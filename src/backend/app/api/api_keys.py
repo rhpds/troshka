@@ -1,4 +1,5 @@
 import datetime
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -8,6 +9,9 @@ from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.models.api_key import ApiKey, generate_api_key, hash_key
 from app.models.user import User
+
+CurrentUser = Annotated[User, Depends(get_current_user)]
+DbSession = Annotated[Session, Depends(get_db)]
 
 router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 
@@ -34,9 +38,7 @@ class ApiKeyCreated(ApiKeyResponse):
 
 
 @router.get("/", response_model=list[ApiKeyResponse])
-def list_api_keys(
-    user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+def list_api_keys(user: CurrentUser, db: DbSession):
     return (
         db.query(ApiKey)
         .filter_by(user_id=user.id)
@@ -46,11 +48,7 @@ def list_api_keys(
 
 
 @router.post("/", response_model=ApiKeyCreated, status_code=201)
-def create_api_key(
-    body: ApiKeyCreate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def create_api_key(body: ApiKeyCreate, user: CurrentUser, db: DbSession):
     raw_key = generate_api_key()
 
     expires_at = None
@@ -82,10 +80,12 @@ def create_api_key(
     )
 
 
-@router.delete("/{key_id}", status_code=204)
-def revoke_api_key(
-    key_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+@router.delete(
+    "/{key_id}",
+    status_code=204,
+    responses={404: {"description": "API key not found"}},
+)
+def revoke_api_key(key_id: str, user: CurrentUser, db: DbSession):
     api_key = db.query(ApiKey).filter_by(id=key_id, user_id=user.id).first()
     if not api_key:
         raise HTTPException(status_code=404, detail="API key not found")

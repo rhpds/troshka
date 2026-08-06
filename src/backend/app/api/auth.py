@@ -44,7 +44,11 @@ def auth_config():
     }
 
 
-@router.get("/dev-token", response_model=LoginResponse)
+@router.get(
+    "/dev-token",
+    response_model=LoginResponse,
+    responses={403: {"description": "Dev tokens disabled when SSO is enabled"}},
+)
 def dev_token(db: DbSession):
     if config.auth.oauth_enabled:
         raise HTTPException(
@@ -62,7 +66,14 @@ def dev_token(db: DbSession):
     )
 
 
-@router.get("/dev-token/{role}", response_model=LoginResponse)
+@router.get(
+    "/dev-token/{role}",
+    response_model=LoginResponse,
+    responses={
+        400: {"description": "Invalid role"},
+        403: {"description": "Dev tokens disabled when SSO is enabled"},
+    },
+)
 def dev_token_with_role(role: str, db: DbSession):
     if config.auth.oauth_enabled:
         raise HTTPException(
@@ -130,7 +141,11 @@ def list_ssh_keys(user: CurrentUser, db: DbSession):
     ]
 
 
-@router.post("/ssh-keys", status_code=201)
+@router.post(
+    "/ssh-keys",
+    status_code=201,
+    responses={400: {"description": "Invalid SSH public key format"}},
+)
 def add_ssh_key(
     body: SshKeyCreate,
     user: CurrentUser,
@@ -154,7 +169,11 @@ def add_ssh_key(
     return {"id": key.id, "name": key.name}
 
 
-@router.delete("/ssh-keys/{key_id}", status_code=204)
+@router.delete(
+    "/ssh-keys/{key_id}",
+    status_code=204,
+    responses={404: {"description": "Key not found"}},
+)
 def delete_ssh_key(key_id: int, user: CurrentUser, db: DbSession):
     key = db.query(UserSshKey).filter_by(id=key_id, user_id=user.id).first()
     if not key:
@@ -187,7 +206,10 @@ def get_ocp_pull_secret(user: CurrentUser):
     }
 
 
-@router.put("/ocp-pull-secret")
+@router.put(
+    "/ocp-pull-secret",
+    responses={400: {"description": "Bad request"}},
+)
 def set_ocp_pull_secret(body: dict, user: CurrentUser, db: DbSession):
     import base64
     import json
@@ -257,7 +279,10 @@ def get_rh_offline_token(user: CurrentUser):
     return {"has_token": True, "masked": masked}
 
 
-@router.put("/rh-offline-token")
+@router.put(
+    "/rh-offline-token",
+    responses={400: {"description": "Offline token is required"}},
+)
 def set_rh_offline_token(body: dict, user: CurrentUser, db: DbSession):
     token = body.get("offline_token", "").strip()
     if not token:

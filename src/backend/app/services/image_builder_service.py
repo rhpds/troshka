@@ -171,11 +171,139 @@ def clear_build_status(provider_id: str):
     _build_progress.pop(provider_id, None)
 
 
-def build_host_image(provider_id: str, user_id: str, rhel_version: str = "rhel-10"):
-    from app.core.database import SessionLocal
+def _set_build_error(provider_id: str, message: str, **extra):
+    progress: dict = {"status": "error", "message": message}
+    progress.update(extra)
+    _build_progress[provider_id] = progress
+
+
+def _resolve_build_inputs(db, provider_id: str, user_id: str):
     from app.core.encryption import decrypt
     from app.models.provider import Provider
     from app.models.user import User
+
+    provider = db.get(Provider, provider_id)
+    user = db.get(User, user_id)
+    if not provider or not user:
+        _set_build_error(provider_id, "Provider or user not found")
+        return None
+
+    if not user.rh_offline_token:
+        _set_build_error(
+            provider_id,
+            "No Red Hat offline token configured — add one in Settings",
+        )
+        return None
+
+    offline_token = decrypt(user.rh_offline_token)
+    if not offline_token:
+        _set_build_error(provider_id, "Failed to decrypt offline token")
+        return None
+
+    return provider, offline_token
+
+
+def _poll_with_token_refresh(
+    access_token: str, offline_token: str, compose_id: str
+) -> tuple:
+    try:
+        return _poll_compose(access_token, compose_id), access_token
+    except ImageBuilderError as e:
+        if "401" not in str(e) and "403" not in str(e):
+            raise
+        access_token = _exchange_token(offline_token)
+        return _poll_compose(access_token, compose_id), access_token
+
+
+def _handle_compose_result(
+    status: dict,
+    provider,
+    provider_id: str,
+    compose_id: str,
+    elapsed: int,
+    db,
+) -> bool:
+    image_status_obj = status.get("image_status", {})
+    image_status = image_status_obj.get("status", "unknown")
+
+    if image_status == "success":
+        image_ref = _extract_image_reference(status, provider.type, provider)
+        provider.default_image = image_ref
+        db.commit()
+        _build_progress[provider_id] = {
+            "status": "success",
+            "message": f"Image ready: {image_ref}",
+            "image": image_ref,
+            "compose_id": compose_id,
+            "elapsed_seconds": elapsed,
+        }
+        logger.info("Image build complete for %s: %s", provider.name, image_ref)
+        return True
+
+    if image_status == "failure":
+        error_info = image_status_obj.get("error", {})
+        reason = error_info.get("reason", "Unknown error")
+        details = error_info.get("details", "")
+        msg = f"Image build failed: {reason}"
+        if details:
+            msg += f" — {details[:200]}"
+        _set_build_error(
+            provider_id, msg, compose_id=compose_id, elapsed_seconds=elapsed
+        )
+        logger.error("Image build failed for %s: %s", provider.name, msg)
+        return True
+
+    if elapsed > 3600:
+        _set_build_error(
+            provider_id,
+            "Image build timed out after 1 hour",
+            compose_id=compose_id,
+            elapsed_seconds=elapsed,
+        )
+        return True
+
+    return False
+
+
+def _poll_compose_loop(
+    access_token: str,
+    offline_token: str,
+    compose_id: str,
+    provider,
+    provider_id: str,
+    start_time: float,
+    db,
+):
+    while True:
+        time.sleep(30)
+        elapsed = int(time.time() - start_time)
+
+        status, access_token = _poll_with_token_refresh(
+            access_token, offline_token, compose_id
+        )
+
+        image_status_obj = status.get("image_status", {})
+        image_status = image_status_obj.get("status", "unknown")
+        progress = image_status_obj.get("progress", {})
+        done = progress.get("done", 0)
+        total = progress.get("total", 0)
+        minutes = elapsed // 60
+        if total:
+            msg = f"Step {done}/{total} — {image_status} ({minutes}m elapsed)"
+        else:
+            msg = f"{image_status} ({minutes}m elapsed)"
+        _build_progress[provider_id].update(
+            {"message": msg, "elapsed_seconds": elapsed}
+        )
+
+        if _handle_compose_result(
+            status, provider, provider_id, compose_id, elapsed, db
+        ):
+            return
+
+
+def build_host_image(provider_id: str, user_id: str, rhel_version: str = "rhel-10"):
+    from app.core.database import SessionLocal
 
     start_time = time.time()
     _build_progress[provider_id] = {
@@ -188,32 +316,12 @@ def build_host_image(provider_id: str, user_id: str, rhel_version: str = "rhel-1
 
     db = SessionLocal()
     try:
-        provider = db.get(Provider, provider_id)
-        user = db.get(User, user_id)
-        if not provider or not user:
-            _build_progress[provider_id] = {
-                "status": "error",
-                "message": "Provider or user not found",
-            }
+        result = _resolve_build_inputs(db, provider_id, user_id)
+        if not result:
             return
-
-        if not user.rh_offline_token:
-            _build_progress[provider_id] = {
-                "status": "error",
-                "message": "No Red Hat offline token configured — add one in Settings",
-            }
-            return
-
-        offline_token = decrypt(user.rh_offline_token)
-        if not offline_token:
-            _build_progress[provider_id] = {
-                "status": "error",
-                "message": "Failed to decrypt offline token",
-            }
-            return
+        provider, offline_token = result
 
         access_token = _exchange_token(offline_token)
-
         upload_options = _build_upload_options(provider, rhel_version)
         image_type = "gcp" if provider.type == "gcp" else "azure"
 
@@ -235,74 +343,15 @@ def build_host_image(provider_id: str, user_id: str, rhel_version: str = "rhel-1
             provider.name,
         )
 
-        while True:
-            time.sleep(30)
-            elapsed = int(time.time() - start_time)
-
-            try:
-                status = _poll_compose(access_token, compose_id)
-            except ImageBuilderError as e:
-                if "401" in str(e) or "403" in str(e):
-                    access_token = _exchange_token(offline_token)
-                    status = _poll_compose(access_token, compose_id)
-                else:
-                    raise
-
-            image_status_obj = status.get("image_status", {})
-            image_status = image_status_obj.get("status", "unknown")
-            progress = image_status_obj.get("progress", {})
-            done = progress.get("done", 0)
-            total = progress.get("total", 0)
-            minutes = elapsed // 60
-            if total:
-                msg = f"Step {done}/{total} — {image_status} ({minutes}m elapsed)"
-            else:
-                msg = f"{image_status} ({minutes}m elapsed)"
-            _build_progress[provider_id].update(
-                {
-                    "message": msg,
-                    "elapsed_seconds": elapsed,
-                }
-            )
-
-            if image_status == "success":
-                image_ref = _extract_image_reference(status, provider.type, provider)
-                provider.default_image = image_ref
-                db.commit()
-                _build_progress[provider_id] = {
-                    "status": "success",
-                    "message": f"Image ready: {image_ref}",
-                    "image": image_ref,
-                    "compose_id": compose_id,
-                    "elapsed_seconds": elapsed,
-                }
-                logger.info("Image build complete for %s: %s", provider.name, image_ref)
-                return
-
-            if image_status == "failure":
-                error_info = status.get("image_status", {}).get("error", {})
-                reason = error_info.get("reason", "Unknown error")
-                details = error_info.get("details", "")
-                msg = f"Image build failed: {reason}"
-                if details:
-                    msg += f" — {details[:200]}"
-                _build_progress[provider_id] = {
-                    "status": "error",
-                    "message": msg,
-                    "compose_id": compose_id,
-                    "elapsed_seconds": elapsed,
-                }
-                logger.error("Image build failed for %s: %s", provider.name, msg)
-                return
-
-            if elapsed > 3600:
-                _build_progress[provider_id] = {
-                    "status": "error",
-                    "message": "Image build timed out after 1 hour",
-                    "compose_id": compose_id,
-                    "elapsed_seconds": elapsed,
-                }
-                return
+        _poll_compose_loop(
+            access_token,
+            offline_token,
+            compose_id,
+            provider,
+            provider_id,
+            start_time,
+            db,
+        )
 
     except Exception as e:
         logger.exception("Image build error for provider %s", provider_id)

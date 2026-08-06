@@ -682,7 +682,9 @@ def _scp_file_to_host(
         return False
 
     filename = os.path.basename(local_path)
-    tmp_path = f"/tmp/{filename}"
+    tmp_path = (
+        f"/tmp/{filename}"  # NOSONAR — remote host staging dir, moved with sudo mv
+    )
     logger.info("Copying %s to %s", filename, host_ip)
 
     scp_result = subprocess.run(

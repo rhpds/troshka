@@ -94,6 +94,8 @@ _MSG_CA_CERT = "CA cert"
 _VMS_DESTROY_PATH = "/vms/destroy"
 _MSG_BROWSER_CREDS = "browser credentials"
 _LOG_DEPLOY = "Deploy %s: %s"
+_KUBEVIRT_API = "kubevirt.io"
+_VM_START_FAILED = "Failed to start VM %s: %s"
 
 
 def _set_deploy_progress(project_id: str, data: dict):
@@ -346,130 +348,149 @@ def _teardown_bmc_via_troshkad(host, project_id: str):
         )
 
 
-def cache_library_images(topology: dict, host, db_session, progress_callback=None):
-    """Download all library images and pattern disks to host cache via troshkad.
-
-    Uses troshkad images/cache endpoint for each item. Downloads run in parallel
-    as separate jobs on the host agent.
-
-    Args:
-        topology: Project topology dict
-        host: Host model instance
-        db_session: SQLAlchemy session
-        progress_callback: optional callback(downloaded_bytes, total_bytes)
-    """
+def _collect_library_items(nodes, db_session, pool):
+    """Collect library items from storage nodes for caching."""
     from app.models.library import LibraryItem
-    from app.models.pattern import Pattern, PatternDisk
-    from app.services import s3_storage
-    from app.services.troshkad_client import poll_job
 
-    pool = _get_host_pool(host, db_session)
-    nodes = topology.get("nodes", [])
-    items_to_cache = []
-
-    # Collect library items
+    items = []
     for node in nodes:
         if node.get("type") != "storageNode":
             continue
         item_id = node.get("data", {}).get("libraryItemId")
-        if item_id:
-            item = db_session.query(LibraryItem).filter_by(id=item_id).first()
-            if not item:
-                item_name = node.get("data", {}).get("libraryItemName")
-                fmt = node.get("data", {}).get("format", "qcow2")
-                if item_name:
-                    from sqlalchemy import func as sa_func
+        if not item_id:
+            continue
+        item = db_session.query(LibraryItem).filter_by(id=item_id).first()
+        if not item:
+            item, item_id = _resolve_library_item_by_name(
+                node,
+                item_id,
+                db_session,
+            )
+        if not item or not item.s3_key:
+            continue
+        fmt = node.get("data", {}).get("format", "qcow2")
+        cache_path = _image_cache_path(item_id, fmt, pool)
+        items.append(
+            {
+                "item_id": item_id,
+                "name": item.name,
+                "s3_key": item.s3_key,
+                "cache_path": cache_path,
+                "expected_size": item.size_bytes,
+                "source": getattr(item, "source", "local"),
+                "source_provider_id": getattr(item, "source_provider_id", None),
+            }
+        )
+    return items
 
-                    item = (
-                        db_session.query(LibraryItem)
-                        .filter(
-                            sa_func.lower(LibraryItem.name) == item_name.lower(),
-                            LibraryItem.format == fmt,
-                        )
-                        .first()
-                    )
-                    if item:
-                        logger.info(
-                            "Library item %s not found by ID, resolved by name '%s' → %s",
-                            item_id[:8],
-                            item_name,
-                            item.id[:8],
-                        )
-                        node["data"]["libraryItemId"] = item.id
-                        item_id = item.id
-            if item and item.s3_key:
-                fmt = node.get("data", {}).get("format", "qcow2")
-                cache_path = _image_cache_path(item_id, fmt, pool)
-                items_to_cache.append(
-                    {
-                        "item_id": item_id,
-                        "name": item.name,
-                        "s3_key": item.s3_key,
-                        "cache_path": cache_path,
-                        "expected_size": item.size_bytes,
-                        "source": getattr(item, "source", "local"),
-                        "source_provider_id": getattr(item, "source_provider_id", None),
-                    }
-                )
 
-    # Collect PXE boot ISOs from VM nodes
+def _resolve_library_item_by_name(node, item_id, db_session):
+    """Try to resolve a library item by name when ID lookup fails."""
+    from app.models.library import LibraryItem
+
+    item_name = node.get("data", {}).get("libraryItemName")
+    fmt = node.get("data", {}).get("format", "qcow2")
+    if not item_name:
+        return None, item_id
+    from sqlalchemy import func as sa_func
+
+    item = (
+        db_session.query(LibraryItem)
+        .filter(
+            sa_func.lower(LibraryItem.name) == item_name.lower(),
+            LibraryItem.format == fmt,
+        )
+        .first()
+    )
+    if item:
+        logger.info(
+            "Library item %s not found by ID, resolved by name '%s' → %s",
+            item_id[:8],
+            item_name,
+            item.id[:8],
+        )
+        node["data"]["libraryItemId"] = item.id
+        item_id = item.id
+    return item, item_id
+
+
+def _collect_pxe_boot_isos(nodes, db_session, pool):
+    """Collect PXE boot ISO items from VM nodes for caching."""
+    from app.models.library import LibraryItem
+
+    items = []
     for node in nodes:
         if node.get("type") != "vmNode":
             continue
         item_id = node.get("data", {}).get("pxeBootIsoId")
-        if item_id:
-            item = db_session.query(LibraryItem).filter_by(id=item_id).first()
-            if item and item.s3_key:
-                cache_path = _image_cache_path(item_id, "iso", pool)
-                items_to_cache.append(
-                    {
-                        "item_id": item_id,
-                        "name": item.name,
-                        "s3_key": item.s3_key,
-                        "cache_path": cache_path,
-                        "expected_size": item.size_bytes,
-                        "source": getattr(item, "source", "local"),
-                        "source_provider_id": getattr(item, "source_provider_id", None),
-                    }
-                )
+        if not item_id:
+            continue
+        item = db_session.query(LibraryItem).filter_by(id=item_id).first()
+        if not item or not item.s3_key:
+            continue
+        cache_path = _image_cache_path(item_id, "iso", pool)
+        items.append(
+            {
+                "item_id": item_id,
+                "name": item.name,
+                "s3_key": item.s3_key,
+                "cache_path": cache_path,
+                "expected_size": item.size_bytes,
+                "source": getattr(item, "source", "local"),
+                "source_provider_id": getattr(item, "source_provider_id", None),
+            }
+        )
+    return items
 
-    # Collect pattern disks
+
+def _collect_pattern_disks(nodes, db_session, pool):
+    """Collect pattern disk items from storage nodes for caching."""
+    from app.models.pattern import Pattern, PatternDisk
+
+    items = []
     for node in nodes:
         if node.get("type") != "storageNode":
             continue
         data = node.get("data", {})
         pattern_id = data.get("patternId")
         pattern_disk_id = data.get("patternDiskId")
-        if pattern_id and pattern_disk_id:
-            pd = (
-                db_session.query(PatternDisk)
-                .filter_by(id=pattern_disk_id, pattern_id=pattern_id)
-                .first()
-            )
-            if pd and pd.s3_key:
-                cache_path = _pattern_cache_path(
-                    pattern_id, pd.source_disk_id, pd.format, pool
-                )
-                disk_name = (
-                    data.get("label") or data.get("name") or node.get("id", "")[:8]
-                )
-                pattern_obj = db_session.query(Pattern).filter_by(id=pattern_id).first()
-                pattern_tags = (pattern_obj.tags or {}) if pattern_obj else {}
-                items_to_cache.append(
-                    {
-                        "item_id": pattern_disk_id,
-                        "name": disk_name,
-                        "s3_key": pd.s3_key,
-                        "cache_path": cache_path,
-                        "expected_size": pd.size_bytes,
-                        "source": pattern_tags.get("source", "local"),
-                        "source_provider_id": pattern_tags.get("source_provider_id"),
-                    }
-                )
+        if not (pattern_id and pattern_disk_id):
+            continue
+        pd = (
+            db_session.query(PatternDisk)
+            .filter_by(id=pattern_disk_id, pattern_id=pattern_id)
+            .first()
+        )
+        if not pd or not pd.s3_key:
+            continue
+        cache_path = _pattern_cache_path(
+            pattern_id,
+            pd.source_disk_id,
+            pd.format,
+            pool,
+        )
+        disk_name = data.get("label") or data.get("name") or node.get("id", "")[:8]
+        pattern_obj = db_session.query(Pattern).filter_by(id=pattern_id).first()
+        pattern_tags = (pattern_obj.tags or {}) if pattern_obj else {}
+        items.append(
+            {
+                "item_id": pattern_disk_id,
+                "name": disk_name,
+                "s3_key": pd.s3_key,
+                "cache_path": cache_path,
+                "expected_size": pd.size_bytes,
+                "source": pattern_tags.get("source", "local"),
+                "source_provider_id": pattern_tags.get("source_provider_id"),
+            }
+        )
+    return items
 
-    # Collect snapshot disks
+
+def _collect_snapshot_disks(nodes, db_session):
+    """Collect snapshot disk items from storage nodes for caching."""
     from app.models.library import LibraryItemDisk
 
+    items = []
     for node in nodes:
         if node.get("type") != "storageNode":
             continue
@@ -482,91 +503,97 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         snap_disks = (
             db_session.query(LibraryItemDisk)
             .filter_by(
-                library_item_id=snapshot_item_id, format=data.get("format", "qcow2")
+                library_item_id=snapshot_item_id,
+                format=data.get("format", "qcow2"),
             )
             .order_by(LibraryItemDisk.boot_order)
             .all()
         )
         for sd in snap_disks:
-            if sd.s3_key:
-                parts = sd.s3_key.rsplit("/", 1)[-1].rsplit(".", 1)
-                orig_disk_id = parts[0] if parts else sd.id
-                cache_path = _snapshot_cache_path(
-                    snapshot_item_id, orig_disk_id, sd.format
-                )
-                items_to_cache.append(
-                    {
-                        "item_id": sd.id,
-                        "name": data.get("label")
-                        or data.get("name")
-                        or snapshot_item_id[:8],
-                        "s3_key": sd.s3_key,
-                        "cache_path": cache_path,
-                        "expected_size": sd.size_bytes,
-                        "source": "local",
-                        "source_provider_id": None,
-                    }
-                )
-
-    seen_ids = set()
-    deduped = []
-    for ic in items_to_cache:
-        if ic["item_id"] not in seen_ids:
-            seen_ids.add(ic["item_id"])
-            deduped.append(ic)
-    items_to_cache = deduped
-
-    logger.info("cache_library_images: %d items to cache", len(items_to_cache))
-    if not items_to_cache:
-        return
-
-    # For shared pools: skip items already cached, coordinate downloads
-    # Only use SharedCacheEntry for items on shared storage (not local pattern cache)
-    if pool and pool.mode.startswith("shared"):
-        items_needing_download = []
-        for ic in items_to_cache:
-            if ic["cache_path"].startswith("/var/lib/troshka/local/"):
-                items_needing_download.append(ic)
+            if not sd.s3_key:
                 continue
-            status, entry = _check_shared_cache(
-                db_session, pool, ic["item_id"], "image"
+            parts = sd.s3_key.rsplit("/", 1)[-1].rsplit(".", 1)
+            orig_disk_id = parts[0] if parts else sd.id
+            cache_path = _snapshot_cache_path(
+                snapshot_item_id,
+                orig_disk_id,
+                sd.format,
             )
-            if status == "ready":
-                try:
-                    jid = start_job(host, "/files/stat", {"path": ic["cache_path"]})
-                    stat_job = wait_for_job(host, jid, timeout=10)
-                    if stat_job.get("result", {}).get("exists"):
-                        logger.info(
-                            "  %s already on shared storage, skipping", ic["name"]
-                        )
-                        continue
-                except TroshkadError:
-                    pass
-                logger.warning(
-                    "  %s cache entry says ready but file missing, re-downloading",
-                    ic["name"],
-                )
-                if entry:
-                    db_session.delete(entry)
-                    db_session.commit()
-            elif status == "downloading":
-                logger.info(
-                    "  %s being downloaded by another host, waiting...", ic["name"]
-                )
-                if _wait_for_shared_cache(db_session, pool.id, ic["item_id"], "image"):
-                    logger.info("  %s now available on shared storage", ic["name"])
-                    continue
-                else:
-                    logger.warning("  %s download timed out, will retry", ic["name"])
-            # Need to download — create/update cache entry
-            rel_path = ic["cache_path"].replace("/var/lib/troshka/shared/", "")
-            _create_shared_cache_entry(
-                db_session, pool, ic["item_id"], "image", rel_path
+            items.append(
+                {
+                    "item_id": sd.id,
+                    "name": data.get("label")
+                    or data.get("name")
+                    or snapshot_item_id[:8],
+                    "s3_key": sd.s3_key,
+                    "cache_path": cache_path,
+                    "expected_size": sd.size_bytes,
+                    "source": "local",
+                    "source_provider_id": None,
+                }
             )
-            items_needing_download.append(ic)
-        items_to_cache = items_needing_download
+    return items
 
-    # Check which items already exist on host (local cache)
+
+def _filter_shared_cache_items(items_to_cache, host, db_session, pool):
+    """Filter out items already on shared storage, coordinate concurrent downloads."""
+    items_needing_download = []
+    for ic in items_to_cache:
+        if ic["cache_path"].startswith("/var/lib/troshka/local/"):
+            items_needing_download.append(ic)
+            continue
+        status, entry = _check_shared_cache(
+            db_session,
+            pool,
+            ic["item_id"],
+            "image",
+        )
+        if status == "ready":
+            if _verify_shared_cache_file(host, ic):
+                continue
+            if entry:
+                db_session.delete(entry)
+                db_session.commit()
+        elif status == "downloading":
+            logger.info(
+                "  %s being downloaded by another host, waiting...",
+                ic["name"],
+            )
+            if _wait_for_shared_cache(db_session, pool.id, ic["item_id"], "image"):
+                logger.info("  %s now available on shared storage", ic["name"])
+                continue
+            logger.warning("  %s download timed out, will retry", ic["name"])
+        rel_path = ic["cache_path"].replace("/var/lib/troshka/shared/", "")
+        _create_shared_cache_entry(
+            db_session,
+            pool,
+            ic["item_id"],
+            "image",
+            rel_path,
+        )
+        items_needing_download.append(ic)
+    return items_needing_download
+
+
+def _verify_shared_cache_file(host, ic):
+    """Check if a shared cache file actually exists on disk."""
+    try:
+        jid = start_job(host, "/files/stat", {"path": ic["cache_path"]})
+        stat_job = wait_for_job(host, jid, timeout=10)
+        if stat_job.get("result", {}).get("exists"):
+            logger.info("  %s already on shared storage, skipping", ic["name"])
+            return True
+    except TroshkadError:
+        pass
+    logger.warning(
+        "  %s cache entry says ready but file missing, re-downloading",
+        ic["name"],
+    )
+    return False
+
+
+def _filter_locally_cached_items(items_to_cache, host):
+    """Filter out items already cached locally on the host."""
     items_to_download = []
     for ic in items_to_cache:
         try:
@@ -578,12 +605,12 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         except TroshkadError:
             pass
         items_to_download.append(ic)
+    return items_to_download
 
-    if not items_to_download:
-        logger.info("  all items cached, no downloads needed")
-        return
 
-    # Start download jobs using aws s3 cp
+def _start_download_jobs(items_to_download, host):
+    """Start S3 download jobs on the host for each item. Returns list of active jobs."""
+    from app.services import s3_storage
     from app.services.s3_storage import _get_readonly_s3_config, _get_s3_config
 
     s3_creds = _get_s3_config()
@@ -630,16 +657,66 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                 ic["cache_path"],
             )
         except TroshkadError as e:
-            logger.error("Failed to start cache job for %s: %s", ic["name"], e)
+            logger.exception("Failed to start cache job for %s: %s", ic["name"], e)
+    return active_jobs
 
-    if not active_jobs:
-        return
 
-    # Poll until all jobs complete
+def _build_download_progress_items(active_jobs, completed, failed, host):
+    """Build progress display items for active download jobs."""
+
+    items = []
+    for aj in active_jobs:
+        exp = aj.get("expected_size", 0)
+        size_str = f"{exp / (1024**3):.1f} GB" if exp else ""
+        if aj["job_id"] in completed:
+            items.append(f"{aj['name']}: done{f' ({size_str})' if size_str else ''}")
+        elif aj["job_id"] in failed:
+            items.append(f"{aj['name']}: failed")
+        else:
+            downloaded_gb = _get_download_progress_gb(host, aj["job_id"])
+            total_gb = exp / (1024**3) if exp else 0
+            if downloaded_gb > 0 and total_gb > 0:
+                pct = min(99, int(downloaded_gb / total_gb * 100))
+                items.append(
+                    f"{aj['name']}: {downloaded_gb:.1f} / {total_gb:.1f} GB ({pct}%)"
+                )
+            elif total_gb > 0:
+                items.append(f"{aj['name']}: downloading {total_gb:.1f} GB...")
+            else:
+                items.append(f"{aj['name']}: downloading...")
+    return items
+
+
+def _get_download_progress_gb(host, job_id):
+    """Parse download progress in GB from a cache job's output."""
+    from app.services.troshkad_client import poll_job
+
+    try:
+        job = poll_job(host, job_id)
+        for line in reversed(job.get("output", [])):
+            line = line.strip()
+            if "Downloading:" in line and "GB" in line:
+                try:
+                    return float(
+                        line.split("Downloading:")[1].strip().replace("GB", "").strip()
+                    )
+                except (ValueError, IndexError):
+                    pass
+                break
+    except TroshkadError:
+        pass
+    return 0.0
+
+
+def _poll_download_jobs(active_jobs, host, db_session, pool, progress_callback):
+    """Poll download jobs until all complete or stall timeout is reached."""
+    from app.services.troshkad_client import poll_job
+
     completed: set[str] = set()
     failed: set[str] = set()
     stale_polls = 0
     last_completed_count = 0
+    is_shared = pool and pool.mode.startswith("shared")
 
     while len(completed) + len(failed) < len(active_jobs):
         _time.sleep(5)
@@ -651,9 +728,12 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                 if job["status"] == "completed":
                     completed.add(aj["job_id"])
                     logger.info("cache: %s downloaded", aj["name"])
-                    if pool and pool.mode.startswith("shared"):
+                    if is_shared:
                         _mark_shared_cache_ready(
-                            db_session, pool.id, aj["item_id"], "image"
+                            db_session,
+                            pool.id,
+                            aj["item_id"],
+                            "image",
                         )
                 elif job["status"] == "failed":
                     failed.add(aj["job_id"])
@@ -662,55 +742,24 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
                         aj["name"],
                         job.get("result", {}).get("error", ""),
                     )
-                    if pool and pool.mode.startswith("shared"):
+                    if is_shared:
                         _mark_shared_cache_error(
-                            db_session, pool.id, aj["item_id"], "image"
+                            db_session,
+                            pool.id,
+                            aj["item_id"],
+                            "image",
                         )
             except TroshkadError:
                 pass  # Transient connection error, retry next poll
 
         if progress_callback:
             done_count = len(completed) + len(failed)
-            items = []
-            for aj in active_jobs:
-                exp = aj.get("expected_size", 0)
-                size_str = f"{exp / (1024**3):.1f} GB" if exp else ""
-                if aj["job_id"] in completed:
-                    items.append(
-                        f"{aj['name']}: done{f' ({size_str})' if size_str else ''}"
-                    )
-                elif aj["job_id"] in failed:
-                    items.append(f"{aj['name']}: failed")
-                else:
-                    downloaded_gb = 0.0
-                    try:
-                        job = poll_job(host, aj["job_id"])
-                        for line in reversed(job.get("output", [])):
-                            line = line.strip()
-                            if "Downloading:" in line and "GB" in line:
-                                try:
-                                    downloaded_gb = float(
-                                        line.split("Downloading:")[1]
-                                        .strip()
-                                        .replace("GB", "")
-                                        .strip()
-                                    )
-                                except (ValueError, IndexError):
-                                    pass
-                                break
-                    except TroshkadError:
-                        pass
-                    exp = aj.get("expected_size", 0)
-                    total_gb = exp / (1024**3) if exp else 0
-                    if downloaded_gb > 0 and total_gb > 0:
-                        pct = min(99, int(downloaded_gb / total_gb * 100))
-                        items.append(
-                            f"{aj['name']}: {downloaded_gb:.1f} / {total_gb:.1f} GB ({pct}%)"
-                        )
-                    elif total_gb > 0:
-                        items.append(f"{aj['name']}: downloading {total_gb:.1f} GB...")
-                    else:
-                        items.append(f"{aj['name']}: downloading...")
+            items = _build_download_progress_items(
+                active_jobs,
+                completed,
+                failed,
+                host,
+            )
             progress_callback(f"{done_count}/{len(active_jobs)}", items)
 
         if len(completed) + len(failed) == last_completed_count:
@@ -721,8 +770,73 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
 
         if stale_polls >= 720:  # 1 hour with no progress
             logger.error("Download stalled for 1 hour, aborting")
-            return
+            return failed
 
+    return failed
+
+
+def cache_library_images(topology: dict, host, db_session, progress_callback=None):
+    """Download all library images and pattern disks to host cache via troshkad.
+
+    Uses troshkad images/cache endpoint for each item. Downloads run in parallel
+    as separate jobs on the host agent.
+
+    Args:
+        topology: Project topology dict
+        host: Host model instance
+        db_session: SQLAlchemy session
+        progress_callback: optional callback(downloaded_bytes, total_bytes)
+    """
+    pool = _get_host_pool(host, db_session)
+    nodes = topology.get("nodes", [])
+
+    # Collect all items to cache from topology
+    items_to_cache = []
+    items_to_cache.extend(_collect_library_items(nodes, db_session, pool))
+    items_to_cache.extend(_collect_pxe_boot_isos(nodes, db_session, pool))
+    items_to_cache.extend(_collect_pattern_disks(nodes, db_session, pool))
+    items_to_cache.extend(_collect_snapshot_disks(nodes, db_session))
+
+    # Deduplicate
+    seen_ids = set()
+    deduped = []
+    for ic in items_to_cache:
+        if ic["item_id"] not in seen_ids:
+            seen_ids.add(ic["item_id"])
+            deduped.append(ic)
+    items_to_cache = deduped
+
+    logger.info("cache_library_images: %d items to cache", len(items_to_cache))
+    if not items_to_cache:
+        return
+
+    # For shared pools: skip items already cached, coordinate downloads
+    if pool and pool.mode.startswith("shared"):
+        items_to_cache = _filter_shared_cache_items(
+            items_to_cache,
+            host,
+            db_session,
+            pool,
+        )
+
+    # Check which items already exist on host (local cache)
+    items_to_download = _filter_locally_cached_items(items_to_cache, host)
+    if not items_to_download:
+        logger.info("  all items cached, no downloads needed")
+        return
+
+    # Start and poll download jobs
+    active_jobs = _start_download_jobs(items_to_download, host)
+    if not active_jobs:
+        return
+
+    failed = _poll_download_jobs(
+        active_jobs,
+        host,
+        db_session,
+        pool,
+        progress_callback,
+    )
     if failed:
         logger.error(
             "cache_library_images: %d/%d downloads failed",
@@ -1033,7 +1147,7 @@ def _setup_pxe_via_troshkad(host, topology, vni_map, project_id=""):
                     job.get("result", {}).get("error", ""),
                 )
         except TroshkadError as e:
-            logger.error("PXE setup failed for VNI %s: %s", net["vni"], e)
+            logger.exception("PXE setup failed for VNI %s: %s", net["vni"], e)
 
 
 def _create_seed_isos_via_troshkad(host, project_id, topology, pool=None):
@@ -1076,7 +1190,53 @@ def _create_seed_isos_via_troshkad(host, project_id, topology, pool=None):
                 "Seed ISO creation failed: %s", job.get("result", {}).get("error", "")
             )
     except TroshkadError as e:
-        logger.error("Seed ISO creation failed: %s", e)
+        logger.exception("Seed ISO creation failed: %s", e)
+
+
+def _resolve_disk_backing(disk, pool=None):
+    """Resolve the backing file path for a disk based on its source type."""
+    if (
+        disk.get("source") == "pattern"
+        and disk.get("patternId")
+        and disk.get("patternDiskId")
+    ):
+        from app.core.database import SessionLocal as _SL
+        from app.models.pattern import PatternDisk as _PD
+
+        _s = _SL()
+        _pd = _s.query(_PD).filter_by(id=disk["patternDiskId"]).first()
+        _cache_disk_id = _pd.source_disk_id if _pd else disk["patternDiskId"]
+        _s.close()
+        return _pattern_cache_path(
+            disk["patternId"], _cache_disk_id, disk["format"], pool
+        )
+
+    if disk.get("source") == "snapshot" and disk.get("snapshotItemId"):
+        from app.core.database import SessionLocal as _SL2
+        from app.models.library import LibraryItemDisk as _LID
+
+        _s2 = _SL2()
+        _snap_disks = (
+            _s2.query(_LID)
+            .filter_by(library_item_id=disk["snapshotItemId"], format=disk["format"])
+            .order_by(_LID.boot_order)
+            .all()
+        )
+        backing = None
+        if _snap_disks:
+            s3_key = _snap_disks[0].s3_key
+            parts = s3_key.rsplit("/", 1)[-1].rsplit(".", 1)
+            orig_disk_id = parts[0] if parts else _snap_disks[0].id
+            backing = _snapshot_cache_path(
+                disk["snapshotItemId"], orig_disk_id, disk["format"]
+            )
+        _s2.close()
+        return backing
+
+    if disk.get("source") == "library" and disk.get("library_item_id"):
+        return _image_cache_path(disk["library_item_id"], disk["format"], pool)
+
+    return None
 
 
 def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool=None):
@@ -1089,45 +1249,7 @@ def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool=None):
             project_id, vm["node_id"], disk["node_id"], disk["format"], pool
         )
 
-        backing = None
-        if (
-            disk.get("source") == "pattern"
-            and disk.get("patternId")
-            and disk.get("patternDiskId")
-        ):
-            from app.core.database import SessionLocal as _SL
-            from app.models.pattern import PatternDisk as _PD
-
-            _s = _SL()
-            _pd = _s.query(_PD).filter_by(id=disk["patternDiskId"]).first()
-            _cache_disk_id = _pd.source_disk_id if _pd else disk["patternDiskId"]
-            _s.close()
-            backing = _pattern_cache_path(
-                disk["patternId"], _cache_disk_id, disk["format"], pool
-            )
-        elif disk.get("source") == "snapshot" and disk.get("snapshotItemId"):
-            from app.core.database import SessionLocal as _SL2
-            from app.models.library import LibraryItemDisk as _LID
-
-            _s2 = _SL2()
-            _snap_disks = (
-                _s2.query(_LID)
-                .filter_by(
-                    library_item_id=disk["snapshotItemId"], format=disk["format"]
-                )
-                .order_by(_LID.boot_order)
-                .all()
-            )
-            if _snap_disks:
-                s3_key = _snap_disks[0].s3_key
-                parts = s3_key.rsplit("/", 1)[-1].rsplit(".", 1)
-                orig_disk_id = parts[0] if parts else _snap_disks[0].id
-                backing = _snapshot_cache_path(
-                    disk["snapshotItemId"], orig_disk_id, disk["format"]
-                )
-            _s2.close()
-        elif disk.get("source") == "library" and disk.get("library_item_id"):
-            backing = _image_cache_path(disk["library_item_id"], disk["format"], pool)
+        backing = _resolve_disk_backing(disk, pool)
 
         params = {
             "path": dp,
@@ -1142,22 +1264,8 @@ def _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool=None):
     return job_ids
 
 
-def _create_vm_via_troshkad(
-    host,
-    project_id,
-    vm,
-    topology,
-    vni_map,
-    pool=None,
-    disk_cache=None,
-    clock_offset=None,
-):
-    """Create a VM definition via troshkad vms/create."""
-    vm_name = _vm_domain_name(project_id, vm["node_id"])
-    vm_disks = _find_vm_disks(vm["node_id"], topology)
-    vm_networks = _find_vm_networks(vm["node_id"], topology, vni_map, project_id)
-
-    # Build disk list for virt-install
+def _build_vm_disk_list(vm, vm_disks, project_id, pool):
+    """Build the disk list for virt-install from topology disk nodes."""
     vm_dir = _vm_dir(project_id, pool)
     disks = []
     for disk in vm_disks:
@@ -1184,7 +1292,6 @@ def _create_vm_via_troshkad(
             disk_dict["rotation_rate"] = disk["rotation_rate"]
         disks.append(disk_dict)
 
-    # Seed ISO as cdrom
     if vm.get("cloud_init"):
         disks.append(
             {
@@ -1193,16 +1300,11 @@ def _create_vm_via_troshkad(
                 "device": "cdrom",
             }
         )
+    return disks
 
-    # Build network list
-    networks = []
-    for net in vm_networks:
-        entry = {"bridge": net["bridge"], "model": net.get("model", "virtio")}
-        if net["mac"]:
-            entry["mac"] = net["mac"]
-        networks.append(entry)
 
-    # Translate canvas boot device IDs to libvirt boot types
+def _translate_boot_devices(vm, topology):
+    """Translate canvas boot device IDs to libvirt boot types."""
     boot_devs = []
     seen_boot = set()
     all_nodes = {n["id"]: n for n in topology.get("nodes", [])}
@@ -1218,6 +1320,34 @@ def _create_vm_via_troshkad(
         if bt not in seen_boot:
             boot_devs.append(bt)
             seen_boot.add(bt)
+    return boot_devs
+
+
+def _create_vm_via_troshkad(
+    host,
+    project_id,
+    vm,
+    topology,
+    vni_map,
+    pool=None,
+    disk_cache=None,
+    clock_offset=None,
+):
+    """Create a VM definition via troshkad vms/create."""
+    vm_name = _vm_domain_name(project_id, vm["node_id"])
+    vm_disks = _find_vm_disks(vm["node_id"], topology)
+    vm_networks = _find_vm_networks(vm["node_id"], topology, vni_map, project_id)
+
+    disks = _build_vm_disk_list(vm, vm_disks, project_id, pool)
+
+    networks = []
+    for net in vm_networks:
+        entry = {"bridge": net["bridge"], "model": net.get("model", "virtio")}
+        if net["mac"]:
+            entry["mac"] = net["mac"]
+        networks.append(entry)
+
+    boot_devs = _translate_boot_devices(vm, topology)
 
     params = {
         "domain_name": vm_name,
@@ -1290,67 +1420,94 @@ def _setup_metadata_via_troshkad(host, project_id, topology, vni_map):
         )
 
 
-def _start_vms_via_troshkad(host, project_id, topology):
-    """Start VMs respecting start order via troshkad vms/start.
-    Returns list of (vm_name, error) for any VMs that failed to start."""
-    vms = _extract_vms(topology)
-    start_order = topology.get("startOrder", [])
-    failed = []
+def _start_ordered_vms(host, project_id, vms, start_order):
+    """Start VMs that have explicit start order entries (sequentially).
 
+    Returns (ordered_vm_ids, failed) where ordered_vm_ids is the set of VM IDs
+    that were in the start order, and failed is a list of (name, error) tuples.
+    """
     ordered_vm_ids = set()
-    if start_order:
-        for entry in start_order:
-            vm_id = entry.get("vmId", "")
-            vm = next((v for v in vms if v["node_id"] == vm_id), None)
-            if vm:
-                ordered_vm_ids.add(vm_id)
-                if entry.get("autoStart", True) is False:
-                    logger.info(
-                        "Deploy %s: skipping %s (auto-start disabled)",
-                        project_id[:8],
-                        vm["name"],
-                    )
-                    continue
-                delay = entry.get("delaySeconds", 0)
-                if delay > 0:
-                    _time.sleep(delay)
-                vm_name = _vm_domain_name(project_id, vm["node_id"])
-                try:
-                    job_id = start_job(host, "/vms/start", {"domain_name": vm_name})
-                    wait_for_job(host, job_id, timeout=120)
-                except TroshkadError as e:
-                    logger.warning("Failed to start VM %s: %s", vm_name, e)
-                    failed.append((vm["name"], str(e)))
+    failed = []
+    for entry in start_order:
+        vm_id = entry.get("vmId", "")
+        vm = next((v for v in vms if v["node_id"] == vm_id), None)
+        if not vm:
+            continue
+        ordered_vm_ids.add(vm_id)
+        if entry.get("autoStart", True) is False:
+            logger.info(
+                "Deploy %s: skipping %s (auto-start disabled)",
+                project_id[:8],
+                vm["name"],
+            )
+            continue
+        delay = entry.get("delaySeconds", 0)
+        if delay > 0:
+            _time.sleep(delay)
+        vm_name = _vm_domain_name(project_id, vm["node_id"])
+        try:
+            job_id = start_job(host, "/vms/start", {"domain_name": vm_name})
+            wait_for_job(host, job_id, timeout=120)
+        except TroshkadError as e:
+            logger.warning(_VM_START_FAILED, vm_name, e)
+            failed.append((vm["name"], str(e)))
+    return ordered_vm_ids, failed
 
-    # Start any VMs not in start order (parallel), skip VMs with powerOnAtDeploy=false
+
+def _start_unordered_vms(host, project_id, vms, ordered_vm_ids, topology):
+    """Start VMs not in start order (parallel), skipping powerOnAtDeploy=false.
+
+    Returns list of (name, error) tuples for any VMs that failed.
+    """
     power_on_map = {}
     for node in topology.get("nodes", []):
         if node.get("type") == "vmNode":
             power_on_map[node["id"]] = node.get("data", {}).get("powerOnAtDeploy", True)
 
+    failed = []
     unordered_jobs = []
     for vm in vms:
-        if vm["node_id"] not in ordered_vm_ids:
-            if not power_on_map.get(vm["node_id"], True):
-                logger.info(
-                    "Deploy %s: skipping %s (powerOnAtDeploy=false)",
-                    project_id[:8],
-                    vm["name"],
-                )
-                continue
-            vm_name = _vm_domain_name(project_id, vm["node_id"])
-            try:
-                job_id = start_job(host, "/vms/start", {"domain_name": vm_name})
-                unordered_jobs.append((vm["name"], vm_name, job_id))
-            except TroshkadError as e:
-                logger.warning("Failed to start VM %s: %s", vm_name, e)
-                failed.append((vm["name"], str(e)))
+        if vm["node_id"] in ordered_vm_ids:
+            continue
+        if not power_on_map.get(vm["node_id"], True):
+            logger.info(
+                "Deploy %s: skipping %s (powerOnAtDeploy=false)",
+                project_id[:8],
+                vm["name"],
+            )
+            continue
+        vm_name = _vm_domain_name(project_id, vm["node_id"])
+        try:
+            job_id = start_job(host, "/vms/start", {"domain_name": vm_name})
+            unordered_jobs.append((vm["name"], vm_name, job_id))
+        except TroshkadError as e:
+            logger.warning(_VM_START_FAILED, vm_name, e)
+            failed.append((vm["name"], str(e)))
+
     for name, vm_name, job_id in unordered_jobs:
         try:
             wait_for_job(host, job_id, timeout=120)
         except TroshkadError as e:
-            logger.warning("Failed to start VM %s: %s", vm_name, e)
+            logger.warning(_VM_START_FAILED, vm_name, e)
             failed.append((name, str(e)))
+    return failed
+
+
+def _start_vms_via_troshkad(host, project_id, topology):
+    """Start VMs respecting start order via troshkad vms/start.
+    Returns list of (vm_name, error) for any VMs that failed to start."""
+    vms = _extract_vms(topology)
+    start_order = topology.get("startOrder", [])
+
+    ordered_vm_ids = set()
+    failed = []
+    if start_order:
+        ordered_vm_ids, failed = _start_ordered_vms(host, project_id, vms, start_order)
+
+    unordered_failed = _start_unordered_vms(
+        host, project_id, vms, ordered_vm_ids, topology
+    )
+    failed.extend(unordered_failed)
 
     return failed
 
@@ -2369,7 +2526,7 @@ def _wait_for_old_kubevirt_resources(_ca, _cv1, _ns, cr_name, project_id):
                 pass
 
             _vmis = _ca.list_namespaced_custom_object(
-                group="kubevirt.io",
+                group=_KUBEVIRT_API,
                 version="v1",
                 namespace=_ns,
                 plural="virtualmachineinstances",
@@ -2887,7 +3044,7 @@ def _deploy_setup_lb(host, project_id, topology, vni_map):
             if first_cidr:
                 try:
                     lb_ip = str(_ipa.IPv4Address(first_cidr) + 1)
-                except (ValueError, _ipa.AddressValueError):
+                except ValueError:
                     pass
     lb_params = {
         "ns": ns,
@@ -3225,7 +3382,7 @@ def _deploy_create_disks(host, project_id, topology, pool):
                     f"Disk creation failed: {job.get('result', {}).get('error', 'unknown')}"
                 )
         except TroshkadError as e:
-            logger.error("Deploy %s: disk creation failed: %s", project_id[:8], e)
+            logger.exception("Deploy %s: disk creation failed: %s", project_id[:8], e)
             raise
     return vms
 
@@ -3372,7 +3529,7 @@ def _deploy_define_vms(
                 host, project_id, vm, topology, vni_map, pool, disk_cache, clock_offset
             )
         except TroshkadError as e:
-            logger.error("Deploy %s: VM creation failed: %s", project_id[:8], e)
+            logger.exception("Deploy %s: VM creation failed: %s", project_id[:8], e)
             raise
 
 
@@ -4075,6 +4232,186 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
         s.close()
 
 
+def _find_bastion_disk_path(vms, topology, project_id, pool):
+    """Find the bastion VM's boot disk path, or None if no bastion."""
+    bastion_vm = next((v for v in vms if v.get("name") == "bastion"), None)
+    if not bastion_vm:
+        return None
+    bastion_disks = _find_vm_disks(bastion_vm["node_id"], topology)
+    bastion_boot = next((d for d in bastion_disks if d.get("format") == "qcow2"), None)
+    if not bastion_boot:
+        return None
+    return _disk_path(
+        project_id,
+        bastion_vm["node_id"],
+        bastion_boot["node_id"],
+        bastion_boot["format"],
+        pool,
+    )
+
+
+def _build_recert_params(vm, disk, bastion_disk_path, project_id, common_password):
+    """Build recert job parameters and resolve kubeadmin password."""
+    vm_name = vm.get("name", vm["node_id"][:8])
+    recert_params = {
+        "disk": disk,
+        "extend_expiration": True,
+        "project_id": project_id,
+        "vm_name": vm_name,
+    }
+    if bastion_disk_path:
+        recert_params["bastion_disk"] = bastion_disk_path
+
+    kubeadmin_pw = ""
+    if common_password:
+        import secrets as _secrets
+
+        import bcrypt
+
+        kubeadmin_pw = common_password
+        if len(kubeadmin_pw) < 23:
+            kubeadmin_pw = _secrets.token_urlsafe(24)
+        recert_params["common_password"] = kubeadmin_pw
+        pw_hash = bcrypt.hashpw(
+            kubeadmin_pw.encode(), bcrypt.gensalt(rounds=12)
+        ).decode()
+        recert_params["kubeadmin_password_hash"] = pw_hash
+    return recert_params, kubeadmin_pw
+
+
+def _run_recert_for_vm(
+    host,
+    project_id,
+    vm,
+    topology,
+    pool,
+    bastion_disk_path,
+    pattern_recert,
+    common_password,
+):
+    """Run recert on a single VM. Returns True if recert succeeded."""
+    vm_disks = _find_vm_disks(vm["node_id"], topology)
+    boot_disk = next((d for d in vm_disks if d.get("format") == "qcow2"), None)
+    if not boot_disk:
+        return False
+    disk = _disk_path(
+        project_id,
+        vm["node_id"],
+        boot_disk["node_id"],
+        boot_disk["format"],
+        pool,
+    )
+    vm_name = vm.get("name", vm["node_id"][:8])
+    recert_params, kubeadmin_pw = _build_recert_params(
+        vm,
+        disk,
+        bastion_disk_path,
+        project_id,
+        common_password,
+    )
+    try:
+        job_id = start_job(host, "/vms/recert", recert_params)
+        job = wait_for_job(host, job_id, timeout=300)
+        if job.get("status") == "completed":
+            logger.info("Deploy %s: recert completed for %s", project_id[:8], vm_name)
+            kc = job.get("result", {}).get("kubeconfig")
+            for n in topology.get("nodes", []):
+                if n["id"] == vm["node_id"]:
+                    if common_password:
+                        n.setdefault("data", {})["ocpKubeadminPassword"] = kubeadmin_pw
+                    if kc:
+                        n.setdefault("data", {})["ocpKubeconfig"] = kc
+                    break
+            return True
+        err = job.get("result", {}).get("error", "unknown")
+        if pattern_recert:
+            raise RuntimeError(
+                f"Recert required (pattern has expired certs) but failed for {vm_name}: {err}"
+            )
+        logger.warning(
+            "Deploy %s: recert failed for %s: %s — falling back to guestfish",
+            project_id[:8],
+            vm_name,
+            err,
+        )
+    except RuntimeError:
+        raise
+    except Exception:
+        if pattern_recert:
+            raise RuntimeError(
+                f"Recert required (pattern has expired certs) but recert endpoint unavailable for {vm_name}"
+            )
+        logger.warning(
+            "Deploy %s: recert error for %s — falling back to guestfish",
+            project_id[:8],
+            vm_name,
+            exc_info=True,
+        )
+    return False
+
+
+def _guestfish_clean_kubelet_certs(host, project_id, vm, topology, pool):
+    """Delete stale kubelet PKI from a single RHCOS VM disk via guestfish."""
+    vm_disks = _find_vm_disks(vm["node_id"], topology)
+    boot_disk = next(
+        (d for d in vm_disks if d.get("format") == "qcow2"),
+        None,
+    )
+    vm_name = vm.get("name", vm["node_id"][:8])
+    if not boot_disk:
+        logger.warning(
+            "Deploy %s: no qcow2 boot disk for RHCOS VM %s, skipping cert cleanup",
+            project_id[:8],
+            vm_name,
+        )
+        return
+
+    disk = _disk_path(
+        project_id,
+        vm["node_id"],
+        boot_disk["node_id"],
+        boot_disk["format"],
+        pool,
+    )
+    operations = [
+        {"action": "rm-rf", "path": "/var/lib/kubelet/pki"},
+        {"action": "rm-f", "path": "/var/lib/kubelet/kubeconfig"},
+    ]
+    logger.info("Deploy %s: cleaning kubelet certs from %s", project_id[:8], vm_name)
+    try:
+        job_id = start_job(
+            host,
+            "/vms/modify-fs",
+            {"disk": disk, "operations": operations},
+        )
+        job = wait_for_job(host, job_id, timeout=120)
+        if job.get("status") == "failed":
+            logger.warning(
+                "Deploy %s: cert cleanup failed for %s: %s",
+                project_id[:8],
+                vm_name,
+                job.get("result", {}).get("error", "unknown"),
+            )
+        else:
+            logger.info(
+                "Deploy %s: cert cleanup complete for %s",
+                project_id[:8],
+                vm_name,
+            )
+    except Exception as e:
+        err_msg = str(e)
+        if "No such file or directory" in err_msg and "guestfish" in err_msg:
+            raise RuntimeError(
+                "guestfish not installed on host — install libguestfs-tools-c"
+            ) from e
+        logger.warning(
+            "Deploy %s: cert cleanup error for %s, continuing",
+            project_id[:8],
+            vm_name,
+            exc_info=True,
+        )
+
+
 def _clean_kubelet_certs(
     host, project_id, topology, pool, pattern_recert=False, common_password=None
 ):
@@ -4092,170 +4429,35 @@ def _clean_kubelet_certs(
         return
 
     recert_vms = [vm for vm in rhcos_vms if vm.get("recertEnabled")]
-
-    bastion_vm = next((v for v in vms if v.get("name") == "bastion"), None)
-    bastion_disk_path = None
-    if bastion_vm:
-        bastion_disks = _find_vm_disks(bastion_vm["node_id"], topology)
-        bastion_boot = next(
-            (d for d in bastion_disks if d.get("format") == "qcow2"), None
-        )
-        if bastion_boot:
-            bastion_disk_path = _disk_path(
-                project_id,
-                bastion_vm["node_id"],
-                bastion_boot["node_id"],
-                bastion_boot["format"],
-                pool,
-            )
+    bastion_disk_path = _find_bastion_disk_path(vms, topology, project_id, pool)
 
     recert_succeeded = set()
     for i, vm in enumerate(recert_vms):
-        vm_disks = _find_vm_disks(vm["node_id"], topology)
-        boot_disk = next((d for d in vm_disks if d.get("format") == "qcow2"), None)
-        if not boot_disk:
-            continue
-        disk = _disk_path(
-            project_id,
-            vm["node_id"],
-            boot_disk["node_id"],
-            boot_disk["format"],
-            pool,
-        )
-        vm_name = vm.get("name", vm["node_id"][:8])
         logger.info(
             "Deploy %s: running recert on disk for %s (%d/%d)",
             project_id[:8],
-            vm_name,
+            vm.get("name", vm["node_id"][:8]),
             i + 1,
             len(recert_vms),
         )
-        try:
-            recert_params = {
-                "disk": disk,
-                "extend_expiration": True,
-                "project_id": project_id,
-                "vm_name": vm_name,
-            }
-            if bastion_disk_path:
-                recert_params["bastion_disk"] = bastion_disk_path
-            kubeadmin_pw = ""
-            if common_password:
-                import secrets as _secrets
+        if _run_recert_for_vm(
+            host,
+            project_id,
+            vm,
+            topology,
+            pool,
+            bastion_disk_path,
+            pattern_recert,
+            common_password,
+        ):
+            recert_succeeded.add(vm["node_id"])
 
-                import bcrypt
-
-                kubeadmin_pw = common_password
-                if len(kubeadmin_pw) < 23:
-                    kubeadmin_pw = _secrets.token_urlsafe(24)
-                recert_params["common_password"] = kubeadmin_pw
-                pw_hash = bcrypt.hashpw(
-                    kubeadmin_pw.encode(), bcrypt.gensalt(rounds=12)
-                ).decode()
-                recert_params["kubeadmin_password_hash"] = pw_hash
-            job_id = start_job(host, "/vms/recert", recert_params)
-            job = wait_for_job(host, job_id, timeout=300)
-            if job.get("status") == "completed":
-                logger.info(
-                    "Deploy %s: recert completed for %s",
-                    project_id[:8],
-                    vm_name,
-                )
-                recert_succeeded.add(vm["node_id"])
-                kc = job.get("result", {}).get("kubeconfig")
-                for n in topology.get("nodes", []):
-                    if n["id"] == vm["node_id"]:
-                        if common_password:
-                            n.setdefault("data", {})[
-                                "ocpKubeadminPassword"
-                            ] = kubeadmin_pw
-                        if kc:
-                            n.setdefault("data", {})["ocpKubeconfig"] = kc
-                        break
-                continue
-            else:
-                err = job.get("result", {}).get("error", "unknown")
-                if pattern_recert:
-                    raise RuntimeError(
-                        f"Recert required (pattern has expired certs) but failed for {vm_name}: {err}"
-                    )
-                logger.warning(
-                    "Deploy %s: recert failed for %s: %s — falling back to guestfish",
-                    project_id[:8],
-                    vm_name,
-                    err,
-                )
-        except RuntimeError:
-            raise
-        except Exception:
-            if pattern_recert:
-                raise RuntimeError(
-                    f"Recert required (pattern has expired certs) but recert endpoint unavailable for {vm_name}"
-                )
-            logger.warning(
-                "Deploy %s: recert error for %s — falling back to guestfish",
-                project_id[:8],
-                vm_name,
-                exc_info=True,
-            )
     if recert_succeeded and len(recert_succeeded) == len(recert_vms):
         return
 
-    operations = [
-        {"action": "rm-rf", "path": "/var/lib/kubelet/pki"},
-        {"action": "rm-f", "path": "/var/lib/kubelet/kubeconfig"},
-    ]
-
-    guestfish_vms = [vm for vm in rhcos_vms if vm["node_id"] not in recert_succeeded]
-    for vm in guestfish_vms:
-        vm_disks = _find_vm_disks(vm["node_id"], topology)
-        boot_disk = next(
-            (d for d in vm_disks if d.get("format") == "qcow2"),
-            None,
-        )
-        if not boot_disk:
-            logger.warning(
-                "Deploy %s: no qcow2 boot disk for RHCOS VM %s, skipping cert cleanup",
-                project_id[:8],
-                vm.get("name", vm["node_id"][:8]),
-            )
-            continue
-
-        disk = _disk_path(
-            project_id, vm["node_id"], boot_disk["node_id"], boot_disk["format"], pool
-        )
-        vm_name = vm.get("name", vm["node_id"][:8])
-        logger.info(
-            "Deploy %s: cleaning kubelet certs from %s", project_id[:8], vm_name
-        )
-        try:
-            job_id = start_job(
-                host, "/vms/modify-fs", {"disk": disk, "operations": operations}
-            )
-            job = wait_for_job(host, job_id, timeout=120)
-            if job.get("status") == "failed":
-                logger.warning(
-                    "Deploy %s: cert cleanup failed for %s: %s",
-                    project_id[:8],
-                    vm_name,
-                    job.get("result", {}).get("error", "unknown"),
-                )
-            else:
-                logger.info(
-                    "Deploy %s: cert cleanup complete for %s", project_id[:8], vm_name
-                )
-        except Exception as e:
-            err_msg = str(e)
-            if "No such file or directory" in err_msg and "guestfish" in err_msg:
-                raise RuntimeError(
-                    "guestfish not installed on host — install libguestfs-tools-c"
-                ) from e
-            logger.warning(
-                "Deploy %s: cert cleanup error for %s, continuing",
-                project_id[:8],
-                vm_name,
-                exc_info=True,
-            )
+    for vm in rhcos_vms:
+        if vm["node_id"] not in recert_succeeded:
+            _guestfish_clean_kubelet_certs(host, project_id, vm, topology, pool)
 
 
 def _is_ocp_topology(topology: dict) -> bool:
@@ -4561,7 +4763,9 @@ def _exec_on_bastion(
     )
 
 
-def _exec_on_bastion_kubevirt(host, project_id, bastion_ip, password, command, timeout):
+def _exec_on_bastion_kubevirt(
+    host, project_id, bastion_ip, _password, command, timeout
+):
     import re as _re
 
     try:
@@ -6228,6 +6432,71 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
     )
 
 
+def _stop_kubevirt_vms(s, host, project_id, vms):
+    """Patch KubeVirt VMs to running=False via K8s API."""
+    from app.models.provider import Provider
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+    provider = s.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        return
+    custom_api, _, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+    for vm in vms:
+        kv_name = f"troshka-vm-{vm['node_id'][:8]}"
+        try:
+            custom_api.patch_namespaced_custom_object(
+                group=_KUBEVIRT_API,
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=kv_name,
+                body={"spec": {"running": False}},
+            )
+        except Exception as e:
+            logger.warning(
+                "Stop %s: failed to stop KubeVirt VM %s: %s",
+                project_id[:8],
+                kv_name,
+                e,
+            )
+
+
+def _stop_troshkad_vms(host, project_id, vms):
+    """Stop VMs via troshkad."""
+    for vm in vms:
+        vm_name = _vm_domain_name(project_id, vm["node_id"])
+        try:
+            job_id = start_job(host, "/vms/stop", {"domain_name": vm_name})
+            wait_for_job(host, job_id, timeout=90)
+        except TroshkadError as e:
+            logger.warning(
+                "Stop %s: failed to stop %s: %s",
+                project_id[:8],
+                vm_name,
+                e,
+            )
+
+
+def _set_project_error(s, project_id, error_msg, project=None):
+    """Set project to error state and notify.
+
+    If *project* is passed, uses it directly; otherwise queries the session.
+    """
+    if project is None:
+        from app.models.project import Project
+
+        project = s.query(Project).filter_by(id=project_id).first()
+    if project:
+        project.state = "error"
+        project.deploy_error = error_msg
+        s.commit()
+        notify_project(
+            project_id,
+            {"type": "project-state", "state": "error", "deploy_error": error_msg},
+        )
+
+
 def stop_project_async(project_id: str):
     """Background thread: stop a project's VMs and tear down networks."""
     from app.core.database import SessionLocal
@@ -6242,76 +6511,29 @@ def stop_project_async(project_id: str):
 
         host = s.query(Host).filter_by(id=project.host_id).first()
         if not host:
-            error_msg = "Host is disconnected or unavailable — cannot stop VMs"
-            project.state = "error"
-            project.deploy_error = error_msg
-            s.commit()
-            notify_project(
+            _set_project_error(
+                s,
                 project_id,
-                {
-                    "type": "project-state",
-                    "state": "error",
-                    "deploy_error": error_msg,
-                },
+                "Host is disconnected or unavailable — cannot stop VMs",
+                project=project,
             )
             return
 
         topology = project.topology or {}
         vms = _extract_vms(topology)
 
-        # KubeVirt native: patch VM running state via K8s API
         if host.host_type == "kubevirt-cluster":
-            from app.models.provider import Provider
-            from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
-
-            provider = s.query(Provider).filter_by(id=host.provider_id).first()
-            if provider:
-                custom_api, _, _ = _get_k8s_clients(provider)
-                namespace = _project_ns(provider, project_id)
-                for vm in vms:
-                    kv_name = f"troshka-vm-{vm['node_id'][:8]}"
-                    try:
-                        custom_api.patch_namespaced_custom_object(
-                            group="kubevirt.io",
-                            version="v1",
-                            namespace=namespace,
-                            plural="virtualmachines",
-                            name=kv_name,
-                            body={"spec": {"running": False}},
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Stop %s: failed to stop KubeVirt VM %s: %s",
-                            project_id[:8],
-                            kv_name,
-                            e,
-                        )
+            _stop_kubevirt_vms(s, host, project_id, vms)
+        elif not host.ip_address:
+            _set_project_error(
+                s,
+                project_id,
+                "Host is disconnected or unavailable — cannot stop VMs",
+                project=project,
+            )
+            return
         else:
-            if not host.ip_address:
-                error_msg = "Host is disconnected or unavailable — cannot stop VMs"
-                project.state = "error"
-                project.deploy_error = error_msg
-                s.commit()
-                notify_project(
-                    project_id,
-                    {
-                        "type": "project-state",
-                        "state": "error",
-                        "deploy_error": error_msg,
-                    },
-                )
-                return
-
-            # Stop VMs via troshkad
-            for vm in vms:
-                vm_name = _vm_domain_name(project_id, vm["node_id"])
-                try:
-                    job_id = start_job(host, "/vms/stop", {"domain_name": vm_name})
-                    wait_for_job(host, job_id, timeout=90)
-                except TroshkadError as e:
-                    logger.warning(
-                        "Stop %s: failed to stop %s: %s", project_id[:8], vm_name, e
-                    )
+            _stop_troshkad_vms(host, project_id, vms)
 
         # BMC, networks, and EIPs stay intact on stop — only torn down on delete
         project.state = "stopped"
@@ -6343,23 +6565,167 @@ def stop_project_async(project_id: str):
     except Exception:
         logger.exception("Stop %s failed", project_id[:8])
         try:
-            project = s.query(Project).filter_by(id=project_id).first()
-            if project:
-                project.state = "error"
-                project.deploy_error = "Stop failed unexpectedly. Check server logs."
-                s.commit()
-                notify_project(
-                    project_id,
-                    {
-                        "type": "project-state",
-                        "state": "error",
-                        "deploy_error": project.deploy_error,
-                    },
-                )
+            _set_project_error(
+                s,
+                project_id,
+                "Stop failed unexpectedly. Check server logs.",
+            )
         except Exception:
             pass
     finally:
         s.close()
+
+
+def _start_kubevirt_vms(s, host, project_id, vms):
+    """Patch KubeVirt VMs to running=True via K8s API."""
+    from app.models.provider import Provider
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+    provider = s.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        return
+    custom_api, _, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+    for vm in vms:
+        kv_name = f"troshka-vm-{vm['node_id'][:8]}"
+        try:
+            custom_api.patch_namespaced_custom_object(
+                group=_KUBEVIRT_API,
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=kv_name,
+                body={"spec": {"running": True}},
+            )
+        except Exception as e:
+            logger.warning(
+                "Start %s: failed to start KubeVirt VM %s: %s",
+                project_id[:8],
+                kv_name,
+                e,
+            )
+
+
+def _reassociate_eips_on_start(s, project_id, topology, host):
+    """Re-associate EIPs and sync security group rules on project start.
+
+    Returns the (possibly updated) topology dict.
+    """
+    from app.models.elastic_ip import ElasticIp
+    from app.services.eip_service import associate_eip
+
+    project_eips = (
+        s.query(ElasticIp).filter_by(project_id=project_id, state="allocated").all()
+    )
+    for eip in project_eips:
+        try:
+            associate_eip(s, eip, host)
+            for ext_ip in (topology or {}).get("externalIps", []):
+                if ext_ip.get("id") == eip.canvas_eip_id:
+                    ext_ip["_private_ip"] = eip.private_ip
+                    ext_ip["ip"] = eip.public_ip
+        except Exception:
+            logger.warning("Failed to re-associate EIP %s on start", eip.public_ip)
+
+    if not project_eips:
+        return topology
+
+    import json
+
+    from sqlalchemy import text
+
+    from app.models.project import Project
+
+    s.execute(
+        text("UPDATE projects SET topology = :topo WHERE id = :pid"),
+        {"topo": json.dumps(topology), "pid": project_id},
+    )
+    s.commit()
+    project = s.query(Project).filter_by(id=project_id).first()
+    s.refresh(project)
+    topology = project.topology or {}
+
+    _sync_sg_rules_for_start(s, project, host, topology, project_id)
+    return topology
+
+
+def _sync_sg_rules_for_start(s, project, host, topology, project_id):
+    """Sync security group rules for port forwards after EIP re-association."""
+    from app.models.provider import Provider
+    from app.services.eip_service import sync_security_group_rules
+
+    provider = (
+        s.query(Provider).filter_by(id=project.provider_id).first()
+        if project.provider_id
+        else None
+    )
+    if not provider and host.provider_id:
+        provider = s.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        return
+    gw_node = next(
+        (
+            n
+            for n in (topology or {}).get("nodes", [])
+            if n.get("type") == "networkNode"
+            and n.get("data", {}).get("subtype") == "gateway"
+            and n.get("data", {}).get("gatewayMode") == "nat-portforward"
+        ),
+        None,
+    )
+    if not gw_node:
+        return
+    desired_sg = [
+        {
+            "project_id": project_id,
+            "ext_port": int(pf["extPort"]),
+            "protocol": "tcp",
+        }
+        for pf in gw_node.get("data", {}).get("portForwards", [])
+        if pf.get("extPort")
+    ]
+    sync_security_group_rules(s, provider, desired_sg)
+
+
+def _finalize_project_active(s, project, project_id, topology):
+    """Set project to active state, reset timers, and notify."""
+    project.state = "active"
+    project.deploy_error = None
+    project.auto_stopped = False
+
+    if project.auto_stop_minutes:
+        now = datetime.datetime.now(datetime.UTC)
+        project.auto_stop_started_at = now
+        project.auto_stop_expires_at = now + datetime.timedelta(
+            minutes=project.auto_stop_minutes
+        )
+        project.auto_stop_warned = False
+
+    if _has_ocp_monitor(topology):
+        project.ocp_status = "monitoring"
+        project.ocp_status_detail = None
+        project.ocp_install_elapsed = None
+        project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
+
+    s.commit()
+    notify_project(
+        project_id,
+        {
+            "type": "project-state",
+            "state": "active",
+            "deploy_error": None,
+            "auto_stop_expires_at": (
+                project.auto_stop_expires_at.isoformat()
+                if project.auto_stop_expires_at
+                else None
+            ),
+            "lifetime_expires_at": (
+                project.lifetime_expires_at.isoformat()
+                if project.lifetime_expires_at
+                else None
+            ),
+        },
+    )
 
 
 def start_project_async(project_id: str):
@@ -6376,96 +6742,29 @@ def start_project_async(project_id: str):
 
         host = s.query(Host).filter_by(id=project.host_id).first()
         if not host:
-            error_msg = "Host is disconnected or unavailable — cannot start VMs"
-            project.state = "error"
-            project.deploy_error = error_msg
-            s.commit()
-            notify_project(
+            _set_project_error(
+                s,
                 project_id,
-                {
-                    "type": "project-state",
-                    "state": "error",
-                    "deploy_error": error_msg,
-                },
+                "Host is disconnected or unavailable — cannot start VMs",
+                project=project,
             )
             return
 
         # KubeVirt native: just patch VMs to running, no EIPs/networks/PXE
         if host.host_type == "kubevirt-cluster":
-            from app.models.provider import Provider
-            from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
-
-            provider = s.query(Provider).filter_by(id=host.provider_id).first()
-            if provider:
-                custom_api, _, _ = _get_k8s_clients(provider)
-                namespace = _project_ns(provider, project_id)
-                topology = project.topology or {}
-                vms = _extract_vms(topology)
-                for vm in vms:
-                    kv_name = f"troshka-vm-{vm['node_id'][:8]}"
-                    try:
-                        custom_api.patch_namespaced_custom_object(
-                            group="kubevirt.io",
-                            version="v1",
-                            namespace=namespace,
-                            plural="virtualmachines",
-                            name=kv_name,
-                            body={"spec": {"running": True}},
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Start %s: failed to start KubeVirt VM %s: %s",
-                            project_id[:8],
-                            kv_name,
-                            e,
-                        )
-
-            project.state = "active"
-            project.deploy_error = None
-            project.auto_stopped = False
-
-            if project.auto_stop_minutes:
-                now = datetime.datetime.now(datetime.UTC)
-                project.auto_stop_started_at = now
-                project.auto_stop_expires_at = now + datetime.timedelta(
-                    minutes=project.auto_stop_minutes
-                )
-                project.auto_stop_warned = False
-
-            s.commit()
-            notify_project(
-                project_id,
-                {
-                    "type": "project-state",
-                    "state": "active",
-                    "deploy_error": None,
-                    "auto_stop_expires_at": (
-                        project.auto_stop_expires_at.isoformat()
-                        if project.auto_stop_expires_at
-                        else None
-                    ),
-                    "lifetime_expires_at": (
-                        project.lifetime_expires_at.isoformat()
-                        if project.lifetime_expires_at
-                        else None
-                    ),
-                },
-            )
+            topology = project.topology or {}
+            vms = _extract_vms(topology)
+            _start_kubevirt_vms(s, host, project_id, vms)
+            _finalize_project_active(s, project, project_id, topology)
             logger.info("Start %s: kubevirt VMs started", project_id[:8])
             return
 
         if not host.ip_address:
-            error_msg = "Host is disconnected or unavailable — cannot start VMs"
-            project.state = "error"
-            project.deploy_error = error_msg
-            s.commit()
-            notify_project(
+            _set_project_error(
+                s,
                 project_id,
-                {
-                    "type": "project-state",
-                    "state": "error",
-                    "deploy_error": error_msg,
-                },
+                "Host is disconnected or unavailable — cannot start VMs",
+                project=project,
             )
             return
 
@@ -6473,67 +6772,7 @@ def start_project_async(project_id: str):
         vni_map = project.vni_map or {}
 
         # Re-associate EIPs first so topology has _private_ip for DNAT rules
-        from app.models.elastic_ip import ElasticIp
-        from app.services.eip_service import associate_eip
-
-        project_eips = (
-            s.query(ElasticIp).filter_by(project_id=project_id, state="allocated").all()
-        )
-        for eip in project_eips:
-            try:
-                associate_eip(s, eip, host)
-                for ext_ip in (topology or {}).get("externalIps", []):
-                    if ext_ip.get("id") == eip.canvas_eip_id:
-                        ext_ip["_private_ip"] = eip.private_ip
-                        ext_ip["ip"] = eip.public_ip
-            except Exception:
-                logger.warning("Failed to re-associate EIP %s on start", eip.public_ip)
-
-        if project_eips:
-            import json
-
-            from sqlalchemy import text
-
-            s.execute(
-                text("UPDATE projects SET topology = :topo WHERE id = :pid"),
-                {"topo": json.dumps(topology), "pid": project_id},
-            )
-            s.commit()
-            s.refresh(project)
-            topology = project.topology or {}
-
-            from app.models.provider import Provider
-            from app.services.eip_service import sync_security_group_rules
-
-            provider = (
-                s.query(Provider).filter_by(id=project.provider_id).first()
-                if project.provider_id
-                else None
-            )
-            if not provider and host.provider_id:
-                provider = s.query(Provider).filter_by(id=host.provider_id).first()
-            if provider:
-                gw_node = next(
-                    (
-                        n
-                        for n in (topology or {}).get("nodes", [])
-                        if n.get("type") == "networkNode"
-                        and n.get("data", {}).get("subtype") == "gateway"
-                        and n.get("data", {}).get("gatewayMode") == "nat-portforward"
-                    ),
-                    None,
-                )
-                if gw_node:
-                    desired_sg = [
-                        {
-                            "project_id": project_id,
-                            "ext_port": int(pf["extPort"]),
-                            "protocol": "tcp",
-                        }
-                        for pf in gw_node.get("data", {}).get("portForwards", [])
-                        if pf.get("extPort")
-                    ]
-                    sync_security_group_rules(s, provider, desired_sg)
+        topology = _reassociate_eips_on_start(s, project_id, topology, host)
 
         # Recreate networks via troshkad (serialized to avoid nftables contention)
         if vni_map:
@@ -6555,18 +6794,11 @@ def start_project_async(project_id: str):
 
         # Start VMs via troshkad
         start_failures = _start_vms_via_troshkad(host, project_id, topology)
-
         if start_failures:
             failed_names = ", ".join(name for name, _ in start_failures)
             error_msg = f"Failed to start VMs: {failed_names}"
             logger.error("Start %s: %s", project_id[:8], error_msg)
-            project.state = "error"
-            project.deploy_error = error_msg
-            s.commit()
-            notify_project(
-                project_id,
-                {"type": "project-state", "state": "error", "deploy_error": error_msg},
-            )
+            _set_project_error(s, project_id, error_msg, project=project)
             return
 
         # Re-start BMC endpoints
@@ -6578,61 +6810,17 @@ def start_project_async(project_id: str):
             except Exception:
                 logger.warning("Start %s: BMC setup failed (non-fatal)", project_id[:8])
 
-        project.state = "active"
-        project.deploy_error = None
-        project.auto_stopped = False
-
-        # Restart auto-stop timer
-        if project.auto_stop_minutes:
-            now = datetime.datetime.now(datetime.UTC)
-            project.auto_stop_started_at = now
-            project.auto_stop_expires_at = now + datetime.timedelta(
-                minutes=project.auto_stop_minutes
-            )
-            project.auto_stop_warned = False
-
-        if _has_ocp_monitor(topology):
-            project.ocp_status = "monitoring"
-            project.ocp_status_detail = None
-            project.ocp_install_elapsed = None
-            project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
-        s.commit()
-        notify_project(
-            project_id,
-            {
-                "type": "project-state",
-                "state": "active",
-                "deploy_error": None,
-                "auto_stop_expires_at": (
-                    project.auto_stop_expires_at.isoformat()
-                    if project.auto_stop_expires_at
-                    else None
-                ),
-                "lifetime_expires_at": (
-                    project.lifetime_expires_at.isoformat()
-                    if project.lifetime_expires_at
-                    else None
-                ),
-            },
-        )
+        _finalize_project_active(s, project, project_id, topology)
         logger.info("Start %s: complete", project_id[:8])
 
     except Exception:
         logger.exception("Start %s failed", project_id[:8])
         try:
-            project = s.query(Project).filter_by(id=project_id).first()
-            if project:
-                project.state = "error"
-                project.deploy_error = "Start failed unexpectedly. Check server logs."
-                s.commit()
-                notify_project(
-                    project_id,
-                    {
-                        "type": "project-state",
-                        "state": "error",
-                        "deploy_error": project.deploy_error,
-                    },
-                )
+            _set_project_error(
+                s,
+                project_id,
+                "Start failed unexpectedly. Check server logs.",
+            )
         except Exception:
             pass
     finally:

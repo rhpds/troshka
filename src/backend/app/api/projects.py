@@ -69,6 +69,16 @@ _VMS_START_PATH = "/vms/start"
 _FILES_REMOVE_PATH = "/files/remove"
 _TROSHKA_DOMAIN = "troshka.redhat.com"
 
+CurrentUser = Annotated[User, Depends(get_current_user)]
+DbSession = Annotated[Session, Depends(get_db)]
+
+_PROJECT_NOT_FOUND = "Project not found"
+_ACCESS_DENIED = "Access denied"
+_HOST_NOT_AVAILABLE = "Host not available"
+_KUBEVIRT_API = "kubevirt.io"
+_OCP_LOCAL = "ocp.local"
+_PROJECT_MUST_BE_ACTIVE = "Project must be active"
+
 
 def _get_k8s_clients_for_kubevirt(provider):
     from app.services.providers.kubevirt import _get_k8s_clients
@@ -219,11 +229,11 @@ def _enrich_project_response(p, hosts_by_id, provs_by_id, owners_by_id):
 
 @router.get("/", response_model=list[ProjectResponse])
 def list_projects(
+    user: CurrentUser,
+    db: DbSession,
     skip: int = 0,
     limit: int = 200,
     guid: str | None = None,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     if user.role == "admin":
         query = db.query(Project)
@@ -261,11 +271,11 @@ def list_projects(
     ]
 
 
-@router.post("/", response_model=ProjectResponse, status_code=201)
+@router.post("/", response_model=ProjectResponse, status_code=201, responses={409: {}})
 def create_project(
     body: ProjectCreate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     existing = db.query(Project).filter_by(owner_id=user.id, name=body.name).first()
     if existing:
@@ -290,14 +300,14 @@ def create_project(
 
 
 @router.get("/templates")
-def list_topology_templates(user: User = Depends(get_current_user)):
+def list_topology_templates(user: CurrentUser):
     from app.services.template_loader import list_yaml_templates
 
     return list_yaml_templates()
 
 
 @router.post("/auto-layout")
-def auto_layout_topology(body: dict, user: User = Depends(get_current_user)):
+def auto_layout_topology(body: dict, user: CurrentUser):
     from app.services.auto_layout import auto_layout
 
     nodes = body.get("nodes", [])
@@ -317,11 +327,128 @@ def _build_pull_through_config(registry_url: str) -> dict:
     }
 
 
-@router.post("/from-template", status_code=201)
+def _resolve_bastion_image(db, user, bastion_image_id):
+    """Look up the bastion image by ID or fall back to the user's default."""
+    from app.models.library import Library, LibraryItem
+
+    if bastion_image_id:
+        item = db.query(LibraryItem).filter_by(id=bastion_image_id).first()
+    else:
+        item = (
+            db.query(LibraryItem)
+            .join(Library)
+            .filter(
+                Library.owner_id == user.id,
+                LibraryItem.tags["ocp_default_image"].as_boolean(),
+            )
+            .first()
+        )
+    if item:
+        return {
+            "id": item.id,
+            "name": item.name,
+            "size_gb": max(1, (item.size_bytes or 0) // (1024**3)),
+        }
+    return None
+
+
+def _resolve_bastion_iso(db, user, bastion_iso_id):
+    """Look up the bastion ISO by ID or fall back to the user's default."""
+    from app.models.library import Library, LibraryItem
+
+    if bastion_iso_id:
+        iso_item = db.query(LibraryItem).filter_by(id=bastion_iso_id).first()
+    else:
+        iso_item = (
+            db.query(LibraryItem)
+            .join(Library)
+            .filter(
+                Library.owner_id == user.id,
+                LibraryItem.tags["ocp_default_iso"].as_boolean(),
+            )
+            .first()
+        )
+    if iso_item:
+        return {
+            "id": iso_item.id,
+            "name": iso_item.name,
+            "size_bytes": iso_item.size_bytes or 0,
+        }
+    return None
+
+
+def _resolve_ssh_keys(db, user, body):
+    """Resolve SSH public key and key IDs from body or user's stored keys."""
+    ssh_pub_key = body.get("ssh_pub_key", "")
+    ssh_key_ids = []
+    ssh_keys = [ssh_pub_key] if ssh_pub_key else []
+    bastion_ssh_key_id = body.get("bastion_ssh_key_id")
+    if bastion_ssh_key_id:
+        from app.models.user import UserSshKey
+
+        ssh_key = (
+            db.query(UserSshKey)
+            .filter_by(id=bastion_ssh_key_id, user_id=user.id)
+            .first()
+        )
+        if ssh_key:
+            ssh_pub_key = ssh_key.public_key
+            ssh_key_ids = [ssh_key.id]
+            ssh_keys = [ssh_key.public_key]
+    return ssh_pub_key, ssh_key_ids, ssh_keys
+
+
+def _resolve_pull_secret(user):
+    """Decrypt and return the user's OCP pull secret, or empty string."""
+    if user.ocp_pull_secret:
+        from app.core.encryption import decrypt
+
+        return decrypt(user.ocp_pull_secret)
+    return ""
+
+
+def _apply_bastion_cloud_init(
+    topology, bastion_image, bastion_iso, common_password, ssh_key_ids, ssh_keys
+):
+    """Attach bastion image/ISO and set cloud-init for non-OCP templates."""
+    from app.services.ocp.agent_template import (
+        _attach_bastion_image,
+        _attach_bastion_iso,
+    )
+
+    _attach_bastion_image(topology, bastion_image)
+    _attach_bastion_iso(topology, bastion_iso)
+    for node in topology.get("nodes", []):
+        if (
+            node.get("type") == "vmNode"
+            and node.get("data", {}).get("name") == "bastion"
+        ):
+            node["data"]["cloudInit"] = True
+            if common_password:
+                node["data"]["ciCloudUserPassword"] = common_password
+            if ssh_key_ids:
+                node["data"]["ciSshKeyIds"] = ssh_key_ids
+            if ssh_keys:
+                node["data"]["ciSshKeys"] = ssh_keys
+            break
+
+
+def _parse_clock_target(clock_target_str):
+    """Parse a clock target string or datetime into a datetime object."""
+    if not clock_target_str:
+        return None
+    from datetime import datetime
+
+    if isinstance(clock_target_str, str):
+        return datetime.fromisoformat(clock_target_str.replace("Z", "+00:00"))
+    return clock_target_str
+
+
+@router.post("/from-template", status_code=201, responses={400: {}, 404: {}})
 def create_project_from_template(
     body: dict,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     from app.services.template_loader import (
         generate_topology_from_template,
@@ -368,72 +495,10 @@ def create_project_from_template(
     )
 
     # OCP template customization — resolve DB objects, then delegate to plugin
-    from app.models.library import Library, LibraryItem
-
-    bastion_image_id = body.get("bastion_image_id")
-    bastion_image = None
-    if bastion_image_id:
-        item = db.query(LibraryItem).filter_by(id=bastion_image_id).first()
-    else:
-        item = (
-            db.query(LibraryItem)
-            .join(Library)
-            .filter(
-                Library.owner_id == user.id,
-                LibraryItem.tags["ocp_default_image"].as_boolean(),
-            )
-            .first()
-        )
-    if item:
-        bastion_image = {
-            "id": item.id,
-            "name": item.name,
-            "size_gb": max(1, (item.size_bytes or 0) // (1024**3)),
-        }
-
-    bastion_iso_id = body.get("bastion_iso_id")
-    bastion_iso = None
-    if bastion_iso_id:
-        iso_item = db.query(LibraryItem).filter_by(id=bastion_iso_id).first()
-    else:
-        iso_item = (
-            db.query(LibraryItem)
-            .join(Library)
-            .filter(
-                Library.owner_id == user.id,
-                LibraryItem.tags["ocp_default_iso"].as_boolean(),
-            )
-            .first()
-        )
-    if iso_item:
-        bastion_iso = {
-            "id": iso_item.id,
-            "name": iso_item.name,
-            "size_bytes": iso_item.size_bytes or 0,
-        }
-
-    ssh_pub_key = body.get("ssh_pub_key", "")
-    ssh_key_ids = []
-    ssh_keys = [ssh_pub_key] if ssh_pub_key else []
-    bastion_ssh_key_id = body.get("bastion_ssh_key_id")
-    if bastion_ssh_key_id:
-        from app.models.user import UserSshKey
-
-        ssh_key = (
-            db.query(UserSshKey)
-            .filter_by(id=bastion_ssh_key_id, user_id=user.id)
-            .first()
-        )
-        if ssh_key:
-            ssh_pub_key = ssh_key.public_key
-            ssh_key_ids = [ssh_key.id]
-            ssh_keys = [ssh_key.public_key]
-
-    pull_secret_json = ""
-    if user.ocp_pull_secret:
-        from app.core.encryption import decrypt
-
-        pull_secret_json = decrypt(user.ocp_pull_secret)
+    bastion_image = _resolve_bastion_image(db, user, body.get("bastion_image_id"))
+    bastion_iso = _resolve_bastion_iso(db, user, body.get("bastion_iso_id"))
+    ssh_pub_key, ssh_key_ids, ssh_keys = _resolve_ssh_keys(db, user, body)
+    pull_secret_json = _resolve_pull_secret(user)
 
     if not resolved.get("pull_through_registry") and user.pull_through_registry:
         if user.pull_through_registry_url:
@@ -452,34 +517,21 @@ def create_project_from_template(
     from app.services.ocp.agent_template import customize_topology as customize_ocp
 
     if resolved.get("category") != "openshift":
-        # Non-OCP template — attach bastion image, set password and SSH keys
-        from app.services.ocp.agent_template import (
-            _attach_bastion_image,
-            _attach_bastion_iso,
+        _apply_bastion_cloud_init(
+            topology,
+            bastion_image,
+            bastion_iso,
+            common_password,
+            ssh_key_ids,
+            ssh_keys,
         )
-
-        _attach_bastion_image(topology, bastion_image)
-        _attach_bastion_iso(topology, bastion_iso)
-        for node in topology.get("nodes", []):
-            if (
-                node.get("type") == "vmNode"
-                and node.get("data", {}).get("name") == "bastion"
-            ):
-                node["data"]["cloudInit"] = True
-                if common_password:
-                    node["data"]["ciCloudUserPassword"] = common_password
-                if ssh_key_ids:
-                    node["data"]["ciSshKeyIds"] = ssh_key_ids
-                if ssh_keys:
-                    node["data"]["ciSshKeys"] = ssh_keys
-                break
     else:
         customize_ocp(
             topology,
             template_id,
             {
                 "cluster_name": body.get("cluster_name", "ocp"),
-                "base_domain": body.get("base_domain", "ocp.local"),
+                "base_domain": body.get("base_domain", _OCP_LOCAL),
                 "ocp_version": body.get("ocp_version", "4.20"),
                 "common_password": common_password,
                 "pull_secret_json": pull_secret_json,
@@ -496,7 +548,7 @@ def create_project_from_template(
 
     desc_parts = [resolved.get("description", "")]
     cluster_name = body.get("cluster_name", "ocp")
-    base_domain = body.get("base_domain", "ocp.local")
+    base_domain = body.get("base_domain", _OCP_LOCAL)
     ocp_version = body.get("ocp_version", "")
     if ocp_version:
         desc_parts.append(f"OCP {ocp_version}")
@@ -521,14 +573,8 @@ def create_project_from_template(
         topology=topology,
     )
 
-    clock_target_str = body.get("clock_target") or resolved.get("clock_target")
-    if clock_target_str:
-        from datetime import datetime
-
-        if isinstance(clock_target_str, str):
-            ct = datetime.fromisoformat(clock_target_str.replace("Z", "+00:00"))
-        else:
-            ct = clock_target_str
+    ct = _parse_clock_target(body.get("clock_target") or resolved.get("clock_target"))
+    if ct:
         project.clock_target = ct
 
     db.add(project)
@@ -537,29 +583,8 @@ def create_project_from_template(
     return {"id": project.id, "name": project.name}
 
 
-@router.post("/{project_id}/import-template")
-def import_template(
-    project_id: str,
-    body: dict,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    from app.services.template_loader import (
-        generate_topology_from_template,
-        resolve_inline_template,
-    )
-
-    project = db.query(Project).filter_by(id=project_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
-    if project.state != "draft":
-        raise HTTPException(
-            status_code=409, detail="Can only import template on draft projects"
-        )
-
-    template_yaml = body.get("template_yaml")
+def _validate_template_yaml(template_yaml):
+    """Validate that template_yaml is present and has required sections."""
     if not template_yaml:
         raise HTTPException(status_code=400, detail="template_yaml is required")
     if not isinstance(template_yaml, dict):
@@ -575,13 +600,14 @@ def import_template(
             status_code=400, detail="Template must contain a 'networks' section"
         )
 
-    # Validate library item references exist and belong to this user
+
+def _resolve_template_library_items(db, user, vms_def):
+    """Resolve and validate all library item references in the template VMs."""
     from app.models.library import Library, LibraryItem
 
     missing = []
-    vms_def = template_yaml.get("vms", {})
 
-    def _resolve_library_item(item_id, item_name, label):
+    def _resolve_one(item_id, item_name, label):
         """Look up a library item by ID, falling back to name."""
         if item_id:
             item = (
@@ -607,7 +633,7 @@ def import_template(
 
     for vm_name, vm_cfg in vms_def.items():
         for di, disk_cfg in enumerate(vm_cfg.get("disks", [])):
-            item = _resolve_library_item(
+            item = _resolve_one(
                 disk_cfg.get("library_item_id"),
                 disk_cfg.get("library_item_name"),
                 f"VM '{vm_name}' disk {di}",
@@ -617,7 +643,7 @@ def import_template(
                 disk_cfg["library_item_name"] = item.name
         iso_id = vm_cfg.get("pxe_boot_iso_id")
         if iso_id:
-            item = _resolve_library_item(
+            item = _resolve_one(
                 iso_id,
                 vm_cfg.get("pxe_boot_iso_name"),
                 f"VM '{vm_name}' PXE boot ISO",
@@ -626,7 +652,7 @@ def import_template(
                 vm_cfg["pxe_boot_iso_id"] = item.id
                 vm_cfg["pxe_boot_iso_name"] = item.name
         for ii, iso_cfg in enumerate(vm_cfg.get("isos", [])):
-            item = _resolve_library_item(
+            item = _resolve_one(
                 iso_cfg.get("library_item_id"),
                 iso_cfg.get("library_item_name"),
                 f"VM '{vm_name}' ISO {ii}",
@@ -634,11 +660,42 @@ def import_template(
             if item:
                 iso_cfg["library_item_id"] = item.id
                 iso_cfg["library_item_name"] = item.name
+
     if missing:
         raise HTTPException(
             status_code=400,
             detail="Library items not found:\n" + "\n".join(missing),
         )
+
+
+@router.post(
+    "/{project_id}/import-template", responses={400: {}, 403: {}, 404: {}, 409: {}}
+)
+def import_template(
+    project_id: str,
+    body: dict,
+    user: CurrentUser,
+    db: DbSession,
+):
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+    if project.state != "draft":
+        raise HTTPException(
+            status_code=409, detail="Can only import template on draft projects"
+        )
+
+    template_yaml = body.get("template_yaml")
+    _validate_template_yaml(template_yaml)
+    assert template_yaml is not None
+    _resolve_template_library_items(db, user, template_yaml.get("vms", {}))
 
     try:
         resolved = resolve_inline_template(template_yaml)
@@ -661,14 +718,8 @@ def import_template(
 
     project.topology = topology
 
-    clock_target_str = resolved.get("clock_target")
-    if clock_target_str:
-        from datetime import datetime
-
-        if isinstance(clock_target_str, str):
-            ct = datetime.fromisoformat(clock_target_str.replace("Z", "+00:00"))
-        else:
-            ct = clock_target_str
+    ct = _parse_clock_target(resolved.get("clock_target"))
+    if ct:
         project.clock_target = ct
 
     db.add(project)
@@ -690,31 +741,46 @@ def _apply_password_mode(result: dict, mode: str, custom: str = ""):
     for net_cfg in result.get("networks", {}).values():
         if mode == "none":
             net_cfg.pop("bmc_password", None)
-        elif mode == "custom" and custom:
-            if "bmc_password" in net_cfg:
-                net_cfg["bmc_password"] = custom
+        elif mode == "custom" and custom and "bmc_password" in net_cfg:
+            net_cfg["bmc_password"] = custom
     for vm_cfg in result.get("vms", {}).values():
         if mode == "none":
             vm_cfg.pop("cloud_user_password", None)
-        elif mode == "custom" and custom:
-            if "cloud_user_password" in vm_cfg:
-                vm_cfg["cloud_user_password"] = custom
+        elif mode == "custom" and custom and "cloud_user_password" in vm_cfg:
+            vm_cfg["cloud_user_password"] = custom
 
 
-@router.post("/{project_id}/export-template")
+def _strip_library_ids_from_export(result):
+    """Remove library_item_id fields from exported template VMs."""
+    for vm_cfg in result.get("vms", {}).values():
+        for disk in vm_cfg.get("disks", []):
+            disk.pop("library_item_id", None)
+        for iso in vm_cfg.get("isos", []):
+            iso.pop("library_item_id", None)
+        vm_cfg.pop("pxe_boot_iso_id", None)
+
+
+def _build_export_header(pw_mode):
+    """Return the YAML comment header based on password mode."""
+    if pw_mode == "none":
+        return "# Troshka infra_template export\n# Passwords omitted — set them before deploying.\n\n"
+    return "# Troshka infra_template export\n# WARNING: Passwords are stored in plain text.\n\n"
+
+
+@router.post("/{project_id}/export-template", responses={403: {}, 404: {}})
 def export_template(
     project_id: str,
+    user: CurrentUser,
+    db: DbSession,
     body: dict | None = None,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     from app.services.template_loader import export_topology_to_template
 
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     topo = project.topology or {}
     result = export_topology_to_template(topo, db=db)
@@ -728,7 +794,7 @@ def export_template(
     if ocp_meta.get("clusterName"):
         result["ocp"] = {
             "cluster_name": ocp_meta["clusterName"],
-            "base_domain": ocp_meta.get("baseDomain", "ocp.local"),
+            "base_domain": ocp_meta.get("baseDomain", _OCP_LOCAL),
         }
 
     for key in ("disconnected", "bastion_services", "dns_records"):
@@ -742,68 +808,60 @@ def export_template(
     _apply_password_mode(result, pw_mode, pw_custom)
 
     if not body.get("include_ids"):
-        for vm_cfg in result.get("vms", {}).values():
-            for disk in vm_cfg.get("disks", []):
-                disk.pop("library_item_id", None)
-            for iso in vm_cfg.get("isos", []):
-                iso.pop("library_item_id", None)
-            vm_cfg.pop("pxe_boot_iso_id", None)
+        _strip_library_ids_from_export(result)
 
     import yaml  # type: ignore[import-untyped]
     from fastapi.responses import Response
 
     yaml_str = yaml.dump(result, default_flow_style=False, sort_keys=False)
-    if pw_mode == "none":
-        header = "# Troshka infra_template export\n# Passwords omitted — set them before deploying.\n\n"
-    else:
-        header = "# Troshka infra_template export\n# WARNING: Passwords are stored in plain text.\n\n"
+    header = _build_export_header(pw_mode)
     return Response(content=header + yaml_str, media_type="text/yaml")
 
 
-@router.get("/{project_id}")
+@router.get("/{project_id}", responses={403: {}, 404: {}})
 def get_project(
     project_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     return _project_response_dict(project)
 
 
-@router.get("/{project_id}/deploy-progress")
+@router.get("/{project_id}/deploy-progress", responses={403: {}, 404: {}})
 def get_deploy_progress(
     project_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
     from app.services.deploy_service import get_deploy_progress as _get_dp
 
     progress = _get_dp(project_id)
     return {"state": project.state, "progress": progress}
 
 
-@router.get("/{project_id}/kubeconfigs")
+@router.get("/{project_id}/kubeconfigs", responses={403: {}, 404: {}})
 def list_kubeconfigs(
     project_id: str,
-    user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[Session, Depends(get_db)],
+    user: CurrentUser,
+    db: DbSession,
 ):
     """List available kubeconfigs for a project's recerted VMs."""
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
     topo = project.deployed_topology or project.topology or {}
     configs = []
     for node in topo.get("nodes", []):
@@ -837,8 +895,8 @@ def _find_kubeconfig_content(topo: dict, vm: str | None) -> str | None:
 @router.get("/{project_id}/kubeconfig", responses={403: {}, 404: {}})
 def get_kubeconfig(
     project_id: str,
-    user: Annotated[User, Depends(get_current_user)],
-    db: Annotated[Session, Depends(get_db)],
+    user: CurrentUser,
+    db: DbSession,
     vm: str | None = None,
 ):
     """Download kubeconfig for a project's OCP cluster.
@@ -850,9 +908,9 @@ def get_kubeconfig(
 
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     topo = project.deployed_topology or project.topology or {}
     kc_content = _find_kubeconfig_content(topo, vm)
@@ -907,19 +965,21 @@ def _recompute_auto_delete_timer(project, fields):
 
 
 @router.patch(
-    "/{project_id}", response_model=ProjectResponse, responses={403: {}, 404: {}}
+    "/{project_id}",
+    response_model=ProjectResponse,
+    responses={400: {}, 403: {}, 404: {}},
 )
 def update_project(
     project_id: str,
     body: ProjectUpdate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     fields = body.model_dump(exclude_unset=True)
     for field, value in fields.items():
@@ -953,18 +1013,18 @@ class ExtendTimerRequest(PydanticBaseModel):
     add_minutes: int
 
 
-@router.post("/{project_id}/extend-timer")
+@router.post("/{project_id}/extend-timer", responses={400: {}, 403: {}, 404: {}})
 def extend_timer(
     project_id: str,
     body: ExtendTimerRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     if body.timer == "auto_stop":
         if not project.auto_stop_expires_at:
@@ -988,50 +1048,8 @@ def extend_timer(
     return _project_response_dict(project)
 
 
-@router.post(
-    "/{project_id}/deploy",
-    responses={400: {"description": "Bad request"}},
-)
-def deploy_project(
-    project_id: str,
-    storage_pool_id: str | None = None,
-    host_id: str | None = None,
-    provider_id: str | None = None,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    project = db.query(Project).filter_by(id=project_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
-    if project.state != "draft":
-        raise HTTPException(
-            status_code=409, detail=f"Project is {project.state}, not draft"
-        )
-    if not project.topology:
-        raise HTTPException(status_code=400, detail="Project has no topology")
-
-    from app.services.deploy_topology import (
-        validate_topology_ips,
-        validate_topology_names,
-    )
-
-    topo_errors = validate_topology_names(project.topology) + validate_topology_ips(
-        project.topology
-    )
-    if topo_errors:
-        raise HTTPException(
-            status_code=400,
-            detail="Topology has errors: " + "; ".join(topo_errors),
-        )
-
-    reqs = calculate_project_requirements(project.topology)
-    if reqs["vm_count"] == 0:
-        raise HTTPException(status_code=400, detail="Project has no VMs")
-
-    # Validate BMC network has at least one connected provisioner VM
-    topology = project.topology or {}
+def _validate_bmc_network(topology: dict):
+    """Raise if a BMC network exists but has no connected VMs."""
     bmc_network = None
     for node in topology.get("nodes", []):
         if (
@@ -1040,22 +1058,22 @@ def deploy_project(
         ):
             bmc_network = node
             break
-    if bmc_network:
-        bmc_edges = [
-            e
-            for e in topology.get("edges", [])
-            if e.get("source") == bmc_network["id"]
-            or e.get("target") == bmc_network["id"]
-        ]
-        if not bmc_edges:
-            raise HTTPException(
-                status_code=400,
-                detail="BMC network requires at least one connected VM to act as a provisioner",
-            )
+    if not bmc_network:
+        return
+    bmc_edges = [
+        e
+        for e in topology.get("edges", [])
+        if e.get("source") == bmc_network["id"] or e.get("target") == bmc_network["id"]
+    ]
+    if not bmc_edges:
+        raise HTTPException(
+            status_code=400,
+            detail="BMC network requires at least one connected VM to act as a provisioner",
+        )
 
-    _check_library_items_ready(project.topology, db)
 
-    # Pool/host selection: admin can specify, otherwise auto-select
+def _validate_deploy_pool_and_host(db, user, storage_pool_id, host_id):
+    """Validate admin-specified pool and host for deployment."""
     if (storage_pool_id or host_id) and user.role != "admin":
         raise HTTPException(
             status_code=403, detail="Only admins can select a storage pool or host"
@@ -1082,6 +1100,106 @@ def deploy_project(
                 detail=f"Host is not available (state={target_host.state}, agent={target_host.agent_status})",
             )
 
+
+def _setup_multi_host_placement(project, result, db):
+    """Configure project for multi-host deployment."""
+    project.state = "deploying"
+    project.mesh_network_host_id = result["network_host_id"]
+    project.host_id = result["network_host_id"]  # backward compat
+    project.vni_map = result["vni_map"]
+    # Flatten {host_id: [vm_ids]} -> {vm_id: host_id}
+    flat = {}
+    for hid, vm_ids in result["host_assignments"].items():
+        for vid in vm_ids:
+            flat[vid] = hid
+    project.host_assignments = flat
+    db.commit()
+    logger.info(
+        "Deploy %s: multi-host placement across %d hosts",
+        project.id[:8],
+        len(result["host_assignments"]),
+    )
+
+
+def _check_single_host_disk(project, result, db):
+    """Check disk usage on single-host deployment target."""
+    from app.services.troshkad_client import check_disk_usage
+
+    host = db.query(Host).filter_by(id=result["host_id"]).first()
+    if not host or not host.ip_address:
+        return
+    try:
+        disk = check_disk_usage(host)
+        if not disk:
+            return
+        logger.info(
+            "Deploy %s: disk check — %s%% used, %.1f GB free",
+            project.id[:8],
+            disk["used_pct"],
+            disk["free_bytes"] / (1024**3),
+        )
+        if disk["used_pct"] >= 90:
+            free_gb = disk["free_bytes"] / (1024**3)
+            project.state = "draft"
+            db.commit()
+            raise HTTPException(
+                status_code=507,
+                detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume before deploying.",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(
+            "Deploy %s: disk check failed (non-fatal): %s", project.id[:8], e
+        )
+
+
+@router.post(
+    "/{project_id}/deploy",
+    responses={400: {}, 403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
+def deploy_project(
+    project_id: str,
+    user: CurrentUser,
+    db: DbSession,
+    storage_pool_id: str | None = None,
+    host_id: str | None = None,
+    provider_id: str | None = None,
+):
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+    if project.state != "draft":
+        raise HTTPException(
+            status_code=409, detail=f"Project is {project.state}, not draft"
+        )
+    if not project.topology:
+        raise HTTPException(status_code=400, detail="Project has no topology")
+
+    from app.services.deploy_topology import (
+        validate_topology_ips,
+        validate_topology_names,
+    )
+
+    topo_errors = validate_topology_names(project.topology) + validate_topology_ips(
+        project.topology
+    )
+    if topo_errors:
+        raise HTTPException(
+            status_code=400,
+            detail="Topology has errors: " + "; ".join(topo_errors),
+        )
+
+    reqs = calculate_project_requirements(project.topology)
+    if reqs["vm_count"] == 0:
+        raise HTTPException(status_code=400, detail="Project has no VMs")
+
+    _validate_bmc_network(project.topology or {})
+    _check_library_items_ready(project.topology, db)
+    _validate_deploy_pool_and_host(db, user, storage_pool_id, host_id)
+
     if provider_id and not project.provider_id:
         project.provider_id = provider_id
         db.commit()
@@ -1092,54 +1210,10 @@ def deploy_project(
     if "error" in result:
         raise HTTPException(status_code=503, detail=result["error"])
 
-    from app.services.troshkad_client import check_disk_usage
-
-    # Multi-host deployment
     if result.get("multi_host"):
-        project.state = "deploying"
-        project.mesh_network_host_id = result["network_host_id"]
-        project.host_id = result["network_host_id"]  # backward compat
-        project.vni_map = result["vni_map"]
-        # Flatten {host_id: [vm_ids]} → {vm_id: host_id}
-        flat = {}
-        for hid, vm_ids in result["host_assignments"].items():
-            for vid in vm_ids:
-                flat[vid] = hid
-        project.host_assignments = flat
-        db.commit()
-        logger.info(
-            "Deploy %s: multi-host placement across %d hosts",
-            project.id[:8],
-            len(result["host_assignments"]),
-        )
+        _setup_multi_host_placement(project, result, db)
     else:
-        # Single-host deployment
-        host = db.query(Host).filter_by(id=result["host_id"]).first()
-        if host and host.ip_address:
-            try:
-                disk = check_disk_usage(host)
-                if disk:
-                    logger.info(
-                        "Deploy %s: disk check — %s%% used, %.1f GB free",
-                        project.id[:8],
-                        disk["used_pct"],
-                        disk["free_bytes"] / (1024**3),
-                    )
-                    if disk["used_pct"] >= 90:
-                        free_gb = disk["free_bytes"] / (1024**3)
-                        project.state = "draft"
-                        db.commit()
-                        raise HTTPException(
-                            status_code=507,
-                            detail=f"Host storage is {disk['used_pct']}% full ({free_gb:.1f} GB free). Free space or resize the volume before deploying.",
-                        )
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.warning(
-                    "Deploy %s: disk check failed (non-fatal): %s", project.id[:8], e
-                )
-
+        _check_single_host_disk(project, result, db)
         # Persist VNI map for stop/start/destroy
         project.vni_map = result.get("vni_map")
         db.commit()
@@ -1164,17 +1238,17 @@ def deploy_project(
     }
 
 
-@router.post("/{project_id}/stop")
+@router.post("/{project_id}/stop", responses={403: {}, 404: {}, 409: {}})
 def stop_project(
     project_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
     if project.state != "active":
         raise HTTPException(
             status_code=409, detail=f"Project is {project.state}, not active"
@@ -1193,57 +1267,66 @@ def stop_project(
     return {"status": "stopping"}
 
 
-@router.post("/{project_id}/force-stop")
+def _force_stop_kubevirt_vms(host, project_id, vms, db):
+    """Force-stop all VMs on a KubeVirt cluster."""
+    from app.models.provider import Provider
+
+    provider = db.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        return
+    custom_api, _, _ = _get_k8s_clients_for_kubevirt(provider)
+    namespace = _kubevirt_project_ns(provider, project_id)
+    for vm in vms:
+        kv_name = f"troshka-vm-{vm['id'][:8]}"
+        try:
+            custom_api.patch_namespaced_custom_object(
+                group=_KUBEVIRT_API,
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=kv_name,
+                body={"spec": {"running": False}},
+            )
+        except Exception as e:
+            logger.warning("Failed to force-stop KubeVirt VM %s: %s", kv_name, e)
+
+
+def _force_stop_troshkad_vms(host, project_id, vms):
+    """Force-stop all VMs via troshkad."""
+    if not host.ip_address:
+        raise HTTPException(status_code=503, detail=_HOST_NOT_AVAILABLE)
+    for vm in vms:
+        dom = _domain_name(project_id, vm["id"])
+        try:
+            job_id = start_job(host, "/vms/force-off", {"domain_name": dom})
+            wait_for_job(host, job_id, timeout=30, poll_interval=2)
+        except TroshkadError:
+            logger.warning("Failed to force-stop VM %s", dom)  # NOSONAR
+
+
+@router.post("/{project_id}/force-stop", responses={403: {}, 404: {}, 503: {}})
 def force_stop_project(
     project_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     host = db.query(Host).filter_by(id=project.host_id).first()
     if not host:
-        raise HTTPException(status_code=503, detail="Host not available")
+        raise HTTPException(status_code=503, detail=_HOST_NOT_AVAILABLE)
 
     topo = project.deployed_topology or project.topology or {}
     vms = [n for n in topo.get("nodes", []) if n.get("type") == "vmNode"]
 
     if host.host_type == "kubevirt-cluster":
-        from app.models.provider import Provider
-
-        provider = db.query(Provider).filter_by(id=host.provider_id).first()
-        if provider:
-            custom_api, _, _ = _get_k8s_clients_for_kubevirt(provider)
-            namespace = _kubevirt_project_ns(provider, project_id)
-            for vm in vms:
-                kv_name = f"troshka-vm-{vm['id'][:8]}"
-                try:
-                    custom_api.patch_namespaced_custom_object(
-                        group="kubevirt.io",
-                        version="v1",
-                        namespace=namespace,
-                        plural="virtualmachines",
-                        name=kv_name,
-                        body={"spec": {"running": False}},
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to force-stop KubeVirt VM %s: %s", kv_name, e
-                    )
+        _force_stop_kubevirt_vms(host, project_id, vms, db)
     else:
-        if not host.ip_address:
-            raise HTTPException(status_code=503, detail="Host not available")
-        for vm in vms:
-            dom = _domain_name(project_id, vm["id"])
-            try:
-                job_id = start_job(host, "/vms/force-off", {"domain_name": dom})
-                wait_for_job(host, job_id, timeout=30, poll_interval=2)
-            except TroshkadError:
-                logger.warning("Failed to force-stop VM %s", dom)
+        _force_stop_troshkad_vms(host, project_id, vms)
 
     project.state = "stopped"
     db.commit()
@@ -1253,17 +1336,17 @@ def force_stop_project(
     return {"status": "stopped"}
 
 
-@router.post("/{project_id}/start")
+@router.post("/{project_id}/start", responses={403: {}, 404: {}, 409: {}})
 def start_project(
     project_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
     if project.state not in ("stopped", "error"):
         raise HTTPException(
             status_code=409, detail=f"Project is {project.state}, not stopped"
@@ -1289,20 +1372,20 @@ def _get_project_and_host(
     """Helper to load project + host with auth and state checks."""
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
     if project.state not in ("active", "stopped"):
         raise HTTPException(
             status_code=409, detail=f"Project is {project.state}, VMs not accessible"
         )
     host = db.query(Host).filter_by(id=project.host_id).first()
     if not host:
-        raise HTTPException(status_code=503, detail="Host not available")
+        raise HTTPException(status_code=503, detail=_HOST_NOT_AVAILABLE)
     if host.host_type != "kubevirt-cluster" and (
         not host.private_key or not host.ip_address
     ):
-        raise HTTPException(status_code=503, detail="Host not available")
+        raise HTTPException(status_code=503, detail=_HOST_NOT_AVAILABLE)
     if check_disk:
         from app.services.troshkad_client import check_disk_usage
 
@@ -1396,18 +1479,18 @@ def _build_destroy_context(project) -> dict:
     }
 
 
-@router.get("/{project_id}/vm-states")
+@router.get("/{project_id}/vm-states", responses={403: {}, 404: {}})
 def get_all_vm_states(
     project_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Get actual running state of all VMs from libvirt."""
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
     if not project.host_id:
         return {"states": {}}
 
@@ -1424,12 +1507,15 @@ def get_all_vm_states(
     return {"states": {}, "container_states": {}, "progress": {}}
 
 
-@router.post("/{project_id}/vms/{vm_id}/start")
+@router.post(
+    "/{project_id}/vms/{vm_id}/start",
+    responses={403: {}, 404: {}, 409: {}, 500: {}, 503: {}, 507: {}},
+)
 def start_vm(
     project_id: str,
     vm_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     project, host = _get_project_and_host(project_id, user, db)
 
@@ -1444,7 +1530,7 @@ def start_vm(
             namespace = _kubevirt_project_ns(provider, project_id)
             try:
                 custom_api.patch_namespaced_custom_object(
-                    group="kubevirt.io",
+                    group=_KUBEVIRT_API,
                     version="v1",
                     namespace=namespace,
                     plural="virtualmachines",
@@ -1464,100 +1550,6 @@ def start_vm(
         p_id = project.id
         h_id = host.id
         target_vm_id = vm_id
-
-        def _start_infra_then_vm():
-            import json
-
-            from sqlalchemy import text
-
-            from app.core.database import SessionLocal
-            from app.models.elastic_ip import ElasticIp
-            from app.models.host import Host as HostModel
-            from app.models.project import Project
-            from app.services.deploy_service import (
-                _setup_networks_via_troshkad,
-                cache_library_images,
-            )
-            from app.services.eip_service import associate_eip
-
-            s = SessionLocal()
-            try:
-                proj = s.query(Project).filter_by(id=p_id).first()
-                h = s.query(HostModel).filter_by(id=h_id).first()
-                if not proj or not h:
-                    return
-
-                topology = proj.topology or {}
-                vni_map = proj.vni_map or {}
-
-                # Re-associate EIPs
-                project_eips = (
-                    s.query(ElasticIp)
-                    .filter_by(project_id=p_id, state="allocated")
-                    .all()
-                )
-                for eip in project_eips:
-                    try:
-                        associate_eip(s, eip, h)
-                        for ext_ip in topology.get("externalIps", []):
-                            if ext_ip.get("id") == eip.canvas_eip_id:
-                                ext_ip["_private_ip"] = eip.private_ip
-                                ext_ip["ip"] = eip.public_ip
-                    except Exception:
-                        logger.warning("Failed to re-associate EIP %s", eip.public_ip)
-
-                if project_eips:
-                    s.execute(
-                        text("UPDATE projects SET topology = :topo WHERE id = :pid"),
-                        {"topo": json.dumps(topology), "pid": p_id},
-                    )
-                    s.commit()
-                    s.refresh(proj)
-                    topology = proj.topology or {}
-
-                # Re-cache missing images
-                cache_library_images(topology, h, s)
-
-                # Recreate bridges and DNAT rules via troshkad
-                if vni_map:
-                    from app.services.deploy_service import _get_network_lock
-
-                    with _get_network_lock(h.id):
-                        _setup_networks_via_troshkad(h, topology, vni_map, s, p_id)
-
-                # Start only the target VM
-                dom = _domain_name(p_id, target_vm_id)
-                try:
-                    job_id = start_job(h, _VMS_START_PATH, {"domain_name": dom})
-                    wait_for_job(h, job_id, timeout=60, poll_interval=2)
-                    notify_project(
-                        p_id,
-                        {
-                            "type": "vm-state",
-                            "states": {target_vm_id: "running"},
-                            "progress": {},
-                        },
-                    )
-                except TroshkadError as e:
-                    logger.warning("Failed to start VM %s: %s", dom, e)
-
-                proj.state = "active"
-                s.commit()
-                notify_project(
-                    p_id,
-                    {"type": "project-state", "state": "active", "deploy_error": None},
-                )
-                logger.info(
-                    "Infra + VM %s started for project %s", target_vm_id[:8], p_id[:8]
-                )
-            except Exception:
-                logger.exception("Failed to start infra for project %s", p_id[:8])
-                proj = s.query(Project).filter_by(id=p_id).first()
-                if proj:
-                    proj.state = "error"
-                    s.commit()
-            finally:
-                s.close()
 
         notify_project(
             project_id,
@@ -1584,33 +1576,6 @@ def start_vm(
     p_id = project.id
     h_id = host.id
 
-    def _cache_and_start():
-        from app.core.database import SessionLocal
-        from app.services.deploy_service import cache_library_images
-
-        s = SessionLocal()
-        try:
-            from app.models.host import Host as HostModel
-            from app.models.project import Project
-
-            proj = s.query(Project).filter_by(id=p_id).first()
-            h = s.query(HostModel).filter_by(id=h_id).first()
-            if proj and h:
-                topo = proj.deployed_topology or proj.topology or {}
-                cache_library_images(topo, h, s)
-            dom = _domain_name(p_id, vm_id)
-            try:
-                job_id = start_job(h, _VMS_START_PATH, {"domain_name": dom})
-                wait_for_job(h, job_id, timeout=60, poll_interval=2)
-                notify_project(
-                    p_id,
-                    {"type": "vm-state", "states": {vm_id: "running"}, "progress": {}},
-                )
-            except TroshkadError as e:
-                logger.error("Failed to start VM %s: %s", dom, e)
-        finally:
-            s.close()
-
     from app.core.redis import enqueue_job
     from app.workers.jobs import job_cache_and_start_vm
 
@@ -1620,14 +1585,17 @@ def start_vm(
     return {"action": "start", "success": True}
 
 
-@router.post("/{project_id}/vms/{vm_id}/stop")
+@router.post(
+    "/{project_id}/vms/{vm_id}/stop",
+    responses={403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
 def stop_vm(
     project_id: str,
     vm_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
-    project, host = _get_project_and_host(project_id, user, db)
+    _, host = _get_project_and_host(project_id, user, db)
 
     # KubeVirt native: patch VM running state via K8s API
     if host.host_type == "kubevirt-cluster":
@@ -1640,7 +1608,7 @@ def stop_vm(
             namespace = _kubevirt_project_ns(provider, project_id)
             try:
                 custom_api.patch_namespaced_custom_object(
-                    group="kubevirt.io",
+                    group=_KUBEVIRT_API,
                     version="v1",
                     namespace=namespace,
                     plural="virtualmachines",
@@ -1653,7 +1621,7 @@ def stop_vm(
                 )
                 return {"action": "stop", "success": True}
             except Exception as e:
-                logger.error("Failed to stop KubeVirt VM %s: %s", kv_name, e)
+                logger.exception("Failed to stop KubeVirt VM %s: %s", kv_name, e)
                 return {"action": "stop", "success": False}
         return {"action": "stop", "success": False}
 
@@ -1667,18 +1635,21 @@ def stop_vm(
         )
         return {"action": "stop", "success": True}
     except TroshkadError as e:
-        logger.error("Failed to stop VM %s: %s", dom, e)
+        logger.exception("Failed to stop VM %s: %s", dom, e)
         return {"action": "stop", "success": False}
 
 
-@router.get("/{project_id}/vms/{vm_id}/status")
+@router.get(
+    "/{project_id}/vms/{vm_id}/status",
+    responses={403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
 def get_vm_status(
     project_id: str,
     vm_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
-    project, host = _get_project_and_host(project_id, user, db)
+    _, host = _get_project_and_host(project_id, user, db)
 
     # KubeVirt native: read state from cached WS poller data
     if host.host_type == "kubevirt-cluster":
@@ -1695,14 +1666,17 @@ def get_vm_status(
     return {"state": vm_info["state"], "boot_devs": vm_info.get("boot_devs", [])}
 
 
-@router.post("/{project_id}/vms/{vm_id}/forcestop")
+@router.post(
+    "/{project_id}/vms/{vm_id}/forcestop",
+    responses={403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
 def forcestop_vm(
     project_id: str,
     vm_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
-    project, host = _get_project_and_host(project_id, user, db)
+    _, host = _get_project_and_host(project_id, user, db)
 
     # KubeVirt native: stop VM + delete VMI for immediate shutdown
     if host.host_type == "kubevirt-cluster":
@@ -1715,7 +1689,7 @@ def forcestop_vm(
             namespace = _kubevirt_project_ns(provider, project_id)
             try:
                 custom_api.patch_namespaced_custom_object(
-                    group="kubevirt.io",
+                    group=_KUBEVIRT_API,
                     version="v1",
                     namespace=namespace,
                     plural="virtualmachines",
@@ -1725,7 +1699,7 @@ def forcestop_vm(
                 # Delete VMI for immediate effect (gracePeriodSeconds=0)
                 try:
                     custom_api.delete_namespaced_custom_object(
-                        group="kubevirt.io",
+                        group=_KUBEVIRT_API,
                         version="v1",
                         namespace=namespace,
                         plural="virtualmachineinstances",
@@ -1740,7 +1714,9 @@ def forcestop_vm(
                 )
                 return {"action": "forcestop", "success": True}
             except Exception as e:
-                logger.error("Failed to force-stop KubeVirt VM %s: %s", kv_name, e)
+                logger.exception(
+                    "Failed to force-stop KubeVirt VM %s: %s", kv_name, e
+                )  # NOSONAR
                 return {"action": "forcestop", "success": False}
         return {"action": "forcestop", "success": False}
 
@@ -1754,18 +1730,21 @@ def forcestop_vm(
         )
         return {"action": "forcestop", "success": True}
     except TroshkadError as e:
-        logger.error("Failed to force-stop VM %s: %s", dom, e)
+        logger.exception("Failed to force-stop VM %s: %s", dom, e)
         return {"action": "forcestop", "success": False}
 
 
-@router.post("/{project_id}/vms/{vm_id}/restart")
+@router.post(
+    "/{project_id}/vms/{vm_id}/restart",
+    responses={403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
 def restart_vm(
     project_id: str,
     vm_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
-    project, host = _get_project_and_host(project_id, user, db)
+    _, host = _get_project_and_host(project_id, user, db)
 
     # KubeVirt native: delete VMI to trigger restart (VM CR stays running=true)
     if host.host_type == "kubevirt-cluster":
@@ -1778,7 +1757,7 @@ def restart_vm(
             namespace = _kubevirt_project_ns(provider, project_id)
             try:
                 custom_api.delete_namespaced_custom_object(
-                    group="kubevirt.io",
+                    group=_KUBEVIRT_API,
                     version="v1",
                     namespace=namespace,
                     plural="virtualmachineinstances",
@@ -1790,7 +1769,7 @@ def restart_vm(
                 )
                 return {"action": "restart", "success": True}
             except Exception as e:
-                logger.error("Failed to restart KubeVirt VM %s: %s", kv_name, e)
+                logger.exception("Failed to restart KubeVirt VM %s: %s", kv_name, e)
                 return {"action": "restart", "success": False}
         return {"action": "restart", "success": False}
 
@@ -1804,18 +1783,19 @@ def restart_vm(
         )
         return {"action": "restart", "success": True}
     except TroshkadError as e:
-        logger.error("Failed to restart VM %s: %s", dom, e)
+        logger.exception("Failed to restart VM %s: %s", dom, e)
         return {"action": "restart", "success": False}
 
 
 @router.get(
-    "/{project_id}/vms/{vm_id}/console", responses={404: {"description": "Not found"}}
+    "/{project_id}/vms/{vm_id}/console",
+    responses={403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
 )
 def get_vm_console(
     project_id: str,
     vm_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     project, default_host = _get_project_and_host(project_id, user, db)
 
@@ -1867,12 +1847,15 @@ def get_vm_console(
     }
 
 
-@router.get("/{project_id}/vms/{vm_id}/ready")
+@router.get(
+    "/{project_id}/vms/{vm_id}/ready",
+    responses={403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
 def vm_ready(
     project_id: str,
     vm_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Check if a VM is SSH-reachable via the exec API."""
     project, host = _get_project_and_host(project_id, user, db)
@@ -1923,6 +1906,75 @@ def vm_ready(
     return {"ready": False, "reason": "exec failed"}
 
 
+def _try_kubevirt_method(
+    m: str,
+    provider,
+    project_id: str,
+    vm_id: str,
+    vm_ip: str,
+    username: str,
+    password: str,
+    root_password: str,
+    command: str,
+    timeout: int,
+):
+    """Try a single KubeVirt exec method. Returns (result, error_string | None)."""
+    from app.services.providers.kubevirt import (
+        kubevirt_exec_console,
+        kubevirt_exec_guest_agent,
+        kubevirt_exec_ssh,
+        kubevirt_exec_vnc,
+    )
+
+    if m == "guest-agent":
+        return (
+            kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout),
+            None,
+        )
+    if m == "ssh":
+        if not vm_ip or not password:
+            return None, "ssh: no VM IP or credentials"
+        return (
+            kubevirt_exec_ssh(
+                provider, project_id, vm_id, vm_ip, username, password, command, timeout
+            ),
+            None,
+        )
+    if m == "vnc":
+        vnc_pass = root_password or password
+        if not vnc_pass:
+            return None, "vnc: no password available"
+        return (
+            kubevirt_exec_vnc(
+                provider,
+                project_id,
+                vm_id,
+                "root" if root_password else username,
+                vnc_pass,
+                command,
+                timeout,
+            ),
+            None,
+        )
+    if m in ("console", "serial"):
+        console_pass = root_password or password
+        if not console_pass:
+            return None, "console: no password available"
+        return (
+            kubevirt_exec_console(
+                provider,
+                project_id,
+                vm_id,
+                "root" if root_password else username,
+                console_pass,
+                command,
+                timeout,
+            ),
+            None,
+        )
+    return None, f"{m}: unknown method"
+
+
 def _exec_kubevirt(
     provider,
     project_id: str,
@@ -1936,64 +1988,27 @@ def _exec_kubevirt(
     timeout: int,
 ):
     """Dispatch exec to a KubeVirt-hosted VM. Returns result dict or raises HTTPException."""
-    from app.services.providers.kubevirt import (
-        kubevirt_exec_console,
-        kubevirt_exec_guest_agent,
-        kubevirt_exec_ssh,
-        kubevirt_exec_vnc,
-    )
-
     is_auto = len(methods) > 1
     errors: list[str] = []
 
     for m in methods:
         try:
-            if m == "guest-agent":
-                return kubevirt_exec_guest_agent(
-                    provider, project_id, vm_id, command, timeout
-                )
-            elif m == "ssh":
-                if not vm_ip or not password:
-                    errors.append("ssh: no VM IP or credentials")
-                    continue
-                return kubevirt_exec_ssh(
-                    provider,
-                    project_id,
-                    vm_id,
-                    vm_ip,
-                    username,
-                    password,
-                    command,
-                    timeout,
-                )
-            elif m == "vnc":
-                vnc_pass = root_password or password
-                if not vnc_pass:
-                    errors.append("vnc: no password available")
-                    continue
-                return kubevirt_exec_vnc(
-                    provider,
-                    project_id,
-                    vm_id,
-                    "root" if root_password else username,
-                    vnc_pass,
-                    command,
-                    timeout,
-                )
-            elif m in ("console", "serial"):
-                console_pass = root_password or password
-                if not console_pass:
-                    errors.append("console: no password available")
-                    continue
-                return kubevirt_exec_console(
-                    provider,
-                    project_id,
-                    vm_id,
-                    "root" if root_password else username,
-                    console_pass,
-                    command,
-                    timeout,
-                )
+            result, err = _try_kubevirt_method(
+                m,
+                provider,
+                project_id,
+                vm_id,
+                vm_ip,
+                username,
+                password,
+                root_password,
+                command,
+                timeout,
+            )
+            if result is not None:
+                return result
+            if err:
+                errors.append(err)
         except Exception as e:
             errors.append(f"{m}: {e}")
             if not is_auto:
@@ -2003,6 +2018,135 @@ def _exec_kubevirt(
         status_code=503,
         detail="All exec methods failed: " + "; ".join(errors),
     )
+
+
+def _troshkad_exec_guest_agent(host, dom: str, command: str, timeout: int):
+    """Execute via guest-agent on a troshkad host. Returns (result, error)."""
+    job_id = start_job(
+        host,
+        "/vm/guest-exec",
+        {"domain_name": dom, "command": command, "timeout": timeout},
+    )
+    job = wait_for_job(host, job_id, timeout=timeout + 30)
+    if job["status"] == "completed":
+        result = job.get("result", {})
+        return {
+            "output": result.get("output", ""),
+            "error": result.get("error", ""),
+            "exit_code": result.get("exit_code", 0),
+            "method": "guest-agent",
+        }, None
+    return None, f"guest-agent: {job.get('result', {}).get('error', 'failed')}"
+
+
+def _troshkad_exec_ssh(
+    host,
+    project_id: str,
+    vm_ip: str,
+    username: str,
+    password: str,
+    private_key: str,
+    command: str,
+    timeout: int,
+):
+    """Execute via SSH on a troshkad host. Returns (result, error)."""
+    if not vm_ip or not (password or private_key):
+        return None, "ssh: no VM IP or credentials"
+    job_id = start_job(
+        host,
+        "/vm/ssh-exec",
+        {
+            "project_id": project_id,
+            "vm_ip": vm_ip,
+            "username": username,
+            "password": password,
+            "private_key": private_key,
+            "command": command,
+            "timeout": timeout,
+        },
+    )
+    job = wait_for_job(host, job_id, timeout=timeout + 30)
+    if job["status"] == "completed":
+        result = job.get("result", {})
+        return {
+            "output": result.get("output", ""),
+            "error": result.get("error", ""),
+            "exit_code": result.get("exit_code", 0),
+            "method": "ssh",
+        }, None
+    return None, f"ssh: {job.get('result', {}).get('error', 'failed')}"
+
+
+def _troshkad_exec_serial(
+    host,
+    dom: str,
+    username: str,
+    password: str,
+    command: str,
+    timeout: int,
+):
+    """Execute via serial console on a troshkad host. Returns (result, error)."""
+    job_id = start_job(
+        host,
+        "/vm/serial-exec",
+        {
+            "domain_name": dom,
+            "username": username,
+            "password": password,
+            "command": command,
+            "timeout": timeout,
+        },
+    )
+    job = wait_for_job(host, job_id, timeout=90)
+    if job["status"] == "completed":
+        result = job.get("result", {})
+        if result.get("output") or not result.get("error"):
+            return {
+                "output": result.get("output", ""),
+                "error": result.get("error", ""),
+                "method": "serial",
+            }, None
+    return None, f"serial: {job.get('result', {}).get('error', 'failed')}"
+
+
+def _troshkad_exec_console(
+    host,
+    dom: str,
+    username: str,
+    password: str,
+    root_password: str,
+    command: str,
+    timeout: int,
+    force_tty: bool,
+    method_name: str,
+):
+    """Execute via VNC/text console on a troshkad host. Returns (result, error)."""
+    console_pass = root_password or password
+    if not console_pass:
+        return None, "console: no password available"
+    job_id = start_job(
+        host,
+        "/vm/console-exec",
+        {
+            "domain_name": dom,
+            "username": "root" if root_password else username,
+            "password": console_pass,
+            "command": command,
+            "timeout": timeout,
+            "force_tty": method_name == "console-text" or force_tty,
+        },
+    )
+    job = wait_for_job(host, job_id, timeout=timeout + 30)
+    if job["status"] == "completed":
+        result = job.get("result", {})
+        if not result.get("error"):
+            return {
+                "output": result.get("output", ""),
+                "error": "",
+                "exit_code": result.get("exit_code"),
+                "method": "console",
+            }, None
+    return None, f"console: {job.get('result', {}).get('error', 'failed')}"
 
 
 def _exec_troshkad(
@@ -2027,109 +2171,51 @@ def _exec_troshkad(
     for m in methods:
         try:
             if m == "guest-agent":
-                job_id = start_job(
+                result, err = _troshkad_exec_guest_agent(
                     host,
-                    "/vm/guest-exec",
-                    {
-                        "domain_name": dom,
-                        "command": command,
-                        "timeout": timeout,
-                    },
+                    dom,
+                    command,
+                    timeout,
                 )
-                job = wait_for_job(host, job_id, timeout=timeout + 30)
-                if job["status"] == "completed":
-                    result = job.get("result", {})
-                    return {
-                        "output": result.get("output", ""),
-                        "error": result.get("error", ""),
-                        "exit_code": result.get("exit_code", 0),
-                        "method": "guest-agent",
-                    }
-                errors.append(
-                    f"guest-agent: {job.get('result', {}).get('error', 'failed')}"
-                )
-
             elif m == "ssh":
-                if not vm_ip or not (password or private_key):
-                    errors.append("ssh: no VM IP or credentials")
-                    continue
-                job_id = start_job(
+                result, err = _troshkad_exec_ssh(
                     host,
-                    "/vm/ssh-exec",
-                    {
-                        "project_id": project_id,
-                        "vm_ip": vm_ip,
-                        "username": username,
-                        "password": password,
-                        "private_key": private_key,
-                        "command": command,
-                        "timeout": timeout,
-                    },
+                    project_id,
+                    vm_ip,
+                    username,
+                    password,
+                    private_key,
+                    command,
+                    timeout,
                 )
-                job = wait_for_job(host, job_id, timeout=timeout + 30)
-                if job["status"] == "completed":
-                    result = job.get("result", {})
-                    return {
-                        "output": result.get("output", ""),
-                        "error": result.get("error", ""),
-                        "exit_code": result.get("exit_code", 0),
-                        "method": "ssh",
-                    }
-                errors.append(f"ssh: {job.get('result', {}).get('error', 'failed')}")
-
             elif m == "serial":
-                job_id = start_job(
+                result, err = _troshkad_exec_serial(
                     host,
-                    "/vm/serial-exec",
-                    {
-                        "domain_name": dom,
-                        "username": username,
-                        "password": password,
-                        "command": command,
-                        "timeout": timeout,
-                    },
+                    dom,
+                    username,
+                    password,
+                    command,
+                    timeout,
                 )
-                job = wait_for_job(host, job_id, timeout=90)
-                if job["status"] == "completed":
-                    result = job.get("result", {})
-                    if result.get("output") or not result.get("error"):
-                        return {
-                            "output": result.get("output", ""),
-                            "error": result.get("error", ""),
-                            "method": "serial",
-                        }
-                errors.append(f"serial: {job.get('result', {}).get('error', 'failed')}")
-
             elif m in ("console", "console-text"):
-                console_pass = root_password or password
-                if not console_pass:
-                    errors.append("console: no password available")
-                    continue
-                job_id = start_job(
+                result, err = _troshkad_exec_console(
                     host,
-                    "/vm/console-exec",
-                    {
-                        "domain_name": dom,
-                        "username": "root" if root_password else username,
-                        "password": console_pass,
-                        "command": command,
-                        "timeout": timeout,
-                        "force_tty": m == "console-text" or force_tty,
-                    },
+                    dom,
+                    username,
+                    password,
+                    root_password,
+                    command,
+                    timeout,
+                    force_tty,
+                    m,
                 )
-                job = wait_for_job(host, job_id, timeout=timeout + 30)
-                if job["status"] == "completed":
-                    result = job.get("result", {})
-                    if not result.get("error"):
-                        return {
-                            "output": result.get("output", ""),
-                            "error": "",
-                            "exit_code": result.get("exit_code"),
-                            "method": "console",
-                        }
-                errors.append(
-                    f"console: {job.get('result', {}).get('error', 'failed')}"
-                )
+            else:
+                result, err = None, f"{m}: unknown method"
+
+            if result is not None:
+                return result
+            if err:
+                errors.append(err)
 
         except TroshkadError as e:
             errors.append(f"{m}: {e}")
@@ -2142,36 +2228,8 @@ def _exec_troshkad(
     )
 
 
-@router.post("/{project_id}/vms/{vm_id}/exec")
-def vm_exec(
-    project_id: str,
-    vm_id: str,
-    body: dict,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Execute a command on a VM.
-
-    Body params:
-        command: Shell command to execute (required)
-        username: SSH/console user (default: cloud-user)
-        password: VM password (auto-resolved from topology if omitted)
-        timeout: Command timeout in seconds (default: 600, max: 3600)
-        method: "auto" (tries guest-agent → ssh → console → serial),
-                "guest-agent", "ssh", "serial", or "console"
-    """
-    project, host = _get_project_and_host(project_id, user, db)
-    if project.state not in ("active", "stopped"):
-        raise HTTPException(status_code=409, detail="Project must be active")
-
-    command = body.get("command", "")
-    if not command:
-        raise HTTPException(status_code=400, detail="Command is required")
-
-    vm_node = next(
-        (n for n in (project.topology or {}).get("nodes", []) if n["id"] == vm_id),
-        None,
-    )
+def _resolve_exec_params(body: dict, vm_node: dict | None) -> dict:
+    """Extract and resolve exec parameters from request body and VM topology node."""
     username = body.get("username", "cloud-user")
     password = body.get("password", "")
     if not password and vm_node:
@@ -2203,6 +2261,54 @@ def vm_exec(
     else:
         methods = [method]
 
+    return {
+        "username": username,
+        "password": password,
+        "timeout": timeout,
+        "method": method,
+        "force_tty": force_tty,
+        "vm_ip": vm_ip,
+        "private_key": private_key,
+        "root_password": root_password,
+        "methods": methods,
+    }
+
+
+@router.post(
+    "/{project_id}/vms/{vm_id}/exec",
+    responses={400: {}, 403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
+def vm_exec(
+    project_id: str,
+    vm_id: str,
+    body: dict,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """Execute a command on a VM.
+
+    Body params:
+        command: Shell command to execute (required)
+        username: SSH/console user (default: cloud-user)
+        password: VM password (auto-resolved from topology if omitted)
+        timeout: Command timeout in seconds (default: 600, max: 3600)
+        method: "auto" (tries guest-agent → ssh → console → serial),
+                "guest-agent", "ssh", "serial", or "console"
+    """
+    project, host = _get_project_and_host(project_id, user, db)
+    if project.state not in ("active", "stopped"):
+        raise HTTPException(status_code=409, detail=_PROJECT_MUST_BE_ACTIVE)
+
+    command = body.get("command", "")
+    if not command:
+        raise HTTPException(status_code=400, detail="Command is required")
+
+    vm_node = next(
+        (n for n in (project.topology or {}).get("nodes", []) if n["id"] == vm_id),
+        None,
+    )
+    params = _resolve_exec_params(body, vm_node)
+
     if host.host_type == "kubevirt-cluster":
         from app.models.provider import Provider
 
@@ -2210,9 +2316,8 @@ def vm_exec(
         if not provider:
             raise HTTPException(status_code=503, detail="Provider not found")
 
-        # KubeVirt auto order: guest-agent → ssh → vnc → console
-        kv_methods = methods
-        if method == "auto":
+        kv_methods = params["methods"]
+        if params["method"] == "auto":
             kv_methods = ["guest-agent", "ssh", "vnc", "console"]
 
         return _exec_kubevirt(
@@ -2220,28 +2325,28 @@ def vm_exec(
             project_id,
             vm_id,
             kv_methods,
-            vm_ip,
-            username,
-            password,
-            root_password,
+            params["vm_ip"],
+            params["username"],
+            params["password"],
+            params["root_password"],
             command,
-            timeout,
+            params["timeout"],
         )
 
     return _exec_troshkad(
         host,
         project_id,
         vm_id,
-        methods,
-        method,
-        vm_ip,
-        username,
-        password,
-        private_key,
-        root_password,
+        params["methods"],
+        params["method"],
+        params["vm_ip"],
+        params["username"],
+        params["password"],
+        params["private_key"],
+        params["root_password"],
         command,
-        timeout,
-        force_tty,
+        params["timeout"],
+        params["force_tty"],
     )
 
 
@@ -2264,25 +2369,28 @@ def _resolve_vm_ssh_params(project, vm_id):
     return vm_node, vm_ip, password
 
 
-@router.put("/{project_id}/vms/{vm_id}/files")
+@router.put(
+    "/{project_id}/vms/{vm_id}/files",
+    responses={400: {}, 403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
 async def vm_upload_file(
     project_id: str,
     vm_id: str,
     file: UploadFile,
-    remote_path: str = Query(..., description="Destination path on the VM"),
-    mode: str = Query("0644", description="File permissions (octal)"),
-    username: str = Query("cloud-user"),
-    password: str = Query(""),
-    private_key: str = Query(""),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    remote_path: Annotated[str, Query(description="Destination path on the VM")],
+    user: CurrentUser,
+    db: DbSession,
+    mode: Annotated[str, Query(description="File permissions (octal)")] = "0644",
+    username: Annotated[str, Query()] = "cloud-user",
+    password: Annotated[str, Query()] = "",
+    private_key: Annotated[str, Query()] = "",
 ):
     """Upload a file to a VM via SCP."""
     project, host = _get_project_and_host(project_id, user, db)
     if project.state not in ("active", "stopped"):
-        raise HTTPException(status_code=409, detail="Project must be active")
+        raise HTTPException(status_code=409, detail=_PROJECT_MUST_BE_ACTIVE)
 
-    vm_node, vm_ip, topo_password = _resolve_vm_ssh_params(project, vm_id)
+    _, vm_ip, topo_password = _resolve_vm_ssh_params(project, vm_id)
     if not vm_ip:
         raise HTTPException(status_code=400, detail="VM has no IP address")
     pw = password or topo_password
@@ -2309,22 +2417,25 @@ async def vm_upload_file(
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.get("/{project_id}/vms/{vm_id}/files")
+@router.get(
+    "/{project_id}/vms/{vm_id}/files",
+    responses={400: {}, 403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
 def vm_download_file(
     project_id: str,
     vm_id: str,
-    remote_path: str = Query(..., description="Path of the file on the VM"),
-    username: str = Query("cloud-user"),
-    password: str = Query(""),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    remote_path: Annotated[str, Query(description="Path of the file on the VM")],
+    user: CurrentUser,
+    db: DbSession,
+    username: Annotated[str, Query()] = "cloud-user",
+    password: Annotated[str, Query()] = "",
 ):
     """Download a file from a VM via SCP."""
     project, host = _get_project_and_host(project_id, user, db)
     if project.state not in ("active", "stopped"):
-        raise HTTPException(status_code=409, detail="Project must be active")
+        raise HTTPException(status_code=409, detail=_PROJECT_MUST_BE_ACTIVE)
 
-    vm_node, vm_ip, topo_password = _resolve_vm_ssh_params(project, vm_id)
+    _, vm_ip, topo_password = _resolve_vm_ssh_params(project, vm_id)
     if not vm_ip:
         raise HTTPException(status_code=400, detail="VM has no IP address")
     pw = password or topo_password
@@ -2353,16 +2464,21 @@ def vm_download_file(
     )
 
 
-@router.get("/{project_id}/containers/{container_id}/logs")
+@router.get(
+    "/{project_id}/containers/{container_id}/logs",
+    responses={403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
 def get_container_logs(
     project_id: str,
     container_id: str,
-    tail: int = Query(500, description="Number of lines to retrieve from the end"),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
+    tail: Annotated[
+        int, Query(description="Number of lines to retrieve from the end")
+    ] = 500,
 ):
     """Get logs from a container."""
-    project, host = _get_project_and_host(project_id, user, db)
+    _, host = _get_project_and_host(project_id, user, db)
     container_name = f"troshka-{project_id[:8]}-{container_id[:8]}"
 
     try:
@@ -2375,18 +2491,21 @@ def get_container_logs(
         logs = result.get("result", {}).get("logs", "")
         return {"logs": logs, "container_name": container_name}
     except TroshkadError as e:
-        logger.error("Failed to get logs for container %s: %s", container_name, e)
+        logger.exception("Failed to get logs for container %s: %s", container_name, e)
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.post("/{project_id}/containers/{container_id}/start")
+@router.post(
+    "/{project_id}/containers/{container_id}/start",
+    responses={403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
 def start_container(
     project_id: str,
     container_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
-    project, host = _get_project_and_host(project_id, user, db)
+    _, host = _get_project_and_host(project_id, user, db)
     container_name = f"troshka-{project_id[:8]}-{container_id[:8]}"
     try:
         job_id = start_job(
@@ -2398,14 +2517,17 @@ def start_container(
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.post("/{project_id}/containers/{container_id}/stop")
+@router.post(
+    "/{project_id}/containers/{container_id}/stop",
+    responses={403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
 def stop_container(
     project_id: str,
     container_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
-    project, host = _get_project_and_host(project_id, user, db)
+    _, host = _get_project_and_host(project_id, user, db)
     container_name = f"troshka-{project_id[:8]}-{container_id[:8]}"
     try:
         job_id = start_job(
@@ -2417,14 +2539,17 @@ def stop_container(
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@router.post("/{project_id}/containers/{container_id}/restart")
+@router.post(
+    "/{project_id}/containers/{container_id}/restart",
+    responses={403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
+)
 def restart_container(
     project_id: str,
     container_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
-    project, host = _get_project_and_host(project_id, user, db)
+    _, host = _get_project_and_host(project_id, user, db)
     container_name = f"troshka-{project_id[:8]}-{container_id[:8]}"
     try:
         job_id = start_job(
@@ -2440,21 +2565,46 @@ def restart_container(
         raise HTTPException(status_code=503, detail=str(e))
 
 
+def _allocate_vnis_for_new_networks(db, diff, vni_map):
+    """Allocate VNIs for newly added networks. Modifies vni_map in place."""
+    if not diff["added_networks"]:
+        return
+    from app.services.vxlan import VNI_MAX, VNI_MIN, _get_all_used_vnis
+
+    used_vnis = _get_all_used_vnis(db) | set(vni_map.values())
+    next_vni = VNI_MIN
+    for net_node in diff["added_networks"]:
+        data = net_node.get("data", {})
+        if (
+            data.get("subtype") == "network"
+            and data.get("networkType") != "bmc"
+            and net_node["id"] not in vni_map
+        ):
+            while next_vni in used_vnis:
+                next_vni += 1
+            if next_vni > VNI_MAX:
+                raise HTTPException(status_code=507, detail="VNI pool exhausted")
+            vni_map[net_node["id"]] = next_vni
+            used_vnis.add(next_vni)
+            next_vni += 1
+
+
 @router.post(
-    "/{project_id}/reconfigure", responses={400: {}, 403: {}, 404: {}, 409: {}, 503: {}}
+    "/{project_id}/reconfigure",
+    responses={400: {}, 403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
 )
 def reconfigure_project(
     project_id: str,
+    user: CurrentUser,
+    db: DbSession,
     body: dict | None = None,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     """Apply config changes (boot order, CPU, RAM) without destroying disks."""
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
     if project.state not in ("active", "stopped"):
         raise HTTPException(
             status_code=409, detail=f"Project is {project.state}, cannot reconfigure"
@@ -2464,34 +2614,14 @@ def reconfigure_project(
 
     host = db.query(Host).filter_by(id=project.host_id).first()
     if not host:
-        raise HTTPException(status_code=503, detail="Host not available")
+        raise HTTPException(status_code=503, detail=_HOST_NOT_AVAILABLE)
     if host.host_type != "kubevirt-cluster" and (
         not host.private_key or not host.ip_address
     ):
-        raise HTTPException(status_code=503, detail="Host not available")
+        raise HTTPException(status_code=503, detail=_HOST_NOT_AVAILABLE)
 
-    # Validate BMC network has at least one connected provisioner VM
     current = project.topology or {}
-    bmc_net = next(
-        (
-            n
-            for n in current.get("nodes", [])
-            if n.get("type") == "networkNode"
-            and n.get("data", {}).get("networkType") == "bmc"
-        ),
-        None,
-    )
-    if bmc_net:
-        bmc_edges = [
-            e
-            for e in current.get("edges", [])
-            if e.get("source") == bmc_net["id"] or e.get("target") == bmc_net["id"]
-        ]
-        if not bmc_edges:
-            raise HTTPException(
-                status_code=400,
-                detail="BMC network requires at least one connected VM to act as a provisioner",
-            )
+    _validate_bmc_network(current)
 
     # Allocate VNIs for new networks before going async
     deployed = project.deployed_topology or {}
@@ -2508,24 +2638,7 @@ def reconfigure_project(
             "has_changes": False,
         }
     )
-    if diff["added_networks"]:
-        from app.services.vxlan import VNI_MAX, VNI_MIN, _get_all_used_vnis
-
-        used_vnis = _get_all_used_vnis(db) | set(vni_map.values())
-        next_vni = VNI_MIN
-        for net_node in diff["added_networks"]:
-            if (
-                net_node.get("data", {}).get("subtype") == "network"
-                and net_node.get("data", {}).get("networkType") != "bmc"
-                and net_node["id"] not in vni_map
-            ):
-                while next_vni in used_vnis:
-                    next_vni += 1
-                if next_vni > VNI_MAX:
-                    raise HTTPException(status_code=507, detail="VNI pool exhausted")
-                vni_map[net_node["id"]] = next_vni
-                used_vnis.add(next_vni)
-                next_vni += 1
+    _allocate_vnis_for_new_networks(db, diff, vni_map)
     project.vni_map = vni_map
     project.state = "reconfiguring"
     db.commit()
@@ -2800,7 +2913,7 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
         _finalize_kubevirt_reconfigure(proj, s, p_id, current, copy, notify_project)
         _delete_deploy_progress(p_id)
     except Exception as e:
-        logger.error("Reconfigure %s: kubevirt error: %s", p_id[:8], e, exc_info=True)
+        logger.exception("Reconfigure %s: kubevirt error: %s", p_id[:8], e)
         try:
             proj = s.query(Project).filter_by(id=p_id).first()
             if proj:
@@ -3598,13 +3711,13 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
 
 @router.post(
     "/{project_id}/vms/{vm_id}/redeploy",
-    responses={400: {"description": "Library item not ready"}},
+    responses={400: {}, 403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
 )
 def redeploy_vm(
     project_id: str,
     vm_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Destroy and recreate a single VM in a background thread."""
     project, host = _get_project_and_host(project_id, user, db, check_disk=True)
@@ -3772,19 +3885,19 @@ def _do_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
         s.close()
 
 
-@router.post("/{project_id}/vms/{vm_id}/cancel-redeploy")
+@router.post("/{project_id}/vms/{vm_id}/cancel-redeploy", responses={403: {}, 404: {}})
 def cancel_redeploy(
     project_id: str,
     vm_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Cancel a stuck redeploy by clearing the progress tracker."""
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     dom = _domain_name(project_id, vm_id)
     _redeploy_progress.pop(dom, None)
@@ -3796,15 +3909,15 @@ def cancel_redeploy(
 )
 def redeploy_project(
     project_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Destroy existing infrastructure and redeploy with current topology."""
     project = db.query(Project).filter_by(id=project_id).with_for_update().first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
     if project.state not in ("active", "stopped", "error"):
         raise HTTPException(
             status_code=409, detail=f"Project is {project.state}, cannot redeploy"
@@ -3861,18 +3974,18 @@ def redeploy_project(
     return {"status": "deploying"}
 
 
-@router.post("/{project_id}/undeploy")
+@router.post("/{project_id}/undeploy", responses={403: {}, 404: {}})
 def undeploy_project(
     project_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Destroy all infrastructure and reset project to draft."""
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     if project.host_id:
         destroy_project_sync(
@@ -3896,17 +4009,17 @@ def undeploy_project(
     return {"status": "draft"}
 
 
-@router.delete("/{project_id}")
+@router.delete("/{project_id}", responses={403: {}, 404: {}})
 def delete_project(
     project_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     # Release EIPs
     from app.models.elastic_ip import ElasticIp
@@ -3953,18 +4066,103 @@ class ImportVMRequest(PydanticBaseModel):
     position_y: float = 100.0
 
 
-@router.post("/{project_id}/import-vm", response_model=ProjectResponse)
+def _create_snapshot_disk_nodes(
+    disks, item, vm_id, position_x, position_y, dc_list, unique_name_fn, topology
+):
+    """Create storage nodes and edges for snapshot disks. Returns boot_devices list."""
+    boot_devices = []
+    for idx, disk_info in enumerate(disks):
+        disk_id = str(uuid_mod.uuid4())
+        disk_name = unique_name_fn(disk_info.get("name", "disk"))
+        disk_node = {
+            "id": disk_id,
+            "type": "storageNode",
+            "position": {"x": position_x - 250, "y": position_y + idx * 150},
+            "data": {
+                "label": disk_name,
+                "name": disk_name,
+                "size": disk_info.get("size", 20),
+                "format": disk_info.get("format", "qcow2"),
+                "source": "snapshot",
+                "snapshotItemId": item.id,
+                "libraryItemId": disk_info.get("libraryItemId"),
+                "libraryItemName": disk_info.get("libraryItemName"),
+                "icon": (
+                    "\U0001f6e2" if disk_info.get("format") != "iso" else "\U0001f4bf"
+                ),
+            },
+        }
+        topology["nodes"].append(disk_node)
+
+        target_handle = ""
+        if dc_list and idx < len(dc_list):
+            target_handle = f"dp-{dc_list[idx]['id']}-left"
+
+        edge = {
+            "id": f"xy-edge__{disk_id}right-{vm_id}{target_handle}",
+            "source": disk_id,
+            "target": vm_id,
+            "sourceHandle": "right",
+            "targetHandle": target_handle or None,
+            "type": "smoothstep",
+            "style": {
+                "stroke": "rgba(251,191,36,0.6)",
+                "strokeWidth": 2,
+                "strokeDasharray": "4 4",
+            },
+        }
+        topology["edges"].append(edge)
+        boot_devices.append(disk_id)
+    return boot_devices
+
+
+def _wire_snapshot_network_edges(networks_info, nic_list, vm_id, topology):
+    """Create edges connecting VM NICs to matching canvas networks."""
+    canvas_networks = {
+        n.get("data", {}).get("name", ""): n
+        for n in topology["nodes"]
+        if n.get("type") == "networkNode"
+    }
+    remaining_nics = list(nic_list)
+    for net_info in networks_info:
+        net_name = net_info.get("name", "")
+        matching_net = canvas_networks.get(net_name)
+        if not matching_net or not remaining_nics:
+            continue
+        nic = remaining_nics.pop(0)
+        src_handle = f"nic-{nic['id']}-top"
+        edge = {
+            "id": f"xy-edge__{vm_id}{src_handle}-{matching_net['id']}bottom",
+            "source": vm_id,
+            "target": matching_net["id"],
+            "sourceHandle": src_handle,
+            "targetHandle": "bottom",
+            "type": "smoothstep",
+            "style": {
+                "stroke": "rgba(56,189,248,0.6)",
+                "strokeWidth": 2,
+                "strokeDasharray": "6 4",
+            },
+        }
+        topology["edges"].append(edge)
+
+
+@router.post(
+    "/{project_id}/import-vm",
+    response_model=ProjectResponse,
+    responses={403: {}, 404: {}},
+)
 def import_vm_from_snapshot(
     project_id: str,
     body: ImportVMRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     from app.models.library import Library, LibraryItem
 
@@ -4053,86 +4251,26 @@ def import_vm_from_snapshot(
     vm_data: dict[str, Any] = vm_node["data"]  # type: ignore[assignment]
     disks = vm_config.get("disks", [])
     dc_list = vm_data["diskControllers"]
-    boot_devices = []
 
-    for idx, disk_info in enumerate(disks):
-        disk_id = str(uuid_mod.uuid4())
-        disk_name = _unique_name(disk_info.get("name", "disk"))
-        disk_node = {
-            "id": disk_id,
-            "type": "storageNode",
-            "position": {"x": body.position_x - 250, "y": body.position_y + idx * 150},
-            "data": {
-                "label": disk_name,
-                "name": disk_name,
-                "size": disk_info.get("size", 20),
-                "format": disk_info.get("format", "qcow2"),
-                "source": "snapshot",
-                "snapshotItemId": item.id,
-                "libraryItemId": disk_info.get("libraryItemId"),
-                "libraryItemName": disk_info.get("libraryItemName"),
-                "icon": (
-                    "\U0001f6e2" if disk_info.get("format") != "iso" else "\U0001f4bf"
-                ),
-            },
-        }
-        topology["nodes"].append(disk_node)
-
-        target_handle = ""
-        if dc_list and idx < len(dc_list):
-            target_handle = f"dp-{dc_list[idx]['id']}-left"
-
-        edge = {
-            "id": f"xy-edge__{disk_id}right-{vm_id}{target_handle}",
-            "source": disk_id,
-            "target": vm_id,
-            "sourceHandle": "right",
-            "targetHandle": target_handle or None,
-            "type": "smoothstep",
-            "style": {
-                "stroke": "rgba(251,191,36,0.6)",
-                "strokeWidth": 2,
-                "strokeDasharray": "4 4",
-            },
-        }
-        topology["edges"].append(edge)
-        boot_devices.append(disk_id)
-
+    boot_devices = _create_snapshot_disk_nodes(
+        disks,
+        item,
+        vm_id,
+        body.position_x,
+        body.position_y,
+        dc_list,
+        _unique_name,
+        topology,
+    )
     if boot_devices:
         vm_data["bootDevices"] = boot_devices
 
-    networks_info = vm_config.get("networks", [])
-    nic_list = vm_data["nics"]
-    canvas_networks = {
-        n.get("data", {}).get("name", ""): n
-        for n in topology["nodes"]
-        if n.get("type") == "networkNode"
-    }
-
-    for net_info in networks_info:
-        net_name = net_info.get("name", "")
-        matching_net = canvas_networks.get(net_name)
-        if not matching_net:
-            continue
-        if not nic_list:
-            continue
-        nic = nic_list[0]
-        src_handle = f"nic-{nic['id']}-top"
-        edge = {
-            "id": f"xy-edge__{vm_id}{src_handle}-{matching_net['id']}bottom",
-            "source": vm_id,
-            "target": matching_net["id"],
-            "sourceHandle": src_handle,
-            "targetHandle": "bottom",
-            "type": "smoothstep",
-            "style": {
-                "stroke": "rgba(56,189,248,0.6)",
-                "strokeWidth": 2,
-                "strokeDasharray": "6 4",
-            },
-        }
-        topology["edges"].append(edge)
-        nic_list = nic_list[1:]
+    _wire_snapshot_network_edges(
+        vm_config.get("networks", []),
+        vm_data["nics"],
+        vm_id,
+        topology,
+    )
 
     project.topology = topology
     from sqlalchemy.orm.attributes import flag_modified
@@ -4147,18 +4285,18 @@ class MigrateRequest(PydanticBaseModel):
     target_host_id: str
 
 
-@router.post("/{project_id}/migrate")
+@router.post("/{project_id}/migrate", responses={400: {}, 404: {}})
 def migrate_project_endpoint(
     project_id: str,
     body: MigrateRequest,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: Annotated[User, Depends(require_role("admin"))],
+    db: DbSession,
 ):
     from app.services.migration_service import migrate_project, validate_migration
 
     project = db.get(Project, project_id)
     if not project:
-        raise HTTPException(404, "Project not found")
+        raise HTTPException(404, _PROJECT_NOT_FOUND)
 
     if not project.host_id:
         raise HTTPException(400, "Project has no assigned host")

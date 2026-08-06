@@ -57,6 +57,7 @@ class EC2Driver(ProviderDriver):
         return extend_host_ebs(host, db, increment_gb)
 
     def setup_console(self, provider, base_domain):
+        # No-op: EC2 console setup is handled by console_dns service directly
         pass
 
     def create_console_record(self, provider, host, hostname, ip_address):

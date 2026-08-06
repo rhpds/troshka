@@ -1,4 +1,5 @@
 import logging
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -16,6 +17,9 @@ from app.services.template_loader import (
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["templates"])
 
+CurrentUser = Annotated[User, Depends(get_current_user)]
+DbSession = Annotated[Session, Depends(get_db)]
+
 
 class DeployTemplateRequest(BaseModel):
     template: str
@@ -27,11 +31,18 @@ class DeployTemplateRequest(BaseModel):
     auto_start: bool = True
 
 
-@router.post("/deploy-template", status_code=201)
+@router.post(
+    "/deploy-template",
+    status_code=201,
+    responses={
+        400: {"description": "Bad request"},
+        409: {"description": "Conflict"},
+    },
+)
 def deploy_template(
     body: DeployTemplateRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     try:
         resolved = resolve_template(

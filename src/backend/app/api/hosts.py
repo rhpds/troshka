@@ -1,8 +1,8 @@
 import logging
 import os
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,18 @@ from app.services.provisioner import resize_instance
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/hosts", tags=["hosts"])
 
+# S1192 string constants
+_HOST_NOT_FOUND = "Host not found"
+_TROSHKAD_SCRIPT = "troshkad.py"
+_STORED_CREDS_MSG = "Stored troshkad credentials for host %s"
+_NO_SSH_KEY = "No SSH key stored for this host"
+
+# S8410 annotated type aliases
+OperatorUser = Annotated[User, Depends(require_role("operator"))]
+AdminUser = Annotated[User, Depends(require_role("admin"))]
+DbSession = Annotated[Session, Depends(get_db)]
+HostIdPath = Annotated[str, Path()]
+
 
 def _store_agent_credentials(h, result):
     """Store troshkad credentials from agent install result on the host record."""
@@ -25,7 +37,7 @@ def _store_agent_credentials(h, result):
         if creds.get("token"):
             h.agent_token = creds["token"]
             h.agent_cert_fingerprint = creds.get("fingerprint", "")
-            logger.info("Stored troshkad credentials for host %s", h.id[:8])
+            logger.info(_STORED_CREDS_MSG, h.id[:8])
 
 
 def _detach_install_iso(host, db_session):
@@ -83,7 +95,7 @@ def get_expected_agent_version():
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         ),
         "troshkad",
-        "troshkad.py",
+        _TROSHKAD_SCRIPT,
     )
     with open(troshkad_path, "rb") as f:
         return {"version": hashlib.sha256(f.read()).hexdigest()[:12]}
@@ -99,9 +111,9 @@ def get_overcommit():
 
 @router.get("/", response_model=list[HostResponse])
 def list_hosts(
-    region: str | None = None,
-    user: User = Depends(require_role("operator")),
-    db: Session = Depends(get_db),
+    user: OperatorUser,
+    db: DbSession,
+    region: Annotated[str | None, Query()] = None,
 ):
     from app.services.eip_service import get_host_eip_usage
     from app.services.placement import sync_host_capacity
@@ -246,9 +258,7 @@ def _get_troshkad_storage(host: Host) -> dict[str, Any] | None:
 
 
 @router.get("/storage")
-def host_storage(
-    user: User = Depends(require_role("operator")), db: Session = Depends(get_db)
-):
+def host_storage(user: OperatorUser, db: DbSession):
     """Get live disk usage for all active hosts."""
     hosts = (
         db.query(Host)
@@ -270,9 +280,7 @@ def host_storage(
 
 
 @router.get("/summary")
-def host_summary(
-    user: User = Depends(require_role("operator")), db: Session = Depends(get_db)
-):
+def host_summary(user: OperatorUser, db: DbSession):
     """Summary of host pool by region."""
     from app.services.placement import get_allocatable
 
@@ -309,14 +317,8 @@ def host_summary(
     return list(regions.values())
 
 
-@router.post("/", response_model=HostResponse, status_code=201)
-def add_host(
-    body: ProvisionRequest,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
-):
-    """Provision a new host and add it to the pool."""
-    provider = db.query(Provider).filter_by(id=body.provider_id).first()
+def _validate_provider(provider: Provider | None, body) -> Provider:
+    """Validate that provider exists, is active, and properly configured."""
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
     if provider.state != "active":
@@ -332,41 +334,75 @@ def add_host(
                 status_code=400,
                 detail="No VPC configured — run Setup VPC on the provider first",
             )
+    return provider
 
-    pool = None
-    subnet_override = None
-    if body.storage_pool_id:
-        from app.models.storage_pool import StoragePool
 
-        pool = db.get(StoragePool, body.storage_pool_id)
-        if not pool:
-            raise HTTPException(status_code=404, detail="Storage pool not found")
-        if pool.provider_id != provider.id:
-            raise HTTPException(
-                status_code=400, detail="Pool belongs to a different provider"
-            )
-        if pool.mode.startswith("shared") and pool.status != "available":
-            raise HTTPException(
-                status_code=400, detail=f"Pool is not available (status: {pool.status})"
-            )
-        subnet_override = pool.subnet_id
+def _validate_and_get_pool(
+    body, provider: Provider, db: DbSession
+) -> tuple[Any | None, str | None]:
+    """Validate storage pool and return (pool, subnet_override)."""
+    if not body.storage_pool_id:
+        return None, None
+
+    from app.models.storage_pool import StoragePool
+
+    pool = db.get(StoragePool, body.storage_pool_id)
+    if not pool:
+        raise HTTPException(status_code=404, detail="Storage pool not found")
+    if pool.provider_id != provider.id:
+        raise HTTPException(
+            status_code=400, detail="Pool belongs to a different provider"
+        )
+    if pool.mode.startswith("shared") and pool.status != "available":
+        raise HTTPException(
+            status_code=400, detail=f"Pool is not available (status: {pool.status})"
+        )
+    return pool, pool.subnet_id
+
+
+def _build_nfs_kwargs(pool) -> dict[str, Any]:
+    """Build NFS configuration dict from storage pool."""
+    if not pool:
+        return {}
+    if pool.mode == "shared-fsx" and pool.fsx_dns_name:
+        return {"nfs_server": pool.fsx_dns_name, "nfs_path": "/fsx"}
+    if pool.mode in ("shared-byo", "shared-ceph-nfs") and pool.nfs_endpoint:
+        parts = pool.nfs_endpoint.split(":", 1)
+        kwargs = {
+            "nfs_server": parts[0],
+            "nfs_path": parts[1] if len(parts) > 1 else "/",
+        }
+        if pool.nfs_port:
+            kwargs["nfs_port"] = pool.nfs_port
+        return kwargs
+    return {}
+
+
+@router.post(
+    "/",
+    response_model=HostResponse,
+    status_code=201,
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Not found"},
+    },
+)
+def add_host(
+    body: ProvisionRequest,
+    user: AdminUser,
+    db: DbSession,
+):
+    """Provision a new host and add it to the pool."""
+    provider = db.query(Provider).filter_by(id=body.provider_id).first()
+    provider = _validate_provider(provider, body)
+    pool, subnet_override = _validate_and_get_pool(body, provider, db)
 
     region = body.region or provider.default_region
     if not region and provider.type == "ocpvirt":
         region = provider.name
     provider.get_credentials()
 
-    nfs_kwargs: dict[str, Any] = {}
-    if pool and pool.mode == "shared-fsx" and pool.fsx_dns_name:
-        nfs_kwargs = {"nfs_server": pool.fsx_dns_name, "nfs_path": "/fsx"}
-    elif pool and pool.mode in ("shared-byo", "shared-ceph-nfs") and pool.nfs_endpoint:
-        parts = pool.nfs_endpoint.split(":", 1)
-        nfs_kwargs = {
-            "nfs_server": parts[0],
-            "nfs_path": parts[1] if len(parts) > 1 else "/",
-        }
-        if pool.nfs_port:
-            nfs_kwargs["nfs_port"] = pool.nfs_port
+    nfs_kwargs = _build_nfs_kwargs(pool)
 
     import uuid as _uuid
 
@@ -558,7 +594,7 @@ def _verify_and_update_agent_version(h: Host) -> None:
                 )
             ),
             "troshkad",
-            "troshkad.py",
+            _TROSHKAD_SCRIPT,
         )
         with open(troshkad_path, "rb") as f:
             current_hash = hashlib.sha256(f.read()).hexdigest()[:12]
@@ -822,32 +858,43 @@ def _provision_and_install_bg(
         s.close()
 
 
-@router.get("/{host_id}", response_model=HostResponse)
+@router.get(
+    "/{host_id}",
+    response_model=HostResponse,
+    responses={404: {"description": "Host not found"}},
+)
 def get_host(
-    host_id: str,
-    user: User = Depends(require_role("operator")),
-    db: Session = Depends(get_db),
+    host_id: HostIdPath,
+    user: OperatorUser,
+    db: DbSession,
 ):
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     return host
 
 
-@router.post("/{host_id}/install-agent")
+@router.post(
+    "/{host_id}/install-agent",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Host not found"},
+        409: {"description": "Agent install already in progress"},
+    },
+)
 def install_agent(
-    host_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    host_id: HostIdPath,
+    user: AdminUser,
+    db: DbSession,
 ):
     """SSH into the host and install the troshka agent. Runs async."""
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if not host.ip_address:
         raise HTTPException(status_code=400, detail="Host has no IP address")
     if not host.private_key:
-        raise HTTPException(status_code=400, detail="No SSH key stored for this host")
+        raise HTTPException(status_code=400, detail=_NO_SSH_KEY)
     if host.agent_status in ("waiting_ssh", "installing"):
         raise HTTPException(status_code=409, detail="Agent install already in progress")
 
@@ -925,7 +972,7 @@ def _install_bg(h_id: str, h_ip: str, h_key: str):
         if creds.get("token") and creds.get("fingerprint"):
             h.agent_token = creds["token"]
             h.agent_cert_fingerprint = creds["fingerprint"]
-            logger.info("Stored troshkad credentials for host %s", h.id[:8])
+            logger.info(_STORED_CREDS_MSG, h.id[:8])
 
         # Verify agent version and push update if source changed during reinstall
         if result["success"]:
@@ -950,18 +997,21 @@ def _install_bg(h_id: str, h_ip: str, h_key: str):
     return {"status": "installing"}
 
 
-@router.get("/{host_id}/ssh-key")
+@router.get(
+    "/{host_id}/ssh-key",
+    responses={404: {"description": "Host or SSH key not found"}},
+)
 def get_ssh_key(
-    host_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    host_id: HostIdPath,
+    user: AdminUser,
+    db: DbSession,
 ):
     """Get the SSH private and public key for a host."""
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if not host.private_key:
-        raise HTTPException(status_code=404, detail="No SSH key stored for this host")
+        raise HTTPException(status_code=404, detail=_NO_SSH_KEY)
 
     ssh_user = "ec2-user"
     ssh_port = 22
@@ -1000,20 +1050,23 @@ def get_ssh_key(
     return result
 
 
-@router.get("/{host_id}/ssh-key/download")
+@router.get(
+    "/{host_id}/ssh-key/download",
+    responses={404: {"description": "Host or SSH key not found"}},
+)
 def download_ssh_key(
-    host_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    host_id: HostIdPath,
+    user: AdminUser,
+    db: DbSession,
 ):
     """Download the SSH private key as a file."""
     from fastapi.responses import Response
 
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if not host.private_key:
-        raise HTTPException(status_code=404, detail="No SSH key stored for this host")
+        raise HTTPException(status_code=404, detail=_NO_SSH_KEY)
 
     filename = f"{host.key_pair_name or host_id}.txt"
     return Response(
@@ -1023,16 +1076,23 @@ def download_ssh_key(
     )
 
 
-@router.post("/{host_id}/poweroff")
+@router.post(
+    "/{host_id}/poweroff",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Host not found"},
+        409: {"description": "Host has running projects"},
+    },
+)
 def poweroff_host(
-    host_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    host_id: HostIdPath,
+    user: AdminUser,
+    db: DbSession,
 ):
     """Stop the EC2 instance without terminating it."""
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if not host.instance_id:
         raise HTTPException(status_code=400, detail="No instance ID")
     # Check for running projects (not just allocated — stopped projects are OK to power off)
@@ -1099,17 +1159,25 @@ class PowerOnRequest(BaseModel):
     instance_type: str | None = None
 
 
-@router.post("/{host_id}/poweron")
+@router.post(
+    "/{host_id}/poweron",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Host not found"},
+        409: {"description": "Host must be stopped to resize"},
+        500: {"description": "Failed to resize instance"},
+    },
+)
 def poweron_host(
-    host_id: str,
+    host_id: HostIdPath,
+    user: AdminUser,
+    db: DbSession,
     body: PowerOnRequest | None = None,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
 ):
     """Start a stopped EC2 instance, optionally changing instance type first."""
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if not host.instance_id:
         raise HTTPException(status_code=400, detail="No instance ID")
 
@@ -1241,7 +1309,7 @@ def _reinstall_agent_after_poweron(h: Host, s: Session) -> dict | None:
     if troshkad_creds.get("token") and troshkad_creds.get("fingerprint"):
         h.agent_token = troshkad_creds["token"]
         h.agent_cert_fingerprint = troshkad_creds["fingerprint"]
-        logger.info("Stored troshkad credentials for host %s", h.id[:8])
+        logger.info(_STORED_CREDS_MSG, h.id[:8])
 
     s.commit()
     return result
@@ -1312,17 +1380,25 @@ def _wait_and_reinstall_bg(host_id: str, instance_id: str, provider_id: str):
     return {"status": "starting"}
 
 
-@router.post("/{host_id}/resize")
+@router.post(
+    "/{host_id}/resize",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Host not found"},
+        409: {"description": "Host must be stopped to resize"},
+        500: {"description": "Failed to resize instance"},
+    },
+)
 def resize_host(
-    host_id: str,
+    host_id: HostIdPath,
     body: dict,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Change the instance type of a stopped host."""
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if host.state != "stopped":
         raise HTTPException(status_code=409, detail="Host must be stopped to resize")
     new_type = body.get("instance_type")
@@ -1363,18 +1439,10 @@ def resize_host(
     }
 
 
-@router.post("/{host_id}/resize-storage")
-def resize_storage(
-    host_id: str,
-    body: dict,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
-):
-    """Grow the dedicated EBS storage volume. XFS supports online resize."""
-    host = db.query(Host).filter_by(id=host_id).first()
+def _validate_resize_request(host: Host | None, new_size) -> tuple[Host, int]:
+    """Validate host exists and resize parameters are valid. Returns (host, validated_size)."""
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
-    new_size = body.get("size_gb")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if not new_size or not isinstance(new_size, int) or new_size < 1:
         raise HTTPException(status_code=400, detail="size_gb is required (integer)")
     if new_size <= host.storage_size_gb:
@@ -1386,20 +1454,11 @@ def resize_storage(
         raise HTTPException(
             status_code=400, detail="No instance associated — cannot resize"
         )
+    return host, new_size
 
-    provider = host.provider
-    if not provider or provider.type != "ec2":
-        raise HTTPException(
-            status_code=400,
-            detail="Storage resize via this endpoint is only supported for AWS EC2 hosts",
-        )
-    creds = provider.get_credentials()
 
-    from app.services.provisioner import _get_ec2_client
-
-    ec2 = _get_ec2_client(credentials=creds)
-
-    # Find the data volume (not root)
+def _get_ec2_data_volume(ec2, host: Host) -> str:
+    """Find and return the EBS data volume ID for a host."""
     volumes = ec2.describe_volumes(
         Filters=[
             {"Name": "attachment.instance-id", "Values": [host.instance_id]},
@@ -1411,8 +1470,11 @@ def resize_storage(
             status_code=404,
             detail="No data volume found on instance. Was it provisioned with dedicated storage?",
         )
+    return volumes["Volumes"][0]["VolumeId"]
 
-    vol_id = volumes["Volumes"][0]["VolumeId"]
+
+def _modify_ebs_volume(ec2, vol_id: str, new_size: int) -> None:
+    """Modify EBS volume size, handling optimization errors."""
     try:
         ec2.modify_volume(VolumeId=vol_id, Size=new_size)
     except Exception as e:
@@ -1428,16 +1490,55 @@ def resize_storage(
             detail="Failed to resize EBS volume. Check server logs for details.",
         )
 
-    # Grow the filesystem on the host (XFS online grow)
-    if host.ip_address and host.agent_status == "connected":
-        from app.services.troshkad_client import start_job, wait_for_job
 
-        job_id = start_job(host, "/host/resize-storage", {})
-        job = wait_for_job(host, job_id, timeout=30)
-        if job["status"] == "failed":
-            raise HTTPException(
-                status_code=500, detail=job["result"].get("error", "Resize failed")
-            )
+def _grow_host_filesystem(host: Host) -> None:
+    """Grow the XFS filesystem on a connected host."""
+    if not (host.ip_address and host.agent_status == "connected"):
+        return
+
+    from app.services.troshkad_client import start_job, wait_for_job
+
+    job_id = start_job(host, "/host/resize-storage", {})
+    job = wait_for_job(host, job_id, timeout=30)
+    if job["status"] == "failed":
+        raise HTTPException(
+            status_code=500, detail=job["result"].get("error", "Resize failed")
+        )
+
+
+@router.post(
+    "/{host_id}/resize-storage",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Host or volume not found"},
+        409: {"description": "EBS volume still optimizing"},
+        500: {"description": "Failed to resize volume"},
+    },
+)
+def resize_storage(
+    host_id: HostIdPath,
+    body: dict,
+    user: AdminUser,
+    db: DbSession,
+):
+    """Grow the dedicated EBS storage volume. XFS supports online resize."""
+    host_query = db.query(Host).filter_by(id=host_id).first()
+    host, new_size = _validate_resize_request(host_query, body.get("size_gb"))
+
+    provider = host.provider
+    if not provider or provider.type != "ec2":
+        raise HTTPException(
+            status_code=400,
+            detail="Storage resize via this endpoint is only supported for AWS EC2 hosts",
+        )
+    creds = provider.get_credentials()
+
+    from app.services.provisioner import _get_ec2_client
+
+    ec2 = _get_ec2_client(credentials=creds)
+    vol_id = _get_ec2_data_volume(ec2, host)
+    _modify_ebs_volume(ec2, vol_id, new_size)
+    _grow_host_filesystem(host)
 
     old_size = host.storage_size_gb
     host.storage_size_gb = new_size
@@ -1450,17 +1551,23 @@ def resize_storage(
     }
 
 
-@router.post("/{host_id}/extend-storage")
+@router.post(
+    "/{host_id}/extend-storage",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Host not found"},
+    },
+)
 def extend_storage(
-    host_id: str,
+    host_id: HostIdPath,
+    user: AdminUser,
+    db: DbSession,
     body: dict | None = None,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
 ):
     """Auto-extend the host's storage volume by the configured increment."""
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if not host.instance_id:
         raise HTTPException(status_code=400, detail="No instance associated")
 
@@ -1483,16 +1590,22 @@ def extend_storage(
     return result
 
 
-@router.patch("/{host_id}")
+@router.patch(
+    "/{host_id}",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Host not found"},
+    },
+)
 def update_host(
-    host_id: str,
+    host_id: HostIdPath,
     body: dict,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     allowed = {
         "auto_extend_enabled": bool,
         "auto_extend_threshold_pct": int,
@@ -1588,16 +1701,24 @@ def _terminate_host_instance(db: Session, host: Host, creds: dict | None) -> Non
         )
 
 
-@router.delete("/{host_id}", status_code=204)
+@router.delete(
+    "/{host_id}",
+    status_code=204,
+    responses={
+        404: {"description": "Host not found"},
+        409: {"description": "Host has running projects"},
+        500: {"description": "Failed to terminate host"},
+    },
+)
 def remove_host(
-    host_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    host_id: HostIdPath,
+    user: AdminUser,
+    db: DbSession,
 ):
     """Terminate the EC2 instance and remove the host from the pool."""
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
 
     if host.host_type == "kubevirt-cluster":
         db.delete(host)
@@ -1702,32 +1823,41 @@ def _wait_terminated_bg(host_id: str, instance_id: str, provider_id: str):
         s.close()
 
 
-@router.get("/{host_id}/gc/preview")
+@router.get(
+    "/{host_id}/gc/preview",
+    responses={404: {"description": "Host not found"}},
+)
 def gc_preview(
-    host_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    host_id: HostIdPath,
+    user: AdminUser,
+    db: DbSession,
 ):
     """Dry-run garbage collection — show what would be cleaned."""
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
 
     from app.services.gc_service import reconcile_host
 
     return reconcile_host(host_id, dry_run=True)
 
 
-@router.post("/{host_id}/gc")
+@router.post(
+    "/{host_id}/gc",
+    responses={
+        400: {"description": "Host must be active with agent connected"},
+        404: {"description": "Host not found"},
+    },
+)
 def gc_run(
-    host_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    host_id: HostIdPath,
+    user: AdminUser,
+    db: DbSession,
 ):
     """Run garbage collection on a host."""
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if not host.ip_address or host.agent_status != "connected":
         raise HTTPException(
             status_code=400, detail="Host must be active with agent connected"
@@ -1738,20 +1868,113 @@ def gc_run(
     return reconcile_host(host_id, dry_run=False)
 
 
-@router.post("/{host_id}/wipe")
+def _destroy_active_project(project, results: dict) -> None:
+    """Destroy an active or stopped project during wipe."""
+    from app.services.deploy_service import destroy_project_sync
+
+    try:
+        destroy_project_sync(
+            {
+                "project_id": project.id,
+                "host_id": project.host_id,
+                "vni_map": project.vni_map or {},
+                "topology": project.deployed_topology or project.topology or {},
+                "dns_provider_id": project.dns_provider_id,
+                "domain": project.domain,
+            }
+        )
+        results["projects_destroyed"] += 1
+    except Exception:
+        logger.warning("Failed to destroy project %s during wipe", project.id[:8])
+
+
+def _teardown_partial_project(project, host: Host) -> None:
+    """Teardown networks and files for a deploying/error project during wipe."""
+    from app.services.deploy_service import _teardown_networks_via_troshkad
+    from app.services.troshkad_client import start_job, wait_for_job
+
+    try:
+        _teardown_networks_via_troshkad(host, project.id, project.vni_map)
+        jid = start_job(
+            host, "/files/remove", {"paths": [f"/var/lib/troshka/vms/{project.id}"]}
+        )
+        wait_for_job(host, jid, timeout=15)
+    except Exception:
+        logger.warning("Failed to teardown project %s during wipe", project.id[:8])
+
+
+def _reset_project_to_draft(project) -> None:
+    """Reset a project to draft state, clearing deploy state."""
+    project.state = "draft"
+    project.deploy_error = None
+    project.deployed_topology = None
+
+
+def _gc_discover_orphans(host: Host):
+    """Run GC discovery to find orphaned resources. Returns orphans dict or None."""
+    from app.services.troshkad_client import start_job, wait_for_job
+
+    job_id = start_job(
+        host,
+        "/gc/discover",
+        {
+            "known_project_ids": [],
+            "known_domains": [],
+        },
+    )
+    job = wait_for_job(host, job_id, timeout=30)
+    if job["status"] == "completed":
+        return job["result"]
+    return None
+
+
+def _gc_clean_orphans(host: Host, orphans: dict) -> dict:
+    """Run GC cleanup on discovered orphans. Returns cleanup result."""
+    from app.services.troshkad_client import start_job, wait_for_job
+
+    job_id = start_job(
+        host,
+        "/gc/clean",
+        {
+            "orphan_dirs": orphans.get("orphan_dirs", []),
+            "orphan_domains": orphans.get("orphan_domains", []),
+            "orphan_bridges": orphans.get("orphan_bridges", []),
+            "orphan_namespaces": orphans.get("orphan_namespaces", []),
+            "cache_items": [],
+        },
+    )
+    cleanup_job = wait_for_job(host, job_id, timeout=120)
+    return cleanup_job.get("result", {})
+
+
+def _nft_reset(host: Host, results: dict) -> None:
+    """Flush all troshka nftables chains from host namespace."""
+    from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
+
+    try:
+        nft_job_id = start_job(host, "/host/nft-reset", {})
+        nft_job = wait_for_job(host, nft_job_id, timeout=15)
+        results["nft_reset"] = nft_job.get("result", {})
+    except TroshkadError:
+        pass
+
+
+@router.post(
+    "/{host_id}/wipe",
+    responses={404: {"description": "Host not found"}},
+)
 def wipe_host(
-    host_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    host_id: HostIdPath,
+    user: AdminUser,
+    db: DbSession,
 ):
     """Destroy all projects on a host and clean up all resources. Nuclear option."""
     from app.models.project import Project
-    from app.services.deploy_service import destroy_project_sync
-    from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
+    from app.services.troshkad_client import TroshkadError
 
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
 
     results: dict[str, Any] = {
         "projects_reset": 0,
@@ -1762,71 +1985,19 @@ def wipe_host(
     projects = db.query(Project).filter_by(host_id=host_id).all()
     for p in projects:
         if p.state in ("active", "stopped"):
-            try:
-                destroy_project_sync(
-                    {
-                        "project_id": p.id,
-                        "host_id": p.host_id,
-                        "vni_map": p.vni_map or {},
-                        "topology": p.deployed_topology or p.topology or {},
-                        "dns_provider_id": p.dns_provider_id,
-                        "domain": p.domain,
-                    }
-                )
-                results["projects_destroyed"] += 1
-            except Exception:
-                logger.warning("Failed to destroy project %s during wipe", p.id[:8])
+            _destroy_active_project(p, results)
         elif p.state in ("deploying", "error") and p.vni_map:
-            try:
-                from app.services.deploy_service import _teardown_networks_via_troshkad
-
-                _teardown_networks_via_troshkad(host, p.id, p.vni_map)
-                jid = start_job(
-                    host, "/files/remove", {"paths": [f"/var/lib/troshka/vms/{p.id}"]}
-                )
-                wait_for_job(host, jid, timeout=15)
-            except Exception:
-                logger.warning("Failed to teardown project %s during wipe", p.id[:8])
-        p.state = "draft"
-        p.deploy_error = None
-        p.deployed_topology = None
+            _teardown_partial_project(p, host)
+        _reset_project_to_draft(p)
         results["projects_reset"] += 1
     db.commit()
 
     if host.agent_status == "connected" and host.agent_token:
         try:
-            job_id = start_job(
-                host,
-                "/gc/discover",
-                {
-                    "known_project_ids": [],
-                    "known_domains": [],
-                },
-            )
-            job = wait_for_job(host, job_id, timeout=30)
-            if job["status"] == "completed":
-                orphans = job["result"]
-                job_id = start_job(
-                    host,
-                    "/gc/clean",
-                    {
-                        "orphan_dirs": orphans.get("orphan_dirs", []),
-                        "orphan_domains": orphans.get("orphan_domains", []),
-                        "orphan_bridges": orphans.get("orphan_bridges", []),
-                        "orphan_namespaces": orphans.get("orphan_namespaces", []),
-                        "cache_items": [],  # preserve image/pattern cache — only regular GC cleans stale cache
-                    },
-                )
-                cleanup_job = wait_for_job(host, job_id, timeout=120)
-                results["cleanup"] = cleanup_job.get("result", {})
-
-            # Flush all troshka nftables chains from host namespace
-            try:
-                nft_job_id = start_job(host, "/host/nft-reset", {})
-                nft_job = wait_for_job(host, nft_job_id, timeout=15)
-                results["nft_reset"] = nft_job.get("result", {})
-            except TroshkadError:
-                pass
+            orphans = _gc_discover_orphans(host)
+            if orphans:
+                results["cleanup"] = _gc_clean_orphans(host, orphans)
+            _nft_reset(host, results)
         except TroshkadError as e:
             results["cleanup"] = {"error": str(e)}
 
@@ -1838,17 +2009,25 @@ def wipe_host(
     return results
 
 
-@router.post("/{host_id}/update-agent")
+@router.post(
+    "/{host_id}/update-agent",
+    responses={
+        400: {"description": "Agent not connected or no credentials"},
+        404: {"description": "Host not found"},
+        409: {"description": "Deploy in progress"},
+        500: {"description": "troshkad.py not found on server"},
+    },
+)
 def update_agent(
-    host_id: str,
-    force: bool = False,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    host_id: HostIdPath,
+    user: AdminUser,
+    db: DbSession,
+    force: Annotated[bool, Query()] = False,
 ):
     """Push a troshkad update to a host."""
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if host.agent_status != "connected":
         raise HTTPException(status_code=400, detail="Agent not connected")
     if not host.agent_token:
@@ -1879,7 +2058,7 @@ def update_agent(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         ),
         "troshkad",
-        "troshkad.py",
+        _TROSHKAD_SCRIPT,
     )
     if not os.path.exists(troshkad_path):
         raise HTTPException(status_code=500, detail="troshkad.py not found on server")
@@ -1973,7 +2152,7 @@ def _push_bg(host_id: str, script_bytes: bytes, version: str, force: bool):
             push_update(h, script_bytes, version, force=force)
             _poll_agent_after_update(h, s, old_version)
         except TroshkadError as e:
-            logger.error("Host %s update failed: %s", host_id[:8], e)
+            logger.exception("Host %s update failed: %s", host_id[:8], e)
     except Exception:
         logger.exception("Update agent failed for host %s", host_id)
     finally:
@@ -1990,9 +2169,9 @@ def _push_bg(host_id: str, script_bytes: bytes, version: str, force: bool):
     },
 )
 def evacuate_host_endpoint(
-    host_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    host_id: HostIdPath,
+    user: AdminUser,
+    db: DbSession,
 ):
     from app.models.project import Project
     from app.models.storage_pool import StoragePool
@@ -2000,15 +2179,17 @@ def evacuate_host_endpoint(
 
     host = db.get(Host, host_id)
     if not host:
-        raise HTTPException(404, "Host not found")
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if not host.storage_pool_id:
-        raise HTTPException(400, "Host is not in a storage pool")
+        raise HTTPException(status_code=400, detail="Host is not in a storage pool")
 
     pool = db.get(StoragePool, host.storage_pool_id)
     if not pool:
-        raise HTTPException(400, "Storage pool not found")
+        raise HTTPException(status_code=400, detail="Storage pool not found")
     if pool.mode == "local":
-        raise HTTPException(400, "Cannot evacuate hosts in local-mode pools")
+        raise HTTPException(
+            status_code=400, detail="Cannot evacuate hosts in local-mode pools"
+        )
 
     project_count = (
         db.query(Project)
@@ -2016,7 +2197,7 @@ def evacuate_host_endpoint(
         .count()
     )
     if project_count == 0:
-        raise HTTPException(400, "No active projects to evacuate")
+        raise HTTPException(status_code=400, detail="No active projects to evacuate")
 
     evacuate_host(host_id)
     return {"status": "evacuating", "host_id": host_id, "project_count": project_count}

@@ -91,18 +91,16 @@ class Project(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+    _CASCADE = "all, delete-orphan"
+
     owner: Mapped[User] = relationship(back_populates="projects")
-    vms: Mapped[list[VM]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
+    vms: Mapped[list[VM]] = relationship(back_populates="project", cascade=_CASCADE)
     networks: Mapped[list[Network]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
+        back_populates="project", cascade=_CASCADE
     )
-    disks: Mapped[list[Disk]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
-    )
+    disks: Mapped[list[Disk]] = relationship(back_populates="project", cascade=_CASCADE)
     shares: Mapped[list[ProjectShare]] = relationship(
-        back_populates="project", cascade="all, delete-orphan"
+        back_populates="project", cascade=_CASCADE
     )
 
 

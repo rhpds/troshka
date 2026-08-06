@@ -21,16 +21,10 @@ def _get_ec2_client(provider):
     )
 
 
-def _gc_orphan_eips(db: Session, provider, ec2, dry_run: bool) -> dict:
-    """Find and release Troshka-tagged EIPs whose project no longer exists."""
-    result = ec2.describe_addresses(
-        Filters=[
-            {"Name": "tag:ManagedBy", "Values": ["troshka"]},
-        ]
-    )
-
+def _find_orphan_addresses(db: Session, addresses: list) -> list:
+    """Return addresses whose troshka-project-id tag is missing or has no matching project."""
     orphans = []
-    for addr in result.get("Addresses", []):
+    for addr in addresses:
         tags = {t["Key"]: t["Value"] for t in addr.get("Tags", [])}
         project_id = tags.get("troshka-project-id", "")
         if not project_id:
@@ -39,30 +33,48 @@ def _gc_orphan_eips(db: Session, provider, ec2, dry_run: bool) -> dict:
         project = db.query(Project).filter_by(id=project_id).first()
         if not project:
             orphans.append(addr)
+    return orphans
+
+
+def _release_orphan_address(ec2, db: Session, addr: dict, dry_run: bool) -> bool:
+    """Release a single orphan EIP. Returns True if released, False if dry-run."""
+    alloc_id = addr["AllocationId"]
+    if dry_run:
+        logger.info(
+            "GC dry-run: would release orphan EIP %s (%s)",
+            alloc_id,
+            addr.get("PublicIp"),
+        )
+        return False
+
+    if addr.get("AssociationId"):
+        try:
+            ec2.disassociate_address(AssociationId=addr["AssociationId"])
+        except Exception:
+            logger.warning("Failed to disassociate orphan EIP %s", alloc_id)
+
+    ec2.release_address(AllocationId=alloc_id)
+    db_eip = db.query(ElasticIp).filter_by(allocation_id=alloc_id).first()
+    if db_eip:
+        db.delete(db_eip)
+    logger.info("GC: released orphan EIP %s (%s)", alloc_id, addr.get("PublicIp"))
+    return True
+
+
+def _gc_orphan_eips(db: Session, provider, ec2, dry_run: bool) -> dict:
+    """Find and release Troshka-tagged EIPs whose project no longer exists."""
+    result = ec2.describe_addresses(
+        Filters=[
+            {"Name": "tag:ManagedBy", "Values": ["troshka"]},
+        ]
+    )
+
+    orphans = _find_orphan_addresses(db, result.get("Addresses", []))
 
     released = 0
     for addr in orphans:
-        alloc_id = addr["AllocationId"]
-        if dry_run:
-            logger.info(
-                "GC dry-run: would release orphan EIP %s (%s)",
-                alloc_id,
-                addr.get("PublicIp"),
-            )
-            continue
-
-        if addr.get("AssociationId"):
-            try:
-                ec2.disassociate_address(AssociationId=addr["AssociationId"])
-            except Exception:
-                logger.warning("Failed to disassociate orphan EIP %s", alloc_id)
-
-        ec2.release_address(AllocationId=alloc_id)
-        db_eip = db.query(ElasticIp).filter_by(allocation_id=alloc_id).first()
-        if db_eip:
-            db.delete(db_eip)
-        released += 1
-        logger.info("GC: released orphan EIP %s (%s)", alloc_id, addr.get("PublicIp"))
+        if _release_orphan_address(ec2, db, addr, dry_run):
+            released += 1
 
     db.commit()
 
@@ -101,6 +113,30 @@ def _gc_orphan_eips(db: Session, provider, ec2, dry_run: bool) -> dict:
     }
 
 
+def _find_stale_pf_rules(db: Session, perms: list) -> list:
+    """Find port-forward SG rules whose project no longer exists or is inactive."""
+    stale_rules = []
+    for perm in perms:
+        for ip_range in perm.get("IpRanges", []):
+            desc = ip_range.get("Description", "")
+            if not desc.startswith("troshka-pf:"):
+                continue
+            parts = desc.split(":")
+            if len(parts) < 2:
+                continue
+            project_id = parts[1]
+            project = db.query(Project).filter_by(id=project_id).first()
+            if not project or project.state not in ("active", "deploying"):
+                stale_rules.append(
+                    {
+                        "protocol": perm["IpProtocol"],
+                        "port": perm["FromPort"],
+                        "description": desc,
+                    }
+                )
+    return stale_rules
+
+
 def _gc_stale_sg_rules(db: Session, provider, ec2, dry_run: bool) -> dict:
     """Remove SG ingress rules for projects that no longer exist."""
     if not provider.security_group_id:
@@ -109,24 +145,7 @@ def _gc_stale_sg_rules(db: Session, provider, ec2, dry_run: bool) -> dict:
     sg = ec2.describe_security_groups(GroupIds=[provider.security_group_id])
     current_perms = sg["SecurityGroups"][0]["IpPermissions"]
 
-    stale_rules = []
-    for perm in current_perms:
-        for ip_range in perm.get("IpRanges", []):
-            desc = ip_range.get("Description", "")
-            if not desc.startswith("troshka-pf:"):
-                continue
-            parts = desc.split(":")
-            if len(parts) >= 2:
-                project_id = parts[1]
-                project = db.query(Project).filter_by(id=project_id).first()
-                if not project or project.state not in ("active", "deploying"):
-                    stale_rules.append(
-                        {
-                            "protocol": perm["IpProtocol"],
-                            "port": perm["FromPort"],
-                            "description": desc,
-                        }
-                    )
+    stale_rules = _find_stale_pf_rules(db, current_perms)
 
     removed = 0
     if stale_rules and not dry_run:

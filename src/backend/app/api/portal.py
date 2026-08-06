@@ -1,4 +1,5 @@
 import logging
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
@@ -13,6 +14,12 @@ from app.models.user import User
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["portal"])
 
+CurrentUser = Annotated[User, Depends(get_current_user)]
+DbSession = Annotated[Session, Depends(get_db)]
+
+_PROJECT_NOT_FOUND = "Project not found"
+_INVALID_TOKEN = "Invalid or expired portal token"
+
 ACCESS_LEVELS = {"readonly": 0, "power": 1, "console": 2, "manage": 3}
 POWER_ACTIONS = {"start", "stop", "restart", "forcestop"}
 
@@ -22,17 +29,25 @@ class PortalTokenRequest(BaseModel):
     expires_at: str | None = None
 
 
-@router.post("/projects/{project_id}/portal-token", status_code=201)
+@router.post(
+    "/projects/{project_id}/portal-token",
+    status_code=201,
+    responses={
+        400: {"description": "Invalid access level"},
+        403: {"description": "Not authorized"},
+        404: {"description": "Project not found"},
+    },
+)
 def create_portal_token(
     project_id: str,
     body: PortalTokenRequest,
     request: Request,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
-        raise HTTPException(404, "Project not found")
+        raise HTTPException(404, _PROJECT_NOT_FOUND)
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(403, "Not authorized")
     if body.access_level not in ("readonly", "power", "console", "manage"):
@@ -54,19 +69,22 @@ def create_portal_token(
     }
 
 
-@router.get("/portal/{token}")
+@router.get(
+    "/portal/{token}",
+    responses={404: {"description": "Invalid token or project not found"}},
+)
 def get_portal(
     token: str,
-    db: Session = Depends(get_db),
+    db: DbSession,
 ):
     """Public endpoint -- no authentication required. Token is the auth."""
     portal_token = db.query(ProjectPortalToken).filter_by(token=token).first()
     if not portal_token:
-        raise HTTPException(404, "Invalid or expired portal token")
+        raise HTTPException(404, _INVALID_TOKEN)
 
     project = db.query(Project).filter_by(id=portal_token.project_id).first()
     if not project:
-        raise HTTPException(404, "Project not found")
+        raise HTTPException(404, _PROJECT_NOT_FOUND)
 
     topology = project.topology or {}
     hidden = set(topology.get("hiddenNodeIds", []))
@@ -90,15 +108,18 @@ def get_portal(
     }
 
 
-@router.get("/portal/{token}/vm-states")
+@router.get(
+    "/portal/{token}/vm-states",
+    responses={404: {"description": "Invalid or expired portal token"}},
+)
 def portal_vm_states(
     token: str,
-    db: Session = Depends(get_db),
+    db: DbSession,
 ):
     """Public endpoint — get live VM states via portal token."""
     portal_token = db.query(ProjectPortalToken).filter_by(token=token).first()
     if not portal_token:
-        raise HTTPException(404, "Invalid or expired portal token")
+        raise HTTPException(404, _INVALID_TOKEN)
     project = db.query(Project).filter_by(id=portal_token.project_id).first()
     if not project or not project.host_id:
         return {"states": {}}
@@ -135,7 +156,7 @@ def _get_portal_token(
 ) -> tuple[ProjectPortalToken, Project]:
     portal_token = db.query(ProjectPortalToken).filter_by(token=token).first()
     if not portal_token:
-        raise HTTPException(404, "Invalid or expired portal token")
+        raise HTTPException(404, _INVALID_TOKEN)
     if ACCESS_LEVELS.get(portal_token.access_level, 0) < ACCESS_LEVELS.get(
         min_level, 0
     ):
@@ -145,7 +166,7 @@ def _get_portal_token(
         )
     project = db.query(Project).filter_by(id=portal_token.project_id).first()
     if not project:
-        raise HTTPException(404, "Project not found")
+        raise HTTPException(404, _PROJECT_NOT_FOUND)
     return portal_token, project
 
 
@@ -157,12 +178,19 @@ ACTION_MAP = {
 }
 
 
-@router.post("/portal/{token}/vms/{vm_id}/{action}")
+@router.post(
+    "/portal/{token}/vms/{vm_id}/{action}",
+    responses={
+        400: {"description": "Invalid action or project state"},
+        403: {"description": "Insufficient access level"},
+        404: {"description": "Invalid token or project not found"},
+    },
+)
 def portal_vm_action(
     token: str,
     vm_id: str,
     action: str,
-    db: Session = Depends(get_db),
+    db: DbSession,
 ):
     """Public endpoint -- token is the auth. Perform VM power actions via portal."""
     if action not in POWER_ACTIONS:
@@ -189,5 +217,5 @@ def portal_vm_action(
         wait_for_job(host, job_id, timeout=timeout, poll_interval=2)
         return {"action": action, "success": True}
     except TroshkadError as e:
-        logger.error("Portal VM action %s failed for %s: %s", action, dom_name, e)
+        logger.exception("Portal VM action %s failed for %s: %s", action, dom_name, e)
         return {"action": action, "success": False}

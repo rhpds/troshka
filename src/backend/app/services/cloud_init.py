@@ -7,6 +7,7 @@ HTTP metadata service script to run on the host bridge.
 
 import json
 import logging
+import re
 
 from passlib.hash import sha512_crypt as _sha512_crypt_impl  # type: ignore[attr-defined]
 
@@ -18,69 +19,88 @@ def _sha512_crypt(password: str, rounds: int = 5000) -> str:
     return _sha512_crypt_impl.using(rounds=rounds).hash(password)
 
 
-def generate_userdata(vm_data: dict) -> str:
-    """Generate cloud-init user-data YAML for a VM."""
-    lines = ["#cloud-config"]
-
-    hostname = vm_data.get("ciHostname") or vm_data.get("name", "localhost")
-    lines.append(f"hostname: {hostname}")
-    lines.append(f"fqdn: {hostname}")
-
-    # SSH keys — injected for all users
+def _collect_ssh_keys(vm_data: dict) -> list[str]:
+    """Collect and deduplicate SSH keys from vm_data."""
     ssh_keys = vm_data.get("ciSshKeys", [])
     ssh_key = vm_data.get("ciSshKey", "").strip()
-    all_keys = (
-        [k.strip() for k in ssh_keys if k.strip()]
-        if ssh_keys
-        else ([ssh_key] if ssh_key else [])
-    )
-    if all_keys:
-        lines.append("ssh_authorized_keys:")
-        for key in all_keys:
-            lines.append(f"  - {key}")
+    if ssh_keys:
+        return [k.strip() for k in ssh_keys if k.strip()]
+    if ssh_key:
+        return [ssh_key]
+    return []
 
-    # Passwords
+
+def _build_ssh_keys_lines(all_keys: list[str]) -> list[str]:
+    """Build top-level ssh_authorized_keys YAML lines."""
+    if not all_keys:
+        return []
+    lines = ["ssh_authorized_keys:"]
+    for key in all_keys:
+        lines.append(f"  - {key}")
+    return lines
+
+
+def _build_password_lines(
+    vm_data: dict,
+) -> tuple[list[str], str | None, str | None]:
+    """Build chpasswd section and return password hashes."""
     root_pw = vm_data.get("ciRootPassword", "")
     cloud_user_pw = vm_data.get("ciCloudUserPassword", "")
     root_hash = _sha512_crypt(root_pw) if root_pw else None
     cloud_user_hash = _sha512_crypt(cloud_user_pw) if cloud_user_pw else None
 
-    if root_hash or cloud_user_hash:
-        lines.append("ssh_pwauth: true")
-        lines.append("chpasswd:")
-        lines.append("  expire: false")
-        lines.append("  users:")
-        if cloud_user_hash:
-            lines.append("    - name: cloud-user")
-            lines.append(f"      password: {cloud_user_hash}")
-            lines.append("      type: hash")
-        if root_hash:
-            lines.append("    - name: root")
-            lines.append(f"      password: {root_hash}")
-            lines.append("      type: hash")
+    if not root_hash and not cloud_user_hash:
+        return [], root_hash, cloud_user_hash
 
-    # Users — no 'default' entry (it locks passwords on RHEL 10)
-    lines.append("disable_root: false")
-    cloud_user_sudo = vm_data.get("ciCloudUserSudo", True)
-    lines.append("users:")
+    lines: list[str] = [
+        "ssh_pwauth: true",
+        "chpasswd:",
+        "  expire: false",
+        "  users:",
+    ]
+    if cloud_user_hash:
+        lines.extend(
+            [
+                "    - name: cloud-user",
+                f"      password: {cloud_user_hash}",
+                "      type: hash",
+            ]
+        )
     if root_hash:
-        lines.append("  - name: root")
-        lines.append("    lock_passwd: false")
-    lines.append("  - name: cloud-user")
-    lines.append("    lock_passwd: false")
+        lines.extend(
+            [
+                "    - name: root",
+                f"      password: {root_hash}",
+                "      type: hash",
+            ]
+        )
+    return lines, root_hash, cloud_user_hash
+
+
+def _build_users_lines(
+    vm_data: dict,
+    all_keys: list[str],
+    root_hash: str | None,
+    cloud_user_hash: str | None,
+) -> list[str]:
+    """Build the users section."""
+    lines: list[str] = ["disable_root: false", "users:"]
+    if root_hash:
+        lines.extend(["  - name: root", "    lock_passwd: false"])
+    lines.extend(["  - name: cloud-user", "    lock_passwd: false"])
     if cloud_user_hash:
         lines.append(f"    passwd: {cloud_user_hash}")
     if all_keys:
         lines.append("    ssh_authorized_keys:")
         for key in all_keys:
             lines.append(f"      - {key}")
-    if cloud_user_sudo:
-        lines.append("    sudo: ALL=(ALL) NOPASSWD:ALL")
-        lines.append("    groups: wheel")
+    if vm_data.get("ciCloudUserSudo", True):
+        lines.extend(["    sudo: ALL=(ALL) NOPASSWD:ALL", "    groups: wheel"])
+    return lines
 
-    # Packages
-    import re
 
+def _build_packages_and_chrony(vm_data: dict) -> tuple[list[str], list[str]]:
+    """Build packages YAML lines and chrony runcmd lines."""
     _pkg_re = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+\-._]*$")
     ci_packages = [
         p for p in vm_data.get("ciPackages", []) if _pkg_re.fullmatch(str(p))
@@ -89,9 +109,8 @@ def generate_userdata(vm_data: dict) -> str:
         p for p in ci_packages if p != "qemu-guest-agent"
     ]
 
-    # Chrony NTP client config (points at gateway)
     gateway_ip = vm_data.get("gateway_ip")
-    chrony_runcmd_lines = []
+    chrony_runcmd_lines: list[str] = []
     if gateway_ip:
         if "chrony" not in all_packages:
             all_packages.append("chrony")
@@ -100,20 +119,22 @@ def generate_userdata(vm_data: dict) -> str:
         )
         chrony_runcmd_lines.append("  - systemctl restart chronyd 2>/dev/null || true")
 
+    pkg_lines: list[str] = []
     if all_packages:
-        lines.append("packages:")
+        pkg_lines.append("packages:")
         for pkg in all_packages:
-            lines.append(f"  - {pkg}")
+            pkg_lines.append(f"  - {pkg}")
 
-    # Prevent cloud-init from regenerating SSH host keys on pattern deploys
-    lines.append("ssh_deletekeys: false")
-    # bootcmd runs on EVERY boot regardless of instance-id — use it for
-    # config that must apply on pattern redeploys where runcmd is skipped
-    lines.append("bootcmd:")
-    lines.append(
-        "  - mkdir -p /etc/systemd/system/sshd.service.d && printf '[Unit]\\nStartLimitBurst=20\\n' > /etc/systemd/system/sshd.service.d/restart-limit.conf && systemctl daemon-reload 2>/dev/null || true"
-    )
-    # Inject exec SSH key: remove stale troshka-exec keys, add current one
+    return pkg_lines, chrony_runcmd_lines
+
+
+def _build_bootcmd_lines(all_keys: list[str]) -> list[str]:
+    """Build bootcmd section for every-boot config."""
+    lines = [
+        "ssh_deletekeys: false",
+        "bootcmd:",
+        "  - mkdir -p /etc/systemd/system/sshd.service.d && printf '[Unit]\\nStartLimitBurst=20\\n' > /etc/systemd/system/sshd.service.d/restart-limit.conf && systemctl daemon-reload 2>/dev/null || true",
+    ]
     exec_key = next((k for k in all_keys if "troshka-exec" in k), None)
     if exec_key:
         lines.append(
@@ -122,28 +143,42 @@ def generate_userdata(vm_data: dict) -> str:
     lines.append(
         "  - printf 'PasswordAuthentication yes\\nPerSourcePenaltyExemptList 10.0.0.0/8\\n' > /etc/ssh/sshd_config.d/50-cloud-init.conf"
     )
+    return lines
 
-    # Custom user-data — split into top-level sections and runcmd items
+
+def _parse_custom_userdata(vm_data: dict) -> tuple[list[str], list[str]]:
+    """Parse custom user-data into top-level lines and runcmd items."""
     custom = vm_data.get("ciUserData", "").strip()
-    custom_runcmd_lines = []
-    if custom:
-        in_runcmd = False
-        for line in custom.split("\n"):
-            stripped = line.strip()
-            if stripped == "runcmd:":
-                in_runcmd = True
-                continue
-            if in_runcmd:
-                if line.startswith("  ") or line.startswith("\t"):
-                    custom_runcmd_lines.append(line)
-                elif stripped and not stripped.startswith("#"):
-                    in_runcmd = False
-                    lines.append(line)
-            elif stripped and not stripped.startswith("#cloud-config"):
-                lines.append(line)
+    top_lines: list[str] = []
+    runcmd_lines: list[str] = []
+    if not custom:
+        return top_lines, runcmd_lines
 
-    # runcmd — runs on first boot only (skipped on pattern redeploys where instance-id matches)
-    lines.append("runcmd:")
+    in_runcmd = False
+    for line in custom.split("\n"):
+        stripped = line.strip()
+        if stripped == "runcmd:":
+            in_runcmd = True
+            continue
+        if in_runcmd:
+            if line.startswith(("  ", "\t")):
+                runcmd_lines.append(line)
+            elif stripped and not stripped.startswith("#"):
+                in_runcmd = False
+                top_lines.append(line)
+        elif stripped and not stripped.startswith("#cloud-config"):
+            top_lines.append(line)
+
+    return top_lines, runcmd_lines
+
+
+def _build_runcmd_lines(
+    vm_data: dict,
+    chrony_runcmd_lines: list[str],
+    custom_runcmd_lines: list[str],
+) -> list[str]:
+    """Build the runcmd section."""
+    lines = ["runcmd:"]
     if vm_data.get("guestExecEnabled", True):
         lines.append(
             "  - python3 -c \"import re,pathlib;f=pathlib.Path('/etc/sysconfig/qemu-ga');t=f.read_text() if f.exists() else '';t2=re.sub(r'(--allow-rpcs=[^\\\"]*)',r'\\\\1,guest-exec,guest-exec-status',t) if 'allow-rpcs' in t else re.sub(r'guest-exec-status,|guest-exec,|,guest-exec-status|,guest-exec','',t);f.write_text(t2)\" 2>/dev/null; systemctl restart qemu-guest-agent 2>/dev/null || true"
@@ -153,40 +188,64 @@ def generate_userdata(vm_data: dict) -> str:
     )
     lines.extend(chrony_runcmd_lines)
     lines.extend(custom_runcmd_lines)
+    return lines
 
-    result = "\n".join(lines)
 
-    # Validate the generated cloud-config is valid YAML with no duplicate keys
-    import re
-
+def _validate_cloud_config(result: str) -> None:
+    """Validate generated cloud-config is valid YAML with no duplicate keys."""
     import yaml  # type: ignore[import-untyped]
 
     try:
         parsed = yaml.safe_load(result)
         if not isinstance(parsed, dict):
             raise ValueError("Generated cloud-config is not a YAML mapping")
-        elif "runcmd" in parsed and not isinstance(parsed["runcmd"], list):
+        if "runcmd" in parsed and not isinstance(parsed["runcmd"], list):
             raise ValueError("Generated cloud-config runcmd is not a list")
     except (yaml.YAMLError, ValueError) as e:
-        logger.error(
+        logger.exception(
             "Generated cloud-config is invalid YAML: %s\n--- BEGIN ---\n%s\n--- END ---",
             e,
             result,
         )
         raise ValueError(f"Cloud-init user-data is invalid YAML: {e}")
 
-    # Check for duplicate top-level keys (safe_load silently takes the last one)
     top_keys = re.findall(r"^([a-zA-Z_][a-zA-Z0-9_-]*):", result, re.MULTILINE)
-    seen = set()
+    seen: set[str] = set()
     for k in top_keys:
         if k in seen:
             logger.error("Generated cloud-config has duplicate top-level key: '%s'", k)
         seen.add(k)
 
+
+def generate_userdata(vm_data: dict) -> str:
+    """Generate cloud-init user-data YAML for a VM."""
+    lines = ["#cloud-config"]
+
+    hostname = vm_data.get("ciHostname") or vm_data.get("name", "localhost")
+    lines.append(f"hostname: {hostname}")
+    lines.append(f"fqdn: {hostname}")
+
+    all_keys = _collect_ssh_keys(vm_data)
+    lines.extend(_build_ssh_keys_lines(all_keys))
+
+    pwd_lines, root_hash, cloud_user_hash = _build_password_lines(vm_data)
+    lines.extend(pwd_lines)
+    lines.extend(_build_users_lines(vm_data, all_keys, root_hash, cloud_user_hash))
+
+    pkg_lines, chrony_runcmd_lines = _build_packages_and_chrony(vm_data)
+    lines.extend(pkg_lines)
+    lines.extend(_build_bootcmd_lines(all_keys))
+
+    custom_top_lines, custom_runcmd_lines = _parse_custom_userdata(vm_data)
+    lines.extend(custom_top_lines)
+    lines.extend(_build_runcmd_lines(vm_data, chrony_runcmd_lines, custom_runcmd_lines))
+
+    result = "\n".join(lines)
+    _validate_cloud_config(result)
     return result
 
 
-def generate_metadata(vm_name: str, mac: str = "") -> str:
+def generate_metadata(vm_name: str, _mac: str = "") -> str:
     """Generate cloud-init meta-data JSON for a VM."""
     import uuid
 

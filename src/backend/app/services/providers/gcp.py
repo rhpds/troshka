@@ -12,6 +12,9 @@ from app.services.providers.base import ProviderDriver
 
 logger = logging.getLogger(__name__)
 
+_EXTERNAL_NAT = "External NAT"
+_NOT_FOUND = "was not found"
+
 GCP_DEFAULT_INSTANCE_TYPE = "n2-highmem-32"
 GCP_CURATED_INSTANCE_TYPES = [
     "n2-highmem-4",
@@ -174,42 +177,68 @@ def _zone_to_region(zone):
     return zone.rsplit("-", 1)[0]
 
 
+def _poll_operation_until_done(get_fn):
+    """Poll a GCP operation until DONE, checking for errors."""
+    from google.cloud import compute_v1
+
+    while True:
+        result = get_fn()
+        if result.status == compute_v1.Operation.Status.DONE:
+            if result.error:
+                errors = [e.message for e in result.error.errors]
+                raise RuntimeError(f"GCP operation failed: {'; '.join(errors)}")
+            return result
+        time.sleep(2)
+
+
 def _wait_for_operation(operation, project, zone=None, region=None, creds=None):
     """Wait for a GCP operation to complete."""
     from google.cloud import compute_v1
 
     if zone:
         client = compute_v1.ZoneOperationsClient(credentials=creds)
-        while True:
-            result = client.get(project=project, zone=zone, operation=operation.name)
-            if result.status == compute_v1.Operation.Status.DONE:
-                if result.error:
-                    errors = [e.message for e in result.error.errors]
-                    raise RuntimeError(f"GCP operation failed: {'; '.join(errors)}")
-                return result
-            time.sleep(2)
+
+        def get_fn():
+            return client.get(project=project, zone=zone, operation=operation.name)
+
     elif region:
         client = compute_v1.RegionOperationsClient(credentials=creds)
-        while True:
-            result = client.get(
-                project=project, region=region, operation=operation.name
-            )
-            if result.status == compute_v1.Operation.Status.DONE:
-                if result.error:
-                    errors = [e.message for e in result.error.errors]
-                    raise RuntimeError(f"GCP operation failed: {'; '.join(errors)}")
-                return result
-            time.sleep(2)
+
+        def get_fn():
+            return client.get(project=project, region=region, operation=operation.name)
+
     else:
         client = compute_v1.GlobalOperationsClient(credentials=creds)
-        while True:
-            result = client.get(project=project, operation=operation.name)
-            if result.status == compute_v1.Operation.Status.DONE:
-                if result.error:
-                    errors = [e.message for e in result.error.errors]
-                    raise RuntimeError(f"GCP operation failed: {'; '.join(errors)}")
-                return result
-            time.sleep(2)
+
+        def get_fn():
+            return client.get(project=project, operation=operation.name)
+
+    return _poll_operation_until_done(get_fn)
+
+
+def _resolve_boot_image_url(image_id, project):
+    """Resolve an image ID to a full GCE image URL.
+
+    Handles three formats: full https:// URL, projects/... path, or plain image name.
+    """
+    if image_id.startswith("https://"):
+        from urllib.parse import urlparse
+
+        parsed = urlparse(image_id)
+        if parsed.hostname not in (
+            "compute.googleapis.com",
+            "www.googleapis.com",
+        ):
+            raise ValueError(f"Untrusted image URL host: {parsed.hostname!r}")
+        return image_id
+
+    if image_id.startswith("projects/"):
+        return f"https://compute.googleapis.com/compute/v1/{image_id}"
+
+    return (
+        f"https://compute.googleapis.com/compute/v1/"
+        f"projects/{project}/global/images/{image_id}"
+    )
 
 
 class GCPDriver(ProviderDriver):
@@ -242,23 +271,7 @@ class GCPDriver(ProviderDriver):
         if not image_id:
             raise ValueError("No boot image specified — set image_id or default_image")
 
-        if image_id.startswith("https://"):
-            from urllib.parse import urlparse
-
-            parsed = urlparse(image_id)
-            if parsed.hostname not in (
-                "compute.googleapis.com",
-                "www.googleapis.com",
-            ):
-                raise ValueError(f"Untrusted image URL host: {parsed.hostname!r}")
-            boot_image_url = image_id
-        elif image_id.startswith("projects/"):
-            boot_image_url = f"https://compute.googleapis.com/compute/v1/{image_id}"
-        else:
-            boot_image_url = (
-                f"https://compute.googleapis.com/compute/v1/"
-                f"projects/{project}/global/images/{image_id}"
-            )
+        boot_image_url = _resolve_boot_image_url(image_id, project)
 
         # SSH key metadata (GCP uses metadata for SSH keys)
         ssh_keys_value = f"troshka:{public_key} troshka"
@@ -280,7 +293,7 @@ class GCPDriver(ProviderDriver):
             subnetwork=provider.gcp_subnet_id,
             access_configs=[
                 compute_v1.AccessConfig(
-                    name="External NAT",
+                    name=_EXTERNAL_NAT,
                     type_="ONE_TO_ONE_NAT",
                     network_tier="PREMIUM",
                 )
@@ -340,7 +353,7 @@ class GCPDriver(ProviderDriver):
         # Poll until RUNNING and get IPs
         public_ip = None
         private_ip = None
-        for attempt in range(60):
+        for _ in range(60):
             time.sleep(5)
             inst = compute_client.get(
                 project=project, zone=zone, instance=instance_name
@@ -386,7 +399,7 @@ class GCPDriver(ProviderDriver):
             op = compute_client.delete(project=project, zone=zone, instance=instance_id)
             _wait_for_operation(op, project, zone=zone, creds=creds)
         except Exception as e:
-            if "was not found" in str(e) or "notFound" in str(e):
+            if _NOT_FOUND in str(e) or "notFound" in str(e):
                 logger.info("Instance %s already gone", instance_id)
             else:
                 raise
@@ -398,7 +411,7 @@ class GCPDriver(ProviderDriver):
             op = disks_client.delete(project=project, zone=zone, disk=data_disk_name)
             _wait_for_operation(op, project, zone=zone, creds=creds)
         except Exception as e:
-            if "was not found" in str(e) or "notFound" in str(e):
+            if _NOT_FOUND in str(e) or "notFound" in str(e):
                 logger.info("Data disk %s already gone", data_disk_name)
             else:
                 raise
@@ -415,7 +428,7 @@ class GCPDriver(ProviderDriver):
         try:
             inst = compute_client.get(project=project, zone=zone, instance=instance_id)
         except Exception as e:
-            if "was not found" in str(e) or "notFound" in str(e):
+            if _NOT_FOUND in str(e) or "notFound" in str(e):
                 return None
             raise
 
@@ -686,7 +699,7 @@ class GCPDriver(ProviderDriver):
             zone.delete()
             logger.info("Deleted Cloud DNS zone %s", provider.console_zone_id)
         except Exception as e:
-            if "was not found" in str(e) or "notFound" in str(e):
+            if _NOT_FOUND in str(e) or "notFound" in str(e):
                 logger.info("Cloud DNS zone %s already gone", provider.console_zone_id)
             else:
                 raise
@@ -754,12 +767,12 @@ class GCPDriver(ProviderDriver):
                 project=project,
                 zone=zone,
                 instance=host.instance_id,
-                access_config="External NAT",
+                access_config=_EXTERNAL_NAT,
                 network_interface="nic0",
             )
             _wait_for_operation(op, project, zone=zone, creds=creds)
         except Exception as e:
-            if "was not found" not in str(e) and "notFound" not in str(e):
+            if _NOT_FOUND not in str(e) and "notFound" not in str(e):
                 raise
 
         # Add new access config with the static IP
@@ -769,7 +782,7 @@ class GCPDriver(ProviderDriver):
             instance=host.instance_id,
             network_interface="nic0",
             access_config_resource=compute_v1.AccessConfig(
-                name="External NAT",
+                name=_EXTERNAL_NAT,
                 type_="ONE_TO_ONE_NAT",
                 nat_i_p=static_ip,
                 network_tier="PREMIUM",
@@ -794,7 +807,7 @@ class GCPDriver(ProviderDriver):
             _wait_for_operation(op, project, region=region, creds=creds)
             logger.info("Released static IP %s", allocation_id)
         except Exception as e:
-            if "was not found" in str(e) or "notFound" in str(e):
+            if _NOT_FOUND in str(e) or "notFound" in str(e):
                 logger.info("Static IP %s already gone", allocation_id)
             else:
                 raise

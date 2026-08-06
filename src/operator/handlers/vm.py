@@ -15,6 +15,9 @@ from helpers.kubevirt import (
 
 logger = logging.getLogger(__name__)
 
+_CDI_API = "cdi.kubevirt.io"
+_KUBEVIRT_API = "kubevirt.io"
+
 
 def _cleanup_legacy_pod(core_api, namespace, pod_name):
     """Delete a standalone Pod if it exists (migration from Pod to Deployment)."""
@@ -80,7 +83,7 @@ def _check_datavolume_status(custom_api, name, namespace):
     """Check DataVolume phase. Returns 'ready', 'failed', 'deleted', or 'pending'."""
     try:
         dv = custom_api.get_namespaced_custom_object(
-            group="cdi.kubevirt.io",
+            group=_CDI_API,
             version="v1beta1",
             namespace=namespace,
             plural="datavolumes",
@@ -173,7 +176,7 @@ async def _ensure_golden_pvc(
     )
     try:
         custom_api.create_namespaced_custom_object(
-            group="cdi.kubevirt.io",
+            group=_CDI_API,
             version="v1beta1",
             namespace=CACHE_NAMESPACE,
             plural="datavolumes",
@@ -215,7 +218,7 @@ def _create_clone_datavolume(custom_api, namespace, pvc_name, clone_dv):
     """Create a clone DataVolume, handling 409 conflict with retry logic."""
     try:
         custom_api.create_namespaced_custom_object(
-            group="cdi.kubevirt.io",
+            group=_CDI_API,
             version="v1beta1",
             namespace=namespace,
             plural="datavolumes",
@@ -226,7 +229,7 @@ def _create_clone_datavolume(custom_api, namespace, pvc_name, clone_dv):
             raise
         try:
             existing_dv = custom_api.get_namespaced_custom_object(
-                group="cdi.kubevirt.io",
+                group=_CDI_API,
                 version="v1beta1",
                 namespace=namespace,
                 plural="datavolumes",
@@ -242,7 +245,7 @@ def _create_clone_datavolume(custom_api, namespace, pvc_name, clone_dv):
         except client.ApiException as ge:
             if ge.status == 404:
                 custom_api.create_namespaced_custom_object(
-                    group="cdi.kubevirt.io",
+                    group=_CDI_API,
                     version="v1beta1",
                     namespace=namespace,
                     plural="datavolumes",
@@ -341,7 +344,7 @@ async def _provision_cdrom(
         clone_dv["metadata"]["ownerReferences"] = [owner_ref(body)]
         try:
             custom_api.create_namespaced_custom_object(
-                group="cdi.kubevirt.io",
+                group=_CDI_API,
                 version="v1beta1",
                 namespace=namespace,
                 plural="datavolumes",
@@ -435,7 +438,7 @@ async def _delete_and_wait_for_kubevirt_vm(custom_api, namespace, kv_vm_name):
     """Delete a KubeVirt VM and wait for it to be fully removed."""
     try:
         custom_api.delete_namespaced_custom_object(
-            group="kubevirt.io",
+            group=_KUBEVIRT_API,
             version="v1",
             namespace=namespace,
             plural="virtualmachines",
@@ -446,7 +449,7 @@ async def _delete_and_wait_for_kubevirt_vm(custom_api, namespace, kv_vm_name):
     for _ in range(30):
         try:
             custom_api.get_namespaced_custom_object(
-                group="kubevirt.io",
+                group=_KUBEVIRT_API,
                 version="v1",
                 namespace=namespace,
                 plural="virtualmachines",
@@ -465,7 +468,7 @@ async def _recreate_kubevirt_vm(custom_api, namespace, kv_vm, kv_vm_name):
     await _delete_and_wait_for_kubevirt_vm(custom_api, namespace, kv_vm_name)
     try:
         custom_api.create_namespaced_custom_object(
-            group="kubevirt.io",
+            group=_KUBEVIRT_API,
             version="v1",
             namespace=namespace,
             plural="virtualmachines",
@@ -485,7 +488,7 @@ async def _create_or_adopt_kubevirt_vm(
     """Create a KubeVirt VM, handling 409 conflict with delete-and-recreate."""
     try:
         custom_api.create_namespaced_custom_object(
-            group="kubevirt.io",
+            group=_KUBEVIRT_API,
             version="v1",
             namespace=namespace,
             plural="virtualmachines",
@@ -548,7 +551,7 @@ def _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api):
                 "metadata": {"name": "troshka-bmc", "namespace": namespace},
                 "rules": [
                     {
-                        "apiGroups": ["kubevirt.io"],
+                        "apiGroups": [_KUBEVIRT_API],
                         "resources": [
                             "virtualmachines",
                             "virtualmachineinstances",
@@ -556,7 +559,7 @@ def _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api):
                         "verbs": ["get", "list", "patch"],
                     },
                     {
-                        "apiGroups": ["cdi.kubevirt.io"],
+                        "apiGroups": [_CDI_API],
                         "resources": ["datavolumes"],
                         "verbs": ["create", "get", "list", "delete"],
                     },
@@ -749,7 +752,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
     # troshkad reading domain_uuid from virsh define)
     try:
         created_vm = custom_api.get_namespaced_custom_object(
-            group="kubevirt.io",
+            group=_KUBEVIRT_API,
             version="v1",
             namespace=namespace,
             plural="virtualmachines",
@@ -802,7 +805,7 @@ async def _clone_s3_disk(
     clone_dv["metadata"]["ownerReferences"] = [owner_ref(body)]
     try:
         custom_api.create_namespaced_custom_object(
-            group="cdi.kubevirt.io",
+            group=_CDI_API,
             version="v1beta1",
             namespace=namespace,
             plural="datavolumes",
@@ -878,7 +881,7 @@ def _try_delete_datavolume(custom_api, namespace, pvc_name):
     """Attempt to delete a DataVolume, ignoring 404."""
     try:
         custom_api.delete_namespaced_custom_object(
-            group="cdi.kubevirt.io",
+            group=_CDI_API,
             version="v1beta1",
             namespace=namespace,
             plural="datavolumes",
@@ -913,7 +916,7 @@ async def _stop_kubevirt_vm(custom_api, namespace, kv_name):
     """Stop a KubeVirt VM and wait for the VMI to terminate."""
     try:
         custom_api.patch_namespaced_custom_object(
-            group="kubevirt.io",
+            group=_KUBEVIRT_API,
             version="v1",
             namespace=namespace,
             plural="virtualmachines",
@@ -925,7 +928,7 @@ async def _stop_kubevirt_vm(custom_api, namespace, kv_name):
     for _ in range(60):
         try:
             custom_api.get_namespaced_custom_object(
-                group="kubevirt.io",
+                group=_KUBEVIRT_API,
                 version="v1",
                 namespace=namespace,
                 plural="virtualmachineinstances",
@@ -1024,7 +1027,7 @@ async def vm_update(
     kv_vm["metadata"]["ownerReferences"] = [owner_ref(body)]
     try:
         custom_api.create_namespaced_custom_object(
-            group="kubevirt.io",
+            group=_KUBEVIRT_API,
             version="v1",
             namespace=namespace,
             plural="virtualmachines",
@@ -1038,7 +1041,7 @@ async def vm_update(
 
     try:
         recreated_vm = custom_api.get_namespaced_custom_object(
-            group="kubevirt.io",
+            group=_KUBEVIRT_API,
             version="v1",
             namespace=namespace,
             plural="virtualmachines",
@@ -1057,16 +1060,11 @@ async def vm_update(
     logger.info(f"TroshkaVM {name} reconfigure complete")
 
 
-@kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkavms")
-async def vm_delete(spec, status, meta, namespace, name, **_):
-    logger.info(f"TroshkaVM {name} deleting — cleaning up KubeVirt resources")
-    custom_api = client.CustomObjectsApi()
-    core_api = client.CoreV1Api()
-
-    kv_name = status.get("kubevirtVmName", f"troshka-{name}")
+def _delete_kubevirt_vm(custom_api, namespace, kv_name):
+    """Delete the KubeVirt VM resource."""
     try:
         custom_api.delete_namespaced_custom_object(
-            group="kubevirt.io",
+            group=_KUBEVIRT_API,
             version="v1",
             namespace=namespace,
             plural="virtualmachines",
@@ -1077,40 +1075,68 @@ async def vm_delete(spec, status, meta, namespace, name, **_):
         if e.status != 404:
             logger.warning(f"Failed to delete KubeVirt VM {kv_name}: {e}")
 
+
+def _delete_datavolume(custom_api, namespace, pvc_name):
+    """Delete a CDI DataVolume."""
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group=_CDI_API,
+            version="v1beta1",
+            namespace=namespace,
+            plural="datavolumes",
+            name=pvc_name,
+        )
+    except client.ApiException as e:
+        if e.status != 404:
+            logger.warning(f"Failed to delete datavolume/{pvc_name}: {e}")
+
+
+def _delete_pvc(core_api, namespace, pvc_name):
+    """Delete a PersistentVolumeClaim."""
+    try:
+        core_api.delete_namespaced_persistent_volume_claim(
+            name=pvc_name, namespace=namespace
+        )
+    except client.ApiException as e:
+        if e.status != 404:
+            logger.warning(f"Failed to delete PVC/{pvc_name}: {e}")
+
+
+def _delete_disk_resources(spec, name, custom_api, core_api, namespace):
+    """Delete all disk DataVolumes and PVCs."""
     for disk in spec.get("disks", []):
         disk_id = disk.get("id", "")[:8]
         pvc_name = f"{name}-disk-{disk_id}"
-        for resource_type in ("datavolumes", "persistentvolumeclaims"):
-            try:
-                if resource_type == "datavolumes":
-                    custom_api.delete_namespaced_custom_object(
-                        group="cdi.kubevirt.io",
-                        version="v1beta1",
-                        namespace=namespace,
-                        plural=resource_type,
-                        name=pvc_name,
-                    )
-                else:
-                    core_api.delete_namespaced_persistent_volume_claim(
-                        name=pvc_name, namespace=namespace
-                    )
-            except client.ApiException as e:
-                if e.status != 404:
-                    logger.warning(f"Failed to delete {resource_type}/{pvc_name}: {e}")
+        _delete_datavolume(custom_api, namespace, pvc_name)
+        _delete_pvc(core_api, namespace, pvc_name)
 
-    if spec.get("cdrom", {}).get("s3Path"):
-        cdrom_pvc = f"{name}-cdrom"
-        try:
-            core_api.delete_namespaced_persistent_volume_claim(
-                name=cdrom_pvc, namespace=namespace
-            )
-        except client.ApiException as e:
-            if e.status != 404:
-                logger.warning(f"Failed to delete cdrom PVC {cdrom_pvc}: {e}")
 
+def _delete_cdrom_if_present(spec, name, core_api, namespace):
+    """Delete CDROM PVC if configured."""
+    if not spec.get("cdrom", {}).get("s3Path"):
+        return
+    cdrom_pvc = f"{name}-cdrom"
+    _delete_pvc(core_api, namespace, cdrom_pvc)
+
+
+def _delete_cloudinit_secret(name, core_api, namespace):
+    """Delete cloud-init secret."""
     ci_secret_name = f"cloudinit-{name}"
     try:
         core_api.delete_namespaced_secret(name=ci_secret_name, namespace=namespace)
     except client.ApiException as e:
         if e.status != 404:
             logger.warning(f"Failed to delete cloud-init secret {ci_secret_name}: {e}")
+
+
+@kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkavms")
+async def vm_delete(spec, status, meta, namespace, name, **_):
+    logger.info(f"TroshkaVM {name} deleting — cleaning up KubeVirt resources")
+    custom_api = client.CustomObjectsApi()
+    core_api = client.CoreV1Api()
+
+    kv_name = status.get("kubevirtVmName", f"troshka-{name}")
+    _delete_kubevirt_vm(custom_api, namespace, kv_name)
+    _delete_disk_resources(spec, name, custom_api, core_api, namespace)
+    _delete_cdrom_if_present(spec, name, core_api, namespace)
+    _delete_cloudinit_secret(name, core_api, namespace)

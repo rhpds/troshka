@@ -230,7 +230,7 @@ def _auto_select_pool(db: Session) -> str | None:
         )
         total_free = 0
         for h in hosts:
-            alloc_vcpus, alloc_ram = get_allocatable(h)
+            _alloc_vcpus, alloc_ram = get_allocatable(h)
             total_free += alloc_ram - h.used_ram_mb
         if total_free > best_free:
             best_free = total_free
@@ -422,169 +422,198 @@ def select_network_host(host_assignments: dict[str, list[str]], topology: dict) 
     return max(host_assignments, key=lambda hid: len(host_assignments[hid]))
 
 
-def place_project(
+def _has_anti_affinity(topology: dict) -> bool:
+    """Check if topology has anti-affinity groups with >1 VM needing separate hosts."""
+    aa_groups: dict[str, int] = {}
+    for n in topology.get("nodes", []):
+        if n.get("type") not in ("vmNode", "containerNode"):
+            continue
+        aa = n.get("data", {}).get("separateHost")
+        if aa and isinstance(aa, str):
+            aa_groups[aa] = aa_groups.get(aa, 0) + 1
+    return any(count > 1 for count in aa_groups.values())
+
+
+def _resolve_specified_host(
+    db: Session, host_id: str
+) -> tuple[Host | None, str | None]:
+    """Validate an admin-specified host. Returns (host, error_message)."""
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        return None, f"Host {host_id[:8]} not found"
+    if host.state != "active" or host.agent_status != "connected":
+        return None, f"Host {host_id[:8]} is not available"
+    return host, None
+
+
+def _select_host(
     db: Session,
     project: Project,
-    storage_pool_id: str | None = None,
-    host_id: str | None = None,
-) -> dict:
-    """Assign a project to a host. Returns placement result."""
-    if not project.topology:
-        return {"error": "Project has no topology"}
-
-    reqs = calculate_project_requirements(project.topology)
-    if reqs["vm_count"] == 0:
-        return {"error": "Project has no VMs"}
-
-    # Check for anti-affinity (separateHost group) — forces multi-host placement
-    aa_groups: dict[str, int] = {}
-    for n in project.topology.get("nodes", []):
-        if n.get("type") in ("vmNode", "containerNode"):
-            aa = n.get("data", {}).get("separateHost")
-            if aa and isinstance(aa, str):
-                aa_groups[aa] = aa_groups.get(aa, 0) + 1
-    has_anti_affinity = any(count > 1 for count in aa_groups.values())
-
-    # Admin-specified host override
+    reqs: dict,
+    has_anti_affinity: bool,
+    storage_pool_id: str | None,
+    host_id: str | None,
+) -> tuple[Host | None, str | None, dict | None]:
+    """Select a host for the project. Returns (host, storage_pool_id, error_dict)."""
     if host_id:
-        host = db.query(Host).filter_by(id=host_id).first()
-        if not host:
-            return {"error": f"Host {host_id[:8]} not found"}
-        if host.state != "active" or host.agent_status != "connected":
-            return {"error": f"Host {host_id[:8]} is not available"}
+        host, err = _resolve_specified_host(db, host_id)
+        if err or not host:
+            return None, storage_pool_id, {"error": err or "Host not found"}
         if not storage_pool_id and host.storage_pool_id:
             storage_pool_id = host.storage_pool_id
-    else:
-        # Auto-select pool if not specified
-        if not storage_pool_id:
-            storage_pool_id = _auto_select_pool(db)
+        return host, storage_pool_id, None
 
-        host = None
-        if not has_anti_affinity:
-            host = find_available_host(
-                db,
-                reqs["total_vcpus"],
-                reqs["total_ram_mb"],
-                reqs["requested_eips"],
-                storage_pool_id=storage_pool_id,
-                provider_id=project.provider_id,
-            )
-        if not host and not has_anti_affinity and storage_pool_id:
-            host = find_available_host(
-                db,
-                reqs["total_vcpus"],
-                reqs["total_ram_mb"],
-                reqs["requested_eips"],
-                provider_id=project.provider_id,
-            )
-    if not host:
-        # Try multi-host placement before auto-provisioning
-        multihost_provider = project.provider_id
-        multihost_pool = storage_pool_id
+    if not storage_pool_id:
+        storage_pool_id = _auto_select_pool(db)
 
-        # Anti-affinity needs 2+ hosts — auto-find a provider/pool if not set
-        if has_anti_affinity and not multihost_provider and not multihost_pool:
-            from app.models.storage_pool import StoragePool
-
-            pools = (
-                db.query(StoragePool).filter(StoragePool.status == "available").all()
-            )
-            for pool in pools:
-                host_count = (
-                    db.query(Host)
-                    .filter(
-                        Host.storage_pool_id == pool.id,
-                        Host.state == "active",
-                        Host.agent_status == "connected",
-                        Host.host_type != "pattern_buffer",
-                    )
-                    .count()
-                )
-                if host_count >= 2:
-                    multihost_pool = pool.id
-                    break
-            if not multihost_pool:
-                return {
-                    "error": "Anti-affinity requires a provider with multiple hosts. "
-                    "Select a provider with 2+ hosts or remove anti-affinity."
-                }
-
-        host_assignments = find_multihost_placement(
-            db, project.topology, multihost_pool, multihost_provider
+    host = None
+    if not has_anti_affinity:
+        host = find_available_host(
+            db,
+            reqs["total_vcpus"],
+            reqs["total_ram_mb"],
+            reqs["requested_eips"],
+            storage_pool_id=storage_pool_id,
+            provider_id=project.provider_id,
         )
-        if host_assignments:
-            network_host_id = select_network_host(host_assignments, project.topology)
-            hosts_in_mesh = []
-            for hid in host_assignments:
-                h = db.query(Host).filter_by(id=hid).first()
-                if h:
-                    hosts_in_mesh.append(h)
+    if not host and not has_anti_affinity and storage_pool_id:
+        host = find_available_host(
+            db,
+            reqs["total_vcpus"],
+            reqs["total_ram_mb"],
+            reqs["requested_eips"],
+            provider_id=project.provider_id,
+        )
+    return host, storage_pool_id, None
 
-            same_pool = (
-                len({h.storage_pool_id for h in hosts_in_mesh if h.storage_pool_id})
-                <= 1
+
+def _find_pool_for_anti_affinity(db: Session) -> str | None:
+    """Find a storage pool with 2+ active hosts for anti-affinity placement."""
+    from app.models.storage_pool import StoragePool
+
+    pools = db.query(StoragePool).filter(StoragePool.status == "available").all()
+    for pool in pools:
+        host_count = (
+            db.query(Host)
+            .filter(
+                Host.storage_pool_id == pool.id,
+                Host.state == "active",
+                Host.agent_status == "connected",
+                Host.host_type != "pattern_buffer",
             )
-            host_ips = {}
-            for h in hosts_in_mesh:
-                if same_pool and h.private_ip:
-                    host_ips[h.id] = h.private_ip
-                else:
-                    host_ips[h.id] = h.ip_address
+            .count()
+        )
+        if host_count >= 2:
+            return pool.id
+    return None
 
-            vni_map = allocate_vnis_for_project(db, project.topology)
 
-            logger.info(
-                "Placed project %s across %d hosts (network host: %s)",
-                project.id,
-                len(host_assignments),
-                network_host_id[:8],
-            )
+def _build_multihost_result(
+    db: Session, host_assignments: dict[str, list[str]], topology: dict
+) -> dict:
+    """Build the placement result dict for a multi-host deployment."""
+    network_host_id = select_network_host(host_assignments, topology)
+    hosts_in_mesh = []
+    for hid in host_assignments:
+        h = db.query(Host).filter_by(id=hid).first()
+        if h:
+            hosts_in_mesh.append(h)
 
+    same_pool = (
+        len({h.storage_pool_id for h in hosts_in_mesh if h.storage_pool_id}) <= 1
+    )
+    host_ips = {}
+    for h in hosts_in_mesh:
+        use_private = same_pool and h.private_ip
+        host_ips[h.id] = h.private_ip if use_private else h.ip_address
+
+    vni_map = allocate_vnis_for_project(db, topology)
+
+    return {
+        "multi_host": True,
+        "host_assignments": host_assignments,
+        "network_host_id": network_host_id,
+        "host_ips": host_ips,
+        "vni_map": vni_map,
+    }
+
+
+def _try_multihost_placement(
+    db: Session,
+    project: Project,
+    storage_pool_id: str | None,
+    has_anti_affinity: bool,
+) -> dict | None:
+    """Try multi-host placement. Returns result dict, error dict, or None if no placement found."""
+    multihost_provider = project.provider_id
+    multihost_pool = storage_pool_id
+
+    if has_anti_affinity and not multihost_provider and not multihost_pool:
+        multihost_pool = _find_pool_for_anti_affinity(db)
+        if not multihost_pool:
             return {
-                "multi_host": True,
-                "host_assignments": host_assignments,
-                "network_host_id": network_host_id,
-                "host_ips": host_ips,
-                "vni_map": vni_map,
+                "error": "Anti-affinity requires a provider with multiple hosts. "
+                "Select a provider with 2+ hosts or remove anti-affinity."
             }
 
-        logger.info("No host with capacity — auto-provisioning a new one")
-        try:
-            result = provision_host()
-            host = Host(
-                id=result["host_id"],
-                instance_id=result["instance_id"],
-                instance_type=result["instance_type"],
-                state="active",
-                host_type="shared",
-                total_vcpus=result["total_vcpus"],
-                total_ram_mb=result["total_ram_mb"],
-                max_eips=result.get("max_eips", 0),
-                ip_address=result["public_ip"],
-                agent_status="disconnected",
-            )
-            db.add(host)
-            db.commit()
-            db.refresh(host)
-            logger.info("Auto-provisioned host %s (%s)", host.id, host.ip_address)
-        except Exception as e:
-            logger.exception("Auto-provisioning failed: %s", e)
-            return {
-                "error": f"No host has enough capacity (need {reqs['total_vcpus']} vCPUs, {reqs['total_ram_mb']}MB RAM) and auto-provisioning failed. Check server logs or contact an admin.",
-                "required": reqs,
-            }
+    assert project.topology is not None
+    host_assignments = find_multihost_placement(
+        db, project.topology, multihost_pool, multihost_provider
+    )
+    if not host_assignments:
+        return None
 
-    # Allocate VNIs for project networks
+    result = _build_multihost_result(db, host_assignments, project.topology)
+    logger.info(
+        "Placed project %s across %d hosts (network host: %s)",
+        project.id,
+        len(host_assignments),
+        result["network_host_id"][:8],
+    )
+    return result
+
+
+def _auto_provision_host(db: Session, reqs: dict) -> tuple[Host | None, dict | None]:
+    """Auto-provision a new host. Returns (host, None) on success or (None, error_dict) on failure."""
+    logger.info("No host with capacity — auto-provisioning a new one")
+    try:
+        result = provision_host()
+        host = Host(
+            id=result["host_id"],
+            instance_id=result["instance_id"],
+            instance_type=result["instance_type"],
+            state="active",
+            host_type="shared",
+            total_vcpus=result["total_vcpus"],
+            total_ram_mb=result["total_ram_mb"],
+            max_eips=result.get("max_eips", 0),
+            ip_address=result["public_ip"],
+            agent_status="disconnected",
+        )
+        db.add(host)
+        db.commit()
+        db.refresh(host)
+        logger.info("Auto-provisioned host %s (%s)", host.id, host.ip_address)
+        return host, None
+    except Exception as e:
+        logger.exception("Auto-provisioning failed: %s", e)
+        return None, {
+            "error": f"No host has enough capacity (need {reqs['total_vcpus']} vCPUs, {reqs['total_ram_mb']}MB RAM) and auto-provisioning failed. Check server logs or contact an admin.",
+            "required": reqs,
+        }
+
+
+def _finalize_single_host(
+    db: Session, project: Project, host: Host, reqs: dict
+) -> dict:
+    """Finalize single-host placement: allocate VNIs, update state, return result."""
+    assert project.topology is not None
     vni_map = allocate_vnis_for_project(db, project.topology)
 
-    # Get all host IPs for VXLAN mesh
     all_hosts = db.query(Host).filter(Host.state == "active").all()
     peer_ips = [h.ip_address for h in all_hosts if h.ip_address]
-
-    # Build network config for the agent
     network_config = build_host_network_config(project.topology, vni_map, peer_ips)
 
-    # Update host capacity and in-flight counter (so next placement sees it)
     sync_host_capacity(db, host)
     record_deploy_start(host.id)
     project.host_id = host.id
@@ -608,3 +637,40 @@ def place_project(
         "vni_map": vni_map,
         "network_config": network_config,
     }
+
+
+def place_project(
+    db: Session,
+    project: Project,
+    storage_pool_id: str | None = None,
+    host_id: str | None = None,
+) -> dict:
+    """Assign a project to a host. Returns placement result."""
+    if not project.topology:
+        return {"error": "Project has no topology"}
+
+    reqs = calculate_project_requirements(project.topology)
+    if reqs["vm_count"] == 0:
+        return {"error": "Project has no VMs"}
+
+    has_anti_affinity = _has_anti_affinity(project.topology)
+
+    host, storage_pool_id, error = _select_host(
+        db, project, reqs, has_anti_affinity, storage_pool_id, host_id
+    )
+    if error:
+        return error
+
+    if not host:
+        multihost_result = _try_multihost_placement(
+            db, project, storage_pool_id, has_anti_affinity
+        )
+        if isinstance(multihost_result, dict):
+            return multihost_result
+
+        host, provision_error = _auto_provision_host(db, reqs)
+        if provision_error:
+            return provision_error
+
+    assert host is not None
+    return _finalize_single_host(db, project, host, reqs)

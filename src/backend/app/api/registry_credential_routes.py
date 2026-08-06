@@ -1,3 +1,5 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -9,11 +11,12 @@ from app.models.user import User
 
 router = APIRouter(prefix="/auth/registry-credentials", tags=["auth"])
 
+CurrentUser = Annotated[User, Depends(get_current_user)]
+DbSession = Annotated[Session, Depends(get_db)]
+
 
 @router.get("")
-def list_registry_credentials(
-    user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+def list_registry_credentials(user: CurrentUser, db: DbSession):
     creds = (
         db.query(RegistryCredential)
         .filter(RegistryCredential.user_id == user.id)
@@ -32,12 +35,12 @@ def list_registry_credentials(
     ]
 
 
-@router.post("", status_code=201)
-def create_registry_credential(
-    body: dict,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+@router.post(
+    "",
+    status_code=201,
+    responses={400: {"description": "Missing required fields"}},
+)
+def create_registry_credential(body: dict, user: CurrentUser, db: DbSession):
     name = (body.get("name") or "").strip()
     registry = (body.get("registry") or "").strip()
     username = (body.get("username") or "").strip()
@@ -60,12 +63,12 @@ def create_registry_credential(
     return {"id": cred.id, "name": cred.name, "registry": cred.registry}
 
 
-@router.put("/{cred_id}")
+@router.put(
+    "/{cred_id}",
+    responses={404: {"description": "Credential not found"}},
+)
 def update_registry_credential(
-    cred_id: str,
-    body: dict,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    cred_id: str, body: dict, user: CurrentUser, db: DbSession
 ):
     cred = (
         db.query(RegistryCredential)
@@ -89,12 +92,12 @@ def update_registry_credential(
     return {"id": cred.id, "name": cred.name, "registry": cred.registry}
 
 
-@router.delete("/{cred_id}", status_code=204)
-def delete_registry_credential(
-    cred_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+@router.delete(
+    "/{cred_id}",
+    status_code=204,
+    responses={404: {"description": "Credential not found"}},
+)
+def delete_registry_credential(cred_id: str, user: CurrentUser, db: DbSession):
     cred = (
         db.query(RegistryCredential)
         .filter(

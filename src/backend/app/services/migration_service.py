@@ -215,7 +215,7 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
         logger.info("Migration %s: complete", project_id[:8])
 
     except Exception as e:
-        logger.error("Migration %s failed: %s", project_id[:8], e)
+        logger.exception("Migration %s failed: %s", project_id[:8], e)
         _mark_migration_error(db, project_id, e)
     finally:
         db.close()
@@ -268,13 +268,13 @@ def _do_evacuate_host(host_id: str):
 
         for project in projects:
             # Simple round-robin target selection
-            target = other_hosts[0]  # TODO: implement bin-packing by capacity
+            target = other_hosts[0]
             _do_migrate_project(project.id, host_id, target.id)
 
         host.state = "maintenance"
         db.commit()
         logger.info("Evacuate %s: complete, host set to maintenance", host_id[:8])
     except Exception as e:
-        logger.error("Evacuate %s failed: %s", host_id[:8], e)
+        logger.exception("Evacuate %s failed: %s", host_id[:8], e)
     finally:
         db.close()

@@ -13,6 +13,9 @@ from app.services.providers.base import ProviderDriver
 logger = logging.getLogger(__name__)
 
 _KUBEVIRT_GROUP = "kubevirt.io"
+_KUBEVIRT_DOMAIN_LABEL = "kubevirt.io/domain"
+_ROUTE_API = "route.openshift.io"
+_HOST_ID_LABEL = "troshka/host-id"
 SSH_LB_PORT = 22000
 
 CLOUD_INIT_TEMPLATE = """#cloud-config
@@ -149,6 +152,280 @@ def _generate_ssh_keypair():
     return private_pem, public_key
 
 
+def _build_cloud_init_userdata(
+    host_type, public_key, host_id, nfs_server=None, nfs_path=None, nfs_port=None
+):
+    """Build cloud-init userdata string for a host VM."""
+    template = (
+        CLOUD_INIT_PATTERN_BUFFER
+        if host_type == "pattern_buffer"
+        else CLOUD_INIT_TEMPLATE
+    )
+    user_data = template.format(ssh_pubkey=public_key, host_id=host_id)
+
+    if nfs_server and nfs_path:
+        mount_opts = "nfsvers=4.1,nconnect=16,hard,_netdev"
+        if nfs_port:
+            mount_opts = f"port={nfs_port},{mount_opts}"
+        user_data = user_data.rstrip() + (
+            f"\n  - mkdir -p /var/lib/troshka/shared"
+            f"\n  - 'echo \"{nfs_server}:{nfs_path} /var/lib/troshka/shared nfs "
+            f"{mount_opts} 0 0\" >> /etc/fstab'"
+            f"\n  - mount /var/lib/troshka/shared"
+            f"\n  - setsebool -P virt_use_nfs 1"
+            f"\n"
+        )
+
+    return user_data
+
+
+def _build_root_source(rhel_image_url, datasource_name):
+    """Return the root disk source spec for a VM DataVolume."""
+    if rhel_image_url:
+        return {"source": {"http": {"url": rhel_image_url}}}
+    return {
+        "sourceRef": {
+            "kind": "DataSource",
+            "name": datasource_name,
+            "namespace": "openshift-virtualization-os-images",
+        }
+    }
+
+
+def _build_vm_disks_and_volumes(
+    hostname, storage_size_gb, host_type, iso_pvc, root_source
+):
+    """Build data_volumes, disks, and volumes lists for a VM spec."""
+    data_volumes = [
+        {
+            "metadata": {"name": f"{hostname}-root"},
+            "spec": {
+                **root_source,
+                "storage": {
+                    "resources": {"requests": {"storage": "50Gi"}},
+                    "storageClassName": "ocs-storagecluster-ceph-rbd-virtualization",
+                },
+            },
+        },
+        {
+            "metadata": {"name": f"{hostname}-data"},
+            "spec": {
+                "source": {"blank": {}},
+                "storage": {
+                    "resources": {"requests": {"storage": f"{storage_size_gb}Gi"}},
+                    "storageClassName": "ocs-storagecluster-ceph-rbd-virtualization",
+                },
+            },
+        },
+    ]
+
+    disks = [
+        {"disk": {"bus": "virtio"}, "name": "rootdisk"},
+        {"disk": {"bus": "virtio"}, "name": "datadisk"},
+        {"disk": {"bus": "virtio"}, "name": "cloudinitdisk"},
+    ]
+    volumes = [
+        {"dataVolume": {"name": f"{hostname}-root"}, "name": "rootdisk"},
+        {"dataVolume": {"name": f"{hostname}-data"}, "name": "datadisk"},
+        {
+            "cloudInitNoCloud": {
+                "secretRef": {"name": f"{hostname}-userdata"},
+            },
+            "name": "cloudinitdisk",
+        },
+    ]
+
+    if iso_pvc:
+        disks.insert(
+            2, {"cdrom": {"bus": "sata", "readonly": True}, "name": "installiso"}
+        )
+        volumes.insert(
+            2,
+            {
+                "persistentVolumeClaim": {"claimName": iso_pvc},
+                "name": "installiso",
+            },
+        )
+
+    if host_type == "pattern_buffer":
+        data_volumes.append(
+            {
+                "metadata": {"name": f"{hostname}-scratch"},
+                "spec": {
+                    "source": {"blank": {}},
+                    "storage": {
+                        "resources": {"requests": {"storage": "500Gi"}},
+                        "storageClassName": "ocs-storagecluster-ceph-rbd-virtualization",
+                    },
+                },
+            }
+        )
+        disks.append({"disk": {"bus": "virtio"}, "name": "scratch"})
+        volumes.append(
+            {"dataVolume": {"name": f"{hostname}-scratch"}, "name": "scratch"}
+        )
+
+    return data_volumes, disks, volumes
+
+
+def _wait_for_vmi_running(custom_api, namespace, hostname):
+    """Poll VMI until Running state. Returns pod_ip or raises RuntimeError."""
+    from kubernetes import client
+
+    for _ in range(120):
+        time.sleep(5)
+        try:
+            vmi = cast(
+                dict[str, Any],
+                custom_api.get_namespaced_custom_object(
+                    group=_KUBEVIRT_GROUP,
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachineinstances",
+                    name=hostname,
+                ),
+            )
+            phase = vmi.get("status", {}).get("phase")
+            if phase == "Running":
+                interfaces = vmi.get("status", {}).get("interfaces", [])
+                if interfaces:
+                    return interfaces[0].get("ipAddress")
+                return None
+        except client.ApiException:
+            pass
+    raise RuntimeError(f"VM {hostname} did not reach Running state within 10 minutes")
+
+
+def _wait_for_lb_ip(core_api, svc_name, namespace):
+    """Poll LoadBalancer service for external IP. Returns IP or None."""
+    for _ in range(60):
+        lb_svc = cast(
+            Any,
+            core_api.read_namespaced_service(svc_name, namespace),
+        )
+        lb_status = lb_svc.status.load_balancer
+        ingress = lb_status.ingress if lb_status else None
+        if ingress and ingress[0].ip:
+            return ingress[0].ip
+        time.sleep(2)
+    return None
+
+
+def _cleanup_host_k8s_resources(custom_api, core_api, namespace, instance_id):
+    """Delete services, secrets, and routes associated with a host."""
+    from kubernetes import client
+
+    host_short = instance_id.replace("troshka-host-", "")
+
+    for prefix in ["troshka-lb-", "troshka-vncd-"]:
+        try:
+            core_api.delete_namespaced_service(f"{prefix}{host_short}", namespace)
+        except client.ApiException:
+            pass
+
+    try:
+        eip_svcs = core_api.list_namespaced_service(
+            namespace,
+            label_selector=f"troshka/host-id={host_short}",
+        )
+        for svc in cast(Any, eip_svcs).items:
+            if svc.metadata.name.startswith("troshka-eip-"):
+                try:
+                    core_api.delete_namespaced_service(svc.metadata.name, namespace)
+                except client.ApiException:
+                    pass
+    except client.ApiException:
+        pass
+
+    try:
+        core_api.delete_namespaced_secret(f"{instance_id}-userdata", namespace)
+    except client.ApiException:
+        pass
+
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group=_ROUTE_API,
+            version="v1",
+            namespace=namespace,
+            plural="routes",
+            name=f"troshka-console-{host_short}",
+        )
+    except client.ApiException:
+        pass
+
+
+def _setup_route_dnat(host, project_id, transit_port, int_ip, vm_port):
+    """Set up nftables DNAT rule on the host for route access."""
+    from app.services.troshkad_client import start_job, wait_for_job
+
+    ns_name = f"troshka-{project_id[:8]}"
+    try:
+        job_id = start_job(
+            host,
+            "/networks/add-dnat",
+            {
+                "namespace": ns_name,
+                "transit_port": transit_port,
+                "dst_ip": int_ip,
+                "dst_port": vm_port,
+            },
+        )
+        wait_for_job(host, job_id, timeout=30)
+        logger.info(
+            "Route DNAT: %d → %s:%d in %s",
+            transit_port,
+            int_ip,
+            vm_port,
+            ns_name,
+        )
+    except Exception:
+        logger.warning(
+            "Route DNAT setup failed for %s:%d (transit %d), continuing",
+            int_ip,
+            vm_port,
+            transit_port,
+            exc_info=True,
+        )
+
+
+def _create_or_get_route(custom_api, namespace, route_body, resource_name):
+    """Create an OCP Route, returning the hostname.
+
+    On 409 conflict, reads the existing route instead.
+    """
+    from kubernetes import client
+
+    try:
+        result = cast(
+            dict[str, Any],
+            custom_api.create_namespaced_custom_object(
+                group=_ROUTE_API,
+                version="v1",
+                namespace=namespace,
+                plural="routes",
+                body=route_body,
+            ),
+        )
+        return result.get("spec", {}).get("host", "")
+    except client.ApiException as e:
+        if e.status == 409:
+            try:
+                existing = cast(
+                    dict[str, Any],
+                    custom_api.get_namespaced_custom_object(
+                        group=_ROUTE_API,
+                        version="v1",
+                        namespace=namespace,
+                        plural="routes",
+                        name=resource_name,
+                    ),
+                )
+                return existing.get("spec", {}).get("host", "")
+            except client.ApiException:
+                return ""
+        raise
+
+
 class OCPVirtDriver(ProviderDriver):
     def provision_host(
         self, provider, host_id, instance_type, storage_size_gb, **kwargs
@@ -173,98 +450,23 @@ class OCPVirtDriver(ProviderDriver):
                     client.V1Namespace(metadata=client.V1ObjectMeta(name=namespace))
                 )
 
-        # Build cloud-init
-        template = (
-            CLOUD_INIT_PATTERN_BUFFER
-            if host_type == "pattern_buffer"
-            else CLOUD_INIT_TEMPLATE
+        user_data = _build_cloud_init_userdata(
+            host_type,
+            public_key,
+            host_id,
+            nfs_server=kwargs.get("nfs_server"),
+            nfs_path=kwargs.get("nfs_path"),
+            nfs_port=kwargs.get("nfs_port"),
         )
 
-        user_data = template.format(ssh_pubkey=public_key, host_id=host_id)
-
-        # Append NFS mount if shared storage
-        nfs_server = kwargs.get("nfs_server")
-        nfs_path = kwargs.get("nfs_path")
-        nfs_port = kwargs.get("nfs_port")
-        if nfs_server and nfs_path:
-            mount_opts = "nfsvers=4.1,nconnect=16,hard,_netdev"
-            if nfs_port:
-                mount_opts = f"port={nfs_port},{mount_opts}"
-            user_data = user_data.rstrip() + (
-                f"\n  - mkdir -p /var/lib/troshka/shared"
-                f"\n  - 'echo \"{nfs_server}:{nfs_path} /var/lib/troshka/shared nfs "
-                f"{mount_opts} 0 0\" >> /etc/fstab'"
-                f"\n  - mount /var/lib/troshka/shared"
-                f"\n  - setsebool -P virt_use_nfs 1"
-                f"\n"
-            )
-
-        # Build VM spec — use DataSource ref (preferred) or HTTP URL fallback
         rhel_image_url = kwargs.get("rhel_image_url", "")
         datasource_name = kwargs.get("image_id") or "rhel9"
-        if rhel_image_url:
-            root_source = {"source": {"http": {"url": rhel_image_url}}}
-        else:
-            root_source = {
-                "sourceRef": {
-                    "kind": "DataSource",
-                    "name": datasource_name,
-                    "namespace": "openshift-virtualization-os-images",
-                }
-            }
+        root_source = _build_root_source(rhel_image_url, datasource_name)
 
-        data_volumes = [
-            {
-                "metadata": {"name": f"{hostname}-root"},
-                "spec": {
-                    **root_source,
-                    "storage": {
-                        "resources": {"requests": {"storage": "50Gi"}},
-                        "storageClassName": "ocs-storagecluster-ceph-rbd-virtualization",
-                    },
-                },
-            },
-            {
-                "metadata": {"name": f"{hostname}-data"},
-                "spec": {
-                    "source": {"blank": {}},
-                    "storage": {
-                        "resources": {"requests": {"storage": f"{storage_size_gb}Gi"}},
-                        "storageClassName": "ocs-storagecluster-ceph-rbd-virtualization",
-                    },
-                },
-            },
-        ]
-
-        # ISO PVC name — must exist in the same namespace; set to "" to skip
         iso_pvc = kwargs.get("iso_pvc", creds.get("iso_pvc", "rhel-10.2-dvd-iso"))
-
-        disks = [
-            {"disk": {"bus": "virtio"}, "name": "rootdisk"},
-            {"disk": {"bus": "virtio"}, "name": "datadisk"},
-            {"disk": {"bus": "virtio"}, "name": "cloudinitdisk"},
-        ]
-        volumes = [
-            {"dataVolume": {"name": f"{hostname}-root"}, "name": "rootdisk"},
-            {"dataVolume": {"name": f"{hostname}-data"}, "name": "datadisk"},
-            {
-                "cloudInitNoCloud": {
-                    "secretRef": {"name": f"{hostname}-userdata"},
-                },
-                "name": "cloudinitdisk",
-            },
-        ]
-        if iso_pvc:
-            disks.insert(
-                2, {"cdrom": {"bus": "sata", "readonly": True}, "name": "installiso"}
-            )
-            volumes.insert(
-                2,
-                {
-                    "persistentVolumeClaim": {"claimName": iso_pvc},
-                    "name": "installiso",
-                },
-            )
+        data_volumes, disks, volumes = _build_vm_disks_and_volumes(
+            hostname, storage_size_gb, host_type, iso_pvc, root_source
+        )
 
         # Create Secret with cloud-init userdata (KubeVirt enforces 2KB inline limit)
         import base64
@@ -273,32 +475,13 @@ class OCPVirtDriver(ProviderDriver):
             metadata=client.V1ObjectMeta(
                 name=f"{hostname}-userdata",
                 namespace=namespace,
-                labels={"app": "troshka", "troshka/host-id": host_id},
+                labels={"app": "troshka", _HOST_ID_LABEL: host_id},
             ),
             data={
                 "userdata": base64.b64encode(user_data.encode()).decode(),
             },
         )
         core_api.create_namespaced_secret(namespace=namespace, body=secret_body)
-
-        # Pattern buffer gets a scratch volume for qemu-img/NBD capture
-        if host_type == "pattern_buffer":
-            data_volumes.append(
-                {
-                    "metadata": {"name": f"{hostname}-scratch"},
-                    "spec": {
-                        "source": {"blank": {}},
-                        "storage": {
-                            "resources": {"requests": {"storage": "500Gi"}},
-                            "storageClassName": "ocs-storagecluster-ceph-rbd-virtualization",
-                        },
-                    },
-                }
-            )
-            disks.append({"disk": {"bus": "virtio"}, "name": "scratch"})
-            volumes.append(
-                {"dataVolume": {"name": f"{hostname}-scratch"}, "name": "scratch"}
-            )
 
         vm_manifest = {
             "apiVersion": "kubevirt.io/v1",
@@ -308,7 +491,7 @@ class OCPVirtDriver(ProviderDriver):
                 "namespace": namespace,
                 "labels": {
                     "app": "troshka",
-                    "troshka/host-id": host_id,
+                    _HOST_ID_LABEL: host_id,
                     "troshka/host-type": host_type,
                 },
             },
@@ -318,7 +501,7 @@ class OCPVirtDriver(ProviderDriver):
                 "template": {
                     "metadata": {
                         "labels": {
-                            "kubevirt.io/domain": hostname,
+                            _KUBEVIRT_DOMAIN_LABEL: hostname,
                             "app": "troshka",
                         }
                     },
@@ -363,11 +546,11 @@ class OCPVirtDriver(ProviderDriver):
             metadata=client.V1ObjectMeta(
                 name=f"troshka-lb-{host_id[:8]}",
                 namespace=namespace,
-                labels={"app": "troshka", "troshka/host-id": host_id},
+                labels={"app": "troshka", _HOST_ID_LABEL: host_id},
             ),
             spec=client.V1ServiceSpec(
                 type="LoadBalancer",
-                selector={"kubevirt.io/domain": hostname},
+                selector={_KUBEVIRT_DOMAIN_LABEL: hostname},
                 ports=[
                     client.V1ServicePort(
                         name="ssh", port=SSH_LB_PORT, target_port=22, protocol="TCP"
@@ -383,49 +566,9 @@ class OCPVirtDriver(ProviderDriver):
         )
         core_api.create_namespaced_service(namespace=namespace, body=svc)
 
-        # Wait for VMI to reach Running
-        pod_ip = None
-        for _ in range(120):
-            time.sleep(5)
-            try:
-                vmi = cast(
-                    dict[str, Any],
-                    custom_api.get_namespaced_custom_object(
-                        group=_KUBEVIRT_GROUP,
-                        version="v1",
-                        namespace=namespace,
-                        plural="virtualmachineinstances",
-                        name=hostname,
-                    ),
-                )
-                phase = vmi.get("status", {}).get("phase")
-                if phase == "Running":
-                    interfaces = vmi.get("status", {}).get("interfaces", [])
-                    if interfaces:
-                        pod_ip = interfaces[0].get("ipAddress")
-                    break
-            except client.ApiException:
-                pass
-        else:
-            raise RuntimeError(
-                f"VM {hostname} did not reach Running state within 10 minutes"
-            )
+        pod_ip = _wait_for_vmi_running(custom_api, namespace, hostname)
 
-        # Wait for LoadBalancer external IP assignment (MetalLB)
-        external_ip = None
-        for _ in range(60):
-            lb_svc = cast(
-                Any,
-                core_api.read_namespaced_service(
-                    f"troshka-lb-{host_id[:8]}", namespace
-                ),
-            )
-            lb_status = lb_svc.status.load_balancer
-            ingress = lb_status.ingress if lb_status else None
-            if ingress and ingress[0].ip:
-                external_ip = ingress[0].ip
-                break
-            time.sleep(2)
+        external_ip = _wait_for_lb_ip(core_api, f"troshka-lb-{host_id[:8]}", namespace)
         if not external_ip:
             logger.warning("No external IP assigned for host %s", host_id[:8])
 
@@ -494,49 +637,7 @@ class OCPVirtDriver(ProviderDriver):
             if e.status != 404:
                 raise
 
-        # Clean up all associated services and routes
-        host_short = instance_id.replace("troshka-host-", "")
-        for prefix in [
-            "troshka-lb-",
-            "troshka-vncd-",
-        ]:
-            try:
-                core_api.delete_namespaced_service(f"{prefix}{host_short}", namespace)
-            except client.ApiException:
-                pass
-
-        # Clean up EIP LB services by label
-        try:
-            eip_svcs = core_api.list_namespaced_service(
-                namespace,
-                label_selector=f"troshka/host-id={host_short}",
-            )
-            for svc in cast(Any, eip_svcs).items:
-                if svc.metadata.name.startswith("troshka-eip-"):
-                    try:
-                        core_api.delete_namespaced_service(svc.metadata.name, namespace)
-                    except client.ApiException:
-                        pass
-        except client.ApiException:
-            pass
-
-        # Clean up userdata secret
-        try:
-            core_api.delete_namespaced_secret(f"{instance_id}-userdata", namespace)
-        except client.ApiException:
-            pass
-
-        try:
-            custom_api.delete_namespaced_custom_object(
-                group="route.openshift.io",
-                version="v1",
-                namespace=namespace,
-                plural="routes",
-                name=f"troshka-console-{host_short}",
-            )
-        except client.ApiException:
-            pass
-
+        _cleanup_host_k8s_resources(custom_api, core_api, namespace, instance_id)
         logger.info("Terminated OCP Virt host %s", instance_id)
 
     def get_host_status(self, provider, instance_id):
@@ -630,7 +731,7 @@ class OCPVirtDriver(ProviderDriver):
                 namespace=namespace,
             ),
             spec=client.V1ServiceSpec(
-                selector={"kubevirt.io/domain": host.instance_id},
+                selector={_KUBEVIRT_DOMAIN_LABEL: host.instance_id},
                 ports=[client.V1ServicePort(port=8080, target_port=8080)],
             ),
         )
@@ -667,7 +768,7 @@ class OCPVirtDriver(ProviderDriver):
         }
         try:
             result = custom_api.create_namespaced_custom_object(
-                group="route.openshift.io",
+                group=_ROUTE_API,
                 version="v1",
                 namespace=namespace,
                 plural="routes",
@@ -693,7 +794,7 @@ class OCPVirtDriver(ProviderDriver):
             pass
         try:
             custom_api.delete_namespaced_custom_object(
-                group="route.openshift.io",
+                group=_ROUTE_API,
                 version="v1",
                 namespace=namespace,
                 plural="routes",
@@ -715,8 +816,6 @@ class OCPVirtDriver(ProviderDriver):
         import re
 
         from kubernetes import client
-
-        from app.services.troshkad_client import start_job, wait_for_job
 
         creds = provider.get_credentials()
         namespace = creds.get("namespace", "troshka")
@@ -743,7 +842,7 @@ class OCPVirtDriver(ProviderDriver):
             ),
             spec=client.V1ServiceSpec(
                 type="NodePort",
-                selector={"kubevirt.io/domain": host.instance_id},
+                selector={_KUBEVIRT_DOMAIN_LABEL: host.instance_id},
                 ports=[
                     client.V1ServicePort(
                         port=port,
@@ -767,37 +866,7 @@ class OCPVirtDriver(ProviderDriver):
         svc_obj: Any = created_svc
         transit_port = svc_obj.spec.ports[0].node_port
 
-        # Set up nftables DNAT on the host: transit_port → VM int_ip:vm_port
-        ns_name = f"troshka-{project_id[:8]}"
-        try:
-            from app.services.troshkad_client import start_job, wait_for_job
-
-            job_id = start_job(
-                host,
-                "/networks/add-dnat",
-                {
-                    "namespace": ns_name,
-                    "transit_port": transit_port,
-                    "dst_ip": int_ip,
-                    "dst_port": vm_port,
-                },
-            )
-            wait_for_job(host, job_id, timeout=30)
-            logger.info(
-                "Route DNAT: %d → %s:%d in %s",
-                transit_port,
-                int_ip,
-                vm_port,
-                ns_name,
-            )
-        except Exception:
-            logger.warning(
-                "Route DNAT setup failed for %s:%d (transit %d), continuing",
-                int_ip,
-                vm_port,
-                transit_port,
-                exc_info=True,
-            )
+        _setup_route_dnat(host, project_id, transit_port, int_ip, vm_port)
 
         # Update service target_port to match the assigned nodePort
         # so OCP Router → NodePort → host transit_port → DNAT → VM
@@ -835,36 +904,7 @@ class OCPVirtDriver(ProviderDriver):
                 ),
             },
         }
-        try:
-            result = cast(
-                dict[str, Any],
-                custom_api.create_namespaced_custom_object(
-                    group="route.openshift.io",
-                    version="v1",
-                    namespace=namespace,
-                    plural="routes",
-                    body=route,
-                ),
-            )
-            hostname = result.get("spec", {}).get("host", "")
-        except client.ApiException as e:
-            if e.status == 409:
-                try:
-                    existing = cast(
-                        dict[str, Any],
-                        custom_api.get_namespaced_custom_object(
-                            group="route.openshift.io",
-                            version="v1",
-                            namespace=namespace,
-                            plural="routes",
-                            name=resource_name,
-                        ),
-                    )
-                    hostname = existing.get("spec", {}).get("host", "")
-                except client.ApiException:
-                    hostname = ""
-            else:
-                raise
+        hostname = _create_or_get_route(custom_api, namespace, route, resource_name)
 
         logger.info(
             "Created Route %s → %s:%d (host: %s)", resource_name, int_ip, port, hostname
@@ -907,7 +947,7 @@ class OCPVirtDriver(ProviderDriver):
             routes = cast(
                 dict[str, Any],
                 custom_api.list_namespaced_custom_object(
-                    group="route.openshift.io",
+                    group=_ROUTE_API,
                     version="v1",
                     namespace=namespace,
                     plural="routes",
@@ -917,7 +957,7 @@ class OCPVirtDriver(ProviderDriver):
             for route in routes.get("items", []):
                 try:
                     custom_api.delete_namespaced_custom_object(
-                        group="route.openshift.io",
+                        group=_ROUTE_API,
                         version="v1",
                         namespace=namespace,
                         plural="routes",
@@ -1027,12 +1067,12 @@ class OCPVirtDriver(ProviderDriver):
                 labels={
                     "app": "troshka",
                     "troshka/eip-id": eip_id,
-                    "troshka/host-id": host.instance_id.replace("troshka-host-", ""),
+                    _HOST_ID_LABEL: host.instance_id.replace("troshka-host-", ""),
                 },
             ),
             spec=client.V1ServiceSpec(
                 type="LoadBalancer",
-                selector={"kubevirt.io/domain": host.instance_id},
+                selector={_KUBEVIRT_DOMAIN_LABEL: host.instance_id},
                 ports=[
                     client.V1ServicePort(
                         name="placeholder",

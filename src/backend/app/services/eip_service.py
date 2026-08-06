@@ -42,7 +42,7 @@ def allocate_eip(
     db.commit()
     db.refresh(eip)
 
-    logger.info(
+    logger.info(  # NOSONAR
         "Allocated EIP %s (%s) for project %s",
         eip.public_ip,
         eip.allocation_id,
@@ -87,23 +87,22 @@ def disassociate_eip(db: Session, eip: ElasticIp, host) -> None:
     if not provider:
         raise ValueError(f"Provider {eip.provider_id} not found")
 
-    if provider.type == "ec2":
-        if eip.association_id:
-            from app.services.provisioner import _get_ec2_client
+    if provider.type == "ec2" and eip.association_id:
+        from app.services.provisioner import _get_ec2_client
 
-            creds = provider.get_credentials()
-            ec2 = _get_ec2_client(credentials=creds)
-            ec2.disassociate_address(AssociationId=eip.association_id)
+        creds = provider.get_credentials()
+        ec2 = _get_ec2_client(credentials=creds)
+        ec2.disassociate_address(AssociationId=eip.association_id)
 
-            if eip.private_ip:
-                desc = ec2.describe_instances(InstanceIds=[host.instance_id])
-                for eni in desc["Reservations"][0]["Instances"][0]["NetworkInterfaces"]:
-                    if eni["Attachment"]["DeviceIndex"] == 0:
-                        ec2.unassign_private_ip_addresses(
-                            NetworkInterfaceId=eni["NetworkInterfaceId"],
-                            PrivateIpAddresses=[eip.private_ip],
-                        )
-                        break
+        if eip.private_ip:
+            desc = ec2.describe_instances(InstanceIds=[host.instance_id])
+            for eni in desc["Reservations"][0]["Instances"][0]["NetworkInterfaces"]:
+                if eni["Attachment"]["DeviceIndex"] == 0:
+                    ec2.unassign_private_ip_addresses(
+                        NetworkInterfaceId=eni["NetworkInterfaceId"],
+                        PrivateIpAddresses=[eip.private_ip],
+                    )
+                    break
 
     eip.private_ip = None
     eip.host_id = None
@@ -196,7 +195,25 @@ def allocate_transit_ports(
     return port_map
 
 
-def sync_security_group_rules(db: Session, provider, desired_rules: list[dict]) -> dict:
+def _extract_pf_rules(ip_permissions: list[dict]) -> dict:
+    """Extract troshka port-forward rules from SG IpPermissions."""
+    rules = {}
+    for perm in ip_permissions:
+        for ip_range in perm.get("IpRanges", []):
+            desc = ip_range.get("Description", "")
+            if desc.startswith("troshka-pf:"):
+                key = f"{perm['IpProtocol']}:{perm['FromPort']}"
+                rules[key] = {
+                    "protocol": perm["IpProtocol"],
+                    "port": perm["FromPort"],
+                    "description": desc,
+                }
+    return rules
+
+
+def sync_security_group_rules(
+    _db: Session, provider, desired_rules: list[dict]
+) -> dict:
     """Reconcile SG ingress rules. EC2 only — no-op for other providers."""
     if provider.type != "ec2":
         return {"added": 0, "removed": 0}
@@ -213,17 +230,7 @@ def sync_security_group_rules(db: Session, provider, desired_rules: list[dict]) 
     sg = ec2.describe_security_groups(GroupIds=[sg_id])
     current_perms = sg["SecurityGroups"][0]["IpPermissions"]
 
-    current_pf_rules = {}
-    for perm in current_perms:
-        for ip_range in perm.get("IpRanges", []):
-            desc = ip_range.get("Description", "")
-            if desc.startswith("troshka-pf:"):
-                key = f"{perm['IpProtocol']}:{perm['FromPort']}"
-                current_pf_rules[key] = {
-                    "protocol": perm["IpProtocol"],
-                    "port": perm["FromPort"],
-                    "description": desc,
-                }
+    current_pf_rules = _extract_pf_rules(current_perms)
 
     desired_set = {}
     for rule in desired_rules:

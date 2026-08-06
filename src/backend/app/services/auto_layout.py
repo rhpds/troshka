@@ -8,15 +8,11 @@ Positions nodes in a readable grid layout:
   Row 4: unattached storage
 """
 
+_WORKLOAD_TYPES = ("vmNode", "containerNode")
 
-def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Apply auto-layout to nodes/edges, return updated copies."""
-    if not nodes:
-        return nodes, edges
 
-    updated: dict[str, dict] = {}
-
-    # Classify nodes
+def _classify_nodes(nodes: list[dict]) -> dict[str, list[dict]]:
+    """Classify nodes into networks, routers, gateways, workloads, and storage."""
     networks = [
         n
         for n in nodes
@@ -39,10 +35,19 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
     container_nodes = [n for n in nodes if n.get("type") == "containerNode"]
     storage_nodes = [n for n in nodes if n.get("type") == "storageNode"]
 
-    # Combine VMs and containers for layout purposes (treat them identically)
-    workload_nodes = vm_nodes + container_nodes
+    return {
+        "networks": networks,
+        "routers": routers,
+        "gateways": gateways,
+        "workload_nodes": vm_nodes + container_nodes,
+        "storage_nodes": storage_nodes,
+    }
 
-    # Build connection maps
+
+def _build_connection_maps(
+    nodes: list[dict], edges: list[dict]
+) -> tuple[dict[str, list[str]], dict[str, str], dict[str, list[str]]]:
+    """Build adjacency maps: vm_to_storage, storage_to_vm, network_to_vms."""
     vm_to_storage: dict[str, list[str]] = {}
     storage_to_vm: dict[str, str] = {}
 
@@ -53,14 +58,13 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
             continue
         src_type = src.get("type", "")
         tgt_type = tgt.get("type", "")
-        if src_type in ("vmNode", "containerNode") and tgt_type == "storageNode":
+        if src_type in _WORKLOAD_TYPES and tgt_type == "storageNode":
             vm_to_storage.setdefault(src["id"], []).append(tgt["id"])
             storage_to_vm[tgt["id"]] = src["id"]
-        if tgt_type in ("vmNode", "containerNode") and src_type == "storageNode":
+        if tgt_type in _WORKLOAD_TYPES and src_type == "storageNode":
             vm_to_storage.setdefault(tgt["id"], []).append(src["id"])
             storage_to_vm[src["id"]] = tgt["id"]
 
-    # Build network connection maps
     network_to_vms: dict[str, list[str]] = {}
     for e in edges:
         src = _find(nodes, e.get("source", ""))
@@ -69,25 +73,21 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
             continue
         src_type = src.get("type", "")
         tgt_type = tgt.get("type", "")
-        if src_type in ("vmNode", "containerNode") and tgt_type == "networkNode":
+        if src_type in _WORKLOAD_TYPES and tgt_type == "networkNode":
             network_to_vms.setdefault(tgt["id"], []).append(src["id"])
-        if tgt_type in ("vmNode", "containerNode") and src_type == "networkNode":
+        if tgt_type in _WORKLOAD_TYPES and src_type == "networkNode":
             network_to_vms.setdefault(src["id"], []).append(tgt["id"])
 
-    # Sizing constants (match frontend)
-    net_w = 240
-    net_h = 70
-    vm_w = 200
-    vm_h = 230
-    disk_w = 170
-    disk_h = 90
-    gap_x = 40
-    gap_y = 80
-    disk_gap = 30
+    return vm_to_storage, storage_to_vm, network_to_vms
 
-    # Determine top vs bottom networks from edge handles
+
+def _classify_network_positions(
+    nodes: list[dict], edges: list[dict], networks: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """Determine which networks go on top vs bottom based on edge handles."""
     top_net_ids: set[str] = set()
     bottom_net_ids: set[str] = set()
+
     for e in edges:
         src = _find(nodes, e.get("source", ""))
         tgt = _find(nodes, e.get("target", ""))
@@ -97,14 +97,14 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
         t_h = (e.get("targetHandle") or "").lower()
         src_type = src.get("type", "")
         tgt_type = tgt.get("type", "")
-        if src_type in ("vmNode", "containerNode") and tgt_type == "networkNode":
+        if src_type in _WORKLOAD_TYPES and tgt_type == "networkNode":
             if "top" in s_h:
                 top_net_ids.add(tgt["id"])
             elif "bottom" in s_h:
                 bottom_net_ids.add(tgt["id"])
             else:
                 top_net_ids.add(tgt["id"])
-        if tgt_type in ("vmNode", "containerNode") and src_type == "networkNode":
+        if tgt_type in _WORKLOAD_TYPES and src_type == "networkNode":
             if "top" in t_h:
                 top_net_ids.add(src["id"])
             elif "bottom" in t_h:
@@ -124,9 +124,13 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
 
     top_nets = [n for n in networks if n["id"] in top_net_ids]
     bottom_nets = [n for n in networks if n["id"] in bottom_net_ids]
+    return top_nets, bottom_nets
 
-    # --- Layout rows ---
-    # Pre-calculate VM row width to center infrastructure above it
+
+def _build_router_connections(
+    nodes: list[dict], edges: list[dict]
+) -> dict[str, list[str]]:
+    """Build router/gateway to network adjacency map."""
     router_to_nets: dict[str, list[str]] = {}
     for e in edges:
         src = _find(nodes, e.get("source", ""))
@@ -140,55 +144,104 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
                 router_to_nets.setdefault(src["id"], []).append(tgt["id"])
             if tgt_sub in ("router", "gateway"):
                 router_to_nets.setdefault(tgt["id"], []).append(src["id"])
+    return router_to_nets
 
+
+def _calc_vm_row_width(
+    workload_nodes: list[dict],
+    vm_to_storage: dict[str, list[str]],
+    vm_w: int,
+    disk_w: int,
+    disk_gap: int,
+    gap_x: int,
+) -> int:
+    """Calculate the total width of the VM+disk row."""
     vm_row_width = 0
     for vm in workload_nodes:
         disks = vm_to_storage.get(vm["id"], [])
         if disks:
             vm_row_width += disk_w + disk_gap
         vm_row_width += vm_w + gap_x
-    vm_row_width = max(vm_row_width, 400)
+    return max(vm_row_width, 400)
 
-    current_y = 40
 
-    # Row 0: Gateways — centered above VM row
-    if gateways:
-        gw_total = len(gateways) * (net_w + gap_x) - gap_x
-        gw_start_x = 40 + max(0, (vm_row_width - gw_total) / 2 - vm_row_width * 0.15)
-        for i, n in enumerate(gateways):
-            updated[n["id"]] = {"x": gw_start_x + i * (net_w + gap_x), "y": current_y}
-        current_y += net_h + gap_y
+def _layout_gateways(
+    gateways: list[dict],
+    vm_row_width: int,
+    current_y: float,
+    net_w: int,
+    gap_x: int,
+    net_h: int,
+    gap_y: int,
+) -> tuple[dict[str, dict], float]:
+    """Layout gateway nodes centered above VM row. Returns (updates, new_y)."""
+    updated: dict[str, dict] = {}
+    if not gateways:
+        return updated, current_y
+    gw_total = len(gateways) * (net_w + gap_x) - gap_x
+    gw_start_x = 40 + max(0, (vm_row_width - gw_total) / 2 - vm_row_width * 0.15)
+    for i, n in enumerate(gateways):
+        updated[n["id"]] = {"x": gw_start_x + i * (net_w + gap_x), "y": current_y}
+    return updated, current_y + net_h + gap_y
 
-    # Row 1: Top networks + routers — centered-right above VM row
+
+def _layout_infra_row(
+    top_nets: list[dict],
+    routers: list[dict],
+    router_to_nets: dict[str, list[str]],
+    vm_row_width: int,
+    current_y: float,
+    net_w: int,
+    gap_x: int,
+    net_h: int,
+    gap_y: int,
+) -> tuple[dict[str, dict], float]:
+    """Layout top networks + routers. Returns (updates, new_y)."""
+    updated: dict[str, dict] = {}
+    if not top_nets and not routers:
+        return updated, current_y
+
     placed_infra: set[str] = set()
-    if top_nets or routers:
-        infra_items = []
-        for net in top_nets:
-            infra_items.append(net)
-            placed_infra.add(net["id"])
-            for r in routers:
-                if r["id"] in placed_infra:
-                    continue
-                if net["id"] in router_to_nets.get(r["id"], []):
-                    infra_items.append(r)
-                    placed_infra.add(r["id"])
+    infra_items: list[dict] = []
+    for net in top_nets:
+        infra_items.append(net)
+        placed_infra.add(net["id"])
         for r in routers:
-            if r["id"] not in placed_infra:
+            if r["id"] in placed_infra:
+                continue
+            if net["id"] in router_to_nets.get(r["id"], []):
                 infra_items.append(r)
-        infra_total = len(infra_items) * (net_w + gap_x) - gap_x
-        infra_start_x = 40 + max(
-            0, (vm_row_width - infra_total) / 2 + vm_row_width * 0.15
-        )
-        for i, n in enumerate(infra_items):
-            updated[n["id"]] = {
-                "x": infra_start_x + i * (net_w + gap_x),
-                "y": current_y,
-            }
-        current_y += net_h + gap_y
+                placed_infra.add(r["id"])
+    for r in routers:
+        if r["id"] not in placed_infra:
+            infra_items.append(r)
 
-    # Row 2: VMs and containers with disks
+    infra_total = len(infra_items) * (net_w + gap_x) - gap_x
+    infra_start_x = 40 + max(0, (vm_row_width - infra_total) / 2 + vm_row_width * 0.15)
+    for i, n in enumerate(infra_items):
+        updated[n["id"]] = {
+            "x": infra_start_x + i * (net_w + gap_x),
+            "y": current_y,
+        }
+    return updated, current_y + net_h + gap_y
+
+
+def _layout_workloads(
+    workload_nodes: list[dict],
+    vm_to_storage: dict[str, list[str]],
+    current_y: float,
+    vm_w: int,
+    vm_h: int,
+    disk_w: int,
+    disk_h: int,
+    gap_x: int,
+    disk_gap: int,
+    gap_y: int,
+) -> tuple[dict[str, dict], float, float]:
+    """Layout VMs/containers with their disks. Returns (updates, cursor_x, new_y)."""
+    updated: dict[str, dict] = {}
     vm_row_y = current_y
-    cursor_x = 40
+    cursor_x = 40.0
     max_vm_bottom = vm_row_y
 
     for vm in workload_nodes:
@@ -214,37 +267,48 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
 
         cursor_x += vm_w + gap_x
 
-    current_y = max_vm_bottom + gap_y
+    return updated, cursor_x, max_vm_bottom + gap_y
 
-    # Row 3: Bottom networks — position under connected VMs when possible
-    if bottom_nets:
-        unplaced_bottom = []
-        for n in bottom_nets:
-            conn_vms = network_to_vms.get(n["id"], [])
-            conn_vm_pos = [updated[vid] for vid in conn_vms if vid in updated]
-            if conn_vm_pos:
-                avg_x = sum(p["x"] for p in conn_vm_pos) / len(conn_vm_pos)
-                updated[n["id"]] = {"x": avg_x, "y": current_y}
-            else:
-                unplaced_bottom.append(n)
-        if unplaced_bottom:
-            vm_area_width = cursor_x - 40
-            net_total_width = len(unplaced_bottom) * (net_w + gap_x) - gap_x
-            net_start_x = 40 + (vm_area_width - net_total_width) / 2
-            for i, n in enumerate(unplaced_bottom):
-                updated[n["id"]] = {
-                    "x": max(40, net_start_x + i * (net_w + gap_x)),
-                    "y": current_y,
-                }
-        current_y += net_h + gap_y
 
-    # Row 4: Unattached storage
-    unattached = [n for n in storage_nodes if n["id"] not in storage_to_vm]
-    if unattached:
-        for i, n in enumerate(unattached):
-            updated[n["id"]] = {"x": 40 + i * (disk_w + gap_x), "y": current_y}
+def _layout_bottom_nets(
+    bottom_nets: list[dict],
+    network_to_vms: dict[str, list[str]],
+    already_placed: dict[str, dict],
+    cursor_x: float,
+    current_y: float,
+    net_w: int,
+    gap_x: int,
+    net_h: int,
+    gap_y: int,
+) -> tuple[dict[str, dict], float]:
+    """Layout bottom networks under connected VMs. Returns (updates, new_y)."""
+    updated: dict[str, dict] = {}
+    if not bottom_nets:
+        return updated, current_y
 
-    # Apply positions
+    unplaced_bottom: list[dict] = []
+    for n in bottom_nets:
+        conn_vms = network_to_vms.get(n["id"], [])
+        conn_vm_pos = [already_placed[vid] for vid in conn_vms if vid in already_placed]
+        if conn_vm_pos:
+            avg_x = sum(p["x"] for p in conn_vm_pos) / len(conn_vm_pos)
+            updated[n["id"]] = {"x": avg_x, "y": current_y}
+        else:
+            unplaced_bottom.append(n)
+    if unplaced_bottom:
+        vm_area_width = cursor_x - 40
+        net_total_width = len(unplaced_bottom) * (net_w + gap_x) - gap_x
+        net_start_x = 40 + (vm_area_width - net_total_width) / 2
+        for i, n in enumerate(unplaced_bottom):
+            updated[n["id"]] = {
+                "x": max(40, net_start_x + i * (net_w + gap_x)),
+                "y": current_y,
+            }
+    return updated, current_y + net_h + gap_y
+
+
+def _apply_positions(nodes: list[dict], updated: dict[str, dict]) -> list[dict]:
+    """Apply computed positions to nodes, returning new list."""
     new_nodes = []
     for n in nodes:
         pos = updated.get(n["id"])
@@ -252,9 +316,13 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
             new_nodes.append({**n, "position": pos})
         else:
             new_nodes.append(n)
+    return new_nodes
 
-    # Fix edge handles for bottom networks
-    bottom_net_id_set = {n["id"] for n in bottom_nets}
+
+def _fix_bottom_edges(
+    edges: list[dict], nodes: list[dict], bottom_net_ids: set[str]
+) -> list[dict]:
+    """Fix edge handles so bottom-network edges connect from the bottom."""
     new_edges = []
     for e in edges:
         src = _find(nodes, e.get("source", ""))
@@ -266,21 +334,112 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
         tgt_type = tgt.get("type", "")
         if (
             src_type == "networkNode"
-            and tgt_type in ("vmNode", "containerNode")
-            and src["id"] in bottom_net_id_set
+            and tgt_type in _WORKLOAD_TYPES
+            and src["id"] in bottom_net_ids
         ):
             handle = (e.get("targetHandle") or "").replace("-top", "-bottom")
             new_edges.append({**e, "sourceHandle": "top", "targetHandle": handle})
         elif (
             tgt_type == "networkNode"
-            and src_type in ("vmNode", "containerNode")
-            and tgt["id"] in bottom_net_id_set
+            and src_type in _WORKLOAD_TYPES
+            and tgt["id"] in bottom_net_ids
         ):
             handle = (e.get("sourceHandle") or "").replace("-top", "-bottom")
             new_edges.append({**e, "sourceHandle": handle, "targetHandle": "top"})
         else:
             new_edges.append(e)
+    return new_edges
 
+
+def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Apply auto-layout to nodes/edges, return updated copies."""
+    if not nodes:
+        return nodes, edges
+
+    classified = _classify_nodes(nodes)
+    vm_to_storage, storage_to_vm, network_to_vms = _build_connection_maps(nodes, edges)
+    top_nets, bottom_nets = _classify_network_positions(
+        nodes, edges, classified["networks"]
+    )
+
+    # Sizing constants (match frontend)
+    net_w = 240
+    net_h = 70
+    vm_w = 200
+    vm_h = 230
+    disk_w = 170
+    disk_h = 90
+    gap_x = 40
+    gap_y = 80
+    disk_gap = 30
+
+    router_to_nets = _build_router_connections(nodes, edges)
+    vm_row_width = _calc_vm_row_width(
+        classified["workload_nodes"], vm_to_storage, vm_w, disk_w, disk_gap, gap_x
+    )
+
+    updated: dict[str, dict] = {}
+    current_y: float = 40
+
+    # Row 0: Gateways
+    positions, current_y = _layout_gateways(
+        classified["gateways"], vm_row_width, current_y, net_w, gap_x, net_h, gap_y
+    )
+    updated.update(positions)
+
+    # Row 1: Top networks + routers
+    positions, current_y = _layout_infra_row(
+        top_nets,
+        classified["routers"],
+        router_to_nets,
+        vm_row_width,
+        current_y,
+        net_w,
+        gap_x,
+        net_h,
+        gap_y,
+    )
+    updated.update(positions)
+
+    # Row 2: VMs and containers with disks
+    positions, cursor_x, current_y = _layout_workloads(
+        classified["workload_nodes"],
+        vm_to_storage,
+        current_y,
+        vm_w,
+        vm_h,
+        disk_w,
+        disk_h,
+        gap_x,
+        disk_gap,
+        gap_y,
+    )
+    updated.update(positions)
+
+    # Row 3: Bottom networks
+    positions, current_y = _layout_bottom_nets(
+        bottom_nets,
+        network_to_vms,
+        updated,
+        cursor_x,
+        current_y,
+        net_w,
+        gap_x,
+        net_h,
+        gap_y,
+    )
+    updated.update(positions)
+
+    # Row 4: Unattached storage
+    unattached = [
+        n for n in classified["storage_nodes"] if n["id"] not in storage_to_vm
+    ]
+    if unattached:
+        for i, n in enumerate(unattached):
+            updated[n["id"]] = {"x": 40 + i * (disk_w + gap_x), "y": current_y}
+
+    new_nodes = _apply_positions(nodes, updated)
+    new_edges = _fix_bottom_edges(edges, nodes, {n["id"] for n in bottom_nets})
     return new_nodes, new_edges
 
 

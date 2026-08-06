@@ -9,6 +9,8 @@ from app.models.storage_pool import StoragePool
 
 logger = logging.getLogger(__name__)
 
+_MANAGED_BY_TAG = "tag:ManagedBy"
+
 
 def generate_pool_ca(pool_name: str) -> tuple[str, str]:
     """Generate a self-signed CA cert+key for a storage pool. Returns (cert_pem, key_pem)."""
@@ -146,7 +148,7 @@ def ensure_subnet_in_az(credentials: dict, region: str, vpc_id: str, az: str) ->
         Filters=[
             {"Name": "vpc-id", "Values": [vpc_id]},
             {"Name": "availability-zone", "Values": [az]},
-            {"Name": "tag:ManagedBy", "Values": ["troshka"]},
+            {"Name": _MANAGED_BY_TAG, "Values": ["troshka"]},
         ]
     )
     if existing["Subnets"]:
@@ -155,7 +157,7 @@ def ensure_subnet_in_az(credentials: dict, region: str, vpc_id: str, az: str) ->
     all_subnets = ec2.describe_subnets(
         Filters=[
             {"Name": "vpc-id", "Values": [vpc_id]},
-            {"Name": "tag:ManagedBy", "Values": ["troshka"]},
+            {"Name": _MANAGED_BY_TAG, "Values": ["troshka"]},
         ]
     )
     used_thirds = set()
@@ -182,7 +184,7 @@ def ensure_subnet_in_az(credentials: dict, region: str, vpc_id: str, az: str) ->
     vpc_data = ec2.describe_route_tables(
         Filters=[
             {"Name": "vpc-id", "Values": [vpc_id]},
-            {"Name": "tag:ManagedBy", "Values": ["troshka"]},
+            {"Name": _MANAGED_BY_TAG, "Values": ["troshka"]},
         ]
     )
     if vpc_data["RouteTables"]:
@@ -324,7 +326,7 @@ def provision_fsx_pool(
         pool.fsx_dns_name = result.get("dns_name")
         db.commit()
     except Exception as e:
-        logger.error("FSx provisioning failed for pool %s: %s", pool_id[:8], e)
+        logger.exception("FSx provisioning failed for pool %s: %s", pool_id[:8], e)
         pool = db.get(StoragePool, pool_id)
         if not pool:
             return
@@ -493,6 +495,120 @@ def _ceph_exec(core_api, toolbox_pod: str, command: list[str]) -> str:
     return resp.strip()
 
 
+def _get_internal_ip_from_node(node: Any) -> str | None:
+    """Return the InternalIP address from a node's status, or None."""
+    for addr in node.status.addresses:
+        if addr.type == "InternalIP":
+            return addr.address
+    return None
+
+
+def _resolve_nfs_node_ip(core_api, nfs_pod: Any) -> str | None:
+    """Resolve the InternalIP of the node running the NFS pod, falling back to any node."""
+    nfs_node_name = nfs_pod.items[0].spec.node_name if nfs_pod.items else None
+    if nfs_node_name:
+        node: Any = core_api.read_node(nfs_node_name)
+        ip = _get_internal_ip_from_node(node)
+        if ip:
+            return ip
+
+    nodes: Any = core_api.list_node()
+    for n in nodes.items:
+        ip = _get_internal_ip_from_node(n)
+        if ip:
+            return ip
+    return None
+
+
+def _create_ceph_resources(
+    core_api,
+    toolbox: str,
+    group_name: str,
+    vol_name: str,
+    quota_bytes: int,
+    pseudo_path: str,
+):
+    """Create Ceph subvolumegroup, subvolume, and NFS export."""
+    _ceph_exec(
+        core_api,
+        toolbox,
+        ["ceph", "fs", "subvolumegroup", "create", CEPH_FS_NAME, group_name],
+    )
+    logger.info("Ceph subvolumegroup %s created", group_name)
+
+    _ceph_exec(
+        core_api,
+        toolbox,
+        [
+            "ceph",
+            "fs",
+            "subvolume",
+            "create",
+            CEPH_FS_NAME,
+            vol_name,
+            group_name,
+            f"--size={quota_bytes}",
+        ],
+    )
+    logger.info(
+        "Ceph subvolume %s created (%d GB)", vol_name, quota_bytes // 1073741824
+    )
+
+    subvol_path = _ceph_exec(
+        core_api,
+        toolbox,
+        ["ceph", "fs", "subvolume", "getpath", CEPH_FS_NAME, vol_name, group_name],
+    )
+    logger.info("Ceph subvolume path: %s", subvol_path)
+
+    _ceph_exec(
+        core_api,
+        toolbox,
+        [
+            "ceph",
+            "nfs",
+            "export",
+            "create",
+            "cephfs",
+            CEPH_NFS_CLUSTER,
+            pseudo_path,
+            CEPH_FS_NAME,
+            f"--path={subvol_path}",
+            "--squash=no_root_squash",
+        ],
+    )
+    logger.info("Ceph NFS export %s created with no_root_squash", pseudo_path)
+
+
+def _create_nfs_nodeport_service(
+    core_api, pool_id: str, short_id: str
+) -> tuple[Any, int]:
+    """Create a NodePort service for NFS and return (created_svc, node_port)."""
+    from kubernetes import client
+
+    svc_name = f"troshka-nfs-{short_id}"
+    svc = client.V1Service(
+        metadata=client.V1ObjectMeta(
+            name=svc_name,
+            namespace=ODF_NAMESPACE,
+            labels={"app": "troshka", "troshka/pool-id": pool_id},
+        ),
+        spec=client.V1ServiceSpec(
+            type="NodePort",
+            selector=CEPH_NFS_SVC_SELECTOR,
+            ports=[
+                client.V1ServicePort(
+                    name="nfs", port=2049, target_port=2049, protocol="TCP"
+                )
+            ],
+        ),
+    )
+    created_svc: Any = core_api.create_namespaced_service(ODF_NAMESPACE, body=svc)
+    node_port = created_svc.spec.ports[0].node_port
+    logger.info("NodePort service %s created, port %d", svc_name, node_port)
+    return created_svc, node_port
+
+
 def provision_ceph_nfs_pool(pool_id: str, credentials: dict):
     db = SessionLocal()
     try:
@@ -506,96 +622,16 @@ def provision_ceph_nfs_pool(pool_id: str, credentials: dict):
         pseudo_path = f"/troshka-{short_id}"
         quota_bytes = (pool.fsx_storage_gb or 500) * 1073741824
 
-        core_api, api_client = _get_k8s_clients(credentials)
+        core_api, _api_client = _get_k8s_clients(credentials)
         toolbox = _find_toolbox_pod(core_api)
 
-        _ceph_exec(
-            core_api,
-            toolbox,
-            [
-                "ceph",
-                "fs",
-                "subvolumegroup",
-                "create",
-                CEPH_FS_NAME,
-                group_name,
-            ],
-        )
-        logger.info("Ceph subvolumegroup %s created", group_name)
-
-        _ceph_exec(
-            core_api,
-            toolbox,
-            [
-                "ceph",
-                "fs",
-                "subvolume",
-                "create",
-                CEPH_FS_NAME,
-                vol_name,
-                group_name,
-                f"--size={quota_bytes}",
-            ],
-        )
-        logger.info(
-            "Ceph subvolume %s created (%d GB)", vol_name, quota_bytes // 1073741824
+        _create_ceph_resources(
+            core_api, toolbox, group_name, vol_name, quota_bytes, pseudo_path
         )
 
-        subvol_path = _ceph_exec(
-            core_api,
-            toolbox,
-            [
-                "ceph",
-                "fs",
-                "subvolume",
-                "getpath",
-                CEPH_FS_NAME,
-                vol_name,
-                group_name,
-            ],
+        _created_svc, node_port = _create_nfs_nodeport_service(
+            core_api, pool_id, short_id
         )
-        logger.info("Ceph subvolume path: %s", subvol_path)
-
-        _ceph_exec(
-            core_api,
-            toolbox,
-            [
-                "ceph",
-                "nfs",
-                "export",
-                "create",
-                "cephfs",
-                CEPH_NFS_CLUSTER,
-                pseudo_path,
-                CEPH_FS_NAME,
-                f"--path={subvol_path}",
-                "--squash=no_root_squash",
-            ],
-        )
-        logger.info("Ceph NFS export %s created with no_root_squash", pseudo_path)
-
-        from kubernetes import client
-
-        svc_name = f"troshka-nfs-{short_id}"
-        svc = client.V1Service(
-            metadata=client.V1ObjectMeta(
-                name=svc_name,
-                namespace=ODF_NAMESPACE,
-                labels={"app": "troshka", "troshka/pool-id": pool_id},
-            ),
-            spec=client.V1ServiceSpec(
-                type="NodePort",
-                selector=CEPH_NFS_SVC_SELECTOR,
-                ports=[
-                    client.V1ServicePort(
-                        name="nfs", port=2049, target_port=2049, protocol="TCP"
-                    )
-                ],
-            ),
-        )
-        created_svc: Any = core_api.create_namespaced_service(ODF_NAMESPACE, body=svc)
-        node_port = created_svc.spec.ports[0].node_port
-        logger.info("NodePort service %s created, port %d", svc_name, node_port)
 
         nfs_pod: Any = core_api.list_namespaced_pod(
             ODF_NAMESPACE,
@@ -603,23 +639,7 @@ def provision_ceph_nfs_pool(pool_id: str, credentials: dict):
                 f"{k}={v}" for k, v in CEPH_NFS_SVC_SELECTOR.items()
             ),
         )
-        nfs_node_name = nfs_pod.items[0].spec.node_name if nfs_pod.items else None
-        node_ip = None
-        if nfs_node_name:
-            node: Any = core_api.read_node(nfs_node_name)
-            for addr in node.status.addresses:
-                if addr.type == "InternalIP":
-                    node_ip = addr.address
-                    break
-        if not node_ip:
-            nodes: Any = core_api.list_node()
-            for n in nodes.items:
-                for addr in n.status.addresses:
-                    if addr.type == "InternalIP":
-                        node_ip = addr.address
-                        break
-                if node_ip:
-                    break
+        node_ip = _resolve_nfs_node_ip(core_api, nfs_pod)
 
         pool.nfs_endpoint = f"{node_ip}:{pseudo_path}"
         pool.nfs_port = node_port
@@ -634,7 +654,7 @@ def provision_ceph_nfs_pool(pool_id: str, credentials: dict):
         )
 
     except Exception as e:
-        logger.error("Ceph-NFS provisioning failed for pool %s: %s", pool_id[:8], e)
+        logger.exception("Ceph-NFS provisioning failed for pool %s: %s", pool_id[:8], e)
         pool = db.get(StoragePool, pool_id)
         if pool:
             pool.status = "error"
@@ -653,7 +673,7 @@ def delete_ceph_nfs_pool(
     svc_name = f"troshka-nfs-{short_id}"
 
     try:
-        core_api, api_client = _get_k8s_clients(credentials)
+        core_api, _api_client = _get_k8s_clients(credentials)
 
         try:
             core_api.delete_namespaced_service(svc_name, ODF_NAMESPACE)
@@ -709,7 +729,7 @@ def delete_ceph_nfs_pool(
             logger.warning("Ceph cleanup for pool %s partial: %s", short_id, e)
 
     except Exception as e:
-        logger.error("Ceph-NFS cleanup failed for pool %s: %s", short_id, e)
+        logger.exception("Ceph-NFS cleanup failed for pool %s: %s", short_id, e)
 
 
 # ---------------------------------------------------------------------------
@@ -724,7 +744,7 @@ def create_netapp_pool_and_volume(
     network: str,
     capacity_gb: int,
     volume_name: str = "troshka",
-    service_level: str = "FLEX",
+    _service_level: str = "FLEX",
 ) -> dict:
     from google.cloud import netapp_v1  # type: ignore[attr-defined]
     from google.oauth2 import service_account
@@ -832,7 +852,7 @@ def provision_netapp_pool(
         db.commit()
         logger.info("NetApp pool %s is available", pool_id[:8])
     except Exception as e:
-        logger.error("NetApp provisioning failed for pool %s: %s", pool_id[:8], e)
+        logger.exception("NetApp provisioning failed for pool %s: %s", pool_id[:8], e)
         pool = db.get(StoragePool, pool_id)
         if not pool:
             return
@@ -1054,7 +1074,9 @@ def provision_azure_files_pool(
         db.commit()
         logger.info("Azure Files NFS pool %s is available", pool_id[:8])
     except Exception as e:
-        logger.error("Azure Files provisioning failed for pool %s: %s", pool_id[:8], e)
+        logger.exception(
+            "Azure Files provisioning failed for pool %s: %s", pool_id[:8], e
+        )
         pool = db.get(StoragePool, pool_id)
         if not pool:
             return

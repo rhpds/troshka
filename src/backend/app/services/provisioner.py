@@ -5,15 +5,22 @@ Admins use this to add/remove EC2 hosts to the pool.
 The placement service (separate) assigns projects to available hosts.
 """
 
+from __future__ import annotations
+
 import logging
 import math
 import uuid
+from typing import Any
 
 import boto3
 
 from app.core.config import config
 
 logger = logging.getLogger(__name__)
+
+_ALL_TRAFFIC_CIDR = "0.0.0.0/0"
+_TROSHKAD_RULE_DESC = "Troshkad API"
+_DATA_DEVICE = "/dev/sdg"
 
 
 def get_public_ip() -> str | None:
@@ -66,7 +73,7 @@ def _ensure_troshkad_rule(client, sg_id: str):
     )
     if not has_31337:
         backend_ip = get_public_ip()
-        troshkad_cidr = f"{backend_ip}/32" if backend_ip else "0.0.0.0/0"
+        troshkad_cidr = f"{backend_ip}/32" if backend_ip else _ALL_TRAFFIC_CIDR
         try:
             client.authorize_security_group_ingress(
                 GroupId=sg_id,
@@ -76,7 +83,10 @@ def _ensure_troshkad_rule(client, sg_id: str):
                         "FromPort": 31337,
                         "ToPort": 31337,
                         "IpRanges": [
-                            {"CidrIp": troshkad_cidr, "Description": "Troshkad API"}
+                            {
+                                "CidrIp": troshkad_cidr,
+                                "Description": _TROSHKAD_RULE_DESC,
+                            }
                         ],
                     }
                 ],
@@ -101,7 +111,10 @@ def _ensure_console_rule(client, sg_id: str):
                     "FromPort": 443,
                     "ToPort": 443,
                     "IpRanges": [
-                        {"CidrIp": "0.0.0.0/0", "Description": "Console VNC proxy"}
+                        {
+                            "CidrIp": _ALL_TRAFFIC_CIDR,
+                            "Description": "Console VNC proxy",
+                        }
                     ],
                 }
             ],
@@ -128,7 +141,7 @@ def ensure_security_group(
         return sg_id
 
     backend_ip = get_public_ip()
-    troshkad_cidr = f"{backend_ip}/32" if backend_ip else "0.0.0.0/0"
+    troshkad_cidr = f"{backend_ip}/32" if backend_ip else _ALL_TRAFFIC_CIDR
 
     sg = client.create_security_group(
         GroupName=name,
@@ -143,21 +156,23 @@ def ensure_security_group(
                 "IpProtocol": "tcp",
                 "FromPort": 22,
                 "ToPort": 22,
-                "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "SSH"}],
+                "IpRanges": [{"CidrIp": _ALL_TRAFFIC_CIDR, "Description": "SSH"}],
             },
             {
                 "IpProtocol": "tcp",
                 "FromPort": 443,
                 "ToPort": 443,
                 "IpRanges": [
-                    {"CidrIp": "0.0.0.0/0", "Description": "Console VNC proxy"}
+                    {"CidrIp": _ALL_TRAFFIC_CIDR, "Description": "Console VNC proxy"}
                 ],
             },
             {
                 "IpProtocol": "tcp",
                 "FromPort": 31337,
                 "ToPort": 31337,
-                "IpRanges": [{"CidrIp": troshkad_cidr, "Description": "Troshkad API"}],
+                "IpRanges": [
+                    {"CidrIp": troshkad_cidr, "Description": _TROSHKAD_RULE_DESC}
+                ],
             },
             {
                 "IpProtocol": "udp",
@@ -224,7 +239,9 @@ def update_sg_troshkad_ip(sg_id: str, new_ip: str, credentials: dict | None = No
                 "IpProtocol": "tcp",
                 "FromPort": 31337,
                 "ToPort": 31337,
-                "IpRanges": [{"CidrIp": f"{new_ip}/32", "Description": "Troshkad API"}],
+                "IpRanges": [
+                    {"CidrIp": f"{new_ip}/32", "Description": _TROSHKAD_RULE_DESC}
+                ],
             }
         ],
     )
@@ -242,60 +259,29 @@ runcmd:
 {vm_tuning}"""
 
 
-def provision_host(
-    instance_type: str | None = None,
-    ami_id: str | None = None,
-    host_id: str | None = None,
-    region: str | None = None,
-    credentials: dict | None = None,
-    storage_size_gb: int = 500,
-    **kwargs,
-) -> dict:
-    """Provision a new EC2 host and add it to the pool. Admin operation."""
-    client = _get_ec2_client(region=region, credentials=credentials)
-
-    host_id = host_id or str(uuid.uuid4())
-    hostname = f"troshka-host-{host_id[:8]}"
-    instance_type = instance_type or config.aws.default_instance_type or "m8i.xlarge"
-
-    if not ami_id:
-        ami_id = getattr(config.aws, "default_ami", None) or find_rhel_ami(
-            region, credentials
-        )
-
-    vpc_id = kwargs.get("vpc_id") or getattr(config.aws, "vpc_id", None)
-    subnet_id = kwargs.get("subnet_id") or getattr(config.aws, "subnet_id", None)
-    if not vpc_id or not subnet_id:
-        raise ValueError(
-            "VPC and subnet must be configured on the provider — run Setup VPC first"
-        )
-
-    sg_id = kwargs.get("security_group_id") or getattr(
-        config.aws, "security_group_id", None
-    )
-    if not sg_id:
-        sg_id = ensure_security_group(vpc_id, credentials=credentials)
-
-    # Get all subnets in the VPC for AZ fallback
-    subnet_override = kwargs.get("subnet_override")
+def _resolve_subnet_ids(
+    client, vpc_id: str, subnet_id: str, subnet_override: str | None
+) -> list[str]:
+    """Return ordered list of subnet IDs to try for AZ fallback."""
     if subnet_override:
-        subnet_ids = [subnet_override]
-    else:
-        all_subnets = client.describe_subnets(
-            Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
-        )
-        subnet_ids = [subnet_id] + [
-            s["SubnetId"] for s in all_subnets["Subnets"] if s["SubnetId"] != subnet_id
-        ]
+        return [subnet_override]
+    all_subnets = client.describe_subnets(
+        Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+    )
+    return [subnet_id] + [
+        s["SubnetId"] for s in all_subnets["Subnets"] if s["SubnetId"] != subnet_id
+    ]
 
-    key_name = f"troshka-{host_id[:8]}"
-    key_result = client.create_key_pair(KeyName=key_name)
-    private_key = key_result.get("KeyMaterial", "")
-    logger.info("Created key pair %s", key_name)
 
-    # Build NFS mount commands for shared storage pools
-    nfs_server = kwargs.get("nfs_server")
-    nfs_path = kwargs.get("nfs_path")
+def _build_cloud_init_user_data(
+    hostname: str,
+    host_id: str,
+    is_pattern_buffer: bool,
+    nfs_server: str | None,
+    nfs_path: str | None,
+) -> str:
+    """Build cloud-init user data string for host provisioning."""
+    # NFS mount commands for shared storage pools
     if nfs_server:
         storage_setup = (
             f"  - |\n"
@@ -307,7 +293,7 @@ def provision_host(
     else:
         storage_setup = ""
 
-    if kwargs.get("host_type") == "pattern_buffer":
+    if is_pattern_buffer:
         storage_setup += (
             "  - |\n"
             "    cat > /var/lib/cloud/scripts/per-boot/mount-nvme.sh << 'NVMEOF'\n"
@@ -328,10 +314,12 @@ def provision_host(
             "    chmod +x /var/lib/cloud/scripts/per-boot/mount-nvme.sh\n"
             "    bash /var/lib/cloud/scripts/per-boot/mount-nvme.sh\n"
         )
-    is_pattern_buffer = kwargs.get("host_type") == "pattern_buffer"
-
-    if is_pattern_buffer:
         ebs_setup = ""
+        packages = (
+            "  - python3\n  - python3-pip\n  - nvme-cli\n  - qemu-img\n  - nfs-utils\n"
+        )
+        vm_runcmd = ""
+        vm_tuning = ""
     else:
         ebs_setup = (
             "  - |\n"
@@ -361,14 +349,6 @@ def provision_host(
             "    fi\n"
             "  - mkdir -p /var/lib/troshka/images /var/lib/troshka/vms /var/lib/troshka/tmp\n"
         )
-
-    if is_pattern_buffer:
-        packages = (
-            "  - python3\n  - python3-pip\n  - nvme-cli\n  - qemu-img\n  - nfs-utils\n"
-        )
-        vm_runcmd = ""
-        vm_tuning = ""
-    else:
         packages = (
             "  - qemu-kvm\n  - libvirt\n  - libvirt-client\n  - virt-install\n"
             "  - python3\n  - python3-pip\n  - python3-libvirt\n"
@@ -417,7 +397,7 @@ def provision_host(
             "    chmod +x /etc/libvirt/hooks/qemu\n"
         )
 
-    user_data = CLOUD_INIT.format(
+    return CLOUD_INIT.format(
         hostname=hostname,
         host_id=host_id,
         storage_setup=storage_setup,
@@ -425,6 +405,85 @@ def provision_host(
         vm_runcmd=vm_runcmd,
         vm_tuning=vm_tuning,
         ebs_setup=ebs_setup,
+    )
+
+
+def _launch_with_subnet_fallback(
+    client, subnet_ids: list[str], launch_kwargs: dict, instance_type: str
+) -> dict:
+    """Try launching in each subnet until one supports the instance type."""
+    last_error = None
+    for try_subnet in subnet_ids:
+        launch_kwargs["NetworkInterfaces"][0]["SubnetId"] = try_subnet
+        try:
+            return client.run_instances(**launch_kwargs)
+        except client.exceptions.ClientError as e:
+            if "Unsupported" not in str(e):
+                raise
+            logger.warning(
+                "Instance type %s not supported in subnet %s, trying next AZ",
+                instance_type,
+                try_subnet,
+            )
+            last_error = e
+    raise last_error or ValueError(
+        f"Instance type {instance_type} not supported in any AZ"
+    )
+
+
+def provision_host(
+    instance_type: str | None = None,
+    ami_id: str | None = None,
+    host_id: str | None = None,
+    region: str | None = None,
+    credentials: dict | None = None,
+    storage_size_gb: int = 500,
+    **kwargs,
+) -> dict:
+    """Provision a new EC2 host and add it to the pool. Admin operation."""
+    client = _get_ec2_client(region=region, credentials=credentials)
+
+    host_id = host_id or str(uuid.uuid4())
+    hostname = f"troshka-host-{host_id[:8]}"
+    instance_type = str(
+        instance_type or config.aws.default_instance_type or "m8i.xlarge"
+    )
+
+    if not ami_id:
+        ami_id = getattr(config.aws, "default_ami", None) or find_rhel_ami(
+            region, credentials
+        )
+
+    vpc_id = kwargs.get("vpc_id") or getattr(config.aws, "vpc_id", None)
+    subnet_id = kwargs.get("subnet_id") or getattr(config.aws, "subnet_id", None)
+    if not vpc_id or not subnet_id:
+        raise ValueError(
+            "VPC and subnet must be configured on the provider — run Setup VPC first"
+        )
+
+    sg_id = kwargs.get("security_group_id") or getattr(
+        config.aws, "security_group_id", None
+    )
+    if not sg_id:
+        sg_id = ensure_security_group(vpc_id, credentials=credentials)
+
+    # Get all subnets in the VPC for AZ fallback
+    subnet_ids = _resolve_subnet_ids(
+        client, vpc_id, subnet_id, kwargs.get("subnet_override")
+    )
+
+    key_name = f"troshka-{host_id[:8]}"
+    key_result = client.create_key_pair(KeyName=key_name)
+    private_key = key_result.get("KeyMaterial", "")
+    logger.info("Created key pair %s", key_name)
+
+    is_pattern_buffer = kwargs.get("host_type") == "pattern_buffer"
+    user_data = _build_cloud_init_user_data(
+        hostname,
+        host_id,
+        is_pattern_buffer,
+        kwargs.get("nfs_server"),
+        kwargs.get("nfs_path"),
     )
 
     # Look up instance specs before launch (need RAM size for swap volume)
@@ -441,95 +500,75 @@ def provision_host(
         swap_size_gb,
     )
 
-    # Try each subnet (AZ) until one supports the instance type
-    response = None
-    last_error = None
-    for try_subnet in subnet_ids:
-        try:
-            launch_kwargs = dict(
-                ImageId=ami_id,
-                InstanceType=instance_type,
-                KeyName=key_name,
-                MinCount=1,
-                MaxCount=1,
-                **(
-                    {"CpuOptions": {"NestedVirtualization": "enabled"}}
-                    if kwargs.get("host_type") != "pattern_buffer"
-                    else {}
-                ),
-                UserData=user_data,
-                BlockDeviceMappings=[
-                    {
-                        "DeviceName": "/dev/sda1",
-                        "Ebs": {
-                            "VolumeSize": 50,
-                            "VolumeType": "gp3",
-                            "DeleteOnTermination": True,
-                        },
+    # Build launch parameters
+    block_device_mappings = [
+        {
+            "DeviceName": "/dev/sda1",
+            "Ebs": {
+                "VolumeSize": 50,
+                "VolumeType": "gp3",
+                "DeleteOnTermination": True,
+            },
+        },
+    ]
+    if not is_pattern_buffer:
+        block_device_mappings.extend(
+            [
+                {
+                    "DeviceName": "/dev/sdf",
+                    "Ebs": {
+                        "VolumeSize": storage_size_gb,
+                        "VolumeType": "gp3",
+                        "DeleteOnTermination": True,
                     },
-                ]
-                + (
-                    [
-                        {
-                            "DeviceName": "/dev/sdf",
-                            "Ebs": {
-                                "VolumeSize": storage_size_gb,
-                                "VolumeType": "gp3",
-                                "DeleteOnTermination": True,
-                            },
-                        },
-                        {
-                            "DeviceName": "/dev/sdg",
-                            "Ebs": {
-                                "VolumeSize": swap_size_gb,
-                                "VolumeType": "gp3",
-                                "DeleteOnTermination": True,
-                            },
-                        },
-                    ]
-                    if not is_pattern_buffer
-                    else []
-                ),
-                TagSpecifications=[
-                    {
-                        "ResourceType": "instance",
-                        "Tags": [
-                            {"Key": "Name", "Value": hostname},
-                            {"Key": "Project", "Value": "troshka"},
-                            {"Key": "ManagedBy", "Value": "troshka"},
-                            {"Key": "troshka-host-id", "Value": host_id},
-                        ],
-                    }
-                ],
-                NetworkInterfaces=[
-                    {
-                        "DeviceIndex": 0,
-                        "SubnetId": try_subnet,
-                        "Groups": [sg_id],
-                        "AssociatePublicIpAddress": True,
-                    }
-                ],
-            )
-            if kwargs.get("console_zone_id"):
-                launch_kwargs["IamInstanceProfile"] = {
-                    "Name": "troshka-certbot-profile"
-                }
-            response = client.run_instances(**launch_kwargs)
-            break
-        except client.exceptions.ClientError as e:
-            if "Unsupported" in str(e):
-                logger.warning(
-                    "Instance type %s not supported in subnet %s, trying next AZ",
-                    instance_type,
-                    try_subnet,
-                )
-                last_error = e
-                continue
-            raise
-    if not response:
-        raise last_error or ValueError(
-            f"Instance type {instance_type} not supported in any AZ"
+                },
+                {
+                    "DeviceName": _DATA_DEVICE,
+                    "Ebs": {
+                        "VolumeSize": swap_size_gb,
+                        "VolumeType": "gp3",
+                        "DeleteOnTermination": True,
+                    },
+                },
+            ]
         )
+
+    launch_kwargs: dict[str, Any] = dict(
+        ImageId=ami_id,
+        InstanceType=instance_type,
+        KeyName=key_name,
+        MinCount=1,
+        MaxCount=1,
+        UserData=user_data,
+        BlockDeviceMappings=block_device_mappings,
+        TagSpecifications=[
+            {
+                "ResourceType": "instance",
+                "Tags": [
+                    {"Key": "Name", "Value": hostname},
+                    {"Key": "Project", "Value": "troshka"},
+                    {"Key": "ManagedBy", "Value": "troshka"},
+                    {"Key": "troshka-host-id", "Value": host_id},
+                ],
+            }
+        ],
+        NetworkInterfaces=[
+            {
+                "DeviceIndex": 0,
+                "SubnetId": "",  # Set per subnet by _launch_with_subnet_fallback
+                "Groups": [sg_id],
+                "AssociatePublicIpAddress": True,
+            }
+        ],
+    )
+    if not is_pattern_buffer:
+        launch_kwargs["CpuOptions"] = {"NestedVirtualization": "enabled"}
+    if kwargs.get("console_zone_id"):
+        launch_kwargs["IamInstanceProfile"] = {"Name": "troshka-certbot-profile"}
+
+    response = _launch_with_subnet_fallback(
+        client, subnet_ids, launch_kwargs, instance_type
+    )
 
     instance_id = response["Instances"][0]["InstanceId"]
     logger.info("Launched %s, waiting for running state", instance_id)
@@ -591,7 +630,7 @@ def _resize_swap_volume(client, instance_id: str, new_size_gb: int):
     volumes = client.describe_volumes(
         Filters=[
             {"Name": "attachment.instance-id", "Values": [instance_id]},
-            {"Name": "attachment.device", "Values": ["/dev/sdg"]},
+            {"Name": "attachment.device", "Values": [_DATA_DEVICE]},
         ]
     )
     if not volumes["Volumes"]:
@@ -610,7 +649,9 @@ def _resize_swap_volume(client, instance_id: str, new_size_gb: int):
         return
 
     # Detach, delete, create, attach
-    client.detach_volume(VolumeId=old_vol_id, InstanceId=instance_id, Device="/dev/sdg")
+    client.detach_volume(
+        VolumeId=old_vol_id, InstanceId=instance_id, Device=_DATA_DEVICE
+    )
     waiter = client.get_waiter("volume_available")
     waiter.wait(VolumeIds=[old_vol_id])
     client.delete_volume(VolumeId=old_vol_id)
@@ -634,7 +675,9 @@ def _resize_swap_volume(client, instance_id: str, new_size_gb: int):
     )
     new_vol_id = new_vol["VolumeId"]
     waiter.wait(VolumeIds=[new_vol_id])
-    client.attach_volume(VolumeId=new_vol_id, InstanceId=instance_id, Device="/dev/sdg")
+    client.attach_volume(
+        VolumeId=new_vol_id, InstanceId=instance_id, Device=_DATA_DEVICE
+    )
     logger.info(
         "Created new swap volume %s (%d GB) for %s",
         new_vol_id,

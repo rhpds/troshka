@@ -4,12 +4,8 @@ CACHE_NAMESPACE = "troshka-cache"
 STORAGE_CLASS = "ocs-storagecluster-ceph-rbd-virtualization"
 
 
-def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
-    spec = vm_cr["spec"]
-    name = vm_cr["metadata"]["name"]
-
-    kv_name = f"troshka-{name}"
-
+def _build_base_domain(spec):
+    """Build the base domain configuration for KubeVirt VM."""
     domain = {
         "cpu": {"cores": spec["cpus"]},
         "resources": {"requests": {"memory": f"{spec['memory']}Mi"}},
@@ -25,6 +21,11 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
     if spec.get("smbiosUuid"):
         domain.setdefault("firmware", {})["uuid"] = spec["smbiosUuid"]
 
+    return domain
+
+
+def _apply_firmware_settings(domain, spec):
+    """Apply firmware settings (BIOS/UEFI/SecureBoot) to domain."""
     firmware_type = spec.get("firmware", "bios")
     if firmware_type == "uefi":
         domain.setdefault("firmware", {})["bootloader"] = {"efi": {"secureBoot": False}}
@@ -32,8 +33,21 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
         domain.setdefault("firmware", {})["bootloader"] = {"efi": {"secureBoot": True}}
         domain.setdefault("features", {})["smm"] = {"enabled": True}
 
-    volumes = []
+
+def _find_boot_order_index(device_id, device_type, boot_order, boot_idx):
+    """Find and return boot order index for a device, or None if not in boot order."""
+    for bo in boot_order:
+        bo_id = bo.get("id") if isinstance(bo, dict) else bo
+        bo_type = bo.get("type", "disk") if isinstance(bo, dict) else "disk"
+        if bo_type == device_type and bo_id == device_id:
+            return boot_idx
+    return None
+
+
+def _add_disks_to_domain(spec, disk_pvcs, domain, volumes):
+    """Add disk devices and volumes to domain configuration."""
     boot_idx = 1
+    boot_order = spec.get("bootOrder", [])
 
     for i, disk_info in enumerate(spec.get("disks", [])):
         disk_id = disk_info.get("id", f"disk-{i}")[:8]
@@ -42,13 +56,12 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
 
         disk_entry = {"name": vol_name, "disk": {"bus": bus}}
 
-        for bo in spec.get("bootOrder", []):
-            bo_id = bo.get("id") if isinstance(bo, dict) else bo
-            bo_type = bo.get("type", "disk") if isinstance(bo, dict) else "disk"
-            if bo_type == "disk" and bo_id == disk_info.get("id"):
-                disk_entry["bootOrder"] = boot_idx
-                boot_idx += 1
-                break
+        order_idx = _find_boot_order_index(
+            disk_info.get("id"), "disk", boot_order, boot_idx
+        )
+        if order_idx is not None:
+            disk_entry["bootOrder"] = order_idx
+            boot_idx += 1
 
         domain["devices"]["disks"].append(disk_entry)
 
@@ -60,6 +73,11 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
             }
         )
 
+    return boot_idx
+
+
+def _add_cdrom_if_present(spec, disk_pvcs, domain, volumes):
+    """Add CDROM device and volume if configured."""
     if spec.get("cdrom", {}).get("s3Path") and "cdrom" in disk_pvcs:
         cd_vol_name = "cdrom"
         domain["devices"]["disks"].append(
@@ -75,6 +93,11 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
             }
         )
 
+
+def _add_nics_to_domain(spec, domain, boot_idx):
+    """Add network interface devices to domain configuration."""
+    boot_order = spec.get("bootOrder", [])
+
     for i, nic in enumerate(spec.get("nics", [])):
         nic_id = nic.get("id", f"nic-{i}")[:8]
         iface_name = f"nic-{nic_id}"
@@ -87,16 +110,18 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
         if model and model != "virtio":
             iface["model"] = model
 
-        for bo in spec.get("bootOrder", []):
-            bo_id = bo.get("id") if isinstance(bo, dict) else bo
-            bo_type = bo.get("type", "disk") if isinstance(bo, dict) else "disk"
-            if bo_type == "network" and bo_id == nic.get("id"):
-                iface["bootOrder"] = boot_idx
-                boot_idx += 1
-                break
+        order_idx = _find_boot_order_index(
+            nic.get("id"), "network", boot_order, boot_idx
+        )
+        if order_idx is not None:
+            iface["bootOrder"] = order_idx
+            boot_idx += 1
 
         domain["devices"]["interfaces"].append(iface)
 
+
+def _add_cloudinit_if_present(cloudinit_secret_name, domain, volumes):
+    """Add cloud-init disk and volume if configured."""
     if cloudinit_secret_name:
         domain["devices"]["disks"].append(
             {
@@ -113,6 +138,9 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
             }
         )
 
+
+def _build_networks(spec, nad_refs):
+    """Build network attachments for NICs."""
     networks = []
     for i, nic in enumerate(spec.get("nics", [])):
         nic_id = nic.get("id", f"nic-{i}")[:8]
@@ -126,6 +154,24 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
                 "multus": {"networkName": nad_name},
             }
         )
+    return networks
+
+
+def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
+    spec = vm_cr["spec"]
+    name = vm_cr["metadata"]["name"]
+    kv_name = f"troshka-{name}"
+
+    domain = _build_base_domain(spec)
+    _apply_firmware_settings(domain, spec)
+
+    volumes = []
+    boot_idx = _add_disks_to_domain(spec, disk_pvcs, domain, volumes)
+    _add_cdrom_if_present(spec, disk_pvcs, domain, volumes)
+    _add_nics_to_domain(spec, domain, boot_idx)
+    _add_cloudinit_if_present(cloudinit_secret_name, domain, volumes)
+
+    networks = _build_networks(spec, nad_refs)
 
     vm_body = {
         "apiVersion": "kubevirt.io/v1",

@@ -13,18 +13,14 @@ RUN dnf install -y \
     libvirt-client \
     nmap-ncat \
     openssl \
-    && dnf clean all
-
-RUN dnf install -y \
     qemu-nbd \
     kmod \
     e2fsprogs \
     xfsprogs \
     util-linux \
     tesseract \
-    && dnf clean all
-
-RUN curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \
+    && dnf clean all \
+    && curl -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \
     | tar xzf - -C /usr/local/bin oc kubectl
 
 # recert for OCP certificate regeneration

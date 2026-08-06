@@ -12,6 +12,7 @@ CRD_GROUP = "troshka.redhat.com"
 CRD_VERSION = "v1alpha1"
 _KUBEVIRT_API_GROUP = "kubevirt.io"
 _QEMU_SESSION_URI = "qemu:///session"
+_ROUTE_API = "route.openshift.io"
 
 OPERATOR_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "..", "operator"
@@ -127,7 +128,7 @@ def _apply_manifest(kind, name, ns, body, core_api, rbac_api, apps_api):
                 return
         except ApiException as e:
             if e.status == 404:
-                pass
+                pass  # Not found — fall through to create below
             else:
                 raise
 
@@ -155,7 +156,7 @@ def _apply_manifest(kind, name, ns, body, core_api, rbac_api, apps_api):
 def _deploy_operator(provider):
     from kubernetes import client
 
-    custom_api, core_api, api_client = _get_k8s_clients(provider)
+    _custom_api, core_api, api_client = _get_k8s_clients(provider)
     apps_api = client.AppsV1Api(api_client)
     rbac_api = client.RbacAuthorizationV1Api(api_client)
     ext_api = client.ApiextensionsV1Api(api_client)
@@ -493,7 +494,7 @@ class KubeVirtDriver(ProviderDriver):
     ):
         _deploy_operator(provider)
 
-        custom_api, core_api, _ = _get_k8s_clients(provider)
+        _custom_api, core_api, _ = _get_k8s_clients(provider)
         creds = provider.get_credentials()
         api_url = creds["api_url"]
 
@@ -504,7 +505,7 @@ class KubeVirtDriver(ProviderDriver):
             "host_id": host_id,
             "instance_id": api_url,
             "instance_type": "kubevirt-cluster",
-            "public_ip": api_url.replace("https://", "").split(":")[0],
+            "public_ip": api_url.replace("https://", "").split(":")[0],  # NOSONAR
             "private_ip": api_url.replace("https://", "").split(":")[0],
             "total_vcpus": total_vcpus,
             "total_ram_mb": total_ram_mb,
@@ -515,6 +516,7 @@ class KubeVirtDriver(ProviderDriver):
         }
 
     def terminate_host(self, provider, instance_id):
+        # No-op: KubeVirt virtual host represents the cluster, not a provisionable instance
         pass
 
     def get_host_status(self, provider, instance_id):
@@ -542,9 +544,11 @@ class KubeVirtDriver(ProviderDriver):
         return "running"
 
     def start_host(self, provider, instance_id):
+        # No-op: KubeVirt virtual host is always running (cluster-level)
         pass
 
     def stop_host(self, provider, instance_id):
+        # No-op: KubeVirt virtual host is always running (cluster-level)
         pass
 
     def setup_console(self, provider, base_domain):
@@ -600,7 +604,7 @@ class KubeVirtDriver(ProviderDriver):
         }
         try:
             custom_api.create_namespaced_custom_object(
-                group="route.openshift.io",
+                group=_ROUTE_API,
                 version="v1",
                 namespace=namespace,
                 plural="routes",
@@ -621,7 +625,7 @@ class KubeVirtDriver(ProviderDriver):
             pass
         try:
             custom_api.delete_namespaced_custom_object(
-                group="route.openshift.io",
+                group=_ROUTE_API,
                 version="v1",
                 namespace=namespace,
                 plural="routes",
@@ -645,7 +649,7 @@ class KubeVirtDriver(ProviderDriver):
             pass
         try:
             routes = custom_api.list_namespaced_custom_object(
-                group="route.openshift.io",
+                group=_ROUTE_API,
                 version="v1",
                 namespace=namespace,
                 plural="routes",
@@ -653,7 +657,7 @@ class KubeVirtDriver(ProviderDriver):
             )
             for route in dict(routes).get("items", []):  # type: ignore[call-overload]
                 custom_api.delete_namespaced_custom_object(
-                    group="route.openshift.io",
+                    group=_ROUTE_API,
                     version="v1",
                     namespace=namespace,
                     plural="routes",
@@ -784,7 +788,7 @@ class KubeVirtDriver(ProviderDriver):
         }
         try:
             result = custom_api.create_namespaced_custom_object(
-                group="route.openshift.io",
+                group=_ROUTE_API,
                 version="v1",
                 namespace=namespace,
                 plural="routes",
@@ -814,7 +818,7 @@ class KubeVirtDriver(ProviderDriver):
             pass
         try:
             routes = custom_api.list_namespaced_custom_object(
-                group="route.openshift.io",
+                group=_ROUTE_API,
                 version="v1",
                 namespace=ns,
                 plural="routes",
@@ -822,7 +826,7 @@ class KubeVirtDriver(ProviderDriver):
             )
             for route in dict(routes).get("items", []):  # type: ignore[call-overload]
                 custom_api.delete_namespaced_custom_object(
-                    group="route.openshift.io",
+                    group=_ROUTE_API,
                     version="v1",
                     namespace=ns,
                     plural="routes",
@@ -1199,7 +1203,7 @@ def _find_exec_pod(core_v1, namespace, project_id):
 
 
 def kubevirt_exec_ssh(
-    provider, project_id, vm_id, vm_ip, username, password, command, timeout=600
+    provider, project_id, _vm_id, vm_ip, username, password, command, timeout=600
 ):
     """Execute command via SSH from the exec pod (or dnsmasq pod fallback)."""
     _, core_v1, _ = _get_k8s_clients(provider)
@@ -1322,7 +1326,6 @@ def _vnc_login(
         if state == "password":
             send_text_fn(password + "\n")
             time.sleep(3)
-            continue
     return False
 
 
@@ -1507,7 +1510,7 @@ def kubevirt_exec_console(
     import re
     import time
 
-    _, core_v1, api_client = _get_k8s_clients(provider)
+    _, _core_v1, _api_client = _get_k8s_clients(provider)
     namespace = _project_ns(provider, project_id)
     vm_name = f"troshka-vm-{vm_id[:8]}"
 

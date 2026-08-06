@@ -6,16 +6,18 @@ def _gateway_ip_for_cidr(cidr):
     return ".".join(octets)
 
 
-def extract_networks(topology):
-    nodes = topology.get("nodes", [])
-    edges = topology.get("edges", [])
-
+def _find_gateway_nodes(nodes):
+    """Extract gateway node IDs from topology nodes."""
     gateway_nodes = {}
     for node in nodes:
         data = node.get("data", {})
         if data.get("subtype") == "gateway":
             gateway_nodes[node.get("id", data.get("id", ""))] = data
+    return gateway_nodes
 
+
+def _find_networks_with_gateway(edges, gateway_nodes):
+    """Find network nodes connected to gateway nodes via edges."""
     networks_with_gateway = set()
     for edge in edges:
         src, tgt = edge.get("source", ""), edge.get("target", "")
@@ -23,6 +25,45 @@ def extract_networks(topology):
             networks_with_gateway.add(tgt)
         elif tgt in gateway_nodes:
             networks_with_gateway.add(src)
+    return networks_with_gateway
+
+
+def _build_network_entry(data, node, node_id, networks_with_gateway):
+    """Build a single network entry from node data."""
+    cidr = data.get("cidr", "")
+    gateway_ip = data.get("gatewayIp", "")
+    if not gateway_ip and cidr:
+        gateway_ip = _gateway_ip_for_cidr(cidr)
+
+    dhcp_range = data.get("dhcpRange", "")
+    has_gateway = node_id in networks_with_gateway
+    external_access = data.get("externalAccess", has_gateway)
+
+    dns_forwarders = data.get("dnsForwarders", [])
+    if not dns_forwarders and data.get("dns") and gateway_ip:
+        dns_forwarders = [gateway_ip]
+
+    return {
+        "id": node_id,
+        "label": data.get("label", ""),
+        "cidr": cidr,
+        "gateway": gateway_ip,
+        "dhcpRange": dhcp_range,
+        "networkType": data.get("networkType", "standard"),
+        "dnsForwarders": dns_forwarders,
+        "externalAccess": external_access,
+        "pxeConfig": data.get("pxeConfig", {}),
+        "dnsRecords": data.get("dnsRecords", []),
+        "staticLeases": [],
+    }
+
+
+def extract_networks(topology):
+    nodes = topology.get("nodes", [])
+    edges = topology.get("edges", [])
+
+    gateway_nodes = _find_gateway_nodes(nodes)
+    networks_with_gateway = _find_networks_with_gateway(edges, gateway_nodes)
 
     networks = []
     for node in nodes:
@@ -32,33 +73,8 @@ def extract_networks(topology):
         if data.get("subtype") == "gateway":
             continue
         node_id = data.get("id", node.get("id", ""))
-        cidr = data.get("cidr", "")
-        gateway_ip = data.get("gatewayIp", "")
-        if not gateway_ip and cidr:
-            gateway_ip = _gateway_ip_for_cidr(cidr)
-
-        dhcp_range = data.get("dhcpRange", "")
-        has_gateway = node_id in networks_with_gateway
-        external_access = data.get("externalAccess", has_gateway)
-
-        dns_forwarders = data.get("dnsForwarders", [])
-        if not dns_forwarders and data.get("dns") and gateway_ip:
-            dns_forwarders = [gateway_ip]
-
         networks.append(
-            {
-                "id": node_id,
-                "label": data.get("label", ""),
-                "cidr": cidr,
-                "gateway": gateway_ip,
-                "dhcpRange": dhcp_range,
-                "networkType": data.get("networkType", "standard"),
-                "dnsForwarders": dns_forwarders,
-                "externalAccess": external_access,
-                "pxeConfig": data.get("pxeConfig", {}),
-                "dnsRecords": data.get("dnsRecords", []),
-                "staticLeases": [],
-            }
+            _build_network_entry(data, node, node_id, networks_with_gateway)
         )
     return networks
 
@@ -286,54 +302,62 @@ def extract_start_order(topology):
     return [{"vmId": vm["id"]} for vm in vms]
 
 
-def build_static_leases(topology):
-    edges = topology.get("edges", [])
-    nodes = topology.get("nodes", [])
-
+def _build_node_map(nodes):
+    """Build a map of node ID to node data."""
     node_map = {}
     for node in nodes:
         data = node.get("data", {})
         node_id = data.get("id", node.get("id", ""))
         node_map[node_id] = data
+    return node_map
 
+
+def _find_vm_and_network_from_edge(edge, node_map):
+    """Extract VM data, network ID, and NIC ID from an edge."""
+    source = edge.get("source", "")
+    target = edge.get("target", "")
+    source_handle = edge.get("sourceHandle", "")
+
+    source_data = node_map.get(source, {})
+    target_data = node_map.get(target, {})
+
+    if source_data.get("nics"):
+        return source_data, target, _extract_nic_id(source_handle)
+    if target_data.get("nics"):
+        return target_data, source, _extract_nic_id(edge.get("targetHandle", ""))
+    return None, None, None
+
+
+def _add_lease_for_nic(vm_data, nic_id, net_id, network_leases):
+    """Add a static lease to network_leases if NIC matches."""
+    for nic in vm_data.get("nics", []):
+        if nic.get("id") != nic_id:
+            continue
+        mac = nic.get("mac", "")
+        ip = nic.get("ip", "")
+        if not mac or not ip:
+            continue
+        if net_id not in network_leases:
+            network_leases[net_id] = []
+        network_leases[net_id].append(
+            {
+                "mac": mac,
+                "ip": ip,
+                "hostname": vm_data.get("label", ""),
+            }
+        )
+
+
+def build_static_leases(topology):
+    edges = topology.get("edges", [])
+    nodes = topology.get("nodes", [])
+
+    node_map = _build_node_map(nodes)
     network_leases = {}
 
     for edge in edges:
-        source = edge.get("source", "")
-        target = edge.get("target", "")
-        source_handle = edge.get("sourceHandle", "")
-
-        source_data = node_map.get(source, {})
-        target_data = node_map.get(target, {})
-
-        vm_data = None
-        net_id = None
-        nic_id = None
-
-        if source_data.get("nics"):
-            vm_data = source_data
-            net_id = target
-            nic_id = _extract_nic_id(source_handle)
-        elif target_data.get("nics"):
-            vm_data = target_data
-            net_id = source
-            nic_id = _extract_nic_id(edge.get("targetHandle", ""))
-
+        vm_data, net_id, nic_id = _find_vm_and_network_from_edge(edge, node_map)
         if vm_data and net_id and nic_id:
-            for nic in vm_data.get("nics", []):
-                if nic.get("id") == nic_id:
-                    mac = nic.get("mac", "")
-                    ip = nic.get("ip", "")
-                    hostname = vm_data.get("label", "")
-                    if mac and ip:
-                        if net_id not in network_leases:
-                            network_leases[net_id] = []
-                        network_leases[net_id].append(
-                            {
-                                "mac": mac,
-                                "ip": ip,
-                                "hostname": hostname,
-                            }
-                        )
+            _add_lease_for_nic(vm_data, nic_id, net_id, network_leases)
 
     return network_leases

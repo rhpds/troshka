@@ -2265,7 +2265,7 @@ class TestSaveKubeconfig(unittest.TestCase):
         self.assertEqual(result, kc_data)
         # Should have written kubeconfig and kubeconfig-sno1
         write_calls = [c for c in m().write.call_args_list]
-        self.assertTrue(len(write_calls) >= 2)
+        self.assertGreaterEqual(len(write_calls), 2)
 
     def test_save_kubeconfig_force_expire_skips(self):
         """When force_expire=True, returns None without touching files."""

@@ -13,6 +13,8 @@ import tarfile
 logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 8 * 1024 * 1024  # 8 MiB
+_TOPOLOGY_FILE = "topology.json"
+_METADATA_FILE = "metadata.json"
 
 
 def _tar_end_marker():
@@ -34,11 +36,11 @@ def estimate_export_size(pattern, disks) -> int:
 def _manifest_entries(pattern, disks):
     """Yield (name, size) for each entry in the tar archive."""
     topo_bytes = json.dumps(pattern.topology, indent=2).encode()
-    yield ("topology.json", len(topo_bytes))
+    yield (_TOPOLOGY_FILE, len(topo_bytes))
 
     meta = _build_metadata(pattern, disks)
     meta_bytes = json.dumps(meta, indent=2).encode()
-    yield ("metadata.json", len(meta_bytes))
+    yield (_METADATA_FILE, len(meta_bytes))
 
     for disk in disks:
         ext = disk.format or "qcow2"
@@ -85,11 +87,11 @@ def stream_pattern_export(pattern_id: str, db):
     bucket = s3_storage._bucket()
 
     topo_bytes = json.dumps(pattern.topology, indent=2).encode()
-    yield from _yield_tar_entry("topology.json", topo_bytes)
+    yield from _yield_tar_entry(_TOPOLOGY_FILE, topo_bytes)
 
     meta = _build_metadata(pattern, disks)
     meta_bytes = json.dumps(meta, indent=2).encode()
-    yield from _yield_tar_entry("metadata.json", meta_bytes)
+    yield from _yield_tar_entry(_METADATA_FILE, meta_bytes)
 
     for disk in disks:
         ext = disk.format or "qcow2"
@@ -137,12 +139,114 @@ def _make_tar_header(name: str, size: int) -> bytes:
     return info.tobuf(tarfile.GNU_FORMAT)
 
 
+def _extract_json_member(tf, member):
+    """Extract and parse JSON from a tar member, or return None."""
+    f = tf.extractfile(member)
+    if not f:
+        return None
+    return json.loads(f.read())
+
+
+def _extract_disk_member(tf, member, pattern_id: str):
+    """Upload a disk tar member to S3 and return (disk_id, info_dict)."""
+    disk_id = member.name.split("/")[-1].rsplit(".", 1)[0]
+    fmt = member.name.rsplit(".", 1)[-1] if "." in member.name else "qcow2"
+    s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
+    f = tf.extractfile(member)
+    if f:
+        _upload_tar_member_to_s3(f, s3_key, member.size)
+    return disk_id, {"s3_key": s3_key, "format": fmt, "size_bytes": member.size}
+
+
+def _parse_tar_entries(tf, pattern_id: str):
+    """Parse tar archive entries and upload disk files to S3.
+
+    Returns (topology, metadata, disk_map) where disk_map is
+    {old_disk_id: {"s3_key": ..., "format": ..., "size_bytes": ...}}.
+    """
+    topology = None
+    metadata = None
+    disk_map = {}
+    for member in tf:
+        if member.name == _TOPOLOGY_FILE:
+            topology = _extract_json_member(tf, member)
+        elif member.name == _METADATA_FILE:
+            metadata = _extract_json_member(tf, member)
+        elif member.name.startswith("disks/") and member.size > 0:
+            disk_id, info = _extract_disk_member(tf, member, pattern_id)
+            disk_map[disk_id] = info
+    return topology, metadata, disk_map
+
+
+def _apply_pattern_metadata(pattern, metadata: dict | None, name: str | None):
+    """Set pattern name, description, tags, visibility, and clock_target."""
+    if name:
+        pattern.name = name
+    elif metadata and metadata.get("name"):
+        pattern.name = metadata["name"]
+
+    pattern.description = metadata.get("description") if metadata else None
+    pattern.tags = metadata.get("tags") if metadata else None
+    pattern.visibility = "private"
+
+    if not metadata or not metadata.get("clock_target"):
+        return
+    from dateutil.parser import parse as parse_dt
+
+    try:
+        pattern.clock_target = parse_dt(metadata["clock_target"])
+    except Exception:
+        pass
+
+
+def _create_pattern_disks(
+    db, pattern_id: str, disk_map: dict, metadata: dict | None, new_topo: dict
+) -> int:
+    """Create PatternDisk records and update topology refs. Returns total size."""
+    from app.models.pattern import PatternDisk
+
+    total_size = 0
+    meta_disks = {d["id"]: d for d in (metadata or {}).get("disks", [])}
+
+    for old_id, info in disk_map.items():
+        md = meta_disks.get(old_id, {})
+        pd = PatternDisk(
+            pattern_id=pattern_id,
+            source_disk_id=md.get("source_disk_id", old_id),
+            source_vm_id=md.get("source_vm_id", ""),
+            s3_key=info["s3_key"],
+            format=info["format"],
+            size_bytes=info["size_bytes"],
+            virtual_size_bytes=int(md.get("virtual_size_bytes", 0)),
+            checksum_sha256=md.get("checksum_sha256"),
+            state="available",
+        )
+        db.add(pd)
+        total_size += info["size_bytes"]  # type: ignore[operator]
+        _update_topology_disk_refs(new_topo, old_id, pd.id, pattern_id)
+
+    return total_size
+
+
+def _mark_pattern_error(db, pattern_id: str):
+    """Mark a pattern as error state, swallowing any DB failures."""
+    from app.models.pattern import Pattern
+
+    try:
+        pattern = db.query(Pattern).filter_by(id=pattern_id).first()
+        if pattern:
+            pattern.state = "error"
+            db.commit()
+    except Exception:
+        pass
+
+
 def import_pattern_from_tar(
-    pattern_id: str, tar_stream, owner_id: str, name: str | None
+    pattern_id: str, tar_stream, _owner_id: str, name: str | None
 ):
     """Import a pattern from a tar archive. Runs in background thread."""
     from app.core.database import SessionLocal
-    from app.models.pattern import Pattern, PatternDisk
+    from app.models.pattern import Pattern
 
     db = SessionLocal()
     try:
@@ -151,32 +255,7 @@ def import_pattern_from_tar(
             return
 
         tf = tarfile.open(fileobj=tar_stream, mode="r|")
-        topology = None
-        metadata = None
-        disk_map = {}
-
-        for member in tf:
-            if member.name == "topology.json":
-                f = tf.extractfile(member)
-                if f:
-                    topology = json.loads(f.read())
-            elif member.name == "metadata.json":
-                f = tf.extractfile(member)
-                if f:
-                    metadata = json.loads(f.read())
-            elif member.name.startswith("disks/") and member.size > 0:
-                disk_id = member.name.split("/")[-1].rsplit(".", 1)[0]
-                fmt = member.name.rsplit(".", 1)[-1] if "." in member.name else "qcow2"
-                s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
-                f = tf.extractfile(member)
-                if f:
-                    _upload_tar_member_to_s3(f, s3_key, member.size)
-
-                disk_map[disk_id] = {
-                    "s3_key": s3_key,
-                    "format": fmt,
-                    "size_bytes": member.size,
-                }
+        topology, metadata, disk_map = _parse_tar_entries(tf, pattern_id)
 
         if not topology:
             pattern.state = "error"
@@ -188,42 +267,9 @@ def import_pattern_from_tar(
 
         new_topo = _remap_topology(topology)
         pattern.topology = new_topo
-        if name:
-            pattern.name = name
-        elif metadata and metadata.get("name"):
-            pattern.name = metadata["name"]
-        pattern.description = metadata.get("description") if metadata else None
-        pattern.tags = metadata.get("tags") if metadata else None
-        pattern.visibility = "private"
+        _apply_pattern_metadata(pattern, metadata, name)
 
-        if metadata and metadata.get("clock_target"):
-            from dateutil.parser import parse as parse_dt
-
-            try:
-                pattern.clock_target = parse_dt(metadata["clock_target"])
-            except Exception:
-                pass
-
-        total_size = 0
-        meta_disks = {d["id"]: d for d in (metadata or {}).get("disks", [])}
-
-        for old_id, info in disk_map.items():
-            md = meta_disks.get(old_id, {})
-            pd = PatternDisk(
-                pattern_id=pattern_id,
-                source_disk_id=md.get("source_disk_id", old_id),
-                source_vm_id=md.get("source_vm_id", ""),
-                s3_key=info["s3_key"],
-                format=info["format"],
-                size_bytes=info["size_bytes"],
-                virtual_size_bytes=int(md.get("virtual_size_bytes", 0)),
-                checksum_sha256=md.get("checksum_sha256"),
-                state="available",
-            )
-            db.add(pd)
-            total_size += info["size_bytes"]  # type: ignore[operator]
-
-            _update_topology_disk_refs(new_topo, old_id, pd.id, pattern_id)
+        total_size = _create_pattern_disks(db, pattern_id, disk_map, metadata, new_topo)
 
         pattern.total_size_bytes = total_size
         pattern.state = "available"
@@ -237,13 +283,7 @@ def import_pattern_from_tar(
 
     except Exception:
         logger.exception("Pattern import %s failed", pattern_id)
-        try:
-            pattern = db.query(Pattern).filter_by(id=pattern_id).first()
-            if pattern:
-                pattern.state = "error"
-                db.commit()
-        except Exception:
-            pass
+        _mark_pattern_error(db, pattern_id)
     finally:
         db.close()
 

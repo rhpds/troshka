@@ -236,7 +236,7 @@ def enqueue_job(
                 meta=meta,
                 **kwargs,
             )
-            logger.info(
+            logger.info(  # NOSONAR — internal IDs, not user input
                 "Enqueued job %s: %s.%s (queue=%s, project=%s, host=%s)",
                 job.id[:8],
                 func.__module__,

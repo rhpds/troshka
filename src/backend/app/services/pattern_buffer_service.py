@@ -377,6 +377,84 @@ def stop_pattern_buffer(db: Session, pool: StoragePool):
     logger.info("Pattern buffer %s stopped", host.id[:8])
 
 
+def _wait_for_new_ip(provider, drv, instance_id: str) -> str:
+    """Wait for instance to be running and return its new IP address."""
+    if provider.type == "ec2":
+        import boto3
+
+        credentials = provider.get_credentials()
+        ec2 = boto3.client(
+            "ec2",
+            region_name=provider.default_region,
+            aws_access_key_id=credentials["access_key_id"],
+            aws_secret_access_key=credentials["secret_access_key"],
+        )
+        waiter = ec2.get_waiter("instance_running")
+        waiter.wait(InstanceIds=[instance_id])
+        desc = ec2.describe_instances(InstanceIds=[instance_id])
+        inst = desc["Reservations"][0]["Instances"][0]
+        return inst.get("PublicIpAddress", "")
+
+    # Non-EC2: poll driver for status
+    import time
+
+    status: dict | None = None
+    for _ in range(60):
+        status = drv.get_host_status(provider, instance_id)
+        if status and status["state"] == "running":
+            break
+        time.sleep(5)
+    if not status:
+        return ""
+    return status.get("public_ip") or status.get("private_ip") or ""
+
+
+def _update_buffer_ip(host, new_ip: str) -> None:
+    """Update host IP and flush stale connection pool entries."""
+    if not new_ip or new_ip == host.ip_address:
+        return
+
+    from app.services.troshkad_client import _pools as _connection_pools
+
+    logger.info(
+        "Pattern buffer %s IP changed: %s -> %s",
+        host.id[:8],
+        host.ip_address,
+        new_ip,
+    )
+    old_keys = [
+        k
+        for k in _connection_pools
+        if host.ip_address and k.startswith(host.ip_address + ":")
+    ]
+    for k in old_keys:
+        del _connection_pools[k]
+    host.ip_address = new_ip
+
+
+def _poll_agent_health(host, pool, db: Session, timeout: int) -> bool:
+    """Poll agent health until it responds or timeout expires."""
+    import time
+
+    from app.services.troshkad_client import check_health
+
+    start = time.time()
+    while time.time() - start < timeout:
+        result = check_health(host)
+        if result:
+            from datetime import UTC, datetime
+
+            pool.pb_last_activity_at = datetime.now(UTC)
+            host.agent_status = "connected"
+            db.commit()
+            logger.info(
+                "Pattern buffer %s awake (%.0fs)", host.id[:8], time.time() - start
+            )
+            return True
+        time.sleep(3)
+    return False
+
+
 def wake_pattern_buffer(db: Session, pool: StoragePool, timeout: int = 120) -> bool:
     """Start a stopped pattern buffer and wait for the agent to respond.
 
@@ -395,8 +473,6 @@ def wake_pattern_buffer(db: Session, pool: StoragePool, timeout: int = 120) -> b
     if not provider:
         return False
 
-    import time
-
     from app.services.providers import get_provider_driver
 
     drv = get_provider_driver(provider)
@@ -404,75 +480,19 @@ def wake_pattern_buffer(db: Session, pool: StoragePool, timeout: int = 120) -> b
     logger.info("Waking pattern buffer %s...", host.id[:8])
     drv.start_host(provider, host.instance_id)
 
-    # Wait for running + get new IP
-    if provider.type == "ec2":
-        import boto3
-
-        credentials = provider.get_credentials()
-        ec2 = boto3.client(
-            "ec2",
-            region_name=provider.default_region,
-            aws_access_key_id=credentials["access_key_id"],
-            aws_secret_access_key=credentials["secret_access_key"],
-        )
-        waiter = ec2.get_waiter("instance_running")
-        waiter.wait(InstanceIds=[host.instance_id])
-        desc = ec2.describe_instances(InstanceIds=[host.instance_id])
-        inst = desc["Reservations"][0]["Instances"][0]
-        new_ip = inst.get("PublicIpAddress", "")
-    else:
-        # Non-EC2: poll driver for status
-        status: dict | None = None
-        for _ in range(60):
-            status = drv.get_host_status(provider, host.instance_id)
-            if status and status["state"] == "running":
-                break
-            time.sleep(5)
-        new_ip = (
-            status.get("public_ip") or status.get("private_ip") or "" if status else ""
-        )
-
+    new_ip = _wait_for_new_ip(provider, drv, host.instance_id)
     logger.info("Pattern buffer %s running", host.id[:8])
-    from app.services.troshkad_client import _pools as _connection_pools
-
-    if new_ip and new_ip != host.ip_address:
-        logger.info(
-            "Pattern buffer %s IP changed: %s -> %s",
-            host.id[:8],
-            host.ip_address,
-            new_ip,
-        )
-        old_keys = [
-            k
-            for k in _connection_pools
-            if host.ip_address and k.startswith(host.ip_address + ":")
-        ]
-        for k in old_keys:
-            del _connection_pools[k]
-        host.ip_address = new_ip
+    _update_buffer_ip(host, new_ip)
 
     host.state = "active"
     db.commit()
 
-    from app.services.troshkad_client import check_health
-
-    start = time.time()
-    while time.time() - start < timeout:
-        result = check_health(host)
-        if result:
-            from datetime import UTC, datetime
-
-            pool.pb_last_activity_at = datetime.now(UTC)
-            host.agent_status = "connected"
-            db.commit()
-            logger.info(
-                "Pattern buffer %s awake (%.0fs)", host.id[:8], time.time() - start
-            )
-            return True
-        time.sleep(3)
-
-    logger.warning("Pattern buffer %s failed to wake after %ds", host.id[:8], timeout)
-    return False
+    if not _poll_agent_health(host, pool, db, timeout):
+        logger.warning(
+            "Pattern buffer %s failed to wake after %ds", host.id[:8], timeout
+        )
+        return False
+    return True
 
 
 def get_pattern_buffer_host(

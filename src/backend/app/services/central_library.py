@@ -26,6 +26,48 @@ def _get_or_create_central_library(db: Session):
     return lib
 
 
+def _process_manifest_entry(
+    entry, existing, local_fingerprints, db, lib_id, provider_id
+):
+    """Process a single manifest entry during central library sync.
+
+    Returns "created", "updated", "skipped", or "removed" (removed implies also skipped).
+    """
+    from app.models.library import LibraryItem
+
+    s3_key = entry["s3_key"]
+    fingerprint = (entry.get("size_bytes", 0), entry.get("format", "qcow2"))
+
+    if fingerprint in local_fingerprints:
+        if s3_key in existing:
+            db.delete(existing[s3_key])
+            return "removed"
+        return "skipped"
+
+    if s3_key in existing:
+        item = existing[s3_key]
+        if item.size_bytes != entry.get("size_bytes", 0):
+            item.size_bytes = entry.get("size_bytes", 0)
+            return "updated"
+        return "skipped"
+
+    item = LibraryItem(
+        library_id=lib_id,
+        name=entry["name"],
+        type=entry.get("type", "image"),
+        format=entry.get("format", "qcow2"),
+        size_bytes=entry.get("size_bytes", 0),
+        s3_key=s3_key,
+        os_variant=entry.get("os_variant"),
+        state="ready",
+        source="central",
+        source_provider_id=provider_id,
+        tags=entry.get("tags"),
+    )
+    db.add(item)
+    return "created"
+
+
 def sync_central_library(db: Session, owner_id: str | None = None) -> dict:
     """Scan central S4 bucket and sync items into the local DB.
 
@@ -67,40 +109,18 @@ def sync_central_library(db: Session, owner_id: str | None = None) -> dict:
     removed = 0
 
     for entry in manifest:
-        s3_key = entry["s3_key"]
-        fingerprint = (entry.get("size_bytes", 0), entry.get("format", "qcow2"))
-
-        if fingerprint in local_fingerprints:
-            if s3_key in existing:
-                db.delete(existing[s3_key])
-                removed += 1
-            skipped += 1
-            continue
-
-        if s3_key in existing:
-            item = existing[s3_key]
-            if item.size_bytes != entry.get("size_bytes", 0):
-                item.size_bytes = entry.get("size_bytes", 0)
-                updated += 1
-            else:
-                skipped += 1
-            continue
-
-        item = LibraryItem(
-            library_id=lib.id,
-            name=entry["name"],
-            type=entry.get("type", "image"),
-            format=entry.get("format", "qcow2"),
-            size_bytes=entry.get("size_bytes", 0),
-            s3_key=s3_key,
-            os_variant=entry.get("os_variant"),
-            state="ready",
-            source="central",
-            source_provider_id=provider_id,
-            tags=entry.get("tags"),
+        action = _process_manifest_entry(
+            entry, existing, local_fingerprints, db, lib.id, provider_id
         )
-        db.add(item)
-        created += 1
+        if action == "created":
+            created += 1
+        elif action == "updated":
+            updated += 1
+        elif action == "removed":
+            removed += 1
+            skipped += 1
+        else:
+            skipped += 1
 
     current_keys = {e["s3_key"] for e in manifest}
     for s3_key, item in existing.items():
@@ -246,6 +266,48 @@ def sync_central_patterns(
     return {"created": created, "skipped": skipped}
 
 
+def _remap_storage_node(data, db, local_items, local_by_size):
+    """Remap library item references for a single storage node.
+
+    Tries name match first, then size+format match. Mutates data in place.
+    """
+    from app.models.library import LibraryItem
+
+    item_id = data.get("libraryItemId")
+    if not item_id or data.get("source") == "pattern":
+        return
+
+    existing = db.query(LibraryItem).filter_by(id=item_id).first()
+    if existing:
+        return
+
+    fmt = data.get("format", "qcow2")
+    size = data.get("sizeBytes", 0)
+    ref_name = (data.get("libraryItemName") or data.get("label") or "").lower()
+    for local in local_items:
+        if local.format == fmt and local.name.lower() == ref_name:
+            data["libraryItemId"] = local.id
+            data["libraryItemName"] = local.name
+            logger.info(
+                "Remapped library ref %s -> %s (%s)",
+                item_id[:8],
+                local.id[:8],
+                local.name,
+            )
+            return
+
+    matched = local_by_size.get((size, fmt))
+    if matched:
+        data["libraryItemId"] = matched.id
+        data["libraryItemName"] = matched.name
+        logger.info(
+            "Remapped library ref %s -> %s (%s) by size",
+            item_id[:8],
+            matched.id[:8],
+            matched.name,
+        )
+
+
 def _remap_library_refs(topology: dict, db: Session):
     """Remap libraryItemId references in topology to match local library items.
 
@@ -264,40 +326,7 @@ def _remap_library_refs(topology: dict, db: Session):
     for node in topology.get("nodes", []):
         if node.get("type") != "storageNode":
             continue
-        data = node.get("data", {})
-        item_id = data.get("libraryItemId")
-        if not item_id or data.get("source") == "pattern":
-            continue
-
-        existing = db.query(LibraryItem).filter_by(id=item_id).first()
-        if existing:
-            continue
-
-        fmt = data.get("format", "qcow2")
-        size = data.get("sizeBytes", 0)
-        ref_name = (data.get("libraryItemName") or data.get("label") or "").lower()
-        for local in local_items:
-            if local.format == fmt and local.name.lower() == ref_name:
-                data["libraryItemId"] = local.id
-                data["libraryItemName"] = local.name
-                logger.info(
-                    "Remapped library ref %s -> %s (%s)",
-                    item_id[:8],
-                    local.id[:8],
-                    local.name,
-                )
-                break
-        else:
-            matched = local_by_size.get((size, fmt))
-            if matched:
-                data["libraryItemId"] = matched.id
-                data["libraryItemName"] = matched.name
-                logger.info(
-                    "Remapped library ref %s -> %s (%s) by size",
-                    item_id[:8],
-                    matched.id[:8],
-                    matched.name,
-                )
+        _remap_storage_node(node.get("data", {}), db, local_items, local_by_size)
 
 
 def _load_manifest(client, bucket: str) -> list[dict]:
@@ -315,30 +344,37 @@ def _load_manifest(client, bucket: str) -> list[dict]:
     return _scan_bucket(client, bucket)
 
 
+def _s3_key_to_item(key, size):
+    """Convert an S3 key and size to a library item dict.
+
+    Returns None for directory entries, manifest.json, or patterns/ prefix.
+    """
+    if key.endswith("/") or key == "library/manifest.json":
+        return None
+    if key.startswith("patterns/"):
+        return None
+    name = key.rsplit("/", 1)[-1]
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    fmt = ext if ext in ("qcow2", "iso", "raw", "vmdk") else "qcow2"
+    item_type = "iso" if ext == "iso" else "image"
+    stem = name.rsplit(".", 1)[0]
+    display_name = stem.replace("-", " ").replace("_", " ").title()
+    return {
+        "s3_key": key,
+        "name": display_name,
+        "type": item_type,
+        "format": fmt,
+        "size_bytes": size,
+    }
+
+
 def _scan_bucket(client, bucket: str) -> list[dict]:
     """List all objects in the central bucket and infer metadata from keys."""
     items = []
     paginator = client.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket):
         for obj in page.get("Contents", []):
-            key = obj["Key"]
-            if key.endswith("/") or key == "library/manifest.json":
-                continue
-            if key.startswith("patterns/"):
-                continue
-            name = key.rsplit("/", 1)[-1]
-            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-            fmt = ext if ext in ("qcow2", "iso", "raw", "vmdk") else "qcow2"
-            item_type = "iso" if ext == "iso" else "image"
-            stem = name.rsplit(".", 1)[0]
-            display_name = stem.replace("-", " ").replace("_", " ").title()
-            items.append(
-                {
-                    "s3_key": key,
-                    "name": display_name,
-                    "type": item_type,
-                    "format": fmt,
-                    "size_bytes": obj.get("Size", 0),
-                }
-            )
+            item = _s3_key_to_item(obj["Key"], obj.get("Size", 0))
+            if item:
+                items.append(item)
     return items

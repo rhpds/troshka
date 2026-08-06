@@ -604,7 +604,7 @@ def ocp_versions():
                 import json
 
                 data = json.loads(resp.read())
-                versions = sorted(set(n["version"] for n in data.get("nodes", [])))
+                versions = sorted({n["version"] for n in data.get("nodes", [])})
                 if versions:
                     channels.append(
                         {

@@ -1,3 +1,5 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -11,11 +13,12 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 VALID_ROLES = {"user", "operator", "admin"}
 
+AdminUser = Annotated[User, Depends(require_role("admin"))]
+DbSession = Annotated[Session, Depends(get_db)]
+
 
 @router.get("/", response_model=list[UserResponse])
-def list_users(
-    user: User = Depends(require_role("admin")), db: Session = Depends(get_db)
-):
+def list_users(user: AdminUser, db: DbSession):
     return db.query(User).order_by(User.email).all()
 
 
@@ -27,8 +30,8 @@ def list_users(
 )
 def create_user(
     body: UserCreate,
-    current_user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    current_user: AdminUser,
+    db: DbSession,
 ):
     email = body.email.strip().lower()
     if not email:
@@ -60,8 +63,8 @@ def create_user(
 def update_user(
     user_id: str,
     body: UserUpdate,
-    current_user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    current_user: AdminUser,
+    db: DbSession,
 ):
     user = db.query(User).filter_by(id=user_id).first()
     if not user:
@@ -93,8 +96,8 @@ def update_user(
 )
 def delete_user(
     user_id: str,
-    current_user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    current_user: AdminUser,
+    db: DbSession,
 ):
     user = db.query(User).filter_by(id=user_id).first()
     if not user:

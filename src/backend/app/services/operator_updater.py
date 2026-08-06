@@ -199,7 +199,7 @@ def update_operator(provider) -> dict:
             "registry_digest": (_registry_digest or "")[:20],
         }
     except Exception as e:
-        logger.error("Failed to restart operator on %s: %s", provider.name, e)
+        logger.exception("Failed to restart operator on %s: %s", provider.name, e)
         return {"status": "error", "message": str(e)}
 
 

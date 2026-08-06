@@ -143,7 +143,7 @@ def delete_prefix(prefix: str):
         objects = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
         if objects:
             client.delete_objects(Bucket=bucket, Delete={"Objects": objects}, **op)
-            logger.info("Deleted %d objects under %s", len(objects), prefix)
+            logger.info("Deleted %d objects under %s", len(objects), prefix)  # NOSONAR
 
 
 def generate_presigned_url(key: str, expires: int = 3600) -> str:

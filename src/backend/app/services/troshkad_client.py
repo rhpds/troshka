@@ -79,6 +79,55 @@ def _get_pool(host):
     return pool
 
 
+def _execute_single_request(pool, host, method, path, body, timeout):
+    """Execute a single HTTPS request to troshkad and return parsed JSON.
+
+    Encodes body as JSON, builds auth headers, sends the request, and parses
+    the response. Raises TroshkadError on HTTP errors or connection failures.
+    """
+    encoded_body = json.dumps(body).encode() if body else None
+    headers = {
+        "Authorization": f"Bearer {host.agent_token}",
+    }
+    if encoded_body:
+        headers["Content-Type"] = "application/json"
+
+    try:
+        resp = pool.urlopen(
+            method,
+            path,
+            body=encoded_body,
+            headers=headers,
+            timeout=timeout,
+            retries=False,
+        )
+        resp_body = resp.data.decode()
+
+        if resp.status >= 400:
+            try:
+                error_body = json.loads(resp_body)
+            except ValueError:
+                error_body = {"error": resp_body}
+            raise TroshkadError(
+                f"troshkad {host.ip_address} returned {resp.status}: {error_body}",
+                status_code=resp.status,
+                response=error_body,
+            )
+
+        return json.loads(resp_body)
+
+    except TroshkadError:
+        raise
+    except SSLError as e:
+        raise TroshkadError(
+            f"Certificate verification failed for {host.ip_address}: {e}"
+        )
+    except (MaxRetryError, U3Timeout) as e:
+        raise TroshkadError(f"Cannot connect to troshkad on {host.ip_address}: {e}")
+    except Exception as e:
+        raise TroshkadError(f"troshkad request failed: {e}")
+
+
 def troshkad_request(
     host,
     method,
@@ -105,63 +154,26 @@ def troshkad_request(
     last_error = None
 
     for attempt in range(retries):
-        encoded_body = json.dumps(body).encode() if body else None
-        headers = {
-            "Authorization": f"Bearer {host.agent_token}",
-        }
-        if encoded_body:
-            headers["Content-Type"] = "application/json"
-
         try:
-            resp = pool.urlopen(
-                method,
-                path,
-                body=encoded_body,
-                headers=headers,
-                timeout=timeout,
-                retries=False,  # We handle retries ourselves
-            )
-            resp_body = resp.data.decode()
-
-            if resp.status >= 400:
-                try:
-                    error_body = json.loads(resp_body)
-                except (json.JSONDecodeError, ValueError):
-                    error_body = {"error": resp_body}
-                err = TroshkadError(
-                    f"troshkad {host.ip_address} returned {resp.status}: {error_body}",
-                    status_code=resp.status,
-                    response=error_body,
-                )
-                if resp.status == 503 and attempt < retries - 1:
-                    last_error = err
-                    logger.info(
-                        "troshkad %s returned 503, retrying in 5s (%d/%d)...",
-                        host.ip_address,
-                        attempt + 1,
-                        retries,
-                    )
-                    time.sleep(5)
-                    continue
-                raise err
-
-            result = json.loads(resp_body)
+            result = _execute_single_request(pool, host, method, path, body, timeout)
             if attempt > 0:
                 logger.info("troshkad %s connection re-established", host.ip_address)
             return result
 
-        except TroshkadError:
-            raise
-        except SSLError as e:
-            # Fingerprint mismatch or other SSL errors
-            raise TroshkadError(
-                f"Certificate verification failed for {host.ip_address}: {e}"
-            )
-        except (MaxRetryError, U3Timeout) as e:
-            last_error = TroshkadError(
-                f"Cannot connect to troshkad on {host.ip_address}: {e}"
-            )
-            if attempt < retries - 1:
+        except TroshkadError as e:
+            if e.status_code == 503 and attempt < retries - 1:
+                last_error = e
+                logger.info(
+                    "troshkad %s returned 503, retrying in 5s (%d/%d)...",
+                    host.ip_address,
+                    attempt + 1,
+                    retries,
+                )
+                time.sleep(5)
+                continue
+
+            if "Cannot connect" in str(e) and attempt < retries - 1:
+                last_error = e
                 logger.info(
                     "troshkad %s connection failed, retrying in 5s (%d/%d)...",
                     host.ip_address,
@@ -170,9 +182,8 @@ def troshkad_request(
                 )
                 time.sleep(5)
                 continue
-            raise last_error
-        except Exception as e:
-            raise TroshkadError(f"troshkad request failed: {e}")
+
+            raise
 
     raise last_error or TroshkadError(
         f"troshkad request failed after {retries} retries"
@@ -207,7 +218,7 @@ def troshkad_request_raw(
             resp_text = resp.data.decode(errors="replace")
             try:
                 error_body = json.loads(resp_text)
-            except (json.JSONDecodeError, ValueError):
+            except ValueError:
                 error_body = {"error": resp_text}
             raise TroshkadError(
                 f"troshkad {host.ip_address} returned {resp.status}: {error_body}",
@@ -303,6 +314,25 @@ def troshkad_download_from_vm(
     return resp.data
 
 
+def _is_drain_retryable(e: TroshkadError) -> bool:
+    """Check if a TroshkadError is retryable during drain wait."""
+    return (
+        e.status_code == 503
+        or "Cannot connect" in str(e)
+        or "timed out" in str(e)
+        or "is disconnected" in str(e)
+    )
+
+
+def _get_drain_retry_reason(e: TroshkadError) -> str:
+    """Return a human-readable reason for a retryable drain error."""
+    if not e.status_code:
+        return "unreachable"
+    if e.response and e.response.get("status") == "draining":
+        return "draining"
+    return "busy (job queue full)"
+
+
 def start_job(host, path, params, request_timeout=30):
     """Start an operation on a host. Returns job_id.
 
@@ -332,36 +362,22 @@ def start_job(host, path, params, request_timeout=30):
             )
             return result["job_id"]
         except TroshkadError as e:
-            retryable = (
-                e.status_code == 503
-                or "Cannot connect" in str(e)
-                or "timed out" in str(e)
-                or "is disconnected" in str(e)
+            if not _is_drain_retryable(e):
+                raise
+            if time.time() >= deadline:
+                raise
+            reason = _get_drain_retry_reason(e)
+            remaining = int(deadline - time.time())
+            logger.info(
+                "troshkad %s %s is %s, retrying in %ds (%ds remaining)...",
+                host.ip_address,
+                path,
+                reason,
+                _DRAIN_RETRY_INTERVAL,
+                remaining,
             )
-            if retryable:
-                if time.time() >= deadline:
-                    raise
-                reason = (
-                    "unreachable"
-                    if not e.status_code
-                    else (
-                        "draining"
-                        if e.response and e.response.get("status") == "draining"
-                        else "busy (job queue full)"
-                    )
-                )
-                remaining = int(deadline - time.time())
-                logger.info(
-                    "troshkad %s %s is %s, retrying in %ds (%ds remaining)...",
-                    host.ip_address,
-                    path,
-                    reason,
-                    _DRAIN_RETRY_INTERVAL,
-                    remaining,
-                )
-                time.sleep(_DRAIN_RETRY_INTERVAL)
-                continue
-            raise
+            time.sleep(_DRAIN_RETRY_INTERVAL)
+            continue
 
 
 def poll_job(host, job_id):
@@ -599,6 +615,20 @@ def undefine_vm(host, domain_name, remove_storage=True, timeout=30):
     return job["status"] == "completed"
 
 
+def _find_primary_partition(partitions: list) -> dict:
+    """Find the most relevant partition for disk usage reporting.
+
+    Prefers /var/lib/troshka, falls back to /, then first partition.
+    """
+    for p in partitions:
+        if p.get("mount") == "/var/lib/troshka":
+            return p
+    for p in partitions:
+        if p.get("mount") == "/":
+            return p
+    return partitions[0] if partitions else {}
+
+
 def check_disk_usage(host, timeout=15, retries=3):
     """Check disk usage on host. Returns {free_bytes, total_bytes, used_pct, partitions} for the troshka partition."""
     import time
@@ -606,22 +636,11 @@ def check_disk_usage(host, timeout=15, retries=3):
     for attempt in range(retries):
         try:
             result = troshkad_request(host, "GET", "/host/disk-usage", timeout=timeout)
-            if "partitions" in result:
-                partitions = result["partitions"]
-                primary = None
-                for p in partitions:
-                    if p.get("mount") == "/var/lib/troshka":
-                        primary = p
-                        break
-                if not primary:
-                    for p in partitions:
-                        if p.get("mount") == "/":
-                            primary = p
-                            break
-                if not primary:
-                    primary = partitions[0] if partitions else {}
-                return {**primary, "partitions": partitions}
-            return result
+            if "partitions" not in result:
+                return result
+            partitions = result["partitions"]
+            primary = _find_primary_partition(partitions)
+            return {**primary, "partitions": partitions}
         except TroshkadError:
             if attempt == retries - 1:
                 raise

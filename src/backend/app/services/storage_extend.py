@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__)
 
 _last_extend: dict[str, float] = {}
 _COOLDOWN_SECONDS = 600
+_NO_PROVIDER = "No provider associated with pool"
 
 
 def _on_cooldown(target_id: str) -> bool:
@@ -126,7 +127,7 @@ def extend_pool_fsx(pool, db, increment_gb: int | None = None):
 
     provider = db.get(Provider, pool.provider_id)
     if not provider:
-        raise ValueError("No provider associated with pool")
+        raise ValueError(_NO_PROVIDER)
     creds = provider.get_credentials()
 
     from app.services.storage_pool_service import update_fsx_storage
@@ -137,7 +138,7 @@ def extend_pool_fsx(pool, db, increment_gb: int | None = None):
             creds, provider.default_region, pool.fsx_filesystem_id, new_size
         )
     except Exception as e:
-        logger.error("FSx extend failed for pool %s: %s", pool.id[:8], e)
+        logger.exception("FSx extend failed for pool %s: %s", pool.id[:8], e)
         msg = str(e)
         if "6 hours" in msg or "prior storage capacity" in msg:
             raise ValueError(
@@ -178,7 +179,7 @@ def extend_pool_netapp(pool, db, increment_gb: int | None = None):
 
     provider = db.get(Provider, pool.provider_id)
     if not provider:
-        raise ValueError("No provider associated with pool")
+        raise ValueError(_NO_PROVIDER)
     creds = provider.get_credentials()
 
     from app.services.storage_pool_service import update_netapp_capacity
@@ -219,7 +220,7 @@ def extend_pool_azure_files(pool, db, increment_gb: int | None = None):
 
     provider = db.get(Provider, pool.provider_id)
     if not provider:
-        raise ValueError("No provider associated with pool")
+        raise ValueError(_NO_PROVIDER)
     creds = provider.get_credentials()
 
     from app.services.storage_pool_service import update_azure_files_capacity

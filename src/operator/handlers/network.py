@@ -13,6 +13,8 @@ from helpers.dnsmasq import generate_dnsmasq_config
 
 logger = logging.getLogger(__name__)
 
+_DNSMASQ_CONF = "dnsmasq.conf"
+
 
 def _modify_scc_users(custom_api, scc_name, sa_ref, action):
     """Modify a single SCC's users list. Returns True if a patch was applied."""
@@ -158,7 +160,7 @@ async def network_create(spec, meta, namespace, name, body, patch, **_):
             name=f"dnsmasq-{name}",
             namespace=namespace,
         ),
-        data={"dnsmasq.conf": dnsmasq_conf},
+        data={_DNSMASQ_CONF: dnsmasq_conf},
     )
     try:
         api.create_namespaced_config_map(namespace=namespace, body=cm_body)
@@ -194,7 +196,7 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
         api.patch_namespaced_config_map(
             name=cm_name,
             namespace=namespace,
-            body={"data": {"dnsmasq.conf": dnsmasq_conf}},
+            body={"data": {_DNSMASQ_CONF: dnsmasq_conf}},
         )
         logger.info(f"Updated ConfigMap {cm_name}")
     except client.ApiException as e:
@@ -203,7 +205,7 @@ async def network_update(spec, meta, namespace, name, body, patch, **_):
                 namespace=namespace,
                 body=client.V1ConfigMap(
                     metadata=client.V1ObjectMeta(name=cm_name, namespace=namespace),
-                    data={"dnsmasq.conf": dnsmasq_conf},
+                    data={_DNSMASQ_CONF: dnsmasq_conf},
                 ),
             )
         else:

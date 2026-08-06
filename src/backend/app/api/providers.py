@@ -14,7 +14,11 @@ from app.models.user import User
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/providers", tags=["providers"])
 
+AdminUser = Annotated[User, Depends(require_role("admin"))]
+DbSession = Annotated[Session, Depends(get_db)]
+
 _PROVIDER_NOT_FOUND = "Provider not found"
+_SUBNET_CIDR = "10.100.0.0/16"  # NOSONAR
 
 
 class ProviderCreate(BaseModel):
@@ -304,18 +308,24 @@ def _build_provider_response(
 
 
 @router.get("/", response_model=list[ProviderResponse])
-def list_providers(
-    user: User = Depends(require_role("admin")), db: Session = Depends(get_db)
-):
+def list_providers(user: AdminUser, db: DbSession):
     providers = db.query(Provider).order_by(Provider.name).all()
     return [_build_provider_response(p) for p in providers]
 
 
-@router.post("/", response_model=ProviderResponse, status_code=201)
+@router.post(
+    "/",
+    response_model=ProviderResponse,
+    status_code=201,
+    responses={
+        400: {"description": "Bad request"},
+        409: {"description": "Provider name already exists"},
+    },
+)
 def create_provider(
     body: ProviderCreate,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     existing = db.query(Provider).filter_by(name=body.name).first()
     if existing:
@@ -356,21 +366,8 @@ def create_provider(
     )
 
 
-@router.patch(
-    "/{provider_id}",
-    response_model=ProviderResponse,
-    responses={404: {"description": "Provider not found"}},
-)
-def update_provider(
-    provider_id: str,
-    body: ProviderUpdate,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
-):
-    provider = db.query(Provider).filter_by(id=provider_id).first()
-    if not provider:
-        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
-
+def _update_provider_basic_fields(provider: Provider, body: ProviderUpdate) -> None:
+    """Update basic provider fields from request body."""
     if body.name is not None:
         provider.name = body.name
     if body.default_region is not None:
@@ -386,28 +383,56 @@ def update_provider(
     if body.state is not None:
         provider.state = body.state
 
+
+def _update_cluster_credentials(provider: Provider, body: ProviderUpdate) -> None:
+    """Update cluster provider credentials (OCP Virt/KubeVirt)."""
+    creds = provider.get_credentials()
+    if body.api_url:
+        creds["api_url"] = body.api_url
+    if body.token:
+        creds["token"] = body.token
+    if body.namespace:
+        creds["namespace"] = body.namespace
+        if provider.type in ("ocpvirt", "kubevirt"):
+            provider.default_region = body.namespace
+    if body.cache_namespace:
+        creds["cache_namespace"] = body.cache_namespace
+    if body.project_prefix:
+        creds["project_prefix"] = body.project_prefix
+    provider.set_credentials(creds)
+
+
+def _update_aws_credentials(provider: Provider, body: ProviderUpdate) -> None:
+    """Update AWS credentials (access key/secret)."""
+    creds = provider.get_credentials()
+    if body.access_key_id:
+        creds["access_key_id"] = body.access_key_id
+    if body.secret_access_key:
+        creds["secret_access_key"] = body.secret_access_key
+    provider.set_credentials(creds)
+
+
+@router.patch(
+    "/{provider_id}",
+    response_model=ProviderResponse,
+    responses={404: {"description": _PROVIDER_NOT_FOUND}},
+)
+def update_provider(
+    provider_id: str,
+    body: ProviderUpdate,
+    user: AdminUser,
+    db: DbSession,
+):
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
+
+    _update_provider_basic_fields(provider, body)
+
     if body.api_url or body.token or body.namespace:
-        creds = provider.get_credentials()
-        if body.api_url:
-            creds["api_url"] = body.api_url
-        if body.token:
-            creds["token"] = body.token
-        if body.namespace:
-            creds["namespace"] = body.namespace
-            if provider.type in ("ocpvirt", "kubevirt"):
-                provider.default_region = body.namespace
-        if body.cache_namespace:
-            creds["cache_namespace"] = body.cache_namespace
-        if body.project_prefix:
-            creds["project_prefix"] = body.project_prefix
-        provider.set_credentials(creds)
+        _update_cluster_credentials(provider, body)
     elif body.access_key_id or body.secret_access_key:
-        creds = provider.get_credentials()
-        if body.access_key_id:
-            creds["access_key_id"] = body.access_key_id
-        if body.secret_access_key:
-            creds["secret_access_key"] = body.secret_access_key
-        provider.set_credentials(creds)
+        _update_aws_credentials(provider, body)
 
     db.commit()
     db.refresh(provider)
@@ -424,7 +449,7 @@ def _cleanup_kubevirt_k8s_resources(provider: Provider, creds: dict) -> Any | No
     try:
         from app.services.providers.kubevirt import _get_k8s_clients
 
-        custom_api, core_api, api_client = _get_k8s_clients(provider)
+        _custom_api, core_api, api_client = _get_k8s_clients(provider)
         operator_ns = creds.get("namespace", "troshka-operator")
         cache_ns = creds.get("cache_namespace", "troshka-cache")
 
@@ -504,14 +529,14 @@ def _cleanup_kubevirt_db_resources(
     "/{provider_id}",
     status_code=204,
     responses={
-        404: {"description": "Provider not found"},
+        404: {"description": _PROVIDER_NOT_FOUND},
         409: {"description": "Provider has hosts"},
     },
 )
 def delete_provider(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
@@ -532,12 +557,15 @@ def delete_provider(
 
 @router.get(
     "/{provider_id}/discover-images",
-    responses={404: {"description": _PROVIDER_NOT_FOUND}},
+    responses={
+        404: {"description": _PROVIDER_NOT_FOUND},
+        500: {"description": "Image discovery failed"},
+    },
 )
 def discover_images(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """List available RHEL 9 and 10 images (both Access2/Gold and Hourly/Marketplace)."""
     import re
@@ -636,12 +664,15 @@ def discover_images(
 # Backward-compatible alias for old endpoint name
 @router.get(
     "/{provider_id}/discover-ami",
-    responses={404: {"description": "Provider not found"}},
+    responses={
+        404: {"description": _PROVIDER_NOT_FOUND},
+        500: {"description": "Image discovery failed"},
+    },
 )
 def list_available_amis(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Deprecated: use /discover-images instead."""
     return discover_images(provider_id, user, db)
@@ -649,12 +680,15 @@ def list_available_amis(
 
 @router.get(
     "/{provider_id}/discover-vpcs",
-    responses={404: {"description": "Provider not found"}},
+    responses={
+        404: {"description": _PROVIDER_NOT_FOUND},
+        500: {"description": "VPC discovery failed"},
+    },
 )
 def discover_vpcs(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """List available VPCs and subnets in the provider's region."""
     import boto3
@@ -716,12 +750,15 @@ def discover_vpcs(
 
 @router.post(
     "/{provider_id}/create-vpc",
-    responses={404: {"description": "Provider not found"}},
+    responses={
+        404: {"description": _PROVIDER_NOT_FOUND},
+        500: {"description": "VPC creation failed"},
+    },
 )
 def create_vpc(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Create a new VPC with a public subnet for troshka hosts."""
     import boto3
@@ -739,7 +776,7 @@ def create_vpc(
             aws_secret_access_key=creds.get("secret_access_key"),
         )
 
-        vpc = ec2.create_vpc(CidrBlock="10.100.0.0/16")
+        vpc = ec2.create_vpc(CidrBlock=_SUBNET_CIDR)
         vpc_id = vpc["Vpc"]["VpcId"]
         ec2.create_tags(
             Resources=[vpc_id],
@@ -840,7 +877,7 @@ def create_vpc(
             "subnet_ids": subnet_ids,
             "security_group_id": sg_id,
             "internet_gateway_id": igw_id,
-            "cidr": "10.100.0.0/16",
+            "cidr": _SUBNET_CIDR,
             "availability_zones": azs,
         }
     except HTTPException:
@@ -854,14 +891,17 @@ def create_vpc(
 
 @router.post(
     "/{provider_id}/setup-infra",
-    responses={404: {"description": "Provider not found"}},
+    responses={
+        404: {"description": _PROVIDER_NOT_FOUND},
+        500: {"description": "Infrastructure setup failed"},
+    },
 )
 def setup_infrastructure(
     provider_id: str,
     vpc_id: str,
     subnet_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Set VPC/subnet on the provider and ensure security group exists."""
 
@@ -894,13 +934,13 @@ def setup_infrastructure(
 
 @router.post(
     "/{provider_id}/set-image",
-    responses={404: {"description": "Provider not found"}},
+    responses={404: {"description": _PROVIDER_NOT_FOUND}},
 )
 def set_image(
     provider_id: str,
     image_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Set the default image for a provider."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -914,13 +954,13 @@ def set_image(
 # Backward-compatible alias for old endpoint name
 @router.post(
     "/{provider_id}/set-ami",
-    responses={404: {"description": "Provider not found"}},
+    responses={404: {"description": _PROVIDER_NOT_FOUND}},
 )
 def set_ami(
     provider_id: str,
     ami_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Deprecated: use /set-image instead."""
     return set_image(provider_id, ami_id, user, db)
@@ -928,13 +968,13 @@ def set_ami(
 
 @router.post(
     "/{provider_id}/set-iso",
-    responses={404: {"description": "Provider not found"}},
+    responses={404: {"description": _PROVIDER_NOT_FOUND}},
 )
 def set_iso(
     provider_id: str,
     iso_pvc: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Set the install ISO PVC name for an OCP Virt provider."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -956,8 +996,8 @@ def set_iso(
 )
 def discover_isos(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """List available ISO PVCs in the troshka namespace."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -994,13 +1034,13 @@ def discover_isos(
     "/{provider_id}/discover-datasources",
     responses={
         400: {"description": "Bad request"},
-        404: {"description": "Provider not found"},
+        404: {"description": _PROVIDER_NOT_FOUND},
     },
 )
 def discover_datasources(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """List available VM base images (DataSources) on an OCP Virt cluster."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -1179,13 +1219,13 @@ def _ensure_namespaces(
     "/{provider_id}/test",
     responses={
         400: {"description": "Bad request"},
-        404: {"description": "Provider not found"},
+        404: {"description": _PROVIDER_NOT_FOUND},
     },
 )
 def test_provider(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Test provider credentials by calling the provider's API."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -1270,13 +1310,14 @@ def test_provider(
     "/{provider_id}/create-bucket",
     responses={
         400: {"description": "Bad request"},
-        404: {"description": "Provider not found"},
+        404: {"description": _PROVIDER_NOT_FOUND},
+        500: {"description": "Bucket creation failed"},
     },
 )
 def create_s3_bucket(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Create the S3 bucket for a storage provider."""
     import boto3
@@ -1320,13 +1361,14 @@ def create_s3_bucket(
     responses={
         400: {"description": "Bad request"},
         403: {"description": "Forbidden"},
-        404: {"description": "Provider not found"},
+        404: {"description": _PROVIDER_NOT_FOUND},
+        500: {"description": "Operator install failed"},
     },
 )
 def install_operator(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
@@ -1357,7 +1399,9 @@ def install_operator(
                     "Then click Install Operator again."
                 ),
             )
-        logger.exception("Failed to install operator for %s", provider_id[:8])
+        logger.exception(
+            "Failed to install operator for %s", provider_id[:8]
+        )  # NOSONAR
         raise HTTPException(status_code=500, detail=f"Failed to install operator: {e}")
 
     from app.models.host import Host
@@ -1413,13 +1457,13 @@ def install_operator(
     "/{provider_id}/availability-zones",
     responses={
         400: {"description": "Bad request"},
-        404: {"description": "Provider not found"},
+        404: {"description": _PROVIDER_NOT_FOUND},
     },
 )
 def list_availability_zones(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """List available AZs in the provider's region."""
     import boto3
@@ -1453,14 +1497,15 @@ class ConsoleSetupRequest(BaseModel):
     "/{provider_id}/setup-console",
     responses={
         400: {"description": "Bad request"},
-        404: {"description": "Provider not found"},
+        404: {"description": _PROVIDER_NOT_FOUND},
+        500: {"description": "Console setup failed"},
     },
 )
 def setup_console(
     provider_id: str,
     req: ConsoleSetupRequest,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Set up console infrastructure for direct VNC proxy."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -1512,7 +1557,9 @@ def setup_console(
             )
             zone_id = resp["HostedZone"]["Id"].split("/")[-1]
             nameservers = resp["DelegationSet"]["NameServers"]
-            logger.info("Created hosted zone %s for %s", zone_id, base_domain)
+            logger.info(
+                "Created hosted zone %s for %s", zone_id, base_domain
+            )  # NOSONAR
 
         # Create IAM role + instance profile (idempotent)
         iam = boto3.client(
@@ -1593,37 +1640,32 @@ def setup_console(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception("Failed to setup console for provider %s", provider_id)
+        logger.exception(
+            "Failed to setup console for provider %s", provider_id
+        )  # NOSONAR
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete(
-    "/{provider_id}/console",
-    responses={
-        400: {"description": "Bad request"},
-        404: {"description": "Provider not found"},
-    },
-)
-def delete_console(
-    provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
-):
-    """Remove console DNS configuration and hosted zone."""
-    import boto3
+def _delete_dns_records(r53_client: Any, zone_id: str) -> None:
+    """Delete all A and CNAME records in a Route53 hosted zone."""
+    paginator = r53_client.get_paginator("list_resource_record_sets")
+    changes = []
+    for page in paginator.paginate(HostedZoneId=zone_id):
+        for rrs in page["ResourceRecordSets"]:
+            if rrs["Type"] in ("A", "CNAME"):
+                changes.append({"Action": "DELETE", "ResourceRecordSet": rrs})
+    if changes:
+        for i in range(0, len(changes), 100):
+            r53_client.change_resource_record_sets(
+                HostedZoneId=zone_id,
+                ChangeBatch={"Changes": changes[i : i + 100]},
+            )
 
-    from app.models.host import Host
 
-    provider = db.query(Provider).filter_by(id=provider_id).first()
-    if not provider:
-        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
-    if not provider.console_zone_id:
-        raise HTTPException(status_code=400, detail="Console not configured")
-
-    creds = provider.get_credentials()
-    zone_id = provider.console_zone_id
-
-    # Only delete the hosted zone if no other providers share it
+def _delete_hosted_zone_if_unused(
+    db: Session, provider_id: str, zone_id: str, creds: dict[str, Any]
+) -> None:
+    """Delete Route53 hosted zone if no other providers share it."""
     other_users = (
         db.query(Provider)
         .filter(
@@ -1635,29 +1677,16 @@ def delete_console(
 
     if other_users == 0:
         try:
+            import boto3
+
             r53 = boto3.client(
                 "route53",
                 aws_access_key_id=creds.get("access_key_id"),
                 aws_secret_access_key=creds.get("secret_access_key"),
             )
-
-            # Delete all A records in the zone
-            paginator = r53.get_paginator("list_resource_record_sets")
-            changes = []
-            for page in paginator.paginate(HostedZoneId=zone_id):
-                for rrs in page["ResourceRecordSets"]:
-                    if rrs["Type"] in ("A", "CNAME"):
-                        changes.append({"Action": "DELETE", "ResourceRecordSet": rrs})
-            if changes:
-                for i in range(0, len(changes), 100):
-                    r53.change_resource_record_sets(
-                        HostedZoneId=zone_id,
-                        ChangeBatch={"Changes": changes[i : i + 100]},
-                    )
-
+            _delete_dns_records(r53, zone_id)
             r53.delete_hosted_zone(Id=zone_id)
             logger.info("Deleted hosted zone %s", zone_id)
-
         except Exception as e:
             logger.warning("Failed to fully clean up hosted zone %s: %s", zone_id, e)
     else:
@@ -1667,13 +1696,43 @@ def delete_console(
             other_users,
         )
 
-    # Clear console_domain on all hosts under this provider
-    hosts = db.query(Host).filter_by(provider_id=provider_id).all()
+
+def _clear_console_config(db: Session, provider: Provider) -> None:
+    """Clear console configuration from provider and all its hosts."""
+    from app.models.host import Host
+
+    hosts = db.query(Host).filter_by(provider_id=provider.id).all()
     for h in hosts:
         h.console_domain = None
     provider.console_zone_id = None
     provider.console_base_domain = None
     provider.console_nameservers = None
+
+
+@router.delete(
+    "/{provider_id}/console",
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": _PROVIDER_NOT_FOUND},
+    },
+)
+def delete_console(
+    provider_id: str,
+    user: AdminUser,
+    db: DbSession,
+):
+    """Remove console DNS configuration and hosted zone."""
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
+    if not provider.console_zone_id:
+        raise HTTPException(status_code=400, detail="Console not configured")
+
+    creds = provider.get_credentials()
+    zone_id = provider.console_zone_id
+
+    _delete_hosted_zone_if_unused(db, provider_id, zone_id, creds)
+    _clear_console_config(db, provider)
     db.commit()
 
     return {"status": "removed"}
@@ -1685,8 +1744,8 @@ def delete_console(
 )
 def create_network_gcp(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Create a VPC network, subnet, and firewall rules for a GCP provider."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -1767,14 +1826,64 @@ def create_network_gcp(
     }
 
 
+def _is_valid_gcp_image(img: Any, skip_terms: tuple[str, ...]) -> bool:
+    """Check if a GCP image meets filter criteria."""
+    name = img.name or ""
+    if not name.startswith(("rhel-9", "rhel-10")):
+        return False
+    if "lvm" not in name:
+        return False
+    if any(s in name for s in skip_terms):
+        return False
+    if img.deprecated and img.deprecated.state == "DEPRECATED":
+        return False
+    return True
+
+
+def _build_gcp_image_prefix(name: str, source: str) -> str:
+    """Build prefix key for tracking latest version of each GCP image family."""
+    parts = name.rsplit("-v", 1)
+    return f"{source}:{parts[0]}" if len(parts) == 2 else f"{source}:{name}"
+
+
+def _collect_gcp_images(
+    images_client: Any, image_project: str, source: str, skip_terms: tuple[str, ...]
+) -> dict[str, dict]:
+    """Collect latest GCP images by prefix."""
+    latest_by_prefix: dict[str, dict] = {}
+    try:
+        for img in images_client.list(project=image_project):
+            if not _is_valid_gcp_image(img, skip_terms):
+                continue
+
+            name = img.name or ""
+            prefix = _build_gcp_image_prefix(name, source)
+            ts = img.creation_timestamp or ""
+
+            if (
+                prefix not in latest_by_prefix
+                or ts > latest_by_prefix[prefix]["creation_timestamp"]
+            ):
+                latest_by_prefix[prefix] = {
+                    "name": name,
+                    "self_link": img.self_link,
+                    "family": img.family or "",
+                    "source": source,
+                    "creation_timestamp": ts,
+                }
+    except Exception as e:
+        logger.warning("Failed to list images from %s: %s", image_project, e)
+    return latest_by_prefix
+
+
 @router.get(
     "/{provider_id}/discover-images-gcp",
     responses={404: {"description": "GCP provider not found"}},
 )
 def discover_images_gcp(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Discover RHEL BYOS and PAYG images on GCP."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -1789,40 +1898,11 @@ def discover_images_gcp(
     credential = service_account.Credentials.from_service_account_info(sa_json)
 
     images_client = compute_v1.ImagesClient(credentials=credential)
-    skip = ("arm64", "eus", "sap", "baremetal")
-    latest_by_prefix: dict[str, dict] = {}
+    skip_terms = ("arm64", "eus", "sap", "baremetal")
 
-    for image_project in ["rhel-cloud"]:
-        source = "PAYG"
-        try:
-            for img in images_client.list(project=image_project):
-                name = img.name or ""
-                if not name.startswith(("rhel-9", "rhel-10")):
-                    continue
-                if "lvm" not in name:
-                    continue
-                if any(s in name for s in skip):
-                    continue
-                if img.deprecated and img.deprecated.state == "DEPRECATED":
-                    continue
-                parts = name.rsplit("-v", 1)
-                prefix = (
-                    f"{source}:{parts[0]}" if len(parts) == 2 else f"{source}:{name}"
-                )
-                ts = img.creation_timestamp or ""
-                if (
-                    prefix not in latest_by_prefix
-                    or ts > latest_by_prefix[prefix]["creation_timestamp"]
-                ):
-                    latest_by_prefix[prefix] = {
-                        "name": name,
-                        "self_link": img.self_link,
-                        "family": img.family or "",
-                        "source": source,
-                        "creation_timestamp": ts,
-                    }
-        except Exception as e:
-            logger.warning("Failed to list images from %s: %s", image_project, e)
+    latest_by_prefix = _collect_gcp_images(
+        images_client, "rhel-cloud", "PAYG", skip_terms
+    )
 
     results = sorted(
         latest_by_prefix.values(),
@@ -1838,8 +1918,8 @@ def discover_images_gcp(
 )
 def create_network_azure(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Create a Resource Group, VNet, subnet, and NSG for an Azure provider."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -1936,7 +2016,7 @@ def create_network_azure(
     # Create VNet with subnet
     vnet_params: Any = {
         "location": location,
-        "address_space": {"address_prefixes": ["10.100.0.0/16"]},
+        "address_space": {"address_prefixes": [_SUBNET_CIDR]},
         "subnets": [
             {
                 "name": "troshka-subnet",
@@ -1969,14 +2049,88 @@ def create_network_azure(
     }
 
 
+def _is_valid_azure_sku(sku_name: str, all_skus: Any) -> bool:
+    """Check if an Azure SKU meets filter criteria."""
+    if not any(
+        sku_name.startswith(p)
+        for p in [
+            "rhel-lvm9",
+            "rhel-lvm10",
+            "9-lvm",
+            "9_",
+            "10-lvm",
+            "10_",
+        ]
+    ):
+        return False
+    if "lvm" not in sku_name:
+        return False
+    # Skip non-gen2 if gen2 variant exists
+    if not sku_name.endswith("-gen2") and any(
+        (sku_name + "-gen2") == s.name for s in all_skus
+    ):
+        return False
+    return True
+
+
+def _build_azure_image_result(
+    publisher: str, offer: str, sku_name: str, latest_image: Any, source: str
+) -> dict[str, str]:
+    """Build result dict for an Azure image."""
+    urn = f"{publisher}:{offer}:{sku_name}:{latest_image.name}"
+    rhel_version = sku_name.split("-")[0] if sku_name[0].isdigit() else sku_name
+    return {
+        "name": sku_name,
+        "urn": urn,
+        "version": latest_image.name,
+        "source": source,
+        "rhel_version": rhel_version,
+    }
+
+
+def _collect_azure_images_for_offer(
+    compute_client: Any,
+    location: str,
+    publisher: str,
+    offer: str,
+    source: str,
+) -> list[dict[str, str]]:
+    """Collect Azure images for a single publisher/offer combination."""
+    results = []
+    try:
+        skus = compute_client.virtual_machine_images.list_skus(
+            location, publisher, offer
+        )
+        for sku in skus:
+            sku_name = sku.name or ""
+            if not _is_valid_azure_sku(sku_name, skus):
+                continue
+            try:
+                images = compute_client.virtual_machine_images.list(
+                    location, publisher, offer, sku_name
+                )
+                if images:
+                    latest = images[-1]
+                    results.append(
+                        _build_azure_image_result(
+                            publisher, offer, sku_name, latest, source
+                        )
+                    )
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning("Failed to list Azure images for %s/%s: %s", publisher, offer, e)
+    return results
+
+
 @router.get(
     "/{provider_id}/discover-images-azure",
     responses={404: {"description": "Azure provider not found"}},
 )
 def discover_images_azure(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Discover RHEL BYOS and PAYG images on Azure."""
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -1998,60 +2152,13 @@ def discover_images_azure(
     compute_client = ComputeManagementClient(credential, subscription_id)
     results = []
 
-    offers = [
-        ("redhat", "RHEL", "PAYG"),
-    ]
+    offers = [("redhat", "RHEL", "PAYG")]
     for publisher, offer, source in offers:
-        try:
-            skus = compute_client.virtual_machine_images.list_skus(
-                location, publisher, offer
+        results.extend(
+            _collect_azure_images_for_offer(
+                compute_client, location, publisher, offer, source
             )
-            for sku in skus:
-                sku_name = sku.name or ""
-                if not any(
-                    sku_name.startswith(p)
-                    for p in [
-                        "rhel-lvm9",
-                        "rhel-lvm10",
-                        "9-lvm",
-                        "9_",
-                        "10-lvm",
-                        "10_",
-                    ]
-                ):
-                    continue
-                if "lvm" not in sku_name:
-                    continue
-                if not sku_name.endswith("-gen2") and any(
-                    (sku_name + "-gen2") == s.name for s in skus
-                ):
-                    continue
-                try:
-                    images = compute_client.virtual_machine_images.list(
-                        location, publisher, offer, sku_name
-                    )
-                    if images:
-                        latest = images[-1]
-                        urn = f"{publisher}:{offer}:{sku_name}:{latest.name}"
-                        results.append(
-                            {
-                                "name": sku_name,
-                                "urn": urn,
-                                "version": latest.name,
-                                "source": source,
-                                "rhel_version": (
-                                    sku_name.split("-")[0]
-                                    if sku_name[0].isdigit()
-                                    else sku_name
-                                ),
-                            }
-                        )
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning(
-                "Failed to list Azure images for %s/%s: %s", publisher, offer, e
-            )
+        )
 
     return results
 
@@ -2060,15 +2167,15 @@ def discover_images_azure(
     "/{provider_id}/build-image",
     responses={
         400: {"description": "Bad request"},
-        404: {"description": "Provider not found"},
+        404: {"description": _PROVIDER_NOT_FOUND},
         409: {"description": "Build already in progress"},
     },
 )
 def build_image(
     provider_id: str,
+    user: AdminUser,
+    db: DbSession,
     body: dict[str, Any] | None = None,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
 ):
     from app.services import image_builder_service
 
@@ -2111,7 +2218,7 @@ def build_image(
 @router.get("/{provider_id}/build-image/status")
 def build_image_status(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
+    user: AdminUser,
 ):
     from app.services import image_builder_service
 
@@ -2121,7 +2228,7 @@ def build_image_status(
 @router.delete("/{provider_id}/build-image/status", status_code=204)
 def clear_build_image_status(
     provider_id: str,
-    user: User = Depends(require_role("admin")),
+    user: AdminUser,
 ):
     from app.services import image_builder_service
 
@@ -2134,8 +2241,8 @@ def clear_build_image_status(
 )
 def get_operator_status(
     provider_id: str,
-    user: Annotated[User, Depends(require_role("admin"))],
-    db: Annotated[Session, Depends(get_db)],
+    user: AdminUser,
+    db: DbSession,
 ):
     from app.services.operator_updater import (
         _fetch_registry_digest,
@@ -2172,8 +2279,8 @@ def get_operator_status(
 )
 def update_operator_endpoint(
     provider_id: str,
-    user: Annotated[User, Depends(require_role("admin"))],
-    db: Annotated[Session, Depends(get_db)],
+    user: AdminUser,
+    db: DbSession,
 ):
     provider = db.get(Provider, provider_id)
     if not provider:

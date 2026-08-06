@@ -15,6 +15,9 @@ if TYPE_CHECKING:
     from app.models.project import Project
 
 
+_VMS_FK = "vms.id"
+
+
 class VM(Base):
     __tablename__ = "vms"
 
@@ -59,8 +62,8 @@ class BootPrereq(Base):
     __tablename__ = "boot_prereqs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    vm_id: Mapped[str] = mapped_column(ForeignKey("vms.id", ondelete="CASCADE"))
-    depends_on_vm_id: Mapped[str] = mapped_column(ForeignKey("vms.id"))
+    vm_id: Mapped[str] = mapped_column(ForeignKey(_VMS_FK, ondelete="CASCADE"))
+    depends_on_vm_id: Mapped[str] = mapped_column(ForeignKey(_VMS_FK))
     check_type: Mapped[str] = mapped_column(String(20), default="none")
     check_value: Mapped[str | None] = mapped_column(String(100))
 
@@ -71,7 +74,7 @@ class VMInterface(Base):
     __tablename__ = "vm_interfaces"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    vm_id: Mapped[str] = mapped_column(ForeignKey("vms.id", ondelete="CASCADE"))
+    vm_id: Mapped[str] = mapped_column(ForeignKey(_VMS_FK, ondelete="CASCADE"))
     network_id: Mapped[str] = mapped_column(ForeignKey("networks.id"))
     ip_mode: Mapped[str] = mapped_column(String(10), default="dhcp")
     ip_address: Mapped[str | None] = mapped_column(String(45))

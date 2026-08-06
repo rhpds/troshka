@@ -138,6 +138,150 @@ def _check_ip_change_if_all_unreachable(hosts_checked, hosts_failed):
 _skip_until: dict[str, float] = {}
 
 
+def _poll_kubevirt_host(host, db) -> None:
+    """Check KubeVirt cluster health via K8s API."""
+    try:
+        from app.models.provider import Provider
+        from app.services.providers import get_provider_driver
+
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        if provider:
+            driver = get_provider_driver(provider)
+            status = driver.get_host_status(provider, host.instance_id)
+            if status:
+                host.agent_status = "connected"
+                host.last_health_at = datetime.now(UTC)
+            else:
+                host.agent_status = "disconnected"
+        db.commit()
+    except Exception:
+        host.agent_status = "disconnected"
+        db.commit()
+
+
+def _handle_storage_auto_extend(host, db) -> None:
+    """Auto-extend host storage if usage exceeds threshold."""
+    try:
+        from app.services.storage_extend import should_extend_host
+
+        if should_extend_host(host) and host.provider:
+            from app.services.providers import get_provider_driver
+
+            drv = get_provider_driver(host.provider)
+            logger.info(
+                "Auto-extending storage for host %s",
+                host.id[:8],
+            )
+            drv.extend_host_storage(host.provider, host, db)
+    except Exception:
+        logger.warning(
+            "Auto-extend failed for host %s",
+            host.id[:8],
+            exc_info=True,
+        )
+
+
+def _handle_pool_fsx_extend(host, health, db, checked_pools: set) -> None:
+    """Check and extend FSx shared storage for the host's pool."""
+    if not host.storage_pool_id or host.storage_pool_id in checked_pools:
+        return
+    checked_pools.add(host.storage_pool_id)
+    pool = host.storage_pool
+    if not pool or pool.mode != "shared-fsx":
+        return
+    partitions = health.get("partitions", [])
+    shared_mount = next(
+        (p for p in partitions if "shared" in p.get("mount", "")),
+        None,
+    )
+    if not shared_mount:
+        return
+    try:
+        from app.services.storage_extend import extend_pool_fsx, should_extend_pool
+
+        if should_extend_pool(pool, shared_mount["used_pct"]):
+            logger.info("Auto-extending FSx for pool %s", pool.name)
+            extend_pool_fsx(pool, db)
+    except Exception:
+        logger.warning(
+            "Auto-extend failed for pool %s",
+            pool.name,
+            exc_info=True,
+        )
+
+
+def _handle_health_success(host, health, db, checked_pools: set) -> None:
+    """Process a successful health check response."""
+    now_dt = datetime.now(UTC)
+    host.last_health_at = now_dt
+    _skip_until.pop(host.id, None)
+    if health.get("version"):
+        host.agent_version = health["version"]
+
+    # Sync capacity from live data
+    capacity = health.get("capacity", {})
+    if capacity.get("vcpus_total"):
+        host.total_vcpus = capacity["vcpus_total"]
+    if "vcpus_used" in capacity:
+        host.used_vcpus = capacity["vcpus_used"]
+    if capacity.get("ram_total_mb"):
+        host.total_ram_mb = capacity["ram_total_mb"]
+    if "ram_used_mb" in capacity:
+        host.used_ram_mb = capacity["ram_used_mb"]
+
+    host.storage_warnings = _evaluate_partitions(health)
+    if host.storage_warnings:
+        _handle_storage_auto_extend(host, db)
+
+    _check_mesh_health(host, db)
+    _handle_pool_fsx_extend(host, health, db, checked_pools)
+
+    # Auto-reconnect if was disconnected or install_failed
+    if host.agent_status in ("disconnected", "install_failed"):
+        host.agent_status = "connected"
+        logger.info(
+            "Host %s reconnected (troshkad %s)",
+            host.id[:8],
+            health.get("version"),
+        )
+        from app.core.redis import enqueue_job
+        from app.services.gc_service import recover_host_services
+
+        enqueue_job(recover_host_services, host.id, queue_name="default")
+
+
+def _handle_health_failure(host, now_dt) -> None:
+    """Process a failed health check — update status and schedule backoff."""
+    if host.agent_status == "connected" and host.last_health_at:
+        elapsed = (now_dt - host.last_health_at).total_seconds()
+        if elapsed > _DISCONNECT_AFTER_SECONDS:
+            host.agent_status = "disconnected"
+            _skip_until[host.id] = time.time() + 30
+            logger.warning(
+                "Host %s marked disconnected (no health for %ds, retrying in 30s)",
+                host.id[:8],
+                int(elapsed),
+            )
+        else:
+            _skip_until[host.id] = time.time() + 15
+    elif host.agent_status == "disconnected":
+        if (
+            host.host_type == "pattern_buffer"
+            and host.last_health_at
+            and (now_dt - host.last_health_at).total_seconds() > 600
+        ):
+            host.state = "stopped"
+            _skip_until[host.id] = time.time() + 86400
+            logger.info(
+                "Host %s (pattern buffer) auto-stopped after 10min disconnect",
+                host.id[:8],
+            )
+        else:
+            _skip_until[host.id] = time.time() + 30
+    else:
+        _skip_until[host.id] = time.time() + 60
+
+
 def _poll_hosts():
     """Single poll cycle — check all active hosts."""
     from app.core.database import SessionLocal
@@ -148,9 +292,6 @@ def _poll_hosts():
     hosts_checked = 0
     hosts_failed = 0
     try:
-        # Query hosts that should be polled:
-        # - state="active" (not stopped/terminated)
-        # - have agent_token (troshkad is installed)
         hosts = (
             db.query(Host)
             .filter(
@@ -160,28 +301,11 @@ def _poll_hosts():
             .all()
         )
 
-        _checked_pools = set()
+        checked_pools = set()
         now = time.time()
         for host in hosts:
-            # KubeVirt native: check K8s API reachability instead of troshkad
             if host.host_type == "kubevirt-cluster":
-                try:
-                    from app.models.provider import Provider
-                    from app.services.providers import get_provider_driver
-
-                    provider = db.query(Provider).filter_by(id=host.provider_id).first()
-                    if provider:
-                        driver = get_provider_driver(provider)
-                        status = driver.get_host_status(provider, host.instance_id)
-                        if status:
-                            host.agent_status = "connected"
-                            host.last_health_at = datetime.now(UTC)
-                        else:
-                            host.agent_status = "disconnected"
-                    db.commit()
-                except Exception:
-                    host.agent_status = "disconnected"
-                    db.commit()
+                _poll_kubevirt_host(host, db)
                 continue
 
             if not host.agent_cert_fingerprint:
@@ -192,133 +316,11 @@ def _poll_hosts():
             hosts_checked += 1
             try:
                 health = check_health(host)
-                now_dt = datetime.now(UTC)
-
                 if health:
-                    # Success — update health data
-                    host.last_health_at = now_dt
-                    _skip_until.pop(host.id, None)
-                    if health.get("version"):
-                        host.agent_version = health["version"]
-
-                    # Sync capacity from live data
-                    capacity = health.get("capacity", {})
-                    if capacity.get("vcpus_total"):
-                        host.total_vcpus = capacity["vcpus_total"]
-                    if "vcpus_used" in capacity:
-                        host.used_vcpus = capacity["vcpus_used"]
-                    if capacity.get("ram_total_mb"):
-                        host.total_ram_mb = capacity["ram_total_mb"]
-                    if "ram_used_mb" in capacity:
-                        host.used_ram_mb = capacity["ram_used_mb"]
-
-                    host.storage_warnings = _evaluate_partitions(health)
-                    if host.storage_warnings:
-                        try:
-                            from app.services.storage_extend import should_extend_host
-
-                            if should_extend_host(host) and host.provider:
-                                from app.services.providers import get_provider_driver
-
-                                drv = get_provider_driver(host.provider)
-                                logger.info(
-                                    "Auto-extending storage for host %s",
-                                    host.id[:8],
-                                )
-                                drv.extend_host_storage(host.provider, host, db)
-                        except Exception:
-                            logger.warning(
-                                "Auto-extend failed for host %s",
-                                host.id[:8],
-                                exc_info=True,
-                            )
-
-                    # Check WireGuard mesh health
-                    _check_mesh_health(host, db)
-
-                    if (
-                        host.storage_pool_id
-                        and host.storage_pool_id not in _checked_pools
-                    ):
-                        _checked_pools.add(host.storage_pool_id)
-                        pool = host.storage_pool
-                        if pool and pool.mode == "shared-fsx":
-                            partitions = health.get("partitions", [])
-                            shared_mount = next(
-                                (
-                                    p
-                                    for p in partitions
-                                    if "shared" in p.get("mount", "")
-                                ),
-                                None,
-                            )
-                            if shared_mount:
-                                try:
-                                    from app.services.storage_extend import (
-                                        extend_pool_fsx,
-                                        should_extend_pool,
-                                    )
-
-                                    if should_extend_pool(
-                                        pool, shared_mount["used_pct"]
-                                    ):
-                                        logger.info(
-                                            "Auto-extending FSx for pool %s", pool.name
-                                        )
-                                        extend_pool_fsx(pool, db)
-                                except Exception:
-                                    logger.warning(
-                                        "Auto-extend failed for pool %s",
-                                        pool.name,
-                                        exc_info=True,
-                                    )
-
-                    # Auto-reconnect if was disconnected or install_failed
-                    if host.agent_status in ("disconnected", "install_failed"):
-                        host.agent_status = "connected"
-                        logger.info(
-                            "Host %s reconnected (troshkad %s)",
-                            host.id[:8],
-                            health.get("version"),
-                        )
-                        from app.core.redis import enqueue_job
-                        from app.services.gc_service import recover_host_services
-
-                        enqueue_job(
-                            recover_host_services,
-                            host.id,
-                            queue_name="default",
-                        )
+                    _handle_health_success(host, health, db, checked_pools)
                 else:
                     hosts_failed += 1
-                    if host.agent_status == "connected" and host.last_health_at:
-                        elapsed = (now_dt - host.last_health_at).total_seconds()
-                        if elapsed > _DISCONNECT_AFTER_SECONDS:
-                            host.agent_status = "disconnected"
-                            _skip_until[host.id] = time.time() + 30
-                            logger.warning(
-                                "Host %s marked disconnected (no health for %ds, retrying in 30s)",
-                                host.id[:8],
-                                int(elapsed),
-                            )
-                        else:
-                            _skip_until[host.id] = time.time() + 15
-                    elif host.agent_status == "disconnected":
-                        if (
-                            host.host_type == "pattern_buffer"
-                            and host.last_health_at
-                            and (now_dt - host.last_health_at).total_seconds() > 600
-                        ):
-                            host.state = "stopped"
-                            _skip_until[host.id] = time.time() + 86400
-                            logger.info(
-                                "Host %s (pattern buffer) auto-stopped after 10min disconnect",
-                                host.id[:8],
-                            )
-                        else:
-                            _skip_until[host.id] = time.time() + 30
-                    else:
-                        _skip_until[host.id] = time.time() + 60
+                    _handle_health_failure(host, datetime.now(UTC))
             except Exception:
                 hosts_failed += 1
                 logger.debug(
@@ -460,7 +462,6 @@ def _poller_loop():
             _check_cert_renewal()
         except Exception:
             logger.exception("Health poller error")
-        pass
 
 
 def start_health_poller():

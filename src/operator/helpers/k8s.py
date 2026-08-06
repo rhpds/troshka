@@ -32,7 +32,7 @@ def golden_pvc_name(s3_path):
 
 
 def build_nad(network_cr):
-    spec = network_cr["spec"]
+    _spec = network_cr["spec"]
     name = network_cr["metadata"]["name"]
     namespace = network_cr["metadata"]["namespace"]
 

@@ -357,7 +357,7 @@ def cancel_capture(pattern_id: str, db) -> None:
     for job_id in job_ids:
         try:
             cancel_job(host, job_id)
-            log.info(
+            log.info(  # NOSONAR — internal IDs, not user input
                 "Cancelled capture job %s on host %s for pattern %s",
                 job_id[:8],
                 host.id[:8],
@@ -522,7 +522,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         return
 
     s3_config = _get_s3_config()
-    custom_api, core_api, _ = _get_k8s_clients(provider)
+    custom_api, _core_api, _ = _get_k8s_clients(provider)
     namespace = _project_ns(provider, project_id)
 
     _ensure_s3_secret(provider, namespace, s3_config)
@@ -580,7 +580,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
             },
         )
     except Exception as e:
-        log.error("Failed to trigger capture on %s: %s", cr_name, e)
+        log.exception("Failed to trigger capture on %s: %s", cr_name, e)
         pattern.state = "error"
         pattern.deploy_error = f"Failed to trigger capture: {e}"
         db.commit()
@@ -994,7 +994,7 @@ def _process_direct_capture_results(all_jobs, host, pattern_id, pattern, db):
             )
 
         except TroshkadError as e:
-            log.error(
+            log.exception(
                 "Troshkad error capturing pattern %s VM %s: %s",
                 pattern_id[:8],
                 jinfo["vm_id"][:8],
@@ -1115,7 +1115,7 @@ def _capture_direct(
                 len(disks_params),
             )
         except TroshkadError as e:
-            log.error(
+            log.exception(
                 "Failed to start capture for pattern %s VM %s: %s",
                 pattern_id[:8],
                 vm_id[:8],
@@ -1220,7 +1220,7 @@ def _capture_container_images(host, topology, pattern_id, creds, pattern, db):
                 ctr["image"],
             )
         except TroshkadError as e:
-            log.error(
+            log.exception(
                 "Failed to capture container image %s for pattern %s: %s",
                 ctr["image"],
                 pattern_id[:8],

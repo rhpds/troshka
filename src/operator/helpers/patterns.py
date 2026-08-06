@@ -44,7 +44,7 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config):
         "echo 'Converting raw to qcow2...'; "
         "qemu-img convert -f raw -O qcow2 -p /disk/disk.img /scratch/disk.qcow2; "
         "SIZE=$(stat -c%s /scratch/disk.qcow2); "
-        "echo \"DISK_SIZE_BYTES=$SIZE\"; "
+        'echo "DISK_SIZE_BYTES=$SIZE"; '
         "echo 'Uploading to S3...'; "
         f"aws s3 cp /scratch/disk.qcow2 s3://{s3_config.get('bucket', '')}/{s3_path} "
         f"--endpoint-url {s3_config.get('endpoint', 'https://s3.amazonaws.com')} "

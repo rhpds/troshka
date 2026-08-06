@@ -1,3 +1,5 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -10,6 +12,11 @@ from app.schemas.disk import DiskCreate, DiskResponse, DiskUpdate
 
 router = APIRouter(prefix="/projects/{project_id}/disks", tags=["disks"])
 
+_DISK_NOT_FOUND = "Disk not found"
+
+CurrentUser = Annotated[User, Depends(get_current_user)]
+DbSession = Annotated[Session, Depends(get_db)]
+
 
 def _get_project_or_403(project_id: str, user: User, db: Session) -> Project:
     project = db.query(Project).filter_by(id=project_id).first()
@@ -20,23 +27,29 @@ def _get_project_or_403(project_id: str, user: User, db: Session) -> Project:
     return project
 
 
-@router.get("/", response_model=list[DiskResponse])
-def list_disks(
-    project_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+@router.get(
+    "/",
+    response_model=list[DiskResponse],
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Project not found"},
+    },
+)
+def list_disks(project_id: str, user: CurrentUser, db: DbSession):
     _get_project_or_403(project_id, user, db)
     return db.query(Disk).filter_by(project_id=project_id).all()
 
 
-@router.post("/", response_model=DiskResponse, status_code=201)
-def create_disk(
-    project_id: str,
-    body: DiskCreate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+@router.post(
+    "/",
+    response_model=DiskResponse,
+    status_code=201,
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Project not found"},
+    },
+)
+def create_disk(project_id: str, body: DiskCreate, user: CurrentUser, db: DbSession):
     _get_project_or_403(project_id, user, db)
     disk = Disk(project_id=project_id, **body.model_dump())
     db.add(disk)
@@ -45,32 +58,37 @@ def create_disk(
     return disk
 
 
-@router.get("/{disk_id}", response_model=DiskResponse)
-def get_disk(
-    project_id: str,
-    disk_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+@router.get(
+    "/{disk_id}",
+    response_model=DiskResponse,
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Project or disk not found"},
+    },
+)
+def get_disk(project_id: str, disk_id: str, user: CurrentUser, db: DbSession):
     _get_project_or_403(project_id, user, db)
     disk = db.query(Disk).filter_by(id=disk_id, project_id=project_id).first()
     if not disk:
-        raise HTTPException(status_code=404, detail="Disk not found")
+        raise HTTPException(status_code=404, detail=_DISK_NOT_FOUND)
     return disk
 
 
-@router.patch("/{disk_id}", response_model=DiskResponse)
+@router.patch(
+    "/{disk_id}",
+    response_model=DiskResponse,
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Project or disk not found"},
+    },
+)
 def update_disk(
-    project_id: str,
-    disk_id: str,
-    body: DiskUpdate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    project_id: str, disk_id: str, body: DiskUpdate, user: CurrentUser, db: DbSession
 ):
     _get_project_or_403(project_id, user, db)
     disk = db.query(Disk).filter_by(id=disk_id, project_id=project_id).first()
     if not disk:
-        raise HTTPException(status_code=404, detail="Disk not found")
+        raise HTTPException(status_code=404, detail=_DISK_NOT_FOUND)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(disk, field, value)
     db.commit()
@@ -78,33 +96,38 @@ def update_disk(
     return disk
 
 
-@router.delete("/{disk_id}", status_code=204)
-def delete_disk(
-    project_id: str,
-    disk_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+@router.delete(
+    "/{disk_id}",
+    status_code=204,
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Project or disk not found"},
+    },
+)
+def delete_disk(project_id: str, disk_id: str, user: CurrentUser, db: DbSession):
     _get_project_or_403(project_id, user, db)
     disk = db.query(Disk).filter_by(id=disk_id, project_id=project_id).first()
     if not disk:
-        raise HTTPException(status_code=404, detail="Disk not found")
+        raise HTTPException(status_code=404, detail=_DISK_NOT_FOUND)
     db.delete(disk)
     db.commit()
 
 
-@router.post("/{disk_id}/attach/{vm_id}", response_model=DiskResponse)
+@router.post(
+    "/{disk_id}/attach/{vm_id}",
+    response_model=DiskResponse,
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Project or disk not found"},
+    },
+)
 def attach_disk(
-    project_id: str,
-    disk_id: str,
-    vm_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    project_id: str, disk_id: str, vm_id: str, user: CurrentUser, db: DbSession
 ):
     _get_project_or_403(project_id, user, db)
     disk = db.query(Disk).filter_by(id=disk_id, project_id=project_id).first()
     if not disk:
-        raise HTTPException(status_code=404, detail="Disk not found")
+        raise HTTPException(status_code=404, detail=_DISK_NOT_FOUND)
     disk.vm_id = vm_id
     disk.attached = True
     db.commit()
@@ -112,17 +135,19 @@ def attach_disk(
     return disk
 
 
-@router.post("/{disk_id}/detach", response_model=DiskResponse)
-def detach_disk(
-    project_id: str,
-    disk_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+@router.post(
+    "/{disk_id}/detach",
+    response_model=DiskResponse,
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Project or disk not found"},
+    },
+)
+def detach_disk(project_id: str, disk_id: str, user: CurrentUser, db: DbSession):
     _get_project_or_403(project_id, user, db)
     disk = db.query(Disk).filter_by(id=disk_id, project_id=project_id).first()
     if not disk:
-        raise HTTPException(status_code=404, detail="Disk not found")
+        raise HTTPException(status_code=404, detail=_DISK_NOT_FOUND)
     disk.vm_id = None
     disk.attached = False
     db.commit()

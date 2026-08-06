@@ -281,6 +281,7 @@ class KubeVirtDriver:
         return "Legacy"
 
     def set_boot_mode(self, identity, mode):
+        # No-op: boot mode is set at VM creation time via KubeVirt spec, not changeable at runtime
         pass
 
     def get_total_memory(self, identity):
@@ -336,7 +337,7 @@ class KubeVirtDriver:
             .get("uuid", identity)
         )
 
-    def get_bios_version(self, identity):
+    def get_bios_version(self, _identity):
         return "KubeVirt BIOS"
 
     def get_systems(self):

@@ -19,6 +19,7 @@ _SYSTEMS_PREFIX = "/redfish/v1/Systems/"
 _MANAGERS_PREFIX = "/redfish/v1/Managers/"
 _ERR_GENERAL = "Base.1.0.GeneralError"
 _ODATA_ID = "@odata.id"
+_ODATA_TYPE = "@odata.type"
 _MEMBERS_COUNT = "Members@odata.count"
 _NOT_FOUND_BODY = {"error": {"code": _ERR_GENERAL, "message": "Not found"}}
 _AUTH_ERROR_BODY = {
@@ -84,7 +85,7 @@ def _get_service_root(handler):
     _send_json(
         handler,
         {
-            "@odata.type": "#ServiceRoot.v1_0_0.ServiceRoot",
+            _ODATA_TYPE: "#ServiceRoot.v1_0_0.ServiceRoot",
             "Id": "RootService",
             "Name": "Troshka Redfish Service",
             "Systems": {_ODATA_ID: "/redfish/v1/Systems"},
@@ -100,7 +101,7 @@ def _get_systems_collection(handler):
     _send_json(
         handler,
         {
-            "@odata.type": "#ComputerSystemCollection.ComputerSystemCollection",
+            _ODATA_TYPE: "#ComputerSystemCollection.ComputerSystemCollection",
             "Name": "Computer System Collection",
             "Members": members,
             _MEMBERS_COUNT: len(members),
@@ -120,7 +121,7 @@ def _get_system_detail(handler, identity):
     _send_json(
         handler,
         {
-            "@odata.type": "#ComputerSystem.v1_1_0.ComputerSystem",
+            _ODATA_TYPE: "#ComputerSystem.v1_1_0.ComputerSystem",
             "Id": identity,
             "Name": identity,
             "UUID": smbios_uuid,
@@ -156,7 +157,7 @@ def _get_managers_collection(handler):
     _send_json(
         handler,
         {
-            "@odata.type": "#ManagerCollection.ManagerCollection",
+            _ODATA_TYPE: "#ManagerCollection.ManagerCollection",
             "Name": "Manager Collection",
             "Members": members,
             _MEMBERS_COUNT: len(members),
@@ -174,7 +175,7 @@ def _get_manager_or_vmedia(handler, path):
         _send_json(
             handler,
             {
-                "@odata.type": "#Manager.v1_0_0.Manager",
+                _ODATA_TYPE: "#Manager.v1_0_0.Manager",
                 "Id": identity,
                 "Name": f"Manager for {identity}",
                 "ManagerType": "BMC",
@@ -192,7 +193,7 @@ def _get_manager_or_vmedia(handler, path):
         _send_json(
             handler,
             {
-                "@odata.type": "#VirtualMediaCollection.VirtualMediaCollection",
+                _ODATA_TYPE: "#VirtualMediaCollection.VirtualMediaCollection",
                 "Name": "Virtual Media Collection",
                 "Members": [
                     {_ODATA_ID: f"{_MANAGERS_PREFIX}{identity}/VirtualMedia/Cd"}
@@ -207,7 +208,7 @@ def _get_manager_or_vmedia(handler, path):
         _send_json(
             handler,
             {
-                "@odata.type": "#VirtualMedia.v1_0_0.VirtualMedia",
+                _ODATA_TYPE: "#VirtualMedia.v1_0_0.VirtualMedia",
                 "Id": "Cd",
                 "Name": "Virtual CD",
                 "MediaTypes": ["CD", "DVD"],
@@ -402,6 +403,7 @@ class RedfishHandler(BaseHTTPRequestHandler):
         _send_json(self, _NOT_FOUND_BODY, 404)
 
     def log_message(self, format, *args):
+        # Suppress default BaseHTTPRequestHandler logging to stderr
         pass
 
 

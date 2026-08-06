@@ -1,4 +1,5 @@
 import logging
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -22,9 +23,22 @@ from app.services import storage_pool_service
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/storage-pools", tags=["storage-pools"])
 
+AdminUser = Annotated[User, Depends(require_role("admin"))]
+DbSession = Annotated[Session, Depends(get_db)]
+
 _ERR_PROVIDER_NOT_FOUND = "Provider not found"
 _ERR_POOL_NOT_FOUND = "Storage pool not found"
 _ERR_PROVIDER_MISSING_REGION = "Provider missing default region"
+_POOL_NOT_FOUND = "Pool not found"
+
+
+def _resolve_worker_status(worker: Host) -> str:
+    """Determine worker status string from agent/host state."""
+    if worker.agent_status == "connected":
+        return "connected"
+    if worker.state == "active":
+        return "installing"
+    return worker.state
 
 
 def _pool_response(pool: StoragePool, db: Session) -> StoragePoolResponse:
@@ -41,12 +55,7 @@ def _pool_response(pool: StoragePool, db: Session) -> StoragePoolResponse:
             resp.worker_private_ip = worker.private_ip
             resp.worker_instance_id = worker.instance_id
             resp.worker_agent_version = worker.agent_version
-            if worker.agent_status == "connected":
-                resp.worker_status = "connected"
-            elif worker.state == "active":
-                resp.worker_status = "installing"
-            else:
-                resp.worker_status = worker.state
+            resp.worker_status = _resolve_worker_status(worker)
         else:
             resp.worker_status = "error"
     elif pool.worker_instance_type:
@@ -70,9 +79,7 @@ def _pool_response(pool: StoragePool, db: Session) -> StoragePoolResponse:
     response_model=list[StoragePoolResponse],
     responses={403: {"description": "Forbidden"}},
 )
-def list_pools(
-    user: User = Depends(require_role("admin")), db: Session = Depends(get_db)
-):
+def list_pools(user: AdminUser, db: DbSession):
     pools = db.query(StoragePool).order_by(StoragePool.created_at).all()
     return [_pool_response(pool, db) for pool in pools]
 
@@ -84,8 +91,8 @@ def list_pools(
 )
 def get_pool(
     pool_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     pool = db.get(StoragePool, pool_id)
     if not pool:
@@ -276,12 +283,13 @@ def _provision_pool_storage(
     responses={
         400: {"description": "Bad request"},
         404: {"description": _ERR_PROVIDER_NOT_FOUND},
+        409: {"description": "Pool name already exists"},
     },
 )
 def create_pool(
     body: StoragePoolCreate,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     if body.mode not in _VALID_POOL_MODES:
         raise HTTPException(400, f"Invalid mode: {body.mode}")
@@ -384,8 +392,8 @@ def _apply_auto_extend_fields(pool: StoragePool, body: StoragePoolUpdate) -> Non
 def update_pool(
     pool_id: str,
     body: StoragePoolUpdate,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     pool = db.get(StoragePool, pool_id)
     if not pool:
@@ -394,9 +402,8 @@ def update_pool(
     if pool.mode == "shared-fsx":
         _update_fsx_pool(pool, body, db)
 
-    if pool.mode == "shared-byo":
-        if body.nfs_endpoint is not None:
-            pool.nfs_endpoint = body.nfs_endpoint
+    if pool.mode == "shared-byo" and body.nfs_endpoint is not None:
+        pool.nfs_endpoint = body.nfs_endpoint
 
     _apply_auto_extend_fields(pool, body)
 
@@ -407,13 +414,16 @@ def update_pool(
 
 @router.post(
     "/{pool_id}/extend",
-    responses={404: {"description": _ERR_POOL_NOT_FOUND}},
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": _ERR_POOL_NOT_FOUND},
+    },
 )
 def extend_pool(
     pool_id: str,
+    user: AdminUser,
+    db: DbSession,
     body: dict | None = None,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
 ):
     """Extend the FSx filesystem by the configured increment."""
     pool = db.get(StoragePool, pool_id)
@@ -491,8 +501,8 @@ def _cleanup_pool_storage(pool: StoragePool, db: Session) -> None:
 )
 def delete_pool(
     pool_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     pool = db.get(StoragePool, pool_id)
     if not pool:
@@ -523,8 +533,8 @@ def delete_pool(
 )
 def list_cache(
     pool_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     pool = db.get(StoragePool, pool_id)
     if not pool:
@@ -546,8 +556,8 @@ def list_cache(
 def evict_cache_entry(
     pool_id: str,
     entry_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     entry = (
         db.query(SharedCacheEntry)
@@ -574,8 +584,8 @@ def evict_cache_entry(
 def probe_azs(
     pool_id: str,
     instance_types: list[str],
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     pool = db.get(StoragePool, pool_id)
     if pool:
@@ -609,13 +619,16 @@ def probe_azs(
 
 @router.post(
     "/{pool_id}/gc",
-    responses={404: {"description": _ERR_POOL_NOT_FOUND}},
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": _ERR_POOL_NOT_FOUND},
+    },
 )
 def run_pool_gc(
     pool_id: str,
+    user: AdminUser,
+    db: DbSession,
     dry_run: bool = False,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
 ):
     pool = db.get(StoragePool, pool_id)
     if not pool:
@@ -632,20 +645,20 @@ def run_pool_gc(
 @router.post(
     "/{pool_id}/pattern-buffer",
     responses={
-        404: {"description": "Pool not found"},
+        404: {"description": _POOL_NOT_FOUND},
         409: {"description": "Pattern buffer operation conflict"},
     },
 )
 def provision_or_replace_pattern_buffer(
     pool_id: str,
+    user: AdminUser,
+    db: DbSession,
     body: dict | None = None,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
 ):
     """Provision or replace the pattern buffer for a storage pool."""
     pool = db.query(StoragePool).filter_by(id=pool_id).first()
     if not pool:
-        raise HTTPException(status_code=404, detail="Pool not found")
+        raise HTTPException(status_code=404, detail=_POOL_NOT_FOUND)
 
     if body and body.get("instance_type"):
         pool.worker_instance_type = body["instance_type"]
@@ -667,13 +680,13 @@ def provision_or_replace_pattern_buffer(
 )
 def delete_pattern_buffer(
     pool_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Terminate and remove the pattern buffer for a storage pool."""
     pool = db.query(StoragePool).filter_by(id=pool_id).first()
     if not pool:
-        raise HTTPException(status_code=404, detail="Pool not found")
+        raise HTTPException(status_code=404, detail=_POOL_NOT_FOUND)
     if not pool.worker_host_id:
         raise HTTPException(status_code=404, detail="No pattern buffer to delete")
 
@@ -698,19 +711,19 @@ def delete_pattern_buffer(
 @router.post(
     "/{pool_id}/pattern-buffer/stop",
     responses={
-        404: {"description": "Pool not found"},
+        404: {"description": _POOL_NOT_FOUND},
         409: {"description": "Pattern buffer operation conflict"},
     },
 )
 def stop_pool_pattern_buffer(
     pool_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Stop (sleep) the pattern buffer for a storage pool."""
     pool = db.query(StoragePool).filter_by(id=pool_id).first()
     if not pool:
-        raise HTTPException(status_code=404, detail="Pool not found")
+        raise HTTPException(status_code=404, detail=_POOL_NOT_FOUND)
 
     from app.services.pattern_buffer_service import stop_pattern_buffer
 
@@ -724,19 +737,19 @@ def stop_pool_pattern_buffer(
 @router.post(
     "/{pool_id}/pattern-buffer/wake",
     responses={
-        404: {"description": "Pool not found"},
+        404: {"description": _POOL_NOT_FOUND},
         503: {"description": "Pattern buffer failed to wake"},
     },
 )
 def wake_pool_pattern_buffer(
     pool_id: str,
-    user: User = Depends(require_role("admin")),
-    db: Session = Depends(get_db),
+    user: AdminUser,
+    db: DbSession,
 ):
     """Wake the pattern buffer for a storage pool."""
     pool = db.query(StoragePool).filter_by(id=pool_id).first()
     if not pool:
-        raise HTTPException(status_code=404, detail="Pool not found")
+        raise HTTPException(status_code=404, detail=_POOL_NOT_FOUND)
 
     from app.services.pattern_buffer_service import wake_pattern_buffer
 

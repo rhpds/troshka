@@ -13,18 +13,14 @@ def create_container_pods(namespace, containers, nad_refs, owner_reference):
         is_pod = ctr.get("isPod", False)
 
         if is_pod:
-            _create_pod_group(
-                core_api, namespace, ctr, nad_refs, owner_reference
-            )
+            _create_pod_group(core_api, namespace, ctr, nad_refs, owner_reference)
         else:
             _create_single_container(
                 core_api, namespace, ctr, nad_refs, owner_reference
             )
 
 
-def _create_single_container(
-    core_api, namespace, ctr, nad_refs, owner_reference
-):
+def _create_single_container(core_api, namespace, ctr, nad_refs, owner_reference):
     ctr_id = ctr.get("id", "")[:8]
     pod_name = f"ctr-{ctr_id}"
 
@@ -54,9 +50,7 @@ def _create_single_container(
     if ctr.get("ports"):
         container_spec["ports"] = [
             {
-                "containerPort": p.get(
-                    "container_port", p.get("port", 0)
-                ),
+                "containerPort": p.get("container_port", p.get("port", 0)),
                 "protocol": "TCP",
             }
             for p in ctr["ports"]
@@ -86,66 +80,76 @@ def _create_single_container(
         }
 
     try:
-        core_api.create_namespaced_pod(
-            namespace=namespace, body=pod_body
-        )
+        core_api.create_namespaced_pod(namespace=namespace, body=pod_body)
         logger.info(f"Created container pod {pod_name}")
     except client.ApiException as e:
         if e.status != 409:
             raise
 
 
-def _create_pod_group(
-    core_api, namespace, ctr, nad_refs, owner_reference
-):
-    ctr_id = ctr.get("id", "")[:8]
-    pod_name = f"pod-{ctr_id}"
+def _build_init_container_spec(ic, index):
+    """Build spec for a single init container."""
+    init_spec = {
+        "name": ic.get("name", f"init-{index}"),
+        "image": ic.get("image", ""),
+    }
+    if ic.get("command"):
+        init_spec["command"] = [_SHELL, "-c", ic["command"]]
+    return init_spec
 
-    init_containers = []
-    for ic in ctr.get("initContainers", []):
-        init_spec = {
-            "name": ic.get("name", f"init-{len(init_containers)}"),
-            "image": ic.get("image", ""),
-        }
-        if ic.get("command"):
-            init_spec["command"] = [_SHELL, "-c", ic["command"]]
-        init_containers.append(init_spec)
 
-    containers = []
-    for pc in ctr.get("podContainers", []):
-        c_spec = {
-            "name": pc.get("name", f"container-{len(containers)}"),
-            "image": pc.get("image", ""),
-        }
-        if pc.get("command"):
-            c_spec["command"] = [_SHELL, "-c", pc["command"]]
-        if pc.get("ports"):
-            c_spec["ports"] = [
-                {
-                    "containerPort": p.get(
-                        "container_port", p.get("port", 0)
-                    ),
-                    "protocol": "TCP",
-                }
-                for p in pc["ports"]
-            ]
-        env_list = []
-        for k, v in pc.get("env", {}).items():
-            env_list.append({"name": k, "value": str(v)})
-        if env_list:
-            c_spec["env"] = env_list
-        containers.append(c_spec)
-
-    if not containers:
-        containers = [
-            {"name": "main", "image": ctr.get("image", "")}
+def _build_pod_container_spec(pc, index):
+    """Build spec for a single pod container."""
+    c_spec = {
+        "name": pc.get("name", f"container-{index}"),
+        "image": pc.get("image", ""),
+    }
+    if pc.get("command"):
+        c_spec["command"] = [_SHELL, "-c", pc["command"]]
+    if pc.get("ports"):
+        c_spec["ports"] = [
+            {
+                "containerPort": p.get("container_port", p.get("port", 0)),
+                "protocol": "TCP",
+            }
+            for p in pc["ports"]
         ]
+    env_list = []
+    for k, v in pc.get("env", {}).items():
+        env_list.append({"name": k, "value": str(v)})
+    if env_list:
+        c_spec["env"] = env_list
+    return c_spec
 
+
+def _build_network_annotations(ctr, nad_refs):
+    """Build network annotations from NICs."""
     net_annotations = []
     for nic in ctr.get("nics", []):
         net_ref = nic.get("networkRef", "")
         nad = nad_refs.get(net_ref, f"{net_ref}-nad")
         net_annotations.append(nad)
+    return net_annotations
+
+
+def _create_pod_group(core_api, namespace, ctr, nad_refs, owner_reference):
+    ctr_id = ctr.get("id", "")[:8]
+    pod_name = f"pod-{ctr_id}"
+
+    init_containers = [
+        _build_init_container_spec(ic, i)
+        for i, ic in enumerate(ctr.get("initContainers", []))
+    ]
+
+    containers = [
+        _build_pod_container_spec(pc, i)
+        for i, pc in enumerate(ctr.get("podContainers", []))
+    ]
+
+    if not containers:
+        containers = [{"name": "main", "image": ctr.get("image", "")}]
+
+    net_annotations = _build_network_annotations(ctr, nad_refs)
 
     pod_body = {
         "apiVersion": "v1",
@@ -172,9 +176,7 @@ def _create_pod_group(
         }
 
     try:
-        core_api.create_namespaced_pod(
-            namespace=namespace, body=pod_body
-        )
+        core_api.create_namespaced_pod(namespace=namespace, body=pod_body)
         logger.info(f"Created pod group {pod_name}")
     except client.ApiException as e:
         if e.status != 409:

@@ -13,6 +13,8 @@ from app.core.database import Base
 if TYPE_CHECKING:
     from app.models.user import User
 
+_LIBRARY_ITEMS_FK = "library_items.id"
+
 
 class Library(Base):
     __tablename__ = "libraries"
@@ -72,7 +74,7 @@ class LibraryShare(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     item_id: Mapped[str] = mapped_column(
-        ForeignKey("library_items.id", ondelete="CASCADE")
+        ForeignKey(_LIBRARY_ITEMS_FK, ondelete="CASCADE")
     )
     shared_with_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
     permission: Mapped[str] = mapped_column(String(10), default="use")
@@ -85,7 +87,7 @@ class LibraryItemDisk(Base):
         UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4())
     )
     library_item_id: Mapped[str] = mapped_column(
-        ForeignKey("library_items.id", ondelete="CASCADE")
+        ForeignKey(_LIBRARY_ITEMS_FK, ondelete="CASCADE")
     )
     s3_key: Mapped[str] = mapped_column(String(500))
     format: Mapped[str] = mapped_column(String(10))
@@ -103,7 +105,7 @@ class ImageCache(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     item_id: Mapped[str] = mapped_column(
-        ForeignKey("library_items.id", ondelete="CASCADE")
+        ForeignKey(_LIBRARY_ITEMS_FK, ondelete="CASCADE")
     )
     host_id: Mapped[str] = mapped_column(ForeignKey("hosts.id"))
     local_path: Mapped[str] = mapped_column(String(500))

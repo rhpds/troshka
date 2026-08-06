@@ -7,6 +7,7 @@ import datetime
 import logging
 import random
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -31,6 +32,11 @@ from app.services.pattern_service import get_capture_progress
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/patterns", tags=["patterns"])
 
+CurrentUser = Annotated[User, Depends(get_current_user)]
+DbSession = Annotated[Session, Depends(get_db)]
+
+_PATTERN_NOT_FOUND = "Pattern not found"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,6 +50,109 @@ def _generate_mac() -> str:
         random.randint(0, 255),
         random.randint(0, 255),
     )
+
+
+def _remap_node_ids(nodes: list, id_map: dict, handle_id_map: dict) -> None:
+    """Remap node IDs, NIC IDs, and disk controller IDs in-place."""
+    for node in nodes:
+        old_id = node["id"]
+        new_id = str(uuid.uuid4())
+        id_map[old_id] = new_id
+        node["id"] = new_id
+
+        data = node.get("data", {})
+
+        for nic in data.get("nics", []):
+            old_nic_id = nic["id"]
+            new_nic_id = f"nic-{uuid.uuid4()}"
+            handle_id_map[old_nic_id] = new_nic_id
+            nic["id"] = new_nic_id
+
+        for dc in data.get("diskControllers", []):
+            old_dc_id = dc["id"]
+            new_dc_id = f"dp-{uuid.uuid4()}"
+            handle_id_map[old_dc_id] = new_dc_id
+            dc["id"] = new_dc_id
+
+
+def _remap_boot_devices(nodes: list, id_map: dict) -> None:
+    """Remap bootDevices references in-place."""
+    for node in nodes:
+        data = node.get("data", {})
+        if "bootDevices" not in data:
+            continue
+        data["bootDevices"] = [
+            id_map.get(d, d) if d != "network" else d for d in data["bootDevices"]
+        ]
+
+
+def _remap_handle(handle: str, handle_id_map: dict) -> str:
+    """Replace old handle IDs with new ones."""
+    if not handle:
+        return handle
+    for old_id, new_id in handle_id_map.items():
+        if old_id in handle:
+            handle = handle.replace(old_id, new_id)
+    return handle
+
+
+def _remap_edges(edges: list, id_map: dict, handle_id_map: dict) -> None:
+    """Remap edge source/target and handles in-place."""
+    for edge in edges:
+        if edge.get("source") in id_map:
+            edge["source"] = id_map[edge["source"]]
+        if edge.get("target") in id_map:
+            edge["target"] = id_map[edge["target"]]
+        if edge.get("sourceHandle"):
+            edge["sourceHandle"] = _remap_handle(edge["sourceHandle"], handle_id_map)
+        if edge.get("targetHandle"):
+            edge["targetHandle"] = _remap_handle(edge["targetHandle"], handle_id_map)
+        if "id" in edge:
+            src = edge.get("source", "")
+            tgt = edge.get("target", "")
+            sh = edge.get("sourceHandle", "")
+            th = edge.get("targetHandle", "")
+            edge["id"] = f"xy-edge__{src}{sh}-{tgt}{th}"
+
+
+def _remap_start_order(start_order: list, id_map: dict) -> list:
+    """Return a new start order list with remapped VM IDs."""
+    return [
+        {
+            **entry,
+            "vmId": id_map.get(entry["vmId"], entry["vmId"]),
+            "waitForVm": (
+                id_map.get(entry["waitForVm"], entry["waitForVm"])
+                if entry.get("waitForVm")
+                else None
+            ),
+        }
+        for entry in start_order
+    ]
+
+
+def _remap_external_ips(topo: dict, nodes: list) -> None:
+    """Remap external IPs and port forwards in-place."""
+    eip_id_map = {}
+    new_eips = []
+    for entry in topo.get("externalIps", []):
+        new_id = f"eip-{uuid.uuid4().hex[:12]}"
+        eip_id_map[entry["id"]] = new_id
+        new_eips.append({"id": new_id, "name": entry.get("name", ""), "ip": ""})
+    topo["externalIps"] = new_eips
+
+    for node in nodes:
+        for pf in node.get("data", {}).get("portForwards", []):
+            old_eip_id = pf.get("extIpId", "")
+            if old_eip_id in eip_id_map:
+                pf["extIpId"] = eip_id_map[old_eip_id]
+
+
+def _clear_external_endpoints(nodes: list) -> None:
+    """Clear externalEndpoints from all nodes in-place."""
+    for node in nodes:
+        if node.get("data", {}).get("externalEndpoints"):
+            node["data"]["externalEndpoints"] = []
 
 
 def _remap_topology(topology: dict) -> dict:
@@ -61,92 +170,21 @@ def _remap_topology(topology: dict) -> dict:
     id_map: dict[str, str] = {}
     handle_id_map: dict[str, str] = {}
 
-    for node in topo.get("nodes", []):
-        old_id = node["id"]
-        new_id = str(uuid.uuid4())
-        id_map[old_id] = new_id
-        node["id"] = new_id
+    nodes = topo.get("nodes", [])
+    edges = topo.get("edges", [])
 
-        data = node.get("data", {})
+    _remap_node_ids(nodes, id_map, handle_id_map)
+    _remap_boot_devices(nodes, id_map)
+    _remap_edges(edges, id_map, handle_id_map)
 
-        for nic in data.get("nics", []):
-            old_nic_id = nic["id"]
-            new_nic_id = f"nic-{uuid.uuid4()}"
-            handle_id_map[old_nic_id] = new_nic_id
-            nic["id"] = new_nic_id
-            # Preserve MACs — CoreOS/ignition bakes network config with specific MACs
-
-        for dc in data.get("diskControllers", []):
-            old_dc_id = dc["id"]
-            new_dc_id = f"dp-{uuid.uuid4()}"
-            handle_id_map[old_dc_id] = new_dc_id
-            dc["id"] = new_dc_id
-
-    for node in topo.get("nodes", []):
-        data = node.get("data", {})
-        if "bootDevices" in data:
-            data["bootDevices"] = [
-                id_map.get(d, d) if d != "network" else d for d in data["bootDevices"]
-            ]
-
-    def _remap_handle(handle: str) -> str:
-        if not handle:
-            return handle
-        for old_id, new_id in handle_id_map.items():
-            if old_id in handle:
-                handle = handle.replace(old_id, new_id)
-        return handle
-
-    for edge in topo.get("edges", []):
-        if edge.get("source") in id_map:
-            edge["source"] = id_map[edge["source"]]
-        if edge.get("target") in id_map:
-            edge["target"] = id_map[edge["target"]]
-        if edge.get("sourceHandle"):
-            edge["sourceHandle"] = _remap_handle(edge["sourceHandle"])
-        if edge.get("targetHandle"):
-            edge["targetHandle"] = _remap_handle(edge["targetHandle"])
-        if "id" in edge:
-            src = edge.get("source", "")
-            tgt = edge.get("target", "")
-            sh = edge.get("sourceHandle", "")
-            th = edge.get("targetHandle", "")
-            edge["id"] = f"xy-edge__{src}{sh}-{tgt}{th}"
-
-    topo["startOrder"] = [
-        {
-            **entry,
-            "vmId": id_map.get(entry["vmId"], entry["vmId"]),
-            "waitForVm": (
-                id_map.get(entry["waitForVm"], entry["waitForVm"])
-                if entry.get("waitForVm")
-                else None
-            ),
-        }
-        for entry in topo.get("startOrder", [])
-    ]
-
-    eip_id_map = {}
-    new_eips = []
-    for entry in topo.get("externalIps", []):
-        new_id = f"eip-{uuid.uuid4().hex[:12]}"
-        eip_id_map[entry["id"]] = new_id
-        new_eips.append({"id": new_id, "name": entry.get("name", ""), "ip": ""})
-    topo["externalIps"] = new_eips
-    for node in topo.get("nodes", []):
-        for pf in node.get("data", {}).get("portForwards", []):
-            old_eip_id = pf.get("extIpId", "")
-            if old_eip_id in eip_id_map:
-                pf["extIpId"] = eip_id_map[old_eip_id]
+    topo["startOrder"] = _remap_start_order(topo.get("startOrder", []), id_map)
+    _remap_external_ips(topo, nodes)
 
     topo["hiddenNodeIds"] = [
         id_map.get(nid, nid) for nid in topo.get("hiddenNodeIds", [])
     ]
 
-    # Clear externalEndpoints — Routes are project-specific and must be re-created
-    for node in topo.get("nodes", []):
-        if node.get("data", {}).get("externalEndpoints"):
-            node["data"]["externalEndpoints"] = []
+    _clear_external_endpoints(nodes)
 
     return topo
 
@@ -266,8 +304,8 @@ def _resolve_pattern_source(body, user, db):
 )
 def create_pattern(
     body: PatternCreate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Create a pattern — either from a project (source_project_id) or from a
     raw topology+disk_mappings payload."""
@@ -322,11 +360,11 @@ def create_pattern(
 
 @router.get("/")
 def list_patterns(
+    user: CurrentUser,
+    db: DbSession,
     name: str | None = None,
     search: str | None = None,
     regex: str | None = None,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     """List patterns visible to the current user:
     - own patterns
@@ -366,15 +404,18 @@ def list_patterns(
     return [_pattern_to_list_dict(p) for p in patterns]
 
 
-@router.get("/{pattern_id}")
+@router.get(
+    "/{pattern_id}",
+    responses={404: {"description": "Pattern not found"}},
+)
 def get_pattern(
     pattern_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     pattern = db.query(Pattern).filter_by(id=pattern_id).first()
     if not pattern:
-        raise HTTPException(status_code=404, detail="Pattern not found")
+        raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
 
     # Access check: owner, admin, shared, or public
     if (
@@ -388,22 +429,25 @@ def get_pattern(
             .first()
         )
         if not shared:
-            raise HTTPException(status_code=404, detail="Pattern not found")
+            raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
 
     return _pattern_to_detail_dict(pattern)
 
 
-@router.get("/{pattern_id}/export-template")
+@router.get(
+    "/{pattern_id}/export-template",
+    responses={404: {"description": "Pattern not found"}},
+)
 def export_pattern_template(
     pattern_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     from app.services.template_loader import export_topology_to_template
 
     pattern = db.query(Pattern).filter_by(id=pattern_id).first()
     if not pattern:
-        raise HTTPException(status_code=404, detail="Pattern not found")
+        raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
 
     if (
         pattern.owner_id != user.id
@@ -416,7 +460,7 @@ def export_pattern_template(
             .first()
         )
         if not shared:
-            raise HTTPException(status_code=404, detail="Pattern not found")
+            raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
 
     topo = pattern.topology or {}
     result = export_topology_to_template(topo, db=db)
@@ -443,18 +487,24 @@ def export_pattern_template(
     return Response(content=header + yaml_str, media_type="text/yaml")
 
 
-@router.get("/{pattern_id}/export")
+@router.get(
+    "/{pattern_id}/export",
+    responses={
+        400: {"description": "Pattern not in available state"},
+        404: {"description": "Pattern not found"},
+    },
+)
 def export_pattern(
     pattern_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Export a pattern as a downloadable tar archive with topology + disk images."""
     from app.services.pattern_export import estimate_export_size, stream_pattern_export
 
     pattern = db.query(Pattern).filter_by(id=pattern_id).first()
     if not pattern:
-        raise HTTPException(status_code=404, detail="Pattern not found")
+        raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
 
     if (
         pattern.owner_id != user.id
@@ -467,7 +517,7 @@ def export_pattern(
             .first()
         )
         if not shared:
-            raise HTTPException(status_code=404, detail="Pattern not found")
+            raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
 
     if pattern.state != "available":
         raise HTTPException(
@@ -493,10 +543,10 @@ def export_pattern(
 
 @router.post("/import", status_code=202)
 def import_pattern(
-    file: UploadFile = File(...),
-    name: str | None = Query(None),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    file: Annotated[UploadFile, File(...)],
+    user: CurrentUser,
+    db: DbSession,
+    name: Annotated[str | None, Query()] = None,
 ):
     """Import a pattern from a tar archive upload."""
     from app.services.pattern_export import import_pattern_from_tar
@@ -518,16 +568,22 @@ def import_pattern(
     return {"id": pattern.id, "state": "importing", "name": pattern.name}
 
 
-@router.patch("/{pattern_id}")
+@router.patch(
+    "/{pattern_id}",
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Pattern not found"},
+    },
+)
 def update_pattern(
     pattern_id: str,
     body: PatternUpdate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     pattern = db.query(Pattern).filter_by(id=pattern_id).first()
     if not pattern:
-        raise HTTPException(status_code=404, detail="Pattern not found")
+        raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
     if pattern.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -545,15 +601,22 @@ def update_pattern(
     return _pattern_to_detail_dict(pattern)
 
 
-@router.delete("/{pattern_id}", status_code=204)
+@router.delete(
+    "/{pattern_id}",
+    status_code=204,
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Pattern not found"},
+    },
+)
 def delete_pattern(
     pattern_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     pattern = db.query(Pattern).filter_by(id=pattern_id).first()
     if not pattern:
-        raise HTTPException(status_code=404, detail="Pattern not found")
+        raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
     if pattern.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -576,34 +639,14 @@ def delete_pattern(
     try:
         s3_storage.delete_prefix(f"patterns/{pattern_id}/")
     except Exception:
-        logger.warning("Failed to clean S3 prefix patterns/%s/", pattern_id[:8])
+        logger.warning(
+            "Failed to clean S3 prefix patterns/%s/", pattern_id[:8]
+        )  # NOSONAR
 
     db.delete(pattern)
     db.commit()
 
     # Clean pattern cache on all hosts in background
-
-    def _clean_pattern_cache(pid: str):
-        from app.core.database import SessionLocal
-        from app.models.host import Host
-        from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
-
-        s = SessionLocal()
-        try:
-            for host in s.query(Host).filter(Host.agent_status == "connected").all():
-                paths = [
-                    f"/var/lib/troshka/local/cache/patterns/{pid}",
-                    f"/var/lib/troshka/cache/patterns/{pid}",
-                    f"/var/lib/troshka/shared/cache/patterns/{pid}",
-                ]
-                try:
-                    job_id = start_job(host, "/files/remove", {"paths": paths})
-                    wait_for_job(host, job_id, timeout=15)
-                except TroshkadError:
-                    pass
-        finally:
-            s.close()
-
     from app.core.redis import enqueue_job
     from app.workers.jobs import job_clean_pattern_cache
 
@@ -615,16 +658,23 @@ def delete_pattern(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{pattern_id}/share")
+@router.post(
+    "/{pattern_id}/share",
+    responses={
+        400: {"description": "Bad request"},
+        403: {"description": "Only the owner can share"},
+        404: {"description": "Pattern or user not found"},
+    },
+)
 def share_pattern(
     pattern_id: str,
     body: PatternShareRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     pattern = db.query(Pattern).filter_by(id=pattern_id).first()
     if not pattern:
-        raise HTTPException(status_code=404, detail="Pattern not found")
+        raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
     if pattern.owner_id != user.id:
         raise HTTPException(status_code=403, detail="Only the owner can share")
 
@@ -646,16 +696,22 @@ def share_pattern(
     return {"shared_with": body.user_email}
 
 
-@router.delete("/{pattern_id}/share/{user_email}")
+@router.delete(
+    "/{pattern_id}/share/{user_email}",
+    responses={
+        403: {"description": "Only the owner can revoke sharing"},
+        404: {"description": "Pattern or user not found"},
+    },
+)
 def revoke_share(
     pattern_id: str,
     user_email: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     pattern = db.query(Pattern).filter_by(id=pattern_id).first()
     if not pattern:
-        raise HTTPException(status_code=404, detail="Pattern not found")
+        raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
     if pattern.owner_id != user.id:
         raise HTTPException(status_code=403, detail="Only the owner can revoke sharing")
 
@@ -680,15 +736,18 @@ def revoke_share(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/{pattern_id}/progress")
+@router.get(
+    "/{pattern_id}/progress",
+    responses={404: {"description": "Pattern not found"}},
+)
 def pattern_progress(
     pattern_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     pattern = db.query(Pattern).filter_by(id=pattern_id).first()
     if not pattern:
-        raise HTTPException(status_code=404, detail="Pattern not found")
+        raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
     if (
         pattern.owner_id != user.id
         and user.role != "admin"
@@ -700,7 +759,7 @@ def pattern_progress(
             .first()
         )
         if not shared:
-            raise HTTPException(status_code=404, detail="Pattern not found")
+            raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
 
     progress = get_capture_progress(pattern_id)
     if progress is None:
@@ -714,34 +773,131 @@ def pattern_progress(
 # ---------------------------------------------------------------------------
 
 
+def _find_bastion_vm(nodes: list) -> dict | None:
+    """Find the first bastion VM node."""
+    for n in nodes:
+        if n.get("type") != "vmNode":
+            continue
+        tags = n.get("data", {}).get("tags", {})
+        groups = tags.get("AnsibleGroup", "")
+        if "bastions" in [g.strip() for g in groups.split(",")]:
+            return n
+    return None
+
+
+def _find_cloud_init_vm(nodes: list) -> dict | None:
+    """Find the first cloud-init VM node."""
+    for n in nodes:
+        if n.get("type") == "vmNode" and n.get("data", {}).get("cloudInit"):
+            return n
+    return None
+
+
 def _apply_inject_vars(nodes: list, inject_vars: dict) -> None:
     """Find the best target VM and set ciInjectVars on it.
 
     Priority: bastion VM first, then any cloud-init VM.
     """
-    target_vm = None
-    for n in nodes:
-        if n.get("type") == "vmNode":
-            tags = n.get("data", {}).get("tags", {})
-            groups = tags.get("AnsibleGroup", "")
-            if "bastions" in [g.strip() for g in groups.split(",")]:
-                target_vm = n
-                break
+    target_vm = _find_bastion_vm(nodes)
     if target_vm is None:
-        for n in nodes:
-            if n.get("type") == "vmNode" and n.get("data", {}).get("cloudInit"):
-                target_vm = n
-                break
+        target_vm = _find_cloud_init_vm(nodes)
     if target_vm is not None:
         target_vm["data"]["ciInjectVars"] = inject_vars
 
 
-@router.post("/{pattern_id}/deploy", status_code=201)
+def _check_pattern_access(
+    pattern: Pattern, user: User, pattern_id: str, db: Session
+) -> None:
+    """Raise HTTPException if user does not have access to pattern."""
+    if (
+        pattern.owner_id == user.id
+        or user.role == "admin"
+        or pattern.visibility == "public"
+    ):
+        return
+    shared = (
+        db.query(PatternShare).filter_by(pattern_id=pattern_id, user_id=user.id).first()
+    )
+    if not shared:
+        raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
+
+
+def _apply_common_password(nodes: list, common_password: str) -> None:
+    """Apply common password to BMC networks and cloud-init VMs."""
+    for n in nodes:
+        d = n.get("data", {})
+        if n.get("type") == "networkNode" and d.get("networkType") == "bmc":
+            d["bmcPassword"] = common_password
+        elif n.get("type") == "vmNode" and d.get("cloudInit"):
+            d["ciCloudUserPassword"] = common_password
+
+
+def _apply_ssh_keys(nodes: list, ssh_keys: list) -> None:
+    """Merge SSH keys into cloud-init VMs."""
+    for n in nodes:
+        if n.get("type") != "vmNode":
+            continue
+        if not n.get("data", {}).get("cloudInit"):
+            continue
+        existing = n["data"].get("ciSshKeys", [])
+        n["data"]["ciSshKeys"] = list(set(existing + ssh_keys))
+
+
+def _apply_optional_fields(
+    project: Project, pattern: Pattern, body: PatternDeployRequest
+) -> None:
+    """Apply optional fields to project from pattern and request body."""
+    if pattern.clock_target:
+        project.clock_target = pattern.clock_target
+    if body.guid:
+        project.guid = body.guid
+    if body.domain:
+        project.domain = body.domain
+    if body.dns_provider_id:
+        project.dns_provider_id = body.dns_provider_id
+
+
+def _apply_recert_config(project: Project, body: PatternDeployRequest) -> None:
+    """Apply recert and common_password to topology if specified."""
+    if body.recert is None:
+        return
+    topo = project.topology or {}
+    topo["_deploy_recert"] = body.recert
+    if body.common_password:
+        topo["_deploy_common_password"] = body.common_password
+    project.topology = topo
+
+
+def _start_auto_deploy(
+    project: Project, body: PatternDeployRequest, db: Session
+) -> None:
+    """Start async deployment if auto_deploy is requested."""
+    from app.core.redis import enqueue_job
+    from app.services.deploy_service import deploy_project_async
+
+    if body.host_id:
+        project.host_id = body.host_id
+    project.state = "deploying"
+    project.deploy_started_at = datetime.datetime.now(datetime.UTC)
+    db.commit()
+    enqueue_job(
+        deploy_project_async, project.id, body.auto_start, project_id=project.id
+    )
+
+
+@router.post(
+    "/{pattern_id}/deploy",
+    status_code=201,
+    responses={
+        404: {"description": "Pattern not found"},
+        409: {"description": "Project with this name already exists"},
+    },
+)
 def deploy_pattern(
     pattern_id: str,
     body: PatternDeployRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Create a new project in 'draft' state from a pattern.
 
@@ -750,21 +906,9 @@ def deploy_pattern(
     """
     pattern = db.query(Pattern).filter_by(id=pattern_id).first()
     if not pattern:
-        raise HTTPException(status_code=404, detail="Pattern not found")
+        raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
 
-    # Access check
-    if (
-        pattern.owner_id != user.id
-        and user.role != "admin"
-        and pattern.visibility != "public"
-    ):
-        shared = (
-            db.query(PatternShare)
-            .filter_by(pattern_id=pattern_id, user_id=user.id)
-            .first()
-        )
-        if not shared:
-            raise HTTPException(status_code=404, detail="Pattern not found")
+    _check_pattern_access(pattern, user, pattern_id, db)
 
     project_name = body.name or f"{pattern.name} (deploy)"
     existing = db.query(Project).filter_by(owner_id=user.id, name=project_name).first()
@@ -774,23 +918,12 @@ def deploy_pattern(
         )
 
     new_topology = _remap_topology(pattern.topology)
-
     nodes = new_topology.get("nodes", [])
 
     if body.common_password:
-        for n in nodes:
-            d = n.get("data", {})
-            if n.get("type") == "networkNode" and d.get("networkType") == "bmc":
-                d["bmcPassword"] = body.common_password
-            elif n.get("type") == "vmNode" and d.get("cloudInit"):
-                d["ciCloudUserPassword"] = body.common_password
-
+        _apply_common_password(nodes, body.common_password)
     if body.ssh_keys:
-        for n in nodes:
-            if n.get("type") == "vmNode" and n.get("data", {}).get("cloudInit"):
-                existing = n["data"].get("ciSshKeys", [])
-                n["data"]["ciSshKeys"] = list(set(existing + body.ssh_keys))
-
+        _apply_ssh_keys(nodes, body.ssh_keys)
     if body.inject_vars:
         _apply_inject_vars(nodes, body.inject_vars)
 
@@ -801,38 +934,17 @@ def deploy_pattern(
         topology=new_topology,
         state="draft",
     )
-    if pattern.clock_target:
-        project.clock_target = pattern.clock_target
-    if body.guid:
-        project.guid = body.guid
-    if body.domain:
-        project.domain = body.domain
-    if body.dns_provider_id:
-        project.dns_provider_id = body.dns_provider_id
+
+    _apply_optional_fields(project, pattern, body)
+
     db.add(project)
     db.commit()
     db.refresh(project)
 
-    if body.recert is not None:
-        topo = project.topology or {}
-        topo["_deploy_recert"] = body.recert
-        if body.common_password:
-            topo["_deploy_common_password"] = body.common_password
-        project.topology = topo
+    _apply_recert_config(project, body)
 
     if body.auto_deploy:
-        from app.services.deploy_service import deploy_project_async
-
-        if body.host_id:
-            project.host_id = body.host_id
-        project.state = "deploying"
-        project.deploy_started_at = datetime.datetime.now(datetime.UTC)
-        db.commit()
-        from app.core.redis import enqueue_job
-
-        enqueue_job(
-            deploy_project_async, project.id, body.auto_start, project_id=project.id
-        )
+        _start_auto_deploy(project, body, db)
 
     return {
         "id": project.id,
@@ -889,12 +1001,41 @@ def _bulk_deploy_projects(project_ids: list[str]):
         enqueue_job(deploy_project_async, pid, project_id=pid)
 
 
-@router.post("/{pattern_id}/bulk-deploy", status_code=201)
+def _create_bulk_project(
+    pattern: Pattern, body: PatternBulkDeployRequest, user: User, index: int
+) -> Project:
+    """Create a single project from pattern for bulk deployment."""
+    name = body.name_template.replace("{n}", f"{index:03d}")
+    new_topology = _remap_topology(pattern.topology)
+    project = Project(
+        name=name,
+        description=pattern.description,
+        owner_id=user.id,
+        topology=new_topology,
+        state="draft",
+    )
+    if body.guid_template:
+        project.guid = body.guid_template.replace("{n}", f"{index:03d}")
+    if body.domain:
+        project.domain = body.domain
+    if body.dns_provider_id:
+        project.dns_provider_id = body.dns_provider_id
+    return project
+
+
+@router.post(
+    "/{pattern_id}/bulk-deploy",
+    status_code=201,
+    responses={
+        400: {"description": "Invalid count"},
+        404: {"description": "Pattern not found"},
+    },
+)
 def bulk_deploy_pattern(
     pattern_id: str,
     body: PatternBulkDeployRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Create N projects from a pattern.
 
@@ -907,39 +1048,13 @@ def bulk_deploy_pattern(
 
     pattern = db.query(Pattern).filter_by(id=pattern_id).first()
     if not pattern:
-        raise HTTPException(status_code=404, detail="Pattern not found")
+        raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
 
-    # Access check
-    if (
-        pattern.owner_id != user.id
-        and user.role != "admin"
-        and pattern.visibility != "public"
-    ):
-        shared = (
-            db.query(PatternShare)
-            .filter_by(pattern_id=pattern_id, user_id=user.id)
-            .first()
-        )
-        if not shared:
-            raise HTTPException(status_code=404, detail="Pattern not found")
+    _check_pattern_access(pattern, user, pattern_id, db)
 
     projects = []
     for i in range(1, body.count + 1):
-        name = body.name_template.replace("{n}", f"{i:03d}")
-        new_topology = _remap_topology(pattern.topology)
-        project = Project(
-            name=name,
-            description=pattern.description,
-            owner_id=user.id,
-            topology=new_topology,
-            state="draft",
-        )
-        if body.guid_template:
-            project.guid = body.guid_template.replace("{n}", f"{i:03d}")
-        if body.domain:
-            project.domain = body.domain
-        if body.dns_provider_id:
-            project.dns_provider_id = body.dns_provider_id
+        project = _create_bulk_project(pattern, body, user, i)
         db.add(project)
         projects.append(project)
 

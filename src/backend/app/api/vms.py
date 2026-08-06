@@ -1,3 +1,5 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -12,6 +14,11 @@ from app.schemas.vm import VMCreate, VMResponse, VMUpdate
 
 router = APIRouter(prefix="/projects/{project_id}/vms", tags=["vms"])
 
+CurrentUser = Annotated[User, Depends(get_current_user)]
+DbSession = Annotated[Session, Depends(get_db)]
+
+_VM_NOT_FOUND = "VM not found"
+
 
 def _get_project_or_403(project_id: str, user: User, db: Session) -> Project:
     project = db.query(Project).filter_by(id=project_id).first()
@@ -22,23 +29,29 @@ def _get_project_or_403(project_id: str, user: User, db: Session) -> Project:
     return project
 
 
-@router.get("/", response_model=list[VMResponse])
-def list_vms(
-    project_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+@router.get(
+    "/",
+    response_model=list[VMResponse],
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Project not found"},
+    },
+)
+def list_vms(project_id: str, user: CurrentUser, db: DbSession):
     _get_project_or_403(project_id, user, db)
     return db.query(VM).filter_by(project_id=project_id).all()
 
 
-@router.post("/", response_model=VMResponse, status_code=201)
-def create_vm(
-    project_id: str,
-    body: VMCreate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+@router.post(
+    "/",
+    response_model=VMResponse,
+    status_code=201,
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Project not found"},
+    },
+)
+def create_vm(project_id: str, body: VMCreate, user: CurrentUser, db: DbSession):
     _get_project_or_403(project_id, user, db)
     vm = VM(project_id=project_id, **body.model_dump())
     db.add(vm)
@@ -47,32 +60,37 @@ def create_vm(
     return vm
 
 
-@router.get("/{vm_id}", response_model=VMResponse)
-def get_vm(
-    project_id: str,
-    vm_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+@router.get(
+    "/{vm_id}",
+    response_model=VMResponse,
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Project or VM not found"},
+    },
+)
+def get_vm(project_id: str, vm_id: str, user: CurrentUser, db: DbSession):
     _get_project_or_403(project_id, user, db)
     vm = db.query(VM).filter_by(id=vm_id, project_id=project_id).first()
     if not vm:
-        raise HTTPException(status_code=404, detail="VM not found")
+        raise HTTPException(status_code=404, detail=_VM_NOT_FOUND)
     return vm
 
 
-@router.patch("/{vm_id}", response_model=VMResponse)
+@router.patch(
+    "/{vm_id}",
+    response_model=VMResponse,
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Project or VM not found"},
+    },
+)
 def update_vm(
-    project_id: str,
-    vm_id: str,
-    body: VMUpdate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    project_id: str, vm_id: str, body: VMUpdate, user: CurrentUser, db: DbSession
 ):
     _get_project_or_403(project_id, user, db)
     vm = db.query(VM).filter_by(id=vm_id, project_id=project_id).first()
     if not vm:
-        raise HTTPException(status_code=404, detail="VM not found")
+        raise HTTPException(status_code=404, detail=_VM_NOT_FOUND)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(vm, field, value)
     db.commit()
@@ -80,95 +98,128 @@ def update_vm(
     return vm
 
 
-@router.delete("/{vm_id}", status_code=204)
-def delete_vm(
-    project_id: str,
-    vm_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+@router.delete(
+    "/{vm_id}",
+    status_code=204,
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Project or VM not found"},
+    },
+)
+def delete_vm(project_id: str, vm_id: str, user: CurrentUser, db: DbSession):
     _get_project_or_403(project_id, user, db)
     vm = db.query(VM).filter_by(id=vm_id, project_id=project_id).first()
     if not vm:
-        raise HTTPException(status_code=404, detail="VM not found")
+        raise HTTPException(status_code=404, detail=_VM_NOT_FOUND)
     db.delete(vm)
     db.commit()
 
 
-@router.post("/{vm_id}/snapshot", response_model=SnapshotResponse, status_code=201)
-def snapshot_vm(
-    project_id: str,
-    vm_id: str,
-    body: SnapshotCreate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    project = db.query(Project).filter_by(id=project_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied")
+def _is_edge_between(edge: dict, node_a: str, node_b: str) -> bool:
+    """Check if an edge connects two nodes in either direction."""
+    return (edge.get("source") == node_a and edge.get("target") == node_b) or (
+        edge.get("target") == node_a and edge.get("source") == node_b
+    )
 
-    topology = project.topology or {"nodes": [], "edges": []}
-    vm_node = None
+
+def _find_vm_node(topology: dict, vm_id: str) -> dict | None:
+    """Find a VM node by ID in topology."""
     for node in topology.get("nodes", []):
         if node["id"] == vm_id and node.get("type") == "vmNode":
-            vm_node = node
-            break
+            return node
+    return None
+
+
+def _find_connected_disks(topology: dict, vm_id: str) -> list[dict]:
+    """Collect disk info for all storage nodes connected to a VM."""
+    edges = topology.get("edges", [])
+    disks: list[dict] = []
+    for node in topology.get("nodes", []):
+        if node.get("type") != "storageNode":
+            continue
+        if not any(_is_edge_between(e, vm_id, node["id"]) for e in edges):
+            continue
+        d = node.get("data", {})
+        disks.append(
+            {
+                "name": d.get("name", "disk"),
+                "size": d.get("size", 20),
+                "format": d.get("format", "qcow2"),
+                "source": d.get("source"),
+                "libraryItemId": d.get("libraryItemId"),
+                "libraryItemName": d.get("libraryItemName"),
+            }
+        )
+    return disks
+
+
+def _find_connecting_edge(edges: list[dict], node_a: str, node_b: str) -> dict | None:
+    """Find the first edge connecting two nodes in either direction."""
+    for e in edges:
+        if _is_edge_between(e, node_a, node_b):
+            return e
+    return None
+
+
+def _find_connected_networks(topology: dict, vm_id: str) -> list[dict]:
+    """Collect network info for all network nodes connected to a VM."""
+    edges = topology.get("edges", [])
+    networks: list[dict] = []
+    for node in topology.get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        edge = _find_connecting_edge(edges, vm_id, node["id"])
+        if not edge:
+            continue
+        d = node.get("data", {})
+        nic_handle = (
+            edge.get("sourceHandle")
+            if edge.get("source") == vm_id
+            else edge.get("targetHandle")
+        )
+        networks.append(
+            {
+                "name": d.get("name", "network"),
+                "cidr": d.get("cidr", ""),
+                "nicHandle": nic_handle,
+            }
+        )
+    return networks
+
+
+def _ensure_user_library(user: User, db: Session) -> Library:
+    """Get or create the user's personal library."""
+    lib = db.query(Library).filter_by(owner_id=user.id, type="personal").first()
+    if lib:
+        return lib
+    lib = Library(type="personal", owner_id=user.id)
+    db.add(lib)
+    db.commit()
+    db.refresh(lib)
+    return lib
+
+
+@router.post(
+    "/{vm_id}/snapshot",
+    response_model=SnapshotResponse,
+    status_code=201,
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Project or VM not found"},
+        409: {"description": "Duplicate snapshot name"},
+    },
+)
+def snapshot_vm(
+    project_id: str, vm_id: str, body: SnapshotCreate, user: CurrentUser, db: DbSession
+):
+    project = _get_project_or_403(project_id, user, db)
+
+    topology = project.topology or {"nodes": [], "edges": []}
+    vm_node = _find_vm_node(topology, vm_id)
     if not vm_node:
         raise HTTPException(status_code=404, detail="VM not found in topology")
 
     vm_data = vm_node.get("data", {})
-
-    edges = topology.get("edges", [])
-    connected_disks = []
-    for node in topology.get("nodes", []):
-        if node.get("type") != "storageNode":
-            continue
-        connected = any(
-            (e.get("source") == vm_id and e.get("target") == node["id"])
-            or (e.get("target") == vm_id and e.get("source") == node["id"])
-            for e in edges
-        )
-        if connected:
-            d = node.get("data", {})
-            connected_disks.append(
-                {
-                    "name": d.get("name", "disk"),
-                    "size": d.get("size", 20),
-                    "format": d.get("format", "qcow2"),
-                    "source": d.get("source"),
-                    "libraryItemId": d.get("libraryItemId"),
-                    "libraryItemName": d.get("libraryItemName"),
-                }
-            )
-
-    connected_networks = []
-    for node in topology.get("nodes", []):
-        if node.get("type") != "networkNode":
-            continue
-        connected_edge = None
-        for e in edges:
-            if (e.get("source") == vm_id and e.get("target") == node["id"]) or (
-                e.get("target") == vm_id and e.get("source") == node["id"]
-            ):
-                connected_edge = e
-                break
-        if connected_edge:
-            d = node.get("data", {})
-            nic_handle = (
-                connected_edge.get("sourceHandle")
-                if connected_edge.get("source") == vm_id
-                else connected_edge.get("targetHandle")
-            )
-            connected_networks.append(
-                {
-                    "name": d.get("name", "network"),
-                    "cidr": d.get("cidr", ""),
-                    "nicHandle": nic_handle,
-                }
-            )
-
     vm_config = {
         "vcpus": vm_data.get("vcpus"),
         "ram": vm_data.get("ram"),
@@ -179,16 +230,11 @@ def snapshot_vm(
         "cloudInit": vm_data.get("cloudInit"),
         "consoleType": vm_data.get("consoleType"),
         "autoStart": vm_data.get("autoStart"),
-        "disks": connected_disks,
-        "networks": connected_networks,
+        "disks": _find_connected_disks(topology, vm_id),
+        "networks": _find_connected_networks(topology, vm_id),
     }
 
-    lib = db.query(Library).filter_by(owner_id=user.id, type="personal").first()
-    if not lib:
-        lib = Library(type="personal", owner_id=user.id)
-        db.add(lib)
-        db.commit()
-        db.refresh(lib)
+    lib = _ensure_user_library(user, db)
 
     existing = (
         db.query(LibraryItem).filter_by(library_id=lib.id, name=body.name).first()

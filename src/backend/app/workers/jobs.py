@@ -148,7 +148,7 @@ def job_cache_and_start_vm(project_id: str, host_id: str, vm_id: str):
                 {"type": "vm-state", "states": {vm_id: "running"}, "progress": {}},
             )
         except TroshkadError as e:
-            logger.error("Failed to start VM %s: %s", dom, e)
+            logger.exception("Failed to start VM %s: %s", dom, e)
     finally:
         s.close()
 

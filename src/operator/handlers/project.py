@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 _KUBEVIRT_GROUP = "kubevirt.io"
 _SNAPSHOT_GROUP = "snapshot.storage.k8s.io"
 _SECURITY_GROUP = "security.openshift.io"
+_DEFAULT_SUBNET = "10.0.0.0/24"  # NOSONAR
+_ROUTE_API = "route.openshift.io"
 
 
 def _cleanup_legacy_pod(core_api, namespace, pod_name):
@@ -548,7 +550,7 @@ async def _setup_gateway(core_api, apps_api, networks, namespace, name, body):
             if net.get("gateway"):
                 gateway_ips[nad_name] = {
                     "ip": net["gateway"],
-                    "cidr": net.get("cidr", "10.0.0.0/24"),
+                    "cidr": net.get("cidr", _DEFAULT_SUBNET),
                 }
 
     if gateway_nads:
@@ -577,11 +579,11 @@ async def _setup_exec_pod(
 ):
     """Create SSH key Secret and exec deployment attached to the first standard network."""
     cluster_nad = None
-    cluster_cidr = "10.0.0.0/24"
+    cluster_cidr = _DEFAULT_SUBNET
     for net in networks:
         if net.get("networkType", "standard") != "bmc":
             cluster_nad = f"net-{net['id'][:8]}-nad"
-            cluster_cidr = net.get("cidr", "10.0.0.0/24")
+            cluster_cidr = net.get("cidr", _DEFAULT_SUBNET)
             break
     if not cluster_nad:
         return
@@ -878,7 +880,7 @@ def _setup_vnc_proxy(custom_api, core_api, namespace, name, body, patch):
     vnc_route = build_vnc_route(name, namespace, owner_body=body)
     try:
         custom_api.create_namespaced_custom_object(
-            group="route.openshift.io",
+            group=_ROUTE_API,
             version="v1",
             namespace=namespace,
             plural="routes",
@@ -894,7 +896,7 @@ def _setup_vnc_proxy(custom_api, core_api, namespace, name, body, patch):
         route = cast(
             dict[str, Any],
             custom_api.get_namespaced_custom_object(
-                group="route.openshift.io",
+                group=_ROUTE_API,
                 version="v1",
                 namespace=namespace,
                 plural="routes",
@@ -1260,7 +1262,7 @@ def _create_recert_jobs(batch_api, recert_cfgs, namespace):
                     batch_api.create_namespaced_job(namespace=namespace, body=job)
                     logger.info(f"Created recert job {job_name}")
                 except Exception as ce:
-                    logger.error(f"Recert job creation failed for {vm_label}: {ce}")
+                    logger.exception(f"Recert job creation failed for {vm_label}: {ce}")
                     return f"Failed to create recert job: {ce}"
     return None
 
@@ -1824,7 +1826,7 @@ async def project_delete(namespace, name, **_):
     )
     _delete_custom_resources(
         custom_api,
-        "route.openshift.io",
+        _ROUTE_API,
         "v1",
         "routes",
         namespace,
@@ -1860,7 +1862,7 @@ async def project_update(status, meta, namespace, name, patch, **_):
     try:
         capture_config = json.loads(capture_json)
     except (json.JSONDecodeError, TypeError) as e:
-        logger.error(f"Invalid capture annotation JSON on {name}: {e}")
+        logger.exception(f"Invalid capture annotation JSON on {name}: {e}")
         return
 
     await _handle_capture(capture_config, namespace, name, patch)

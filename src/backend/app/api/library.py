@@ -3,6 +3,7 @@ Library API — manage ISOs and disk images in S3.
 """
 
 import logging
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
@@ -17,6 +18,12 @@ from app.services import s3_storage
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/library", tags=["library"])
+
+CurrentUser = Annotated[User, Depends(get_current_user)]
+DbSession = Annotated[Session, Depends(get_db)]
+
+_ITEM_NOT_FOUND = "Item not found"
+_ACCESS_DENIED = "Access denied"
 
 
 class LibraryItemCreate(BaseModel):
@@ -67,10 +74,10 @@ def _ensure_user_library(user: User, db: Session) -> Library:
 
 @router.get("/")
 def list_items(
-    type: str | None = Query(None),
-    q: str | None = Query(None),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
+    type: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query()] = None,
 ):
     """List library items: user's own + shared with them."""
     from sqlalchemy import or_
@@ -138,13 +145,11 @@ def list_items(
     ]
 
 
-@router.get("/{item_id}")
-def get_item(
-    item_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+@router.get("/{item_id}", responses={404: {"description": "Item not found"}})
+def get_item(item_id: str, user: CurrentUser, db: DbSession):
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=_ITEM_NOT_FOUND)
     return {
         "id": item.id,
         "name": item.name,
@@ -167,20 +172,44 @@ class LibraryItemUpdate(BaseModel):
     tags: dict | None = None
 
 
-@router.patch("/{item_id}")
+def _clear_default_tag(db: Session, item: LibraryItem, tag_name: str):
+    """Clear a default tag from all other items in the same library."""
+    other_items = (
+        db.query(LibraryItem)
+        .filter(
+            LibraryItem.id != item.id,
+            LibraryItem.library_id == item.library_id,
+        )
+        .all()
+    )
+    for other in other_items:
+        other_tags = other.tags if isinstance(other.tags, dict) else {}
+        if not other_tags.get(tag_name):
+            continue
+        other.tags = {k: v for k, v in other_tags.items() if k != tag_name}
+        flag_modified(other, "tags")
+
+
+@router.patch(
+    "/{item_id}",
+    responses={
+        403: {"description": "Access denied or read-only item"},
+        404: {"description": "Item not found"},
+    },
+)
 def update_item(
     item_id: str,
     body: LibraryItemUpdate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=_ITEM_NOT_FOUND)
     _check_not_central(item)
     lib = db.query(Library).filter_by(id=item.library_id).first()
     if not lib or lib.owner_id != user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
     if body.name is not None:
         item.name = body.name
     if body.description is not None:
@@ -191,44 +220,24 @@ def update_item(
         new_tags = body.tags
         # Enforce only one default per type
         if new_tags.get("ocp_default_image"):
-            for other in (
-                db.query(LibraryItem)
-                .filter(
-                    LibraryItem.id != item.id, LibraryItem.library_id == item.library_id
-                )
-                .all()
-            ):
-                other_tags = other.tags if isinstance(other.tags, dict) else {}
-                if other_tags.get("ocp_default_image"):
-                    other.tags = {
-                        k: v for k, v in other_tags.items() if k != "ocp_default_image"
-                    }
-                    flag_modified(other, "tags")
+            _clear_default_tag(db, item, "ocp_default_image")
         if new_tags.get("ocp_default_iso"):
-            for other in (
-                db.query(LibraryItem)
-                .filter(
-                    LibraryItem.id != item.id, LibraryItem.library_id == item.library_id
-                )
-                .all()
-            ):
-                other_tags = other.tags if isinstance(other.tags, dict) else {}
-                if other_tags.get("ocp_default_iso"):
-                    other.tags = {
-                        k: v for k, v in other_tags.items() if k != "ocp_default_iso"
-                    }
-                    flag_modified(other, "tags")
+            _clear_default_tag(db, item, "ocp_default_iso")
         item.tags = new_tags
         flag_modified(item, "tags")
     db.commit()
     return {"id": item.id, "name": item.name, "description": item.description}
 
 
-@router.post("/", status_code=201)
+@router.post(
+    "/",
+    status_code=201,
+    responses={409: {"description": "Duplicate item name"}},
+)
 def create_item(
     body: LibraryItemCreate,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Create a library item (metadata only). Upload file separately."""
     lib = _ensure_user_library(user, db)
@@ -255,21 +264,27 @@ def create_item(
     return {"id": item.id, "state": item.state}
 
 
-@router.post("/{item_id}/upload-start")
+@router.post(
+    "/{item_id}/upload-start",
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Item not found"},
+    },
+)
 def start_multipart_upload(
     item_id: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Start a multipart S3 upload and return presigned URLs for each part."""
 
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=_ITEM_NOT_FOUND)
 
     lib = db.query(Library).filter_by(id=item.library_id).first()
     if not lib or lib.owner_id != user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     ext = item.format if item.format != "qcow2" else "qcow2"
     s3_key = f"library/{user.id}/{item.id}/{item.name}.{ext}"
@@ -288,7 +303,7 @@ def start_multipart_upload(
     return _do_start_upload(client, _bucket(), s3_key, item_id)
 
 
-def _do_start_upload(client, bucket, s3_key, item_id):
+def _do_start_upload(client, bucket, s3_key, _item_id):
     mpu = client.create_multipart_upload(
         Bucket=bucket, Key=s3_key, ContentType="application/octet-stream"
     )
@@ -296,18 +311,21 @@ def _do_start_upload(client, bucket, s3_key, item_id):
     return {"upload_id": upload_id, "s3_key": s3_key}
 
 
-@router.post("/{item_id}/upload-part-url")
+@router.post(
+    "/{item_id}/upload-part-url",
+    responses={404: {"description": "Item not found"}},
+)
 def get_part_upload_url(
     item_id: str,
-    upload_id: str = Query(...),
-    part_number: int = Query(...),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    upload_id: Annotated[str, Query()],
+    part_number: Annotated[int, Query()],
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Get a presigned URL for uploading one part of a multipart upload."""
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item or not item.s3_key:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=_ITEM_NOT_FOUND)
 
     from app.services.s3_storage import _bucket, _get_s3_client
 
@@ -330,21 +348,29 @@ class CompleteUploadRequest(BaseModel):
     parts: list[dict]
 
 
-@router.post("/{item_id}/upload-complete")
+@router.post(
+    "/{item_id}/upload-complete",
+    responses={
+        400: {"description": "Missing S3 key"},
+        403: {"description": "Access denied"},
+        404: {"description": "Item not found"},
+        500: {"description": "Upload completion failed"},
+    },
+)
 def complete_upload(
     item_id: str,
     body: CompleteUploadRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Complete a multipart S3 upload."""
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=_ITEM_NOT_FOUND)
 
     lib = db.query(Library).filter_by(id=item.library_id).first()
     if not lib or lib.owner_id != user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     if not item.s3_key:
         raise HTTPException(status_code=400, detail="No S3 key set")
@@ -383,12 +409,18 @@ def complete_upload(
         raise HTTPException(status_code=500, detail="Upload completion failed")
 
 
-@router.post("/{item_id}/upload-proxy")
+@router.post(
+    "/{item_id}/upload-proxy",
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Item not found"},
+    },
+)
 async def upload_proxy(
     item_id: str,
-    file: UploadFile = File(...),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    file: Annotated[UploadFile, File()],
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Stream a file upload to S3/MinIO through the backend.
 
@@ -397,11 +429,11 @@ async def upload_proxy(
     """
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=_ITEM_NOT_FOUND)
 
     lib = db.query(Library).filter_by(id=item.library_id).first()
     if not lib or lib.owner_id != user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     ext = item.format if item.format != "qcow2" else "qcow2"
     s3_key = f"library/{user.id}/{item.id}/{item.name}.{ext}"
@@ -432,21 +464,27 @@ class FinalizeSeedRequest(BaseModel):
     skip_copy: bool = False
 
 
-@router.post("/{item_id}/finalize-seed")
+@router.post(
+    "/{item_id}/finalize-seed",
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Item not found"},
+    },
+)
 def finalize_seed(
     item_id: str,
     body: FinalizeSeedRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Move a seeded S3 object to the canonical library path and mark ready."""
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=_ITEM_NOT_FOUND)
 
     lib = db.query(Library).filter_by(id=item.library_id).first()
     if not lib or lib.owner_id != user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     from app.services.s3_storage import _bucket, _get_s3_client
 
@@ -470,10 +508,12 @@ def finalize_seed(
         item.size_bytes = head["ContentLength"]
     item.state = "ready"
     if body.tags:
-        item.tags = {t: True for t in body.tags}
+        item.tags = dict.fromkeys(body.tags, True)
     db.commit()
 
-    logger.info("Finalized seed: %s (%d bytes)", body.seed_key, item.size_bytes)
+    logger.info(
+        "Finalized seed: %s (%d bytes)", body.seed_key, item.size_bytes
+    )  # NOSONAR
     return {
         "id": item.id,
         "s3_key": item.s3_key,
@@ -482,19 +522,24 @@ def finalize_seed(
     }
 
 
-@router.delete("/{item_id}", status_code=204)
-def delete_item(
-    item_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+@router.delete(
+    "/{item_id}",
+    status_code=204,
+    responses={
+        403: {"description": "Access denied or read-only item"},
+        404: {"description": "Item not found"},
+    },
+)
+def delete_item(item_id: str, user: CurrentUser, db: DbSession):
     """Delete a library item and its S3 object."""
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=_ITEM_NOT_FOUND)
     _check_not_central(item)
 
     lib = db.query(Library).filter_by(id=item.library_id).first()
     if not lib or lib.owner_id != user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     if item.s3_key:
         try:
@@ -583,26 +628,32 @@ def _run_import_job(host, it, sess, item_id, s3_key, download_url):
         )
 
     except TroshkadError as e:
-        logger.error("Import %s: troshkad error: %s", item_id[:8], e)
+        logger.exception("Import %s: troshkad error: %s", item_id[:8], e)
         it.state = "error"
         sess.commit()
 
 
-@router.post("/{item_id}/import-url")
+@router.post(
+    "/{item_id}/import-url",
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Item not found"},
+    },
+)
 def import_from_url(
     item_id: str,
     body: ImportUrlRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Import a file from a URL via host — no data passes through the app."""
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=_ITEM_NOT_FOUND)
 
     lib = db.query(Library).filter_by(id=item.library_id).first()
     if not lib or lib.owner_id != user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     ext = item.format if item.format != "qcow2" else "qcow2"
     s3_key = f"library/{user.id}/{item.id}/{item.name}.{ext}"
@@ -648,17 +699,21 @@ def import_from_url(
     return {"id": item.id, "state": "importing"}
 
 
-@router.post("/{item_id}/cancel")
-def cancel_import(
-    item_id: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)
-):
+@router.post(
+    "/{item_id}/cancel",
+    responses={
+        403: {"description": "Access denied"},
+        404: {"description": "Item not found"},
+    },
+)
+def cancel_import(item_id: str, user: CurrentUser, db: DbSession):
     """Cancel an in-progress import and clean up S3."""
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=_ITEM_NOT_FOUND)
     lib = db.query(Library).filter_by(id=item.library_id).first()
     if not lib or lib.owner_id != user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     if item.s3_key:
         from app.services.s3_storage import _bucket, _get_s3_client
@@ -690,17 +745,24 @@ class ShareRequest(BaseModel):
     permission: str = "use"
 
 
-@router.post("/{item_id}/share")
+@router.post(
+    "/{item_id}/share",
+    responses={
+        400: {"description": "Cannot share with yourself"},
+        403: {"description": "Only the owner can share"},
+        404: {"description": "Item or user not found"},
+    },
+)
 def share_item(
     item_id: str,
     body: ShareRequest,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Share a library item with another user."""
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=_ITEM_NOT_FOUND)
 
     lib = db.query(Library).filter_by(id=item.library_id).first()
     if not lib or lib.owner_id != user.id:
@@ -732,17 +794,23 @@ def share_item(
     return {"shared_with": body.user_email, "permission": body.permission}
 
 
-@router.delete("/{item_id}/share/{user_email}")
+@router.delete(
+    "/{item_id}/share/{user_email}",
+    responses={
+        403: {"description": "Only the owner can unshare"},
+        404: {"description": "Item or user not found"},
+    },
+)
 def unshare_item(
     item_id: str,
     user_email: str,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    user: CurrentUser,
+    db: DbSession,
 ):
     """Remove sharing for a library item."""
     item = db.query(LibraryItem).filter_by(id=item_id).first()
     if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
+        raise HTTPException(status_code=404, detail=_ITEM_NOT_FOUND)
 
     lib = db.query(Library).filter_by(id=item.library_id).first()
     if not lib or lib.owner_id != user.id:
@@ -764,8 +832,8 @@ def unshare_item(
     return {"unshared": user_email}
 
 
-@router.post("/sync-central")
-def sync_central(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+@router.post("/sync-central", responses={403: {"description": "Admin only"}})
+def sync_central(user: CurrentUser, db: DbSession):
     """Sync library items from the central read-only S4 bucket."""
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
@@ -775,16 +843,42 @@ def sync_central(user: User = Depends(get_current_user), db: Session = Depends(g
     return sync_central_library(db, owner_id=user.id)
 
 
-@router.post("/scan-s3")
-def scan_s3(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Scan S3 bucket and import any library items not already in the DB."""
-    if user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin only")
+def _scan_s3_prefix(client, bucket, prefix):
+    """List all S3 objects under a prefix, grouped by parent ID."""
+    import json
 
-    lib = _ensure_user_library(user, db)
-    client = s3_storage._get_s3_client()
-    bucket = s3_storage._bucket()
+    groups = {}  # id -> {metadata: dict|None, files: [{key, size}]}
+    cont = None
+    while True:
+        kw = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": 1000}
+        if cont:
+            kw["ContinuationToken"] = cont
+        r = client.list_objects_v2(**kw)
+        for obj in r.get("Contents", []):
+            key = obj["Key"]
+            parts = key.split("/")
+            if len(parts) < 3:
+                continue
+            obj_id = parts[1]
+            if obj_id not in groups:
+                groups[obj_id] = {"metadata": None, "files": []}
+            if key.endswith("/metadata.json"):
+                try:
+                    meta_resp = client.get_object(Bucket=bucket, Key=key)
+                    groups[obj_id]["metadata"] = json.loads(meta_resp["Body"].read())
+                except Exception:
+                    pass
+            else:
+                groups[obj_id]["files"].append({"key": key, "size": obj.get("Size", 0)})
+        if r.get("IsTruncated"):
+            cont = r.get("NextContinuationToken")
+        else:
+            break
+    return groups
 
+
+def _import_library_items(db: Session, lib, client, bucket):
+    """Scan and import library items from S3."""
     imported = 0
     continuation_token = None
 
@@ -837,51 +931,15 @@ def scan_s3(user: User = Depends(get_current_user), db: Session = Depends(get_db
 
     if imported:
         db.commit()
+    return imported
 
-    # Scan snapshots/ and patterns/ — collect all objects grouped by ID
-    import json
 
+def _import_snapshots(db: Session, lib, groups):
+    """Import snapshots from S3 scan groups."""
     from app.models.library import LibraryItemDisk
-    from app.models.pattern import Pattern, PatternDisk
 
-    def _scan_prefix(prefix):
-        """List all S3 objects under a prefix, grouped by parent ID."""
-        groups = {}  # id -> {metadata: dict|None, files: [{key, size}]}
-        cont = None
-        while True:
-            kw = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": 1000}
-            if cont:
-                kw["ContinuationToken"] = cont
-            r = client.list_objects_v2(**kw)
-            for obj in r.get("Contents", []):
-                key = obj["Key"]
-                parts = key.split("/")
-                if len(parts) < 3:
-                    continue
-                obj_id = parts[1]
-                if obj_id not in groups:
-                    groups[obj_id] = {"metadata": None, "files": []}
-                if key.endswith("/metadata.json"):
-                    try:
-                        meta_resp = client.get_object(Bucket=bucket, Key=key)
-                        groups[obj_id]["metadata"] = json.loads(
-                            meta_resp["Body"].read()
-                        )
-                    except Exception:
-                        pass
-                else:
-                    groups[obj_id]["files"].append(
-                        {"key": key, "size": obj.get("Size", 0)}
-                    )
-            if r.get("IsTruncated"):
-                cont = r.get("NextContinuationToken")
-            else:
-                break
-        return groups
-
-    # Import snapshots
     snapshot_count = 0
-    for item_id, group in _scan_prefix("snapshots/").items():
+    for item_id, group in groups.items():
         if db.query(LibraryItem).filter_by(id=item_id).first():
             continue
         meta = group["metadata"]
@@ -942,10 +1000,17 @@ def scan_s3(user: User = Depends(get_current_user), db: Session = Depends(get_db
                     )
                 )
         snapshot_count += 1
+    return snapshot_count
 
-    # Import patterns
+
+def _import_patterns(db: Session, user_id, groups):
+    """Import patterns from S3 scan groups."""
+    import uuid as _uuid
+
+    from app.models.pattern import Pattern, PatternDisk
+
     pattern_count = 0
-    for pattern_id, group in _scan_prefix("patterns/").items():
+    for pattern_id, group in groups.items():
         if db.query(Pattern).filter_by(id=pattern_id).first():
             continue
         meta = group["metadata"]
@@ -954,7 +1019,7 @@ def scan_s3(user: User = Depends(get_current_user), db: Session = Depends(get_db
                 id=pattern_id,
                 name=meta.get("name", f"pattern-{pattern_id[:8]}"),
                 description=meta.get("description"),
-                owner_id=user.id,
+                owner_id=user_id,
                 visibility=meta.get("visibility", "private"),
                 topology=meta.get("topology", {}),
                 state="available",
@@ -964,8 +1029,6 @@ def scan_s3(user: User = Depends(get_current_user), db: Session = Depends(get_db
             db.add(pattern)
             db.flush()
             for disk in meta.get("disks", []):
-                import uuid as _uuid
-
                 db.add(
                     PatternDisk(
                         id=disk.get("id", str(_uuid.uuid4())),
@@ -984,7 +1047,7 @@ def scan_s3(user: User = Depends(get_current_user), db: Session = Depends(get_db
             pattern = Pattern(
                 id=pattern_id,
                 name=f"orphan-pattern-{pattern_id[:8]}",
-                owner_id=user.id,
+                owner_id=user_id,
                 visibility="private",
                 topology={"nodes": [], "edges": []},
                 state="available",
@@ -994,8 +1057,6 @@ def scan_s3(user: User = Depends(get_current_user), db: Session = Depends(get_db
             db.add(pattern)
             db.flush()
             for f in group["files"]:
-                import uuid as _uuid
-
                 file_fmt = f["key"].rsplit(".", 1)[-1] if "." in f["key"] else "qcow2"
                 disk_id = (
                     f["key"].split("/")[-1].rsplit(".", 1)[0]
@@ -1015,6 +1076,26 @@ def scan_s3(user: User = Depends(get_current_user), db: Session = Depends(get_db
                     )
                 )
         pattern_count += 1
+    return pattern_count
+
+
+@router.post("/scan-s3", responses={403: {"description": "Admin only"}})
+def scan_s3(user: CurrentUser, db: DbSession):
+    """Scan S3 bucket and import any library items not already in the DB."""
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    lib = _ensure_user_library(user, db)
+    client = s3_storage._get_s3_client()
+    bucket = s3_storage._bucket()
+
+    imported = _import_library_items(db, lib, client, bucket)
+
+    snapshot_groups = _scan_s3_prefix(client, bucket, "snapshots/")
+    snapshot_count = _import_snapshots(db, lib, snapshot_groups)
+
+    pattern_groups = _scan_s3_prefix(client, bucket, "patterns/")
+    pattern_count = _import_patterns(db, user.id, pattern_groups)
 
     if snapshot_count or pattern_count:
         db.commit()

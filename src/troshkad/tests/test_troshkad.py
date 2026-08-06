@@ -697,12 +697,12 @@ class TestMetadataHandlers(unittest.TestCase):
         # Verify script was written
         mock_open.assert_called()
         write_calls = [c for c in mock_open().write.call_args_list]
-        self.assertTrue(len(write_calls) > 0, "Script should have been written")
+        self.assertGreater(len(write_calls), 0, "Script should have been written")
 
         # Verify metadata IP was added to bridge
         calls = [c[0][0] for c in mock_popen.call_args_list]
         ip_add_calls = [c for c in calls if "ip" in c and "addr" in c and "add" in c]
-        self.assertTrue(len(ip_add_calls) > 0, "Should have added metadata IP to bridge")
+        self.assertGreater(len(ip_add_calls), 0, "Should have added metadata IP to bridge")
 
 
 class TestVmStateHandler(unittest.TestCase):
@@ -938,7 +938,7 @@ class TestVmUndefineHandler(unittest.TestCase):
         # Disks are deleted manually via _delete_vm_disks, then undefine with --nvram
         calls = [c[0][0] for c in mock_popen.call_args_list]
         undefine_calls = [c for c in calls if "undefine" in c]
-        self.assertTrue(len(undefine_calls) > 0)
+        self.assertGreater(len(undefine_calls), 0)
         self.assertIn("--nvram", undefine_calls[0])
 
     @patch("troshkad.subprocess.Popen")
@@ -1091,13 +1091,13 @@ class TestMeshJoinNetwork(unittest.TestCase):
         cmds = [c[0][0] for c in mock_popen.call_args_list]
         # Should create namespace
         ns_add = [c for c in cmds if "netns" in c and "add" in c]
-        self.assertTrue(len(ns_add) > 0)
+        self.assertGreater(len(ns_add), 0)
         # Should create VXLAN interface
         vxlan_add = [c for c in cmds if "vxlan" in c]
-        self.assertTrue(len(vxlan_add) > 0)
+        self.assertGreater(len(vxlan_add), 0)
         # Should create bridge in namespace
         bridge_add = [c for c in cmds if "bridge" in c]
-        self.assertTrue(len(bridge_add) > 0)
+        self.assertGreater(len(bridge_add), 0)
 
     @patch("troshkad.subprocess.Popen")
     def test_join_network_fdb_skips_self(self, mock_popen):
@@ -1325,8 +1325,8 @@ class TestContainerDestroy(unittest.TestCase):
         # Should stop then rm -f
         stop_calls = [c for c in cmds if "stop" in c]
         rm_calls = [c for c in cmds if "rm" in c]
-        self.assertTrue(len(stop_calls) > 0)
-        self.assertTrue(len(rm_calls) > 0)
+        self.assertGreater(len(stop_calls), 0)
+        self.assertGreater(len(rm_calls), 0)
 
     @patch("troshkad.os.path.ismount")
     @patch("troshkad.subprocess.Popen")
@@ -1341,7 +1341,7 @@ class TestContainerDestroy(unittest.TestCase):
         self.assertEqual(result["status"], "destroyed")
         cmds = [c[0][0] for c in mock_popen.call_args_list]
         umount_calls = [c for c in cmds if "umount" in c]
-        self.assertTrue(len(umount_calls) > 0)
+        self.assertGreater(len(umount_calls), 0)
 
     @patch("troshkad.os.path.ismount")
     @patch("troshkad.subprocess.Popen")
@@ -1574,8 +1574,8 @@ class TestPodCreate(unittest.TestCase):
         # Should have created init container and main container
         init_create = [c for c in cmds if "create" in c and "init-init1" in " ".join(c)]
         main_create = [c for c in cmds if "create" in c and "-app" in " ".join(c)]
-        self.assertTrue(len(init_create) > 0, f"No init container created in cmds: {cmds}")
-        self.assertTrue(len(main_create) > 0, f"No main container created in cmds: {cmds}")
+        self.assertGreater(len(init_create), 0, f"No init container created in cmds: {cmds}")
+        self.assertGreater(len(main_create), 0, f"No main container created in cmds: {cmds}")
 
 
 class TestPodStart(unittest.TestCase):
@@ -1649,7 +1649,7 @@ class TestPodDestroy(unittest.TestCase):
         # Should call podman pod rm -f
         cmds = [c[0][0] for c in mock_popen.call_args_list]
         pod_rm = [c for c in cmds if "pod" in c and "rm" in c]
-        self.assertTrue(len(pod_rm) > 0)
+        self.assertGreater(len(pod_rm), 0)
 
     @patch("troshkad.os.path.ismount", return_value=True)
     @patch("troshkad.os.path.exists", return_value=False)
@@ -1664,7 +1664,7 @@ class TestPodDestroy(unittest.TestCase):
         self.assertEqual(result["status"], "destroyed")
         cmds = [c[0][0] for c in mock_popen.call_args_list]
         umount_calls = [c for c in cmds if "umount" in c]
-        self.assertTrue(len(umount_calls) > 0)
+        self.assertGreater(len(umount_calls), 0)
 
     @patch("troshkad.os.path.exists", return_value=False)
     @patch("troshkad.subprocess.Popen")

@@ -18,6 +18,8 @@ import uuid
 
 _MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$")
+_YAML_BLOCK_SCALAR = "  - |\n"
+_MKDIR_OCP_INSTALL = "    mkdir -p /home/cloud-user/ocp-install/openshift\n"
 
 
 def _find_bastion_ip(topology):
@@ -52,6 +54,32 @@ def _find_cluster_cidr(topology):
     return default
 
 
+def _find_ocp_mount_device(node_id, edges, nodes_by_id):
+    """Find the block device path for a storage node connected to an RHCOS VM."""
+    for edge in edges:
+        if edge.get("source") == node_id:
+            vm_id = edge.get("target")
+        elif edge.get("target") == node_id:
+            vm_id = edge.get("source")
+        else:
+            continue
+        vm_node = nodes_by_id.get(vm_id)
+        if not vm_node or vm_node.get("type") != "vmNode":
+            continue
+        if vm_node.get("data", {}).get("os") != "rhcos":
+            continue
+        handle = edge.get("targetHandle") or edge.get("sourceHandle", "")
+        dcs = vm_node.get("data", {}).get("diskControllers", [])
+        disk_index = next(
+            (i for i, dc in enumerate(dcs) if dc["id"] in handle),
+            -1,
+        )
+        if disk_index >= 0:
+            return f"/dev/vd{chr(ord('a') + disk_index)}"
+        break
+    return None
+
+
 def _collect_ocp_mounts(topology):
     """Find storage nodes with ocpMount and return list of (disk_index, mount_path).
 
@@ -59,7 +87,7 @@ def _collect_ocp_mounts(topology):
     """
     mounts = []
     edges = topology.get("edges", [])
-    nodes = {n["id"]: n for n in topology.get("nodes", [])}
+    nodes_by_id = {n["id"]: n for n in topology.get("nodes", [])}
 
     for node in topology.get("nodes", []):
         if node.get("type") != "storageNode":
@@ -67,28 +95,9 @@ def _collect_ocp_mounts(topology):
         mount_path = node.get("data", {}).get("ocpMount")
         if not mount_path:
             continue
-        for edge in edges:
-            if edge.get("source") == node["id"]:
-                vm_id = edge.get("target")
-            elif edge.get("target") == node["id"]:
-                vm_id = edge.get("source")
-            else:
-                continue
-            vm_node = nodes.get(vm_id)
-            if not vm_node or vm_node.get("type") != "vmNode":
-                continue
-            if vm_node.get("data", {}).get("os") != "rhcos":
-                continue
-            handle = edge.get("targetHandle") or edge.get("sourceHandle", "")
-            dcs = vm_node.get("data", {}).get("diskControllers", [])
-            disk_index = next(
-                (i for i, dc in enumerate(dcs) if dc["id"] in handle),
-                -1,
-            )
-            if disk_index >= 0:
-                dev = f"/dev/vd{chr(ord('a') + disk_index)}"
-                mounts.append({"device": dev, "mount": mount_path})
-            break
+        dev = _find_ocp_mount_device(node["id"], edges, nodes_by_id)
+        if dev:
+            mounts.append({"device": dev, "mount": mount_path})
     return mounts
 
 
@@ -109,7 +118,7 @@ def _generate_ocp_mount_script(topology):
         return ""
 
     lines = "    # Create extra manifests for disk mounts\n"
-    lines += "    mkdir -p /home/cloud-user/ocp-install/openshift\n"
+    lines += _MKDIR_OCP_INSTALL
     for m in mounts:
         dev = m["device"]
         mount_path = m["mount"]
@@ -229,7 +238,7 @@ def _generate_dns_manifests(topology, base_domain):
         return ""
 
     lines = "    # Create extra manifests for disconnected DNS resolution\n"
-    lines += "    mkdir -p /home/cloud-user/ocp-install/openshift\n"
+    lines += _MKDIR_OCP_INSTALL
 
     hosts_lines = "\\n".join(f"{rec['ip']} {rec['name']}" for rec in dns_records)
     mc = {
@@ -306,6 +315,39 @@ def _find_sno_node_ip(topology):
     return None
 
 
+def _resolve_ocp_vips(topology, ocp_cfg):
+    """Resolve API and Ingress VIPs from ocp config or topology control-plane nodes."""
+    api_vip = ocp_cfg.get("api_vip", "")
+    ingress_vip = ocp_cfg.get("ingress_vip", "")
+
+    if api_vip and ingress_vip:
+        return api_vip, ingress_vip
+
+    cluster_cidr = _find_cluster_cidr(topology)
+    net = ipaddress.ip_network(cluster_cidr, strict=False)
+    if not api_vip:
+        api_vip = str(net.network_address + 2)
+    if not ingress_vip:
+        ingress_vip = str(net.network_address + 3)
+
+    for n in topology.get("nodes", []):
+        if (
+            n.get("type") == "vmNode"
+            and n.get("data", {}).get("tags", {}).get("AnsibleGroup") == "controllers"
+        ):
+            cp_ip = n.get("data", {}).get("nics", [{}])[0].get("ip")
+            if not cp_ip:
+                break
+            if not ocp_cfg.get("api_vip"):
+                api_vip = cp_ip
+            if not ocp_cfg.get("ingress_vip"):
+                ingress_vip = str(
+                    ipaddress.IPv4Address(int(ipaddress.IPv4Address(cp_ip)) + 1)
+                )
+            break
+    return api_vip, ingress_vip
+
+
 def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     """Apply OCP Agent-Based configuration to a base topology."""
     cluster_name = config.get("cluster_name", "ocp")
@@ -328,33 +370,8 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     resolved = config.get("resolved", {})
     pull_through_registry = resolved.get("pull_through_registry")
 
-    # Read VIPs from template ocp section if available, otherwise derive from topology
     ocp_cfg = resolved.get("ocp", {})
-    api_vip = ocp_cfg.get("api_vip", "")
-    ingress_vip = ocp_cfg.get("ingress_vip", "")
-
-    if not api_vip or not ingress_vip:
-        cluster_cidr = _find_cluster_cidr(topology)
-        net = ipaddress.ip_network(cluster_cidr, strict=False)
-        if not api_vip:
-            api_vip = str(net.network_address + 2)
-        if not ingress_vip:
-            ingress_vip = str(net.network_address + 3)
-        for n in topology.get("nodes", []):
-            if (
-                n.get("type") == "vmNode"
-                and n.get("data", {}).get("tags", {}).get("AnsibleGroup")
-                == "controllers"
-            ):
-                cp_ip = n.get("data", {}).get("nics", [{}])[0].get("ip")
-                if cp_ip:
-                    if not ocp_cfg.get("api_vip"):
-                        api_vip = cp_ip
-                    if not ocp_cfg.get("ingress_vip"):
-                        ingress_vip = str(
-                            ipaddress.IPv4Address(int(ipaddress.IPv4Address(cp_ip)) + 1)
-                        )
-                    break
+    api_vip, ingress_vip = _resolve_ocp_vips(topology, ocp_cfg)
 
     dns_api = api_vip
     dns_ingress = ingress_vip
@@ -386,6 +403,31 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     return topology
 
 
+def _build_ocp_dns_records(
+    cluster_name,
+    base_domain,
+    api_vip,
+    ingress_vip,
+    topology,
+    resolved,
+):
+    """Build the full list of OCP DNS records including extras from resolved config."""
+    records = [
+        {"name": f"api.{cluster_name}.{base_domain}", "ip": api_vip},
+        {"name": f"api-int.{cluster_name}.{base_domain}", "ip": api_vip},
+        {"name": f".apps.{cluster_name}.{base_domain}", "ip": ingress_vip},
+    ]
+    bastion_ip = _find_bastion_ip(topology)
+    for extra in resolved.get("dns_records", []):
+        target = extra.get("target", "")
+        ip = extra.get("ip", "")
+        if target == "bastion" and bastion_ip:
+            ip = bastion_ip
+        if ip:
+            records.append({"name": extra["name"], "ip": ip})
+    return records
+
+
 def _setup_dns_records(
     topology, cluster_name, base_domain, api_vip, ingress_vip, resolved=None
 ):
@@ -398,21 +440,14 @@ def _setup_dns_records(
         ):
             node["data"]["dns"] = True
             node["data"]["dnsDomain"] = base_domain
-            records = [
-                {"name": f"api.{cluster_name}.{base_domain}", "ip": api_vip},
-                {"name": f"api-int.{cluster_name}.{base_domain}", "ip": api_vip},
-                {"name": f".apps.{cluster_name}.{base_domain}", "ip": ingress_vip},
-            ]
-            bastion_ip = _find_bastion_ip(topology)
-            # Add extra DNS records from template (e.g. infra.domain → bastion)
-            for extra in resolved.get("dns_records", []):
-                target = extra.get("target", "")
-                ip = extra.get("ip", "")
-                if target == "bastion" and bastion_ip:
-                    ip = bastion_ip
-                if ip:
-                    records.append({"name": extra["name"], "ip": ip})
-            node["data"]["dnsRecords"] = records
+            node["data"]["dnsRecords"] = _build_ocp_dns_records(
+                cluster_name,
+                base_domain,
+                api_vip,
+                ingress_vip,
+                topology,
+                resolved,
+            )
             break
 
 
@@ -493,6 +528,128 @@ def _attach_bastion_iso(topology, bastion_iso):
     topology["edges"].append(iso_edge)
 
 
+def _setup_bastion_no_auto_install(
+    node, password, ssh_key_ids, ssh_keys, pull_through_registry
+):
+    """Configure bastion cloud-init when auto_install_ocp is false."""
+    node["data"]["cloudInit"] = True
+    cloud_user_pw = node["data"].get("ciCloudUserPassword") or password
+    if cloud_user_pw:
+        node["data"]["ciCloudUserPassword"] = cloud_user_pw
+    if ssh_key_ids:
+        node["data"]["ciSshKeyIds"] = ssh_key_ids
+    if ssh_keys:
+        node["data"]["ciSshKeys"] = ssh_keys
+
+    if pull_through_registry and pull_through_registry.get("enabled"):
+        if "ciUserData" not in node["data"]:
+            node["data"]["ciUserData"] = "runcmd:\n"
+        node["data"]["ciUserData"] += _generate_ptr_registries_conf(
+            pull_through_registry
+        )
+
+
+def _generate_ptr_registries_conf(pull_through_registry, guard=""):
+    """Generate pull-through registry config script for containers/registries.conf.d."""
+    ptr_url = pull_through_registry["url"]
+    result = (
+        _YAML_BLOCK_SCALAR
+        + guard
+        + "    mkdir -p /etc/containers/registries.conf.d\n"
+        + "    cat > /etc/containers/registries.conf.d/rhdp-cache.conf << 'EOF'\n"
+    )
+    for source, org in pull_through_registry.get("orgs", {}).items():
+        result += (
+            f"    [[registry]]\n"
+            f'      prefix = "{source}"\n'
+            f'      location = "{ptr_url}/{org}"\n'
+            f"\n"
+        )
+    result += "    EOF\n"
+    return result
+
+
+def _collect_bmc_ips_and_password(topology, password):
+    """Collect BMC IPs for hub cluster VMs and read BMC password from BMC network."""
+    bmc_ips = []
+    for tnode in topology.get("nodes", []):
+        td = tnode.get("data", {})
+        group = td.get("tags", {}).get("AnsibleGroup", "")
+        if (
+            tnode.get("type") == "vmNode"
+            and td.get("bmcEnabled")
+            and td.get("bmcIp")
+            and group in ("controllers", "workers")
+        ):
+            ip = str(ipaddress.IPv4Address(td["bmcIp"]))
+            bmc_ips.append(ip)
+
+    bmc_pw = password
+    for tnode in topology.get("nodes", []):
+        td = tnode.get("data", {})
+        if td.get("networkType") == "bmc" and td.get("bmcPassword"):
+            bmc_pw = td["bmcPassword"]
+            break
+    return " ".join(bmc_ips), bmc_pw
+
+
+def _write_ocp_config_files(node, guard, install_config, agent_config):
+    """Write install-config.yaml and agent-config.yaml to bastion cloud-init."""
+    if install_config:
+        indented_ic = "\n".join("    " + line for line in install_config.split("\n"))
+        node["data"]["ciUserData"] += (
+            _YAML_BLOCK_SCALAR
+            + guard
+            + "    mkdir -p /home/cloud-user/ocp-install\n"
+            + "    cat > /home/cloud-user/ocp-install/install-config.yaml << 'ICEOF'\n"
+            f"{indented_ic}\n"
+            "    ICEOF\n"
+            "    chown -R cloud-user:cloud-user /home/cloud-user/ocp-install\n"
+        )
+
+    if agent_config:
+        indented_ac = "\n".join("    " + line for line in agent_config.split("\n"))
+        node["data"]["ciUserData"] += (
+            _YAML_BLOCK_SCALAR
+            + guard
+            + "    cat > /home/cloud-user/ocp-install/agent-config.yaml << 'ACEOF'\n"
+            f"{indented_ac}\n"
+            "    ACEOF\n"
+            "    chown -R cloud-user:cloud-user /home/cloud-user/ocp-install\n"
+        )
+
+
+def _write_itms_manifest(node, guard, pull_through_registry):
+    """Write ImageTagMirrorSet extra manifest for pull-through registry."""
+    if not pull_through_registry or not pull_through_registry.get("enabled"):
+        return
+    ptr_url = pull_through_registry["url"]
+    itms_yaml = (
+        "apiVersion: config.openshift.io/v1\n"
+        "kind: ImageTagMirrorSet\n"
+        "metadata:\n"
+        "  name: pull-through-registry-tags\n"
+        "spec:\n"
+        "  imageTagMirrors:\n"
+    )
+    for source, org in pull_through_registry.get("orgs", {}).items():
+        itms_yaml += (
+            f"    - source: {source}\n"
+            f"      mirrors:\n"
+            f"        - {ptr_url}/{org}\n"
+        )
+    indented_itms = "\n".join("    " + line for line in itms_yaml.split("\n"))
+    node["data"]["ciUserData"] += (
+        _YAML_BLOCK_SCALAR
+        + guard
+        + _MKDIR_OCP_INSTALL
+        + "    cat > /home/cloud-user/ocp-install/openshift/itms-pull-through.yaml << 'ITMSEOF'\n"
+        f"{indented_itms}\n"
+        "    ITMSEOF\n"
+        "    chown -R cloud-user:cloud-user /home/cloud-user/ocp-install/openshift\n"
+    )
+
+
 def _setup_bastion_cloud_init(
     topology,
     password,
@@ -518,36 +675,14 @@ def _setup_bastion_cloud_init(
         ):
             continue
 
-        # When auto_install_ocp is false, agnosticd handles everything
-        # via Ansible roles — set password + SSH keys so exec API can connect
         if not auto_install_ocp:
-            node["data"]["cloudInit"] = True
-            cloud_user_pw = node["data"].get("ciCloudUserPassword") or password
-            if cloud_user_pw:
-                node["data"]["ciCloudUserPassword"] = cloud_user_pw
-            if ssh_key_ids:
-                node["data"]["ciSshKeyIds"] = ssh_key_ids
-            if ssh_keys:
-                node["data"]["ciSshKeys"] = ssh_keys
-
-            # Inject pull-through registry config for podman on bastion
-            if pull_through_registry and pull_through_registry.get("enabled"):
-                ptr_url = pull_through_registry["url"]
-                if "ciUserData" not in node["data"]:
-                    node["data"]["ciUserData"] = "runcmd:\n"
-                node["data"]["ciUserData"] += (
-                    "  - |\n"
-                    "    mkdir -p /etc/containers/registries.conf.d\n"
-                    "    cat > /etc/containers/registries.conf.d/rhdp-cache.conf << 'EOF'\n"
-                )
-                for source, org in pull_through_registry.get("orgs", {}).items():
-                    node["data"]["ciUserData"] += (
-                        f"    [[registry]]\n"
-                        f'      prefix = "{source}"\n'
-                        f'      location = "{ptr_url}/{org}"\n'
-                        f"\n"
-                    )
-                node["data"]["ciUserData"] += "    EOF\n"
+            _setup_bastion_no_auto_install(
+                node,
+                password,
+                ssh_key_ids,
+                ssh_keys,
+                pull_through_registry,
+            )
             break
 
         node["data"]["cloudInit"] = True
@@ -594,17 +729,14 @@ def _setup_bastion_cloud_init(
                 "  - nmcli con up cluster-nic 2>/dev/null || true\n"
             )
 
-        # Ensure ciUserData exists (may not be set if no bastion_iso)
         if "ciUserData" not in node["data"]:
             node["data"]["ciUserData"] = "runcmd:\n"
 
-        # Guard: skip all remaining runcmd blocks if cluster already installed (pattern deploy)
         _guard = "    [ -f /home/cloud-user/ocp-install/auth/kubeconfig ] && exit 0\n"
 
-        # Pull secret
         if pull_secret_json:
             node["data"]["ciUserData"] += (
-                "  - |\n"
+                _YAML_BLOCK_SCALAR
                 + _guard
                 + "    cat > /home/cloud-user/pull-secret.json << 'PULLSECRETEOF'\n"
                 f"    {pull_secret_json}\n"
@@ -613,25 +745,12 @@ def _setup_bastion_cloud_init(
                 "    chmod 600 /home/cloud-user/pull-secret.json\n"
             )
 
-        # Pull-through registry mirror config for podman
         if pull_through_registry and pull_through_registry.get("enabled"):
-            ptr_url = pull_through_registry["url"]
-            node["data"]["ciUserData"] += (
-                "  - |\n"
-                + _guard
-                + "    mkdir -p /etc/containers/registries.conf.d\n"
-                + "    cat > /etc/containers/registries.conf.d/rhdp-cache.conf << 'EOF'\n"
+            node["data"]["ciUserData"] += _generate_ptr_registries_conf(
+                pull_through_registry,
+                _guard,
             )
-            for source, org in pull_through_registry.get("orgs", {}).items():
-                node["data"]["ciUserData"] += (
-                    f"    [[registry]]\n"
-                    f'      prefix = "{source}"\n'
-                    f'      location = "{ptr_url}/{org}"\n'
-                    f"\n"
-                )
-            node["data"]["ciUserData"] += "    EOF\n"
 
-        # Build install-config.yaml and agent-config.yaml
         install_config = _build_install_config(
             topology,
             template_id,
@@ -652,29 +771,7 @@ def _setup_bastion_cloud_init(
             ingress_vip,
         )
 
-        # Install script
-        # Collect BMC IPs only for hub cluster VMs (controllers/workers)
-        bmc_ips = []
-        for tnode in topology.get("nodes", []):
-            td = tnode.get("data", {})
-            group = td.get("tags", {}).get("AnsibleGroup", "")
-            if (
-                tnode.get("type") == "vmNode"
-                and td.get("bmcEnabled")
-                and td.get("bmcIp")
-                and group in ("controllers", "workers")
-            ):
-                ip = str(ipaddress.IPv4Address(td["bmcIp"]))
-                bmc_ips.append(ip)
-        bmc_ips_str = " ".join(bmc_ips)
-
-        # Read BMC password from the BMC network node (may differ from common)
-        bmc_pw = password
-        for tnode in topology.get("nodes", []):
-            td = tnode.get("data", {})
-            if td.get("networkType") == "bmc" and td.get("bmcPassword"):
-                bmc_pw = td["bmcPassword"]
-                break
+        bmc_ips_str, bmc_pw = _collect_bmc_ips_and_password(topology, password)
 
         node["data"]["ciUserData"] += _build_install_script(
             ocp_version,
@@ -686,58 +783,8 @@ def _setup_bastion_cloud_init(
             topology=topology,
         )
 
-        # Write install-config.yaml
-        if install_config:
-            indented_ic = "\n".join(
-                "    " + line for line in install_config.split("\n")
-            )
-            node["data"]["ciUserData"] += (
-                "  - |\n" + _guard + "    mkdir -p /home/cloud-user/ocp-install\n"
-                "    cat > /home/cloud-user/ocp-install/install-config.yaml << 'ICEOF'\n"
-                f"{indented_ic}\n"
-                "    ICEOF\n"
-                "    chown -R cloud-user:cloud-user /home/cloud-user/ocp-install\n"
-            )
-
-        # Write agent-config.yaml
-        if agent_config:
-            indented_ac = "\n".join("    " + line for line in agent_config.split("\n"))
-            node["data"]["ciUserData"] += (
-                "  - |\n"
-                + _guard
-                + "    cat > /home/cloud-user/ocp-install/agent-config.yaml << 'ACEOF'\n"
-                f"{indented_ac}\n"
-                "    ACEOF\n"
-                "    chown -R cloud-user:cloud-user /home/cloud-user/ocp-install\n"
-            )
-
-        # Write ImageTagMirrorSet for pull-through registry (tag-based pulls like catalog sources)
-        if pull_through_registry and pull_through_registry.get("enabled"):
-            ptr_url = pull_through_registry["url"]
-            itms_yaml = (
-                "apiVersion: config.openshift.io/v1\n"
-                "kind: ImageTagMirrorSet\n"
-                "metadata:\n"
-                "  name: pull-through-registry-tags\n"
-                "spec:\n"
-                "  imageTagMirrors:\n"
-            )
-            for source, org in pull_through_registry.get("orgs", {}).items():
-                itms_yaml += (
-                    f"    - source: {source}\n"
-                    f"      mirrors:\n"
-                    f"        - {ptr_url}/{org}\n"
-                )
-            indented_itms = "\n".join("    " + line for line in itms_yaml.split("\n"))
-            node["data"]["ciUserData"] += (
-                "  - |\n"
-                + _guard
-                + "    mkdir -p /home/cloud-user/ocp-install/openshift\n"
-                "    cat > /home/cloud-user/ocp-install/openshift/itms-pull-through.yaml << 'ITMSEOF'\n"
-                f"{indented_itms}\n"
-                "    ITMSEOF\n"
-                "    chown -R cloud-user:cloud-user /home/cloud-user/ocp-install/openshift\n"
-            )
+        _write_ocp_config_files(node, _guard, install_config, agent_config)
+        _write_itms_manifest(node, _guard, pull_through_registry)
 
         # Launch OCP installer in background
         node["data"][
@@ -746,8 +793,10 @@ def _setup_bastion_cloud_init(
 
         # Desktop setup script — written as a file to avoid nested quoting issues
         node["data"]["ciUserData"] += (
-            "  - |\n" + _guard + "    cat > /root/setup-desktop.sh << 'DESKTOPEOF'\n"
-            "    #!/bin/bash\n"
+            _YAML_BLOCK_SCALAR
+            + _guard
+            + "    cat > /root/setup-desktop.sh << 'DESKTOPEOF'\n"
+            + "    #!/bin/bash\n"
             "    set -x\n"
             "    dnf remove -y gnome-initial-setup gnome-software gnome-tour subscription-manager-cockpit 2>/dev/null\n"
             "    sed -i 's|^ExecStart=.*gsd-subman|#ExecStart=/usr/libexec/gsd-subman|' /lib/systemd/user/org.gnome.SettingsDaemon.Subscription.service 2>/dev/null\n"
@@ -818,8 +867,10 @@ def _setup_bastion_cloud_init(
             f"https://console-openshift-console.apps.{cluster_name}.{base_domain}"
         )
         node["data"]["ciUserData"] += (
-            "  - |\n" + _guard + "    mkdir -p /etc/firefox/policies\n"
-            "    cat > /etc/firefox/policies/policies.json << 'FPEOF'\n"
+            _YAML_BLOCK_SCALAR
+            + _guard
+            + "    mkdir -p /etc/firefox/policies\n"
+            + "    cat > /etc/firefox/policies/policies.json << 'FPEOF'\n"
             "    {\n"
             '      "policies": {\n'
             f'        "Homepage": {{"URL": "{console_url}", "Locked": true, "StartPage": "homepage"}},\n'
@@ -837,10 +888,10 @@ def _setup_bastion_cloud_init(
         )
         # Firefox default prefs (suppress crash recovery, update prompts)
         node["data"]["ciUserData"] += (
-            "  - |\n"
+            _YAML_BLOCK_SCALAR
             + _guard
             + "    FIREFOX_DIR=$(find /usr/lib64/firefox /usr/lib/firefox -maxdepth 0 2>/dev/null | head -1)\n"
-            '    if [ -n "$FIREFOX_DIR" ]; then\n'
+            + '    if [ -n "$FIREFOX_DIR" ]; then\n'
             "      mkdir -p $FIREFOX_DIR/defaults/pref\n"
             "      cat > $FIREFOX_DIR/defaults/pref/autoconfig.js << 'ACEOF'\n"
             '    pref("browser.sessionstore.resume_from_crash", false);\n'
@@ -874,6 +925,43 @@ def _setup_bastion_cloud_init(
         break
 
 
+def _count_ocp_nodes_by_group(topology, group_name):
+    """Count VM nodes with a given AnsibleGroup tag."""
+    return sum(
+        1
+        for n in topology.get("nodes", [])
+        if n.get("type") == "vmNode"
+        and n.get("data", {}).get("tags", {}).get("AnsibleGroup") == group_name
+    )
+
+
+def _collect_bmc_host_entries(topology):
+    """Collect baremetal host entries for install-config.yaml."""
+    entries = []
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        td = node.get("data", {})
+        if not td.get("bmcEnabled") or not td.get("bmcIp"):
+            continue
+        group = td.get("tags", {}).get("AnsibleGroup", "")
+        if group not in ("controllers", "workers"):
+            continue
+        vm_name = td.get("name", "")
+        boot_mac = td.get("nics", [{}])[0].get("mac", "")
+        if not _NAME_RE.match(vm_name) or not _MAC_RE.match(boot_mac):
+            continue
+        role = "master" if group == "controllers" else "worker"
+        entries.extend(
+            [
+                f"      - name: {vm_name}",
+                f"        role: {role}",
+                f"        bootMACAddress: {boot_mac}",
+            ]
+        )
+    return entries
+
+
 def _build_install_config(
     topology,
     template_id,
@@ -881,27 +969,19 @@ def _build_install_config(
     base_domain,
     api_vip,
     ingress_vip,
-    password,
+    _password,
     pull_secret_json,
     ssh_pub_key,
     pull_through_registry=None,
 ):
-    # Count actual CP and worker nodes from topology
-    cp_nodes_count = sum(
-        1
-        for n in topology.get("nodes", [])
-        if n.get("type") == "vmNode"
-        and n.get("data", {}).get("tags", {}).get("AnsibleGroup") == "controllers"
-    )
-    worker_nodes_count = sum(
-        1
-        for n in topology.get("nodes", [])
-        if n.get("type") == "vmNode"
-        and n.get("data", {}).get("tags", {}).get("AnsibleGroup") == "workers"
-    )
-    num_masters = (
-        cp_nodes_count if cp_nodes_count > 0 else (1 if template_id == "ocp-sno" else 3)
-    )
+    cp_nodes_count = _count_ocp_nodes_by_group(topology, "controllers")
+    worker_nodes_count = _count_ocp_nodes_by_group(topology, "workers")
+    if cp_nodes_count > 0:
+        num_masters = cp_nodes_count
+    elif template_id == "ocp-sno":
+        num_masters = 1
+    else:
+        num_masters = 3
     num_workers = worker_nodes_count
 
     ic_lines = [
@@ -927,13 +1007,9 @@ def _build_install_config(
         "  machineNetwork:",
         f"    - cidr: {_find_cluster_cidr(topology)}",
     ]
-    if num_masters == 1 and num_workers == 0:
-        ic_lines.extend(
-            [
-                "platform:",
-                "  none: {}",
-            ]
-        )
+    is_sno = num_masters == 1 and num_workers == 0
+    if is_sno:
+        ic_lines.extend(["platform:", "  none: {}"])
     else:
         ic_lines.extend(
             [
@@ -946,29 +1022,8 @@ def _build_install_config(
                 "    hosts:",
             ]
         )
-    is_sno = num_masters == 1 and num_workers == 0
-    if not is_sno:
-        for node in topology.get("nodes", []):
-            if node.get("type") != "vmNode":
-                continue
-            td = node.get("data", {})
-            if not td.get("bmcEnabled") or not td.get("bmcIp"):
-                continue
-            group = td.get("tags", {}).get("AnsibleGroup", "")
-            if group not in ("controllers", "workers"):
-                continue
-            vm_name = td.get("name", "")
-            boot_mac = td.get("nics", [{}])[0].get("mac", "")
-            if not _NAME_RE.match(vm_name) or not _MAC_RE.match(boot_mac):
-                continue
-            role = "master" if group == "controllers" else "worker"
-            ic_lines.extend(
-                [
-                    f"      - name: {vm_name}",
-                    f"        role: {role}",
-                    f"        bootMACAddress: {boot_mac}",
-                ]
-            )
+        ic_lines.extend(_collect_bmc_host_entries(topology))
+
     if pull_secret_json:
         ic_lines.append(f"pullSecret: '{pull_secret_json}'")
     if ssh_pub_key:
@@ -989,8 +1044,45 @@ def _build_install_config(
     return "\n".join(ic_lines)
 
 
+def _build_agent_host_yaml(vm_name, role, boot_mac, cluster_ip, prefix_len, gateway_ip):
+    """Build a single host entry for agent-config.yaml."""
+    return (
+        f"    - hostname: {vm_name}\n"
+        f"      role: {role}\n"
+        f"      interfaces:\n"
+        f"        - name: cluster-nic\n"
+        f"          macAddress: {boot_mac}\n"
+        f"      networkConfig:\n"
+        f"        interfaces:\n"
+        f"          - name: cluster-nic\n"
+        f"            type: ethernet\n"
+        f"            state: up\n"
+        f"            identifier: mac-address\n"
+        f"            mac-address: {boot_mac}\n"
+        f"            ipv4:\n"
+        f"              enabled: true\n"
+        f"              address:\n"
+        f"                - ip: {cluster_ip}\n"
+        f"                  prefix-length: {prefix_len}\n"
+        f"              dhcp: false\n"
+        f"        dns-resolver:\n"
+        f"          config:\n"
+        f"            server:\n"
+        f"              - {gateway_ip}\n"
+        f"        routes:\n"
+        f"          config:\n"
+        f"            - destination: 0.0.0.0/0\n"
+        f"              next-hop-address: {gateway_ip}\n"
+        f"              next-hop-interface: cluster-nic\n"
+    )
+
+
 def _build_agent_config(
-    topology, cluster_name, base_domain, api_vip="10.0.0.2", ingress_vip="10.0.0.3"
+    topology,
+    cluster_name,
+    _base_domain,
+    _api_vip="10.0.0.2",
+    _ingress_vip="10.0.0.3",  # NOSONAR
 ):
     """Build agent-config.yaml with BMC host details for Redfish virtual media boot."""
     cluster_cidr = _find_cluster_cidr(topology)
@@ -1010,7 +1102,6 @@ def _build_agent_config(
         if group not in ("controllers", "workers"):
             continue
         vm_name = td.get("name", "")
-        td["bmcIp"]
         cluster_ip = td.get("nics", [{}])[0].get("ip", "")
         boot_mac = td.get("nics", [{}])[0].get("mac", "")
         if not _NAME_RE.match(vm_name) or not _MAC_RE.match(boot_mac):
@@ -1018,35 +1109,13 @@ def _build_agent_config(
         role = "master" if group == "controllers" else "worker"
         if not rendezvous_ip and cluster_ip:
             rendezvous_ip = cluster_ip
-
-        hosts_yaml += (
-            f"    - hostname: {vm_name}\n"
-            f"      role: {role}\n"
-            f"      interfaces:\n"
-            f"        - name: cluster-nic\n"
-            f"          macAddress: {boot_mac}\n"
-            f"      networkConfig:\n"
-            f"        interfaces:\n"
-            f"          - name: cluster-nic\n"
-            f"            type: ethernet\n"
-            f"            state: up\n"
-            f"            identifier: mac-address\n"
-            f"            mac-address: {boot_mac}\n"
-            f"            ipv4:\n"
-            f"              enabled: true\n"
-            f"              address:\n"
-            f"                - ip: {cluster_ip}\n"
-            f"                  prefix-length: {prefix_len}\n"
-            f"              dhcp: false\n"
-            f"        dns-resolver:\n"
-            f"          config:\n"
-            f"            server:\n"
-            f"              - {gateway_ip}\n"
-            f"        routes:\n"
-            f"          config:\n"
-            f"            - destination: 0.0.0.0/0\n"
-            f"              next-hop-address: {gateway_ip}\n"
-            f"              next-hop-interface: cluster-nic\n"
+        hosts_yaml += _build_agent_host_yaml(
+            vm_name,
+            role,
+            boot_mac,
+            cluster_ip,
+            prefix_len,
+            gateway_ip,
         )
 
     if not rendezvous_ip:
@@ -1078,8 +1147,8 @@ def _build_install_script(
     topology=None,
 ):
     return (
-        "  - |\n"
-        "    cat > /home/cloud-user/install-ocp.sh << 'SCRIPTEOF'\n"
+        _YAML_BLOCK_SCALAR
+        + "    cat > /home/cloud-user/install-ocp.sh << 'SCRIPTEOF'\n"
         "    #!/bin/bash\n"
         "    set -e\n"
         "    cd /home/cloud-user\n"
