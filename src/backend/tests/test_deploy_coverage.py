@@ -1467,3 +1467,1092 @@ class TestDestroyCleanupEips:
         s.query.return_value.filter_by.return_value.all.return_value = [eip]
         # Should not raise
         _destroy_cleanup_eips(s, PROJECT_ID)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _set_deploy_error
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _set_deploy_error
+
+
+class TestSetDeployError:
+    def test_sets_state_and_commits(self):
+        s = MagicMock()
+        project = MagicMock()
+        _set_deploy_error(s, project, "something broke")
+        assert project.state == "error"
+        assert project.deploy_error == "something broke"
+        s.commit.assert_called_once()
+
+    def test_empty_error_message(self):
+        s = MagicMock()
+        project = MagicMock()
+        _set_deploy_error(s, project, "")
+        assert project.state == "error"
+        assert project.deploy_error == ""
+        s.commit.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _set_deploy_error_and_notify
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _set_deploy_error_and_notify
+
+
+class TestSetDeployErrorAndNotify:
+    @patch("app.services.deploy_service.notify_project")
+    def test_sets_state_and_notifies(self, mock_notify):
+        s = MagicMock()
+        project = MagicMock()
+        _set_deploy_error_and_notify(s, PROJECT_ID, project, "disk full")
+        assert project.state == "error"
+        assert project.deploy_error == "disk full"
+        s.commit.assert_called_once()
+        mock_notify.assert_called_once_with(
+            PROJECT_ID,
+            {"type": "project-state", "state": "error", "deploy_error": "disk full"},
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_resolve_host
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _deploy_resolve_host
+
+
+class TestDeployResolveHost:
+    def test_existing_host_with_ip(self):
+        s = MagicMock()
+        host = _make_host()
+        s.query.return_value.filter_by.return_value.first.return_value = host
+        project = MagicMock()
+        project.host_id = HOST_ID
+        result_host, err = _deploy_resolve_host(s, project, PROJECT_ID)
+        assert result_host is host
+        assert err is None
+
+    def test_existing_host_no_ip(self):
+        s = MagicMock()
+        host = _make_host()
+        host.ip_address = None
+        s.query.return_value.filter_by.return_value.first.return_value = host
+        project = MagicMock()
+        project.host_id = HOST_ID
+        result_host, err = _deploy_resolve_host(s, project, PROJECT_ID)
+        assert result_host is host
+        assert err is not None
+        assert "no IP address" in err
+
+    def test_host_id_set_but_not_found(self):
+        s = MagicMock()
+        s.query.return_value.filter_by.return_value.first.return_value = None
+        project = MagicMock()
+        project.host_id = "nonexistent"
+        result_host, err = _deploy_resolve_host(s, project, PROJECT_ID)
+        assert result_host is None
+        assert err is not None
+        assert "no longer exists" in err
+
+    @patch("app.services.placement.find_available_host")
+    @patch("app.services.placement.calculate_project_requirements")
+    def test_auto_placement_success(self, mock_reqs, mock_find):
+        s = MagicMock()
+        host = _make_host()
+        mock_reqs.return_value = {"total_vcpus": 4, "total_ram_mb": 8192}
+        mock_find.return_value = host
+        project = MagicMock()
+        project.host_id = None
+        project.topology = {"nodes": []}
+        result_host, err = _deploy_resolve_host(s, project, PROJECT_ID)
+        assert result_host is host
+        assert err is None
+        assert project.host_id == HOST_ID
+
+    @patch("app.services.placement.find_available_host")
+    @patch("app.services.placement.calculate_project_requirements")
+    def test_auto_placement_no_capacity(self, mock_reqs, mock_find):
+        s = MagicMock()
+        mock_reqs.return_value = {"total_vcpus": 64, "total_ram_mb": 524288}
+        mock_find.return_value = None
+        project = MagicMock()
+        project.host_id = None
+        project.topology = {"nodes": []}
+        result_host, err = _deploy_resolve_host(s, project, PROJECT_ID)
+        assert result_host is None
+        assert err is not None
+        assert "Not enough capacity" in err
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_host_error_msg
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _deploy_host_error_msg
+
+
+class TestDeployHostErrorMsg:
+    @patch("app.services.placement.calculate_project_requirements")
+    def test_no_host_id_returns_capacity_message(self, mock_reqs):
+        mock_reqs.return_value = {"total_vcpus": 8, "total_ram_mb": 16384}
+        project = MagicMock()
+        project.host_id = None
+        project.topology = {}
+        msg = _deploy_host_error_msg(project, None)
+        assert "Not enough capacity" in msg
+        assert "8 vCPUs" in msg
+        assert "16.0 GB" in msg
+
+    def test_host_id_set_but_host_none(self):
+        project = MagicMock()
+        project.host_id = "some-id"
+        msg = _deploy_host_error_msg(project, None)
+        assert "no longer exists" in msg
+
+    def test_host_exists_but_no_ip(self):
+        project = MagicMock()
+        project.host_id = HOST_ID
+        host = _make_host()
+        host.ip_address = None
+        msg = _deploy_host_error_msg(project, host)
+        assert "no IP address" in msg
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_init_context
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _deploy_init_context
+
+
+class TestDeployInitContext:
+    def test_no_clock_target_existing_vni_map(self):
+        s = MagicMock()
+        project = MagicMock()
+        project.clock_target = None
+        project.topology = {"nodes": []}
+        project.vni_map = {"net-1": 100}
+        topo, offset, vni_map = _deploy_init_context(s, project, PROJECT_ID)
+        assert offset is None
+        assert vni_map == {"net-1": 100}
+        assert topo == {"nodes": []}
+
+    @patch("app.services.clock_service.compute_clock_offset")
+    def test_with_clock_target(self, mock_offset):
+        mock_offset.return_value = -3600
+        s = MagicMock()
+        project = MagicMock()
+        project.clock_target = "2025-01-01T00:00:00Z"
+        project.topology = {"nodes": []}
+        project.vni_map = {"net-1": 100}
+        topo, offset, vni_map = _deploy_init_context(s, project, PROJECT_ID)
+        assert offset == -3600
+        mock_offset.assert_called_once_with("2025-01-01T00:00:00Z")
+
+    @patch("app.services.vxlan.allocate_vnis_for_project")
+    def test_allocates_vnis_when_empty(self, mock_alloc):
+        mock_alloc.return_value = {"net-1": 200}
+        s = MagicMock()
+        project = MagicMock()
+        project.clock_target = None
+        project.topology = {"nodes": []}
+        project.vni_map = {}
+        topo, offset, vni_map = _deploy_init_context(s, project, PROJECT_ID)
+        assert vni_map == {"net-1": 200}
+        assert project.vni_map == {"net-1": 200}
+        s.commit.assert_called_once()
+
+    def test_none_topology_defaults_to_empty_dict(self):
+        s = MagicMock()
+        project = MagicMock()
+        project.clock_target = None
+        project.topology = None
+        project.vni_map = {"net-1": 100}
+        topo, offset, vni_map = _deploy_init_context(s, project, PROJECT_ID)
+        assert topo == {}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_disable_guest_exec
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _deploy_disable_guest_exec
+
+
+class TestDeployDisableGuestExec:
+    def test_enabled_does_nothing(self):
+        project = MagicMock()
+        project.guest_exec_enabled = True
+        topology = {
+            "nodes": [
+                {"type": "vmNode", "data": {"cloudInit": True}},
+            ]
+        }
+        _deploy_disable_guest_exec(project, topology)
+        assert "guestExecEnabled" not in topology["nodes"][0]["data"]
+
+    def test_disabled_marks_cloud_init_vms(self):
+        project = MagicMock()
+        project.guest_exec_enabled = False
+        topology = {
+            "nodes": [
+                {"type": "vmNode", "data": {"cloudInit": True}},
+                {"type": "vmNode", "data": {"cloudInit": False}},
+                {"type": "networkNode", "data": {}},
+            ]
+        }
+        _deploy_disable_guest_exec(project, topology)
+        assert topology["nodes"][0]["data"]["guestExecEnabled"] is False
+        # Non-cloud-init VM should not be touched
+        assert "guestExecEnabled" not in topology["nodes"][1]["data"]
+
+    def test_no_nodes(self):
+        project = MagicMock()
+        project.guest_exec_enabled = False
+        topology = {"nodes": []}
+        _deploy_disable_guest_exec(project, topology)  # should not raise
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_cache_images_and_pxe
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _deploy_cache_images_and_pxe
+
+
+class TestDeployCacheImagesAndPxe:
+    @patch("app.services.deploy_service._setup_pxe_via_troshkad")
+    @patch("app.services.deploy_service.cache_library_images")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._checkpoint")
+    def test_calls_cache_and_pxe(self, mock_cp, mock_prog, mock_cache, mock_pxe):
+        host = _make_host()
+        topology = {"nodes": []}
+        vni_map = {"net-1": 100}
+        s = MagicMock()
+        _deploy_cache_images_and_pxe(host, PROJECT_ID, topology, vni_map, s)
+        mock_cp.assert_called_once_with(s, PROJECT_ID, "images")
+        mock_cache.assert_called_once()
+        mock_pxe.assert_called_once_with(host, topology, vni_map, PROJECT_ID)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_create_bmc_bridge
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _deploy_create_bmc_bridge
+
+
+class TestDeployCreateBmcBridge:
+    @patch("app.services.deploy_service.wait_for_job")
+    @patch("app.services.deploy_service.start_job")
+    @patch("app.services.deploy_service._extract_bmc_config")
+    def test_creates_bridge_when_bmc_config_present(
+        self, mock_extract, mock_start, mock_wait
+    ):
+        mock_extract.return_value = {
+            "bmc_network": {"cidr": "192.168.100.0/24"},
+            "vms": [{"bmc_ip": "192.168.100.10"}],
+        }
+        mock_start.return_value = "job-1"
+        mock_wait.return_value = {"status": "completed"}
+        host = _make_host()
+        _deploy_create_bmc_bridge(host, PROJECT_ID, {"nodes": []})
+        mock_start.assert_called_once()
+        call_args = mock_start.call_args[0]
+        assert call_args[1] == "/bmc/create-bridge"
+        assert call_args[2]["bmc_cidr"] == "192.168.100.0/24"
+        assert call_args[2]["bmc_gateway_ip"] == "192.168.100.1"
+
+    @patch("app.services.deploy_service._extract_bmc_config")
+    def test_skips_when_no_bmc_config(self, mock_extract):
+        mock_extract.return_value = None
+        host = _make_host()
+        _deploy_create_bmc_bridge(host, PROJECT_ID, {"nodes": []})
+        # Should not raise, nothing to do
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_single_host_setup
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _deploy_single_host_setup
+
+
+class TestDeploySingleHostSetup:
+    @patch("app.services.deploy_service._deploy_create_bmc_bridge")
+    @patch("app.services.deploy_service._deploy_validate_bmc")
+    @patch("app.services.deploy_service._deploy_pull_container_images")
+    @patch("app.services.deploy_service._deploy_cache_images_and_pxe")
+    @patch("app.services.deploy_service._project_deleted", return_value=False)
+    @patch("app.services.deploy_service._deploy_create_ocpvirt_routes")
+    @patch("app.services.deploy_service._deploy_disable_guest_exec")
+    @patch("app.services.deploy_service._deploy_inject_gateway_ip")
+    @patch("app.services.deploy_service._deploy_sync_sg_rules")
+    @patch("app.services.deploy_service._deploy_setup_lb")
+    @patch(
+        "app.services.deploy_service._setup_networks_via_troshkad", return_value=True
+    )
+    @patch("app.services.deploy_service._get_network_lock")
+    @patch("app.services.deploy_service._auto_assign_container_ips")
+    @patch("app.services.deploy_service._deploy_allocate_eips")
+    @patch("app.services.deploy_service._setup_metadata_via_troshkad")
+    @patch("app.services.deploy_service._create_seed_isos_via_troshkad")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._checkpoint")
+    @patch("app.services.deploy_service._should_skip", return_value=False)
+    def test_success_no_eips(
+        self,
+        mock_skip,
+        mock_cp,
+        mock_prog,
+        mock_seeds,
+        mock_meta,
+        mock_alloc_eips,
+        mock_auto_ips,
+        mock_lock,
+        mock_net,
+        mock_lb,
+        mock_sg,
+        mock_gw_ip,
+        mock_guest_exec,
+        mock_routes,
+        mock_deleted,
+        mock_cache,
+        mock_pull,
+        mock_bmc_validate,
+        mock_bmc_bridge,
+    ):
+        mock_bmc_validate.return_value = None
+        mock_lb.return_value = None
+        s = MagicMock()
+        project = MagicMock()
+        host = _make_host()
+        topology = {"nodes": [], "externalIps": []}
+        result = _deploy_single_host_setup(
+            s, project, host, topology, {}, PROJECT_ID, None, None
+        )
+        assert result is not None
+        assert result["lb_config"] is None
+        assert result["external_ips"] == []
+        # EIP allocation should not be called since no external IPs
+        mock_alloc_eips.assert_not_called()
+
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._set_deploy_error")
+    @patch("app.services.deploy_service._get_network_lock")
+    @patch("app.services.deploy_service._setup_networks_via_troshkad")
+    @patch("app.services.deploy_service._auto_assign_container_ips")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._checkpoint")
+    @patch("app.services.deploy_service._should_skip", return_value=False)
+    def test_network_failure_returns_none(
+        self,
+        mock_skip,
+        mock_cp,
+        mock_prog,
+        mock_auto_ips,
+        mock_net,
+        mock_lock,
+        mock_err,
+        mock_del,
+    ):
+        mock_net.return_value = "nftables failed"
+        s = MagicMock()
+        project = MagicMock()
+        host = _make_host()
+        topology = {"nodes": [], "externalIps": []}
+        result = _deploy_single_host_setup(
+            s, project, host, topology, {}, PROJECT_ID, None, None
+        )
+        assert result is None
+        mock_err.assert_called_once()
+
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._set_deploy_error")
+    @patch("app.services.deploy_service._deploy_allocate_eips")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._checkpoint")
+    @patch("app.services.deploy_service._should_skip", return_value=False)
+    def test_eip_allocation_error(
+        self, mock_skip, mock_cp, mock_prog, mock_alloc, mock_err, mock_del
+    ):
+        mock_alloc.return_value = "No EIPs available"
+        s = MagicMock()
+        project = MagicMock()
+        host = _make_host()
+        topology = {"nodes": [], "externalIps": [{"id": "eip-1"}]}
+        result = _deploy_single_host_setup(
+            s, project, host, topology, {}, PROJECT_ID, None, None
+        )
+        assert result is None
+        mock_err.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_single_host_execute
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _deploy_single_host_execute
+
+
+class TestDeploySingleHostExecute:
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._deploy_complete_and_notify")
+    @patch("app.services.deploy_service._deploy_start_vms", return_value=True)
+    @patch("app.services.deploy_service._project_deleted", return_value=False)
+    @patch("app.services.deploy_service._deploy_create_containers")
+    @patch("app.services.deploy_service._deploy_setup_bmc")
+    @patch("app.services.deploy_service._deploy_define_vms")
+    @patch("app.services.deploy_service._deploy_handle_recert")
+    @patch("app.services.deploy_service._deploy_create_disks")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._checkpoint")
+    def test_success_path(
+        self,
+        mock_cp,
+        mock_prog,
+        mock_disks,
+        mock_recert,
+        mock_define,
+        mock_bmc,
+        mock_containers,
+        mock_deleted,
+        mock_start,
+        mock_complete,
+        mock_del,
+    ):
+        mock_disks.return_value = [{"node_id": "vm-1", "domain_name": "dom1"}]
+        mock_bmc.return_value = (None, None)  # no error, no bmc_config
+        s = MagicMock()
+        project = MagicMock()
+        host = _make_host()
+        topology = {"nodes": []}
+        _deploy_single_host_execute(
+            s, host, PROJECT_ID, project, topology, {}, None, None, None, True, None, []
+        )
+        mock_complete.assert_called_once()
+        mock_start.assert_called_once()
+
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._set_deploy_error")
+    @patch("app.services.deploy_service._deploy_setup_bmc")
+    @patch("app.services.deploy_service._deploy_define_vms")
+    @patch("app.services.deploy_service._deploy_handle_recert")
+    @patch("app.services.deploy_service._deploy_create_disks")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._checkpoint")
+    def test_bmc_error_returns_early(
+        self,
+        mock_cp,
+        mock_prog,
+        mock_disks,
+        mock_recert,
+        mock_define,
+        mock_bmc,
+        mock_err,
+        mock_del,
+    ):
+        mock_disks.return_value = [{"node_id": "vm-1"}]
+        mock_bmc.return_value = ("BMC setup failed", None)
+        s = MagicMock()
+        project = MagicMock()
+        host = _make_host()
+        _deploy_single_host_execute(
+            s, host, PROJECT_ID, project, {}, {}, None, None, None, True, None, []
+        )
+        mock_err.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_complete_and_notify
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _deploy_complete_and_notify
+
+
+class TestDeployCompleteAndNotify:
+    @patch("app.services.deploy_service._has_ocp_monitor", return_value=False)
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._deploy_store_bmc_topology")
+    @patch("app.services.deploy_service._deploy_create_dns_records")
+    @patch("app.services.deploy_service._deploy_finalize_timers")
+    @patch("app.services.deploy_service.notify_project")
+    def test_active_state_when_auto_start(
+        self, mock_notify, mock_timers, mock_dns, mock_bmc, mock_del, mock_ocp
+    ):
+        s = MagicMock()
+        project = MagicMock()
+        project.auto_stop_expires_at = None
+        project.lifetime_expires_at = None
+        vms = [{"node_id": "vm-1"}, {"node_id": "vm-2"}]
+        _deploy_complete_and_notify(
+            s, PROJECT_ID, project, {}, vms, None, [], True, None
+        )
+        assert project.state == "active"
+        assert project.deploy_error is None
+        s.commit.assert_called_once()
+        # Two notifications: project-state + vm-state
+        assert mock_notify.call_count == 2
+
+    @patch("app.services.deploy_service._has_ocp_monitor", return_value=False)
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._deploy_store_bmc_topology")
+    @patch("app.services.deploy_service._deploy_create_dns_records")
+    @patch("app.services.deploy_service._deploy_finalize_timers")
+    @patch("app.services.deploy_service.notify_project")
+    def test_stopped_state_when_no_auto_start(
+        self, mock_notify, mock_timers, mock_dns, mock_bmc, mock_del, mock_ocp
+    ):
+        s = MagicMock()
+        project = MagicMock()
+        project.auto_stop_expires_at = None
+        project.lifetime_expires_at = None
+        _deploy_complete_and_notify(
+            s, PROJECT_ID, project, {}, [], None, [], False, None
+        )
+        assert project.state == "stopped"
+
+    @patch("app.services.deploy_service._has_ocp_monitor", return_value=True)
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._deploy_store_bmc_topology")
+    @patch("app.services.deploy_service._deploy_create_dns_records")
+    @patch("app.services.deploy_service._deploy_finalize_timers")
+    @patch("app.services.deploy_service.notify_project")
+    def test_ocp_monitor_enabled(
+        self, mock_notify, mock_timers, mock_dns, mock_bmc, mock_del, mock_ocp
+    ):
+        s = MagicMock()
+        project = MagicMock()
+        project.auto_stop_expires_at = None
+        project.lifetime_expires_at = None
+        _deploy_complete_and_notify(
+            s, PROJECT_ID, project, {}, [], None, [], True, None
+        )
+        assert project.ocp_status == "monitoring"
+        assert project.ocp_status_detail is None
+        assert project.ocp_install_elapsed is None
+        # Two commits: one for state, one for ocp_monitor
+        assert s.commit.call_count == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_handle_failure
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _deploy_handle_failure
+
+
+class TestDeployHandleFailure:
+    @patch("app.services.deploy_service.notify_project")
+    @patch("app.services.deploy_service._cleanup_stale_shared_cache")
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    def test_sets_error_state_and_notifies(self, mock_del, mock_cache, mock_notify):
+        s = MagicMock()
+        project = MagicMock()
+        s.query.return_value.filter_by.return_value.first.return_value = project
+        exc = RuntimeError("disk full")
+        _deploy_handle_failure(s, PROJECT_ID, exc)
+        assert project.state == "error"
+        assert project.deploy_error == "disk full"
+        mock_cache.assert_called_once_with(s, project)
+        mock_notify.assert_called_once()
+        s.commit.assert_called_once()
+        mock_del.assert_called_once_with(PROJECT_ID)
+
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    def test_project_not_found(self, mock_del):
+        s = MagicMock()
+        s.query.return_value.filter_by.return_value.first.return_value = None
+        _deploy_handle_failure(s, PROJECT_ID, RuntimeError("err"))
+        # Should not raise, just delete progress
+        mock_del.assert_called_once()
+
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    def test_inner_exception_swallowed(self, mock_del):
+        s = MagicMock()
+        s.query.side_effect = Exception("DB gone")
+        # Should not raise
+        _deploy_handle_failure(s, PROJECT_ID, RuntimeError("orig"))
+        mock_del.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _setup_remote_host_network
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _setup_remote_host_network
+
+
+class TestSetupRemoteHostNetwork:
+    def test_skips_network_host(self):
+        result = _setup_remote_host_network(
+            HOST_ID, HOST_ID, [], {}, [], {}, PROJECT_ID, MagicMock()
+        )
+        assert result is None
+
+    def test_host_not_found(self):
+        db = MagicMock()
+        db.query.return_value.filter_by.return_value.first.return_value = None
+        result = _setup_remote_host_network(
+            HOST_ID, HOST_ID_2, [], {}, [], {HOST_ID: "10.0.0.1"}, PROJECT_ID, db
+        )
+        assert result is not None
+        assert "not found" in result
+
+    @patch("app.services.deploy_service.wait_for_job")
+    @patch("app.services.deploy_service.start_job")
+    def test_success(self, mock_start, mock_wait):
+        mock_start.return_value = "job-1"
+        mock_wait.return_value = {"status": "completed"}
+        db = MagicMock()
+        host = _make_host()
+        db.query.return_value.filter_by.return_value.first.return_value = host
+        network_nodes = [{"id": "net-1", "type": "networkNode", "data": {}}]
+        vni_map = {"net-1": 100}
+        result = _setup_remote_host_network(
+            HOST_ID,
+            HOST_ID_2,
+            network_nodes,
+            vni_map,
+            ["10.0.0.1", "10.0.0.2"],
+            {HOST_ID: "10.0.0.1"},
+            PROJECT_ID,
+            db,
+        )
+        assert result is None
+
+    @patch("app.services.deploy_service.wait_for_job")
+    @patch("app.services.deploy_service.start_job")
+    def test_job_failed(self, mock_start, mock_wait):
+        mock_start.return_value = "job-1"
+        mock_wait.return_value = {
+            "status": "failed",
+            "result": {"error": "bridge failed"},
+        }
+        db = MagicMock()
+        host = _make_host()
+        db.query.return_value.filter_by.return_value.first.return_value = host
+        result = _setup_remote_host_network(
+            HOST_ID,
+            HOST_ID_2,
+            [{"id": "net-1"}],
+            {"net-1": 100},
+            ["10.0.0.1"],
+            {HOST_ID: "10.0.0.1"},
+            PROJECT_ID,
+            db,
+        )
+        assert result is not None
+        assert "bridge failed" in result
+
+    @patch("app.services.deploy_service.start_job", side_effect=Exception("timeout"))
+    def test_exception_returns_error(self, mock_start):
+        db = MagicMock()
+        host = _make_host()
+        db.query.return_value.filter_by.return_value.first.return_value = host
+        result = _setup_remote_host_network(
+            HOST_ID,
+            HOST_ID_2,
+            [{"id": "net-1"}],
+            {"net-1": 100},
+            ["10.0.0.1"],
+            {HOST_ID: "10.0.0.1"},
+            PROJECT_ID,
+            db,
+        )
+        assert result is not None
+        assert "timeout" in result
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _setup_remote_networks
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _setup_remote_networks
+
+
+class TestSetupRemoteNetworks:
+    @patch("app.services.deploy_service._setup_remote_host_network", return_value=None)
+    def test_success_all_hosts(self, mock_setup):
+        db = MagicMock()
+        peer1 = MagicMock()
+        peer1.host_id = HOST_ID
+        peer1.wg_address = "10.99.0.1/32"
+        peer2 = MagicMock()
+        peer2.host_id = HOST_ID_2
+        peer2.wg_address = "10.99.0.2/32"
+        db.query.return_value.filter_by.return_value.all.return_value = [peer1, peer2]
+        project = MagicMock()
+        project.id = PROJECT_ID
+        project.mesh_network_host_id = HOST_ID
+        host_assignments = {HOST_ID: ["vm-1"], HOST_ID_2: ["vm-2"]}
+        topology = {
+            "nodes": [
+                {
+                    "id": "net-1",
+                    "type": "networkNode",
+                    "data": {"networkType": "vxlan"},
+                }
+            ]
+        }
+        result = _setup_remote_networks(db, project, host_assignments, {}, topology)
+        assert result is True
+
+    @patch(
+        "app.services.deploy_service._setup_remote_host_network",
+        return_value="failed on remote",
+    )
+    def test_failure_returns_false(self, mock_setup):
+        db = MagicMock()
+        peer = MagicMock()
+        peer.host_id = HOST_ID
+        peer.wg_address = "10.99.0.1/32"
+        db.query.return_value.filter_by.return_value.all.return_value = [peer]
+        project = MagicMock()
+        project.id = PROJECT_ID
+        project.mesh_network_host_id = HOST_ID
+        host_assignments = {HOST_ID: ["vm-1"]}
+        topology = {"nodes": []}
+        result = _setup_remote_networks(db, project, host_assignments, {}, topology)
+        assert result is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_multihost
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _deploy_multihost
+
+
+class TestDeployMultihost:
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._build_multihost_assignments")
+    def test_no_host_assignments(self, mock_build, mock_del):
+        mock_build.return_value = None
+        db = MagicMock()
+        project = MagicMock()
+        _deploy_multihost(PROJECT_ID, project, db)
+        assert project.state == "error"
+        assert "No host assignments" in project.deploy_error
+        db.commit.assert_called_once()
+
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._setup_mesh")
+    @patch("app.services.deploy_service._resolve_multihost_ips")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._build_multihost_assignments")
+    def test_mesh_setup_failure(
+        self, mock_build, mock_prog, mock_ips, mock_mesh, mock_del
+    ):
+        mock_build.return_value = {HOST_ID: ["vm-1"]}
+        mock_ips.return_value = {HOST_ID: "10.0.0.1"}
+        mock_mesh.return_value = False
+        db = MagicMock()
+        project = MagicMock()
+        project.topology = {"nodes": []}
+        project.vni_map = {}
+        _deploy_multihost(PROJECT_ID, project, db)
+        assert project.state == "error"
+        assert "Mesh setup failed" in project.deploy_error
+
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._setup_remote_networks")
+    @patch("app.services.deploy_service._get_network_lock")
+    @patch("app.services.deploy_service._setup_networks_via_troshkad")
+    @patch("app.services.deploy_service._setup_mesh")
+    @patch("app.services.deploy_service._resolve_multihost_ips")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._build_multihost_assignments")
+    def test_network_setup_failure(
+        self,
+        mock_build,
+        mock_prog,
+        mock_ips,
+        mock_mesh,
+        mock_net,
+        mock_lock,
+        mock_remote,
+        mock_del,
+    ):
+        mock_build.return_value = {HOST_ID: ["vm-1"]}
+        mock_ips.return_value = {HOST_ID: "10.0.0.1"}
+        mock_mesh.return_value = True
+        mock_net.return_value = "nftables error"
+        db = MagicMock()
+        network_host = _make_host()
+        db.query.return_value.filter_by.return_value.first.return_value = network_host
+        project = MagicMock()
+        project.topology = {"nodes": []}
+        project.vni_map = {}
+        project.mesh_network_host_id = HOST_ID
+        _deploy_multihost(PROJECT_ID, project, db)
+        assert project.state == "error"
+        assert "Network setup failed" in project.deploy_error
+
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._setup_remote_networks", return_value=False)
+    @patch("app.services.deploy_service._get_network_lock")
+    @patch(
+        "app.services.deploy_service._setup_networks_via_troshkad", return_value=True
+    )
+    @patch("app.services.deploy_service._setup_mesh", return_value=True)
+    @patch("app.services.deploy_service._resolve_multihost_ips")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._build_multihost_assignments")
+    def test_remote_network_failure(
+        self,
+        mock_build,
+        mock_prog,
+        mock_ips,
+        mock_mesh,
+        mock_net,
+        mock_lock,
+        mock_remote,
+        mock_del,
+    ):
+        mock_build.return_value = {HOST_ID: ["vm-1"]}
+        mock_ips.return_value = {HOST_ID: "10.0.0.1"}
+        db = MagicMock()
+        network_host = _make_host()
+        db.query.return_value.filter_by.return_value.first.return_value = network_host
+        project = MagicMock()
+        project.topology = {"nodes": []}
+        project.vni_map = {}
+        project.mesh_network_host_id = HOST_ID
+        _deploy_multihost(PROJECT_ID, project, db)
+        assert project.state == "error"
+        assert "Remote network setup failed" in project.deploy_error
+
+    @patch("app.services.deploy_service.notify_project")
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._start_multihost_vms")
+    @patch("app.services.deploy_service._deploy_vms_on_host", return_value=None)
+    @patch("app.services.deploy_service._extract_vms")
+    @patch("app.services.deploy_service._setup_remote_networks", return_value=True)
+    @patch("app.services.deploy_service._get_network_lock")
+    @patch(
+        "app.services.deploy_service._setup_networks_via_troshkad", return_value=True
+    )
+    @patch("app.services.deploy_service._setup_mesh", return_value=True)
+    @patch("app.services.deploy_service._resolve_multihost_ips")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._build_multihost_assignments")
+    def test_full_success(
+        self,
+        mock_build,
+        mock_prog,
+        mock_ips,
+        mock_mesh,
+        mock_net,
+        mock_lock,
+        mock_remote,
+        mock_vms,
+        mock_deploy_vms,
+        mock_start,
+        mock_del,
+        mock_notify,
+    ):
+        mock_build.return_value = {HOST_ID: ["vm-1"]}
+        mock_ips.return_value = {HOST_ID: "10.0.0.1"}
+        mock_vms.return_value = [{"node_id": "vm-1"}]
+        db = MagicMock()
+        network_host = _make_host()
+        db.query.return_value.filter_by.return_value.first.return_value = network_host
+        project = MagicMock()
+        project.id = PROJECT_ID
+        project.topology = {"nodes": []}
+        project.vni_map = {}
+        project.mesh_network_host_id = HOST_ID
+        project.host_assignments = {HOST_ID: "vm-1"}
+        _deploy_multihost(PROJECT_ID, project, db)
+        assert project.state == "active"
+        assert project.deploy_error is None
+        mock_notify.assert_called_once()
+
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._setup_mesh", return_value=True)
+    @patch("app.services.deploy_service._resolve_multihost_ips")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._build_multihost_assignments")
+    def test_network_host_not_found(
+        self, mock_build, mock_prog, mock_ips, mock_mesh, mock_del
+    ):
+        mock_build.return_value = {HOST_ID: ["vm-1"]}
+        mock_ips.return_value = {HOST_ID: "10.0.0.1"}
+        db = MagicMock()
+        db.query.return_value.filter_by.return_value.first.return_value = None
+        project = MagicMock()
+        project.topology = {"nodes": []}
+        project.vni_map = {}
+        project.mesh_network_host_id = HOST_ID
+        _deploy_multihost(PROJECT_ID, project, db)
+        assert project.state == "error"
+        assert "Network host not found" in project.deploy_error
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# cache_library_images — name fallback branch (lines 378-399)
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import cache_library_images
+
+
+class TestCacheLibraryImagesNameFallback:
+    @patch("app.services.deploy_service.start_job")
+    @patch("app.services.deploy_service.wait_for_job")
+    @patch("app.services.deploy_service._get_host_pool", return_value=None)
+    def test_name_fallback_resolves_item(self, mock_pool, mock_wait, mock_start):
+        """When libraryItemId lookup fails, falls back to name-based lookup."""
+        mock_start.return_value = "job-1"
+        # stat says file exists (skip download)
+        mock_wait.return_value = {"result": {"exists": True}}
+        db = MagicMock()
+        item = MagicMock()
+        item.id = "resolved-item-id"
+        item.name = "rhel9"
+        item.s3_key = "library/rhel9.qcow2"
+        item.size_bytes = 1024
+        item.source = "local"
+        item.source_provider_id = None
+        # filter_by(id=...).first() returns None, filter(...name...).first() returns item
+        db.query.return_value.filter_by.return_value.first.return_value = None
+        db.query.return_value.filter.return_value.first.return_value = item
+        topology = {
+            "nodes": [
+                {
+                    "type": "storageNode",
+                    "data": {
+                        "libraryItemId": "bad-id-00",
+                        "libraryItemName": "rhel9",
+                        "format": "qcow2",
+                    },
+                }
+            ]
+        }
+        host = _make_host()
+        cache_library_images(topology, host, db)
+        # The node's libraryItemId should be updated to the resolved ID
+        assert topology["nodes"][0]["data"]["libraryItemId"] == "resolved-item-id"
+
+    @patch("app.services.deploy_service._get_host_pool", return_value=None)
+    def test_name_fallback_no_match_no_s3(self, mock_pool):
+        """Name fallback returns None, item has no s3_key — no download needed."""
+        db = MagicMock()
+        db.query.return_value.filter_by.return_value.first.return_value = None
+        db.query.return_value.filter.return_value.first.return_value = None
+        topology = {
+            "nodes": [
+                {
+                    "type": "storageNode",
+                    "data": {
+                        "libraryItemId": "bad-id-00",
+                        "libraryItemName": "nonexistent",
+                        "format": "qcow2",
+                    },
+                }
+            ]
+        }
+        host = _make_host()
+        # Should not hang — no items to cache, returns early
+        cache_library_images(topology, host, db)
+        assert topology["nodes"][0]["data"]["libraryItemId"] == "bad-id-00"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _setup_mesh
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _setup_mesh
+
+
+class TestSetupMesh:
+    @patch("app.services.deploy_service._push_mesh_config_to_peer", return_value=None)
+    @patch("app.services.deploy_service.create_mesh_peers")
+    def test_success(self, mock_create, mock_push):
+        peer1 = MagicMock()
+        peer2 = MagicMock()
+        mock_create.return_value = [peer1, peer2]
+        db = MagicMock()
+        project = MagicMock()
+        project.id = PROJECT_ID
+        project.mesh_network_host_id = HOST_ID
+        result = _setup_mesh(db, project, {HOST_ID: ["vm-1"]}, {HOST_ID: "10.0.0.1"})
+        assert result is True
+        assert mock_push.call_count == 2
+
+    @patch("app.services.deploy_service._rollback_mesh")
+    @patch(
+        "app.services.deploy_service._push_mesh_config_to_peer",
+        return_value="config push failed",
+    )
+    @patch("app.services.deploy_service.create_mesh_peers")
+    def test_failure_rolls_back(self, mock_create, mock_push, mock_rollback):
+        peer = MagicMock()
+        mock_create.return_value = [peer]
+        db = MagicMock()
+        project = MagicMock()
+        project.id = PROJECT_ID
+        project.mesh_network_host_id = HOST_ID
+        result = _setup_mesh(db, project, {HOST_ID: ["vm-1"]}, {HOST_ID: "10.0.0.1"})
+        assert result is False
+        mock_rollback.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _cleanup_stale_shared_cache
+# ═══════════════════════════════════════════════════════════════════════════
+
+from app.services.deploy_service import _cleanup_stale_shared_cache
+
+
+class TestCleanupStaleSharedCache:
+    def test_no_host_id(self):
+        s = MagicMock()
+        project = MagicMock()
+        project.host_id = None
+        _cleanup_stale_shared_cache(s, project)
+        s.query.assert_not_called()
+
+    def test_host_not_found(self):
+        s = MagicMock()
+        project = MagicMock()
+        project.host_id = HOST_ID
+        # Host query returns None
+        s.query.return_value.filter_by.return_value.first.return_value = None
+        _cleanup_stale_shared_cache(s, project)
+
+    @patch("app.services.deploy_service._get_host_pool")
+    def test_local_pool_skips(self, mock_pool):
+        pool = MagicMock()
+        pool.mode = "local"
+        mock_pool.return_value = pool
+        s = MagicMock()
+        project = MagicMock()
+        project.host_id = HOST_ID
+        host = _make_host()
+        s.query.return_value.filter_by.return_value.first.return_value = host
+        _cleanup_stale_shared_cache(s, project)
+
+    @patch("app.services.deploy_service._get_host_pool")
+    def test_shared_pool_deletes_downloading_entries(self, mock_pool):
+        pool = MagicMock()
+        pool.id = "pool-1"
+        pool.mode = "shared-fsx"
+        mock_pool.return_value = pool
+        entry1 = MagicMock()
+        entry2 = MagicMock()
+        s = MagicMock()
+        project = MagicMock()
+        project.host_id = HOST_ID
+        host = _make_host()
+        # First query is for Host lookup, second for SharedCacheEntry
+        host_query = MagicMock()
+        host_query.filter_by.return_value.first.return_value = host
+        cache_query = MagicMock()
+        cache_query.filter.return_value.all.return_value = [entry1, entry2]
+        s.query.side_effect = [host_query, cache_query]
+        _cleanup_stale_shared_cache(s, project)
+        assert s.delete.call_count == 2

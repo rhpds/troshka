@@ -961,5 +961,864 @@ class TestVmUndefineHandler(unittest.TestCase):
             troshkad._handle_vm_undefine(job, job["params"])
 
 
+class TestMeshSetup(unittest.TestCase):
+    """Tests for mesh/setup handler — WireGuard interface setup."""
+
+    @patch("troshkad.os.chmod")
+    @patch("builtins.open", new_callable=unittest.mock.mock_open)
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.Popen")
+    def test_mesh_setup_creates_wg_interface(self, mock_popen, mock_makedirs, mock_open_fn, mock_chmod):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("mesh/setup", {
+            "project_id": "aabbccdd-1122-3344-5566-778899001122",
+            "wg_private_key": "dGVzdC1rZXk=",  # pragma: allowlist secret
+            "wg_address": "10.252.1.1/24",
+            "wg_port": 51820,
+            "peers": [{
+                "public_key": "cGVlcl9rZXk=",
+                "endpoint": "10.0.0.2:51820",
+                "allowed_ips": "10.252.1.2/32",
+            }],
+        })
+        result = troshkad._handle_mesh_setup(job, job["params"])
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["interface"], "wg-aabbccdd")
+
+        # Verify commands were issued
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        # Should delete old interface, add new one, setconf, addr add, link set up, ping
+        ip_link_add = [c for c in cmds if "link" in c and "add" in c and "wireguard" in c]
+        self.assertEqual(len(ip_link_add), 1)
+        wg_setconf = [c for c in cmds if "wg" in c and "setconf" in c]
+        self.assertEqual(len(wg_setconf), 1)
+        addr_add = [c for c in cmds if "addr" in c and "add" in c and "10.252.1.1/24" in c]
+        self.assertEqual(len(addr_add), 1)
+
+        # Verify conf written
+        mock_open_fn.assert_called()
+        mock_makedirs.assert_called_with("/var/lib/troshka/mesh", exist_ok=True)
+        mock_chmod.assert_called_with(
+            "/var/lib/troshka/mesh/aabbccdd-1122-3344-5566-778899001122.conf",
+            0o600,
+        )
+
+    @patch("troshkad.os.chmod")
+    @patch("builtins.open", new_callable=unittest.mock.mock_open)
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.Popen")
+    def test_mesh_setup_multiple_peers(self, mock_popen, mock_makedirs, mock_open_fn, mock_chmod):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("mesh/setup", {
+            "project_id": "aabbccdd-1122-3344-5566-778899001122",
+            "wg_private_key": "dGVzdC1rZXk=",  # pragma: allowlist secret
+            "wg_address": "10.252.1.1/24",
+            "wg_port": 51820,
+            "peers": [
+                {
+                    "public_key": "a2V5MQ==",
+                    "endpoint": "10.0.0.2:51820",
+                    "allowed_ips": "10.252.1.2/32",
+                },
+                {
+                    "public_key": "a2V5Mg==",
+                    "endpoint": "10.0.0.3:51820",
+                    "allowed_ips": "10.252.1.3/32",
+                },
+            ],
+        })
+        result = troshkad._handle_mesh_setup(job, job["params"])
+        self.assertEqual(result["status"], "ok")
+        # Verify ping was called for each peer
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        ping_calls = [c for c in cmds if "ping" in c]
+        self.assertEqual(len(ping_calls), 2)
+
+    @patch("troshkad.os.chmod")
+    @patch("builtins.open", new_callable=unittest.mock.mock_open)
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.Popen")
+    def test_mesh_setup_peer_unreachable_does_not_fail(self, mock_popen, mock_makedirs, mock_open_fn, mock_chmod):
+        """Unreachable peer logs a warning but still returns ok."""
+        mock_popen.return_value = _mock_popen(returncode=1)
+        job = troshkad._create_job("mesh/setup", {
+            "project_id": "aabbccdd-1122-3344-5566-778899001122",
+            "wg_private_key": "dGVzdC1rZXk=",  # pragma: allowlist secret
+            "wg_address": "10.252.1.1/24",
+            "wg_port": 51820,
+            "peers": [{
+                "public_key": "cGVlcl9rZXk=",
+                "endpoint": "10.0.0.2:51820",
+                "allowed_ips": "10.252.1.2/32",
+            }],
+        })
+        # _run_cmd for ping has check=False so returncode=1 is fine,
+        # but other commands also use _run_cmd which checks by default.
+        # We need a smarter mock.
+        call_count = [0]
+        def popen_side_effect(*args, **kwargs):
+            call_count[0] += 1
+            cmd = args[0] if args else kwargs.get("cmd", [])
+            if isinstance(cmd, list) and "ping" in cmd:
+                return _mock_popen(returncode=1)
+            return _mock_popen(returncode=0)
+        mock_popen.side_effect = popen_side_effect
+
+        result = troshkad._handle_mesh_setup(job, job["params"])
+        self.assertEqual(result["status"], "ok")
+
+
+class TestMeshJoinNetwork(unittest.TestCase):
+    """Tests for mesh/join-network handler — VXLAN+bridge on remote host."""
+
+    @patch("troshkad.subprocess.Popen")
+    def test_join_network_single_network(self, mock_popen):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("mesh/join-network", {
+            "project_id": "aabbccdd-1122-3344-5566-778899001122",
+            "wg_local_ip": "10.252.1.2",
+            "networks": [{
+                "vni": 10001,
+                "bridge_name": "br-10001",
+                "wg_peer_ips": ["10.252.1.1", "10.252.1.2"],
+            }],
+        })
+        result = troshkad._handle_mesh_join_network(job, job["params"])
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["namespace"], "troshka-aabbccdd")
+
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        # Should create namespace
+        ns_add = [c for c in cmds if "netns" in c and "add" in c]
+        self.assertTrue(len(ns_add) > 0)
+        # Should create VXLAN interface
+        vxlan_add = [c for c in cmds if "vxlan" in c]
+        self.assertTrue(len(vxlan_add) > 0)
+        # Should create bridge in namespace
+        bridge_add = [c for c in cmds if "bridge" in c]
+        self.assertTrue(len(bridge_add) > 0)
+
+    @patch("troshkad.subprocess.Popen")
+    def test_join_network_fdb_skips_self(self, mock_popen):
+        """FDB entries should NOT be added for the local IP."""
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("mesh/join-network", {
+            "project_id": "aabbccdd-1122-3344-5566-778899001122",
+            "wg_local_ip": "10.252.1.2",
+            "networks": [{
+                "vni": 10001,
+                "bridge_name": "br-10001",
+                "wg_peer_ips": ["10.252.1.1", "10.252.1.2", "10.252.1.3"],
+            }],
+        })
+        result = troshkad._handle_mesh_join_network(job, job["params"])
+        self.assertEqual(result["status"], "ok")
+
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        fdb_calls = [c for c in cmds if "fdb" in c and "append" in c]
+        # Should have FDB entries for 10.252.1.1 and 10.252.1.3, but NOT for 10.252.1.2 (self)
+        fdb_dsts = [c[-1] for c in fdb_calls]
+        self.assertNotIn("10.252.1.2", fdb_dsts)
+        self.assertIn("10.252.1.1", fdb_dsts)
+        self.assertIn("10.252.1.3", fdb_dsts)
+
+    @patch("troshkad.subprocess.Popen")
+    def test_join_network_multiple_networks(self, mock_popen):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("mesh/join-network", {
+            "project_id": "aabbccdd-1122-3344-5566-778899001122",
+            "wg_local_ip": "10.252.1.2",
+            "networks": [
+                {"vni": 10001, "bridge_name": "br-10001", "wg_peer_ips": ["10.252.1.1"]},
+                {"vni": 10002, "bridge_name": "br-10002", "wg_peer_ips": ["10.252.1.1"]},
+            ],
+        })
+        result = troshkad._handle_mesh_join_network(job, job["params"])
+        self.assertEqual(result["status"], "ok")
+
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        vxlan_adds = [c for c in cmds if "vxlan" in c and "add" in c]
+        self.assertEqual(len(vxlan_adds), 2)
+
+
+class TestMeshTeardown(unittest.TestCase):
+    """Tests for DELETE /mesh/teardown route handler."""
+
+    @patch("troshkad.os.path.exists", return_value=True)
+    @patch("troshkad.os.remove")
+    @patch("troshkad.subprocess.run")
+    def test_teardown_removes_interface_and_config(self, mock_run, mock_remove, mock_exists):
+        mock_run.return_value = MagicMock(returncode=0)
+        handler = MagicMock()
+        handler.path = "/mesh/teardown?project_id=aabbccdd-1122-3344-5566-778899001122"
+
+        troshkad.handle_mesh_teardown(handler, {"project_id": "aabbccdd-1122-3344-5566-778899001122"})
+
+        # Should call ip link del
+        mock_run.assert_called()
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd, ["ip", "link", "del", "wg-aabbccdd"])
+        # Should remove conf file
+        mock_remove.assert_called_with(
+            "/var/lib/troshka/mesh/aabbccdd-1122-3344-5566-778899001122.conf"
+        )
+        handler._send_json.assert_called_with(200, {"status": "ok"})
+
+    @patch("troshkad.os.path.exists", return_value=False)
+    @patch("troshkad.subprocess.run")
+    def test_teardown_skips_missing_conf(self, mock_run, mock_exists):
+        handler = MagicMock()
+        handler.path = "/mesh/teardown"
+        troshkad.handle_mesh_teardown(handler, {"project_id": "aabbccdd-1122-3344-5566-778899001122"})
+        handler._send_json.assert_called_with(200, {"status": "ok"})
+
+    def test_teardown_rejects_missing_project_id(self):
+        handler = MagicMock()
+        handler.path = "/mesh/teardown"
+        troshkad.handle_mesh_teardown(handler, {})
+        handler._send_json.assert_called_with(400, {"error": "project_id required"})
+
+
+class TestMeshStatus(unittest.TestCase):
+    """Tests for GET /mesh/status route handler."""
+
+    @patch("troshkad.os.path.isdir", return_value=False)
+    def test_status_no_mesh_dir(self, mock_isdir):
+        handler = MagicMock()
+        troshkad.handle_mesh_status(handler, {})
+        handler._send_json.assert_called_with(200, {"projects": {}})
+
+    @patch("troshkad.subprocess.check_output")
+    @patch("troshkad.os.listdir")
+    @patch("troshkad.os.path.isdir", return_value=True)
+    def test_status_returns_peer_info(self, mock_isdir, mock_listdir, mock_check_output):
+        mock_listdir.return_value = ["aabbccdd-1122-3344-5566-778899001122.conf"]
+        mock_check_output.return_value = "cGVlcl9rZXk=\t1723456789\n"
+        handler = MagicMock()
+        troshkad.handle_mesh_status(handler, {})
+
+        call_args = handler._send_json.call_args[0]
+        self.assertEqual(call_args[0], 200)
+        projects = call_args[1]["projects"]
+        pid = "aabbccdd-1122-3344-5566-778899001122"
+        self.assertIn(pid, projects)
+        self.assertEqual(projects[pid]["interface"], "wg-aabbccdd")
+        self.assertIn("peers", projects[pid])
+        self.assertEqual(projects[pid]["peers"]["cGVlcl9rZXk="], 1723456789)
+
+    @patch("troshkad.subprocess.check_output", side_effect=Exception("wg: interface not found"))
+    @patch("troshkad.os.listdir")
+    @patch("troshkad.os.path.isdir", return_value=True)
+    def test_status_reports_error_for_down_interface(self, mock_isdir, mock_listdir, mock_check_output):
+        mock_listdir.return_value = ["deadbeef-1111-2222-3333-444455556666.conf"]
+        handler = MagicMock()
+        troshkad.handle_mesh_status(handler, {})
+
+        call_args = handler._send_json.call_args[0]
+        projects = call_args[1]["projects"]
+        pid = "deadbeef-1111-2222-3333-444455556666"
+        self.assertIn(pid, projects)
+        self.assertEqual(projects[pid]["error"], "not running")
+
+    @patch("troshkad.os.listdir")
+    @patch("troshkad.os.path.isdir", return_value=True)
+    def test_status_ignores_non_conf_files(self, mock_isdir, mock_listdir):
+        mock_listdir.return_value = ["readme.txt", "backup.bak"]
+        handler = MagicMock()
+        troshkad.handle_mesh_status(handler, {})
+        handler._send_json.assert_called_with(200, {"projects": {}})
+
+
+class TestContainerPull(unittest.TestCase):
+    """Tests for containers/pull handler."""
+
+    @patch("troshkad.subprocess.Popen")
+    def test_pull_without_credentials(self, mock_popen):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("containers/pull", {
+            "image": "quay.io/test/image:latest",
+        })
+        result = troshkad._handle_container_pull(job, job["params"])
+        self.assertEqual(result["status"], "pulled")
+        self.assertEqual(result["image"], "quay.io/test/image:latest")
+        # Should only call podman pull (no login)
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        self.assertEqual(len(cmds), 1)
+        self.assertIn("podman", cmds[0])
+        self.assertIn("pull", cmds[0])
+
+    @patch("troshkad.subprocess.Popen")
+    def test_pull_with_credentials(self, mock_popen):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("containers/pull", {
+            "image": "registry.example.com/app:v1",
+            "registry": "registry.example.com",
+            "username": "user",
+            "password": "test-pass",  # pragma: allowlist secret
+        })
+        result = troshkad._handle_container_pull(job, job["params"])
+        self.assertEqual(result["status"], "pulled")
+        # Should call login first, then pull
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        self.assertEqual(len(cmds), 2)
+        self.assertIn("login", cmds[0])
+        self.assertIn("pull", cmds[1])
+
+
+class TestContainerStart(unittest.TestCase):
+    """Tests for containers/start handler."""
+
+    @patch("troshkad.subprocess.Popen")
+    def test_start_container(self, mock_popen):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("containers/start", {
+            "container_name": "troshka-aabbccdd-mycontainer",
+        })
+        result = troshkad._handle_container_start(job, job["params"])
+        self.assertEqual(result["status"], "started")
+        self.assertEqual(result["container_name"], "troshka-aabbccdd-mycontainer")
+        cmd = mock_popen.call_args[0][0]
+        self.assertEqual(cmd, ["podman", "start", "troshka-aabbccdd-mycontainer"])
+
+
+class TestContainerStop(unittest.TestCase):
+    """Tests for containers/stop handler."""
+
+    @patch("troshkad.subprocess.Popen")
+    def test_stop_container_default_timeout(self, mock_popen):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("containers/stop", {
+            "container_name": "troshka-aabbccdd-mycontainer",
+        })
+        result = troshkad._handle_container_stop(job, job["params"])
+        self.assertEqual(result["status"], "stopped")
+        cmd = mock_popen.call_args[0][0]
+        self.assertIn("-t", cmd)
+        self.assertIn("10", cmd)  # default timeout
+
+    @patch("troshkad.subprocess.Popen")
+    def test_stop_container_custom_timeout(self, mock_popen):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("containers/stop", {
+            "container_name": "troshka-aabbccdd-mycontainer",
+            "timeout": 30,
+        })
+        result = troshkad._handle_container_stop(job, job["params"])
+        self.assertEqual(result["status"], "stopped")
+        cmd = mock_popen.call_args[0][0]
+        self.assertIn("30", cmd)
+
+
+class TestContainerDestroy(unittest.TestCase):
+    """Tests for containers/destroy handler."""
+
+    @patch("troshkad.subprocess.Popen")
+    def test_destroy_container_no_volumes(self, mock_popen):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("containers/destroy", {
+            "container_name": "troshka-aabbccdd-mycontainer",
+        })
+        result = troshkad._handle_container_destroy(job, job["params"])
+        self.assertEqual(result["status"], "destroyed")
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        # Should stop then rm -f
+        stop_calls = [c for c in cmds if "stop" in c]
+        rm_calls = [c for c in cmds if "rm" in c]
+        self.assertTrue(len(stop_calls) > 0)
+        self.assertTrue(len(rm_calls) > 0)
+
+    @patch("troshkad.os.path.ismount")
+    @patch("troshkad.subprocess.Popen")
+    def test_destroy_container_unmounts_volumes(self, mock_popen, mock_ismount):
+        mock_popen.return_value = _mock_popen()
+        mock_ismount.return_value = True
+        job = troshkad._create_job("containers/destroy", {
+            "container_name": "troshka-aabbccdd-mycontainer",
+            "volumes": [{"mount_dir": "/var/lib/troshka/vms/proj/vol1"}],
+        })
+        result = troshkad._handle_container_destroy(job, job["params"])
+        self.assertEqual(result["status"], "destroyed")
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        umount_calls = [c for c in cmds if "umount" in c]
+        self.assertTrue(len(umount_calls) > 0)
+
+    @patch("troshkad.os.path.ismount")
+    @patch("troshkad.subprocess.Popen")
+    def test_destroy_skips_unmounted_volumes(self, mock_popen, mock_ismount):
+        mock_popen.return_value = _mock_popen()
+        mock_ismount.return_value = False
+        job = troshkad._create_job("containers/destroy", {
+            "container_name": "troshka-aabbccdd-mycontainer",
+            "volumes": [{"mount_dir": "/var/lib/troshka/vms/proj/vol1"}],
+        })
+        result = troshkad._handle_container_destroy(job, job["params"])
+        self.assertEqual(result["status"], "destroyed")
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        umount_calls = [c for c in cmds if "umount" in c]
+        self.assertEqual(len(umount_calls), 0)
+
+
+class TestContainerLogs(unittest.TestCase):
+    """Tests for containers/logs handler."""
+
+    @patch("troshkad.subprocess.run")
+    def test_logs_default_tail(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="line1\nline2\nline3\n", stderr=""
+        )
+        job = troshkad._create_job("containers/logs", {
+            "container_name": "troshka-aabbccdd-mycontainer",
+        })
+        result = troshkad._handle_container_logs(job, job["params"])
+        self.assertEqual(result["container_name"], "troshka-aabbccdd-mycontainer")
+        self.assertIn("line1", result["logs"])
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("500", cmd)  # default tail
+
+    @patch("troshkad.subprocess.run")
+    def test_logs_custom_tail(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="log output\n", stderr="")
+        job = troshkad._create_job("containers/logs", {
+            "container_name": "troshka-aabbccdd-mycontainer",
+            "tail": 100,
+        })
+        result = troshkad._handle_container_logs(job, job["params"])
+        cmd = mock_run.call_args[0][0]
+        self.assertIn("100", cmd)
+
+    @patch("troshkad.subprocess.run")
+    def test_logs_failure_raises(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="Error: no such container"
+        )
+        job = troshkad._create_job("containers/logs", {
+            "container_name": "troshka-aabbccdd-nonexistent",
+        })
+        with self.assertRaises(RuntimeError):
+            troshkad._handle_container_logs(job, job["params"])
+
+
+class TestContainerExec(unittest.TestCase):
+    """Tests for containers/exec handler."""
+
+    @patch("troshkad.subprocess.run")
+    def test_exec_default_command(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="output", stderr="")
+        job = troshkad._create_job("containers/exec", {
+            "container_name": "troshka-aabbccdd-mycontainer",
+        })
+        result = troshkad._handle_container_exec(job, job["params"])
+        self.assertEqual(result["stdout"], "output")
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd, ["podman", "exec", "troshka-aabbccdd-mycontainer", "/bin/sh"])
+
+    @patch("troshkad.subprocess.run")
+    def test_exec_custom_command(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="hello", stderr="")
+        job = troshkad._create_job("containers/exec", {
+            "container_name": "troshka-aabbccdd-mycontainer",
+            "command": ["echo", "hello"],
+        })
+        result = troshkad._handle_container_exec(job, job["params"])
+        self.assertEqual(result["stdout"], "hello")
+        cmd = mock_run.call_args[0][0]
+        self.assertEqual(cmd, ["podman", "exec", "troshka-aabbccdd-mycontainer", "echo", "hello"])
+
+    @patch("troshkad.subprocess.run")
+    def test_exec_failure_raises(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="exec failed")
+        job = troshkad._create_job("containers/exec", {
+            "container_name": "troshka-aabbccdd-mycontainer",
+        })
+        with self.assertRaises(RuntimeError):
+            troshkad._handle_container_exec(job, job["params"])
+
+
+class TestContainerSaveImage(unittest.TestCase):
+    """Tests for containers/save-image handler."""
+
+    @patch("troshkad.os.path.getsize", return_value=10485760)
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.Popen")
+    def test_save_image(self, mock_popen, mock_makedirs, mock_getsize):
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate.return_value = ("", "")
+        mock_popen.return_value = proc
+        job = troshkad._create_job("containers/save-image", {
+            "image": "quay.io/test/image:latest",
+            "output_path": "/var/lib/troshka/cache/image.tar.gz",
+        })
+        result = troshkad._handle_container_save_image(job, job["params"])
+        self.assertEqual(result["size_bytes"], 10485760)
+        self.assertEqual(result["output_path"], "/var/lib/troshka/cache/image.tar.gz")
+
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.Popen")
+    def test_save_image_failure_raises(self, mock_popen, mock_makedirs):
+        proc = MagicMock()
+        proc.returncode = 1
+        proc.communicate.return_value = ("", "save failed")
+        mock_popen.return_value = proc
+        job = troshkad._create_job("containers/save-image", {
+            "image": "quay.io/test/image:latest",
+            "output_path": "/var/lib/troshka/cache/image.tar.gz",
+        })
+        with self.assertRaises(RuntimeError):
+            troshkad._handle_container_save_image(job, job["params"])
+
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.Popen")
+    def test_save_image_timeout_raises(self, mock_popen, mock_makedirs):
+        proc = MagicMock()
+        proc.kill = MagicMock()
+        # First call raises TimeoutExpired, second call (after kill) succeeds
+        proc.communicate.side_effect = [
+            subprocess.TimeoutExpired(cmd="podman save", timeout=600),
+            ("", ""),
+        ]
+        mock_popen.return_value = proc
+        job = troshkad._create_job("containers/save-image", {
+            "image": "quay.io/test/image:latest",
+            "output_path": "/var/lib/troshka/cache/image.tar.gz",
+        })
+        with self.assertRaises(RuntimeError) as ctx:
+            troshkad._handle_container_save_image(job, job["params"])
+        self.assertIn("timed out", str(ctx.exception))
+
+
+class TestContainerLoadImage(unittest.TestCase):
+    """Tests for containers/load-image handler."""
+
+    @patch("troshkad.os.path.isfile", return_value=True)
+    @patch("troshkad.subprocess.Popen")
+    def test_load_image(self, mock_popen, mock_isfile):
+        proc = MagicMock()
+        proc.returncode = 0
+        proc.communicate.return_value = ("Loaded image: quay.io/test:latest", "")
+        mock_popen.return_value = proc
+        job = troshkad._create_job("containers/load-image", {
+            "input_path": "/var/lib/troshka/cache/image.tar.gz",
+        })
+        result = troshkad._handle_container_load_image(job, job["params"])
+        self.assertEqual(result["status"], "loaded")
+
+    @patch("troshkad.os.path.isfile", return_value=False)
+    def test_load_image_not_found(self, mock_isfile):
+        job = troshkad._create_job("containers/load-image", {
+            "input_path": "/var/lib/troshka/cache/nonexistent.tar.gz",
+        })
+        with self.assertRaises(FileNotFoundError):
+            troshkad._handle_container_load_image(job, job["params"])
+
+    @patch("troshkad.os.path.isfile", return_value=True)
+    @patch("troshkad.subprocess.Popen")
+    def test_load_image_failure_raises(self, mock_popen, mock_isfile):
+        proc = MagicMock()
+        proc.returncode = 1
+        proc.communicate.return_value = ("", "load failed")
+        mock_popen.return_value = proc
+        job = troshkad._create_job("containers/load-image", {
+            "input_path": "/var/lib/troshka/cache/image.tar.gz",
+        })
+        with self.assertRaises(RuntimeError):
+            troshkad._handle_container_load_image(job, job["params"])
+
+
+class TestPodCreate(unittest.TestCase):
+    """Tests for pods/create handler."""
+
+    @patch("troshkad._run_cmd")
+    def test_pod_create_simple(self, mock_run_cmd):
+        """Create a pod with no networks, init containers, or main containers."""
+        # _run_cmd for inspect returns a proc-like object whose .strip() works
+        def run_cmd_side_effect(job, cmd, **kwargs):
+            if "inspect" in cmd:
+                return "12345"
+            return ""
+        mock_run_cmd.side_effect = run_cmd_side_effect
+
+        job = troshkad._create_job("pods/create", {
+            "pod_name": "mypod",
+            "project_id": "aabbccdd-1122-3344-5566-778899001122",
+            "containers": [],
+        })
+        result = troshkad._handle_pod_create(job, job["params"])
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(result["pod_name"], "troshka-aabbccdd-mypod")
+
+    @patch("troshkad._run_cmd")
+    def test_pod_create_with_containers(self, mock_run_cmd):
+        """Create a pod with init and main containers."""
+        def run_cmd_side_effect(job, cmd, **kwargs):
+            if "inspect" in cmd:
+                return "12345"
+            return ""
+        mock_run_cmd.side_effect = run_cmd_side_effect
+
+        job = troshkad._create_job("pods/create", {
+            "pod_name": "mypod",
+            "project_id": "aabbccdd-1122-3344-5566-778899001122",
+            "init_containers": [
+                {"name": "init1", "image": "busybox:latest", "command": "/bin/sh -c 'echo init'"},
+            ],
+            "containers": [
+                {"name": "app", "image": "nginx:latest", "cpus": 2, "memory": 1024},
+            ],
+        })
+        result = troshkad._handle_pod_create(job, job["params"])
+        self.assertEqual(result["status"], "created")
+
+        cmds = [c[0][1] for c in mock_run_cmd.call_args_list]
+        # Should have created init container and main container
+        init_create = [c for c in cmds if "create" in c and "init-init1" in " ".join(c)]
+        main_create = [c for c in cmds if "create" in c and "-app" in " ".join(c)]
+        self.assertTrue(len(init_create) > 0, f"No init container created in cmds: {cmds}")
+        self.assertTrue(len(main_create) > 0, f"No main container created in cmds: {cmds}")
+
+
+class TestPodStart(unittest.TestCase):
+    """Tests for pods/start handler."""
+
+    @patch("troshkad._run_cmd")
+    def test_pod_start_no_init_containers(self, mock_run_cmd):
+        def run_cmd_side_effect(job, cmd, **kwargs):
+            if "ps" in cmd:
+                return ""  # no init containers
+            return ""
+        mock_run_cmd.side_effect = run_cmd_side_effect
+
+        job = troshkad._create_job("pods/start", {
+            "pod_name": "troshka-aabbccdd-mypod",
+        })
+        result = troshkad._handle_pod_start(job, job["params"])
+        self.assertEqual(result["status"], "started")
+
+    @patch("troshkad._run_cmd")
+    def test_pod_start_with_init_containers(self, mock_run_cmd):
+        def run_cmd_side_effect(job, cmd, **kwargs):
+            if "ps" in cmd:
+                return "troshka-aabbccdd-mypod-init-setup\n"
+            elif "wait" in cmd:
+                return "0"
+            return ""
+        mock_run_cmd.side_effect = run_cmd_side_effect
+
+        job = troshkad._create_job("pods/start", {
+            "pod_name": "troshka-aabbccdd-mypod",
+        })
+        result = troshkad._handle_pod_start(job, job["params"])
+        self.assertEqual(result["status"], "started")
+
+    @patch("troshkad._run_cmd")
+    def test_pod_start_init_container_failure(self, mock_run_cmd):
+        def run_cmd_side_effect(job, cmd, **kwargs):
+            if "ps" in cmd:
+                return "troshka-aabbccdd-mypod-init-setup\n"
+            elif "wait" in cmd:
+                return "1"
+            elif "logs" in cmd:
+                return "init failed: missing config"
+            return ""
+        mock_run_cmd.side_effect = run_cmd_side_effect
+
+        job = troshkad._create_job("pods/start", {
+            "pod_name": "troshka-aabbccdd-mypod",
+        })
+        with self.assertRaises(RuntimeError) as ctx:
+            troshkad._handle_pod_start(job, job["params"])
+        self.assertIn("exit code 1", str(ctx.exception))
+
+
+class TestPodDestroy(unittest.TestCase):
+    """Tests for pods/destroy handler."""
+
+    @patch("troshkad.os.path.exists", return_value=True)
+    @patch("troshkad.os.unlink")
+    @patch("troshkad.subprocess.Popen")
+    def test_pod_destroy_cleans_up(self, mock_popen, mock_unlink, mock_exists):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("pods/destroy", {
+            "pod_name": "troshka-aabbccdd-mypod",
+        })
+        result = troshkad._handle_pod_destroy(job, job["params"])
+        self.assertEqual(result["status"], "destroyed")
+        # Should remove netns symlink
+        mock_unlink.assert_called_with("/var/run/netns/ctr-dd-mypod")
+        # Should call podman pod rm -f
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        pod_rm = [c for c in cmds if "pod" in c and "rm" in c]
+        self.assertTrue(len(pod_rm) > 0)
+
+    @patch("troshkad.os.path.ismount", return_value=True)
+    @patch("troshkad.os.path.exists", return_value=False)
+    @patch("troshkad.subprocess.Popen")
+    def test_pod_destroy_unmounts_volumes(self, mock_popen, mock_exists, mock_ismount):
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("pods/destroy", {
+            "pod_name": "troshka-aabbccdd-mypod",
+            "volumes": [{"mount_dir": "/var/lib/troshka/vms/proj/vol"}],
+        })
+        result = troshkad._handle_pod_destroy(job, job["params"])
+        self.assertEqual(result["status"], "destroyed")
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        umount_calls = [c for c in cmds if "umount" in c]
+        self.assertTrue(len(umount_calls) > 0)
+
+    @patch("troshkad.os.path.exists", return_value=False)
+    @patch("troshkad.subprocess.Popen")
+    def test_pod_destroy_no_netns_symlink(self, mock_popen, mock_exists):
+        """Should not fail if netns symlink doesn't exist."""
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job("pods/destroy", {
+            "pod_name": "troshka-aabbccdd-mypod",
+        })
+        result = troshkad._handle_pod_destroy(job, job["params"])
+        self.assertEqual(result["status"], "destroyed")
+
+
+class TestNfsHealthRecovery(unittest.TestCase):
+    """Tests for NFS health check with recovery path."""
+
+    def setUp(self):
+        self._orig_config = troshkad._config.copy()
+        self._orig_healthy = troshkad._nfs_healthy
+        self._orig_stale_since = troshkad._nfs_stale_since
+
+    def tearDown(self):
+        troshkad._config.update(self._orig_config)
+        troshkad._nfs_healthy = self._orig_healthy
+        troshkad._nfs_stale_since = self._orig_stale_since
+
+    def test_local_mode_always_healthy(self):
+        troshkad._config["storage_mode"] = "local"
+        result = troshkad._check_nfs_health()
+        self.assertTrue(result)
+        self.assertTrue(troshkad._nfs_healthy)
+
+    @patch("troshkad.os.path.ismount", return_value=False)
+    def test_shared_mode_not_mounted_unhealthy(self, mock_ismount):
+        troshkad._config["storage_mode"] = "shared"
+        troshkad._nfs_healthy = True
+        result = troshkad._check_nfs_health()
+        self.assertFalse(result)
+        self.assertFalse(troshkad._nfs_healthy)
+        self.assertGreater(troshkad._nfs_stale_since, 0)
+
+    @patch("troshkad.os.statvfs")
+    @patch("troshkad.os.path.ismount", return_value=True)
+    def test_shared_mode_healthy_probe_passes(self, mock_ismount, mock_statvfs):
+        troshkad._config["storage_mode"] = "shared"
+        troshkad._nfs_healthy = False  # was unhealthy, should recover
+        result = troshkad._check_nfs_health()
+        self.assertTrue(result)
+        self.assertTrue(troshkad._nfs_healthy)
+        self.assertEqual(troshkad._nfs_stale_since, 0.0)
+
+    def test_default_mode_treated_as_local(self):
+        troshkad._config.pop("storage_mode", None)
+        result = troshkad._check_nfs_health()
+        self.assertTrue(result)
+
+
+class TestNfsRecovery(unittest.TestCase):
+    """Tests for _try_nfs_recovery."""
+
+    def setUp(self):
+        self._orig_config = troshkad._config.copy()
+
+    def tearDown(self):
+        troshkad._config.update(self._orig_config)
+
+    @patch("builtins.open", side_effect=OSError("no fstab"))
+    def test_recovery_fails_no_fstab(self, mock_open_fn):
+        troshkad._config["shared_mount"] = "/var/lib/troshka/shared"
+        result = troshkad._try_nfs_recovery()
+        self.assertFalse(result)
+
+    @patch("builtins.open", new_callable=unittest.mock.mock_open, read_data="# empty fstab\n")
+    def test_recovery_fails_no_entry(self, mock_open_fn):
+        troshkad._config["shared_mount"] = "/var/lib/troshka/shared"
+        result = troshkad._try_nfs_recovery()
+        self.assertFalse(result)
+
+    @patch("troshkad.subprocess.run")
+    @patch("builtins.open", new_callable=unittest.mock.mock_open,
+           read_data="nfs-server:/export /var/lib/troshka/shared nfs soft,timeo=50 0 0\n")
+    def test_recovery_succeeds(self, mock_open_fn, mock_run):
+        troshkad._config["shared_mount"] = "/var/lib/troshka/shared"
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # umount -l
+            MagicMock(returncode=0, stderr=""),  # mount
+        ]
+        result = troshkad._try_nfs_recovery()
+        self.assertTrue(result)
+
+    @patch("troshkad.subprocess.run")
+    @patch("builtins.open", new_callable=unittest.mock.mock_open,
+           read_data="nfs-server:/export /var/lib/troshka/shared nfs soft,timeo=50 0 0\n")
+    def test_recovery_fails_mount_error(self, mock_open_fn, mock_run):
+        troshkad._config["shared_mount"] = "/var/lib/troshka/shared"
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # umount -l
+            MagicMock(returncode=1, stderr="mount: mount failed"),  # mount
+        ]
+        result = troshkad._try_nfs_recovery()
+        self.assertFalse(result)
+
+
+class TestRateLimitingEdgeCases(unittest.TestCase):
+    """Additional rate-limiting tests for edge cases not covered by helpers."""
+
+    def setUp(self):
+        troshkad._fail_tracker.clear()
+        troshkad._banned_ips.clear()
+        troshkad._permabanned_ips.clear()
+        troshkad._ban_history.clear()
+
+    def tearDown(self):
+        troshkad._fail_tracker.clear()
+        troshkad._banned_ips.clear()
+        troshkad._permabanned_ips.clear()
+        troshkad._ban_history.clear()
+
+    def test_failures_from_different_ips_are_independent(self):
+        for _ in range(troshkad._BAN_THRESHOLD - 1):
+            troshkad._record_auth_failure("10.0.0.1")
+            troshkad._record_auth_failure("10.0.0.2")
+        self.assertFalse(troshkad._is_banned("10.0.0.1"))
+        self.assertFalse(troshkad._is_banned("10.0.0.2"))
+
+    def test_temp_ban_cleared_by_is_banned_after_expiry(self):
+        """_is_banned should remove the ban entry when it's expired."""
+        troshkad._banned_ips["10.0.0.99"] = time.monotonic() - 1
+        self.assertFalse(troshkad._is_banned("10.0.0.99"))
+        self.assertNotIn("10.0.0.99", troshkad._banned_ips)
+
+    def test_cleanup_preserves_permabanned(self):
+        """_cleanup_rate_limit should not clear permabanned IPs."""
+        troshkad._permabanned_ips.add("10.0.0.50")
+        troshkad._cleanup_rate_limit()
+        self.assertIn("10.0.0.50", troshkad._permabanned_ips)
+
+    def test_ban_history_cleanup_by_window(self):
+        """Old ban history entries should be cleaned by _cleanup_rate_limit."""
+        troshkad._ban_history["10.0.0.60"] = [time.monotonic() - 7200]
+        troshkad._cleanup_rate_limit()
+        self.assertNotIn("10.0.0.60", troshkad._ban_history)
+
+    def test_fail_tracker_window_sliding(self):
+        """Old failures outside the window should be pruned on next failure."""
+        ip = "10.0.0.70"
+        # Add old failures
+        old_time = time.monotonic() - troshkad._BAN_WINDOW - 10
+        troshkad._fail_tracker[ip] = [old_time] * (troshkad._BAN_THRESHOLD - 1)
+        # Add one new failure -- old ones should be pruned, so no ban
+        troshkad._record_auth_failure(ip)
+        self.assertFalse(troshkad._is_banned(ip))
+        self.assertEqual(len(troshkad._fail_tracker[ip]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

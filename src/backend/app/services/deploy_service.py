@@ -3628,15 +3628,380 @@ def deploy_project_async(  # pyright: ignore[reportGeneralTypeIssues]
         _deploy_semaphore.release()
 
 
+# ── Deploy pipeline helpers ───────────────────────────────────────────────
+
+
+def _set_deploy_error(s, project, error_msg):
+    """Set project to error state without notification."""
+    project.state = "error"
+    project.deploy_error = error_msg
+    s.commit()
+
+
+def _set_deploy_error_and_notify(s, project_id, project, error_msg):
+    """Set project to error state and send WS notification."""
+    project.state = "error"
+    project.deploy_error = error_msg
+    s.commit()
+    notify_project(
+        project_id,
+        {"type": "project-state", "state": "error", "deploy_error": error_msg},
+    )
+
+
+def _deploy_resolve_host(s, project, project_id):
+    """Resolve or auto-place a host for the project.
+
+    Returns ``(host, error_msg)`` where *error_msg* is ``None`` on success.
+    """
+    from app.models.host import Host
+
+    host = (
+        s.query(Host).filter_by(id=project.host_id).first() if project.host_id else None
+    )
+    if not host and not project.host_id:
+        from app.services.placement import (
+            calculate_project_requirements,
+            find_available_host,
+        )
+
+        reqs = calculate_project_requirements(project.topology or {})
+        host = find_available_host(s, reqs["total_vcpus"], reqs["total_ram_mb"])
+        if host:
+            project.host_id = host.id
+            s.commit()
+            logger.info(
+                "Deploy %s: auto-placed on host %s", project_id[:8], host.id[:8]
+            )
+    if not host or not host.ip_address:
+        return host, _deploy_host_error_msg(project, host)
+    return host, None
+
+
+def _deploy_host_error_msg(project, host):
+    """Build a human-readable error when host resolution fails."""
+    if not project.host_id:
+        from app.services.placement import calculate_project_requirements
+
+        reqs = calculate_project_requirements(project.topology or {})
+        ram_gb = round(reqs["total_ram_mb"] / 1024, 1)
+        return (
+            f"Not enough capacity in pool — need {reqs['total_vcpus']} vCPUs "
+            f"and {ram_gb} GB RAM but no host has room. "
+            f"Free up resources or add a host."
+        )
+    if not host:
+        return "Assigned host no longer exists"
+    return "Assigned host has no IP address — it may still be provisioning"
+
+
+def _deploy_init_context(s, project, project_id):
+    """Compute clock offset and allocate VNIs.
+
+    Returns ``(topology, clock_offset, vni_map)``.
+    """
+    topology = project.topology or {}
+    clock_offset = None
+    if project.clock_target:
+        from app.services.clock_service import compute_clock_offset
+
+        clock_offset = compute_clock_offset(project.clock_target)
+    vni_map = project.vni_map or {}
+    if not vni_map:
+        from app.services.vxlan import allocate_vnis_for_project
+
+        vni_map = allocate_vnis_for_project(s, topology)
+        project.vni_map = vni_map
+        s.commit()
+        logger.info("Deploy %s: allocated VNIs %s", project_id[:8], vni_map)
+    return topology, clock_offset, vni_map
+
+
+def _deploy_disable_guest_exec(project, topology):
+    """Mark VMs with cloud-init as guest-exec disabled when project flag is off."""
+    if not project.guest_exec_enabled:
+        for node in topology.get("nodes", []):
+            if node.get("type") == "vmNode" and node.get("data", {}).get("cloudInit"):
+                node["data"]["guestExecEnabled"] = False
+
+
+def _deploy_cache_images_and_pxe(host, project_id, topology, vni_map, s):
+    """Download library images and set up PXE boot services."""
+    _checkpoint(s, project_id, "images")
+    _update_deploy_progress(project_id, "downloading images", "0%")
+    logger.info("Deploy %s: caching library images", project_id[:8])
+
+    def _progress(detail, items):
+        _update_deploy_progress(
+            project_id, "downloading images", str(detail), items=items
+        )
+
+    cache_library_images(topology, host, s, progress_callback=_progress)
+    logger.info("Deploy %s: setting up PXE boot services", project_id[:8])
+    _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
+
+
+def _deploy_create_bmc_bridge(host, project_id, topology):
+    """Create BMC bridge on host if topology contains a BMC network."""
+    bmc_config = _extract_bmc_config(topology, project_id)
+    if bmc_config:
+        net_data = bmc_config["bmc_network"]
+        cidr = net_data.get("cidr", "192.168.100.0/24")
+        _bj = start_job(
+            host,
+            "/bmc/create-bridge",
+            {
+                "project_id": project_id,
+                "bmc_cidr": cidr,
+                "bmc_gateway_ip": cidr.rsplit(".", 1)[0] + ".1",
+                "vms": [{"bmc_ip": vm["bmc_ip"]} for vm in bmc_config["vms"]],
+            },
+        )
+        wait_for_job(host, _bj, timeout=30)
+        logger.info("Deploy %s: BMC bridge created", project_id[:8])
+
+
+def _deploy_single_host_setup(
+    s, project, host, topology, vni_map, project_id, resume_from, pool
+):
+    """Provision networks, seeds, images, and BMC bridge for single-host deploy.
+
+    Returns a dict with ``lb_config`` and ``external_ips`` on success, or
+    ``None`` if the deploy should stop (error state already set or project
+    was deleted mid-deploy).
+    """
+    external_ips = topology.get("externalIps", [])
+    if external_ips and not _should_skip(resume_from, "eips"):
+        err = _deploy_allocate_eips(
+            s, project_id, project, host, topology, external_ips
+        )
+        if err:
+            _set_deploy_error(s, project, err)
+            _delete_deploy_progress(project_id)
+            return None
+
+    _auto_assign_container_ips(topology)
+
+    _checkpoint(s, project_id, "networks")
+    _update_deploy_progress(project_id, "networking", "waiting for lock")
+    with _get_network_lock(host.id):
+        _update_deploy_progress(project_id, "networking", "configuring VXLAN")
+        logger.info(
+            "Deploy %s: setting up networks on %s", project_id[:8], host.ip_address
+        )
+        net_result = _setup_networks_via_troshkad(
+            host, topology, vni_map, s, project_id
+        )
+    if net_result is not True:
+        logger.error(_LOG_DEPLOY, project_id[:8], net_result)
+        _set_deploy_error(s, project, net_result)
+        _delete_deploy_progress(project_id)
+        return None
+
+    lb_config = _deploy_setup_lb(host, project_id, topology, vni_map)
+
+    if external_ips:
+        _deploy_sync_sg_rules(s, project_id, project, host, topology, lb_config)
+
+    if _project_deleted(project_id):
+        _delete_deploy_progress(project_id)
+        return None
+
+    _deploy_inject_gateway_ip(topology, project_id)
+    _deploy_disable_guest_exec(project, topology)
+    _deploy_create_ocpvirt_routes(s, host, project_id, topology)
+
+    _checkpoint(s, project_id, "seeds")
+    _update_deploy_progress(project_id, "cloud-init", "creating seed ISOs")
+    logger.info("Deploy %s: creating cloud-init seed ISOs", project_id[:8])
+    _create_seed_isos_via_troshkad(host, project_id, topology, pool)
+
+    _update_deploy_progress(project_id, "cloud-init", "deploying metadata service")
+    logger.info("Deploy %s: deploying metadata service", project_id[:8])
+    _setup_metadata_via_troshkad(host, project_id, topology, vni_map)
+
+    if _project_deleted(project_id):
+        _delete_deploy_progress(project_id)
+        return None
+
+    _deploy_cache_images_and_pxe(host, project_id, topology, vni_map, s)
+
+    _checkpoint(s, project_id, "container_pull")
+    _deploy_pull_container_images(host, project_id, topology, s)
+
+    if _project_deleted(project_id):
+        _delete_deploy_progress(project_id)
+        return None
+
+    bmc_err = _deploy_validate_bmc(project_id, topology)
+    if bmc_err:
+        logger.error(_LOG_DEPLOY, project_id[:8], bmc_err)
+        _set_deploy_error_and_notify(s, project_id, project, bmc_err)
+        _delete_deploy_progress(project_id)
+        return None
+
+    _deploy_create_bmc_bridge(host, project_id, topology)
+
+    if _project_deleted(project_id):
+        _delete_deploy_progress(project_id)
+        return None
+
+    return {"lb_config": lb_config, "external_ips": external_ips}
+
+
+def _deploy_single_host_execute(
+    s,
+    host,
+    project_id,
+    project,
+    topology,
+    vni_map,
+    pool,
+    disk_cache,
+    clock_offset,
+    auto_start,
+    lb_config,
+    external_ips,
+):
+    """Create VMs, start them, and finalize single-host deploy."""
+    _checkpoint(s, project_id, "disks")
+    _update_deploy_progress(project_id, "creating", "VMs")
+    logger.info("Deploy %s: creating VMs", project_id[:8])
+    vms = _deploy_create_disks(host, project_id, topology, pool)
+
+    _deploy_handle_recert(s, host, project_id, topology, pool)
+
+    _checkpoint(s, project_id, "vms")
+    _deploy_define_vms(
+        host, project_id, vms, topology, vni_map, pool, disk_cache, clock_offset
+    )
+
+    project.topology = topology
+    s.commit()
+
+    bmc_err, bmc_config = _deploy_setup_bmc(host, project_id, topology)
+    if bmc_err:
+        _set_deploy_error(s, project, bmc_err)
+        _delete_deploy_progress(project_id)
+        return
+
+    _checkpoint(s, project_id, "containers")
+    _deploy_create_containers(host, project_id, topology, vni_map, pool)
+
+    if _project_deleted(project_id):
+        _delete_deploy_progress(project_id)
+        return
+
+    _checkpoint(s, project_id, "starting")
+    if not _deploy_start_vms(s, host, project_id, project, topology, auto_start):
+        return
+
+    _deploy_complete_and_notify(
+        s,
+        project_id,
+        project,
+        topology,
+        vms,
+        lb_config,
+        external_ips,
+        auto_start,
+        bmc_config,
+    )
+
+
+def _deploy_complete_and_notify(
+    s,
+    project_id,
+    project,
+    topology,
+    vms,
+    lb_config,
+    external_ips,
+    auto_start,
+    bmc_config,
+):
+    """Set final project state and send success notifications."""
+    project.state = "active" if auto_start else "stopped"
+    project.deploy_error = None
+    project.deploy_step = None
+    project.deploy_progress = None
+    project.deployed_topology = project.topology
+
+    _deploy_finalize_timers(project, auto_start)
+    _deploy_create_dns_records(
+        s, project_id, project, topology, lb_config, external_ips
+    )
+    _deploy_store_bmc_topology(project, topology, bmc_config)
+
+    s.commit()
+    notify_project(
+        project_id,
+        {
+            "type": "project-state",
+            "state": "active",
+            "deploy_error": None,
+            "auto_stop_expires_at": (
+                project.auto_stop_expires_at.isoformat()
+                if project.auto_stop_expires_at
+                else None
+            ),
+            "lifetime_expires_at": (
+                project.lifetime_expires_at.isoformat()
+                if project.lifetime_expires_at
+                else None
+            ),
+        },
+    )
+    vm_states = {vm["node_id"]: "running" for vm in vms}
+    notify_project(
+        project_id, {"type": "vm-state", "states": vm_states, "progress": {}}
+    )
+    _delete_deploy_progress(project_id)
+    logger.info("Deploy %s: complete — all VMs running", project_id[:8])
+
+    if auto_start and _has_ocp_monitor(topology):
+        project.ocp_status = "monitoring"
+        project.ocp_status_detail = None
+        project.ocp_install_elapsed = None
+        project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
+        s.commit()
+
+
+def _deploy_handle_failure(s, project_id, exception):
+    """Handle unexpected exception during deploy."""
+    logger.exception("Deploy %s failed unexpectedly", project_id[:8])
+    _delete_deploy_progress(project_id)
+    try:
+        from app.models.project import Project
+
+        project = s.query(Project).filter_by(id=project_id).first()
+        if project:
+            project.state = "error"
+            project.deploy_error = str(exception)
+            _cleanup_stale_shared_cache(s, project)
+            s.commit()
+            notify_project(
+                project_id,
+                {
+                    "type": "project-state",
+                    "state": "error",
+                    "deploy_error": project.deploy_error,
+                },
+            )
+    except Exception:
+        logger.exception("Deploy %s: failed to set error state", project_id[:8])
+
+
+# ── Main deploy orchestrator ─────────────────────────────────────────────
+
+
 def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
     project_id: str, auto_start: bool = True, resume_from: str | None = None
 ):
     from app.core.database import SessionLocal
-    from app.models.host import Host
     from app.models.project import Project
     from app.services.placement import record_deploy_end, record_deploy_start
 
-    # Clear cancellation flag and stale error from previous deploy
     _clear_deploy_cancelled(project_id)
 
     _host_id_for_inflight: str | None = None
@@ -3653,73 +4018,18 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                 "Deploy %s: resuming from step '%s'", project_id[:8], resume_from
             )
 
-        host = (
-            s.query(Host).filter_by(id=project.host_id).first()
-            if project.host_id
-            else None
-        )
-        if not host and not project.host_id:
-            from app.services.placement import (
-                calculate_project_requirements,
-                find_available_host,
-            )
-
-            reqs = calculate_project_requirements(project.topology or {})
-            host = find_available_host(s, reqs["total_vcpus"], reqs["total_ram_mb"])
-            if host:
-                project.host_id = host.id
-                s.commit()
-                logger.info(
-                    "Deploy %s: auto-placed on host %s", project_id[:8], host.id[:8]
-                )
+        host, host_err = _deploy_resolve_host(s, project, project_id)
         if host:
             _host_id_for_inflight = host.id
             record_deploy_start(host.id)
-
-        if not host or not host.ip_address:
-            if not project.host_id:
-                from app.services.placement import (
-                    calculate_project_requirements as _calc_reqs,
-                )
-
-                reqs = _calc_reqs(project.topology or {})
-                ram_gb = round(reqs["total_ram_mb"] / 1024, 1)
-                error_msg = f"Not enough capacity in pool — need {reqs['total_vcpus']} vCPUs and {ram_gb} GB RAM but no host has room. Free up resources or add a host."
-            elif not host:
-                error_msg = "Assigned host no longer exists"
-            else:
-                error_msg = (
-                    "Assigned host has no IP address — it may still be provisioning"
-                )
-            project.state = "error"
-            project.deploy_error = error_msg
-            s.commit()
-            notify_project(
-                project_id,
-                {
-                    "type": "project-state",
-                    "state": "error",
-                    "deploy_error": error_msg,
-                },
-            )
+        if host_err:
+            _set_deploy_error_and_notify(s, project_id, project, host_err)
             return
+        assert host is not None  # guaranteed when host_err is None
 
-        topology = project.topology or {}
-        clock_offset = None
-        if project.clock_target:
-            from app.services.clock_service import compute_clock_offset
+        topology, clock_offset, vni_map = _deploy_init_context(s, project, project_id)
 
-            clock_offset = compute_clock_offset(project.clock_target)
-        vni_map = project.vni_map or {}
-        if not vni_map:
-            from app.services.vxlan import allocate_vnis_for_project
-
-            vni_map = allocate_vnis_for_project(s, topology)
-            project.vni_map = vni_map
-            s.commit()
-            logger.info("Deploy %s: allocated VNIs %s", project_id[:8], vni_map)
-
-        # Multi-host deploy: mesh setup → network setup → VM distribution
+        # Multi-host deploy: mesh setup -> network setup -> VM distribution
         if project.mesh_network_host_id:
             logger.info(
                 "Deploy %s: multi-host mode (network host: %s)",
@@ -3737,225 +4047,28 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
         pool = _get_host_pool(host, s)
         disk_cache = "none" if pool and pool.mode.startswith("shared") else None
 
-        external_ips = topology.get("externalIps", [])
-        if external_ips and not _should_skip(resume_from, "eips"):
-            err = _deploy_allocate_eips(
-                s, project_id, project, host, topology, external_ips
-            )
-            if err:
-                project.state = "error"
-                project.deploy_error = err
-                s.commit()
-                _delete_deploy_progress(project_id)
-                return
-
-        _auto_assign_container_ips(topology)
-
-        _checkpoint(s, project_id, "networks")
-        _update_deploy_progress(project_id, "networking", "waiting for lock")
-        with _get_network_lock(host.id):
-            _update_deploy_progress(project_id, "networking", "configuring VXLAN")
-            logger.info(
-                "Deploy %s: setting up networks on %s", project_id[:8], host.ip_address
-            )
-            net_result = _setup_networks_via_troshkad(
-                host, topology, vni_map, s, project_id
-            )
-        if net_result is not True:
-            logger.error(_LOG_DEPLOY, project_id[:8], net_result)
-            project.state = "error"
-            project.deploy_error = net_result
-            s.commit()
-            _delete_deploy_progress(project_id)
-            return
-
-        lb_config = _deploy_setup_lb(host, project_id, topology, vni_map)
-
-        if external_ips:
-            _deploy_sync_sg_rules(s, project_id, project, host, topology, lb_config)
-
-        if _project_deleted(project_id):
-            _delete_deploy_progress(project_id)
-            return
-
-        _deploy_inject_gateway_ip(topology, project_id)
-
-        if not project.guest_exec_enabled:
-            for node in topology.get("nodes", []):
-                if node.get("type") == "vmNode" and node.get("data", {}).get(
-                    "cloudInit"
-                ):
-                    node["data"]["guestExecEnabled"] = False
-
-        _deploy_create_ocpvirt_routes(s, host, project_id, topology)
-
-        _checkpoint(s, project_id, "seeds")
-        _update_deploy_progress(project_id, "cloud-init", "creating seed ISOs")
-        logger.info("Deploy %s: creating cloud-init seed ISOs", project_id[:8])
-        _create_seed_isos_via_troshkad(host, project_id, topology, pool)
-
-        _update_deploy_progress(project_id, "cloud-init", "deploying metadata service")
-        logger.info("Deploy %s: deploying metadata service", project_id[:8])
-        _setup_metadata_via_troshkad(host, project_id, topology, vni_map)
-
-        if _project_deleted(project_id):
-            _delete_deploy_progress(project_id)
-            return
-
-        _checkpoint(s, project_id, "images")
-        _update_deploy_progress(project_id, "downloading images", "0%")
-        logger.info("Deploy %s: caching library images", project_id[:8])
-
-        def _deploy_dl_progress(detail, items):
-            _update_deploy_progress(
-                project_id, "downloading images", str(detail), items=items
-            )
-
-        cache_library_images(topology, host, s, progress_callback=_deploy_dl_progress)
-
-        logger.info("Deploy %s: setting up PXE boot services", project_id[:8])
-        _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
-
-        _checkpoint(s, project_id, "container_pull")
-        _deploy_pull_container_images(host, project_id, topology, s)
-
-        if _project_deleted(project_id):
-            _delete_deploy_progress(project_id)
-            return
-
-        bmc_err = _deploy_validate_bmc(project_id, topology)
-        if bmc_err:
-            logger.error(_LOG_DEPLOY, project_id[:8], bmc_err)
-            project.state = "error"
-            project.deploy_error = bmc_err
-            s.commit()
-            notify_project(
-                project_id,
-                {"type": "project-state", "state": "error", "deploy_error": bmc_err},
-            )
-            _delete_deploy_progress(project_id)
-            return
-
-        bmc_config = _extract_bmc_config(topology, project_id)
-        if bmc_config:
-            net_data = bmc_config["bmc_network"]
-            cidr = net_data.get("cidr", "192.168.100.0/24")
-            _bj = start_job(
-                host,
-                "/bmc/create-bridge",
-                {
-                    "project_id": project_id,
-                    "bmc_cidr": cidr,
-                    "bmc_gateway_ip": cidr.rsplit(".", 1)[0] + ".1",
-                    "vms": [{"bmc_ip": vm["bmc_ip"]} for vm in bmc_config["vms"]],
-                },
-            )
-            wait_for_job(host, _bj, timeout=30)
-            logger.info("Deploy %s: BMC bridge created", project_id[:8])
-
-        if _project_deleted(project_id):
-            _delete_deploy_progress(project_id)
-            return
-
-        _checkpoint(s, project_id, "disks")
-        _update_deploy_progress(project_id, "creating", "VMs")
-        logger.info("Deploy %s: creating VMs", project_id[:8])
-        vms = _deploy_create_disks(host, project_id, topology, pool)
-
-        _deploy_handle_recert(s, host, project_id, topology, pool)
-
-        _checkpoint(s, project_id, "vms")
-        _deploy_define_vms(
-            host, project_id, vms, topology, vni_map, pool, disk_cache, clock_offset
+        ctx = _deploy_single_host_setup(
+            s, project, host, topology, vni_map, project_id, resume_from, pool
         )
-
-        project.topology = topology
-        s.commit()
-
-        bmc_err, bmc_config = _deploy_setup_bmc(host, project_id, topology)
-        if bmc_err:
-            project.state = "error"
-            project.deploy_error = bmc_err
-            s.commit()
-            _delete_deploy_progress(project_id)
+        if ctx is None:
             return
 
-        _checkpoint(s, project_id, "containers")
-        _deploy_create_containers(host, project_id, topology, vni_map, pool)
-
-        if _project_deleted(project_id):
-            _delete_deploy_progress(project_id)
-            return
-
-        _checkpoint(s, project_id, "starting")
-        if not _deploy_start_vms(s, host, project_id, project, topology, auto_start):
-            return
-
-        project.state = "active" if auto_start else "stopped"
-        project.deploy_error = None
-        project.deploy_step = None
-        project.deploy_progress = None
-        project.deployed_topology = project.topology
-
-        _deploy_finalize_timers(project, auto_start)
-        _deploy_create_dns_records(
-            s, project_id, project, topology, lb_config, external_ips
-        )
-        _deploy_store_bmc_topology(project, topology, bmc_config)
-
-        s.commit()
-        notify_project(
+        _deploy_single_host_execute(
+            s,
+            host,
             project_id,
-            {
-                "type": "project-state",
-                "state": "active",
-                "deploy_error": None,
-                "auto_stop_expires_at": (
-                    project.auto_stop_expires_at.isoformat()
-                    if project.auto_stop_expires_at
-                    else None
-                ),
-                "lifetime_expires_at": (
-                    project.lifetime_expires_at.isoformat()
-                    if project.lifetime_expires_at
-                    else None
-                ),
-            },
+            project,
+            topology,
+            vni_map,
+            pool,
+            disk_cache,
+            clock_offset,
+            auto_start,
+            ctx["lb_config"],
+            ctx["external_ips"],
         )
-        vm_states = {vm["node_id"]: "running" for vm in vms}
-        notify_project(
-            project_id, {"type": "vm-state", "states": vm_states, "progress": {}}
-        )
-        _delete_deploy_progress(project_id)
-        logger.info("Deploy %s: complete — all VMs running", project_id[:8])
-
-        if auto_start and _has_ocp_monitor(topology):
-            project.ocp_status = "monitoring"
-            project.ocp_status_detail = None
-            project.ocp_install_elapsed = None
-            project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
-            s.commit()
-
     except Exception as e:
-        logger.exception("Deploy %s failed unexpectedly", project_id[:8])
-        _delete_deploy_progress(project_id)
-        try:
-            project = s.query(Project).filter_by(id=project_id).first()
-            if project:
-                project.state = "error"
-                project.deploy_error = str(e)
-                _cleanup_stale_shared_cache(s, project)
-                s.commit()
-                notify_project(
-                    project_id,
-                    {
-                        "type": "project-state",
-                        "state": "error",
-                        "deploy_error": project.deploy_error,
-                    },
-                )
-        except Exception:
-            logger.exception("Deploy %s: failed to set error state", project_id[:8])
+        _deploy_handle_failure(s, project_id, e)
     finally:
         if _host_id_for_inflight:
             record_deploy_end(_host_id_for_inflight)

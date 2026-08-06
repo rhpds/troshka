@@ -1067,3 +1067,1229 @@ class TestApplyDiskChanges:
         # remove + create + resize = 3 start_job calls
         assert mock_start.call_count == 3
         mock_cache.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _reconfigure_process_vms  (Priority 1)
+# ---------------------------------------------------------------------------
+
+
+class TestReconfigureProcessVms:
+    @patch("app.api.projects._deploy_added_vms")
+    @patch("app.api.projects._reconfigure_existing_vm")
+    @patch("app.api.projects._extract_vms")
+    def test_processes_existing_and_skips_added_removed(
+        self, mock_extract, mock_reconfig, mock_deploy
+    ):
+        from app.api.projects import _reconfigure_process_vms
+
+        mock_extract.return_value = [
+            {"node_id": "vm1", "name": "existing"},
+            {"node_id": "vm2", "name": "added"},
+            {"node_id": "vm3", "name": "removed"},
+        ]
+        diff = {
+            "added_vms": [{"id": "vm2"}],
+            "removed_vms": [{"id": "vm3"}],
+        }
+        errors = []
+        _reconfigure_process_vms(
+            MagicMock(), "p1", MagicMock(), {}, {}, {}, set(), None, diff, errors
+        )
+        # Only vm1 should be processed (not vm2=added, vm3=removed)
+        mock_reconfig.assert_called_once()
+        assert mock_reconfig.call_args[0][6] == {}  # vni_map
+        mock_deploy.assert_called_once()
+
+    @patch("app.api.projects._deploy_added_vms")
+    @patch("app.api.projects._reconfigure_existing_vm")
+    @patch("app.api.projects._extract_vms")
+    def test_no_added_vms_skips_deploy(self, mock_extract, mock_reconfig, mock_deploy):
+        from app.api.projects import _reconfigure_process_vms
+
+        mock_extract.return_value = [{"node_id": "vm1", "name": "existing"}]
+        diff = {"added_vms": [], "removed_vms": []}
+        errors = []
+        _reconfigure_process_vms(
+            MagicMock(), "p1", MagicMock(), {}, {}, {}, set(), None, diff, errors
+        )
+        mock_reconfig.assert_called_once()
+        mock_deploy.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _deploy_added_vms  (lines 2945-2984)
+# ---------------------------------------------------------------------------
+
+
+class TestDeployAddedVms:
+    @patch("app.api.projects.wait_for_job")
+    @patch("app.api.projects.start_job", return_value="j1")
+    @patch("app.api.projects._create_vm_via_troshkad")
+    @patch("app.api.projects._create_vm_disks_via_troshkad")
+    @patch("app.api.projects._create_seed_isos_via_troshkad")
+    @patch("app.api.projects.cache_library_images")
+    @patch("app.api.projects._find_vm_disks", return_value=[])
+    @patch("app.services.deploy_service._set_deploy_progress")
+    def test_deploys_added_vms(
+        self,
+        mock_set,
+        mock_find,
+        mock_cache,
+        mock_seed,
+        mock_disks,
+        mock_create,
+        mock_start,
+        mock_wait,
+    ):
+        from app.api.projects import _deploy_added_vms
+
+        added = [
+            {
+                "id": "new-vm-1",
+                "data": {"name": "newvm", "vcpus": 4, "ram": 8},
+            }
+        ]
+        current = {"startOrder": []}
+        errors = []
+        with patch(
+            "app.services.deploy_topology._vm_domain_name", return_value="dom-new"
+        ):
+            _deploy_added_vms(
+                MagicMock(), "p1", MagicMock(), current, {}, added, errors
+            )
+
+        mock_cache.assert_called_once()
+        mock_seed.assert_called_once()
+        mock_disks.assert_called_once()
+        mock_create.assert_called_once()
+        mock_start.assert_called_once()
+        assert len(errors) == 0
+
+    @patch("app.api.projects._create_vm_via_troshkad")
+    @patch("app.api.projects._create_vm_disks_via_troshkad")
+    @patch("app.api.projects._create_seed_isos_via_troshkad")
+    @patch("app.api.projects.cache_library_images")
+    @patch("app.api.projects._find_vm_disks", return_value=[])
+    @patch("app.services.deploy_service._set_deploy_progress")
+    def test_auto_start_disabled_skips_start(
+        self, mock_set, mock_find, mock_cache, mock_seed, mock_disks, mock_create
+    ):
+        from app.api.projects import _deploy_added_vms
+
+        added = [{"id": "vm-nostart", "data": {"name": "ns"}}]
+        current = {"startOrder": [{"vmId": "vm-nostart", "autoStart": False}]}
+        errors = []
+        with patch("app.api.projects.start_job") as mock_start:
+            _deploy_added_vms(
+                MagicMock(), "p1", MagicMock(), current, {}, added, errors
+            )
+            mock_start.assert_not_called()
+
+    @patch("app.api.projects._create_vm_via_troshkad")
+    @patch(
+        "app.api.projects._create_vm_disks_via_troshkad",
+        side_effect=RuntimeError("disk fail"),
+    )
+    @patch("app.api.projects._create_seed_isos_via_troshkad")
+    @patch("app.api.projects.cache_library_images")
+    @patch("app.api.projects._find_vm_disks", return_value=[])
+    @patch("app.services.deploy_service._set_deploy_progress")
+    def test_troshkad_error_appends_to_errors(
+        self, mock_set, mock_find, mock_cache, mock_seed, mock_disks, mock_create
+    ):
+        from app.api.projects import _deploy_added_vms
+
+        added = [{"id": "vm-fail", "data": {"name": "fail"}}]
+        errors = []
+        _deploy_added_vms(
+            MagicMock(), "p1", MagicMock(), {"startOrder": []}, {}, added, errors
+        )
+        assert len(errors) == 1
+        assert "vm-fail" in errors[0]
+
+
+# ---------------------------------------------------------------------------
+# _apply_kubevirt_vm_changes  (lines 2596-2636)
+# ---------------------------------------------------------------------------
+
+
+class TestApplyKubevirtVmChanges:
+    def test_deletes_removed_vms(self):
+        from app.api.projects import _apply_kubevirt_vm_changes
+
+        custom_api = MagicMock()
+        diff = {"removed_vms": ["vm-abcdefgh"]}
+        _apply_kubevirt_vm_changes(custom_api, "ns1", "p1234567", diff, [], {}, {})
+        custom_api.delete_namespaced_custom_object.assert_called_once()
+        call_kwargs = custom_api.delete_namespaced_custom_object.call_args
+        assert call_kwargs[1]["name"] == "vm-vm-abcde"
+
+    def test_patches_changed_vms(self):
+        from app.api.projects import _apply_kubevirt_vm_changes
+
+        custom_api = MagicMock()
+        existing_cr = {"spec": {"old": True}, "metadata": {}}
+        custom_api.get_namespaced_custom_object.return_value = existing_cr
+
+        diff = {"removed_vms": []}
+        changed_ids = ["vm-changed1"]
+        current_vms = {"vm-changed1": {"name": "bastion", "vcpus": 4, "ram_gb": 8}}
+        current = {
+            "nodes": [
+                {
+                    "id": "vm-changed1",
+                    "type": "vmNode",
+                    "data": {
+                        "id": "vm-changed1",
+                        "nics": [],
+                        "bootDevices": [],
+                    },
+                }
+            ]
+        }
+
+        with patch("app.api.projects._build_kubevirt_vm_spec") as mock_spec:
+            mock_spec.return_value = {"name": "bastion", "cpus": 4}
+            _apply_kubevirt_vm_changes(
+                custom_api,
+                "ns1",
+                "p1234567",
+                diff,
+                changed_ids,
+                current_vms,
+                current,
+            )
+
+        custom_api.replace_namespaced_custom_object.assert_called_once()
+
+    def test_delete_exception_ignored(self):
+        from app.api.projects import _apply_kubevirt_vm_changes
+
+        custom_api = MagicMock()
+        custom_api.delete_namespaced_custom_object.side_effect = Exception("404")
+        diff = {"removed_vms": ["vm-xx"]}
+        # Should not raise
+        _apply_kubevirt_vm_changes(custom_api, "ns", "p1", diff, [], {}, {})
+
+    def test_patch_exception_logged(self):
+        from app.api.projects import _apply_kubevirt_vm_changes
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.side_effect = Exception("not found")
+        diff = {"removed_vms": []}
+        current_vms = {"vm-err": {"name": "x", "vcpus": 2, "ram_gb": 4}}
+        current = {
+            "nodes": [
+                {
+                    "id": "vm-err",
+                    "type": "vmNode",
+                    "data": {"id": "vm-err", "nics": [], "bootDevices": []},
+                }
+            ]
+        }
+        with patch("app.api.projects._build_kubevirt_vm_spec", return_value={}):
+            _apply_kubevirt_vm_changes(
+                custom_api, "ns", "p1", diff, ["vm-err"], current_vms, current
+            )
+        custom_api.replace_namespaced_custom_object.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _do_reconfigure_kubevirt  (lines 2658-2750)
+# ---------------------------------------------------------------------------
+
+
+class TestDoReconfigureKubevirt:
+    @patch("app.api.projects._finalize_kubevirt_reconfigure")
+    @patch("app.api.projects._sync_eips_for_reconfigure")
+    @patch("app.api.projects._wait_kubevirt_vms_ready", return_value=None)
+    @patch("app.api.projects._apply_kubevirt_vm_changes")
+    @patch("app.api.projects._find_changed_kubevirt_vms", return_value=[])
+    def test_happy_path(
+        self, mock_find, mock_apply, mock_wait, mock_eips, mock_finalize
+    ):
+        from app.api.projects import _do_reconfigure_kubevirt
+
+        mock_session = MagicMock()
+        mock_proj = MagicMock()
+        mock_proj.id = "p1"
+        mock_host = MagicMock()
+        mock_host.id = "h1"
+        mock_host.provider_id = "prov1"
+        mock_provider = MagicMock()
+
+        call_count = {"n": 0}
+        results = [mock_proj, mock_host, mock_provider]
+
+        def _fake_first():
+            idx = call_count["n"]
+            call_count["n"] += 1
+            return results[idx] if idx < len(results) else MagicMock()
+
+        mock_session.query.return_value.filter_by.return_value.first = _fake_first
+
+        current = {"nodes": []}
+        deployed = {"nodes": []}
+
+        with patch("app.core.database.SessionLocal", return_value=mock_session):
+            with patch(
+                "app.services.providers.kubevirt._get_k8s_clients",
+                return_value=(MagicMock(), MagicMock(), MagicMock()),
+            ):
+                with patch(
+                    "app.services.providers.kubevirt._project_ns",
+                    return_value="troshka-p1",
+                ):
+                    with patch(
+                        "app.services.deploy_topology.diff_topologies",
+                        return_value={
+                            "added_vms": [],
+                            "removed_vms": [],
+                            "changed_vms": [],
+                            "has_changes": False,
+                        },
+                    ):
+                        with patch(
+                            "app.services.deploy_topology._extract_vms",
+                            return_value=[],
+                        ):
+                            with patch(
+                                "app.services.deploy_service._set_deploy_progress"
+                            ):
+                                with patch(
+                                    "app.services.deploy_service._delete_deploy_progress"
+                                ):
+                                    with patch(
+                                        "app.services.deploy_service._patch_kubevirt_gateway_forwards"
+                                    ):
+                                        _do_reconfigure_kubevirt(
+                                            "p1", "h1", current, deployed
+                                        )
+
+        mock_finalize.assert_called_once()
+
+    def test_no_project_returns_early(self):
+        from app.api.projects import _do_reconfigure_kubevirt
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.return_value = None
+
+        with patch("app.core.database.SessionLocal", return_value=mock_session):
+            _do_reconfigure_kubevirt("p1", "h1", {}, {})
+        mock_session.commit.assert_not_called()
+
+    def test_no_provider_sets_error(self):
+        from app.api.projects import _do_reconfigure_kubevirt
+
+        mock_session = MagicMock()
+        mock_proj = MagicMock()
+        mock_proj.id = "p1"
+        mock_host = MagicMock()
+        mock_host.provider_id = "prov1"
+
+        call_count = {"n": 0}
+        results = [mock_proj, mock_host, None]
+
+        def _fake_first():
+            idx = call_count["n"]
+            call_count["n"] += 1
+            return results[idx] if idx < len(results) else None
+
+        mock_session.query.return_value.filter_by.return_value.first = _fake_first
+
+        with patch("app.core.database.SessionLocal", return_value=mock_session):
+            _do_reconfigure_kubevirt("p1", "h1", {}, {})
+
+        assert mock_proj.state == "error"
+        assert "No provider" in mock_proj.deploy_error
+        mock_session.commit.assert_called()
+
+    def test_wait_error_returns_early(self):
+        from app.api.projects import _do_reconfigure_kubevirt
+
+        mock_session = MagicMock()
+        mock_proj = MagicMock()
+        mock_proj.id = "p1"
+        mock_host = MagicMock()
+        mock_host.id = "h1"
+        mock_host.provider_id = "prov1"
+        mock_provider = MagicMock()
+
+        call_count = {"n": 0}
+        results = [mock_proj, mock_host, mock_provider]
+
+        def _fake_first():
+            idx = call_count["n"]
+            call_count["n"] += 1
+            return results[idx] if idx < len(results) else MagicMock()
+
+        mock_session.query.return_value.filter_by.return_value.first = _fake_first
+
+        with patch("app.core.database.SessionLocal", return_value=mock_session):
+            with patch(
+                "app.services.providers.kubevirt._get_k8s_clients",
+                return_value=(MagicMock(), MagicMock(), MagicMock()),
+            ):
+                with patch(
+                    "app.services.providers.kubevirt._project_ns",
+                    return_value="ns",
+                ):
+                    with patch(
+                        "app.services.deploy_topology.diff_topologies",
+                        return_value={
+                            "added_vms": [],
+                            "removed_vms": [],
+                            "changed_vms": [],
+                            "has_changes": False,
+                        },
+                    ):
+                        with patch(
+                            "app.services.deploy_topology._extract_vms",
+                            return_value=[],
+                        ):
+                            with patch(
+                                "app.services.deploy_service._set_deploy_progress"
+                            ):
+                                with patch(
+                                    "app.services.deploy_service._delete_deploy_progress"
+                                ):
+                                    with patch(
+                                        "app.api.projects._apply_kubevirt_vm_changes"
+                                    ):
+                                        with patch(
+                                            "app.api.projects._find_changed_kubevirt_vms",
+                                            return_value=[],
+                                        ):
+                                            with patch(
+                                                "app.api.projects._wait_kubevirt_vms_ready",
+                                                return_value="vm_error",
+                                            ):
+                                                with patch(
+                                                    "app.api.projects._sync_eips_for_reconfigure"
+                                                ) as mock_eips:
+                                                    _do_reconfigure_kubevirt(
+                                                        "p1", "h1", {}, {}
+                                                    )
+                                                    mock_eips.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _sync_eips_for_reconfigure  (lines 2851-2914)
+# ---------------------------------------------------------------------------
+
+
+class TestSyncEipsForReconfigure:
+    def test_no_external_ips_returns_early(self):
+        from app.api.projects import _sync_eips_for_reconfigure
+
+        errors = []
+        _sync_eips_for_reconfigure(
+            MagicMock(), MagicMock(), MagicMock(), "p1", {}, errors
+        )
+        assert len(errors) == 0
+
+    @patch("app.api.projects._sync_transit_ports")
+    @patch("app.services.eip_service.sync_security_group_rules")
+    @patch("app.services.eip_service.associate_eip")
+    @patch("app.services.eip_service.allocate_eip")
+    def test_allocates_and_associates_eips(
+        self, mock_alloc, mock_assoc, mock_sync, mock_transit
+    ):
+        from app.api.projects import _sync_eips_for_reconfigure
+
+        mock_eip = MagicMock()
+        mock_eip.state = "allocated"
+        mock_eip.public_ip = "1.2.3.4"
+        mock_eip.private_ip = "10.0.0.5"
+        mock_alloc.return_value = mock_eip
+
+        s = MagicMock()
+        mock_provider = MagicMock(id="prov1")
+        # Use a function that returns what we need based on call context
+        s.query.return_value.filter_by.return_value.first.return_value = None
+
+        proj = MagicMock()
+        proj.provider_id = "prov1"
+        h = MagicMock()
+        h.provider_id = "prov1"
+
+        current = {
+            "externalIps": [{"id": "eip1"}],
+        }
+        errors = []
+
+        # Patch the Provider query to return a provider
+        with patch("app.api.projects._find_gateway_node", return_value=None):
+            with patch("app.api.projects._sync_eips_for_reconfigure.__module__"):
+                pass
+            # Rather than fighting the mock chain, patch allocate_eip to
+            # handle the "no existing" case: allocate_eip returns mock_eip
+            # and the provider query is also mocked. We set first() to None
+            # (for the ElasticIp query), then mock the Provider query
+            # separately.
+            # Actually, let's just use a simpler approach: override s.query
+            # to return different things based on the model argument.
+
+            eip_filter = MagicMock()
+            eip_filter.first.return_value = None  # no existing EIP
+
+            provider_filter = MagicMock()
+            provider_filter.first.return_value = mock_provider
+
+            def _query_dispatch(model):
+                m = MagicMock()
+                model_name = getattr(model, "__name__", str(model))
+                if "ElasticIp" in model_name:
+                    m.filter_by.return_value = eip_filter
+                elif "Provider" in model_name:
+                    m.filter_by.return_value = provider_filter
+                return m
+
+            s.query.side_effect = _query_dispatch
+
+            _sync_eips_for_reconfigure(s, proj, h, "p1", current, errors)
+
+        mock_alloc.assert_called_once()
+        mock_assoc.assert_called_once()
+        assert current["externalIps"][0]["ip"] == "1.2.3.4"
+
+    def test_exception_appends_error(self):
+        from app.api.projects import _sync_eips_for_reconfigure
+
+        s = MagicMock()
+        s.query.side_effect = Exception("db error")
+        proj = MagicMock()
+        proj.provider_id = "prov1"
+        errors = []
+        current = {"externalIps": [{"id": "eip1"}]}
+        _sync_eips_for_reconfigure(s, proj, MagicMock(), "p1", current, errors)
+        assert len(errors) == 1
+        assert "EIP" in errors[0]
+
+
+# ---------------------------------------------------------------------------
+# _sync_transit_ports  (lines 2786-2842)
+# ---------------------------------------------------------------------------
+
+
+class TestSyncTransitPorts:
+    @patch("app.services.providers.get_provider_driver")
+    def test_kubevirt_direct_update(self, mock_driver_fn):
+        from app.api.projects import _sync_transit_ports
+
+        driver = MagicMock()
+        mock_driver_fn.return_value = driver
+
+        provider = MagicMock()
+        provider.type = "kubevirt"
+        h = MagicMock()
+        s = MagicMock()
+        eip = MagicMock()
+        eip.canvas_eip_id = "eip1"
+        eip.allocation_id = "alloc1"
+        s.query.return_value.filter_by.return_value = [eip]
+
+        gw_node = {
+            "data": {
+                "portForwards": [{"extIpId": "eip1", "extPort": "443", "proto": "tcp"}]
+            }
+        }
+        with patch("app.services.providers.kubevirt._project_ns", return_value="ns1"):
+            _sync_transit_ports(s, provider, h, "p1234567", gw_node)
+
+        driver.update_eip_ports.assert_called_once()
+        call_kwargs = driver.update_eip_ports.call_args
+        assert call_kwargs[1]["namespace"] == "ns1"
+
+    @patch(
+        "app.services.eip_service.allocate_transit_ports", return_value={"8443": 443}
+    )
+    @patch("app.services.providers.get_provider_driver")
+    def test_non_kubevirt_allocates_transit(self, mock_driver_fn, mock_alloc):
+        from app.api.projects import _sync_transit_ports
+
+        driver = MagicMock()
+        mock_driver_fn.return_value = driver
+
+        provider = MagicMock()
+        provider.type = "gcp"
+        h = MagicMock()
+        s = MagicMock()
+        eip = MagicMock()
+        eip.canvas_eip_id = "eip1"
+        eip.allocation_id = "alloc1"
+        s.query.return_value.filter_by.return_value = [eip]
+
+        gw_node = {"data": {"portForwards": [{"extIpId": "eip1", "extPort": "443"}]}}
+        _sync_transit_ports(s, provider, h, "p1234567", gw_node)
+
+        mock_alloc.assert_called_once()
+        driver.update_eip_ports.assert_called_once()
+
+    @patch("app.services.providers.get_provider_driver")
+    def test_no_port_forwards_for_eip_skips(self, mock_driver_fn):
+        from app.api.projects import _sync_transit_ports
+
+        driver = MagicMock()
+        mock_driver_fn.return_value = driver
+
+        provider = MagicMock()
+        provider.type = "ec2"
+        s = MagicMock()
+        eip = MagicMock()
+        eip.canvas_eip_id = "eip1"
+        s.query.return_value.filter_by.return_value = [eip]
+
+        gw_node = {"data": {"portForwards": [{"extIpId": "other-eip"}]}}
+        _sync_transit_ports(s, provider, MagicMock(), "p1", gw_node)
+        driver.update_eip_ports.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _finalize_reconfigure  (lines 3270-3317)
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizeReconfigure:
+    @patch("app.api.projects._broadcast_vm_states")
+    @patch("app.services.ws_pubsub.notify_project")
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.placement.sync_host_capacity")
+    @patch("app.api.projects._reconfigure_bmc")
+    def test_no_errors_sets_deployed_topology(
+        self, mock_bmc, mock_sync, mock_del, mock_notify, mock_broadcast
+    ):
+        from app.api.projects import _finalize_reconfigure
+
+        s = MagicMock()
+        proj = MagicMock()
+        proj.topology = {"nodes": [{"type": "vmNode", "data": {"name": "vm1"}}]}
+        s.refresh = lambda p: None
+        h = MagicMock()
+
+        with patch(
+            "app.services.deploy_topology._extract_bmc_config", return_value=None
+        ):
+            _finalize_reconfigure(s, proj, h, "p1234567", {"nodes": []}, {}, [])
+
+        assert proj.state == "active"
+        assert proj.deploy_error is None
+        s.commit.assert_called()
+
+    @patch("app.api.projects._broadcast_vm_states")
+    @patch("app.services.ws_pubsub.notify_project")
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.placement.sync_host_capacity")
+    @patch("app.api.projects._reconfigure_bmc")
+    def test_errors_set_deploy_error(
+        self, mock_bmc, mock_sync, mock_del, mock_notify, mock_broadcast
+    ):
+        from app.api.projects import _finalize_reconfigure
+
+        s = MagicMock()
+        proj = MagicMock()
+        proj.topology = {"nodes": []}
+        s.refresh = lambda p: None
+
+        with patch(
+            "app.services.deploy_topology._extract_bmc_config", return_value=None
+        ):
+            _finalize_reconfigure(
+                s, proj, MagicMock(), "p1", {}, {}, ["error1", "error2"]
+            )
+
+        assert proj.state == "active"
+        assert "error1" in proj.deploy_error
+        assert "error2" in proj.deploy_error
+
+    @patch("app.api.projects._broadcast_vm_states")
+    @patch("app.services.ws_pubsub.notify_project")
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.placement.sync_host_capacity")
+    @patch("app.api.projects._reconfigure_bmc")
+    def test_bmc_config_included_in_deployed_topology(
+        self, mock_bmc, mock_sync, mock_del, mock_notify, mock_broadcast
+    ):
+        from app.api.projects import _finalize_reconfigure
+
+        s = MagicMock()
+        proj = MagicMock()
+        proj.topology = {"nodes": []}
+        s.refresh = lambda p: None
+        bmc_conf = {
+            "bmc_network": {"bmcUsername": "admin", "bmcPassword": "secret"},
+            "vms": [
+                {
+                    "node_id": "vm1",
+                    "bmc_ip": "192.168.100.10",
+                    "domain_name": "dom1",
+                }
+            ],
+        }
+
+        with patch(
+            "app.services.deploy_topology._extract_bmc_config",
+            return_value=bmc_conf,
+        ):
+            _finalize_reconfigure(
+                s, proj, MagicMock(), "p1234567", {"nodes": []}, {}, []
+            )
+
+        deployed = proj.deployed_topology
+        assert "bmc" in deployed
+        assert "vm1" in deployed["bmc"]["vms"]
+        assert deployed["bmc"]["username"] == "admin"
+
+
+# ---------------------------------------------------------------------------
+# _cleanup_old_vm_files  (line ~3561)
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupOldVmFiles:
+    @patch("app.api.projects.wait_for_job")
+    @patch("app.api.projects.start_job", return_value="j1")
+    @patch("app.api.projects._seed_path", return_value="/seed/path")
+    @patch("app.api.projects._disk_path", return_value="/disk/path")
+    @patch(
+        "app.api.projects._find_vm_disks",
+        return_value=[{"node_id": "d1", "format": "qcow2"}],
+    )
+    def test_removes_disk_and_seed(
+        self, mock_find, mock_disk_path, mock_seed_path, mock_start, mock_wait
+    ):
+        from app.api.projects import _cleanup_old_vm_files
+
+        _cleanup_old_vm_files(MagicMock(), "p1", "vm1", {"nodes": []})
+        mock_start.assert_called_once()
+        payload = mock_start.call_args[0][2]
+        assert "/disk/path" in payload["paths"]
+        assert "/seed/path" in payload["paths"]
+
+    @patch("app.api.projects._seed_path", return_value="/seed/path")
+    @patch(
+        "app.api.projects._find_vm_disks",
+        return_value=[{"node_id": "d1", "format": "iso"}],
+    )
+    def test_skips_iso_disks(self, mock_find, mock_seed_path):
+        from app.api.projects import _cleanup_old_vm_files
+
+        with patch("app.api.projects.start_job", return_value="j1") as mock_start:
+            with patch("app.api.projects.wait_for_job"):
+                _cleanup_old_vm_files(MagicMock(), "p1", "vm1", {})
+
+        payload = mock_start.call_args[0][2]
+        # ISO disks should not produce a disk_path entry, only seed
+        assert len(payload["paths"]) == 1
+        assert payload["paths"][0] == "/seed/path"
+
+    @patch("app.api.projects._seed_path", return_value="/seed/path")
+    @patch("app.api.projects._find_vm_disks", return_value=[])
+    def test_troshkad_error_non_fatal(self, mock_find, mock_seed_path):
+        from app.api.projects import _cleanup_old_vm_files
+        from app.services.troshkad_client import TroshkadError
+
+        with patch("app.api.projects.start_job", side_effect=TroshkadError("fail")):
+            # Should not raise
+            with patch(
+                "app.services.deploy_topology._vm_domain_name", return_value="dom"
+            ):
+                _cleanup_old_vm_files(MagicMock(), "p1", "vm1", {})
+
+
+# ---------------------------------------------------------------------------
+# _cache_redeploy_images  (line ~3626)
+# ---------------------------------------------------------------------------
+
+
+class TestCacheRedeployImages:
+    @patch("app.api.projects.cache_library_images")
+    def test_updates_progress(self, mock_cache):
+        from app.api.projects import _cache_redeploy_images, _redeploy_progress
+
+        _cache_redeploy_images(MagicMock(), MagicMock(), {"nodes": []}, "dom-test")
+        assert (
+            "dom-test" not in _redeploy_progress
+            or _redeploy_progress.get("dom-test", {}).get("step") == "downloading"
+        )
+        mock_cache.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _create_redeploy_vm  (line ~3636)
+# ---------------------------------------------------------------------------
+
+
+class TestCreateRedeployVm:
+    @patch("app.api.projects._create_vm_via_troshkad")
+    @patch("app.api.projects._create_vm_disks_via_troshkad")
+    @patch("app.api.projects._find_vm_disks", return_value=[])
+    @patch("app.api.projects._build_redeploy_vm_data", return_value={"node_id": "vm1"})
+    @patch("app.api.projects._create_seed_isos_via_troshkad")
+    def test_creates_seed_disks_and_vm(
+        self, mock_seed, mock_build, mock_find, mock_disks, mock_create
+    ):
+        from app.api.projects import _create_redeploy_vm
+
+        vm_node = {"id": "vm1", "data": {"name": "test"}}
+        pool = MagicMock()
+        pool.mode = "local"
+        _create_redeploy_vm(
+            MagicMock(), "p1", vm_node, {"nodes": []}, {}, pool, "vm1", "dom-1"
+        )
+        mock_seed.assert_called_once()
+        mock_disks.assert_called_once()
+        mock_create.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _do_redeploy_bg  (lines 3661-3708)
+# ---------------------------------------------------------------------------
+
+
+class TestDoRedeployBg:
+    @patch("app.api.projects._start_vm_if_needed")
+    @patch("app.api.projects._create_redeploy_vm")
+    @patch("app.api.projects._setup_pxe_via_troshkad")
+    @patch("app.api.projects._cache_redeploy_images")
+    @patch("app.api.projects._build_connected_topology", return_value={"nodes": []})
+    @patch(
+        "app.api.projects._find_vm_node_in_topology",
+        return_value={"id": "vm1", "type": "vmNode", "data": {}},
+    )
+    @patch("app.api.projects._cleanup_old_vm_files")
+    @patch("app.api.projects.troshkad_undefine_vm")
+    @patch(
+        "app.api.projects.troshkad_get_vm_state",
+        return_value={"state": "running"},
+    )
+    def test_happy_path(
+        self,
+        mock_state,
+        mock_undef,
+        mock_cleanup,
+        mock_find_node,
+        mock_connected,
+        mock_cache,
+        mock_pxe,
+        mock_create,
+        mock_start,
+    ):
+        from app.api.projects import _do_redeploy_bg
+
+        mock_session = MagicMock()
+        mock_proj = MagicMock()
+        mock_proj.id = "p1"
+        mock_proj.topology = {"nodes": []}
+        mock_proj.vni_map = {}
+        mock_host = MagicMock()
+        mock_host.id = "h1"
+        mock_session.query.return_value.filter_by.return_value.first.side_effect = [
+            mock_proj,
+            mock_host,
+        ]
+
+        with patch("app.core.database.SessionLocal", return_value=mock_session):
+            with patch(
+                "app.services.deploy_topology._vm_domain_name",
+                return_value="dom-vm1",
+            ):
+                with patch("app.api.projects._vm_dir", return_value="/vms/p1"):
+                    with patch(
+                        "app.services.deploy_service._get_host_pool",
+                        return_value=None,
+                    ):
+                        _do_redeploy_bg("p1", "h1", "vm1")
+
+        mock_undef.assert_called_once()
+        mock_cleanup.assert_called_once()
+        mock_create.assert_called_once()
+        mock_start.assert_called_once()
+        mock_session.commit.assert_called()
+
+    def test_no_project_returns_early(self):
+        from app.api.projects import _do_redeploy_bg
+
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.return_value = None
+
+        with patch("app.core.database.SessionLocal", return_value=mock_session):
+            _do_redeploy_bg("p1", "h1", "vm1")
+        mock_session.commit.assert_not_called()
+
+    @patch("app.api.projects._cleanup_old_vm_files")
+    @patch("app.api.projects.troshkad_undefine_vm")
+    @patch(
+        "app.api.projects.troshkad_get_vm_state",
+        return_value={"state": "running"},
+    )
+    def test_vm_node_not_found_returns_early(
+        self, mock_state, mock_undef, mock_cleanup
+    ):
+        from app.api.projects import _do_redeploy_bg
+
+        mock_session = MagicMock()
+        mock_proj = MagicMock()
+        mock_proj.id = "p1"
+        mock_proj.topology = {"nodes": []}
+        mock_proj.vni_map = {}
+        mock_host = MagicMock()
+        mock_host.id = "h1"
+        mock_session.query.return_value.filter_by.return_value.first.side_effect = [
+            mock_proj,
+            mock_host,
+        ]
+
+        with patch("app.core.database.SessionLocal", return_value=mock_session):
+            with patch(
+                "app.services.deploy_topology._vm_domain_name",
+                return_value="dom-x",
+            ):
+                with patch("app.api.projects._vm_dir"):
+                    with patch(
+                        "app.api.projects._find_vm_node_in_topology",
+                        return_value=None,
+                    ):
+                        _do_redeploy_bg("p1", "h1", "vm-missing")
+
+        mock_session.commit.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _wait_kubevirt_vms_ready  (lines ~2544-2582)
+# ---------------------------------------------------------------------------
+
+
+class TestWaitKubevirtVmsReady:
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._set_deploy_progress")
+    def test_all_ready_returns_none(self, mock_set, mock_del):
+        from app.api.projects import _wait_kubevirt_vms_ready
+
+        custom_api = MagicMock()
+        custom_api.list_namespaced_custom_object.return_value = {
+            "items": [{"status": {"state": "Running"}, "spec": {"name": "vm1"}}]
+        }
+        proj = MagicMock()
+        s = MagicMock()
+        result = _wait_kubevirt_vms_ready(
+            custom_api, "ns", "p1", proj, s, deadline_secs=1
+        )
+        assert result is None
+
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._set_deploy_progress")
+    def test_vm_error_returns_string(self, mock_set, mock_del):
+        from app.api.projects import _wait_kubevirt_vms_ready
+
+        custom_api = MagicMock()
+        custom_api.list_namespaced_custom_object.return_value = {
+            "items": [
+                {
+                    "status": {"state": "Error", "message": "disk not found"},
+                    "spec": {"name": "vm-bad"},
+                }
+            ]
+        }
+        proj = MagicMock()
+        s = MagicMock()
+        result = _wait_kubevirt_vms_ready(
+            custom_api, "ns", "p1", proj, s, deadline_secs=1
+        )
+        assert result == "vm_error"
+        assert proj.state == "error"
+        assert "vm-bad" in proj.deploy_error
+
+
+# ---------------------------------------------------------------------------
+# redeploy_project endpoint  (lines 3759-3797)
+# ---------------------------------------------------------------------------
+
+
+class TestRedeployProjectEndpoint:
+    def _create_project(self, state="active", host_id=None, topology=None):
+        import uuid
+
+        from app.models.project import Project
+
+        db = TestSession()
+        proj = Project(
+            id=str(uuid.uuid4()),
+            name=f"redeploy-test-{uuid.uuid4().hex[:6]}",
+            owner_id=_user.id,
+            state=state,
+            topology=topology,
+            host_id=host_id,
+        )
+        db.add(proj)
+        db.commit()
+        db.refresh(proj)
+        db.close()
+        return proj
+
+    def test_404_not_found(self):
+        resp = client.post("/api/v1/projects/nonexistent/redeploy", headers=HEADERS)
+        assert resp.status_code == 404
+
+    def test_409_wrong_state(self):
+        proj = self._create_project(state="deploying")
+        resp = client.post(f"/api/v1/projects/{proj.id}/redeploy", headers=HEADERS)
+        assert resp.status_code == 409
+
+    def test_400_no_topology(self):
+        proj = self._create_project(state="active", topology=None)
+        resp = client.post(f"/api/v1/projects/{proj.id}/redeploy", headers=HEADERS)
+        assert resp.status_code == 400
+
+    def test_400_no_vms(self):
+        proj = self._create_project(
+            state="active",
+            topology={"nodes": [{"type": "networkNode", "data": {}}], "edges": []},
+        )
+        resp = client.post(f"/api/v1/projects/{proj.id}/redeploy", headers=HEADERS)
+        assert resp.status_code == 400
+
+    @patch("app.core.redis.enqueue_job")
+    @patch("app.services.deploy_service._mark_deploy_cancelled")
+    def test_success_no_host(self, mock_cancel, mock_enqueue):
+        proj = self._create_project(
+            state="active",
+            topology={
+                "nodes": [
+                    {
+                        "id": "vm1",
+                        "type": "vmNode",
+                        "data": {"vcpus": 2, "ram": 4, "name": "vm"},
+                    }
+                ],
+                "edges": [],
+            },
+        )
+        resp = client.post(f"/api/v1/projects/{proj.id}/redeploy", headers=HEADERS)
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "deploying"
+        mock_enqueue.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _reconfigure_existing_vm  (covers lines ~3169-3268)
+# ---------------------------------------------------------------------------
+
+
+class TestReconfigureExistingVm:
+    @patch("app.api.projects.troshkad_reconfigure_vm")
+    @patch(
+        "app.api.projects.troshkad_get_vm_config",
+        return_value={
+            "boot_devs": ["hd"],
+            "vcpus": 2,
+            "ram_mb": 4096,
+            "nics": [{"bridge": "br-100"}],
+            "disks": ["/vms/p1/d1.qcow2"],
+            "cdroms": [],
+        },
+    )
+    @patch("app.api.projects._apply_disk_changes")
+    @patch(
+        "app.api.projects._detect_disk_changes",
+        return_value={
+            "disk_list": [{"path": "/vms/p1/d1.qcow2", "format": "qcow2"}],
+            "cdrom_list": [],
+            "any_disk_changed": False,
+            "needs_library_download": False,
+            "files_to_remove": [],
+            "disks_to_create": [],
+            "disks_to_resize": [],
+        },
+    )
+    @patch("app.api.projects._find_vm_networks")
+    @patch("app.api.projects._find_vm_disks", return_value=[])
+    @patch("app.services.deploy_service._set_deploy_progress")
+    def test_unchanged_vm_skips_reconfigure(
+        self,
+        mock_set,
+        mock_find_disks,
+        mock_find_nets,
+        mock_detect,
+        mock_apply,
+        mock_config,
+        mock_reconfig,
+    ):
+        from app.api.projects import _reconfigure_existing_vm
+
+        mock_find_nets.return_value = [{"bridge": "br-100", "mac": "aa:bb:cc:dd:ee:ff"}]
+        vm = {
+            "node_id": "vm1",
+            "name": "test",
+            "vcpus": 2,
+            "ram_gb": 4,
+            "cloud_init": False,
+        }
+        current = {"nodes": [], "edges": []}
+        deployed = {"nodes": [], "edges": []}
+
+        with patch(
+            "app.services.deploy_topology._vm_domain_name", return_value="dom-vm1"
+        ):
+            with patch(
+                "app.services.deploy_topology._resolve_boot_devs",
+                return_value=["hd"],
+            ):
+                _reconfigure_existing_vm(
+                    MagicMock(),
+                    "p1234567",
+                    MagicMock(),
+                    current,
+                    deployed,
+                    vm,
+                    {},
+                    set(),
+                    None,
+                    {"added_vms": [], "removed_vms": [], "changed_vms": []},
+                    [],
+                )
+
+        mock_reconfig.assert_not_called()
+        mock_apply.assert_not_called()
+
+    @patch("app.api.projects.troshkad_reconfigure_vm")
+    @patch(
+        "app.api.projects.troshkad_get_vm_config",
+        return_value={
+            "boot_devs": ["hd"],
+            "vcpus": 2,
+            "ram_mb": 4096,
+            "nics": [{"bridge": "br-100"}],
+            "disks": ["/vms/p1/d1.qcow2"],
+            "cdroms": [],
+        },
+    )
+    @patch("app.api.projects._apply_disk_changes")
+    @patch(
+        "app.api.projects._detect_disk_changes",
+        return_value={
+            "disk_list": [{"path": "/vms/p1/d1.qcow2", "format": "qcow2"}],
+            "cdrom_list": [],
+            "any_disk_changed": False,
+            "needs_library_download": False,
+            "files_to_remove": [],
+            "disks_to_create": [],
+            "disks_to_resize": [],
+        },
+    )
+    @patch("app.api.projects._find_vm_networks")
+    @patch("app.api.projects._find_vm_disks", return_value=[])
+    @patch("app.services.deploy_service._set_deploy_progress")
+    def test_changed_vcpus_triggers_reconfigure(
+        self,
+        mock_set,
+        mock_find_disks,
+        mock_find_nets,
+        mock_detect,
+        mock_apply,
+        mock_config,
+        mock_reconfig,
+    ):
+        from app.api.projects import _reconfigure_existing_vm
+
+        mock_find_nets.return_value = [{"bridge": "br-100", "mac": "aa:bb:cc:dd:ee:ff"}]
+        vm = {
+            "node_id": "vm1",
+            "name": "test",
+            "vcpus": 4,
+            "ram_gb": 4,
+            "cloud_init": False,
+        }
+        current = {"nodes": [], "edges": []}
+        deployed = {"nodes": [], "edges": []}
+
+        with patch(
+            "app.services.deploy_topology._vm_domain_name", return_value="dom-vm1"
+        ):
+            with patch(
+                "app.services.deploy_topology._resolve_boot_devs",
+                return_value=["hd"],
+            ):
+                _reconfigure_existing_vm(
+                    MagicMock(),
+                    "p1234567",
+                    MagicMock(),
+                    current,
+                    deployed,
+                    vm,
+                    {},
+                    set(),
+                    None,
+                    {"added_vms": [], "removed_vms": [], "changed_vms": []},
+                    [],
+                )
+
+        mock_reconfig.assert_called_once()
+        call_kwargs = mock_reconfig.call_args
+        assert call_kwargs[1]["vcpus"] == 4
+
+    @patch("app.api.projects._apply_disk_changes")
+    @patch(
+        "app.api.projects._detect_disk_changes",
+        return_value={
+            "disk_list": [],
+            "cdrom_list": [],
+            "any_disk_changed": False,
+            "needs_library_download": False,
+            "files_to_remove": [],
+            "disks_to_create": [],
+            "disks_to_resize": [],
+        },
+    )
+    @patch("app.api.projects._find_vm_networks", return_value=[])
+    @patch("app.api.projects._find_vm_disks", return_value=[])
+    @patch("app.services.deploy_service._set_deploy_progress")
+    def test_no_config_adds_to_added_vms(
+        self,
+        mock_set,
+        mock_find_disks,
+        mock_find_nets,
+        mock_detect,
+        mock_apply,
+    ):
+        from app.api.projects import _reconfigure_existing_vm
+
+        with patch("app.api.projects.troshkad_get_vm_config", return_value=None):
+            vm = {
+                "node_id": "vm1",
+                "name": "test",
+                "vcpus": 2,
+                "ram_gb": 4,
+                "cloud_init": False,
+            }
+            current = {
+                "nodes": [{"id": "vm1", "type": "vmNode", "data": {}}],
+                "edges": [],
+            }
+            deployed = {"nodes": [], "edges": []}
+            diff = {"added_vms": [], "removed_vms": [], "changed_vms": []}
+
+            with patch(
+                "app.services.deploy_topology._vm_domain_name", return_value="dom"
+            ):
+                with patch(
+                    "app.services.deploy_topology._resolve_boot_devs",
+                    return_value=[],
+                ):
+                    _reconfigure_existing_vm(
+                        MagicMock(),
+                        "p1234567",
+                        MagicMock(),
+                        current,
+                        deployed,
+                        vm,
+                        {},
+                        set(),
+                        None,
+                        diff,
+                        [],
+                    )
+
+            assert len(diff["added_vms"]) == 1
+            assert diff["added_vms"][0]["id"] == "vm1"

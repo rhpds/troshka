@@ -3421,6 +3421,34 @@ def _get_storage_pool_for_host(h, s):
     return None
 
 
+def _reconfigure_process_vms(
+    h, p_id, s, current, deployed, vni_map, restart_vm_ids, pool, diff, errors
+):
+    """Update existing VMs and deploy newly added VMs during reconfigure."""
+    vms = _extract_vms(current)
+    added_ids = {n["id"] for n in diff["added_vms"]}
+    removed_ids = {n["id"] for n in diff["removed_vms"]}
+    for vm in vms:
+        if vm["node_id"] in added_ids or vm["node_id"] in removed_ids:
+            continue
+        _reconfigure_existing_vm(
+            h,
+            p_id,
+            s,
+            current,
+            deployed,
+            vm,
+            vni_map,
+            restart_vm_ids,
+            pool,
+            diff,
+            errors,
+        )
+
+    if diff["added_vms"]:
+        _deploy_added_vms(h, p_id, s, current, vni_map, diff["added_vms"], errors)
+
+
 def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
     from app.core.database import SessionLocal
     from app.services.deploy_service import (
@@ -3479,28 +3507,18 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
 
         _remove_vms_from_reconfigure(h, p_id, diff, vm_dir_path)
 
-        vms = _extract_vms(current)
-        added_ids = {n["id"] for n in diff["added_vms"]}
-        removed_ids = {n["id"] for n in diff["removed_vms"]}
-        for vm in vms:
-            if vm["node_id"] in added_ids or vm["node_id"] in removed_ids:
-                continue
-            _reconfigure_existing_vm(
-                h,
-                p_id,
-                s,
-                current,
-                deployed,
-                vm,
-                vni_map,
-                restart_vm_ids,
-                _pool,
-                diff,
-                errors,
-            )
-
-        if diff["added_vms"]:
-            _deploy_added_vms(h, p_id, s, current, vni_map, diff["added_vms"], errors)
+        _reconfigure_process_vms(
+            h,
+            p_id,
+            s,
+            current,
+            deployed,
+            vni_map,
+            restart_vm_ids,
+            _pool,
+            diff,
+            errors,
+        )
 
         _finalize_reconfigure(s, proj, h, p_id, current, deployed, errors)
     except Exception:
