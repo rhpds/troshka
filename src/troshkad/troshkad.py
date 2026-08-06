@@ -2479,7 +2479,7 @@ def _setup_bastion_autologin(job, bastion_mount):
             " ~/.config/autostart/ocp-autologin.desktop\n"
             "fi\n"
         )
-    os.chmod(boot_script, 0o755)
+    os.chmod(boot_script, 0o700)
     os.chown(boot_script, 1000, 1000)
     autostart_dir = os.path.join(
         bastion_mount,
@@ -3186,8 +3186,8 @@ def _extract_pxe_boot_files(job, mount_point, tftp_root):
             os.makedirs(os.path.dirname(i_dest), exist_ok=True)
             shutil.copy2(k_src, k_dest)
             shutil.copy2(i_src, i_dest)
-            os.chmod(k_dest, 0o644)
-            os.chmod(i_dest, 0o644)
+            os.chmod(k_dest, 0o600)
+            os.chmod(i_dest, 0o600)
             _job_log(job, f"Copied kernel to {paths['kernel']}")
             _job_log(job, f"Copied initrd to {paths['initrd']}")
             return
@@ -3213,7 +3213,7 @@ def _try_uefi_bootloader(job, mount_point, tftp_root):
         if os.path.isfile(src):
             dest = os.path.join(tftp_root, fname)
             shutil.copy2(src, dest)
-            os.chmod(dest, 0o644)
+            os.chmod(dest, 0o600)
     _job_log(
         job, f"Copied EFI/BOOT/ directory ({len(os.listdir(efi_boot_dir))} files)"
     )
@@ -3233,7 +3233,7 @@ def _try_bios_bootloader(job, mount_point, tftp_root):
             bl_name = os.path.basename(bl_path)
             bl_dest = os.path.join(tftp_root, bl_name)
             shutil.copy2(bl_src, bl_dest)
-            os.chmod(bl_dest, 0o644)
+            os.chmod(bl_dest, 0o600)
             _job_log(job, f"Copied BIOS bootloader from {bl_path}")
             return bl_name
     return None
@@ -7874,7 +7874,7 @@ def handle_update_vncd(handler, params):
         with open(vncd_path + ".new", "wb") as f:
             f.write(script_bytes)
         os.rename(vncd_path + ".new", vncd_path)
-        os.chmod(vncd_path, 0o755)
+        os.chmod(vncd_path, 0o700)
     except Exception as e:
         handler._send_json(500, {"error": f"failed to write vncd: {e}"})
         return
@@ -8006,7 +8006,7 @@ def main():
 
     server = create_server(_config)
     _server_ref[0] = server
-    logger.info("troshkad %s listening on port %d", VERSION, _config["port"])
+    logger.info("troshkad %s listening on port %d", str(VERSION), int(_config["port"]))
 
     try:
         server.serve_forever()
