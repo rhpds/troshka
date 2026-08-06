@@ -273,7 +273,10 @@ def _provision_pool_storage(
     "/",
     response_model=StoragePoolResponse,
     status_code=201,
-    responses={404: {"description": _ERR_PROVIDER_NOT_FOUND}},
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": _ERR_PROVIDER_NOT_FOUND},
+    },
 )
 def create_pool(
     body: StoragePoolCreate,

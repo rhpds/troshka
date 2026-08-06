@@ -396,6 +396,85 @@ def _delete_namespace_jobs(provider, namespace):
         pass
 
 
+def _query_cluster_capacity(core_api):
+    """Sum allocatable vCPUs and RAM across schedulable worker nodes.
+
+    Returns ``(total_vcpus, total_ram_mb)`` or ``(256, 1048576)`` as fallback.
+    """
+    total_vcpus = 0
+    total_ram_mb = 0
+    try:
+        nodes = core_api.list_node()
+        for node in getattr(nodes, "items", []):
+            labels = node.metadata.labels or {}
+            taints = node.spec.taints or []
+
+            is_worker = "node-role.kubernetes.io/worker" in labels
+            is_unschedulable = node.spec.unschedulable or False
+            has_noschedule = any(t.effect == "NoSchedule" for t in taints)
+            if not is_worker or is_unschedulable or has_noschedule:
+                continue
+
+            alloc = node.status.allocatable or {}
+            cpu_str = alloc.get("cpu", "0")
+            mem_str = alloc.get("memory", "0")
+            total_vcpus += int(cpu_str)
+            if mem_str.endswith("Ki"):
+                total_ram_mb += int(mem_str[:-2]) // 1024
+            elif mem_str.endswith("Mi"):
+                total_ram_mb += int(mem_str[:-2])
+            elif mem_str.endswith("Gi"):
+                total_ram_mb += int(mem_str[:-2]) * 1024
+    except Exception as e:
+        logger.warning(f"Failed to query cluster capacity: {e}")
+        total_vcpus = 256
+        total_ram_mb = 1024 * 1024
+    return total_vcpus, total_ram_mb
+
+
+def _query_ceph_storage_gb(core_api):
+    """Query total Ceph storage via the rook-ceph-tools pod. Returns 0 on failure."""
+    try:
+        toolbox_pods = core_api.list_namespaced_pod(
+            namespace="openshift-storage",
+            label_selector="app=rook-ceph-tools",
+        )
+        if not getattr(toolbox_pods, "items", []):
+            return 0
+
+        from kubernetes.stream import stream as k8s_stream
+
+        resp = k8s_stream(
+            core_api.connect_get_namespaced_pod_exec,
+            getattr(toolbox_pods, "items", [])[0].metadata.name,
+            "openshift-storage",
+            command=["ceph", "df", "-f", "json"],
+            stderr=True,
+            stdout=True,
+            stdin=False,
+            tty=False,
+            _preload_content=False,
+        )
+        stdout = ""
+        while resp.is_open():
+            resp.update(timeout=10)
+            if resp.peek_stdout():
+                stdout += resp.read_stdout()
+            if resp.peek_stderr():
+                resp.read_stderr()
+        resp.close()
+
+        import json
+
+        ceph_df = json.loads(stdout)
+        stats = ceph_df.get("stats", {})
+        total_bytes = stats.get("total_bytes", 0)
+        return int(total_bytes / (1024**3))
+    except Exception as e:
+        logger.warning(f"Failed to query Ceph storage capacity: {e}")
+        return 0
+
+
 class KubeVirtDriver(ProviderDriver):
     def provision_host(
         self, provider, host_id, instance_type, storage_size_gb, **kwargs
@@ -406,72 +485,8 @@ class KubeVirtDriver(ProviderDriver):
         creds = provider.get_credentials()
         api_url = creds["api_url"]
 
-        total_vcpus = 0
-        total_ram_mb = 0
-        try:
-            nodes = core_api.list_node()
-            for node in getattr(nodes, "items", []):
-                labels = node.metadata.labels or {}
-                taints = node.spec.taints or []
-
-                is_worker = "node-role.kubernetes.io/worker" in labels
-                is_unschedulable = node.spec.unschedulable or False
-                has_noschedule = any(t.effect == "NoSchedule" for t in taints)
-                if not is_worker or is_unschedulable or has_noschedule:
-                    continue
-
-                alloc = node.status.allocatable or {}
-                cpu_str = alloc.get("cpu", "0")
-                mem_str = alloc.get("memory", "0")
-                total_vcpus += int(cpu_str)
-                if mem_str.endswith("Ki"):
-                    total_ram_mb += int(mem_str[:-2]) // 1024
-                elif mem_str.endswith("Mi"):
-                    total_ram_mb += int(mem_str[:-2])
-                elif mem_str.endswith("Gi"):
-                    total_ram_mb += int(mem_str[:-2]) * 1024
-        except Exception as e:
-            logger.warning(f"Failed to query cluster capacity: {e}")
-            total_vcpus = 256
-            total_ram_mb = 1024 * 1024
-
-        storage_gb = 0
-        try:
-            toolbox_pods = core_api.list_namespaced_pod(
-                namespace="openshift-storage",
-                label_selector="app=rook-ceph-tools",
-            )
-            if getattr(toolbox_pods, "items", []):
-                from kubernetes.stream import stream as k8s_stream
-
-                resp = k8s_stream(
-                    core_api.connect_get_namespaced_pod_exec,
-                    getattr(toolbox_pods, "items", [])[0].metadata.name,
-                    "openshift-storage",
-                    command=["ceph", "df", "-f", "json"],
-                    stderr=True,
-                    stdout=True,
-                    stdin=False,
-                    tty=False,
-                    _preload_content=False,
-                )
-                stdout = ""
-                while resp.is_open():
-                    resp.update(timeout=10)
-                    if resp.peek_stdout():
-                        stdout += resp.read_stdout()
-                    if resp.peek_stderr():
-                        resp.read_stderr()
-                resp.close()
-
-                import json
-
-                ceph_df = json.loads(stdout)
-                stats = ceph_df.get("stats", {})
-                total_bytes = stats.get("total_bytes", 0)
-                storage_gb = int(total_bytes / (1024**3))
-        except Exception as e:
-            logger.warning(f"Failed to query Ceph storage capacity: {e}")
+        total_vcpus, total_ram_mb = _query_cluster_capacity(core_api)
+        storage_gb = _query_ceph_storage_gb(core_api)
 
         return {
             "host_id": host_id,

@@ -10,6 +10,41 @@ from app.models.storage_pool import StoragePool
 logger = logging.getLogger(__name__)
 
 
+def _validate_target_state_and_capacity(
+    db: Session, target: Host, project: Project
+) -> list[str]:
+    """Check target host state, agent status, and resource capacity."""
+    from app.services.placement import (
+        calculate_project_requirements,
+        get_allocatable,
+        sync_host_capacity,
+    )
+
+    errors = []
+    if target.state != "active":
+        errors.append(f"Target host must be active (current state: {target.state})")
+    if target.agent_status != "connected":
+        errors.append(
+            f"Target host agent must be connected (status: {target.agent_status})"
+        )
+
+    topology = project.deployed_topology or project.topology or {}
+    reqs = calculate_project_requirements(topology)
+    sync_host_capacity(db, target)
+    alloc_vcpus, alloc_ram = get_allocatable(target)
+    free_vcpus = alloc_vcpus - target.used_vcpus
+    free_ram = alloc_ram - target.used_ram_mb
+    if free_vcpus < reqs["total_vcpus"]:
+        errors.append(
+            f"Target host has insufficient CPU ({free_vcpus} free, need {reqs['total_vcpus']})"
+        )
+    if free_ram < reqs["total_ram_mb"]:
+        errors.append(
+            f"Target host has insufficient RAM ({free_ram} MB free, need {reqs['total_ram_mb']} MB)"
+        )
+    return errors
+
+
 def validate_migration(
     db: Session, project_id: str, source_host_id: str, target_host_id: str
 ) -> list[str]:
@@ -54,34 +89,7 @@ def validate_migration(
     if pool.mode == "local":
         errors.append("Migration requires shared storage (pool mode is 'local')")
 
-    if target.state != "active":
-        errors.append(f"Target host must be active (current state: {target.state})")
-    if target.agent_status != "connected":
-        errors.append(
-            f"Target host agent must be connected (status: {target.agent_status})"
-        )
-
-    # Check target has enough capacity
-    from app.services.placement import (
-        calculate_project_requirements,
-        get_allocatable,
-        sync_host_capacity,
-    )
-
-    topology = project.deployed_topology or project.topology or {}
-    reqs = calculate_project_requirements(topology)
-    sync_host_capacity(db, target)
-    alloc_vcpus, alloc_ram = get_allocatable(target)
-    free_vcpus = alloc_vcpus - target.used_vcpus
-    free_ram = alloc_ram - target.used_ram_mb
-    if free_vcpus < reqs["total_vcpus"]:
-        errors.append(
-            f"Target host has insufficient CPU ({free_vcpus} free, need {reqs['total_vcpus']})"
-        )
-    if free_ram < reqs["total_ram_mb"]:
-        errors.append(
-            f"Target host has insufficient RAM ({free_ram} MB free, need {reqs['total_ram_mb']} MB)"
-        )
+    errors.extend(_validate_target_state_and_capacity(db, target, project))
 
     return errors
 
@@ -99,6 +107,55 @@ def migrate_project(project_id: str, source_host_id: str, target_host_id: str):
     )
 
 
+def _migrate_vms_to_target(
+    source: Host, target: Host, project: Project, topology: dict
+):
+    """Live-migrate each VM from source to target in start order."""
+    from app.services.troshkad_client import start_job, wait_for_job
+
+    nodes = topology.get("nodes", [])
+    vm_nodes = [n for n in nodes if n.get("type") == "vmNode"]
+    start_order = topology.get("startOrder", [])
+    vm_ids_ordered = (
+        [s["vmId"] for s in start_order] if start_order else [n["id"] for n in vm_nodes]
+    )
+
+    for vm_id in vm_ids_ordered:
+        vm_node = next((n for n in vm_nodes if n["id"] == vm_id), None)
+        if not vm_node:
+            continue
+
+        domain = f"troshka-{project.id[:8]}-{vm_id[:8]}"
+        logger.info("Migration %s: migrating VM %s", project.id[:8], domain)
+
+        target_ip = target.private_ip or target.ip_address
+        job_id = start_job(
+            source,
+            "/vm/migrate",
+            {
+                "domain": domain,
+                "target_host": target_ip,
+            },
+        )
+        result = wait_for_job(source, job_id, timeout=600)
+        if result.get("status") == "failed":
+            error_msg = result.get("result", {}).get("error", "Unknown error")
+            raise RuntimeError(f"VM migration failed for {domain}: {error_msg}")
+        logger.info("Migration %s: VM %s migrated successfully", project.id[:8], domain)
+
+
+def _mark_migration_error(db: Session, project_id: str, error: Exception):
+    """Mark a project as errored after a failed migration."""
+    try:
+        project = db.get(Project, project_id)
+        if project:
+            project.state = "error"
+            project.deploy_error = f"Migration failed: {error}"
+            db.commit()
+    except Exception:
+        pass
+
+
 def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: str):
     from app.services.deploy_service import (
         _setup_bmc_via_troshkad,
@@ -107,7 +164,6 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
         _teardown_networks_via_troshkad,
     )
     from app.services.deploy_topology import _extract_bmc_config
-    from app.services.troshkad_client import start_job, wait_for_job
 
     db = SessionLocal()
     try:
@@ -141,38 +197,7 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
             _setup_bmc_via_troshkad(target, project_id, bmc_config)
 
         # Step 3: Live-migrate each VM in start order
-        vm_nodes = [n for n in nodes if n.get("type") == "vmNode"]
-        start_order = topology.get("startOrder", [])
-        vm_ids_ordered = (
-            [s["vmId"] for s in start_order]
-            if start_order
-            else [n["id"] for n in vm_nodes]
-        )
-
-        for vm_id in vm_ids_ordered:
-            vm_node = next((n for n in vm_nodes if n["id"] == vm_id), None)
-            if not vm_node:
-                continue
-
-            domain = f"troshka-{project.id[:8]}-{vm_id[:8]}"
-            logger.info("Migration %s: migrating VM %s", project_id[:8], domain)
-
-            target_ip = target.private_ip or target.ip_address
-            job_id = start_job(
-                source,
-                "/vm/migrate",
-                {
-                    "domain": domain,
-                    "target_host": target_ip,
-                },
-            )
-            result = wait_for_job(source, job_id, timeout=600)
-            if result.get("status") == "failed":
-                error_msg = result.get("result", {}).get("error", "Unknown error")
-                raise RuntimeError(f"VM migration failed for {domain}: {error_msg}")
-            logger.info(
-                "Migration %s: VM %s migrated successfully", project_id[:8], domain
-            )
+        _migrate_vms_to_target(source, target, project, topology)
 
         # Step 4: Tear down source infrastructure
         logger.info(
@@ -191,14 +216,7 @@ def _do_migrate_project(project_id: str, source_host_id: str, target_host_id: st
 
     except Exception as e:
         logger.error("Migration %s failed: %s", project_id[:8], e)
-        try:
-            project = db.get(Project, project_id)
-            if project:
-                project.state = "error"
-                project.deploy_error = f"Migration failed: {e}"
-                db.commit()
-        except Exception:
-            pass
+        _mark_migration_error(db, project_id, e)
     finally:
         db.close()
 

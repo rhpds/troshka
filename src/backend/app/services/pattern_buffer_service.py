@@ -50,14 +50,147 @@ def provision_pattern_buffer_async(pool_id: str):
     enqueue_job(_provision_pattern_buffer, pool_id, queue_name="host_lifecycle")
 
 
+def _resolve_instance_type(pool: StoragePool, provider: Provider) -> str:
+    """Pick the instance type for a pattern buffer host."""
+    if pool.worker_instance_type:
+        return pool.worker_instance_type
+    if provider.type == "gcp":
+        return "e2-standard-2"
+    if provider.type == "azure":
+        return "Standard_E2s_v5"
+    return DEFAULT_INSTANCE_TYPE
+
+
+def _resolve_nfs_kwargs(pool: StoragePool) -> dict:
+    """Build NFS mount kwargs from pool configuration."""
+    if pool.mode == "shared-fsx" and pool.fsx_dns_name:
+        return {"nfs_server": pool.fsx_dns_name, "nfs_path": "/fsx"}
+    if pool.mode == "shared-netapp" and pool.netapp_mount_ip:
+        return {
+            "nfs_server": pool.netapp_mount_ip,
+            "nfs_path": f"/{pool.netapp_volume_name or 'troshka'}",
+        }
+    if pool.mode == "shared-azure-files" and pool.azure_file_share_url:
+        parts = pool.azure_file_share_url.split(":", 1)
+        return {
+            "nfs_server": parts[0],
+            "nfs_path": parts[1] if len(parts) > 1 else "/",
+        }
+    if pool.mode in ("shared-byo", "shared-ceph-nfs") and pool.nfs_endpoint:
+        parts = pool.nfs_endpoint.split(":", 1)
+        kwargs: dict = {
+            "nfs_server": parts[0],
+            "nfs_path": parts[1] if len(parts) > 1 else "/",
+        }
+        if pool.nfs_port:
+            kwargs["nfs_port"] = pool.nfs_port
+        return kwargs
+    return {}
+
+
+def _wait_and_install_agent(
+    host: Host,
+    provider: Provider,
+    pool: StoragePool,
+    result: dict,
+    nfs_kwargs: dict,
+) -> bool:
+    """Wait for SSH and deploy the troshkad agent on a pattern buffer host.
+
+    Returns True on success, False if SSH never becomes available.
+    Other errors propagate as exceptions.
+    """
+    from app.services.agent_ca_service import get_agent_ca_cert
+    from app.services.agent_deployer import (
+        deploy_agent,
+        get_provider_data_disk,
+        get_provider_ssh_user,
+        wait_for_ssh,
+    )
+
+    ssh_port = result.get("_ssh_port", 22)
+    ssh_host = result.get("_ssh_host") or result["public_ip"]
+    ssh_user = get_provider_ssh_user(provider.type)
+    data_disk = get_provider_data_disk(provider.type)
+
+    logger.info("Pattern buffer %s provisioned, waiting for SSH...", host.id[:8])
+    if not wait_for_ssh(
+        ssh_host,
+        result["private_key"],
+        port=ssh_port,
+        ssh_user=ssh_user,
+        timeout=300,
+    ):
+        logger.error("Pattern buffer %s SSH never became available", host.id[:8])
+        return False
+
+    logger.info("Pattern buffer %s SSH ready, installing agent...", host.id[:8])
+
+    storage_mode = "shared" if nfs_kwargs else "local"
+    cert_pem = key_pem = ca_pem = ""
+    if pool.ca_cert and pool.ca_key:
+        from app.services.storage_pool_service import sign_host_cert
+
+        cert_pem, key_pem = sign_host_cert(
+            pool.ca_cert,
+            pool.ca_key,
+            result["public_ip"],
+            result.get("private_ip", ""),
+        )
+        ca_pem = pool.ca_cert
+
+    deploy_result = deploy_agent(
+        host_ip=ssh_host,
+        private_key=result["private_key"],
+        host_id=host.id,
+        storage_mode=storage_mode,
+        nfs_server=nfs_kwargs.get("nfs_server", ""),
+        nfs_path=nfs_kwargs.get("nfs_path", ""),
+        nfs_port=nfs_kwargs.get("nfs_port", 0),
+        ca_cert=ca_pem,
+        host_cert=cert_pem,
+        host_key=key_pem,
+        host_type="pattern_buffer",
+        ssh_port=ssh_port,
+        ssh_user=ssh_user,
+        data_disk_device=data_disk,
+        vncd_no_tls=provider.type == "ocpvirt",
+        agent_ca_cert=get_agent_ca_cert(),
+    )
+
+    creds = deploy_result.get("troshkad_credentials", {})
+    if creds.get("token"):
+        host.agent_token = creds["token"]
+    if creds.get("fingerprint"):
+        host.agent_cert_fingerprint = creds["fingerprint"]
+    host.agent_status = "connected"
+    return True
+
+
+def _cleanup_failed_instance(result: dict | None, provider: Provider | None) -> None:
+    """Terminate the cloud instance after a failed provision attempt."""
+    if not result or not isinstance(result, dict) or not result.get("instance_id"):
+        return
+    if not provider:
+        return
+    try:
+        from app.services.providers import get_provider_driver
+
+        get_provider_driver(provider).terminate_host(provider, result["instance_id"])
+        logger.info("Cleaned up orphaned instance %s", result["instance_id"])
+    except Exception:
+        logger.warning("Failed to clean up instance after error", exc_info=True)
+
+
 def _provision_pattern_buffer(pool_id: str):
     """Provision a pattern buffer host for a storage pool."""
-    from app.services.agent_deployer import deploy_agent
     from app.services.providers import get_provider_driver
 
     _provisioning.add(pool_id)
     _provision_errors.pop(pool_id, None)
     db = SessionLocal()
+    result = None
+    provider = None
     try:
         pool = db.query(StoragePool).filter_by(id=pool_id).first()
         if not pool:
@@ -75,35 +208,9 @@ def _provision_pattern_buffer(pool_id: str):
             return
 
         driver = get_provider_driver(provider)
-        if pool.worker_instance_type:
-            instance_type = pool.worker_instance_type
-        elif provider.type == "gcp":
-            instance_type = "e2-standard-2"
-        elif provider.type == "azure":
-            instance_type = "Standard_E2s_v5"
-        else:
-            instance_type = DEFAULT_INSTANCE_TYPE
+        instance_type = _resolve_instance_type(pool, provider)
         host_id = str(uuid.uuid4())
-
-        nfs_kwargs = {}
-        if pool.mode == "shared-fsx" and pool.fsx_dns_name:
-            nfs_kwargs["nfs_server"] = pool.fsx_dns_name
-            nfs_kwargs["nfs_path"] = "/fsx"
-        elif pool.mode == "shared-netapp" and pool.netapp_mount_ip:
-            nfs_kwargs["nfs_server"] = pool.netapp_mount_ip
-            nfs_kwargs["nfs_path"] = f"/{pool.netapp_volume_name or 'troshka'}"
-        elif pool.mode == "shared-azure-files" and pool.azure_file_share_url:
-            parts = pool.azure_file_share_url.split(":", 1)
-            nfs_kwargs["nfs_server"] = parts[0]
-            nfs_kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
-        elif pool.mode in ("shared-byo", "shared-ceph-nfs") and pool.nfs_endpoint:
-            parts = pool.nfs_endpoint.split(":", 1)
-            nfs_kwargs["nfs_server"] = parts[0]
-            nfs_kwargs["nfs_path"] = parts[1] if len(parts) > 1 else "/"
-            if pool.nfs_port:
-                nfs_kwargs["nfs_port"] = pool.nfs_port
-
-        result = None
+        nfs_kwargs = _resolve_nfs_kwargs(pool)
         logger.info(
             "Provisioning pattern buffer for pool %s: type=%s instance=%s image=%s provider=%s(%s)",
             pool_id[:8],
@@ -155,74 +262,9 @@ def _provision_pattern_buffer(pool_id: str):
         db.commit()
         db.refresh(host)
 
-        ssh_port = result.get("_ssh_port", 22)
-        ssh_host = result.get("_ssh_host") or result["public_ip"]
-
-        from app.services.agent_deployer import (
-            get_provider_data_disk,
-            get_provider_ssh_user,
-        )
-
-        ssh_user = get_provider_ssh_user(provider.type)
-        data_disk = get_provider_data_disk(provider.type)
-
-        logger.info("Pattern buffer %s provisioned, waiting for SSH...", host_id[:8])
-
-        from app.services.agent_deployer import wait_for_ssh
-
-        if not wait_for_ssh(
-            ssh_host,
-            result["private_key"],
-            port=ssh_port,
-            ssh_user=ssh_user,
-            timeout=300,
-        ):
-            logger.error("Pattern buffer %s SSH never became available", host_id[:8])
+        if not _wait_and_install_agent(host, provider, pool, result, nfs_kwargs):
             return
 
-        logger.info("Pattern buffer %s SSH ready, installing agent...", host_id[:8])
-
-        storage_mode = "shared" if nfs_kwargs else "local"
-        cert_pem = key_pem = ca_pem = ""
-        if pool.ca_cert and pool.ca_key:
-            from app.services.storage_pool_service import sign_host_cert
-
-            cert_pem, key_pem = sign_host_cert(
-                pool.ca_cert,
-                pool.ca_key,
-                result["public_ip"],
-                result.get("private_ip", ""),
-            )
-            ca_pem = pool.ca_cert
-
-        from app.services.agent_ca_service import get_agent_ca_cert
-
-        deploy_result = deploy_agent(
-            host_ip=ssh_host,
-            private_key=result["private_key"],
-            host_id=host_id,
-            storage_mode=storage_mode,
-            nfs_server=nfs_kwargs.get("nfs_server", ""),
-            nfs_path=nfs_kwargs.get("nfs_path", ""),
-            nfs_port=nfs_kwargs.get("nfs_port", 0),
-            ca_cert=ca_pem,
-            host_cert=cert_pem,
-            host_key=key_pem,
-            host_type="pattern_buffer",
-            ssh_port=ssh_port,
-            ssh_user=ssh_user,
-            data_disk_device=data_disk,
-            vncd_no_tls=provider.type == "ocpvirt",
-            agent_ca_cert=get_agent_ca_cert(),
-        )
-
-        creds = deploy_result.get("troshkad_credentials", {})
-        if creds.get("token"):
-            host.agent_token = creds["token"]
-        if creds.get("fingerprint"):
-            host.agent_cert_fingerprint = creds["fingerprint"]
-
-        host.agent_status = "connected"
         host.ip_address = result["public_ip"]
         db.commit()
         logger.info(
@@ -241,21 +283,7 @@ def _provision_pattern_buffer(pool_id: str):
             pool_id
         ] = f"Provisioning failed ({type(e).__name__}). Check server logs for details."
         db.rollback()
-        try:
-            _result = locals().get("result")
-            _provider = locals().get("provider")
-            if (
-                _result
-                and isinstance(_result, dict)
-                and _result.get("instance_id")
-                and _provider
-            ):
-                from app.services.providers import get_provider_driver as _get_drv
-
-                _get_drv(_provider).terminate_host(_provider, _result["instance_id"])
-                logger.info("Cleaned up orphaned instance %s", _result["instance_id"])
-        except Exception:
-            logger.warning("Failed to clean up instance after error", exc_info=True)
+        _cleanup_failed_instance(result, provider)
     finally:
         _provisioning.discard(pool_id)
         db.close()

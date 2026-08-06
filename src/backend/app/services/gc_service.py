@@ -285,6 +285,75 @@ def repair_networks(db: Session, host) -> dict:
     return {"repaired": repaired}
 
 
+def _recover_mesh_peers(db, host, host_id: str, mesh_peers) -> None:
+    """Recover WireGuard mesh interfaces for all mesh peers on a host."""
+    from app.services.mesh_service import get_peer_config_for_host
+    from app.services.troshkad_client import start_job, wait_for_job
+
+    for peer in mesh_peers:
+        try:
+            config = get_peer_config_for_host(db, peer.project_id, host_id)
+            job_id = start_job(host, "/mesh/setup", config)
+            wait_for_job(host, job_id, timeout=60)
+            log.info(
+                "Recovered mesh for project %s on host %s",
+                peer.project_id[:8],
+                host_id[:8],
+            )
+        except Exception as e:
+            log.warning("Failed to recover mesh for %s: %s", peer.project_id[:8], e)
+
+
+def _reconnect_project_taps(host, projects, vm_states: dict) -> None:
+    """Reconnect running VMs' TAPs to restored namespace bridges."""
+    from app.services.troshkad_client import start_job, wait_for_job
+
+    for p in projects:
+        ns_prefix = f"troshka-{p.id[:8]}-"
+        running_domains = [
+            d
+            for d, s in vm_states.items()
+            if s == "running" and d.startswith(ns_prefix)
+        ]
+        if not running_domains:
+            continue
+        try:
+            tap_job = start_job(
+                host,
+                "/networks/reconnect-taps",
+                {"project_id": p.id, "domains": running_domains},
+            )
+            tap_result = wait_for_job(host, tap_job, timeout=30)
+            rc = tap_result.get("result", {}).get("reconnected", 0)
+            if rc:
+                log.info("Reconnected %d TAPs for project %s", rc, p.id[:8])
+        except Exception:
+            log.warning("TAP reconnect failed for project %s (non-fatal)", p.id[:8])
+
+
+def _restore_project_bmc(host, projects) -> int:
+    """Restore BMC services for projects with BMC configuration.
+
+    Returns the number of projects whose BMC was successfully restored.
+    """
+    from app.services.deploy_service import _setup_bmc_via_troshkad
+    from app.services.deploy_topology import _extract_bmc_config
+
+    bmc_restored = 0
+    for p in projects:
+        topo = p.deployed_topology or p.topology or {}
+        bmc_config = _extract_bmc_config(topo, p.id)
+        if not bmc_config:
+            continue
+        try:
+            _setup_bmc_via_troshkad(host, p.id, bmc_config)
+            bmc_restored += 1
+            log.info("Restored BMC for project %s", p.id[:8])
+        except Exception:
+            log.warning("BMC restore failed for project %s (non-fatal)", p.id[:8])
+    return bmc_restored
+
+
 _recovering_hosts: set[str] = set()
 
 
@@ -304,10 +373,7 @@ def recover_host_services(host_id: str):
     from app.models.host import Host
     from app.models.mesh_peer import ProjectMeshPeer
     from app.models.project import Project
-    from app.services.deploy_service import _setup_bmc_via_troshkad
-    from app.services.deploy_topology import _extract_bmc_config
-    from app.services.mesh_service import get_peer_config_for_host
-    from app.services.troshkad_client import get_all_vm_states, start_job, wait_for_job
+    from app.services.troshkad_client import get_all_vm_states
 
     db = SessionLocal()
     try:
@@ -335,62 +401,16 @@ def recover_host_services(host_id: str):
             "Host %s reconnected — recovering %d project(s)", host_id[:8], len(projects)
         )
 
-        # Recover WireGuard mesh interfaces
         mesh_peers = db.query(ProjectMeshPeer).filter_by(host_id=host_id).all()
-        for peer in mesh_peers:
-            try:
-                config = get_peer_config_for_host(db, peer.project_id, host_id)
-                job_id = start_job(host, "/mesh/setup", config)
-                wait_for_job(host, job_id, timeout=60)
-                log.info(
-                    "Recovered mesh for project %s on host %s",
-                    peer.project_id[:8],
-                    host_id[:8],
-                )
-            except Exception as e:
-                log.warning("Failed to recover mesh for %s: %s", peer.project_id[:8], e)
+        _recover_mesh_peers(db, host, host_id, mesh_peers)
 
         net_result = repair_networks(db, host)
         log.info("Host %s network repair: %s", host_id[:8], net_result)
 
-        # Reconnect running VMs' TAPs to restored namespace bridges
-        from app.services.troshkad_client import get_all_vm_states
-
         vm_states = get_all_vm_states(host) or {}
-        for p in projects:
-            ns_prefix = f"troshka-{p.id[:8]}-"
-            running_domains = [
-                d
-                for d, s in vm_states.items()
-                if s == "running" and d.startswith(ns_prefix)
-            ]
-            if not running_domains:
-                continue
-            try:
-                tap_job = start_job(
-                    host,
-                    "/networks/reconnect-taps",
-                    {"project_id": p.id, "domains": running_domains},
-                )
-                tap_result = wait_for_job(host, tap_job, timeout=30)
-                rc = tap_result.get("result", {}).get("reconnected", 0)
-                if rc:
-                    log.info("Reconnected %d TAPs for project %s", rc, p.id[:8])
-            except Exception:
-                log.warning("TAP reconnect failed for project %s (non-fatal)", p.id[:8])
+        _reconnect_project_taps(host, projects, vm_states)
 
-        bmc_restored = 0
-        for p in projects:
-            topo = p.deployed_topology or p.topology or {}
-            bmc_config = _extract_bmc_config(topo, p.id)
-            if not bmc_config:
-                continue
-            try:
-                _setup_bmc_via_troshkad(host, p.id, bmc_config)
-                bmc_restored += 1
-                log.info("Restored BMC for project %s", p.id[:8])
-            except Exception:
-                log.warning("BMC restore failed for project %s (non-fatal)", p.id[:8])
+        bmc_restored = _restore_project_bmc(host, projects)
 
         log.info(
             "Host %s recovery complete: %d networks, %d BMC projects",

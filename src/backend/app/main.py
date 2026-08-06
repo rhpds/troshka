@@ -426,6 +426,32 @@ async def lifespan(app):
     close_redis()
 
 
+def _resolve_pool_nfs_config(pool) -> tuple:
+    """Extract NFS server and path from a storage pool's endpoint config."""
+    if pool.fsx_dns_name:
+        return pool.fsx_dns_name, "/fsx"
+    endpoint = pool.azure_file_share_url or pool.nfs_endpoint
+    if endpoint:
+        parts = endpoint.split(":", 1)
+        return parts[0], parts[1] if len(parts) > 1 else "/"
+    return "", ""
+
+
+def _resolve_pool_tls_certs(pool, host) -> tuple:
+    """Sign a host TLS cert from the pool CA, returning (cert, key, ca) PEM strings."""
+    if not pool.ca_cert or not pool.ca_key:
+        return "", "", ""
+    from app.services.storage_pool_service import sign_host_cert
+
+    cert_pem, key_pem = sign_host_cert(
+        pool.ca_cert,
+        pool.ca_key,
+        host.ip_address or "",
+        host.private_ip or "",
+    )
+    return cert_pem, key_pem, pool.ca_cert
+
+
 def _retry_pb_agent_install(host_id: str, pool_id: str):
     """Retry agent install on a pattern buffer host that got stuck."""
     from app.core.database import SessionLocal
@@ -467,29 +493,8 @@ def _retry_pb_agent_install(host_id: str, pool_id: str):
             if pool.nfs_endpoint or pool.fsx_dns_name or pool.azure_file_share_url
             else "local"
         )
-        cert_pem = key_pem = ca_pem = ""
-        if pool.ca_cert and pool.ca_key:
-            from app.services.storage_pool_service import sign_host_cert
-
-            cert_pem, key_pem = sign_host_cert(
-                pool.ca_cert,
-                pool.ca_key,
-                host.ip_address or "",
-                host.private_ip or "",
-            )
-            ca_pem = pool.ca_cert
-
-        nfs_server = nfs_path = ""
-        if pool.fsx_dns_name:
-            nfs_server, nfs_path = pool.fsx_dns_name, "/fsx"
-        elif pool.azure_file_share_url:
-            parts = pool.azure_file_share_url.split(":", 1)
-            nfs_server = parts[0]
-            nfs_path = parts[1] if len(parts) > 1 else "/"
-        elif pool.nfs_endpoint:
-            parts = pool.nfs_endpoint.split(":", 1)
-            nfs_server = parts[0]
-            nfs_path = parts[1] if len(parts) > 1 else "/"
+        cert_pem, key_pem, ca_pem = _resolve_pool_tls_certs(pool, host)
+        nfs_server, nfs_path = _resolve_pool_nfs_config(pool)
 
         from app.services.agent_ca_service import get_agent_ca_cert
 

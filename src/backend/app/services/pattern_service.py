@@ -367,10 +367,138 @@ def cancel_capture(pattern_id: str, db) -> None:
             pass
 
 
+def _build_capture_disk_manifest(disk_nodes, disk_to_vm, pattern_id):
+    """Build the disk manifest list for a KubeVirt capture request."""
+    manifest = []
+    for disk_node in disk_nodes:
+        fmt = disk_node.get("data", {}).get("format", "qcow2")
+        if fmt == "iso":
+            continue
+        vm_id = disk_to_vm.get(disk_node["id"], "")
+        if not vm_id:
+            continue
+        vm_name = f"vm-{vm_id[:8]}"
+        disk_id = disk_node["id"]
+        manifest.append(
+            {
+                "vmName": vm_name,
+                "vmId": vm_id,
+                "diskId": disk_id,
+                "pvcName": f"{vm_name}-disk-{disk_id[:8]}",
+                "s3Key": f"patterns/{pattern_id}/{disk_id}.{fmt}",
+                "sizeGb": int(disk_node.get("data", {}).get("size", 50)),
+                "format": fmt,
+            }
+        )
+    return manifest
+
+
+def _poll_capture_completion(
+    custom_api, namespace, cr_name, pattern_id, crd_group, crd_version
+):
+    """Poll CR status for capture completion (max 45 min).
+
+    Returns the captured disks list on success, or None on error/timeout.
+    Sets pattern error state via _capture_progress side-channel on failure.
+    """
+    import time as _time
+
+    from app.services.ws_pubsub import notify_pattern
+
+    for _attempt in range(270):
+        _time.sleep(10)
+        try:
+            cr_obj = custom_api.get_namespaced_custom_object(
+                group=crd_group,
+                version=crd_version,
+                namespace=namespace,
+                plural="troshkaprojects",
+                name=cr_name,
+            )
+            cr: dict = cr_obj if isinstance(cr_obj, dict) else {}
+            cr_status: dict = cr.get("status") or {}
+            phase = cr_status.get("phase", "")
+            progress = cr_status.get("captureProgress", "")
+
+            _capture_progress[pattern_id] = {
+                "step": "capturing",
+                "detail": progress,
+            }
+            notify_pattern(
+                pattern_id,
+                {
+                    "type": "capture-progress",
+                    "step": "capturing",
+                    "detail": progress,
+                },
+            )
+
+            if phase == "CaptureComplete":
+                captured_disks = cr_status.get("capturedDisks", [])
+                log.info(
+                    "Capture complete for %s: %d disks",
+                    pattern_id[:8],
+                    len(captured_disks),
+                )
+                return captured_disks
+
+            if phase == "CaptureError":
+                err = cr_status.get("captureError", "Unknown error")
+                log.error("Capture failed for %s: %s", pattern_id[:8], err)
+                return None
+
+        except Exception as e:
+            log.warning("Error polling capture status for %s: %s", pattern_id[:8], e)
+
+    log.error("Capture timed out for %s after 45 minutes", pattern_id[:8])
+    return None
+
+
+def _update_topology_with_captures(topo, captured_disks, pattern_id):
+    """Update topology storage nodes to reference captured pattern disks."""
+    for node in topo.get("nodes", []):
+        if node.get("type") != "storageNode":
+            continue
+        if node.get("data", {}).get("format") == "iso":
+            continue
+        node_id = node["id"]
+        matching_pd = next(
+            (cd for cd in captured_disks if cd.get("diskId") == node_id), None
+        )
+        if matching_pd:
+            node["data"]["source"] = "pattern"
+            node["data"]["patternId"] = pattern_id
+            node["data"]["patternDiskId"] = matching_pd.get("diskId", "")
+            node["data"].pop("libraryItemId", None)
+            node["data"].pop("libraryItemName", None)
+
+
+def _restart_kubevirt_vms(custom_api, namespace):
+    """Restart all KubeVirt VMs in the given namespace."""
+    try:
+        vms_obj = custom_api.list_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+        )
+        vms_list: dict = vms_obj if isinstance(vms_obj, dict) else {}
+        for vm in vms_list.get("items", []):
+            custom_api.patch_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=vm["metadata"]["name"],
+                body={"spec": {"running": True}},
+            )
+    except Exception as e:
+        log.warning("Failed to restart VMs after capture: %s", e)
+
+
 def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     """Capture pattern disks via KubeVirt VolumeSnapshot + S3 export Jobs."""
     import json as _json
-    import time as _time
 
     from app.models.provider import Provider
     from app.services.providers.kubevirt import (
@@ -402,32 +530,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     topology = project.deployed_topology or project.topology or {}
     disk_nodes, _, disk_to_vm, _ = _build_disk_to_vm_map(topology)
 
-    disk_manifest = []
-    for disk_node in disk_nodes:
-        fmt = disk_node.get("data", {}).get("format", "qcow2")
-        if fmt == "iso":
-            continue
-        vm_id = disk_to_vm.get(disk_node["id"], "")
-        if not vm_id:
-            continue
-        vm_name = f"vm-{vm_id[:8]}"
-        disk_id = disk_node["id"]
-        pvc_name = f"{vm_name}-disk-{disk_id[:8]}"
-        s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
-        size_gb = int(disk_node.get("data", {}).get("size", 50))
-
-        disk_manifest.append(
-            {
-                "vmName": vm_name,
-                "vmId": vm_id,
-                "diskId": disk_id,
-                "pvcName": pvc_name,
-                "s3Key": s3_key,
-                "sizeGb": size_gb,
-                "format": fmt,
-            }
-        )
-
+    disk_manifest = _build_capture_disk_manifest(disk_nodes, disk_to_vm, pattern_id)
     if not disk_manifest:
         pattern.state = "error"
         pattern.deploy_error = "No disks to capture"
@@ -483,58 +586,12 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         db.commit()
         return
 
-    # Poll CR status for capture completion (max 45 min)
-    for attempt in range(270):
-        _time.sleep(10)
-        try:
-            cr_obj = custom_api.get_namespaced_custom_object(
-                group=CRD_GROUP,
-                version=CRD_VERSION,
-                namespace=namespace,
-                plural="troshkaprojects",
-                name=cr_name,
-            )
-            cr: dict = cr_obj if isinstance(cr_obj, dict) else {}
-            cr_status: dict = cr.get("status") or {}
-            phase = cr_status.get("phase", "")
-            progress = cr_status.get("captureProgress", "")
-
-            _capture_progress[pattern_id] = {
-                "step": "capturing",
-                "detail": progress,
-            }
-            notify_pattern(
-                pattern_id,
-                {
-                    "type": "capture-progress",
-                    "step": "capturing",
-                    "detail": progress,
-                },
-            )
-
-            if phase == "CaptureComplete":
-                captured_disks = cr_status.get("capturedDisks", [])
-                log.info(
-                    "Capture complete for %s: %d disks",
-                    pattern_id[:8],
-                    len(captured_disks),
-                )
-                break
-
-            if phase == "CaptureError":
-                err = cr_status.get("captureError", "Unknown error")
-                log.error("Capture failed for %s: %s", pattern_id[:8], err)
-                pattern.state = "error"
-                pattern.deploy_error = err
-                db.commit()
-                _capture_progress.pop(pattern_id, None)
-                return
-
-        except Exception as e:
-            log.warning("Error polling capture status for %s: %s", pattern_id[:8], e)
-    else:
+    captured_disks = _poll_capture_completion(
+        custom_api, namespace, cr_name, pattern_id, CRD_GROUP, CRD_VERSION
+    )
+    if captured_disks is None:
         pattern.state = "error"
-        pattern.deploy_error = "Capture timed out after 45 minutes"
+        pattern.deploy_error = pattern.deploy_error or "Capture failed or timed out"
         db.commit()
         _capture_progress.pop(pattern_id, None)
         return
@@ -557,29 +614,13 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
 
     # Update topology nodes to reference pattern
     topo = pattern.topology or {}
-    for node in topo.get("nodes", []):
-        if node.get("type") != "storageNode":
-            continue
-        if node.get("data", {}).get("format") == "iso":
-            continue
-        node_id = node["id"]
-        matching_pd = next(
-            (cd for cd in captured_disks if cd.get("diskId") == node_id), None
-        )
-        if matching_pd:
-            node["data"]["source"] = "pattern"
-            node["data"]["patternId"] = pattern_id
-            node["data"]["patternDiskId"] = matching_pd.get("diskId", "")
-            node["data"].pop("libraryItemId", None)
-            node["data"].pop("libraryItemName", None)
-
-    import json as _json2
+    _update_topology_with_captures(topo, captured_disks, pattern_id)
 
     from sqlalchemy import text
 
     db.execute(
         text("UPDATE patterns SET topology = :topo WHERE id = :pid"),
-        {"topo": _json2.dumps(topo), "pid": pattern_id},
+        {"topo": _json.dumps(topo), "pid": pattern_id},
     )
 
     pattern.state = "available"
@@ -608,33 +649,14 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         s3_storage._get_s3_client().put_object(
             Bucket=s3_storage._bucket(),
             Key=f"patterns/{pattern_id}/metadata.json",
-            Body=_json2.dumps(metadata).encode(),
+            Body=_json.dumps(metadata).encode(),
             ContentType="application/json",
         )
     except Exception:
         log.warning("Failed to save metadata.json for pattern %s", pattern_id[:8])
 
-    # Optionally restart VMs
     if restart_after:
-        try:
-            vms_obj = custom_api.list_namespaced_custom_object(
-                group="kubevirt.io",
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachines",
-            )
-            vms_list: dict = vms_obj if isinstance(vms_obj, dict) else {}
-            for vm in vms_list.get("items", []):
-                custom_api.patch_namespaced_custom_object(
-                    group="kubevirt.io",
-                    version="v1",
-                    namespace=namespace,
-                    plural="virtualmachines",
-                    name=vm["metadata"]["name"],
-                    body={"spec": {"running": True}},
-                )
-        except Exception as e:
-            log.warning("Failed to restart VMs after capture: %s", e)
+        _restart_kubevirt_vms(custom_api, namespace)
 
     # Clear the capture annotation
     try:

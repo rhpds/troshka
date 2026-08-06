@@ -347,6 +347,72 @@ _last_cert_check = 0
 _CERT_CHECK_INTERVAL = 3600
 
 
+def _renew_pool_ca_if_expiring(pool, db):
+    """Regenerate pool CA certificate if it expires within 90 days."""
+    from app.services.storage_pool_service import generate_pool_ca
+
+    try:
+        from cryptography import x509
+
+        ca = x509.load_pem_x509_certificate(pool.ca_cert.encode())
+        days_left = (ca.not_valid_after_utc - datetime.now(UTC)).days
+        if days_left < 90:
+            logger.info(
+                "Pool %s CA expires in %d days, regenerating",
+                pool.name,
+                days_left,
+            )
+            new_cert, new_key = generate_pool_ca(pool.name)
+            pool.ca_cert = new_cert
+            pool.ca_key = new_key
+            db.commit()
+    except Exception:
+        logger.debug("CA expiry check failed for pool %s", pool.name, exc_info=True)
+
+
+def _renew_host_certs_for_pool(pool, db):
+    """Sign and push TLS certs to all connected hosts in a shared pool."""
+    import base64
+
+    from app.models.host import Host
+    from app.services.storage_pool_service import sign_host_cert
+    from app.services.troshkad_client import start_job, wait_for_job
+
+    hosts = (
+        db.query(Host)
+        .filter(
+            Host.storage_pool_id == pool.id,
+            Host.state == "active",
+            Host.agent_status == "connected",
+        )
+        .all()
+    )
+
+    for host in hosts:
+        if not host.ip_address:
+            continue
+        try:
+            host_cert, host_key = sign_host_cert(
+                pool.ca_cert,
+                pool.ca_key,
+                host.ip_address,
+                host.private_ip or "",
+            )
+            job_id = start_job(
+                host,
+                "/tls/update-certs",
+                {
+                    "ca_cert_b64": base64.b64encode(pool.ca_cert.encode()).decode(),
+                    "host_cert_b64": base64.b64encode(host_cert.encode()).decode(),
+                    "host_key_b64": base64.b64encode(host_key.encode()).decode(),
+                },
+            )
+            wait_for_job(host, job_id, timeout=30)
+            logger.debug("Renewed TLS cert for host %s", host.id[:8])
+        except Exception:
+            logger.debug("Cert renewal failed for host %s", host.id[:8], exc_info=True)
+
+
 def _check_cert_renewal():
     """Check and renew libvirt TLS certs for hosts in shared pools (runs hourly)."""
     global _last_cert_check
@@ -355,13 +421,8 @@ def _check_cert_renewal():
         return
     _last_cert_check = now
 
-    import base64
-
     from app.core.database import SessionLocal
-    from app.models.host import Host
     from app.models.storage_pool import StoragePool
-    from app.services.storage_pool_service import generate_pool_ca, sign_host_cert
-    from app.services.troshkad_client import start_job, wait_for_job
 
     db = SessionLocal()
     try:
@@ -377,67 +438,8 @@ def _check_cert_renewal():
         for pool in pools:
             if not pool.ca_cert or not pool.ca_key:
                 continue
-            # Check CA expiry — renew if within 90 days
-            try:
-                from cryptography import x509
-
-                ca = x509.load_pem_x509_certificate(pool.ca_cert.encode())
-                days_left = (ca.not_valid_after_utc - datetime.now(UTC)).days
-                if days_left < 90:
-                    logger.info(
-                        "Pool %s CA expires in %d days, regenerating",
-                        pool.name,
-                        days_left,
-                    )
-                    new_cert, new_key = generate_pool_ca(pool.name)
-                    pool.ca_cert = new_cert
-                    pool.ca_key = new_key
-                    db.commit()
-            except Exception:
-                logger.debug(
-                    "CA expiry check failed for pool %s", pool.name, exc_info=True
-                )
-            hosts = (
-                db.query(Host)
-                .filter(
-                    Host.storage_pool_id == pool.id,
-                    Host.state == "active",
-                    Host.agent_status == "connected",
-                )
-                .all()
-            )
-
-            for host in hosts:
-                if not host.ip_address:
-                    continue
-                try:
-                    host_cert, host_key = sign_host_cert(
-                        pool.ca_cert,
-                        pool.ca_key,
-                        host.ip_address,
-                        host.private_ip or "",
-                    )
-                    job_id = start_job(
-                        host,
-                        "/tls/update-certs",
-                        {
-                            "ca_cert_b64": base64.b64encode(
-                                pool.ca_cert.encode()
-                            ).decode(),
-                            "host_cert_b64": base64.b64encode(
-                                host_cert.encode()
-                            ).decode(),
-                            "host_key_b64": base64.b64encode(
-                                host_key.encode()
-                            ).decode(),
-                        },
-                    )
-                    wait_for_job(host, job_id, timeout=30)
-                    logger.debug("Renewed TLS cert for host %s", host.id[:8])
-                except Exception:
-                    logger.debug(
-                        "Cert renewal failed for host %s", host.id[:8], exc_info=True
-                    )
+            _renew_pool_ca_if_expiring(pool, db)
+            _renew_host_certs_for_pool(pool, db)
     except Exception:
         logger.debug("Cert renewal check failed", exc_info=True)
     finally:

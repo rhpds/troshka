@@ -862,6 +862,7 @@ _NET_NAME_RE = re.compile(r"^troshka-net-[a-f0-9]+$")
 _BRIDGE_RE = re.compile(r"^br-(?:troshka-|bmc-)?[a-f0-9]+$")
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 _URL_RE = re.compile(r"^https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$")
+_SOURCE_BRIDGE_RE = re.compile(r"source bridge='([^']+)'")
 _BUS_TYPES = {"virtio", "scsi", "sata", "ide", "usb"}
 _NET_MODELS = {"virtio", "e1000", "e1000e", "igb", "rtl8139"}
 
@@ -1243,7 +1244,7 @@ def _handle_vm_start(job, params):
         timeout=10,
     )
     if xml_result.returncode == 0:
-        for bridge in _re.findall(r"source bridge='([^']+)'", xml_result.stdout):
+        for bridge in _SOURCE_BRIDGE_RE.findall(xml_result.stdout):
             check = subprocess.run(
                 ["ip", "link", "show", bridge], capture_output=True, timeout=5
             )
@@ -3294,7 +3295,7 @@ def _handle_reconnect_taps(job, params):
             xml = result.stdout
             import re
 
-            bridges = re.findall(r"source bridge='([^']+)'", xml)
+            bridges = _SOURCE_BRIDGE_RE.findall(xml)
             taps = re.findall(r"target dev='((?:vnet|tap)[^']+)'", xml)
             for i, tap in enumerate(taps):
                 if i >= len(bridges):
@@ -5558,9 +5559,7 @@ def _handle_gc_discover(job, params):
                 timeout=10,
             )
             if xml.returncode == 0:
-                all_vm_bridges.update(
-                    _re_gc.findall(r"source bridge='([^']+)'", xml.stdout)
-                )
+                all_vm_bridges.update(_SOURCE_BRIDGE_RE.findall(xml.stdout))
 
         result = subprocess.run(
             ["ip", "-o", "link", "show", "type", "bridge"],

@@ -235,6 +235,99 @@ def _delete_resource(label, delete_fn, retries=3):
     return False
 
 
+def _extract_raw_power_state(vm):
+    """Extract raw Azure power state from VM instance view (e.g., 'running', 'deallocated')."""
+    if not (vm.instance_view and vm.instance_view.statuses):
+        return None
+    for status in vm.instance_view.statuses:
+        if status.code and status.code.startswith("PowerState/"):
+            return status.code.split("/", 1)[1]
+    return None
+
+
+def _extract_nic_ips(network_client, rg, nic_name):
+    """Extract (public_ip, private_ip) from a NIC's IP configurations."""
+    nic_info = network_client.network_interfaces.get(rg, nic_name)
+    public_ip = None
+    private_ip = None
+    for ip_config in nic_info.ip_configurations or []:
+        if ip_config.private_ip_address:
+            private_ip = ip_config.private_ip_address
+        if ip_config.public_ip_address and ip_config.public_ip_address.id:
+            pip_name = ip_config.public_ip_address.id.rsplit("/", 1)[-1]
+            pip = network_client.public_ip_addresses.get(rg, pip_name)
+            public_ip = pip.ip_address
+    return public_ip, private_ip
+
+
+def _resolve_vm_ips(network_client, rg, vm, instance_id):
+    """Extract IPs from a VM's primary network interface."""
+    if not (vm.network_profile and vm.network_profile.network_interfaces):
+        return None, None
+    nic_ref = vm.network_profile.network_interfaces[0]
+    if not nic_ref.id:
+        return None, None
+    nic_name = nic_ref.id.rsplit("/", 1)[-1]
+    try:
+        return _extract_nic_ips(network_client, rg, nic_name)
+    except Exception:
+        logger.debug("Could not retrieve NIC info for %s", instance_id)
+        return None, None
+
+
+def _accept_marketplace_terms(creds_dict, image_ref, image_urn):
+    """Accept marketplace terms for a BYOS image. Returns plan info dict or None."""
+    try:
+        from azure.mgmt.marketplaceordering import MarketplaceOrderingAgreements
+
+        credential = _get_credential(creds_dict)
+        subscription_id = _get_subscription_id(creds_dict)
+        mp_client = MarketplaceOrderingAgreements(credential, subscription_id)
+        agreement = mp_client.marketplace_agreements.get(
+            offer_type="virtualmachine",
+            publisher_id=image_ref["publisher"],
+            offer_id=image_ref["offer"],
+            plan_id=image_ref["sku"],
+        )
+        agreement.accepted = True
+        mp_client.marketplace_agreements.create(
+            offer_type="virtualmachine",
+            publisher_id=image_ref["publisher"],
+            offer_id=image_ref["offer"],
+            plan_id=image_ref["sku"],
+            parameters=agreement,
+        )
+        logger.info("Accepted marketplace terms for %s", image_urn)
+        return {
+            "name": image_ref["sku"],
+            "publisher": image_ref["publisher"],
+            "product": image_ref["offer"],
+        }
+    except Exception as e:
+        if "not found" in str(e).lower() or "no agreement" in str(e).lower():
+            return None
+        logger.debug(
+            "Marketplace terms check for %s: %s (proceeding without plan)",
+            image_urn,
+            e,
+        )
+        return None
+
+
+def _poll_vm_until_running(compute_client, network_client, rg, instance_name, nic_name):
+    """Poll until VM reaches running state and return (public_ip, private_ip)."""
+    for _attempt in range(60):
+        time.sleep(5)
+        vm = compute_client.virtual_machines.get(
+            rg, instance_name, expand="instanceView"
+        )
+        if _extract_raw_power_state(vm) == "running":
+            return _extract_nic_ips(network_client, rg, nic_name)
+    raise RuntimeError(
+        f"VM {instance_name} did not reach running state within 5 minutes"
+    )
+
+
 class AzureDriver(ProviderDriver):
     def provision_host(
         self, provider, host_id, instance_type, storage_size_gb, **kwargs
@@ -320,43 +413,7 @@ class AzureDriver(ProviderDriver):
         # --- Accept marketplace terms if needed (BYOS images) ---
         # Skip marketplace terms entirely for managed images (Image Builder)
         if "id" not in image_ref:
-            try:
-                from azure.mgmt.marketplaceordering import MarketplaceOrderingAgreements
-
-                credential = _get_credential(creds_dict)
-                subscription_id = _get_subscription_id(creds_dict)
-                mp_client = MarketplaceOrderingAgreements(credential, subscription_id)
-                agreement = mp_client.marketplace_agreements.get(
-                    offer_type="virtualmachine",
-                    publisher_id=image_ref["publisher"],
-                    offer_id=image_ref["offer"],
-                    plan_id=image_ref["sku"],
-                )
-                agreement.accepted = True
-                mp_client.marketplace_agreements.create(
-                    offer_type="virtualmachine",
-                    publisher_id=image_ref["publisher"],
-                    offer_id=image_ref["offer"],
-                    plan_id=image_ref["sku"],
-                    parameters=agreement,
-                )
-                logger.info("Accepted marketplace terms for %s", image_urn)
-                plan_info = {
-                    "name": image_ref["sku"],
-                    "publisher": image_ref["publisher"],
-                    "product": image_ref["offer"],
-                }
-            except Exception as e:
-                if "not found" in str(e).lower() or "no agreement" in str(e).lower():
-                    # Not a marketplace image, no terms needed
-                    plan_info = None
-                else:
-                    logger.debug(
-                        "Marketplace terms check for %s: %s (proceeding without plan)",
-                        image_urn,
-                        e,
-                    )
-                    plan_info = None
+            plan_info = _accept_marketplace_terms(creds_dict, image_ref, image_urn)
         else:
             plan_info = None
 
@@ -475,34 +532,9 @@ class AzureDriver(ProviderDriver):
                 logger.debug("Failed to tag disk %s", disk_name)
 
         # --- Poll until running and get IPs ---
-        public_ip = None
-        private_ip = None
-        for attempt in range(60):
-            time.sleep(5)
-            vm = compute_client.virtual_machines.get(
-                rg, instance_name, expand="instanceView"
-            )
-            power_state = None
-            if vm.instance_view and vm.instance_view.statuses:
-                for status in vm.instance_view.statuses:
-                    if status.code and status.code.startswith("PowerState/"):
-                        power_state = status.code.split("/", 1)[1]
-                        break
-
-            if power_state == "running":
-                # Get IPs from the NIC
-                nic_info = network_client.network_interfaces.get(rg, nic_name)
-                for ip_config in nic_info.ip_configurations or []:
-                    if ip_config.private_ip_address:
-                        private_ip = ip_config.private_ip_address
-                    if ip_config.public_ip_address:
-                        pip = network_client.public_ip_addresses.get(rg, ip_name)
-                        public_ip = pip.ip_address
-                break
-        else:
-            raise RuntimeError(
-                f"VM {instance_name} did not reach running state within 5 minutes"
-            )
+        public_ip, private_ip = _poll_vm_until_running(
+            compute_client, network_client, rg, instance_name, nic_name
+        )
 
         return {
             "host_id": host_id,
@@ -592,36 +624,11 @@ class AzureDriver(ProviderDriver):
             "starting": "pending",
             "stopping": "stopping",
         }
-        power_state = "unknown"
-        if vm.instance_view and vm.instance_view.statuses:
-            for status in vm.instance_view.statuses:
-                if status.code and status.code.startswith("PowerState/"):
-                    raw = status.code.split("/", 1)[1]
-                    power_state = state_map.get(raw, "unknown")
-                    break
+        raw_state = _extract_raw_power_state(vm)
+        power_state = state_map.get(raw_state, "unknown") if raw_state else "unknown"
 
         # Get IPs from NIC
-        public_ip = None
-        private_ip = None
-        if vm.network_profile and vm.network_profile.network_interfaces:
-            nic_ref = vm.network_profile.network_interfaces[0]
-            # Extract NIC name from the resource ID
-            if nic_ref.id:
-                nic_name = nic_ref.id.rsplit("/", 1)[-1]
-                try:
-                    nic_info = network_client.network_interfaces.get(rg, nic_name)
-                    for ip_config in nic_info.ip_configurations or []:
-                        if ip_config.private_ip_address:
-                            private_ip = ip_config.private_ip_address
-                        if (
-                            ip_config.public_ip_address
-                            and ip_config.public_ip_address.id
-                        ):
-                            pip_name = ip_config.public_ip_address.id.rsplit("/", 1)[-1]
-                            pip = network_client.public_ip_addresses.get(rg, pip_name)
-                            public_ip = pip.ip_address
-                except Exception:
-                    logger.debug("Could not retrieve NIC info for %s", instance_id)
+        public_ip, private_ip = _resolve_vm_ips(network_client, rg, vm, instance_id)
 
         return {
             "instance_id": instance_id,

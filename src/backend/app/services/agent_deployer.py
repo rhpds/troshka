@@ -663,6 +663,156 @@ echo "=== Pattern buffer agent installation complete ==="
 """
 
 
+def _scp_file_to_host(
+    local_path: str,
+    remote_dest: str,
+    host_ip: str,
+    ssh_user: str,
+    ssh_opts: list,
+    ssh_port_opts: list,
+    scp_port_opts: list,
+    create_parent_dir: bool = False,
+) -> bool:
+    """Copy a local file to a remote host via SCP then sudo mv into place.
+
+    Returns True if the file was copied successfully, False otherwise.
+    """
+    if not os.path.exists(local_path):
+        logger.warning("%s not found at %s", os.path.basename(local_path), local_path)
+        return False
+
+    filename = os.path.basename(local_path)
+    tmp_path = f"/tmp/{filename}"
+    logger.info("Copying %s to %s", filename, host_ip)
+
+    scp_result = subprocess.run(
+        [
+            "scp",
+            *scp_port_opts,
+            *ssh_opts,
+            local_path,
+            f"{ssh_user}@{host_ip}:{tmp_path}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if scp_result.returncode != 0:
+        logger.warning("SCP %s failed: %s", filename, scp_result.stderr)
+        return False
+
+    if create_parent_dir:
+        parent_dir = os.path.dirname(remote_dest)
+        subprocess.run(
+            [
+                "ssh",
+                *ssh_opts,
+                *ssh_port_opts,
+                f"{ssh_user}@{host_ip}",
+                "sudo",
+                "mkdir",
+                "-p",
+                parent_dir,
+            ],
+            capture_output=True,
+            timeout=60,
+        )
+
+    subprocess.run(
+        [
+            "ssh",
+            *ssh_opts,
+            *ssh_port_opts,
+            f"{ssh_user}@{host_ip}",
+            "sudo",
+            "mv",
+            tmp_path,
+            remote_dest,
+        ],
+        capture_output=True,
+        timeout=30,
+    )
+    return True
+
+
+def _run_install_script_via_ssh(
+    script: str,
+    host_ip: str,
+    ssh_user: str,
+    ssh_opts: list,
+    ssh_port_opts: list,
+    deploy_start: float,
+) -> dict:
+    """Run the install script on the remote host and return the result dict.
+
+    Handles subprocess timeout, credential extraction from output,
+    and result logging.
+    """
+    logger.info("Running install script on %s", host_ip)
+    try:
+        result = subprocess.run(
+            [
+                "ssh",
+                *ssh_opts,
+                *ssh_port_opts,
+                f"{ssh_user}@{host_ip}",
+                "sudo",
+                "bash",
+                "-s",
+            ],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired as te:
+        stdout = str(te.stdout) if te.stdout else ""
+        stderr = str(te.stderr) if te.stderr else ""
+        partial = stdout + stderr
+        last_lines = "\n".join(partial.strip().splitlines()[-15:])
+        logger.error(
+            "Install script timed out on %s after 300s. Last output:\n%s",
+            host_ip,
+            last_lines,
+        )
+        return {
+            "success": False,
+            "exit_code": -1,
+            "output": partial,
+            "troshkad_credentials": {},
+        }
+
+    output = result.stdout + result.stderr
+    success = result.returncode == 0
+
+    troshkad_credentials: dict = {}
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith("TROSHKAD_TOKEN="):
+            troshkad_credentials["token"] = line.split("=", 1)[1]
+        elif line.startswith("TROSHKAD_FINGERPRINT="):
+            troshkad_credentials["fingerprint"] = line.split("=", 1)[1]
+
+    elapsed = int(time.time() - deploy_start)
+    logger.info(
+        "Agent deploy %s on %s (exit %d, %ds)",
+        "succeeded" if success else "failed",
+        host_ip,
+        result.returncode,
+        elapsed,
+    )
+    if not success:
+        last_lines = "\n".join(output.strip().splitlines()[-10:])
+        logger.warning("Agent deploy output (last 10 lines):\n%s", last_lines)
+
+    return {
+        "success": success,
+        "exit_code": result.returncode,
+        "output": output,
+        "troshkad_credentials": troshkad_credentials,
+    }
+
+
 def deploy_agent(
     host_ip: str,
     private_key: str,
@@ -754,106 +904,32 @@ def deploy_agent(
         deploy_start = time.time()
 
         # SCP troshkad.py to host
-        troshkad_path = os.path.join(
-            os.path.dirname(
-                os.path.dirname(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                )
-            ),
-            "troshkad",
-            "troshkad.py",
+        src_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         )
-        if os.path.exists(troshkad_path):
-            logger.info("Copying troshkad.py to %s", host_ip)
-            scp_result = subprocess.run(
-                [
-                    "scp",
-                    *scp_port_opts,
-                    *ssh_opts,
-                    troshkad_path,
-                    f"{ssh_user}@{host_ip}:/tmp/troshkad.py",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if scp_result.returncode != 0:
-                logger.warning("SCP troshkad.py failed: %s", scp_result.stderr)
-            else:
-                subprocess.run(
-                    [
-                        "ssh",
-                        *ssh_opts,
-                        *ssh_port_opts,
-                        f"{ssh_user}@{host_ip}",
-                        "sudo",
-                        "mkdir",
-                        "-p",
-                        "/opt/troshka",
-                    ],
-                    capture_output=True,
-                    timeout=60,
-                )
-                subprocess.run(
-                    [
-                        "ssh",
-                        *ssh_opts,
-                        *ssh_port_opts,
-                        f"{ssh_user}@{host_ip}",
-                        "sudo",
-                        "mv",
-                        "/tmp/troshkad.py",
-                        "/opt/troshka/troshkad.py",
-                    ],
-                    capture_output=True,
-                    timeout=30,
-                )
-        else:
-            logger.warning("troshkad.py not found at %s", troshkad_path)
+        troshkad_path = os.path.join(src_root, "troshkad", "troshkad.py")
+        _scp_file_to_host(
+            troshkad_path,
+            "/opt/troshka/troshkad.py",
+            host_ip,
+            ssh_user,
+            ssh_opts,
+            ssh_port_opts,
+            scp_port_opts,
+            create_parent_dir=True,
+        )
 
         # SCP vncd.py to host
-        vncd_path = os.path.join(
-            os.path.dirname(
-                os.path.dirname(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                )
-            ),
-            "troshka-vncd",
-            "troshka-vncd.py",
+        vncd_path = os.path.join(src_root, "troshka-vncd", "troshka-vncd.py")
+        _scp_file_to_host(
+            vncd_path,
+            "/opt/troshka/troshka-vncd.py",
+            host_ip,
+            ssh_user,
+            ssh_opts,
+            ssh_port_opts,
+            scp_port_opts,
         )
-        if os.path.exists(vncd_path):
-            logger.info("Copying troshka-vncd.py to %s", host_ip)
-            scp_result = subprocess.run(
-                [
-                    "scp",
-                    *scp_port_opts,
-                    *ssh_opts,
-                    vncd_path,
-                    f"{ssh_user}@{host_ip}:/tmp/troshka-vncd.py",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            if scp_result.returncode != 0:
-                logger.warning("SCP troshka-vncd.py failed: %s", scp_result.stderr)
-            else:
-                subprocess.run(
-                    [
-                        "ssh",
-                        *ssh_opts,
-                        *ssh_port_opts,
-                        f"{ssh_user}@{host_ip}",
-                        "sudo",
-                        "mv",
-                        "/tmp/troshka-vncd.py",
-                        "/opt/troshka/troshka-vncd.py",
-                    ],
-                    capture_output=True,
-                    timeout=30,
-                )
-        else:
-            logger.warning("troshka-vncd.py not found at %s", vncd_path)
 
         # Copy utility scripts
         tools_dir = os.path.dirname(troshkad_path)
@@ -893,69 +969,8 @@ def deploy_agent(
             )
 
         # Run install script (sets up system config, qemu hook, restarts virtqemud)
-        logger.info("Running install script on %s", host_ip)
-        try:
-            result = subprocess.run(
-                [
-                    "ssh",
-                    *ssh_opts,
-                    *ssh_port_opts,
-                    f"{ssh_user}@{host_ip}",
-                    "sudo",
-                    "bash",
-                    "-s",
-                ],
-                input=script,
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-        except subprocess.TimeoutExpired as te:
-            stdout = str(te.stdout) if te.stdout else ""
-            stderr = str(te.stderr) if te.stderr else ""
-            partial = stdout + stderr
-            last_lines = "\n".join(partial.strip().splitlines()[-15:])
-            logger.error(
-                "Install script timed out on %s after 300s. Last output:\n%s",
-                host_ip,
-                last_lines,
-            )
-            return {
-                "success": False,
-                "exit_code": -1,
-                "output": partial,
-                "troshkad_credentials": {},
-            }
-
-        output = result.stdout + result.stderr
-        success = result.returncode == 0
-
-        # Extract troshkad credentials from output
-        troshkad_credentials = {}
-        for line in output.splitlines():
-            line = line.strip()
-            if line.startswith("TROSHKAD_TOKEN="):
-                troshkad_credentials["token"] = line.split("=", 1)[1]
-            elif line.startswith("TROSHKAD_FINGERPRINT="):
-                troshkad_credentials["fingerprint"] = line.split("=", 1)[1]
-
-        elapsed = int(time.time() - deploy_start)
-        logger.info(
-            "Agent deploy %s on %s (exit %d, %ds)",
-            "succeeded" if success else "failed",
-            host_ip,
-            result.returncode,
-            elapsed,
+        return _run_install_script_via_ssh(
+            script, host_ip, ssh_user, ssh_opts, ssh_port_opts, deploy_start
         )
-        if not success:
-            last_lines = "\n".join(output.strip().splitlines()[-10:])
-            logger.warning("Agent deploy output (last 10 lines):\n%s", last_lines)
-
-        return {
-            "success": success,
-            "exit_code": result.returncode,
-            "output": output,
-            "troshkad_credentials": troshkad_credentials,
-        }
     finally:
         os.unlink(key_path)
