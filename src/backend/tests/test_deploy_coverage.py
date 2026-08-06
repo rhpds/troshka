@@ -2505,7 +2505,19 @@ class TestSetupMesh:
 # _cleanup_stale_shared_cache
 # ═══════════════════════════════════════════════════════════════════════════
 
-from app.services.deploy_service import _cleanup_stale_shared_cache
+from app.services.deploy_service import (
+    _cleanup_stale_shared_cache,
+    _create_ordered_containers,
+    _deploy_allocate_eips,
+    _deploy_create_dns_records,
+    _deploy_create_ocpvirt_routes,
+    _deploy_handle_recert,
+    _deploy_setup_bmc,
+    _deploy_sync_sg_rules,
+    _deploy_vms_on_host,
+    _load_container_from_pattern,
+    _start_multihost_vms,
+)
 
 
 class TestCleanupStaleSharedCache:
@@ -2556,3 +2568,582 @@ class TestCleanupStaleSharedCache:
         s.query.side_effect = [host_query, cache_query]
         _cleanup_stale_shared_cache(s, project)
         assert s.delete.call_count == 2
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_setup_bmc (covers lines 3379-3406)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestDeploySetupBmc:
+    @patch("app.services.deploy_service._extract_bmc_config", return_value=None)
+    def test_no_bmc_vms(self, mock_extract):
+        topo = {"nodes": [{"type": "vmNode", "data": {"bmcEnabled": False}}]}
+        err, cfg = _deploy_setup_bmc(_make_host(), PROJECT_ID, topo)
+        assert err is None
+        assert cfg is None
+
+    @patch("app.services.deploy_service._extract_bmc_config", return_value=None)
+    def test_bmc_vms_but_no_bmc_config(self, mock_extract):
+        topo = {
+            "nodes": [{"type": "vmNode", "data": {"bmcEnabled": True}}],
+        }
+        err, cfg = _deploy_setup_bmc(_make_host(), PROJECT_ID, topo)
+        assert "no BMC network" in err
+        assert cfg is None
+
+    @patch("app.services.deploy_service._setup_bmc_via_troshkad", return_value=True)
+    @patch("app.services.deploy_service._get_deploy_progress_data", return_value={})
+    @patch("app.services.deploy_service.notify_project")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._extract_bmc_config")
+    def test_bmc_success(
+        self, mock_extract, mock_prog, mock_notify, mock_get, mock_bmc
+    ):
+        bmc = {"bmc_network": {"cidr": "10.0.0.0/24"}, "vms": [{"bmc_ip": "10.0.0.10"}]}
+        mock_extract.return_value = bmc
+        topo = {"nodes": [{"type": "vmNode", "data": {"bmcEnabled": True}}]}
+        err, cfg = _deploy_setup_bmc(_make_host(), PROJECT_ID, topo)
+        assert err is None
+        assert cfg is bmc
+        mock_bmc.assert_called_once()
+
+    @patch(
+        "app.services.deploy_service._setup_bmc_via_troshkad",
+        return_value="port conflict",
+    )
+    @patch("app.services.deploy_service._get_deploy_progress_data", return_value={})
+    @patch("app.services.deploy_service.notify_project")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._extract_bmc_config")
+    def test_bmc_failure(
+        self, mock_extract, mock_prog, mock_notify, mock_get, mock_bmc
+    ):
+        bmc = {"bmc_network": {}, "vms": [{"bmc_ip": "10.0.0.10"}]}
+        mock_extract.return_value = bmc
+        topo = {"nodes": [{"type": "vmNode", "data": {"bmcEnabled": True}}]}
+        err, cfg = _deploy_setup_bmc(_make_host(), PROJECT_ID, topo)
+        assert "port conflict" in err
+        assert cfg is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_create_dns_records (covers lines 3513-3555)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestDeployCreateDnsRecords:
+    def test_no_dns_provider_id(self):
+        s = MagicMock()
+        project = MagicMock()
+        project.dns_provider_id = None
+        project.guid = "guid1"
+        project.domain = "example.com"
+        _deploy_create_dns_records(s, PROJECT_ID, project, {}, None, [])
+        s.query.assert_not_called()
+
+    def test_no_guid(self):
+        s = MagicMock()
+        project = MagicMock()
+        project.dns_provider_id = "dns-1"
+        project.guid = None
+        project.domain = "example.com"
+        _deploy_create_dns_records(s, PROJECT_ID, project, {}, None, [])
+        s.query.assert_not_called()
+
+    def test_no_lb_config(self):
+        s = MagicMock()
+        project = MagicMock()
+        project.dns_provider_id = "dns-1"
+        project.guid = "guid1"
+        project.domain = "example.com"
+        dns_prov = MagicMock()
+        s.query.return_value.filter_by.return_value.first.return_value = dns_prov
+        _deploy_create_dns_records(s, PROJECT_ID, project, {}, None, [])
+
+    @patch("app.services.dns_service.create_dns_records", return_value=[])
+    @patch(
+        "app.services.dns_service.resolve_dns_records",
+        return_value=[{"name": "api.guid1.example.com", "value": "1.2.3.4"}],
+    )
+    @patch("app.services.deploy_service._update_deploy_progress")
+    def test_creates_records(self, mock_prog, mock_resolve, mock_create):
+        s = MagicMock()
+        project = MagicMock()
+        project.dns_provider_id = "dns-1"
+        project.guid = "guid1"
+        project.domain = "example.com"
+        project.deployed_topology = {}
+        dns_prov = MagicMock()
+        dns_prov.type = "route53"
+        dns_prov.config = {"zone_id": "Z123"}
+        s.query.return_value.filter_by.return_value.first.return_value = dns_prov
+        lb_config = {
+            "dns_records": [{"name": "api.{guid}.{domain}", "type": "A"}],
+            "dns_ttl": 60,
+        }
+        ext_ips = [{"ip": "1.2.3.4"}]
+        _deploy_create_dns_records(s, PROJECT_ID, project, {}, lb_config, ext_ips)
+        mock_resolve.assert_called_once()
+        mock_create.assert_called_once()
+        assert project.deployed_topology["_dns_records"] == [
+            {"name": "api.guid1.example.com", "value": "1.2.3.4"}
+        ]
+
+    @patch("app.services.dns_service.create_dns_records", return_value=["err1"])
+    @patch("app.services.dns_service.resolve_dns_records", return_value=[{"name": "a"}])
+    @patch("app.services.deploy_service._update_deploy_progress")
+    def test_logs_errors(self, mock_prog, mock_resolve, mock_create):
+        s = MagicMock()
+        project = MagicMock()
+        project.dns_provider_id = "dns-1"
+        project.guid = "g"
+        project.domain = "d.com"
+        project.deployed_topology = None
+        dns_prov = MagicMock()
+        dns_prov.type = "route53"
+        dns_prov.config = {}
+        s.query.return_value.filter_by.return_value.first.return_value = dns_prov
+        lb_config = {"dns_records": [{"name": "x"}], "dns_ttl": 30}
+        _deploy_create_dns_records(s, PROJECT_ID, project, {}, lb_config, [])
+        # Should not raise even with errors
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_sync_sg_rules (covers lines 2926-2959)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestDeploySyncSgRules:
+    @patch("app.services.eip_service.sync_security_group_rules")
+    def test_no_provider(self, mock_sync):
+        s = MagicMock()
+        s.query.return_value.filter_by.return_value.first.return_value = None
+        project = MagicMock()
+        project.provider_id = None
+        host = _make_host()
+        host.provider_id = None
+        _deploy_sync_sg_rules(s, PROJECT_ID, project, host, {}, None)
+        mock_sync.assert_not_called()
+
+    @patch("app.services.eip_service.sync_security_group_rules")
+    def test_with_gateway_and_lb(self, mock_sync):
+        s = MagicMock()
+        provider = MagicMock()
+        s.query.return_value.filter_by.return_value.first.return_value = provider
+        project = MagicMock()
+        project.provider_id = "prov-1"
+        host = _make_host()
+        topology = {
+            "nodes": [
+                {
+                    "type": "networkNode",
+                    "data": {
+                        "subtype": "gateway",
+                        "gatewayMode": "nat-portforward",
+                        "portForwards": [{"extPort": 443}],
+                    },
+                }
+            ]
+        }
+        lb_config = {
+            "frontends": [{"bindPort": 6443}],
+            "external": True,
+        }
+        _deploy_sync_sg_rules(s, PROJECT_ID, project, host, topology, lb_config)
+        mock_sync.assert_called_once()
+        rules = mock_sync.call_args[0][2]
+        ports = {r["ext_port"] for r in rules}
+        assert 443 in ports
+        assert 6443 in ports
+
+    @patch("app.services.eip_service.sync_security_group_rules")
+    def test_fallback_to_host_provider(self, mock_sync):
+        s = MagicMock()
+        provider = MagicMock()
+        # project.provider_id query returns None, host.provider_id query returns provider
+        s.query.return_value.filter_by.return_value.first.side_effect = [None, provider]
+        project = MagicMock()
+        project.provider_id = "missing"
+        host = _make_host()
+        topology = {
+            "nodes": [
+                {
+                    "type": "networkNode",
+                    "data": {
+                        "subtype": "gateway",
+                        "gatewayMode": "nat-portforward",
+                        "portForwards": [{"extPort": 80}],
+                    },
+                }
+            ]
+        }
+        _deploy_sync_sg_rules(s, PROJECT_ID, project, host, topology, None)
+        mock_sync.assert_called_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_allocate_eips (covers lines 2839-2867)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestDeployAllocateEips:
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._checkpoint")
+    def test_no_provider(self, mock_cp, mock_prog):
+        s = MagicMock()
+        s.query.return_value.filter_by.return_value.first.return_value = None
+        project = MagicMock()
+        project.provider_id = None
+        host = _make_host()
+        host.provider_id = None
+        result = _deploy_allocate_eips(
+            s, PROJECT_ID, project, host, {}, [{"id": "eip-1"}]
+        )
+        assert "No provider" in result
+
+    @patch("app.services.deploy_service._allocate_single_eip")
+    @patch("app.services.deploy_service._should_skip_ocpvirt_eip", return_value=False)
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._checkpoint")
+    def test_allocates_eips(self, mock_cp, mock_prog, mock_skip, mock_alloc):
+        s = MagicMock()
+        provider = MagicMock()
+        s.query.return_value.filter_by.return_value.first.return_value = provider
+        project = MagicMock()
+        project.provider_id = "prov-1"
+        host = _make_host()
+        ext_ips = [{"id": "eip-1"}, {"id": "eip-2"}]
+        result = _deploy_allocate_eips(
+            s, PROJECT_ID, project, host, {"nodes": []}, ext_ips
+        )
+        assert result is None
+        assert mock_alloc.call_count == 2
+        s.commit.assert_called_once()
+
+    @patch("app.services.deploy_service._should_skip_ocpvirt_eip", return_value=True)
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._checkpoint")
+    def test_skips_ocpvirt(self, mock_cp, mock_prog, mock_skip):
+        s = MagicMock()
+        provider = MagicMock()
+        s.query.return_value.filter_by.return_value.first.return_value = provider
+        project = MagicMock()
+        project.provider_id = "prov-1"
+        host = _make_host()
+        ext_ips = [{"id": "eip-1"}]
+        result = _deploy_allocate_eips(
+            s, PROJECT_ID, project, host, {"nodes": []}, ext_ips
+        )
+        assert result is None
+        # _skip key should be cleaned up
+        assert "_skip" not in ext_ips[0]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_handle_recert (covers lines 3283-3294)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestDeployHandleRecert:
+    @patch("app.services.deploy_service._is_ocp_topology", return_value=False)
+    @patch("app.services.deploy_service._is_pattern_deploy", return_value=True)
+    def test_skip_non_ocp(self, mock_pattern, mock_ocp):
+        s = MagicMock()
+        host = _make_host()
+        _deploy_handle_recert(s, host, PROJECT_ID, {"nodes": []}, None)
+        # Should return early, no recert logic
+
+    @patch("app.services.deploy_service._is_pattern_deploy", return_value=False)
+    def test_skip_non_pattern(self, mock_pattern):
+        s = MagicMock()
+        host = _make_host()
+        _deploy_handle_recert(s, host, PROJECT_ID, {"nodes": []}, None)
+
+    @patch("app.services.deploy_service._clean_kubelet_certs")
+    @patch("app.services.deploy_service._auto_enable_recert_on_rhcos")
+    @patch(
+        "app.services.deploy_service._resolve_recert_settings",
+        return_value=(True, "pass123"),
+    )
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._is_ocp_topology", return_value=True)
+    @patch("app.services.deploy_service._is_pattern_deploy", return_value=True)
+    def test_runs_recert(
+        self, mock_pattern, mock_ocp, mock_prog, mock_resolve, mock_auto, mock_clean
+    ):
+        s = MagicMock()
+        host = _make_host()
+        topo = {"nodes": []}
+        _deploy_handle_recert(s, host, PROJECT_ID, topo, None)
+        mock_clean.assert_called_once()
+        mock_auto.assert_called_once_with(topo, True, PROJECT_ID)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_create_ocpvirt_routes (covers lines 3050-3070)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestDeployCreateOcpvirtRoutes:
+    def test_no_host(self):
+        s = MagicMock()
+        _deploy_create_ocpvirt_routes(s, None, PROJECT_ID, {})
+        s.query.assert_not_called()
+
+    def test_non_ocpvirt_provider(self):
+        s = MagicMock()
+        provider = MagicMock()
+        provider.type = "ec2"
+        s.query.return_value.filter_by.return_value.first.return_value = provider
+        host = _make_host()
+        _deploy_create_ocpvirt_routes(s, host, PROJECT_ID, {"nodes": []})
+        s.commit.assert_not_called()
+
+    @patch("app.services.deploy_service._create_routes_for_gateway")
+    @patch("app.services.providers.get_provider_driver")
+    def test_creates_routes(self, mock_driver, mock_create):
+        mock_create.return_value = [{"hostname": "test.apps.cluster.com", "port": 443}]
+        s = MagicMock()
+        provider = MagicMock()
+        provider.type = "ocpvirt"
+        s.query.return_value.filter_by.return_value.first.return_value = provider
+        host = _make_host()
+        topology = {
+            "nodes": [
+                {
+                    "id": "gw1",
+                    "data": {
+                        "subtype": "gateway",
+                        "portForwards": [{"extPort": 443}],
+                    },
+                }
+            ]
+        }
+        _deploy_create_ocpvirt_routes(s, host, PROJECT_ID, topology)
+        mock_create.assert_called_once()
+        s.commit.assert_called_once()
+        assert topology["nodes"][0]["data"]["externalEndpoints"] == [
+            {"hostname": "test.apps.cluster.com", "port": 443}
+        ]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _start_multihost_vms (covers lines 2643-2658)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestStartMultihostVms:
+    @patch("app.services.deploy_service._start_vms_via_troshkad", return_value=[])
+    @patch("app.services.deploy_service._filter_topology_for_host")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    def test_starts_vms_on_all_hosts(self, mock_prog, mock_filter, mock_start):
+        mock_filter.return_value = {"nodes": []}
+        db = MagicMock()
+        host1 = _make_host()
+        host1.id = HOST_ID
+        host2 = _make_host()
+        host2.id = HOST_ID_2
+        db.query.return_value.filter_by.return_value.first.side_effect = [host1, host2]
+        vm_sets = {HOST_ID: ["vm-1"], HOST_ID_2: ["vm-2"]}
+        _start_multihost_vms(PROJECT_ID, vm_sets, {"nodes": []}, db)
+        assert mock_start.call_count == 2
+
+    @patch("app.services.deploy_service._start_vms_via_troshkad")
+    @patch("app.services.deploy_service._filter_topology_for_host")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    def test_skips_missing_host(self, mock_prog, mock_filter, mock_start):
+        db = MagicMock()
+        db.query.return_value.filter_by.return_value.first.return_value = None
+        _start_multihost_vms(PROJECT_ID, {HOST_ID: ["vm-1"]}, {"nodes": []}, db)
+        mock_start.assert_not_called()
+
+    @patch(
+        "app.services.deploy_service._start_vms_via_troshkad",
+        return_value=[("sno1", "qemu error")],
+    )
+    @patch("app.services.deploy_service._filter_topology_for_host")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    def test_logs_start_failures(self, mock_prog, mock_filter, mock_start):
+        mock_filter.return_value = {"nodes": []}
+        db = MagicMock()
+        host = _make_host()
+        db.query.return_value.filter_by.return_value.first.return_value = host
+        _start_multihost_vms(PROJECT_ID, {HOST_ID: ["vm-1"]}, {"nodes": []}, db)
+        # Should not raise, just log
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _deploy_vms_on_host (covers lines 2542-2570)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestDeployVmsOnHost:
+    @patch("app.services.deploy_service._define_multihost_vms", return_value=None)
+    @patch("app.services.deploy_service._clean_stale_domains")
+    @patch("app.services.deploy_service._create_multihost_disks", return_value=None)
+    @patch("app.services.deploy_service._create_seed_isos_via_troshkad")
+    @patch("app.services.deploy_service._filter_topology_for_host")
+    @patch("app.services.deploy_service.cache_library_images")
+    @patch("app.services.deploy_service._get_host_pool", return_value=None)
+    @patch("app.services.deploy_service._update_deploy_progress")
+    def test_success(
+        self,
+        mock_prog,
+        mock_pool,
+        mock_cache,
+        mock_filter,
+        mock_seeds,
+        mock_disks,
+        mock_stale,
+        mock_define,
+    ):
+        host = _make_host()
+        project = MagicMock()
+        project.clock_target = None
+        host_vms = [{"node_id": "vm-1"}]
+        topo = {"nodes": []}
+        result = _deploy_vms_on_host(
+            host, PROJECT_ID, project, host_vms, topo, {}, MagicMock()
+        )
+        assert result is None
+        mock_cache.assert_called_once()
+        mock_seeds.assert_called_once()
+
+    @patch(
+        "app.services.deploy_service._create_multihost_disks",
+        return_value="disk error",
+    )
+    @patch("app.services.deploy_service._create_seed_isos_via_troshkad")
+    @patch("app.services.deploy_service._filter_topology_for_host")
+    @patch("app.services.deploy_service.cache_library_images")
+    @patch("app.services.deploy_service._get_host_pool", return_value=None)
+    @patch("app.services.deploy_service._update_deploy_progress")
+    def test_disk_error(
+        self, mock_prog, mock_pool, mock_cache, mock_filter, mock_seeds, mock_disks
+    ):
+        host = _make_host()
+        project = MagicMock()
+        project.clock_target = None
+        result = _deploy_vms_on_host(
+            host, PROJECT_ID, project, [{"node_id": "vm-1"}], {}, {}, MagicMock()
+        )
+        assert result == "disk error"
+
+    @patch("app.services.deploy_service._define_multihost_vms", return_value=None)
+    @patch("app.services.deploy_service._clean_stale_domains")
+    @patch("app.services.deploy_service._create_multihost_disks", return_value=None)
+    @patch("app.services.deploy_service._create_seed_isos_via_troshkad")
+    @patch("app.services.deploy_service._filter_topology_for_host")
+    @patch("app.services.deploy_service.cache_library_images")
+    @patch("app.services.deploy_service._get_host_pool", return_value=None)
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.clock_service.compute_clock_offset", return_value=-3600)
+    def test_with_clock_target(
+        self,
+        mock_offset,
+        mock_prog,
+        mock_pool,
+        mock_cache,
+        mock_filter,
+        mock_seeds,
+        mock_disks,
+        mock_stale,
+        mock_define,
+    ):
+        host = _make_host()
+        project = MagicMock()
+        project.clock_target = "2025-01-01T00:00:00Z"
+        host_vms = [{"node_id": "vm-1"}]
+        result = _deploy_vms_on_host(
+            host, PROJECT_ID, project, host_vms, {}, {}, MagicMock()
+        )
+        assert result is None
+        # clock_offset should be passed to _define_multihost_vms
+        call_args = mock_define.call_args[0]
+        assert call_args[6] == -3600
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _create_ordered_containers (covers lines 3409-3431)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestCreateOrderedContainers:
+    @patch("app.services.deploy_service._create_and_start_container")
+    def test_creates_ordered_containers(self, mock_create):
+        host = _make_host()
+        containers = [
+            {"node_id": "c1", "image": "nginx", "is_pod": False},
+            {"node_id": "c2", "image": "redis", "is_pod": False},
+        ]
+        start_order = [
+            {"entryType": "container", "containerId": "c1", "delaySeconds": 0},
+            {"entryType": "container", "containerId": "c2", "delaySeconds": 0},
+        ]
+        result = _create_ordered_containers(
+            host, PROJECT_ID, containers, start_order, {}, {}, None
+        )
+        assert result == {"c1", "c2"}
+        assert mock_create.call_count == 2
+
+    @patch("app.services.deploy_service._create_and_start_pod")
+    def test_creates_ordered_pods(self, mock_create):
+        host = _make_host()
+        containers = [{"node_id": "p1", "image": "", "is_pod": True}]
+        start_order = [{"entryType": "container", "containerId": "p1"}]
+        result = _create_ordered_containers(
+            host, PROJECT_ID, containers, start_order, {}, {}, None
+        )
+        assert "p1" in result
+        mock_create.assert_called_once()
+
+    def test_no_matching_containers(self):
+        host = _make_host()
+        containers = [{"node_id": "c1", "image": "nginx", "is_pod": False}]
+        start_order = [{"entryType": "container", "containerId": "nonexistent"}]
+        result = _create_ordered_containers(
+            host, PROJECT_ID, containers, start_order, {}, {}, None
+        )
+        assert result == set()
+
+    def test_skips_non_container_entries(self):
+        host = _make_host()
+        containers = []
+        start_order = [{"entryType": "vm", "vmId": "vm-1"}]
+        result = _create_ordered_containers(
+            host, PROJECT_ID, containers, start_order, {}, {}, None
+        )
+        assert result == set()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _load_container_from_pattern (covers lines 3145-3176)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestLoadContainerFromPattern:
+    @patch("app.services.deploy_service.wait_for_job")
+    @patch("app.services.deploy_service.start_job")
+    @patch("app.services.s3_storage._get_s3_config")
+    @patch("app.services.s3_storage._bucket", return_value="troshka-images")
+    def test_loads_image(self, mock_bucket, mock_creds, mock_start, mock_wait):
+        mock_creds.return_value = {
+            "access_key_id": "ak",
+            "secret_access_key": "sk",
+            "region": "us-east-1",
+            "endpoint_url": "",
+        }
+        mock_start.side_effect = ["cache-job", "load-job"]
+        mock_wait.side_effect = [
+            {"status": "completed"},
+            {"status": "completed"},
+        ]
+        host = _make_host()
+        ctr = {"node_id": "container-1234-5678", "image": "quay.io/test/img:v1"}
+        _load_container_from_pattern(host, PROJECT_ID, ctr, "pattern-123")
+        assert mock_start.call_count == 2
+        # First call: /images/cache to download the tar
+        assert mock_start.call_args_list[0][0][1] == "/images/cache"
+        # Second call: /containers/load-image to load it
+        assert mock_start.call_args_list[1][0][1] == "/containers/load-image"
