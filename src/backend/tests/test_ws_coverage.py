@@ -3,6 +3,73 @@
 from unittest.mock import MagicMock, patch
 
 
+class TestNotifyProject:
+    @patch("app.services.ws_pubsub._deliver_locally")
+    def test_delivers_locally_and_publishes_to_redis(self, mock_deliver):
+        from app.services.ws_pubsub import notify_project
+
+        with patch("app.core.redis.is_redis_available", return_value=True):
+            with patch("app.core.redis.publish") as mock_pub:
+                notify_project("proj-1", {"type": "test"})
+                mock_deliver.assert_called_once_with("proj-1", {"type": "test"})
+                mock_pub.assert_called_once()
+
+    @patch("app.services.ws_pubsub._deliver_locally")
+    def test_redis_unavailable_still_delivers_locally(self, mock_deliver):
+        from app.services.ws_pubsub import notify_project
+
+        with patch("app.core.redis.is_redis_available", return_value=False):
+            notify_project("proj-2", {"type": "test"})
+            mock_deliver.assert_called_once()
+
+    @patch("app.services.ws_pubsub._deliver_locally")
+    def test_redis_exception_swallowed(self, mock_deliver):
+        from app.services.ws_pubsub import notify_project
+
+        with patch("app.core.redis.is_redis_available", side_effect=Exception("boom")):
+            notify_project("proj-3", {"type": "test"})
+            mock_deliver.assert_called_once()
+
+
+class TestDeliverLocally:
+    def test_no_loop_returns_immediately(self):
+        from app.services import ws_pubsub
+
+        old_loop = ws_pubsub._loop
+        ws_pubsub._loop = None
+        try:
+            ws_pubsub._deliver_locally("proj-1", {"type": "test"})
+        finally:
+            ws_pubsub._loop = old_loop
+
+    def test_no_subscribers_returns_immediately(self):
+        from app.services import ws_pubsub
+
+        old_loop = ws_pubsub._loop
+        ws_pubsub._loop = MagicMock()
+        try:
+            ws_pubsub._deliver_locally("no-such-project", {"type": "test"})
+        finally:
+            ws_pubsub._loop = old_loop
+
+
+class TestEvictStaleCacheEntries:
+    def test_evicts_projects_not_in_set(self):
+        from app.services import ws_pubsub
+
+        ws_pubsub._last_states["stale-1"] = {"vm_states": {}}
+        ws_pubsub._last_states["stale-2"] = {"vm_states": {}}
+        ws_pubsub._last_states["keep-1"] = {"vm_states": {}}
+        try:
+            active = {"keep-1": MagicMock()}
+            ws_pubsub._evict_stale_cache_entries(active)
+            assert "keep-1" in ws_pubsub._last_states
+            assert "stale-1" not in ws_pubsub._last_states
+            assert "stale-2" not in ws_pubsub._last_states
+        finally:
+            ws_pubsub._last_states.pop("keep-1", None)
+
+
 class TestGetCachedVmStates:
     def test_returns_none_when_empty(self):
         from app.services.ws_pubsub import get_cached_vm_states
