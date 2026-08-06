@@ -19,7 +19,12 @@ def list_users(
     return db.query(User).order_by(User.email).all()
 
 
-@router.post("/", response_model=UserResponse, status_code=201)
+@router.post(
+    "/",
+    response_model=UserResponse,
+    status_code=201,
+    responses={400: {"description": "Bad request"}, 409: {"description": "Conflict"}},
+)
 def create_user(
     body: UserCreate,
     current_user: User = Depends(require_role("admin")),
@@ -47,7 +52,11 @@ def create_user(
     return user
 
 
-@router.patch("/{user_id}", response_model=UserResponse)
+@router.patch(
+    "/{user_id}",
+    response_model=UserResponse,
+    responses={400: {"description": "Bad request"}, 404: {"description": "Not found"}},
+)
 def update_user(
     user_id: str,
     body: UserUpdate,
@@ -73,7 +82,15 @@ def update_user(
     return user
 
 
-@router.delete("/{user_id}", status_code=204)
+@router.delete(
+    "/{user_id}",
+    status_code=204,
+    responses={
+        400: {"description": "Bad request"},
+        404: {"description": "Not found"},
+        409: {"description": "Conflict"},
+    },
+)
 def delete_user(
     user_id: str,
     current_user: User = Depends(require_role("admin")),
