@@ -29,7 +29,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function VMProperties({ data }: { data: Record<string, any> }) {
   const nics = (data.nics as Array<Record<string, string>>) || [];
-  const dcs = (data.diskControllers as Array<Record<string, string>>) || [];
+  const dcs = (data.diskControllers as Array<{id: string; name: string; bus: string; rotationRate?: number}>) || [];
 
   return (
     <>
@@ -66,7 +66,7 @@ function VMProperties({ data }: { data: Record<string, any> }) {
         <Section title={`Disk Controllers (${dcs.length})`}>
           {dcs.map((dc, i) => (
             <div key={dc.id || i} style={{ fontSize: 12, padding: "2px 0" }}>
-              {dc.name} ({dc.bus})
+              {dc.name} ({dc.bus}){dc.rotationRate !== undefined && ["scsi", "sata", "ide"].includes(dc.bus) ? ` — ${dc.rotationRate === 1 ? "SSD" : `${dc.rotationRate} RPM`}` : ""}
             </div>
           ))}
         </Section>

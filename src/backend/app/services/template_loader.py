@@ -572,7 +572,10 @@ def _build_vm_iso_nodes(
 
 
 def _build_disk_node_and_edge(vm_name, disk_cfg, di, vm_x, vm_row_y):
-    dc = {"id": f"dp-{_id()}", "name": f"disk{di}", "bus": "virtio"}
+    disk_bus = disk_cfg.get("bus", "virtio")
+    dc = {"id": f"dp-{_id()}", "name": f"disk{di}", "bus": disk_bus}
+    if disk_bus in ("scsi", "sata", "ide"):
+        dc["rotationRate"] = disk_cfg.get("rotation_rate", 1)
     disk_id = _id()
     disk_data = {
         "label": disk_cfg.get("name", f"{vm_name}-disk{di}"),
@@ -1218,7 +1221,12 @@ def _find_disk_for_controller(dc, storage_ids, storage_nodes, vm_edges, _iso_ite
             if e["source"] == sid and dc["id"] in e.get("targetHandle", ""):
                 if _is_iso_storage_node(sn, _iso_item_ids):
                     break
-                return _build_disk_output(sn)
+                disk_out = _build_disk_output(sn)
+                if dc.get("bus") and dc["bus"] != "virtio":
+                    disk_out["bus"] = dc["bus"]
+                if dc.get("rotationRate") is not None:
+                    disk_out["rotation_rate"] = dc["rotationRate"]
+                return disk_out
     return None
 
 

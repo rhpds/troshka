@@ -988,7 +988,7 @@ export default function PropertiesPanel() {
               Disk Controllers
             </div>
             {!isCollapsed("disks") && (() => {
-              let ports = ((data as unknown as VMNodeData).diskControllers || []) as Array<{id: string; name: string; bus: string}>;
+              let ports = ((data as unknown as VMNodeData).diskControllers || []) as Array<{id: string; name: string; bus: string; rotationRate?: number}>;
               if (ports.length === 0) {
                 ports = [{ id: generateDiskControllerId(), name: "disk0", bus: "virtio" }];
                 update("diskControllers", ports);
@@ -1014,7 +1014,15 @@ export default function PropertiesPanel() {
                       <div className="props-field">
                         <label className="props-label">Bus</label>
                         <select className="props-select" value={port.bus || "virtio"} onChange={(e) => {
-                          const updated = [...ports]; updated[i] = { ...port, bus: e.target.value }; update("diskControllers", updated);
+                          const bus = e.target.value;
+                          const patch: Record<string, unknown> = { ...port, bus };
+                          const isKubevirt = useCanvasStore.getState().providerType === "kubevirt";
+                          if (["scsi", "sata", "ide"].includes(bus) && port.rotationRate === undefined && !isKubevirt) {
+                            patch.rotationRate = 1;
+                          } else if (bus === "virtio" || bus === "usb") {
+                            delete patch.rotationRate;
+                          }
+                          const updated = [...ports]; updated[i] = patch as typeof port; update("diskControllers", updated);
                         }}>
                           <option value="virtio">virtio-blk</option>
                           <option value="scsi">virtio-scsi</option>
@@ -1023,6 +1031,20 @@ export default function PropertiesPanel() {
                           <option value="usb">USB</option>
                         </select>
                       </div>
+                      {["scsi", "sata", "ide"].includes(port.bus) && useCanvasStore.getState().providerType !== "kubevirt" && (
+                        <div className="props-field">
+                          <label className="props-label">Rotation Rate</label>
+                          <select className="props-select" value={port.rotationRate ?? 1} onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            const updated = [...ports]; updated[i] = { ...port, rotationRate: val }; update("diskControllers", updated);
+                          }}>
+                            <option value={1}>SSD (non-rotational)</option>
+                            <option value={7200}>7200 RPM</option>
+                            <option value={10000}>10000 RPM</option>
+                            <option value={15000}>15000 RPM</option>
+                          </select>
+                        </div>
+                      )}
                     </div>
                   ))}
                   {ports.length < 8 && (
