@@ -272,7 +272,7 @@ class TestVmHandlers(unittest.TestCase):
             "networks": [{"bridge": "br-troshka-abc", "model": "virtio"}],
             "seed_iso": "/var/lib/troshka/vms/proj/aabb-seed.iso",
         })
-        result = troshkad._handle_vm_create(job, job["params"])
+        _result = troshkad._handle_vm_create(job, job["params"])
         self.assertTrue(mock_popen.called)
         cmd = mock_popen.call_args_list[0][0][0]
         self.assertEqual(cmd[0], "virt-install")
@@ -588,7 +588,7 @@ class TestLibraryImportEndpoint(unittest.TestCase):
             "cache_path": "/var/lib/troshka/images/item-123.qcow2",
             "flatten": True,
         })
-        result = troshkad._handle_library_import(job, job["params"])
+        _result = troshkad._handle_library_import(job, job["params"])
 
         # Check that qemu-img convert was called
         cmds = [c[0][0] for c in mock_popen.call_args_list]
@@ -1383,7 +1383,7 @@ class TestContainerLogs(unittest.TestCase):
             "container_name": "troshka-aabbccdd-mycontainer",
             "tail": 100,
         })
-        result = troshkad._handle_container_logs(job, job["params"])
+        _result = troshkad._handle_container_logs(job, job["params"])
         cmd = mock_run.call_args[0][0]
         self.assertIn("100", cmd)
 
