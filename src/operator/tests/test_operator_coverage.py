@@ -194,7 +194,7 @@ class TestGetBmcCredentials:
                                     "data": {
                                         "networkType": "bmc",
                                         "bmcUsername": "admin",
-                                        "bmcPassword": "test-bmc-pass"  # pragma: allowlist secret,
+                                        "bmcPassword": "test-bmc-pass",  # pragma: allowlist secret,
                                     }
                                 }
                             ]
@@ -204,7 +204,10 @@ class TestGetBmcCredentials:
             ]
         }
         result = _get_bmc_credentials(custom_api, "test-ns")
-        assert result == {"username": "admin", "password": "test-bmc-pass"}  # pragma: allowlist secret
+        assert result == {
+            "username": "admin",
+            "password": "test-bmc-pass",  # pragma: allowlist secret
+        }
 
     def test_returns_empty_on_no_bmc_node(self):
         from handlers.project import _get_bmc_credentials
@@ -663,7 +666,9 @@ class TestCloneS3Disk:
     @patch("handlers.vm._wait_for_datavolume", return_value=True)
     @patch("handlers.vm.build_clone_datavolume", return_value={"metadata": {}})
     @patch("handlers.vm._ensure_golden_pvc", return_value="golden-abc")
-    @patch("handlers.vm._resolve_disk_s3", return_value=("s3://path", {}, "test-key"))  # pragma: allowlist secret
+    @patch(
+        "handlers.vm._resolve_disk_s3", return_value=("s3://path", {}, "test-key")
+    )  # pragma: allowlist secret
     @patch("handlers.vm.owner_ref", return_value={})
     @patch("handlers.vm.client")
     def test_clone_success(
@@ -898,3 +903,109 @@ class TestVmUpdate:
         mock_reconcile.assert_called_once()
         assert p.status["domainUuid"] == "new-uuid"
         assert p.status["kubevirtVmName"] == "kv-1"
+
+
+# ---------------------------------------------------------------------------
+# helpers/topology.py — _find_storage_vm_pair
+# ---------------------------------------------------------------------------
+
+
+class TestFindStorageVmPair:
+    def test_storage_to_vm(self):
+        from helpers.topology import _find_storage_vm_pair
+
+        node_map = {
+            "s1": {"type": "storageNode", "data": {}},
+            "v1": {"type": "vmNode", "data": {}},
+        }
+        edge = {"source": "s1", "target": "v1"}
+        storage_id, vm_id = _find_storage_vm_pair(edge, node_map)
+        assert storage_id == "s1"
+        assert vm_id == "v1"
+
+    def test_vm_to_storage(self):
+        from helpers.topology import _find_storage_vm_pair
+
+        node_map = {
+            "s1": {"type": "storageNode", "data": {}},
+            "v1": {"type": "vmNode", "data": {}},
+        }
+        edge = {"source": "v1", "target": "s1"}
+        storage_id, vm_id = _find_storage_vm_pair(edge, node_map)
+        assert storage_id == "s1"
+        assert vm_id == "v1"
+
+    def test_no_match(self):
+        from helpers.topology import _find_storage_vm_pair
+
+        node_map = {
+            "n1": {"type": "networkNode", "data": {}},
+            "n2": {"type": "networkNode", "data": {}},
+        }
+        edge = {"source": "n1", "target": "n2"}
+        storage_id, vm_id = _find_storage_vm_pair(edge, node_map)
+        assert storage_id is None
+        assert vm_id is None
+
+
+# ---------------------------------------------------------------------------
+# helpers/topology.py — _build_disk_from_storage
+# ---------------------------------------------------------------------------
+
+
+class TestBuildDiskFromStorage:
+    def test_blank(self):
+        from helpers.topology import _build_disk_from_storage
+
+        sd = {"size": 50}
+        result = _build_disk_from_storage(sd, "disk-1")
+        assert "disk" in result
+        disk = result["disk"]
+        assert disk["blank"] is True
+        assert disk["id"] == "disk-1"
+        assert disk["sizeGb"] == 50
+        assert disk["format"] == "qcow2"
+
+    def test_pattern(self):
+        from helpers.topology import _build_disk_from_storage
+
+        sd = {
+            "source": "pattern",
+            "patternId": "pat-1",
+            "patternDiskId": "pd-1",
+        }
+        result = _build_disk_from_storage(sd, "disk-2")
+        disk = result["disk"]
+        assert "patternImage" in disk
+        assert disk["patternImage"]["s3Path"] == "patterns/pat-1/pd-1.qcow2"
+        assert disk["patternImage"]["format"] == "qcow2"
+        assert disk["patternImage"]["central"] is False
+        assert "blank" not in disk
+
+    def test_library(self):
+        from helpers.topology import _build_disk_from_storage
+
+        sd = {
+            "source": "library",
+            "libraryItemId": "lib-1",
+            "format": "qcow2",
+        }
+        result = _build_disk_from_storage(sd, "disk-3")
+        disk = result["disk"]
+        assert "libraryImage" in disk
+        assert disk["libraryImage"]["s3Path"] == "library/lib-1.qcow2"
+        assert disk["libraryImage"]["format"] == "qcow2"
+        assert "blank" not in disk
+
+    def test_iso_returns_cdrom(self):
+        from helpers.topology import _build_disk_from_storage
+
+        sd = {
+            "format": "iso",
+            "libraryItemId": "iso-1",
+        }
+        result = _build_disk_from_storage(sd, "disk-4")
+        assert "cdrom" in result
+        assert "disk" not in result
+        assert result["cdrom"]["libraryIsoId"] == "iso-1"
+        assert result["cdrom"]["s3Path"] == "library/iso-1.iso"

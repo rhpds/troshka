@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 CRD_GROUP = "troshka.redhat.com"
 CRD_VERSION = "v1alpha1"
 _KUBEVIRT_API_GROUP = "kubevirt.io"
+_QEMU_SESSION_URI = "qemu:///session"
 
 OPERATOR_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "..", "operator"
@@ -85,19 +86,9 @@ def _ensure_s3_secret(
             raise
 
 
-def _deploy_operator(provider):
-    from kubernetes import client
+def _apply_crds(ext_api, operator_dir):
+    """Load CRD YAML files and create-or-update them on the cluster."""
     from kubernetes.client.exceptions import ApiException
-
-    custom_api, core_api, api_client = _get_k8s_clients(provider)
-    apps_api = client.AppsV1Api(api_client)
-    rbac_api = client.RbacAuthorizationV1Api(api_client)
-    ext_api = client.ApiextensionsV1Api(api_client)
-
-    creds = provider.get_credentials()
-    operator_ns = creds.get("namespace", "troshka-operator")
-
-    operator_dir = os.path.normpath(OPERATOR_DIR)
 
     crd_files = [
         os.path.join(operator_dir, "crds", "troshkaproject.yaml"),
@@ -118,6 +109,63 @@ def _deploy_operator(provider):
                 logger.info(f"Updated CRD {crd_body['metadata']['name']}")
             else:
                 raise
+
+
+def _apply_manifest(kind, name, ns, body, core_api, rbac_api, apps_api):
+    """Create or patch a single Kubernetes manifest by kind."""
+    from kubernetes.client.exceptions import ApiException
+
+    if kind in ("ClusterRole", "ClusterRoleBinding"):
+        try:
+            if kind == "ClusterRole":
+                rbac_api.read_cluster_role(name=name)
+                logger.info(f"ClusterRole {name} already exists, skipping")
+                return
+            else:
+                rbac_api.patch_cluster_role_binding(name=name, body=body)
+                logger.info(f"ClusterRoleBinding {name} patched")
+                return
+        except ApiException as e:
+            if e.status == 404:
+                pass
+            else:
+                raise
+
+    try:
+        if kind == "Namespace":
+            core_api.create_namespace(body=body)
+        elif kind == "ServiceAccount":
+            core_api.create_namespaced_service_account(namespace=ns, body=body)
+        elif kind == "ClusterRole":
+            rbac_api.create_cluster_role(body=body)
+        elif kind == "ClusterRoleBinding":
+            rbac_api.create_cluster_role_binding(body=body)
+        elif kind == "Deployment":
+            apps_api.create_namespaced_deployment(namespace=ns, body=body)
+        logger.info(f"Created {kind} {name}")
+    except ApiException as e:
+        if e.status == 409:
+            if kind == "Deployment":
+                apps_api.patch_namespaced_deployment(name=name, namespace=ns, body=body)
+            logger.info(f"Updated {kind} {name}")
+        else:
+            raise
+
+
+def _deploy_operator(provider):
+    from kubernetes import client
+
+    custom_api, core_api, api_client = _get_k8s_clients(provider)
+    apps_api = client.AppsV1Api(api_client)
+    rbac_api = client.RbacAuthorizationV1Api(api_client)
+    ext_api = client.ApiextensionsV1Api(api_client)
+
+    creds = provider.get_credentials()
+    operator_ns = creds.get("namespace", "troshka-operator")
+
+    operator_dir = os.path.normpath(OPERATOR_DIR)
+
+    _apply_crds(ext_api, operator_dir)
 
     deploy_dir = os.path.join(operator_dir, "deploy")
     manifest_order = [
@@ -148,43 +196,7 @@ def _deploy_operator(provider):
                 if subj.get("namespace"):
                     subj["namespace"] = operator_ns
 
-        if kind in ("ClusterRole", "ClusterRoleBinding"):
-            try:
-                if kind == "ClusterRole":
-                    rbac_api.read_cluster_role(name=name)
-                    logger.info(f"ClusterRole {name} already exists, skipping")
-                    continue
-                else:
-                    rbac_api.patch_cluster_role_binding(name=name, body=body)
-                    logger.info(f"ClusterRoleBinding {name} patched")
-                    continue
-            except ApiException as e:
-                if e.status == 404:
-                    pass
-                else:
-                    raise
-
-        try:
-            if kind == "Namespace":
-                core_api.create_namespace(body=body)
-            elif kind == "ServiceAccount":
-                core_api.create_namespaced_service_account(namespace=ns, body=body)
-            elif kind == "ClusterRole":
-                rbac_api.create_cluster_role(body=body)
-            elif kind == "ClusterRoleBinding":
-                rbac_api.create_cluster_role_binding(body=body)
-            elif kind == "Deployment":
-                apps_api.create_namespaced_deployment(namespace=ns, body=body)
-            logger.info(f"Created {kind} {name}")
-        except ApiException as e:
-            if e.status == 409:
-                if kind == "Deployment":
-                    apps_api.patch_namespaced_deployment(
-                        name=name, namespace=ns, body=body
-                    )
-                logger.info(f"Updated {kind} {name}")
-            else:
-                raise
+        _apply_manifest(kind, name, ns, body, core_api, rbac_api, apps_api)
 
     logger.info("Operator deployed successfully")
 
@@ -999,15 +1011,8 @@ class KubeVirtDriver(ProviderDriver):
         return status.get("vmStates", {})
 
 
-def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600):
-    """Execute command via qemu-guest-agent inside the virt-launcher pod."""
-    import base64
-    import json
-
-    _, core_v1, _ = _get_k8s_clients(provider)
-    namespace = _project_ns(provider, project_id)
-    vm_name = f"troshka-vm-{vm_id[:8]}"
-
+def _find_virt_launcher(core_v1, namespace, vm_name):
+    """Find the running virt-launcher pod for a VM, or raise RuntimeError."""
     pod_list: list = getattr(
         core_v1.list_namespaced_pod(
             namespace, label_selector=f"vm.kubevirt.io/name={vm_name}"
@@ -1015,13 +1020,60 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
         "items",
         [],
     )
-    launcher = None
     for p in pod_list:
         if p.metadata.name.startswith("virt-launcher-") and p.status.phase == "Running":
-            launcher = p
-            break
-    if not launcher:
-        raise RuntimeError(f"No running virt-launcher pod for {vm_name}")
+            return p
+    raise RuntimeError(f"No running virt-launcher pod for {vm_name}")
+
+
+def _poll_guest_exec(pod_exec_fn, domain, pid, timeout):
+    """Poll guest-exec-status until the command completes or times out."""
+    import base64
+    import json
+
+    status_payload = json.dumps(
+        {
+            "execute": "guest-exec-status",
+            "arguments": {"pid": pid},
+        }
+    )
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        sr = pod_exec_fn(
+            ["virsh", "qemu-agent-command", domain, status_payload, "--timeout", "10"],
+        )
+        status = json.loads(sr).get("return", {})
+        if status.get("exited"):
+            stdout = ""
+            stderr = ""
+            if status.get("out-data"):
+                stdout = base64.b64decode(status["out-data"]).decode(
+                    "utf-8", errors="replace"
+                )
+            if status.get("err-data"):
+                stderr = base64.b64decode(status["err-data"]).decode(
+                    "utf-8", errors="replace"
+                )
+            return {
+                "output": stdout,
+                "error": stderr,
+                "exit_code": status.get("exitcode", -1),
+                "method": "guest-agent",
+            }
+        time.sleep(0.5)
+
+    raise RuntimeError(f"guest-exec timed out after {timeout}s (pid={pid})")
+
+
+def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600):
+    """Execute command via qemu-guest-agent inside the virt-launcher pod."""
+    import json
+
+    _, core_v1, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+    vm_name = f"troshka-vm-{vm_id[:8]}"
+
+    launcher = _find_virt_launcher(core_v1, namespace, vm_name)
 
     from kubernetes.stream import stream as k8s_stream
 
@@ -1114,43 +1166,11 @@ def kubevirt_exec_guest_agent(provider, project_id, vm_id, command, timeout=600)
     if pid is None:
         raise RuntimeError(f"No PID in guest-exec response: {exec_resp}")
 
-    # Poll for completion
-    import time
+    # Poll for completion via extracted helper
+    def _bound_exec(cmd):
+        return _pod_exec_raw(launcher.metadata.name, namespace, cmd)
 
-    status_payload = json.dumps(
-        {
-            "execute": "guest-exec-status",
-            "arguments": {"pid": pid},
-        }
-    )
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        sr = _pod_exec_raw(
-            launcher.metadata.name,
-            namespace,
-            ["virsh", "qemu-agent-command", domain, status_payload, "--timeout", "10"],
-        )
-        status = json.loads(sr).get("return", {})
-        if status.get("exited"):
-            stdout = ""
-            stderr = ""
-            if status.get("out-data"):
-                stdout = base64.b64decode(status["out-data"]).decode(
-                    "utf-8", errors="replace"
-                )
-            if status.get("err-data"):
-                stderr = base64.b64decode(status["err-data"]).decode(
-                    "utf-8", errors="replace"
-                )
-            return {
-                "output": stdout,
-                "error": stderr,
-                "exit_code": status.get("exitcode", -1),
-                "method": "guest-agent",
-            }
-        time.sleep(0.5)
-
-    raise RuntimeError(f"guest-exec timed out after {timeout}s (pid={pid})")
+    return _poll_guest_exec(_bound_exec, domain, pid, timeout)
 
 
 def _find_exec_pod(core_v1, namespace, project_id):
@@ -1281,6 +1301,31 @@ _CHAR_TO_KEYS.update(
 )
 
 
+def _vnc_login(
+    send_keys_fn, send_text_fn, screenshot_ocr_fn, detect_state_fn, username, password
+):
+    """Handle the VNC login loop. Returns True if shell prompt is reached."""
+    for _ in range(4):
+        ocr = screenshot_ocr_fn()
+        state = detect_state_fn(ocr)
+
+        if state == "shell":
+            return True
+        if state == "unknown":
+            send_keys_fn("KEY_ENTER")
+            time.sleep(1)
+            continue
+        if state == "login":
+            send_text_fn(username + "\n")
+            time.sleep(2)
+            continue
+        if state == "password":
+            send_text_fn(password + "\n")
+            time.sleep(3)
+            continue
+    return False
+
+
 def kubevirt_exec_vnc(
     provider, project_id, vm_id, username, password, command, timeout=600
 ):
@@ -1348,14 +1393,14 @@ def kubevirt_exec_vnc(
         )
         return ws.strip() if isinstance(ws, str) else ""
 
-    resp = _launcher_exec(["virsh", "-c", "qemu:///session", "list", "--name"])
+    resp = _launcher_exec(["virsh", "-c", _QEMU_SESSION_URI, "list", "--name"])
     domain = resp.split("\n")[0].strip()
     if not domain:
         raise RuntimeError("No libvirt domain found in virt-launcher pod")
 
     def _send_keys(*keys):
         _launcher_exec(
-            ["virsh", "-c", "qemu:///session", "send-key", domain] + list(keys)
+            ["virsh", "-c", _QEMU_SESSION_URI, "send-key", domain] + list(keys)
         )
 
     def _send_text(text):
@@ -1367,7 +1412,7 @@ def kubevirt_exec_vnc(
     def _screenshot_ocr():
         img_path = "/tmp/troshka-screen.ppm"
         _launcher_exec(
-            ["virsh", "-c", "qemu:///session", "screenshot", domain, img_path]
+            ["virsh", "-c", _QEMU_SESSION_URI, "screenshot", domain, img_path]
         )
         b64 = _launcher_exec(["base64", "-w0", img_path], req_timeout=10)
         _launcher_exec(["rm", "-f", img_path])
@@ -1407,27 +1452,10 @@ def kubevirt_exec_vnc(
     _send_keys("KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_F3")
     time.sleep(2)
 
-    # Login loop
-    logged_in = False
-    for attempt in range(4):
-        ocr = _screenshot_ocr()
-        state = _detect_state(ocr)
-
-        if state == "shell":
-            logged_in = True
-            break
-        if state == "unknown":
-            _send_keys("KEY_ENTER")
-            time.sleep(1)
-            continue
-        if state == "login":
-            _send_text(username + "\n")
-            time.sleep(2)
-            continue
-        if state == "password":
-            _send_text(password + "\n")
-            time.sleep(3)
-            continue
+    # Login loop via extracted helper
+    logged_in = _vnc_login(
+        _send_keys, _send_text, _screenshot_ocr, _detect_state, username, password
+    )
 
     if not logged_in:
         return {

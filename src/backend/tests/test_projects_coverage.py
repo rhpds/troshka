@@ -2293,3 +2293,212 @@ class TestReconfigureExistingVm:
 
             assert len(diff["added_vms"]) == 1
             assert diff["added_vms"][0]["id"] == "vm1"
+
+
+# ---------------------------------------------------------------------------
+# _exec_troshkad  (extracted from vm_exec)
+# ---------------------------------------------------------------------------
+
+
+class TestExecTroshkad:
+    @patch("app.api.projects.wait_for_job")
+    @patch("app.api.projects.start_job", return_value="job-ga")
+    def test_guest_agent_success(self, mock_start, mock_wait):
+        from app.api.projects import _exec_troshkad
+
+        mock_wait.return_value = {
+            "status": "completed",
+            "result": {"output": "hello", "error": "", "exit_code": 0},
+        }
+        host = MagicMock()
+        result = _exec_troshkad(
+            host=host,
+            project_id="p1234567",
+            vm_id="vm-abc",
+            methods=["guest-agent"],
+            method="guest-agent",
+            vm_ip="",
+            username="cloud-user",
+            password="pass",
+            private_key="",
+            root_password="",
+            command="whoami",
+            timeout=60,
+            force_tty=False,
+        )
+        assert result["method"] == "guest-agent"
+        assert result["output"] == "hello"
+        assert result["exit_code"] == 0
+        mock_start.assert_called_once()
+
+    def test_all_methods_fail_raises_503(self):
+        from fastapi import HTTPException
+
+        from app.api.projects import _exec_troshkad
+        from app.services.troshkad_client import TroshkadError
+
+        host = MagicMock()
+
+        with patch(
+            "app.api.projects.start_job",
+            side_effect=TroshkadError("connection refused"),
+        ):
+            try:
+                _exec_troshkad(
+                    host=host,
+                    project_id="p1234567",
+                    vm_id="vm-abc",
+                    methods=["guest-agent", "ssh"],
+                    method="auto",
+                    vm_ip="",
+                    username="cloud-user",
+                    password="",
+                    private_key="",
+                    root_password="",
+                    command="whoami",
+                    timeout=60,
+                    force_tty=False,
+                )
+                assert False, "Should have raised HTTPException"
+            except HTTPException as exc:
+                assert exc.status_code == 503
+                assert "All exec methods failed" in exc.detail
+
+    @patch("app.api.projects.wait_for_job")
+    @patch("app.api.projects.start_job", return_value="job-ssh")
+    def test_ssh_success(self, mock_start, mock_wait):
+        from app.api.projects import _exec_troshkad
+
+        mock_wait.return_value = {
+            "status": "completed",
+            "result": {"output": "uid=0", "error": "", "exit_code": 0},
+        }
+        result = _exec_troshkad(
+            host=MagicMock(),
+            project_id="p1234567",
+            vm_id="vm-abc",
+            methods=["ssh"],
+            method="ssh",
+            vm_ip="10.0.0.5",
+            username="cloud-user",
+            password="pass",
+            private_key="",
+            root_password="",
+            command="id",
+            timeout=60,
+            force_tty=False,
+        )
+        assert result["method"] == "ssh"
+        assert result["output"] == "uid=0"
+
+    def test_single_method_failure_raises_immediately(self):
+        from fastapi import HTTPException
+
+        from app.api.projects import _exec_troshkad
+        from app.services.troshkad_client import TroshkadError
+
+        with patch("app.api.projects.start_job", side_effect=TroshkadError("timeout")):
+            try:
+                _exec_troshkad(
+                    host=MagicMock(),
+                    project_id="p1234567",
+                    vm_id="vm-abc",
+                    methods=["guest-agent"],
+                    method="guest-agent",
+                    vm_ip="",
+                    username="cloud-user",
+                    password="pass",
+                    private_key="",
+                    root_password="",
+                    command="whoami",
+                    timeout=60,
+                    force_tty=False,
+                )
+                assert False, "Should have raised HTTPException"
+            except HTTPException as exc:
+                assert exc.status_code == 503
+                assert "guest-agent exec failed" in exc.detail
+
+
+# ---------------------------------------------------------------------------
+# _exec_kubevirt  (extracted from vm_exec)
+# ---------------------------------------------------------------------------
+
+
+class TestExecKubevirt:
+    @patch("app.api.projects._exec_kubevirt.__module__", "app.api.projects")
+    def test_guest_agent_success(self):
+        from app.api.projects import _exec_kubevirt
+
+        with patch(
+            "app.services.providers.kubevirt.kubevirt_exec_guest_agent",
+            return_value={"output": "ok", "method": "guest-agent"},
+        ):
+            result = _exec_kubevirt(
+                provider=MagicMock(),
+                project_id="p1",
+                vm_id="vm1",
+                methods=["guest-agent"],
+                vm_ip="",
+                username="cloud-user",
+                password="pass",
+                root_password="",
+                command="whoami",
+                timeout=60,
+            )
+        assert result["method"] == "guest-agent"
+        assert result["output"] == "ok"
+
+    def test_all_methods_fail_raises_503(self):
+        from fastapi import HTTPException
+
+        from app.api.projects import _exec_kubevirt
+
+        with patch(
+            "app.services.providers.kubevirt.kubevirt_exec_guest_agent",
+            side_effect=Exception("agent down"),
+        ):
+            with patch(
+                "app.services.providers.kubevirt.kubevirt_exec_ssh",
+                side_effect=Exception("ssh down"),
+            ):
+                try:
+                    _exec_kubevirt(
+                        provider=MagicMock(),
+                        project_id="p1",
+                        vm_id="vm1",
+                        methods=["guest-agent", "ssh"],
+                        vm_ip="10.0.0.5",
+                        username="cloud-user",
+                        password="pass",
+                        root_password="",
+                        command="whoami",
+                        timeout=60,
+                    )
+                    assert False, "Should have raised HTTPException"
+                except HTTPException as exc:
+                    assert exc.status_code == 503
+                    assert "All exec methods failed" in exc.detail
+
+    def test_ssh_skipped_without_ip(self):
+        from fastapi import HTTPException
+
+        from app.api.projects import _exec_kubevirt
+
+        try:
+            _exec_kubevirt(
+                provider=MagicMock(),
+                project_id="p1",
+                vm_id="vm1",
+                methods=["ssh"],
+                vm_ip="",
+                username="cloud-user",
+                password="pass",
+                root_password="",
+                command="whoami",
+                timeout=60,
+            )
+            assert False, "Should have raised HTTPException"
+        except HTTPException as exc:
+            assert exc.status_code == 503
+            assert "ssh: no VM IP or credentials" in exc.detail

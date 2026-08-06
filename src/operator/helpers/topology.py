@@ -180,6 +180,69 @@ def resolve_nic_networks(topology):
     return nic_to_network
 
 
+def _find_storage_vm_pair(edge, node_map):
+    """Given an edge and node_map, return (storage_id, vm_id) or (None, None)."""
+    source = edge.get("source", "")
+    target = edge.get("target", "")
+    source_info = node_map.get(source, {})
+    target_info = node_map.get(target, {})
+
+    if source_info.get("type") == "storageNode" and target_info.get("type") == "vmNode":
+        return source, target
+    if target_info.get("type") == "storageNode" and source_info.get("type") == "vmNode":
+        return target, source
+    return None, None
+
+
+def _build_disk_from_storage(sd, storage_id):
+    """Build a disk dict from storage node data with pattern/library/blank source."""
+    fmt = sd.get("format", "qcow2")
+    size_gb = sd.get("size", sd.get("sizeGb", 20))
+    source_type = sd.get("source", "")
+    central = sd.get("centralSource", False)
+
+    if fmt == "iso":
+        resolved = sd.get("resolvedS3Path", "")
+        return {
+            "cdrom": {
+                "libraryIsoId": sd.get("libraryItemId", ""),
+                "s3Path": resolved or f"library/{sd.get('libraryItemId', '')}.iso",
+                "central": central,
+            }
+        }
+
+    disk = {
+        "id": storage_id,
+        "sizeGb": int(size_gb) if size_gb else 20,
+        "bus": "virtio",
+        "format": fmt,
+    }
+
+    if source_type == "pattern":
+        pattern_id = sd.get("patternId", "")
+        disk_id = sd.get("patternDiskId", "")
+        resolved_path = sd.get("resolvedS3Path", "")
+        if pattern_id and (disk_id or resolved_path):
+            disk["patternImage"] = {
+                "s3Path": resolved_path or f"patterns/{pattern_id}/{disk_id}.qcow2",
+                "format": "qcow2",
+                "central": central,
+            }
+    elif source_type == "library":
+        lib_id = sd.get("libraryItemId", "")
+        resolved = sd.get("resolvedS3Path", "")
+        if lib_id or resolved:
+            disk["libraryImage"] = {
+                "s3Path": resolved or f"library/{lib_id}.{fmt}",
+                "format": fmt,
+                "central": central,
+            }
+    else:
+        disk["blank"] = True
+
+    return {"disk": disk}
+
+
 def resolve_vm_disks(topology):
     """Resolve disks for each VM by following edges from storageNode → vmNode."""
     nodes = topology.get("nodes", [])
@@ -195,80 +258,19 @@ def resolve_vm_disks(topology):
     vm_cdroms = {}
 
     for edge in edges:
-        source = edge.get("source", "")
-        target = edge.get("target", "")
-
-        source_info = node_map.get(source, {})
-        target_info = node_map.get(target, {})
-
-        storage_id = None
-        vm_id = None
-        if (
-            source_info.get("type") == "storageNode"
-            and target_info.get("type") == "vmNode"
-        ):
-            storage_id = source
-            vm_id = target
-        elif (
-            target_info.get("type") == "storageNode"
-            and source_info.get("type") == "vmNode"
-        ):
-            storage_id = target
-            vm_id = source
-
+        storage_id, vm_id = _find_storage_vm_pair(edge, node_map)
         if not storage_id or not vm_id:
             continue
 
         sd = node_map[storage_id]["data"]
-        fmt = sd.get("format", "qcow2")
-        size_gb = sd.get("size", sd.get("sizeGb", 20))
-        source_type = sd.get("source", "")
-        presigned_url = sd.get("presignedUrl", "")
+        result = _build_disk_from_storage(sd, storage_id)
 
-        if fmt == "iso":
-            resolved = sd.get("resolvedS3Path", "")
-            cdrom = {
-                "libraryIsoId": sd.get("libraryItemId", ""),
-                "s3Path": resolved or f"library/{sd.get('libraryItemId', '')}.iso",
-                "central": sd.get("centralSource", False),
-            }
-            vm_cdroms[vm_id] = cdrom
-            continue
-
-        disk = {
-            "id": storage_id,
-            "sizeGb": int(size_gb) if size_gb else 20,
-            "bus": "virtio",
-            "format": fmt,
-        }
-
-        central = sd.get("centralSource", False)
-
-        if source_type == "pattern":
-            pattern_id = sd.get("patternId", "")
-            disk_id = sd.get("patternDiskId", "")
-            resolved_path = sd.get("resolvedS3Path", "")
-            if pattern_id and (disk_id or resolved_path):
-                disk["patternImage"] = {
-                    "s3Path": resolved_path or f"patterns/{pattern_id}/{disk_id}.qcow2",
-                    "format": "qcow2",
-                    "central": central,
-                }
-        elif source_type == "library":
-            lib_id = sd.get("libraryItemId", "")
-            resolved = sd.get("resolvedS3Path", "")
-            if lib_id or resolved:
-                disk["libraryImage"] = {
-                    "s3Path": resolved or f"library/{lib_id}.{fmt}",
-                    "format": fmt,
-                    "central": central,
-                }
+        if "cdrom" in result:
+            vm_cdroms[vm_id] = result["cdrom"]
         else:
-            disk["blank"] = True
-
-        if vm_id not in vm_disks:
-            vm_disks[vm_id] = []
-        vm_disks[vm_id].append(disk)
+            if vm_id not in vm_disks:
+                vm_disks[vm_id] = []
+            vm_disks[vm_id].append(result["disk"])
 
     return vm_disks, vm_cdroms
 

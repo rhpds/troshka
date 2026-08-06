@@ -22,6 +22,10 @@ from helpers.topology import (
 
 logger = logging.getLogger(__name__)
 
+_KUBEVIRT_GROUP = "kubevirt.io"
+_SNAPSHOT_GROUP = "snapshot.storage.k8s.io"
+_SECURITY_GROUP = "security.openshift.io"
+
 
 def _cleanup_legacy_pod(core_api, namespace, pod_name):
     """Delete a standalone Pod if it exists (migration from Pod to Deployment)."""
@@ -167,7 +171,7 @@ async def _stop_all_vms(custom_api, namespace):
         )
         try:
             custom_api.patch_namespaced_custom_object(
-                group="kubevirt.io",
+                group=_KUBEVIRT_GROUP,
                 version="v1",
                 namespace=namespace,
                 plural="virtualmachines",
@@ -182,7 +186,7 @@ async def _stop_all_vms(custom_api, namespace):
             vmis = cast(
                 dict[str, Any],
                 custom_api.list_namespaced_custom_object(
-                    group="kubevirt.io",
+                    group=_KUBEVIRT_GROUP,
                     version="v1",
                     namespace=namespace,
                     plural="virtualmachineinstances",
@@ -224,7 +228,7 @@ async def _snapshot_and_export_disk(
     snapshot = build_volume_snapshot(snap_name, namespace, pvc_name)
     try:
         custom_api.create_namespaced_custom_object(
-            group="snapshot.storage.k8s.io",
+            group=_SNAPSHOT_GROUP,
             version="v1",
             namespace=namespace,
             plural="volumesnapshots",
@@ -240,7 +244,7 @@ async def _snapshot_and_export_disk(
             vs = cast(
                 dict[str, Any],
                 custom_api.get_namespaced_custom_object(
-                    group="snapshot.storage.k8s.io",
+                    group=_SNAPSHOT_GROUP,
                     version="v1",
                     namespace=namespace,
                     plural="volumesnapshots",
@@ -370,7 +374,7 @@ def _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, nam
             pass
         try:
             custom_api.delete_namespaced_custom_object(
-                group="snapshot.storage.k8s.io",
+                group=_SNAPSHOT_GROUP,
                 version="v1",
                 namespace=namespace,
                 plural="volumesnapshots",
@@ -459,7 +463,7 @@ def _setup_recert_sa(core_api, custom_api, namespace):
         scc = cast(
             dict[str, Any],
             custom_api.get_cluster_custom_object(
-                group="security.openshift.io",
+                group=_SECURITY_GROUP,
                 version="v1",
                 plural="securitycontextconstraints",
                 name="troshka-privileged-jobs",
@@ -470,7 +474,7 @@ def _setup_recert_sa(core_api, custom_api, namespace):
         if sa_ref not in users:
             users.append(sa_ref)
             custom_api.patch_cluster_custom_object(
-                group="security.openshift.io",
+                group=_SECURITY_GROUP,
                 version="v1",
                 plural="securitycontextconstraints",
                 name="troshka-privileged-jobs",
@@ -918,7 +922,7 @@ def _create_vnc_rbac(namespace):
         "metadata": {"name": "troshka-vnc-access", "namespace": namespace},
         "rules": [
             {
-                "apiGroups": ["kubevirt.io"],
+                "apiGroups": [_KUBEVIRT_GROUP],
                 "resources": ["virtualmachineinstances"],
                 "verbs": ["get"],
             },
@@ -1387,7 +1391,7 @@ def _start_kubevirt_vms(custom_api, vm_items, namespace):
             continue
         try:
             custom_api.patch_namespaced_custom_object(
-                group="kubevirt.io",
+                group=_KUBEVIRT_GROUP,
                 version="v1",
                 namespace=namespace,
                 plural="virtualmachines",
@@ -1406,7 +1410,7 @@ def _fetch_vmi_states(custom_api, namespace):
         vmis = cast(
             dict[str, Any],
             custom_api.list_namespaced_custom_object(
-                group="kubevirt.io",
+                group=_KUBEVIRT_GROUP,
                 version="v1",
                 namespace=namespace,
                 plural="virtualmachineinstances",
@@ -1756,7 +1760,7 @@ def _remove_sa_from_sccs(custom_api, namespace, sa_name, scc_names):
             scc = cast(
                 dict[str, Any],
                 custom_api.get_cluster_custom_object(
-                    group="security.openshift.io",
+                    group=_SECURITY_GROUP,
                     version="v1",
                     plural="securitycontextconstraints",
                     name=scc_name,
@@ -1766,7 +1770,7 @@ def _remove_sa_from_sccs(custom_api, namespace, sa_name, scc_names):
             if sa_ref in users:
                 users.remove(sa_ref)
                 custom_api.patch_cluster_custom_object(
-                    group="security.openshift.io",
+                    group=_SECURITY_GROUP,
                     version="v1",
                     plural="securitycontextconstraints",
                     name=scc_name,
@@ -1787,7 +1791,7 @@ async def project_delete(namespace, name, **_):
     # Force-delete VMIs first (immediate, no graceful shutdown wait)
     _delete_custom_resources(
         custom_api,
-        "kubevirt.io",
+        _KUBEVIRT_GROUP,
         "v1",
         "virtualmachineinstances",
         namespace,
@@ -1796,7 +1800,7 @@ async def project_delete(namespace, name, **_):
     )
     _delete_custom_resources(
         custom_api,
-        "kubevirt.io",
+        _KUBEVIRT_GROUP,
         "v1",
         "virtualmachines",
         namespace,

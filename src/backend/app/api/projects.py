@@ -1923,146 +1923,107 @@ def vm_ready(
     return {"ready": False, "reason": "exec failed"}
 
 
-@router.post("/{project_id}/vms/{vm_id}/exec")
-def vm_exec(
+def _exec_kubevirt(
+    provider,
     project_id: str,
     vm_id: str,
-    body: dict,
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    methods: list,
+    vm_ip: str,
+    username: str,
+    password: str,
+    root_password: str,
+    command: str,
+    timeout: int,
 ):
-    """Execute a command on a VM.
-
-    Body params:
-        command: Shell command to execute (required)
-        username: SSH/console user (default: cloud-user)
-        password: VM password (auto-resolved from topology if omitted)
-        timeout: Command timeout in seconds (default: 600, max: 3600)
-        method: "auto" (tries guest-agent → ssh → console → serial),
-                "guest-agent", "ssh", "serial", or "console"
-    """
-    project, host = _get_project_and_host(project_id, user, db)
-    if project.state not in ("active", "stopped"):
-        raise HTTPException(status_code=409, detail="Project must be active")
-
-    command = body.get("command", "")
-    if not command:
-        raise HTTPException(status_code=400, detail="Command is required")
-
-    vm_node = next(
-        (n for n in (project.topology or {}).get("nodes", []) if n["id"] == vm_id),
-        None,
+    """Dispatch exec to a KubeVirt-hosted VM. Returns result dict or raises HTTPException."""
+    from app.services.providers.kubevirt import (
+        kubevirt_exec_console,
+        kubevirt_exec_guest_agent,
+        kubevirt_exec_ssh,
+        kubevirt_exec_vnc,
     )
-    username = body.get("username", "cloud-user")
-    password = body.get("password", "")
-    if not password and vm_node:
-        password = vm_node.get("data", {}).get("ciCloudUserPassword", "")
 
-    timeout = min(body.get("timeout", 600), 3600)
-    method = body.get("method", "auto")
-    if body.get("use_ssh"):
-        method = "ssh"
-    force_tty = method == "console-text"
-    if force_tty:
-        method = "console"
+    is_auto = len(methods) > 1
+    errors: list[str] = []
 
-    vm_ip = ""
-    if vm_node:
-        for nic in vm_node.get("data", {}).get("nics", []):
-            if nic.get("ip"):
-                vm_ip = nic["ip"]
-                break
+    for m in methods:
+        try:
+            if m == "guest-agent":
+                return kubevirt_exec_guest_agent(
+                    provider, project_id, vm_id, command, timeout
+                )
+            elif m == "ssh":
+                if not vm_ip or not password:
+                    errors.append("ssh: no VM IP or credentials")
+                    continue
+                return kubevirt_exec_ssh(
+                    provider,
+                    project_id,
+                    vm_id,
+                    vm_ip,
+                    username,
+                    password,
+                    command,
+                    timeout,
+                )
+            elif m == "vnc":
+                vnc_pass = root_password or password
+                if not vnc_pass:
+                    errors.append("vnc: no password available")
+                    continue
+                return kubevirt_exec_vnc(
+                    provider,
+                    project_id,
+                    vm_id,
+                    "root" if root_password else username,
+                    vnc_pass,
+                    command,
+                    timeout,
+                )
+            elif m in ("console", "serial"):
+                console_pass = root_password or password
+                if not console_pass:
+                    errors.append("console: no password available")
+                    continue
+                return kubevirt_exec_console(
+                    provider,
+                    project_id,
+                    vm_id,
+                    "root" if root_password else username,
+                    console_pass,
+                    command,
+                    timeout,
+                )
+        except Exception as e:
+            errors.append(f"{m}: {e}")
+            if not is_auto:
+                raise HTTPException(status_code=503, detail=f"{m} exec failed: {e}")
 
-    private_key = body.get("private_key", "")
+    raise HTTPException(
+        status_code=503,
+        detail="All exec methods failed: " + "; ".join(errors),
+    )
+
+
+def _exec_troshkad(
+    host,
+    project_id: str,
+    vm_id: str,
+    methods: list,
+    method: str,
+    vm_ip: str,
+    username: str,
+    password: str,
+    private_key: str,
+    root_password: str,
+    command: str,
+    timeout: int,
+    force_tty: bool,
+):
+    """Dispatch exec to a troshkad-hosted VM. Returns result dict or raises HTTPException."""
     dom = _domain_name(project_id, vm_id)
-    root_password = ""
-    if vm_node:
-        root_password = vm_node.get("data", {}).get("ciRootPassword", "")
+    errors: list[str] = []
 
-    if method == "auto":
-        methods = ["guest-agent", "ssh", "console", "serial"]
-        force_tty = False
-    else:
-        methods = [method]
-    errors = []
-
-    if host.host_type == "kubevirt-cluster":
-        from app.models.provider import Provider
-        from app.services.providers.kubevirt import (
-            kubevirt_exec_console,
-            kubevirt_exec_guest_agent,
-            kubevirt_exec_ssh,
-            kubevirt_exec_vnc,
-        )
-
-        provider = db.query(Provider).filter_by(id=host.provider_id).first()
-        if not provider:
-            raise HTTPException(status_code=503, detail="Provider not found")
-
-        # KubeVirt auto order: guest-agent → ssh → vnc → console
-        kv_methods = methods
-        if method == "auto":
-            kv_methods = ["guest-agent", "ssh", "vnc", "console"]
-
-        for m in kv_methods:
-            try:
-                if m == "guest-agent":
-                    return kubevirt_exec_guest_agent(
-                        provider, project_id, vm_id, command, timeout
-                    )
-                elif m == "ssh":
-                    if not vm_ip or not password:
-                        errors.append("ssh: no VM IP or credentials")
-                        continue
-                    return kubevirt_exec_ssh(
-                        provider,
-                        project_id,
-                        vm_id,
-                        vm_ip,
-                        username,
-                        password,
-                        command,
-                        timeout,
-                    )
-                elif m == "vnc":
-                    vnc_pass = root_password or password
-                    if not vnc_pass:
-                        errors.append("vnc: no password available")
-                        continue
-                    return kubevirt_exec_vnc(
-                        provider,
-                        project_id,
-                        vm_id,
-                        "root" if root_password else username,
-                        vnc_pass,
-                        command,
-                        timeout,
-                    )
-                elif m in ("console", "serial"):
-                    console_pass = root_password or password
-                    if not console_pass:
-                        errors.append("console: no password available")
-                        continue
-                    return kubevirt_exec_console(
-                        provider,
-                        project_id,
-                        vm_id,
-                        "root" if root_password else username,
-                        console_pass,
-                        command,
-                        timeout,
-                    )
-            except Exception as e:
-                errors.append(f"{m}: {e}")
-                if method != "auto":
-                    raise HTTPException(status_code=503, detail=f"{m} exec failed: {e}")
-
-        raise HTTPException(
-            status_code=503,
-            detail="All exec methods failed: " + "; ".join(errors),
-        )
-
-    # Troshkad hosts — existing dispatch via start_job/wait_for_job
     for m in methods:
         try:
             if m == "guest-agent":
@@ -2178,6 +2139,109 @@ def vm_exec(
     raise HTTPException(
         status_code=503,
         detail="All exec methods failed: " + "; ".join(errors),
+    )
+
+
+@router.post("/{project_id}/vms/{vm_id}/exec")
+def vm_exec(
+    project_id: str,
+    vm_id: str,
+    body: dict,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Execute a command on a VM.
+
+    Body params:
+        command: Shell command to execute (required)
+        username: SSH/console user (default: cloud-user)
+        password: VM password (auto-resolved from topology if omitted)
+        timeout: Command timeout in seconds (default: 600, max: 3600)
+        method: "auto" (tries guest-agent → ssh → console → serial),
+                "guest-agent", "ssh", "serial", or "console"
+    """
+    project, host = _get_project_and_host(project_id, user, db)
+    if project.state not in ("active", "stopped"):
+        raise HTTPException(status_code=409, detail="Project must be active")
+
+    command = body.get("command", "")
+    if not command:
+        raise HTTPException(status_code=400, detail="Command is required")
+
+    vm_node = next(
+        (n for n in (project.topology or {}).get("nodes", []) if n["id"] == vm_id),
+        None,
+    )
+    username = body.get("username", "cloud-user")
+    password = body.get("password", "")
+    if not password and vm_node:
+        password = vm_node.get("data", {}).get("ciCloudUserPassword", "")
+
+    timeout = min(body.get("timeout", 600), 3600)
+    method = body.get("method", "auto")
+    if body.get("use_ssh"):
+        method = "ssh"
+    force_tty = method == "console-text"
+    if force_tty:
+        method = "console"
+
+    vm_ip = ""
+    if vm_node:
+        for nic in vm_node.get("data", {}).get("nics", []):
+            if nic.get("ip"):
+                vm_ip = nic["ip"]
+                break
+
+    private_key = body.get("private_key", "")
+    root_password = ""
+    if vm_node:
+        root_password = vm_node.get("data", {}).get("ciRootPassword", "")
+
+    if method == "auto":
+        methods = ["guest-agent", "ssh", "console", "serial"]
+        force_tty = False
+    else:
+        methods = [method]
+
+    if host.host_type == "kubevirt-cluster":
+        from app.models.provider import Provider
+
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        if not provider:
+            raise HTTPException(status_code=503, detail="Provider not found")
+
+        # KubeVirt auto order: guest-agent → ssh → vnc → console
+        kv_methods = methods
+        if method == "auto":
+            kv_methods = ["guest-agent", "ssh", "vnc", "console"]
+
+        return _exec_kubevirt(
+            provider,
+            project_id,
+            vm_id,
+            kv_methods,
+            vm_ip,
+            username,
+            password,
+            root_password,
+            command,
+            timeout,
+        )
+
+    return _exec_troshkad(
+        host,
+        project_id,
+        vm_id,
+        methods,
+        method,
+        vm_ip,
+        username,
+        password,
+        private_key,
+        root_password,
+        command,
+        timeout,
+        force_tty,
     )
 
 

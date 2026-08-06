@@ -56,15 +56,15 @@ def _get_pool(host):
     key = f"{host.ip_address}:{fp_clean}"
     pool = _pools.get(key)
     if pool is None:
-        pool_kwargs: dict[str, Any] = dict(
-            host=host.ip_address,
-            port=TROSHKAD_PORT,
-            maxsize=4,
-            cert_reqs="CERT_NONE",
-            assert_fingerprint=fp_clean,
-            retries=False,
-            timeout=urllib3.Timeout(connect=10, read=DEFAULT_TIMEOUT),
-        )
+        pool_kwargs: dict[str, Any] = {
+            "host": host.ip_address,
+            "port": TROSHKAD_PORT,
+            "maxsize": 4,
+            "cert_reqs": "CERT_NONE",
+            "assert_fingerprint": fp_clean,
+            "retries": False,
+            "timeout": urllib3.Timeout(connect=10, read=DEFAULT_TIMEOUT),
+        }
         try:
             from app.services.agent_ca_service import get_client_cert_paths
 

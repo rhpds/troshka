@@ -12,6 +12,7 @@ from app.services.providers.base import ProviderDriver
 
 logger = logging.getLogger(__name__)
 
+_KUBEVIRT_GROUP = "kubevirt.io"
 SSH_LB_PORT = 22000
 
 CLOUD_INIT_TEMPLATE = """#cloud-config
@@ -349,7 +350,7 @@ class OCPVirtDriver(ProviderDriver):
         }
 
         custom_api.create_namespaced_custom_object(
-            group="kubevirt.io",
+            group=_KUBEVIRT_GROUP,
             version="v1",
             namespace=namespace,
             plural="virtualmachines",
@@ -390,7 +391,7 @@ class OCPVirtDriver(ProviderDriver):
                 vmi = cast(
                     dict[str, Any],
                     custom_api.get_namespaced_custom_object(
-                        group="kubevirt.io",
+                        group=_KUBEVIRT_GROUP,
                         version="v1",
                         namespace=namespace,
                         plural="virtualmachineinstances",
@@ -454,7 +455,7 @@ class OCPVirtDriver(ProviderDriver):
         # Force stop: set running=false, then force-delete VMI (like virtctl stop --force)
         try:
             custom_api.patch_namespaced_custom_object(
-                group="kubevirt.io",
+                group=_KUBEVIRT_GROUP,
                 version="v1",
                 namespace=namespace,
                 plural="virtualmachines",
@@ -465,7 +466,7 @@ class OCPVirtDriver(ProviderDriver):
             pass
         try:
             custom_api.delete_namespaced_custom_object(
-                group="kubevirt.io",
+                group=_KUBEVIRT_GROUP,
                 version="v1",
                 namespace=namespace,
                 plural="virtualmachineinstances",
@@ -483,7 +484,7 @@ class OCPVirtDriver(ProviderDriver):
         # Then delete the VM
         try:
             custom_api.delete_namespaced_custom_object(
-                group="kubevirt.io",
+                group=_KUBEVIRT_GROUP,
                 version="v1",
                 namespace=namespace,
                 plural="virtualmachines",
@@ -549,7 +550,7 @@ class OCPVirtDriver(ProviderDriver):
             vmi = cast(
                 dict[str, Any],
                 custom_api.get_namespaced_custom_object(
-                    group="kubevirt.io",
+                    group=_KUBEVIRT_GROUP,
                     version="v1",
                     namespace=namespace,
                     plural="virtualmachineinstances",
@@ -939,7 +940,7 @@ class OCPVirtDriver(ProviderDriver):
         namespace = creds.get("namespace", "troshka")
         custom_api, _ = _get_k8s_clients(creds)
         custom_api.patch_namespaced_custom_object(
-            group="kubevirt.io",
+            group=_KUBEVIRT_GROUP,
             version="v1",
             namespace=namespace,
             plural="virtualmachines",
@@ -952,7 +953,7 @@ class OCPVirtDriver(ProviderDriver):
         namespace = creds.get("namespace", "troshka")
         custom_api, _ = _get_k8s_clients(creds)
         custom_api.patch_namespaced_custom_object(
-            group="kubevirt.io",
+            group=_KUBEVIRT_GROUP,
             version="v1",
             namespace=namespace,
             plural="virtualmachines",
@@ -974,7 +975,7 @@ class OCPVirtDriver(ProviderDriver):
         vm = cast(
             dict[str, Any],
             custom_api.get_namespaced_custom_object(
-                group="kubevirt.io",
+                group=_KUBEVIRT_GROUP,
                 version="v1",
                 namespace=namespace,
                 plural="virtualmachines",
@@ -1003,7 +1004,7 @@ class OCPVirtDriver(ProviderDriver):
             }
         }
         custom_api.patch_namespaced_custom_object(
-            group="kubevirt.io",
+            group=_KUBEVIRT_GROUP,
             version="v1",
             namespace=namespace,
             plural="virtualmachines",

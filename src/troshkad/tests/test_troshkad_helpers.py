@@ -194,7 +194,10 @@ class TestValidateNetModel(unittest.TestCase):
 
 class TestValidateNetworkName(unittest.TestCase):
     def test_valid_name(self):
-        assert troshkad._validate_network_name("troshka-net-abcdef0123") == "troshka-net-abcdef0123"
+        assert (
+            troshkad._validate_network_name("troshka-net-abcdef0123")
+            == "troshka-net-abcdef0123"
+        )
 
     def test_invalid_name_raises(self):
         with self.assertRaises(ValueError):
@@ -203,7 +206,10 @@ class TestValidateNetworkName(unittest.TestCase):
 
 class TestValidateBridgeName(unittest.TestCase):
     def test_valid_troshka_bridge(self):
-        assert troshkad._validate_bridge_name("br-troshka-abcdef01") == "br-troshka-abcdef01"
+        assert (
+            troshkad._validate_bridge_name("br-troshka-abcdef01")
+            == "br-troshka-abcdef01"
+        )
 
     def test_valid_bmc_bridge(self):
         assert troshkad._validate_bridge_name("br-bmc-abcdef01") == "br-bmc-abcdef01"
@@ -218,10 +224,16 @@ class TestValidateBridgeName(unittest.TestCase):
 
 class TestValidateURL(unittest.TestCase):
     def test_valid_https_url(self):
-        assert troshkad._validate_url("https://example.com/path") == "https://example.com/path"
+        assert (
+            troshkad._validate_url("https://example.com/path")
+            == "https://example.com/path"
+        )
 
     def test_valid_http_url(self):
-        assert troshkad._validate_url("http://10.0.0.1:8080/api") == "http://10.0.0.1:8080/api"
+        assert (
+            troshkad._validate_url("http://10.0.0.1:8080/api")
+            == "http://10.0.0.1:8080/api"
+        )
 
     def test_invalid_url_raises(self):
         with self.assertRaises(ValueError):
@@ -313,7 +325,9 @@ class TestStoragePath(unittest.TestCase):
         troshkad._config["storage_mode"] = "shared"
         troshkad._config["shared_mount"] = "/mnt/shared"
         troshkad._config["local_mount"] = "/mnt/local"
-        assert troshkad._storage_path("cache/snapshots") == "/mnt/shared/cache/snapshots"
+        assert (
+            troshkad._storage_path("cache/snapshots") == "/mnt/shared/cache/snapshots"
+        )
 
     def test_shared_mode_seeds(self):
         troshkad._config["storage_mode"] = "shared"
@@ -427,14 +441,18 @@ class TestSafeKill(unittest.TestCase):
     @patch("os.path.exists", return_value=True)
     def test_kills_with_matching_cmdline(self, _exists, mock_kill):
         pid = os.getpid() + 99999
-        result = troshkad._safe_kill(pid, signal.SIGTERM, expected_cmdline_substring="troshkad")
+        result = troshkad._safe_kill(
+            pid, signal.SIGTERM, expected_cmdline_substring="troshkad"
+        )
         assert result is True
 
     @patch("os.kill")
     @patch("builtins.open", mock_open(read_data=b"nginx\x00-g\x00daemon off;\x00"))
     def test_skips_kill_on_cmdline_mismatch(self, mock_kill):
         pid = os.getpid() + 99999
-        result = troshkad._safe_kill(pid, signal.SIGTERM, expected_cmdline_substring="troshkad")
+        result = troshkad._safe_kill(
+            pid, signal.SIGTERM, expected_cmdline_substring="troshkad"
+        )
         assert result is False
         mock_kill.assert_not_called()
 
@@ -488,7 +506,16 @@ class TestDetectNamespaceGatewayIP(unittest.TestCase):
         assert result == "10.0.0.1"
         mock_run.assert_called_once()
         args = mock_run.call_args
-        assert args[0][0] == ["ip", "netns", "exec", "troshka-abcdef01", "ip", "-4", "addr", "show"]
+        assert args[0][0] == [
+            "ip",
+            "netns",
+            "exec",
+            "troshka-abcdef01",
+            "ip",
+            "-4",
+            "addr",
+            "show",
+        ]
 
     @patch("subprocess.run")
     def test_skips_loopback(self, mock_run):
@@ -944,12 +971,15 @@ class TestHandleOcExec(unittest.TestCase):
     def test_with_gateway_ip_uses_unshare(self, _mock_gw, _mock_isfile, mock_run):
         mock_run.return_value = MagicMock(stdout="output", stderr="", returncode=0)
         job = self._make_job()
-        result = troshkad._handle_oc_exec(job, {
-            "project_id": "12345678-abcd-ef01-2345-6789abcdef01",
-            "command": "get nodes",
-            "timeout": "30",
-            "gateway_ip": "10.0.0.1",
-        })
+        result = troshkad._handle_oc_exec(
+            job,
+            {
+                "project_id": "12345678-abcd-ef01-2345-6789abcdef01",
+                "command": "get nodes",
+                "timeout": "30",
+                "gateway_ip": "10.0.0.1",
+            },
+        )
         self.assertEqual(result["exit_code"], 0)
         self.assertEqual(result["output"], "output")
         cmd = mock_run.call_args[0][0]
@@ -964,11 +994,14 @@ class TestHandleOcExec(unittest.TestCase):
     def test_without_gateway_ip_no_unshare(self, _mock_isfile, mock_run):
         mock_run.return_value = MagicMock(stdout="nodes", stderr="", returncode=0)
         job = self._make_job()
-        result = troshkad._handle_oc_exec(job, {
-            "project_id": "12345678-abcd-ef01-2345-6789abcdef01",
-            "command": "get nodes",
-            "gateway_ip": "",
-        })
+        result = troshkad._handle_oc_exec(
+            job,
+            {
+                "project_id": "12345678-abcd-ef01-2345-6789abcdef01",
+                "command": "get nodes",
+                "gateway_ip": "",
+            },
+        )
         self.assertEqual(result["exit_code"], 0)
         cmd = mock_run.call_args[0][0]
         self.assertIn("/usr/local/bin/oc", cmd)
@@ -978,30 +1011,39 @@ class TestHandleOcExec(unittest.TestCase):
     def test_missing_kubeconfig_raises(self, _mock_isfile):
         job = self._make_job()
         with self.assertRaises(RuntimeError):
-            troshkad._handle_oc_exec(job, {
-                "project_id": "12345678-abcd-ef01-2345-6789abcdef01",
-                "command": "get nodes",
-            })
+            troshkad._handle_oc_exec(
+                job,
+                {
+                    "project_id": "12345678-abcd-ef01-2345-6789abcdef01",
+                    "command": "get nodes",
+                },
+            )
 
     def test_empty_command_raises(self):
         job = self._make_job()
         with self.assertRaises(RuntimeError):
-            troshkad._handle_oc_exec(job, {
-                "project_id": "12345678-abcd-ef01-2345-6789abcdef01",
-                "command": "",
-            })
+            troshkad._handle_oc_exec(
+                job,
+                {
+                    "project_id": "12345678-abcd-ef01-2345-6789abcdef01",
+                    "command": "",
+                },
+            )
 
     @patch("subprocess.run")
     @patch("os.path.isfile", return_value=True)
     def test_timeout_capped_at_300(self, _mock_isfile, mock_run):
         mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
         job = self._make_job()
-        troshkad._handle_oc_exec(job, {
-            "project_id": "12345678-abcd-ef01-2345-6789abcdef01",
-            "command": "get pods",
-            "timeout": "9999",
-            "gateway_ip": "",
-        })
+        troshkad._handle_oc_exec(
+            job,
+            {
+                "project_id": "12345678-abcd-ef01-2345-6789abcdef01",
+                "command": "get pods",
+                "timeout": "9999",
+                "gateway_ip": "",
+            },
+        )
         _, kwargs = mock_run.call_args
         self.assertEqual(kwargs["timeout"], 300)
 
@@ -1025,7 +1067,9 @@ class TestBmcStartDnsmasq(unittest.TestCase):
             pid="abcdef01",
             bridge="br-bmc-abcdef01",
             bmc_cidr="192.168.100.0/24",
-            dhcp_hosts=[{"mac": "aa:bb:cc:dd:ee:ff", "ip": "192.168.100.10", "name": "vm1"}],
+            dhcp_hosts=[
+                {"mac": "aa:bb:cc:dd:ee:ff", "ip": "192.168.100.10", "name": "vm1"}
+            ],
         )
         mock_popen.assert_called_once()
         cmd = mock_popen.call_args[0][0]
@@ -1045,8 +1089,16 @@ class TestBmcStartDnsmasq(unittest.TestCase):
                 bridge="br-bmc-abcdef01",
                 bmc_cidr="192.168.100.0/24",
                 dhcp_hosts=[
-                    {"mac": "aa:bb:cc:dd:ee:01", "ip": "192.168.100.10", "name": "node-1"},
-                    {"mac": "aa:bb:cc:dd:ee:02", "ip": "192.168.100.11", "name": "node-2"},
+                    {
+                        "mac": "aa:bb:cc:dd:ee:01",
+                        "ip": "192.168.100.10",
+                        "name": "node-1",
+                    },
+                    {
+                        "mac": "aa:bb:cc:dd:ee:02",
+                        "ip": "192.168.100.11",
+                        "name": "node-2",
+                    },
                 ],
             )
         handle = m()
@@ -1126,8 +1178,15 @@ class TestBmcStartVbmcd(unittest.TestCase):
     @patch("os.path.isdir", return_value=False)
     @patch("builtins.open", mock_open())
     def test_starts_vbmcd_and_registers_vms(
-        self, _mock_isdir, _mock_makedirs, _mock_stop, mock_popen,
-        _mock_exists, _mock_sleep, mock_run_cmd, _mock_log,
+        self,
+        _mock_isdir,
+        _mock_makedirs,
+        _mock_stop,
+        mock_popen,
+        _mock_exists,
+        _mock_sleep,
+        mock_run_cmd,
+        _mock_log,
     ):
         mock_proc = MagicMock()
         mock_proc.pid = 999
@@ -1138,9 +1197,11 @@ class TestBmcStartVbmcd(unittest.TestCase):
             ns="troshka-abcdef01",
             bmc_dir="/var/lib/troshka/bmc/proj-id",
             venv_bin="/opt/troshka/venv/bin",
-            vms=[{"domain_name": "troshka-abcdef01-12345678", "bmc_ip": "192.168.100.10"}],
+            vms=[
+                {"domain_name": "troshka-abcdef01-12345678", "bmc_ip": "192.168.100.10"}
+            ],
             bmc_username="admin",
-            bmc_password="password", # pragma: allowlist secret
+            bmc_password="password",  # pragma: allowlist secret
         )
         mock_popen.assert_called_once()
         # vbmc add + vbmc start = 2 calls per VM
@@ -1157,8 +1218,16 @@ class TestBmcStartVbmcd(unittest.TestCase):
     @patch("shutil.rmtree")
     @patch("builtins.open", mock_open())
     def test_cleans_old_conf_dir(
-        self, mock_rmtree, _mock_isdir, _mock_makedirs, _mock_stop,
-        mock_popen, _mock_exists, _mock_sleep, _mock_run_cmd, _mock_log,
+        self,
+        mock_rmtree,
+        _mock_isdir,
+        _mock_makedirs,
+        _mock_stop,
+        mock_popen,
+        _mock_exists,
+        _mock_sleep,
+        _mock_run_cmd,
+        _mock_log,
     ):
         mock_popen.return_value = MagicMock(pid=100)
         troshkad._bmc_start_vbmcd(
@@ -1168,7 +1237,7 @@ class TestBmcStartVbmcd(unittest.TestCase):
             venv_bin="/opt/troshka/venv/bin",
             vms=[],
             bmc_username="admin",
-            bmc_password="pass", # pragma: allowlist secret
+            bmc_password="pass",  # pragma: allowlist secret
         )
         mock_rmtree.assert_called_once_with("/var/lib/troshka/bmc/proj-id/vbmcd")
 
@@ -1181,8 +1250,15 @@ class TestBmcStartVbmcd(unittest.TestCase):
     @patch("os.makedirs")
     @patch("os.path.isdir", return_value=False)
     def test_writes_vbmcd_config(
-        self, _mock_isdir, _mock_makedirs, _mock_stop, mock_popen,
-        _mock_exists, _mock_sleep, _mock_run_cmd, _mock_log,
+        self,
+        _mock_isdir,
+        _mock_makedirs,
+        _mock_stop,
+        mock_popen,
+        _mock_exists,
+        _mock_sleep,
+        _mock_run_cmd,
+        _mock_log,
     ):
         mock_popen.return_value = MagicMock(pid=100)
         m = mock_open()
@@ -1194,7 +1270,7 @@ class TestBmcStartVbmcd(unittest.TestCase):
                 venv_bin="/opt/troshka/venv/bin",
                 vms=[],
                 bmc_username="admin",
-                bmc_password="pass", # pragma: allowlist secret
+                bmc_password="pass",  # pragma: allowlist secret
             )
         handle = m()
         written = "".join(c.args[0] for c in handle.write.call_args_list)
@@ -1212,8 +1288,15 @@ class TestBmcStartVbmcd(unittest.TestCase):
     @patch("os.path.isdir", return_value=False)
     @patch("builtins.open", mock_open())
     def test_stops_old_vbmcd_before_start(
-        self, _mock_isdir, _mock_makedirs, mock_stop, mock_popen,
-        _mock_exists, _mock_sleep, _mock_run_cmd, _mock_log,
+        self,
+        _mock_isdir,
+        _mock_makedirs,
+        mock_stop,
+        mock_popen,
+        _mock_exists,
+        _mock_sleep,
+        _mock_run_cmd,
+        _mock_log,
     ):
         mock_popen.return_value = MagicMock(pid=100)
         troshkad._bmc_start_vbmcd(
@@ -1223,7 +1306,7 @@ class TestBmcStartVbmcd(unittest.TestCase):
             venv_bin="/opt/troshka/venv/bin",
             vms=[],
             bmc_username="admin",
-            bmc_password="pass", # pragma: allowlist secret
+            bmc_password="pass",  # pragma: allowlist secret
         )
         mock_stop.assert_called_once_with("/var/lib/troshka/bmc/proj-id/vbmcd.pid")
 
@@ -1239,7 +1322,12 @@ class TestBmcStopVbmcdExtended(unittest.TestCase):
     @patch("builtins.open", mock_open(read_data="9876\n"))
     @patch("os.path.exists", return_value=True)
     def test_removes_pid_file_after_process_dies(
-        self, _mock_exists, _mock_safe_kill, _mock_sleep, _mock_os_kill, mock_remove,
+        self,
+        _mock_exists,
+        _mock_safe_kill,
+        _mock_sleep,
+        _mock_os_kill,
+        mock_remove,
     ):
         troshkad._bmc_stop_vbmcd("/tmp/vbmcd.pid")
         mock_remove.assert_called_once_with("/tmp/vbmcd.pid")
@@ -1251,7 +1339,12 @@ class TestBmcStopVbmcdExtended(unittest.TestCase):
     @patch("builtins.open", mock_open(read_data="1111\n"))
     @patch("os.path.exists", return_value=True)
     def test_does_not_remove_pid_if_process_alive(
-        self, _mock_exists, _mock_safe_kill, _mock_sleep, mock_os_kill, mock_remove,
+        self,
+        _mock_exists,
+        _mock_safe_kill,
+        _mock_sleep,
+        mock_os_kill,
+        mock_remove,
     ):
         # os.kill(pid, 0) succeeds means process is alive
         mock_os_kill.return_value = None
@@ -1354,7 +1447,9 @@ class TestCleanupStaleRecert(unittest.TestCase):
     @patch("os.path.ismount", return_value=False)
     @patch("glob.glob", return_value=[])
     @patch("os.path.exists", return_value=False)
-    def test_no_artifacts_is_noop(self, _mock_exists, _mock_glob, _mock_ismount, mock_rmdir, mock_run):
+    def test_no_artifacts_is_noop(
+        self, _mock_exists, _mock_glob, _mock_ismount, mock_rmdir, mock_run
+    ):
         mock_run.return_value = MagicMock(stdout="", returncode=0)
         troshkad._cleanup_stale_recert()
         # No dirs to remove, no nbd disconnects, no container removals
@@ -1374,10 +1469,7 @@ class TestCleanupStaleRecert(unittest.TestCase):
             with patch("os.path.exists", return_value=False):
                 troshkad._cleanup_stale_recert()
         # First call should be umount
-        umount_calls = [
-            c for c in mock_run.call_args_list
-            if "umount" in str(c)
-        ]
+        umount_calls = [c for c in mock_run.call_args_list if "umount" in str(c)]
         self.assertEqual(len(umount_calls), 1)
 
     @patch("subprocess.run")
@@ -1385,17 +1477,17 @@ class TestCleanupStaleRecert(unittest.TestCase):
     @patch("os.rmdir")
     @patch("os.path.ismount", return_value=False)
     @patch("glob.glob", return_value=[])
-    def test_disconnects_nbd_devices(self, _mock_glob, _mock_ismount, _mock_rmdir, mock_exists, mock_run):
+    def test_disconnects_nbd_devices(
+        self, _mock_glob, _mock_ismount, _mock_rmdir, mock_exists, mock_run
+    ):
         # nbd0p1 exists, others don't
         def exists_side_effect(path):
             return path == "/dev/nbd0p1"
+
         mock_exists.side_effect = exists_side_effect
         mock_run.return_value = MagicMock(stdout="", returncode=0)
         troshkad._cleanup_stale_recert()
-        disconnect_calls = [
-            c for c in mock_run.call_args_list
-            if "qemu-nbd" in str(c)
-        ]
+        disconnect_calls = [c for c in mock_run.call_args_list if "qemu-nbd" in str(c)]
         self.assertEqual(len(disconnect_calls), 1)
 
     @patch("subprocess.run")
@@ -1403,16 +1495,20 @@ class TestCleanupStaleRecert(unittest.TestCase):
     @patch("os.rmdir")
     @patch("os.path.ismount", return_value=False)
     @patch("glob.glob", return_value=[])
-    def test_removes_stale_podman_containers(self, _mock_glob, _mock_ismount, _mock_rmdir, _mock_exists, mock_run):
+    def test_removes_stale_podman_containers(
+        self, _mock_glob, _mock_ismount, _mock_rmdir, _mock_exists, mock_run
+    ):
         # First subprocess.run is podman ps, return a stale container name
         def run_side_effect(cmd, **kwargs):
             if "podman" in cmd and "ps" in cmd:
                 return MagicMock(stdout="recert-etcd-abc123\n", returncode=0)
             return MagicMock(stdout="", returncode=0)
+
         mock_run.side_effect = run_side_effect
         troshkad._cleanup_stale_recert()
         rm_calls = [
-            c for c in mock_run.call_args_list
+            c
+            for c in mock_run.call_args_list
             if "rm" in str(c) and "recert-etcd-abc123" in str(c)
         ]
         self.assertEqual(len(rm_calls), 1)
@@ -1422,7 +1518,9 @@ class TestCleanupStaleRecert(unittest.TestCase):
     @patch("os.rmdir")
     @patch("os.path.ismount", return_value=False)
     @patch("glob.glob", return_value=["/var/lib/troshka/local/tmp/recert-xyz"])
-    def test_rmdir_after_unmount(self, _mock_glob, _mock_ismount, mock_rmdir, _mock_exists, mock_run):
+    def test_rmdir_after_unmount(
+        self, _mock_glob, _mock_ismount, mock_rmdir, _mock_exists, mock_run
+    ):
         mock_run.return_value = MagicMock(stdout="", returncode=0)
         troshkad._cleanup_stale_recert()
         mock_rmdir.assert_called_once_with("/var/lib/troshka/local/tmp/recert-xyz")
@@ -1573,9 +1671,7 @@ class TestCleanupOldJobsExtended(unittest.TestCase):
                 troshkad._jobs.pop("recent-job-1", None)
 
     def test_keeps_running_jobs(self):
-        old_ts = time.strftime(
-            "%Y-%m-%dT%H:%M:%SZ", time.localtime(time.time() - 7200)
-        )
+        old_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.localtime(time.time() - 7200))
         job = {
             "job_id": "running-job-1",
             "status": "running",
@@ -1602,7 +1698,9 @@ class TestThreadingHTTPServerVerifyRequest(unittest.TestCase):
             troshkad._permabanned_ips.discard(ip)
 
         server = MagicMock(spec=troshkad.ThreadingHTTPServer)
-        result = troshkad.ThreadingHTTPServer.verify_request(server, MagicMock(), (ip, 12345))
+        result = troshkad.ThreadingHTTPServer.verify_request(
+            server, MagicMock(), (ip, 12345)
+        )
         self.assertTrue(result)
 
     def test_rejects_permabanned_ip(self):
@@ -1757,6 +1855,426 @@ class TestRecordAuthFailurePermabannedEarlyReturn(unittest.TestCase):
             self.assertNotIn(self._ip, troshkad._fail_tracker)
             # IP should still be permabanned
             self.assertIn(self._ip, troshkad._permabanned_ips)
+
+
+# ── Capacity helpers ──
+
+
+class TestGetCpuCapacity(unittest.TestCase):
+    @patch("os.cpu_count", return_value=16)
+    def test_returns_cpu_count(self, _mock):
+        result = troshkad._get_cpu_capacity()
+        self.assertEqual(result, {"vcpus_total": 16})
+
+    @patch("os.cpu_count", return_value=None)
+    def test_none_cpu_count_returns_zero(self, _mock):
+        result = troshkad._get_cpu_capacity()
+        self.assertEqual(result, {"vcpus_total": 0})
+
+    @patch("os.cpu_count", side_effect=OSError("fail"))
+    def test_exception_returns_zero(self, _mock):
+        result = troshkad._get_cpu_capacity()
+        self.assertEqual(result, {"vcpus_total": 0})
+
+
+class TestGetMemoryCapacity(unittest.TestCase):
+    def test_parses_meminfo(self):
+        meminfo = "MemTotal:       16384000 kB\nMemFree:         8192000 kB\n"
+        with patch("builtins.open", mock_open(read_data=meminfo)):
+            result = troshkad._get_memory_capacity()
+        self.assertEqual(result, {"ram_total_mb": 16384000 // 1024})
+
+    def test_missing_memtotal_returns_zero(self):
+        meminfo = "MemFree:         8192000 kB\n"
+        with patch("builtins.open", mock_open(read_data=meminfo)):
+            result = troshkad._get_memory_capacity()
+        self.assertEqual(result, {"ram_total_mb": 0})
+
+    @patch("builtins.open", side_effect=OSError("no such file"))
+    def test_exception_returns_zero(self, _mock):
+        result = troshkad._get_memory_capacity()
+        self.assertEqual(result, {"ram_total_mb": 0})
+
+
+class TestGetStorageCapacity(unittest.TestCase):
+    def setUp(self):
+        self._orig_config = troshkad._config.copy()
+
+    def tearDown(self):
+        troshkad._config.clear()
+        troshkad._config.update(self._orig_config)
+
+    @patch("shutil.disk_usage")
+    def test_local_mode(self, mock_du):
+        troshkad._config["storage_mode"] = "local"
+        mock_du.return_value = MagicMock(total=500 * (1024**3), used=200 * (1024**3))
+        result = troshkad._get_storage_capacity()
+        self.assertEqual(result, {"storage_total_gb": 500, "storage_used_gb": 200})
+        mock_du.assert_called_once_with("/var/lib/troshka")
+
+    @patch("shutil.disk_usage")
+    def test_shared_mode_uses_local_mount(self, mock_du):
+        troshkad._config["storage_mode"] = "shared"
+        troshkad._config["local_mount"] = "/mnt/local"
+        mock_du.return_value = MagicMock(total=1000 * (1024**3), used=300 * (1024**3))
+        result = troshkad._get_storage_capacity()
+        self.assertEqual(result, {"storage_total_gb": 1000, "storage_used_gb": 300})
+        mock_du.assert_called_once_with("/mnt/local")
+
+    @patch("shutil.disk_usage", side_effect=OSError("fail"))
+    def test_exception_returns_zeros(self, _mock):
+        result = troshkad._get_storage_capacity()
+        self.assertEqual(result, {"storage_total_gb": 0, "storage_used_gb": 0})
+
+
+class TestGetVmCapacity(unittest.TestCase):
+    @patch("subprocess.run")
+    def test_counts_vms_and_resources(self, mock_run):
+        def run_side_effect(cmd, **kwargs):
+            if cmd == ["virsh", "list", "--all", "--name"]:
+                return MagicMock(returncode=0, stdout="vm-a\nvm-b\n")
+            if cmd == ["virsh", "list", "--name"]:
+                return MagicMock(returncode=0, stdout="vm-a\n")
+            if cmd[0:2] == ["virsh", "dominfo"]:
+                return MagicMock(
+                    returncode=0,
+                    stdout="CPU(s):          4\nMax memory:      8388608 KiB\n",
+                )
+            return MagicMock(returncode=1, stdout="")
+
+        mock_run.side_effect = run_side_effect
+        result = troshkad._get_vm_capacity()
+        self.assertEqual(result["total_vms"], 2)
+        self.assertEqual(result["running_vms"], 1)
+        self.assertEqual(result["vcpus_used"], 8)  # 4 per VM * 2 VMs
+        self.assertEqual(result["ram_used_mb"], 8388608 // 1024 * 2)
+
+    @patch("subprocess.run")
+    def test_virsh_failure_returns_empty(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        result = troshkad._get_vm_capacity()
+        self.assertEqual(result, {})
+
+    @patch("subprocess.run", side_effect=FileNotFoundError("virsh not found"))
+    def test_exception_returns_empty(self, _mock):
+        result = troshkad._get_vm_capacity()
+        self.assertEqual(result, {})
+
+    @patch("subprocess.run")
+    def test_no_domains(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="\n")
+        result = troshkad._get_vm_capacity()
+        self.assertEqual(result["total_vms"], 0)
+        self.assertEqual(result["vcpus_used"], 0)
+        self.assertEqual(result["ram_used_mb"], 0)
+
+
+class TestGetContainerCapacity(unittest.TestCase):
+    @patch("subprocess.run")
+    def test_counts_containers(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="troshka-web running\ntroshka-db exited\ntroshka-cache running\n",
+        )
+        result = troshkad._get_container_capacity()
+        self.assertEqual(result["total_containers"], 3)
+        self.assertEqual(result["running_containers"], 2)
+
+    @patch("subprocess.run")
+    def test_no_containers(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0, stdout="\n")
+        result = troshkad._get_container_capacity()
+        self.assertEqual(result["total_containers"], 0)
+        self.assertEqual(result["running_containers"], 0)
+
+    @patch("subprocess.run")
+    def test_podman_failure_returns_empty(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        result = troshkad._get_container_capacity()
+        self.assertEqual(result, {})
+
+    @patch("subprocess.run", side_effect=FileNotFoundError("podman not found"))
+    def test_exception_returns_empty(self, _mock):
+        result = troshkad._get_container_capacity()
+        self.assertEqual(result, {})
+
+
+# ── _parse_boot_devices / _parse_memory ──
+
+
+class TestParseBootDevices(unittest.TestCase):
+    def test_parse_boot_devices_os_boot(self):
+        """<os><boot dev="hd"/><boot dev="network"/></os> returns ["hd", "network"]."""
+        import xml.etree.ElementTree as ET
+
+        xml_str = (
+            "<domain>"
+            "  <os><boot dev='hd'/><boot dev='network'/></os>"
+            "  <devices></devices>"
+            "</domain>"
+        )
+        root = ET.fromstring(xml_str)
+        result = troshkad._parse_boot_devices(root)
+        self.assertEqual(result, ["hd", "network"])
+
+    def test_parse_boot_devices_per_device(self):
+        """Per-device <boot order="N"> elements produce correct order."""
+        import xml.etree.ElementTree as ET
+
+        xml_str = (
+            "<domain>"
+            "  <os></os>"
+            "  <devices>"
+            "    <interface type='bridge'><boot order='2'/></interface>"
+            "    <disk type='file' device='disk'><boot order='1'/></disk>"
+            "    <disk type='file' device='cdrom'><boot order='3'/></disk>"
+            "  </devices>"
+            "</domain>"
+        )
+        root = ET.fromstring(xml_str)
+        result = troshkad._parse_boot_devices(root)
+        self.assertEqual(result, ["hd", "network", "cdrom"])
+
+    def test_parse_boot_devices_empty(self):
+        """No boot elements returns empty list."""
+        import xml.etree.ElementTree as ET
+
+        xml_str = (
+            "<domain>"
+            "  <os></os>"
+            "  <devices>"
+            "    <disk type='file' device='disk'/>"
+            "  </devices>"
+            "</domain>"
+        )
+        root = ET.fromstring(xml_str)
+        result = troshkad._parse_boot_devices(root)
+        self.assertEqual(result, [])
+
+
+class TestParseMemory(unittest.TestCase):
+    def test_parse_memory_kib(self):
+        """<memory unit="KiB">4194304</memory> returns 4096 MB."""
+        import xml.etree.ElementTree as ET
+
+        xml_str = '<domain><memory unit="KiB">4194304</memory></domain>'
+        root = ET.fromstring(xml_str)
+        result = troshkad._parse_memory(root)
+        self.assertEqual(result, 4096)
+
+    def test_parse_memory_no_unit(self):
+        """<memory>2048</memory> defaults to KiB, returns 2 MB."""
+        import xml.etree.ElementTree as ET
+
+        xml_str = "<domain><memory>2048</memory></domain>"
+        root = ET.fromstring(xml_str)
+        result = troshkad._parse_memory(root)
+        self.assertEqual(result, 2)
+
+
+# ── Watchdog Helpers ──
+
+
+class TestWatchdogCheckHttpSuccess(unittest.TestCase):
+    """HTTP self-check succeeds — failure counter resets to 0."""
+
+    def test_watchdog_check_http_success(self):
+        original = troshkad._watchdog_http_failures
+        troshkad._watchdog_http_failures = 3
+        saved_config = troshkad._config.copy() if troshkad._config else {}
+        troshkad._config["port"] = 31337
+        try:
+            with patch("socket.create_connection") as mock_conn:
+                mock_sock = MagicMock()
+                mock_conn.return_value = mock_sock
+                troshkad._watchdog_check_http()
+                mock_conn.assert_called_once_with(("127.0.0.1", 31337), timeout=5)
+                mock_sock.close.assert_called_once()
+                assert troshkad._watchdog_http_failures == 0
+        finally:
+            troshkad._watchdog_http_failures = original
+            troshkad._config.update(saved_config)
+
+
+class TestWatchdogCheckHttpFailureIncrements(unittest.TestCase):
+    """HTTP self-check fails — failure counter increments."""
+
+    def test_watchdog_check_http_failure_increments(self):
+        original = troshkad._watchdog_http_failures
+        troshkad._watchdog_http_failures = 0
+        saved_config = troshkad._config.copy() if troshkad._config else {}
+        troshkad._config["port"] = 31337
+        try:
+            with patch("socket.create_connection", side_effect=OSError("refused")):
+                troshkad._watchdog_check_http()
+                assert troshkad._watchdog_http_failures == 1
+        finally:
+            troshkad._watchdog_http_failures = original
+            troshkad._config.update(saved_config)
+
+
+class TestWatchdogCheckHttpThresholdExit(unittest.TestCase):
+    """HTTP self-check fails at threshold — os._exit(1) called."""
+
+    def test_watchdog_check_http_threshold_exit(self):
+        original = troshkad._watchdog_http_failures
+        troshkad._watchdog_http_failures = 5
+        saved_config = troshkad._config.copy() if troshkad._config else {}
+        troshkad._config["port"] = 31337
+        try:
+            with patch("socket.create_connection", side_effect=OSError("refused")):
+                with patch("os._exit") as mock_exit:
+                    troshkad._watchdog_check_http()
+                    assert troshkad._watchdog_http_failures == 6
+                    mock_exit.assert_called_once_with(1)
+        finally:
+            troshkad._watchdog_http_failures = original
+            troshkad._config.update(saved_config)
+
+
+class TestWatchdogCheckServicesActive(unittest.TestCase):
+    """All services active — no restart triggered."""
+
+    def test_watchdog_check_services_active(self):
+        active_result = MagicMock()
+        active_result.stdout = "active\n"
+        with patch("subprocess.run", return_value=active_result) as mock_run:
+            troshkad._watchdog_check_services()
+            # Each service gets one is-active check (all return active)
+            assert mock_run.call_count == len(troshkad._REQUIRED_SERVICES)
+            for c in mock_run.call_args_list:
+                assert c[0][0][0] == "systemctl"
+                assert c[0][0][1] == "is-active"
+
+
+class TestWatchdogCheckServicesRestart(unittest.TestCase):
+    """Service inactive — systemctl start called."""
+
+    def test_watchdog_check_services_restart(self):
+        inactive_result = MagicMock()
+        inactive_result.stdout = "inactive\n"
+        start_result = MagicMock()
+
+        def run_side_effect(cmd, **kwargs):
+            if cmd[1] == "is-active":
+                return inactive_result
+            return start_result
+
+        with patch("subprocess.run", side_effect=run_side_effect) as mock_run:
+            troshkad._watchdog_check_services()
+            # For socket services (is_socket=True), we get: is-active socket, is-active service, start
+            # For non-socket services: is-active unit, start
+            start_calls = [c for c in mock_run.call_args_list if c[0][0][1] == "start"]
+            assert len(start_calls) == len(troshkad._REQUIRED_SERVICES)
+
+
+class TestWatchdogCheckNfsHealthy(unittest.TestCase):
+    """NFS healthy on shared storage — no recovery attempted."""
+
+    def test_watchdog_check_nfs_healthy(self):
+        saved_config = troshkad._config.copy() if troshkad._config else {}
+        troshkad._config["storage_mode"] = "shared"
+        try:
+            with patch.object(
+                troshkad, "_check_nfs_health", return_value=True
+            ) as mock_check:
+                with patch.object(troshkad, "_try_nfs_recovery") as mock_recovery:
+                    troshkad._watchdog_check_nfs()
+                    mock_check.assert_called_once()
+                    mock_recovery.assert_not_called()
+        finally:
+            troshkad._config.update(saved_config)
+            if "storage_mode" not in saved_config:
+                troshkad._config.pop("storage_mode", None)
+
+
+# ── _find_ostree_paths ──
+
+
+class TestFindOstreePaths(unittest.TestCase):
+    @patch("os.path.isdir")
+    @patch("os.listdir", return_value=["abc123def456.0"])
+    def test_find_ostree_paths_success(self, _mock_listdir, mock_isdir):
+        """Valid RHCOS disk returns all six expected paths."""
+
+        def isdir_side_effect(path):
+            # deploy dir, etc_k8s, var_kubelet, var_etcd all exist
+            return True
+
+        mock_isdir.side_effect = isdir_side_effect
+        result = troshkad._find_ostree_paths("/mnt/disk")
+        deploy_root, var_root, etc_k8s, etc_mcd, var_kubelet, var_etcd = result
+        self.assertEqual(
+            deploy_root,
+            "/mnt/disk/ostree/deploy/rhcos/deploy/abc123def456.0",
+        )
+        self.assertEqual(var_root, "/mnt/disk/ostree/deploy/rhcos/var")
+        self.assertIn("etc/kubernetes", etc_k8s)
+        self.assertIn("etc/machine-config-daemon", etc_mcd)
+        self.assertIn("lib/kubelet", var_kubelet)
+        self.assertIn("lib/etcd", var_etcd)
+
+    @patch("os.path.isdir", return_value=False)
+    def test_find_ostree_paths_no_deploy_dir(self, _mock_isdir):
+        """Raises RuntimeError when ostree deploy dir is missing."""
+        with self.assertRaises(RuntimeError) as ctx:
+            troshkad._find_ostree_paths("/mnt/disk")
+        self.assertIn("no ostree deploy dir", str(ctx.exception))
+
+    @patch("os.path.isdir")
+    @patch("os.listdir", return_value=[])
+    def test_find_ostree_paths_no_entries(self, _mock_listdir, mock_isdir):
+        """Raises RuntimeError when no deployment entries exist."""
+
+        def isdir_side_effect(path):
+            if path.endswith("deploy"):
+                return True
+            return False
+
+        mock_isdir.side_effect = isdir_side_effect
+        with self.assertRaises(RuntimeError) as ctx:
+            troshkad._find_ostree_paths("/mnt/disk")
+        self.assertIn("No OSTree deployment", str(ctx.exception))
+
+
+# ── _save_kubeconfig ──
+
+
+class TestSaveKubeconfig(unittest.TestCase):
+    def setUp(self):
+        self._orig_config = troshkad._config.copy()
+
+    def tearDown(self):
+        troshkad._config.clear()
+        troshkad._config.update(self._orig_config)
+
+    @patch("os.makedirs")
+    @patch("os.path.isfile", return_value=True)
+    def test_save_kubeconfig_writes_file(self, _mock_isfile, _mock_makedirs):
+        """Writes kubeconfig to project dir and returns content."""
+        troshkad._config["vm_dir"] = "/var/lib/troshka/vms"
+        job = {"job_id": "aaaa0000-0000-0000-0000-000000000000", "output": []}
+        params = {"project_id": "proj-1234", "vm_name": "sno1"}
+        kc_data = "apiVersion: v1\nclusters: []\n"
+
+        m = mock_open(read_data=kc_data)
+        with patch("builtins.open", m):
+            result = troshkad._save_kubeconfig(
+                job, params, "/mnt/etc/kubernetes", force_expire=False
+            )
+        self.assertEqual(result, kc_data)
+        # Should have written kubeconfig and kubeconfig-sno1
+        write_calls = [c for c in m().write.call_args_list]
+        self.assertTrue(len(write_calls) >= 2)
+
+    def test_save_kubeconfig_force_expire_skips(self):
+        """When force_expire=True, returns None without touching files."""
+        job = {"job_id": "bbbb0000-0000-0000-0000-000000000000", "output": []}
+        params = {"project_id": "proj-1234", "vm_name": "sno1"}
+        result = troshkad._save_kubeconfig(
+            job, params, "/mnt/etc/kubernetes", force_expire=True
+        )
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

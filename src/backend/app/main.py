@@ -560,32 +560,34 @@ from app.api import users as user_routes  # noqa: E402
 from app.api import vms as vm_routes  # noqa: E402
 from app.api import ws as ws_routes  # noqa: E402
 
-app.include_router(auth_routes.router, prefix="/api/v1")
-app.include_router(project_routes.router, prefix="/api/v1")
-app.include_router(vm_routes.router, prefix="/api/v1")
-app.include_router(network_routes.router, prefix="/api/v1")
-app.include_router(disk_routes.router, prefix="/api/v1")
-app.include_router(api_key_routes.router, prefix="/api/v1")
-app.include_router(host_routes.router, prefix="/api/v1")
-app.include_router(provider_routes.router, prefix="/api/v1")
-app.include_router(library_routes.router, prefix="/api/v1")
-app.include_router(pattern_routes.router, prefix="/api/v1")
-app.include_router(eip_routes.router, prefix="/api/v1")
+_API_PREFIX = "/api/v1"
+
+app.include_router(auth_routes.router, prefix=_API_PREFIX)
+app.include_router(project_routes.router, prefix=_API_PREFIX)
+app.include_router(vm_routes.router, prefix=_API_PREFIX)
+app.include_router(network_routes.router, prefix=_API_PREFIX)
+app.include_router(disk_routes.router, prefix=_API_PREFIX)
+app.include_router(api_key_routes.router, prefix=_API_PREFIX)
+app.include_router(host_routes.router, prefix=_API_PREFIX)
+app.include_router(provider_routes.router, prefix=_API_PREFIX)
+app.include_router(library_routes.router, prefix=_API_PREFIX)
+app.include_router(pattern_routes.router, prefix=_API_PREFIX)
+app.include_router(eip_routes.router, prefix=_API_PREFIX)
 app.include_router(ws_routes.router)
-app.include_router(storage_pool_routes.router, prefix="/api/v1")
-app.include_router(dns_provider_routes.router, prefix="/api/v1")
-app.include_router(portal_routes.router, prefix="/api/v1")
-app.include_router(template_routes.router, prefix="/api/v1")
-app.include_router(registry_cred_routes.router, prefix="/api/v1")
-app.include_router(user_routes.router, prefix="/api/v1")
+app.include_router(storage_pool_routes.router, prefix=_API_PREFIX)
+app.include_router(dns_provider_routes.router, prefix=_API_PREFIX)
+app.include_router(portal_routes.router, prefix=_API_PREFIX)
+app.include_router(template_routes.router, prefix=_API_PREFIX)
+app.include_router(registry_cred_routes.router, prefix=_API_PREFIX)
+app.include_router(user_routes.router, prefix=_API_PREFIX)
 
 
-@app.get("/api/v1/health")
+@app.get(f"{_API_PREFIX}/health")
 def health_check():
     return {"status": "healthy", "app": config.app.name, "version": "0.1.0"}
 
 
-@app.get("/api/v1/ocp/versions")
+@app.get(f"{_API_PREFIX}/ocp/versions")
 def ocp_versions():
     """Fetch available OCP stable versions from the OpenShift Update Service."""
     import urllib.request
@@ -617,7 +619,7 @@ def ocp_versions():
     return channels
 
 
-@app.get("/api/v1/debug/threads")
+@app.get(f"{_API_PREFIX}/debug/threads")
 def debug_threads(user: AdminUser):
     import threading
 
@@ -692,7 +694,7 @@ def _collect_inflight_deploys(r_str):
     return inflight
 
 
-@app.get("/api/v1/admin/queue-status")
+@app.get(f"{_API_PREFIX}/admin/queue-status")
 def queue_status(user: AdminUser):
     """Show job queue depths, active workers, and failed jobs."""
     from app.core.redis import is_redis_available
@@ -717,7 +719,7 @@ def queue_status(user: AdminUser):
     }
 
 
-@app.get("/api/v1/admin/failed-jobs")
+@app.get(f"{_API_PREFIX}/admin/failed-jobs")
 def list_failed_jobs(
     user: AdminUser,
     queue_name: str = "deploy",
@@ -765,7 +767,7 @@ def list_failed_jobs(
 
 
 @app.post(
-    "/api/v1/admin/failed-jobs/{job_id}/retry",
+    f"{_API_PREFIX}/admin/failed-jobs/{{job_id}}/retry",
     responses={400: {"description": "Redis unavailable or job retry failed"}},
 )
 def retry_failed_job(job_id: str, user: AdminUser):
@@ -787,7 +789,7 @@ def retry_failed_job(job_id: str, user: AdminUser):
 
 
 @app.delete(
-    "/api/v1/admin/failed-jobs/{job_id}",
+    f"{_API_PREFIX}/admin/failed-jobs/{{job_id}}",
     responses={400: {"description": "Redis unavailable or job deletion failed"}},
 )
 def delete_failed_job(job_id: str, user: AdminUser):

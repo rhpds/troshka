@@ -22,6 +22,7 @@ import time
 import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import socketserver
+import xml.etree.ElementTree as ET
 
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
@@ -202,7 +203,16 @@ def _cleanup_rate_limit():
 
 # ── Path / string constants ──
 
+_TROSHKA_DIR = "/var/lib/troshka"
 _VMS_DIR = "/var/lib/troshka/vms"
+_TMP_DIR = "/var/lib/troshka/tmp"
+_MESH_DIR = "/var/lib/troshka/mesh"
+_BMC_DIR = "/var/lib/troshka/bmc"
+_PXE_DIR = "/var/lib/troshka/pxe"
+_CHRONY_DIR = "/var/lib/troshka/chrony"
+_SHARED_DIR = "/var/lib/troshka/shared"
+_LOCAL_DIR = "/var/lib/troshka/local"
+_DNSMASQ_PREFIX = "/var/lib/troshka/dnsmasq"
 _INET_PREFIX = "inet "
 
 # ── NFS health tracking ──
@@ -220,7 +230,7 @@ def _check_nfs_health():
         _nfs_healthy = True
         return True
 
-    shared = _config.get("shared_mount", "/var/lib/troshka/shared")
+    shared = _config.get("shared_mount", _SHARED_DIR)
     if not os.path.ismount(shared):
         if _nfs_healthy:
             logger.warning("NFS mount %s not mounted", shared)
@@ -259,7 +269,7 @@ def _check_nfs_health():
 
 def _try_nfs_recovery():
     """Attempt to recover a stale NFS mount via lazy unmount + remount."""
-    shared = _config.get("shared_mount", "/var/lib/troshka/shared")
+    shared = _config.get("shared_mount", _SHARED_DIR)
     logger.warning("Attempting NFS recovery on %s", shared)
 
     # Read fstab to get mount source and options
@@ -410,38 +420,44 @@ def _job_cleanup_loop():
 # ── Capacity info ──
 
 
-def _get_capacity():
-    """Read host capacity from system — best effort."""
-    capacity = {
-        "vcpus_total": 0,
-        "vcpus_used": 0,
-        "ram_total_mb": 0,
-        "ram_used_mb": 0,
-        "storage_total_gb": 0,
-        "storage_used_gb": 0,
-    }
+def _get_cpu_capacity():
+    """Return dict with vcpus_total from os.cpu_count()."""
     try:
-        capacity["vcpus_total"] = os.cpu_count() or 0
+        return {"vcpus_total": os.cpu_count() or 0}
     except Exception:
-        pass
+        return {"vcpus_total": 0}
+
+
+def _get_memory_capacity():
+    """Return dict with ram_total_mb from /proc/meminfo."""
     try:
         with open("/proc/meminfo") as f:
             for line in f:
                 if line.startswith("MemTotal:"):
-                    capacity["ram_total_mb"] = int(line.split()[1]) // 1024
-                    break
+                    return {"ram_total_mb": int(line.split()[1]) // 1024}
     except Exception:
         pass
+    return {"ram_total_mb": 0}
+
+
+def _get_storage_capacity():
+    """Return dict with storage_total_gb and storage_used_gb."""
     try:
-        # Use local mount for capacity to avoid blocking on stale NFS
-        storage_root = "/var/lib/troshka"
+        storage_root = _TROSHKA_DIR
         if _config.get("storage_mode") == "shared":
-            storage_root = _config.get("local_mount", "/var/lib/troshka/local")
+            storage_root = _config.get("local_mount", _LOCAL_DIR)
         stat = shutil.disk_usage(storage_root)
-        capacity["storage_total_gb"] = stat.total // (1024**3)
-        capacity["storage_used_gb"] = stat.used // (1024**3)
+        return {
+            "storage_total_gb": stat.total // (1024**3),
+            "storage_used_gb": stat.used // (1024**3),
+        }
     except Exception:
-        pass
+        return {"storage_total_gb": 0, "storage_used_gb": 0}
+
+
+def _get_vm_capacity():
+    """Return dict with total_vms, running_vms, vcpus_used, ram_used_mb."""
+    result_dict = {}
     try:
         result = subprocess.run(
             ["virsh", "list", "--all", "--name"],
@@ -449,43 +465,44 @@ def _get_capacity():
             text=True,
             timeout=5,
         )
-        if result.returncode == 0:
-            domains = [
-                d.strip() for d in result.stdout.strip().split("\n") if d.strip()
-            ]
-            capacity["total_vms"] = len(domains)
-            running = subprocess.run(
-                ["virsh", "list", "--name"],
+        if result.returncode != 0:
+            return result_dict
+        domains = [d.strip() for d in result.stdout.strip().split("\n") if d.strip()]
+        result_dict["total_vms"] = len(domains)
+        running = subprocess.run(
+            ["virsh", "list", "--name"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if running.returncode == 0:
+            result_dict["running_vms"] = len(
+                [d for d in running.stdout.strip().split("\n") if d.strip()]
+            )
+        vcpus_used = 0
+        ram_used = 0
+        for domain in domains:
+            info = subprocess.run(
+                ["virsh", "dominfo", domain],
                 capture_output=True,
                 text=True,
                 timeout=5,
             )
-            if running.returncode == 0:
-                capacity["running_vms"] = len(
-                    [d for d in running.stdout.strip().split("\n") if d.strip()]
-                )
-            vcpus_used = 0
-            ram_used = 0
-            for domain in domains:
-                info = subprocess.run(
-                    ["virsh", "dominfo", domain],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if info.returncode == 0:
-                    for line in info.stdout.split("\n"):
-                        if line.startswith("CPU(s):"):
-                            vcpus_used += int(line.split(":")[1].strip())
-                        elif line.startswith("Max memory:"):
-                            ram_used += (
-                                int(line.split(":")[1].strip().split()[0]) // 1024
-                            )
-            capacity["vcpus_used"] = vcpus_used
-            capacity["ram_used_mb"] = ram_used
+            if info.returncode == 0:
+                for line in info.stdout.split("\n"):
+                    if line.startswith("CPU(s):"):
+                        vcpus_used += int(line.split(":")[1].strip())
+                    elif line.startswith("Max memory:"):
+                        ram_used += int(line.split(":")[1].strip().split()[0]) // 1024
+        result_dict["vcpus_used"] = vcpus_used
+        result_dict["ram_used_mb"] = ram_used
     except Exception:
         pass
-    # Container counts
+    return result_dict
+
+
+def _get_container_capacity():
+    """Return dict with total_containers and running_containers."""
     try:
         result = subprocess.run(
             [
@@ -507,12 +524,32 @@ def _get_capacity():
                 for line in result.stdout.strip().split("\n")
                 if line.strip()
             ]
-            capacity["total_containers"] = len(containers)
-            capacity["running_containers"] = len(
-                [c for c in containers if c.split(None, 1)[-1].lower() == "running"]
-            )
+            return {
+                "total_containers": len(containers),
+                "running_containers": len(
+                    [c for c in containers if c.split(None, 1)[-1].lower() == "running"]
+                ),
+            }
     except Exception:
         pass
+    return {}
+
+
+def _get_capacity():
+    """Read host capacity from system — best effort."""
+    capacity = {
+        "vcpus_total": 0,
+        "vcpus_used": 0,
+        "ram_total_mb": 0,
+        "ram_used_mb": 0,
+        "storage_total_gb": 0,
+        "storage_used_gb": 0,
+    }
+    capacity.update(_get_cpu_capacity())
+    capacity.update(_get_memory_capacity())
+    capacity.update(_get_storage_capacity())
+    capacity.update(_get_vm_capacity())
+    capacity.update(_get_container_capacity())
     return capacity
 
 
@@ -875,12 +912,12 @@ def _validate_domain_name(name):
 
 def _validate_path(path):
     normalized = os.path.normpath(path)
-    allowed_prefixes = ["/var/lib/troshka/", "/opt/troshka/", "/var/log/troshka-"]
+    allowed_prefixes = [_TROSHKA_DIR + "/", "/opt/troshka/", "/var/log/troshka-"]
     mode = _config.get("storage_mode", "local")
     if mode == "shared":
-        shared = _config.get("shared_mount", "/var/lib/troshka/shared")
-        local = _config.get("local_mount", "/var/lib/troshka/local")
-        allowed_prefixes.extend([shared + "/", local + "/", "/var/lib/troshka/seeds/"])
+        shared = _config.get("shared_mount", _SHARED_DIR)
+        local = _config.get("local_mount", _LOCAL_DIR)
+        allowed_prefixes.extend([shared + "/", local + "/", _TROSHKA_DIR + "/seeds/"])
     if not any(normalized.startswith(p) for p in allowed_prefixes):
         raise ValueError(f"Path must be under /var/lib/troshka/: {path}")
     if os.path.exists(normalized):
@@ -897,8 +934,8 @@ def _storage_path(category):
     """
     mode = _config.get("storage_mode", "local")
     if mode == "shared":
-        shared = _config.get("shared_mount", "/var/lib/troshka/shared")
-        local = _config.get("local_mount", "/var/lib/troshka/local")
+        shared = _config.get("shared_mount", _SHARED_DIR)
+        local = _config.get("local_mount", _LOCAL_DIR)
         shared_categories = {"vms", "images", "cache/snapshots"}
         local_categories = {"pxe", "bmc", "tmp", "cache/patterns"}
         if category in shared_categories:
@@ -906,11 +943,11 @@ def _storage_path(category):
         elif category in local_categories:
             return os.path.join(local, category)
         elif category == "seeds":
-            return "/var/lib/troshka/seeds"
+            return _TROSHKA_DIR + "/seeds"
         else:
             return os.path.join(shared, category)
     else:
-        base = "/var/lib/troshka"
+        base = _TROSHKA_DIR
         if category == "seeds":
             return os.path.join(base, "vms")
         return os.path.join(base, category)
@@ -1165,7 +1202,7 @@ def _handle_vm_create(job, params):
 COMMAND_HANDLERS["vms/create"] = _handle_vm_create
 
 
-_IMAGE_CACHE_DIRS = ("/var/lib/troshka/images/", "/var/lib/troshka/shared/images/")
+_IMAGE_CACHE_DIRS = (f"{_TROSHKA_DIR}/images/", f"{_SHARED_DIR}/images/")
 
 
 def _delete_vm_disks(job, domain):
@@ -1438,10 +1475,64 @@ def _handle_vm_vnc_port(job, params):
 COMMAND_HANDLERS["vms/vnc-port"] = _handle_vm_vnc_port
 
 
+def _parse_boot_devices(root):
+    """Extract boot device list from a libvirt XML root element.
+
+    Checks ``<os><boot dev="..."/>`` first.  Falls back to per-device
+    ``<boot order="N">`` elements inside ``<devices>`` when the os/boot
+    elements are absent.
+
+    Returns a list of device type strings (e.g. ``["hd", "network"]``).
+    """
+    boot_devs = [b.get("dev") for b in root.findall(".//os/boot")]
+    if boot_devs:
+        return boot_devs
+
+    dev_boots = []
+    devices = root.find("devices")
+    if devices is not None:
+        for dev_elem in devices:
+            boot_child = dev_elem.find("boot")
+            if boot_child is None:
+                continue
+            order = int(boot_child.get("order", 999))
+            if dev_elem.tag == "disk":
+                dev_type = "cdrom" if dev_elem.get("device") == "cdrom" else "hd"
+            elif dev_elem.tag == "interface":
+                dev_type = "network"
+            else:
+                continue
+            dev_boots.append((order, dev_type))
+
+    if not dev_boots:
+        return []
+
+    seen = set()
+    result = []
+    for _, dt in sorted(dev_boots):
+        if dt not in seen:
+            result.append(dt)
+            seen.add(dt)
+    return result
+
+
+def _parse_memory(root):
+    """Extract RAM in MB from a libvirt XML root element.
+
+    Reads ``<memory unit="...">`` and converts to megabytes.
+    Defaults to KiB when no unit attribute is present.
+    """
+    mem_elem = root.find("memory")
+    if mem_elem is None:
+        return 0
+    mem_val = int(mem_elem.text)
+    if mem_elem.get("unit", "KiB") == "KiB":
+        return mem_val // 1024
+    return mem_val
+
+
 def _handle_vm_config(job, params):
     """Get VM config from inactive XML — structured dict."""
-    import xml.etree.ElementTree as ET
-
     domain = _validate_domain_name(params["domain_name"])
     result = subprocess.run(
         ["virsh", "dumpxml", "--inactive", domain],
@@ -1454,38 +1545,9 @@ def _handle_vm_config(job, params):
 
     root = ET.fromstring(result.stdout)
 
-    boot_devs = [b.get("dev") for b in root.findall(".//os/boot")]
-    # Fall back to per-device boot orders if no os/boot elements
-    if not boot_devs:
-        dev_boots = []
-        devices = root.find("devices")
-        if devices is not None:
-            for dev_elem in devices:
-                boot_child = dev_elem.find("boot")
-                if boot_child is not None:
-                    order = int(boot_child.get("order", 999))
-                    if dev_elem.tag == "disk":
-                        dev_type = (
-                            "cdrom" if dev_elem.get("device") == "cdrom" else "hd"
-                        )
-                    elif dev_elem.tag == "interface":
-                        dev_type = "network"
-                    else:
-                        continue
-                    dev_boots.append((order, dev_type))
-        if dev_boots:
-            seen = set()
-            for _, dt in sorted(dev_boots):
-                if dt not in seen:
-                    boot_devs.append(dt)
-                    seen.add(dt)
+    boot_devs = _parse_boot_devices(root)
     vcpus = int(root.findtext("vcpu", "0"))
-    mem_elem = root.find("memory")
-    mem_kib = int(mem_elem.text) if mem_elem is not None else 0
-    if mem_elem is not None and mem_elem.get("unit", "KiB") == "KiB":
-        ram_mb = mem_kib // 1024
-    else:
-        ram_mb = mem_kib
+    ram_mb = _parse_memory(root)
 
     nics = []
     for iface in root.findall(".//interface"):
@@ -2135,6 +2197,262 @@ def _ensure_container_image(job, image):
         _run_cmd(job, ["podman", "pull", image], timeout=300)
 
 
+def _mount_rhcos_disk(job, nbd_dev, disk, mount_dir):
+    """Connect a RHCOS qcow2 disk via NBD and mount its root partition (p4).
+
+    Returns True on success.  Raises RuntimeError if the partition is missing.
+    """
+    _job_log(job, f"Connecting {os.path.basename(disk)} to {nbd_dev}")
+    _run_cmd(job, ["qemu-nbd", "--connect", nbd_dev, disk], timeout=30)
+    time.sleep(1)
+    _run_cmd(job, ["partprobe", nbd_dev], timeout=15, check=False)
+    time.sleep(1)
+
+    partition = f"{nbd_dev}p4"
+    if not os.path.exists(partition):
+        raise RuntimeError(f"Partition {partition} not found — disk may not be RHCOS")
+
+    os.makedirs(mount_dir, exist_ok=True)
+    _job_log(job, f"Mounting {partition}")
+    rc = _run_cmd(
+        job,
+        ["mount", "-o", "nouuid", partition, mount_dir],
+        timeout=30,
+        check=False,
+    )
+    if rc and rc.returncode != 0:
+        _job_log(job, "Mount failed — repairing XFS log")
+        _run_cmd(job, ["xfs_repair", "-L", partition], timeout=120)
+        _run_cmd(job, ["mount", "-o", "nouuid", partition, mount_dir], timeout=30)
+    return True
+
+
+def _find_ostree_paths(mount_dir):
+    """Locate RHCOS ostree deployment paths on a mounted disk.
+
+    Returns (deploy_root, var_root, etc_k8s, etc_mcd, var_kubelet, var_etcd).
+    Raises RuntimeError when the disk is not a valid RHCOS ostree layout.
+    """
+    deploy_dir = os.path.join(mount_dir, "ostree/deploy/rhcos/deploy")
+    if not os.path.isdir(deploy_dir):
+        raise RuntimeError("Not an OSTree/RHCOS disk — no ostree deploy dir")
+    entries = [e for e in os.listdir(deploy_dir) if not e.endswith(".origin")]
+    if not entries:
+        raise RuntimeError("No OSTree deployment found")
+
+    deploy_root = os.path.join(deploy_dir, entries[0])
+    var_root = os.path.join(mount_dir, "ostree/deploy/rhcos/var")
+
+    etc_k8s = os.path.join(deploy_root, "etc/kubernetes")
+    etc_mcd = os.path.join(deploy_root, "etc/machine-config-daemon")
+    var_kubelet = os.path.join(var_root, "lib/kubelet")
+    var_etcd = os.path.join(var_root, "lib/etcd")
+
+    for d in [etc_k8s, var_kubelet, var_etcd]:
+        if not os.path.isdir(d):
+            raise RuntimeError(f"Expected dir not found: {d}")
+
+    return deploy_root, var_root, etc_k8s, etc_mcd, var_kubelet, var_etcd
+
+
+def _save_kubeconfig(job, params, etc_k8s, force_expire):
+    """Save kubeconfig from recerted disk to project dir for direct oc access.
+
+    Returns the kubeconfig content string, or None when skipped.
+    """
+    if force_expire:
+        return None
+    project_id = params.get("project_id", "")
+    vm_name = params.get("vm_name", "")
+    kubeconfig_src = os.path.join(
+        etc_k8s,
+        "static-pod-resources/kube-apiserver-certs/secrets/"
+        "node-kubeconfigs/lb-ext.kubeconfig",
+    )
+    if not project_id or not os.path.isfile(kubeconfig_src):
+        return None
+
+    kc_dir = os.path.join(_config.get("vm_dir", _VMS_DIR), project_id)
+    os.makedirs(kc_dir, exist_ok=True)
+    with open(kubeconfig_src) as f:
+        kc_content = f.read()
+    kc_dest = os.path.join(kc_dir, "kubeconfig")
+    with open(kc_dest, "w") as f:
+        f.write(kc_content)
+    if vm_name:
+        kc_named = os.path.join(kc_dir, f"kubeconfig-{vm_name}")
+        with open(kc_named, "w") as f:
+            f.write(kc_content)
+    _job_log(job, f"Saved kubeconfig to {kc_dest}")
+    return kc_content
+
+
+def _update_bastion_disk(
+    job, params, etc_k8s, common_password, bastion_kubeconfig_path, force_expire
+):
+    """Update bastion disk with recerted kubeconfig and clean stale data.
+
+    Self-contained: allocates/releases its own NBD device and mount.
+    Silently returns when there is no bastion disk or force_expire is set.
+    """
+    bastion_disk = params.get("bastion_disk")
+    if not bastion_disk or force_expire:
+        return
+    bastion_disk = _validate_path(bastion_disk)
+
+    kubeconfig_src = os.path.join(
+        etc_k8s,
+        "static-pod-resources/kube-apiserver-certs/secrets/"
+        "node-kubeconfigs/lb-ext.kubeconfig",
+    )
+    if not os.path.isfile(kubeconfig_src):
+        _job_log(
+            job,
+            f"No kubeconfig found at {kubeconfig_src}, skipping bastion update",
+        )
+        return
+
+    _job_log(job, "Updating bastion disk")
+    bastion_nbd = _allocate_nbd_device()
+    bastion_mount = f"{_TMP_DIR}/recert-bastion-{job['job_id'][:8]}"
+    bastion_mounted = False
+    try:
+        _run_cmd(
+            job,
+            ["qemu-nbd", "--connect", bastion_nbd, bastion_disk],
+            timeout=30,
+        )
+        time.sleep(1)
+        _run_cmd(job, ["partprobe", bastion_nbd], timeout=15, check=False)
+        time.sleep(1)
+        bastion_part = f"{bastion_nbd}p3"
+        if not os.path.exists(bastion_part):
+            bastion_part = f"{bastion_nbd}p1"
+        os.makedirs(bastion_mount, exist_ok=True)
+        _run_cmd(
+            job,
+            ["mount", "-o", "nouuid", bastion_part, bastion_mount],
+            timeout=30,
+        )
+        bastion_mounted = True
+
+        kc_dest = os.path.join(bastion_mount, bastion_kubeconfig_path.lstrip("/"))
+        os.makedirs(os.path.dirname(kc_dest), exist_ok=True)
+        with open(kubeconfig_src) as f:
+            kc_content = f.read()
+        with open(kc_dest, "w") as f:
+            f.write(kc_content)
+        _job_log(job, "Bastion kubeconfig updated")
+
+        pem = os.path.join(
+            bastion_mount,
+            "etc/pki/ca-trust/source/anchors/ocp-ingress.pem",
+        )
+        if os.path.exists(pem):
+            os.unlink(pem)
+
+        if common_password:
+            pw_path = os.path.join(
+                bastion_mount,
+                "home/cloud-user/ocp-install/auth/kubeadmin-password",
+            )
+            if os.path.exists(os.path.dirname(pw_path)):
+                with open(pw_path, "w") as f:
+                    f.write(common_password)
+                _job_log(job, "Bastion kubeadmin password updated")
+
+        ff_patterns = ["cert9.db", "key4.db", "logins.json"]
+        for pattern in ff_patterns:
+            for db_file in glob.glob(
+                os.path.join(
+                    bastion_mount,
+                    f"home/cloud-user/.mozilla/firefox/*.default*/{pattern}",
+                )
+            ):
+                os.unlink(db_file)
+
+        if os.path.exists(
+            os.path.join(
+                bastion_mount,
+                "home/cloud-user/ocp-autologin.py",
+            )
+        ):
+            boot_script = os.path.join(
+                bastion_mount,
+                "home/cloud-user/ocp-autologin-boot.sh",
+            )
+            with open(boot_script, "w") as f:
+                f.write(
+                    "#!/bin/bash\n"
+                    "# Wait for OCP oauth-server to be ready\n"
+                    "API=$(grep server: ~/ocp-install/auth/kubeconfig"
+                    " | head -1 | sed 's|.*https://api\\.||;s|:.*||')\n"
+                    '[ -z "$API" ] && exit 1\n'
+                    "CONSOLE=https://console-openshift-console.apps.$API\n"
+                    "for i in $(seq 1 60); do\n"
+                    "  curl -skL -o /dev/null -w '%{http_code}'"
+                    " $CONSOLE/auth/login 2>/dev/null | grep -q 200"
+                    " && break\n"
+                    "  sleep 10\n"
+                    "done\n"
+                    "export DISPLAY=:0 WAYLAND_DISPLAY=wayland-0"
+                    " XDG_RUNTIME_DIR=/run/user/$(id -u)"
+                    " MOZ_ENABLE_WAYLAND=1\n"
+                    "python3 ~/ocp-autologin.py $CONSOLE 2>/dev/null\n"
+                    "if [ $? -eq 0 ]; then\n"
+                    "  rm -f ~/ocp-autologin-boot.sh"
+                    " ~/.config/autostart/ocp-autologin.desktop\n"
+                    "fi\n"
+                )
+            os.chmod(boot_script, 0o755)
+            os.chown(boot_script, 1000, 1000)
+            autostart_dir = os.path.join(
+                bastion_mount,
+                "home/cloud-user/.config/autostart",
+            )
+            os.makedirs(autostart_dir, exist_ok=True)
+            desktop_file = os.path.join(autostart_dir, "ocp-autologin.desktop")
+            with open(desktop_file, "w") as f:
+                f.write(
+                    "[Desktop Entry]\n"
+                    "Type=Application\n"
+                    "Name=OCP Auto-Login\n"
+                    "Exec=/home/cloud-user/ocp-autologin-boot.sh\n"
+                    "X-GNOME-Autostart-enabled=true\n"
+                )
+            os.chown(autostart_dir, 1000, 1000)
+            os.chown(desktop_file, 1000, 1000)
+            _job_log(job, "Firefox auto-login scheduled for first boot")
+
+    except Exception as e:
+        _job_log(job, f"Bastion update failed: {e}")
+    finally:
+        if bastion_mounted:
+            try:
+                _run_cmd(
+                    job,
+                    ["umount", bastion_mount],
+                    timeout=30,
+                    check=False,
+                )
+            except Exception:
+                pass
+        try:
+            _run_cmd(
+                job,
+                ["qemu-nbd", "--disconnect", bastion_nbd],
+                timeout=15,
+                check=False,
+            )
+        except Exception:
+            pass
+        try:
+            os.rmdir(bastion_mount)
+        except OSError:
+            pass
+        _release_nbd_device(bastion_nbd)
+
+
 def _handle_vm_recert(job, params):
     """Regenerate OCP certificates on a stopped SNO's boot disk using recert.
 
@@ -2172,57 +2490,20 @@ def _handle_vm_recert(job, params):
     nbd_dev = _allocate_nbd_device()
     etcd_port = _allocate_etcd_port()
     etcd_peer_port = etcd_port + 10
-    mount_dir = f"/var/lib/troshka/tmp/recert-{job['job_id'][:8]}"
+    mount_dir = f"{_TMP_DIR}/recert-{job['job_id'][:8]}"
     etcd_ctr = f"recert-etcd-{job['job_id'][:8]}"
     mounted = False
 
     try:
-        _job_log(job, f"Connecting {os.path.basename(disk)} to {nbd_dev}")
-        _run_cmd(job, ["qemu-nbd", "--connect", nbd_dev, disk], timeout=30)
-        time.sleep(1)
-        _run_cmd(job, ["partprobe", nbd_dev], timeout=15, check=False)
-        time.sleep(1)
+        mounted = _mount_rhcos_disk(job, nbd_dev, disk, mount_dir)
 
-        partition = f"{nbd_dev}p4"
-        if not os.path.exists(partition):
-            raise RuntimeError(
-                f"Partition {partition} not found — disk may not be RHCOS"
-            )
-
-        os.makedirs(mount_dir, exist_ok=True)
-        _job_log(job, f"Mounting {partition}")
-        rc = _run_cmd(
-            job,
-            ["mount", "-o", "nouuid", partition, mount_dir],
-            timeout=30,
-            check=False,
+        deploy_root, var_root, etc_k8s, etc_mcd, var_kubelet, var_etcd = (
+            _find_ostree_paths(mount_dir)
         )
-        if rc and rc.returncode != 0:
-            _job_log(job, "Mount failed — repairing XFS log")
-            _run_cmd(job, ["xfs_repair", "-L", partition], timeout=120)
-            _run_cmd(job, ["mount", "-o", "nouuid", partition, mount_dir], timeout=30)
-        mounted = True
-
-        deploy_dir = os.path.join(mount_dir, "ostree/deploy/rhcos/deploy")
-        if not os.path.isdir(deploy_dir):
-            raise RuntimeError("Not an OSTree/RHCOS disk — no ostree deploy dir")
-        entries = [e for e in os.listdir(deploy_dir) if not e.endswith(".origin")]
-        if not entries:
-            raise RuntimeError("No OSTree deployment found")
-        deploy_hash = entries[0]
-        _job_log(job, f"OSTree deployment: {deploy_hash[:12]}...")
-
-        deploy_root = os.path.join(deploy_dir, deploy_hash)
-        var_root = os.path.join(mount_dir, "ostree/deploy/rhcos/var")
-
-        etc_k8s = os.path.join(deploy_root, "etc/kubernetes")
-        etc_mcd = os.path.join(deploy_root, "etc/machine-config-daemon")
-        var_kubelet = os.path.join(var_root, "lib/kubelet")
-        var_etcd = os.path.join(var_root, "lib/etcd")
-
-        for d in [etc_k8s, var_kubelet, var_etcd]:
-            if not os.path.isdir(d):
-                raise RuntimeError(f"Expected dir not found: {d}")
+        _job_log(
+            job,
+            f"OSTree deployment: {os.path.basename(deploy_root)[:12]}...",
+        )
 
         _job_log(job, f"Starting temp etcd on port {etcd_port}")
         _run_cmd(
@@ -2320,189 +2601,13 @@ def _handle_vm_recert(job, params):
         _run_cmd(job, recert_cmd, timeout=300)
         _job_log(job, "Recert completed successfully")
 
-        # Save kubeconfig for direct oc access (bastion-optional)
-        project_id = params.get("project_id", "")
-        vm_name = params.get("vm_name", "")
-        kubeconfig_src = os.path.join(
-            etc_k8s,
-            "static-pod-resources/kube-apiserver-certs/secrets/"
-            "node-kubeconfigs/lb-ext.kubeconfig",
-        )
-        if project_id and os.path.isfile(kubeconfig_src) and not force_expire:
-            kc_dir = os.path.join(_config.get("vm_dir", _VMS_DIR), project_id)
-            os.makedirs(kc_dir, exist_ok=True)
-            with open(kubeconfig_src) as f:
-                kc_content = f.read()
-            kc_dest = os.path.join(kc_dir, "kubeconfig")
-            with open(kc_dest, "w") as f:
-                f.write(kc_content)
-            if vm_name:
-                kc_named = os.path.join(kc_dir, f"kubeconfig-{vm_name}")
-                with open(kc_named, "w") as f:
-                    f.write(kc_content)
-            _job_log(job, f"Saved kubeconfig to {kc_dest}")
+        kc_content = _save_kubeconfig(job, params, etc_k8s, force_expire)
+        if kc_content:
             job.setdefault("result", {})["kubeconfig"] = kc_content
 
-        if bastion_disk and not force_expire:
-            kubeconfig_src = os.path.join(
-                etc_k8s,
-                "static-pod-resources/kube-apiserver-certs/secrets/"
-                "node-kubeconfigs/lb-ext.kubeconfig",
-            )
-            if os.path.isfile(kubeconfig_src):
-                _job_log(job, "Updating bastion disk")
-                bastion_nbd = _allocate_nbd_device()
-                bastion_mount = (
-                    f"/var/lib/troshka/tmp/recert-bastion-{job['job_id'][:8]}"
-                )
-                bastion_mounted = False
-                try:
-                    _run_cmd(
-                        job,
-                        ["qemu-nbd", "--connect", bastion_nbd, bastion_disk],
-                        timeout=30,
-                    )
-                    time.sleep(1)
-                    _run_cmd(job, ["partprobe", bastion_nbd], timeout=15, check=False)
-                    time.sleep(1)
-                    bastion_part = f"{bastion_nbd}p3"
-                    if not os.path.exists(bastion_part):
-                        bastion_part = f"{bastion_nbd}p1"
-                    os.makedirs(bastion_mount, exist_ok=True)
-                    _run_cmd(
-                        job,
-                        ["mount", "-o", "nouuid", bastion_part, bastion_mount],
-                        timeout=30,
-                    )
-                    bastion_mounted = True
-
-                    kc_dest = os.path.join(
-                        bastion_mount, bastion_kubeconfig_path.lstrip("/")
-                    )
-                    os.makedirs(os.path.dirname(kc_dest), exist_ok=True)
-                    with open(kubeconfig_src) as f:
-                        kc_content = f.read()
-                    with open(kc_dest, "w") as f:
-                        f.write(kc_content)
-                    _job_log(job, "Bastion kubeconfig updated")
-
-                    pem = os.path.join(
-                        bastion_mount,
-                        "etc/pki/ca-trust/source/anchors/ocp-ingress.pem",
-                    )
-                    if os.path.exists(pem):
-                        os.unlink(pem)
-
-                    if common_password:
-                        pw_path = os.path.join(
-                            bastion_mount,
-                            "home/cloud-user/ocp-install/auth/kubeadmin-password",
-                        )
-                        if os.path.exists(os.path.dirname(pw_path)):
-                            with open(pw_path, "w") as f:
-                                f.write(common_password)
-                            _job_log(job, "Bastion kubeadmin password updated")
-
-                    import glob as _glob
-
-                    ff_patterns = ["cert9.db", "key4.db", "logins.json"]
-                    for pattern in ff_patterns:
-                        for db_file in _glob.glob(
-                            os.path.join(
-                                bastion_mount,
-                                f"home/cloud-user/.mozilla/firefox/*.default*/{pattern}",
-                            )
-                        ):
-                            os.unlink(db_file)
-
-                    if os.path.exists(
-                        os.path.join(
-                            bastion_mount,
-                            "home/cloud-user/ocp-autologin.py",
-                        )
-                    ):
-                        boot_script = os.path.join(
-                            bastion_mount,
-                            "home/cloud-user/ocp-autologin-boot.sh",
-                        )
-                        with open(boot_script, "w") as f:
-                            f.write(
-                                "#!/bin/bash\n"
-                                "# Wait for OCP oauth-server to be ready\n"
-                                "API=$(grep server: ~/ocp-install/auth/kubeconfig"
-                                " | head -1 | sed 's|.*https://api\\.||;s|:.*||')\n"
-                                '[ -z "$API" ] && exit 1\n'
-                                "CONSOLE=https://console-openshift-console.apps.$API\n"
-                                "for i in $(seq 1 60); do\n"
-                                "  curl -skL -o /dev/null -w '%{http_code}'"
-                                " $CONSOLE/auth/login 2>/dev/null | grep -q 200"
-                                " && break\n"
-                                "  sleep 10\n"
-                                "done\n"
-                                "export DISPLAY=:0 WAYLAND_DISPLAY=wayland-0"
-                                " XDG_RUNTIME_DIR=/run/user/$(id -u)"
-                                " MOZ_ENABLE_WAYLAND=1\n"
-                                "python3 ~/ocp-autologin.py $CONSOLE 2>/dev/null\n"
-                                "if [ $? -eq 0 ]; then\n"
-                                "  rm -f ~/ocp-autologin-boot.sh"
-                                " ~/.config/autostart/ocp-autologin.desktop\n"
-                                "fi\n"
-                            )
-                        os.chmod(boot_script, 0o755)
-                        # chown to cloud-user (UID 1000) so the script can self-cleanup
-                        os.chown(boot_script, 1000, 1000)
-                        autostart_dir = os.path.join(
-                            bastion_mount,
-                            "home/cloud-user/.config/autostart",
-                        )
-                        os.makedirs(autostart_dir, exist_ok=True)
-                        desktop_file = os.path.join(
-                            autostart_dir, "ocp-autologin.desktop"
-                        )
-                        with open(desktop_file, "w") as f:
-                            f.write(
-                                "[Desktop Entry]\n"
-                                "Type=Application\n"
-                                "Name=OCP Auto-Login\n"
-                                "Exec=/home/cloud-user/ocp-autologin-boot.sh\n"
-                                "X-GNOME-Autostart-enabled=true\n"
-                            )
-                        os.chown(autostart_dir, 1000, 1000)
-                        os.chown(desktop_file, 1000, 1000)
-                        _job_log(job, "Firefox auto-login scheduled for first boot")
-
-                except Exception as e:
-                    _job_log(job, f"Bastion update failed: {e}")
-                finally:
-                    if bastion_mounted:
-                        try:
-                            _run_cmd(
-                                job,
-                                ["umount", bastion_mount],
-                                timeout=30,
-                                check=False,
-                            )
-                        except Exception:
-                            pass
-                    try:
-                        _run_cmd(
-                            job,
-                            ["qemu-nbd", "--disconnect", bastion_nbd],
-                            timeout=15,
-                            check=False,
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        os.rmdir(bastion_mount)
-                    except OSError:
-                        pass
-                    _release_nbd_device(bastion_nbd)
-            else:
-                _job_log(
-                    job,
-                    f"No kubeconfig found at {kubeconfig_src}, skipping bastion update",
-                )
+        _update_bastion_disk(
+            job, params, etc_k8s, common_password, bastion_kubeconfig_path, force_expire
+        )
 
         return {"status": "completed", "disk": disk}
 
@@ -2636,7 +2741,7 @@ def _cleanup_stale_recert():
     """Clean up leftover recert artifacts from a previous agent crash."""
     import glob as _glob
 
-    tmp_base = os.path.join(_config.get("local_mount", "/var/lib/troshka/local"), "tmp")
+    tmp_base = os.path.join(_config.get("local_mount", _LOCAL_DIR), "tmp")
     for d in _glob.glob(os.path.join(tmp_base, "recert-*")):
         if os.path.ismount(d):
             logger.warning("Cleaning stale recert mount: %s", d)
@@ -2747,7 +2852,7 @@ def _handle_seed_create(job, params):
 
     import tempfile as _tf
 
-    with _tf.TemporaryDirectory(dir="/var/lib/troshka/tmp") as tmpdir:
+    with _tf.TemporaryDirectory(dir=_TMP_DIR) as tmpdir:
         if meta_data:
             with open(os.path.join(tmpdir, "meta-data"), "w") as f:
                 f.write(meta_data)
@@ -2888,8 +2993,8 @@ def _handle_pxe_setup(job, params):
     iso_path = _validate_path(params["iso_path"])
     gateway_ip = params.get("gateway_ip", "")
     http_port = int(params.get("http_port", 8080))
-    tftp_root = params.get("tftp_root", f"/var/lib/troshka/pxe/{vni}/tftpboot")
-    mount_point = f"/var/lib/troshka/pxe/{vni}/mnt"
+    tftp_root = params.get("tftp_root", f"{_PXE_DIR}/{vni}/tftpboot")
+    mount_point = f"{_PXE_DIR}/{vni}/mnt"
     ns = f"troshka-{project_id[:8]}"
 
     if not os.path.exists(iso_path):
@@ -3072,7 +3177,7 @@ socketserver.TCPServer.allow_reuse_address = True
 httpd = socketserver.TCPServer(("0.0.0.0", {http_port}), http.server.SimpleHTTPRequestHandler)
 httpd.serve_forever()
 """
-    script_path = f"/var/lib/troshka/pxe/{vni}/http_server.py"
+    script_path = f"{_PXE_DIR}/{vni}/http_server.py"
     with open(script_path, "w") as f:
         f.write(http_script)
 
@@ -3663,7 +3768,7 @@ def _handle_network_full_setup(job, params):
         pid_short = project_id[:8]
         dnsmasq_conf = f"/etc/dnsmasq.d/troshka-{pid_short}-{vni}.conf"
         dnsmasq_pid = f"/run/troshka-dnsmasq-{pid_short}-{vni}.pid"
-        dnsmasq_lease = f"/var/lib/troshka/dnsmasq-{pid_short}-{vni}.leases"
+        dnsmasq_lease = f"{_DNSMASQ_PREFIX}-{pid_short}-{vni}.leases"
 
         pid = project_id[:8]
         bmc_bridge = f"br-bmc-{pid}"
@@ -3781,7 +3886,7 @@ def _handle_network_full_setup(job, params):
     # Runs on the gateway bridge IP so VMs can sync time from the gateway.
     # Uses `local stratum 3` — trusts the host clock (reflects libvirt offset
     # when clock_target is set, real time otherwise).
-    chrony_dir = f"/var/lib/troshka/chrony"
+    chrony_dir = _CHRONY_DIR
     os.makedirs(chrony_dir, exist_ok=True)
     chrony_conf = f"{chrony_dir}/{pid}.conf"
     chrony_pid = f"/run/troshka-chronyd-{pid}.pid"
@@ -4682,7 +4787,7 @@ def _handle_network_full_teardown(job, params):
     # Clean up config and lease files
     for pat in [
         f"/etc/dnsmasq.d/troshka-{pid_short}-*.conf",
-        f"/var/lib/troshka/dnsmasq-{pid_short}-*.leases",
+        f"{_DNSMASQ_PREFIX}-{pid_short}-*.leases",
     ]:
         for f in glob.glob(pat):
             try:
@@ -4706,8 +4811,8 @@ def _handle_network_full_teardown(job, params):
             pass
     # Clean up chrony config and drift files
     for chrony_path in [
-        f"/var/lib/troshka/chrony/{pid}.conf",
-        f"/var/lib/troshka/chrony/{pid}.drift",
+        f"{_CHRONY_DIR}/{pid}.conf",
+        f"{_CHRONY_DIR}/{pid}.drift",
     ]:
         try:
             os.remove(chrony_path)
@@ -4794,7 +4899,7 @@ def _handle_network_full_teardown(job, params):
         for path in [
             f"/run/troshka-dnsmasq-{vni}.pid",
             f"/etc/dnsmasq.d/troshka-{vni}.conf",
-            f"/var/lib/troshka/dnsmasq-{vni}.leases",
+            f"{_DNSMASQ_PREFIX}-{vni}.leases",
         ]:
             try:
                 os.remove(path)
@@ -4815,12 +4920,12 @@ def _handle_network_full_teardown(job, params):
                 os.remove(pid_file)
             except FileNotFoundError:
                 pass
-        mount_point = f"/var/lib/troshka/pxe/{vni}/mnt"
+        mount_point = f"{_PXE_DIR}/{vni}/mnt"
         try:
             subprocess.run(["umount", mount_point], capture_output=True, timeout=10)
         except (subprocess.TimeoutExpired, OSError):
             pass
-        pxe_dir = f"/var/lib/troshka/pxe/{vni}"
+        pxe_dir = f"{_PXE_DIR}/{vni}"
         if os.path.isdir(pxe_dir):
             import shutil
 
@@ -4857,8 +4962,8 @@ def _handle_mesh_setup(job, params):
     pid = project_id[:8]
     wg_iface = f"wg-{pid}"
 
-    os.makedirs("/var/lib/troshka/mesh", exist_ok=True)
-    conf_path = f"/var/lib/troshka/mesh/{project_id}.conf"
+    os.makedirs(_MESH_DIR, exist_ok=True)
+    conf_path = f"{_MESH_DIR}/{project_id}.conf"
 
     conf_lines = [
         "[Interface]",
@@ -5023,7 +5128,7 @@ def handle_mesh_teardown(handler, params):
 
     pid = project_id[:8]
     wg_iface = f"wg-{pid}"
-    conf_path = f"/var/lib/troshka/mesh/{project_id}.conf"
+    conf_path = f"{_MESH_DIR}/{project_id}.conf"
 
     subprocess.run(["ip", "link", "del", wg_iface], capture_output=True, check=False)
 
@@ -5039,7 +5144,7 @@ _CONF_EXT = ".conf"
 @route("GET", "/mesh/status")
 def handle_mesh_status(handler, params):
     result = {}
-    mesh_dir = "/var/lib/troshka/mesh"
+    mesh_dir = _MESH_DIR
     if not os.path.isdir(mesh_dir):
         handler._send_json(200, {"projects": {}})
         return
@@ -5221,7 +5326,7 @@ def _handle_seed_create_batch(job, params):
         user_data = seed.get("user_data", "")
         network_config = seed.get("network_config", "")
 
-        with _tf.TemporaryDirectory(dir="/var/lib/troshka/tmp") as tmpdir:
+        with _tf.TemporaryDirectory(dir=_TMP_DIR) as tmpdir:
             if meta_data:
                 with open(os.path.join(tmpdir, "meta-data"), "w") as f:
                     f.write(meta_data)
@@ -5466,8 +5571,8 @@ def _handle_gc_discover(job, params):
     # 1. Scan VM dirs for orphan project dirs (local + shared storage)
     for vms_dir in [
         _VMS_DIR,
-        "/var/lib/troshka/shared/vms",
-        "/var/lib/troshka/local/vms",
+        f"{_SHARED_DIR}/vms",
+        f"{_LOCAL_DIR}/vms",
     ]:
         if not os.path.exists(vms_dir):
             continue
@@ -5608,17 +5713,17 @@ def _handle_gc_discover(job, params):
         _job_log(job, f"Failed to list namespaces: {e}")
 
     # 5. Scan cache dirs for staleness (report all items, backend will decide eviction)
-    local = _config.get("local_mount", "/var/lib/troshka/local")
+    local = _config.get("local_mount", _LOCAL_DIR)
     cache_dirs = [
         (f"{local}/cache/patterns", "pattern"),
-        ("/var/lib/troshka/cache/patterns", "pattern"),
-        ("/var/lib/troshka/cache/snapshots", "snapshot"),
-        ("/var/lib/troshka/images", "image"),
-        ("/var/lib/troshka/local/cache/patterns", "pattern"),
-        ("/var/lib/troshka/local/cache/snapshots", "snapshot"),
-        ("/var/lib/troshka/shared/images", "image"),
-        ("/var/lib/troshka/shared/cache/patterns", "pattern"),
-        ("/var/lib/troshka/shared/cache/snapshots", "snapshot"),
+        (f"{_TROSHKA_DIR}/cache/patterns", "pattern"),
+        (f"{_TROSHKA_DIR}/cache/snapshots", "snapshot"),
+        (f"{_TROSHKA_DIR}/images", "image"),
+        (f"{_LOCAL_DIR}/cache/patterns", "pattern"),
+        (f"{_LOCAL_DIR}/cache/snapshots", "snapshot"),
+        (f"{_SHARED_DIR}/images", "image"),
+        (f"{_SHARED_DIR}/cache/patterns", "pattern"),
+        (f"{_SHARED_DIR}/cache/snapshots", "snapshot"),
     ]
     for cache_dir, item_type in cache_dirs:
         if os.path.exists(cache_dir):
@@ -5642,7 +5747,7 @@ def _handle_gc_discover(job, params):
 
     # 6. Clean orphan dnsmasq lease files (stale files from deleted projects)
     known_prefixes = {pid[:8] for pid in known_project_ids}
-    for lf in glob.glob("/var/lib/troshka/dnsmasq-*.leases"):
+    for lf in glob.glob(f"{_DNSMASQ_PREFIX}-*.leases"):
         prefix = os.path.basename(lf).replace("dnsmasq-", "").split("-")[0]
         if prefix not in known_prefixes:
             try:
@@ -5653,7 +5758,7 @@ def _handle_gc_discover(job, params):
 
     # 7. Discover orphaned BMC directories
     orphaned_bmc = []
-    bmc_base = "/var/lib/troshka/bmc"
+    bmc_base = _BMC_DIR
     known_bmc = set(params.get("known_bmc_project_ids", []))
     if os.path.isdir(bmc_base):
         for entry in os.listdir(bmc_base):
@@ -5664,9 +5769,7 @@ def _handle_gc_discover(job, params):
 
     # Scan temp dir — cross-reference against running jobs' _tmpdirs
     stale_temps = []
-    _s3_tmpdir = os.path.join(
-        _config.get("local_mount", "/var/lib/troshka/local"), "tmp"
-    )
+    _s3_tmpdir = os.path.join(_config.get("local_mount", _LOCAL_DIR), "tmp")
     if os.path.exists(_s3_tmpdir):
         active_tmpdirs = set()
         with _jobs_lock:
@@ -5819,7 +5922,7 @@ def _handle_gc_clean(job, params):
     orphan_bmc_ids = params.get("orphan_bmc_project_ids", [])
     removed_bmc = 0
     for project_id in orphan_bmc_ids:
-        bmc_dir = f"/var/lib/troshka/bmc/{project_id}"
+        bmc_dir = f"{_BMC_DIR}/{project_id}"
         if os.path.isdir(bmc_dir):
             # Kill any running BMC processes
             for fname in os.listdir(bmc_dir):
@@ -5893,9 +5996,7 @@ def _handle_gc_clean(job, params):
 
     # 8. Remove stale temp files (containment check prevents path traversal)
     removed_temps = 0
-    _s3_tmpdir = os.path.join(
-        _config.get("local_mount", "/var/lib/troshka/local"), "tmp"
-    )
+    _s3_tmpdir = os.path.join(_config.get("local_mount", _LOCAL_DIR), "tmp")
     real_tmpdir = os.path.realpath(_s3_tmpdir)
     for path in params.get("stale_temps", []):
         try:
@@ -6017,9 +6118,7 @@ def _s3_upload(
     total_bytes = os.path.getsize(local_path)
     total_gb = round(total_bytes / (1024**3), 1)
     env = os.environ.copy()
-    _s3_tmpdir = os.path.join(
-        _config.get("local_mount", "/var/lib/troshka/local"), "tmp"
-    )
+    _s3_tmpdir = os.path.join(_config.get("local_mount", _LOCAL_DIR), "tmp")
     os.makedirs(_s3_tmpdir, exist_ok=True)
     env["TMPDIR"] = _s3_tmpdir
     if aws_access_key:
@@ -6082,9 +6181,7 @@ def _s3_upload_with_cache(
     """Upload to S3 while reporting combined upload + cache progress."""
     total_gb = round(total_bytes / (1024**3), 1)
     env = os.environ.copy()
-    _s3_tmpdir = os.path.join(
-        _config.get("local_mount", "/var/lib/troshka/local"), "tmp"
-    )
+    _s3_tmpdir = os.path.join(_config.get("local_mount", _LOCAL_DIR), "tmp")
     os.makedirs(_s3_tmpdir, exist_ok=True)
     env["TMPDIR"] = _s3_tmpdir
     if aws_access_key:
@@ -6162,9 +6259,7 @@ def _s3_download(
 ):
     """Download a file from S3 using aws cli with file-size progress monitoring."""
     env = os.environ.copy()
-    _s3_tmpdir = os.path.join(
-        _config.get("local_mount", "/var/lib/troshka/local"), "tmp"
-    )
+    _s3_tmpdir = os.path.join(_config.get("local_mount", _LOCAL_DIR), "tmp")
     os.makedirs(_s3_tmpdir, exist_ok=True)
     env["TMPDIR"] = _s3_tmpdir
     if aws_access_key:
@@ -6229,9 +6324,7 @@ def _handle_snapshot_capture(job, params):
                 disk_path = bfn
     _job_log(job, f"Disk {disk_index} path: {disk_path}")
 
-    _local_tmp = os.path.join(
-        _config.get("local_mount", "/var/lib/troshka/local"), "tmp"
-    )
+    _local_tmp = os.path.join(_config.get("local_mount", _LOCAL_DIR), "tmp")
     os.makedirs(_local_tmp, exist_ok=True)
     try:
         with _tf.TemporaryDirectory(dir=_local_tmp) as tmpdir:
@@ -6532,9 +6625,7 @@ def _handle_pattern_capture_direct(job, params):
 
             import tempfile as _tf
 
-            _local_tmp = os.path.join(
-                _config.get("local_mount", "/var/lib/troshka/local"), "tmp"
-            )
+            _local_tmp = os.path.join(_config.get("local_mount", _LOCAL_DIR), "tmp")
             os.makedirs(_local_tmp, exist_ok=True)
             with _tf.TemporaryDirectory(dir=_local_tmp) as tmpdir:
                 job.setdefault("_tmpdirs", []).append(tmpdir)
@@ -6907,7 +6998,7 @@ def _handle_resize_storage(job, params):
     seconds to reflect the new size.  Poll until it grows (or 60s timeout),
     then run xfs_growfs.
     """
-    mount = "/var/lib/troshka"
+    mount = _TROSHKA_DIR
     # Find the block device backing the mount
     dev = None
     with open("/proc/mounts") as f:
@@ -7436,9 +7527,7 @@ def _check_and_restart_dnsmasq():
                 try:
                     os.remove(pidfile)
                     os.remove(conf_path)
-                    for lf in glob.glob(
-                        f"/var/lib/troshka/dnsmasq-{project_prefix}-*.leases"
-                    ):
+                    for lf in glob.glob(f"{_DNSMASQ_PREFIX}-{project_prefix}-*.leases"):
                         os.remove(lf)
                     logger.info(
                         "Cleaned orphan dnsmasq files for deleted project %s",
@@ -7557,91 +7646,100 @@ _REQUIRED_SERVICES = [
 _watchdog_http_failures = 0
 
 
+def _watchdog_check_http():
+    """Self-health check: verify our HTTP server is responsive."""
+    global _watchdog_http_failures
+    try:
+        import socket as _sock
+
+        s = _sock.create_connection(("127.0.0.1", _config["port"]), timeout=5)
+        s.close()
+        _watchdog_http_failures = 0
+    except Exception:
+        _watchdog_http_failures += 1
+        logger.warning(
+            "watchdog: HTTP server self-check failed (%d/6)",
+            _watchdog_http_failures,
+        )
+        if _watchdog_http_failures >= 6:
+            logger.error(
+                "watchdog: HTTP server unresponsive for %d checks, forcing restart",
+                _watchdog_http_failures,
+            )
+            os._exit(1)
+
+
+def _watchdog_check_services():
+    """Check systemd services and restart any that are not active."""
+    for service_name, unit, is_socket in _REQUIRED_SERVICES:
+        try:
+            result = subprocess.run(
+                ["systemctl", "is-active", unit],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.stdout.strip() == "active":
+                continue
+            if is_socket:
+                check_svc = subprocess.run(
+                    ["systemctl", "is-active", f"{service_name}.service"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if check_svc.stdout.strip() == "active":
+                    continue
+            logger.warning("watchdog: %s is not active, restarting", unit)
+            subprocess.run(
+                ["systemctl", "start", unit],
+                capture_output=True,
+                timeout=10,
+            )
+        except Exception as e:
+            logger.warning("watchdog: %s check error: %s", service_name, e)
+
+
+def _watchdog_check_nfs():
+    """NFS health check with auto-recovery after sustained staleness."""
+    if _config.get("storage_mode") != "shared":
+        return
+    try:
+        healthy = _check_nfs_health()
+        if not healthy and _nfs_stale_since:
+            stale_secs = int(time.time() - _nfs_stale_since)
+            if stale_secs >= 60:
+                logger.warning(
+                    "watchdog: NFS stale for %ds, attempting recovery",
+                    stale_secs,
+                )
+                if _try_nfs_recovery():
+                    _check_nfs_health()
+    except Exception as e:
+        logger.warning("watchdog: NFS check error: %s", e)
+
+
 def _watchdog_loop():
     """Periodically check dnsmasq instances + system services, restart if dead."""
-    global _watchdog_http_failures
     time.sleep(10)
     while True:
         if _draining:
             time.sleep(30)
             continue
-        # Self-health check: verify our HTTP server is responsive
-        try:
-            import socket as _sock
-
-            s = _sock.create_connection(("127.0.0.1", _config["port"]), timeout=5)
-            s.close()
-            _watchdog_http_failures = 0
-        except Exception:
-            _watchdog_http_failures += 1
-            logger.warning(
-                "watchdog: HTTP server self-check failed (%d/6)",
-                _watchdog_http_failures,
-            )
-            if _watchdog_http_failures >= 6:
-                logger.error(
-                    "watchdog: HTTP server unresponsive for %d checks, forcing restart",
-                    _watchdog_http_failures,
-                )
-                os._exit(1)
-
+        _watchdog_check_http()
         try:
             _check_and_restart_dnsmasq()
         except Exception as e:
             logger.warning("watchdog: dnsmasq check error: %s", e)
-
-        for service_name, unit, is_socket in _REQUIRED_SERVICES:
-            try:
-                result = subprocess.run(
-                    ["systemctl", "is-active", unit],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if result.stdout.strip() == "active":
-                    continue
-                if is_socket:
-                    check_svc = subprocess.run(
-                        ["systemctl", "is-active", f"{service_name}.service"],
-                        capture_output=True,
-                        text=True,
-                        timeout=5,
-                    )
-                    if check_svc.stdout.strip() == "active":
-                        continue
-                logger.warning("watchdog: %s is not active, restarting", unit)
-                subprocess.run(
-                    ["systemctl", "start", unit],
-                    capture_output=True,
-                    timeout=10,
-                )
-            except Exception as e:
-                logger.warning("watchdog: %s check error: %s", service_name, e)
-
+        _watchdog_check_services()
         _cleanup_rate_limit()
-
-        # NFS health check + auto-recovery
-        if _config.get("storage_mode") == "shared":
-            try:
-                healthy = _check_nfs_health()
-                if not healthy and _nfs_stale_since:
-                    stale_secs = int(time.time() - _nfs_stale_since)
-                    if stale_secs >= 60:
-                        logger.warning(
-                            "watchdog: NFS stale for %ds, attempting recovery",
-                            stale_secs,
-                        )
-                        if _try_nfs_recovery():
-                            _check_nfs_health()
-            except Exception as e:
-                logger.warning("watchdog: NFS check error: %s", e)
-
+        _watchdog_check_nfs()
         time.sleep(30)
 
 
 def _restore_bmc_services():
     """Restart BMC services (sushy-emulator, vbmcd) from existing configs on troshkad startup."""
-    bmc_base = "/var/lib/troshka/bmc"
+    bmc_base = _BMC_DIR
     venv_bin = "/opt/troshka/venv/bin"
     if not os.path.isdir(bmc_base):
         return
@@ -7824,7 +7922,7 @@ def _bmc_start_dnsmasq(job, ns, pid, bridge, bmc_cidr, dhcp_hosts):
     net_base = bmc_cidr.rsplit(".", 1)[0]
     dnsmasq_conf = f"/etc/dnsmasq.d/troshka-bmc-{pid}.conf"
     dnsmasq_pid_file = f"/run/troshka-dnsmasq-bmc-{pid}.pid"
-    dnsmasq_lease = f"/var/lib/troshka/dnsmasq-bmc-{pid}.leases"
+    dnsmasq_lease = f"{_DNSMASQ_PREFIX}-bmc-{pid}.leases"
     conf_lines = [
         f"interface={bridge}",
         "bind-interfaces",
@@ -8075,7 +8173,7 @@ def _handle_bmc_setup(job, params):
     ns = f"troshka-{pid}"
     bridge = f"br-bmc-{pid}"
     prefix = bmc_cidr.split("/")[1] if "/" in bmc_cidr else "24"
-    bmc_dir = f"/var/lib/troshka/bmc/{project_id}"
+    bmc_dir = f"{_BMC_DIR}/{project_id}"
     venv_bin = "/opt/troshka/venv/bin"
 
     os.makedirs(bmc_dir, exist_ok=True)
@@ -8299,7 +8397,7 @@ def _handle_bmc_teardown(job, params):
     pid = project_id[:8]
     ns = f"troshka-{pid}"
     bridge = f"br-bmc-{pid}"
-    bmc_dir = f"/var/lib/troshka/bmc/{project_id}"
+    bmc_dir = f"{_BMC_DIR}/{project_id}"
     venv_bin = "/opt/troshka/venv/bin"
 
     killed = 0
@@ -8356,7 +8454,7 @@ def _handle_bmc_teardown(job, params):
     for f_path in [
         f"/etc/dnsmasq.d/troshka-bmc-{pid}.conf",
         dnsmasq_pid_file,
-        f"/var/lib/troshka/dnsmasq-bmc-{pid}.leases",
+        f"{_DNSMASQ_PREFIX}-bmc-{pid}.leases",
     ]:
         try:
             os.remove(f_path)
@@ -8386,7 +8484,7 @@ COMMAND_HANDLERS["bmc/teardown"] = _handle_bmc_teardown
 def _handle_bmc_status(job, params):
     """Check status of BMC processes for a project."""
     project_id = _validate_project_id(params["project_id"])
-    bmc_dir = f"/var/lib/troshka/bmc/{project_id}"
+    bmc_dir = f"{_BMC_DIR}/{project_id}"
 
     result = {"sushy_processes": [], "vbmcd_running": False}
 

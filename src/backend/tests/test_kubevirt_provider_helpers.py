@@ -544,3 +544,196 @@ class TestKubeVirtDriverSimpleMethods:
             provider, "https://api.cluster.example.com:6443"
         )
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _apply_crds — mock ext_api
+# ---------------------------------------------------------------------------
+
+from app.services.providers.kubevirt import _apply_crds
+
+
+class TestApplyCrds:
+    def test_create_succeeds(self, tmp_path):
+        """When create succeeds, no patch is called."""
+        ext_api = MagicMock()
+
+        # Write a minimal CRD YAML for each expected file
+        crds_dir = tmp_path / "crds"
+        crds_dir.mkdir()
+        for name in ("troshkaproject.yaml", "troshkanetwork.yaml", "troshkavm.yaml"):
+            (crds_dir / name).write_text(
+                f"kind: CustomResourceDefinition\nmetadata:\n  name: {name.replace('.yaml', '')}\n"
+            )
+
+        _apply_crds(ext_api, str(tmp_path))
+
+        assert ext_api.create_custom_resource_definition.call_count == 3
+        ext_api.patch_custom_resource_definition.assert_not_called()
+
+    def test_create_409_triggers_patch(self, tmp_path):
+        """When create returns 409, the CRD is patched instead."""
+        from kubernetes.client.exceptions import ApiException
+
+        ext_api = MagicMock()
+        err = ApiException(status=409, reason="Conflict")
+        ext_api.create_custom_resource_definition.side_effect = err
+
+        crds_dir = tmp_path / "crds"
+        crds_dir.mkdir()
+        for name in ("troshkaproject.yaml", "troshkanetwork.yaml", "troshkavm.yaml"):
+            (crds_dir / name).write_text(
+                f"kind: CustomResourceDefinition\nmetadata:\n  name: {name.replace('.yaml', '')}\n"
+            )
+
+        _apply_crds(ext_api, str(tmp_path))
+
+        assert ext_api.create_custom_resource_definition.call_count == 3
+        assert ext_api.patch_custom_resource_definition.call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# _find_virt_launcher — mock K8s API
+# ---------------------------------------------------------------------------
+
+from app.services.providers.kubevirt import _find_virt_launcher
+
+
+class TestFindVirtLauncher:
+    def test_returns_running_pod(self):
+        core_v1 = MagicMock()
+        pod = MagicMock()
+        pod.metadata.name = "virt-launcher-troshka-vm-abcdef12-xyz"
+        pod.status.phase = "Running"
+        result_obj = MagicMock()
+        result_obj.items = [pod]
+        core_v1.list_namespaced_pod.return_value = result_obj
+
+        result = _find_virt_launcher(core_v1, "ns-test", "troshka-vm-abcdef12")
+        assert result is pod
+
+    def test_raises_when_no_pod_found(self):
+        core_v1 = MagicMock()
+        result_obj = MagicMock()
+        result_obj.items = []
+        core_v1.list_namespaced_pod.return_value = result_obj
+
+        import pytest
+
+        with pytest.raises(RuntimeError, match="No running virt-launcher pod"):
+            _find_virt_launcher(core_v1, "ns-test", "troshka-vm-abcdef12")
+
+    def test_skips_non_running_pods(self):
+        core_v1 = MagicMock()
+        pending_pod = MagicMock()
+        pending_pod.metadata.name = "virt-launcher-troshka-vm-abcdef12-xyz"
+        pending_pod.status.phase = "Pending"
+        result_obj = MagicMock()
+        result_obj.items = [pending_pod]
+        core_v1.list_namespaced_pod.return_value = result_obj
+
+        import pytest
+
+        with pytest.raises(RuntimeError, match="No running virt-launcher pod"):
+            _find_virt_launcher(core_v1, "ns-test", "troshka-vm-abcdef12")
+
+
+# ---------------------------------------------------------------------------
+# _poll_guest_exec — mock pod_exec_fn
+# ---------------------------------------------------------------------------
+
+from app.services.providers.kubevirt import _poll_guest_exec
+
+
+class TestPollGuestExec:
+    @patch("time.sleep", return_value=None)
+    def test_returns_result_when_exited(self, _sleep):
+        import base64
+        import json
+
+        stdout_b64 = base64.b64encode(b"hello world").decode()
+        stderr_b64 = base64.b64encode(b"").decode()
+        pod_exec_fn = MagicMock(
+            return_value=json.dumps(
+                {
+                    "return": {
+                        "exited": True,
+                        "exitcode": 0,
+                        "out-data": stdout_b64,
+                        "err-data": stderr_b64,
+                    }
+                }
+            )
+        )
+
+        result = _poll_guest_exec(pod_exec_fn, "domain-1", 42, timeout=10)
+
+        assert result["output"] == "hello world"
+        assert result["error"] == ""
+        assert result["exit_code"] == 0
+        assert result["method"] == "guest-agent"
+
+    @patch("time.time")
+    @patch("time.sleep", return_value=None)
+    def test_raises_on_timeout(self, _sleep, mock_time):
+        import json
+
+        # Simulate time advancing past the deadline
+        mock_time.side_effect = [100.0, 100.0, 111.0]
+        pod_exec_fn = MagicMock(return_value=json.dumps({"return": {"exited": False}}))
+
+        import pytest
+
+        with pytest.raises(RuntimeError, match="guest-exec timed out"):
+            _poll_guest_exec(pod_exec_fn, "domain-1", 42, timeout=10)
+
+
+# ---------------------------------------------------------------------------
+# _vnc_login — mock callables
+# ---------------------------------------------------------------------------
+
+from app.services.providers.kubevirt import _vnc_login
+
+
+class TestVncLogin:
+    @patch("time.sleep", return_value=None)
+    def test_returns_true_when_shell_detected(self, _sleep):
+        send_keys_fn = MagicMock()
+        send_text_fn = MagicMock()
+        screenshot_ocr_fn = MagicMock(return_value="some text\n$ ")
+        detect_state_fn = MagicMock(return_value="shell")
+
+        result = _vnc_login(
+            send_keys_fn,
+            send_text_fn,
+            screenshot_ocr_fn,
+            detect_state_fn,
+            "root",
+            "password123",
+        )
+
+        assert result is True
+        # Should detect shell on first attempt and not send any login text
+        send_text_fn.assert_not_called()
+
+    @patch("time.sleep", return_value=None)
+    def test_returns_false_after_max_attempts(self, _sleep):
+        send_keys_fn = MagicMock()
+        send_text_fn = MagicMock()
+        screenshot_ocr_fn = MagicMock(return_value="")
+        detect_state_fn = MagicMock(return_value="unknown")
+
+        result = _vnc_login(
+            send_keys_fn,
+            send_text_fn,
+            screenshot_ocr_fn,
+            detect_state_fn,
+            "root",
+            "password123",
+        )
+
+        assert result is False
+        # Should have tried 4 times (the loop range)
+        assert screenshot_ocr_fn.call_count == 4
+        # Each unknown state sends KEY_ENTER
+        assert send_keys_fn.call_count == 4
