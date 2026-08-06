@@ -53,6 +53,10 @@ cd /Users/prutledg/troshka && git add src/backend/app/api/file.py
 # Option 3: git status --short to see actual paths, then use those
 ```
 
+## Code Quality
+
+SonarQube enforces a quality gate on every push via GitLab CI. Key rule: **cognitive complexity must stay at or below 15 per function** (rule S3776). When adding logic to an existing function, check if it's already near the limit — extract helpers rather than nesting deeper.
+
 ## Key Patterns
 
 ### Backend Models (SQLAlchemy 2.0+)

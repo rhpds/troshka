@@ -1198,13 +1198,17 @@ def _is_iso_storage_node(snode, _iso_item_ids):
     return lid in _iso_item_ids
 
 
-def _build_disk_output(sn):
+def _build_disk_output(sn, dc=None):
     sd = sn.get("data", {})
     disk_out = {}
     disk_name = sd.get("name", "")
     if disk_name:
         disk_out["name"] = disk_name
     disk_out["size_gb"] = sd.get("size", 50)
+    if dc and dc.get("bus") and dc["bus"] != "virtio":
+        disk_out["bus"] = dc["bus"]
+    if dc and dc.get("rotationRate") is not None:
+        disk_out["rotation_rate"] = dc["rotationRate"]
     if sd.get("libraryItemId"):
         disk_out["library_item_id"] = sd["libraryItemId"]
     if sd.get("libraryItemName"):
@@ -1221,12 +1225,7 @@ def _find_disk_for_controller(dc, storage_ids, storage_nodes, vm_edges, _iso_ite
             if e["source"] == sid and dc["id"] in e.get("targetHandle", ""):
                 if _is_iso_storage_node(sn, _iso_item_ids):
                     break
-                disk_out = _build_disk_output(sn)
-                if dc.get("bus") and dc["bus"] != "virtio":
-                    disk_out["bus"] = dc["bus"]
-                if dc.get("rotationRate") is not None:
-                    disk_out["rotation_rate"] = dc["rotationRate"]
-                return disk_out
+                return _build_disk_output(sn, dc)
     return None
 
 
