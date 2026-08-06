@@ -163,8 +163,9 @@ class TestWaitForSsh:
     @patch("app.services.agent_deployer.time.time")
     @patch("app.services.agent_deployer.subprocess.run")
     def test_timeout(self, mock_run, mock_time, mock_sleep):
-        # Simulate: start=0, first check at 0, second check at 7 (>6 timeout)
-        mock_time.side_effect = [0, 0, 5, 7]
+        # start=0, while-check=0 (enter), elapsed=5, while-check=7 (exit, >6)
+        # Extra values guard against Python version differences in call count
+        mock_time.side_effect = [0, 0, 5, 5, 7, 7, 99, 99]
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="timeout")
         result = wait_for_ssh("10.0.0.1", "KEY", timeout=6)
         assert result is False

@@ -554,7 +554,7 @@ class TestPollAgentHealth:
     def test_agent_never_responds(self, mock_health, mock_sleep, mock_time):
         mock_health.return_value = None
         # time.time() returns values that exceed timeout immediately on second check
-        mock_time.side_effect = [0, 0, 121]
+        mock_time.side_effect = [0, 0, 121, 121, 999, 999]
         host = MagicMock()
         host.id = "host-1234abcd"
         pool = MagicMock()
@@ -570,8 +570,9 @@ class TestPollAgentHealth:
     @patch("app.services.troshkad_client.check_health")
     def test_agent_responds_after_retries(self, mock_health, mock_sleep, mock_time):
         mock_health.side_effect = [None, None, {"status": "ok"}]
-        # Calls: start=0, while-check=1, while-check=4, while-check=7, log-msg=8
-        mock_time.side_effect = [0, 1, 4, 7, 8]
+        # start=0, while-check=1, while-check=4, while-check=7, log-msg=8
+        # Extra values guard against Python version differences in call count
+        mock_time.side_effect = [0, 1, 4, 7, 8, 8, 99, 99]
         host = MagicMock()
         host.id = "host-1234abcd"
         pool = MagicMock()
