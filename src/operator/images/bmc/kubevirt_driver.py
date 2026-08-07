@@ -452,16 +452,15 @@ class KubeVirtDriver:
 
     def _find_nvram_pvc(self, identity):
         """Return the PVC name backing this VM's persistent NVRAM, or None."""
-        vm = self._get_vm(identity)
-        volumes = (
-            vm.get("spec", {}).get("template", {}).get("spec", {}).get("volumes", [])
-        )
-        for v in volumes:
-            pvc = (v.get("persistentVolumeClaim") or {}).get("claimName")
-            if not pvc:
-                pvc = (v.get("dataVolume") or {}).get("name")
-            if pvc and ("efivars" in pvc or "persistent-state" in pvc):
-                return pvc
+        name = self._kv_name(identity)
+        try:
+            pvcs = self.core_api.list_namespaced_persistent_volume_claim(self.namespace)
+            for pvc in pvcs.items:  # type: ignore[union-attr]
+                pvc_name = pvc.metadata.name
+                if "persistent-state" in pvc_name and name in pvc_name:
+                    return pvc_name
+        except Exception:
+            pass
         return None
 
     def _set_boot_next_cdrom(self, identity):
