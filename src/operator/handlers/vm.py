@@ -568,6 +568,11 @@ def _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api):
                         "resources": ["persistentvolumeclaims"],
                         "verbs": ["get", "list"],
                     },
+                    {
+                        "apiGroups": [""],
+                        "resources": ["pods"],
+                        "verbs": ["create", "get", "list", "delete"],
+                    },
                 ],
             },
         )
