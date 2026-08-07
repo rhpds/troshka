@@ -534,6 +534,7 @@ class KubeVirtDriver:
             "metadata": {"name": pod_name, "namespace": self.namespace},
             "spec": {
                 "restartPolicy": "Never",
+                "serviceAccountName": "troshka-bmc",
                 "containers": [
                     {
                         "name": "bootnext",
@@ -541,10 +542,8 @@ class KubeVirtDriver:
                         "command": ["python3", "-c", script],
                         "volumeMounts": [{"name": "nvram", "mountPath": "/mnt/nvram"}],
                         "securityContext": {
-                            "runAsUser": 0,
                             "allowPrivilegeEscalation": False,
                             "capabilities": {"drop": ["ALL"]},
-                            "seccompProfile": {"type": "RuntimeDefault"},
                         },
                     }
                 ],
