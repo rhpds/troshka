@@ -540,6 +540,12 @@ class KubeVirtDriver:
                         "image": bmc_image,
                         "command": ["python3", "-c", script],
                         "volumeMounts": [{"name": "nvram", "mountPath": "/mnt/nvram"}],
+                        "securityContext": {
+                            "runAsNonRoot": True,
+                            "allowPrivilegeEscalation": False,
+                            "capabilities": {"drop": ["ALL"]},
+                            "seccompProfile": {"type": "RuntimeDefault"},
+                        },
                     }
                 ],
                 "volumes": [
