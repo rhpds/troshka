@@ -541,7 +541,7 @@ class KubeVirtDriver:
                         "command": ["python3", "-c", script],
                         "volumeMounts": [{"name": "nvram", "mountPath": "/mnt/nvram"}],
                         "securityContext": {
-                            "runAsNonRoot": True,
+                            "runAsUser": 0,
                             "allowPrivilegeEscalation": False,
                             "capabilities": {"drop": ["ALL"]},
                             "seccompProfile": {"type": "RuntimeDefault"},
