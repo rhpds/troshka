@@ -480,6 +480,19 @@ class KubeVirtDriver:
             return
 
         name = self._kv_name(identity)
+
+        # Wait for VMI to fully terminate so the NVRAM PVC is released.
+        # eject_image() already deleted the VMI but the virt-launcher pod
+        # takes time to stop and release the RWO PVC.
+        deadline = time.monotonic() + _NVRAM_POLL_TIMEOUT
+        while time.monotonic() < deadline:
+            if not self._get_vmi(identity):
+                # Also wait a few seconds for PVC detach to propagate
+                time.sleep(5)
+                break
+            print(f"[BMC] Waiting for VMI {name} to terminate before BootNext...")
+            time.sleep(_NVRAM_POLL_INTERVAL)
+
         pod_name = f"bootnext-{name}"[:63]
         print(f"[BMC] Creating BootNext pod {pod_name} with NVRAM PVC {nvram_pvc}")
         bmc_image = os.environ.get(
