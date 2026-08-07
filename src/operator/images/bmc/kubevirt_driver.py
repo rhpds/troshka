@@ -452,7 +452,7 @@ class KubeVirtDriver:
             pvc = (v.get("persistentVolumeClaim") or {}).get("claimName")
             if not pvc:
                 pvc = (v.get("dataVolume") or {}).get("name")
-            if pvc and "efivars" in pvc:
+            if pvc and ("efivars" in pvc or "persistent-state" in pvc):
                 return pvc
         return None
 
