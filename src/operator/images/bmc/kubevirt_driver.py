@@ -20,6 +20,8 @@ _VMEDIA_DV_SUFFIX = "-vmedia-cd"
 _VMEDIA_DV_SIZE = "5Gi"
 _VMEDIA_POLL_INTERVAL = 5
 _VMEDIA_POLL_TIMEOUT = 300
+_WIPE_POLL_INTERVAL = 2
+_WIPE_TIMEOUT = 60
 
 
 class KubeVirtDriver:
@@ -447,6 +449,99 @@ class KubeVirtDriver:
         t.start()
         return event, result
 
+    def _wipe_disk_boot_sectors(self, identity):
+        """Wipe first 1MB of each root disk so UEFI falls through to CDROM.
+
+        Mimics a bare-metal reinstall where disks are wiped before booting
+        from ISO.  Uses a temporary Pod per PVC with a python one-liner
+        (available in the BMC image) to overwrite the boot sector.
+        """
+        name = self._kv_name(identity)
+        vm = self._get_vm(identity)
+        spec = vm.get("spec", {}).get("template", {}).get("spec", {})
+        volumes = spec.get("volumes", [])
+        disks = spec.get("domain", {}).get("devices", {}).get("disks", [])
+
+        cdrom_vol_names = {d["name"] for d in disks if "cdrom" in d}
+        disk_vol_names = [
+            d["name"] for d in disks if "disk" in d and d["name"] not in cdrom_vol_names
+        ]
+
+        vol_to_pvc = {}
+        for v in volumes:
+            pvc = (v.get("persistentVolumeClaim") or {}).get("claimName")
+            if not pvc:
+                pvc = (v.get("dataVolume") or {}).get("name")
+            if pvc and v["name"] in disk_vol_names:
+                vol_to_pvc[v["name"]] = pvc
+
+        if not vol_to_pvc:
+            return
+
+        wiper_image = os.environ.get(
+            "SUSHY_WIPER_IMAGE", "registry.access.redhat.com/ubi9/ubi-micro:latest"
+        )
+        wipe_cmd = [
+            "python3",
+            "-c",
+            (
+                "import pathlib, os\n"
+                "p = pathlib.Path('/mnt/disk')\n"
+                "targets = [p / 'disk.img'] if (p / 'disk.img').exists() else list(p.iterdir())\n"
+                "for t in targets:\n"
+                "  if t.is_file():\n"
+                "    f = open(t, 'r+b'); f.write(b'\\x00' * 1048576); f.close()\n"
+            ),
+        ]
+
+        created_pods = []
+        for vol_name, pvc_name in vol_to_pvc.items():
+            pod_name = f"wipe-{name}-{vol_name}"[:63]
+            pod_body = {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": {"name": pod_name, "namespace": self.namespace},
+                "spec": {
+                    "restartPolicy": "Never",
+                    "containers": [
+                        {
+                            "name": "wipe",
+                            "image": wiper_image,
+                            "command": wipe_cmd,
+                            "volumeMounts": [
+                                {"name": "disk", "mountPath": "/mnt/disk"}
+                            ],
+                        }
+                    ],
+                    "volumes": [
+                        {
+                            "name": "disk",
+                            "persistentVolumeClaim": {"claimName": pvc_name},
+                        }
+                    ],
+                },
+            }
+            try:
+                self.core_api.create_namespaced_pod(self.namespace, pod_body)
+                created_pods.append(pod_name)
+            except Exception:
+                pass
+
+        for pod_name in created_pods:
+            deadline = time.monotonic() + _WIPE_TIMEOUT
+            while time.monotonic() < deadline:
+                try:
+                    pod = self.core_api.read_namespaced_pod(pod_name, self.namespace)
+                    if pod.status.phase in ("Succeeded", "Failed"):  # type: ignore[union-attr]
+                        break
+                except Exception:
+                    break
+                time.sleep(_WIPE_POLL_INTERVAL)
+            try:
+                self.core_api.delete_namespaced_pod(pod_name, self.namespace)
+            except Exception:
+                pass
+
     def insert_image(self, identity, image_url, proxy_base_url):
         """Create CDI DataVolume, attach CDROM to VM, return immediately."""
         name = self._kv_name(identity)
@@ -454,6 +549,8 @@ class KubeVirtDriver:
 
         self.eject_image(identity)
         self._cleanup_stale_vmedia(identity, dv_name)
+
+        self._wipe_disk_boot_sectors(identity)
 
         proxy_url = f"{proxy_base_url}/vmedia/download/{identity}"
 
