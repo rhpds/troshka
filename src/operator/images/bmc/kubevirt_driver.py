@@ -145,6 +145,10 @@ class KubeVirtDriver:
             self._delete_vmi(identity)
 
     def get_boot_device(self, identity):
+        name = self._kv_name(identity)
+        override = self._boot_device_override.get(name)
+        if override:
+            return override
         devices = self._get_vm_devices(identity)
         disks = devices.get("disks", [])
         interfaces = devices.get("interfaces", [])
@@ -161,6 +165,7 @@ class KubeVirtDriver:
         return boot_items[0][1] if boot_items else "Hdd"
 
     _boot_once_overrides = {}
+    _boot_device_override = {}
 
     @staticmethod
     def _strip_boot_orders(disks, interfaces):
@@ -198,8 +203,8 @@ class KubeVirtDriver:
             order = assign(patch_ifaces, lambda _: True, 1)
             assign(patch_disks, lambda d: "disk" in d or "cdrom" in d, order)
         elif target_type == "cdrom":
-            order = assign(patch_disks, lambda d: "cdrom" in d, 1)
-            assign(patch_disks, lambda d: "disk" in d, order)
+            order = assign(patch_disks, lambda d: "disk" in d, 1)
+            assign(patch_disks, lambda d: "cdrom" in d, order)
         else:
             assign(patch_disks, lambda d: "disk" in d, 1)
 
@@ -224,6 +229,8 @@ class KubeVirtDriver:
             }
         else:
             self._boot_once_overrides.pop(name, None)
+
+        self._boot_device_override[name] = device
 
         target_type = self._DEVICE_MAP.get(device, "disk")
         patch_disks, patch_ifaces = self._strip_boot_orders(disks, interfaces)
@@ -253,6 +260,7 @@ class KubeVirtDriver:
 
     def revert_boot_once(self, identity):
         name = self._kv_name(identity)
+        self._boot_device_override.pop(name, None)
         saved = self._boot_once_overrides.pop(name, None)
         if saved is None:
             return
@@ -645,6 +653,7 @@ class KubeVirtDriver:
         """
         self._vmedia_state.pop(identity, None)
         name = self._kv_name(identity)
+        self._boot_device_override.pop(name, None)
         dv_name = f"{name}{_VMEDIA_DV_SUFFIX}"
         removed = False
 
