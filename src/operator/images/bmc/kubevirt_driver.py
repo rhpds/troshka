@@ -458,9 +458,11 @@ class KubeVirtDriver:
             for pvc in pvcs.items:  # type: ignore[union-attr]
                 pvc_name = pvc.metadata.name
                 if "persistent-state" in pvc_name and name in pvc_name:
+                    print(f"[BMC] Found NVRAM PVC: {pvc_name} for {name}")
                     return pvc_name
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[BMC] Error listing PVCs for NVRAM: {e}")
+        print(f"[BMC] No NVRAM PVC found for {name}")
         return None
 
     def _set_boot_next_cdrom(self, identity):
@@ -474,10 +476,12 @@ class KubeVirtDriver:
         """
         nvram_pvc = self._find_nvram_pvc(identity)
         if not nvram_pvc:
+            print(f"[BMC] Skipping BootNext — no persistent NVRAM for {identity}")
             return
 
         name = self._kv_name(identity)
         pod_name = f"bootnext-{name}"[:63]
+        print(f"[BMC] Creating BootNext pod {pod_name} with NVRAM PVC {nvram_pvc}")
         bmc_image = os.environ.get(
             "SUSHY_BMC_IMAGE",
             "quay.io/redhat-gpte/troshka-bmc:production",
@@ -536,16 +540,24 @@ class KubeVirtDriver:
 
         try:
             self.core_api.create_namespaced_pod(self.namespace, pod_body)
-        except Exception:
+            print(f"[BMC] BootNext pod {pod_name} created")
+        except Exception as e:
+            print(f"[BMC] Failed to create BootNext pod {pod_name}: {e}")
             return
 
         deadline = time.monotonic() + _NVRAM_POLL_TIMEOUT
         while time.monotonic() < deadline:
             try:
                 pod = self.core_api.read_namespaced_pod(pod_name, self.namespace)
-                if pod.status.phase in ("Succeeded", "Failed"):  # type: ignore[union-attr]
+                phase = pod.status.phase  # type: ignore[union-attr]
+                if phase == "Succeeded":
+                    print(f"[BMC] BootNext pod {pod_name} succeeded")
                     break
-            except Exception:
+                if phase == "Failed":
+                    print(f"[BMC] BootNext pod {pod_name} failed")
+                    break
+            except Exception as e:
+                print(f"[BMC] Error polling BootNext pod {pod_name}: {e}")
                 break
             time.sleep(_NVRAM_POLL_INTERVAL)
 
@@ -562,6 +574,7 @@ class KubeVirtDriver:
         self.eject_image(identity)
         self._cleanup_stale_vmedia(identity, dv_name)
 
+        print(f"[BMC] InsertVirtualMedia for {name}: {image_url}")
         self._set_boot_next_cdrom(identity)
 
         proxy_url = f"{proxy_base_url}/vmedia/download/{identity}"
