@@ -20,8 +20,9 @@ _VMEDIA_DV_SUFFIX = "-vmedia-cd"
 _VMEDIA_DV_SIZE = "5Gi"
 _VMEDIA_POLL_INTERVAL = 5
 _VMEDIA_POLL_TIMEOUT = 300
-_WIPE_POLL_INTERVAL = 2
-_WIPE_TIMEOUT = 60
+_NVRAM_POLL_INTERVAL = 2
+_NVRAM_POLL_TIMEOUT = 60
+_BOOT_NEXT_INDEX = 0x00FF
 
 
 class KubeVirtDriver:
@@ -144,10 +145,6 @@ class KubeVirtDriver:
             self._delete_vmi(identity)
 
     def get_boot_device(self, identity):
-        name = self._kv_name(identity)
-        override = self._boot_device_override.get(name)
-        if override:
-            return override
         devices = self._get_vm_devices(identity)
         disks = devices.get("disks", [])
         interfaces = devices.get("interfaces", [])
@@ -164,7 +161,6 @@ class KubeVirtDriver:
         return boot_items[0][1] if boot_items else "Hdd"
 
     _boot_once_overrides = {}
-    _boot_device_override = {}
 
     @staticmethod
     def _strip_boot_orders(disks, interfaces):
@@ -202,8 +198,8 @@ class KubeVirtDriver:
             order = assign(patch_ifaces, lambda _: True, 1)
             assign(patch_disks, lambda d: "disk" in d or "cdrom" in d, order)
         elif target_type == "cdrom":
-            order = assign(patch_disks, lambda d: "disk" in d, 1)
-            assign(patch_disks, lambda d: "cdrom" in d, order)
+            order = assign(patch_disks, lambda d: "cdrom" in d, 1)
+            assign(patch_disks, lambda d: "disk" in d, order)
         else:
             assign(patch_disks, lambda d: "disk" in d, 1)
 
@@ -228,8 +224,6 @@ class KubeVirtDriver:
             }
         else:
             self._boot_once_overrides.pop(name, None)
-
-        self._boot_device_override[name] = device
 
         target_type = self._DEVICE_MAP.get(device, "disk")
         patch_disks, patch_ifaces = self._strip_boot_orders(disks, interfaces)
@@ -259,7 +253,6 @@ class KubeVirtDriver:
 
     def revert_boot_once(self, identity):
         name = self._kv_name(identity)
-        self._boot_device_override.pop(name, None)
         saved = self._boot_once_overrides.pop(name, None)
         if saved is None:
             return
@@ -449,98 +442,110 @@ class KubeVirtDriver:
         t.start()
         return event, result
 
-    def _wipe_disk_boot_sectors(self, identity):
-        """Wipe first 1MB of each root disk so UEFI falls through to CDROM.
-
-        Mimics a bare-metal reinstall where disks are wiped before booting
-        from ISO.  Uses a temporary Pod per PVC with a python one-liner
-        (available in the BMC image) to overwrite the boot sector.
-        """
-        name = self._kv_name(identity)
+    def _find_nvram_pvc(self, identity):
+        """Return the PVC name backing this VM's persistent NVRAM, or None."""
         vm = self._get_vm(identity)
-        spec = vm.get("spec", {}).get("template", {}).get("spec", {})
-        volumes = spec.get("volumes", [])
-        disks = spec.get("domain", {}).get("devices", {}).get("disks", [])
-
-        cdrom_vol_names = {d["name"] for d in disks if "cdrom" in d}
-        disk_vol_names = [
-            d["name"] for d in disks if "disk" in d and d["name"] not in cdrom_vol_names
-        ]
-
-        vol_to_pvc = {}
+        volumes = (
+            vm.get("spec", {}).get("template", {}).get("spec", {}).get("volumes", [])
+        )
         for v in volumes:
             pvc = (v.get("persistentVolumeClaim") or {}).get("claimName")
             if not pvc:
                 pvc = (v.get("dataVolume") or {}).get("name")
-            if pvc and v["name"] in disk_vol_names:
-                vol_to_pvc[v["name"]] = pvc
+            if pvc and "efivars" in pvc:
+                return pvc
+        return None
 
-        if not vol_to_pvc:
+    def _set_boot_next_cdrom(self, identity):
+        """Set UEFI BootNext to CDROM in the VM's persistent NVRAM.
+
+        Uses a temporary Pod that mounts the NVRAM PVC and runs
+        virt-firmware to write the BootNext variable.  This gives
+        real UEFI 'boot once' semantics: OVMF reads BootNext on
+        the next start, boots from CDROM, clears BootNext, and
+        subsequent reboots use the normal BootOrder (disk first).
+        """
+        nvram_pvc = self._find_nvram_pvc(identity)
+        if not nvram_pvc:
             return
 
-        wiper_image = os.environ.get(
-            "SUSHY_WIPER_IMAGE", "registry.access.redhat.com/ubi9/ubi-micro:latest"
+        name = self._kv_name(identity)
+        pod_name = f"bootnext-{name}"[:63]
+        bmc_image = os.environ.get(
+            "SUSHY_BMC_IMAGE",
+            "quay.io/redhat-gpte/troshka-bmc:production",
         )
-        wipe_cmd = [
-            "python3",
-            "-c",
-            (
-                "import pathlib, os\n"
-                "p = pathlib.Path('/mnt/disk')\n"
-                "targets = [p / 'disk.img'] if (p / 'disk.img').exists() else list(p.iterdir())\n"
-                "for t in targets:\n"
-                "  if t.is_file():\n"
-                "    f = open(t, 'r+b'); f.write(b'\\x00' * 1048576); f.close()\n"
-            ),
-        ]
 
-        created_pods = []
-        for vol_name, pvc_name in vol_to_pvc.items():
-            pod_name = f"wipe-{name}-{vol_name}"[:63]
-            pod_body = {
-                "apiVersion": "v1",
-                "kind": "Pod",
-                "metadata": {"name": pod_name, "namespace": self.namespace},
-                "spec": {
-                    "restartPolicy": "Never",
-                    "containers": [
-                        {
-                            "name": "wipe",
-                            "image": wiper_image,
-                            "command": wipe_cmd,
-                            "volumeMounts": [
-                                {"name": "disk", "mountPath": "/mnt/disk"}
-                            ],
-                        }
-                    ],
-                    "volumes": [
-                        {
-                            "name": "disk",
-                            "persistentVolumeClaim": {"claimName": pvc_name},
-                        }
-                    ],
-                },
-            }
+        script = (
+            "import sys, struct, glob\n"
+            "from virt.firmware.varstore.edk2 import Edk2VarStore\n"
+            "paths = glob.glob('/mnt/nvram/*VARS*') or glob.glob('/mnt/nvram/disk.img')\n"
+            "if not paths:\n"
+            "    print('no NVRAM file found'); sys.exit(0)\n"
+            "nvram = paths[0]\n"
+            "store = Edk2VarStore()\n"
+            "store.readfile(nvram)\n"
+            "varlist = store.get_varlist()\n"
+            "# Find a CDROM boot entry, or pick the highest Boot#### index\n"
+            "cd_idx = None\n"
+            "for key in varlist:\n"
+            "    if key.startswith('Boot') and key[4:].isalnum() and key != 'BootOrder' and key != 'BootNext' and key != 'BootCurrent' and key != 'BootOptionSupport':\n"
+            "        var = varlist[key]\n"
+            "        if var.data and b'CDROM' in var.data or b'CD-ROM' in var.data or b'DVD' in var.data or b'SATA' in var.data:\n"
+            "            cd_idx = int(key[4:], 16)\n"
+            "            break\n"
+            "if cd_idx is None:\n"
+            "    # Create a BootNext entry pointing to the SATA CDROM\n"
+            f"    cd_idx = {_BOOT_NEXT_INDEX}\n"
+            "    varlist.set_boot_entry(cd_idx, 'Virtual CD', 'PciRoot(0x0)/Pci(0x1f,0x2)/Sata(0,0,0)')\n"
+            "    varlist.append_boot_order(cd_idx)\n"
+            "varlist.set_boot_next(cd_idx)\n"
+            "store.write_varstore(nvram)\n"
+            "print(f'BootNext set to 0x{cd_idx:04X}')\n"
+        )
+
+        pod_body = {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": pod_name, "namespace": self.namespace},
+            "spec": {
+                "restartPolicy": "Never",
+                "containers": [
+                    {
+                        "name": "bootnext",
+                        "image": bmc_image,
+                        "command": ["python3", "-c", script],
+                        "volumeMounts": [{"name": "nvram", "mountPath": "/mnt/nvram"}],
+                    }
+                ],
+                "volumes": [
+                    {
+                        "name": "nvram",
+                        "persistentVolumeClaim": {"claimName": nvram_pvc},
+                    }
+                ],
+            },
+        }
+
+        try:
+            self.core_api.create_namespaced_pod(self.namespace, pod_body)
+        except Exception:
+            return
+
+        deadline = time.monotonic() + _NVRAM_POLL_TIMEOUT
+        while time.monotonic() < deadline:
             try:
-                self.core_api.create_namespaced_pod(self.namespace, pod_body)
-                created_pods.append(pod_name)
-            except Exception:
-                pass
-
-        for pod_name in created_pods:
-            deadline = time.monotonic() + _WIPE_TIMEOUT
-            while time.monotonic() < deadline:
-                try:
-                    pod = self.core_api.read_namespaced_pod(pod_name, self.namespace)
-                    if pod.status.phase in ("Succeeded", "Failed"):  # type: ignore[union-attr]
-                        break
-                except Exception:
+                pod = self.core_api.read_namespaced_pod(pod_name, self.namespace)
+                if pod.status.phase in ("Succeeded", "Failed"):  # type: ignore[union-attr]
                     break
-                time.sleep(_WIPE_POLL_INTERVAL)
-            try:
-                self.core_api.delete_namespaced_pod(pod_name, self.namespace)
             except Exception:
-                pass
+                break
+            time.sleep(_NVRAM_POLL_INTERVAL)
+
+        try:
+            self.core_api.delete_namespaced_pod(pod_name, self.namespace)
+        except Exception:
+            pass
 
     def insert_image(self, identity, image_url, proxy_base_url):
         """Create CDI DataVolume, attach CDROM to VM, return immediately."""
@@ -550,7 +555,7 @@ class KubeVirtDriver:
         self.eject_image(identity)
         self._cleanup_stale_vmedia(identity, dv_name)
 
-        self._wipe_disk_boot_sectors(identity)
+        self._set_boot_next_cdrom(identity)
 
         proxy_url = f"{proxy_base_url}/vmedia/download/{identity}"
 
@@ -640,7 +645,6 @@ class KubeVirtDriver:
         """
         self._vmedia_state.pop(identity, None)
         name = self._kv_name(identity)
-        self._boot_device_override.pop(name, None)
         dv_name = f"{name}{_VMEDIA_DV_SUFFIX}"
         removed = False
 

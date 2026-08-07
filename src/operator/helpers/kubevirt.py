@@ -28,9 +28,13 @@ def _apply_firmware_settings(domain, spec):
     """Apply firmware settings (BIOS/UEFI/SecureBoot) to domain."""
     firmware_type = spec.get("firmware", "bios")
     if firmware_type == "uefi":
-        domain.setdefault("firmware", {})["bootloader"] = {"efi": {"secureBoot": False}}
+        domain.setdefault("firmware", {})["bootloader"] = {
+            "efi": {"secureBoot": False, "persistent": True}
+        }
     elif firmware_type == "uefi-secure":
-        domain.setdefault("firmware", {})["bootloader"] = {"efi": {"secureBoot": True}}
+        domain.setdefault("firmware", {})["bootloader"] = {
+            "efi": {"secureBoot": True, "persistent": True}
+        }
         domain.setdefault("features", {})["smm"] = {"enabled": True}
 
 
