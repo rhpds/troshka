@@ -1302,13 +1302,11 @@ def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
     disk_path = f"/var/run/kubevirt-private/vmi-disks/{vol_name}/disk.img"
 
     custom_api, _, _ = _get_k8s_clients_for_kubevirt(provider)
-    was_running = True
     pods = core_api.list_namespaced_pod(
         namespace=namespace,
         label_selector=f"vm.kubevirt.io/name={kv_name}",
     )
     if not pods.items:  # type: ignore[union-attr]
-        was_running = False
         custom_api.patch_namespaced_custom_object(
             group=_KUBEVIRT_API,
             version="v1",
@@ -1356,50 +1354,27 @@ def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Disk wipe failed: {e}")
 
-    if restart:
-        try:
-            custom_api.delete_namespaced_custom_object(
-                group=_KUBEVIRT_API,
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachineinstances",
-                name=kv_name,
-            )
-        except Exception:
-            pass
-        try:
-            custom_api.patch_namespaced_custom_object(
-                group=_KUBEVIRT_API,
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachines",
-                name=kv_name,
-                body={"spec": {"running": True}},
-            )
-        except Exception as e:
-            logger.warning("Failed to restart VM after wipe: %s", e)
-    elif not was_running:
-        try:
-            custom_api.delete_namespaced_custom_object(
-                group=_KUBEVIRT_API,
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachineinstances",
-                name=kv_name,
-            )
-        except Exception:
-            pass
-        try:
-            custom_api.patch_namespaced_custom_object(
-                group=_KUBEVIRT_API,
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachines",
-                name=kv_name,
-                body={"spec": {"running": False}},
-            )
-        except Exception as e:
-            logger.warning("Failed to stop VM after wipe: %s", e)
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group=_KUBEVIRT_API,
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachineinstances",
+            name=kv_name,
+        )
+    except Exception:
+        pass
+    try:
+        custom_api.patch_namespaced_custom_object(
+            group=_KUBEVIRT_API,
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+            name=kv_name,
+            body={"spec": {"running": restart}},
+        )
+    except Exception as e:
+        logger.warning("Failed to set VM state after wipe: %s", e)
 
     return {"status": "wiped"}
 
