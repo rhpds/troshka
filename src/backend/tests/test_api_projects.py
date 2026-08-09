@@ -1065,7 +1065,7 @@ def test_wipe_disk_no_host():
     assert resp.status_code == 503
 
 
-def test_wipe_disk_kubevirt_returns_501():
+def test_wipe_disk_kubevirt_vm_not_found():
     db = TestSession()
     host = Host(
         id=str(uuid.uuid4()),
@@ -1075,11 +1075,17 @@ def test_wipe_disk_kubevirt_returns_501():
     )
     db.add(host)
     db.commit()
-    pid = _create_project(name="wipe-disk-kv", state="active", host_id=host.id)
+    topo = {"nodes": [], "edges": []}
+    pid = _create_project(
+        name="wipe-disk-kv",
+        state="active",
+        host_id=host.id,
+        deployed_topology=topo,
+    )
     fake_vm = str(uuid.uuid4())
     fake_disk = str(uuid.uuid4())
     resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/disks/{fake_disk}/wipe")
-    assert resp.status_code == 501
+    assert resp.status_code == 404
     db.close()
 
 

@@ -1284,6 +1284,71 @@ def stop_project(
     return {"status": "stopping"}
 
 
+def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
+    """Wipe a disk on a KubeVirt VM by exec'ing dd into the virt-launcher."""
+    from kubernetes import stream
+
+    from app.models.provider import Provider
+
+    provider = db.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=503, detail=_HOST_NOT_AVAILABLE)
+
+    _, core_api, _ = _get_k8s_clients_for_kubevirt(provider)
+    namespace = _kubevirt_project_ns(provider, project.id)
+    kv_name = f"troshka-vm-{vm_id[:8]}"
+    vol_name = f"disk-{disk_node_id[:8]}"
+    disk_path = f"/var/run/kubevirt-private/vmi-disks/{vol_name}/disk.img"
+
+    pods = core_api.list_namespaced_pod(
+        namespace=namespace,
+        label_selector=f"kubevirt.io/domain={kv_name}",
+    )
+    if not pods.items:  # type: ignore[union-attr]
+        raise HTTPException(
+            status_code=409, detail="VM is not running — start it before wiping"
+        )
+    pod_name = pods.items[0].metadata.name  # type: ignore[union-attr]
+
+    try:
+        resp = stream.stream(
+            core_api.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            command=[
+                "dd",
+                "if=/dev/zero",
+                f"of={disk_path}",
+                "bs=1M",
+                "count=1",
+                "conv=notrunc",
+            ],
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False,
+        )
+        logger.info("Wiped disk %s on %s: %s", vol_name, kv_name, resp)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Disk wipe failed: {e}")
+
+    if not restart:
+        custom_api, _, _ = _get_k8s_clients_for_kubevirt(provider)
+        try:
+            custom_api.patch_namespaced_custom_object(
+                group=_KUBEVIRT_API,
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=kv_name,
+                body={"spec": {"running": False}},
+            )
+        except Exception as e:
+            logger.warning("Failed to stop VM after wipe: %s", e)
+
+    return {"status": "wiped"}
+
+
 def _force_stop_kubevirt_vms(host, project_id, vms, db):
     """Force-stop all VMs on a KubeVirt cluster."""
     from app.models.provider import Provider
@@ -1818,11 +1883,6 @@ def wipe_disk(
 ):
     project, host = _get_project_and_host(project_id, user, db)
 
-    if host.host_type == "kubevirt-cluster":
-        raise HTTPException(
-            status_code=501, detail="Disk wipe not yet supported on KubeVirt"
-        )
-
     topo = project.deployed_topology or project.topology or {}
     vm_node = next(
         (
@@ -1839,6 +1899,9 @@ def wipe_disk(
     disk = next((d for d in disks if d["node_id"] == disk_node_id), None)
     if not disk:
         raise HTTPException(status_code=404, detail="Disk not found on this VM")
+
+    if host.host_type == "kubevirt-cluster":
+        return _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db)
 
     pool = _get_storage_pool_for_host(host, db)
     disk_path = _disk_path(project.id, vm_id, disk_node_id, disk["format"], pool=pool)
