@@ -1,5 +1,6 @@
 import datetime
 import logging
+import time
 import uuid as uuid_mod
 from typing import Annotated, Any
 
@@ -1300,14 +1301,37 @@ def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
     vol_name = f"disk-{disk_node_id[:8]}"
     disk_path = f"/var/run/kubevirt-private/vmi-disks/{vol_name}/disk.img"
 
+    custom_api, _, _ = _get_k8s_clients_for_kubevirt(provider)
+    was_running = True
     pods = core_api.list_namespaced_pod(
         namespace=namespace,
         label_selector=f"kubevirt.io/domain={kv_name}",
     )
     if not pods.items:  # type: ignore[union-attr]
-        raise HTTPException(
-            status_code=409, detail="VM is not running — start it before wiping"
+        was_running = False
+        custom_api.patch_namespaced_custom_object(
+            group=_KUBEVIRT_API,
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+            name=kv_name,
+            body={"spec": {"running": True}},
         )
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            pods = core_api.list_namespaced_pod(
+                namespace=namespace,
+                label_selector=f"kubevirt.io/domain={kv_name}",
+            )
+            if pods.items:  # type: ignore[union-attr]
+                pod = pods.items[0]  # type: ignore[union-attr]
+                if pod.status.phase == "Running":  # type: ignore[union-attr]
+                    break
+            time.sleep(5)
+        else:
+            raise HTTPException(
+                status_code=409, detail="Timed out waiting for VM to start for wipe"
+            )
     pod_name = pods.items[0].metadata.name  # type: ignore[union-attr]
 
     try:
@@ -1332,8 +1356,7 @@ def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Disk wipe failed: {e}")
 
-    if not restart:
-        custom_api, _, _ = _get_k8s_clients_for_kubevirt(provider)
+    if not was_running and not restart:
         try:
             custom_api.patch_namespaced_custom_object(
                 group=_KUBEVIRT_API,
