@@ -3187,7 +3187,7 @@ export default function PropertiesPanel() {
                     const projectId = useCanvasStore.getState().currentProjectId;
                     const resp = await fetch(`/api/v1/projects/${projectId}/vms/${wipeDiskModal.connVmId}/disks/${wipeDiskModal.diskNodeId}/wipe?restart=${wipeDiskRestart}`, { method: "POST" });
                     if (resp.ok) {
-                      setAlertMsg(`Disk "${wipeDiskModal.diskName}" wiped successfully.`);
+                      setAlertMsg(`Wiping disk "${wipeDiskModal.diskName}" — the VM will stop when done.`);
                     } else {
                       const err = await resp.json().catch(() => ({ detail: "Unknown error" }));
                       setAlertMsg(`Wipe failed: ${err.detail || err.error || resp.statusText}`);
