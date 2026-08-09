@@ -3038,6 +3038,19 @@ def _handle_disk_resize(job, params):
 COMMAND_HANDLERS["disks/resize"] = _handle_disk_resize
 
 
+def _handle_disk_wipe(job, params):
+    """Zero the first 1MB of a disk image (destroys boot sector/GPT)."""
+    path = _validate_path(params["path"])
+    if not os.path.exists(path):
+        return {"error": f"Disk not found: {path}"}
+    with open(path, "r+b") as f:
+        f.write(b"\x00" * 1048576)
+    return {"status": "wiped", "path": path}
+
+
+COMMAND_HANDLERS["disks/wipe"] = _handle_disk_wipe
+
+
 def _handle_seed_create(job, params):
     path = _validate_path(params["path"])
     meta_data = params.get("meta_data", "")

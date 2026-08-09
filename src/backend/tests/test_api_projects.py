@@ -1037,6 +1037,106 @@ def test_forcestop_vm_wrong_state():
 
 
 # ---------------------------------------------------------------------------
+# Disk wipe — POST /projects/{id}/vms/{vm_id}/disks/{disk}/wipe — validation
+# ---------------------------------------------------------------------------
+def test_wipe_disk_project_not_found():
+    fake_id = str(uuid.uuid4())
+    fake_vm = str(uuid.uuid4())
+    fake_disk = str(uuid.uuid4())
+    resp = client.post(
+        f"/api/v1/projects/{fake_id}/vms/{fake_vm}/disks/{fake_disk}/wipe"
+    )
+    assert resp.status_code == 404
+
+
+def test_wipe_disk_wrong_state():
+    pid = _create_project(name="wipe-disk-draft", state="draft")
+    fake_vm = str(uuid.uuid4())
+    fake_disk = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/disks/{fake_disk}/wipe")
+    assert resp.status_code == 409
+
+
+def test_wipe_disk_no_host():
+    pid = _create_project(name="wipe-disk-no-host", state="active")
+    fake_vm = str(uuid.uuid4())
+    fake_disk = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/disks/{fake_disk}/wipe")
+    assert resp.status_code == 503
+
+
+def test_wipe_disk_kubevirt_returns_501():
+    db = TestSession()
+    host = Host(
+        id=str(uuid.uuid4()),
+        ip_address="10.0.0.1",
+        host_type="kubevirt-cluster",
+        state="active",
+    )
+    db.add(host)
+    db.commit()
+    pid = _create_project(name="wipe-disk-kv", state="active", host_id=host.id)
+    fake_vm = str(uuid.uuid4())
+    fake_disk = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/disks/{fake_disk}/wipe")
+    assert resp.status_code == 501
+    db.close()
+
+
+def test_wipe_disk_vm_not_found():
+    db = TestSession()
+    host = Host(
+        id=str(uuid.uuid4()),
+        ip_address="10.0.0.2",
+        private_key="fake-key",
+        state="active",
+    )
+    db.add(host)
+    db.commit()
+    topo = {"nodes": [], "edges": []}
+    pid = _create_project(
+        name="wipe-disk-no-vm",
+        state="active",
+        host_id=host.id,
+        deployed_topology=topo,
+    )
+    fake_vm = str(uuid.uuid4())
+    fake_disk = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/disks/{fake_disk}/wipe")
+    assert resp.status_code == 404
+    db.close()
+
+
+def test_wipe_disk_disk_not_found():
+    db = TestSession()
+    host = Host(
+        id=str(uuid.uuid4()),
+        ip_address="10.0.0.3",
+        private_key="fake-key",
+        state="active",
+    )
+    db.add(host)
+    db.commit()
+    vm_id = "vm-node-1"
+    topo = {
+        "nodes": [
+            {"id": vm_id, "type": "vmNode", "data": {"name": "test-vm"}},
+        ],
+        "edges": [],
+    }
+    pid = _create_project(
+        name="wipe-disk-no-disk",
+        state="active",
+        host_id=host.id,
+        deployed_topology=topo,
+    )
+    fake_disk = str(uuid.uuid4())
+    resp = client.post(f"/api/v1/projects/{pid}/vms/{vm_id}/disks/{fake_disk}/wipe")
+    assert resp.status_code == 404
+    db.close()
+
+
+# ---------------------------------------------------------------------------
 # VM restart — POST /projects/{id}/vms/{vm_id}/restart — validation
 # ---------------------------------------------------------------------------
 def test_restart_vm_project_not_found():

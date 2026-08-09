@@ -176,6 +176,9 @@ export default function PropertiesPanel() {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ boot: true, cloudinit: true, nics: true, disks: true, bmc: true, tags: true });
   const [containerLogs, setContainerLogs] = useState<{ containerId: string; logs: string; containerName: string } | null>(null);
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
+  const [wipeDiskModal, setWipeDiskModal] = useState<{ diskNodeId: string; connVmId: string; vmIsRunning: boolean; diskName: string } | null>(null);
+  const [wipeDiskRestart, setWipeDiskRestart] = useState(true);
+  const [wipeDiskLoading, setWipeDiskLoading] = useState(false);
 
   React.useEffect(() => {
     fetch("/api/v1/auth/ssh-keys")
@@ -2953,6 +2956,25 @@ export default function PropertiesPanel() {
                 </div>
               </div>
             )}
+            {!isIso && diskIsDeployed && (
+              <>
+                <div className="props-divider" />
+                <div className="props-section">
+                  <button
+                    className="props-library-btn"
+                    style={{ color: "#ef4444", borderColor: "#ef4444" }}
+                    onClick={() => {
+                      const vmNode = connVmId ? nodes.find((n) => n.id === connVmId) : null;
+                      const vmIsRunning = vmNode ? (vmNode.data as unknown as VMNodeData).status === "running" : false;
+                      setWipeDiskRestart(vmIsRunning);
+                      setWipeDiskModal({ diskNodeId: node.id, connVmId: connVmId || "", vmIsRunning, diskName: (sd.name || "disk") });
+                    }}
+                  >
+                    Wipe Disk
+                  </button>
+                </div>
+              </>
+            )}
           </>
         );
       })()}
@@ -3127,6 +3149,61 @@ export default function PropertiesPanel() {
           }}
           onClose={() => setShowLibraryPicker(null)}
         />
+      )}
+      {wipeDiskModal && (
+        <div className="start-order-overlay" onClick={() => { if (!wipeDiskLoading) setWipeDiskModal(null); }}>
+          <div className="start-order-modal" style={{ maxWidth: 460 }} onClick={(e) => e.stopPropagation()}>
+            <div className="start-order-header">
+              <span>Wipe Disk</span>
+              <button onClick={() => { if (!wipeDiskLoading) setWipeDiskModal(null); }}>&#x2715;</button>
+            </div>
+            <div className="start-order-body" style={{ padding: 16 }}>
+              <div style={{
+                padding: "8px 12px", marginBottom: 16, borderRadius: 6,
+                background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)",
+                color: "#f87171", fontSize: 13,
+              }}>
+                This will erase the boot sector and partition table on this disk. All data will be lost. The VM will be shut down during the wipe.
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: wipeDiskLoading ? "not-allowed" : "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={wipeDiskRestart}
+                  onChange={(e) => setWipeDiskRestart(e.target.checked)}
+                  disabled={wipeDiskLoading}
+                />
+                Start VM after wipe
+              </label>
+            </div>
+            <div className="start-order-footer">
+              <button className="start-order-btn cancel" onClick={() => { if (!wipeDiskLoading) setWipeDiskModal(null); }} disabled={wipeDiskLoading}>Cancel</button>
+              <button
+                className="start-order-btn save"
+                style={{ background: "rgba(239,68,68,0.15)", borderColor: "#ef4444", color: "#ef4444" }}
+                disabled={wipeDiskLoading}
+                onClick={async () => {
+                  setWipeDiskLoading(true);
+                  try {
+                    const projectId = useCanvasStore.getState().currentProjectId;
+                    const resp = await fetch(`/api/v1/projects/${projectId}/vms/${wipeDiskModal.connVmId}/disks/${wipeDiskModal.diskNodeId}/wipe?restart=${wipeDiskRestart}`, { method: "POST" });
+                    if (resp.ok) {
+                      setAlertMsg(`Disk "${wipeDiskModal.diskName}" wiped successfully.`);
+                    } else {
+                      const err = await resp.json().catch(() => ({ detail: "Unknown error" }));
+                      setAlertMsg(`Wipe failed: ${err.detail || err.error || resp.statusText}`);
+                    }
+                  } catch {
+                    setAlertMsg("Failed to connect to server");
+                  }
+                  setWipeDiskLoading(false);
+                  setWipeDiskModal(null);
+                }}
+              >
+                {wipeDiskLoading ? "Wiping..." : "Wipe"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
     </div>

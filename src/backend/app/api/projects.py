@@ -1804,6 +1804,75 @@ def restart_vm(
         return {"action": "restart", "success": False}
 
 
+@router.post(
+    "/{project_id}/vms/{vm_id}/disks/{disk_node_id}/wipe",
+    responses={403: {}, 404: {}, 409: {}, 501: {}, 503: {}, 507: {}},
+)
+def wipe_disk(
+    project_id: str,
+    vm_id: str,
+    disk_node_id: str,
+    user: CurrentUser,
+    db: DbSession,
+    restart: bool = False,
+):
+    project, host = _get_project_and_host(project_id, user, db)
+
+    if host.host_type == "kubevirt-cluster":
+        raise HTTPException(
+            status_code=501, detail="Disk wipe not yet supported on KubeVirt"
+        )
+
+    topo = project.deployed_topology or project.topology or {}
+    vm_node = next(
+        (
+            n
+            for n in topo.get("nodes", [])
+            if n["id"] == vm_id and n.get("type") == "vmNode"
+        ),
+        None,
+    )
+    if not vm_node:
+        raise HTTPException(status_code=404, detail="VM not found in topology")
+
+    disks = _find_vm_disks(vm_id, topo)
+    disk = next((d for d in disks if d["node_id"] == disk_node_id), None)
+    if not disk:
+        raise HTTPException(status_code=404, detail="Disk not found on this VM")
+
+    pool = _get_storage_pool_for_host(host, db)
+    disk_path = _disk_path(project.id, vm_id, disk_node_id, disk["format"], pool=pool)
+
+    dom = _domain_name(project_id, vm_id)
+    vm_info = troshkad_get_vm_state(host, dom)
+    was_running = vm_info["state"] == "running"
+
+    if was_running:
+        try:
+            job_id = start_job(host, "/vms/stop", {"domain_name": dom})
+            wait_for_job(host, job_id, timeout=120, poll_interval=2)
+        except TroshkadError as e:
+            raise HTTPException(
+                status_code=409, detail=f"Failed to stop VM before wipe: {e}"
+            )
+
+    try:
+        job_id = start_job(host, "/disks/wipe", {"path": disk_path})
+        wait_for_job(host, job_id, timeout=60, poll_interval=2)
+    except TroshkadError as e:
+        logger.exception("Failed to wipe disk %s: %s", sanitize_log(disk_path), e)
+        raise HTTPException(status_code=500, detail=f"Disk wipe failed: {e}")
+
+    if restart or was_running:
+        try:
+            job_id = start_job(host, _VMS_START_PATH, {"domain_name": dom})
+            wait_for_job(host, job_id, timeout=120, poll_interval=2)
+        except TroshkadError as e:
+            logger.warning("VM start after wipe failed: %s", e)
+
+    return {"status": "wiped"}
+
+
 @router.get(
     "/{project_id}/vms/{vm_id}/console",
     responses={403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
