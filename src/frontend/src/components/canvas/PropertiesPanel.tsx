@@ -3209,23 +3209,23 @@ export default function PropertiesPanel() {
                         setWipeDiskModal(null);
                         return;
                       }
-                      let sawRunning = false;
-                      let sawStopped = false;
-                      const wantRestart = wipeDiskRestart;
-                      const poll = setInterval(() => {
-                        const vmNode = useCanvasStore.getState().nodes.find((n) => n.id === wipeDiskModal.connVmId);
-                        const st = vmNode ? (vmNode.data as unknown as VMNodeData).status : "";
-                        if (st === "running") sawRunning = true;
-                        if (sawRunning && (st === "stopped" || st === "")) sawStopped = true;
-                        const done = wantRestart ? (sawStopped && st === "running") : sawStopped;
-                        if (done) {
-                          clearInterval(poll);
-                          setWipeDiskLoading(false);
-                          setWipeDiskModal(null);
-                          setAlertMsg(`Disk "${wipeDiskModal.diskName}" wiped successfully.`);
-                        }
-                      }, 3000);
-                      setTimeout(() => { clearInterval(poll); setWipeDiskLoading(false); setWipeDiskModal(null); }, 180000);
+                      const pollWipe = async () => {
+                        const projectId2 = useCanvasStore.getState().currentProjectId;
+                        try {
+                          const r = await fetch(`/api/v1/projects/${projectId2}/vms/${wipeDiskModal.connVmId}/disks/${wipeDiskModal.diskNodeId}/wipe-status`);
+                          if (r.ok) {
+                            const d = await r.json();
+                            if (d.status === "done" || d.status === "error") {
+                              setWipeDiskLoading(false);
+                              setWipeDiskModal(null);
+                              setAlertMsg(d.status === "done" ? `Disk "${wipeDiskModal.diskName}" wiped successfully.` : `Wipe failed: ${d.detail || "unknown error"}`);
+                              return;
+                            }
+                          }
+                        } catch { /* ignore */ }
+                        setTimeout(pollWipe, 3000);
+                      };
+                      setTimeout(pollWipe, 3000);
                     }}
                   >
                     Wipe

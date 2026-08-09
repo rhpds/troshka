@@ -1285,6 +1285,9 @@ def stop_project(
     return {"status": "stopping"}
 
 
+_wipe_status: dict[str, dict] = {}
+
+
 def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
     """Wipe a disk on a KubeVirt VM by exec'ing dd into the virt-launcher.
 
@@ -1305,6 +1308,9 @@ def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
     kv_name = f"troshka-vm-{vm_id[:8]}"
     vol_name = f"disk-{disk_node_id[:8]}"
     disk_path = f"/var/run/kubevirt-private/vmi-disks/{vol_name}/disk.img"
+
+    wipe_key = f"{project_id}:{vm_id}:{disk_node_id}"
+    _wipe_status[wipe_key] = {"status": "wiping"}
 
     def _do_wipe():
         from kubernetes import client as k8s_client
@@ -1346,6 +1352,10 @@ def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
                     logger.error(
                         "Timed out waiting for VM %s to start for wipe", kv_name
                     )
+                    _wipe_status[wipe_key] = {
+                        "status": "error",
+                        "detail": "VM failed to start",
+                    }
                     return
 
             pod_name = pods.items[0].metadata.name  # type: ignore[union-attr]
@@ -1369,6 +1379,7 @@ def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
             logger.info("Wiped disk %s on %s: %s", vol_name, kv_name, resp)
         except Exception:
             logger.exception("Failed to wipe disk %s on %s", vol_name, kv_name)
+            _wipe_status[wipe_key] = {"status": "error", "detail": "dd failed"}
             return
 
         try:
@@ -1393,6 +1404,7 @@ def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
         except Exception as e:
             logger.warning("Failed to set VM state after wipe: %s", e)
 
+        _wipe_status[wipe_key] = {"status": "done"}
         notify_project(
             project_id,
             {
@@ -1991,6 +2003,21 @@ def wipe_disk(
             logger.warning("VM start after wipe failed: %s", e)
 
     return {"status": "wiped"}
+
+
+@router.get(
+    "/{project_id}/vms/{vm_id}/disks/{disk_node_id}/wipe-status",
+)
+def wipe_disk_status(
+    project_id: str,
+    vm_id: str,
+    disk_node_id: str,
+):
+    key = f"{project_id}:{vm_id}:{disk_node_id}"
+    status = _wipe_status.pop(key, None)
+    if status:
+        return status
+    return {"status": "unknown"}
 
 
 @router.get(
