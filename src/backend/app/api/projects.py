@@ -1383,6 +1383,17 @@ def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
             return
 
         try:
+            custom_api.patch_namespaced_custom_object(
+                group=_KUBEVIRT_API,
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=kv_name,
+                body={"spec": {"running": False}},
+            )
+        except Exception:
+            pass
+        try:
             custom_api.delete_namespaced_custom_object(
                 group=_KUBEVIRT_API,
                 version="v1",
@@ -1392,17 +1403,25 @@ def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
             )
         except Exception:
             pass
-        try:
-            custom_api.patch_namespaced_custom_object(
-                group=_KUBEVIRT_API,
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachines",
-                name=kv_name,
-                body={"spec": {"running": restart}},
-            )
-        except Exception as e:
-            logger.warning("Failed to set VM state after wipe: %s", e)
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            try:
+                core_api.read_namespaced_pod(pod_name, namespace)
+                time.sleep(3)
+            except Exception:
+                break
+        if restart:
+            try:
+                custom_api.patch_namespaced_custom_object(
+                    group=_KUBEVIRT_API,
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachines",
+                    name=kv_name,
+                    body={"spec": {"running": True}},
+                )
+            except Exception as e:
+                logger.warning("Failed to restart VM after wipe: %s", e)
 
         _wipe_status[wipe_key] = {"status": "done"}
         notify_project(
