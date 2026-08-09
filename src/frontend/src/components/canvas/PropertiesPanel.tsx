@@ -3158,49 +3158,74 @@ export default function PropertiesPanel() {
               <button onClick={() => { if (!wipeDiskLoading) setWipeDiskModal(null); }}>&#x2715;</button>
             </div>
             <div className="start-order-body" style={{ padding: 16 }}>
-              <div style={{
-                padding: "8px 12px", marginBottom: 16, borderRadius: 6,
-                background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)",
-                color: "#f87171", fontSize: 13,
-              }}>
-                This will erase the boot sector and partition table on this disk. All data will be lost.
-              </div>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: wipeDiskLoading ? "not-allowed" : "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={wipeDiskRestart}
-                  onChange={(e) => setWipeDiskRestart(e.target.checked)}
-                  disabled={wipeDiskLoading}
-                />
-                Restart VM after wipe
-              </label>
+              {!wipeDiskLoading ? (
+                <>
+                  <div style={{
+                    padding: "8px 12px", marginBottom: 16, borderRadius: 6,
+                    background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)",
+                    color: "#f87171", fontSize: 13,
+                  }}>
+                    This will erase the boot sector and partition table on this disk. All data will be lost.
+                  </div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={wipeDiskRestart}
+                      onChange={(e) => setWipeDiskRestart(e.target.checked)}
+                    />
+                    Restart VM after wipe
+                  </label>
+                </>
+              ) : (
+                <div style={{ textAlign: "center", padding: "20px 0" }}>
+                  <div style={{ fontSize: 14, color: "#ccc", marginBottom: 8 }}>Wiping disk &quot;{wipeDiskModal.diskName}&quot;...</div>
+                  <div style={{ fontSize: 12, color: "#888" }}>Starting VM, wiping boot sector, then stopping.</div>
+                  <div style={{ fontSize: 12, color: "#888", marginTop: 4 }}>This may take up to 2 minutes.</div>
+                </div>
+              )}
             </div>
             <div className="start-order-footer">
-              <button className="start-order-btn cancel" onClick={() => { if (!wipeDiskLoading) setWipeDiskModal(null); }} disabled={wipeDiskLoading}>Cancel</button>
-              <button
-                className="start-order-btn save"
-                style={{ background: "rgba(239,68,68,0.15)", borderColor: "#ef4444", color: "#ef4444" }}
-                disabled={wipeDiskLoading}
-                onClick={async () => {
-                  setWipeDiskLoading(true);
-                  try {
-                    const projectId = useCanvasStore.getState().currentProjectId;
-                    const resp = await fetch(`/api/v1/projects/${projectId}/vms/${wipeDiskModal.connVmId}/disks/${wipeDiskModal.diskNodeId}/wipe?restart=${wipeDiskRestart}`, { method: "POST" });
-                    if (resp.ok) {
-                      setAlertMsg(`Wiping disk "${wipeDiskModal.diskName}" — the VM will stop when done.`);
-                    } else {
-                      const err = await resp.json().catch(() => ({ detail: "Unknown error" }));
-                      setAlertMsg(`Wipe failed: ${err.detail || err.error || resp.statusText}`);
-                    }
-                  } catch {
-                    setAlertMsg("Failed to connect to server");
-                  }
-                  setWipeDiskLoading(false);
-                  setWipeDiskModal(null);
-                }}
-              >
-                {wipeDiskLoading ? "Wiping..." : "Wipe"}
-              </button>
+              {!wipeDiskLoading ? (
+                <>
+                  <button className="start-order-btn cancel" onClick={() => setWipeDiskModal(null)}>Cancel</button>
+                  <button
+                    className="start-order-btn save"
+                    style={{ background: "rgba(239,68,68,0.15)", borderColor: "#ef4444", color: "#ef4444" }}
+                    onClick={async () => {
+                      setWipeDiskLoading(true);
+                      try {
+                        const projectId = useCanvasStore.getState().currentProjectId;
+                        const resp = await fetch(`/api/v1/projects/${projectId}/vms/${wipeDiskModal.connVmId}/disks/${wipeDiskModal.diskNodeId}/wipe?restart=${wipeDiskRestart}`, { method: "POST" });
+                        if (!resp.ok) {
+                          const err = await resp.json().catch(() => ({ detail: "Unknown error" }));
+                          setAlertMsg(`Wipe failed: ${err.detail || err.error || resp.statusText}`);
+                          setWipeDiskLoading(false);
+                          setWipeDiskModal(null);
+                          return;
+                        }
+                      } catch {
+                        setAlertMsg("Failed to connect to server");
+                        setWipeDiskLoading(false);
+                        setWipeDiskModal(null);
+                        return;
+                      }
+                      const poll = setInterval(() => {
+                        const vmNode = useCanvasStore.getState().nodes.find((n) => n.id === wipeDiskModal.connVmId);
+                        const st = vmNode ? (vmNode.data as unknown as VMNodeData).status : "";
+                        if (st === "stopped" || st === "running" || st === "") {
+                          clearInterval(poll);
+                          setWipeDiskLoading(false);
+                          setWipeDiskModal(null);
+                          setAlertMsg(`Disk "${wipeDiskModal.diskName}" wiped successfully.`);
+                        }
+                      }, 3000);
+                      setTimeout(() => { clearInterval(poll); setWipeDiskLoading(false); setWipeDiskModal(null); }, 180000);
+                    }}
+                  >
+                    Wipe
+                  </button>
+                </>
+              ) : null}
             </div>
           </div>
         </div>
