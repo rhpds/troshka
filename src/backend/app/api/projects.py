@@ -2012,12 +2012,17 @@ def wipe_disk_status(
     project_id: str,
     vm_id: str,
     disk_node_id: str,
+    user: CurrentUser,
+    db: DbSession,
 ):
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project or (project.owner_id != user.id and user.role != "admin"):
+        raise HTTPException(status_code=404)
     key = f"{project_id}:{vm_id}:{disk_node_id}"
-    status = _wipe_status.pop(key, None)
-    if status:
-        return status
-    return {"status": "unknown"}
+    status = _wipe_status.get(key)
+    if status and status.get("status") in ("done", "error"):
+        _wipe_status.pop(key, None)
+    return status or {"status": "unknown"}
 
 
 @router.get(
