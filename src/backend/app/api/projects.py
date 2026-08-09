@@ -1356,7 +1356,28 @@ def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Disk wipe failed: {e}")
 
-    if not was_running and not restart:
+    if restart:
+        try:
+            custom_api.patch_namespaced_custom_object(
+                group=_KUBEVIRT_API,
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=kv_name,
+                body={"spec": {"running": False}},
+            )
+            time.sleep(5)
+            custom_api.patch_namespaced_custom_object(
+                group=_KUBEVIRT_API,
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=kv_name,
+                body={"spec": {"running": True}},
+            )
+        except Exception as e:
+            logger.warning("Failed to restart VM after wipe: %s", e)
+    elif not was_running:
         try:
             custom_api.patch_namespaced_custom_object(
                 group=_KUBEVIRT_API,
