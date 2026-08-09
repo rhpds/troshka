@@ -471,14 +471,10 @@ def _setup_recert_sa(core_api, custom_api, namespace):
                 name="troshka-privileged-jobs",
             ),
         )
+        sa_ref = f"system:serviceaccount:{namespace}:troshka-recert"
         users = scc.get("users", []) or []
-        changed = False
-        for sa_name in ("troshka-recert", "troshka-bmc"):
-            sa_ref = f"system:serviceaccount:{namespace}:{sa_name}"
-            if sa_ref not in users:
-                users.append(sa_ref)
-                changed = True
-        if changed:
+        if sa_ref not in users:
+            users.append(sa_ref)
             custom_api.patch_cluster_custom_object(
                 group=_SECURITY_GROUP,
                 version="v1",
@@ -487,7 +483,7 @@ def _setup_recert_sa(core_api, custom_api, namespace):
                 body={"users": users},
             )
     except Exception as e:
-        logger.warning(f"Could not patch SCC for privileged-jobs in {namespace}: {e}")
+        logger.warning(f"Could not patch SCC for recert SA in {namespace}: {e}")
 
 
 def _create_network_crs(

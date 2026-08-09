@@ -1,2 +1,1 @@
 kubernetes==31.0.0
-virt-firmware==26.8

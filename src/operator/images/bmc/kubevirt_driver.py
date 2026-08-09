@@ -20,9 +20,6 @@ _VMEDIA_DV_SUFFIX = "-vmedia-cd"
 _VMEDIA_DV_SIZE = "5Gi"
 _VMEDIA_POLL_INTERVAL = 5
 _VMEDIA_POLL_TIMEOUT = 300
-_NVRAM_POLL_INTERVAL = 2
-_NVRAM_POLL_TIMEOUT = 60
-_BOOT_NEXT_INDEX = 0x00FF
 
 
 class KubeVirtDriver:
@@ -203,6 +200,10 @@ class KubeVirtDriver:
             order = assign(patch_ifaces, lambda _: True, 1)
             assign(patch_disks, lambda d: "disk" in d or "cdrom" in d, order)
         elif target_type == "cdrom":
+            # Disk first: empty disk falls through to CDROM on initial boot,
+            # and reboots after install go to disk.  Revert to CD-first once
+            # KubeVirt supports rebootPolicy: Terminate (guest reboots will
+            # recreate the VMI from the reverted boot order).
             order = assign(patch_disks, lambda d: "disk" in d, 1)
             assign(patch_disks, lambda d: "cdrom" in d, order)
         else:
@@ -450,140 +451,6 @@ class KubeVirtDriver:
         t.start()
         return event, result
 
-    def _find_nvram_pvc(self, identity):
-        """Return the PVC name backing this VM's persistent NVRAM, or None."""
-        name = self._kv_name(identity)
-        try:
-            pvcs = self.core_api.list_namespaced_persistent_volume_claim(self.namespace)
-            for pvc in pvcs.items:  # type: ignore[union-attr]
-                pvc_name = pvc.metadata.name
-                if "persistent-state" in pvc_name and name in pvc_name:
-                    print(f"[BMC] Found NVRAM PVC: {pvc_name} for {name}")
-                    return pvc_name
-        except Exception as e:
-            print(f"[BMC] Error listing PVCs for NVRAM: {e}")
-        print(f"[BMC] No NVRAM PVC found for {name}")
-        return None
-
-    def _set_boot_next_cdrom(self, identity):
-        """Set UEFI BootNext to CDROM in the VM's persistent NVRAM.
-
-        Uses a temporary Pod that mounts the NVRAM PVC and runs
-        virt-firmware to write the BootNext variable.  This gives
-        real UEFI 'boot once' semantics: OVMF reads BootNext on
-        the next start, boots from CDROM, clears BootNext, and
-        subsequent reboots use the normal BootOrder (disk first).
-        """
-        nvram_pvc = self._find_nvram_pvc(identity)
-        if not nvram_pvc:
-            print(f"[BMC] Skipping BootNext — no persistent NVRAM for {identity}")
-            return
-
-        name = self._kv_name(identity)
-
-        # Wait for VMI to fully terminate so the NVRAM PVC is released.
-        # eject_image() already deleted the VMI but the virt-launcher pod
-        # takes time to stop and release the RWO PVC.
-        deadline = time.monotonic() + _NVRAM_POLL_TIMEOUT
-        while time.monotonic() < deadline:
-            if not self._get_vmi(identity):
-                # Also wait a few seconds for PVC detach to propagate
-                time.sleep(5)
-                break
-            print(f"[BMC] Waiting for VMI {name} to terminate before BootNext...")
-            time.sleep(_NVRAM_POLL_INTERVAL)
-
-        pod_name = f"bootnext-{name}"[:63]
-        print(f"[BMC] Creating BootNext pod {pod_name} with NVRAM PVC {nvram_pvc}")
-        bmc_image = os.environ.get(
-            "SUSHY_BMC_IMAGE",
-            "quay.io/redhat-gpte/troshka-bmc:production",
-        )
-
-        script = (
-            "import sys, struct, glob\n"
-            "from virt.firmware.varstore.edk2 import Edk2VarStore\n"
-            "paths = glob.glob('/mnt/nvram/*VARS*') or glob.glob('/mnt/nvram/disk.img')\n"
-            "if not paths:\n"
-            "    print('no NVRAM file found'); sys.exit(0)\n"
-            "nvram = paths[0]\n"
-            "store = Edk2VarStore()\n"
-            "store.readfile(nvram)\n"
-            "varlist = store.get_varlist()\n"
-            "# Find a CDROM boot entry, or pick the highest Boot#### index\n"
-            "cd_idx = None\n"
-            "for key in varlist:\n"
-            "    if key.startswith('Boot') and key[4:].isalnum() and key != 'BootOrder' and key != 'BootNext' and key != 'BootCurrent' and key != 'BootOptionSupport':\n"
-            "        var = varlist[key]\n"
-            "        if var.data and b'CDROM' in var.data or b'CD-ROM' in var.data or b'DVD' in var.data or b'SATA' in var.data:\n"
-            "            cd_idx = int(key[4:], 16)\n"
-            "            break\n"
-            "if cd_idx is None:\n"
-            "    # Create a BootNext entry pointing to the SATA CDROM\n"
-            f"    cd_idx = {_BOOT_NEXT_INDEX}\n"
-            "    varlist.set_boot_entry(cd_idx, 'Virtual CD', 'PciRoot(0x0)/Pci(0x1f,0x2)/Sata(0,0,0)')\n"
-            "    varlist.append_boot_order(cd_idx)\n"
-            "varlist.set_boot_next(cd_idx)\n"
-            "store.write_varstore(nvram)\n"
-            "print(f'BootNext set to 0x{cd_idx:04X}')\n"
-        )
-
-        pod_body = {
-            "apiVersion": "v1",
-            "kind": "Pod",
-            "metadata": {"name": pod_name, "namespace": self.namespace},
-            "spec": {
-                "restartPolicy": "Never",
-                "serviceAccountName": "troshka-bmc",
-                "containers": [
-                    {
-                        "name": "bootnext",
-                        "image": bmc_image,
-                        "command": ["python3", "-c", script],
-                        "volumeMounts": [{"name": "nvram", "mountPath": "/mnt/nvram"}],
-                        "securityContext": {
-                            "allowPrivilegeEscalation": False,
-                            "capabilities": {"drop": ["ALL"]},
-                        },
-                    }
-                ],
-                "volumes": [
-                    {
-                        "name": "nvram",
-                        "persistentVolumeClaim": {"claimName": nvram_pvc},
-                    }
-                ],
-            },
-        }
-
-        try:
-            self.core_api.create_namespaced_pod(self.namespace, pod_body)
-            print(f"[BMC] BootNext pod {pod_name} created")
-        except Exception as e:
-            print(f"[BMC] Failed to create BootNext pod {pod_name}: {e}")
-            return
-
-        deadline = time.monotonic() + _NVRAM_POLL_TIMEOUT
-        while time.monotonic() < deadline:
-            try:
-                pod = self.core_api.read_namespaced_pod(pod_name, self.namespace)
-                phase = pod.status.phase  # type: ignore[union-attr]
-                if phase == "Succeeded":
-                    print(f"[BMC] BootNext pod {pod_name} succeeded")
-                    break
-                if phase == "Failed":
-                    print(f"[BMC] BootNext pod {pod_name} failed")
-                    break
-            except Exception as e:
-                print(f"[BMC] Error polling BootNext pod {pod_name}: {e}")
-                break
-            time.sleep(_NVRAM_POLL_INTERVAL)
-
-        try:
-            self.core_api.delete_namespaced_pod(pod_name, self.namespace)
-        except Exception:
-            pass
-
     def insert_image(self, identity, image_url, proxy_base_url):
         """Create CDI DataVolume, attach CDROM to VM, return immediately."""
         name = self._kv_name(identity)
@@ -591,9 +458,6 @@ class KubeVirtDriver:
 
         self.eject_image(identity)
         self._cleanup_stale_vmedia(identity, dv_name)
-
-        print(f"[BMC] InsertVirtualMedia for {name}: {image_url}")
-        self._set_boot_next_cdrom(identity)
 
         proxy_url = f"{proxy_base_url}/vmedia/download/{identity}"
 

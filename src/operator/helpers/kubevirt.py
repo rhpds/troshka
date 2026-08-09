@@ -177,6 +177,14 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
 
     networks = _build_networks(spec, nad_refs)
 
+    template_spec: dict = {
+        "domain": domain,
+        "volumes": volumes,
+        "networks": networks,
+    }
+    if spec.get("bmcEnabled"):
+        template_spec["rebootPolicy"] = "Terminate"
+
     vm_body = {
         "apiVersion": "kubevirt.io/v1",
         "kind": "VirtualMachine",
@@ -197,11 +205,7 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
                         "mutatevirtualmachines.kubemacpool.io": "ignore",
                     },
                 },
-                "spec": {
-                    "domain": domain,
-                    "volumes": volumes,
-                    "networks": networks,
-                },
+                "spec": template_spec,
             },
         },
     }
