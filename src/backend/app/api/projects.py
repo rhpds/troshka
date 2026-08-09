@@ -1305,7 +1305,7 @@ def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
     was_running = True
     pods = core_api.list_namespaced_pod(
         namespace=namespace,
-        label_selector=f"kubevirt.io/domain={kv_name}",
+        label_selector=f"vm.kubevirt.io/name={kv_name}",
     )
     if not pods.items:  # type: ignore[union-attr]
         was_running = False
@@ -1321,7 +1321,7 @@ def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
         while time.monotonic() < deadline:
             pods = core_api.list_namespaced_pod(
                 namespace=namespace,
-                label_selector=f"kubevirt.io/domain={kv_name}",
+                label_selector=f"vm.kubevirt.io/name={kv_name}",
             )
             if pods.items:  # type: ignore[union-attr]
                 pod = pods.items[0]  # type: ignore[union-attr]

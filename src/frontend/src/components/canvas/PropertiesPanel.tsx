@@ -3163,8 +3163,10 @@ export default function PropertiesPanel() {
                 background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.3)",
                 color: "#f87171", fontSize: 13,
               }}>
-                This will erase the boot sector and partition table on this disk. All data will be lost. The VM will be shut down during the wipe.
+                This will erase the boot sector and partition table on this disk. All data will be lost.
+                {useCanvasStore.getState().providerType !== "kubevirt" && " The VM will be shut down during the wipe."}
               </div>
+              {useCanvasStore.getState().providerType !== "kubevirt" && (
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: wipeDiskLoading ? "not-allowed" : "pointer" }}>
                 <input
                   type="checkbox"
@@ -3172,8 +3174,9 @@ export default function PropertiesPanel() {
                   onChange={(e) => setWipeDiskRestart(e.target.checked)}
                   disabled={wipeDiskLoading}
                 />
-                Start VM after wipe
+                Restart VM after wipe
               </label>
+              )}
             </div>
             <div className="start-order-footer">
               <button className="start-order-btn cancel" onClick={() => { if (!wipeDiskLoading) setWipeDiskModal(null); }} disabled={wipeDiskLoading}>Cancel</button>
