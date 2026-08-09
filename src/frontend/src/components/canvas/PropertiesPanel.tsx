@@ -3210,11 +3210,15 @@ export default function PropertiesPanel() {
                         return;
                       }
                       let sawRunning = false;
+                      let sawStopped = false;
+                      const wantRestart = wipeDiskRestart;
                       const poll = setInterval(() => {
                         const vmNode = useCanvasStore.getState().nodes.find((n) => n.id === wipeDiskModal.connVmId);
                         const st = vmNode ? (vmNode.data as unknown as VMNodeData).status : "";
                         if (st === "running") sawRunning = true;
-                        if (sawRunning && (st === "stopped" || st === "")) {
+                        if (sawRunning && (st === "stopped" || st === "")) sawStopped = true;
+                        const done = wantRestart ? (sawStopped && st === "running") : sawStopped;
+                        if (done) {
                           clearInterval(poll);
                           setWipeDiskLoading(false);
                           setWipeDiskModal(null);
