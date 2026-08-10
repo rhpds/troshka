@@ -3,7 +3,8 @@
 An alternative to [`dev-services.sh`](../../dev-services.sh) that runs the whole local dev stack —
 Postgres, Redis, backend, worker, and frontend — as containers via `podman compose`, with source
 bind-mounted into each container so both the backend (`uvicorn --reload`) and frontend (`next dev`)
-hot-reload on file changes.
+hot-reload on file changes. The compose stack also runs a local MinIO container (see
+[Image library storage](#image-library-storage-minio) below), which `dev-services.sh` doesn't.
 
 Use whichever path you prefer. They are **not meant to run at the same time**.
 
@@ -18,8 +19,8 @@ podman compose up -d
 ```
 
 This builds the backend/frontend dev images (see `deploy/containerfiles/Containerfile.backend.dev`
-and `Containerfile.frontend.dev`), starts Postgres + Redis, waits for them to report healthy, runs
-`alembic upgrade head`, then starts the backend, worker, and frontend.
+and `Containerfile.frontend.dev`), starts Postgres + Redis + MinIO, waits for them to report
+healthy, runs `alembic upgrade head`, then starts the backend, worker, and frontend.
 
 | Service | URL | Notes |
 |---------|-----|-------|
@@ -28,6 +29,26 @@ and `Containerfile.frontend.dev`), starts Postgres + Redis, waits for them to re
 | API Docs | http://localhost:8200/docs | Swagger UI |
 | PostgreSQL | localhost:5433 | container `postgres` |
 | Redis | localhost:6379 | container `redis` |
+| MinIO API | localhost:9000 | S3-compatible storage for the image library |
+| MinIO Console | http://localhost:9001 | Web UI — login `minioadmin` / `minioadmin` |
+
+## Image library storage (MinIO)
+
+The image library (ISOs/disk images, `Library` > `Images`) needs an S3-compatible backend. The
+`podman compose` stack runs a local MinIO container out of the box, so uploads work immediately with
+**no Admin > Providers setup required** — the backend picks it up automatically via
+`TROSHKA_S3__*` env vars (`endpoint_url`, `region`, `access_key_id`, `secret_access_key`, `bucket`),
+which [`s3_storage._get_s3_config()`](../../src/backend/app/services/s3_storage.py) falls back to
+when no `Provider(type="s3")` row exists in the database. The `troshka-images` bucket is created
+automatically on backend startup if it doesn't already exist.
+
+Because the browser can't resolve the container-network hostname `minio` (compose) directly, uploads
+against this local MinIO go through a single-request proxy endpoint (`/{item_id}/upload-proxy`)
+instead of the usual presigned-URL multipart flow — the UI switches between the two automatically
+based on whether the resolved S3 config has an `endpoint_url` set.
+
+If you want to test against real AWS S3 instead, add an S3 `Provider` via **Admin > Providers** in
+the UI — a DB-configured provider always takes priority over the MinIO env var fallback.
 
 ## Common commands
 
@@ -53,7 +74,8 @@ podman compose down -v
 
 - **Port collisions with `dev-services.sh`.** Both stacks bind the same host ports (`5433`, `6379`,
   `8200`, `3100`). Stop one before starting the other — `./dev-services.sh stop` or
-  `podman compose down`.
+  `podman compose down`. The compose stack additionally binds `9000`/`9001` for MinIO, which
+  `dev-services.sh` doesn't use.
 - **Separate Postgres data.** The compose stack uses its own named volume
   (`troshka-compose-pgdata`), independent from the `troshka-pgdata` volume that
   `dev-services.sh` manages via `troshka-postgres`. Data doesn't automatically move between the two

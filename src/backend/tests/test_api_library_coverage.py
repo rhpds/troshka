@@ -91,10 +91,14 @@ def _create_other_user_and_library():
 # ===========================================================================
 
 
+@patch(
+    "app.api.library.s3_storage._get_s3_config",
+    return_value={"endpoint_url": "", "bucket": "test-bucket"},
+)
 @patch("app.api.library.s3_storage._bucket", return_value="test-bucket")
 @patch("app.api.library.s3_storage._get_s3_client")
-def test_upload_start_success(mock_client_fn, mock_bucket):
-    """POST /library/{item_id}/upload-start returns upload_id and s3_key."""
+def test_upload_start_success(mock_client_fn, mock_bucket, _mock_config):
+    """POST /library/{item_id}/upload-start returns presigned mode, upload_id, and s3_key."""
     _user_id, lib_id = _ensure_user_and_library()
     item_id = _create_library_item(
         lib_id, name=f"upl-start-{uuid.uuid4().hex[:8]}", state="pending"
@@ -107,9 +111,49 @@ def test_upload_start_success(mock_client_fn, mock_bucket):
     resp = client.post(f"/api/v1/library/{item_id}/upload-start")
     assert resp.status_code == 200
     data = resp.json()
+    assert data["mode"] == "presigned"
     assert data["upload_id"] == "test-upload-123"
     assert "s3_key" in data
     assert item_id in data["s3_key"]
+
+
+@patch(
+    "app.api.library.s3_storage._get_s3_config",
+    return_value={"endpoint_url": "http://minio:9000", "bucket": "test-bucket"},
+)
+def test_upload_start_proxy_mode(_mock_config):
+    """POST /library/{item_id}/upload-start returns proxy mode when endpoint_url is set (MinIO/dev)."""
+    _user_id, lib_id = _ensure_user_and_library()
+    item_id = _create_library_item(
+        lib_id, name=f"upl-start-proxy-{uuid.uuid4().hex[:8]}", state="pending"
+    )
+
+    resp = client.post(f"/api/v1/library/{item_id}/upload-start")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mode"] == "proxy"
+    assert "s3_key" in data
+    assert item_id in data["s3_key"]
+    assert "upload_id" not in data
+
+
+@patch(
+    "app.api.library.s3_storage._get_s3_config",
+    side_effect=ValueError(
+        "No S3 provider configured. Add an S3 provider in Admin > Providers."
+    ),
+)
+def test_upload_start_no_s3_configured_returns_friendly_400(_mock_config):
+    """POST /library/{item_id}/upload-start returns 400 with a friendly detail
+    (not an uncaught 500) when no S3 provider/config is available."""
+    _user_id, lib_id = _ensure_user_and_library()
+    item_id = _create_library_item(
+        lib_id, name=f"upl-start-noS3-{uuid.uuid4().hex[:8]}", state="pending"
+    )
+
+    resp = client.post(f"/api/v1/library/{item_id}/upload-start")
+    assert resp.status_code == 400
+    assert "S3" in resp.json()["detail"]
 
 
 def test_upload_start_not_found():

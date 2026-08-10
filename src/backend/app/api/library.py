@@ -294,14 +294,17 @@ def start_multipart_upload(
     item.state = "uploading"
     db.commit()
 
-    from app.services.s3_storage import _bucket, _get_s3_client
+    from app.services.s3_storage import _bucket, _get_s3_client, _get_s3_config
+
+    cfg = _get_s3_config()
+    if cfg.get("endpoint_url"):
+        # Self-hosted S3 (e.g. dev MinIO) — presigned URLs generated for the
+        # internal endpoint aren't reachable from the browser, so upload the
+        # whole file through the backend via the /upload-proxy endpoint instead.
+        return {"mode": "proxy", "s3_key": s3_key}
 
     client = _get_s3_client()
-
-    # Parse file_size from query param
-
-    # We'll receive file_size in the JSON body instead
-    return _do_start_upload(client, _bucket(), s3_key, item_id)
+    return {"mode": "presigned", **_do_start_upload(client, _bucket(), s3_key, item_id)}
 
 
 def _do_start_upload(client, bucket, s3_key, _item_id):

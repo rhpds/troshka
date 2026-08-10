@@ -66,6 +66,28 @@ def _bucket():
     return _get_s3_config()["bucket"]
 
 
+def ensure_dev_bucket_exists():
+    """Idempotently create the configured bucket when a self-hosted endpoint
+    (e.g. dev MinIO) is configured. No-op for real AWS S3 (no endpoint_url) —
+    those buckets are expected to already exist and be provisioned via IAM.
+    """
+    try:
+        cfg = _get_s3_config()
+    except ValueError:
+        return
+    if not cfg.get("endpoint_url"):
+        return
+    client = _get_s3_client()
+    try:
+        client.head_bucket(Bucket=cfg["bucket"])
+    except Exception:
+        try:
+            client.create_bucket(Bucket=cfg["bucket"])
+            logger.info("Created dev S3 bucket %s at %s", cfg["bucket"], cfg["endpoint_url"])
+        except Exception as e:
+            logger.warning("Could not ensure dev S3 bucket %s exists: %s", cfg["bucket"], e)
+
+
 _cached_account_ids: dict[str, str] = {}
 
 

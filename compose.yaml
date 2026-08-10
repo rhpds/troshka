@@ -1,8 +1,8 @@
 # Podman compose dev stack — an alternative to ./dev-services.sh.
 #
-# Runs Postgres, Redis, backend, worker, and frontend as containers with
+# Runs Postgres, Redis, MinIO, backend, worker, and frontend as containers with
 # bind-mounted source for hot reload. Do not run this alongside
-# dev-services.sh — both bind the same host ports (5433, 6379, 8200, 3100).
+# dev-services.sh — both bind the same host ports (5433, 6379, 9000, 9001, 8200, 3100).
 #
 # This is the default compose filename, so no -f flag is needed:
 #   podman compose up -d
@@ -41,6 +41,24 @@ services:
       timeout: 3s
       retries: 20
 
+  minio:
+    image: docker.io/minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - troshka-compose-miniodata:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   backend:
     build:
       context: .
@@ -53,6 +71,13 @@ services:
       TROSHKA_DATABASE__URL: postgresql+psycopg2://troshka:troshka@postgres:5432/troshka
       TROSHKA_REDIS__URL: redis://redis:6379/0
       TROSHKA_AUTH__JWT_SECRET: dev-only-not-secret
+      # Local S3-compatible storage for the image library (see docs/dev/podman-compose.md).
+      # A real S3 Provider added via Admin > Providers takes priority over this fallback.
+      TROSHKA_S3__ENDPOINT_URL: http://minio:9000
+      TROSHKA_S3__REGION: us-east-1
+      TROSHKA_S3__ACCESS_KEY_ID: minioadmin
+      TROSHKA_S3__SECRET_ACCESS_KEY: minioadmin
+      TROSHKA_S3__BUCKET: troshka-images
     volumes:
       - ./src/backend:/opt/app-root/src:z
     ports:
@@ -61,6 +86,8 @@ services:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/api/v1/health', timeout=3)"]
@@ -79,6 +106,11 @@ services:
       TROSHKA_DATABASE__URL: postgresql+psycopg2://troshka:troshka@postgres:5432/troshka
       TROSHKA_REDIS__URL: redis://redis:6379/0
       TROSHKA_AUTH__JWT_SECRET: dev-only-not-secret
+      TROSHKA_S3__ENDPOINT_URL: http://minio:9000
+      TROSHKA_S3__REGION: us-east-1
+      TROSHKA_S3__ACCESS_KEY_ID: minioadmin
+      TROSHKA_S3__SECRET_ACCESS_KEY: minioadmin
+      TROSHKA_S3__BUCKET: troshka-images
     volumes:
       - ./src/backend:/opt/app-root/src:z
     depends_on:
@@ -112,4 +144,5 @@ services:
 
 volumes:
   troshka-compose-pgdata:
+  troshka-compose-miniodata:
   troshka-compose-node-modules:
