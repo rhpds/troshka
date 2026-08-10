@@ -1,0 +1,115 @@
+# Podman compose dev stack — an alternative to ./dev-services.sh.
+#
+# Runs Postgres, Redis, backend, worker, and frontend as containers with
+# bind-mounted source for hot reload. Do not run this alongside
+# dev-services.sh — both bind the same host ports (5433, 6379, 8200, 3100).
+#
+# This is the default compose filename, so no -f flag is needed:
+#   podman compose up -d
+#   podman compose up -d --scale worker=3
+#   podman compose logs -f backend
+#   podman compose down
+#
+# See docs/dev/podman-compose.md for details.
+
+services:
+  postgres:
+    image: docker.io/library/postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: troshka
+      POSTGRES_PASSWORD: troshka
+      POSTGRES_DB: troshka
+    volumes:
+      - troshka-compose-pgdata:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "troshka"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: docker.io/library/redis:7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: .
+      dockerfile: deploy/containerfiles/Containerfile.backend.dev
+    restart: unless-stopped
+    # `|| true` matches dev-services.sh: a from-scratch DB can trip a pre-existing
+    # alembic history issue (see docs/dev/podman-compose.md), so don't block startup on it.
+    command: sh -c "alembic upgrade head || true; exec uvicorn app.main:app --host 0.0.0.0 --port 8200 --reload"
+    environment:
+      TROSHKA_DATABASE__URL: postgresql+psycopg2://troshka:troshka@postgres:5432/troshka
+      TROSHKA_REDIS__URL: redis://redis:6379/0
+      TROSHKA_AUTH__JWT_SECRET: dev-only-not-secret
+    volumes:
+      - ./src/backend:/opt/app-root/src:z
+    ports:
+      - "8200:8200"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8200/api/v1/health', timeout=3)"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  worker:
+    build:
+      context: .
+      dockerfile: deploy/containerfiles/Containerfile.backend.dev
+    restart: unless-stopped
+    command: python3 -m app.workers.deploy_worker
+    environment:
+      TROSHKA_DATABASE__URL: postgresql+psycopg2://troshka:troshka@postgres:5432/troshka
+      TROSHKA_REDIS__URL: redis://redis:6379/0
+      TROSHKA_AUTH__JWT_SECRET: dev-only-not-secret
+    volumes:
+      - ./src/backend:/opt/app-root/src:z
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: deploy/containerfiles/Containerfile.frontend.dev
+    restart: unless-stopped
+    # Runs as root (container-local only) so `next dev` can write .next/ into the
+    # bind-mounted source tree, which is owned by the host user's UID, not the
+    # image's default UID 1001.
+    user: "0:0"
+    command: npm run dev
+    environment:
+      BACKEND_URL: http://backend:8200
+      # HOME defaults to the bind-mounted WORKDIR when running as root, which would
+      # otherwise make Next.js write a root-owned .config/ into the host source tree.
+      HOME: /tmp
+      NEXT_TELEMETRY_DISABLED: "1"
+    volumes:
+      - ./src/frontend:/opt/app-root/src:Z
+      - troshka-compose-node-modules:/opt/app-root/src/node_modules
+    ports:
+      - "3100:3100"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  troshka-compose-pgdata:
+  troshka-compose-node-modules:

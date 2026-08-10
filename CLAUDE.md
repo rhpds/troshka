@@ -27,6 +27,12 @@ Nested VM environment builder: FastAPI backend + Next.js frontend + libvirt host
 - Backend: http://localhost:8200 (no auto-reload — restart required for Python changes)
 - Frontend: http://localhost:3100 (hot-reloads)
 - Dev mode auto-authenticates as admin
+### Alternative: podman compose
+
+`compose.yaml` (`podman compose up -d`) runs the same stack (Postgres, Redis, backend, worker,
+frontend) fully containerized with hot reload via bind mounts — an opt-in alternative to
+`dev-services.sh`, not a replacement. Don't run both at once (they share ports
+5433/6379/8200/3100). See [`docs/dev/podman-compose.md`](docs/dev/podman-compose.md).
 ## Running Tests
 
 ```bash

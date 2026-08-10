@@ -194,6 +194,10 @@ cd troshka
 
 Open http://localhost:3100 — dev mode auto-authenticates as admin.
 
+Prefer everything containerized instead? `podman compose up -d` runs the same stack with hot
+reload — see [Podman Compose Dev Stack](docs/dev/podman-compose.md) (don't run both at once; they
+share ports).
+
 ### Services
 
 | Service | URL | Notes |
