@@ -25,6 +25,13 @@ function buildHeaders(request: NextRequest): Headers {
   return headers;
 }
 
+// Bound how long we wait on the backend, but also give up immediately if the
+// browser disconnects (e.g. the user cancels an upload) instead of leaving
+// the backend request running for up to 10 minutes for nothing.
+function abortSignal(request: NextRequest): AbortSignal {
+  return AbortSignal.any([request.signal, AbortSignal.timeout(600_000)]);
+}
+
 function toResponse(resp: Response): NextResponse {
   const responseHeaders = new Headers();
   for (const [key, value] of resp.headers.entries()) {
@@ -53,7 +60,7 @@ async function proxyStreamingRequest(
       body: request.body,
       duplex: "half",
       redirect: "manual",
-      signal: AbortSignal.timeout(600_000),
+      signal: abortSignal(request),
     };
     const resp = await fetch(backendUrl, init);
     return toResponse(resp);
@@ -74,6 +81,7 @@ async function proxyRequest(request: NextRequest) {
   }
 
   const body = hasBody ? await request.arrayBuffer() : undefined;
+  const signal = abortSignal(request);
 
   try {
     let resp = await fetch(backendUrl, {
@@ -81,7 +89,7 @@ async function proxyRequest(request: NextRequest) {
       headers,
       body,
       redirect: "manual",
-      signal: AbortSignal.timeout(600_000),
+      signal,
     });
 
     if (resp.status === 307 || resp.status === 308) {
@@ -95,7 +103,7 @@ async function proxyRequest(request: NextRequest) {
           headers,
           body,
           redirect: "manual",
-          signal: AbortSignal.timeout(600_000),
+          signal,
         });
       }
     }
