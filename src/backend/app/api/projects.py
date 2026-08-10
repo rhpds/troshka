@@ -1288,12 +1288,139 @@ def stop_project(
 _wipe_status: dict[str, dict] = {}
 
 
-def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
-    """Wipe a disk on a KubeVirt VM by exec'ing dd into the virt-launcher.
+def _ensure_kubevirt_vm_pod(core_api, custom_api, namespace, kv_name):
+    """Start a KubeVirt VM if needed and return its pod name, or None on timeout."""
+    pods = core_api.list_namespaced_pod(
+        namespace=namespace,
+        label_selector=f"vm.kubevirt.io/name={kv_name}",
+    )
+    if pods.items:  # type: ignore[union-attr]
+        return pods.items[0].metadata.name  # type: ignore[union-attr]
 
-    Runs the actual work in a daemon thread so the HTTP response returns
-    immediately (the OAuth proxy times out on long-running requests).
-    """
+    custom_api.patch_namespaced_custom_object(
+        group=_KUBEVIRT_API,
+        version="v1",
+        namespace=namespace,
+        plural="virtualmachines",
+        name=kv_name,
+        body={"spec": {"running": True}},
+    )
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        pods = core_api.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=f"vm.kubevirt.io/name={kv_name}",
+        )
+        if pods.items and pods.items[0].status.phase == "Running":  # type: ignore[union-attr]
+            return pods.items[0].metadata.name  # type: ignore[union-attr]
+        time.sleep(5)
+    return None
+
+
+def _stop_kubevirt_vm_and_wait(custom_api, core_api, namespace, kv_name, pod_name):
+    """Stop a KubeVirt VM and wait for its pod to terminate."""
+    try:
+        custom_api.patch_namespaced_custom_object(
+            group=_KUBEVIRT_API,
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+            name=kv_name,
+            body={"spec": {"running": False}},
+        )
+    except Exception:
+        pass
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group=_KUBEVIRT_API,
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachineinstances",
+            name=kv_name,
+        )
+    except Exception:
+        pass
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        try:
+            core_api.read_namespaced_pod(pod_name, namespace)
+            time.sleep(3)
+        except Exception:
+            return
+
+
+def _do_kubevirt_wipe(
+    creds, namespace, kv_name, vol_name, disk_path, project_id, vm_id, wipe_key, restart
+):
+    from kubernetes import client as k8s_client
+    from kubernetes import stream
+
+    config = k8s_client.Configuration()
+    config.host = creds["api_url"]
+    config.api_key = {"authorization": f"Bearer {creds['token']}"}
+    config.verify_ssl = creds.get("verify_ssl", False)
+    api_client = k8s_client.ApiClient(config)
+    custom_api = k8s_client.CustomObjectsApi(api_client)
+    core_api = k8s_client.CoreV1Api(api_client)
+
+    pod_name = _ensure_kubevirt_vm_pod(core_api, custom_api, namespace, kv_name)
+    if not pod_name:
+        logger.error("Timed out waiting for VM %s to start for wipe", kv_name)
+        _wipe_status[wipe_key] = {"status": "error", "detail": "VM failed to start"}
+        return
+
+    try:
+        resp = stream.stream(
+            core_api.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            command=[
+                "dd",
+                "if=/dev/zero",
+                f"of={disk_path}",
+                "bs=1M",
+                "count=1",
+                "conv=notrunc",
+            ],
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False,
+        )
+        logger.info("Wiped disk %s on %s: %s", vol_name, kv_name, resp)
+    except Exception:
+        logger.exception("Failed to wipe disk %s on %s", vol_name, kv_name)
+        _wipe_status[wipe_key] = {"status": "error", "detail": "dd failed"}
+        return
+
+    _stop_kubevirt_vm_and_wait(custom_api, core_api, namespace, kv_name, pod_name)
+
+    if restart:
+        try:
+            custom_api.patch_namespaced_custom_object(
+                group=_KUBEVIRT_API,
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=kv_name,
+                body={"spec": {"running": True}},
+            )
+        except Exception as e:
+            logger.warning("Failed to restart VM after wipe: %s", e)
+
+    _wipe_status[wipe_key] = {"status": "done"}
+    notify_project(
+        project_id,
+        {
+            "type": "vm-state",
+            "states": {vm_id: "stopped" if not restart else "running"},
+            "progress": {},
+        },
+    )
+
+
+def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
+    """Wipe a disk on a KubeVirt VM by exec'ing dd into the virt-launcher."""
     import threading
 
     from app.models.provider import Provider
@@ -1312,128 +1439,21 @@ def _wipe_disk_kubevirt(project, host, vm_id, disk_node_id, restart, db):
     wipe_key = f"{project_id}:{vm_id}:{disk_node_id}"
     _wipe_status[wipe_key] = {"status": "wiping"}
 
-    def _do_wipe():
-        from kubernetes import client as k8s_client
-        from kubernetes import stream
-
-        config = k8s_client.Configuration()
-        config.host = creds["api_url"]
-        config.api_key = {"authorization": f"Bearer {creds['token']}"}
-        config.verify_ssl = creds.get("verify_ssl", False)
-        api_client = k8s_client.ApiClient(config)
-        custom_api = k8s_client.CustomObjectsApi(api_client)
-        core_api = k8s_client.CoreV1Api(api_client)
-
-        try:
-            pods = core_api.list_namespaced_pod(
-                namespace=namespace,
-                label_selector=f"vm.kubevirt.io/name={kv_name}",
-            )
-            if not pods.items:  # type: ignore[union-attr]
-                custom_api.patch_namespaced_custom_object(
-                    group=_KUBEVIRT_API,
-                    version="v1",
-                    namespace=namespace,
-                    plural="virtualmachines",
-                    name=kv_name,
-                    body={"spec": {"running": True}},
-                )
-                deadline = time.monotonic() + 120
-                while time.monotonic() < deadline:
-                    pods = core_api.list_namespaced_pod(
-                        namespace=namespace,
-                        label_selector=f"vm.kubevirt.io/name={kv_name}",
-                    )
-                    if pods.items:  # type: ignore[union-attr]
-                        if pods.items[0].status.phase == "Running":  # type: ignore[union-attr]
-                            break
-                    time.sleep(5)
-                else:
-                    logger.error(
-                        "Timed out waiting for VM %s to start for wipe", kv_name
-                    )
-                    _wipe_status[wipe_key] = {
-                        "status": "error",
-                        "detail": "VM failed to start",
-                    }
-                    return
-
-            pod_name = pods.items[0].metadata.name  # type: ignore[union-attr]
-            resp = stream.stream(
-                core_api.connect_get_namespaced_pod_exec,
-                pod_name,
-                namespace,
-                command=[
-                    "dd",
-                    "if=/dev/zero",
-                    f"of={disk_path}",
-                    "bs=1M",
-                    "count=1",
-                    "conv=notrunc",
-                ],
-                stderr=True,
-                stdin=False,
-                stdout=True,
-                tty=False,
-            )
-            logger.info("Wiped disk %s on %s: %s", vol_name, kv_name, resp)
-        except Exception:
-            logger.exception("Failed to wipe disk %s on %s", vol_name, kv_name)
-            _wipe_status[wipe_key] = {"status": "error", "detail": "dd failed"}
-            return
-
-        try:
-            custom_api.patch_namespaced_custom_object(
-                group=_KUBEVIRT_API,
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachines",
-                name=kv_name,
-                body={"spec": {"running": False}},
-            )
-        except Exception:
-            pass
-        try:
-            custom_api.delete_namespaced_custom_object(
-                group=_KUBEVIRT_API,
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachineinstances",
-                name=kv_name,
-            )
-        except Exception:
-            pass
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            try:
-                core_api.read_namespaced_pod(pod_name, namespace)
-                time.sleep(3)
-            except Exception:
-                break
-        if restart:
-            try:
-                custom_api.patch_namespaced_custom_object(
-                    group=_KUBEVIRT_API,
-                    version="v1",
-                    namespace=namespace,
-                    plural="virtualmachines",
-                    name=kv_name,
-                    body={"spec": {"running": True}},
-                )
-            except Exception as e:
-                logger.warning("Failed to restart VM after wipe: %s", e)
-
-        _wipe_status[wipe_key] = {"status": "done"}
-        notify_project(
+    threading.Thread(
+        target=_do_kubevirt_wipe,
+        args=(
+            creds,
+            namespace,
+            kv_name,
+            vol_name,
+            disk_path,
             project_id,
-            {
-                "type": "vm-state",
-                "states": {vm_id: "stopped" if not restart else "running"},
-                "progress": {},
-            },
-        )
-
-    threading.Thread(target=_do_wipe, daemon=True).start()
+            vm_id,
+            wipe_key,
+            restart,
+        ),
+        daemon=True,
+    ).start()
     return {"status": "wiping"}
 
 
@@ -1959,7 +1979,7 @@ def restart_vm(
 
 @router.post(
     "/{project_id}/vms/{vm_id}/disks/{disk_node_id}/wipe",
-    responses={403: {}, 404: {}, 409: {}, 501: {}, 503: {}, 507: {}},
+    responses={403: {}, 404: {}, 409: {}, 500: {}, 501: {}, 503: {}, 507: {}},
 )
 def wipe_disk(
     project_id: str,
@@ -2026,6 +2046,7 @@ def wipe_disk(
 
 @router.get(
     "/{project_id}/vms/{vm_id}/disks/{disk_node_id}/wipe-status",
+    responses={404: {}},
 )
 def wipe_disk_status(
     project_id: str,
