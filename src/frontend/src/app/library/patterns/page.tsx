@@ -428,7 +428,7 @@ export default function PatternsPage() {
                     <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 8 }}>{pattern.description}</p>
                   )}
                   {saving && pattern.capture_progress ? (
-                    <div style={{ fontSize: 12, opacity: 0.8, lineHeight: 1.6 }}>
+                    <div style={{ fontSize: 12, opacity: 0.8, lineHeight: 1.6, maxHeight: 160, overflowY: "auto" }}>
                       <div style={{ marginBottom: 4 }}>{pattern.capture_progress.detail || "Capturing..."}</div>
                       {pattern.capture_progress.disks?.map((d: { name: string; status: string }) => (
                         <div key={d.name} style={{ display: "flex", alignItems: "center", gap: 6 }}>
