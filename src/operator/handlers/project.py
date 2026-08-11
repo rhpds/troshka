@@ -593,6 +593,23 @@ async def _handle_capture(capture_config, namespace, name, patch):
 
     _setup_export_sa(core_api, custom_api, namespace)
 
+    # Clean up any stale export resources from previous attempts
+    try:
+        stale_jobs = batch_api.list_namespaced_job(
+            namespace=namespace, label_selector="troshka-role=pattern-export"
+        )
+        for j in getattr(stale_jobs, "items", []):
+            try:
+                batch_api.delete_namespaced_job(
+                    name=j.metadata.name,
+                    namespace=namespace,
+                    propagation_policy="Background",
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # Snapshot and export each disk
     export_jobs = []
     for disk_info in disk_manifest:
