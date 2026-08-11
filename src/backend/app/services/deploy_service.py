@@ -2053,6 +2053,8 @@ def _finalize_kubevirt_deploy(project_id, project, topology, db):
         ndata.pop("resolvedS3Path", None)
         ndata.pop("presignedUrl", None)
         ndata.pop("ciGeneratedUserData", None)
+        if node.get("type") == "vmNode" and not ndata.get("bmcIp"):
+            ndata["bmcIp"] = ""
 
     _allocate_kubevirt_eips(project_id, project, clean_topo, db)
 
