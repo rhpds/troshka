@@ -5656,10 +5656,11 @@ class TestSnapshotAndExportDisk:
         )
 
         custom_api.create_namespaced_custom_object.assert_called_once()
-        core_api.create_namespaced_persistent_volume_claim.assert_called_once()
+        assert core_api.create_namespaced_persistent_volume_claim.call_count == 2
         batch_api.create_namespaced_job.assert_called_once()
         assert result["snapName"] == "snap-myvm-1234abcd"
         assert result["tempPvcName"] == "export-myvm-1234abcd"
+        assert result["scratchPvcName"] == "scratch-myvm-1234abcd"
         assert result["diskId"] == "1234abcd-0000-0000-0000-000000000000"
         assert result["s3Key"] == "patterns/p1/disk.qcow2"
         assert result["format"] == "qcow2"

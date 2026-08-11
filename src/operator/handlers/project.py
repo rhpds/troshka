@@ -204,13 +204,11 @@ async def _stop_all_vms(custom_api, namespace):
 async def _snapshot_and_export_disk(
     disk_info, s3_config, custom_api, core_api, batch_api, namespace, name, patch
 ):
-    """Snapshot a single disk PVC, create temp PVC, and launch export job.
-
-    Returns the export job metadata dict.
-    """
+    """Snapshot a single disk PVC, create temp PVC + scratch PVC, launch export job."""
     from helpers.patterns import (
         build_volume_snapshot,
         build_temp_pvc_from_snapshot,
+        build_scratch_pvc,
         build_export_job,
     )
 
@@ -219,12 +217,22 @@ async def _snapshot_and_export_disk(
     vm_name = disk_info["vmName"]
     s3_key = disk_info["s3Key"]
     size_gb = disk_info.get("sizeGb", 50)
+    disk_label = disk_info.get("diskLabel", f"{vm_name}-{disk_id}")
+    vm_label = disk_info.get("vmLabel", vm_name)
 
     snap_name = f"snap-{vm_name}-{disk_id}"
     temp_pvc_name = f"export-{vm_name}-{disk_id}"
+    scratch_pvc_name = f"scratch-{vm_name}-{disk_id}"
     job_name = f"{vm_name}-{disk_id}"
 
-    patch.status["captureProgress"] = f"Snapshotting {vm_name}/{disk_id}"
+    _patch_cr_status(
+        custom_api,
+        namespace,
+        name,
+        {
+            "captureProgress": f"Snapshotting {vm_label}/{disk_label}",
+        },
+    )
     logger.info(f"Capture {name}: snapshotting PVC {pvc_name}")
 
     snapshot = build_volume_snapshot(snap_name, namespace, pvc_name)
@@ -274,6 +282,15 @@ async def _snapshot_and_export_disk(
         if e.status != 409:
             raise
 
+    scratch = build_scratch_pvc(scratch_pvc_name, namespace, size_gb)
+    try:
+        core_api.create_namespaced_persistent_volume_claim(
+            namespace=namespace, body=scratch
+        )
+    except ApiException as e:
+        if e.status != 409:
+            raise
+
     export_job = build_export_job(
         job_name,
         namespace,
@@ -283,6 +300,7 @@ async def _snapshot_and_export_disk(
         size_gb,
     )
     deadline = export_job.pop("_deadline", 3600)
+    export_job.pop("_scratchPvcName", None)
     try:
         batch_api.create_namespaced_job(namespace=namespace, body=export_job)
     except ApiException as e:
@@ -293,12 +311,14 @@ async def _snapshot_and_export_disk(
         "jobName": f"export-{job_name}",
         "snapName": snap_name,
         "tempPvcName": temp_pvc_name,
+        "scratchPvcName": scratch_pvc_name,
         "diskId": disk_info["diskId"],
         "vmId": disk_info.get("vmId", ""),
         "s3Key": s3_key,
         "format": disk_info.get("format", "qcow2"),
         "virtualSizeBytes": size_gb * 1073741824,
         "deadline": deadline,
+        "displayName": f"{vm_label}/{disk_label}",
     }
 
 
@@ -321,8 +341,43 @@ def _check_export_job(batch_api, ej, namespace):
         return "pending"
 
 
+def _read_job_progress(core_api, ej, namespace):
+    """Read qemu-img progress from export pod logs."""
+    try:
+        pods = core_api.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=f"job-name={ej['jobName']}",
+        )
+        if not getattr(pods, "items", None):
+            return "pending"
+        logs = str(
+            core_api.read_namespaced_pod_log(
+                name=pods.items[0].metadata.name,
+                namespace=namespace,
+                tail_lines=10,
+            )
+        )
+        phase = "converting"
+        percent = 0
+        for line in logs.splitlines():
+            if line.startswith("PHASE="):
+                phase = line.split("=", 1)[1]
+            elif "/100%" in line:
+                try:
+                    percent = int(float(line.strip().strip("()").split("/")[0]))
+                except Exception:
+                    pass
+        if phase == "done":
+            return "done"
+        if phase == "uploading":
+            return "uploading"
+        return f"converting {percent}%"
+    except Exception:
+        return "starting"
+
+
 async def _poll_export_jobs(
-    batch_api, export_jobs, namespace, custom_api, cr_name
+    batch_api, export_jobs, namespace, custom_api, cr_name, core_api=None
 ):
     """Poll export Jobs until all complete.
 
@@ -333,7 +388,7 @@ async def _poll_export_jobs(
     max_wait = max_deadline + 120
     iterations = max_wait // 10
 
-    disk_statuses = {ej["jobName"]: "exporting" for ej in export_jobs}
+    disk_statuses = {ej["jobName"]: "starting" for ej in export_jobs}
     for _ in range(iterations):
         all_done = True
         for ej in export_jobs:
@@ -343,23 +398,39 @@ async def _poll_export_jobs(
                 continue
             if result == "failed":
                 logger.error(f"Export job {ej['jobName']} failed")
-                _patch_cr_status(custom_api, namespace, cr_name, {
-                    "phase": "CaptureError",
-                    "captureError": f"Export job {ej['jobName']} failed",
-                })
+                _patch_cr_status(
+                    custom_api,
+                    namespace,
+                    cr_name,
+                    {
+                        "phase": "CaptureError",
+                        "captureError": f"Export job {ej['jobName']} failed",
+                    },
+                )
                 return f"Export job {ej['jobName']} failed"
+            if core_api:
+                disk_statuses[ej["jobName"]] = _read_job_progress(
+                    core_api, ej, namespace
+                )
+            else:
+                disk_statuses[ej["jobName"]] = "exporting"
             all_done = False
         done_count = sum(1 for s in disk_statuses.values() if s == "done")
-        _patch_cr_status(custom_api, namespace, cr_name, {
-            "captureProgress": f"Exporting disks to S3 ({done_count}/{len(export_jobs)})",
-            "captureDisks": [
-                {
-                    "name": ej["jobName"].removeprefix("export-"),
-                    "status": disk_statuses[ej["jobName"]],
-                }
-                for ej in export_jobs
-            ],
-        })
+        _patch_cr_status(
+            custom_api,
+            namespace,
+            cr_name,
+            {
+                "captureProgress": f"Exporting disks to S3 ({done_count}/{len(export_jobs)})",
+                "captureDisks": [
+                    {
+                        "name": ej.get("displayName", ej["jobName"]),
+                        "status": disk_statuses[ej["jobName"]],
+                    }
+                    for ej in export_jobs
+                ],
+            },
+        )
         if all_done:
             break
         await asyncio.sleep(10)
@@ -371,10 +442,15 @@ async def _poll_export_jobs(
         ]
         msg = f"Export timed out after {max_wait}s, jobs still pending: {pending}"
         logger.error(msg)
-        _patch_cr_status(custom_api, namespace, cr_name, {
-            "phase": "CaptureError",
-            "captureError": msg,
-        })
+        _patch_cr_status(
+            custom_api,
+            namespace,
+            cr_name,
+            {
+                "phase": "CaptureError",
+                "captureError": msg,
+            },
+        )
         return msg
     return None
 
@@ -406,7 +482,7 @@ def _read_export_sizes(core_api, export_jobs, namespace):
 
 
 def _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, namespace):
-    """Cleanup temp PVCs, snapshots, and export Jobs."""
+    """Cleanup temp PVCs, scratch PVCs, snapshots, and export Jobs."""
     for ej in export_jobs:
         try:
             core_api.delete_namespaced_persistent_volume_claim(
@@ -415,6 +491,14 @@ def _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, nam
             )
         except Exception:
             pass
+        if ej.get("scratchPvcName"):
+            try:
+                core_api.delete_namespaced_persistent_volume_claim(
+                    name=ej["scratchPvcName"],
+                    namespace=namespace,
+                )
+            except Exception:
+                pass
         try:
             custom_api.delete_namespaced_custom_object(
                 group=_SNAPSHOT_GROUP,
@@ -460,15 +544,25 @@ async def _handle_capture(capture_config, namespace, name, patch):
     core_api = client.CoreV1Api()
     batch_api = client.BatchV1Api()
 
-    _patch_cr_status(custom_api, namespace, name, {
-        "phase": "Capturing",
-        "captureProgress": "Snapshotting disks",
-    })
+    _patch_cr_status(
+        custom_api,
+        namespace,
+        name,
+        {
+            "phase": "Capturing",
+            "captureProgress": "Snapshotting disks",
+        },
+    )
 
     if restart_after:
-        _patch_cr_status(custom_api, namespace, name, {
-            "captureProgress": "Stopping VMs",
-        })
+        _patch_cr_status(
+            custom_api,
+            namespace,
+            name,
+            {
+                "captureProgress": "Stopping VMs",
+            },
+        )
         await _stop_all_vms(custom_api, namespace)
 
     # Snapshot and export each disk
@@ -487,7 +581,7 @@ async def _handle_capture(capture_config, namespace, name, patch):
         export_jobs.append(ej)
 
     err = await _poll_export_jobs(
-        batch_api, export_jobs, namespace, custom_api, name
+        batch_api, export_jobs, namespace, custom_api, name, core_api
     )
     if err:
         _cleanup_capture_resources(
@@ -512,11 +606,16 @@ async def _handle_capture(capture_config, namespace, name, patch):
     patch.status["capturedDisks"] = captured_disks
     patch.status["phase"] = "CaptureComplete"
     patch.status["captureProgress"] = "Done"
-    _patch_cr_status(custom_api, namespace, name, {
-        "capturedDisks": captured_disks,
-        "phase": "CaptureComplete",
-        "captureProgress": "Done",
-    })
+    _patch_cr_status(
+        custom_api,
+        namespace,
+        name,
+        {
+            "capturedDisks": captured_disks,
+            "phase": "CaptureComplete",
+            "captureProgress": "Done",
+        },
+    )
     logger.info(f"Pattern capture complete for {name}: {len(captured_disks)} disk(s)")
 
     _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, namespace)

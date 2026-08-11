@@ -389,7 +389,7 @@ def cancel_capture(pattern_id: str, db) -> None:
             pass
 
 
-def _build_capture_disk_manifest(disk_nodes, disk_to_vm, pattern_id):
+def _build_capture_disk_manifest(disk_nodes, disk_to_vm, pattern_id, vm_nodes=None):
     """Build the disk manifest list for a KubeVirt capture request."""
     manifest = []
     for disk_node in disk_nodes:
@@ -401,6 +401,16 @@ def _build_capture_disk_manifest(disk_nodes, disk_to_vm, pattern_id):
             continue
         vm_name = f"vm-{vm_id[:8]}"
         disk_id = disk_node["id"]
+        disk_label = disk_node.get("data", {}).get(
+            "label", disk_node.get("data", {}).get("name", disk_id[:8])
+        )
+        vm_label = ""
+        if vm_nodes and vm_id in vm_nodes:
+            vm_label = (
+                vm_nodes[vm_id]
+                .get("data", {})
+                .get("label", vm_nodes[vm_id].get("data", {}).get("name", ""))
+            )
         manifest.append(
             {
                 "vmName": vm_name,
@@ -410,6 +420,8 @@ def _build_capture_disk_manifest(disk_nodes, disk_to_vm, pattern_id):
                 "s3Key": f"patterns/{pattern_id}/{disk_id}.{fmt}",
                 "sizeGb": int(disk_node.get("data", {}).get("size", 50)),
                 "format": fmt,
+                "diskLabel": disk_label,
+                "vmLabel": vm_label,
             }
         )
     return manifest
@@ -555,9 +567,11 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     _ensure_s3_secret(provider, namespace, s3_config)
 
     topology = project.deployed_topology or project.topology or {}
-    disk_nodes, _, disk_to_vm, _ = _build_disk_to_vm_map(topology)
+    disk_nodes, vm_nodes, disk_to_vm, _ = _build_disk_to_vm_map(topology)
 
-    disk_manifest = _build_capture_disk_manifest(disk_nodes, disk_to_vm, pattern_id)
+    disk_manifest = _build_capture_disk_manifest(
+        disk_nodes, disk_to_vm, pattern_id, vm_nodes
+    )
     if not disk_manifest:
         pattern.state = "error"
         pattern.deploy_error = "No disks to capture"

@@ -38,20 +38,37 @@ def build_temp_pvc_from_snapshot(name, namespace, snapshot_name, size_gb):
     }
 
 
+def build_scratch_pvc(name, namespace, size_gb):
+    return {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+        },
+        "spec": {
+            "accessModes": ["ReadWriteOnce"],
+            "resources": {"requests": {"storage": f"{size_gb}Gi"}},
+            "storageClassName": "ocs-storagecluster-ceph-rbd",
+        },
+    }
+
+
 def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb):
     deadline = max(3600, size_gb * 15)
+    scratch_pvc_name = f"scratch-{name}"
 
     export_cmd = (
         "set -e; "
-        "echo 'Converting raw to qcow2...'; "
+        "echo 'PHASE=converting'; "
         "qemu-img convert -f raw -O qcow2 -p /disk/disk.img /scratch/disk.qcow2; "
         "SIZE=$(stat -c%s /scratch/disk.qcow2); "
         'echo "DISK_SIZE_BYTES=$SIZE"; '
-        "echo 'Uploading to S3...'; "
+        "echo 'PHASE=uploading'; "
         f"aws s3 cp /scratch/disk.qcow2 s3://{s3_config.get('bucket', '')}/{s3_path} "
         f"--endpoint-url {s3_config.get('endpoint', 'https://s3.amazonaws.com')} "
         f"--region {s3_config.get('region', 'us-east-1')}; "
-        "echo 'Done'"
+        "echo 'PHASE=done'"
     )
 
     return {
@@ -102,7 +119,9 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
                         },
                         {
                             "name": "scratch",
-                            "emptyDir": {"sizeLimit": f"{size_gb}Gi"},
+                            "persistentVolumeClaim": {
+                                "claimName": scratch_pvc_name,
+                            },
                         },
                     ],
                     "restartPolicy": "Never",
@@ -110,4 +129,5 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
             },
         },
         "_deadline": deadline,
+        "_scratchPvcName": scratch_pvc_name,
     }
