@@ -591,6 +591,8 @@ async def _handle_capture(capture_config, namespace, name, patch):
         )
         await _stop_all_vms(custom_api, namespace)
 
+    _setup_export_sa(core_api, custom_api, namespace)
+
     # Snapshot and export each disk
     export_jobs = []
     for disk_info in disk_manifest:
@@ -684,6 +686,43 @@ def _setup_recert_sa(core_api, custom_api, namespace):
             )
     except Exception as e:
         logger.warning(f"Could not patch SCC for recert SA in {namespace}: {e}")
+
+
+def _setup_export_sa(core_api, custom_api, namespace):
+    """Create export SA and patch SCC for pattern export Jobs."""
+    try:
+        core_api.create_namespaced_service_account(
+            namespace=namespace,
+            body=client.V1ServiceAccount(
+                metadata=client.V1ObjectMeta(name="troshka-export"),
+            ),
+        )
+    except ApiException as e:
+        if e.status != 409:
+            raise
+    try:
+        scc = cast(
+            dict[str, Any],
+            custom_api.get_cluster_custom_object(
+                group=_SECURITY_GROUP,
+                version="v1",
+                plural="securitycontextconstraints",
+                name="troshka-privileged-jobs",
+            ),
+        )
+        sa_ref = f"system:serviceaccount:{namespace}:troshka-export"
+        users = scc.get("users", []) or []
+        if sa_ref not in users:
+            users.append(sa_ref)
+            custom_api.patch_cluster_custom_object(
+                group=_SECURITY_GROUP,
+                version="v1",
+                plural="securitycontextconstraints",
+                name="troshka-privileged-jobs",
+                body={"users": users},
+            )
+    except Exception as e:
+        logger.warning(f"Could not patch SCC for export SA in {namespace}: {e}")
 
 
 
