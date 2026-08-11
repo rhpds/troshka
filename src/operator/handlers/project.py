@@ -241,6 +241,7 @@ async def _snapshot_and_export_disk(
             raise
 
     # Poll until snapshot is ready (max 5 min)
+    restore_size_gi = size_gb
     for _ in range(60):
         try:
             vs = cast(
@@ -254,13 +255,16 @@ async def _snapshot_and_export_disk(
                 ),
             )
             if vs.get("status", {}).get("readyToUse"):
+                rs = vs.get("status", {}).get("restoreSize", "")
+                if rs.endswith("Gi"):
+                    restore_size_gi = max(size_gb, int(rs[:-2]))
                 break
         except Exception:
             pass
         await asyncio.sleep(5)
 
     temp_pvc = build_temp_pvc_from_snapshot(
-        temp_pvc_name, namespace, snap_name, size_gb
+        temp_pvc_name, namespace, snap_name, restore_size_gi
     )
     try:
         core_api.create_namespaced_persistent_volume_claim(
