@@ -342,7 +342,11 @@ def _check_export_job(batch_api, ej, namespace):
 
 
 def _read_job_progress(core_api, ej, namespace):
-    """Read qemu-img progress from export pod logs."""
+    """Read qemu-img progress from export pod logs.
+
+    qemu-img -p uses \\r (carriage return) so all progress updates land on
+    one log line. Split on \\r to find the latest percentage and PHASE marker.
+    """
     try:
         pods = core_api.list_namespaced_pod(
             namespace=namespace,
@@ -354,17 +358,18 @@ def _read_job_progress(core_api, ej, namespace):
             core_api.read_namespaced_pod_log(
                 name=pods.items[0].metadata.name,
                 namespace=namespace,
-                tail_lines=10,
+                tail_lines=20,
             )
         )
         phase = "converting"
         percent = 0
-        for line in logs.splitlines():
-            if line.startswith("PHASE="):
-                phase = line.split("=", 1)[1]
-            elif "/100%" in line:
+        for segment in logs.replace("\r", "\n").splitlines():
+            segment = segment.strip()
+            if segment.startswith("PHASE="):
+                phase = segment.split("=", 1)[1]
+            elif "/100%" in segment:
                 try:
-                    percent = int(float(line.strip().strip("()").split("/")[0]))
+                    percent = int(float(segment.strip("()").split("/")[0]))
                 except Exception:
                     pass
         if phase == "done":
