@@ -551,6 +551,13 @@ async def _handle_capture(capture_config, namespace, name, patch):
         {
             "phase": "Capturing",
             "captureProgress": "Snapshotting disks",
+            "captureDisks": [
+                {
+                    "name": f"{d.get('vmLabel', d['vmName'])}/{d.get('diskLabel', d['diskId'][:8])}",
+                    "status": "pending",
+                }
+                for d in disk_manifest
+            ],
         },
     )
 
