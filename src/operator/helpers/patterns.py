@@ -84,7 +84,7 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
             "activeDeadlineSeconds": deadline,
             "template": {
                 "spec": {
-                    "serviceAccountName": "troshka-recert",
+                    "serviceAccountName": "troshka-export",
                     "securityContext": {"fsGroup": 107},
                     "containers": [
                         {
