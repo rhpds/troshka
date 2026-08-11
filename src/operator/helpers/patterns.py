@@ -88,6 +88,7 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
                     "securityContext": {
                         "runAsUser": 107,
                         "runAsGroup": 107,
+                        "fsGroup": 107,
                     },
                     "containers": [
                         {
