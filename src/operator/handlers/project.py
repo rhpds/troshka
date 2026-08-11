@@ -321,7 +321,9 @@ def _check_export_job(batch_api, ej, namespace):
         return "pending"
 
 
-async def _poll_export_jobs(batch_api, export_jobs, namespace, patch):
+async def _poll_export_jobs(
+    batch_api, export_jobs, namespace, custom_api, cr_name
+):
     """Poll export Jobs until all complete.
 
     Wait time scales to the longest job deadline (+ 2 min buffer).
@@ -332,11 +334,6 @@ async def _poll_export_jobs(batch_api, export_jobs, namespace, patch):
     iterations = max_wait // 10
 
     disk_statuses = {ej["jobName"]: "exporting" for ej in export_jobs}
-    patch.status["captureProgress"] = f"Exporting {len(export_jobs)} disk(s) to S3"
-    patch.status["captureDisks"] = [
-        {"name": ej["jobName"].removeprefix("export-"), "status": "exporting"}
-        for ej in export_jobs
-    ]
     for _ in range(iterations):
         all_done = True
         for ej in export_jobs:
@@ -346,21 +343,23 @@ async def _poll_export_jobs(batch_api, export_jobs, namespace, patch):
                 continue
             if result == "failed":
                 logger.error(f"Export job {ej['jobName']} failed")
-                patch.status["phase"] = "CaptureError"
-                patch.status["captureError"] = f"Export job {ej['jobName']} failed"
+                _patch_cr_status(custom_api, namespace, cr_name, {
+                    "phase": "CaptureError",
+                    "captureError": f"Export job {ej['jobName']} failed",
+                })
                 return f"Export job {ej['jobName']} failed"
             all_done = False
         done_count = sum(1 for s in disk_statuses.values() if s == "done")
-        patch.status["captureProgress"] = (
-            f"Exporting disks to S3 ({done_count}/{len(export_jobs)})"
-        )
-        patch.status["captureDisks"] = [
-            {
-                "name": ej["jobName"].removeprefix("export-"),
-                "status": disk_statuses[ej["jobName"]],
-            }
-            for ej in export_jobs
-        ]
+        _patch_cr_status(custom_api, namespace, cr_name, {
+            "captureProgress": f"Exporting disks to S3 ({done_count}/{len(export_jobs)})",
+            "captureDisks": [
+                {
+                    "name": ej["jobName"].removeprefix("export-"),
+                    "status": disk_statuses[ej["jobName"]],
+                }
+                for ej in export_jobs
+            ],
+        })
         if all_done:
             break
         await asyncio.sleep(10)
@@ -372,8 +371,10 @@ async def _poll_export_jobs(batch_api, export_jobs, namespace, patch):
         ]
         msg = f"Export timed out after {max_wait}s, jobs still pending: {pending}"
         logger.error(msg)
-        patch.status["phase"] = "CaptureError"
-        patch.status["captureError"] = msg
+        _patch_cr_status(custom_api, namespace, cr_name, {
+            "phase": "CaptureError",
+            "captureError": msg,
+        })
         return msg
     return None
 
@@ -434,20 +435,40 @@ def _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, nam
             pass
 
 
+def _patch_cr_status(custom_api, namespace, name, status_fields):
+    """Patch TroshkaProject CR status directly via the k8s API."""
+    try:
+        custom_api.patch_namespaced_custom_object_status(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkaprojects",
+            name=name,
+            body={"status": status_fields},
+        )
+    except Exception as e:
+        logger.warning(f"Failed to patch CR status for {name}: {e}")
+
+
 async def _handle_capture(capture_config, namespace, name, patch):
     """Handle pattern capture: snapshot disks and export to S3."""
     s3_config = capture_config.get("s3Config", {})
     disk_manifest = capture_config.get("disks", [])
     restart_after = capture_config.get("restartAfter", False)
 
-    patch.status["phase"] = "Capturing"
-
     custom_api = client.CustomObjectsApi()
     core_api = client.CoreV1Api()
     batch_api = client.BatchV1Api()
 
+    _patch_cr_status(custom_api, namespace, name, {
+        "phase": "Capturing",
+        "captureProgress": "Snapshotting disks",
+    })
+
     if restart_after:
-        patch.status["captureProgress"] = "Stopping VMs"
+        _patch_cr_status(custom_api, namespace, name, {
+            "captureProgress": "Stopping VMs",
+        })
         await _stop_all_vms(custom_api, namespace)
 
     # Snapshot and export each disk
@@ -465,7 +486,9 @@ async def _handle_capture(capture_config, namespace, name, patch):
         )
         export_jobs.append(ej)
 
-    err = await _poll_export_jobs(batch_api, export_jobs, namespace, patch)
+    err = await _poll_export_jobs(
+        batch_api, export_jobs, namespace, custom_api, name
+    )
     if err:
         _cleanup_capture_resources(
             core_api, custom_api, batch_api, export_jobs, namespace
@@ -489,6 +512,11 @@ async def _handle_capture(capture_config, namespace, name, patch):
     patch.status["capturedDisks"] = captured_disks
     patch.status["phase"] = "CaptureComplete"
     patch.status["captureProgress"] = "Done"
+    _patch_cr_status(custom_api, namespace, name, {
+        "capturedDisks": captured_disks,
+        "phase": "CaptureComplete",
+        "captureProgress": "Done",
+    })
     logger.info(f"Pattern capture complete for {name}: {len(captured_disks)} disk(s)")
 
     _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, namespace)

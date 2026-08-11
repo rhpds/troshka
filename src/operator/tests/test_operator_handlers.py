@@ -4960,8 +4960,9 @@ class TestPollExportJobs:
         export_jobs = [{"jobName": "export-vm1-disk1"}]
         patch_obj = MagicMock()
 
+        custom_api = MagicMock()
         result = asyncio.run(
-            _poll_export_jobs(batch_api, export_jobs, "ns1", patch_obj)
+            _poll_export_jobs(batch_api, export_jobs, "ns1", custom_api, "proj1")
         )
 
         assert result is None
@@ -4976,10 +4977,10 @@ class TestPollExportJobs:
         batch_api.read_namespaced_job.return_value = job
 
         export_jobs = [{"jobName": "export-vm1-disk1"}]
-        patch_obj = MagicMock()
+        custom_api = MagicMock()
 
         result = asyncio.run(
-            _poll_export_jobs(batch_api, export_jobs, "ns1", patch_obj)
+            _poll_export_jobs(batch_api, export_jobs, "ns1", custom_api, "proj1")
         )
 
         assert result is not None
@@ -4995,12 +4996,14 @@ class TestPollExportJobs:
         batch_api.read_namespaced_job.return_value = job
 
         export_jobs = [{"jobName": "export-vm1-disk1", "deadline": 10}]
-        patch_obj = MagicMock()
+        custom_api = MagicMock()
 
         async def _run():
             with patch("asyncio.sleep", return_value=asyncio.Future()) as ms:
                 ms.return_value.set_result(None)
-                return await _poll_export_jobs(batch_api, export_jobs, "ns1", patch_obj)
+                return await _poll_export_jobs(
+                    batch_api, export_jobs, "ns1", custom_api, "proj1"
+                )
 
         result = asyncio.run(_run())
 
