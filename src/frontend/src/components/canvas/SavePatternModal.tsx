@@ -86,7 +86,7 @@ export default function SavePatternModal({ projectId, projectName, hasRunningVMs
           description,
           visibility: "private",
           source_project_id: projectId,
-          restart_after: restartAfter,
+          restart_after: stopVMs && restartAfter,
           quiesce_cluster: recert ? false : quiesceCluster,
           capture_clock_target: captureClockTarget,
           recert,

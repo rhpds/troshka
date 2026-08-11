@@ -573,6 +573,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
             "credentialsSecret": "s3-credentials",  # pragma: allowlist secret
         },
         "disks": disk_manifest,
+        "restartAfter": restart_after,
     }
 
     _set_capture_progress(

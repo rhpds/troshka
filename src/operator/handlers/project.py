@@ -435,18 +435,20 @@ def _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, nam
 
 
 async def _handle_capture(capture_config, namespace, name, patch):
-    """Handle pattern capture: stop VMs, snapshot disks, export to S3."""
+    """Handle pattern capture: snapshot disks and export to S3."""
     s3_config = capture_config.get("s3Config", {})
     disk_manifest = capture_config.get("disks", [])
+    restart_after = capture_config.get("restartAfter", False)
 
     patch.status["phase"] = "Capturing"
-    patch.status["captureProgress"] = "Stopping VMs"
 
     custom_api = client.CustomObjectsApi()
     core_api = client.CoreV1Api()
     batch_api = client.BatchV1Api()
 
-    await _stop_all_vms(custom_api, namespace)
+    if restart_after:
+        patch.status["captureProgress"] = "Stopping VMs"
+        await _stop_all_vms(custom_api, namespace)
 
     # Snapshot and export each disk
     export_jobs = []
