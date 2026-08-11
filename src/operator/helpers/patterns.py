@@ -120,7 +120,6 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
                             "name": "disk",
                             "persistentVolumeClaim": {
                                 "claimName": temp_pvc_name,
-                                "readOnly": True,
                             },
                         },
                         {
