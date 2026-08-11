@@ -80,12 +80,14 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
             "labels": {"troshka-role": "pattern-export"},
         },
         "spec": {
-            "backoffLimit": 2,
+            "backoffLimit": 6,
             "activeDeadlineSeconds": deadline,
             "template": {
                 "spec": {
-                    "serviceAccountName": "troshka-export",
-                    "securityContext": {"fsGroup": 107},
+                    "securityContext": {
+                        "runAsUser": 107,
+                        "runAsGroup": 107,
+                    },
                     "containers": [
                         {
                             "name": "export",

@@ -591,8 +591,6 @@ async def _handle_capture(capture_config, namespace, name, patch):
         )
         await _stop_all_vms(custom_api, namespace)
 
-    _setup_export_sa(core_api, custom_api, namespace)
-
     # Snapshot and export each disk
     export_jobs = []
     for disk_info in disk_manifest:
