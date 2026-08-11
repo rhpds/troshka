@@ -534,6 +534,25 @@ def _patch_cr_status(custom_api, namespace, name, status_fields):
         logger.warning(f"Failed to patch CR status for {name}: {e}")
 
 
+def _clear_capture_annotation(custom_api, namespace, name):
+    """Remove the capture-request annotation so kopf sees a clean state on retry."""
+    try:
+        custom_api.patch_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkaprojects",
+            name=name,
+            body={
+                "metadata": {
+                    "annotations": {CAPTURE_ANNOTATION: None}
+                }
+            },
+        )
+    except Exception as e:
+        logger.warning(f"Failed to clear capture annotation on {name}: {e}")
+
+
 async def _handle_capture(capture_config, namespace, name, patch):
     """Handle pattern capture: snapshot disks and export to S3."""
     s3_config = capture_config.get("s3Config", {})
@@ -596,6 +615,7 @@ async def _handle_capture(capture_config, namespace, name, patch):
         _cleanup_capture_resources(
             core_api, custom_api, batch_api, export_jobs, namespace
         )
+        _clear_capture_annotation(custom_api, namespace, name)
         return
 
     _read_export_sizes(core_api, export_jobs, namespace)
@@ -628,6 +648,7 @@ async def _handle_capture(capture_config, namespace, name, patch):
     logger.info(f"Pattern capture complete for {name}: {len(captured_disks)} disk(s)")
 
     _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, namespace)
+    _clear_capture_annotation(custom_api, namespace, name)
 
 
 def _setup_recert_sa(core_api, custom_api, namespace):
