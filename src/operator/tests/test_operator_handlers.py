@@ -4985,6 +4985,63 @@ class TestPollExportJobs:
         assert result is not None
         assert "failed" in result
 
+    def test_timeout_returns_error(self):
+        from handlers.project import _poll_export_jobs
+
+        batch_api = MagicMock()
+        job = MagicMock()
+        job.status.succeeded = None
+        job.status.failed = None
+        batch_api.read_namespaced_job.return_value = job
+
+        export_jobs = [{"jobName": "export-vm1-disk1", "deadline": 10}]
+        patch_obj = MagicMock()
+
+        async def _run():
+            with patch("asyncio.sleep", return_value=asyncio.Future()) as ms:
+                ms.return_value.set_result(None)
+                return await _poll_export_jobs(batch_api, export_jobs, "ns1", patch_obj)
+
+        result = asyncio.run(_run())
+
+        assert result is not None
+        assert "timed out" in result
+
+    def test_deadline_scales_with_disk_size(self):
+        from handlers.project import _snapshot_and_export_disk
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "status": {"readyToUse": True}
+        }
+        core_api = MagicMock()
+        batch_api = MagicMock()
+        patch_obj = MagicMock()
+        patch_obj.status = {}
+
+        disk_info = {
+            "pvcName": "vm-abc-disk-1234",
+            "diskId": "1234abcd-0000-0000-0000-000000000000",
+            "vmName": "myvm",
+            "s3Key": "patterns/p1/disk.qcow2",
+            "vmId": "vm-uuid-1",
+            "sizeGb": 1228,
+            "format": "qcow2",
+        }
+        result = asyncio.run(
+            _snapshot_and_export_disk(
+                disk_info,
+                {"bucket": "b"},
+                custom_api,
+                core_api,
+                batch_api,
+                "ns1",
+                "proj1",
+                patch_obj,
+            )
+        )
+        assert result["deadline"] == 1228 * 15
+
 
 class TestCreateVncRbac:
     @patch("handlers.project.client")

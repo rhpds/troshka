@@ -276,7 +276,9 @@ async def _snapshot_and_export_disk(
         temp_pvc_name,
         s3_key,
         s3_config,
+        size_gb,
     )
+    deadline = export_job.pop("_deadline", 3600)
     try:
         batch_api.create_namespaced_job(namespace=namespace, body=export_job)
     except ApiException as e:
@@ -292,6 +294,7 @@ async def _snapshot_and_export_disk(
         "s3Key": s3_key,
         "format": disk_info.get("format", "qcow2"),
         "virtualSizeBytes": size_gb * 1073741824,
+        "deadline": deadline,
     }
 
 
@@ -315,12 +318,17 @@ def _check_export_job(batch_api, ej, namespace):
 
 
 async def _poll_export_jobs(batch_api, export_jobs, namespace, patch):
-    """Poll export Jobs until all complete (max 30 min).
+    """Poll export Jobs until all complete.
 
+    Wait time scales to the longest job deadline (+ 2 min buffer).
     Returns None on success, or sets CaptureError phase and returns error string.
     """
+    max_deadline = max((ej.get("deadline", 3600) for ej in export_jobs), default=3600)
+    max_wait = max_deadline + 120
+    iterations = max_wait // 10
+
     patch.status["captureProgress"] = f"Exporting {len(export_jobs)} disk(s) to S3"
-    for _ in range(180):
+    for _ in range(iterations):
         all_done = True
         for ej in export_jobs:
             result = _check_export_job(batch_api, ej, namespace)
@@ -335,6 +343,17 @@ async def _poll_export_jobs(batch_api, export_jobs, namespace, patch):
         if all_done:
             break
         await asyncio.sleep(10)
+    else:
+        pending = [
+            ej["jobName"]
+            for ej in export_jobs
+            if _check_export_job(batch_api, ej, namespace) != "done"
+        ]
+        msg = f"Export timed out after {max_wait}s, jobs still pending: {pending}"
+        logger.error(msg)
+        patch.status["phase"] = "CaptureError"
+        patch.status["captureError"] = msg
+        return msg
     return None
 
 
@@ -425,6 +444,9 @@ async def _handle_capture(capture_config, namespace, name, patch):
 
     err = await _poll_export_jobs(batch_api, export_jobs, namespace, patch)
     if err:
+        _cleanup_capture_resources(
+            core_api, custom_api, batch_api, export_jobs, namespace
+        )
         return
 
     _read_export_sizes(core_api, export_jobs, namespace)

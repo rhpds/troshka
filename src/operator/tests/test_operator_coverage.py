@@ -640,12 +640,13 @@ class TestHandleCapture:
         assert p.status["captureProgress"] == "Done"
         assert len(p.status["capturedDisks"]) == 1
 
+    @patch("handlers.project._cleanup_capture_resources")
     @patch("handlers.project._poll_export_jobs", return_value="export failed")
     @patch("handlers.project._snapshot_and_export_disk")
     @patch("handlers.project._stop_all_vms")
     @patch("handlers.project.client")
     def test_capture_returns_early_on_poll_error(
-        self, mock_client, mock_stop, mock_snap, mock_poll
+        self, mock_client, mock_stop, mock_snap, mock_poll, mock_cleanup
     ):
         from handlers.project import _handle_capture
 
@@ -653,8 +654,8 @@ class TestHandleCapture:
         p = MockPatch()
         capture_config = {"s3Config": {}, "disks": [{"diskId": "d1"}]}
         asyncio.run(_handle_capture(capture_config, "ns", "proj", p))
-        # Should NOT set CaptureComplete since poll returned error
         assert p.status.get("phase") != "CaptureComplete"
+        mock_cleanup.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

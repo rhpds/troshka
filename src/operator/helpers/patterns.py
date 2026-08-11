@@ -38,7 +38,9 @@ def build_temp_pvc_from_snapshot(name, namespace, snapshot_name, size_gb):
     }
 
 
-def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config):
+def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb):
+    deadline = max(3600, size_gb * 15)
+
     export_cmd = (
         "set -e; "
         "echo 'Converting raw to qcow2...'; "
@@ -62,7 +64,7 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config):
         },
         "spec": {
             "backoffLimit": 2,
-            "activeDeadlineSeconds": 3600,
+            "activeDeadlineSeconds": deadline,
             "template": {
                 "spec": {
                     "containers": [
@@ -100,11 +102,12 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config):
                         },
                         {
                             "name": "scratch",
-                            "emptyDir": {"sizeLimit": "500Gi"},
+                            "emptyDir": {"sizeLimit": f"{size_gb}Gi"},
                         },
                     ],
                     "restartPolicy": "Never",
                 },
             },
         },
+        "_deadline": deadline,
     }
