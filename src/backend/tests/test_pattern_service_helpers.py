@@ -328,8 +328,9 @@ class TestMarkCaptureError:
     @patch("app.services.ws_pubsub.notify_project")
     def test_marks_pattern_error(self, mock_notify):
         from app.services.pattern_service import (
-            _capture_progress,
+            _clear_capture_progress,
             _mark_capture_error,
+            get_capture_progress,
         )
 
         mock_pattern = MagicMock()
@@ -341,9 +342,9 @@ class TestMarkCaptureError:
         _mark_capture_error(mock_db, "pat-99")
         assert mock_pattern.state == "error"
         mock_db.commit.assert_called_once()
-        assert _capture_progress.get("pat-99", {}).get("step") == "error"
+        assert (get_capture_progress("pat-99") or {}).get("step") == "error"
         # cleanup
-        _capture_progress.pop("pat-99", None)
+        _clear_capture_progress("pat-99")
 
     def test_swallows_exceptions(self):
         from app.services.pattern_service import _mark_capture_error
@@ -445,8 +446,9 @@ class TestFinalizePatternCapture:
         self, mock_recert, mock_bucket, mock_s3_client, mock_notify
     ):
         from app.services.pattern_service import (
-            _capture_progress,
+            _clear_capture_progress,
             _finalize_pattern_capture,
+            get_capture_progress,
         )
 
         disk1 = MagicMock()
@@ -488,9 +490,9 @@ class TestFinalizePatternCapture:
         mock_s3_client.return_value.put_object.assert_called_once()
         # Completion notification sent
         mock_notify.assert_called()
-        assert _capture_progress.get("pat-finalize", {}).get("step") == "complete"
+        assert (get_capture_progress("pat-finalize") or {}).get("step") == "complete"
         # cleanup
-        _capture_progress.pop("pat-finalize", None)
+        _clear_capture_progress("pat-finalize")
 
     @patch("app.services.ws_pubsub.notify_project")
     @patch("app.services.s3_storage._get_s3_client")
@@ -500,7 +502,7 @@ class TestFinalizePatternCapture:
         self, mock_recert, mock_bucket, mock_s3, mock_notify
     ):
         from app.services.pattern_service import (
-            _capture_progress,
+            _clear_capture_progress,
             _finalize_pattern_capture,
         )
 
@@ -521,7 +523,7 @@ class TestFinalizePatternCapture:
 
         mock_recert.assert_called_once()
         # cleanup
-        _capture_progress.pop("pat-recert", None)
+        _clear_capture_progress("pat-recert")
 
     @patch("app.services.ws_pubsub.notify_project")
     @patch("app.services.s3_storage._get_s3_client")
@@ -532,7 +534,7 @@ class TestFinalizePatternCapture:
         self, mock_touch, mock_recert, mock_bucket, mock_s3, mock_notify
     ):
         from app.services.pattern_service import (
-            _capture_progress,
+            _clear_capture_progress,
             _finalize_pattern_capture,
         )
 
@@ -553,7 +555,7 @@ class TestFinalizePatternCapture:
         _finalize_pattern_capture(pattern, "pat-pb", worker, MagicMock(), db)
         mock_touch.assert_called_once_with(db, "pool-123")
         # cleanup
-        _capture_progress.pop("pat-pb", None)
+        _clear_capture_progress("pat-pb")
 
 
 # ---------------------------------------------------------------------------
@@ -1029,20 +1031,27 @@ class TestProcessDirectCaptureResults:
 
 class TestGetCaptureProgress:
     def test_returns_progress_when_exists(self):
-        from app.services.pattern_service import _capture_progress, get_capture_progress
+        from app.services.pattern_service import (
+            _clear_capture_progress,
+            _set_capture_progress,
+            get_capture_progress,
+        )
 
-        _capture_progress["pat-test"] = {"percent": 50, "step": "uploading"}
+        _set_capture_progress("pat-test", {"percent": 50, "step": "uploading"})
         try:
             result = get_capture_progress("pat-test")
             assert result["percent"] == 50
             assert result["step"] == "uploading"
         finally:
-            _capture_progress.pop("pat-test", None)
+            _clear_capture_progress("pat-test")
 
     def test_returns_none_when_not_exists(self):
-        from app.services.pattern_service import _capture_progress, get_capture_progress
+        from app.services.pattern_service import (
+            _clear_capture_progress,
+            get_capture_progress,
+        )
 
-        _capture_progress.pop("pat-missing", None)
+        _clear_capture_progress("pat-missing")
         result = get_capture_progress("pat-missing")
         assert result is None
 
@@ -1052,7 +1061,11 @@ class TestGetCaptureProgress:
 
 class TestCancelCapture:
     def test_cancel_capture_cancels_jobs(self):
-        from app.services.pattern_service import _capture_progress, cancel_capture
+        from app.services.pattern_service import (
+            _clear_capture_progress,
+            _set_capture_progress,
+            cancel_capture,
+        )
 
         host = MagicMock()
         host.id = "host-1"
@@ -1060,37 +1073,44 @@ class TestCancelCapture:
         mock_db = MagicMock()
         mock_db.query.return_value.filter_by.return_value.first.return_value = host
 
-        _capture_progress["pat-1"] = {
-            "_host_id": "host-1",
-            "_job_ids": ["job-a", "job-b"],
-        }
+        _set_capture_progress(
+            "pat-1",
+            {
+                "_host_id": "host-1",
+                "_job_ids": ["job-a", "job-b"],
+            },
+        )
         try:
             with patch("app.services.troshkad_client.cancel_job") as mock_cancel:
                 cancel_capture("pat-1", mock_db)
                 assert mock_cancel.call_count == 2
         finally:
-            _capture_progress.pop("pat-1", None)
+            _clear_capture_progress("pat-1")
 
     def test_cancel_capture_no_progress(self):
-        from app.services.pattern_service import _capture_progress, cancel_capture
+        from app.services.pattern_service import _clear_capture_progress, cancel_capture
 
-        _capture_progress.pop("pat-missing", None)
+        _clear_capture_progress("pat-missing")
         mock_db = MagicMock()
 
         # Should not raise
         cancel_capture("pat-missing", mock_db)
 
     def test_cancel_capture_no_host_id(self):
-        from app.services.pattern_service import _capture_progress, cancel_capture
+        from app.services.pattern_service import (
+            _clear_capture_progress,
+            _set_capture_progress,
+            cancel_capture,
+        )
 
-        _capture_progress["pat-2"] = {"_host_id": None, "_job_ids": ["j1"]}
+        _set_capture_progress("pat-2", {"_host_id": None, "_job_ids": ["j1"]})
         try:
             mock_db = MagicMock()
             cancel_capture("pat-2", mock_db)
             # Should return early without querying host
             mock_db.query.assert_not_called()
         finally:
-            _capture_progress.pop("pat-2", None)
+            _clear_capture_progress("pat-2")
 
 
 # ── _run_recert_force_expire tests ──
@@ -1227,7 +1247,7 @@ class TestCapturePatternDisks:
     @patch("app.services.pattern_service.SessionLocal")
     def test_capture_no_host_marks_error(self, mock_session_cls, mock_sleep):
         from app.services.pattern_service import (
-            _capture_progress,
+            _clear_capture_progress,
             capture_pattern_disks,
         )
 
@@ -1247,7 +1267,7 @@ class TestCapturePatternDisks:
 
         capture_pattern_disks("pat-1", "proj-1")
         assert pattern.state == "error"
-        _capture_progress.pop("pat-1", None)
+        _clear_capture_progress("pat-1")
 
 
 # ---------------------------------------------------------------------------

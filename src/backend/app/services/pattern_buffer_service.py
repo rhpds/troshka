@@ -306,11 +306,11 @@ def _check_pattern_buffer_busy(db: Session, pool: StoragePool) -> str | None:
     if health and health.get("running_jobs", 0) > 0:
         return f"{health['running_jobs']} active job(s) on pattern buffer"
 
-    from app.services.pattern_service import _capture_progress
+    from app.models.pattern import Pattern
 
-    for pattern_id, progress in _capture_progress.items():
-        if progress.get("step") in ("capturing",):
-            return f"Pattern capture in progress ({pattern_id[:8]})"
+    capturing = db.query(Pattern).filter(Pattern.state == "capturing").first()
+    if capturing:
+        return f"Pattern capture in progress ({capturing.id[:8]})"
 
     return None
 

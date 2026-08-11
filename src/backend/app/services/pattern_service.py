@@ -10,7 +10,17 @@ from app.models.pattern import Pattern, PatternDisk
 
 log = logging.getLogger(__name__)
 
-_capture_progress: dict[str, dict] = {}
+
+def _set_capture_progress(pattern_id: str, data: dict):
+    from app.core.redis import set_progress
+
+    set_progress(f"pattern-capture:{pattern_id}", data)
+
+
+def _clear_capture_progress(pattern_id: str):
+    from app.core.redis import delete_progress
+
+    delete_progress(f"pattern-capture:{pattern_id}")
 
 
 def _run_recert_force_expire(host, pattern_id, topology, disks, db):
@@ -113,10 +123,13 @@ def _quiesce_ocp_cluster(host, project_id, topology, pattern_id):
     password = bastion.get("data", {}).get("ciCloudUserPassword", "")
 
     log.info("Pattern %s: quiescing OCP cluster before capture", pattern_id[:8])
-    _capture_progress[pattern_id] = {
-        "step": "quiescing",
-        "detail": "Checking cluster health",
-    }
+    _set_capture_progress(
+        pattern_id,
+        {
+            "step": "quiescing",
+            "detail": "Checking cluster health",
+        },
+    )
     from app.services.ws_pubsub import notify_pattern
 
     notify_pattern(
@@ -168,10 +181,13 @@ def _quiesce_ocp_cluster(host, project_id, topology, pattern_id):
                     "Pattern %s: cluster quiesced — all operators available",
                     pattern_id[:8],
                 )
-                _capture_progress[pattern_id] = {
-                    "step": "quiescing",
-                    "detail": "Cluster stable — all operators available",
-                }
+                _set_capture_progress(
+                    pattern_id,
+                    {
+                        "step": "quiescing",
+                        "detail": "Cluster stable — all operators available",
+                    },
+                )
                 notify_pattern(
                     pattern_id,
                     {
@@ -181,10 +197,13 @@ def _quiesce_ocp_cluster(host, project_id, topology, pattern_id):
                     },
                 )
                 break
-        _capture_progress[pattern_id] = {
-            "step": "quiescing",
-            "detail": "Waiting for cluster operators to stabilize",
-        }
+        _set_capture_progress(
+            pattern_id,
+            {
+                "step": "quiescing",
+                "detail": "Waiting for cluster operators to stabilize",
+            },
+        )
         notify_pattern(
             pattern_id,
             {
@@ -336,7 +355,9 @@ def _capture_vm_via_nbd(
 
 def get_capture_progress(pattern_id: str) -> dict | None:
     """Return capture progress for a pattern, or None if not tracking."""
-    return _capture_progress.get(pattern_id)
+    from app.core.redis import get_progress
+
+    return get_progress(f"pattern-capture:{pattern_id}")
 
 
 def cancel_capture(pattern_id: str, db) -> None:
@@ -344,7 +365,8 @@ def cancel_capture(pattern_id: str, db) -> None:
     from app.models.host import Host
     from app.services.troshkad_client import TroshkadError, cancel_job
 
-    progress = _capture_progress.pop(pattern_id, None)
+    progress = get_capture_progress(pattern_id)
+    _clear_capture_progress(pattern_id)
     if not progress:
         return
     host_id = progress.get("_host_id")
@@ -420,16 +442,21 @@ def _poll_capture_completion(
             phase = cr_status.get("phase", "")
             progress = cr_status.get("captureProgress", "")
 
-            _capture_progress[pattern_id] = {
+            disks = cr_status.get("captureDisks") or []
+            progress_data: dict = {
                 "step": "capturing",
                 "detail": progress,
             }
+            if disks:
+                progress_data["disks"] = disks
+            _set_capture_progress(pattern_id, progress_data)
             notify_pattern(
                 pattern_id,
                 {
                     "type": "capture-progress",
                     "step": "capturing",
                     "detail": progress,
+                    "disks": disks,
                 },
             )
 
@@ -548,10 +575,13 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         "disks": disk_manifest,
     }
 
-    _capture_progress[pattern_id] = {
-        "step": "capturing",
-        "detail": "Triggering capture on cluster",
-    }
+    _set_capture_progress(
+        pattern_id,
+        {
+            "step": "capturing",
+            "detail": "Triggering capture on cluster",
+        },
+    )
     notify_pattern(
         pattern_id,
         {
@@ -593,7 +623,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         pattern.state = "error"
         pattern.deploy_error = pattern.deploy_error or "Capture failed or timed out"
         db.commit()
-        _capture_progress.pop(pattern_id, None)
+        _clear_capture_progress(pattern_id)
         return
 
     # Create PatternDisk records from captured disks
@@ -627,7 +657,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     pattern.total_size_bytes = total_size
     db.commit()
 
-    _capture_progress.pop(pattern_id, None)
+    _clear_capture_progress(pattern_id)
     notify_pattern(pattern_id, {"type": "capture-complete"})
 
     # Save metadata to S3
@@ -804,12 +834,15 @@ def _capture_via_nbd(
 
     vm_count = len(vm_tasks)
     vm_status = {t["vm_id"]: "waiting" for t in vm_tasks}
-    _capture_progress[pattern_id] = {
-        "step": "capturing",
-        "detail": f"0/{vm_count} VMs done (NBD)",
-        "_host_id": host.id,
-        "_job_ids": [],
-    }
+    _set_capture_progress(
+        pattern_id,
+        {
+            "step": "capturing",
+            "detail": f"0/{vm_count} VMs done (NBD)",
+            "_host_id": host.id,
+            "_job_ids": [],
+        },
+    )
 
     def _update_progress():
         done = sum(1 for s in vm_status.values() if s == "done")
@@ -822,7 +855,7 @@ def _capture_via_nbd(
             "detail": f"{done}/{vm_count} VMs done (NBD)",
             "vms": lines,
         }
-        _capture_progress[pattern_id] = progress
+        _set_capture_progress(pattern_id, progress)
         notify_pattern(pattern_id, {"type": "capture-progress", **progress})
 
     errors = {}
@@ -1128,15 +1161,18 @@ def _capture_direct(
     # Poll all jobs concurrently, update progress with per-VM status
     completed_jobs: set[str] = set()
     deadline = _time.time() + 3600
-    _capture_progress[pattern_id] = {
-        "step": "capturing",
-        "detail": f"0/{len(all_jobs)} VMs done",
-        "_host_id": host.id,
-        "_job_ids": [j["job_id"] for j in all_jobs],
-    }
+    _set_capture_progress(
+        pattern_id,
+        {
+            "step": "capturing",
+            "detail": f"0/{len(all_jobs)} VMs done",
+            "_host_id": host.id,
+            "_job_ids": [j["job_id"] for j in all_jobs],
+        },
+    )
 
     while len(completed_jobs) < len(all_jobs) and _time.time() < deadline:
-        if pattern_id not in _capture_progress:
+        if not get_capture_progress(pattern_id):
             log.info(
                 "Pattern %s: capture cancelled, exiting poll loop",
                 pattern_id[:8],
@@ -1151,7 +1187,7 @@ def _capture_direct(
             "detail": f"{len(completed_jobs)}/{len(all_jobs)} VMs done",
             "vms": lines,
         }
-        _capture_progress[pattern_id] = progress
+        _set_capture_progress(pattern_id, progress)
         notify_pattern(pattern_id, {"type": "capture-progress", **progress})
         _time.sleep(5)
 
@@ -1315,11 +1351,14 @@ def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
         except Exception:
             log.debug("Failed to touch PB activity", exc_info=True)
 
-    _capture_progress[pattern_id] = {
-        "step": "complete",
-        "detail": "Capture complete",
-        "vms": [],
-    }
+    _set_capture_progress(
+        pattern_id,
+        {
+            "step": "complete",
+            "detail": "Capture complete",
+            "vms": [],
+        },
+    )
     notify_pattern(pattern_id, {"type": "capture-complete", "state": "available"})
 
 
@@ -1408,11 +1447,14 @@ def _mark_capture_error(db, pattern_id):
         if pattern:
             pattern.state = "error"
             db.commit()
-            _capture_progress[pattern_id] = {
-                "step": "error",
-                "detail": "Capture failed",
-                "vms": [],
-            }
+            _set_capture_progress(
+                pattern_id,
+                {
+                    "step": "error",
+                    "detail": "Capture failed",
+                    "vms": [],
+                },
+            )
             from app.services.ws_pubsub import notify_pattern
 
             notify_pattern(pattern_id, {"type": "capture-complete", "state": "error"})
@@ -1473,5 +1515,5 @@ def capture_pattern_disks(
         import time
 
         time.sleep(2)
-        _capture_progress.pop(pattern_id, None)
+        _clear_capture_progress(pattern_id)
         db.close()

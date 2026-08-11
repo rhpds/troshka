@@ -1037,9 +1037,9 @@ export default function ProjectCanvasPage() {
           projectName={projectName}
           hasRunningVMs={nodes.some((n) => n.type === "vmNode" && (n.data as Record<string, any>).status === "running")}
           isSno={nodes.filter((n) => n.type === "vmNode" && (n.data as Record<string, any>).os === "rhcos").length === 1}
-          onSaved={() => {
+          onSaved={(_id, capturing) => {
             setShowPatternModal(false);
-            showToast("Pattern saved successfully");
+            showToast(capturing ? "Pattern capture started — track progress on the Patterns page" : "Pattern saved successfully");
           }}
           onClose={() => setShowPatternModal(false)}
         />

@@ -37,7 +37,7 @@ interface Pattern {
   disk_count: number;
   total_size_gb: number;
   total_size_bytes: number;
-  capture_progress?: { step?: string; detail?: string; vms?: string[] };
+  capture_progress?: { step?: string; detail?: string; vms?: string[]; disks?: { name: string; status: string }[] };
   tags: Record<string, any> | null;
   disks: PatternDisk[];
   created_at: string;
@@ -427,10 +427,21 @@ export default function PatternsPage() {
                   {pattern.description && (
                     <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 8 }}>{pattern.description}</p>
                   )}
-                  {saving && pattern.capture_progress?.vms ? (
-                    <div style={{ fontSize: 12, opacity: 0.8, whiteSpace: "pre-line", lineHeight: 1.6 }}>
-                      {pattern.capture_progress.detail}
-                      {"\n"}{pattern.capture_progress.vms.join("\n")}
+                  {saving && pattern.capture_progress ? (
+                    <div style={{ fontSize: 12, opacity: 0.8, lineHeight: 1.6 }}>
+                      <div style={{ marginBottom: 4 }}>{pattern.capture_progress.detail || "Capturing..."}</div>
+                      {pattern.capture_progress.disks?.map((d: { name: string; status: string }) => (
+                        <div key={d.name} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ color: d.status === "done" ? "#4ade80" : "var(--pf-t--global--text--color--subtle)" }}>
+                            {d.status === "done" ? "✓" : "○"}
+                          </span>
+                          <span>{d.name}</span>
+                          <span style={{ opacity: 0.5 }}>{d.status}</span>
+                        </div>
+                      ))}
+                      {pattern.capture_progress.vms?.map((v: string) => (
+                        <div key={v}>{v}</div>
+                      ))}
                     </div>
                   ) : (
                     <div style={{ fontSize: 12, opacity: 0.6 }}>

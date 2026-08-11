@@ -576,7 +576,10 @@ class TestCaptureDirect:
         mock_process,
         mock_notify,
     ):
-        from app.services.pattern_service import _capture_direct, _capture_progress
+        from app.services.pattern_service import (
+            _capture_direct,
+            _clear_capture_progress,
+        )
 
         host = MagicMock()
         host.id = "host-1234"
@@ -596,7 +599,7 @@ class TestCaptureDirect:
         def sleep_side_effect(*args, **kwargs):
             # After first poll cycle, remove from progress (simulating cancel)
             if poll_count[0] >= 1:
-                _capture_progress.pop("pattern-cancel", None)
+                _clear_capture_progress("pattern-cancel")
 
         mock_sleep.side_effect = sleep_side_effect
 
@@ -1138,8 +1141,9 @@ class TestCapturePatternDisks:
     @patch("time.sleep")
     def test_cleans_up_progress_on_exit(self, mock_sleep, mock_session_cls):
         from app.services.pattern_service import (
-            _capture_progress,
+            _set_capture_progress,
             capture_pattern_disks,
+            get_capture_progress,
         )
 
         db = MagicMock()
@@ -1160,7 +1164,7 @@ class TestCapturePatternDisks:
         ]
 
         # Set some progress that should be cleaned up
-        _capture_progress["pat-cleanup"] = {"step": "test"}
+        _set_capture_progress("pat-cleanup", {"step": "test"})
 
         with patch(
             "app.services.pattern_service._get_pattern_buffer", return_value=None
@@ -1168,7 +1172,7 @@ class TestCapturePatternDisks:
             capture_pattern_disks("pat-cleanup", "proj-1")
 
         # Progress must be cleaned up in finally block
-        assert "pat-cleanup" not in _capture_progress
+        assert get_capture_progress("pat-cleanup") is None
 
     @patch("app.services.pattern_service.SessionLocal")
     @patch("time.sleep")

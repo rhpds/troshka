@@ -327,12 +327,18 @@ async def _poll_export_jobs(batch_api, export_jobs, namespace, patch):
     max_wait = max_deadline + 120
     iterations = max_wait // 10
 
+    disk_statuses = {ej["jobName"]: "exporting" for ej in export_jobs}
     patch.status["captureProgress"] = f"Exporting {len(export_jobs)} disk(s) to S3"
+    patch.status["captureDisks"] = [
+        {"name": ej["jobName"].removeprefix("export-"), "status": "exporting"}
+        for ej in export_jobs
+    ]
     for _ in range(iterations):
         all_done = True
         for ej in export_jobs:
             result = _check_export_job(batch_api, ej, namespace)
             if result == "done":
+                disk_statuses[ej["jobName"]] = "done"
                 continue
             if result == "failed":
                 logger.error(f"Export job {ej['jobName']} failed")
@@ -340,6 +346,17 @@ async def _poll_export_jobs(batch_api, export_jobs, namespace, patch):
                 patch.status["captureError"] = f"Export job {ej['jobName']} failed"
                 return f"Export job {ej['jobName']} failed"
             all_done = False
+        done_count = sum(1 for s in disk_statuses.values() if s == "done")
+        patch.status["captureProgress"] = (
+            f"Exporting disks to S3 ({done_count}/{len(export_jobs)})"
+        )
+        patch.status["captureDisks"] = [
+            {
+                "name": ej["jobName"].removeprefix("export-"),
+                "status": disk_statuses[ej["jobName"]],
+            }
+            for ej in export_jobs
+        ]
         if all_done:
             break
         await asyncio.sleep(10)
