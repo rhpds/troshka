@@ -1,0 +1,52 @@
+# bootc image for a disposable Fedora VM that Troshka's "libvirt" provider
+# type adopts as a host. Pre-installs the packages the SSH-based agent
+# installer (app/services/agent_deployer.py) would otherwise install itself,
+# so the install step just finds everything present and skips ahead.
+#
+# Intentionally carries no SSH key material — this image is meant to be
+# generic and shareable (pushed to the org's quay.io namespace, buildable
+# via CI). Each person injects their own key at `virt-install` time via
+# --cloud-init, which requires cloud-init to be present and enabled here.
+#
+# Build (run from the repo root so the build context includes this file):
+#
+#   podman build \
+#     -t quay.io/rhpds/troshka-libvirt-host:latest \
+#     -f infra/libvirt-host-image/Containerfile .
+#
+# See infra/libvirt-host-image/README.md for the full build -> qcow2 ->
+# virt-install workflow.
+#
+# Pin to a Fedora release image-builder-cli still has a distro definition for
+# (`image-builder list | grep fedora`) — EOL releases get dropped and fail
+# with "missing required info: DefaultRootFs". Check endoflife.date/fedora
+# before bumping.
+
+FROM quay.io/fedora/fedora-bootc:44
+
+RUN dnf install -y \
+      qemu-kvm libvirt libvirt-client virt-install \
+      python3 python3-libvirt dnsmasq nftables xorriso \
+      nmap-ncat sshpass wireguard-tools openssh-server nvme-cli \
+      cloud-init && \
+    dnf clean all && \
+    systemctl enable sshd cloud-init-local cloud-init-network cloud-config cloud-final
+
+# Set statically rather than via cloud-init's `hostname:` key: read directly
+# at boot via sethostname(2), no D-Bus involved (see README step 4 for why
+# that matters, and the `preserve_hostname: true` that keeps it from being
+# overridden).
+RUN echo troshka-libvirt-host > /etc/hostname
+
+# bootc/OSTree only guarantees /etc and /var as writable + persistent at
+# runtime — /opt ships as part of the read-only composefs tree. The agent
+# installer (app/services/agent_deployer.py) writes troshkad's TLS certs,
+# config (incl. auth token), and the daemon script itself under
+# /opt/troshka, so without this it silently fails every write there (the
+# install script has no `set -e`, so it still reports success) and
+# troshkad.service crash-loops forever on `WorkingDirectory=/opt/troshka`.
+# Symlinking /opt into /var — the standard OSTree idiom also used by
+# Fedora/RHEL Silverblue and CoreOS — makes it writable and persistent.
+RUN rmdir /opt && mkdir -p /var/opt && ln -s var/opt /opt
+
+RUN bootc container lint

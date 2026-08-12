@@ -43,6 +43,8 @@ def get_provider_ssh_user(provider_type: str) -> str:
         return "cloud-user"
     elif provider_type in ("gcp", "azure"):
         return "troshka"
+    elif provider_type == "libvirt":
+        return "root"
     raise ValueError(f"Unknown provider type: {provider_type}")
 
 
@@ -63,7 +65,21 @@ def get_provider_data_disk(provider_type: str) -> str:
         return "/dev/sdb"
     elif provider_type == "azure":
         return "/dev/disk/azure/scsi1/lun0"
+    elif provider_type == "libvirt":
+        return "/dev/vdb"
     raise ValueError(f"Unknown provider type: {provider_type}")
+
+
+# Provider types where vncd can't get a Let's Encrypt cert via Route53
+# DNS-01 (no console_domain/DNS integration available), so it runs plain
+# HTTP instead: OCP Virt is fronted by the OCP router's own TLS, while
+# libvirt "bring your own host" is reached directly over the local network.
+NO_TLS_VNCD_PROVIDER_TYPES = ("ocpvirt", "libvirt")
+
+
+def get_provider_vncd_no_tls(provider_type: str) -> bool:
+    """Whether vncd should run in --no-tls mode for this provider type."""
+    return provider_type in NO_TLS_VNCD_PROVIDER_TYPES
 
 
 AGENT_INSTALL_SCRIPT = """#!/bin/bash
@@ -441,9 +457,15 @@ SYSTEMDEOF
 CONSOLE_DOMAIN="{console_domain}"
 VNCD_NO_TLS="{vncd_no_tls}"
 if [ -n "$VNCD_NO_TLS" ]; then
-    # OCP Virt: TLS terminated by OCP router, vncd runs plain on 8080
+    # OCP Virt: TLS terminated by OCP router, vncd runs plain on 8080.
+    # Libvirt "bring your own host": no router in front, reached directly
+    # over the local network — open the port so the browser can connect.
     sed -i 's|ExecStart=.*troshka-vncd.py.*|ExecStart=/opt/troshka/venv/bin/python3 /opt/troshka/troshka-vncd.py --no-tls|' \
         /etc/systemd/system/troshka-vncd.service
+    if which firewall-cmd &>/dev/null; then
+        firewall-cmd --add-port=8080/tcp --permanent 2>/dev/null || true
+        firewall-cmd --reload 2>/dev/null || true
+    fi
     systemctl daemon-reload
     systemctl enable troshka-vncd
     systemctl restart troshka-vncd

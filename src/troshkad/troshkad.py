@@ -7864,9 +7864,44 @@ def handle_update(handler, params):
     drain_thread.start()
 
 
+def _set_vncd_tls_mode(no_tls):
+    """Rewrite the troshka-vncd systemd unit's ExecStart to add/remove --no-tls.
+
+    Mirrors the install-time logic in agent_deployer.py so the lightweight
+    update-vncd push path can toggle TLS mode without a full reinstall.
+    """
+    import re
+
+    unit_path = "/etc/systemd/system/troshka-vncd.service"
+    base_exec = "/opt/troshka/venv/bin/python3 /opt/troshka/troshka-vncd.py"
+    new_exec_line = f"ExecStart={base_exec} --no-tls" if no_tls else f"ExecStart={base_exec}"
+
+    with open(unit_path) as f:
+        content = f.read()
+    content = re.sub(
+        r"^ExecStart=.*troshka-vncd\.py.*$",
+        new_exec_line,
+        content,
+        flags=re.MULTILINE,
+    )
+    with open(unit_path, "w") as f:
+        f.write(content)
+
+    if no_tls:
+        try:
+            subprocess.run(
+                ["firewall-cmd", "--add-port=8080/tcp", "--permanent"], timeout=10
+            )
+            subprocess.run(["firewall-cmd", "--reload"], timeout=10)
+        except Exception:
+            pass
+
+    subprocess.run(["systemctl", "daemon-reload"], timeout=10, check=True)
+
+
 @route("POST", "/admin/update-vncd")
 def handle_update_vncd(handler, params):
-    """Update troshka-vncd.py and restart the vncd service."""
+    """Update troshka-vncd.py, optionally flip its TLS mode, and restart it."""
     import base64
 
     body = handler._read_body()
@@ -7891,6 +7926,16 @@ def handle_update_vncd(handler, params):
     except Exception as e:
         handler._send_json(500, {"error": f"failed to write vncd: {e}"})
         return
+
+    # Optionally flip TLS mode (systemd unit ExecStart) before restarting.
+    # Absent "no_tls" means "leave the current mode alone" — keeps callers
+    # that only push the script (no mode info) from silently flipping mode.
+    if "no_tls" in body:
+        try:
+            _set_vncd_tls_mode(bool(body["no_tls"]))
+        except Exception as e:
+            handler._send_json(500, {"error": f"failed to update vncd unit: {e}"})
+            return
 
     # Restart service
     try:

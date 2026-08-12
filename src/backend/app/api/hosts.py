@@ -112,6 +112,7 @@ class ProvisionRequest(BaseModel):
     image_id: str | None = None
     storage_pool_id: str | None = None
     disk_gb: int | None = None
+    ip_address: str | None = None
 
 
 @router.get("/expected-agent-version")
@@ -362,6 +363,11 @@ def _validate_provider(provider: Provider | None, body) -> Provider:
                 status_code=400,
                 detail="No VPC configured — run Setup VPC on the provider first",
             )
+    elif provider.type == "libvirt" and not body.ip_address:
+        raise HTTPException(
+            status_code=400,
+            detail="ip_address is required for a libvirt provider host",
+        )
     return provider
 
 
@@ -484,6 +490,7 @@ def add_host(
         _disk_gb,
         region,
         nfs_kwargs,
+        body.ip_address or "",
         queue_name="host_lifecycle",
         host_id=host_id,
     )
@@ -573,13 +580,14 @@ def _build_pool_install_kwargs(
         get_provider_data_disk,
         get_provider_ssh_port,
         get_provider_ssh_user,
+        get_provider_vncd_no_tls,
     )
 
     cfg = AgentDeployConfig(
         ssh_user=get_provider_ssh_user(provider_type),
         ssh_port=get_provider_ssh_port(provider_type),
         data_disk_device=get_provider_data_disk(provider_type),
-        vncd_no_tls=provider_type == "ocpvirt",
+        vncd_no_tls=get_provider_vncd_no_tls(provider_type),
         agent_ca_cert=get_agent_ca_cert(),
     )
     if h.console_domain:
@@ -727,7 +735,9 @@ def _push_vncd_update(h: Host, s: Session) -> None:
     with open(vncd_path, "rb") as vf:
         vncd_b64 = base64.b64encode(vf.read()).decode()
     prov = s.query(Provider).filter_by(id=h.provider_id).first()
-    no_tls = prov.type == "ocpvirt" if prov else False
+    from app.services.agent_deployer import get_provider_vncd_no_tls
+
+    no_tls = get_provider_vncd_no_tls(prov.type) if prov else False
     troshkad_request(
         h,
         "POST",
@@ -752,6 +762,7 @@ def _do_ssh_wait_and_install(
         deploy_agent,
         get_provider_data_disk,
         get_provider_ssh_user,
+        get_provider_vncd_no_tls,
         wait_for_ssh,
     )
 
@@ -784,7 +795,7 @@ def _do_ssh_wait_and_install(
             host_cert=_host_cert,
             host_key=_host_key,
             console_domain=h.console_domain or "",
-            vncd_no_tls=provider_type == "ocpvirt",
+            vncd_no_tls=get_provider_vncd_no_tls(provider_type),
             data_disk_device=_data_disk,
             agent_ca_cert=_get_aca(),
         ),
@@ -816,6 +827,7 @@ def _provision_and_install_bg(
     _disk_gb: int = 500,
     region: str = "",
     nfs_kwargs: dict | None = None,
+    ip_address: str = "",
 ):
     if nfs_kwargs is None:
         nfs_kwargs = {}
@@ -845,6 +857,7 @@ def _provision_and_install_bg(
                 security_group_id=_sg_id,
                 subnet_override=_subnet_id,  # type: ignore[arg-type]
                 host_type="shared",
+                ip_address=ip_address,
                 **nfs_kwargs,
             )
         except Exception:

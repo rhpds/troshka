@@ -2113,12 +2113,29 @@ def get_vm_console(
     if not vnc_port:
         return {"error": "VNC not available"}
 
-    if not host.console_domain or not host.agent_token:
+    if not host.agent_token:
         return {"error": "Console proxy not configured for this host"}
+
+    from app.models.provider import Provider
+
+    provider = db.query(Provider).filter_by(id=host.provider_id).first()
 
     from app.services.console_dns import sign_console_jwt
 
     jwt = sign_console_jwt(dom, host.id, host.agent_token)
+
+    if provider and provider.type == "libvirt":
+        # Bring-your-own libvirt host: no console DNS/TLS available, so
+        # vncd runs --no-tls directly on the host's own IP instead of a
+        # DNS-backed console_domain (see agent_deployer.py).
+        return {
+            "ws_url": f"ws://{host.ip_address}:8080/ws/{jwt}",
+            "host_type": host.host_type,
+        }
+
+    if not host.console_domain:
+        return {"error": "Console proxy not configured for this host"}
+
     return {
         "ws_url": f"wss://{host.console_domain}/ws/{jwt}",
         "host_type": host.host_type,

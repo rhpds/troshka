@@ -77,3 +77,10 @@ src/backend/.vni_hwm
 
 # Local Claude Code settings (personal, not shared)
 .claude/settings.json
+
+# libvirt-host-image: personal SSH keypair + local qcow2 build output
+# (see infra/libvirt-host-image/README.md steps 1 and 3)
+infra/libvirt-host-image/output/
+infra/libvirt-host-image/troshka-libvirt
+infra/libvirt-host-image/troshka-libvirt.pub
+infra/libvirt-host-image/troshka-libvirt-user-data.yaml

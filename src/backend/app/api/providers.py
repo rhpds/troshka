@@ -62,6 +62,9 @@ class ProviderCreate(BaseModel):
     azure_subscription_id: str = ""
     azure_location: str = ""
 
+    # Libvirt "bring your own host" fields
+    credentials: dict[str, Any] | None = None
+
 
 class ProviderUpdate(BaseModel):
     name: str | None = None
@@ -226,6 +229,15 @@ def _build_provider_credentials(
         if body.endpoint_url:
             creds["endpoint_url"] = body.endpoint_url
         return creds
+
+    if body.type == "libvirt":
+        ssh_private_key = (body.credentials or {}).get("ssh_private_key", "")
+        if not ssh_private_key:
+            raise HTTPException(
+                status_code=400,
+                detail="libvirt providers require credentials.ssh_private_key",
+            )
+        return {"ssh_private_key": ssh_private_key}
 
     raise HTTPException(400, f"Unknown provider type: {body.type}")
 
@@ -1229,6 +1241,34 @@ def _ensure_namespaces(
     return ns_checks
 
 
+def _test_libvirt_provider(creds: dict[str, Any]) -> dict[str, Any]:
+    """Test a libvirt "bring your own host" provider's SSH private key.
+
+    Unlike the cloud providers, libvirt has no API to call — the only stored
+    credential is the SSH private key used to adopt hosts, so "testing" it
+    just means confirming it's present and parses as a valid private key.
+    """
+    from cryptography.hazmat.primitives.serialization import load_ssh_private_key
+
+    private_key = creds.get("ssh_private_key", "")
+    if not private_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Provider credentials are missing 'ssh_private_key'",
+        )
+    try:
+        key = load_ssh_private_key(private_key.encode(), password=None)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400, detail=f"ssh_private_key is not a valid private key: {e}"
+        )
+    return {
+        "status": "ok",
+        "key_type": type(key).__name__,
+        "message": "SSH private key is valid",
+    }
+
+
 @router.post(
     "/{provider_id}/test",
     responses={
@@ -1312,6 +1352,8 @@ def test_provider(
                 "account": identity["Account"],
                 "arn": identity["Arn"],
             }
+        if provider.type == "libvirt":
+            return _test_libvirt_provider(creds)
         raise HTTPException(400, f"Unknown provider type: {provider.type}")
     except HTTPException:
         raise
