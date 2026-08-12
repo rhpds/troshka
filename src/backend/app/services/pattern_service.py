@@ -635,8 +635,8 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     provider = db.query(Provider).filter_by(id=host.provider_id).first()
     if not provider:
         pattern.state = "error"
-        pattern.deploy_error = "Provider not found"
         db.commit()
+        log.error("Pattern %s: provider not found", pattern_id[:8])
         return
 
     pattern.source_provider_id = provider.id
@@ -649,10 +649,12 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     cluster_s3 = get_cluster_s3_config(db, provider.id)
     if not cluster_s3:
         pattern.state = "error"
-        pattern.deploy_error = (
-            "No OBC credentials for this cluster — restart the backend to sync"
-        )
         db.commit()
+        log.error(
+            "Pattern %s: no OBC credentials for provider %s",
+            pattern_id[:8],
+            provider.name,
+        )
         return
 
     s3_config_for_secret = {
@@ -678,8 +680,8 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     )
     if not disk_manifest:
         pattern.state = "error"
-        pattern.deploy_error = "No disks to capture"
         db.commit()
+        log.error("Pattern %s: no disks to capture", pattern_id[:8])
         return
 
     capture_config = {
@@ -726,7 +728,6 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     except Exception as e:
         log.exception("Failed to trigger capture on %s: %s", cr_name, e)
         pattern.state = "error"
-        pattern.deploy_error = f"Failed to trigger capture: {e}"
         db.commit()
         return
 
@@ -757,8 +758,8 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
 
     if captured_disks is None:
         pattern.state = "error"
-        pattern.deploy_error = pattern.deploy_error or "Capture failed or timed out"
         db.commit()
+        log.error("Pattern %s: capture failed or timed out", pattern_id[:8])
         _clear_capture_progress(pattern_id)
         return
 
