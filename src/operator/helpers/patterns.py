@@ -60,6 +60,7 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
 
     export_cmd = (
         "set -e; "
+        "export AWS_CONFIG_FILE=/tmp/.aws-config; "
         "aws configure set default.s3.multipart_chunksize 64MB; "
         "aws configure set default.s3.max_concurrent_requests 20; "
         "echo 'PHASE=converting'; "
