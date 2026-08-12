@@ -57,7 +57,7 @@ def build_scratch_pvc(name, namespace, size_gb):
 
 
 def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb):
-    deadline = max(3600, size_gb * 15)
+    deadline = max(7200, size_gb * 90)
     scratch_pvc_name = f"scratch-{name}"
 
     export_cmd = (
