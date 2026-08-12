@@ -1,6 +1,6 @@
 """add pattern_locations
 
-Revision ID: a1b2c3d4e5f6
+Revision ID: 33827935d7e4
 Revises: 67320038e4ea
 Create Date: 2026-08-12 12:00:00.000000
 
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 from alembic import op
 
-revision: str = "a1b2c3d4e5f6"
+revision: str = "33827935d7e4"
 down_revision: str | Sequence[str] | None = "67320038e4ea"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
