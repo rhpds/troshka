@@ -1,4 +1,4 @@
-"""Tests for operator.py — startup configure() and module-level constants."""
+"""Tests for main.py — startup configure() and module-level constants."""
 
 import logging
 import textwrap
@@ -18,12 +18,12 @@ class TestCrdConstants:
 
 
 def _get_configure():
-    """Build the configure function from operator.py source without loading
+    """Build the configure function from main.py source without loading
     handler modules (which would pollute the kopf mock for other tests)."""
-    # Read the raw source of operator.py and exec only the configure function
+    # Read the raw source of main.py and exec only the configure function
     import os
 
-    op_path = os.path.join(os.path.dirname(__file__), "..", "operator.py")
+    op_path = os.path.join(os.path.dirname(__file__), "..", "main.py")
     with open(op_path) as f:
         source = f.read()
 

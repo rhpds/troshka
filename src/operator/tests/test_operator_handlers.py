@@ -9423,15 +9423,15 @@ class TestCollectRecertConfigsRemainingEdges:
 
 
 # ---------------------------------------------------------------------------
-# operator.py — configure() startup handler
+# main.py — configure() startup handler
 # ---------------------------------------------------------------------------
 
 
 def _load_configure():
-    """Load the configure function from operator.py with a passthrough decorator.
+    """Load the configure function from main.py with a passthrough decorator.
 
     The conftest mocks kopf as MagicMock, which swallows the decorated function.
-    We reload operator.py with kopf.on.startup() set as a passthrough so the
+    We reload main.py with kopf.on.startup() set as a passthrough so the
     real configure function is preserved and callable.
     """
     import importlib.util
@@ -9455,7 +9455,7 @@ def _load_configure():
     if "troshka_operator" in sys.modules:
         del sys.modules["troshka_operator"]
 
-    op_path = os.path.join(os.path.dirname(__file__), "..", "operator.py")
+    op_path = os.path.join(os.path.dirname(__file__), "..", "main.py")
     spec = importlib.util.spec_from_file_location("troshka_operator", op_path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -9471,7 +9471,7 @@ import sys
 
 
 class TestConfigureStartup:
-    """Tests for the @kopf.on.startup() handler in operator.py."""
+    """Tests for the @kopf.on.startup() handler in main.py."""
 
     def _make_settings(self):
         """Create a mock settings object with the attributes configure() sets."""

@@ -7,4 +7,4 @@ RUN pip install --no-cache-dir --require-hashes --only-binary :all: -r requireme
 
 COPY . .
 
-CMD ["kopf", "run", "operator.py", "--verbose"]
+CMD ["kopf", "run", "main.py", "--verbose"]
