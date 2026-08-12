@@ -555,7 +555,6 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         _get_k8s_clients,
         _project_ns,
     )
-    from app.services.s3_storage import _get_s3_config
     from app.services.ws_pubsub import notify_pattern
 
     pattern_id = pattern.id
@@ -573,33 +572,29 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     custom_api, _core_api, _ = _get_k8s_clients(provider)
     namespace = _project_ns(provider, project_id)
 
-    # Use OBC config for local RGW when available, fall back to global S4
     from app.services.s3_storage import get_cluster_s3_config
 
     cluster_s3 = get_cluster_s3_config(db, provider.id)
-    if cluster_s3:
-        s3_config_for_secret = {
-            "access_key_id": cluster_s3.get("access_key_id", ""),
-            "secret_access_key": cluster_s3.get("secret_access_key", ""),
-            "region": cluster_s3.get("region", "us-east-1"),
-            "endpoint_url": cluster_s3.get("endpoint", ""),
-        }
-        capture_s3 = {
-            "bucket": cluster_s3.get("bucket", ""),
-            "endpoint": cluster_s3.get("endpoint", ""),
-            "region": cluster_s3.get("region", "us-east-1"),
-            "credentialsSecret": "s3-credentials",  # pragma: allowlist secret
-        }
-    else:
-        s3_config_for_secret = _get_s3_config()
-        capture_s3 = {
-            "bucket": s3_config_for_secret.get("bucket", ""),
-            "endpoint": s3_config_for_secret.get(
-                "endpoint_url", "https://s3.amazonaws.com"
-            ),
-            "region": s3_config_for_secret.get("region", "us-east-1"),
-            "credentialsSecret": "s3-credentials",  # pragma: allowlist secret
-        }
+    if not cluster_s3:
+        pattern.state = "error"
+        pattern.deploy_error = (
+            "No OBC credentials for this cluster — restart the backend to sync"
+        )
+        db.commit()
+        return
+
+    s3_config_for_secret = {
+        "access_key_id": cluster_s3.get("access_key_id", ""),
+        "secret_access_key": cluster_s3.get("secret_access_key", ""),
+        "region": cluster_s3.get("region", "us-east-1"),
+        "endpoint_url": cluster_s3.get("endpoint", ""),
+    }
+    capture_s3 = {
+        "bucket": cluster_s3.get("bucket", ""),
+        "endpoint": cluster_s3.get("endpoint", ""),
+        "region": cluster_s3.get("region", "us-east-1"),
+        "credentialsSecret": "s3-credentials",  # pragma: allowlist secret
+    }
 
     _ensure_s3_secret(provider, namespace, s3_config_for_secret)
 

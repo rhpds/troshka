@@ -380,9 +380,7 @@ def _startup_sync_obc_credentials():
 
     db = SessionLocal()
     try:
-        providers = (
-            db.query(Provider).filter_by(type="kubevirt_native", state="active").all()
-        )
+        providers = db.query(Provider).filter_by(type="kubevirt", state="active").all()
         for provider in providers:
             try:
                 _sync_provider_obc(db, provider)

@@ -226,7 +226,7 @@ def _compute_sync_status(p: Pattern, db: Session) -> tuple[str | None, list[dict
 
     kubevirt_providers = (
         db.query(Provider)
-        .filter(Provider.type == "kubevirt_native", Provider.state == "active")
+        .filter(Provider.type == "kubevirt", Provider.state == "active")
         .count()
     )
     synced_count = sum(1 for ps in provider_states.values() if ps["state"] == "synced")
