@@ -390,7 +390,8 @@ def _read_job_progress(core_api, ej, namespace):
                 return f"uploading {size_label}"
             return "uploading"
         return f"converting {data.get('percent', 0)}%"
-    except Exception:
+    except Exception as _exc:
+        logger.debug("Progress exec failed for %s: %s", ej.get("jobName", "?"), _exc)
         return "starting"
 
 
