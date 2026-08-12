@@ -334,6 +334,39 @@ def _map_vm_states_for_project(project, host_batch, kv_batch):
     return vm_states, vm_progress, vm_boot_devs
 
 
+def _container_domain_name(project_id: str, node_id: str) -> str:
+    return f"troshka-{project_id[:8]}-{node_id[:8]}"
+
+
+_CONTAINER_STOPPED_STATES = frozenset(("stopped", "dead"))
+
+
+def _map_container_states_for_project(project, host_batch):
+    """Map batch container states to per-project containerNode states.
+
+    Returns dict of {node_id: {"state": str, "ips": list[str]}}.
+    """
+    container_states: dict = {}
+    if host_batch is None:
+        return container_states
+
+    for node in (project.topology or {}).get("nodes", []):
+        if node.get("type") != "containerNode":
+            continue
+        node_id = node.get("data", {}).get("id", node.get("id", ""))
+        name = _container_domain_name(project.id, node_id)
+        info = host_batch.get(name)
+        if info is None:
+            continue
+        state = info.get("state", "unknown")
+        container_states[node_id] = {
+            "state": "stopped" if state in _CONTAINER_STOPPED_STATES else state,
+            "ips": info.get("ips", []),
+        }
+
+    return container_states
+
+
 def _log_vm_state_changes(project, vm_states, prev_vm_states):
     """Log individual VM state transitions for debugging."""
     for vm_id, new_state in vm_states.items():
@@ -355,12 +388,20 @@ def _log_vm_state_changes(project, vm_states, prev_vm_states):
 
 
 def _check_and_notify_project_changes(
-    project_id, project, dp, vm_states, vm_progress, vm_boot_devs
+    project_id,
+    project,
+    dp,
+    vm_states,
+    vm_progress,
+    vm_boot_devs,
+    container_states=None,
 ):
     """Compare current state vs last cached state and send WS notifications.
 
     Updates _last_states for the project.
     """
+    if container_states is None:
+        container_states = {}
     last = _last_states.get(project_id, {})
     current_project_state = project.state
     current_deploy_error = project.deploy_error
@@ -402,6 +443,14 @@ def _check_and_notify_project_changes(
             },
         )
 
+    # Log and notify container state changes
+    prev_container_states = last.get("container_states", {})
+    if container_states and container_states != prev_container_states:
+        notify_project(
+            project_id,
+            {"type": "container-state", "states": container_states},
+        )
+
     # Update cache
     _last_states[project_id] = {
         "project_state": current_project_state,
@@ -410,23 +459,35 @@ def _check_and_notify_project_changes(
         "vm_states": vm_states if vm_states else last.get("vm_states", {}),
         "vm_progress": vm_progress,
         "vm_boot_devs": vm_boot_devs,
+        "container_states": (
+            container_states if container_states else last.get("container_states", {})
+        ),
     }
 
 
-def _fetch_troshkad_host_states(host, host_batch_states):
-    """Fetch VM states from a troshkad host if not already cached."""
+def _fetch_troshkad_host_states(host, host_batch_states, container_batch_states=None):
+    """Fetch VM and container states from a troshkad host if not already cached."""
+    if container_batch_states is None:
+        container_batch_states = {}
     if host.agent_status != "connected":
         return
-    if host.id in host_batch_states:
-        return
-    from app.services.troshkad_client import get_all_vm_states
+    from app.services.troshkad_client import get_all_container_states, get_all_vm_states
 
-    try:
-        batch = get_all_vm_states(host)
-        if batch is not None:
-            host_batch_states[host.id] = batch
-    except Exception:
-        pass
+    if host.id not in host_batch_states:
+        try:
+            batch = get_all_vm_states(host)
+            if batch is not None:
+                host_batch_states[host.id] = batch
+        except Exception:
+            pass
+
+    if host.id not in container_batch_states:
+        try:
+            batch = get_all_container_states(host)
+            if batch is not None:
+                container_batch_states[host.id] = batch
+        except Exception:
+            pass
 
 
 def _collect_hosts_to_query(projects):
@@ -452,14 +513,16 @@ def _fetch_kubevirt_states_for_host(host_id, projects, host, db, project_batch_s
 
 
 def _batch_fetch_vm_states(projects, deploying_host_ids, db):
-    """Batch-fetch VM states: one call per host (troshkad) or per project (kubevirt).
+    """Batch-fetch VM and container states: one call per host (troshkad) or per
+    project (kubevirt).
 
-    Returns (host_batch_states, project_batch_states).
+    Returns (host_batch_states, project_batch_states, container_batch_states).
     """
     from app.models.host import Host
 
     host_batch_states: dict = {}
     project_batch_states: dict = {}
+    container_batch_states: dict = {}
 
     hosts_to_query = _collect_hosts_to_query(projects)
     hosts_to_query -= deploying_host_ids
@@ -473,9 +536,9 @@ def _batch_fetch_vm_states(projects, deploying_host_ids, db):
                 host_id, projects, host, db, project_batch_states
             )
         else:
-            _fetch_troshkad_host_states(host, host_batch_states)
+            _fetch_troshkad_host_states(host, host_batch_states, container_batch_states)
 
-    return host_batch_states, project_batch_states
+    return host_batch_states, project_batch_states, container_batch_states
 
 
 def _collect_host_batch_for_project(project, host_batch_states):
@@ -496,6 +559,13 @@ def _get_vm_states_for_project(project, host_batch, kv_batch):
     return {}, {}, {}
 
 
+def _get_container_states_for_project(project, container_batch):
+    """Get container states for a project."""
+    if project.state in ("active", "stopped"):
+        return _map_container_states_for_project(project, container_batch)
+    return {}
+
+
 def _evict_stale_cache_entries(projects):
     """Evict cache entries for projects no longer active/stopped."""
     stale = [k for k in _last_states if k not in projects]
@@ -503,19 +573,33 @@ def _evict_stale_cache_entries(projects):
         del _last_states[k]
 
 
-def _notify_all_projects(projects, host_batch_states, project_batch_states):
-    """Send WS notifications for all projects based on fetched VM states."""
+def _notify_all_projects(
+    projects, host_batch_states, project_batch_states, container_batch_states=None
+):
+    """Send WS notifications for all projects based on fetched VM/container states."""
+    if container_batch_states is None:
+        container_batch_states = {}
     from app.services.deploy_service import _get_deploy_progress_data
 
     for project_id, project in projects.items():
         dp = _get_deploy_progress_data(project_id)
         kv_batch = project_batch_states.get(project_id)
         host_batch = _collect_host_batch_for_project(project, host_batch_states)
+        container_batch = _collect_host_batch_for_project(
+            project, container_batch_states
+        )
         vm_states, vm_progress, vm_boot_devs = _get_vm_states_for_project(
             project, host_batch, kv_batch
         )
+        container_states = _get_container_states_for_project(project, container_batch)
         _check_and_notify_project_changes(
-            project_id, project, dp, vm_states, vm_progress, vm_boot_devs
+            project_id,
+            project,
+            dp,
+            vm_states,
+            vm_progress,
+            vm_boot_devs,
+            container_states,
         )
 
     _evict_stale_cache_entries(projects)
@@ -554,10 +638,12 @@ def _poll_active_projects():
                 if p.host_assignments:
                     deploying_host_ids.update(set(p.host_assignments.values()))
 
-        host_batch_states, project_batch_states = _batch_fetch_vm_states(
-            projects, deploying_host_ids, db
+        host_batch_states, project_batch_states, container_batch_states = (
+            _batch_fetch_vm_states(projects, deploying_host_ids, db)
         )
-        _notify_all_projects(projects, host_batch_states, project_batch_states)
+        _notify_all_projects(
+            projects, host_batch_states, project_batch_states, container_batch_states
+        )
     finally:
         db.close()
 
