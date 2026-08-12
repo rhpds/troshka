@@ -356,7 +356,11 @@ def _read_job_progress(core_api, ej, namespace):
         if not items:
             return "pending"
         pod = next(
-            (p for p in items if getattr(getattr(p, "status", None), "phase", "") == "Running"),
+            (
+                p
+                for p in items
+                if getattr(getattr(p, "status", None), "phase", "") == "Running"
+            ),
             items[-1],
         )
         from kubernetes.stream import stream
@@ -377,9 +381,13 @@ def _read_job_progress(core_api, ej, namespace):
             return "done"
         if phase == "uploading":
             size = data.get("size", 0)
+            uploaded = data.get("uploaded", 0)
             if size:
-                label = f"{size / 1073741824:.1f} GiB"
-                return f"uploading {label}"
+                size_label = f"{size / 1073741824:.1f} GiB"
+                if uploaded:
+                    pct = min(99, int(uploaded * 100 / size))
+                    return f"uploading {size_label} {pct}%"
+                return f"uploading {size_label}"
             return "uploading"
         return f"converting {data.get('percent', 0)}%"
     except Exception:
@@ -582,11 +590,7 @@ def _clear_capture_annotation(custom_api, namespace, name):
             namespace=namespace,
             plural="troshkaprojects",
             name=name,
-            body={
-                "metadata": {
-                    "annotations": {CAPTURE_ANNOTATION: None}
-                }
-            },
+            body={"metadata": {"annotations": {CAPTURE_ANNOTATION: None}}},
         )
     except Exception as e:
         logger.warning(f"Failed to clear capture annotation on {name}: {e}")
@@ -779,7 +783,6 @@ def _setup_export_sa(core_api, custom_api, namespace):
             )
     except Exception as e:
         logger.warning(f"Could not patch SCC for export SA in {namespace}: {e}")
-
 
 
 def _create_network_crs(

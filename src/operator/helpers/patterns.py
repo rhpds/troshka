@@ -60,26 +60,53 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
     deadline = max(7200, size_gb * 90)
     scratch_pvc_name = f"scratch-{name}"
 
+    s3_bucket = s3_config.get("bucket", "")
+    s3_endpoint = s3_config.get("endpoint", "https://s3.amazonaws.com")
+
     export_cmd = (
         "set -e; "
         "export HOME=/scratch; "
-        "export AWS_CONFIG_FILE=/scratch/.aws-config; "
-        f"aws configure set default.s3.multipart_chunksize {_EXPORT_MULTIPART_CHUNK}; "
-        f"aws configure set default.s3.max_concurrent_requests {_EXPORT_CONCURRENT_REQUESTS}; "
-        # Progress file on scratch PVC — operator reads via exec
-        "echo '{\"phase\":\"converting\",\"percent\":0}' > /scratch/.progress; "
+        'echo \'{"phase":"converting","percent":0}\' > /scratch/.progress; '
+        # qemu-img -p writes \r-delimited progress — tr splits into lines
         "qemu-img convert -f raw -O qcow2 -p /disk/disk.img /scratch/disk.qcow2 2>&1 | "
+        "  tr '\\r' '\\n' | "
         "  while IFS= read -r line; do "
         "    pct=$(echo \"$line\" | grep -oP '\\d+\\.\\d+(?=/100%)' || true); "
-        "    [ -n \"$pct\" ] && echo \"{\\\"phase\\\":\\\"converting\\\",\\\"percent\\\":${pct%%.*}}\" > /scratch/.progress; "
+        '    [ -n "$pct" ] && echo "{\\"phase\\":\\"converting\\",\\"percent\\":${pct%%.*}}" > /scratch/.progress; '
         "  done; "
         "SIZE=$(stat -c%s /scratch/disk.qcow2); "
-        'echo "DISK_SIZE_BYTES=$SIZE"; '
-        "echo '{\"phase\":\"uploading\",\"size\":'$SIZE'}' > /scratch/.progress; "
-        f"aws s3 cp /scratch/disk.qcow2 s3://{s3_config.get('bucket', '')}/{s3_path} "
-        f"--endpoint-url {s3_config.get('endpoint', 'https://s3.amazonaws.com')} "
-        f"--region {s3_config.get('region', 'us-east-1')}; "
-        "echo '{\"phase\":\"done\"}' > /scratch/.progress"
+        'echo \'{"phase":"uploading","size":\'$SIZE\',"uploaded":0}\' > /scratch/.progress; '
+        # rclone uploads with --progress writing stats to stderr
+        "export RCLONE_CONFIG=/scratch/rclone.conf; "
+        "cat > $RCLONE_CONFIG <<REOF\n"
+        "[target]\n"
+        "type = s3\n"
+        "provider = Ceph\n"
+        "access_key_id = $AWS_ACCESS_KEY_ID\n"
+        "secret_access_key = $AWS_SECRET_ACCESS_KEY\n"
+        f"endpoint = {s3_endpoint}\n"
+        "no_check_bucket = true\n"
+        "no_verify_ssl = true\n"
+        "REOF\n"
+        f"rclone copyto /scratch/disk.qcow2 target:{s3_bucket}/{s3_path} "
+        f"--s3-chunk-size {_EXPORT_MULTIPART_CHUNK} "
+        f"--s3-upload-concurrency {_EXPORT_CONCURRENT_REQUESTS} "
+        "--progress --stats 5s --stats-one-line 2>&1 | "
+        "  tr '\\r' '\\n' | "
+        "  while IFS= read -r line; do "
+        "    bytes=$(echo \"$line\" | grep -oP 'Transferred:.*?\\K\\d+\\.\\d+ [GgMm]' | head -1 || true); "
+        '    if [ -n "$bytes" ]; then '
+        "      num=$(echo \"$bytes\" | grep -oP '[\\d.]+'); "
+        "      unit=$(echo \"$bytes\" | grep -oP '[GgMm]'); "
+        '      case "$unit" in '
+        '        G|g) ub=$(echo "$num * 1073741824" | bc | cut -d. -f1);; '
+        '        M|m) ub=$(echo "$num * 1048576" | bc | cut -d. -f1);; '
+        "        *) ub=0;; "
+        "      esac; "
+        '      echo "{\\"phase\\":\\"uploading\\",\\"size\\":$SIZE,\\"uploaded\\":$ub}" > /scratch/.progress; '
+        "    fi; "
+        "  done; "
+        'echo \'{"phase":"done"}\' > /scratch/.progress'
     )
 
     return {
