@@ -344,7 +344,7 @@ def _check_export_job(batch_api, ej, namespace):
 
 
 def _read_job_progress(core_api, ej, namespace):
-    """Read export progress from /scratch/.progress file via exec."""
+    """Read export progress from pod logs (last PROGRESS: line)."""
     import json as _json
 
     try:
@@ -363,19 +363,20 @@ def _read_job_progress(core_api, ej, namespace):
             ),
             items[-1],
         )
-        from kubernetes.stream import stream
-
-        output = stream(
-            core_api.connect_get_namespaced_pod_exec,
-            pod.metadata.name,
-            namespace,
-            command=["cat", "/scratch/.progress"],
-            stderr=False,
-            stdout=True,
-            stdin=False,
-            tty=False,
+        logs = core_api.read_namespaced_pod_log(
+            name=pod.metadata.name,
+            namespace=namespace,
+            tail_lines=5,
         )
-        data = _json.loads(output.strip())
+        logs_str = logs if isinstance(logs, str) else str(logs or "")
+        last_progress = None
+        for line in reversed(logs_str.strip().split("\n")):
+            if line.startswith("PROGRESS:"):
+                last_progress = line[9:].strip()
+                break
+        if not last_progress:
+            return "starting"
+        data = _json.loads(last_progress)
         phase = data.get("phase", "converting")
         if phase == "done":
             return "done"
@@ -391,7 +392,7 @@ def _read_job_progress(core_api, ej, namespace):
             return "uploading"
         return f"converting {data.get('percent', 0)}%"
     except Exception as _exc:
-        logger.debug("Progress exec failed for %s: %s", ej.get("jobName", "?"), _exc)
+        logger.debug("Progress read failed for %s: %s", ej.get("jobName", "?"), _exc)
         return "starting"
 
 

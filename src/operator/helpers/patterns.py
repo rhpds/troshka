@@ -65,25 +65,27 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
 
     raw_size_bytes = size_gb * 1073741824
 
+    # _p helper: write progress JSON to file AND stdout (for pod log reading)
     export_cmd = (
         "set -e; "
         "export HOME=/scratch; "
-        'echo \'{"phase":"converting","percent":0}\' > /scratch/.progress; '
+        '_p() { echo "$1" > /scratch/.progress; echo "PROGRESS:$1"; }; '
+        '_p \'{"phase":"converting","percent":0}\'; '
         # Background progress monitor — polls output file size every 5s
         "( while [ ! -f /scratch/.convert_done ]; do "
         "    if [ -f /scratch/disk.qcow2 ]; then "
         "      cur=$(stat -c%s /scratch/disk.qcow2 2>/dev/null || echo 0); "
         f"      pct=$((cur * 100 / {raw_size_bytes})); "
         "      [ $pct -gt 99 ] && pct=99; "
-        '      echo "{\\"phase\\":\\"converting\\",\\"percent\\":$pct}" > /scratch/.progress; '
+        '      _p "{\\"phase\\":\\"converting\\",\\"percent\\":$pct}"; '
         "    fi; "
         "    sleep 5; "
         "  done ) & "
         "qemu-img convert -f raw -O qcow2 /disk/disk.img /scratch/disk.qcow2; "
         "touch /scratch/.convert_done; "
         "SIZE=$(stat -c%s /scratch/disk.qcow2); "
-        'echo \'{"phase":"uploading","size":\'$SIZE\',"uploaded":0}\' > /scratch/.progress; '
-        # rclone upload with progress via log file polling
+        '_p \'{"phase":"uploading","size":\'$SIZE\',"uploaded":0}\'; '
+        # rclone config
         "export RCLONE_CONFIG=/scratch/rclone.conf; "
         "cat > $RCLONE_CONFIG <<REOF\n"
         "[target]\n"
@@ -107,7 +109,7 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
         '        M) ub=$(echo "$num * 1048576" | bc | cut -d. -f1);; '
         "        *) ub=0;; "
         "      esac; "
-        '      echo "{\\"phase\\":\\"uploading\\",\\"size\\":$SIZE,\\"uploaded\\":$ub}" > /scratch/.progress; '
+        '      _p "{\\"phase\\":\\"uploading\\",\\"size\\":$SIZE,\\"uploaded\\":$ub}"; '
         "    fi; "
         "  fi; "
         "  sleep 5; "
@@ -117,7 +119,7 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
         f"--s3-upload-concurrency {_EXPORT_CONCURRENT_REQUESTS} "
         "--stats 5s --stats-one-line --log-file /scratch/.rclone.log --log-level INFO; "
         "touch /scratch/.upload_done; "
-        'echo \'{"phase":"done"}\' > /scratch/.progress'
+        '_p \'{"phase":"done"}\''
     )
 
     return {
