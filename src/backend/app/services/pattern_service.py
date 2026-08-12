@@ -518,8 +518,13 @@ def _poll_capture_completion(
     iterations = max_wait_seconds // 10
     for _attempt in range(iterations):
         _time.sleep(10)
-        if not get_capture_progress(pattern_id):
-            log.info("Pattern %s: capture cancelled, exiting poll", pattern_id[:8])
+        from app.core.database import SessionLocal as _SL
+
+        _check_db = _SL()
+        _exists = _check_db.query(Pattern).filter_by(id=pattern_id).first() is not None
+        _check_db.close()
+        if not _exists:
+            log.info("Pattern %s: deleted during capture, exiting poll", pattern_id[:8])
             return None
         try:
             cr_obj = custom_api.get_namespaced_custom_object(
