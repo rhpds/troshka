@@ -22,10 +22,18 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - id: check
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
         run: |
-          DIFF=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
+          BEFORE="$PUSH_BEFORE"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            BEFORE="HEAD~1"
+          fi
+          DIFF=$(git diff --name-only "$BEFORE" HEAD 2>/dev/null || echo "")
+          echo "Files changed since last push:"
+          echo "$DIFF"
           echo "backend=$(echo "$DIFF" | grep -qE '^src/backend/|^deploy/containerfiles/Containerfile\.backend' && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "frontend=$(echo "$DIFF" | grep -qE '^src/frontend/|^deploy/containerfiles/Containerfile\.frontend' && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "operator=$(echo "$DIFF" | grep -q '^src/operator/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
