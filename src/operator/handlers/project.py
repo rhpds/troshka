@@ -282,7 +282,7 @@ async def _snapshot_and_export_disk(
         if e.status != 409:
             raise
 
-    scratch = build_scratch_pvc(scratch_pvc_name, namespace, size_gb)
+    scratch = build_scratch_pvc(scratch_pvc_name, namespace, max(size_gb + 10, int(size_gb * 1.2)))
     try:
         core_api.create_namespaced_persistent_volume_claim(
             namespace=namespace, body=scratch
