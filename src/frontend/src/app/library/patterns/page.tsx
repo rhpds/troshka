@@ -476,13 +476,13 @@ export default function PatternsPage() {
                       loadPatterns();
                     }}
                   />
-                  <Button variant="primary" size="sm" isDisabled={saving} onClick={() => setDeployPattern({ id: pattern.id, name: pattern.name, is_sno: pattern.is_sno })}>
+                  <Button variant="primary" size="sm" isDisabled={saving || pattern.state === "error"} onClick={() => setDeployPattern({ id: pattern.id, name: pattern.name, is_sno: pattern.is_sno })}>
                     Create Project
                   </Button>
-                  <Button variant="secondary" size="sm" isDisabled={saving} onClick={() => setBulkPatternId(pattern.id)}>
+                  <Button variant="secondary" size="sm" isDisabled={saving || pattern.state === "error"} onClick={() => setBulkPatternId(pattern.id)}>
                     Bulk Deploy
                   </Button>
-                  <Button variant="secondary" size="sm" isDisabled={saving} onClick={() => setExportPattern(pattern)}>
+                  <Button variant="secondary" size="sm" isDisabled={saving || pattern.state === "error"} onClick={() => setExportPattern(pattern)}>
                     Export
                   </Button>
                   {saving && (
