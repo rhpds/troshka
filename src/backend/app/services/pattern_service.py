@@ -733,6 +733,11 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     total_disk_gb = sum(d.get("sizeGb", 50) for d in disk_manifest)
     poll_timeout = max(2700, total_disk_gb * 30)
 
+    # Release the DB transaction before the long poll so cancel/delete
+    # can modify the pattern row without blocking on our lock.
+    db.commit()
+    db.expire_all()
+
     captured_disks = _poll_capture_completion(
         custom_api,
         namespace,
@@ -742,6 +747,14 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         CRD_VERSION,
         max_wait_seconds=poll_timeout,
     )
+
+    # Re-query pattern after poll — it may have been deleted by cancel
+    pattern = db.query(Pattern).filter_by(id=pattern_id).first()
+    if not pattern:
+        log.info("Pattern %s deleted during capture", pattern_id[:8])
+        _clear_capture_progress(pattern_id)
+        return
+
     if captured_disks is None:
         pattern.state = "error"
         pattern.deploy_error = pattern.deploy_error or "Capture failed or timed out"
