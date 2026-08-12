@@ -147,6 +147,7 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
                         {
                             "name": "export",
                             "image": TOOLS_IMAGE,
+                            "imagePullPolicy": "Always",
                             "command": ["sh", "-c", export_cmd],
                             "volumeMounts": [
                                 {"name": "disk", "mountPath": "/disk"},
