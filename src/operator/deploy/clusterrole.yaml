@@ -51,6 +51,10 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
+  # OBC for local pattern storage (Ceph RGW)
+  - apiGroups: ["objectbucket.io"]
+    resources: ["objectbucketclaims"]
+    verbs: ["get", "create"]
   # kopf operator framework — peering and CRD discovery
   - apiGroups: ["kopf.dev"]
     resources: ["clusterkopfpeerings"]
