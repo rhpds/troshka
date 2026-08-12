@@ -865,6 +865,21 @@ class KubeVirtDriver(ProviderDriver):
             if "AlreadyExists" not in str(e):
                 raise
 
+        # Use OBC config for local RGW when available
+        from app.services.s3_storage import get_cluster_s3_config
+
+        db = kwargs.get("db")
+        cluster_s3 = get_cluster_s3_config(db, provider.id) if db else None
+        if cluster_s3:
+            obc_s3 = {
+                "access_key_id": cluster_s3.get("access_key_id", ""),
+                "secret_access_key": cluster_s3.get("secret_access_key", ""),
+                "region": cluster_s3.get("region", "us-east-1"),
+                "endpoint_url": cluster_s3.get("endpoint", ""),
+                "bucket": cluster_s3.get("bucket", ""),
+            }
+            _ensure_s3_secret(provider, namespace, obc_s3, "s3-obc-credentials")
+
         _ensure_s3_secret(provider, namespace, s3_config, "s3-credentials")
 
         central_s3 = kwargs.get("central_s3_config")
@@ -880,6 +895,13 @@ class KubeVirtDriver(ProviderDriver):
             "accessKeyId": s3_config.get("access_key_id", ""),
             "secretKey": s3_config.get("secret_access_key", ""),
         }
+        if cluster_s3:
+            s3_cr_config["obcConfig"] = {
+                "bucket": cluster_s3.get("bucket", ""),
+                "endpoint": cluster_s3.get("endpoint", ""),
+                "region": cluster_s3.get("region", "us-east-1"),
+                "credentialsSecret": "s3-obc-credentials",  # pragma: allowlist secret
+            }
 
         project_cr = {
             "apiVersion": f"{CRD_GROUP}/{CRD_VERSION}",

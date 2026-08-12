@@ -20,6 +20,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
 if TYPE_CHECKING:
+    from app.models.pattern_location import PatternLocation
     from app.models.user import User
 
 
@@ -34,6 +35,9 @@ class Pattern(Base):
     owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
     visibility: Mapped[str] = mapped_column(String(20), default="private")
     source_project_id: Mapped[str | None] = mapped_column(String(36))
+    source_provider_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("providers.id"), nullable=True
+    )
     topology: Mapped[dict] = mapped_column(JSONB, nullable=False)
     state: Mapped[str] = mapped_column(String(20), default="creating")
     total_size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
@@ -74,6 +78,9 @@ class PatternDisk(Base):
     state: Mapped[str] = mapped_column(String(20), default="uploading")
 
     pattern: Mapped[Pattern] = relationship(back_populates="disks")
+    locations: Mapped[list[PatternLocation]] = relationship(
+        back_populates="pattern_disk", cascade="all, delete-orphan"
+    )
 
 
 class PatternShare(Base):

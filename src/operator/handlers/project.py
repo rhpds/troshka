@@ -960,6 +960,24 @@ def _ensure_cache_namespace_and_secrets(core_api, s3_config, central_s3_config):
             continue
         _upsert_s3_secret(core_api, CACHE_NAMESPACE, secret_name, cfg)
 
+    # Ensure OBC credentials are available in cache namespace for local RGW deploys
+    try:
+        from helpers.obc import get_obc_s3_config
+
+        obc = get_obc_s3_config(core_api)
+        if obc:
+            _upsert_s3_secret(
+                core_api,
+                CACHE_NAMESPACE,
+                "s3-obc-credentials",  # pragma: allowlist secret
+                {
+                    "accessKeyId": obc["access_key_id"],
+                    "secretKey": obc["secret_access_key"],
+                },
+            )
+    except Exception:
+        pass
+
 
 def _upsert_s3_secret(core_api, namespace, secret_name, cfg):
     """Create or update an S3 credential secret."""
@@ -997,7 +1015,15 @@ def _create_golden_pvc_for_disk(
     if not s3_path:
         return
 
-    if use_central and central_s3_config:
+    # For pattern images, prefer local OBC config over S4
+    is_pattern = disk.get("patternImage") is not None
+    obc_config = s3_config.get("obcConfig")
+    if is_pattern and obc_config:
+        disk_s3_config = obc_config
+        secret_name = obc_config.get(
+            "credentialsSecret", "s3-obc-credentials"  # pragma: allowlist secret
+        )
+    elif use_central and central_s3_config:
         disk_s3_config = central_s3_config
         secret_name = "s3-central-credentials"  # pragma: allowlist secret
     else:

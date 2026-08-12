@@ -13,6 +13,7 @@ from app.models.library import (
 from app.models.mesh_peer import ProjectMeshPeer
 from app.models.network import Network, SecurityRule
 from app.models.pattern import Pattern, PatternDisk, PatternShare
+from app.models.pattern_location import PatternLocation
 from app.models.portal import ProjectPortalToken
 from app.models.project import Project, ProjectShare
 from app.models.provider import Provider
@@ -52,4 +53,5 @@ __all__ = [
     "RegistryCredential",
     "SystemConfig",
     "ProjectMeshPeer",
+    "PatternLocation",
 ]

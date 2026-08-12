@@ -24,7 +24,23 @@ def configure(settings: kopf.OperatorSettings, **_):
     from kubernetes import client
 
     custom_api = client.CustomObjectsApi()
+    core_api = client.CoreV1Api()
     batch_api = client.BatchV1Api()
+
+    # Ensure OBC exists for local pattern storage
+    try:
+        from helpers.obc import ensure_obc
+
+        obc_config = ensure_obc(custom_api, core_api)
+        if obc_config:
+            logger.info(
+                "OBC ready: bucket=%s", obc_config.get("bucket", "?")
+            )
+        else:
+            logger.warning("OBC created but credentials not yet available")
+    except Exception:
+        logger.warning("OBC setup skipped (ODF may not be available)")
+
     try:
         projects = custom_api.list_cluster_custom_object(
             group=CRD_GROUP, version=CRD_VERSION, plural="troshkaprojects"

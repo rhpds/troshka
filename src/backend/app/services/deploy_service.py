@@ -2646,6 +2646,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 s3_config,
                 exec_ssh_key=exec_privkey_pem,
                 central_s3_config=central_s3_config,
+                db=db,
             )
         except Exception as e:
             if "AlreadyExists" in str(e):
