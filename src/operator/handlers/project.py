@@ -486,8 +486,37 @@ def _read_export_sizes(core_api, export_jobs, namespace):
             pass
 
 
+def _log_failed_export_pods(core_api, export_jobs, namespace):
+    """Log output from failed export pods before cleanup deletes them."""
+    for ej in export_jobs:
+        try:
+            pods = core_api.list_namespaced_pod(
+                namespace=namespace,
+                label_selector=f"job-name={ej['jobName']}",
+            )
+            for pod in getattr(pods, "items", []):
+                phase = getattr(getattr(pod, "status", None), "phase", "")
+                if phase == "Failed":
+                    try:
+                        logs = core_api.read_namespaced_pod_log(
+                            name=pod.metadata.name,
+                            namespace=namespace,
+                            tail_lines=20,
+                        )
+                        logger.error(
+                            "Export pod %s failed. Logs:\n%s",
+                            pod.metadata.name,
+                            logs,
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+
 def _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, namespace):
     """Cleanup temp PVCs, scratch PVCs, snapshots, and export Jobs."""
+    _log_failed_export_pods(core_api, export_jobs, namespace)
     for ej in export_jobs:
         try:
             core_api.delete_namespaced_persistent_volume_claim(
