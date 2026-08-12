@@ -847,10 +847,15 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         progress_callback,
     )
     if failed:
+        failed_names = [aj["name"] for aj in active_jobs if aj["job_id"] in failed]
         logger.error(
-            "cache_library_images: %d/%d downloads failed",
+            "cache_library_images: %d/%d downloads failed: %s",
             len(failed),
             len(active_jobs),
+            ", ".join(failed_names),
+        )
+        raise TroshkadError(
+            f"Failed to cache required image(s) on host: {', '.join(failed_names)}"
         )
 
 

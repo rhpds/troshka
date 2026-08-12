@@ -1209,6 +1209,10 @@ def _handle_vm_create(job, params):
         cmd.extend(["--disk", f"path={_validate_path(seed_iso)},device=cdrom,bus=sata"])
     if video_model in ("virtio", "vga", "qxl"):
         cmd.extend(["--video", video_model])
+    # Force VNC graphics explicitly — without this, virt-install's
+    # osinfo-based defaults can pick spice on some hosts, which the
+    # console proxy (troshka-vncd) can't talk to.
+    cmd.extend(["--graphics", "vnc,listen=127.0.0.1"])
     if input_model == "virtio":
         cmd.extend(["--input", "type=keyboard,bus=virtio"])
         cmd.extend(["--input", "type=tablet,bus=virtio"])
@@ -6746,7 +6750,8 @@ def _s3_download(
     proc = subprocess.Popen(
         [aws_bin, "s3", "cp", s3_url, local_path],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
         env=env,
     )
     while proc.poll() is None:
@@ -6758,8 +6763,15 @@ def _s3_download(
         except OSError:
             pass
         time.sleep(5)
+    stderr_output = (proc.stderr.read() or "").strip() if proc.stderr else ""
     if proc.returncode != 0:
-        raise RuntimeError(f"S3 download failed (exit {proc.returncode})")
+        for line in stderr_output.splitlines():
+            _job_log(job, line)
+        detail = stderr_output.splitlines()[-1] if stderr_output else ""
+        raise RuntimeError(
+            f"S3 download failed (exit {proc.returncode})"
+            + (f": {detail}" if detail else "")
+        )
 
 
 def _handle_snapshot_capture(job, params):

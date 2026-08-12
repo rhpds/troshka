@@ -3424,9 +3424,10 @@ def _deploy_added_vms(h, p_id, s, current, vni_map, added_vms, errors):
 
     _set_deploy_progress(p_id, {"step": "downloading", "detail": "0%"})
 
-    def _progress(downloaded, total):
-        pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
-        _set_deploy_progress(p_id, {"step": "downloading", "detail": pct})
+    def _progress(detail, items):
+        _set_deploy_progress(
+            p_id, {"step": "downloading", "detail": str(detail), "items": items}
+        )
 
     cache_library_images(current, h, s, progress_callback=_progress)
     _create_seed_isos_via_troshkad(h, p_id, current)
@@ -3445,8 +3446,12 @@ def _deploy_added_vms(h, p_id, s, current, vni_map, added_vms, errors):
         }
         vm_disks_add = _find_vm_disks(vm_node["id"], current)
         try:
-            _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks_add)
-            _create_vm_via_troshkad(h, p_id, vm_data, current, vni_map)
+            disk_job_ids = _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks_add)
+            for jid in disk_job_ids:
+                wait_for_job(h, jid, timeout=900)
+            vm_job_id = _create_vm_via_troshkad(h, p_id, vm_data, current, vni_map)
+            if vm_job_id:
+                wait_for_job(h, vm_job_id, timeout=120)
             # Start if auto-start not disabled
             no_auto_start = {
                 e["vmId"]
@@ -3826,9 +3831,10 @@ def _cache_images_and_metadata(h, p_id, current, vni_map, s):
 
     _set_deploy_progress(p_id, {"step": "downloading", "detail": "0%"})
 
-    def _reconfig_dl_progress(downloaded, total):
-        pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
-        _set_deploy_progress(p_id, {"step": "downloading", "detail": pct})
+    def _reconfig_dl_progress(detail, items):
+        _set_deploy_progress(
+            p_id, {"step": "downloading", "detail": str(detail), "items": items}
+        )
 
     cache_library_images(current, h, s, progress_callback=_reconfig_dl_progress)
 
@@ -4103,9 +4109,12 @@ def _build_connected_topology(topology, target_vm_id):
 def _cache_redeploy_images(h, s, vm_topo, dom):
     _redeploy_progress[dom] = {"step": "downloading", "detail": "0%"}
 
-    def _progress(downloaded, total):
-        pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
-        _redeploy_progress[dom] = {"step": "downloading", "detail": pct}
+    def _progress(detail, items):
+        _redeploy_progress[dom] = {
+            "step": "downloading",
+            "detail": str(detail),
+            "items": items,
+        }
 
     cache_library_images(vm_topo, h, s, progress_callback=_progress)
 
@@ -4115,12 +4124,20 @@ def _create_redeploy_vm(h, p_id, vm_node, topology, vni_map, pool, target_vm_id,
     _redeploy_progress[dom] = {"step": "creating", "detail": "cloud-init seed ISO"}
     _create_seed_isos_via_troshkad(h, p_id, vm_only_topo, pool)
 
-    _redeploy_progress[dom] = {"step": "creating", "detail": "VM definition"}
+    _redeploy_progress[dom] = {"step": "creating", "detail": "VM disk"}
     vm_data = _build_redeploy_vm_data(vm_node)
     disk_cache = "none" if pool and pool.mode.startswith("shared") else None
     vm_disks = _find_vm_disks(target_vm_id, topology or {})
-    _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks, pool)
-    _create_vm_via_troshkad(h, p_id, vm_data, topology or {}, vni_map, pool, disk_cache)
+    disk_job_ids = _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks, pool)
+    for jid in disk_job_ids:
+        wait_for_job(h, jid, timeout=900)
+
+    _redeploy_progress[dom] = {"step": "creating", "detail": "VM definition"}
+    vm_job_id = _create_vm_via_troshkad(
+        h, p_id, vm_data, topology or {}, vni_map, pool, disk_cache
+    )
+    if vm_job_id:
+        wait_for_job(h, vm_job_id, timeout=120)
 
 
 def _start_vm_if_needed(h, dom, was_running, vm_node):
