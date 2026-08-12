@@ -368,6 +368,7 @@ def _read_job_progress(core_api, ej, namespace):
         )
         phase = "converting"
         percent = 0
+        upload_progress = ""
         for line in logs.splitlines():
             line = line.strip()
             if line.startswith("PHASE="):
@@ -377,10 +378,16 @@ def _read_job_progress(core_api, ej, namespace):
                     percent = int(float(line.strip("()").split("/")[0]))
                 except Exception:
                     pass
+            elif line.startswith("Completed ") and "remaining" in line:
+                try:
+                    parts = line.split()
+                    upload_progress = f"{parts[1]}/{parts[2].rstrip('(')}"
+                except Exception:
+                    pass
         if phase == "done":
             return "done"
         if phase == "uploading":
-            return "uploading"
+            return f"uploading {upload_progress}" if upload_progress else "uploading"
         return f"converting {percent}%"
     except Exception:
         return "starting"
