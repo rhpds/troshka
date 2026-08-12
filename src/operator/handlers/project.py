@@ -334,8 +334,10 @@ def _check_export_job(batch_api, ej, namespace):
         )
         if job.status.succeeded and job.status.succeeded >= 1:  # type: ignore[union-attr]
             return "done"
-        if job.status.failed and job.status.failed >= 3:  # type: ignore[union-attr]
-            return "failed"
+        conditions = getattr(job.status, "conditions", None) or []
+        for c in conditions:
+            if c.type == "Failed" and c.status == "True":
+                return "failed"
         return "pending"
     except Exception:
         return "pending"
