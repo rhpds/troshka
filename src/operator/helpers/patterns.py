@@ -1,6 +1,8 @@
 from helpers.k8s import TOOLS_IMAGE
 
 SNAPSHOT_CLASS = "ocs-storagecluster-rbdplugin-snapclass"
+_EXPORT_MULTIPART_CHUNK = "64MB"
+_EXPORT_CONCURRENT_REQUESTS = "20"
 
 
 def build_volume_snapshot(name, namespace, pvc_name):
@@ -61,8 +63,8 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
     export_cmd = (
         "set -e; "
         "export AWS_CONFIG_FILE=/tmp/.aws-config; "
-        "aws configure set default.s3.multipart_chunksize 64MB; "
-        "aws configure set default.s3.max_concurrent_requests 20; "
+        f"aws configure set default.s3.multipart_chunksize {_EXPORT_MULTIPART_CHUNK}; "
+        f"aws configure set default.s3.max_concurrent_requests {_EXPORT_CONCURRENT_REQUESTS}; "
         "echo 'PHASE=converting'; "
         "qemu-img convert -f raw -O qcow2 -p /disk/disk.img /scratch/disk.qcow2; "
         "SIZE=$(stat -c%s /scratch/disk.qcow2); "
