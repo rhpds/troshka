@@ -77,7 +77,8 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
         "      cur=$(stat -c%s /scratch/disk.qcow2 2>/dev/null || echo 0); "
         f"      pct=$((cur * 100 / {raw_size_bytes})); "
         "      [ $pct -gt 99 ] && pct=99; "
-        '      _p "{\\"phase\\":\\"converting\\",\\"percent\\":$pct}"; '
+        '      echo "{\\"phase\\":\\"converting\\",\\"percent\\":$pct}" > /scratch/.progress; '
+        '      echo "PROGRESS:{\\"phase\\":\\"converting\\",\\"percent\\":$pct}"; '
         "    fi; "
         "    sleep 5; "
         "  done ) & "
@@ -102,14 +103,15 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
         "  if [ -f /scratch/.rclone.log ]; then "
         "    last=$(grep -oP 'Transferred:.*?\\K[\\d.]+ [GgMm]iB' /scratch/.rclone.log | tail -1); "
         '    if [ -n "$last" ]; then '
-        "      num=$(echo \"$last\" | grep -oP '[\\d.]+'); "
+        "      num=$(echo \"$last\" | grep -oP '[\\d.]+' | cut -d. -f1); "
         "      unit=$(echo \"$last\" | grep -oP '[GM]'); "
         '      case "$unit" in '
-        '        G) ub=$(echo "$num * 1073741824" | bc | cut -d. -f1);; '
-        '        M) ub=$(echo "$num * 1048576" | bc | cut -d. -f1);; '
+        "        G) ub=$((num * 1073741824));; "
+        "        M) ub=$((num * 1048576));; "
         "        *) ub=0;; "
         "      esac; "
-        '      _p "{\\"phase\\":\\"uploading\\",\\"size\\":$SIZE,\\"uploaded\\":$ub}"; '
+        '      echo "{\\"phase\\":\\"uploading\\",\\"size\\":$SIZE,\\"uploaded\\":$ub}" > /scratch/.progress; '
+        '      echo "PROGRESS:{\\"phase\\":\\"uploading\\",\\"size\\":$SIZE,\\"uploaded\\":$ub}"; '
         "    fi; "
         "  fi; "
         "  sleep 5; "
