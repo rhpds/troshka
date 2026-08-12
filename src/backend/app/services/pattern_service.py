@@ -428,18 +428,26 @@ def _build_capture_disk_manifest(disk_nodes, disk_to_vm, pattern_id, vm_nodes=No
 
 
 def _poll_capture_completion(
-    custom_api, namespace, cr_name, pattern_id, crd_group, crd_version
+    custom_api,
+    namespace,
+    cr_name,
+    pattern_id,
+    crd_group,
+    crd_version,
+    max_wait_seconds=2700,
 ):
-    """Poll CR status for capture completion (max 45 min).
+    """Poll CR status for capture completion.
 
+    max_wait_seconds defaults to 45 min but callers should scale it
+    based on total disk size for large captures.
     Returns the captured disks list on success, or None on error/timeout.
-    Sets pattern error state via _capture_progress side-channel on failure.
     """
     import time as _time
 
     from app.services.ws_pubsub import notify_pattern
 
-    for _attempt in range(270):
+    iterations = max_wait_seconds // 10
+    for _attempt in range(iterations):
         _time.sleep(10)
         try:
             cr_obj = custom_api.get_namespaced_custom_object(
@@ -631,8 +639,17 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         db.commit()
         return
 
+    total_disk_gb = sum(d.get("sizeGb", 50) for d in disk_manifest)
+    poll_timeout = max(2700, total_disk_gb * 30)
+
     captured_disks = _poll_capture_completion(
-        custom_api, namespace, cr_name, pattern_id, CRD_GROUP, CRD_VERSION
+        custom_api,
+        namespace,
+        cr_name,
+        pattern_id,
+        CRD_GROUP,
+        CRD_VERSION,
+        max_wait_seconds=poll_timeout,
     )
     if captured_disks is None:
         pattern.state = "error"
