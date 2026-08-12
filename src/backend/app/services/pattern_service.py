@@ -361,25 +361,38 @@ def get_capture_progress(pattern_id: str) -> dict | None:
 
 
 def cancel_capture(pattern_id: str, db) -> None:
-    """Cancel in-flight capture jobs on the host."""
+    """Cancel in-flight capture jobs on the host or KubeVirt cluster."""
     from app.models.host import Host
+    from app.models.pattern import Pattern
+    from app.models.project import Project
+
+    pattern = db.query(Pattern).filter_by(id=pattern_id).first()
+    if not pattern or not pattern.source_project_id:
+        _clear_capture_progress(pattern_id)
+        return
+
+    project = db.query(Project).filter_by(id=pattern.source_project_id).first()
+    host = db.query(Host).filter_by(id=project.host_id).first() if project else None
+
+    if host and host.host_type == "kubevirt-cluster":
+        _cancel_kubevirt_capture(pattern_id, host, project, db)
+    else:
+        _cancel_troshkad_capture(pattern_id, host, db)
+
+    _clear_capture_progress(pattern_id)
+
+
+def _cancel_troshkad_capture(pattern_id, host, db):
+    """Cancel troshkad-based capture jobs."""
     from app.services.troshkad_client import TroshkadError, cancel_job
 
     progress = get_capture_progress(pattern_id)
-    _clear_capture_progress(pattern_id)
-    if not progress:
+    if not progress or not host:
         return
-    host_id = progress.get("_host_id")
-    job_ids = progress.get("_job_ids", [])
-    if not host_id or not job_ids:
-        return
-    host = db.query(Host).filter_by(id=host_id).first()
-    if not host:
-        return
-    for job_id in job_ids:
+    for job_id in progress.get("_job_ids", []):
         try:
             cancel_job(host, job_id)
-            log.info(  # NOSONAR — internal IDs, not user input
+            log.info(
                 "Cancelled capture job %s on host %s for pattern %s",
                 job_id[:8],
                 host.id[:8],
@@ -387,6 +400,62 @@ def cancel_capture(pattern_id: str, db) -> None:
             )
         except TroshkadError:
             pass
+
+
+def _cancel_kubevirt_capture(pattern_id, host, project, db):
+    """Cancel KubeVirt capture: clear annotation, delete export jobs."""
+    from app.models.provider import Provider
+    from app.services.providers.kubevirt import (
+        CRD_GROUP,
+        CRD_VERSION,
+        _get_k8s_clients,
+        _project_ns,
+    )
+
+    provider = db.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        return
+
+    custom_api, _, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project.id)
+    cr_name = f"project-{project.id[:8]}"
+
+    try:
+        custom_api.patch_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkaprojects",
+            name=cr_name,
+            body={
+                "metadata": {
+                    "annotations": {"troshka.redhat.com/capture-request": None}
+                }
+            },
+        )
+    except Exception:
+        log.debug("Failed to clear capture annotation for %s", pattern_id[:8])
+
+    from kubernetes import client as k8s_client
+
+    batch_api = k8s_client.BatchV1Api(custom_api.api_client)
+    try:
+        jobs = batch_api.list_namespaced_job(
+            namespace=namespace, label_selector="troshka-role=pattern-export"
+        )
+        for j in getattr(jobs, "items", []):
+            try:
+                batch_api.delete_namespaced_job(
+                    name=j.metadata.name,
+                    namespace=namespace,
+                    propagation_policy="Background",
+                )
+            except Exception:
+                pass
+    except Exception:
+        log.debug("Failed to delete export jobs for %s", pattern_id[:8])
+
+    log.info("Cancelled KubeVirt capture for pattern %s", pattern_id[:8])
 
 
 def _build_capture_disk_manifest(disk_nodes, disk_to_vm, pattern_id, vm_nodes=None):
@@ -449,6 +518,9 @@ def _poll_capture_completion(
     iterations = max_wait_seconds // 10
     for _attempt in range(iterations):
         _time.sleep(10)
+        if not get_capture_progress(pattern_id):
+            log.info("Pattern %s: capture cancelled, exiting poll", pattern_id[:8])
+            return None
         try:
             cr_obj = custom_api.get_namespaced_custom_object(
                 group=crd_group,
