@@ -352,13 +352,17 @@ def _read_job_progress(core_api, ej, namespace):
             namespace=namespace,
             label_selector=f"job-name={ej['jobName']}",
         )
-        if not getattr(pods, "items", None):
+        items = getattr(pods, "items", []) or []
+        if not items:
             return "pending"
+        pod = next(
+            (p for p in items if getattr(getattr(p, "status", None), "phase", "") == "Running"),
+            items[-1],
+        )
         logs = str(
             core_api.read_namespaced_pod_log(
-                name=pods.items[0].metadata.name,
+                name=pod.metadata.name,
                 namespace=namespace,
-                tail_lines=20,
             )
         )
         phase = "converting"
