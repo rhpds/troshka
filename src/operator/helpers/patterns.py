@@ -63,20 +63,27 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
     s3_bucket = s3_config.get("bucket", "")
     s3_endpoint = s3_config.get("endpoint", "https://s3.amazonaws.com")
 
+    raw_size_bytes = size_gb * 1073741824
+
     export_cmd = (
         "set -e; "
         "export HOME=/scratch; "
         'echo \'{"phase":"converting","percent":0}\' > /scratch/.progress; '
-        # qemu-img -p writes \r-delimited progress — tr splits into lines
-        "qemu-img convert -f raw -O qcow2 -p /disk/disk.img /scratch/disk.qcow2 2>&1 | "
-        "  tr '\\r' '\\n' | "
-        "  while IFS= read -r line; do "
-        "    pct=$(echo \"$line\" | grep -oP '\\d+\\.\\d+(?=/100%)' || true); "
-        '    [ -n "$pct" ] && echo "{\\"phase\\":\\"converting\\",\\"percent\\":${pct%%.*}}" > /scratch/.progress; '
-        "  done; "
+        # Background progress monitor — polls output file size every 5s
+        "( while [ ! -f /scratch/.convert_done ]; do "
+        "    if [ -f /scratch/disk.qcow2 ]; then "
+        "      cur=$(stat -c%s /scratch/disk.qcow2 2>/dev/null || echo 0); "
+        f"      pct=$((cur * 100 / {raw_size_bytes})); "
+        "      [ $pct -gt 99 ] && pct=99; "
+        '      echo "{\\"phase\\":\\"converting\\",\\"percent\\":$pct}" > /scratch/.progress; '
+        "    fi; "
+        "    sleep 5; "
+        "  done ) & "
+        "qemu-img convert -f raw -O qcow2 /disk/disk.img /scratch/disk.qcow2; "
+        "touch /scratch/.convert_done; "
         "SIZE=$(stat -c%s /scratch/disk.qcow2); "
         'echo \'{"phase":"uploading","size":\'$SIZE\',"uploaded":0}\' > /scratch/.progress; '
-        # rclone uploads with --progress writing stats to stderr
+        # rclone upload with progress via log file polling
         "export RCLONE_CONFIG=/scratch/rclone.conf; "
         "cat > $RCLONE_CONFIG <<REOF\n"
         "[target]\n"
@@ -88,24 +95,28 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
         "no_check_bucket = true\n"
         "no_verify_ssl = true\n"
         "REOF\n"
-        f"rclone copyto /scratch/disk.qcow2 target:{s3_bucket}/{s3_path} "
-        f"--s3-chunk-size {_EXPORT_MULTIPART_CHUNK} "
-        f"--s3-upload-concurrency {_EXPORT_CONCURRENT_REQUESTS} "
-        "--progress --stats 5s --stats-one-line 2>&1 | "
-        "  tr '\\r' '\\n' | "
-        "  while IFS= read -r line; do "
-        "    bytes=$(echo \"$line\" | grep -oP 'Transferred:.*?\\K\\d+\\.\\d+ [GgMm]' | head -1 || true); "
-        '    if [ -n "$bytes" ]; then '
-        "      num=$(echo \"$bytes\" | grep -oP '[\\d.]+'); "
-        "      unit=$(echo \"$bytes\" | grep -oP '[GgMm]'); "
+        # Background upload progress monitor
+        "( while [ ! -f /scratch/.upload_done ]; do "
+        "  if [ -f /scratch/.rclone.log ]; then "
+        "    last=$(grep -oP 'Transferred:.*?\\K[\\d.]+ [GgMm]iB' /scratch/.rclone.log | tail -1); "
+        '    if [ -n "$last" ]; then '
+        "      num=$(echo \"$last\" | grep -oP '[\\d.]+'); "
+        "      unit=$(echo \"$last\" | grep -oP '[GM]'); "
         '      case "$unit" in '
-        '        G|g) ub=$(echo "$num * 1073741824" | bc | cut -d. -f1);; '
-        '        M|m) ub=$(echo "$num * 1048576" | bc | cut -d. -f1);; '
+        '        G) ub=$(echo "$num * 1073741824" | bc | cut -d. -f1);; '
+        '        M) ub=$(echo "$num * 1048576" | bc | cut -d. -f1);; '
         "        *) ub=0;; "
         "      esac; "
         '      echo "{\\"phase\\":\\"uploading\\",\\"size\\":$SIZE,\\"uploaded\\":$ub}" > /scratch/.progress; '
         "    fi; "
-        "  done; "
+        "  fi; "
+        "  sleep 5; "
+        "done ) & "
+        f"rclone copyto /scratch/disk.qcow2 target:{s3_bucket}/{s3_path} "
+        f"--s3-chunk-size {_EXPORT_MULTIPART_CHUNK} "
+        f"--s3-upload-concurrency {_EXPORT_CONCURRENT_REQUESTS} "
+        "--stats 5s --stats-one-line --log-file /scratch/.rclone.log --log-level INFO; "
+        "touch /scratch/.upload_done; "
         'echo \'{"phase":"done"}\' > /scratch/.progress'
     )
 
