@@ -33,14 +33,39 @@ DbSession = Annotated[Session, Depends(get_db)]
 HostIdPath = Annotated[str, Path()]
 
 
-def _store_agent_credentials(h, result):
-    """Store troshkad credentials from agent install result on the host record."""
-    if result.get("success"):
-        creds = result.get("troshkad_credentials") or result.get("credentials") or {}
-        if creds.get("token"):
-            h.agent_token = creds["token"]
-            h.agent_cert_fingerprint = creds.get("fingerprint", "")
-            logger.info(_STORED_CREDS_MSG, h.id[:8])
+def _store_agent_credentials(h, result) -> bool:
+    """Store troshkad credentials from agent install result on the host record.
+
+    Returns True only if both a token and a cert fingerprint were captured
+    and stored. Both are required for any troshkad call to succeed (the
+    fingerprint is used for TLS pinning — see troshkad_client._get_pool),
+    so partial credentials are just as broken as none and are not stored.
+    The install script can exit 0 without ever producing real credentials
+    (e.g. if it silently failed to write to a read-only /opt on the host —
+    see infra/libvirt-host-image), so callers must check this return value
+    rather than trusting `result["success"]` alone.
+    """
+    if not result.get("success"):
+        return False
+    creds = result.get("troshkad_credentials") or result.get("credentials") or {}
+    token = creds.get("token")
+    fingerprint = creds.get("fingerprint")
+    if token and fingerprint:
+        h.agent_token = token
+        h.agent_cert_fingerprint = fingerprint
+        logger.info(_STORED_CREDS_MSG, h.id[:8])
+        return True
+    last_output = "\n".join(result.get("output", "").strip().splitlines()[-15:])
+    logger.warning(
+        "Agent install for host %s exited 0 but produced no usable troshkad "
+        "credentials (token=%s, fingerprint=%s) — marking install_failed. "
+        "Last output:\n%s",
+        h.id[:8],
+        bool(token),
+        bool(fingerprint),
+        last_output,
+    )
+    return False
 
 
 def _detach_install_iso(host, db_session):
@@ -764,15 +789,16 @@ def _do_ssh_wait_and_install(
             agent_ca_cert=_get_aca(),
         ),
     )
-    h.agent_status = "connected" if result["success"] else "install_failed"
-    _store_agent_credentials(h, result)
+    creds_ok = _store_agent_credentials(h, result)
+    h.agent_status = "connected" if result["success"] and creds_ok else "install_failed"
 
     # Detach install ISO from ocpvirt hosts (unblocks live migration)
-    if result["success"] and provider_type == "ocpvirt" and h.instance_id:
+    if creds_ok and provider_type == "ocpvirt" and h.instance_id:
         _detach_install_iso(h, s)
 
     # Create console DNS/Route record
-    _setup_console_dns(h, s, provider_console_domain)
+    if creds_ok:
+        _setup_console_dns(h, s, provider_console_domain)
     s.commit()
 
 
@@ -974,21 +1000,16 @@ def _install_bg(h_id: str, h_ip: str, h_key: str):
         result = deploy_agent(
             host_ip=h_ip, private_key=h_key, host_id=h_id, config=_install_config
         )
-        h.agent_status = "connected" if result["success"] else "install_failed"
-
         # Store troshkad credentials FIRST (needed for health check below)
-        creds = result.get("troshkad_credentials", {})
-        if creds.get("token") and creds.get("fingerprint"):
-            h.agent_token = creds["token"]
-            h.agent_cert_fingerprint = creds["fingerprint"]
-            logger.info(_STORED_CREDS_MSG, h.id[:8])
+        creds_ok = _store_agent_credentials(h, result)
+        h.agent_status = "connected" if result["success"] and creds_ok else "install_failed"
 
         # Verify agent version and push update if source changed during reinstall
-        if result["success"]:
+        if creds_ok:
             _verify_and_update_agent_version(h)
 
         # Detach install ISO from ocpvirt hosts (unblocks live migration)
-        if result["success"] and _provider_type == "ocpvirt" and h.instance_id:
+        if creds_ok and _provider_type == "ocpvirt" and h.instance_id:
             _detach_install_iso(h, s)
 
         s.commit()

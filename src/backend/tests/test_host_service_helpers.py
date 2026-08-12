@@ -52,8 +52,8 @@ class TestStoreAgentCredentials(unittest.TestCase):
         h.id = "host-12345678"
         result = {
             "success": True,
-            "troshkad_credentials": {"token": "tok-primary"},
-            "credentials": {"token": "tok-fallback"},
+            "troshkad_credentials": {"token": "tok-primary", "fingerprint": "fp-primary"},
+            "credentials": {"token": "tok-fallback", "fingerprint": "fp-fallback"},
         }
 
         self._call(h, result)
@@ -112,18 +112,24 @@ class TestStoreAgentCredentials(unittest.TestCase):
         # No credentials dict at all -> creds = {}, no token -> skip
         assert h.agent_token is sentinel_token
 
-    def test_fingerprint_defaults_to_empty_string(self):
+    def test_token_without_fingerprint_skips_storage(self):
+        """Token alone (no fingerprint) is just as broken as neither — troshkad
+        calls require both (fingerprint is used for TLS pinning), so partial
+        credentials must not be stored."""
         h = MagicMock()
         h.id = "host-12345678"
+        sentinel_token = object()
+        h.agent_token = sentinel_token
         result = {
             "success": True,
             "troshkad_credentials": {"token": "tok-nofp"},
+            "output": "",
         }
 
-        self._call(h, result)
+        stored = self._call(h, result)
 
-        assert h.agent_token == "tok-nofp"
-        assert h.agent_cert_fingerprint == ""
+        assert stored is False
+        assert h.agent_token is sentinel_token
 
 
 # ---------------------------------------------------------------------------
