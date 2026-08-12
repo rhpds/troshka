@@ -95,6 +95,13 @@ podman compose down -v
      instead — typically `http://192.168.124.1:9000` for the default NAT network (check with
      `ip -4 addr show virbr0`). A DB-configured provider takes priority over the env var fallback,
      so no restart is needed.
+
+     In **Admin > Providers > + Add Provider**:
+     - **Type**: `S3 Storage`
+     - **S3 Bucket**: `troshka-images` (must match the compose stack's bucket)
+     - Check **S4 / Custom S3 Endpoint**, then set **Endpoint URL** to the gateway IP, e.g.
+       `http://192.168.124.1:9000`
+     - **Access Key** / **Secret Key**: `minioadmin` / `minioadmin` (the compose MinIO defaults)
   2. firewalld's `libvirt` zone (assigned to `virbr0`) rejects inbound traffic to arbitrary ports by
      default — it only allows `dhcp`/`dhcpv6`/`dns`/`ssh`/`tftp`. Don't open the port directly in the
      shared `libvirt` zone — libvirt places **every** NAT/route/open network's bridge into that same
