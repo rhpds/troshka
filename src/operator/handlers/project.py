@@ -344,11 +344,12 @@ def _check_export_job(batch_api, ej, namespace):
 
 
 def _read_job_progress(core_api, ej, namespace):
-    """Read qemu-img progress from export pod logs.
+    """Read export pod progress from logs.
 
-    qemu-img -p uses \\r (carriage return) so all progress updates land on
-    one log line. Split on \\r to find the latest percentage and PHASE marker.
+    Handles both qemu-img (-p with \\r) and aws s3 cp (\\r) output.
     """
+    import re
+
     try:
         pods = core_api.list_namespaced_pod(
             namespace=namespace,
@@ -365,27 +366,29 @@ def _read_job_progress(core_api, ej, namespace):
             core_api.read_namespaced_pod_log(
                 name=pod.metadata.name,
                 namespace=namespace,
-                tail_lines=10,
+                tail_lines=20,
             )
         )
         phase = "converting"
         percent = 0
         upload_progress = ""
-        for line in logs.splitlines():
-            line = line.strip()
-            if line.startswith("PHASE="):
-                phase = line.split("=", 1)[1]
-            elif "/100%" in line:
+        for segment in logs.replace("\r", "\n").splitlines():
+            segment = segment.strip()
+            if not segment:
+                continue
+            if segment.startswith("PHASE="):
+                phase = segment.split("=", 1)[1]
+            elif "/100%" in segment:
                 try:
-                    percent = int(float(line.strip("()").split("/")[0]))
+                    percent = int(float(segment.strip("()").split("/")[0]))
                 except Exception:
                     pass
-            elif line.startswith("Completed ") and "remaining" in line:
-                try:
-                    parts = line.split()
-                    upload_progress = f"{parts[1]}/{parts[2].rstrip('(')}"
-                except Exception:
-                    pass
+            elif segment.startswith("Completed ") and "remaining" in segment:
+                m = re.search(
+                    r"Completed\s+([\d.]+\s+\S+)\s*/\s*([\d.]+\s+\S+)", segment
+                )
+                if m:
+                    upload_progress = f"{m.group(1)}/{m.group(2)}"
         if phase == "done":
             return "done"
         if phase == "uploading":
