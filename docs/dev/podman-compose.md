@@ -86,6 +86,63 @@ podman compose down -v
 - **`troshkad` / operator / real hosts are out of scope.** This stack covers the API + UI dev loop
   only. Deploying actual VMs still requires a connected libvirt host — see
   [`docs/dev/host-agent.md`](host-agent.md).
+- **Local `libvirt` provider host can't reach the compose MinIO by default.** If you register a
+  [`libvirt`-type host](../../infra/libvirt-host-image/README.md) (e.g. a nested VM on your own
+  machine's default `virbr0` network) instead of a real cloud host, `troshkad` running there
+  downloads library images from this stack's MinIO — but two things block that out of the box:
+  1. The compose-internal hostname `http://minio:9000` doesn't resolve outside the podman network.
+     Point an S3 `Provider` (Admin > Providers, or the API) at the host's libvirt gateway IP
+     instead — typically `http://192.168.124.1:9000` for the default NAT network (check with
+     `ip -4 addr show virbr0`). A DB-configured provider takes priority over the env var fallback,
+     so no restart is needed.
+  2. firewalld's `libvirt` zone (assigned to `virbr0`) rejects inbound traffic to arbitrary ports by
+     default — it only allows `dhcp`/`dhcpv6`/`dns`/`ssh`/`tftp`. Don't open the port directly in the
+     shared `libvirt` zone — libvirt places **every** NAT/route/open network's bridge into that same
+     zone, so doing so would expose MinIO to any other libvirt guest on the machine too, not just the
+     Troshka host VM. Instead, give this network its own zone
+     ([libvirt docs](https://libvirt.org/firewall.html#firewalld-and-the-virtual-network-driver)):
+
+     ```bash
+     # 1. Create a dedicated zone instead of modifying the shared `libvirt` one
+     sudo firewall-cmd --permanent --new-zone=troshka-libvirt
+
+     # 2. Re-add what guests need by default (the built-in `libvirt` zone pre-allows these;
+     #    a fresh custom zone starts empty) plus the MinIO port
+     sudo firewall-cmd --permanent --zone=troshka-libvirt \
+       --add-service=dhcp --add-service=dhcpv6 --add-service=dns \
+       --add-service=tftp --add-service=ssh --add-port=9000/tcp
+     sudo firewall-cmd --reload
+
+     # 3. Point the network's bridge at the new zone — edit XML, don't use
+     #    `--change-interface`, since libvirt re-applies its own zone assignment on
+     #    every network start and would overwrite an ad hoc interface move
+     sudo virsh net-edit default   # or whichever network the libvirt host VM uses
+     # add zone='troshka-libvirt' to the <bridge> element, e.g.:
+     #   <bridge name='virbr0' zone='troshka-libvirt'/>
+     sudo virsh net-destroy default && sudo virsh net-start default
+     ```
+
+     This affects **all** guests on that network (e.g. `default`), not just the Troshka VM — if the
+     dev machine runs other unrelated libvirt VMs on the same network, they move out of the shared
+     `libvirt` zone into `troshka-libvirt` too. For a fully isolated blast radius, use a separate
+     dedicated libvirt network just for the Troshka host VM instead of `default`.
+
+     To undo this and put `default` back on the standard `libvirt` zone (e.g. once you no longer
+     need the local libvirt provider):
+
+     ```bash
+     sudo virsh net-edit default
+     # remove the zone='troshka-libvirt' attribute from the <bridge> element, e.g.:
+     #   <bridge name='virbr0' zone='troshka-libvirt'/>  ->  <bridge name='virbr0'/>
+     sudo virsh net-destroy default && sudo virsh net-start default
+
+     # optional cleanup — only if nothing else was moved into troshka-libvirt
+     sudo firewall-cmd --permanent --delete-zone=troshka-libvirt
+     sudo firewall-cmd --reload
+     ```
+
+  Verify with `curl http://192.168.124.1:9000/minio/health/live` from inside the libvirt host (e.g.
+  via `./scripts/host-ssh.sh`).
 - **Fresh-database migrations.** The backend command runs `alembic upgrade head || true`, matching
   `dev-services.sh`'s leniency — on a truly from-scratch database this can currently skip over a
   pre-existing gap in the migration history (a handful of revisions are missing a `down_revision`
