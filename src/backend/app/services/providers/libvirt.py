@@ -46,3 +46,17 @@ class LibvirtDriver(ProviderDriver):
         # Troshka didn't create it via a cloud API, so it shouldn't try
         # to destroy it. Removing the Host row is enough on our side.
         pass
+
+    def get_host_status(self, provider, instance_id):
+        # There's no cloud instance to poll — terminate_host() above is
+        # already a no-op, so as far as _wait_terminated_bg() is concerned
+        # this host is "terminated" the moment deletion is requested.
+        # Without this override, the base class's NotImplementedError gets
+        # swallowed by _wait_terminated_bg's broad except, silently leaving
+        # the Host row stuck in "shutting_down" forever.
+        return {
+            "instance_id": instance_id,
+            "state": "terminated",
+            "public_ip": None,
+            "private_ip": None,
+        }
