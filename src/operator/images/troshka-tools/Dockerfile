@@ -25,7 +25,7 @@ RUN dnf install -y \
     | tar xzf - -C /usr/local/bin oc kubectl
 
 # rclone for diskless S3-to-S3 pattern sync between clusters
-RUN curl -sO https://downloads.rclone.org/current/rclone-current-linux-amd64.zip && \
+RUN curl -fsO https://downloads.rclone.org/rclone-current-linux-amd64.zip && \
     unzip -q rclone-current-linux-amd64.zip && \
     cp rclone-*/rclone /usr/local/bin/ && \
     chmod +x /usr/local/bin/rclone && \
