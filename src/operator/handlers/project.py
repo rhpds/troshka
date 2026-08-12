@@ -344,11 +344,8 @@ def _check_export_job(batch_api, ej, namespace):
 
 
 def _read_job_progress(core_api, ej, namespace):
-    """Read export pod progress from logs.
-
-    Handles both qemu-img (-p with \\r) and aws s3 cp (\\r) output.
-    """
-    import re
+    """Read export progress from /scratch/.progress file via exec."""
+    import json as _json
 
     try:
         pods = core_api.list_namespaced_pod(
@@ -362,38 +359,29 @@ def _read_job_progress(core_api, ej, namespace):
             (p for p in items if getattr(getattr(p, "status", None), "phase", "") == "Running"),
             items[-1],
         )
-        logs = str(
-            core_api.read_namespaced_pod_log(
-                name=pod.metadata.name,
-                namespace=namespace,
-                tail_lines=20,
-            )
+        from kubernetes.stream import stream
+
+        output = stream(
+            core_api.connect_get_namespaced_pod_exec,
+            pod.metadata.name,
+            namespace,
+            command=["cat", "/scratch/.progress"],
+            stderr=False,
+            stdout=True,
+            stdin=False,
+            tty=False,
         )
-        phase = "converting"
-        percent = 0
-        upload_progress = ""
-        for segment in logs.replace("\r", "\n").splitlines():
-            segment = segment.strip()
-            if not segment:
-                continue
-            if segment.startswith("PHASE="):
-                phase = segment.split("=", 1)[1]
-            elif "/100%" in segment:
-                try:
-                    percent = int(float(segment.strip("()").split("/")[0]))
-                except Exception:
-                    pass
-            elif segment.startswith("Completed ") and "remaining" in segment:
-                m = re.search(
-                    r"Completed\s+([\d.]+\s+\S+)\s*/\s*([\d.]+\s+\S+)", segment
-                )
-                if m:
-                    upload_progress = f"{m.group(1)}/{m.group(2)}"
+        data = _json.loads(output.strip())
+        phase = data.get("phase", "converting")
         if phase == "done":
             return "done"
         if phase == "uploading":
-            return f"uploading {upload_progress}" if upload_progress else "uploading"
-        return f"converting {percent}%"
+            size = data.get("size", 0)
+            if size:
+                label = f"{size / 1073741824:.1f} GiB"
+                return f"uploading {label}"
+            return "uploading"
+        return f"converting {data.get('percent', 0)}%"
     except Exception:
         return "starting"
 

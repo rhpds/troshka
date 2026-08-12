@@ -65,15 +65,20 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
         "export AWS_CONFIG_FILE=/tmp/.aws-config; "
         f"aws configure set default.s3.multipart_chunksize {_EXPORT_MULTIPART_CHUNK}; "
         f"aws configure set default.s3.max_concurrent_requests {_EXPORT_CONCURRENT_REQUESTS}; "
-        "echo 'PHASE=converting'; "
-        "qemu-img convert -f raw -O qcow2 -p /disk/disk.img /scratch/disk.qcow2 2>&1 | tr '\\r' '\\n'; "
+        # Progress file on scratch PVC — operator reads via exec
+        "echo '{\"phase\":\"converting\",\"percent\":0}' > /scratch/.progress; "
+        "qemu-img convert -f raw -O qcow2 -p /disk/disk.img /scratch/disk.qcow2 2>&1 | "
+        "  while IFS= read -r line; do "
+        "    pct=$(echo \"$line\" | grep -oP '\\d+\\.\\d+(?=/100%)' || true); "
+        "    [ -n \"$pct\" ] && echo \"{\\\"phase\\\":\\\"converting\\\",\\\"percent\\\":${pct%%.*}}\" > /scratch/.progress; "
+        "  done; "
         "SIZE=$(stat -c%s /scratch/disk.qcow2); "
         'echo "DISK_SIZE_BYTES=$SIZE"; '
-        "echo 'PHASE=uploading'; "
+        "echo '{\"phase\":\"uploading\",\"size\":'$SIZE'}' > /scratch/.progress; "
         f"aws s3 cp /scratch/disk.qcow2 s3://{s3_config.get('bucket', '')}/{s3_path} "
         f"--endpoint-url {s3_config.get('endpoint', 'https://s3.amazonaws.com')} "
         f"--region {s3_config.get('region', 'us-east-1')}; "
-        "echo 'PHASE=done'"
+        "echo '{\"phase\":\"done\"}' > /scratch/.progress"
     )
 
     return {
