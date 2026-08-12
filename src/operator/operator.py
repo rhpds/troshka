@@ -21,7 +21,12 @@ def configure(settings: kopf.OperatorSettings, **_):
     settings.batching.batch_window = 0.5
     logger.info("Troshka operator starting (max_workers=100)")
 
-    from kubernetes import client
+    from kubernetes import client, config
+
+    try:
+        config.load_incluster_config()
+    except config.ConfigException:
+        config.load_kube_config()
 
     custom_api = client.CustomObjectsApi()
     core_api = client.CoreV1Api()
