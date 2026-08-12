@@ -66,7 +66,7 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
         f"aws configure set default.s3.multipart_chunksize {_EXPORT_MULTIPART_CHUNK}; "
         f"aws configure set default.s3.max_concurrent_requests {_EXPORT_CONCURRENT_REQUESTS}; "
         "echo 'PHASE=converting'; "
-        "qemu-img convert -f raw -O qcow2 -p /disk/disk.img /scratch/disk.qcow2; "
+        "qemu-img convert -f raw -O qcow2 -p /disk/disk.img /scratch/disk.qcow2 2>&1 | tr '\\r' '\\n'; "
         "SIZE=$(stat -c%s /scratch/disk.qcow2); "
         'echo "DISK_SIZE_BYTES=$SIZE"; '
         "echo 'PHASE=uploading'; "

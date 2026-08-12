@@ -363,17 +363,18 @@ def _read_job_progress(core_api, ej, namespace):
             core_api.read_namespaced_pod_log(
                 name=pod.metadata.name,
                 namespace=namespace,
+                tail_lines=10,
             )
         )
         phase = "converting"
         percent = 0
-        for segment in logs.replace("\r", "\n").splitlines():
-            segment = segment.strip()
-            if segment.startswith("PHASE="):
-                phase = segment.split("=", 1)[1]
-            elif "/100%" in segment:
+        for line in logs.splitlines():
+            line = line.strip()
+            if line.startswith("PHASE="):
+                phase = line.split("=", 1)[1]
+            elif "/100%" in line:
                 try:
-                    percent = int(float(segment.strip("()").split("/")[0]))
+                    percent = int(float(line.strip("()").split("/")[0]))
                 except Exception:
                     pass
         if phase == "done":
