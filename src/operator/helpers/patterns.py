@@ -1,8 +1,8 @@
 from helpers.k8s import TOOLS_IMAGE
 
 SNAPSHOT_CLASS = "ocs-storagecluster-rbdplugin-snapclass"
-_EXPORT_MULTIPART_CHUNK = "64MB"
-_EXPORT_CONCURRENT_REQUESTS = "20"
+_EXPORT_MULTIPART_CHUNK = "256MB"
+_EXPORT_CONCURRENT_REQUESTS = "7"
 
 
 def build_volume_snapshot(name, namespace, pvc_name):
@@ -62,7 +62,8 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
 
     export_cmd = (
         "set -e; "
-        "export AWS_CONFIG_FILE=/tmp/.aws-config; "
+        "export HOME=/scratch; "
+        "export AWS_CONFIG_FILE=/scratch/.aws-config; "
         f"aws configure set default.s3.multipart_chunksize {_EXPORT_MULTIPART_CHUNK}; "
         f"aws configure set default.s3.max_concurrent_requests {_EXPORT_CONCURRENT_REQUESTS}; "
         # Progress file on scratch PVC — operator reads via exec

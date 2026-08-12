@@ -373,6 +373,68 @@ def _startup_resume_storage_pools():
         db.close()
 
 
+def _startup_sync_obc_credentials():
+    """Sync OBC S3 credentials from each KubeVirt cluster into provider records."""
+    from app.core.database import SessionLocal
+    from app.models.provider import Provider
+
+    db = SessionLocal()
+    try:
+        providers = (
+            db.query(Provider).filter_by(type="kubevirt_native", state="active").all()
+        )
+        for provider in providers:
+            try:
+                _sync_provider_obc(db, provider)
+            except Exception:
+                logger.debug(
+                    "OBC sync skipped for %s (cluster may be unreachable)",
+                    provider.name,
+                )
+        db.commit()
+    except Exception:
+        logger.debug("OBC credential sync failed", exc_info=True)
+    finally:
+        db.close()
+
+
+def _sync_provider_obc(db, provider):
+    """Read OBC credentials from a KubeVirt cluster and store in provider record."""
+    import base64
+
+    from app.services.providers.kubevirt import _get_k8s_clients
+
+    _, core_api, _ = _get_k8s_clients(provider)
+
+    obc_name = "troshka-patterns"
+    ns = "troshka-operator"
+    secret = core_api.read_namespaced_secret(obc_name, ns)
+    cm = core_api.read_namespaced_config_map(obc_name, ns)
+
+    secret_data = getattr(secret, "data", None) or {}
+    cm_data = getattr(cm, "data", None) or {}
+    s3_config = {
+        "bucket": cm_data.get("BUCKET_NAME", ""),
+        "endpoint": (
+            "http://rook-ceph-rgw-ocs-storagecluster-cephobjectstore"
+            ".openshift-storage.svc:80"
+        ),
+        "region": cm_data.get("BUCKET_REGION", "us-east-1") or "us-east-1",
+        "access_key_id": base64.b64decode(
+            secret_data.get("AWS_ACCESS_KEY_ID", "")
+        ).decode(),
+        "secret_access_key": base64.b64decode(
+            secret_data.get("AWS_SECRET_ACCESS_KEY", "")
+        ).decode(),
+    }
+
+    creds = provider.get_credentials()
+    if creds.get("s3_config") != s3_config:
+        creds["s3_config"] = s3_config
+        provider.set_credentials(creds)
+        logger.info("Synced OBC credentials for provider %s", provider.name)
+
+
 @asynccontextmanager
 async def lifespan(app):
     import asyncio
@@ -417,6 +479,7 @@ async def lifespan(app):
 
     _startup_resume_pattern_captures()
     _startup_resume_storage_pools()
+    _startup_sync_obc_credentials()
 
     yield
 

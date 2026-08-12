@@ -38,6 +38,15 @@ class PatternUpdate(BaseModel):
     tags: dict | None = None
 
 
+class PatternLocationResponse(BaseModel):
+    provider_id: str
+    provider_name: str | None = None
+    state: str
+    synced_at: datetime.datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class PatternResponse(BaseModel):
     id: str
     name: str
@@ -45,6 +54,7 @@ class PatternResponse(BaseModel):
     owner_id: str
     visibility: str
     source_project_id: str | None = None
+    source_provider_id: str | None = None
     topology: dict
     state: str
     total_size_bytes: int
@@ -53,6 +63,8 @@ class PatternResponse(BaseModel):
     recert: bool = False
     created_at: datetime.datetime
     disks: list[PatternDiskResponse] = []
+    sync_status: str | None = None
+    locations: list[PatternLocationResponse] = []
 
     model_config = {"from_attributes": True}
 

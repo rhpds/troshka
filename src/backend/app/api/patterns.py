@@ -19,7 +19,9 @@ from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.core.logging_utils import sanitize_log
 from app.models.pattern import Pattern, PatternDisk, PatternShare
+from app.models.pattern_location import PatternLocation
 from app.models.project import Project
+from app.models.provider import Provider
 from app.models.user import User
 from app.schemas.pattern import (
     PatternBulkDeployRequest,
@@ -190,7 +192,55 @@ def _remap_topology(topology: dict) -> dict:
     return topo
 
 
-def _pattern_to_list_dict(p: Pattern) -> dict:
+def _compute_sync_status(p: Pattern, db: Session) -> tuple[str | None, list[dict]]:
+    """Compute aggregate sync status and per-provider location list."""
+    if not p.disks:
+        return None, []
+
+    all_locs = (
+        db.query(PatternLocation)
+        .filter(PatternLocation.pattern_disk_id.in_([d.id for d in p.disks]))
+        .all()
+    )
+    if not all_locs:
+        return None, []
+
+    provider_ids = {loc.provider_id for loc in all_locs}
+    providers = {
+        prov.id: prov.name
+        for prov in db.query(Provider).filter(Provider.id.in_(provider_ids)).all()
+    }
+
+    provider_states: dict[str, dict] = {}
+    for loc in all_locs:
+        pid = loc.provider_id
+        if pid not in provider_states:
+            provider_states[pid] = {
+                "provider_id": pid,
+                "provider_name": providers.get(pid),
+                "state": "synced",
+                "synced_at": loc.synced_at,
+            }
+        if loc.state != "synced":
+            provider_states[pid]["state"] = loc.state
+
+    kubevirt_providers = (
+        db.query(Provider)
+        .filter(Provider.type == "kubevirt_native", Provider.state == "active")
+        .count()
+    )
+    synced_count = sum(1 for ps in provider_states.values() if ps["state"] == "synced")
+    if kubevirt_providers > 0 and synced_count >= kubevirt_providers:
+        sync_status = "synced"
+    elif synced_count > 0:
+        sync_status = f"partial {synced_count}/{kubevirt_providers}"
+    else:
+        sync_status = "local"
+
+    return sync_status, list(provider_states.values())
+
+
+def _pattern_to_list_dict(p: Pattern, db: Session | None = None) -> dict:
     """Serialize a Pattern for list responses (lightweight)."""
     nodes = (p.topology or {}).get("nodes", [])
     vms = [n for n in nodes if n.get("type") == "vmNode"]
@@ -209,6 +259,11 @@ def _pattern_to_list_dict(p: Pattern) -> dict:
             data = n.get("data", {})
             if data.get("format") != "iso":
                 total_disk_gb += data.get("size", 0)
+
+    sync_status = None
+    if db and p.source_provider_id:
+        sync_status, _ = _compute_sync_status(p, db)
+
     return {
         "id": p.id,
         "name": p.name,
@@ -230,11 +285,18 @@ def _pattern_to_list_dict(p: Pattern) -> dict:
         "is_ocp": is_ocp,
         "is_sno": is_sno,
         "recert": p.recert,
+        "sync_status": sync_status,
+        "source_provider_id": p.source_provider_id,
     }
 
 
-def _pattern_to_detail_dict(p: Pattern) -> dict:
+def _pattern_to_detail_dict(p: Pattern, db: Session | None = None) -> dict:
     """Serialize a Pattern for detail responses (full)."""
+    sync_status = None
+    locations = []
+    if db and p.source_provider_id:
+        sync_status, locations = _compute_sync_status(p, db)
+
     return {
         "id": p.id,
         "name": p.name,
@@ -242,6 +304,7 @@ def _pattern_to_detail_dict(p: Pattern) -> dict:
         "owner_id": p.owner_id,
         "visibility": p.visibility,
         "source_project_id": p.source_project_id,
+        "source_provider_id": p.source_provider_id,
         "topology": p.topology,
         "state": p.state,
         "capture_progress": (
@@ -264,6 +327,8 @@ def _pattern_to_detail_dict(p: Pattern) -> dict:
             }
             for d in p.disks
         ],
+        "sync_status": sync_status,
+        "locations": locations,
     }
 
 
@@ -356,7 +421,7 @@ def create_pattern(
             body.quiesce_cluster,
         )
 
-    return _pattern_to_detail_dict(pattern)
+    return _pattern_to_detail_dict(pattern, db)
 
 
 @router.get("/")
@@ -402,7 +467,7 @@ def list_patterns(
 
     patterns = q.order_by(Pattern.created_at.desc()).all()
 
-    return [_pattern_to_list_dict(p) for p in patterns]
+    return [_pattern_to_list_dict(p, db) for p in patterns]
 
 
 @router.get(
@@ -432,7 +497,7 @@ def get_pattern(
         if not shared:
             raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
 
-    return _pattern_to_detail_dict(pattern)
+    return _pattern_to_detail_dict(pattern, db)
 
 
 @router.get(
@@ -599,7 +664,7 @@ def update_pattern(
 
     db.commit()
     db.refresh(pattern)
-    return _pattern_to_detail_dict(pattern)
+    return _pattern_to_detail_dict(pattern, db)
 
 
 @router.delete(

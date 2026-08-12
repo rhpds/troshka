@@ -178,6 +178,21 @@ def file_exists(key: str) -> bool:
         return False
 
 
+def get_cluster_s3_config(db, provider_id: str) -> dict | None:
+    """Get the OBC-based S3 config for a KubeVirt cluster.
+
+    The config is stored in the provider's credentials JSON under 's3_config'.
+    Returns None for non-KubeVirt providers (they use the global S3 config).
+    """
+    from app.models.provider import Provider
+
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider or not provider.credentials:
+        return None
+    creds = provider.get_credentials()
+    return creds.get("s3_config")
+
+
 def _get_readonly_s3_config() -> dict | None:
     """Get read-only central S3 config from DB provider (type='s3_readonly')."""
     try:
