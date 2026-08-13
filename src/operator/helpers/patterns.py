@@ -1,7 +1,7 @@
 from helpers.k8s import TOOLS_IMAGE
 
 SNAPSHOT_CLASS = "ocs-storagecluster-rbdplugin-snapclass"
-_EXPORT_MULTIPART_CHUNK = "256MB"
+_EXPORT_MULTIPART_CHUNK = "256M"
 _EXPORT_CONCURRENT_REQUESTS = "7"
 
 
