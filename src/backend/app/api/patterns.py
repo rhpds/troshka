@@ -205,7 +205,7 @@ def _compute_sync_status(p: Pattern, db: Session) -> tuple[str | None, list[dict
     if not all_locs:
         return None, []
 
-    provider_ids = {loc.provider_id for loc in all_locs}
+    provider_ids = {loc.provider_id for loc in all_locs if loc.provider_id is not None}
     providers = {
         prov.id: prov.name
         for prov in db.query(Provider).filter(Provider.id.in_(provider_ids)).all()
@@ -214,6 +214,8 @@ def _compute_sync_status(p: Pattern, db: Session) -> tuple[str | None, list[dict
     provider_states: dict[str, dict] = {}
     for loc in all_locs:
         pid = loc.provider_id
+        if pid is None:
+            continue
         if pid not in provider_states:
             provider_states[pid] = {
                 "provider_id": pid,
@@ -713,7 +715,10 @@ def delete_pattern(
     from app.services import cluster_storage
 
     cluster_provider_ids = {
-        loc.provider_id for disk in pattern.disks for loc in disk.locations
+        loc.provider_id
+        for disk in pattern.disks
+        for loc in disk.locations
+        if loc.provider_id is not None
     }
     for pid in cluster_provider_ids:
         cluster_storage.delete_pattern(db, pid, pattern_id)

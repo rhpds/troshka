@@ -26,10 +26,13 @@ class PatternLocation(Base):
         ForeignKey("pattern_disks.id", ondelete="CASCADE"),
         nullable=False,
     )
-    provider_id: Mapped[str] = mapped_column(
+    provider_id: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False),
         ForeignKey("providers.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+    )
+    location_type: Mapped[str] = mapped_column(
+        String(20), default="obc", server_default="obc", nullable=False
     )
     s3_key: Mapped[str] = mapped_column(String(500), nullable=False)
     state: Mapped[str] = mapped_column(String(20), default="syncing", nullable=False)
@@ -43,4 +46,4 @@ class PatternLocation(Base):
     )
 
     pattern_disk: Mapped[PatternDisk] = relationship(back_populates="locations")
-    provider: Mapped[Provider] = relationship()
+    provider: Mapped[Provider | None] = relationship()
