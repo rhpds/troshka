@@ -10587,6 +10587,31 @@ def _mount_container_volumes(job, volumes):
     return mount_dirs
 
 
+def _parse_command_override(command):
+    """Parse a container command override into a list of argv tokens.
+
+    Accepts a plain shell-style string (`--foo bar`), a pasted JSON array
+    string (`["--foo", "bar"]` — the Kubernetes/Docker `command:` style users
+    sometimes paste in by habit), or an already-parsed list. Returns None for
+    empty input so callers can treat it as "no override".
+    """
+    if not command:
+        return None
+    if isinstance(command, list):
+        return [str(c) for c in command] or None
+    command = command.strip()
+    if command.startswith("["):
+        try:
+            parsed = json.loads(command)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(c) for c in parsed] or None
+    import shlex
+
+    return shlex.split(command) or None
+
+
 def _build_container_cmd(
     name,
     image,
@@ -10633,8 +10658,9 @@ def _build_container_cmd(
         cmd.extend(["-v", f"{mount_dir}:{mount_path}"])
 
     cmd.append(image)
-    if command:
-        cmd.extend(command.split())
+    tokens = _parse_command_override(command)
+    if tokens:
+        cmd.extend(tokens)
     return cmd
 
 
@@ -11171,8 +11197,9 @@ def _create_init_container(job, full_pod_name, ic):
         cmd.extend(["-e", f"{k}={v}"])
     for vol in ic.get("mounts") or []:
         cmd.extend(["-v", vol])
-    if ic.get("command"):
-        cmd.extend(["--entrypoint", ic["command"]])
+    tokens = _parse_command_override(ic.get("command"))
+    if tokens:
+        cmd.extend(["--entrypoint", json.dumps(tokens)])
     cmd.append(ic["image"])
     _run_cmd(job, cmd)
     _job_log(job, f"Init container created: {ic['name']}")
@@ -11201,8 +11228,9 @@ def _create_main_container(job, full_pod_name, ctr, restart_policy, privileged):
         cmd.extend(["-v", vol])
     if privileged:
         cmd.append("--privileged")
-    if ctr.get("command"):
-        cmd.extend(["--entrypoint", ctr["command"]])
+    tokens = _parse_command_override(ctr.get("command"))
+    if tokens:
+        cmd.extend(["--entrypoint", json.dumps(tokens)])
     cmd.append(ctr["image"])
     _run_cmd(job, cmd)
     _job_log(job, f"Main container created: {ctr['name']}")
