@@ -1109,23 +1109,32 @@ def _test_s3_provider(provider: Provider, creds: dict[str, Any]) -> dict[str, An
     """Test S3 provider credentials and bucket access."""
     import boto3
 
+    endpoint_url = creds.get("endpoint_url") or None
     s3 = boto3.client(
         "s3",
         region_name=provider.default_region,
         aws_access_key_id=creds.get("access_key_id"),
         aws_secret_access_key=creds.get("secret_access_key"),
+        endpoint_url=endpoint_url,
     )
     bucket = creds.get("bucket", "troshka-images")
-    sts = boto3.client(
-        "sts",
-        region_name=provider.default_region,
-        aws_access_key_id=creds.get("access_key_id"),
-        aws_secret_access_key=creds.get("secret_access_key"),
-    )
-    identity = sts.get_caller_identity()
-    account_id = identity["Account"]
+
+    # STS is an AWS-only API — skip it for self-hosted S3-compatible endpoints
+    # (e.g. dev MinIO), which don't implement it and would otherwise hang
+    # trying to reach real AWS.
+    account_id = ""
+    if not endpoint_url:
+        sts = boto3.client(
+            "sts",
+            region_name=provider.default_region,
+            aws_access_key_id=creds.get("access_key_id"),
+            aws_secret_access_key=creds.get("secret_access_key"),
+        )
+        account_id = sts.get_caller_identity()["Account"]
+
+    owner_kwargs = {"ExpectedBucketOwner": account_id} if account_id else {}
     try:
-        s3.head_bucket(Bucket=bucket, ExpectedBucketOwner=account_id)
+        s3.head_bucket(Bucket=bucket, **owner_kwargs)
         return {"status": "ok", "bucket": bucket, "account": account_id}
     except s3.exceptions.ClientError as e:
         code = e.response["Error"]["Code"]
@@ -1392,6 +1401,7 @@ def create_s3_bucket(
         region_name=provider.default_region,
         aws_access_key_id=creds.get("access_key_id"),
         aws_secret_access_key=creds.get("secret_access_key"),
+        endpoint_url=creds.get("endpoint_url") or None,
     )
 
     try:
