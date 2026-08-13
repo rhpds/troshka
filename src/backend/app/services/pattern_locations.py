@@ -8,6 +8,7 @@ identical "all disks or not ready" logic.
 
 from __future__ import annotations
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.pattern_location import PatternLocation
@@ -35,27 +36,25 @@ def pattern_disk_source_for_cluster(
     OBC on the target provider is preferred over central.
     """
     if target_provider_id:
-        obc = (
-            db.query(PatternLocation)
-            .filter_by(
+        obc = db.scalars(
+            select(PatternLocation).filter_by(
                 pattern_disk_id=pattern_disk_id,
                 provider_id=target_provider_id,
                 location_type="obc",
                 state="synced",
             )
-            .first()
-        )
+        ).first()
         if obc:
             return "obc"
-    central = (
-        db.query(PatternLocation)
+    central = db.scalars(
+        select(PatternLocation)
         .filter_by(
             pattern_disk_id=pattern_disk_id,
             location_type="central",
             state="synced",
         )
-        .first()
-    )
+        .where(PatternLocation.provider_id.is_(None))
+    ).first()
     if central:
         return "central"
     return None
