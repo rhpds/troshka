@@ -101,13 +101,17 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
         # Background upload progress monitor
         "( while [ ! -f /scratch/.upload_done ]; do "
         "  if [ -f /scratch/.rclone.log ]; then "
-        "    last=$(grep -oP 'Transferred:.*?\\K[\\d.]+ [GgMm]iB' /scratch/.rclone.log | tail -1); "
-        '    if [ -n "$last" ]; then '
-        "      num=$(echo \"$last\" | grep -oP '[\\d.]+' | cut -d. -f1); "
-        "      unit=$(echo \"$last\" | grep -oP '[GM]'); "
+        # rclone stats-one-line format: "18.215 GiB / 97.022 GiB, 19%, 359 MiB/s, ETA 3m"
+        "    last=$(tail -1 /scratch/.rclone.log); "
+        "    num=$(echo \"$last\" | grep -oP '^.*?INFO\\s+:\\s+\\K[\\d.]+' | head -1); "
+        "    unit=$(echo \"$last\" | grep -oP '^.*?INFO\\s+:\\s+[\\d.]+ \\K[GM]' | head -1); "
+        '    if [ -n "$num" ] && [ -n "$unit" ]; then '
+        '      int_num=$(echo "$num" | cut -d. -f1); '
+        "      frac=$(echo \"$num\" | grep -oP '\\.\\K\\d' | head -1); "
+        "      frac=${frac:-0}; "
         '      case "$unit" in '
-        "        G) ub=$((num * 1073741824));; "
-        "        M) ub=$((num * 1048576));; "
+        "        G) ub=$(( (int_num * 1073741824) + (frac * 107374182) ));; "
+        "        M) ub=$(( (int_num * 1048576) + (frac * 104857) ));; "
         "        *) ub=0;; "
         "      esac; "
         '      echo "{\\"phase\\":\\"uploading\\",\\"size\\":$SIZE,\\"uploaded\\":$ub}" > /scratch/.progress; '
