@@ -1605,11 +1605,14 @@ export default function PropertiesPanel() {
               <label className="props-label">Command Override</label>
               <input
                 className="props-input"
-                placeholder="Optional entrypoint override"
+                placeholder="--flag=value --other value (space-separated)"
                 value={(data as unknown as ContainerNodeData).command || ""}
                 style={{ fontFamily: "monospace", fontSize: 11 }}
                 onChange={(e) => update("command", e.target.value || null)}
               />
+              <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", display: "block", marginTop: 4 }}>
+                Extra args appended after the image&apos;s own entrypoint — space-separated, not a JSON/Kubernetes-style array. E.g. for wetty: <code>--base=/wetty/ --port=8001 --ssh-host=10.0.0.20</code>
+              </span>
             </div>
             <div className="props-field" style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <input
@@ -1675,7 +1678,7 @@ export default function PropertiesPanel() {
                   </div>
                   <div className="props-field">
                     <label className="props-label">Command</label>
-                    <input className="props-input" value={container.command || ""} placeholder="Optional entrypoint override" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
+                    <input className="props-input" value={container.command || ""} placeholder="/path/to/exe arg1 arg2 (replaces the image entrypoint)" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
                       const containers = [...((node?.data as any)?.initContainers || [])];
                       containers[i] = { ...container, command: e.target.value || null };
                       updateNodeData(node!.id, { initContainers: containers });
@@ -1821,7 +1824,7 @@ export default function PropertiesPanel() {
                   </div>
                   <div className="props-field">
                     <label className="props-label">Command</label>
-                    <input className="props-input" value={container.command || ""} placeholder="Optional entrypoint override" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
+                    <input className="props-input" value={container.command || ""} placeholder="/path/to/exe arg1 arg2 (replaces the image entrypoint)" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
                       const containers = [...((node?.data as any)?.podContainers || [])];
                       containers[i] = { ...container, command: e.target.value || null };
                       updateNodeData(node!.id, { podContainers: containers });
