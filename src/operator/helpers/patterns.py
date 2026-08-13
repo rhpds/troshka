@@ -85,6 +85,7 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
         "qemu-img convert -f raw -O qcow2 /disk/disk.img /scratch/disk.qcow2; "
         "touch /scratch/.convert_done; "
         "SIZE=$(stat -c%s /scratch/disk.qcow2); "
+        'echo "DISK_SIZE_BYTES=$SIZE"; '
         '_p \'{"phase":"uploading","size":\'$SIZE\',"uploaded":0}\'; '
         # rclone config
         "export RCLONE_CONFIG=/scratch/rclone.conf; "
