@@ -714,6 +714,23 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
 
     cr_name = f"project-{project_id[:8]}"
     try:
+        # Clear stale capture status before starting
+        custom_api.patch_namespaced_custom_object_status(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkaprojects",
+            name=cr_name,
+            body={
+                "status": {
+                    "phase": "Capturing",
+                    "captureProgress": "Starting capture",
+                    "captureError": None,
+                    "captureDisks": None,
+                    "capturedDisks": None,
+                }
+            },
+        )
         custom_api.patch_namespaced_custom_object(
             group=CRD_GROUP,
             version=CRD_VERSION,
