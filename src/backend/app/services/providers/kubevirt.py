@@ -499,18 +499,108 @@ def _query_ceph_storage_gb(core_api):
         return 0
 
 
+def _count_addresses(addr: str) -> int:
+    """Count IPs in a single MetalLB address entry (CIDR, range, or single IP)."""
+    import ipaddress
+
+    addr = addr.strip()
+    try:
+        if "-" in addr:
+            start_s, end_s = addr.split("-", 1)
+            start = int(ipaddress.ip_address(start_s.strip()))
+            end = int(ipaddress.ip_address(end_s.strip()))
+            return max(0, end - start + 1)
+        if "/" in addr:
+            return ipaddress.ip_network(addr, strict=False).num_addresses
+        ipaddress.ip_address(addr)  # validate single IP
+        return 1
+    except ValueError:
+        return 0
+
+
+def _query_metallb_capacity(custom_api):
+    """Sum assignable external IPs across auto-assign MetalLB IPAddressPools.
+
+    Troshka's EIP LoadBalancer services don't pin a pool, so only pools with
+    ``autoAssign`` enabled (the default) are eligible. Returns the total number
+    of external IPs MetalLB can hand out, or 0 if MetalLB isn't installed.
+    """
+    try:
+        pools = custom_api.list_cluster_custom_object(
+            group="metallb.io",
+            version="v1beta1",
+            plural="ipaddresspools",
+        )
+    except Exception as e:
+        logger.warning(f"Failed to query MetalLB IPAddressPools: {e}")
+        return 0
+
+    total = 0
+    for pool in pools.get("items", []):
+        spec = pool.get("spec", {})
+        if spec.get("autoAssign") is False:
+            continue
+        for addr in spec.get("addresses", []):
+            total += _count_addresses(addr)
+    return total
+
+
+def _query_metallb_usage(core_api):
+    """Count assigned external IPs across LoadBalancer Services cluster-wide.
+
+    Returns ``(total_used, troshka_used)``:
+      * ``total_used`` — every LoadBalancer Service currently holding an
+        ingress IP (Troshka EIPs plus any other MetalLB consumer, e.g. the
+        cluster ingress router).
+      * ``troshka_used`` — the subset labeled ``app=troshka-eip``.
+
+    The difference (external consumers) is what eats into the pool capacity
+    available for new Troshka EIPs. Returns ``(0, 0)`` if the API can't be read.
+    """
+    try:
+        svcs = core_api.list_service_for_all_namespaces()
+    except Exception as e:
+        logger.warning(f"Failed to list LoadBalancer services: {e}")
+        return 0, 0
+
+    total_used = 0
+    troshka_used = 0
+    for svc in svcs.items:
+        spec = getattr(svc, "spec", None)
+        if not spec or spec.type != "LoadBalancer":
+            continue
+        assigned = _count_assigned_ingress(svc)
+        if assigned == 0:
+            continue
+        total_used += assigned
+        meta = getattr(svc, "metadata", None)
+        labels = (getattr(meta, "labels", None) or {}) if meta else {}
+        if labels.get("app") == "troshka-eip":
+            troshka_used += assigned
+    return total_used, troshka_used
+
+
+def _count_assigned_ingress(svc) -> int:
+    """Count ingress entries on a Service that carry an assigned IP."""
+    status = getattr(svc, "status", None)
+    lb = getattr(status, "load_balancer", None) if status else None
+    ingress = getattr(lb, "ingress", None) if lb else None
+    return sum(1 for ing in (ingress or []) if getattr(ing, "ip", None))
+
+
 class KubeVirtDriver(ProviderDriver):
     def provision_host(
         self, provider, host_id, instance_type, storage_size_gb, **kwargs
     ):
         _deploy_operator(provider)
 
-        _custom_api, core_api, _ = _get_k8s_clients(provider)
+        custom_api, core_api, _ = _get_k8s_clients(provider)
         creds = provider.get_credentials()
         api_url = creds["api_url"]
 
         total_vcpus, total_ram_mb = _query_cluster_capacity(core_api)
         storage_gb = _query_ceph_storage_gb(core_api)
+        max_eips = _query_metallb_capacity(custom_api)
 
         return {
             "host_id": host_id,
@@ -523,12 +613,36 @@ class KubeVirtDriver(ProviderDriver):
             "private_key": "",
             "key_pair_name": "",
             "storage_size_gb": storage_gb or storage_size_gb or 0,
-            "max_eips": 0,
+            "max_eips": max_eips,
         }
 
     def terminate_host(self, provider, instance_id):
         # No-op: KubeVirt virtual host represents the cluster, not a provisionable instance
         pass
+
+    def get_external_ip_capacity(self, provider):
+        """Discover MetalLB external-IP pool size and live usage for the cluster.
+
+        Returns ``{total, used, troshka_used, external_used, available}`` or
+        ``None`` if the cluster can't be reached. ``external_used`` is capacity
+        consumed by non-Troshka LoadBalancer services; the effective ceiling
+        Troshka should honor for placement is ``total - external_used``.
+        """
+        try:
+            custom_api, core_api, _ = _get_k8s_clients(provider)
+        except Exception as e:
+            logger.warning(f"Failed to reach cluster for EIP capacity: {e}")
+            return None
+        total = _query_metallb_capacity(custom_api)
+        used, troshka_used = _query_metallb_usage(core_api)
+        external_used = max(0, used - troshka_used)
+        return {
+            "total": total,
+            "used": used,
+            "troshka_used": troshka_used,
+            "external_used": external_used,
+            "available": max(0, total - used),
+        }
 
     def get_host_status(self, provider, instance_id):
         try:

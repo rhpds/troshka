@@ -737,3 +737,169 @@ class TestVncLogin:
         assert screenshot_ocr_fn.call_count == 4
         # Each unknown state sends KEY_ENTER
         assert send_keys_fn.call_count == 4
+
+
+# ---------------------------------------------------------------------------
+# _count_addresses / _query_metallb_capacity — MetalLB pool sizing
+# ---------------------------------------------------------------------------
+from app.services.providers.kubevirt import _count_addresses, _query_metallb_capacity
+
+
+class TestCountAddresses:
+    def test_range(self):
+        # inclusive range: .2 through .254 = 253 addresses
+        assert _count_addresses("150.238.17.2-150.238.17.254") == 253
+
+    def test_range_with_spaces(self):
+        assert _count_addresses(" 10.0.0.10 - 10.0.0.20 ") == 11
+
+    def test_cidr(self):
+        assert _count_addresses("192.168.1.0/24") == 256
+
+    def test_cidr_host(self):
+        assert _count_addresses("192.168.1.5/32") == 1
+
+    def test_single_ip(self):
+        assert _count_addresses("192.168.1.5") == 1
+
+    def test_invalid(self):
+        assert _count_addresses("not-an-ip") == 0
+
+    def test_ipv6_cidr(self):
+        assert _count_addresses("2001:db8::/120") == 256
+
+
+class TestQueryMetallbCapacity:
+    def test_sums_autoassign_pools(self):
+        custom_api = MagicMock()
+        custom_api.list_cluster_custom_object.return_value = {
+            "items": [
+                {
+                    "spec": {
+                        "addresses": [
+                            "150.238.17.2-150.238.17.254",
+                            "169.46.117.2-169.46.117.254",
+                        ]
+                    }
+                }
+            ]
+        }
+        assert _query_metallb_capacity(custom_api) == 506
+
+    def test_skips_non_autoassign_pools(self):
+        custom_api = MagicMock()
+        custom_api.list_cluster_custom_object.return_value = {
+            "items": [
+                {"spec": {"autoAssign": False, "addresses": ["10.0.0.0/24"]}},
+                {"spec": {"autoAssign": True, "addresses": ["10.0.1.10-10.0.1.19"]}},
+            ]
+        }
+        # Only the autoAssign pool counts: 10 addresses
+        assert _query_metallb_capacity(custom_api) == 10
+
+    def test_returns_zero_when_metallb_absent(self):
+        custom_api = MagicMock()
+        custom_api.list_cluster_custom_object.side_effect = Exception("404 not found")
+        assert _query_metallb_capacity(custom_api) == 0
+
+    def test_returns_zero_when_no_pools(self):
+        custom_api = MagicMock()
+        custom_api.list_cluster_custom_object.return_value = {"items": []}
+        assert _query_metallb_capacity(custom_api) == 0
+
+
+# ---------------------------------------------------------------------------
+# _query_metallb_usage — live LoadBalancer external-IP consumption
+# ---------------------------------------------------------------------------
+from app.services.providers.kubevirt import _query_metallb_usage
+
+
+def _make_lb_service(ip=None, app_label=None, svc_type="LoadBalancer"):
+    """Build a fake V1Service with an optional assigned ingress IP + app label."""
+    svc = MagicMock()
+    svc.spec.type = svc_type
+    if ip:
+        ingress = MagicMock()
+        ingress.ip = ip
+        svc.status.load_balancer.ingress = [ingress]
+    else:
+        svc.status.load_balancer.ingress = []
+    svc.metadata.labels = {"app": app_label} if app_label else {}
+    return svc
+
+
+class TestQueryMetallbUsage:
+    def test_counts_all_assigned_and_troshka_subset(self):
+        core_api = MagicMock()
+        core_api.list_service_for_all_namespaces.return_value = MagicMock(
+            items=[
+                _make_lb_service(ip="10.0.0.1", app_label="troshka-eip"),
+                _make_lb_service(ip="10.0.0.2", app_label="troshka-eip"),
+                _make_lb_service(ip="10.0.0.3", app_label="ingress-router"),
+            ]
+        )
+        total_used, troshka_used = _query_metallb_usage(core_api)
+        assert total_used == 3
+        assert troshka_used == 2
+
+    def test_ignores_non_loadbalancer_services(self):
+        core_api = MagicMock()
+        core_api.list_service_for_all_namespaces.return_value = MagicMock(
+            items=[
+                _make_lb_service(ip="10.0.0.1", app_label="troshka-eip"),
+                _make_lb_service(
+                    ip="10.0.0.9", app_label="whatever", svc_type="ClusterIP"
+                ),
+            ]
+        )
+        total_used, troshka_used = _query_metallb_usage(core_api)
+        assert total_used == 1
+        assert troshka_used == 1
+
+    def test_ignores_pending_services_without_ip(self):
+        core_api = MagicMock()
+        core_api.list_service_for_all_namespaces.return_value = MagicMock(
+            items=[
+                _make_lb_service(ip=None, app_label="troshka-eip"),  # not assigned yet
+                _make_lb_service(ip="10.0.0.5", app_label=None),
+            ]
+        )
+        total_used, troshka_used = _query_metallb_usage(core_api)
+        assert total_used == 1
+        assert troshka_used == 0
+
+    def test_returns_zero_on_exception(self):
+        core_api = MagicMock()
+        core_api.list_service_for_all_namespaces.side_effect = Exception("forbidden")
+        assert _query_metallb_usage(core_api) == (0, 0)
+
+
+# ---------------------------------------------------------------------------
+# KubeVirtDriver.get_external_ip_capacity — combined pool total + live usage
+# ---------------------------------------------------------------------------
+
+
+class TestGetExternalIpCapacity:
+    @patch("app.services.providers.kubevirt._query_metallb_usage")
+    @patch("app.services.providers.kubevirt._query_metallb_capacity")
+    @patch("app.services.providers.kubevirt._get_k8s_clients")
+    def test_combines_total_and_usage(self, mock_clients, mock_cap, mock_usage):
+        mock_clients.return_value = (MagicMock(), MagicMock(), MagicMock())
+        mock_cap.return_value = 506
+        mock_usage.return_value = (10, 6)  # 10 in use, 6 of them Troshka's
+
+        driver = KubeVirtDriver()
+        result = driver.get_external_ip_capacity(MagicMock())
+
+        assert result is not None
+        assert result["total"] == 506
+        assert result["used"] == 10
+        assert result["troshka_used"] == 6
+        assert result["external_used"] == 4  # 10 - 6 non-Troshka consumers
+        assert result["available"] == 496  # 506 - 10 assigned
+
+    @patch("app.services.providers.kubevirt._get_k8s_clients")
+    def test_returns_none_when_cluster_unreachable(self, mock_clients):
+        mock_clients.side_effect = Exception("connection refused")
+        driver = KubeVirtDriver()
+        assert driver.get_external_ip_capacity(MagicMock()) is None

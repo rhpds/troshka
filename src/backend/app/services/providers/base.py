@@ -20,6 +20,13 @@ class ProviderDriver:
         """Terminate a host instance."""
         raise NotImplementedError
 
+    def get_external_ip_capacity(self, provider) -> dict | None:
+        """Discover external-IP pool capacity and live usage for a host.
+
+        Returns a dict with total/used/available counts, or None if the
+        provider has no discoverable external-IP pool (default)."""
+        return None
+
     def get_host_status(self, provider, instance_id):
         """Get current status. Returns dict with instance_id, state,
         public_ip, private_ip — or None if not found."""

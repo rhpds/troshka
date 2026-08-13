@@ -318,6 +318,62 @@ class TestCheckCertRenewal:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# _refresh_kubevirt_eip_capacity
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestRefreshKubevirtEipCapacity:
+    def test_sets_max_eips_to_total_minus_external(self):
+        host = MagicMock()
+        host.id = "abcdef12-3456"
+        host.max_eips = 0
+        driver = MagicMock()
+        driver.get_external_ip_capacity.return_value = {
+            "total": 506,
+            "used": 10,
+            "troshka_used": 6,
+            "external_used": 4,
+            "available": 496,
+        }
+        hp._refresh_kubevirt_eip_capacity(host, driver, MagicMock())
+        # 506 pool - 4 non-Troshka consumers = 502 effective ceiling
+        assert host.max_eips == 502
+
+    def test_does_not_clobber_when_total_zero(self):
+        """A failed / empty MetalLB query must not reset a good max_eips."""
+        host = MagicMock()
+        host.id = "abcdef12-3456"
+        host.max_eips = 500
+        driver = MagicMock()
+        driver.get_external_ip_capacity.return_value = {
+            "total": 0,
+            "used": 0,
+            "external_used": 0,
+        }
+        hp._refresh_kubevirt_eip_capacity(host, driver, MagicMock())
+        assert host.max_eips == 500
+
+    def test_does_not_clobber_on_none(self):
+        host = MagicMock()
+        host.id = "abcdef12-3456"
+        host.max_eips = 500
+        driver = MagicMock()
+        driver.get_external_ip_capacity.return_value = None
+        hp._refresh_kubevirt_eip_capacity(host, driver, MagicMock())
+        assert host.max_eips == 500
+
+    def test_swallows_exception(self):
+        host = MagicMock()
+        host.id = "abcdef12-3456"
+        host.max_eips = 500
+        driver = MagicMock()
+        driver.get_external_ip_capacity.side_effect = Exception("boom")
+        # Must not raise
+        hp._refresh_kubevirt_eip_capacity(host, driver, MagicMock())
+        assert host.max_eips == 500
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # start_health_poller
 # ═══════════════════════════════════════════════════════════════════════════
 

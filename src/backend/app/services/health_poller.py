@@ -138,6 +138,35 @@ def _check_ip_change_if_all_unreachable(hosts_checked, hosts_failed):
 _skip_until: dict[str, float] = {}
 
 
+def _refresh_kubevirt_eip_capacity(host, driver, provider) -> None:
+    """Refresh a KubeVirt host's external-IP capacity from live MetalLB state.
+
+    Sets ``host.max_eips`` to the pool total minus IPs already consumed by
+    non-Troshka LoadBalancer services, so placement sees the real ceiling.
+    Troshka's own in-use EIPs stay tracked in the ElasticIp table. A failed or
+    empty query (``total == 0``) is left alone so transient RBAC/API errors
+    never clobber a good value.
+    """
+    try:
+        cap = driver.get_external_ip_capacity(provider)
+    except Exception:
+        logger.debug(
+            "EIP capacity refresh failed for host %s", host.id[:8], exc_info=True
+        )
+        return
+    if not cap or cap.get("total", 0) <= 0:
+        return
+    host.max_eips = max(0, cap["total"] - cap.get("external_used", 0))
+    logger.debug(
+        "Host %s MetalLB: %d total, %d in use (%d external), max_eips=%d",
+        host.id[:8],
+        cap["total"],
+        cap.get("used", 0),
+        cap.get("external_used", 0),
+        host.max_eips,
+    )
+
+
 def _poll_kubevirt_host(host, db) -> None:
     """Check KubeVirt cluster health via K8s API."""
     try:
@@ -151,6 +180,7 @@ def _poll_kubevirt_host(host, db) -> None:
             if status:
                 host.agent_status = "connected"
                 host.last_health_at = datetime.now(UTC)
+                _refresh_kubevirt_eip_capacity(host, driver, provider)
             else:
                 host.agent_status = "disconnected"
         db.commit()

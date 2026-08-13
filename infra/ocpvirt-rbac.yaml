@@ -34,6 +34,10 @@ rules:
   - apiGroups: [""]
     resources: ["services"]
     verbs: ["create", "delete", "get", "list", "patch", "update"]
+  # MetalLB IPAddressPools — read external-IP capacity for placement (max_eips)
+  - apiGroups: ["metallb.io"]
+    resources: ["ipaddresspools"]
+    verbs: ["get", "list"]
   # PVCs — Ceph-NFS storage pools, extend
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]

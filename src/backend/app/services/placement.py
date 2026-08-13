@@ -129,7 +129,12 @@ def record_deploy_end(host_id: str):
 
 
 def _check_eip_capacity(db: Session, host: Host, required_eips: int) -> bool:
-    """Return True if the host (and its provider) have enough EIP capacity."""
+    """Return True if the host (and its provider) have enough EIP capacity.
+
+    For KubeVirt clusters, host.max_eips reflects the size of the MetalLB
+    IPAddressPool (synced at host provision), so the same host-level check
+    applies uniformly.
+    """
     from app.services.eip_service import get_host_eip_usage
 
     eip_used = get_host_eip_usage(db, host.id)
@@ -299,6 +304,11 @@ def _prepare_hosts(
     hosts_query = db.query(Host).filter(
         Host.state == "active",
         Host.agent_status == "connected",
+        Host.host_type != "pattern_buffer",
+        # KubeVirt clusters have no troshkad WireGuard/VXLAN mesh and each host
+        # is an entire OCP cluster — they can never be mesh peers for a
+        # multi-host deploy, so exclude them from bin-packing.
+        Host.host_type != "kubevirt-cluster",
     )
     if pool_id:
         hosts_query = hosts_query.filter(Host.storage_pool_id == pool_id)

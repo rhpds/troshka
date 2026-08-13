@@ -142,6 +142,42 @@ def test_multihost_placement_returns_none_when_impossible():
         db.close()
 
 
+def test_multihost_placement_excludes_kubevirt():
+    """KubeVirt clusters must never be bin-packed into a mesh deployment.
+
+    Each kubevirt-cluster host is an entire OCP cluster with no cross-cluster
+    WireGuard/VXLAN mesh path, so multi-host placement must skip them entirely.
+    """
+    db = TestSession()
+    try:
+        prov = _make_provider(db)
+        # Two kubevirt-cluster hosts with plenty of capacity
+        host_a = _make_host(
+            db, prov, vcpus=256, ram_mb=1048576, host_type="kubevirt-cluster"
+        )
+        host_b = _make_host(
+            db, prov, vcpus=256, ram_mb=1048576, host_type="kubevirt-cluster"
+        )
+
+        topo = _topology_with_vms(
+            [
+                ("vm1", 8, 16, None),
+                ("vm2", 8, 16, None),
+            ]
+        )
+
+        # No non-kubevirt hosts available → no multi-host placement possible
+        result = find_multihost_placement(db, topo, None, prov.id)
+        assert result is None
+
+        db.delete(host_a)
+        db.delete(host_b)
+        db.delete(prov)
+        db.commit()
+    finally:
+        db.close()
+
+
 def test_select_network_host_picks_most_vms():
     assignments = {
         "host-a": ["vm1"],

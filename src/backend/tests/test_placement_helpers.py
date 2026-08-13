@@ -159,3 +159,38 @@ def test_check_eip_capacity_zero_required():
         assert _check_eip_capacity(db, host, required_eips=0) is True
     finally:
         db.close()
+
+
+def test_check_eip_capacity_kubevirt_uses_max_eips():
+    """KubeVirt hosts are gated by max_eips (synced from the MetalLB pool size).
+
+    max_eips=0 (no pool / no RBAC) rejects the host; a real pool size admits it.
+    """
+    from app.services.placement import _check_eip_capacity
+
+    db = TestSession()
+    try:
+        host = Host(
+            provider_id=None,
+            instance_id="i-placement-kubevirt",
+            ip_address="10.0.0.12",
+            private_key="fake-key",
+            state="active",
+            host_type="kubevirt-cluster",
+            max_eips=0,
+        )
+        db.add(host)
+        db.commit()
+        db.refresh(host)
+        # No MetalLB capacity synced → rejected like any other host
+        assert _check_eip_capacity(db, host, required_eips=1) is False
+
+        # Simulate a synced MetalLB pool with capacity
+        host.max_eips = 506
+        db.commit()
+        assert _check_eip_capacity(db, host, required_eips=1) is True
+
+        db.delete(host)
+        db.commit()
+    finally:
+        db.close()
