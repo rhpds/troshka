@@ -709,6 +709,15 @@ def delete_pattern(
             "Failed to clean S3 prefix patterns/%s/", sanitize_log(pattern_id[:8])
         )
 
+    # Cluster RGW cleanup — read locations before cascade delete destroys them
+    from app.services import cluster_storage
+
+    cluster_provider_ids = {
+        loc.provider_id for disk in pattern.disks for loc in disk.locations
+    }
+    for pid in cluster_provider_ids:
+        cluster_storage.delete_pattern(db, pid, pattern_id)
+
     db.delete(pattern)
     db.commit()
 

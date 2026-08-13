@@ -11,7 +11,8 @@ from fastapi.testclient import TestClient
 from app.core.auth import create_jwt, hash_password
 from app.core.database import get_db
 from app.main import app
-from app.models.pattern import Pattern, PatternShare
+from app.models.pattern import Pattern, PatternDisk, PatternShare
+from app.models.pattern_location import PatternLocation
 from app.models.project import Project
 from app.models.user import User
 from tests.conftest import TestSession, get_test_db
@@ -463,6 +464,52 @@ def test_delete_capturing_pattern_calls_cancel(
     assert resp.status_code == 204
     mock_cancel.assert_called_once()
     assert mock_cancel.call_args[0][0] == pid
+
+
+@patch("app.core.redis.enqueue_job")
+@patch("app.services.cluster_storage.delete_pattern")
+@patch("app.services.s3_storage.delete_prefix")
+@patch("app.services.s3_storage.delete_file")
+def test_delete_pattern_cleans_cluster_rgw(
+    mock_del_file, mock_del_prefix, mock_cluster_del, mock_enqueue
+):
+    db = TestSession()
+    pattern = Pattern(
+        name="Del Cluster RGW Cov",
+        owner_id=USER_ID,
+        topology=SAMPLE_TOPOLOGY,
+        state="available",
+    )
+    db.add(pattern)
+    db.flush()
+    disk = PatternDisk(
+        pattern_id=pattern.id,
+        source_disk_id="disk-1",
+        source_vm_id="vm-1",
+        s3_key=f"patterns/{pattern.id}/disk-1.qcow2",
+        format="qcow2",
+        size_bytes=1000,
+    )
+    db.add(disk)
+    db.flush()
+    fake_provider_id = str(uuid.uuid4())
+    loc = PatternLocation(
+        pattern_disk_id=disk.id,
+        provider_id=fake_provider_id,
+        s3_key=disk.s3_key,
+        state="synced",
+        size_bytes=1000,
+    )
+    db.add(loc)
+    db.commit()
+    pid = pattern.id
+    db.close()
+
+    resp = client.delete(f"/api/v1/patterns/{pid}", headers=HEADERS)
+    assert resp.status_code == 204
+    mock_cluster_del.assert_called_once()
+    assert mock_cluster_del.call_args[0][1] == fake_provider_id
+    assert mock_cluster_del.call_args[0][2] == pid
 
 
 # ---------------------------------------------------------------------------

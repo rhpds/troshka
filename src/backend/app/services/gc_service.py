@@ -719,6 +719,27 @@ def _reconcile_shared_cache_entries(db, host, host_id, report):
         )
 
 
+def _clean_cluster_rgw_orphans(db: Session, dry_run: bool) -> list[dict]:
+    """Scan all KubeVirt providers with OBC config and clean orphaned pattern objects."""
+    from app.models.provider import Provider
+    from app.services import cluster_storage
+
+    providers = (
+        db.query(Provider)
+        .filter(Provider.type == "kubevirt", Provider.state == "active")
+        .all()
+    )
+    results = []
+    for p in providers:
+        creds = p.get_credentials()
+        if not creds or "s3_config" not in creds:
+            continue
+        report = cluster_storage.clean_orphans(db, p.id, dry_run)
+        if report.get("orphan_patterns", 0) > 0 or report.get("error"):
+            results.append(report)
+    return results
+
+
 def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
     """Full reconciliation: sync capacity + discover + clean orphans + repair networks."""
     from app.core.database import SessionLocal
@@ -776,6 +797,10 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
             or s3_cleanup.get("aborted_multipart", 0) > 0
         ):
             report["s3_cleanup"] = s3_cleanup
+
+        cluster_rgw_cleanup = _clean_cluster_rgw_orphans(db, dry_run)
+        if cluster_rgw_cleanup:
+            report["cluster_rgw_cleanup"] = cluster_rgw_cleanup
 
         if not dry_run:
             _reconcile_ocp_routes(db, host, host_id, report)
