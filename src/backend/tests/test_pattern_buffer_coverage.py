@@ -206,10 +206,6 @@ class TestCheckPatternBufferBusy:
         result = _check_pattern_buffer_busy(db, pool)
         assert "3 active" in result
 
-    @patch(
-        "app.services.pattern_service._capture_progress",
-        {"pat-1234abcd": {"step": "capturing"}},
-    )
     @patch("app.services.troshkad_client.check_health")
     def test_capture_in_progress(self, mock_health):
         mock_health.return_value = {"running_jobs": 0}
@@ -218,7 +214,18 @@ class TestCheckPatternBufferBusy:
         db = MagicMock()
         host = MagicMock()
         host.agent_status = "connected"
-        db.query.return_value.filter_by.return_value.first.return_value = host
+        capturing_pattern = MagicMock()
+        capturing_pattern.id = "pat-1234-abcd-0000-000000000000"
+
+        def query_side_effect(model):
+            q = MagicMock()
+            if model.__name__ == "Pattern":
+                q.filter.return_value.first.return_value = capturing_pattern
+            else:
+                q.filter_by.return_value.first.return_value = host
+            return q
+
+        db.query.side_effect = query_side_effect
         result = _check_pattern_buffer_busy(db, pool)
         assert "capture" in result.lower()
 

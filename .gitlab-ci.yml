@@ -9,7 +9,7 @@ stages:
 
 test-backend:
   stage: test
-  image: python:3.11
+  image: python:3.13
   script:
     - cd src/backend
     - pip install --upgrade pip
@@ -26,7 +26,7 @@ test-backend:
 
 test-operator:
   stage: test
-  image: python:3.11
+  image: python:3.13
   script:
     - cd src/operator
     - pip install --upgrade pip
@@ -47,7 +47,7 @@ test-operator:
 
 test-troshkad:
   stage: test
-  image: python:3.11
+  image: python:3.13
   script:
     - cd src/troshkad
     - pip install pytest pytest-cov

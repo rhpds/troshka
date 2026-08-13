@@ -35,7 +35,7 @@ cd src/backend && ./venv/bin/python3 -m pytest tests/ -v
 
 Tests use SQLite with type compiler overrides for JSONB/UUID. Auth is dev-mode (auto-authenticates).
 
-**CI runs Python 3.11** (GitLab/SonarQube), dev runs Python 3.13. Mock `side_effect` iterators behave differently between versions — always add extra trailing values to `time.time()` mocks to prevent `StopIteration` on 3.11.
+**CI and dev both run Python 3.13.** Always add extra trailing values to `time.time()` mocks to prevent `StopIteration`.
 ### Git Commands — ALWAYS Use Absolute Paths
 
 Never `cd` into a subdirectory and then run `git add` with relative paths — this doubles the path segment and fails. Always use one of:
