@@ -140,8 +140,8 @@ class TestBuildExportJobS3Tuning:
             100,
         )
         cmd = job["spec"]["template"]["spec"]["containers"][0]["command"][2]
-        assert "256MB" in cmd
-        assert "max_concurrent_requests 7" in cmd
+        assert "256M" in cmd
+        assert "upload-concurrency 7" in cmd
 
     def test_export_job_sets_home_to_scratch(self):
         job = self._build_export_job(

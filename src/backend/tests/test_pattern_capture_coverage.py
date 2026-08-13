@@ -66,9 +66,18 @@ class TestBuildCaptureDiskManifest:
 
 
 class TestPollCaptureCompletion:
+    def _mock_session_local(self):
+        """Return a mock SessionLocal whose query says the pattern exists."""
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter_by.return_value.first.return_value = True
+        return mock_db
+
     @patch("app.services.ws_pubsub.notify_pattern")
-    def test_success_returns_disks(self, mock_notify):
+    @patch("app.core.database.SessionLocal")
+    def test_success_returns_disks(self, mock_sl, mock_notify):
         from app.services.pattern_service import _poll_capture_completion
+
+        mock_sl.return_value = self._mock_session_local()
 
         custom_api = MagicMock()
         custom_api.get_namespaced_custom_object.return_value = {
@@ -86,8 +95,11 @@ class TestPollCaptureCompletion:
         assert result[0]["diskId"] == "d1"
 
     @patch("app.services.ws_pubsub.notify_pattern")
-    def test_error_returns_none(self, mock_notify):
+    @patch("app.core.database.SessionLocal")
+    def test_error_returns_none(self, mock_sl, mock_notify):
         from app.services.pattern_service import _poll_capture_completion
+
+        mock_sl.return_value = self._mock_session_local()
 
         custom_api = MagicMock()
         custom_api.get_namespaced_custom_object.return_value = {
@@ -103,8 +115,11 @@ class TestPollCaptureCompletion:
         assert result is None
 
     @patch("app.services.ws_pubsub.notify_pattern")
-    def test_progress_update(self, mock_notify):
+    @patch("app.core.database.SessionLocal")
+    def test_progress_update(self, mock_sl, mock_notify):
         from app.services.pattern_service import _poll_capture_completion
+
+        mock_sl.return_value = self._mock_session_local()
 
         call_count = [0]
 
@@ -141,32 +156,52 @@ class TestPollCaptureCompletion:
 
 class TestCancelCaptureJobs:
     @patch("app.services.troshkad_client.cancel_job")
-    def test_cancels_troshkad_jobs(self, mock_cancel):
-        from app.services.pattern_service import _capture_progress, cancel_capture
+    @patch("app.services.pattern_service.get_capture_progress")
+    def test_cancels_troshkad_jobs(self, mock_get_progress, mock_cancel):
+        from app.services.pattern_service import cancel_capture
 
-        _capture_progress["pat-cancel2"] = {
+        mock_get_progress.return_value = {
             "step": "capturing",
             "_host_id": "host-1",
             "_job_ids": ["j1", "j2"],
         }
         db = MagicMock()
+        pattern = MagicMock()
+        pattern.source_project_id = "proj-1"
+        project = MagicMock()
+        project.host_id = "host-1"
         host = MagicMock()
-        db.query.return_value.filter_by.return_value.first.return_value = host
+        host.host_type = "bare-metal"
+        db.query.return_value.filter_by.return_value.first.side_effect = [
+            pattern,
+            project,
+            host,
+        ]
         cancel_capture("pat-cancel2", db)
         assert mock_cancel.call_count == 2
 
-    def test_cancel_no_progress(self):
+    def test_cancel_no_pattern(self):
         from app.services.pattern_service import cancel_capture
 
         db = MagicMock()
-        # Should not raise when pattern not found
+        db.query.return_value.filter_by.return_value.first.return_value = None
         cancel_capture("pat-nonexistent", db)
 
-    def test_cancel_no_host_or_jobs(self):
-        from app.services.pattern_service import _capture_progress, cancel_capture
+    @patch("app.services.pattern_service.get_capture_progress")
+    def test_cancel_no_host_or_jobs(self, mock_get_progress):
+        from app.services.pattern_service import cancel_capture
 
-        _capture_progress["pat-nohost"] = {"step": "capturing"}
+        mock_get_progress.return_value = None
         db = MagicMock()
+        pattern = MagicMock()
+        pattern.source_project_id = "proj-1"
+        project = MagicMock()
+        project.host_id = "host-1"
+        host = MagicMock()
+        host.host_type = "bare-metal"
+        db.query.return_value.filter_by.return_value.first.side_effect = [
+            pattern,
+            project,
+            host,
+        ]
         cancel_capture("pat-nohost", db)
-        # Should return without error — popped from dict
-        assert "pat-nohost" not in _capture_progress

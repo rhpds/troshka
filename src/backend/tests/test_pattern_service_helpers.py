@@ -1096,21 +1096,14 @@ class TestCancelCapture:
         # Should not raise
         cancel_capture("pat-missing", mock_db)
 
-    def test_cancel_capture_no_host_id(self):
-        from app.services.pattern_service import (
-            _clear_capture_progress,
-            _set_capture_progress,
-            cancel_capture,
-        )
+    def test_cancel_capture_no_source_project(self):
+        from app.services.pattern_service import cancel_capture
 
-        _set_capture_progress("pat-2", {"_host_id": None, "_job_ids": ["j1"]})
-        try:
-            mock_db = MagicMock()
-            cancel_capture("pat-2", mock_db)
-            # Should return early without querying host
-            mock_db.query.assert_not_called()
-        finally:
-            _clear_capture_progress("pat-2")
+        mock_db = MagicMock()
+        pattern = MagicMock()
+        pattern.source_project_id = None
+        mock_db.query.return_value.filter_by.return_value.first.return_value = pattern
+        cancel_capture("pat-2", mock_db)
 
 
 # ── _run_recert_force_expire tests ──
