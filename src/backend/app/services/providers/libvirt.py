@@ -7,7 +7,17 @@ you already built yourself (e.g. a disposable VM) — Troshka never creates
 or destroys the underlying machine for this provider type.
 """
 
+import logging
+
 from app.services.providers.base import ProviderDriver
+
+logger = logging.getLogger(__name__)
+
+# Not a real hardware/API limit — libvirt hosts have no cloud EIP resource
+# to allocate. This just caps how many gateway port-forward rules can
+# reference this host, since they all share the same host.ip_address (see
+# allocate_eip below). Bump via PATCH /hosts/{id} if you need more.
+DEFAULT_MAX_EIPS = 50
 
 
 class LibvirtDriver(ProviderDriver):
@@ -38,7 +48,7 @@ class LibvirtDriver(ProviderDriver):
             "private_key": private_key,
             "key_pair_name": f"troshka-libvirt-{host_id[:8]}",
             "storage_size_gb": storage_size_gb,
-            "max_eips": 0,
+            "max_eips": DEFAULT_MAX_EIPS,
         }
 
     def terminate_host(self, provider, instance_id):
@@ -60,3 +70,30 @@ class LibvirtDriver(ProviderDriver):
             "public_ip": None,
             "private_ip": None,
         }
+
+    def allocate_eip(self, provider, host, eip_id, project_id=None):
+        # No cloud API to call — a libvirt host has exactly one real
+        # address, so "allocating an EIP" just means handing back that
+        # same address with a synthetic allocation id for bookkeeping.
+        if not host.ip_address:
+            raise ValueError("Host has no ip_address to use as an elastic IP")
+
+        allocation_id = f"libvirt-eip-{eip_id[:8]}"
+        logger.info(
+            "Allocated libvirt EIP %s (%s) for host %s using host IP",
+            host.ip_address,
+            allocation_id,
+            host.id[:8],
+        )
+        return {"public_ip": host.ip_address, "allocation_id": allocation_id}
+
+    def associate_eip(self, provider, host, allocation_id):
+        # Returning the host's own IP as private_ip is what makes
+        # troshkad's host-level nftables DNAT (priv_ip branch) fire,
+        # mapping host.ip_address:extPort -> transit_ip:extPort. See
+        # _setup_host_port_forward_dnat in src/troshkad/troshkad.py.
+        return {"private_ip": host.ip_address}
+
+    def release_eip(self, provider, allocation_id, namespace=None):
+        # No cloud resource was ever created — nothing to release.
+        logger.info("Released libvirt EIP %s (no-op, no cloud resource)", allocation_id)

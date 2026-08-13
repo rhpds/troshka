@@ -1654,6 +1654,11 @@ def update_host(
         "auto_extend_threshold_pct": int,
         "auto_extend_increment_gb": int,
         "auto_extend_max_gb": (int, type(None)),
+        # Normally set from provider driver provisioning/resize results —
+        # exposed here so admins can raise it on hosts (e.g. libvirt BYO
+        # hosts) provisioned before a driver started returning a non-zero
+        # value, without having to re-provision.
+        "max_eips": int,
     }
     for key, val in body.items():
         if key not in allowed:

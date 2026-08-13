@@ -3384,7 +3384,11 @@ def _sync_eips_for_reconfigure(s, proj, h, p_id, current, errors):
             ]
             sync_security_group_rules(s, provider, desired_sg)
 
-        if provider.type != "ec2" and gw_node:
+        # EC2 and libvirt both DNAT directly onto a real per-EIP address
+        # (see LibvirtDriver.associate_eip) rather than needing the
+        # transit-port indirection — keep this in sync with the same
+        # exclusion in deploy_service._allocate_single_eip.
+        if provider.type not in ("ec2", "libvirt") and gw_node:
             _sync_transit_ports(s, provider, h, p_id, gw_node)
     except Exception:
         logger.exception("EIP sync failed during reconfigure %s", p_id[:8])

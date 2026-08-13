@@ -672,6 +672,18 @@ class TestUpdateHost:
         assert resp.status_code == 200
         assert resp.json()["status"] == "updated"
 
+    def test_update_max_eips(self):
+        hid = _create_host()
+        resp = client.patch(
+            f"/api/v1/hosts/{hid}",
+            json={"max_eips": 50},
+            headers=ADMIN_HEADERS,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "updated"
+        get_resp = client.get(f"/api/v1/hosts/{hid}", headers=ADMIN_HEADERS)
+        assert get_resp.json()["max_eips"] == 50
+
     def test_update_disallowed_field(self):
         hid = _create_host()
         resp = client.patch(

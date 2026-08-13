@@ -1554,6 +1554,75 @@ class TestSyncEipsForReconfigure:
         mock_assoc.assert_called_once()
         assert current["externalIps"][0]["ip"] == "1.2.3.4"
 
+    def _run_with_provider_type(self, provider_type, mock_alloc, mock_assoc, mock_sync):
+        """Shared harness for the libvirt/non-ec2 transit-port branch tests."""
+        from app.api.projects import _sync_eips_for_reconfigure
+
+        mock_eip = MagicMock()
+        mock_eip.state = "allocated"
+        mock_eip.public_ip = "1.2.3.4"
+        mock_eip.private_ip = "1.2.3.4"
+        mock_alloc.return_value = mock_eip
+
+        s = MagicMock()
+        mock_provider = MagicMock(id="prov1")
+        mock_provider.type = provider_type
+
+        proj = MagicMock()
+        proj.provider_id = "prov1"
+        h = MagicMock()
+        h.provider_id = "prov1"
+
+        current = {"externalIps": [{"id": "eip1"}]}
+        errors = []
+
+        gw_node = {"data": {"portForwards": [{"extIpId": "eip1", "extPort": "8080"}]}}
+
+        eip_filter = MagicMock()
+        eip_filter.first.return_value = None
+
+        provider_filter = MagicMock()
+        provider_filter.first.return_value = mock_provider
+
+        def _query_dispatch(model):
+            m = MagicMock()
+            model_name = getattr(model, "__name__", str(model))
+            if "ElasticIp" in model_name:
+                m.filter_by.return_value = eip_filter
+            elif "Provider" in model_name:
+                m.filter_by.return_value = provider_filter
+            return m
+
+        s.query.side_effect = _query_dispatch
+
+        with patch("app.api.projects._find_gateway_node", return_value=gw_node):
+            _sync_eips_for_reconfigure(s, proj, h, "p1", current, errors)
+        assert errors == []
+
+    @patch("app.api.projects._sync_transit_ports")
+    @patch("app.services.eip_service.sync_security_group_rules")
+    @patch("app.services.eip_service.associate_eip")
+    @patch("app.services.eip_service.allocate_eip")
+    def test_libvirt_provider_skips_transit_ports(
+        self, mock_alloc, mock_assoc, mock_sync, mock_transit
+    ):
+        """Libvirt DNATs directly onto the host IP (like EC2) — no transit
+        ports needed, and update_eip_ports isn't implemented for it."""
+        self._run_with_provider_type("libvirt", mock_alloc, mock_assoc, mock_sync)
+        mock_transit.assert_not_called()
+
+    @patch("app.api.projects._sync_transit_ports")
+    @patch("app.services.eip_service.sync_security_group_rules")
+    @patch("app.services.eip_service.associate_eip")
+    @patch("app.services.eip_service.allocate_eip")
+    def test_non_ec2_non_libvirt_provider_still_calls_transit_ports(
+        self, mock_alloc, mock_assoc, mock_sync, mock_transit
+    ):
+        """Regression guard: providers that share one LB IP (gcp/azure/
+        ocpvirt/kubevirt) must keep going through transit-port allocation."""
+        self._run_with_provider_type("gcp", mock_alloc, mock_assoc, mock_sync)
+        mock_transit.assert_called_once()
+
     def test_exception_appends_error(self):
         from app.api.projects import _sync_eips_for_reconfigure
 
