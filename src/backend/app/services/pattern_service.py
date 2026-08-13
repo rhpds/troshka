@@ -723,8 +723,8 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
             name=cr_name,
             body={
                 "status": {
-                    "phase": "Capturing",
-                    "captureProgress": "Starting capture",
+                    "phase": "Active",
+                    "captureProgress": None,
                     "captureError": None,
                     "captureDisks": None,
                     "capturedDisks": None,
