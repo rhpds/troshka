@@ -1486,13 +1486,14 @@ class TestTestS3ProviderEdgeCases:
         assert result["status"] == "ok"
         assert result["account"] == ""
         mock_sts.get_caller_identity.assert_not_called()
-        mock_boto.assert_any_call(
-            "s3",
-            region_name="us-east-1",
-            aws_access_key_id="minioadmin",
-            aws_secret_access_key="minioadmin",
-            endpoint_url="http://192.168.124.1:9000",
-        )
+        s3_call = next(c for c in mock_boto.call_args_list if c.args[0] == "s3")
+        assert s3_call.kwargs["region_name"] == "us-east-1"
+        assert s3_call.kwargs["aws_access_key_id"] == "minioadmin"
+        assert s3_call.kwargs["aws_secret_access_key"] == "minioadmin"
+        assert s3_call.kwargs["endpoint_url"] == "http://192.168.124.1:9000"
+        assert s3_call.kwargs["config"].connect_timeout == 5
+        assert s3_call.kwargs["config"].read_timeout == 10
+        assert s3_call.kwargs["config"].retries == {"max_attempts": 1}
         mock_s3.head_bucket.assert_called_once_with(Bucket="test-bucket")
 
     @patch("boto3.client")

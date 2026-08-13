@@ -1105,10 +1105,20 @@ def discover_datasources(
         raise HTTPException(status_code=400, detail="Failed to list DataSources")
 
 
+def _fast_fail_boto_config():
+    """Bounded connect/read timeout and no retries for interactive "Test"/
+    "Create Bucket" calls, so an unreachable or misconfigured endpoint fails
+    in seconds rather than hanging on botocore's 60s-per-attempt defaults."""
+    from botocore.config import Config
+
+    return Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 1})
+
+
 def _test_s3_provider(provider: Provider, creds: dict[str, Any]) -> dict[str, Any]:
     """Test S3 provider credentials and bucket access."""
     import boto3
 
+    boto_config = _fast_fail_boto_config()
     endpoint_url = creds.get("endpoint_url") or None
     s3 = boto3.client(
         "s3",
@@ -1116,6 +1126,7 @@ def _test_s3_provider(provider: Provider, creds: dict[str, Any]) -> dict[str, An
         aws_access_key_id=creds.get("access_key_id"),
         aws_secret_access_key=creds.get("secret_access_key"),
         endpoint_url=endpoint_url,
+        config=boto_config,
     )
     bucket = creds.get("bucket", "troshka-images")
 
@@ -1129,6 +1140,7 @@ def _test_s3_provider(provider: Provider, creds: dict[str, Any]) -> dict[str, An
             region_name=provider.default_region,
             aws_access_key_id=creds.get("access_key_id"),
             aws_secret_access_key=creds.get("secret_access_key"),
+            config=boto_config,
         )
         account_id = sts.get_caller_identity()["Account"]
 
@@ -1402,6 +1414,7 @@ def create_s3_bucket(
         aws_access_key_id=creds.get("access_key_id"),
         aws_secret_access_key=creds.get("secret_access_key"),
         endpoint_url=creds.get("endpoint_url") or None,
+        config=_fast_fail_boto_config(),
     )
 
     try:

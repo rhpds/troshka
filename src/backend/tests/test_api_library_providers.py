@@ -2741,13 +2741,15 @@ def test_create_bucket_uses_custom_endpoint_url():
     with patch("boto3.client", return_value=mock_s3) as mock_boto3_client:
         resp = client.post(f"/api/v1/providers/{pid}/create-bucket")
     assert resp.status_code == 200
-    mock_boto3_client.assert_called_once_with(
-        "s3",
-        region_name="us-east-1",
-        aws_access_key_id="minioadmin",
-        aws_secret_access_key="minioadmin",
-        endpoint_url="http://192.168.124.1:9000",
-    )
+    mock_boto3_client.assert_called_once()
+    call = mock_boto3_client.call_args
+    assert call.args[0] == "s3"
+    assert call.kwargs["region_name"] == "us-east-1"
+    assert call.kwargs["aws_access_key_id"] == "minioadmin"
+    assert call.kwargs["aws_secret_access_key"] == "minioadmin"
+    assert call.kwargs["endpoint_url"] == "http://192.168.124.1:9000"
+    assert call.kwargs["config"].connect_timeout == 5
+    assert call.kwargs["config"].read_timeout == 10
 
 
 # ===========================================================================
