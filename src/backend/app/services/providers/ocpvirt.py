@@ -30,25 +30,7 @@ write_files:
       options ndots:5
     permissions: '0644'
 runcmd:
-  - |
-    mkdir -p /mnt/iso
-    mount /dev/sr0 /mnt/iso || mount /dev/cdrom /mnt/iso || true
-    if [ -d /mnt/iso/BaseOS ]; then
-      cat > /etc/yum.repos.d/local-baseos.repo << 'REPOEOF'
-    [local-baseos]
-    name=Local BaseOS
-    baseurl=file:///mnt/iso/BaseOS
-    enabled=1
-    gpgcheck=0
-    REPOEOF
-      cat > /etc/yum.repos.d/local-appstream.repo << 'REPOEOF'
-    [local-appstream]
-    name=Local AppStream
-    baseurl=file:///mnt/iso/AppStream
-    enabled=1
-    gpgcheck=0
-    REPOEOF
-    fi
+{repo_setup}
   - dnf install -y qemu-kvm libvirt libvirt-client virt-install python3 python3-libvirt dnsmasq nftables xorriso nmap-ncat sshpass nfs-utils || true
   - systemctl enable --now libvirtd || systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket
   - systemctl enable --now nftables
@@ -81,7 +63,14 @@ write_files:
       options ndots:5
     permissions: '0644'
 runcmd:
-  - |
+{repo_setup}
+  - dnf install -y python3 qemu-img nfs-utils || true
+  - mkdir -p /var/lib/troshka /etc/troshka-agent
+  - 'echo "host_id: {host_id}" > /etc/troshka-agent/host-id'
+"""
+
+# Repo-setup runcmd item. Default: mount the RHEL DVD ISO as a local repo.
+_REPO_SETUP_DVD = """  - |
     mkdir -p /mnt/iso
     mount /dev/sr0 /mnt/iso || mount /dev/cdrom /mnt/iso || true
     if [ -d /mnt/iso/BaseOS ]; then
@@ -99,11 +88,30 @@ runcmd:
     enabled=1
     gpgcheck=0
     REPOEOF
-    fi
-  - dnf install -y python3 qemu-img nfs-utils || true
-  - mkdir -p /var/lib/troshka /etc/troshka-agent
-  - 'echo "host_id: {host_id}" > /etc/troshka-agent/host-id'
-"""
+    fi"""
+
+# Alternative: pull packages from the central-S4 HTTP repo (basic auth). Used
+# when the OCP Virt provider is registered with pkg_repo_url — avoids importing
+# the 11 GB DVD ISO as a per-host boot volume.
+_REPO_SETUP_HTTP = """  - |
+    cat > /etc/yum.repos.d/troshka-rhel.repo << 'REPOEOF'
+    [troshka-baseos]
+    name=Troshka RHEL BaseOS
+    baseurl={repo_url}/BaseOS
+    enabled=1
+    gpgcheck=0
+    sslverify=0
+    username={repo_user}
+    password={repo_pass}
+    [troshka-appstream]
+    name=Troshka RHEL AppStream
+    baseurl={repo_url}/AppStream
+    enabled=1
+    gpgcheck=0
+    sslverify=0
+    username={repo_user}
+    password={repo_pass}
+    REPOEOF"""
 
 
 def _get_k8s_clients(credentials):
@@ -153,15 +161,35 @@ def _generate_ssh_keypair():
 
 
 def _build_cloud_init_userdata(
-    host_type, public_key, host_id, nfs_server=None, nfs_path=None, nfs_port=None
+    host_type,
+    public_key,
+    host_id,
+    nfs_server=None,
+    nfs_path=None,
+    nfs_port=None,
+    repo_url="",
+    repo_user="",
+    repo_pass="",
 ):
-    """Build cloud-init userdata string for a host VM."""
+    """Build cloud-init userdata string for a host VM.
+
+    When repo_url is set, packages come from the central-S4 HTTP repo (basic
+    auth) instead of a mounted DVD ISO.
+    """
     template = (
         CLOUD_INIT_PATTERN_BUFFER
         if host_type == "pattern_buffer"
         else CLOUD_INIT_TEMPLATE
     )
-    user_data = template.format(ssh_pubkey=public_key, host_id=host_id)
+    if repo_url:
+        repo_setup = _REPO_SETUP_HTTP.format(
+            repo_url=repo_url, repo_user=repo_user, repo_pass=repo_pass
+        )
+    else:
+        repo_setup = _REPO_SETUP_DVD
+    user_data = template.format(
+        ssh_pubkey=public_key, host_id=host_id, repo_setup=repo_setup
+    )
 
     if nfs_server and nfs_path:
         mount_opts = "nfsvers=4.1,nconnect=16,hard,_netdev"
@@ -450,6 +478,7 @@ class OCPVirtDriver(ProviderDriver):
                     client.V1Namespace(metadata=client.V1ObjectMeta(name=namespace))
                 )
 
+        repo_url = creds.get("pkg_repo_url", "")
         user_data = _build_cloud_init_userdata(
             host_type,
             public_key,
@@ -457,13 +486,21 @@ class OCPVirtDriver(ProviderDriver):
             nfs_server=kwargs.get("nfs_server"),
             nfs_path=kwargs.get("nfs_path"),
             nfs_port=kwargs.get("nfs_port"),
+            repo_url=repo_url,
+            repo_user=creds.get("pkg_repo_username", ""),
+            repo_pass=creds.get("pkg_repo_password", ""),
         )
 
         rhel_image_url = kwargs.get("rhel_image_url", "")
         datasource_name = kwargs.get("image_id") or "rhel9"
         root_source = _build_root_source(rhel_image_url, datasource_name)
 
-        iso_pvc = kwargs.get("iso_pvc", creds.get("iso_pvc", "rhel-10.2-dvd-iso"))
+        # With the HTTP package repo, the host installs packages over the network,
+        # so no DVD ISO boot volume (CDROM) is attached.
+        if repo_url:
+            iso_pvc = ""
+        else:
+            iso_pvc = kwargs.get("iso_pvc", creds.get("iso_pvc", "rhel-10.2-dvd-iso"))
         data_volumes, disks, volumes = _build_vm_disks_and_volumes(
             hostname, storage_size_gb, host_type, iso_pvc, root_source
         )

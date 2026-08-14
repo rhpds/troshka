@@ -45,6 +45,11 @@ class ProviderCreate(BaseModel):
     # a host. The dedicated-CI role sets this so it can create a correctly-sized
     # host explicitly (avoids a duplicate, wrongly sized, wasted host).
     auto_provision_host: bool = True
+    # ocpvirt: HTTP package repo (basic auth) for host dnf. When set, hosts
+    # install packages from it instead of mounting the RHEL DVD ISO.
+    pkg_repo_url: str = ""
+    pkg_repo_username: str = ""
+    pkg_repo_password: str = ""
 
     # GCP fields
     gcp_project_id: str = ""
@@ -135,6 +140,10 @@ def _build_cluster_credentials(
         }
         if body.iso_pvc is not None:
             creds["iso_pvc"] = body.iso_pvc
+        if body.pkg_repo_url:
+            creds["pkg_repo_url"] = body.pkg_repo_url
+            creds["pkg_repo_username"] = body.pkg_repo_username
+            creds["pkg_repo_password"] = body.pkg_repo_password
         provider.default_region = body.namespace or "troshka"
         return creds
 

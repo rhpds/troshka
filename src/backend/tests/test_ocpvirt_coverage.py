@@ -86,6 +86,27 @@ class TestBuildCloudInitUserdata:
         assert "/var/lib/troshka/shared" not in result
         assert "virt_use_nfs" not in result
 
+    def test_http_repo_when_configured(self):
+        result = _build_cloud_init_userdata(
+            "shared",
+            "ssh-rsa KEY",
+            "host-r",
+            repo_url="https://repo.example/rhel-10.2",
+            repo_user="u",
+            repo_pass="p",
+        )
+        assert "baseurl=https://repo.example/rhel-10.2/BaseOS" in result
+        assert "baseurl=https://repo.example/rhel-10.2/AppStream" in result
+        assert "username=u" in result
+        assert "password=p" in result
+        assert "/dev/sr0" not in result  # no DVD mount when repo is configured
+        assert "qemu-kvm" in result  # still installs the virt stack
+
+    def test_dvd_fallback_when_no_repo(self):
+        result = _build_cloud_init_userdata("shared", "ssh-rsa KEY", "host-d")
+        assert "/dev/sr0" in result  # falls back to DVD mount
+        assert "file:///mnt/iso/BaseOS" in result
+
     def test_nfs_server_only_no_path(self):
         """NFS server without path should not add mount commands."""
         result = _build_cloud_init_userdata(
