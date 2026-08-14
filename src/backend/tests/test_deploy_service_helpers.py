@@ -2799,6 +2799,85 @@ class TestDiffTopologies:
         result = diff_topologies(current, deployed)
         assert len(result["removed_networks"]) == 1
 
+    def test_added_container(self):
+        from app.services.deploy_topology import diff_topologies
+
+        current = {
+            "nodes": [
+                {"id": "ctr1", "type": "containerNode", "data": {"name": "a"}},
+                {"id": "ctr2", "type": "containerNode", "data": {"name": "b"}},
+            ]
+        }
+        deployed = {
+            "nodes": [{"id": "ctr1", "type": "containerNode", "data": {"name": "a"}}]
+        }
+        result = diff_topologies(current, deployed)
+        assert result["has_changes"] is True
+        assert len(result["added_containers"]) == 1
+        assert result["added_containers"][0]["id"] == "ctr2"
+
+    def test_removed_container(self):
+        from app.services.deploy_topology import diff_topologies
+
+        current = {
+            "nodes": [{"id": "ctr1", "type": "containerNode", "data": {"name": "a"}}]
+        }
+        deployed = {
+            "nodes": [
+                {"id": "ctr1", "type": "containerNode", "data": {"name": "a"}},
+                {"id": "ctr2", "type": "containerNode", "data": {"name": "b"}},
+            ]
+        }
+        result = diff_topologies(current, deployed)
+        assert len(result["removed_containers"]) == 1
+        assert result["removed_containers"][0]["id"] == "ctr2"
+
+    def test_changed_container(self):
+        from app.services.deploy_topology import diff_topologies
+
+        current = {
+            "nodes": [
+                {
+                    "id": "ctr1",
+                    "type": "containerNode",
+                    "data": {"name": "a", "command": "--port=8001"},
+                }
+            ]
+        }
+        deployed = {
+            "nodes": [
+                {"id": "ctr1", "type": "containerNode", "data": {"name": "a", "command": None}}
+            ]
+        }
+        result = diff_topologies(current, deployed)
+        assert len(result["changed_containers"]) == 1
+        assert result["has_changes"] is True
+
+    def test_container_skip_keys_not_counted(self):
+        from app.services.deploy_topology import diff_topologies
+
+        current = {
+            "nodes": [
+                {
+                    "id": "ctr1",
+                    "type": "containerNode",
+                    "data": {"name": "a", "status": "running", "liveIps": ["10.0.0.5"]},
+                }
+            ]
+        }
+        deployed = {
+            "nodes": [
+                {
+                    "id": "ctr1",
+                    "type": "containerNode",
+                    "data": {"name": "a", "status": "stopped", "liveIps": []},
+                }
+            ]
+        }
+        result = diff_topologies(current, deployed)
+        assert result["changed_containers"] == []
+        assert result["has_changes"] is False
+
     def test_empty_topologies(self):
         from app.services.deploy_topology import diff_topologies
 

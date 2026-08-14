@@ -1210,6 +1210,187 @@ class TestDeployAddedVms:
 
 
 # ---------------------------------------------------------------------------
+# _reconfigure_process_containers and helpers
+# ---------------------------------------------------------------------------
+
+
+class TestPullContainerOrPodImage:
+    @patch("app.services.deploy_service._pull_pod_images")
+    @patch("app.services.deploy_service._pull_single_container_image")
+    def test_pod_pulls_pod_images(self, mock_single, mock_pod):
+        from app.api.projects import _pull_container_or_pod_image
+
+        _pull_container_or_pod_image(MagicMock(), {"is_pod": True}, MagicMock())
+        mock_pod.assert_called_once()
+        mock_single.assert_not_called()
+
+    @patch("app.services.deploy_service._pull_pod_images")
+    @patch("app.services.deploy_service._pull_single_container_image")
+    def test_single_container_pulls_single_image(self, mock_single, mock_pod):
+        from app.api.projects import _pull_container_or_pod_image
+
+        _pull_container_or_pod_image(
+            MagicMock(), {"is_pod": False, "image": "nginx:latest"}, MagicMock()
+        )
+        mock_single.assert_called_once()
+        mock_pod.assert_not_called()
+
+    @patch("app.services.deploy_service._pull_pod_images")
+    @patch("app.services.deploy_service._pull_single_container_image")
+    def test_no_image_pulls_nothing(self, mock_single, mock_pod):
+        from app.api.projects import _pull_container_or_pod_image
+
+        _pull_container_or_pod_image(
+            MagicMock(), {"is_pod": False, "image": ""}, MagicMock()
+        )
+        mock_single.assert_not_called()
+        mock_pod.assert_not_called()
+
+
+class TestCreateContainerOrPod:
+    @patch("app.services.deploy_service._create_and_start_pod")
+    @patch("app.services.deploy_service._create_and_start_container")
+    def test_pod_calls_create_and_start_pod(self, mock_ctr, mock_pod):
+        from app.api.projects import _create_container_or_pod
+
+        _create_container_or_pod(
+            MagicMock(), "p1", {"is_pod": True}, {}, {}, None
+        )
+        mock_pod.assert_called_once()
+        mock_ctr.assert_not_called()
+
+    @patch("app.services.deploy_service._create_and_start_pod")
+    @patch("app.services.deploy_service._create_and_start_container")
+    def test_single_calls_create_and_start_container(self, mock_ctr, mock_pod):
+        from app.api.projects import _create_container_or_pod
+
+        _create_container_or_pod(
+            MagicMock(), "p1", {"is_pod": False}, {}, {}, None
+        )
+        mock_ctr.assert_called_once()
+        mock_pod.assert_not_called()
+
+
+class TestDestroyReconfiguredContainers:
+    @patch("app.services.deploy_service._destroy_container")
+    def test_destroys_each_matching_container(self, mock_destroy):
+        from app.api.projects import _destroy_reconfigured_containers
+
+        deployed_by_id = {
+            "ctr1": {"node_id": "ctr1", "name": "one"},
+            "ctr2": {"node_id": "ctr2", "name": "two"},
+        }
+        errors = []
+        _destroy_reconfigured_containers(
+            MagicMock(), "p1", {}, deployed_by_id, {"ctr1", "ctr2"}, None, errors
+        )
+        assert mock_destroy.call_count == 2
+        assert errors == []
+
+    @patch("app.services.deploy_service._destroy_container")
+    def test_skips_unknown_ids(self, mock_destroy):
+        from app.api.projects import _destroy_reconfigured_containers
+
+        errors = []
+        _destroy_reconfigured_containers(
+            MagicMock(), "p1", {}, {}, {"missing"}, None, errors
+        )
+        mock_destroy.assert_not_called()
+        assert errors == []
+
+    @patch(
+        "app.services.deploy_service._destroy_container",
+        side_effect=RuntimeError("podman rm failed"),
+    )
+    def test_error_appends_to_errors(self, mock_destroy):
+        from app.api.projects import _destroy_reconfigured_containers
+
+        deployed_by_id = {"ctr1": {"node_id": "ctr1", "name": "wetty"}}
+        errors = []
+        _destroy_reconfigured_containers(
+            MagicMock(), "p1", {}, deployed_by_id, {"ctr1"}, None, errors
+        )
+        assert len(errors) == 1
+        assert "wetty" in errors[0]
+
+
+class TestCreateReconfiguredContainers:
+    @patch("app.api.projects._create_container_or_pod")
+    @patch("app.api.projects._pull_container_or_pod_image")
+    def test_creates_each_matching_container(self, mock_pull, mock_create):
+        from app.api.projects import _create_reconfigured_containers
+
+        current_by_id = {
+            "ctr1": {"node_id": "ctr1", "name": "one"},
+            "ctr2": {"node_id": "ctr2", "name": "two"},
+        }
+        errors = []
+        _create_reconfigured_containers(
+            MagicMock(), "p1", {}, current_by_id, {"ctr1", "ctr2"}, {}, None,
+            MagicMock(), errors,
+        )
+        assert mock_pull.call_count == 2
+        assert mock_create.call_count == 2
+        assert errors == []
+
+    def test_error_appends_to_errors(self):
+        from app.api.projects import _create_reconfigured_containers
+        from app.services.troshkad_client import TroshkadError
+
+        current_by_id = {"ctr1": {"node_id": "ctr1", "name": "wetty"}}
+        errors = []
+        with patch("app.api.projects._pull_container_or_pod_image"), patch(
+            "app.api.projects._create_container_or_pod",
+            side_effect=TroshkadError("exec failed"),
+        ):
+            _create_reconfigured_containers(
+                MagicMock(), "p1", {}, current_by_id, {"ctr1"}, {}, None,
+                MagicMock(), errors,
+            )
+        assert len(errors) == 1
+        assert "wetty" in errors[0]
+
+
+class TestReconfigureProcessContainers:
+    @patch("app.api.projects._create_reconfigured_containers")
+    @patch("app.api.projects._destroy_reconfigured_containers")
+    @patch("app.services.deploy_service._set_deploy_progress")
+    @patch("app.api.projects._extract_containers")
+    def test_routes_added_removed_changed_correctly(
+        self, mock_extract, mock_set_progress, mock_destroy, mock_create
+    ):
+        from app.api.projects import _reconfigure_process_containers
+
+        current_ctrs = [
+            {"node_id": "added", "name": "added"},
+            {"node_id": "changed", "name": "changed"},
+        ]
+        deployed_ctrs = [
+            {"node_id": "removed", "name": "removed"},
+            {"node_id": "changed", "name": "changed"},
+        ]
+        mock_extract.side_effect = [current_ctrs, deployed_ctrs]
+
+        diff = {
+            "added_containers": [{"id": "added"}],
+            "removed_containers": [{"id": "removed"}],
+            "changed_containers": [{"id": "changed"}],
+        }
+        errors = []
+        _reconfigure_process_containers(
+            MagicMock(), "p1", MagicMock(), {}, {}, {}, None, diff, errors
+        )
+
+        # removed + changed get destroyed
+        destroy_ids = mock_destroy.call_args[0][4]
+        assert destroy_ids == {"removed", "changed"}
+        # changed + added get (re)created
+        create_ids = mock_create.call_args[0][4]
+        assert create_ids == {"changed", "added"}
+        assert errors == []
+
+
+# ---------------------------------------------------------------------------
 # _apply_kubevirt_vm_changes  (lines 2596-2636)
 # ---------------------------------------------------------------------------
 

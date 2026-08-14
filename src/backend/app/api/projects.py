@@ -33,6 +33,7 @@ from app.services.deploy_service import (  # noqa: F401
 )
 from app.services.deploy_topology import (  # noqa: F401
     _disk_path,
+    _extract_containers,
     _extract_vms,
     _find_vm_disks,
     _find_vm_networks,
@@ -2934,6 +2935,9 @@ def reconfigure_project(
             "changed_vms": [],
             "added_networks": [],
             "removed_networks": [],
+            "added_containers": [],
+            "removed_containers": [],
+            "changed_containers": [],
             "has_changes": False,
         }
     )
@@ -3168,6 +3172,9 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
                 "added_vms": [],
                 "removed_vms": [],
                 "changed_vms": [],
+                "added_containers": [],
+                "removed_containers": [],
+                "changed_containers": [],
                 "has_changes": False,
             }
         )
@@ -3936,6 +3943,83 @@ def _reconfigure_process_vms(
         _deploy_added_vms(h, p_id, s, current, vni_map, diff["added_vms"], errors)
 
 
+def _pull_container_or_pod_image(h, ctr, s):
+    """Pull the image(s) for a single container or pod node ahead of creation."""
+    from app.services.deploy_service import _pull_pod_images, _pull_single_container_image
+
+    if ctr.get("is_pod"):
+        _pull_pod_images(h, ctr, s)
+    elif ctr.get("image"):
+        _pull_single_container_image(h, ctr, s)
+
+
+def _create_container_or_pod(h, p_id, ctr, topology, vni_map, pool):
+    from app.services.deploy_service import (
+        _create_and_start_container,
+        _create_and_start_pod,
+    )
+
+    if ctr.get("is_pod"):
+        _create_and_start_pod(h, p_id, ctr, topology, vni_map, pool)
+    else:
+        _create_and_start_container(h, p_id, ctr, topology, vni_map, pool)
+
+
+def _destroy_reconfigured_containers(h, p_id, deployed, deployed_by_id, node_ids, pool, errors):
+    """Destroy containers being removed or about to be recreated (changed)."""
+    from app.services.deploy_service import _destroy_container
+
+    for nid in node_ids:
+        old_ctr = deployed_by_id.get(nid)
+        if not old_ctr:
+            continue
+        try:
+            _destroy_container(h, p_id, old_ctr, deployed, pool)
+        except (TroshkadError, RuntimeError) as e:
+            errors.append(f"Failed to destroy container {old_ctr['name']}: {e}")
+
+
+def _create_reconfigured_containers(h, p_id, current, current_by_id, node_ids, vni_map, pool, s, errors):
+    """Pull images and create/start containers being added or recreated (changed)."""
+    for nid in node_ids:
+        ctr = current_by_id.get(nid)
+        if not ctr:
+            continue
+        try:
+            _pull_container_or_pod_image(h, ctr, s)
+            _create_container_or_pod(h, p_id, ctr, current, vni_map, pool)
+        except (TroshkadError, RuntimeError) as e:
+            errors.append(f"Failed to create container {ctr['name']}: {e}")
+
+
+def _reconfigure_process_containers(
+    h, p_id, s, current, deployed, vni_map, pool, diff, errors
+):
+    """Add, remove, and recreate containers/pods during a project reconfigure.
+
+    Podman can't live-patch an existing container's image/env/command, so
+    "changed" containers are destroyed using their old (deployed) definition
+    and recreated using the new (current) one, rather than reconfigured in
+    place — the same as a fresh deploy would create them.
+    """
+    from app.services.deploy_service import _set_deploy_progress
+
+    current_by_id = {c["node_id"]: c for c in _extract_containers(current)}
+    deployed_by_id = {c["node_id"]: c for c in _extract_containers(deployed)}
+
+    removed_ids = {n["id"] for n in diff.get("removed_containers", [])}
+    changed_ids = {n["id"] for n in diff.get("changed_containers", [])}
+    added_ids = {n["id"] for n in diff.get("added_containers", [])}
+
+    _set_deploy_progress(p_id, {"step": "containers", "detail": "reconfiguring containers"})
+    _destroy_reconfigured_containers(
+        h, p_id, deployed, deployed_by_id, removed_ids | changed_ids, pool, errors
+    )
+    _create_reconfigured_containers(
+        h, p_id, current, current_by_id, changed_ids | added_ids, vni_map, pool, s, errors
+    )
+
+
 def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
     from app.core.database import SessionLocal
     from app.services.deploy_service import (
@@ -3968,6 +4052,9 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
                 "changed_vms": [],
                 "added_networks": [],
                 "removed_networks": [],
+                "added_containers": [],
+                "removed_containers": [],
+                "changed_containers": [],
                 "has_changes": False,
             }
         )
@@ -3980,6 +4067,11 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
 
         has_vm_changes = (
             diff.get("added_vms") or diff.get("removed_vms") or diff.get("changed_vms")
+        )
+        has_container_changes = (
+            diff.get("added_containers")
+            or diff.get("removed_containers")
+            or diff.get("changed_containers")
         )
 
         if has_vm_changes:
@@ -4006,6 +4098,11 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
             diff,
             errors,
         )
+
+        if has_container_changes:
+            _reconfigure_process_containers(
+                h, p_id, s, current, deployed, vni_map, _pool, diff, errors
+            )
 
         _finalize_reconfigure(s, proj, h, p_id, current, deployed, errors)
     except Exception:
