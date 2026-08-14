@@ -74,3 +74,6 @@ deploy/argocd/*.yaml
 # Troshkad test artifacts
 *.py.new
 src/backend/.vni_hwm
+
+# Local Claude Code settings (personal, not shared)
+.claude/settings.json
