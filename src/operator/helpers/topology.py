@@ -254,6 +254,14 @@ def _build_disk_from_storage(sd, storage_id):
                 "format": fmt,
                 "central": central,
             }
+    elif source_type == "snapshot" and sd.get("resolvedS3Path"):
+        # Snapshot data disks clone from their resolved key. No fabricated
+        # fallback — an unresolved snapshot must not guess a library path.
+        disk["libraryImage"] = {
+            "s3Path": sd["resolvedS3Path"],
+            "format": fmt,
+            "central": central,
+        }
     else:
         disk["blank"] = True
 

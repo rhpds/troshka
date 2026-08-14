@@ -1815,7 +1815,12 @@ def _resolve_disk_s3_paths(
             continue
         if data.get("source") == "pattern" and data.get("patternId"):
             _resolve_pattern_disk(data, db, target_provider_id)
-        elif data.get("source") == "library" and data.get("libraryItemId"):
+        elif data.get("source") in ("library", "snapshot") and data.get(
+            "libraryItemId"
+        ):
+            # Snapshot nodes carry a libraryItemId whose LibraryItem.s3_key is
+            # already correct: data disks -> snapshots/<id>/<disk>.qcow2, and
+            # ISOs (not captured) -> the original library item's real key.
             _resolve_library_disk(
                 data,
                 db,

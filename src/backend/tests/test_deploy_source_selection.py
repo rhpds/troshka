@@ -152,3 +152,90 @@ def test_preflight_skips_obc_disks():
         topology, s3_client, "troshka-images", {}
     )
     s3_client.head_object.assert_not_called()
+
+
+def _library_item(db, s3_key, fmt, source="local", item_type="snapshot"):
+    from app.models.library import Library, LibraryItem
+
+    lib = Library(id=str(uuid.uuid4()), type="personal")
+    db.add(lib)
+    db.flush()
+    item = LibraryItem(
+        id=str(uuid.uuid4()),
+        library_id=lib.id,
+        name="item",
+        type=item_type,
+        format=fmt,
+        s3_key=s3_key,
+        source=source,
+        state="ready",
+    )
+    db.add(item)
+    db.flush()
+    return item
+
+
+def test_resolve_snapshot_disk_uses_library_item_s3_key():
+    # A snapshot-sourced data disk must resolve to the snapshot's real s3_key,
+    # not be skipped (which leaves the operator to guess/blank it).
+    db = _make_db()
+    try:
+        item = _library_item(db, "snapshots/abc/disk-a.qcow2", "qcow2", source="local")
+        topology = {
+            "nodes": [
+                {
+                    "type": "storageNode",
+                    "data": {
+                        "source": "snapshot",
+                        "libraryItemId": item.id,
+                        "format": "qcow2",
+                        "label": "disk-00",
+                    },
+                }
+            ]
+        }
+        deploy_service._resolve_disk_s3_paths(
+            topology, db, PROV, None, "troshka-images", {}, None, "", {}
+        )
+        data = topology["nodes"][0]["data"]
+        assert data["resolvedS3Path"] == "snapshots/abc/disk-a.qcow2"
+        assert data["centralSource"] is False
+    finally:
+        db.rollback()
+        db.close()
+
+
+def test_resolve_snapshot_iso_uses_central_library_key():
+    # A snapshot ISO points at the ORIGINAL (central) library item and must
+    # resolve to its nested s3_key with central=True — not the flat guess.
+    db = _make_db()
+    try:
+        item = _library_item(
+            db,
+            "library/lib-x/iso-1/RHEL 10.2 Binary DVD.iso",
+            "iso",
+            source="central",
+            item_type="iso",
+        )
+        topology = {
+            "nodes": [
+                {
+                    "type": "storageNode",
+                    "data": {
+                        "source": "snapshot",
+                        "libraryItemId": item.id,
+                        "format": "iso",
+                        "label": "boot-00",
+                    },
+                }
+            ]
+        }
+        deploy_service._resolve_disk_s3_paths(
+            topology, db, PROV, None, "troshka-images", {}, None, "", {}
+        )
+        data = topology["nodes"][0]["data"]
+        assert data["resolvedS3Path"] == "library/lib-x/iso-1/RHEL 10.2 Binary DVD.iso"
+        assert data["centralSource"] is True
+    finally:
+        db.rollback()
+        db.close()

@@ -328,17 +328,41 @@ async def _provision_disk_pvcs(
     return disk_pvcs
 
 
+def _cdrom_s3_creds(cdrom, s3_config, central_s3_config):
+    """Pick (s3_config, secret_name) for the cdrom golden import.
+
+    Central-sourced ISOs live in central S4 and must import with the central
+    credentials; otherwise the golden import 404s and the clone hangs forever.
+    """
+    if cdrom.get("central") and central_s3_config:
+        return (
+            central_s3_config,
+            "s3-central-credentials",  # pragma: allowlist secret  # NOSONAR
+        )
+    return s3_config, "s3-credentials"  # pragma: allowlist secret  # NOSONAR
+
+
 async def _provision_cdrom(
-    spec, name, namespace, body, core_api, custom_api, s3_config
+    spec,
+    name,
+    namespace,
+    body,
+    core_api,
+    custom_api,
+    s3_config,
+    central_s3_config=None,
 ):
     """Provision CDROM PVC if spec has a cdrom s3Path. Returns pvc_name or None."""
     if not spec.get("cdrom", {}).get("s3Path"):
         return None
     cdrom_pvc = f"{name}-cdrom"
     cdrom_s3 = spec["cdrom"]["s3Path"]
+    cdrom_cfg, cdrom_secret = _cdrom_s3_creds(
+        spec["cdrom"], s3_config, central_s3_config
+    )
     try:
         golden_name = await _ensure_golden_pvc(
-            custom_api, core_api, cdrom_s3, 10, s3_config
+            custom_api, core_api, cdrom_s3, 10, cdrom_cfg, secret_name=cdrom_secret
         )
         cdrom_size = 10
         try:
@@ -725,6 +749,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         core_api,
         custom_api,
         s3_config,
+        central_s3_config,
     )
     if cdrom_pvc:
         disk_pvcs["cdrom"] = cdrom_pvc
