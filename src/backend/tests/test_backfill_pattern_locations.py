@@ -4,22 +4,38 @@ import uuid
 from unittest.mock import MagicMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
-from app.core.database import Base
 from app.models.pattern import Pattern, PatternDisk
 from app.models.pattern_location import PatternLocation
 from app.models.user import User
 from app.scripts.backfill_pattern_locations import backfill_central_locations
-from tests.conftest import TestSession, test_engine
+from tests.conftest import TestSession
 
 
 @pytest.fixture(autouse=True)
-def _clear_db():
-    """Clear database before each test."""
-    Base.metadata.drop_all(bind=test_engine)
-    Base.metadata.create_all(bind=test_engine)
+def _isolate_pattern_tables():
+    """Remove pattern-domain rows before and after each test.
+
+    backfill_central_locations scans ALL PatternDisk rows, so leftover disks
+    from other suite files would corrupt the created-count assertions. Clean
+    ONLY the three pattern tables (FK order), never User — the shared dev-mode
+    admin User must survive for downstream auth tests.
+    """
+
+    def _clean():
+        db = TestSession()
+        try:
+            db.execute(delete(PatternLocation))
+            db.execute(delete(PatternDisk))
+            db.execute(delete(Pattern))
+            db.commit()
+        finally:
+            db.close()
+
+    _clean()
     yield
+    _clean()
 
 
 def _pattern(db, key):

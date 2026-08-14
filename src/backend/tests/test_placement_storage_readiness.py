@@ -74,7 +74,7 @@ def test_find_host_skips_unready_cluster():
 
 
 def test_find_host_allows_ready_cluster():
-    """find_available_host returns the host when a central synced PatternLocation exists."""
+    """find_available_host returns the host whose provider has the disk (OBC synced)."""
     db = TestSession()
     try:
         prov = str(uuid.uuid4())
@@ -83,8 +83,8 @@ def test_find_host_allows_ready_cluster():
         db.add(
             PatternLocation(
                 pattern_disk_id=pd.id,
-                provider_id=None,
-                location_type="central",
+                provider_id=prov,
+                location_type="obc",
                 s3_key=pd.s3_key,
                 state="synced",
             )
