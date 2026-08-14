@@ -197,14 +197,25 @@ def _resolve_disk_s3(disk, s3_config, central_s3_config):
     """Return (s3_path, s3_config_dict, secret_name) for a disk, or (None, None, None)."""
     s3_path = None
     use_central = False
+    pattern_source = None
     if disk.get("libraryImage", {}).get("s3Path"):
         s3_path = disk["libraryImage"]["s3Path"]
         use_central = disk["libraryImage"].get("central", False)
     elif disk.get("patternImage", {}).get("s3Path"):
         s3_path = disk["patternImage"]["s3Path"]
-        use_central = disk["patternImage"].get("central", False)
+        pattern_source = disk["patternImage"].get("source", "central")
     if not s3_path:
         return None, None, None
+    if pattern_source == "obc":
+        obc = (s3_config or {}).get("obcConfig")
+        if obc:
+            return (
+                s3_path,
+                obc,
+                obc.get(
+                    "credentialsSecret", "s3-obc-credentials"
+                ),  # pragma: allowlist secret  # NOSONAR
+            )
     if use_central and central_s3_config:
         return (
             s3_path,

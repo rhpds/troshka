@@ -282,7 +282,9 @@ async def _snapshot_and_export_disk(
         if e.status != 409:
             raise
 
-    scratch = build_scratch_pvc(scratch_pvc_name, namespace, max(size_gb + 10, int(size_gb * 1.2)))
+    scratch = build_scratch_pvc(
+        scratch_pvc_name, namespace, max(size_gb + 10, int(size_gb * 1.2))
+    )
     try:
         core_api.create_namespaced_persistent_volume_claim(
             namespace=namespace, body=scratch
@@ -1020,10 +1022,12 @@ def _create_golden_pvc_for_disk(
     if not s3_path:
         return
 
-    # For pattern images, prefer local OBC config over S4
-    is_pattern = disk.get("patternImage") is not None
+    # Pattern disks carry an explicit source: obc (local RGW) or central (S4).
+    pattern_source = None
+    if disk.get("patternImage"):
+        pattern_source = disk["patternImage"].get("source", "central")
     obc_config = s3_config.get("obcConfig")
-    if is_pattern and obc_config:
+    if pattern_source == "obc" and obc_config:
         disk_s3_config = obc_config
         secret_name = obc_config.get(
             "credentialsSecret", "s3-obc-credentials"  # pragma: allowlist secret

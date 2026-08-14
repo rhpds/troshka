@@ -243,6 +243,7 @@ def _build_disk_from_storage(sd, storage_id):
                 "s3Path": resolved_path or f"patterns/{pattern_id}/{disk_id}.qcow2",
                 "format": "qcow2",
                 "central": central,
+                "source": sd.get("diskSource", "central"),
             }
     elif source_type == "library":
         lib_id = sd.get("libraryItemId", "")
