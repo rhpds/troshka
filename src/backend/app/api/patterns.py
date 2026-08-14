@@ -811,6 +811,35 @@ def revoke_share(
     return {"unshared": user_email}
 
 
+@router.get(
+    "/{pattern_id}/shares",
+    responses={
+        403: {"description": "Only the owner can view shares"},
+        404: {"description": "Pattern not found"},
+    },
+)
+def list_shares(
+    pattern_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """Return the emails of users this pattern is shared with (owner-only)."""
+    pattern = db.query(Pattern).filter_by(id=pattern_id).first()
+    if not pattern:
+        raise HTTPException(status_code=404, detail=_PATTERN_NOT_FOUND)
+    if pattern.owner_id != user.id:
+        raise HTTPException(status_code=403, detail="Only the owner can view shares")
+
+    emails = (
+        db.query(User.email)
+        .join(PatternShare, PatternShare.user_id == User.id)
+        .filter(PatternShare.pattern_id == pattern_id)
+        .order_by(User.email)
+        .all()
+    )
+    return {"shared_with": [e[0] for e in emails]}
+
+
 # ---------------------------------------------------------------------------
 # Progress
 # ---------------------------------------------------------------------------

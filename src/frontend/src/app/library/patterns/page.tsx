@@ -21,6 +21,7 @@ import {
 } from "@patternfly/react-core";
 import BulkDeployModal from "@/components/canvas/BulkDeployModal";
 import PatternPreviewModal from "@/components/canvas/PatternPreviewModal";
+import SharePatternModal from "@/components/canvas/SharePatternModal";
 
 interface PatternDisk {
   id: string;
@@ -202,6 +203,8 @@ export default function PatternsPage() {
   const [editingName, setEditingName] = useState<string | null>(null);
   const [editNameValue, setEditNameValue] = useState("");
   const [exportPattern, setExportPattern] = useState<Pattern | null>(null);
+  const [sharePattern, setSharePattern] = useState<Pattern | null>(null);
+  const [me, setMe] = useState<{ id?: string; role?: string }>({});
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
 
   const loadPatterns = () => {
@@ -210,6 +213,13 @@ export default function PatternsPage() {
       .then((data) => { setPatterns(Array.isArray(data) ? data : []); setLoading(false); })
       .catch(() => setLoading(false));
   };
+
+  useEffect(() => {
+    fetch("/api/v1/auth/me")
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((d: { id?: string; role?: string }) => setMe({ id: d.id, role: d.role }))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     loadPatterns();
@@ -485,6 +495,11 @@ export default function PatternsPage() {
                   <Button variant="secondary" size="sm" isDisabled={saving || pattern.state === "error"} onClick={() => setExportPattern(pattern)}>
                     Export
                   </Button>
+                  {!saving && pattern.state !== "error" && (pattern.owner_id === me.id || me.role === "admin") && (
+                    <Button variant="secondary" size="sm" onClick={() => setSharePattern(pattern)}>
+                      Share
+                    </Button>
+                  )}
                   {saving && (
                     <Button variant="warning" size="sm" onClick={() => {
                       if (!window.confirm("Cancel pattern capture? This will stop the capture and clean up.")) return;
@@ -567,6 +582,17 @@ export default function PatternsPage() {
         onDeploy={(name, guid, domain, dnsProviderId, ad, as_, hostId, recert) => handleDeploy(deployPattern.id, name, guid, domain, dnsProviderId, ad, as_, hostId, recert)}
         onClose={() => { if (!deploying) setDeployPattern(null); }}
       />}
+
+      {sharePattern && (
+        <SharePatternModal
+          patternId={sharePattern.id}
+          patternName={sharePattern.name}
+          visibility={sharePattern.visibility}
+          isOwner={sharePattern.owner_id === me.id}
+          onClose={() => setSharePattern(null)}
+          onChanged={loadPatterns}
+        />
+      )}
 
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
 

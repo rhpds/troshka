@@ -326,3 +326,67 @@ def test_deploy_pattern_with_inject_vars():
         "guid": "abc123",
         "student_password": "s3cret",
     }
+
+
+def _make_other_user(email: str):
+    db = TestSession()
+    other = User(
+        email=email,
+        display_name=email,
+        role="user",
+        auth_source="local",
+        password_hash=hash_password("pass"),
+    )
+    db.add(other)
+    db.commit()
+    db.refresh(other)
+    token = create_jwt(user_id=other.id, email=other.email, role=other.role)
+    db.close()
+    return token
+
+
+def test_list_shares_owner_sees_shared_users():
+    recipient = "share-recipient@example.com"
+    _make_other_user(recipient)
+    create_resp = client.post(
+        "/api/v1/patterns",
+        json={"name": "Shareable", "topology": SAMPLE_TOPOLOGY},
+        headers=HEADERS,
+    )
+    pattern_id = create_resp.json()["id"]
+
+    # No shares yet
+    resp = client.get(f"/api/v1/patterns/{pattern_id}/shares", headers=HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["shared_with"] == []
+
+    # Share, then it appears
+    share_resp = client.post(
+        f"/api/v1/patterns/{pattern_id}/share",
+        json={"user_email": recipient},
+        headers=HEADERS,
+    )
+    assert share_resp.status_code == 200
+    resp = client.get(f"/api/v1/patterns/{pattern_id}/shares", headers=HEADERS)
+    assert resp.status_code == 200
+    assert resp.json()["shared_with"] == [recipient]
+
+
+def test_list_shares_non_owner_forbidden():
+    other_token = _make_other_user("share-nonowner@example.com")
+    create_resp = client.post(
+        "/api/v1/patterns",
+        json={"name": "Owned Pattern", "topology": SAMPLE_TOPOLOGY},
+        headers=HEADERS,
+    )
+    pattern_id = create_resp.json()["id"]
+    resp = client.get(
+        f"/api/v1/patterns/{pattern_id}/shares",
+        headers={"Authorization": f"Bearer {other_token}"},
+    )
+    assert resp.status_code == 403
+
+
+def test_list_shares_pattern_not_found():
+    resp = client.get("/api/v1/patterns/nonexistent-id/shares", headers=HEADERS)
+    assert resp.status_code == 404
