@@ -4463,6 +4463,15 @@ def import_vm_from_snapshot(
         raise HTTPException(status_code=404, detail="Snapshot not found")
 
     vm_config = item.vm_config or {}
+    if not vm_config:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This snapshot has no captured configuration and cannot be "
+                "imported (it predates snapshot capture or the capture failed). "
+                "Re-create the snapshot."
+            ),
+        )
     vm_id = str(uuid_mod.uuid4())
 
     import random
@@ -4482,7 +4491,7 @@ def import_vm_from_snapshot(
             "label": item.name,
             "name": item.name,
             "vcpus": vm_config.get("vcpus", 2),
-            "ram": vm_config.get("ram", 4096),
+            "ram": vm_config.get("ram", 4),
             "os": vm_config.get("os", ""),
             "status": "stopped",
             "icon": "\U0001f5a5",

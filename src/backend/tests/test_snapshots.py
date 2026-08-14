@@ -157,3 +157,61 @@ def test_import_vm_snapshot():
     assert vm_nodes[0]["data"]["ram"] == 8192
     # New UUID should be generated
     assert vm_nodes[0]["id"] != "vm-1"
+
+
+def _create_snapshot_item(vm_config):
+    """Create a real snapshot via the API, then overwrite its vm_config to
+    simulate a legacy/partial capture."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models.library import LibraryItem
+
+    pid = _create_project_with_vm()
+    snap = client.post(
+        f"/api/v1/projects/{pid}/vms/vm-1/snapshot",
+        json={"name": f"cfg-snap-{pid[:8]}"},
+        headers=HEADERS,
+    )
+    sid = snap.json()["id"]
+    db = TestSession()
+    item = db.query(LibraryItem).filter_by(id=sid).first()
+    item.vm_config = vm_config
+    flag_modified(item, "vm_config")
+    db.commit()
+    db.close()
+    return sid
+
+
+def _new_project(name):
+    return client.post("/api/v1/projects", json={"name": name}, headers=HEADERS).json()[
+        "id"
+    ]
+
+
+def test_import_empty_snapshot_is_rejected():
+    """A legacy/empty snapshot (no captured vm_config) must fail fast with a
+    clear error rather than silently creating a 4096 GB diskless VM."""
+    target = _new_project("empty snap target")
+    sid = _create_snapshot_item({})
+    resp = client.post(
+        f"/api/v1/projects/{target}/import-vm",
+        json={"snapshot_id": sid},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 400
+    assert "configuration" in resp.json()["detail"].lower()
+
+
+def test_import_snapshot_defaults_ram_to_4_gb():
+    """When a (non-empty) snapshot config omits ram, the vmNode must default to
+    4 GB, not 4096 (ram is a GB field)."""
+    target = _new_project("partial snap target")
+    sid = _create_snapshot_item({"vcpus": 2, "disks": []})
+    resp = client.post(
+        f"/api/v1/projects/{target}/import-vm",
+        json={"snapshot_id": sid},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 200
+    vm_nodes = [n for n in resp.json()["topology"]["nodes"] if n["type"] == "vmNode"]
+    assert vm_nodes[0]["data"]["ram"] == 4
