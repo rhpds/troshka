@@ -6,7 +6,9 @@ import logging
 import os
 
 from app.core.database import SessionLocal
+from app.core.redis import enqueue_job
 from app.models.pattern import Pattern, PatternDisk
+from app.services.pattern_sync import sync_pattern_to_central
 
 log = logging.getLogger(__name__)
 
@@ -620,6 +622,13 @@ def _restart_kubevirt_vms(custom_api, namespace):
         log.warning("Failed to restart VMs after capture: %s", e)
 
 
+def _enqueue_pattern_sync(pattern_id: str, source_provider_id: str | None) -> None:
+    """Kick off eager OBC->central S4 replication for a freshly captured pattern."""
+    if not source_provider_id:
+        return
+    enqueue_job(sync_pattern_to_central, pattern_id, queue_name="default")
+
+
 def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     """Capture pattern disks via KubeVirt VolumeSnapshot + S3 export Jobs."""
     import json as _json
@@ -832,6 +841,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
 
     _clear_capture_progress(pattern_id)
     notify_pattern(pattern_id, {"type": "capture-complete"})
+    _enqueue_pattern_sync(pattern_id, pattern.source_provider_id)
 
     # Save metadata to S3
     try:
