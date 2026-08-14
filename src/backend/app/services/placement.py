@@ -8,7 +8,7 @@ for the project's VMs, or fails if no host has room.
 import datetime
 import logging
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.host import Host
@@ -165,15 +165,25 @@ def _storage_ready_anywhere(db: Session, pattern_disk_ids: list[str]) -> bool:
 
     if not pattern_disk_ids:
         return True
-    hosts = (
-        db.query(Host)
-        .filter(Host.state == "active", Host.agent_status == "connected")
-        .all()
-    )
+    hosts = db.scalars(
+        select(Host).filter(Host.state == "active", Host.agent_status == "connected")
+    ).all()
     return any(
         pattern_disks_ready_on_provider(db, pattern_disk_ids, h.provider_id)
         for h in hosts
     )
+
+
+def _host_has_pattern_storage(
+    db: Session, host, pattern_disk_ids: list[str] | None
+) -> bool:
+    """True when the host's provider has every required pattern disk available.
+    Non-pattern deploys (empty/None list) are always eligible."""
+    if not pattern_disk_ids:
+        return True
+    from app.services.pattern_locations import pattern_disks_ready_on_provider
+
+    return pattern_disks_ready_on_provider(db, pattern_disk_ids, host.provider_id)
 
 
 def find_available_host(
@@ -216,15 +226,8 @@ def find_available_host(
             if required_eips > 0 and not _check_eip_capacity(db, host, required_eips):
                 continue
 
-            if pattern_disk_ids:
-                from app.services.pattern_locations import (
-                    pattern_disks_ready_on_provider,
-                )
-
-                if not pattern_disks_ready_on_provider(
-                    db, pattern_disk_ids, host.provider_id
-                ):
-                    continue
+            if not _host_has_pattern_storage(db, host, pattern_disk_ids):
+                continue
 
             inflight = _get_inflight_deploys(host.id)
             candidates.append((host, free_vcpus, free_ram, inflight))

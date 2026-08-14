@@ -2,6 +2,8 @@
 
 import uuid
 
+from sqlalchemy import select
+
 from app.models.host import Host
 from app.models.pattern import Pattern, PatternDisk
 from app.models.pattern_location import PatternLocation
@@ -125,7 +127,7 @@ def test_place_project_syncing_message():
         prov = str(uuid.uuid4())
         _host(db, prov)
         pd = _pattern_disk(db)
-        user = db.query(User).first()
+        user = db.scalars(select(User)).first()
         topo = {
             "nodes": [
                 {"id": "vm1", "type": "vmNode", "data": {"vcpus": 2, "ram": 4}},
