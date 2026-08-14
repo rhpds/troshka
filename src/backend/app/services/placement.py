@@ -242,6 +242,91 @@ def find_available_host(
     return candidates[0][0]
 
 
+def _capacity_shortfall_reason(
+    hosts: list[Host], required_vcpus: int, required_ram_mb: int
+) -> str:
+    """Explain a capacity shortfall across *hosts* as CPU, RAM, both, or
+    fragmentation (no single host fits both even though each resource exists)."""
+    best_cpu = 0
+    best_ram = 0
+    for h in hosts:
+        alloc_vcpus, alloc_ram = get_allocatable(h)
+        best_cpu = max(best_cpu, alloc_vcpus - h.used_vcpus)
+        best_ram = max(best_ram, alloc_ram - h.used_ram_mb)
+
+    req_ram_gb = round(required_ram_mb / 1024, 1)
+    best_ram_gb = round(best_ram / 1024, 1)
+    cpu_short = best_cpu < required_vcpus
+    ram_short = best_ram < required_ram_mb
+
+    if cpu_short and ram_short:
+        return (
+            f"Not enough CPU or RAM — need {required_vcpus} vCPUs and "
+            f"{req_ram_gb} GB RAM, but the best host has {best_cpu} vCPUs and "
+            f"{best_ram_gb} GB free. Free up resources or add a host."
+        )
+    if ram_short:
+        return (
+            f"Not enough RAM — need {req_ram_gb} GB but the best host has only "
+            f"{best_ram_gb} GB free. Free up RAM or add a host."
+        )
+    if cpu_short:
+        return (
+            f"Not enough CPU — need {required_vcpus} vCPUs but the best host has "
+            f"only {best_cpu} free. Free up CPU or add a host."
+        )
+    return (
+        "No single host can fit all VMs together — capacity is fragmented "
+        "across hosts. Free up resources or add a host."
+    )
+
+
+def diagnose_placement_failure(
+    db: Session,
+    required_vcpus: int,
+    required_ram_mb: int,
+    storage_pool_id: str | None = None,
+    provider_id: str | None = None,
+    pattern_disk_ids: list[str] | None = None,
+) -> str:
+    """Human-readable reason find_available_host found no host.
+
+    Distinguishes CPU, RAM, and pattern-disk availability so operators are not
+    told 'not enough capacity' when the real problem is that a pattern's disks
+    are not yet synced/located on any reachable cluster.
+    """
+    query = db.query(Host).filter(
+        Host.state == "active",
+        Host.agent_status == "connected",
+        Host.host_type != "pattern_buffer",
+    )
+    if storage_pool_id:
+        query = query.filter(Host.storage_pool_id == storage_pool_id)
+    if provider_id:
+        query = query.filter(Host.provider_id == provider_id)
+    hosts = query.all()
+
+    if not hosts:
+        return "No active, connected hosts are available. Add a host."
+
+    for host in hosts:
+        sync_host_capacity(db, host)
+
+    storage_ok = [
+        h for h in hosts if _host_has_pattern_storage(db, h, pattern_disk_ids)
+    ]
+    if pattern_disk_ids and not storage_ok:
+        return (
+            "Pattern disks are not available on any host — they may still be "
+            "syncing to storage, or their location records are missing. Try "
+            "again shortly; if it persists, re-capture or re-sync the pattern."
+        )
+
+    return _capacity_shortfall_reason(
+        storage_ok or hosts, required_vcpus, required_ram_mb
+    )
+
+
 def _auto_select_pool(db: Session) -> str | None:
     """Auto-select the best storage pool — the one with the most free RAM across its hosts."""
     from app.models.storage_pool import StoragePool
@@ -298,13 +383,30 @@ def _parse_affinity_groups(
 def _build_placement_units(
     affinity_groups: dict[str, list[dict]], ungrouped: list[dict]
 ) -> list[dict]:
-    """Build placement units from affinity groups and ungrouped VMs."""
+    """Build placement units from affinity groups and ungrouped VMs.
+
+    Container nodes carry memory in ``data.memory`` (MB) and CPU in
+    ``data.cpus``; VM nodes carry ``data.ram`` (GB) and ``data.vcpus``. Mirror
+    ``calculate_project_requirements`` so bin-packing reserves the right amount.
+    """
+
+    def _node_ram_mb(node):
+        data = node.get("data", {})
+        if node.get("type") == "containerNode":
+            return data.get("memory", 512)
+        return data.get("ram", 4) * 1024
+
+    def _node_vcpus(node):
+        data = node.get("data", {})
+        if node.get("type") == "containerNode":
+            return data.get("cpus", 1)
+        return data.get("vcpus", 2)
 
     def _group_ram(nodes):
-        return sum(n.get("data", {}).get("ram", 4) * 1024 for n in nodes)
+        return sum(_node_ram_mb(n) for n in nodes)
 
     def _group_vcpus(nodes):
-        return sum(n.get("data", {}).get("vcpus", 2) for n in nodes)
+        return sum(_node_vcpus(n) for n in nodes)
 
     units = []
     for ag_nodes in affinity_groups.values():
@@ -319,8 +421,8 @@ def _build_placement_units(
         units.append(
             {
                 "vm_ids": [node["id"]],
-                "ram_mb": node.get("data", {}).get("ram", 4) * 1024,
-                "vcpus": node.get("data", {}).get("vcpus", 2),
+                "ram_mb": _node_ram_mb(node),
+                "vcpus": _node_vcpus(node),
             }
         )
 

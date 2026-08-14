@@ -3874,21 +3874,31 @@ def _deploy_resolve_host(s, project, project_id):
                 "Deploy %s: auto-placed on host %s", project_id[:8], host.id[:8]
             )
     if not host or not host.ip_address:
-        return host, _deploy_host_error_msg(project, host)
+        return host, _deploy_host_error_msg(s, project, host)
     return host, None
 
 
-def _deploy_host_error_msg(project, host):
-    """Build a human-readable error when host resolution fails."""
+def _deploy_host_error_msg(s, project, host):
+    """Build a human-readable error when host resolution fails.
+
+    When auto-placement found no host, delegate to the placement diagnostic so
+    the message names the real cause — CPU, RAM, or pattern-disk availability —
+    rather than a blanket 'not enough capacity'.
+    """
     if not project.host_id:
-        from app.services.placement import calculate_project_requirements
+        from app.services.pattern_locations import pattern_disk_ids_from_topology
+        from app.services.placement import (
+            calculate_project_requirements,
+            diagnose_placement_failure,
+        )
 
         reqs = calculate_project_requirements(project.topology or {})
-        ram_gb = round(reqs["total_ram_mb"] / 1024, 1)
-        return (
-            f"Not enough capacity in pool — need {reqs['total_vcpus']} vCPUs "
-            f"and {ram_gb} GB RAM but no host has room. "
-            f"Free up resources or add a host."
+        pattern_disk_ids = pattern_disk_ids_from_topology(project.topology or {})
+        return diagnose_placement_failure(
+            s,
+            reqs["total_vcpus"],
+            reqs["total_ram_mb"],
+            pattern_disk_ids=pattern_disk_ids,
         )
     if not host:
         return "Assigned host no longer exists"

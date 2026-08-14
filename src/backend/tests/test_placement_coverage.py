@@ -474,6 +474,27 @@ def test_multihost_containers():
         db.close()
 
 
+def test_build_placement_units_container_uses_memory_and_cpus():
+    """Container nodes must contribute data.memory (MB) and data.cpus to a
+    placement unit — not data.ram (GB) / data.vcpus, which they don't have."""
+    from app.services.placement import _build_placement_units
+
+    ctr = {"id": "c1", "type": "containerNode", "data": {"memory": 8192, "cpus": 3}}
+    units = _build_placement_units({}, [ctr])
+    assert units[0]["ram_mb"] == 8192
+    assert units[0]["vcpus"] == 3
+
+
+def test_build_placement_units_vm_uses_ram_gb():
+    """VM nodes contribute data.ram (GB -> MB) and data.vcpus."""
+    from app.services.placement import _build_placement_units
+
+    vm = {"id": "v1", "type": "vmNode", "data": {"ram": 16, "vcpus": 8}}
+    units = _build_placement_units({}, [vm])
+    assert units[0]["ram_mb"] == 16 * 1024
+    assert units[0]["vcpus"] == 8
+
+
 def test_multihost_empty_topology():
     """Empty topology returns None."""
     db = TestSession()

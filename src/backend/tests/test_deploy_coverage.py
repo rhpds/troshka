@@ -1571,9 +1571,13 @@ class TestDeployResolveHost:
         assert err is None
         assert project.host_id == HOST_ID
 
+    @patch(
+        "app.services.placement.diagnose_placement_failure",
+        return_value="Not enough RAM — need 512.0 GB",
+    )
     @patch("app.services.placement.find_available_host")
     @patch("app.services.placement.calculate_project_requirements")
-    def test_auto_placement_no_capacity(self, mock_reqs, mock_find):
+    def test_auto_placement_no_capacity(self, mock_reqs, mock_find, mock_diag):
         s = MagicMock()
         mock_reqs.return_value = {"total_vcpus": 64, "total_ram_mb": 524288}
         mock_find.return_value = None
@@ -1582,8 +1586,7 @@ class TestDeployResolveHost:
         project.topology = {"nodes": []}
         result_host, err = _deploy_resolve_host(s, project, PROJECT_ID)
         assert result_host is None
-        assert err is not None
-        assert "Not enough capacity" in err
+        assert err == "Not enough RAM — need 512.0 GB"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1594,29 +1597,34 @@ from app.services.deploy_service import _deploy_host_error_msg
 
 
 class TestDeployHostErrorMsg:
-    @patch("app.services.placement.calculate_project_requirements")
-    def test_no_host_id_returns_capacity_message(self, mock_reqs):
-        mock_reqs.return_value = {"total_vcpus": 8, "total_ram_mb": 16384}
+    @patch(
+        "app.services.placement.diagnose_placement_failure",
+        return_value="Pattern disks are not available on any host",
+    )
+    def test_no_host_id_uses_placement_diagnostic(self, mock_diag):
+        s = MagicMock()
         project = MagicMock()
         project.host_id = None
         project.topology = {}
-        msg = _deploy_host_error_msg(project, None)
-        assert "Not enough capacity" in msg
-        assert "8 vCPUs" in msg
-        assert "16.0 GB" in msg
+        project.provider_id = None
+        msg = _deploy_host_error_msg(s, project, None)
+        assert msg == "Pattern disks are not available on any host"
+        mock_diag.assert_called_once()
 
     def test_host_id_set_but_host_none(self):
+        s = MagicMock()
         project = MagicMock()
         project.host_id = "some-id"
-        msg = _deploy_host_error_msg(project, None)
+        msg = _deploy_host_error_msg(s, project, None)
         assert "no longer exists" in msg
 
     def test_host_exists_but_no_ip(self):
+        s = MagicMock()
         project = MagicMock()
         project.host_id = HOST_ID
         host = _make_host()
         host.ip_address = None
-        msg = _deploy_host_error_msg(project, host)
+        msg = _deploy_host_error_msg(s, project, host)
         assert "no IP address" in msg
 
 
