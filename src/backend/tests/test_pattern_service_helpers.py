@@ -435,6 +435,48 @@ class TestCaptureContainerImages:
 
 
 # ---------------------------------------------------------------------------
+# _save_pattern_metadata_to_s3 — shared by both capture paths
+# ---------------------------------------------------------------------------
+class TestSavePatternMetadataToS3:
+    @patch("app.services.s3_storage._bucket", return_value="troshka-images")
+    @patch("app.services.s3_storage._get_s3_client")
+    def test_writes_topology_and_full_disk_identity(self, mock_client, mock_bucket):
+        """The gold metadata.json MUST carry topology and each disk's PatternDisk
+        id + source_disk_id — cross-cluster import/DR rebuild patterns from it."""
+        import json
+
+        from app.services.pattern_service import _save_pattern_metadata_to_s3
+
+        disk = MagicMock(
+            id="pd-1",
+            source_disk_id="content-1",
+            source_vm_id="vm-1",
+            s3_key="patterns/p/content-1.qcow2",
+            format="qcow2",
+            size_bytes=10,
+            virtual_size_bytes=20,
+        )
+        pattern = MagicMock()
+        pattern.name = "p"
+        pattern.description = "d"
+        pattern.visibility = "private"
+        pattern.topology = {
+            "nodes": [{"type": "storageNode", "data": {"patternDiskId": "pd-1"}}]
+        }
+        pattern.total_size_bytes = 10
+        pattern.tags = {}
+        pattern.disks = [disk]
+
+        _save_pattern_metadata_to_s3(pattern, "pat-1")
+
+        body = mock_client.return_value.put_object.call_args.kwargs["Body"]
+        meta = json.loads(body)
+        assert meta["topology"]["nodes"][0]["data"]["patternDiskId"] == "pd-1"
+        assert meta["disks"][0]["id"] == "pd-1"
+        assert meta["disks"][0]["source_disk_id"] == "content-1"
+
+
+# ---------------------------------------------------------------------------
 # _finalize_pattern_capture
 # ---------------------------------------------------------------------------
 class TestFinalizePatternCapture:

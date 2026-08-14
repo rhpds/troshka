@@ -32,12 +32,14 @@ class TestUpdateTopologyWithCaptures:
             ]
         }
         captured = [{"diskId": "disk-1", "s3Key": "patterns/p1/disk-1.qcow2"}]
-        _update_topology_with_captures(topo, captured, "pattern-abc")
+        _update_topology_with_captures(
+            topo, captured, "pattern-abc", {"disk-1": "pd-1"}
+        )
 
         node_data = topo["nodes"][0]["data"]
         assert node_data["source"] == "pattern"
         assert node_data["patternId"] == "pattern-abc"
-        assert node_data["patternDiskId"] == "disk-1"
+        assert node_data["patternDiskId"] == "pd-1"
 
     def test_removes_library_item_fields(self):
         from app.services.pattern_service import _update_topology_with_captures
@@ -56,7 +58,7 @@ class TestUpdateTopologyWithCaptures:
             ]
         }
         captured = [{"diskId": "disk-2"}]
-        _update_topology_with_captures(topo, captured, "p-1")
+        _update_topology_with_captures(topo, captured, "p-1", {"disk-2": "pd-2"})
 
         assert "libraryItemId" not in topo["nodes"][0]["data"]
         assert "libraryItemName" not in topo["nodes"][0]["data"]
@@ -74,7 +76,7 @@ class TestUpdateTopologyWithCaptures:
             ]
         }
         captured = [{"diskId": "iso-1"}]
-        _update_topology_with_captures(topo, captured, "p-1")
+        _update_topology_with_captures(topo, captured, "p-1", {})
 
         # ISO node should not be modified
         assert "source" not in topo["nodes"][0]["data"]
@@ -89,7 +91,7 @@ class TestUpdateTopologyWithCaptures:
             ]
         }
         captured = [{"diskId": "vm-1"}, {"diskId": "net-1"}]
-        _update_topology_with_captures(topo, captured, "p-1")
+        _update_topology_with_captures(topo, captured, "p-1", {})
 
         # Neither node should have "source" added
         assert "source" not in topo["nodes"][0]["data"]
@@ -108,7 +110,7 @@ class TestUpdateTopologyWithCaptures:
             ]
         }
         captured = [{"diskId": "disk-other"}]
-        _update_topology_with_captures(topo, captured, "p-1")
+        _update_topology_with_captures(topo, captured, "p-1", {})
 
         assert "source" not in topo["nodes"][0]["data"]
 
@@ -116,7 +118,7 @@ class TestUpdateTopologyWithCaptures:
         from app.services.pattern_service import _update_topology_with_captures
 
         topo = {"nodes": []}
-        _update_topology_with_captures(topo, [{"diskId": "x"}], "p-1")
+        _update_topology_with_captures(topo, [{"diskId": "x"}], "p-1", {})
         assert topo == {"nodes": []}
 
     def test_multiple_storage_nodes_mixed(self):
@@ -143,16 +145,44 @@ class TestUpdateTopologyWithCaptures:
             ]
         }
         captured = [{"diskId": "d1"}, {"diskId": "d3"}]
-        _update_topology_with_captures(topo, captured, "pat-xyz")
+        _update_topology_with_captures(
+            topo, captured, "pat-xyz", {"d1": "pd-d1", "d3": "pd-d3"}
+        )
 
         # d1: updated
         assert topo["nodes"][0]["data"]["source"] == "pattern"
+        assert topo["nodes"][0]["data"]["patternDiskId"] == "pd-d1"
         # d2: skipped (iso)
         assert "source" not in topo["nodes"][1]["data"]
         # d3: updated
         assert topo["nodes"][2]["data"]["source"] == "pattern"
         # vm-1: skipped (not storageNode)
         assert "source" not in topo["nodes"][3]["data"]
+
+    def test_writes_pattern_disk_db_id_not_content_uuid(self):
+        """patternDiskId must be the PatternDisk row id (what PatternLocation
+        FKs to), NOT the content UUID / source_disk_id. Deploy placement looks
+        up disk availability by PatternDisk.id, so writing the content UUID
+        makes every pattern-derived deploy fail as 'not ready'."""
+        from app.services.pattern_service import _update_topology_with_captures
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "content-uuid-1",
+                    "type": "storageNode",
+                    "data": {"format": "qcow2", "size": 50},
+                },
+            ]
+        }
+        captured = [
+            {"diskId": "content-uuid-1", "s3Key": "patterns/p/content-uuid-1.qcow2"}
+        ]
+        pd_id_by_disk_id = {"content-uuid-1": "pd-db-id-1"}
+
+        _update_topology_with_captures(topo, captured, "p", pd_id_by_disk_id)
+
+        assert topo["nodes"][0]["data"]["patternDiskId"] == "pd-db-id-1"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

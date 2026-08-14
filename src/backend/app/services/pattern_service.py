@@ -580,8 +580,61 @@ def _poll_capture_completion(
     return None
 
 
-def _update_topology_with_captures(topo, captured_disks, pattern_id):
-    """Update topology storage nodes to reference captured pattern disks."""
+def _save_pattern_metadata_to_s3(pattern, pattern_id):
+    """Write the canonical pattern metadata.json to central S4.
+
+    Used by BOTH capture paths so the gold copy always carries the topology and
+    each disk's full identity (``id`` + ``source_disk_id``). Cross-cluster
+    import (``central_library``) and DR recovery rebuild the pattern from this
+    object, so a thin copy (no topology / no ids) yields an unusable import.
+    """
+    import json as _json
+
+    from app.services import s3_storage
+
+    metadata = {
+        "type": "pattern",
+        "pattern_id": pattern_id,
+        "name": pattern.name,
+        "description": pattern.description,
+        "visibility": pattern.visibility,
+        "topology": pattern.topology,
+        "total_size_bytes": pattern.total_size_bytes,
+        "tags": pattern.tags,
+        "disks": [
+            {
+                "id": d.id,
+                "source_disk_id": d.source_disk_id,
+                "source_vm_id": d.source_vm_id,
+                "s3_key": d.s3_key,
+                "format": d.format,
+                "size_bytes": d.size_bytes,
+                "virtual_size_bytes": d.virtual_size_bytes,
+            }
+            for d in pattern.disks
+        ],
+    }
+    try:
+        s3_storage._get_s3_client().put_object(
+            Bucket=s3_storage._bucket(),
+            Key=f"patterns/{pattern_id}/metadata.json",
+            Body=_json.dumps(metadata).encode(),
+            ContentType="application/json",
+        )
+    except Exception:
+        log.warning("Failed to save pattern metadata.json for %s", pattern_id[:8])
+
+
+def _update_topology_with_captures(topo, captured_disks, pattern_id, pd_id_by_disk_id):
+    """Update topology storage nodes to reference captured pattern disks.
+
+    ``pd_id_by_disk_id`` maps each captured disk's content id (``diskId``,
+    equal to the storage node id and ``PatternDisk.source_disk_id``) to the
+    ``PatternDisk.id``. ``patternDiskId`` MUST be the PatternDisk row id —
+    that is what ``PatternLocation`` FKs to and what deploy placement uses to
+    check disk availability. Writing the content id here silently breaks every
+    pattern-derived deploy with a misleading 'not enough capacity' error.
+    """
     for node in topo.get("nodes", []):
         if node.get("type") != "storageNode":
             continue
@@ -594,7 +647,7 @@ def _update_topology_with_captures(topo, captured_disks, pattern_id):
         if matching_pd:
             node["data"]["source"] = "pattern"
             node["data"]["patternId"] = pattern_id
-            node["data"]["patternDiskId"] = matching_pd.get("diskId", "")
+            node["data"]["patternDiskId"] = pd_id_by_disk_id.get(node_id, node_id)
             node["data"].pop("libraryItemId", None)
             node["data"].pop("libraryItemName", None)
 
@@ -798,6 +851,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     from app.models.pattern_location import PatternLocation
 
     total_size = 0
+    pd_id_by_disk_id: dict[str, str] = {}
     for cd in captured_disks:
         pd = PatternDisk(
             pattern_id=pattern_id,
@@ -811,6 +865,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         )
         db.add(pd)
         db.flush()
+        pd_id_by_disk_id[cd.get("diskId", "")] = pd.id
         total_size += cd.get("sizeBytes", 0)
 
         # Track that this disk exists on the source cluster's RGW
@@ -824,9 +879,9 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
             )
             db.add(loc)
 
-    # Update topology nodes to reference pattern
+    # Update topology nodes to reference pattern (by PatternDisk.id)
     topo = pattern.topology or {}
-    _update_topology_with_captures(topo, captured_disks, pattern_id)
+    _update_topology_with_captures(topo, captured_disks, pattern_id, pd_id_by_disk_id)
 
     from sqlalchemy import text
 
@@ -843,30 +898,9 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     notify_pattern(pattern_id, {"type": "capture-complete"})
     _enqueue_pattern_sync(pattern_id, pattern.source_provider_id)
 
-    # Save metadata to S3
-    try:
-        from app.services import s3_storage
-
-        metadata = {
-            "pattern_id": pattern_id,
-            "name": pattern.name,
-            "disks": [
-                {
-                    "disk_id": cd.get("diskId"),
-                    "s3_key": cd.get("s3Key"),
-                    "format": cd.get("format"),
-                }
-                for cd in captured_disks
-            ],
-        }
-        s3_storage._get_s3_client().put_object(
-            Bucket=s3_storage._bucket(),
-            Key=f"patterns/{pattern_id}/metadata.json",
-            Body=_json.dumps(metadata).encode(),
-            ContentType="application/json",
-        )
-    except Exception:
-        log.warning("Failed to save metadata.json for pattern %s", pattern_id[:8])
+    # Save the canonical metadata.json to central S4 (topology + full disk
+    # identity) so cross-cluster import / DR recovery can rebuild the pattern.
+    _save_pattern_metadata_to_s3(pattern, pattern_id)
 
     if restart_after:
         _restart_kubevirt_vms(custom_api, namespace)
@@ -1459,7 +1493,6 @@ def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
 
     from sqlalchemy import text
 
-    from app.services import s3_storage
     from app.services.ws_pubsub import notify_pattern
 
     # Update pattern topology: point storage nodes to captured pattern disks
@@ -1491,37 +1524,8 @@ def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
     pattern.total_size_bytes = sum(d.size_bytes for d in pattern.disks)
     db.commit()
 
-    # Save metadata to S3 for recovery after DB loss
-    metadata = {
-        "type": "pattern",
-        "name": pattern.name,
-        "description": pattern.description,
-        "visibility": pattern.visibility,
-        "topology": pattern.topology,
-        "total_size_bytes": pattern.total_size_bytes,
-        "tags": pattern.tags,
-        "disks": [
-            {
-                "id": d.id,
-                "source_disk_id": d.source_disk_id,
-                "source_vm_id": d.source_vm_id,
-                "s3_key": d.s3_key,
-                "format": d.format,
-                "size_bytes": d.size_bytes,
-                "virtual_size_bytes": d.virtual_size_bytes,
-            }
-            for d in pattern.disks
-        ],
-    }
-    try:
-        s3_storage._get_s3_client().put_object(
-            Bucket=s3_storage._bucket(),
-            Key=f"patterns/{pattern_id}/metadata.json",
-            Body=json.dumps(metadata),
-            ContentType="application/json",
-        )
-    except Exception:
-        log.warning("Failed to save pattern metadata to S3 for %s", pattern_id[:8])
+    # Save the canonical metadata.json to central S4 for recovery after DB loss
+    _save_pattern_metadata_to_s3(pattern, pattern_id)
 
     log.info("Pattern %s capture complete", pattern_id)
 
