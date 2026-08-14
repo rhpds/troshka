@@ -3699,60 +3699,6 @@ class TestReportPreInstallStatus:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# _qcow2_virtual_size_gb_s3
-# ═══════════════════════════════════════════════════════════════════════
-
-
-class TestQcow2VirtualSizeGbS3:
-    def test_valid_header(self):
-        import struct
-
-        from app.services.deploy_service import _qcow2_virtual_size_gb_s3
-
-        # Build a valid qcow2 header: magic + padding + virtual size
-        magic = b"QFI\xfb"
-        padding = b"\x00" * 20
-        vsize = 50 * (1024**3)  # 50 GB
-        header = magic + padding + struct.pack(">Q", vsize)
-        mock_client = MagicMock()
-        mock_body = MagicMock()
-        mock_body.read.return_value = header
-        mock_client.get_object.return_value = {"Body": mock_body}
-        result = _qcow2_virtual_size_gb_s3(mock_client, "bucket", {}, "path.qcow2")
-        assert result == 51  # 50 + 1 (ceiling)
-
-    def test_invalid_magic(self):
-        from app.services.deploy_service import _qcow2_virtual_size_gb_s3
-
-        mock_client = MagicMock()
-        mock_body = MagicMock()
-        mock_body.read.return_value = b"\x00" * 32
-        mock_client.get_object.return_value = {"Body": mock_body}
-        assert _qcow2_virtual_size_gb_s3(mock_client, "bucket", {}, "path") == 0
-
-    def test_none_client(self):
-        from app.services.deploy_service import _qcow2_virtual_size_gb_s3
-
-        assert _qcow2_virtual_size_gb_s3(None, "bucket", {}, "path") == 0
-
-    def test_exception_returns_zero(self):
-        from app.services.deploy_service import _qcow2_virtual_size_gb_s3
-
-        mock_client = MagicMock()
-        mock_client.get_object.side_effect = Exception("access denied")
-        assert _qcow2_virtual_size_gb_s3(mock_client, "bucket", {}, "path") == 0
-
-    def test_short_header(self):
-        from app.services.deploy_service import _qcow2_virtual_size_gb_s3
-
-        mock_client = MagicMock()
-        mock_body = MagicMock()
-        mock_body.read.return_value = b"QFI\xfb" + b"\x00" * 10  # only 14 bytes
-        mock_client.get_object.return_value = {"Body": mock_body}
-        assert _qcow2_virtual_size_gb_s3(mock_client, "bucket", {}, "path") == 0
-
-
-# ═══════════════════════════════════════════════════════════════════════
 # _teardown_networks_via_troshkad (mocked)
 # ═══════════════════════════════════════════════════════════════════════
 

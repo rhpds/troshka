@@ -39,6 +39,9 @@ def upgrade():
 
 
 def downgrade():
+    # NOTE: this restore of NOT NULL will fail if any central rows exist
+    # (location_type="central" rows have provider_id=NULL). Delete/convert
+    # those rows before downgrading.
     op.alter_column(
         "pattern_locations",
         "provider_id",

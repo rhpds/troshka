@@ -2960,6 +2960,7 @@ def _build_kubevirt_vm_spec(vm_id: str, vm: dict, current: dict) -> dict:
                 "s3Path": d.get("resolvedS3Path", ""),
                 "format": "qcow2",
                 "central": d.get("centralSource", False),
+                "source": d.get("diskSource", "central"),
             }
         elif d.get("source") == "library" and d.get("libraryItemId"):
             disk_spec["libraryImage"] = {

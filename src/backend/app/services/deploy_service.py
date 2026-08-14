@@ -1695,25 +1695,6 @@ def _setup_kubevirt_s3_clients():
     )
 
 
-def _qcow2_virtual_size_gb_s3(client, bucket, owner_params_dict, s3_path):
-    """Read qcow2 virtual size from S3 header (Range request)."""
-    try:
-        if not client:
-            return 0
-        import struct
-
-        resp = client.get_object(
-            Bucket=bucket, Key=s3_path, Range="bytes=0-31", **owner_params_dict
-        )
-        header = resp["Body"].read()
-        if len(header) >= 32 and header[:4] == b"QFI\xfb":
-            vsize = struct.unpack(">Q", header[24:32])[0]
-            return int(vsize / (1024**3)) + 1
-    except Exception:
-        pass
-    return 0
-
-
 def _check_central_source(
     s3_path, s3_client, bucket, s3_op, central_s3_client, central_bucket, central_op
 ):
@@ -1771,6 +1752,7 @@ def _resolve_pattern_disk(data, db, target_provider_id):
 
     data["resolvedS3Path"] = s3_path
     data["diskSource"] = source
+    data["centralSource"] = False
     logger.info(
         "Deploy: pattern disk %s s3=%s source=%s",
         data.get("label", "?"),
