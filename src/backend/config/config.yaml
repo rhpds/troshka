@@ -45,6 +45,12 @@ gc:
   cache_stale_hours_snapshots: 1
   cache_stale_hours_images: 5
 
+central_s4:
+  # Soft ceiling for central S4 (troshka-images). Sync jobs refuse to copy a
+  # pattern when synced central bytes + pattern size would exceed this value.
+  # Null / omitted = no ceiling (guard disabled).
+  max_bytes: null
+
 health:
   interval_seconds: 30
   disconnect_after_seconds: 90
