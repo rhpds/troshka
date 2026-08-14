@@ -41,6 +41,10 @@ class ProviderCreate(BaseModel):
     iso_pvc: str | None = None
     cache_namespace: str = ""
     project_prefix: str = ""
+    # When false, registering an ocpvirt/kubevirt provider does NOT auto-create
+    # a host. The dedicated-CI role sets this so it can create a correctly-sized
+    # host explicitly (avoids a duplicate, wrongly sized, wasted host).
+    auto_provision_host: bool = True
 
     # GCP fields
     gcp_project_id: str = ""
@@ -356,7 +360,7 @@ def create_provider(
         except Exception as e:
             logger.warning("Central library auto-sync failed: %s", e)
 
-    if body.type in ("ocpvirt", "kubevirt"):
+    if body.type in ("ocpvirt", "kubevirt") and body.auto_provision_host:
         _enqueue_cluster_host_provision(provider, db)
 
     return _build_provider_response(

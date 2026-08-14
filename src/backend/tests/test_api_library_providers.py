@@ -2880,3 +2880,44 @@ def test_test_provider_unknown_type():
     resp = client.post(f"/api/v1/providers/{pid}/test")
     assert resp.status_code == 400
     assert "Unknown provider type" in resp.json()["detail"]
+
+
+# ===========================================================================
+# Provider register — auto_provision_host flag (avoid duplicate ocpvirt host)
+# ===========================================================================
+
+
+def _ocpvirt_payload(name, **extra):
+    return {
+        "name": name,
+        "type": "ocpvirt",
+        "api_url": "https://api.test.example:6443",
+        "token": "test-token",
+        "namespace": "troshka",
+        **extra,
+    }
+
+
+def test_ocpvirt_register_auto_provisions_host_by_default():
+    """Registering an OCP Virt provider auto-provisions a host by default."""
+    from unittest.mock import patch
+
+    name = f"ocpv-auto-{uuid.uuid4().hex[:8]}"
+    with patch("app.api.providers._enqueue_cluster_host_provision") as m:
+        resp = client.post("/api/v1/providers/", json=_ocpvirt_payload(name))
+    assert resp.status_code == 201, resp.text
+    m.assert_called_once()
+
+
+def test_ocpvirt_register_skips_host_when_auto_provision_false():
+    """auto_provision_host=false must NOT auto-create a host (caller creates it)."""
+    from unittest.mock import patch
+
+    name = f"ocpv-noauto-{uuid.uuid4().hex[:8]}"
+    with patch("app.api.providers._enqueue_cluster_host_provision") as m:
+        resp = client.post(
+            "/api/v1/providers/",
+            json=_ocpvirt_payload(name, auto_provision_host=False),
+        )
+    assert resp.status_code == 201, resp.text
+    m.assert_not_called()
