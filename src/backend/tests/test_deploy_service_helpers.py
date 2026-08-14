@@ -5580,34 +5580,41 @@ class TestReportPreInstallStatusV2:
 
 
 class TestResolvePatternDisk:
-    @patch("app.services.deploy_service._qcow2_virtual_size_gb_s3", return_value=None)
-    @patch("app.services.deploy_service._check_central_source", return_value=False)
-    def test_resolves_from_db_record(self, mock_central, mock_size):
+    @patch(
+        "app.services.pattern_locations.pattern_disk_source_for_cluster",
+        return_value="obc",
+    )
+    def test_resolves_from_db_record(self, mock_source):
         from app.services.deploy_service import _resolve_pattern_disk
 
         data = {"patternId": "pat-1", "patternDiskId": "pd-1", "label": "disk"}
         mock_db = MagicMock()
         mock_pd = MagicMock()
         mock_pd.s3_key = "patterns/pat-1/pd-1.qcow2"
-        mock_db.query.return_value.filter_by.return_value.first.return_value = mock_pd
-        _resolve_pattern_disk(data, mock_db, MagicMock(), "bkt", {}, None, "", {})
+        mock_pd.virtual_size_bytes = None
+        mock_db.scalars.return_value.first.return_value = mock_pd
+        _resolve_pattern_disk(data, mock_db, "provider-1")
         assert data["resolvedS3Path"] == "patterns/pat-1/pd-1.qcow2"
-        assert data["centralSource"] is False
+        assert data["diskSource"] == "obc"
 
-    @patch("app.services.deploy_service._qcow2_virtual_size_gb_s3", return_value=None)
-    @patch("app.services.deploy_service._check_central_source", return_value=False)
-    def test_fallback_path_when_no_record(self, mock_central, mock_size):
+    @patch(
+        "app.services.pattern_locations.pattern_disk_source_for_cluster",
+        return_value="central",
+    )
+    def test_fallback_path_when_no_record(self, mock_source):
         from app.services.deploy_service import _resolve_pattern_disk
 
         data = {"patternId": "pat-1", "patternDiskId": "pd-1", "label": "disk"}
         mock_db = MagicMock()
-        mock_db.query.return_value.filter_by.return_value.first.return_value = None
-        _resolve_pattern_disk(data, mock_db, MagicMock(), "bkt", {}, None, "", {})
+        mock_db.scalars.return_value.first.return_value = None
+        _resolve_pattern_disk(data, mock_db, "provider-1")
         assert data["resolvedS3Path"] == "patterns/pat-1/pd-1.qcow2"
 
-    @patch("app.services.deploy_service._qcow2_virtual_size_gb_s3", return_value=200)
-    @patch("app.services.deploy_service._check_central_source", return_value=False)
-    def test_size_override_when_larger(self, mock_central, mock_size):
+    @patch(
+        "app.services.pattern_locations.pattern_disk_source_for_cluster",
+        return_value="obc",
+    )
+    def test_size_override_when_larger(self, mock_source):
         from app.services.deploy_service import _resolve_pattern_disk
 
         data = {
@@ -5617,8 +5624,11 @@ class TestResolvePatternDisk:
             "size": 50,
         }
         mock_db = MagicMock()
-        mock_db.query.return_value.filter_by.return_value.first.return_value = None
-        _resolve_pattern_disk(data, mock_db, MagicMock(), "bkt", {}, None, "", {})
+        mock_pd = MagicMock()
+        mock_pd.s3_key = "patterns/pat-1/pd-1.qcow2"
+        mock_pd.virtual_size_bytes = 214748364800  # 200 GiB
+        mock_db.scalars.return_value.first.return_value = mock_pd
+        _resolve_pattern_disk(data, mock_db, "provider-1")
         assert data["size"] == 200
 
 
@@ -5692,7 +5702,9 @@ class TestResolveDiskS3Paths:
                 },
             ]
         }
-        _resolve_disk_s3_paths(topo, MagicMock(), MagicMock(), "bkt", {}, None, "", {})
+        _resolve_disk_s3_paths(
+            topo, MagicMock(), "provider-1", MagicMock(), "bkt", {}, None, "", {}
+        )
         mock_pattern.assert_called_once()
         mock_library.assert_called_once()
 

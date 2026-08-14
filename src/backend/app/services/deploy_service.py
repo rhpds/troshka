@@ -69,6 +69,11 @@ logger = logging.getLogger(__name__)
 
 _deploy_semaphore = RedisSemaphore("deploy", limit=100, ttl=7200)
 
+
+class DeployError(Exception):
+    """Raised when a deploy cannot proceed (e.g. pattern storage not ready)."""
+
+
 # Ordered deploy steps — used for checkpoint-based resume
 DEPLOY_STEPS = [
     "eips",
@@ -1728,42 +1733,54 @@ def _check_central_source(
             return False
 
 
-def _resolve_pattern_disk(
-    data, db, s3_client, bucket, s3_op, central_s3_client, central_bucket, central_op
-):
-    """Resolve S3 path for a pattern-sourced disk."""
+def _resolve_pattern_disk(data, db, target_provider_id):
+    """Resolve source (obc|central) + S3 path for a pattern-sourced disk.
+
+    Uses PatternLocation on the target cluster. Raises DeployError if the disk
+    is not synced anywhere reachable from that cluster (placement should
+    prevent this; this is the correctness backstop).
+    """
+    import math
+
+    from sqlalchemy import select
+
     from app.models.pattern import PatternDisk as PatternDiskModel
+    from app.services.pattern_locations import pattern_disk_source_for_cluster
 
     pid = data["patternId"]
     pattern_disk_id = data.get("patternDiskId", "")
-    pd_record = (
-        db.query(PatternDiskModel).filter_by(id=pattern_disk_id, pattern_id=pid).first()
-        if pattern_disk_id
-        else None
+    pd_record = None
+    if pattern_disk_id:
+        pd_record = db.scalars(
+            select(PatternDiskModel).filter_by(id=pattern_disk_id, pattern_id=pid)
+        ).first()
+
+    s3_path = (
+        pd_record.s3_key
+        if pd_record and pd_record.s3_key
+        else f"patterns/{pid}/{pattern_disk_id}.qcow2"
     )
-    if pd_record and pd_record.s3_key:
-        s3_path = pd_record.s3_key
-    else:
-        s3_path = f"patterns/{pid}/{pattern_disk_id}.qcow2"
-    use_central = _check_central_source(
-        s3_path, s3_client, bucket, s3_op, central_s3_client, central_bucket, central_op
-    )
+
+    source = pattern_disk_source_for_cluster(db, pattern_disk_id, target_provider_id)
+    if source is None:
+        label = data.get("label", pattern_disk_id[:8])
+        raise DeployError(
+            f"pattern disk {label} is not available on the target cluster"
+            f" — storage not ready"
+        )
+
     data["resolvedS3Path"] = s3_path
-    data["centralSource"] = use_central
+    data["diskSource"] = source
     logger.info(
-        "Deploy: disk %s s3=%s central=%s",
+        "Deploy: pattern disk %s s3=%s source=%s",
         data.get("label", "?"),
         s3_path[:40],
-        use_central,
+        source,
     )
-    real_size = _qcow2_virtual_size_gb_s3(
-        central_s3_client if use_central else s3_client,
-        central_bucket if use_central else bucket,
-        central_op if use_central else s3_op,
-        s3_path,
-    )
-    if real_size and real_size > (data.get("size", 0) or 0):
-        data["size"] = real_size
+    if pd_record and pd_record.virtual_size_bytes:
+        real_gb = math.ceil(pd_record.virtual_size_bytes / (1024**3))
+        if real_gb > (data.get("size", 0) or 0):
+            data["size"] = real_gb
 
 
 def _resolve_library_disk(
@@ -1801,6 +1818,7 @@ def _resolve_library_disk(
 def _resolve_disk_s3_paths(
     topology,
     db,
+    target_provider_id,
     s3_client,
     bucket,
     s3_op,
@@ -1814,16 +1832,7 @@ def _resolve_disk_s3_paths(
         if node.get("type") != "storageNode":
             continue
         if data.get("source") == "pattern" and data.get("patternId"):
-            _resolve_pattern_disk(
-                data,
-                db,
-                s3_client,
-                bucket,
-                s3_op,
-                central_s3_client,
-                central_bucket,
-                central_op,
-            )
+            _resolve_pattern_disk(data, db, target_provider_id)
         elif data.get("source") == "library" and data.get("libraryItemId"):
             _resolve_library_disk(
                 data,
@@ -1835,6 +1844,33 @@ def _resolve_disk_s3_paths(
                 central_bucket,
                 central_op,
             )
+
+
+def _preflight_verify_pattern_disks(topology, s3_client, bucket, s3_op):
+    """HEAD every central-source pattern disk against central S4 before deploy.
+
+    OBC-source disks are trusted (their synced PatternLocation was written only
+    after a verified capture, and the OBC endpoint is unreachable from here).
+    If s3_client is None (central S4 not configured), central-disk checks are skipped.
+    """
+    if not s3_client:
+        return
+    for node in topology.get("nodes", []):
+        data = node.get("data", {})
+        if node.get("type") != "storageNode":
+            continue
+        if data.get("source") != "pattern":
+            continue
+        if data.get("diskSource") != "central":
+            continue
+        key = data.get("resolvedS3Path", "")
+        try:
+            s3_client.head_object(Bucket=bucket, Key=key, **s3_op)
+        except Exception as exc:
+            label = data.get("label", key[:16])
+            raise DeployError(
+                f"pattern disk {label} not found in central S4 — storage not ready"
+            ) from exc
 
 
 def _build_clone_name_map(topology):
@@ -2583,16 +2619,27 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         central_op,
     ) = _setup_kubevirt_s3_clients()
 
-    _resolve_disk_s3_paths(
-        topology,
-        db,
-        s3_client,
-        bucket,
-        s3_op,
-        central_s3_client,
-        central_bucket,
-        central_op,
-    )
+    try:
+        _resolve_disk_s3_paths(
+            topology,
+            db,
+            host.provider_id,
+            s3_client,
+            bucket,
+            s3_op,
+            central_s3_client,
+            central_bucket,
+            central_op,
+        )
+        _preflight_verify_pattern_disks(
+            topology, central_s3_client, central_bucket, central_op
+        )
+    except DeployError as e:
+        project.state = "error"
+        project.deploy_error = str(e)
+        db.commit()
+        logger.warning("Deploy %s aborted: %s", project_id[:8], e)
+        return
 
     exec_privkey_pem, exec_pubkey = _generate_exec_ssh_keypair(project_id)
     _regenerate_kubevirt_cloud_init(topology, project, exec_pubkey)
