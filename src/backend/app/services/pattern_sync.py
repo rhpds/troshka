@@ -7,6 +7,7 @@ from the backend workers). Central S4 = the primary ``troshka-images`` bucket.
 
 from __future__ import annotations
 
+import datetime
 import logging
 import time
 
@@ -292,8 +293,6 @@ def sync_pattern_to_central(pattern_id: str) -> None:
         job_name = f"sync-{pattern_id[:8]}"
         ok = _run_rclone_job(provider, job_name, keys, src_cfg, dst_cfg)
         if ok:
-            import datetime
-
             now = datetime.datetime.now(datetime.UTC)
             for _pd, row in pending:
                 row.state = "synced"
