@@ -3871,13 +3871,20 @@ def _deploy_resolve_host(s, project, project_id):
         s.query(Host).filter_by(id=project.host_id).first() if project.host_id else None
     )
     if not host and not project.host_id:
+        from app.services.pattern_locations import pattern_disk_ids_from_topology
         from app.services.placement import (
             calculate_project_requirements,
             find_available_host,
         )
 
         reqs = calculate_project_requirements(project.topology or {})
-        host = find_available_host(s, reqs["total_vcpus"], reqs["total_ram_mb"])
+        pattern_disk_ids = pattern_disk_ids_from_topology(project.topology or {})
+        host = find_available_host(
+            s,
+            reqs["total_vcpus"],
+            reqs["total_ram_mb"],
+            pattern_disk_ids=pattern_disk_ids,
+        )
         if host:
             project.host_id = host.id
             s.commit()

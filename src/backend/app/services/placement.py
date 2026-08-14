@@ -159,6 +159,23 @@ def _check_eip_capacity(db: Session, host: Host, required_eips: int) -> bool:
     return True
 
 
+def _storage_ready_anywhere(db: Session, pattern_disk_ids: list[str]) -> bool:
+    """True if any active connected host's provider makes all disks ready."""
+    from app.services.pattern_locations import pattern_disks_ready_on_provider
+
+    if not pattern_disk_ids:
+        return True
+    hosts = (
+        db.query(Host)
+        .filter(Host.state == "active", Host.agent_status == "connected")
+        .all()
+    )
+    return any(
+        pattern_disks_ready_on_provider(db, pattern_disk_ids, h.provider_id)
+        for h in hosts
+    )
+
+
 def find_available_host(
     db: Session,
     required_vcpus: int,
@@ -166,6 +183,7 @@ def find_available_host(
     required_eips: int = 0,
     storage_pool_id: str | None = None,
     provider_id: str | None = None,
+    pattern_disk_ids: list[str] | None = None,
 ) -> Host | None:
     """Find the least-loaded active host with enough free capacity (with overcommit).
 
@@ -197,6 +215,16 @@ def find_available_host(
         if free_vcpus >= required_vcpus and free_ram >= required_ram_mb:
             if required_eips > 0 and not _check_eip_capacity(db, host, required_eips):
                 continue
+
+            if pattern_disk_ids:
+                from app.services.pattern_locations import (
+                    pattern_disks_ready_on_provider,
+                )
+
+                if not pattern_disks_ready_on_provider(
+                    db, pattern_disk_ids, host.provider_id
+                ):
+                    continue
 
             inflight = _get_inflight_deploys(host.id)
             candidates.append((host, free_vcpus, free_ram, inflight))
@@ -463,6 +491,7 @@ def _select_host(
     has_anti_affinity: bool,
     storage_pool_id: str | None,
     host_id: str | None,
+    pattern_disk_ids: list[str] | None = None,
 ) -> tuple[Host | None, str | None, dict | None]:
     """Select a host for the project. Returns (host, storage_pool_id, error_dict)."""
     if host_id:
@@ -485,6 +514,7 @@ def _select_host(
             reqs["requested_eips"],
             storage_pool_id=storage_pool_id,
             provider_id=project.provider_id,
+            pattern_disk_ids=pattern_disk_ids,
         )
     if not host and not has_anti_affinity and storage_pool_id:
         host = find_available_host(
@@ -493,6 +523,7 @@ def _select_host(
             reqs["total_ram_mb"],
             reqs["requested_eips"],
             provider_id=project.provider_id,
+            pattern_disk_ids=pattern_disk_ids,
         )
     return host, storage_pool_id, None
 
@@ -663,10 +694,22 @@ def place_project(
     if reqs["vm_count"] == 0:
         return {"error": "Project has no VMs"}
 
+    from app.services.pattern_locations import pattern_disk_ids_from_topology
+
+    pattern_disk_ids = pattern_disk_ids_from_topology(project.topology)
+    if (
+        pattern_disk_ids
+        and not host_id
+        and not _storage_ready_anywhere(db, pattern_disk_ids)
+    ):
+        return {
+            "error": "pattern storage still syncing to central S4 — try again shortly"
+        }
+
     has_anti_affinity = _has_anti_affinity(project.topology)
 
     host, storage_pool_id, error = _select_host(
-        db, project, reqs, has_anti_affinity, storage_pool_id, host_id
+        db, project, reqs, has_anti_affinity, storage_pool_id, host_id, pattern_disk_ids
     )
     if error:
         return error
