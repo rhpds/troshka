@@ -185,6 +185,7 @@ def _create_pattern_record(db, pid, meta, owner_id, provider_id):
     import uuid as _uuid
 
     from app.models.pattern import Pattern, PatternDisk
+    from app.models.pattern_location import PatternLocation
 
     topology = meta.get("topology", {"nodes": [], "edges": []})
     _remap_library_refs(topology, db)
@@ -208,9 +209,10 @@ def _create_pattern_record(db, pid, meta, owner_id, provider_id):
     db.flush()
 
     for disk in meta.get("disks", []):
+        disk_id = disk.get("id", str(_uuid.uuid4()))
         db.add(
             PatternDisk(
-                id=disk.get("id", str(_uuid.uuid4())),
+                id=disk_id,
                 pattern_id=pid,
                 source_disk_id=disk.get("source_disk_id", ""),
                 source_vm_id=disk.get("source_vm_id", ""),
@@ -220,6 +222,19 @@ def _create_pattern_record(db, pid, meta, owner_id, provider_id):
                 virtual_size_bytes=disk.get("virtual_size_bytes", 0),
                 checksum_sha256=disk.get("checksum_sha256"),
                 state="available",
+            )
+        )
+        # The disk lives in the central S4 bucket — record a central location so
+        # pattern_disk_source_for_cluster() can resolve it on any cluster that
+        # has the central read-only provider configured.
+        db.add(
+            PatternLocation(
+                pattern_disk_id=disk_id,
+                provider_id=None,
+                location_type="central",
+                s3_key=disk["s3_key"],
+                state="synced",
+                size_bytes=disk.get("size_bytes", 0),
             )
         )
 
@@ -316,7 +331,12 @@ def _remap_library_refs(topology: dict, db: Session):
     """
     from app.models.library import LibraryItem
 
-    local_items = db.query(LibraryItem).filter(LibraryItem.source == "local").all()
+    # Include central-synced items: a dedicated Troshka's library is entirely
+    # source=="central", so restricting to "local" would leave nothing to
+    # remap the pattern's library refs onto.
+    local_items = (
+        db.query(LibraryItem).filter(LibraryItem.source.in_(["local", "central"])).all()
+    )
     local_by_size = {}
     for item in local_items:
         key = (item.size_bytes, item.format)

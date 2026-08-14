@@ -607,7 +607,7 @@ class TestCreatePatternRecord:
         _create_pattern_record(mock_db, "pid-001", meta, "owner-1", "prov-1")
 
         # Pattern added
-        assert mock_db.add.call_count == 2  # Pattern + 1 PatternDisk
+        assert mock_db.add.call_count == 3  # Pattern + PatternDisk + PatternLocation
         mock_db.flush.assert_called_once()
 
         pattern_arg = mock_db.add.call_args_list[0][0][0]
@@ -623,6 +623,12 @@ class TestCreatePatternRecord:
         assert disk_arg.id == "disk-1"
         assert disk_arg.pattern_id == "pid-001"
         assert disk_arg.s3_key == "patterns/pid/disk-1.qcow2"
+
+        loc_arg = mock_db.add.call_args_list[2][0][0]
+        assert loc_arg.pattern_disk_id == "disk-1"
+        assert loc_arg.location_type == "central"
+        assert loc_arg.state == "synced"
+        assert loc_arg.provider_id is None
 
     @patch("app.services.central_library._remap_library_refs")
     def test_defaults_when_meta_fields_missing(self, mock_remap):
