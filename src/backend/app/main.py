@@ -469,6 +469,10 @@ async def lifespan(app):
 
     start_operator_updater()
 
+    from app.services.app_updater import start_app_updater
+
+    start_app_updater()
+
     _startup_clear_health_monitors()
     _startup_recover_abandoned_jobs()
 
@@ -620,6 +624,7 @@ from app.api import providers as provider_routes  # noqa: E402
 from app.api import registry_credential_routes as registry_cred_routes  # noqa: E402
 from app.api import storage_pools as storage_pool_routes  # noqa: E402
 from app.api import templates as template_routes  # noqa: E402
+from app.api import updates as update_routes  # noqa: E402
 from app.api import users as user_routes  # noqa: E402
 from app.api import vms as vm_routes  # noqa: E402
 from app.api import ws as ws_routes  # noqa: E402
@@ -644,6 +649,7 @@ app.include_router(portal_routes.router, prefix=_API_PREFIX)
 app.include_router(template_routes.router, prefix=_API_PREFIX)
 app.include_router(registry_cred_routes.router, prefix=_API_PREFIX)
 app.include_router(user_routes.router, prefix=_API_PREFIX)
+app.include_router(update_routes.router, prefix=_API_PREFIX)
 
 
 @app.get(f"{_API_PREFIX}/health")

@@ -1,4 +1,12 @@
+from fastapi.testclient import TestClient
+
+from app.core.database import get_db
+from app.main import app
 from app.services import app_updater
+from tests.conftest import get_test_db
+
+app.dependency_overrides[get_db] = get_test_db
+client = TestClient(app)
 
 
 def _reset():
@@ -177,3 +185,34 @@ def test_apply_update_image_patches_both_deployments(monkeypatch):
     result = app_updater.apply_update()
     assert result == {"status": "rolling_out"}
     assert set(patched) == {"troshka-backend", "troshka-frontend"}
+
+
+def test_status_endpoint_returns_snapshot(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.app_updater.get_status",
+        lambda: {
+            "mode": "dev",
+            "up_to_date": False,
+            "rolling_out": False,
+            "components": {},
+        },
+    )
+    resp = client.get("/api/v1/update/status")
+    assert resp.status_code == 200
+    assert resp.json()["mode"] == "dev"
+
+
+def test_apply_endpoint_dispatches(monkeypatch):
+    monkeypatch.setattr("app.services.app_updater.resolve_mode", lambda: "dev")
+    monkeypatch.setattr(
+        "app.services.app_updater.apply_update", lambda: {"status": "restarting"}
+    )
+    resp = client.post("/api/v1/update/apply")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "restarting"
+
+
+def test_apply_endpoint_disabled_returns_400(monkeypatch):
+    monkeypatch.setattr("app.services.app_updater.resolve_mode", lambda: "disabled")
+    resp = client.post("/api/v1/update/apply")
+    assert resp.status_code == 400
