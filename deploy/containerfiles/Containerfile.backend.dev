@@ -1,0 +1,19 @@
+# Dev image for compose.yaml — same dependency set as Containerfile.backend,
+# but no baked-in CMD: the process (migrations + uvicorn --reload, or the RQ
+# worker) is supplied by compose so source can be bind-mounted for hot reload.
+FROM registry.access.redhat.com/ubi9/python-311:latest
+
+WORKDIR /opt/app-root/src
+
+COPY src/backend/requirements.txt .
+# libvirt-python needs system headers not available in container — exclude it
+RUN grep -v -e '^libvirt-python' -e '^-e git+' requirements.txt > requirements-container.txt && \
+    pip install --no-cache-dir -r requirements-container.txt
+
+COPY src/backend/ .
+COPY src/troshkad/troshkad.py /opt/app-root/troshkad/troshkad.py
+COPY src/troshka-vncd/troshka-vncd.py /opt/app-root/troshka-vncd/troshka-vncd.py
+COPY src/operator/crds/ /opt/app-root/operator/crds/
+COPY src/operator/deploy/ /opt/app-root/operator/deploy/
+
+EXPOSE 8200

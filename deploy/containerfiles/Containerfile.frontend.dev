@@ -1,0 +1,13 @@
+# Dev image for compose.yaml — installs deps only, no build step: the
+# Next.js dev server (supplied by compose) compiles on the fly against the
+# bind-mounted source, so this image just needs npm + node_modules ready.
+FROM registry.access.redhat.com/ubi9/nodejs-20:latest
+
+WORKDIR /opt/app-root/src
+
+COPY --chown=1001:1001 src/frontend/package.json src/frontend/package-lock.json ./
+RUN npm ci
+
+COPY --chown=1001:1001 src/frontend/ .
+
+EXPOSE 3100
