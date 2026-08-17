@@ -1166,6 +1166,7 @@ class TestDeployAddedVms:
         mock_start.assert_called_once()
         assert len(errors) == 0
 
+    @patch("app.api.projects.wait_for_job")
     @patch("app.api.projects._create_vm_via_troshkad")
     @patch("app.api.projects._create_vm_disks_via_troshkad")
     @patch("app.api.projects._create_seed_isos_via_troshkad")
@@ -1173,7 +1174,14 @@ class TestDeployAddedVms:
     @patch("app.api.projects._find_vm_disks", return_value=[])
     @patch("app.services.deploy_service._set_deploy_progress")
     def test_auto_start_disabled_skips_start(
-        self, mock_set, mock_find, mock_cache, mock_seed, mock_disks, mock_create
+        self,
+        mock_set,
+        mock_find,
+        mock_cache,
+        mock_seed,
+        mock_disks,
+        mock_create,
+        mock_wait,
     ):
         from app.api.projects import _deploy_added_vms
 
@@ -2072,13 +2080,14 @@ class TestCacheRedeployImages:
 
 
 class TestCreateRedeployVm:
+    @patch("app.api.projects.wait_for_job")
     @patch("app.api.projects._create_vm_via_troshkad")
     @patch("app.api.projects._create_vm_disks_via_troshkad")
     @patch("app.api.projects._find_vm_disks", return_value=[])
     @patch("app.api.projects._build_redeploy_vm_data", return_value={"node_id": "vm1"})
     @patch("app.api.projects._create_seed_isos_via_troshkad")
     def test_creates_seed_disks_and_vm(
-        self, mock_seed, mock_build, mock_find, mock_disks, mock_create
+        self, mock_seed, mock_build, mock_find, mock_disks, mock_create, mock_wait
     ):
         from app.api.projects import _create_redeploy_vm
 
