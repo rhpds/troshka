@@ -153,6 +153,7 @@ interface CanvasState {
   deployedDiskSizes: Record<string, number>;
   deployedNodeData: Record<string, string>;
   deployedEdgeKey: string;
+  deployedExternalIps: string;
   showMinimap: boolean;
   hiddenNodeIds: string[];
   suppressDeleteWarning: boolean;
@@ -265,7 +266,19 @@ export function setLatestContainerStates(states: Record<string, { state: string;
   if (changed) useCanvasStore.setState({ nodes: updated });
 }
 
-export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; deployedNodeData: Record<string, string>; deployedEdgeKey: string }): boolean {
+// External IPs are compared by their desired/config fields only (id + name).
+// The allocated `ip`, `_private_ip`, and `state` are deploy-time runtime values
+// that live only in deployed_topology — including them would make a running
+// project permanently "dirty" (live topology keeps ip="" until reconfigure).
+export function stableExternalIpsKey(ips: ExternalIp[] | undefined): string {
+  return JSON.stringify(
+    (ips || [])
+      .map((e) => ({ id: e.id, name: e.name }))
+      .sort((a, b) => (a.id || "").localeCompare(b.id || ""))
+  );
+}
+
+export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; deployedNodeData: Record<string, string>; deployedEdgeKey: string; externalIps?: ExternalIp[]; deployedExternalIps?: string }): boolean {
   const { nodes, edges, deployedNodeData, deployedEdgeKey } = state;
   if (!deployedEdgeKey && !Object.keys(deployedNodeData).length) return false;
   const currentNodeIds = nodes.map((n) => n.id).sort().join(",");
@@ -279,6 +292,9 @@ export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; depl
     const { status, redeployStep, redeployDetail, liveBootDevs, ...stable } = (n.data || {}) as Record<string, unknown>;
     if (JSON.stringify(stable) !== deployed) return true;
   }
+  // External IPs (add/remove/rename) — compared by desired fields only. Set
+  // together with deployedNodeData on load, so it is populated by this point.
+  if (state.deployedExternalIps !== undefined && stableExternalIpsKey(state.externalIps) !== state.deployedExternalIps) return true;
   return false;
 }
 
@@ -297,6 +313,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   deployedDiskSizes: {} as Record<string, number>,
   deployedNodeData: {} as Record<string, string>,
   deployedEdgeKey: "",
+  deployedExternalIps: "[]",
   topologyDirty: false,
   startOrder: [] as StartOrderEntry[],
   externalIps: [] as ExternalIp[],
@@ -726,12 +743,23 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         if (project?.topology) {
           const t = project.topology;
           const nodes = (t.nodes || []).map((n: Record<string, unknown>) => n);
+          // Surface the allocated EIP address: it is written to deployed_topology
+          // at deploy time but the editable topology keeps ip="". Merge it back by
+          // id so the canvas shows the assigned IP (only when live ip is empty).
+          const deployedEips: ExternalIp[] = project.deployed_topology?.externalIps || [];
+          const deployedEipById = new Map(deployedEips.map((e) => [e.id, e]));
+          const externalIps = (t.externalIps || []).map((e: ExternalIp) => {
+            const dep = deployedEipById.get(e.id);
+            return dep && !e.ip
+              ? { ...e, ip: dep.ip, _private_ip: dep._private_ip ?? e._private_ip, state: dep.state ?? e.state }
+              : e;
+          });
           set({
             nodes,
             edges: t.edges || [],
             hiddenNodeIds: t.hiddenNodeIds || [],
             startOrder: t.startOrder || [],
-            externalIps: t.externalIps || [],
+            externalIps,
           });
           _lastSavedNodeCount = (t.nodes || []).length;
         }
@@ -760,6 +788,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
   setExternalIps: (ips) => {
     set({ externalIps: ips });
+    set({ topologyDirty: computeTopologyDirty(get()) });
   },
 
   duplicateNode: (nodeId, opts) => {
@@ -1111,7 +1140,7 @@ useCanvasStore.subscribe((state) => {
         return `${n.id}:${JSON.stringify(stable)}`;
       }
       return `${n.id}:${JSON.stringify(n.data)}`;
-    }).join("|") + "||" + s.edges.map((e) => `${e.source}-${e.target}`).join("|") + "||so:" + JSON.stringify(s.startOrder);
+    }).join("|") + "||" + s.edges.map((e) => `${e.source}-${e.target}`).join("|") + "||so:" + JSON.stringify(s.startOrder) + "||eip:" + stableExternalIpsKey(s.externalIps);
     if (topoKey === _lastSavedTopologyKey) return;
     _lastSavedTopologyKey = topoKey;
     _lastSavedNodeCount = s.nodes.length;

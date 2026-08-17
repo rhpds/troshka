@@ -8,7 +8,7 @@ import Palette from "@/components/canvas/Palette";
 import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
-import { useCanvasStore, computeTopologyDirty, setLatestVmStates, setLatestContainerStates } from "@/stores/canvasStore";
+import { useCanvasStore, computeTopologyDirty, stableExternalIpsKey, setLatestVmStates, setLatestContainerStates } from "@/stores/canvasStore";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
@@ -121,7 +121,7 @@ export default function ProjectCanvasPage() {
         const depEdgeKey = (data.deployed_topology?.edges || [])
           .map((e: any) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
           .sort().join("|");
-        useCanvasStore.setState({ deployedNodeData: depNodeData, deployedEdgeKey: depEdgeKey });
+        useCanvasStore.setState({ deployedNodeData: depNodeData, deployedEdgeKey: depEdgeKey, deployedExternalIps: stableExternalIpsKey(data.deployed_topology?.externalIps || []) });
         setTimeout(() => {
           const s = useCanvasStore.getState();
           useCanvasStore.setState({ topologyDirty: computeTopologyDirty(s) });
@@ -189,7 +189,7 @@ export default function ProjectCanvasPage() {
         const depEdge = (proj.deployed_topology?.edges || [])
           .map((e: any) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
           .sort().join("|");
-        useCanvasStore.setState({ deployedNodeData: depData, deployedEdgeKey: depEdge });
+        useCanvasStore.setState({ deployedNodeData: depData, deployedEdgeKey: depEdge, deployedExternalIps: stableExternalIpsKey(proj.deployed_topology?.externalIps || []) });
         setTimeout(() => {
           const s = useCanvasStore.getState();
           useCanvasStore.setState({ topologyDirty: computeTopologyDirty(s) });
@@ -232,7 +232,7 @@ export default function ProjectCanvasPage() {
               const depEdge = (data.deployed_topology?.edges || [])
                 .map((e: any) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
                 .sort().join("|");
-              useCanvasStore.setState({ deployedNodeData: depData, deployedEdgeKey: depEdge });
+              useCanvasStore.setState({ deployedNodeData: depData, deployedEdgeKey: depEdge, deployedExternalIps: stableExternalIpsKey(data.deployed_topology?.externalIps || []) });
               setDeployProgress(null);
             }
           }
