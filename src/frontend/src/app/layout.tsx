@@ -165,6 +165,46 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     return () => clearInterval(iv);
   }, [isAdmin]);
 
+  const [updateStatus, setUpdateStatus] = useState<any>(null);
+  const [applying, setApplying] = useState(false);
+  const [dismissedKey, setDismissedKey] = useState<string | null>(null);
+  useEffect(() => { setDismissedKey(localStorage.getItem("troshka-update-dismissed")); }, []);
+  useEffect(() => {
+    if (!isAdmin) return;
+    const check = () => {
+      fetch("/api/v1/update/status")
+        .then((r) => (r.ok ? r.json() : null))
+        .then(setUpdateStatus)
+        .catch(() => {});
+    };
+    check();
+    const iv = setInterval(check, 60000);
+    return () => clearInterval(iv);
+  }, [isAdmin]);
+
+  const updateTargetKey =
+    updateStatus?.mode === "image"
+      ? JSON.stringify(updateStatus?.components || {})
+      : "dev";
+  const showUpdate =
+    isAdmin &&
+    updateStatus &&
+    updateStatus.mode !== "disabled" &&
+    updateStatus.up_to_date === false &&
+    dismissedKey !== updateTargetKey;
+  const updateBusy = applying || updateStatus?.rolling_out;
+
+  const applyUpdate = () => {
+    setApplying(true);
+    fetch("/api/v1/update/apply", { method: "POST" }).catch(() => {});
+    // leave applying=true; the backendDown banner covers the restart gap and
+    // the status poll clears this banner once the new version is up.
+  };
+  const dismissUpdate = () => {
+    localStorage.setItem("troshka-update-dismissed", updateTargetKey);
+    setDismissedKey(updateTargetKey);
+  };
+
   if (isConsolePage || isPortalPage) {
     return (
       <html lang="en">
@@ -348,6 +388,31 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               fontWeight: 500,
             }}>
               Backend is unreachable — the server may be restarting
+            </div>
+          )}
+          {showUpdate && (
+            <div style={{
+              background: "rgba(59, 130, 246, 0.15)",
+              border: "1px solid rgba(59, 130, 246, 0.4)",
+              color: "#93c5fd",
+              padding: "8px 16px",
+              fontSize: 13,
+              textAlign: "center",
+              fontWeight: 500,
+              display: "flex",
+              gap: 12,
+              justifyContent: "center",
+              alignItems: "center",
+            }}>
+              <span>A newer version of Troshka is available.</span>
+              <Button variant="primary" isDisabled={updateBusy} isLoading={updateBusy} onClick={applyUpdate}>
+                {updateBusy
+                  ? "Update in progress…"
+                  : updateStatus?.mode === "dev"
+                    ? "Restart backend"
+                    : "Apply update"}
+              </Button>
+              <Button variant="link" isInline onClick={dismissUpdate}>Dismiss</Button>
             </div>
           )}
           {!authChecked && !isConsolePage ? null : isDenied ? (
