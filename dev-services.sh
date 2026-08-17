@@ -123,9 +123,27 @@ stop_worker() {
     echo "  Worker:     stopped"
 }
 
+# PIDs of the backend server on this port — the uvicorn process (matched by
+# command, which reliably catches stale orphans the PID file no longer tracks)
+# and anything LISTENing on the port. Deliberately does NOT do a plain
+# `lsof -ti tcp:PORT`: that also returns *clients* connected to the port (e.g.
+# the frontend's keep-alive to the backend), which we must never kill.
+backend_pids() {
+    {
+        pgrep -f "uvicorn app.main:app.*--port ${BACKEND_PORT}" 2>/dev/null || true
+        lsof -ti "tcp:${BACKEND_PORT}" -sTCP:LISTEN 2>/dev/null || true
+    } | sort -u
+}
+
+backend_port_in_use() {
+    [ -n "$(backend_pids)" ]
+}
+
 start_backend() {
-    if [ -f "$PID_DIR/backend.pid" ] && kill -0 "$(cat "$PID_DIR/backend.pid")" 2>/dev/null; then
-        echo "  Backend:    already running (port $BACKEND_PORT)"
+    # Never start a duplicate: if anything already holds the port, leave it alone.
+    if backend_port_in_use; then
+        echo "  Backend:    already running on port $BACKEND_PORT (PID(s): $(backend_pids | tr '\n' ' '))"
+        echo "              use '$0 restart backend' to replace it"
         return
     fi
     cd "$BACKEND_DIR"
@@ -137,8 +155,17 @@ start_backend() {
     source venv/bin/activate
     alembic upgrade head 2>/dev/null || true
     uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" >>/tmp/troshka-backend.log 2>&1 &
-    echo $! > "$PID_DIR/backend.pid"
-    echo "  Backend:    started (port $BACKEND_PORT, PID $(cat "$PID_DIR/backend.pid"))"
+    local pid=$!
+    echo "$pid" > "$PID_DIR/backend.pid"
+    # Catch an immediate failure (crash / bind conflict). Slow startup is fine —
+    # the process stays alive and binds the port once lifespan startup completes.
+    sleep 3
+    if ! kill -0 "$pid" 2>/dev/null; then
+        echo "  Backend:    FAILED to start — process exited (see /tmp/troshka-backend.log)"
+        rm -f "$PID_DIR/backend.pid"
+        return 1
+    fi
+    echo "  Backend:    started (port $BACKEND_PORT, PID $pid)"
 }
 
 check_backend_idle() {
@@ -180,15 +207,24 @@ stop_backend() {
         if ! check_backend_idle 2>/dev/null; then
             echo "  Backend:    in-flight work detected — will resume after restart"
         fi
-        kill "$(cat "$PID_DIR/backend.pid")" 2>/dev/null || true
     fi
     rm -f "$PID_DIR/backend.pid"
-    # Kill any orphaned uvicorn processes listening on the backend port
-    local orphans
-    orphans=$(lsof -ti :"$BACKEND_PORT" -sTCP:LISTEN 2>/dev/null || true)
-    if [ -n "$orphans" ]; then
-        echo "$orphans" | xargs kill 2>/dev/null || true
-        sleep 1
+    # Kill every process on the backend port — tracked PID, stale orphans, and
+    # zombies alike (matched by port AND by uvicorn command). Graceful first,
+    # then force, waiting until the port is actually free.
+    local pids
+    pids="$(backend_pids)"
+    if [ -n "$pids" ]; then
+        echo "$pids" | xargs kill 2>/dev/null || true
+        for _ in $(seq 1 10); do
+            backend_port_in_use || break
+            sleep 1
+        done
+        pids="$(backend_pids)"
+        if [ -n "$pids" ]; then
+            echo "$pids" | xargs kill -9 2>/dev/null || true
+            sleep 1
+        fi
     fi
     echo "  Backend:    stopped"
 }
