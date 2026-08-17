@@ -227,11 +227,11 @@ sudo firewall-cmd --reload
 ## 6. Register it with Troshka
 
 ```bash
-curl -X POST http://localhost:8200/api/v1/providers \
+curl -X POST http://localhost:8200/api/v1/providers/ \
   -H "Authorization: Bearer $TROSHKA_TOKEN" -H "Content-Type: application/json" \
   -d '{"name":"local-libvirt","type":"libvirt","credentials":{"ssh_private_key":"<paste PEM key>"}}'
 
-curl -X POST http://localhost:8200/api/v1/hosts \
+curl -X POST http://localhost:8200/api/v1/hosts/ \
   -H "Authorization: Bearer $TROSHKA_TOKEN" -H "Content-Type: application/json" \
   -d '{"provider_id":"<id-from-previous-call>","ip_address":"192.168.x.x","instance_type":"manual","disk_gb":100}'
 ```
