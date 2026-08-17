@@ -8,7 +8,6 @@ where ArgoCD manages the deployment.
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
 import time
@@ -107,11 +106,10 @@ def _fetch_registry_digest(image: str, tag: str) -> str | None:
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            digest = resp.headers.get("Docker-Content-Digest")
-            if digest:
-                return digest
-            body = json.loads(resp.read())
-            return body.get("config", {}).get("digest")
+            # Only trust the manifest digest header. Falling back to the image
+            # config-blob digest here would compare against the pod's manifest
+            # digest and produce a false "update available".
+            return resp.headers.get("Docker-Content-Digest")
     except Exception as e:
         logger.warning("Failed to fetch %s:%s digest from registry: %s", image, tag, e)
         return None

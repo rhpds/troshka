@@ -94,3 +94,27 @@ def test_build_image_snapshot_missing_digest_not_flagged(monkeypatch):
     monkeypatch.setattr(app_updater, "_fetch_registry_digest", lambda image, tag: None)
     snap = app_updater._build_image_snapshot()
     assert snap["up_to_date"] is True
+
+
+def test_fetch_registry_digest_none_when_header_missing(monkeypatch):
+    # No Docker-Content-Digest header -> must NOT fall back to config digest.
+    class _FakeHeaders:
+        def get(self, key):
+            return None
+
+    class _FakeResp:
+        headers = _FakeHeaders()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(
+        app_updater.urllib.request, "urlopen", lambda req, timeout=15: _FakeResp()
+    )
+    result = app_updater._fetch_registry_digest(
+        "redhat-gpte/troshka-backend", "production"
+    )
+    assert result is None
