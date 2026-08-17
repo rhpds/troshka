@@ -1,9 +1,11 @@
 """Detect and apply Troshka app (backend/frontend) updates.
 
 Mirrors operator_updater but targets the app's OWN images. In image mode a
-daemon thread compares the running pod digest against the production tag digest
-on quay.io. Dev mode compares source mtimes against process start. Disabled
-where ArgoCD manages the deployment.
+daemon thread compares the running pod digest against the registry digest for
+the tag each Deployment is actually pinned to (auto-detected per component, e.g.
+latest for dedicated CI or production for production deploys). Dev mode compares
+source mtimes against process start. Disabled where ArgoCD manages the
+deployment.
 """
 
 from __future__ import annotations
@@ -106,6 +108,36 @@ def _poll_interval() -> int:
     return int(getattr(config.app_update, "poll_interval", 300) or 300)
 
 
+def _extract_tag_from_ref(ref: str) -> str | None:
+    # Parse the tag from an image reference, avoiding registry-port colons and
+    # digest pins. Only the final path segment can carry a ":tag" (a leading
+    # "registry:port/" segment contains a "/", so it is never parsed as a tag).
+    last_segment = ref.rsplit("/", 1)[-1]
+    # Drop any digest pin (name@sha256:abc) so its ":" is not read as a tag.
+    last_segment = last_segment.split("@", 1)[0]
+    if ":" not in last_segment:
+        return None
+    tag = last_segment.rsplit(":", 1)[1]
+    return tag or None
+
+
+def _read_deployment_tag(suffix: str) -> str:
+    try:
+        from kubernetes import client
+        from kubernetes import config as k8s_config
+
+        k8s_config.load_incluster_config()
+        apps = client.AppsV1Api()
+        dep = apps.read_namespaced_deployment(
+            name=suffix, namespace=_get_own_namespace()
+        )
+        image = dep.spec.template.spec.containers[0].image  # type: ignore[union-attr]
+        return _extract_tag_from_ref(image) or _tag()
+    except Exception:
+        logger.debug("Failed to read %s deployment image tag", suffix, exc_info=True)
+        return _tag()
+
+
 def _fetch_registry_digest(image: str, tag: str) -> str | None:
     url = f"https://{_registry()}/v2/{image}/manifests/{tag}"
     req = urllib.request.Request(
@@ -174,7 +206,8 @@ def _build_image_snapshot() -> dict:
     comps: dict = {}
     up_to_date = True
     for name, suffix in COMPONENTS.items():
-        available = _fetch_registry_digest(f"{_repo()}/{suffix}", _tag())
+        tag = _read_deployment_tag(suffix)
+        available = _fetch_registry_digest(f"{_repo()}/{suffix}", tag)
         current = running.get(name)
         comps[name] = {"current": current, "available": available}
         if current and available and current != available:

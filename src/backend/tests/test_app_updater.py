@@ -1,3 +1,4 @@
+import sys
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -120,6 +121,76 @@ def test_build_image_snapshot_missing_digest_not_flagged(monkeypatch):
     monkeypatch.setattr(app_updater, "_fetch_registry_digest", lambda image, tag: None)
     snap = app_updater._build_image_snapshot()
     assert snap["up_to_date"] is True
+
+
+def test_extract_tag_from_ref_cases():
+    assert (
+        app_updater._extract_tag_from_ref("quay.io/redhat-gpte/troshka-backend:latest")
+        == "latest"
+    )
+    assert (
+        app_updater._extract_tag_from_ref(
+            "quay.io/redhat-gpte/troshka-backend:production"
+        )
+        == "production"
+    )
+    # Registry port colon must not be mistaken for a tag.
+    assert (
+        app_updater._extract_tag_from_ref("quay.io:443/x/troshka-backend:latest")
+        == "latest"
+    )
+    # Digest pin -> no tag.
+    assert app_updater._extract_tag_from_ref("quay.io/x/name@sha256:abc") is None
+    # No tag at all.
+    assert app_updater._extract_tag_from_ref("quay.io/x/name") is None
+
+
+def test_read_deployment_tag_parses_latest(monkeypatch):
+    class _Container:
+        image = "quay.io/redhat-gpte/troshka-backend:latest"
+
+    class _PodSpec:
+        containers = [_Container()]
+
+    class _Template:
+        spec = _PodSpec()
+
+    class _DepSpec:
+        template = _Template()
+
+    class _Dep:
+        spec = _DepSpec()
+
+    class _FakeApps:
+        def read_namespaced_deployment(self, name, namespace):
+            return _Dep()
+
+    fake_client = SimpleNamespace(AppsV1Api=lambda: _FakeApps())
+    fake_config = SimpleNamespace(load_incluster_config=lambda: None)
+    fake_kubernetes = SimpleNamespace(client=fake_client, config=fake_config)
+    monkeypatch.setitem(sys.modules, "kubernetes", fake_kubernetes)
+    monkeypatch.setitem(sys.modules, "kubernetes.client", fake_client)
+    monkeypatch.setitem(sys.modules, "kubernetes.config", fake_config)
+    assert app_updater._read_deployment_tag("troshka-backend") == "latest"
+
+
+def test_build_image_snapshot_uses_deployment_tag(monkeypatch):
+    monkeypatch.setattr(app_updater, "_read_deployment_tag", lambda suffix: "latest")
+    monkeypatch.setattr(
+        app_updater,
+        "_read_own_digests",
+        lambda: {"backend": "sha256:aaa", "frontend": "sha256:bbb"},
+    )
+    monkeypatch.setattr(app_updater, "_read_rolling_out", lambda: False)
+    seen_tags = []
+
+    def _fake_fetch(image, tag):
+        seen_tags.append(tag)
+        return "sha256:aaa"
+
+    monkeypatch.setattr(app_updater, "_fetch_registry_digest", _fake_fetch)
+    app_updater._build_image_snapshot()
+    assert seen_tags == ["latest", "latest"]
 
 
 def test_fetch_registry_digest_none_when_header_missing(monkeypatch):
