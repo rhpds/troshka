@@ -149,6 +149,15 @@ def job_cache_and_start_vm(project_id: str, host_id: str, vm_id: str):
             )
         except TroshkadError as e:
             logger.exception("Failed to start VM %s: %s", dom, e)
+    except Exception as e:
+        logger.exception(
+            "Failed to cache images for VM %s in project %s", vm_id[:8], project_id[:8]
+        )
+        proj = s.query(Project).filter_by(id=project_id).first()
+        if proj:
+            proj.state = "error"
+            proj.deploy_error = f"{e}. Please retry."
+            s.commit()
     finally:
         s.close()
 
