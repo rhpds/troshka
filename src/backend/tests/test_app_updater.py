@@ -233,6 +233,22 @@ def test_get_status_dev(monkeypatch):
     assert status["rolling_out"] is False
 
 
+def test_dev_up_to_date_true_when_hash_matches():
+    # Live source hash equals the snapshot captured at import -> up to date.
+    assert app_updater._dev_up_to_date() is True
+
+
+def test_dev_up_to_date_false_when_source_changed(monkeypatch):
+    # A different snapshot hash means the running code no longer matches source.
+    monkeypatch.setattr(app_updater, "_SOURCE_HASH_AT_START", "different-hash")
+    assert app_updater._dev_up_to_date() is False
+
+
+def test_compute_source_hash_is_stable():
+    # Content-based: deterministic for an unchanged tree, no mtime dependence.
+    assert app_updater._compute_source_hash() == app_updater._compute_source_hash()
+
+
 def test_get_status_image(monkeypatch):
     _reset()
     monkeypatch.setattr(app_updater, "resolve_mode", lambda: "image")

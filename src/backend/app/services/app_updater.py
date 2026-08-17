@@ -4,13 +4,14 @@ Mirrors operator_updater but targets the app's OWN images. In image mode a
 daemon thread compares the running pod digest against the registry digest for
 the tag each Deployment is actually pinned to (auto-detected per component, e.g.
 latest for dedicated CI or production for production deploys). Dev mode compares
-source mtimes against process start. Disabled where ArgoCD manages the
-deployment.
+a content hash of the backend source against the hash captured at process start.
+Disabled where ArgoCD manages the deployment.
 """
 
 from __future__ import annotations
 
 import datetime
+import hashlib
 import logging
 import os
 import subprocess
@@ -245,27 +246,40 @@ def start_app_updater() -> threading.Thread:
     return thread
 
 
-_PROCESS_START = time.time()
-
-
-def _backend_src_dir() -> Path:
-    return Path(__file__).resolve().parents[2]  # src/backend
+def _app_src_dir() -> Path:
+    return Path(__file__).resolve().parents[1]  # src/backend/app
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[4]  # repo root
 
 
-def _dev_up_to_date() -> bool:
-    newest = 0.0
-    for path in _backend_src_dir().rglob("*.py"):
+def _compute_source_hash() -> str:
+    """Content hash of the backend application source (src/backend/app/**/*.py).
+
+    Uses file *content*, not mtime, so git checkout/pull/rebase — which rewrite
+    mtimes without changing content — never spuriously report an update.
+    """
+    h = hashlib.sha256()
+    for path in sorted(_app_src_dir().rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
         try:
-            mtime = path.stat().st_mtime
-            if mtime > newest:
-                newest = mtime
+            h.update(path.relative_to(_app_src_dir()).as_posix().encode())
+            h.update(b"\0")
+            h.update(path.read_bytes())
+            h.update(b"\0")
         except OSError:
             continue
-    return newest <= _PROCESS_START
+    return h.hexdigest()
+
+
+# Snapshot of the source at process start; dev mode compares the live hash to it.
+_SOURCE_HASH_AT_START = _compute_source_hash()
+
+
+def _dev_up_to_date() -> bool:
+    return _compute_source_hash() == _SOURCE_HASH_AT_START
 
 
 def get_status() -> dict:

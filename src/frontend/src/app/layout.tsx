@@ -207,10 +207,42 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               ? "Update failed: missing permissions to restart deployments."
               : `Update failed (${r.status}). Check backend logs.`,
           );
+          return;
         }
-        // On success leave applying=true; the backendDown banner covers the
-        // restart gap and the status poll clears this banner once the new
-        // version is up.
+        // Success: the backend restarts (backendDown banner covers the gap).
+        // Poll until it's back and current, then stop the spinner. Bounded by a
+        // 90s budget so the button can never spin indefinitely.
+        const startedAt = Date.now();
+        const poll = () => {
+          fetch("/api/v1/update/status")
+            .then((r2) => (r2.ok ? r2.json() : null))
+            .then((s) => {
+              if (s) {
+                setUpdateStatus(s);
+                if (s.up_to_date !== false) {
+                  setApplying(false);
+                  return;
+                }
+              }
+              if (Date.now() - startedAt > 90000) {
+                setApplying(false);
+                setUpdateError(
+                  "Update applied, but the version still looks out of date — you may need to try again.",
+                );
+                return;
+              }
+              setTimeout(poll, 3000);
+            })
+            .catch(() => {
+              // Backend is restarting; keep waiting within the time budget.
+              if (Date.now() - startedAt > 90000) {
+                setApplying(false);
+                return;
+              }
+              setTimeout(poll, 3000);
+            });
+        };
+        setTimeout(poll, 3000);
       })
       .catch(() => {
         setApplying(false);
