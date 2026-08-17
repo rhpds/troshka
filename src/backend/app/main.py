@@ -433,6 +433,33 @@ def _sync_provider_obc(db, provider):
         logger.info("Synced OBC credentials for provider %s", provider.name)
 
 
+def _run_deferred_startup():
+    """Startup work that does remote I/O (k8s / cloud APIs).
+
+    These hooks must NOT run on the FastAPI lifespan path: a single unreachable
+    provider cluster makes their synchronous calls retry with backoff, which
+    would block uvicorn from binding the port for minutes. Each hook handles its
+    own errors; guard again defensively so one failure can't skip the rest.
+    """
+    for hook in (_startup_resume_storage_pools, _startup_sync_obc_credentials):
+        try:
+            hook()
+        except Exception:
+            logger.warning(
+                "Deferred startup hook %s failed", hook.__name__, exc_info=True
+            )
+
+
+def _start_deferred_startup():
+    """Run the remote-I/O startup hooks in a background daemon thread so they
+    never block the port bind (mirrors start_operator_updater)."""
+    import threading
+
+    threading.Thread(
+        target=_run_deferred_startup, daemon=True, name="deferred-startup"
+    ).start()
+
+
 @asynccontextmanager
 async def lifespan(app):
     import asyncio
@@ -480,8 +507,10 @@ async def lifespan(app):
     _startup_reset_stuck_hosts()
 
     _startup_resume_pattern_captures()
-    _startup_resume_storage_pools()
-    _startup_sync_obc_credentials()
+
+    # Remote-I/O hooks run in the background so an unreachable provider cluster
+    # can't block the port bind (see _run_deferred_startup).
+    _start_deferred_startup()
 
     yield
 
