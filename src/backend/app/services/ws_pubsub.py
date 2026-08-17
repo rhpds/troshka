@@ -338,11 +338,19 @@ def _container_domain_name(project_id: str, node_id: str) -> str:
     return f"troshka-{project_id[:8]}-{node_id[:8]}"
 
 
+def _pod_domain_name(project_id: str, pod_name: str) -> str:
+    return f"troshka-{project_id[:8]}-{pod_name}"
+
+
 _CONTAINER_STOPPED_STATES = frozenset(("stopped", "dead"))
 
 
 def _map_container_states_for_project(project, host_batch):
     """Map batch container states to per-project containerNode states.
+
+    Pod-backed containerNodes (data.isPod) are named on the host after their
+    ctr["name"] (see deploy_service._create_and_start_pod), not their node ID
+    like single containers, so they need a different lookup key.
 
     Returns dict of {node_id: {"state": str, "ips": list[str]}}.
     """
@@ -353,8 +361,12 @@ def _map_container_states_for_project(project, host_batch):
     for node in (project.topology or {}).get("nodes", []):
         if node.get("type") != "containerNode":
             continue
-        node_id = node.get("data", {}).get("id", node.get("id", ""))
-        name = _container_domain_name(project.id, node_id)
+        data = node.get("data", {})
+        node_id = data.get("id", node.get("id", ""))
+        if data.get("isPod"):
+            name = _pod_domain_name(project.id, data.get("name", "container"))
+        else:
+            name = _container_domain_name(project.id, node_id)
         info = host_batch.get(name)
         if info is None:
             continue

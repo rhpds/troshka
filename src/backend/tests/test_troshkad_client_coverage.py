@@ -559,6 +559,26 @@ class TestGetAllContainerStates(unittest.TestCase):
         self.assertEqual(result["troshka-web"]["state"], "running")
 
     @patch("app.services.troshkad_client._get_pool")
+    def test_merges_pods_into_result(self, mock_get_pool):
+        """containerNodes backed by pods must show up in the flat states dict too."""
+        pool = MagicMock()
+        pool.urlopen.return_value = _mock_response(
+            {
+                "containers": {
+                    "troshka-web": {"state": "running", "ips": ["10.0.0.5"]},
+                },
+                "pods": {
+                    "troshka-my-pod": {"state": "running"},
+                },
+            }
+        )
+        mock_get_pool.return_value = pool
+
+        result = get_all_container_states(FakeHost())
+        self.assertEqual(result["troshka-web"]["state"], "running")
+        self.assertEqual(result["troshka-my-pod"]["state"], "running")
+
+    @patch("app.services.troshkad_client._get_pool")
     def test_error_returns_none(self, mock_get_pool):
         pool = MagicMock()
         pool.urlopen.side_effect = SSLError("cert issue")
