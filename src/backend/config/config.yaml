@@ -25,6 +25,13 @@ auth:
   admin_groups: ""
   operator_groups: ""
 
+app_update:
+  mode: auto          # auto | dev | image | disabled
+  registry: quay.io
+  repo: redhat-gpte
+  tag: production
+  poll_interval: 300
+
 aws:
   default_region: "us-east-1"
   default_instance_type: "m8i.xlarge"
