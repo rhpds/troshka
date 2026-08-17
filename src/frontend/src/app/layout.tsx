@@ -194,6 +194,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     updateStatus.up_to_date === false &&
     dismissedKey !== updateTargetKey;
   const updateBusy = applying || updateStatus?.rolling_out;
+  const shortDigest = (d?: string) =>
+    d ? d.replace(/^sha256:/, "").slice(0, 12) : "—";
+  const updateVersions: string[] = updateStatus?.components
+    ? Object.entries(updateStatus.components).map(
+        ([name, v]: [string, any]) =>
+          `${name} ${shortDigest(v?.current)} → ${shortDigest(v?.available)}`,
+      )
+    : [];
 
   const applyUpdate = () => {
     setApplying(true);
@@ -454,6 +462,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               alignItems: "center",
             }}>
               <span>A newer version of Troshka is available.</span>
+              {updateVersions.length > 0 && (
+                <span style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.85 }}>
+                  {updateVersions.join("   ·   ")}
+                </span>
+              )}
               <Button variant="primary" isDisabled={updateBusy} isLoading={updateBusy} onClick={applyUpdate}>
                 {updateBusy
                   ? "Update in progress…"
