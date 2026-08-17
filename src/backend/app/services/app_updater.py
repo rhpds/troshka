@@ -27,8 +27,16 @@ logger = logging.getLogger(__name__)
 _resolved_mode: str | None = None
 
 
+def _au(key, default):
+    """Read an app_update.<key> setting, tolerant of the whole block being
+    absent. Deployed ConfigMaps often omit the app_update block entirely, and
+    accessing a missing top-level Dynaconf key raises AttributeError — so go
+    through config.get(), which returns the default instead of raising."""
+    return config.get("app_update", {}).get(key, default)
+
+
 def _configured_mode() -> str:
-    return str(getattr(config.app_update, "mode", "auto") or "auto")
+    return str(_au("mode", "auto") or "auto")
 
 
 def _oauth_enabled() -> bool:
@@ -94,19 +102,19 @@ _snapshot: dict = {}
 
 
 def _registry() -> str:
-    return str(getattr(config.app_update, "registry", "quay.io") or "quay.io")
+    return str(_au("registry", "quay.io") or "quay.io")
 
 
 def _repo() -> str:
-    return str(getattr(config.app_update, "repo", "redhat-gpte") or "redhat-gpte")
+    return str(_au("repo", "redhat-gpte") or "redhat-gpte")
 
 
 def _tag() -> str:
-    return str(getattr(config.app_update, "tag", "production") or "production")
+    return str(_au("tag", "production") or "production")
 
 
 def _poll_interval() -> int:
-    return int(getattr(config.app_update, "poll_interval", 300) or 300)
+    return int(_au("poll_interval", 300) or 300)
 
 
 def _extract_tag_from_ref(ref: str) -> str | None:

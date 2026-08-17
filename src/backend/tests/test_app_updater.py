@@ -249,6 +249,27 @@ def test_compute_source_hash_is_stable():
     assert app_updater._compute_source_hash() == app_updater._compute_source_hash()
 
 
+def test_config_accessors_tolerate_missing_block(monkeypatch):
+    # Deployed ConfigMaps often omit the app_update block; accessors must return
+    # defaults, not raise AttributeError on the missing top-level key.
+    monkeypatch.setattr(app_updater.config, "get", lambda k, d=None: d)
+    assert app_updater._configured_mode() == "auto"
+    assert app_updater._registry() == "quay.io"
+    assert app_updater._repo() == "redhat-gpte"
+    assert app_updater._tag() == "production"
+    assert app_updater._poll_interval() == 300
+
+
+def test_resolve_mode_image_when_config_block_missing(monkeypatch):
+    # A missing app_update block must NOT collapse to "disabled" — that would
+    # silently turn the feature off on every deployed instance.
+    _reset()
+    monkeypatch.setattr(app_updater.config, "get", lambda k, d=None: d)
+    monkeypatch.setattr(app_updater, "_oauth_enabled", lambda: True)
+    monkeypatch.setattr(app_updater, "_read_own_deployment_labels", lambda: {})
+    assert app_updater.resolve_mode() == "image"
+
+
 def test_get_status_image(monkeypatch):
     _reset()
     monkeypatch.setattr(app_updater, "resolve_mode", lambda: "image")
