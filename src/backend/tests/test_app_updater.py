@@ -1,5 +1,8 @@
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
+from app.core.auth import get_current_user
 from app.core.database import get_db
 from app.main import app
 from app.services import app_updater
@@ -11,6 +14,7 @@ client = TestClient(app)
 
 def _reset():
     app_updater._resolved_mode = None
+    app_updater._snapshot = {}
 
 
 def test_is_argo_managed_true():
@@ -54,6 +58,20 @@ def test_resolve_mode_disabled_when_argo(monkeypatch):
         lambda: {"argocd.argoproj.io/instance": "troshka"},
     )
     assert app_updater.resolve_mode() == "disabled"
+
+
+def test_resolve_mode_disabled_and_uncached_on_label_error(monkeypatch):
+    _reset()
+    monkeypatch.setattr(app_updater, "_configured_mode", lambda: "auto")
+    monkeypatch.setattr(app_updater, "_oauth_enabled", lambda: True)
+
+    def _boom():
+        raise RuntimeError("in-cluster API unavailable")
+
+    monkeypatch.setattr(app_updater, "_read_own_deployment_labels", _boom)
+    assert app_updater.resolve_mode() == "disabled"
+    # Must NOT cache the failure-derived mode; next call should recompute.
+    assert app_updater._resolved_mode is None
 
 
 def test_build_image_snapshot_up_to_date(monkeypatch):
@@ -216,3 +234,26 @@ def test_apply_endpoint_disabled_returns_400(monkeypatch):
     monkeypatch.setattr("app.services.app_updater.resolve_mode", lambda: "disabled")
     resp = client.post("/api/v1/update/apply")
     assert resp.status_code == 400
+
+
+def test_status_endpoint_forbidden_for_non_admin():
+    # require_role("admin") calls get_current_user; override it to a plain user.
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+        role="user", email="user@example.com"
+    )
+    try:
+        resp = client.get("/api/v1/update/status")
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_apply_endpoint_forbidden_for_non_admin():
+    app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(
+        role="user", email="user@example.com"
+    )
+    try:
+        resp = client.post("/api/v1/update/apply")
+        assert resp.status_code == 403
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)

@@ -63,17 +63,22 @@ def _compute_mode() -> str:
         return configured
     if not _oauth_enabled():
         return "dev"
-    try:
-        labels = _read_own_deployment_labels()
-    except Exception:
-        labels = {}
+    # Let a failed label read propagate so resolve_mode() does not cache a
+    # failure-derived "image" mode on an ArgoCD-managed cluster.
+    labels = _read_own_deployment_labels()
     return "disabled" if _is_argo_managed(labels) else "image"
 
 
 def resolve_mode() -> str:
     global _resolved_mode
     if _resolved_mode is None:
-        _resolved_mode = _compute_mode()
+        try:
+            _resolved_mode = _compute_mode()
+        except Exception:
+            # Transient in-cluster API failure: return disabled WITHOUT caching
+            # so the next call recomputes and caches the correct mode.
+            logger.warning("app_updater: mode resolution failed, disabling for now")
+            return "disabled"
     return _resolved_mode
 
 

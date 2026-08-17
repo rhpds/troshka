@@ -167,6 +167,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   const [updateStatus, setUpdateStatus] = useState<any>(null);
   const [applying, setApplying] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   useEffect(() => { setDismissedKey(localStorage.getItem("troshka-update-dismissed")); }, []);
   useEffect(() => {
@@ -196,9 +197,25 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   const applyUpdate = () => {
     setApplying(true);
-    fetch("/api/v1/update/apply", { method: "POST" }).catch(() => {});
-    // leave applying=true; the backendDown banner covers the restart gap and
-    // the status poll clears this banner once the new version is up.
+    setUpdateError(null);
+    fetch("/api/v1/update/apply", { method: "POST" })
+      .then((r) => {
+        if (!r.ok) {
+          setApplying(false);
+          setUpdateError(
+            r.status === 403
+              ? "Update failed: missing permissions to restart deployments."
+              : `Update failed (${r.status}). Check backend logs.`,
+          );
+        }
+        // On success leave applying=true; the backendDown banner covers the
+        // restart gap and the status poll clears this banner once the new
+        // version is up.
+      })
+      .catch(() => {
+        setApplying(false);
+        setUpdateError("Update failed: could not reach the backend.");
+      });
   };
   const dismissUpdate = () => {
     localStorage.setItem("troshka-update-dismissed", updateTargetKey);
@@ -412,6 +429,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     ? "Restart backend"
                     : "Apply update"}
               </Button>
+              {updateError && (
+                <span style={{ color: "#fca5a5", fontWeight: 500 }}>{updateError}</span>
+              )}
               <Button variant="link" isInline onClick={dismissUpdate}>Dismiss</Button>
             </div>
           )}
