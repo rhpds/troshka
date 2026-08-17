@@ -8,10 +8,14 @@ where ArgoCD manages the deployment.
 
 from __future__ import annotations
 
+import datetime
 import logging
+import os
+import subprocess
 import threading
 import time
 import urllib.request
+from pathlib import Path
 
 from app.core.config import config
 
@@ -29,8 +33,6 @@ def _oauth_enabled() -> bool:
 
 
 def _get_own_namespace() -> str:
-    import os
-
     ns = os.environ.get("POD_NAMESPACE")
     if ns:
         return ns
@@ -203,3 +205,87 @@ def start_app_updater() -> threading.Thread:
     thread = threading.Thread(target=_poller_loop, daemon=True, name="app-updater")
     thread.start()
     return thread
+
+
+_PROCESS_START = time.time()
+
+
+def _backend_src_dir() -> Path:
+    return Path(__file__).resolve().parents[2]  # src/backend
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[4]  # repo root
+
+
+def _dev_up_to_date() -> bool:
+    newest = 0.0
+    for path in _backend_src_dir().rglob("*.py"):
+        try:
+            mtime = path.stat().st_mtime
+            if mtime > newest:
+                newest = mtime
+        except OSError:
+            continue
+    return newest <= _PROCESS_START
+
+
+def get_status() -> dict:
+    mode = resolve_mode()
+    if mode == "disabled":
+        return {"mode": "disabled"}
+    if mode == "dev":
+        return {
+            "mode": "dev",
+            "up_to_date": _dev_up_to_date(),
+            "rolling_out": False,
+            "components": {},
+        }
+    snap = _snapshot or {"up_to_date": True, "rolling_out": False, "components": {}}
+    return {"mode": "image", **snap}
+
+
+def _patch_restart(name: str) -> None:
+    from kubernetes import client
+    from kubernetes import config as k8s_config
+
+    k8s_config.load_incluster_config()
+    apps = client.AppsV1Api()
+    ts = datetime.datetime.now(datetime.UTC).isoformat()
+    apps.patch_namespaced_deployment(
+        name=name,
+        namespace=_get_own_namespace(),
+        body={
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {"kubectl.kubernetes.io/restartedAt": ts}
+                    }
+                }
+            }
+        },
+    )
+
+
+def _apply_image() -> dict:
+    for suffix in COMPONENTS.values():
+        _patch_restart(suffix)
+    return {"status": "rolling_out"}
+
+
+def _apply_dev() -> dict:
+    subprocess.Popen(
+        ["./dev-services.sh", "restart", "backend"],
+        cwd=str(_repo_root()),
+        start_new_session=True,
+    )
+    return {"status": "restarting"}
+
+
+def apply_update() -> dict:
+    mode = resolve_mode()
+    if mode == "image":
+        return _apply_image()
+    if mode == "dev":
+        return _apply_dev()
+    raise ValueError(f"apply_update not supported in mode={mode}")

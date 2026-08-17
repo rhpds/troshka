@@ -118,3 +118,62 @@ def test_fetch_registry_digest_none_when_header_missing(monkeypatch):
         "redhat-gpte/troshka-backend", "production"
     )
     assert result is None
+
+
+def test_get_status_disabled(monkeypatch):
+    _reset()
+    monkeypatch.setattr(app_updater, "resolve_mode", lambda: "disabled")
+    assert app_updater.get_status() == {"mode": "disabled"}
+
+
+def test_get_status_dev(monkeypatch):
+    _reset()
+    monkeypatch.setattr(app_updater, "resolve_mode", lambda: "dev")
+    monkeypatch.setattr(app_updater, "_dev_up_to_date", lambda: False)
+    status = app_updater.get_status()
+    assert status["mode"] == "dev"
+    assert status["up_to_date"] is False
+    assert status["rolling_out"] is False
+
+
+def test_get_status_image(monkeypatch):
+    _reset()
+    monkeypatch.setattr(app_updater, "resolve_mode", lambda: "image")
+    app_updater._snapshot = {
+        "up_to_date": False,
+        "rolling_out": False,
+        "components": {},
+    }
+    status = app_updater.get_status()
+    assert status["mode"] == "image"
+    assert status["up_to_date"] is False
+
+
+def test_apply_update_dev_spawns_restart(monkeypatch):
+    _reset()
+    monkeypatch.setattr(app_updater, "resolve_mode", lambda: "dev")
+    calls = {}
+
+    class FakePopen:
+        def __init__(self, args, cwd=None, start_new_session=False):
+            calls["args"] = args
+            calls["cwd"] = cwd
+            calls["detached"] = start_new_session
+
+    monkeypatch.setattr(app_updater.subprocess, "Popen", FakePopen)
+    result = app_updater.apply_update()
+    assert result == {"status": "restarting"}
+    assert calls["args"] == ["./dev-services.sh", "restart", "backend"]
+    assert calls["detached"] is True
+
+
+def test_apply_update_image_patches_both_deployments(monkeypatch):
+    _reset()
+    monkeypatch.setattr(app_updater, "resolve_mode", lambda: "image")
+    patched = []
+    monkeypatch.setattr(
+        app_updater, "_patch_restart", lambda name: patched.append(name)
+    )
+    result = app_updater.apply_update()
+    assert result == {"status": "rolling_out"}
+    assert set(patched) == {"troshka-backend", "troshka-frontend"}
