@@ -52,6 +52,10 @@ spec:
                   name: troshka-secrets
                   key: s3-secret-key
                   optional: true
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
           volumeMounts:
             - name: config
               mountPath: /opt/app-root/src/config/config.yaml
