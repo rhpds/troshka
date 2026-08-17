@@ -17,6 +17,7 @@ import signal
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -1047,12 +1048,27 @@ def _job_log(job, msg):
     logger.info("[%s] %s", job["job_id"][:8], msg)
 
 
-def _run_cmd(job, cmd, timeout=600, check=True):
-    """Run a subprocess command, appending output to job. Stores process handle in job for drain."""
+def _run_cmd(job, cmd, timeout=600, check=True, capture_output=True):
+    """Run a subprocess command, appending output to job. Stores process handle in job for drain.
+
+    capture_output=False must be used for commands that self-daemonize (double-fork
+    and detach into the background, e.g. dnsmasq, chronyd -f, haproxy -D). A piped
+    stdout/stderr is inherited by the detached grandchild, so communicate() blocks
+    waiting for EOF that never arrives -- even though the process we're tracking
+    already exited successfully -- until the timeout fires and kills it, turning a
+    successful daemon start into a spurious "Command timed out" failure. Temp files
+    avoid this: we only read them after the tracked process exits, so a lingering
+    grandchild fd on them doesn't block anything.
+    """
     _job_log(job, f"$ {' '.join(cmd)}")
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-    )
+    out_f = err_f = None
+    if capture_output:
+        stdout_dst, stderr_dst = subprocess.PIPE, subprocess.PIPE
+    else:
+        out_f = tempfile.TemporaryFile(mode="w+")
+        err_f = tempfile.TemporaryFile(mode="w+")
+        stdout_dst, stderr_dst = out_f, err_f
+    proc = subprocess.Popen(cmd, stdout=stdout_dst, stderr=stderr_dst, text=True)
     job["_process"] = proc
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
@@ -1062,6 +1078,14 @@ def _run_cmd(job, cmd, timeout=600, check=True):
         raise RuntimeError(f"Command timed out after {timeout}s: {' '.join(cmd)}")
     finally:
         job["_process"] = None
+        if out_f:
+            out_f.seek(0)
+            stdout = out_f.read()
+            out_f.close()
+        if err_f:
+            err_f.seek(0)
+            stderr = err_f.read()
+            err_f.close()
     if stdout:
         for line in stdout.strip().split("\n"):
             _job_log(job, line)
@@ -3354,6 +3378,7 @@ def _configure_dnsmasq_tftp(job, ns, vni, tftp_root, boot_filename):
         job,
         ["ip", "netns", "exec", ns, "dnsmasq", f"--conf-file={dnsmasq_conf}"],
         timeout=10,
+        capture_output=False,
     )
     _job_log(job, "Restarted dnsmasq with TFTP enabled")
 
@@ -4109,6 +4134,7 @@ def _kill_and_restart_dnsmasq(job, ns, dnsmasq_conf, dnsmasq_pid, vni, bridge):
         job,
         ["ip", "netns", "exec", ns, "dnsmasq", f"--conf-file={dnsmasq_conf}"],
         timeout=10,
+        capture_output=False,
     )
     try:
         with open(dnsmasq_pid) as _pf:
@@ -4196,6 +4222,7 @@ def _setup_chrony_ntp(job, ns, pid, networks):
             job,
             ["ip", "netns", "exec", ns, "chronyd", "-f", chrony_conf],
             timeout=10,
+            capture_output=False,
         )
         _job_log(job, f"chronyd started on {chrony_bind_ip} in namespace {ns}")
     except RuntimeError:
@@ -5030,6 +5057,7 @@ def _handle_lb_setup(job, params):
             haproxy_pid,
         ],
         timeout=10,
+        capture_output=False,
     )
     _job_log(job, f"HAProxy started in namespace {ns}")
     return {"status": "started", "config": haproxy_conf}
@@ -8171,6 +8199,11 @@ def _restart_dead_dnsmasq(pidfile, conf_path, conf_name):
     if ns_name not in ns_check.stdout:
         return False
     try:
+        # dnsmasq self-daemonizes (double-fork); capture_output=True here would pipe
+        # stdout/stderr, which the detached grandchild inherits, so subprocess.run()
+        # would block waiting for EOF that never arrives until the timeout kills an
+        # already-successfully-started process. Use DEVNULL since we don't need the
+        # output (failures are reported via the caught exception below).
         subprocess.run(
             [
                 "ip",
@@ -8180,7 +8213,8 @@ def _restart_dead_dnsmasq(pidfile, conf_path, conf_name):
                 "dnsmasq",
                 f"--conf-file={conf_path}",
             ],
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=10,
         )
         try:
