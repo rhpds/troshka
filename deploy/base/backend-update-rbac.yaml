@@ -9,7 +9,8 @@ metadata:
 rules:
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get", "list", "watch", "patch"]
+    resourceNames: ["troshka-backend", "troshka-frontend"]
+    verbs: ["get", "patch"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
