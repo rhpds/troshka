@@ -8,7 +8,7 @@ import Palette from "@/components/canvas/Palette";
 import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
-import { useCanvasStore, computeTopologyDirty, stableExternalIpsKey, setLatestVmStates, setLatestContainerStates } from "@/stores/canvasStore";
+import { useCanvasStore, computeTopologyDirty, setLatestVmStates, setLatestContainerStates } from "@/stores/canvasStore";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
@@ -105,39 +105,6 @@ export default function ProjectCanvasPage() {
         if (data.ocp_install_elapsed != null) setOcpInstallElapsed(data.ocp_install_elapsed);
         prevStateRef.current = data.state;
         setHasDeployedTopology(!!(data.deployed_topology?.nodes?.length));
-        // topologyDirty is computed from deployedNodeData/deployedEdgeKey after they're set below
-        const depSizes: Record<string, number> = {};
-        for (const n of (data.deployed_topology?.nodes || [])) {
-          if (n.type === "storageNode" && n.data?.size) {
-            depSizes[n.id] = n.data.size;
-          }
-        }
-        useCanvasStore.setState({ deployedDiskSizes: depSizes });
-        const depNodeData: Record<string, string> = {};
-        for (const n of (data.deployed_topology?.nodes || [])) {
-          const { status, redeployStep, redeployDetail, liveBootDevs, resolvedS3Path, presignedUrl, ...stable } = (n.data || {}) as Record<string, unknown>;
-          depNodeData[n.id] = JSON.stringify(stable);
-        }
-        const depEdgeKey = (data.deployed_topology?.edges || [])
-          .map((e: any) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
-          .sort().join("|");
-        useCanvasStore.setState({ deployedNodeData: depNodeData, deployedEdgeKey: depEdgeKey, deployedExternalIps: stableExternalIpsKey(data.deployed_topology?.externalIps || []) });
-        setTimeout(() => {
-          const s = useCanvasStore.getState();
-          useCanvasStore.setState({ topologyDirty: computeTopologyDirty(s) });
-        }, 100);
-
-        // Expose BMC data to properties panel
-        if (data.bmc) {
-          (window as any).__deployedTopology = { bmc: data.bmc };
-        } else if (data.deployed_topology?.bmc) {
-          (window as any).__deployedTopology = data.deployed_topology;
-        }
-
-        // Clean up BMC data when project is in draft
-        if (data.state === "draft") {
-          delete (window as any).__deployedTopology;
-        }
       })
       .catch(() => {});
   }, [projectId]);
@@ -178,23 +145,7 @@ export default function ProjectCanvasPage() {
     }
     prevStateRef.current = ws.projectState;
     if (wasTransitional && ws.projectState === "active") {
-      useCanvasStore.getState().loadProject(projectId);
-      fetch(`/api/v1/projects/${projectId}`).then((r) => r.ok ? r.json() : null).then((proj) => {
-        if (!proj) return;
-        const depData: Record<string, string> = {};
-        for (const n of (proj.deployed_topology?.nodes || [])) {
-          const { status, redeployStep, redeployDetail, liveBootDevs, resolvedS3Path, presignedUrl, ...stable } = (n.data || {}) as Record<string, unknown>;
-          depData[n.id] = JSON.stringify(stable);
-        }
-        const depEdge = (proj.deployed_topology?.edges || [])
-          .map((e: any) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
-          .sort().join("|");
-        useCanvasStore.setState({ deployedNodeData: depData, deployedEdgeKey: depEdge, deployedExternalIps: stableExternalIpsKey(proj.deployed_topology?.externalIps || []) });
-        setTimeout(() => {
-          const s = useCanvasStore.getState();
-          useCanvasStore.setState({ topologyDirty: computeTopologyDirty(s) });
-        }, 100);
-      });
+      void useCanvasStore.getState().loadProject(projectId);
     }
   }, [ws.projectState, ws.deployError]);
 
@@ -223,16 +174,7 @@ export default function ProjectCanvasPage() {
             const wasTransitional = ["reconfiguring", "deploying", "starting", "deleting"].includes(projectState);
             setProjectState(data.state);
             if (wasTransitional && data.state === "active") {
-              useCanvasStore.getState().loadProject(projectId);
-              const depData: Record<string, string> = {};
-              for (const n of (data.deployed_topology?.nodes || [])) {
-                const { status: _s, redeployStep: _rs, redeployDetail: _rd, liveBootDevs: _lb, resolvedS3Path: _rp, presignedUrl: _pu, ...stable } = (n.data || {}) as Record<string, unknown>;
-                depData[n.id] = JSON.stringify(stable);
-              }
-              const depEdge = (data.deployed_topology?.edges || [])
-                .map((e: any) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
-                .sort().join("|");
-              useCanvasStore.setState({ deployedNodeData: depData, deployedEdgeKey: depEdge, deployedExternalIps: stableExternalIpsKey(data.deployed_topology?.externalIps || []) });
+              void useCanvasStore.getState().loadProject(projectId);
               setDeployProgress(null);
             }
           }

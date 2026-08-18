@@ -176,7 +176,7 @@ interface CanvasState {
   autoLayout: () => Promise<void>;
   duplicateNode: (nodeId: string, opts?: { cloneUuid?: boolean }) => void;
   deleteEdge: (edgeId: string) => void;
-  loadProject: (projectId: string) => void;
+  loadProject: (projectId: string) => Promise<void>;
   startOrder: StartOrderEntry[];
   setStartOrder: (order: StartOrderEntry[]) => void;
   externalIps: ExternalIp[];
@@ -266,6 +266,63 @@ export function setLatestContainerStates(states: Record<string, { state: string;
   if (changed) useCanvasStore.setState({ nodes: updated });
 }
 
+// Runtime / deploy-transient node.data fields — excluded from dirty comparison.
+const DEPLOY_TRANSIENT_NODE_KEYS = [
+  "status", "redeployStep", "redeployDetail", "liveBootDevs",
+  "resolvedS3Path", "presignedUrl", "ciGeneratedUserData",
+] as const;
+
+function stableNodeData(data: Record<string, unknown>): Record<string, unknown> {
+  const stable = { ...data };
+  for (const k of DEPLOY_TRANSIENT_NODE_KEYS) delete stable[k];
+  return stable;
+}
+
+type DeployedTopologySnapshot = {
+  nodes?: Array<{ id: string; type?: string; data?: Record<string, unknown> }>;
+  edges?: Array<{ source: string; sourceHandle?: string; target: string; targetHandle?: string }>;
+  externalIps?: ExternalIp[];
+  bmc?: unknown;
+};
+
+function buildDeployedBaseline(deployed: DeployedTopologySnapshot | null | undefined) {
+  const depNodeData: Record<string, string> = {};
+  const depSizes: Record<string, number> = {};
+  for (const n of deployed?.nodes || []) {
+    if (n.type === "storageNode" && n.data?.size) {
+      depSizes[n.id] = n.data.size as number;
+    }
+    depNodeData[n.id] = JSON.stringify(stableNodeData(n.data || {}));
+  }
+  const depEdgeKey = (deployed?.edges || [])
+    .map((e) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
+    .sort()
+    .join("|");
+  return {
+    deployedDiskSizes: depSizes,
+    deployedNodeData: depNodeData,
+    deployedEdgeKey: depEdgeKey,
+    deployedExternalIps: stableExternalIpsKey(deployed?.externalIps),
+  };
+}
+
+function applyDeployedTopologySnapshot(
+  project: { deployed_topology?: DeployedTopologySnapshot; bmc?: unknown; state?: string },
+) {
+  const deployed = project.deployed_topology;
+  if (deployed?.nodes?.length) {
+    useCanvasStore.setState(buildDeployedBaseline(deployed));
+  }
+  if (project.bmc) {
+    (window as any).__deployedTopology = { bmc: project.bmc };
+  } else if (deployed?.bmc) {
+    (window as any).__deployedTopology = deployed;
+  }
+  if (project.state === "draft") {
+    delete (window as any).__deployedTopology;
+  }
+}
+
 // External IPs are compared by their desired/config fields only (id + name).
 // The allocated `ip`, `_private_ip`, and `state` are deploy-time runtime values
 // that live only in deployed_topology — including them would make a running
@@ -289,8 +346,7 @@ export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; depl
   for (const n of nodes) {
     const deployed = deployedNodeData[n.id];
     if (!deployed) return true;
-    const { status, redeployStep, redeployDetail, liveBootDevs, ...stable } = (n.data || {}) as Record<string, unknown>;
-    if (JSON.stringify(stable) !== deployed) return true;
+    if (JSON.stringify(stableNodeData((n.data || {}) as Record<string, unknown>)) !== deployed) return true;
   }
   // External IPs (add/remove/rename) — compared by desired fields only. Set
   // together with deployedNodeData on load, so it is populated by this point.
@@ -737,10 +793,14 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       set({ currentProjectId: projectId });
     }
 
-    fetch(`/api/v1/projects/${projectId}`)
+    return fetch(`/api/v1/projects/${projectId}`)
       .then((r) => r.ok ? r.json() : null)
       .then((project) => {
-        if (project?.topology) {
+        if (!project) return;
+
+        applyDeployedTopologySnapshot(project);
+
+        if (project.topology) {
           const t = project.topology;
           const nodes = (t.nodes || []).map((n: Record<string, unknown>) => n);
           // Surface the allocated EIP address: it is written to deployed_topology
@@ -764,20 +824,8 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           _lastSavedNodeCount = (t.nodes || []).length;
         }
 
-        // Expose BMC data to properties panel
-        if (project?.bmc) {
-          (window as any).__deployedTopology = { bmc: project.bmc };
-        } else if (project?.deployed_topology?.bmc) {
-          (window as any).__deployedTopology = project.deployed_topology;
-        }
-
-        // Clean up BMC data when project is in draft
-        if (project?.state === "draft") {
-          delete (window as any).__deployedTopology;
-        }
-
-
         _loadingProject = false;
+        set({ topologyDirty: computeTopologyDirty(get()) });
       })
       .catch(() => { _loadingProject = false; });
   },
@@ -1134,13 +1182,9 @@ useCanvasStore.subscribe((state) => {
     if (_loadingProject) return;
     const s = useCanvasStore.getState();
     if (s.nodes.length === 0) return;
-    const topoKey = s.nodes.map((n) => {
-      if (n.type === "vmNode") {
-        const { status, redeployStep, redeployDetail, liveBootDevs, ...stable } = (n.data || {}) as Record<string, unknown>;
-        return `${n.id}:${JSON.stringify(stable)}`;
-      }
-      return `${n.id}:${JSON.stringify(n.data)}`;
-    }).join("|") + "||" + s.edges.map((e) => `${e.source}-${e.target}`).join("|") + "||so:" + JSON.stringify(s.startOrder) + "||eip:" + stableExternalIpsKey(s.externalIps);
+    const topoKey = s.nodes.map((n) =>
+      `${n.id}:${JSON.stringify(stableNodeData((n.data || {}) as Record<string, unknown>))}`,
+    ).join("|") + "||" + s.edges.map((e) => `${e.source}-${e.target}`).join("|") + "||so:" + JSON.stringify(s.startOrder) + "||eip:" + stableExternalIpsKey(s.externalIps);
     if (topoKey === _lastSavedTopologyKey) return;
     _lastSavedTopologyKey = topoKey;
     _lastSavedNodeCount = s.nodes.length;
