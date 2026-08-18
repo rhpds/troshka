@@ -21,6 +21,7 @@ import urllib.request
 from pathlib import Path
 
 from app.core.config import config
+from app.core.lifecycle import LOG_PATH, RUNTIME_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -351,7 +352,7 @@ def _apply_image() -> dict:
     return {"status": "rolling_out"}
 
 
-_RESTART_LOCK = Path("/tmp/troshka/backend-restart.lock")
+_RESTART_LOCK = RUNTIME_DIR / "backend-restart.lock"
 _RESTART_COOLDOWN_SEC = 120
 
 
@@ -384,7 +385,7 @@ def _apply_dev(initiated_by: str | None = None, client_ip: str | None = None) ->
     except OSError:
         logger.warning("apply_dev: could not write restart lock file")
 
-    log_fd = open("/tmp/troshka-lifecycle.log", "a", encoding="utf-8")
+    log_fd = LOG_PATH.open("a", encoding="utf-8")
     try:
         subprocess.Popen(
             ["./dev-services.sh", "restart", "backend"],

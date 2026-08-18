@@ -13,8 +13,8 @@ DB_PASS="troshka"
 DB_NAME="troshka"
 BACKEND_PORT=8200
 FRONTEND_PORT=3100
-PID_DIR="/tmp/troshka"
-LIFECYCLE_LOG="/tmp/troshka-lifecycle.log"
+PID_DIR="${HOME}/.cache/troshka"
+LIFECYCLE_LOG="${PID_DIR}/lifecycle.log"
 
 mkdir -p "$PID_DIR"
 

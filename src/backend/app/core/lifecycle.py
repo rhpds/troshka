@@ -10,8 +10,18 @@ import threading
 import time
 from pathlib import Path
 
-LOG_PATH = Path("/tmp/troshka-lifecycle.log")
+RUNTIME_DIR = Path.home() / ".cache" / "troshka"
+LOG_PATH = RUNTIME_DIR / "lifecycle.log"
 logger = logging.getLogger(__name__)
+
+
+def _ensure_runtime_dir() -> None:
+    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        RUNTIME_DIR.chmod(0o700)
+    except OSError:
+        pass
+
 
 _started_at = time.monotonic()
 _handlers_installed = False
@@ -24,6 +34,7 @@ def audit(message: str) -> None:
         f"uptime={time.monotonic() - _started_at:.1f}s {message}"
     )
     try:
+        _ensure_runtime_dir()
         with LOG_PATH.open("a") as fh:
             fh.write(line + "\n")
     except OSError:
@@ -38,7 +49,7 @@ def install_signal_audit() -> None:
         return
     _handlers_installed = True
 
-    def _wrap(signum: int, handler):
+    def _wrap(_signum: int, handler):
         if handler is None or handler in (signal.SIG_DFL, signal.SIG_IGN):
             return handler
 
