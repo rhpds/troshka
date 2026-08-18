@@ -621,7 +621,7 @@ def _retry_pb_agent_install(host_id: str, pool_id: str):
 app = FastAPI(
     title=config.app.name,
     description="Nested VM Environment Builder",
-    version="0.1.1",
+    version="0.1.2",
     root_path=config.app.root_path,
     lifespan=lifespan,
 )
@@ -683,7 +683,7 @@ app.include_router(update_routes.router, prefix=_API_PREFIX)
 
 @app.get(f"{_API_PREFIX}/health")
 def health_check():
-    return {"status": "healthy", "app": config.app.name, "version": "0.1.1"}
+    return {"status": "healthy", "app": config.app.name, "version": "0.1.2"}
 
 
 @app.get(f"{_API_PREFIX}/ocp/versions")
