@@ -249,6 +249,18 @@ def test_compute_source_hash_is_stable():
     assert app_updater._compute_source_hash() == app_updater._compute_source_hash()
 
 
+def test_selector_from_match_labels():
+    # Must handle the dedicated-CI label convention, not just app=.
+    assert (
+        app_updater._selector_from_match_labels(
+            {"app.kubernetes.io/name": "troshka-backend"}
+        )
+        == "app.kubernetes.io/name=troshka-backend"
+    )
+    assert app_updater._selector_from_match_labels({}) == ""
+    assert app_updater._selector_from_match_labels(None) == ""
+
+
 def test_config_accessors_tolerate_missing_block(monkeypatch):
     # Deployed ConfigMaps often omit the app_update block; accessors must return
     # defaults, not raise AttributeError on the missing top-level key.

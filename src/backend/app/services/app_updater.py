@@ -163,6 +163,11 @@ def _fetch_registry_digest(image: str, tag: str) -> str | None:
         return None
 
 
+def _selector_from_match_labels(match: dict | None) -> str:
+    """Build a label_selector string from a Deployment's selector.matchLabels."""
+    return ",".join(f"{k}={v}" for k, v in (match or {}).items())
+
+
 def _read_own_digests() -> dict:
     from kubernetes import client
     from kubernetes import config as k8s_config
@@ -171,14 +176,21 @@ def _read_own_digests() -> dict:
 
     k8s_config.load_incluster_config()
     core = client.CoreV1Api()
+    apps = client.AppsV1Api()
     ns = _get_own_namespace()
     out: dict = {}
-    for name in COMPONENTS:
+    for name, suffix in COMPONENTS.items():
         out[name] = None
         try:
-            pods = core.list_namespaced_pod(
-                namespace=ns, label_selector=f"app=troshka-{name}"
+            # Derive the pod selector from the Deployment itself so this works
+            # regardless of label convention (app= vs app.kubernetes.io/name=).
+            dep = apps.read_namespaced_deployment(name=suffix, namespace=ns)
+            selector = _selector_from_match_labels(
+                dep.spec.selector.match_labels  # type: ignore[union-attr]
             )
+            if not selector:
+                continue
+            pods = core.list_namespaced_pod(namespace=ns, label_selector=selector)
             for pod in pods.items or []:  # type: ignore[union-attr]
                 digest = _extract_digest_from_pod(pod)
                 if digest:
