@@ -11,6 +11,7 @@ import PowerOffIcon from "@patternfly/react-icons/dist/esm/icons/power-off-icon"
 import DesktopIcon from "@patternfly/react-icons/dist/esm/icons/desktop-icon";
 import "@patternfly/react-core/dist/styles/base.css";
 import { Alert, Spinner } from "@patternfly/react-core";
+import { appConfirm } from "@/lib/confirm";
 
 interface VMInfo {
   id: string;
@@ -127,7 +128,7 @@ export default function PortalPage() {
         : action === "restart"
           ? `Restart "${name}"?`
           : `Stop "${name}"? The VM will be gracefully shut down.`;
-      if (!window.confirm(msg)) return;
+      if (!(await appConfirm({ message: msg, confirmLabel: action === "forcestop" ? "Force off" : action }))) return;
     }
     setVmPending((prev) => ({ ...prev, [vmId]: action }));
     if (action === "stop") {

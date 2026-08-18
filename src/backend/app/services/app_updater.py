@@ -302,6 +302,11 @@ def _dev_up_to_date() -> bool:
     return _compute_source_hash() == _SOURCE_HASH_AT_START
 
 
+def _dev_stale_key() -> str:
+    """Dismiss key for dev-mode update banner — changes when source files change."""
+    return f"dev:{_compute_source_hash()}"
+
+
 def get_status() -> dict:
     mode = resolve_mode()
     if mode == "disabled":
@@ -310,6 +315,7 @@ def get_status() -> dict:
         return {
             "mode": "dev",
             "up_to_date": _dev_up_to_date(),
+            "stale_key": _dev_stale_key(),
             "rolling_out": False,
             "components": {},
         }
@@ -345,19 +351,61 @@ def _apply_image() -> dict:
     return {"status": "rolling_out"}
 
 
-def _apply_dev() -> dict:
-    subprocess.Popen(
-        ["./dev-services.sh", "restart", "backend"],
-        cwd=str(_repo_root()),
-        start_new_session=True,
+_RESTART_LOCK = Path("/tmp/troshka/backend-restart.lock")
+_RESTART_COOLDOWN_SEC = 120
+
+
+def _apply_dev(initiated_by: str | None = None, client_ip: str | None = None) -> dict:
+    from app.core.lifecycle import audit
+
+    audit(
+        f"apply_dev spawn restart initiated_by={initiated_by or 'unknown'} "
+        f"client_ip={client_ip or 'unknown'}"
     )
+
+    now = time.time()
+    try:
+        if _RESTART_LOCK.exists():
+            age = now - _RESTART_LOCK.stat().st_mtime
+            if age < _RESTART_COOLDOWN_SEC:
+                logger.warning(
+                    "apply_dev: restart skipped — lock age %.0fs (cooldown %ds)",
+                    age,
+                    _RESTART_COOLDOWN_SEC,
+                )
+                audit(f"apply_dev skipped lock_age={age:.0f}s")
+                return {"status": "restarting"}
+    except OSError:
+        pass
+
+    try:
+        _RESTART_LOCK.parent.mkdir(parents=True, exist_ok=True)
+        _RESTART_LOCK.write_text(f"{now}\n{initiated_by or ''}\n{client_ip or ''}\n")
+    except OSError:
+        logger.warning("apply_dev: could not write restart lock file")
+
+    log_fd = open("/tmp/troshka-lifecycle.log", "a", encoding="utf-8")
+    try:
+        subprocess.Popen(
+            ["./dev-services.sh", "restart", "backend"],
+            cwd=str(_repo_root()),
+            start_new_session=True,
+            stdout=log_fd,
+            stderr=subprocess.STDOUT,
+            close_fds=True,
+        )
+    finally:
+        log_fd.close()
     return {"status": "restarting"}
 
 
-def apply_update() -> dict:
+def apply_update(initiated_by: str | None = None, client_ip: str | None = None) -> dict:
+    from app.core.lifecycle import audit
+
     mode = resolve_mode()
+    audit(f"apply_update mode={mode} initiated_by={initiated_by or 'unknown'}")
     if mode == "image":
         return _apply_image()
     if mode == "dev":
-        return _apply_dev()
+        return _apply_dev(initiated_by=initiated_by, client_ip=client_ip)
     raise ValueError(f"apply_update not supported in mode={mode}")

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import AlertModal from "@/components/AlertModal";
+import { appConfirm } from "@/lib/confirm";
 import { useCanvasStore } from "@/stores/canvasStore";
 
 interface NodeContextMenuProps {
@@ -105,7 +106,12 @@ export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM, o
           const updateNodeData = useCanvasStore.getState().updateNodeData;
           onClose();
           setTimeout(async () => {
-            if (!window.confirm(`Redeploy ${vmName}? This will destroy and recreate this VM (disk data will be lost).`)) return;
+            if (!(await appConfirm({
+              title: "Redeploy VM",
+              message: `Redeploy ${vmName}? This will destroy and recreate this VM (disk data will be lost).`,
+              confirmLabel: "Redeploy",
+              variant: "danger",
+            }))) return;
             updateNodeData(nodeId, { status: "redeploying" });
             const resp = await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/redeploy`, { method: "POST" });
             const result = await resp.json();

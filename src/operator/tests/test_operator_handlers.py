@@ -5044,7 +5044,6 @@ class TestPollExportJobs:
                 batch_api,
                 "ns1",
                 "proj1",
-                patch_obj,
             )
         )
         assert result["deadline"] == 1228 * 90
@@ -5657,7 +5656,6 @@ class TestSnapshotAndExportDisk:
                 batch_api,
                 "ns1",
                 "proj1",
-                patch_obj,
             )
         )
 
@@ -5707,7 +5705,6 @@ class TestSnapshotAndExportDisk:
                 batch_api,
                 "ns1",
                 "proj1",
-                patch_obj,
             )
         )
         assert "snapName" in result
@@ -5745,7 +5742,6 @@ class TestSnapshotAndExportDisk:
                 batch_api,
                 "ns1",
                 "proj1",
-                patch_obj,
             )
         )
         assert result["jobName"] == "export-myvm-1234abcd"

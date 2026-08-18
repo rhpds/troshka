@@ -22,14 +22,12 @@ RUN dnf install -y \
     unzip \
     && dnf clean all \
     && curl --proto =https -sL https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz \
-    | tar xzf - -C /usr/local/bin oc kubectl
-
-# rclone for diskless S3-to-S3 pattern sync between clusters
-RUN curl -fsO https://downloads.rclone.org/rclone-current-linux-amd64.zip && \
-    unzip -q rclone-current-linux-amd64.zip && \
-    cp rclone-*/rclone /usr/local/bin/ && \
-    chmod +x /usr/local/bin/rclone && \
-    rm -rf rclone-*
+    | tar xzf - -C /usr/local/bin oc kubectl \
+    && curl -fsO https://downloads.rclone.org/rclone-current-linux-amd64.zip \
+    && unzip -q rclone-current-linux-amd64.zip \
+    && cp rclone-*/rclone /usr/local/bin/ \
+    && chmod +x /usr/local/bin/rclone \
+    && rm -rf rclone-*
 
 # recert for OCP certificate regeneration
 COPY --from=quay.io/edge-infrastructure/recert:latest /usr/local/bin/recert /usr/local/bin/recert

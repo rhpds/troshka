@@ -314,6 +314,10 @@ def _handle_health_failure(host, now_dt) -> None:
 
 def _poll_hosts():
     """Single poll cycle — check all active hosts."""
+    from app.core.lifecycle import audit
+
+    audit("health_poller: begin")
+    t = time.monotonic()
     from app.core.database import SessionLocal
     from app.models.host import Host
     from app.services.troshkad_client import check_health
@@ -322,6 +326,9 @@ def _poll_hosts():
     hosts_checked = 0
     hosts_failed = 0
     try:
+        from app.services.app_updater import resolve_mode
+
+        dev_mode = resolve_mode() == "dev"
         hosts = (
             db.query(Host)
             .filter(
@@ -335,6 +342,8 @@ def _poll_hosts():
         now = time.time()
         for host in hosts:
             if host.host_type == "kubevirt-cluster":
+                if dev_mode:
+                    continue
                 _poll_kubevirt_host(host, db)
                 continue
 
@@ -373,6 +382,7 @@ def _poll_hosts():
         logger.exception("Health poller cycle failed")
     finally:
         db.close()
+        audit(f"health_poller: done ({time.monotonic() - t:.2f}s)")
 
 
 _last_cert_check = 0

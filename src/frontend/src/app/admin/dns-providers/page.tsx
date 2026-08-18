@@ -9,6 +9,7 @@ import {
   CardBody,
   Alert,
 } from "@patternfly/react-core";
+import { appConfirm } from "@/lib/confirm";
 
 interface DnsProvider {
   id: string;
@@ -104,7 +105,12 @@ export default function DnsProvidersPage() {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Delete DNS provider "${name}"?`)) return;
+    if (!(await appConfirm({
+      title: "Delete DNS Provider",
+      message: `Delete DNS provider "${name}"?`,
+      confirmLabel: "Delete",
+      variant: "danger",
+    }))) return;
     try {
       await fetch(`/api/v1/dns-providers/${id}`, { method: "DELETE" });
       loadProviders();

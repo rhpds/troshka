@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef } from "react";
 import AlertModal from "@/components/AlertModal";
+import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
 import type {
@@ -1193,13 +1194,13 @@ export default function PropertiesPanel() {
                     <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginTop: 4 }}>
                       <input type="checkbox" checked={!!(node.data as Record<string, any>).configureBastionBrowser}
                         disabled={projectState === "deploying"}
-                        onChange={(e) => {
+                        onChange={async (e) => {
                           if (e.target.checked) {
                             const prev = nodes.find((n) => n.id !== node.id && n.type === "vmNode" && (n.data as Record<string, any>).configureBastionBrowser);
                             if (prev) {
                               const prevName = (prev.data as Record<string, any>).label || (prev.data as Record<string, any>).name || prev.id.slice(0, 8);
                               const curName = (node.data as Record<string, any>).label || (node.data as Record<string, any>).name || node.id.slice(0, 8);
-                              if (!window.confirm(`Move "Configure bastion browser" from ${prevName} to ${curName}?`)) return;
+                              if (!(await appConfirm({ message: `Move "Configure bastion browser" from ${prevName} to ${curName}?` }))) return;
                               updateNodeData(prev.id, { configureBastionBrowser: false });
                             }
                           }
@@ -2989,7 +2990,12 @@ export default function PropertiesPanel() {
               style={{ color: "#ef4444", borderColor: "#ef4444" }}
               onClick={async () => {
                 const vmName = (data as unknown as VMNodeData).name;
-                if (!window.confirm(`Redeploy ${vmName}? This will destroy and recreate this VM (disk data will be lost).`)) return;
+                if (!(await appConfirm({
+                  title: "Redeploy VM",
+                  message: `Redeploy ${vmName}? This will destroy and recreate this VM (disk data will be lost).`,
+                  confirmLabel: "Redeploy",
+                  variant: "danger",
+                }))) return;
                 const projectId = useCanvasStore.getState().currentProjectId;
                 updateNodeData(node.id, { status: "redeploying" });
                 const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/redeploy`, { method: "POST" });

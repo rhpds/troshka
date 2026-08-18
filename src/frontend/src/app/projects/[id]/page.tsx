@@ -14,6 +14,8 @@ import SavePatternModal from "@/components/canvas/SavePatternModal";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
 import { useVmStateSocket } from "@/hooks/useVmStateSocket";
 import AlertModal from "@/components/AlertModal";
+import ConfirmModal from "@/components/ConfirmModal";
+import { appConfirm } from "@/lib/confirm";
 
 export default function ProjectCanvasPage() {
   const params = useParams();
@@ -49,6 +51,7 @@ export default function ProjectCanvasPage() {
   const [clockTarget, setClockTarget] = useState<string | null>(null);
   const [guestExecEnabled, setGuestExecEnabled] = useState(true);
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
   const ws = useVmStateSocket(projectId);
 
   useEffect(() => {
@@ -453,11 +456,11 @@ export default function ProjectCanvasPage() {
     if (containerCount > 0) parts.push(`${containerCount} container${containerCount !== 1 ? "s" : ""}`);
     parts.push(`${netCount} network${netCount !== 1 ? "s" : ""}`);
     parts.push(`${diskCount} disk${diskCount !== 1 ? "s" : ""}`);
-    if (!window.confirm(
-      `Deploy this environment?\n\n` +
-      `${parts.join(", ")}\n\n` +
-      `This will provision real infrastructure.`
-    )) return;
+    if (!(await appConfirm({
+      title: "Deploy Environment",
+      message: `Deploy this environment?\n\n${parts.join(", ")}\n\nThis will provision real infrastructure.`,
+      confirmLabel: "Deploy",
+    }))) return;
 
     try {
       await saveTopology();
@@ -489,6 +492,25 @@ export default function ProjectCanvasPage() {
     } catch {
       setProjectState("draft");
       setAlertMsg("Failed to connect to server");
+    }
+  };
+
+  const handleRepublish = async (message: string) => {
+    if (!(await appConfirm({
+      title: "Republish",
+      message,
+      confirmLabel: "Republish",
+      variant: "danger",
+    }))) return;
+    setProjectState("deploying");
+    const r = await fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" });
+    if (r.ok) {
+      useCanvasStore.setState({ deployedVmIds: new Set() });
+      setDeployError(null);
+    } else {
+      setProjectState("active");
+      const err = await r.json().catch(() => ({ detail: "Redeploy failed" }));
+      setAlertMsg(err.detail || "Redeploy failed");
     }
   };
 
@@ -616,19 +638,7 @@ export default function ProjectCanvasPage() {
             <button
               className="project-stop-btn"
               style={{ borderColor: "var(--pf-t--global--color--status--danger--default)", color: "var(--pf-t--global--color--status--danger--default)" }}
-              onClick={() => {
-                if (!window.confirm(`Delete project "${projectName}"? This cannot be undone.`)) return;
-                setProjectState("deleting");
-                localStorage.removeItem(`troshka-canvas-${projectId}`);
-                const deleting = JSON.parse(localStorage.getItem("troshka-deleting-projects") || "[]");
-                deleting.push(projectId);
-                localStorage.setItem("troshka-deleting-projects", JSON.stringify(deleting));
-                router.push("/projects");
-                fetch(`/api/v1/projects/${projectId}`, { method: "DELETE" }).then(() => {
-                  const remaining = JSON.parse(localStorage.getItem("troshka-deleting-projects") || "[]").filter((id: string) => id !== projectId);
-                  localStorage.setItem("troshka-deleting-projects", JSON.stringify(remaining));
-                });
-              }}
+              onClick={() => setShowDeleteModal(true)}
             >
               Delete
             </button>
@@ -664,11 +674,10 @@ export default function ProjectCanvasPage() {
           )}
           {projectState === "active" && (
             <>
-              <button className="project-stop-btn" onClick={() => {
-                if (window.confirm("Stop all VMs in this environment?")) {
-                  fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" })
-                    .then(() => setProjectState("stopping"));
-                }
+              <button className="project-stop-btn" onClick={async () => {
+                if (!(await appConfirm({ message: "Stop all VMs in this environment?", confirmLabel: "Stop" }))) return;
+                fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" })
+                  .then(() => setProjectState("stopping"));
               }}>
                 ■ Stop
               </button>
@@ -678,16 +687,7 @@ export default function ProjectCanvasPage() {
               <button className="project-publish-btn" disabled={!topologyDirty || applyingChanges} style={(!topologyDirty || applyingChanges) ? { opacity: 0.4 } : {}} onClick={handleApplyChanges}>
                 {applyingChanges ? <><span className="project-btn-spinner" /> Applying...</> : "Apply Changes"}
               </button>
-              <button className="project-publish-btn" onClick={() => {
-                if (window.confirm("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")) {
-                  setProjectState("deploying");
-                  fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
-                    .then(async (r) => {
-                      if (r.ok) { useCanvasStore.setState({ deployedVmIds: new Set() }); }
-                      else { setProjectState("active"); const err = await r.json().catch(() => ({ detail: "Redeploy failed" })); setAlertMsg(err.detail || "Redeploy failed"); }
-                    });
-                }
-              }}>
+              <button className="project-publish-btn" onClick={() => handleRepublish("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")}>
                 ↻ Republish
               </button>
             </>
@@ -723,23 +723,18 @@ export default function ProjectCanvasPage() {
               }}>
                 Apply Changes
               </button>
-              <button className="project-publish-btn" onClick={() => {
-                if (window.confirm("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")) {
-                  setProjectState("deploying");
-                  fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
-                    .then(async (r) => {
-                      if (r.ok) { useCanvasStore.setState({ deployedVmIds: new Set() }); }
-                      else { setProjectState("active"); const err = await r.json().catch(() => ({ detail: "Redeploy failed" })); setAlertMsg(err.detail || "Redeploy failed"); }
-                    });
-                }
-              }}>
+              <button className="project-publish-btn" onClick={() => handleRepublish("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")}>
                 ↻ Republish
               </button>
-              <button className="project-stop-btn" onClick={() => {
-                if (window.confirm("Undeploy? This will destroy all VMs and return to design mode.")) {
-                  fetch(`/api/v1/projects/${projectId}/undeploy`, { method: "POST" })
-                    .then(() => { setProjectState("draft"); setDeployError(null); });
-                }
+              <button className="project-stop-btn" onClick={async () => {
+                if (!(await appConfirm({
+                  title: "Undeploy",
+                  message: "Undeploy? This will destroy all VMs and return to design mode.",
+                  confirmLabel: "Undeploy",
+                  variant: "danger",
+                }))) return;
+                fetch(`/api/v1/projects/${projectId}/undeploy`, { method: "POST" })
+                  .then(() => { setProjectState("draft"); setDeployError(null); });
               }}>
                 Undeploy
               </button>
@@ -769,12 +764,7 @@ export default function ProjectCanvasPage() {
                   ▶ Retry Start
                 </button>
               )}
-              <button className="project-publish-btn" onClick={() => {
-                if (window.confirm("Republish? This will destroy all VMs and redeploy with the current topology.")) {
-                  fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
-                    .then(() => { setProjectState("deploying"); setDeployError(null); });
-                }
-              }}>
+              <button className="project-publish-btn" onClick={() => handleRepublish("Republish? This will destroy all VMs and redeploy with the current topology.")}>
                 ↻ Republish
               </button>
             </>
@@ -1254,6 +1244,28 @@ export default function ProjectCanvasPage() {
         </div>
       )}
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
+      {showDeleteModal && (
+        <ConfirmModal
+          title="Delete Project"
+          message={`Delete project "${projectName}"? This cannot be undone.`}
+          confirmLabel="Delete"
+          variant="danger"
+          onCancel={() => setShowDeleteModal(false)}
+          onConfirm={() => {
+            setShowDeleteModal(false);
+            setProjectState("deleting");
+            localStorage.removeItem(`troshka-canvas-${projectId}`);
+            const deleting = JSON.parse(localStorage.getItem("troshka-deleting-projects") || "[]");
+            deleting.push(projectId);
+            localStorage.setItem("troshka-deleting-projects", JSON.stringify(deleting));
+            router.push("/projects");
+            fetch(`/api/v1/projects/${projectId}`, { method: "DELETE" }).then(() => {
+              const remaining = JSON.parse(localStorage.getItem("troshka-deleting-projects") || "[]").filter((id: string) => id !== projectId);
+              localStorage.setItem("troshka-deleting-projects", JSON.stringify(remaining));
+            });
+          }}
+        />
+      )}
       <style>{`
         @keyframes pulse {
           0%, 100% { opacity: 1; }

@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import AlertModal from "@/components/AlertModal";
+import { appConfirm } from "@/lib/confirm";
 import TagEditor from "@/components/TagEditor";
 import {
   Button,
@@ -346,8 +347,12 @@ export default function PatternsPage() {
                   {someSelected ? `${selected.length} of ${filtered.length} selected` : "Select all"}
                 </label>
                 {someSelected && (
-                  <Button variant="danger" size="sm" onClick={() => {
-                    if (!window.confirm(`Delete ${selected.length} pattern(s)? This cannot be undone.`)) return;
+                  <Button variant="danger" size="sm" onClick={async () => {
+                    if (!(await appConfirm({
+                      message: `Delete ${selected.length} pattern(s)? This cannot be undone.`,
+                      confirmLabel: "Delete",
+                      variant: "danger",
+                    }))) return;
                     for (const p of selected) { fetch(`/api/v1/patterns/${p.id}`, { method: "DELETE" }); }
                     setSelectedPatterns(new Set());
                     setTimeout(loadPatterns, 1000);
@@ -501,16 +506,20 @@ export default function PatternsPage() {
                     </Button>
                   )}
                   {saving && (
-                    <Button variant="warning" size="sm" onClick={() => {
-                      if (!window.confirm("Cancel pattern capture? This will stop the capture and clean up.")) return;
+                    <Button variant="warning" size="sm" onClick={async () => {
+                      if (!(await appConfirm({ message: "Cancel pattern capture? This will stop the capture and clean up.", confirmLabel: "Cancel capture", variant: "danger" }))) return;
                       fetch(`/api/v1/patterns/${pattern.id}`, { method: "DELETE" }).then((r) => {
                         if (r.ok) setPatterns(patterns.filter((p) => p.id !== pattern.id));
                       });
                     }}>Cancel</Button>
                   )}
                   {!saving && pattern.visibility !== "public" && (
-                    <Button variant="danger" size="sm" onClick={() => {
-                      if (!window.confirm(`Delete pattern "${pattern.name}"? This cannot be undone.`)) return;
+                    <Button variant="danger" size="sm" onClick={async () => {
+                      if (!(await appConfirm({
+                        message: `Delete pattern "${pattern.name}"? This cannot be undone.`,
+                        confirmLabel: "Delete",
+                        variant: "danger",
+                      }))) return;
                       fetch(`/api/v1/patterns/${pattern.id}`, { method: "DELETE" }).then((r) => {
                         if (r.ok) setPatterns(patterns.filter((p) => p.id !== pattern.id));
                       });

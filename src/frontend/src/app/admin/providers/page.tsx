@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import AlertModal from "@/components/AlertModal";
+import { appConfirm } from "@/lib/confirm";
 import {
   Button,
   Card,
@@ -360,7 +361,7 @@ export default function AdminProvidersPage() {
   };
 
   const createVpc = async (id: string, skipConfirm = false) => {
-    if (!skipConfirm && !window.confirm("Create a new VPC (10.100.0.0/16) with a public subnet, internet gateway, and security group?")) return;
+    if (!skipConfirm && !(await appConfirm({ message: "Create a new VPC (10.100.0.0/16) with a public subnet, internet gateway, and security group?", confirmLabel: "Create VPC" }))) return;
     setImageResult((prev) => ({ ...prev, [id]: "Creating VPC..." }));
     const resp = await fetch(`/api/v1/providers/${id}/create-vpc`, { method: "POST" });
     if (resp.ok) {
@@ -399,7 +400,12 @@ export default function AdminProvidersPage() {
   };
 
   const removeConsole = async (providerId: string) => {
-    if (!confirm("Remove console DNS? This will delete the hosted zone and all DNS records.")) return;
+    if (!(await appConfirm({
+      title: "Remove Console DNS",
+      message: "Remove console DNS? This will delete the hosted zone and all DNS records.",
+      confirmLabel: "Remove",
+      variant: "danger",
+    }))) return;
     try {
       const resp = await fetch(`/api/v1/providers/${providerId}/console`, { method: "DELETE" });
       if (resp.ok) loadProviders();
@@ -428,7 +434,7 @@ export default function AdminProvidersPage() {
   };
 
   const deleteProvider = async (id: string) => {
-    if (!window.confirm("Delete this provider?")) return;
+    if (!(await appConfirm({ message: "Delete this provider?", confirmLabel: "Delete", variant: "danger" }))) return;
     const resp = await fetch(`/api/v1/providers/${id}`, { method: "DELETE" });
     if (resp.ok) {
       loadProviders();
@@ -1018,7 +1024,7 @@ export default function AdminProvidersPage() {
                       <Button
                         variant="secondary"
                         onClick={async () => {
-                          if (!window.confirm("Create a new VPC network with subnet and firewall rules?")) return;
+                          if (!(await appConfirm({ message: "Create a new VPC network with subnet and firewall rules?", confirmLabel: "Create network" }))) return;
                           setImageResult((prev) => ({ ...prev, [p.id]: "Creating network..." }));
                           const resp = await fetch(`/api/v1/providers/${p.id}/create-network-gcp`, { method: "POST" });
                           if (resp.ok) {
@@ -1038,7 +1044,7 @@ export default function AdminProvidersPage() {
                       <Button
                         variant="secondary"
                         onClick={async () => {
-                          if (!window.confirm("Create a new VNet with subnet and NSG?")) return;
+                          if (!(await appConfirm({ message: "Create a new VNet with subnet and NSG?", confirmLabel: "Create network" }))) return;
                           setImageResult((prev) => ({ ...prev, [p.id]: "Creating network..." }));
                           const resp = await fetch(`/api/v1/providers/${p.id}/create-network-azure`, { method: "POST" });
                           if (resp.ok) {

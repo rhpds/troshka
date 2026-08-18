@@ -28,6 +28,7 @@ import SunIcon from "@patternfly/react-icons/dist/esm/icons/sun-icon";
 import MoonIcon from "@patternfly/react-icons/dist/esm/icons/moon-icon";
 import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 import SignOutAltIcon from "@patternfly/react-icons/dist/esm/icons/sign-out-alt-icon";
+import { ConfirmHost } from "@/lib/confirm";
 
 interface UserInfo {
   id: string;
@@ -183,15 +184,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     return () => clearInterval(iv);
   }, [isAdmin]);
 
+  // stale_key from the API (dev: content hash, image: component digests) so Dismiss
+  // only hides the banner until the next code change, not permanently.
   const updateTargetKey =
-    updateStatus?.mode === "image"
+    updateStatus?.stale_key ??
+    (updateStatus?.mode === "image"
       ? JSON.stringify(updateStatus?.components || {})
-      : "dev";
+      : null);
   const showUpdate =
     isAdmin &&
     updateStatus &&
     updateStatus.mode !== "disabled" &&
     updateStatus.up_to_date === false &&
+    updateTargetKey != null &&
     dismissedKey !== updateTargetKey;
   const updateBusy = applying || updateStatus?.rolling_out;
   const shortDigest = (d?: string) =>
@@ -204,6 +209,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     : [];
 
   const applyUpdate = () => {
+    if (applying) return;
     setApplying(true);
     setUpdateError(null);
     fetch("/api/v1/update/apply", { method: "POST" })
@@ -494,6 +500,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <h1 style={{ fontSize: "1.5rem", fontWeight: 600 }}>{(user as any).detail}</h1>
             </div>
           ) : children}
+          <ConfirmHost />
         </Page>
       </body>
     </html>

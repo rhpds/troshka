@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import AlertModal from "@/components/AlertModal";
+import { appConfirm } from "@/lib/confirm";
 import {
   PageSection,
   Title,
@@ -372,7 +373,11 @@ export default function StoragePoolsPage() {
   };
 
   const handleDelete = async (pool: StoragePool) => {
-    if (!window.confirm(`Delete storage pool "${pool.name}"? This will also delete the FSx filesystem if applicable.`)) return;
+    if (!(await appConfirm({
+      message: `Delete storage pool "${pool.name}"? This will also delete the FSx filesystem if applicable.`,
+      confirmLabel: "Delete",
+      variant: "danger",
+    }))) return;
     const resp = await fetch(`/api/v1/storage-pools/${pool.id}`, { method: "DELETE" });
     if (resp.ok) {
       loadData();
@@ -384,7 +389,10 @@ export default function StoragePoolsPage() {
 
   const handleExtendNow = async (pool: StoragePool) => {
     const newSize = (poolStorageGb(pool) || 0) + pool.auto_extend_increment_gb;
-    if (!window.confirm(`Extend storage for pool "${pool.name}"?\n\n${poolStorageGb(pool)} GB → ${newSize} GB (+${pool.auto_extend_increment_gb} GB)\n\nNote: FSx only allows one extend every 6 hours. The host may take a few minutes to see the new capacity.`)) return;
+    if (!(await appConfirm({
+      message: `Extend storage for pool "${pool.name}"?\n\n${poolStorageGb(pool)} GB → ${newSize} GB (+${pool.auto_extend_increment_gb} GB)\n\nNote: FSx only allows one extend every 6 hours. The host may take a few minutes to see the new capacity.`,
+      confirmLabel: "Extend",
+    }))) return;
     setExtending({ ...extending, [pool.id]: true });
     const resp = await fetch(`/api/v1/storage-pools/${pool.id}/extend`, {
       method: "POST",
@@ -435,7 +443,10 @@ export default function StoragePoolsPage() {
       setError(`FSx requires at least 10% growth (minimum ${minGrow} GB)`);
       return;
     }
-    if (!window.confirm(`Resize pool "${pool.name}" to ${targetGb} GB? (currently ${currentGb} GB)\n\nNote: FSx only allows one resize every 6 hours.`)) return;
+    if (!(await appConfirm({
+      message: `Resize pool "${pool.name}" to ${targetGb} GB? (currently ${currentGb} GB)\n\nNote: FSx only allows one resize every 6 hours.`,
+      confirmLabel: "Resize",
+    }))) return;
     setExtending({ ...extending, [pool.id]: true });
     const incrementGb = targetGb - currentGb;
     const resp = await fetch(`/api/v1/storage-pools/${pool.id}/extend`, {
@@ -821,7 +832,7 @@ export default function StoragePoolsPage() {
                     )}
                     {pool.worker_status === "connected" && (
                       <Button variant="secondary" size="sm" isLoading={pbAction[pool.id] === "sleeping"} isDisabled={!!pbAction[pool.id]} onClick={async () => {
-                        if (!window.confirm("Stop pattern buffer? It will auto-wake when needed.")) return;
+                        if (!(await appConfirm({ message: "Stop pattern buffer? It will auto-wake when needed.", confirmLabel: "Sleep" }))) return;
                         setPbAction(prev => ({ ...prev, [pool.id]: "sleeping" }));
                         await fetch(`/api/v1/storage-pools/${pool.id}/pattern-buffer/stop`, { method: "POST" });
                         loadData();
@@ -846,8 +857,12 @@ export default function StoragePoolsPage() {
                       </Button>
                     )}
                     {!pbAction[pool.id] && pool.worker_host_id && (
-                      <Button variant="danger" size="sm" onClick={() => {
-                        if (!window.confirm("Delete the pattern buffer instance? This will terminate the VM.")) return;
+                      <Button variant="danger" size="sm" onClick={async () => {
+                        if (!(await appConfirm({
+                          message: "Delete the pattern buffer instance? This will terminate the VM.",
+                          confirmLabel: "Delete",
+                          variant: "danger",
+                        }))) return;
                         fetch(`/api/v1/storage-pools/${pool.id}/pattern-buffer`, { method: "DELETE" });
                         loadData();
                       }}>Delete Pattern Buffer</Button>

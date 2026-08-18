@@ -3,6 +3,7 @@
 import React, { Suspense, useEffect, useRef, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import AlertModal from "@/components/AlertModal";
+import { appConfirm } from "@/lib/confirm";
 import { useVmStateSocket } from "@/hooks/useVmStateSocket";
 
 export default function ConsolePageWrapper() {
@@ -325,7 +326,7 @@ function ConsolePage() {
   }, []);
 
   const vmPowerAction = useCallback(async (action: string, label: string, confirm?: string) => {
-    if (confirm && !window.confirm(confirm)) return;
+    if (confirm && !(await appConfirm({ message: confirm, confirmLabel: label }))) return;
     if (action === "start") { startingRef.current = true; setStatus("Starting..."); }
     try {
       const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/${action}`, { method: "POST" });

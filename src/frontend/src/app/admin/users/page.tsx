@@ -10,6 +10,7 @@ import {
   Alert,
   Label,
 } from "@patternfly/react-core";
+import { appConfirm } from "@/lib/confirm";
 
 interface UserInfo {
   id: string;
@@ -130,7 +131,12 @@ export default function AdminUsersPage() {
   };
 
   const handleDelete = async (id: string, email: string) => {
-    if (!confirm(`Delete user "${email}"? This cannot be undone.`)) return;
+    if (!(await appConfirm({
+      title: "Delete User",
+      message: `Delete user "${email}"? This cannot be undone.`,
+      confirmLabel: "Delete",
+      variant: "danger",
+    }))) return;
     setError("");
     try {
       const resp = await fetch(`/api/v1/users/${id}`, { method: "DELETE" });

@@ -9,6 +9,7 @@ import {
   Label,
   Alert,
 } from "@patternfly/react-core";
+import { appConfirm } from "@/lib/confirm";
 
 interface QueueInfo {
   name: string;
@@ -83,8 +84,8 @@ export default function QueuePage() {
       .finally(() => setRetrying(null));
   };
 
-  const deleteJob = (jobId: string) => {
-    if (!confirm("Delete this failed job?")) return;
+  const deleteJob = async (jobId: string) => {
+    if (!(await appConfirm({ message: "Delete this failed job?", confirmLabel: "Delete", variant: "danger" }))) return;
     fetch(`/api/v1/admin/failed-jobs/${jobId}`, { method: "DELETE" })
       .then(() => {
         fetchFailed(failedQueue);

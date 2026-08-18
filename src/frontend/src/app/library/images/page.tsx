@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import TagEditor from "@/components/TagEditor";
+import { appConfirm } from "@/lib/confirm";
 import {
   Button,
   Card,
@@ -214,7 +215,11 @@ export default function ImagesPage() {
   };
 
   const deleteItem = async (id: string) => {
-    if (!window.confirm("Delete this library item? The file will be removed from S3.")) return;
+    if (!(await appConfirm({
+      message: "Delete this library item? The file will be removed from S3.",
+      confirmLabel: "Delete",
+      variant: "danger",
+    }))) return;
     await fetch(`/api/v1/library/${id}`, { method: "DELETE" });
     loadItems();
   };
@@ -353,8 +358,12 @@ export default function ImagesPage() {
                 {someSelected ? `${selected.length} of ${items.length} selected` : "Select all"}
               </label>
               {someSelected && (
-                <Button variant="danger" size="sm" onClick={() => {
-                  if (!window.confirm(`Delete ${selected.length} library item(s)? Files will be removed from S3.`)) return;
+                <Button variant="danger" size="sm" onClick={async () => {
+                  if (!(await appConfirm({
+                    message: `Delete ${selected.length} library item(s)? Files will be removed from S3.`,
+                    confirmLabel: "Delete",
+                    variant: "danger",
+                  }))) return;
                   for (const i of selected) { fetch(`/api/v1/library/${i.id}`, { method: "DELETE" }); }
                   setSelectedItems(new Set());
                   setTimeout(loadItems, 1000);
@@ -487,7 +496,7 @@ export default function ImagesPage() {
               )}
               {["importing", "uploading", "downloading", "uploading_s3"].includes(item.state) && (
                 <Button variant="secondary" onClick={async () => {
-                  if (!window.confirm("Cancel this transfer?")) return;
+                  if (!(await appConfirm({ message: "Cancel this transfer?", confirmLabel: "Cancel transfer", variant: "danger" }))) return;
                   await fetch(`/api/v1/library/${item.id}/cancel`, { method: "POST" });
                   loadItems();
                 }}>

@@ -201,8 +201,43 @@ async def _stop_all_vms(custom_api, namespace):
         await asyncio.sleep(3)
 
 
+async def _wait_volume_snapshot_ready(
+    custom_api, namespace: str, snap_name: str, size_gb: int
+) -> int:
+    restore_size_gi = size_gb
+    for _ in range(60):
+        try:
+            vs = cast(
+                dict[str, Any],
+                custom_api.get_namespaced_custom_object(
+                    group=_SNAPSHOT_GROUP,
+                    version="v1",
+                    namespace=namespace,
+                    plural="volumesnapshots",
+                    name=snap_name,
+                ),
+            )
+            if vs.get("status", {}).get("readyToUse"):
+                rs = vs.get("status", {}).get("restoreSize", "")
+                if rs.endswith("Gi"):
+                    restore_size_gi = max(size_gb, int(rs[:-2]))
+                break
+        except Exception:
+            pass
+        await asyncio.sleep(5)
+    return restore_size_gi
+
+
+def _create_namespaced_pvc(core_api, namespace: str, body: dict) -> None:
+    try:
+        core_api.create_namespaced_persistent_volume_claim(namespace=namespace, body=body)
+    except ApiException as e:
+        if e.status != 409:
+            raise
+
+
 async def _snapshot_and_export_disk(
-    disk_info, s3_config, custom_api, core_api, batch_api, namespace, name, patch
+    disk_info, s3_config, custom_api, core_api, batch_api, namespace, name
 ):
     """Snapshot a single disk PVC, create temp PVC + scratch PVC, launch export job."""
     from helpers.patterns import (
@@ -249,49 +284,19 @@ async def _snapshot_and_export_disk(
             raise
 
     # Poll until snapshot is ready (max 5 min)
-    restore_size_gi = size_gb
-    for _ in range(60):
-        try:
-            vs = cast(
-                dict[str, Any],
-                custom_api.get_namespaced_custom_object(
-                    group=_SNAPSHOT_GROUP,
-                    version="v1",
-                    namespace=namespace,
-                    plural="volumesnapshots",
-                    name=snap_name,
-                ),
-            )
-            if vs.get("status", {}).get("readyToUse"):
-                rs = vs.get("status", {}).get("restoreSize", "")
-                if rs.endswith("Gi"):
-                    restore_size_gi = max(size_gb, int(rs[:-2]))
-                break
-        except Exception:
-            pass
-        await asyncio.sleep(5)
+    restore_size_gi = await _wait_volume_snapshot_ready(
+        custom_api, namespace, snap_name, size_gb
+    )
 
     temp_pvc = build_temp_pvc_from_snapshot(
         temp_pvc_name, namespace, snap_name, restore_size_gi
     )
-    try:
-        core_api.create_namespaced_persistent_volume_claim(
-            namespace=namespace, body=temp_pvc
-        )
-    except ApiException as e:
-        if e.status != 409:
-            raise
+    _create_namespaced_pvc(core_api, namespace, temp_pvc)
 
     scratch = build_scratch_pvc(
         scratch_pvc_name, namespace, max(size_gb + 10, int(size_gb * 1.2))
     )
-    try:
-        core_api.create_namespaced_persistent_volume_claim(
-            namespace=namespace, body=scratch
-        )
-    except ApiException as e:
-        if e.status != 409:
-            raise
+    _create_namespaced_pvc(core_api, namespace, scratch)
 
     export_job = build_export_job(
         job_name,
@@ -348,6 +353,23 @@ def _check_export_job(batch_api, ej, namespace):
         return "pending"
 
 
+def _format_export_progress(data: dict) -> str:
+    phase = data.get("phase", "converting")
+    if phase == "done":
+        return "done"
+    if phase == "uploading":
+        size = data.get("size", 0)
+        uploaded = data.get("uploaded", 0)
+        if size:
+            size_label = f"{size / 1073741824:.1f} GiB"
+            if uploaded:
+                pct = min(99, int(uploaded * 100 / size))
+                return f"uploading {size_label} {pct}%"
+            return f"uploading {size_label}"
+        return "uploading"
+    return f"converting {data.get('percent', 0)}%"
+
+
 def _read_job_progress(core_api, ej, namespace):
     """Read export progress from pod logs (last PROGRESS: line)."""
     import json as _json
@@ -382,23 +404,36 @@ def _read_job_progress(core_api, ej, namespace):
         if not last_progress:
             return "starting"
         data = _json.loads(last_progress)
-        phase = data.get("phase", "converting")
-        if phase == "done":
-            return "done"
-        if phase == "uploading":
-            size = data.get("size", 0)
-            uploaded = data.get("uploaded", 0)
-            if size:
-                size_label = f"{size / 1073741824:.1f} GiB"
-                if uploaded:
-                    pct = min(99, int(uploaded * 100 / size))
-                    return f"uploading {size_label} {pct}%"
-                return f"uploading {size_label}"
-            return "uploading"
-        return f"converting {data.get('percent', 0)}%"
+        return _format_export_progress(data)
     except Exception as _exc:
         logger.debug("Progress read failed for %s: %s", ej.get("jobName", "?"), _exc)
         return "starting"
+
+
+def _export_job_poll_result(
+    batch_api, ej, namespace, custom_api, cr_name, core_api, disk_statuses
+):
+    result = _check_export_job(batch_api, ej, namespace)
+    if result == "done":
+        disk_statuses[ej["jobName"]] = "done"
+        return True, None
+    if result == "failed":
+        logger.error(f"Export job {ej['jobName']} failed")
+        _patch_cr_status(
+            custom_api,
+            namespace,
+            cr_name,
+            {
+                "phase": "CaptureError",
+                "captureError": f"Export job {ej['jobName']} failed",
+            },
+        )
+        return False, f"Export job {ej['jobName']} failed"
+    if core_api:
+        disk_statuses[ej["jobName"]] = _read_job_progress(core_api, ej, namespace)
+    else:
+        disk_statuses[ej["jobName"]] = "exporting"
+    return False, None
 
 
 async def _poll_export_jobs(
@@ -417,29 +452,13 @@ async def _poll_export_jobs(
     for _ in range(iterations):
         all_done = True
         for ej in export_jobs:
-            result = _check_export_job(batch_api, ej, namespace)
-            if result == "done":
-                disk_statuses[ej["jobName"]] = "done"
-                continue
-            if result == "failed":
-                logger.error(f"Export job {ej['jobName']} failed")
-                _patch_cr_status(
-                    custom_api,
-                    namespace,
-                    cr_name,
-                    {
-                        "phase": "CaptureError",
-                        "captureError": f"Export job {ej['jobName']} failed",
-                    },
-                )
-                return f"Export job {ej['jobName']} failed"
-            if core_api:
-                disk_statuses[ej["jobName"]] = _read_job_progress(
-                    core_api, ej, namespace
-                )
-            else:
-                disk_statuses[ej["jobName"]] = "exporting"
-            all_done = False
+            done, err = _export_job_poll_result(
+                batch_api, ej, namespace, custom_api, cr_name, core_api, disk_statuses
+            )
+            if err:
+                return err
+            if not done:
+                all_done = False
         done_count = sum(1 for s in disk_statuses.values() if s == "done")
         _patch_cr_status(
             custom_api,
@@ -671,7 +690,6 @@ async def _handle_capture(capture_config, namespace, name, patch):
             batch_api,
             namespace,
             name,
-            patch,
         )
         export_jobs.append(ej)
 

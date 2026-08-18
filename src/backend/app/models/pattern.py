@@ -19,6 +19,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
+_CASCADE_ALL_DELETE_ORPHAN = "all, delete-orphan"
+
 if TYPE_CHECKING:
     from app.models.pattern_location import PatternLocation
     from app.models.user import User
@@ -52,10 +54,10 @@ class Pattern(Base):
 
     owner: Mapped[User] = relationship()
     disks: Mapped[list[PatternDisk]] = relationship(
-        back_populates="pattern", cascade="all, delete-orphan"
+        back_populates="pattern", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
     shares: Mapped[list[PatternShare]] = relationship(
-        back_populates="pattern", cascade="all, delete-orphan"
+        back_populates="pattern", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
 
@@ -79,7 +81,7 @@ class PatternDisk(Base):
 
     pattern: Mapped[Pattern] = relationship(back_populates="disks")
     locations: Mapped[list[PatternLocation]] = relationship(
-        back_populates="pattern_disk", cascade="all, delete-orphan"
+        back_populates="pattern_disk", cascade=_CASCADE_ALL_DELETE_ORPHAN
     )
 
 

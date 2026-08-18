@@ -210,6 +210,39 @@ def _find_storage_vm_pair(edge, node_map):
     return None, None
 
 
+def _apply_pattern_disk_source(disk: dict, sd: dict, central: bool) -> None:
+    pattern_id = sd.get("patternId", "")
+    disk_id = sd.get("patternDiskId", "")
+    resolved_path = sd.get("resolvedS3Path", "")
+    if pattern_id and (disk_id or resolved_path):
+        disk["patternImage"] = {
+            "s3Path": resolved_path or f"patterns/{pattern_id}/{disk_id}.qcow2",
+            "format": "qcow2",
+            "central": central,
+            "source": sd.get("diskSource", "central"),
+        }
+
+
+def _apply_library_disk_source(disk: dict, sd: dict, fmt: str, central: bool) -> None:
+    lib_id = sd.get("libraryItemId", "")
+    resolved = sd.get("resolvedS3Path", "")
+    if lib_id or resolved:
+        disk["libraryImage"] = {
+            "s3Path": resolved or f"library/{lib_id}.{fmt}",
+            "format": fmt,
+            "central": central,
+        }
+
+
+def _apply_snapshot_disk_source(disk: dict, sd: dict, fmt: str, central: bool) -> None:
+    if sd.get("resolvedS3Path"):
+        disk["libraryImage"] = {
+            "s3Path": sd["resolvedS3Path"],
+            "format": fmt,
+            "central": central,
+        }
+
+
 def _build_disk_from_storage(sd, storage_id):
     """Build a disk dict from storage node data with pattern/library/blank source."""
     fmt = sd.get("format", "qcow2")
@@ -235,33 +268,14 @@ def _build_disk_from_storage(sd, storage_id):
     }
 
     if source_type == "pattern":
-        pattern_id = sd.get("patternId", "")
-        disk_id = sd.get("patternDiskId", "")
-        resolved_path = sd.get("resolvedS3Path", "")
-        if pattern_id and (disk_id or resolved_path):
-            disk["patternImage"] = {
-                "s3Path": resolved_path or f"patterns/{pattern_id}/{disk_id}.qcow2",
-                "format": "qcow2",
-                "central": central,
-                "source": sd.get("diskSource", "central"),
-            }
+        _apply_pattern_disk_source(disk, sd, central)
     elif source_type == "library":
-        lib_id = sd.get("libraryItemId", "")
-        resolved = sd.get("resolvedS3Path", "")
-        if lib_id or resolved:
-            disk["libraryImage"] = {
-                "s3Path": resolved or f"library/{lib_id}.{fmt}",
-                "format": fmt,
-                "central": central,
-            }
-    elif source_type == "snapshot" and sd.get("resolvedS3Path"):
-        # Snapshot data disks clone from their resolved key. No fabricated
-        # fallback — an unresolved snapshot must not guess a library path.
-        disk["libraryImage"] = {
-            "s3Path": sd["resolvedS3Path"],
-            "format": fmt,
-            "central": central,
-        }
+        _apply_library_disk_source(disk, sd, fmt, central)
+    elif source_type == "snapshot":
+        if sd.get("resolvedS3Path"):
+            _apply_snapshot_disk_source(disk, sd, fmt, central)
+        else:
+            disk["blank"] = True
     else:
         disk["blank"] = True
 

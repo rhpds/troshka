@@ -227,10 +227,18 @@ def test_get_status_dev(monkeypatch):
     _reset()
     monkeypatch.setattr(app_updater, "resolve_mode", lambda: "dev")
     monkeypatch.setattr(app_updater, "_dev_up_to_date", lambda: False)
+    monkeypatch.setattr(app_updater, "_dev_stale_key", lambda: "dev:abc123")
     status = app_updater.get_status()
     assert status["mode"] == "dev"
     assert status["up_to_date"] is False
+    assert status["stale_key"] == "dev:abc123"
     assert status["rolling_out"] is False
+
+
+def test_dev_stale_key_reflects_source_hash():
+    key = app_updater._dev_stale_key()
+    assert key.startswith("dev:")
+    assert len(key) > 4
 
 
 def test_dev_up_to_date_true_when_hash_matches():
@@ -295,19 +303,28 @@ def test_get_status_image(monkeypatch):
     assert status["up_to_date"] is False
 
 
-def test_apply_update_dev_spawns_restart(monkeypatch):
+def test_apply_update_dev_spawns_restart(monkeypatch, tmp_path):
     _reset()
     monkeypatch.setattr(app_updater, "resolve_mode", lambda: "dev")
+    monkeypatch.setattr(app_updater, "_RESTART_LOCK", tmp_path / "restart.lock")
     calls = {}
 
     class FakePopen:
-        def __init__(self, args, cwd=None, start_new_session=False):
+        def __init__(
+            self,
+            args,
+            cwd=None,
+            start_new_session=False,
+            stdout=None,
+            stderr=None,
+            close_fds=False,
+        ):
             calls["args"] = args
             calls["cwd"] = cwd
             calls["detached"] = start_new_session
 
     monkeypatch.setattr(app_updater.subprocess, "Popen", FakePopen)
-    result = app_updater.apply_update()
+    result = app_updater.apply_update(initiated_by="admin@test", client_ip="127.0.0.1")
     assert result == {"status": "restarting"}
     assert calls["args"] == ["./dev-services.sh", "restart", "backend"]
     assert calls["detached"] is True
@@ -343,7 +360,8 @@ def test_status_endpoint_returns_snapshot(monkeypatch):
 def test_apply_endpoint_dispatches(monkeypatch):
     monkeypatch.setattr("app.services.app_updater.resolve_mode", lambda: "dev")
     monkeypatch.setattr(
-        "app.services.app_updater.apply_update", lambda: {"status": "restarting"}
+        "app.api.updates.app_updater.apply_update",
+        lambda **kwargs: {"status": "restarting"},
     )
     resp = client.post("/api/v1/update/apply")
     assert resp.status_code == 200

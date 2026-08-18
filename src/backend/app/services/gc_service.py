@@ -740,6 +740,38 @@ def _clean_cluster_rgw_orphans(db: Session, dry_run: bool) -> list[dict]:
     return results
 
 
+def _gc_skip_while_deploying(db, host_id: str, report: dict) -> bool:
+    from app.models.project import Project
+
+    deploying = (
+        db.query(Project)
+        .filter(
+            Project.host_id == host_id,
+            Project.state.in_(("deploying", "reconfiguring")),
+        )
+        .count()
+    )
+    if deploying > 0:
+        report["skipped"] = f"{deploying} project(s) deploying — skipping GC"
+        return True
+    return False
+
+
+def _gc_append_remote_reports(
+    db, host, host_id: str, dry_run: bool, report: dict
+) -> None:
+    s3_cleanup = clean_s3_orphans(db, dry_run)
+    if s3_cleanup.get("deleted", 0) > 0 or s3_cleanup.get("aborted_multipart", 0) > 0:
+        report["s3_cleanup"] = s3_cleanup
+
+    cluster_rgw_cleanup = _clean_cluster_rgw_orphans(db, dry_run)
+    if cluster_rgw_cleanup:
+        report["cluster_rgw_cleanup"] = cluster_rgw_cleanup
+
+    if not dry_run:
+        _reconcile_ocp_routes(db, host, host_id, report)
+
+
 def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
     """Full reconciliation: sync capacity + discover + clean orphans + repair networks."""
     from app.core.database import SessionLocal
@@ -753,19 +785,7 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
 
         report: dict[str, Any] = {"host_id": host_id, "host_ip": host.ip_address}
 
-        # Skip GC if any project is deploying on this host
-        from app.models.project import Project
-
-        deploying = (
-            db.query(Project)
-            .filter(
-                Project.host_id == host_id,
-                Project.state.in_(("deploying", "reconfiguring")),
-            )
-            .count()
-        )
-        if deploying > 0:
-            report["skipped"] = f"{deploying} project(s) deploying — skipping GC"
+        if _gc_skip_while_deploying(db, host_id, report):
             return report
 
         report["capacity"] = sync_host_capacity(db, host)
@@ -791,19 +811,7 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
                     network_repair["repaired"],
                 )
 
-        s3_cleanup = clean_s3_orphans(db, dry_run)
-        if (
-            s3_cleanup.get("deleted", 0) > 0
-            or s3_cleanup.get("aborted_multipart", 0) > 0
-        ):
-            report["s3_cleanup"] = s3_cleanup
-
-        cluster_rgw_cleanup = _clean_cluster_rgw_orphans(db, dry_run)
-        if cluster_rgw_cleanup:
-            report["cluster_rgw_cleanup"] = cluster_rgw_cleanup
-
-        if not dry_run:
-            _reconcile_ocp_routes(db, host, host_id, report)
+        _gc_append_remote_reports(db, host, host_id, dry_run, report)
 
         # Re-sync capacity after cleanup freed disk space
         if not dry_run and report.get("cleanup", {}).get("cache_cleaned", 0) > 0:

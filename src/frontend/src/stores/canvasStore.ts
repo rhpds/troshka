@@ -11,6 +11,7 @@ import {
   applyEdgeChanges,
   addEdge,
 } from "@xyflow/react";
+import { appConfirm } from "@/lib/confirm";
 
 /* ---------- Node data shapes ---------- */
 
@@ -388,6 +389,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     }
 
     if (removals.length > 0) {
+      set({ nodes: updatedNodes });
       if (!get().suppressDeleteWarning) {
         const names = removals
           .map((r) => {
@@ -395,10 +397,23 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             return node ? (node.data as Record<string, any>).name as string || node.id : (r as { id: string }).id;
           })
           .join(", ");
-        if (!window.confirm(`Delete ${removals.length > 1 ? `${removals.length} items` : names}?`)) {
-          set({ nodes: updatedNodes });
-          return;
-        }
+        appConfirm({
+          message: `Delete ${removals.length > 1 ? `${removals.length} items` : names}?`,
+          title: "Delete",
+          confirmLabel: "Delete",
+          variant: "danger",
+        }).then((confirmed) => {
+          if (!confirmed) return;
+          get().pushHistory();
+          const removedIds = new Set(removals.map((r) => (r as { id: string }).id));
+          set({
+            nodes: applyNodeChanges(removals, get().nodes),
+            edges: get().edges.filter((e) => !removedIds.has(e.source) && !removedIds.has(e.target)),
+            selectedNodeId: removedIds.has(get().selectedNodeId || "") ? null : get().selectedNodeId,
+          });
+          set({ topologyDirty: computeTopologyDirty(get()) });
+        });
+        return;
       }
       get().pushHistory();
       const removedIds = new Set(removals.map((r) => (r as { id: string }).id));
@@ -418,12 +433,21 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     const others = changes.filter((c) => c.type !== "remove");
 
     if (removals.length > 0 && !get().suppressDeleteWarning) {
-      if (!window.confirm(`Delete ${removals.length} connection${removals.length > 1 ? "s" : ""}?`)) {
-        if (others.length > 0) set({ edges: applyEdgeChanges(others, get().edges) });
-        return;
-      }
-      get().pushHistory();
+      if (others.length > 0) set({ edges: applyEdgeChanges(others, get().edges) });
+      appConfirm({
+        message: `Delete ${removals.length} connection${removals.length > 1 ? "s" : ""}?`,
+        title: "Delete",
+        confirmLabel: "Delete",
+        variant: "danger",
+      }).then((confirmed) => {
+        if (!confirmed) return;
+        get().pushHistory();
+        set({ edges: applyEdgeChanges(changes, get().edges) });
+        set({ topologyDirty: computeTopologyDirty(get()) });
+      });
+      return;
     }
+    if (removals.length > 0) get().pushHistory();
     set({ edges: applyEdgeChanges(changes, get().edges) });
     if (removals.length > 0) set({ topologyDirty: computeTopologyDirty(get()) });
   },

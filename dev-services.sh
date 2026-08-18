@@ -14,8 +14,13 @@ DB_NAME="troshka"
 BACKEND_PORT=8200
 FRONTEND_PORT=3100
 PID_DIR="/tmp/troshka"
+LIFECYCLE_LOG="/tmp/troshka-lifecycle.log"
 
 mkdir -p "$PID_DIR"
+
+lifecycle_log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') dev-services pid=$$ $*" >> "$LIFECYCLE_LOG"
+}
 
 start_db() {
     if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "^${DB_CONTAINER}$"; then
@@ -153,19 +158,40 @@ start_backend() {
         venv/bin/pip install -q -e ".[dev]"
     fi
     source venv/bin/activate
+    # macOS: avoid fork-safety crashes when background threads + subprocess/ssl coexist
+    export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
     alembic upgrade head 2>/dev/null || true
-    uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" >>/tmp/troshka-backend.log 2>&1 &
+    lifecycle_log "start_backend spawning uvicorn on port $BACKEND_PORT"
+    nohup uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" >>/tmp/troshka-backend.log 2>&1 &
     local pid=$!
+    disown -h "$pid" 2>/dev/null || true
     echo "$pid" > "$PID_DIR/backend.pid"
+    lifecycle_log "start_backend spawned pid=$pid"
     # Catch an immediate failure (crash / bind conflict). Slow startup is fine —
     # the process stays alive and binds the port once lifespan startup completes.
     sleep 3
     if ! kill -0 "$pid" 2>/dev/null; then
+        lifecycle_log "start_backend FAILED pid=$pid exited immediately"
         echo "  Backend:    FAILED to start — process exited (see /tmp/troshka-backend.log)"
         rm -f "$PID_DIR/backend.pid"
         return 1
     fi
-    echo "  Backend:    started (port $BACKEND_PORT, PID $pid)"
+    for _ in $(seq 1 30); do
+        if curl -sf --max-time 2 "http://localhost:$BACKEND_PORT/api/v1/auth/me" >/dev/null 2>&1; then
+            lifecycle_log "start_backend ready pid=$pid"
+            echo "  Backend:    started (port $BACKEND_PORT, PID $pid)"
+            return
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+            lifecycle_log "start_backend FAILED pid=$pid died during warmup"
+            rm -f "$PID_DIR/backend.pid"
+            echo "  Backend:    FAILED during warmup (see /tmp/troshka-backend.log)"
+            return 1
+        fi
+        sleep 2
+    done
+    lifecycle_log "start_backend slow pid=$pid still warming"
+    echo "  Backend:    started (port $BACKEND_PORT, PID $pid) — still warming up"
 }
 
 check_backend_idle() {
@@ -203,6 +229,7 @@ except:
 
 stop_backend() {
     local force="${1:-}"
+    lifecycle_log "stop_backend begin force=${force} pids=$(backend_pids | tr '\n' ' ')"
     if [ -f "$PID_DIR/backend.pid" ] && kill -0 "$(cat "$PID_DIR/backend.pid")" 2>/dev/null; then
         if ! check_backend_idle 2>/dev/null; then
             echo "  Backend:    in-flight work detected — will resume after restart"
@@ -222,10 +249,12 @@ stop_backend() {
         done
         pids="$(backend_pids)"
         if [ -n "$pids" ]; then
+            lifecycle_log "stop_backend kill -9 pids=$(echo "$pids" | tr '\n' ' ')"
             echo "$pids" | xargs kill -9 2>/dev/null || true
             sleep 1
         fi
     fi
+    lifecycle_log "stop_backend done"
     echo "  Backend:    stopped"
 }
 
