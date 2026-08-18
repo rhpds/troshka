@@ -5335,7 +5335,10 @@ def _is_route_ready(code):
 
 def _http_suffix(code):
     """Return a formatted HTTP code suffix for status messages."""
-    return f" (HTTP {code})" if code not in ("000", "") else ""
+    normalized = (code or "").strip()
+    if not normalized or set(normalized) <= {"0"}:
+        return ""
+    return f" (HTTP {normalized})"
 
 
 def _check_vm_console_and_oauth(oc_fn, push_fn, _t):
@@ -6324,8 +6327,7 @@ def _ocp_check_console_route(host, project_id, bastion_ip, password, push_fn):
     ):
         push_fn(
             "console",
-            "waiting for console route"
-            + (f" (HTTP {http_code})" if http_code not in ("000", "") else ""),
+            "waiting for console route" + _http_suffix(http_code),
         )
         _t.sleep(10)
         return False
@@ -6348,8 +6350,7 @@ def _ocp_check_console_route(host, project_id, bastion_ip, password, push_fn):
     ):
         push_fn(
             "console",
-            "waiting for OAuth route"
-            + (f" (HTTP {oauth_code})" if oauth_code not in ("000", "") else ""),
+            "waiting for OAuth route" + _http_suffix(oauth_code),
         )
         _t.sleep(10)
         return False

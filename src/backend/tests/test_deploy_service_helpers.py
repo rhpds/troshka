@@ -407,6 +407,9 @@ class TestHttpSuffix:
     def test_000_suppressed(self):
         assert _http_suffix("000") == ""
 
+    def test_000000_suppressed(self):
+        assert _http_suffix("000000") == ""
+
     def test_empty_suppressed(self):
         assert _http_suffix("") == ""
 
@@ -8282,6 +8285,23 @@ class TestOcpCheckConsoleRoute:
         calls = [c for c in push_fn.call_args_list if "console" in str(c)]
         found_http_000 = any("HTTP 000" in str(c) for c in calls)
         assert not found_http_000
+
+    @patch("app.services.deploy_service._exec_on_bastion")
+    @patch("time.sleep", return_value=None)
+    def test_console_ok_oauth_000000_returns_false(self, mock_sleep, mock_exec):
+        from app.services.deploy_service import _ocp_check_console_route
+
+        mock_exec.side_effect = ["200", "000000"]
+        push_fn = MagicMock()
+        result = _ocp_check_console_route(
+            MagicMock(), "proj-1", "10.0.0.5", "pass", push_fn
+        )
+        assert result is False
+        oauth_calls = [
+            c for c in push_fn.call_args_list if "waiting for OAuth route" in str(c)
+        ]
+        assert oauth_calls
+        assert "HTTP" not in str(oauth_calls[-1])
 
     @patch("app.services.deploy_service._exec_on_bastion")
     @patch("time.sleep", return_value=None)
