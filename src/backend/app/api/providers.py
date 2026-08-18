@@ -1166,6 +1166,76 @@ def discover_datasources(
         raise HTTPException(status_code=400, detail="Failed to list DataSources")
 
 
+def _s3_client_kwargs(
+    creds: dict[str, Any], region: str, endpoint_url: str | None
+) -> dict[str, str]:
+    kwargs: dict[str, str] = {"region_name": region}
+    if creds.get("access_key_id"):
+        kwargs["aws_access_key_id"] = creds["access_key_id"]
+    if creds.get("secret_access_key"):
+        kwargs["aws_secret_access_key"] = creds["secret_access_key"]
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+    return kwargs
+
+
+def _s3_account_id(region: str, creds: dict[str, Any]) -> str | None:
+    import boto3
+
+    try:
+        sts = boto3.client(
+            "sts",
+            region_name=region,
+            aws_access_key_id=creds.get("access_key_id"),
+            aws_secret_access_key=creds.get("secret_access_key"),
+        )
+        return sts.get_caller_identity()["Account"]
+    except Exception:
+        return None
+
+
+def _s3_head_bucket_result(
+    s3: Any,
+    bucket: str,
+    *,
+    account_id: str | None = None,
+    endpoint_url: str | None = None,
+) -> dict[str, Any]:
+    head_kwargs: dict[str, str] = {"Bucket": bucket}
+    if account_id:
+        head_kwargs["ExpectedBucketOwner"] = account_id
+    try:
+        s3.head_bucket(**head_kwargs)
+    except s3.exceptions.ClientError as e:
+        code = e.response["Error"]["Code"]
+        if code in ("404", "NoSuchBucket"):
+            result: dict[str, Any] = {
+                "status": "ok",
+                "bucket_missing": True,
+                "bucket": bucket,
+                "message": (
+                    f"Credentials OK but bucket '{bucket}' does not exist. "
+                    "Click Create Bucket."
+                ),
+            }
+        elif code == "403":
+            result = {
+                "status": "ok",
+                "bucket_denied": True,
+                "bucket": bucket,
+                "message": f"Credentials OK but no access to bucket '{bucket}'.",
+            }
+        else:
+            raise
+    else:
+        result = {"status": "ok", "bucket": bucket}
+    if account_id:
+        result["account"] = account_id
+    if endpoint_url:
+        result["endpoint"] = endpoint_url
+    return result
+
+
 def _test_s3_provider(provider: Provider, creds: dict[str, Any]) -> dict[str, Any]:
     """Test S3 provider credentials and bucket access."""
     import boto3
@@ -1174,70 +1244,11 @@ def _test_s3_provider(provider: Provider, creds: dict[str, Any]) -> dict[str, An
     endpoint_url = creds.get("endpoint_url") or None
     bucket = creds.get("bucket", "troshka-images")
 
-    kwargs: dict[str, str] = {"region_name": region}
-    if creds.get("access_key_id"):
-        kwargs["aws_access_key_id"] = creds["access_key_id"]
-    if creds.get("secret_access_key"):
-        kwargs["aws_secret_access_key"] = creds["secret_access_key"]
-    if endpoint_url:
-        kwargs["endpoint_url"] = endpoint_url
-
-    s3 = boto3.client("s3", **kwargs)
-
-    if endpoint_url:
-        try:
-            s3.head_bucket(Bucket=bucket)
-            return {"status": "ok", "bucket": bucket, "endpoint": endpoint_url}
-        except s3.exceptions.ClientError as e:
-            code = e.response["Error"]["Code"]
-            if code in ("404", "NoSuchBucket"):
-                return {
-                    "status": "ok",
-                    "bucket_missing": True,
-                    "bucket": bucket,
-                    "endpoint": endpoint_url,
-                    "message": f"Credentials OK but bucket '{bucket}' does not exist. Click Create Bucket.",
-                }
-            if code == "403":
-                return {
-                    "status": "ok",
-                    "bucket_denied": True,
-                    "bucket": bucket,
-                    "endpoint": endpoint_url,
-                    "message": f"Credentials OK but no access to bucket '{bucket}'.",
-                }
-            raise
-
-    sts = boto3.client(
-        "sts",
-        region_name=region,
-        aws_access_key_id=creds.get("access_key_id"),
-        aws_secret_access_key=creds.get("secret_access_key"),
+    s3 = boto3.client("s3", **_s3_client_kwargs(creds, region, endpoint_url))
+    account_id = _s3_account_id(region, creds)
+    return _s3_head_bucket_result(
+        s3, bucket, account_id=account_id, endpoint_url=endpoint_url
     )
-    identity = sts.get_caller_identity()
-    account_id = identity["Account"]
-    try:
-        s3.head_bucket(Bucket=bucket, ExpectedBucketOwner=account_id)
-        return {"status": "ok", "bucket": bucket, "account": account_id}
-    except s3.exceptions.ClientError as e:
-        code = e.response["Error"]["Code"]
-        if code == "404":
-            return {
-                "status": "ok",
-                "bucket_missing": True,
-                "bucket": bucket,
-                "account": account_id,
-                "message": f"Credentials OK but bucket '{bucket}' does not exist. Click Create Bucket.",
-            }
-        if code == "403":
-            return {
-                "status": "ok",
-                "bucket_denied": True,
-                "bucket": bucket,
-                "account": account_id,
-                "message": f"Credentials OK but no access to bucket '{bucket}'.",
-            }
-        raise
 
 
 def _test_kubevirt_provider(
