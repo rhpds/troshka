@@ -95,10 +95,12 @@ class TestBuildCloudInitUserdata:
             repo_user="u",
             repo_pass="p",
         )
+        assert "path: /etc/yum.repos.d/troshka-rhel.repo" in result
         assert "baseurl=https://repo.example/rhel-10.2/BaseOS" in result
         assert "baseurl=https://repo.example/rhel-10.2/AppStream" in result
         assert "username=u" in result
         assert "password=p" in result
+        assert "REPOEOF" not in result
         assert "/dev/sr0" not in result  # no DVD mount when repo is configured
         assert "qemu-kvm" in result  # still installs the virt stack
 

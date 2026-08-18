@@ -29,7 +29,7 @@ write_files:
       nameserver 172.30.0.10
       options ndots:5
     permissions: '0644'
-runcmd:
+{repo_write_file}runcmd:
 {repo_setup}
   - dnf install -y qemu-kvm libvirt libvirt-client virt-install python3 python3-libvirt dnsmasq nftables xorriso nmap-ncat sshpass nfs-utils || true
   - systemctl enable --now libvirtd || systemctl enable --now virtqemud.socket virtnetworkd.socket virtstoraged.socket
@@ -62,7 +62,7 @@ write_files:
       nameserver 172.30.0.10
       options ndots:5
     permissions: '0644'
-runcmd:
+{repo_write_file}runcmd:
 {repo_setup}
   - dnf install -y python3 qemu-img nfs-utils || true
   - mkdir -p /var/lib/troshka /etc/troshka-agent
@@ -90,28 +90,28 @@ _REPO_SETUP_DVD = """  - |
     REPOEOF
     fi"""
 
-# Alternative: pull packages from the central-S4 HTTP repo (basic auth). Used
-# when the OCP Virt provider is registered with pkg_repo_url — avoids importing
-# the 11 GB DVD ISO as a per-host boot volume.
-_REPO_SETUP_HTTP = """  - |
-    cat > /etc/yum.repos.d/troshka-rhel.repo << 'REPOEOF'
-    [troshka-baseos]
-    name=Troshka RHEL BaseOS
-    baseurl={repo_url}/BaseOS
-    enabled=1
-    gpgcheck=0
-    sslverify=0
-    username={repo_user}
-    password={repo_pass}
-    [troshka-appstream]
-    name=Troshka RHEL AppStream
-    baseurl={repo_url}/AppStream
-    enabled=1
-    gpgcheck=0
-    sslverify=0
-    username={repo_user}
-    password={repo_pass}
-    REPOEOF"""
+# HTTP repo: write the .repo file via cloud-init (not a shell heredoc — indented
+# REPOEOF delimiters break bash and swallow the rest of runcmd).
+_REPO_WRITE_FILE_HTTP = """  - path: /etc/yum.repos.d/troshka-rhel.repo
+    permissions: '0644'
+    content: |
+      [troshka-baseos]
+      name=Troshka RHEL BaseOS
+      baseurl={repo_url}/BaseOS
+      enabled=1
+      gpgcheck=0
+      sslverify=0
+      username={repo_user}
+      password={repo_pass}
+      [troshka-appstream]
+      name=Troshka RHEL AppStream
+      baseurl={repo_url}/AppStream
+      enabled=1
+      gpgcheck=0
+      sslverify=0
+      username={repo_user}
+      password={repo_pass}
+"""
 
 
 def _resolve_pkg_repo_creds(creds: dict[str, Any]) -> tuple[str, str, str]:
@@ -188,13 +188,18 @@ def _build_cloud_init_userdata(
         else CLOUD_INIT_TEMPLATE
     )
     if repo_url:
-        repo_setup = _REPO_SETUP_HTTP.format(
+        repo_write_file = _REPO_WRITE_FILE_HTTP.format(
             repo_url=repo_url, repo_user=repo_user, repo_pass=repo_pass
         )
+        repo_setup = ""
     else:
+        repo_write_file = ""
         repo_setup = _REPO_SETUP_DVD
     user_data = template.format(
-        ssh_pubkey=public_key, host_id=host_id, repo_setup=repo_setup
+        ssh_pubkey=public_key,
+        host_id=host_id,
+        repo_setup=repo_setup,
+        repo_write_file=repo_write_file,
     )
 
     if nfs_server and nfs_path:

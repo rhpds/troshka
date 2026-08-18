@@ -18,4 +18,8 @@ def resolve_pkg_repo(creds: dict[str, Any] | None = None) -> tuple[str, str, str
     password = creds.get("pkg_repo_password") or (
         getattr(pkg, "password", "") if pkg else ""
     )
+    # HTTP basic auth requires both URL and password; URL-only config must not
+    # disable the DVD ISO fallback path.
+    if not url or not password:
+        return "", "", ""
     return url, user, password

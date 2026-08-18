@@ -35,3 +35,18 @@ def test_resolve_pkg_repo_falls_back_to_config():
     assert "ocpv-infra01" in url
     assert user == "troshka-repo"
     assert pw == "secret"
+
+
+def test_resolve_pkg_repo_disabled_without_password():
+    pkg = MagicMock(
+        url="https://repo.example/rhel-10.2",
+        username="troshka-repo",
+        password="",
+    )
+    ocp = MagicMock(pkg_repo=pkg)
+    cfg = MagicMock(ocpvirt=ocp)
+    with patch("app.core.config.config", cfg):
+        url, user, pw = resolve_pkg_repo({})
+    assert url == ""
+    assert user == ""
+    assert pw == ""
