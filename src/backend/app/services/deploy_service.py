@@ -98,6 +98,13 @@ _MSG_WAITING_CONSOLE = "waiting for OpenShift console"
 _MSG_CA_CERT = "CA cert"
 _VMS_DESTROY_PATH = "/vms/destroy"
 _MSG_BROWSER_CREDS = "browser credentials"
+_KILL_BROWSER_CMD = (
+    "pkill -x firefox 2>/dev/null || true; "
+    "pkill -f '[f]irefox' 2>/dev/null || true; "
+    "sleep 2; "
+    "rm -f /home/cloud-user/.mozilla/firefox/*.default*/lock "
+    "/home/cloud-user/.mozilla/firefox/*.default*/.parentlock 2>/dev/null || true"
+)
 _LOG_DEPLOY = "Deploy %s: %s"
 _KUBEVIRT_API = "kubevirt.io"
 _VM_START_FAILED = "Failed to start VM %s: %s"
@@ -4955,7 +4962,9 @@ def _exec_on_bastion_troshkad(host, project_id, bastion_ip, password, command, t
     return None
 
 
-def _verify_bastion_browser(exec_fn, push_fn, project_id, vm_name=None):
+def _verify_bastion_browser(
+    exec_fn, push_fn, project_id, vm_name=None, status_phase="browser"
+):
     """Verify and fix bastion CA trust and browser credentials.
 
     Args:
@@ -4978,10 +4987,9 @@ def _verify_bastion_browser(exec_fn, push_fn, project_id, vm_name=None):
         'if [ -n "$LIVE_FP" ] && [ "$LIVE_FP" = "$FILE_FP" ]; then echo "ca:ok"; '
         'elif [ -z "$LIVE_FP" ]; then echo "ca:pending"; '
         'else echo "ca:stale"; fi; '
-        'BOOT=$(date -d "$(uptime -s)" +%s 2>/dev/null || echo 0); '
-        "LJ=$(stat -c %Y /home/cloud-user/.mozilla/firefox/*/logins.json 2>/dev/null | head -1 || echo 0); "
-        'if [ "$LJ" -gt "$BOOT" ] 2>/dev/null; then echo "logins:ok"; '
-        'elif [ "$LJ" = "0" ]; then echo "logins:missing"; '
+        "LJ=$(find /home/cloud-user/.mozilla/firefox -name logins.json 2>/dev/null | head -1); "
+        'if [ -n "$LJ" ] && grep -q encryptedUsername "$LJ" 2>/dev/null; then echo "logins:ok"; '
+        'elif [ -z "$LJ" ]; then echo "logins:missing"; '
         'else echo "logins:stale"; fi'
     )
     _CA_UPDATE_CMD = (
@@ -5002,18 +5010,20 @@ def _verify_bastion_browser(exec_fn, push_fn, project_id, vm_name=None):
             return True
 
         if _apply_bastion_browser_fixes(
-            verify, exec_fn, push_fn, _CA_UPDATE_CMD, _AUTOLOGIN_CMD
+            verify, exec_fn, push_fn, _CA_UPDATE_CMD, _AUTOLOGIN_CMD, status_phase
         ):
             _t.sleep(5)
             continue
-        push_fn("browser", "waiting for bastion setup")
+        push_fn(status_phase, "waiting for bastion setup")
         _t.sleep(10)
 
     logger.warning("OCP monitor %s: bastion browser setup incomplete", label)
     return False
 
 
-def _apply_bastion_browser_fixes(verify, exec_fn, push_fn, ca_cmd, autologin_cmd):
+def _apply_bastion_browser_fixes(
+    verify, exec_fn, push_fn, ca_cmd, autologin_cmd, status_phase="browser"
+):
     """Check for and apply CA cert / browser credential fixes. Returns True if fixes applied."""
     needs_fix = []
     if verify and "ca:stale" in verify:
@@ -5022,10 +5032,11 @@ def _apply_bastion_browser_fixes(verify, exec_fn, push_fn, ca_cmd, autologin_cmd
         needs_fix.append(_MSG_BROWSER_CREDS)
     if not needs_fix:
         return False
-    push_fn("browser", f"bastion {', '.join(needs_fix)} stale, updating...")
+    push_fn(status_phase, f"bastion {', '.join(needs_fix)} stale, updating...")
     if _MSG_CA_CERT in needs_fix:
         exec_fn(ca_cmd, timeout=15)
     if _MSG_BROWSER_CREDS in needs_fix:
+        exec_fn(_KILL_BROWSER_CMD, timeout=10)
         exec_fn(autologin_cmd, timeout=30)
     return True
 
@@ -5268,6 +5279,7 @@ def _configure_bastion_and_cleanup(
     _oc,
     _push,
     vm_name=None,
+    status_phase="browser",
 ):
     """Configure bastion browser if flag is set, then clean up temp kubeconfig."""
     vm_node = next((n for n in nodes if n["id"] == vm_id), None)
@@ -5277,7 +5289,7 @@ def _configure_bastion_and_cleanup(
     if configure_browser:
         # Copy kubeconfig to bastion default locations (skip if already using bastion default)
         if kc_path:
-            _push("browser", "setting bastion kubeconfig for this cluster")
+            _push(status_phase, "setting bastion kubeconfig for this cluster")
             _exec_on_bastion(
                 host,
                 project_id,
@@ -5292,7 +5304,7 @@ def _configure_bastion_and_cleanup(
             )
 
         # Refresh bastion CA trust with this cluster's ingress cert
-        _push("browser", "refreshing bastion CA trust")
+        _push(status_phase, "refreshing bastion CA trust")
         _oc(
             "oc get secret -n openshift-ingress router-certs-default "
             "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
@@ -5302,10 +5314,12 @@ def _configure_bastion_and_cleanup(
         )
 
         # Verify CA fingerprint + run autologin with retry loop
-        _push("browser", "verifying bastion browser setup")
-        bastion_ready = _verify_bastion_browser(_oc, _push, project_id, vm_name)
+        _push(status_phase, "verifying bastion browser setup")
+        bastion_ready = _verify_bastion_browser(
+            _oc, _push, project_id, vm_name, status_phase=status_phase
+        )
         if bastion_ready:
-            _push("browser", "bastion browser ready")
+            _push(status_phase, "bastion browser ready")
 
     # Cleanup temp kubeconfig (skip if we used bastion default or copied it there)
     if kc_path and not configure_browser:
@@ -5392,7 +5406,9 @@ def _ocp_vm_wait_for_api(_oc, _push, deadline):
     return False
 
 
-def _ocp_vm_restart_ingress(_oc, _push):
+def _ocp_vm_restart_ingress(_oc, _push, skip=False):
+    if skip:
+        return
     _push("console", "restarting ingress router")
     _oc(
         "oc rollout restart deployment/router-default -n openshift-ingress 2>/dev/null || true",
@@ -5454,19 +5470,19 @@ def _ocp_vm_health_inner(
 
     def _push(phase, detail, items=None):
         detail_with_time = f"{detail} ({_elapsed()})"
-        msg = {
-            "type": "ocp-health",
-            "phase": phase,
-            "detail": detail_with_time,
-            "vm_id": vm_id,
-            "vm_name": vm_name,
-        }
-        if items:
-            msg["items"] = items
-        notify_project(project_id, msg)
+        _ocp_push_status(
+            project_id,
+            phase,
+            detail_with_time,
+            items,
+            vm_id=vm_id,
+            vm_name=vm_name,
+        )
 
     # Find bastion for exec
     nodes = topo.get("nodes", [])
+    vm_node = next((n for n in nodes if n["id"] == vm_id), None)
+    is_recert = bool(vm_node and vm_node.get("data", {}).get("recertEnabled"))
     _bastion, bastion_ip, password = _extract_bastion_info(nodes)
 
     if not bastion_ip:
@@ -5488,15 +5504,26 @@ def _ocp_vm_health_inner(
     logger.info("OCP VM monitor started for %s/%s", project_id[:8], vm_name)
 
     if not _ocp_vm_wait_for_api(_oc, _push, deadline):
+        _ocp_update_status(project_id, "error", int(_t.time() - start))
         return
 
     _ocp_vm_poll_with_csrs(_oc, _approve_csrs, _push, deadline)
-    _ocp_vm_restart_ingress(_oc, _push)
-    _t.sleep(10)
+    _ocp_vm_restart_ingress(_oc, _push, skip=is_recert)
+    if not is_recert:
+        _t.sleep(10)
     _ocp_vm_wait_for_console(_oc, _approve_csrs, _push, deadline)
-    _ocp_vm_final_csr_sweep(_approve_csrs, _push)
 
-    # Configure bastion browser + cleanup temp kubeconfig
+    elapsed_secs = int(_t.time() - start)
+    ready_detail = f"{vm_name} cluster ready"
+    _push("ready", ready_detail)
+    _ocp_update_status(project_id, "ready", elapsed_secs)
+
+    def _ready_push(_phase, detail, items=None):
+        _push("ready", detail, items)
+
+    _ocp_vm_final_csr_sweep(_approve_csrs, _ready_push)
+
+    # Post-ready housekeeping — keep phase "ready" so UI doesn't regress
     _configure_bastion_and_cleanup(
         nodes,
         vm_id,
@@ -5506,11 +5533,11 @@ def _ocp_vm_health_inner(
         bastion_ip,
         password,
         _oc,
-        _push,
+        _ready_push,
         vm_name=vm_name,
+        status_phase="ready",
     )
 
-    _push("ready", f"{vm_name} cluster ready")
     logger.info(
         "OCP VM monitor complete for %s/%s (%s)",
         project_id[:8],
@@ -6301,11 +6328,15 @@ def _ocp_post_pattern_cert_refresh(
     _verify_bastion_browser(_bastion_oc, push_fn, project_id)
 
 
-def _ocp_push_status(project_id, phase, detail, items=None):
+def _ocp_push_status(project_id, phase, detail, items=None, vm_id=None, vm_name=None):
     """Push OCP health status via WebSocket and persist to DB."""
     msg = {"type": "ocp-health", "phase": phase, "detail": detail}
     if items:
         msg["items"] = items
+    if vm_id:
+        msg["vm_id"] = vm_id
+    if vm_name:
+        msg["vm_name"] = vm_name
     notify_project(project_id, msg)
     try:
         from app.core.database import SessionLocal as _PushSL

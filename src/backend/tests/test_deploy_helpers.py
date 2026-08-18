@@ -449,6 +449,7 @@ class TestVerifyBastionBrowser(unittest.TestCase):
             side_effect=[
                 "ca:stale\nlogins:stale",  # verify
                 "updated ca",  # CA update cmd
+                "",  # kill browser
                 "autologin done",  # autologin cmd
                 "ca:ok\nlogins:ok",  # verify again
             ]
@@ -470,6 +471,7 @@ class TestVerifyBastionBrowser(unittest.TestCase):
         exec_fn = MagicMock(
             side_effect=[
                 "ca:pending\nlogins:missing",  # verify → logins:missing triggers fix
+                "",  # kill browser
                 "autologin done",  # autologin cmd
                 "ca:ok\nlogins:ok",  # verify again
             ]
@@ -478,6 +480,33 @@ class TestVerifyBastionBrowser(unittest.TestCase):
 
         result = _verify_bastion_browser(exec_fn, push_fn, "proj-1234", "bastion")
         self.assertTrue(result)
+
+    @patch("time.sleep", return_value=None)
+    def test_kills_browser_before_autologin(self, _mock_sleep):
+        from app.services.deploy_service import (
+            _KILL_BROWSER_CMD,
+            _verify_bastion_browser,
+        )
+
+        exec_fn = MagicMock(
+            side_effect=[
+                "ca:ok\nlogins:missing",
+                "",
+                "autologin done",
+                "ca:ok\nlogins:ok",
+            ]
+        )
+        push_fn = MagicMock()
+
+        result = _verify_bastion_browser(exec_fn, push_fn, "proj-1234")
+        self.assertTrue(result)
+        calls = [c[0][0] for c in exec_fn.call_args_list]
+        self.assertIn(_KILL_BROWSER_CMD, calls)
+        kill_idx = calls.index(_KILL_BROWSER_CMD)
+        autologin_idx = next(
+            i for i, cmd in enumerate(calls) if "ocp-autologin.py" in cmd
+        )
+        self.assertLess(kill_idx, autologin_idx)
 
     @patch("time.sleep", return_value=None)
     def test_timeout_returns_false(self, _mock_sleep):
