@@ -2,6 +2,7 @@ import faulthandler
 import logging
 import signal
 import sys
+import time
 
 faulthandler.enable()
 faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
@@ -384,7 +385,7 @@ def _startup_sync_obc_credentials():
         providers = db.query(Provider).filter_by(type="kubevirt", state="active").all()
         for provider in providers:
             try:
-                _sync_provider_obc(db, provider)
+                _sync_provider_obc(provider)
             except Exception:
                 logger.debug(
                     "OBC sync skipped for %s (cluster may be unreachable)",
@@ -397,27 +398,26 @@ def _startup_sync_obc_credentials():
         db.close()
 
 
-def _sync_provider_obc(db, provider):
+def _sync_provider_obc(provider):
     """Read OBC credentials from a KubeVirt cluster and store in provider record."""
     import base64
 
+    from app.constants.rgw import RGW_IN_CLUSTER_ENDPOINT
     from app.services.providers.kubevirt import _get_k8s_clients
 
     _, core_api, _ = _get_k8s_clients(provider)
 
     obc_name = "troshka-patterns"
     ns = "troshka-operator"
-    secret = core_api.read_namespaced_secret(obc_name, ns)
-    cm = core_api.read_namespaced_config_map(obc_name, ns)
+    k8s_timeout = 15
+    secret = core_api.read_namespaced_secret(obc_name, ns, _request_timeout=k8s_timeout)
+    cm = core_api.read_namespaced_config_map(obc_name, ns, _request_timeout=k8s_timeout)
 
     secret_data = getattr(secret, "data", None) or {}
     cm_data = getattr(cm, "data", None) or {}
     s3_config = {
         "bucket": cm_data.get("BUCKET_NAME", ""),
-        "endpoint": (
-            "http://rook-ceph-rgw-ocs-storagecluster-cephobjectstore"
-            ".openshift-storage.svc:80"
-        ),
+        "endpoint": RGW_IN_CLUSTER_ENDPOINT,
         "region": cm_data.get("BUCKET_REGION", "us-east-1") or "us-east-1",
         "access_key_id": base64.b64decode(
             secret_data.get("AWS_ACCESS_KEY_ID", "")
@@ -434,10 +434,56 @@ def _sync_provider_obc(db, provider):
         logger.info("Synced OBC credentials for provider %s", provider.name)
 
 
+def _run_deferred_startup():
+    """Startup work that does remote I/O (k8s / cloud APIs).
+
+    These hooks must NOT run on the FastAPI lifespan path: a single unreachable
+    provider cluster makes their synchronous calls retry with backoff, which
+    would block uvicorn from binding the port for minutes. Each hook handles its
+    own errors; guard again defensively so one failure can't skip the rest.
+    """
+    from app.core.lifecycle import audit
+    from app.services.app_updater import resolve_mode
+
+    hooks = [_startup_resume_storage_pools]
+    if resolve_mode() != "dev":
+        hooks.append(_startup_sync_obc_credentials)
+    else:
+        audit("deferred _startup_sync_obc_credentials: skipped (dev mode)")
+
+    for hook in hooks:
+        try:
+            t = time.monotonic()
+            audit(f"deferred {hook.__name__}: begin")
+            hook()
+            audit(f"deferred {hook.__name__}: done ({time.monotonic() - t:.2f}s)")
+        except Exception:
+            audit(f"deferred {hook.__name__}: failed")
+            logger.warning(
+                "Deferred startup hook %s failed", hook.__name__, exc_info=True
+            )
+
+
+def _start_deferred_startup():
+    """Run the remote-I/O startup hooks in a background daemon thread so they
+    never block the port bind (mirrors start_operator_updater)."""
+    import threading
+
+    threading.Thread(
+        target=_run_deferred_startup, daemon=True, name="deferred-startup"
+    ).start()
+
+
 @asynccontextmanager
 async def lifespan(app):
     import asyncio
 
+    from app.core.lifecycle import (
+        audit,
+        install_signal_audit,
+        run_startup_step,
+        start_heartbeat,
+    )
     from app.core.redis import get_redis
     from app.services.health_poller import start_health_poller
     from app.services.project_timer import start_project_timer
@@ -446,6 +492,10 @@ async def lifespan(app):
         start_redis_listener,
         start_state_poller,
     )
+
+    audit("lifespan startup begin")
+    install_signal_audit()
+    start_heartbeat()
 
     set_event_loop(asyncio.get_running_loop())
 
@@ -474,22 +524,29 @@ async def lifespan(app):
 
     start_operator_updater()
 
-    _startup_clear_health_monitors()
-    _startup_recover_abandoned_jobs()
+    from app.services.app_updater import start_app_updater
 
-    _startup_reset_stuck_projects()
-    _startup_reset_stuck_hosts()
+    start_app_updater()
 
-    _startup_resume_pattern_captures()
-    _startup_resume_storage_pools()
-    _startup_sync_obc_credentials()
+    run_startup_step("clear_health_monitors", _startup_clear_health_monitors)
+    run_startup_step("recover_abandoned_jobs", _startup_recover_abandoned_jobs)
+    run_startup_step("reset_stuck_projects", _startup_reset_stuck_projects)
+    run_startup_step("reset_stuck_hosts", _startup_reset_stuck_hosts)
+    run_startup_step("resume_pattern_captures", _startup_resume_pattern_captures)
 
+    # Remote-I/O hooks run in the background so an unreachable provider cluster
+    # can't block the port bind (see _run_deferred_startup).
+    _start_deferred_startup()
+
+    audit("lifespan startup complete")
     yield
 
+    audit("lifespan shutdown begin")
     # Shutdown
     from app.core.redis import close_redis
 
     close_redis()
+    audit("lifespan shutdown complete")
 
 
 def _resolve_pool_nfs_config(pool) -> tuple:
@@ -593,7 +650,7 @@ def _retry_pb_agent_install(host_id: str, pool_id: str):
 app = FastAPI(
     title=config.app.name,
     description="Nested VM Environment Builder",
-    version="0.1.0",
+    version="0.1.2",
     root_path=config.app.root_path,
     lifespan=lifespan,
 )
@@ -632,6 +689,7 @@ from app.api import providers as provider_routes  # noqa: E402
 from app.api import registry_credential_routes as registry_cred_routes  # noqa: E402
 from app.api import storage_pools as storage_pool_routes  # noqa: E402
 from app.api import templates as template_routes  # noqa: E402
+from app.api import updates as update_routes  # noqa: E402
 from app.api import users as user_routes  # noqa: E402
 from app.api import vms as vm_routes  # noqa: E402
 from app.api import ws as ws_routes  # noqa: E402
@@ -656,11 +714,12 @@ app.include_router(portal_routes.router, prefix=_API_PREFIX)
 app.include_router(template_routes.router, prefix=_API_PREFIX)
 app.include_router(registry_cred_routes.router, prefix=_API_PREFIX)
 app.include_router(user_routes.router, prefix=_API_PREFIX)
+app.include_router(update_routes.router, prefix=_API_PREFIX)
 
 
 @app.get(f"{_API_PREFIX}/health")
 def health_check():
-    return {"status": "healthy", "app": config.app.name, "version": "0.1.0"}
+    return {"status": "healthy", "app": config.app.name, "version": "0.1.2"}
 
 
 @app.get(f"{_API_PREFIX}/ocp/versions")

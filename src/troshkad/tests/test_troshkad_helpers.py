@@ -5990,6 +5990,35 @@ class TestHandleVmRecert(unittest.TestCase):
 
     @patch("troshkad._release_nbd_device")
     @patch("troshkad.os.rmdir")
+    @patch("troshkad._update_bastion_disk")
+    @patch("troshkad._save_kubeconfig", return_value="apiVersion: v1\nkind: Config")
+    @patch("troshkad._build_recert_cmd", return_value=["podman", "run", "recert"])
+    @patch("troshkad._wait_for_etcd_healthy")
+    @patch("troshkad._find_ostree_paths", return_value=("/deploy", "/boot", "/etc/k8s", "/etc/mcd", "/var/kubelet", "/var/etcd"))
+    @patch("troshkad._mount_rhcos_disk", return_value=True)
+    @patch("troshkad._allocate_etcd_port", return_value=2379)
+    @patch("troshkad._allocate_nbd_device", return_value="/dev/nbd0")
+    @patch("troshkad._ensure_container_image")
+    @patch("troshkad._ensure_nbd_module")
+    @patch("troshkad._run_cmd")
+    @patch("troshkad.os.path.realpath", side_effect=lambda p: p)
+    @patch("troshkad.os.path.exists", return_value=True)
+    def test_recert_stores_kubeconfig_when_result_is_none(
+        self, _exists, _realpath, mock_run, _nbd_mod, _img, _alloc_nbd, _alloc_port,
+        _mount, _paths, _wait, _build, _save, _update, _rmdir, _release,
+    ):
+        mock_run.return_value = MagicMock(returncode=0)
+        job = {"job_id": "job-0003", "output": [], "result": None}
+        params = {
+            "disk": "/var/lib/troshka/vms/proj/disk.qcow2",
+            "project_id": "proj-1",
+            "vm_name": "cp-0",
+        }
+        troshkad._handle_vm_recert(job, params)
+        self.assertEqual(job["result"]["kubeconfig"], "apiVersion: v1\nkind: Config")
+
+    @patch("troshkad._release_nbd_device")
+    @patch("troshkad.os.rmdir")
     @patch("troshkad._run_cmd")
     @patch("troshkad.os.path.exists", return_value=False)
     def test_missing_disk_raises(self, _exists, _run, _rmdir, _release):

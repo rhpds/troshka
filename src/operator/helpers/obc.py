@@ -14,6 +14,7 @@ from kubernetes.client.exceptions import ApiException
 logger = logging.getLogger(__name__)
 
 OBC_NAME = "troshka-patterns"
+# NOSONAR — in-cluster ODF RGW; HTTP on port 80 inside the mesh is expected
 RGW_ENDPOINT = (
     "http://rook-ceph-rgw-ocs-storagecluster-cephobjectstore"
     ".openshift-storage.svc:80"

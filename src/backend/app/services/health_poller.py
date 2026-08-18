@@ -312,16 +312,51 @@ def _handle_health_failure(host, now_dt) -> None:
         _skip_until[host.id] = time.time() + 60
 
 
+def _poll_host(
+    host, dev_mode: bool, db, checked_pools: set, now: float
+) -> tuple[bool, bool]:
+    """Poll one host. Returns (checked, failed)."""
+    from app.services.troshkad_client import check_health
+
+    if host.host_type == "kubevirt-cluster":
+        if not dev_mode:
+            _poll_kubevirt_host(host, db)
+        return False, False
+
+    if not host.agent_cert_fingerprint:
+        return False, False
+    skip_ts = _skip_until.get(host.id)
+    if skip_ts and now < skip_ts:
+        return False, False
+
+    try:
+        health = check_health(host)
+        if health:
+            _handle_health_success(host, health, db, checked_pools)
+            return True, False
+        _handle_health_failure(host, datetime.now(UTC))
+        return True, True
+    except Exception:
+        logger.debug("Health check failed for host %s", host.id[:8], exc_info=True)
+        return True, True
+
+
 def _poll_hosts():
     """Single poll cycle — check all active hosts."""
+    from app.core.lifecycle import audit
+
+    audit("health_poller: begin")
+    t = time.monotonic()
     from app.core.database import SessionLocal
     from app.models.host import Host
-    from app.services.troshkad_client import check_health
 
     db = SessionLocal()
     hosts_checked = 0
     hosts_failed = 0
     try:
+        from app.services.app_updater import resolve_mode
+
+        dev_mode = resolve_mode() == "dev"
         hosts = (
             db.query(Host)
             .filter(
@@ -334,28 +369,9 @@ def _poll_hosts():
         checked_pools = set()
         now = time.time()
         for host in hosts:
-            if host.host_type == "kubevirt-cluster":
-                _poll_kubevirt_host(host, db)
-                continue
-
-            if not host.agent_cert_fingerprint:
-                continue
-            skip_ts = _skip_until.get(host.id)
-            if skip_ts and now < skip_ts:
-                continue
-            hosts_checked += 1
-            try:
-                health = check_health(host)
-                if health:
-                    _handle_health_success(host, health, db, checked_pools)
-                else:
-                    hosts_failed += 1
-                    _handle_health_failure(host, datetime.now(UTC))
-            except Exception:
-                hosts_failed += 1
-                logger.debug(
-                    "Health check failed for host %s", host.id[:8], exc_info=True
-                )
+            checked, failed = _poll_host(host, dev_mode, db, checked_pools, now)
+            hosts_checked += int(checked)
+            hosts_failed += int(failed)
 
         db.commit()
 
@@ -373,6 +389,7 @@ def _poll_hosts():
         logger.exception("Health poller cycle failed")
     finally:
         db.close()
+        audit(f"health_poller: done ({time.monotonic() - t:.2f}s)")
 
 
 _last_cert_check = 0

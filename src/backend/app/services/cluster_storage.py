@@ -9,6 +9,8 @@ import logging
 import boto3
 from sqlalchemy.orm import Session
 
+from app.core.logging_utils import sanitize_log
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,6 +38,58 @@ def _get_client_and_bucket(
     return client, bucket
 
 
+def _list_orphan_pattern_ids(
+    client, bucket: str, active_pattern_ids: set[str]
+) -> list[str] | None:
+    orphan_ids: list[str] = []
+    try:
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(
+            Bucket=bucket, Prefix="patterns/", Delimiter="/"
+        ):
+            for cp in page.get("CommonPrefixes", []):
+                pid = cp["Prefix"].removeprefix("patterns/").rstrip("/")
+                if pid not in active_pattern_ids:
+                    orphan_ids.append(pid)
+    except Exception:
+        logger.exception(
+            "Failed to list RGW prefixes in bucket %s", sanitize_log(bucket)
+        )
+        return None
+    return orphan_ids
+
+
+def _delete_orphan_pattern_objects(
+    client, bucket: str, pattern_id: str, dry_run: bool
+) -> tuple[int, int]:
+    deleted = 0
+    deleted_bytes = 0
+    if dry_run:
+        logger.info(
+            "Cluster RGW dry-run: would delete orphan pattern %s",
+            sanitize_log(pattern_id[:8]),
+        )
+        return deleted, deleted_bytes
+    prefix = f"patterns/{pattern_id}/"
+    try:
+        paginator = client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            objects = page.get("Contents", [])
+            if objects:
+                deleted_bytes += sum(o.get("Size", 0) for o in objects)
+                client.delete_objects(
+                    Bucket=bucket,
+                    Delete={"Objects": [{"Key": o["Key"]} for o in objects]},
+                )
+                deleted += len(objects)
+    except Exception:
+        logger.exception(
+            "Failed to delete orphan pattern %s from RGW",
+            sanitize_log(pattern_id[:8]),
+        )
+    return deleted, deleted_bytes
+
+
 def delete_pattern(db: Session, provider_id: str, pattern_id: str) -> int:
     """Delete all objects under patterns/{pattern_id}/ from a cluster's RGW."""
     result = _get_client_and_bucket(db, provider_id)
@@ -60,8 +114,8 @@ def delete_pattern(db: Session, provider_id: str, pattern_id: str) -> int:
     except Exception:
         logger.exception(
             "Failed to clean RGW prefix %s on provider %s",
-            prefix,
-            provider_id[:8],
+            sanitize_log(prefix),
+            sanitize_log(provider_id[:8]),
         )
         return deleted
 
@@ -69,8 +123,8 @@ def delete_pattern(db: Session, provider_id: str, pattern_id: str) -> int:
         logger.info(
             "Cluster RGW cleanup: deleted %d objects under %s (provider %s)",
             deleted,
-            prefix,
-            provider_id[:8],
+            sanitize_log(prefix),
+            sanitize_log(provider_id[:8]),
         )
     return deleted
 
@@ -86,49 +140,18 @@ def clean_orphans(db: Session, provider_id: str, dry_run: bool = False) -> dict:
     client, bucket = result
     active_pattern_ids = {p.id for p in db.query(Pattern).all()}
 
-    deleted = 0
-    deleted_bytes = 0
-    orphan_ids: list[str] = []
-
-    try:
-        paginator = client.get_paginator("list_objects_v2")
-        for page in paginator.paginate(
-            Bucket=bucket, Prefix="patterns/", Delimiter="/"
-        ):
-            for cp in page.get("CommonPrefixes", []):
-                pid = cp["Prefix"].removeprefix("patterns/").rstrip("/")
-                if pid not in active_pattern_ids:
-                    orphan_ids.append(pid)
-    except Exception:
-        logger.exception("Failed to list RGW prefixes on provider %s", provider_id[:8])
+    orphan_ids = _list_orphan_pattern_ids(client, bucket, active_pattern_ids)
+    if orphan_ids is None:
         return {"error": "Failed to list RGW bucket"}
 
+    deleted = 0
+    deleted_bytes = 0
     for pid in orphan_ids:
-        if dry_run:
-            logger.info(
-                "Cluster RGW dry-run: would delete orphan pattern %s (provider %s)",
-                pid[:8],
-                provider_id[:8],
-            )
-            continue
-        try:
-            prefix = f"patterns/{pid}/"
-            paginator = client.get_paginator("list_objects_v2")
-            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-                objects = page.get("Contents", [])
-                if objects:
-                    deleted_bytes += sum(o.get("Size", 0) for o in objects)
-                    client.delete_objects(
-                        Bucket=bucket,
-                        Delete={"Objects": [{"Key": o["Key"]} for o in objects]},
-                    )
-                    deleted += len(objects)
-        except Exception:
-            logger.exception(
-                "Failed to delete orphan pattern %s from RGW (provider %s)",
-                pid[:8],
-                provider_id[:8],
-            )
+        obj_count, obj_bytes = _delete_orphan_pattern_objects(
+            client, bucket, pid, dry_run
+        )
+        deleted += obj_count
+        deleted_bytes += obj_bytes
 
     report = {
         "provider_id": provider_id,
@@ -143,7 +166,7 @@ def clean_orphans(db: Session, provider_id: str, dry_run: bool = False) -> dict:
     if orphan_ids:
         logger.info(
             "Cluster RGW GC (provider %s): %d orphan patterns, %d objects deleted",
-            provider_id[:8],
+            sanitize_log(provider_id[:8]),
             len(orphan_ids),
             deleted,
         )

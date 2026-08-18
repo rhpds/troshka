@@ -3680,7 +3680,11 @@ class TestApplyBastionBrowserFixes:
         exec_fn.assert_called_once_with("ca-cmd", timeout=15)
 
     def test_logins_missing(self):
-        from app.services.deploy_service import _apply_bastion_browser_fixes
+        from app.services.deploy_service import (
+            _ENSURE_FIREFOX_PROFILE_CMD,
+            _KILL_BROWSER_CMD,
+            _apply_bastion_browser_fixes,
+        )
 
         exec_fn = MagicMock()
         push_fn = MagicMock()
@@ -3688,7 +3692,10 @@ class TestApplyBastionBrowserFixes:
             "ca:ok\nlogins:missing", exec_fn, push_fn, "ca-cmd", "autologin-cmd"
         )
         assert result is True
-        exec_fn.assert_called_once_with("autologin-cmd", timeout=30)
+        assert exec_fn.call_count == 3
+        exec_fn.assert_any_call(_KILL_BROWSER_CMD, timeout=10)
+        exec_fn.assert_any_call(_ENSURE_FIREFOX_PROFILE_CMD, timeout=20)
+        exec_fn.assert_any_call("autologin-cmd", timeout=30)
 
     def test_both_stale(self):
         from app.services.deploy_service import _apply_bastion_browser_fixes
@@ -3699,7 +3706,7 @@ class TestApplyBastionBrowserFixes:
             "ca:stale\nlogins:stale", exec_fn, push_fn, "ca-cmd", "autologin-cmd"
         )
         assert result is True
-        assert exec_fn.call_count == 2
+        assert exec_fn.call_count == 4
 
     def test_none_verify(self):
         from app.services.deploy_service import _apply_bastion_browser_fixes

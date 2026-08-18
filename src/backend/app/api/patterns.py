@@ -386,6 +386,11 @@ def create_pattern(
 
     source_project, topology, state = _resolve_pattern_source(body, user, db)
 
+    if body.recert:
+        from app.services.ocp_topology_flags import apply_sno_ocp_vm_flags
+
+        apply_sno_ocp_vm_flags(topology, recert=True)
+
     pattern_description = body.description or (
         source_project.description if source_project else None
     )
@@ -966,15 +971,27 @@ def _apply_optional_fields(
         project.dns_provider_id = body.dns_provider_id
 
 
-def _apply_recert_config(project: Project, body: PatternDeployRequest) -> None:
-    """Apply recert and common_password to topology if specified."""
-    if body.recert is None:
-        return
-    topo = project.topology or {}
-    topo["_deploy_recert"] = body.recert
+def _resolve_deploy_recert(pattern: Pattern, body: PatternDeployRequest) -> bool:
+    """Resolve whether recert should run for this pattern deploy."""
+    if body.recert is not None:
+        return bool(body.recert)
+    return bool(pattern.recert)
+
+
+def _apply_pattern_deploy_topology(
+    topology: dict, pattern: Pattern, body: PatternDeployRequest
+) -> None:
+    """Apply OCP VM flags and deploy-time recert markers to cloned topology."""
+    from app.services.ocp_topology_flags import apply_sno_ocp_vm_flags
+
+    deploy_recert = _resolve_deploy_recert(pattern, body)
+    apply_sno_ocp_vm_flags(topology, recert=deploy_recert)
+    if body.recert is not None:
+        topology["_deploy_recert"] = body.recert
+    elif pattern.recert:
+        topology["_deploy_recert"] = True
     if body.common_password:
-        topo["_deploy_common_password"] = body.common_password
-    project.topology = topo
+        topology["_deploy_common_password"] = body.common_password
 
 
 def _start_auto_deploy(
@@ -1036,6 +1053,8 @@ def deploy_pattern(
     if body.inject_vars:
         _apply_inject_vars(nodes, body.inject_vars)
 
+    _apply_pattern_deploy_topology(new_topology, pattern, body)
+
     project = Project(
         name=project_name,
         description=body.description or pattern.description,
@@ -1049,8 +1068,6 @@ def deploy_pattern(
     db.add(project)
     db.commit()
     db.refresh(project)
-
-    _apply_recert_config(project, body)
 
     if body.auto_deploy:
         _start_auto_deploy(project, body, db)
@@ -1116,6 +1133,11 @@ def _create_bulk_project(
     """Create a single project from pattern for bulk deployment."""
     name = body.name_template.replace("{n}", f"{index:03d}")
     new_topology = _remap_topology(pattern.topology)
+    _apply_pattern_deploy_topology(
+        new_topology,
+        pattern,
+        PatternDeployRequest(recert=pattern.recert or None),
+    )
     project = Project(
         name=name,
         description=pattern.description,

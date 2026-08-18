@@ -28,6 +28,7 @@ import SunIcon from "@patternfly/react-icons/dist/esm/icons/sun-icon";
 import MoonIcon from "@patternfly/react-icons/dist/esm/icons/moon-icon";
 import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 import SignOutAltIcon from "@patternfly/react-icons/dist/esm/icons/sign-out-alt-icon";
+import { ConfirmHost } from "@/lib/confirm";
 
 interface UserInfo {
   id: string;
@@ -164,6 +165,110 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     const iv = setInterval(check, 30000);
     return () => clearInterval(iv);
   }, [isAdmin]);
+
+  const [updateStatus, setUpdateStatus] = useState<any>(null);
+  const [applying, setApplying] = useState(false);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+  const [dismissedKey, setDismissedKey] = useState<string | null>(null);
+  useEffect(() => { setDismissedKey(localStorage.getItem("troshka-update-dismissed")); }, []);
+  useEffect(() => {
+    if (!isAdmin) return;
+    const check = () => {
+      fetch("/api/v1/update/status")
+        .then((r) => (r.ok ? r.json() : null))
+        .then(setUpdateStatus)
+        .catch(() => {});
+    };
+    check();
+    const iv = setInterval(check, 60000);
+    return () => clearInterval(iv);
+  }, [isAdmin]);
+
+  // stale_key from the API (dev: content hash, image: component digests) so Dismiss
+  // only hides the banner until the next code change, not permanently.
+  const updateTargetKey =
+    updateStatus?.stale_key ??
+    (updateStatus?.mode === "image"
+      ? JSON.stringify(updateStatus?.components || {})
+      : null);
+  const showUpdate =
+    isAdmin &&
+    updateStatus &&
+    updateStatus.mode !== "disabled" &&
+    updateStatus.up_to_date === false &&
+    updateTargetKey != null &&
+    dismissedKey !== updateTargetKey;
+  const updateBusy = applying || updateStatus?.rolling_out;
+  const shortDigest = (d?: string) =>
+    d ? d.replace(/^sha256:/, "").slice(0, 12) : "—";
+  const updateVersions: string[] = updateStatus?.components
+    ? Object.entries(updateStatus.components).map(
+        ([name, v]: [string, any]) =>
+          `${name} ${shortDigest(v?.current)} → ${shortDigest(v?.available)}`,
+      )
+    : [];
+
+  const applyUpdate = () => {
+    if (applying) return;
+    setApplying(true);
+    setUpdateError(null);
+    fetch("/api/v1/update/apply", { method: "POST" })
+      .then((r) => {
+        if (!r.ok) {
+          setApplying(false);
+          setUpdateError(
+            r.status === 403
+              ? "Update failed: missing permissions to restart deployments."
+              : `Update failed (${r.status}). Check backend logs.`,
+          );
+          return;
+        }
+        // Success: the backend restarts (backendDown banner covers the gap).
+        // Poll until it's back and current, then stop the spinner. Bounded by a
+        // 90s budget so the button can never spin indefinitely.
+        const startedAt = Date.now();
+        const poll = () => {
+          fetch("/api/v1/update/status")
+            .then((r2) => (r2.ok ? r2.json() : null))
+            .then((s) => {
+              if (s) {
+                setUpdateStatus(s);
+                if (s.up_to_date !== false) {
+                  // Full reload: image mode rolls out a new frontend bundle; dev
+                  // mode may have left pages with failed fetches (e.g. empty projects).
+                  window.location.reload();
+                  return;
+                }
+              }
+              if (Date.now() - startedAt > 90000) {
+                setApplying(false);
+                setUpdateError(
+                  "Update applied, but the version still looks out of date — you may need to try again.",
+                );
+                return;
+              }
+              setTimeout(poll, 3000);
+            })
+            .catch(() => {
+              // Backend is restarting; keep waiting within the time budget.
+              if (Date.now() - startedAt > 90000) {
+                setApplying(false);
+                return;
+              }
+              setTimeout(poll, 3000);
+            });
+        };
+        setTimeout(poll, 3000);
+      })
+      .catch(() => {
+        setApplying(false);
+        setUpdateError("Update failed: could not reach the backend.");
+      });
+  };
+  const dismissUpdate = () => {
+    localStorage.setItem("troshka-update-dismissed", updateTargetKey);
+    setDismissedKey(updateTargetKey);
+  };
 
   if (isConsolePage || isPortalPage) {
     return (
@@ -350,6 +455,39 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               Backend is unreachable — the server may be restarting
             </div>
           )}
+          {showUpdate && (
+            <div style={{
+              background: "rgba(59, 130, 246, 0.15)",
+              border: "1px solid rgba(59, 130, 246, 0.4)",
+              color: "#93c5fd",
+              padding: "8px 16px",
+              fontSize: 13,
+              textAlign: "center",
+              fontWeight: 500,
+              display: "flex",
+              gap: 12,
+              justifyContent: "center",
+              alignItems: "center",
+            }}>
+              <span>A newer version of Troshka is available.</span>
+              {updateVersions.length > 0 && (
+                <span style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.85 }}>
+                  {updateVersions.join("   ·   ")}
+                </span>
+              )}
+              <Button variant="primary" isDisabled={updateBusy} isLoading={updateBusy} onClick={applyUpdate}>
+                {updateBusy
+                  ? "Update in progress…"
+                  : updateStatus?.mode === "dev"
+                    ? "Restart backend"
+                    : "Apply update"}
+              </Button>
+              {updateError && (
+                <span style={{ color: "#fca5a5", fontWeight: 500 }}>{updateError}</span>
+              )}
+              <Button variant="link" isInline onClick={dismissUpdate}>Dismiss</Button>
+            </div>
+          )}
           {!authChecked && !isConsolePage ? null : isDenied ? (
             <div style={{
               display: "flex",
@@ -362,6 +500,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <h1 style={{ fontSize: "1.5rem", fontWeight: 600 }}>{(user as any).detail}</h1>
             </div>
           ) : children}
+          <ConfirmHost />
         </Page>
       </body>
     </html>

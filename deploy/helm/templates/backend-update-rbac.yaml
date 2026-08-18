@@ -1,0 +1,35 @@
+{{- if .Values.deploy }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: troshka-self-update
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["troshka-backend", "troshka-frontend"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: troshka-self-update
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+subjects:
+  - kind: ServiceAccount
+    name: troshka-backend
+    namespace: {{ include "troshka.namespace" . }}
+roleRef:
+  kind: Role
+  name: troshka-self-update
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

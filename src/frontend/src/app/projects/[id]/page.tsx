@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ReactFlowProvider } from "@xyflow/react";
 import Canvas from "@/components/canvas/Canvas";
@@ -14,6 +14,8 @@ import SavePatternModal from "@/components/canvas/SavePatternModal";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
 import { useVmStateSocket } from "@/hooks/useVmStateSocket";
 import AlertModal from "@/components/AlertModal";
+import ConfirmModal from "@/components/ConfirmModal";
+import { appConfirm } from "@/lib/confirm";
 
 export default function ProjectCanvasPage() {
   const params = useParams();
@@ -49,6 +51,7 @@ export default function ProjectCanvasPage() {
   const [clockTarget, setClockTarget] = useState<string | null>(null);
   const [guestExecEnabled, setGuestExecEnabled] = useState(true);
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
   const ws = useVmStateSocket(projectId);
 
   useEffect(() => {
@@ -105,39 +108,6 @@ export default function ProjectCanvasPage() {
         if (data.ocp_install_elapsed != null) setOcpInstallElapsed(data.ocp_install_elapsed);
         prevStateRef.current = data.state;
         setHasDeployedTopology(!!(data.deployed_topology?.nodes?.length));
-        // topologyDirty is computed from deployedNodeData/deployedEdgeKey after they're set below
-        const depSizes: Record<string, number> = {};
-        for (const n of (data.deployed_topology?.nodes || [])) {
-          if (n.type === "storageNode" && n.data?.size) {
-            depSizes[n.id] = n.data.size;
-          }
-        }
-        useCanvasStore.setState({ deployedDiskSizes: depSizes });
-        const depNodeData: Record<string, string> = {};
-        for (const n of (data.deployed_topology?.nodes || [])) {
-          const { status, redeployStep, redeployDetail, liveBootDevs, resolvedS3Path, presignedUrl, ...stable } = (n.data || {}) as Record<string, unknown>;
-          depNodeData[n.id] = JSON.stringify(stable);
-        }
-        const depEdgeKey = (data.deployed_topology?.edges || [])
-          .map((e: any) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
-          .sort().join("|");
-        useCanvasStore.setState({ deployedNodeData: depNodeData, deployedEdgeKey: depEdgeKey });
-        setTimeout(() => {
-          const s = useCanvasStore.getState();
-          useCanvasStore.setState({ topologyDirty: computeTopologyDirty(s) });
-        }, 100);
-
-        // Expose BMC data to properties panel
-        if (data.bmc) {
-          (window as any).__deployedTopology = { bmc: data.bmc };
-        } else if (data.deployed_topology?.bmc) {
-          (window as any).__deployedTopology = data.deployed_topology;
-        }
-
-        // Clean up BMC data when project is in draft
-        if (data.state === "draft") {
-          delete (window as any).__deployedTopology;
-        }
       })
       .catch(() => {});
   }, [projectId]);
@@ -178,23 +148,7 @@ export default function ProjectCanvasPage() {
     }
     prevStateRef.current = ws.projectState;
     if (wasTransitional && ws.projectState === "active") {
-      useCanvasStore.getState().loadProject(projectId);
-      fetch(`/api/v1/projects/${projectId}`).then((r) => r.ok ? r.json() : null).then((proj) => {
-        if (!proj) return;
-        const depData: Record<string, string> = {};
-        for (const n of (proj.deployed_topology?.nodes || [])) {
-          const { status, redeployStep, redeployDetail, liveBootDevs, resolvedS3Path, presignedUrl, ...stable } = (n.data || {}) as Record<string, unknown>;
-          depData[n.id] = JSON.stringify(stable);
-        }
-        const depEdge = (proj.deployed_topology?.edges || [])
-          .map((e: any) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
-          .sort().join("|");
-        useCanvasStore.setState({ deployedNodeData: depData, deployedEdgeKey: depEdge });
-        setTimeout(() => {
-          const s = useCanvasStore.getState();
-          useCanvasStore.setState({ topologyDirty: computeTopologyDirty(s) });
-        }, 100);
-      });
+      void useCanvasStore.getState().loadProject(projectId);
     }
   }, [ws.projectState, ws.deployError]);
 
@@ -223,16 +177,7 @@ export default function ProjectCanvasPage() {
             const wasTransitional = ["reconfiguring", "deploying", "starting", "deleting"].includes(projectState);
             setProjectState(data.state);
             if (wasTransitional && data.state === "active") {
-              useCanvasStore.getState().loadProject(projectId);
-              const depData: Record<string, string> = {};
-              for (const n of (data.deployed_topology?.nodes || [])) {
-                const { status: _s, redeployStep: _rs, redeployDetail: _rd, liveBootDevs: _lb, resolvedS3Path: _rp, presignedUrl: _pu, ...stable } = (n.data || {}) as Record<string, unknown>;
-                depData[n.id] = JSON.stringify(stable);
-              }
-              const depEdge = (data.deployed_topology?.edges || [])
-                .map((e: any) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
-                .sort().join("|");
-              useCanvasStore.setState({ deployedNodeData: depData, deployedEdgeKey: depEdge });
+              void useCanvasStore.getState().loadProject(projectId);
               setDeployProgress(null);
             }
           }
@@ -259,8 +204,40 @@ export default function ProjectCanvasPage() {
   useEffect(() => {
     if (ws.ocpHealth?.phase === "ready") setOcpStatus("ready");
     else if (ws.ocpHealth?.phase === "warning") setOcpStatus("warning");
-    else if (ws.ocpHealth) setOcpStatus("monitoring");
-  }, [ws.ocpHealth]);
+    else if (ws.ocpHealth?.phase === "error") setOcpStatus("error");
+    else if (ws.ocpHealth?.phase === "timeout") setOcpStatus("monitoring");
+    else if (ws.ocpHealth && ocpStatus !== "ready" && ocpStatus !== "warning") {
+      setOcpStatus("monitoring");
+    }
+  }, [ws.ocpHealth, ocpStatus]);
+
+  const resolvedOcpHealth = useMemo(() => {
+    const fallback =
+      ocpStatus === "ready"
+        ? {
+            phase: "ready",
+            detail:
+              ocpInstallElapsed != null
+                ? `cluster ready (${Math.floor(ocpInstallElapsed / 60)}m ${(ocpInstallElapsed % 60).toString().padStart(2, "0")}s)`
+                : "cluster ready",
+          }
+        : ocpStatus === "error"
+          ? { phase: "error", detail: "install failed" }
+          : ocpStatus === "warning"
+            ? {
+                phase: "warning",
+                detail:
+                  ocpInstallElapsed != null
+                    ? `cluster issues (${Math.floor(ocpInstallElapsed / 60)}m ${(ocpInstallElapsed % 60).toString().padStart(2, "0")}s)`
+                    : "cluster issues",
+              }
+            : ocpStatus === "monitoring"
+              ? { phase: "ssh", detail: "monitoring..." }
+              : null;
+
+    if (!ws.ocpHealth) return fallback;
+    return ws.ocpHealth;
+  }, [ws.ocpHealth, ocpStatus, ocpInstallElapsed]);
 
   // Timer countdown ticker
   useEffect(() => {
@@ -511,11 +488,11 @@ export default function ProjectCanvasPage() {
     if (containerCount > 0) parts.push(`${containerCount} container${containerCount !== 1 ? "s" : ""}`);
     parts.push(`${netCount} network${netCount !== 1 ? "s" : ""}`);
     parts.push(`${diskCount} disk${diskCount !== 1 ? "s" : ""}`);
-    if (!window.confirm(
-      `Deploy this environment?\n\n` +
-      `${parts.join(", ")}\n\n` +
-      `This will provision real infrastructure.`
-    )) return;
+    if (!(await appConfirm({
+      title: "Deploy Environment",
+      message: `Deploy this environment?\n\n${parts.join(", ")}\n\nThis will provision real infrastructure.`,
+      confirmLabel: "Deploy",
+    }))) return;
 
     try {
       await saveTopology();
@@ -547,6 +524,25 @@ export default function ProjectCanvasPage() {
     } catch {
       setProjectState("draft");
       setAlertMsg("Failed to connect to server");
+    }
+  };
+
+  const handleRepublish = async (message: string) => {
+    if (!(await appConfirm({
+      title: "Republish",
+      message,
+      confirmLabel: "Republish",
+      variant: "danger",
+    }))) return;
+    setProjectState("deploying");
+    const r = await fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" });
+    if (r.ok) {
+      useCanvasStore.setState({ deployedVmIds: new Set() });
+      setDeployError(null);
+    } else {
+      setProjectState("active");
+      const err = await r.json().catch(() => ({ detail: "Redeploy failed" }));
+      setAlertMsg(err.detail || "Redeploy failed");
     }
   };
 
@@ -674,19 +670,7 @@ export default function ProjectCanvasPage() {
             <button
               className="project-stop-btn"
               style={{ borderColor: "var(--pf-t--global--color--status--danger--default)", color: "var(--pf-t--global--color--status--danger--default)" }}
-              onClick={() => {
-                if (!window.confirm(`Delete project "${projectName}"? This cannot be undone.`)) return;
-                setProjectState("deleting");
-                localStorage.removeItem(`troshka-canvas-${projectId}`);
-                const deleting = JSON.parse(localStorage.getItem("troshka-deleting-projects") || "[]");
-                deleting.push(projectId);
-                localStorage.setItem("troshka-deleting-projects", JSON.stringify(deleting));
-                router.push("/projects");
-                fetch(`/api/v1/projects/${projectId}`, { method: "DELETE" }).then(() => {
-                  const remaining = JSON.parse(localStorage.getItem("troshka-deleting-projects") || "[]").filter((id: string) => id !== projectId);
-                  localStorage.setItem("troshka-deleting-projects", JSON.stringify(remaining));
-                });
-              }}
+              onClick={() => setShowDeleteModal(true)}
             >
               Delete
             </button>
@@ -722,11 +706,10 @@ export default function ProjectCanvasPage() {
           )}
           {projectState === "active" && (
             <>
-              <button className="project-stop-btn" onClick={() => {
-                if (window.confirm("Stop all VMs in this environment?")) {
-                  fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" })
-                    .then(() => setProjectState("stopping"));
-                }
+              <button className="project-stop-btn" onClick={async () => {
+                if (!(await appConfirm({ message: "Stop all VMs in this environment?", confirmLabel: "Stop" }))) return;
+                fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" })
+                  .then(() => setProjectState("stopping"));
               }}>
                 ■ Stop
               </button>
@@ -736,16 +719,7 @@ export default function ProjectCanvasPage() {
               <button className="project-publish-btn" disabled={!topologyDirty || applyingChanges} style={(!topologyDirty || applyingChanges) ? { opacity: 0.4 } : {}} onClick={handleApplyChanges}>
                 {applyingChanges ? <><span className="project-btn-spinner" /> Applying...</> : "Apply Changes"}
               </button>
-              <button className="project-publish-btn" onClick={() => {
-                if (window.confirm("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")) {
-                  setProjectState("deploying");
-                  fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
-                    .then(async (r) => {
-                      if (r.ok) { useCanvasStore.setState({ deployedVmIds: new Set() }); }
-                      else { setProjectState("active"); const err = await r.json().catch(() => ({ detail: "Redeploy failed" })); setAlertMsg(err.detail || "Redeploy failed"); }
-                    });
-                }
-              }}>
+              <button className="project-publish-btn" onClick={() => handleRepublish("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")}>
                 ↻ Republish
               </button>
             </>
@@ -781,23 +755,18 @@ export default function ProjectCanvasPage() {
               }}>
                 Apply Changes
               </button>
-              <button className="project-publish-btn" onClick={() => {
-                if (window.confirm("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")) {
-                  setProjectState("deploying");
-                  fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
-                    .then(async (r) => {
-                      if (r.ok) { useCanvasStore.setState({ deployedVmIds: new Set() }); }
-                      else { setProjectState("active"); const err = await r.json().catch(() => ({ detail: "Redeploy failed" })); setAlertMsg(err.detail || "Redeploy failed"); }
-                    });
-                }
-              }}>
+              <button className="project-publish-btn" onClick={() => handleRepublish("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")}>
                 ↻ Republish
               </button>
-              <button className="project-stop-btn" onClick={() => {
-                if (window.confirm("Undeploy? This will destroy all VMs and return to design mode.")) {
-                  fetch(`/api/v1/projects/${projectId}/undeploy`, { method: "POST" })
-                    .then(() => { setProjectState("draft"); setDeployError(null); });
-                }
+              <button className="project-stop-btn" onClick={async () => {
+                if (!(await appConfirm({
+                  title: "Undeploy",
+                  message: "Undeploy? This will destroy all VMs and return to design mode.",
+                  confirmLabel: "Undeploy",
+                  variant: "danger",
+                }))) return;
+                fetch(`/api/v1/projects/${projectId}/undeploy`, { method: "POST" })
+                  .then(() => { setProjectState("draft"); setDeployError(null); });
               }}>
                 Undeploy
               </button>
@@ -827,12 +796,7 @@ export default function ProjectCanvasPage() {
                   ▶ Retry Start
                 </button>
               )}
-              <button className="project-publish-btn" onClick={() => {
-                if (window.confirm("Republish? This will destroy all VMs and redeploy with the current topology.")) {
-                  fetch(`/api/v1/projects/${projectId}/redeploy`, { method: "POST" })
-                    .then(() => { setProjectState("deploying"); setDeployError(null); });
-                }
-              }}>
+              <button className="project-publish-btn" onClick={() => handleRepublish("Republish? This will destroy all VMs and redeploy with the current topology.")}>
                 ↻ Republish
               </button>
             </>
@@ -941,7 +905,7 @@ export default function ProjectCanvasPage() {
             </div>
           </div>
         )}
-        {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} projectDescription={projectDesc} projectGuid={projectGuid} projectId={projectId} hostId={isAdmin ? projectHostId : undefined} ocpHealth={ws.ocpHealth || (ocpStatus === "ready" ? { phase: "ready", detail: ocpInstallElapsed != null ? `cluster ready (${Math.floor(ocpInstallElapsed / 60)}m ${(ocpInstallElapsed % 60).toString().padStart(2, "0")}s)` : "cluster ready" } : ocpStatus === "error" ? { phase: "error", detail: "install failed" } : ocpStatus === "warning" ? { phase: "warning", detail: ocpInstallElapsed != null ? `cluster issues (${Math.floor(ocpInstallElapsed / 60)}m ${(ocpInstallElapsed % 60).toString().padStart(2, "0")}s)` : "cluster issues" } : ocpStatus === "monitoring" ? { phase: "ssh", detail: "monitoring..." } : null)} onDescriptionChange={(desc) => {
+        {showPalette && <Palette onOpenStartOrder={() => setShowStartOrder(true)} onOpenExternalIps={() => setShowExternalIps(true)} projectDescription={projectDesc} projectGuid={projectGuid} projectId={projectId} hostId={isAdmin ? projectHostId : undefined} ocpHealth={resolvedOcpHealth} onDescriptionChange={(desc) => {
           fetch(`/api/v1/projects/${projectId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description: desc }) })
             .then((r) => { if (r.ok) setProjectDesc(desc); });
         }} autoStopMinutes={autoStopMinutes} autoDeleteMinutes={autoDeleteMinutes} onAutoStopChange={(v) => {
@@ -1312,6 +1276,28 @@ export default function ProjectCanvasPage() {
         </div>
       )}
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
+      {showDeleteModal && (
+        <ConfirmModal
+          title="Delete Project"
+          message={`Delete project "${projectName}"? This cannot be undone.`}
+          confirmLabel="Delete"
+          variant="danger"
+          onCancel={() => setShowDeleteModal(false)}
+          onConfirm={() => {
+            setShowDeleteModal(false);
+            setProjectState("deleting");
+            localStorage.removeItem(`troshka-canvas-${projectId}`);
+            const deleting = JSON.parse(localStorage.getItem("troshka-deleting-projects") || "[]");
+            deleting.push(projectId);
+            localStorage.setItem("troshka-deleting-projects", JSON.stringify(deleting));
+            router.push("/projects");
+            fetch(`/api/v1/projects/${projectId}`, { method: "DELETE" }).then(() => {
+              const remaining = JSON.parse(localStorage.getItem("troshka-deleting-projects") || "[]").filter((id: string) => id !== projectId);
+              localStorage.setItem("troshka-deleting-projects", JSON.stringify(remaining));
+            });
+          }}
+        />
+      )}
       <style>{`
         @keyframes pulse {
           0%, 100% { opacity: 1; }

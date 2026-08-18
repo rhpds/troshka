@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from "react";
 import AlertModal from "@/components/AlertModal";
 import ConfirmModal from "@/components/ConfirmModal";
+import { appConfirm } from "@/lib/confirm";
 import TagEditor from "@/components/TagEditor";
 import {
   Button,
@@ -855,6 +856,8 @@ export default function ProjectsPage() {
   const [deployHostId, setDeployHostId] = useState("");
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
   const [republishTarget, setRepublishTarget] = useState<Project | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Project | null>(null);
+  const [bulkDeletePending, setBulkDeletePending] = useState(false);
 
   const pollUntilSettled = () => {
     const settled = ["draft", "active", "stopped", "error"];
@@ -991,8 +994,8 @@ export default function ProjectsPage() {
               {someSelected && (
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {allActive && (
-                    <Button variant="secondary" size="sm" onClick={() => {
-                      if (!window.confirm(`Stop ${selected.length} project(s)?`)) return;
+                    <Button variant="secondary" size="sm" onClick={async () => {
+                      if (!(await appConfirm({ message: `Stop ${selected.length} project(s)?`, confirmLabel: "Stop" }))) return;
                       for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}/stop`, { method: "POST" }); }
                       setSelectedProjects(new Set());
                       fetchProjects();
@@ -1000,8 +1003,8 @@ export default function ProjectsPage() {
                     }}>Stop ({selected.length})</Button>
                   )}
                   {allStoppedOrError && (
-                    <Button variant="secondary" size="sm" onClick={() => {
-                      if (!window.confirm(`Start ${selected.length} project(s)?`)) return;
+                    <Button variant="secondary" size="sm" onClick={async () => {
+                      if (!(await appConfirm({ message: `Start ${selected.length} project(s)?`, confirmLabel: "Start" }))) return;
                       for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}/start`, { method: "POST" }); }
                       setSelectedProjects(new Set());
                       fetchProjects();
@@ -1009,8 +1012,8 @@ export default function ProjectsPage() {
                     }}>Start ({selected.length})</Button>
                   )}
                   {allDraft && (
-                    <Button variant="secondary" size="sm" onClick={() => {
-                      if (!window.confirm(`Deploy ${selected.length} project(s)?`)) return;
+                    <Button variant="secondary" size="sm" onClick={async () => {
+                      if (!(await appConfirm({ title: "Deploy", message: `Deploy ${selected.length} project(s)?`, confirmLabel: "Deploy" }))) return;
                       for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}/deploy`, { method: "POST" }); }
                       setSelectedProjects(new Set());
                       fetchProjects();
@@ -1018,20 +1021,20 @@ export default function ProjectsPage() {
                     }}>Deploy ({selected.length})</Button>
                   )}
                   {allDeployed && (
-                    <Button variant="secondary" size="sm" onClick={() => {
-                      if (!window.confirm(`Republish ${selected.length} project(s)? All VMs will be destroyed and recreated.`)) return;
+                    <Button variant="secondary" size="sm" onClick={async () => {
+                      if (!(await appConfirm({
+                        title: "Republish",
+                        message: `Republish ${selected.length} project(s)? All VMs will be destroyed and recreated.`,
+                        confirmLabel: "Republish",
+                        variant: "danger",
+                      }))) return;
                       for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}/redeploy`, { method: "POST" }); }
                       setSelectedProjects(new Set());
                       fetchProjects();
                       pollUntilSettled();
                     }}>Republish ({selected.length})</Button>
                   )}
-                  <Button variant="danger" size="sm" onClick={() => {
-                    if (!window.confirm(`Delete ${selected.length} project(s)? This cannot be undone.`)) return;
-                    for (const p of selected) { fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" }); }
-                    setSelectedProjects(new Set());
-                    setTimeout(fetchProjects, 1000);
-                  }}>Delete ({selected.length})</Button>
+                  <Button variant="danger" size="sm" onClick={() => setBulkDeletePending(true)}>Delete ({selected.length})</Button>
                 </div>
               )}
             </div>
@@ -1167,8 +1170,12 @@ export default function ProjectsPage() {
                         {availableHosts.map((h) => <option key={h.id} value={h.id}>{h.id.slice(0, 8)} — {h.ip_address} ({h.provider_type}), {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free</option>)}
                       </select>
                     )}
-                    <Button variant="primary" onClick={() => {
-                      if (!window.confirm(`Deploy project "${p.name}"? This will provision networking and start all VMs.`)) return;
+                    <Button variant="primary" onClick={async () => {
+                      if (!(await appConfirm({
+                        title: "Deploy",
+                        message: `Deploy project "${p.name}"? This will provision networking and start all VMs.`,
+                        confirmLabel: "Deploy",
+                      }))) return;
                       setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deploying" } : pr));
                       const params = new URLSearchParams();
                       if (deployPoolId) params.set("storage_pool_id", deployPoolId);
@@ -1182,15 +1189,15 @@ export default function ProjectsPage() {
                   </>
                 )}
                 {p.state === "active" && (
-                  <Button variant="secondary" onClick={() => {
-                    if (!window.confirm(`Stop project "${p.name}"? All VMs will be shut down.`)) return;
+                  <Button variant="secondary" onClick={async () => {
+                    if (!(await appConfirm({ message: `Stop project "${p.name}"? All VMs will be shut down.`, confirmLabel: "Stop" }))) return;
                     setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "stopping" } : pr));
                     fetch(`${API_BASE}/api/v1/projects/${p.id}/stop`, { method: "POST" }).then(() => pollUntilSettled());
                   }}>Stop</Button>
                 )}
                 {(p.state === "stopped" || p.state === "error") && (
-                  <Button variant="secondary" onClick={() => {
-                    if (!window.confirm(`Start project "${p.name}"? All VMs will be started.`)) return;
+                  <Button variant="secondary" onClick={async () => {
+                    if (!(await appConfirm({ message: `Start project "${p.name}"? All VMs will be started.`, confirmLabel: "Start" }))) return;
                     setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "starting" } : pr));
                     fetch(`${API_BASE}/api/v1/projects/${p.id}/start`, { method: "POST" }).then(() => pollUntilSettled());
                   }}>Start</Button>
@@ -1198,24 +1205,9 @@ export default function ProjectsPage() {
                 {(p.state === "error" || p.state === "active" || p.state === "stopped") && (
                   <Button variant="secondary" onClick={() => setRepublishTarget(p)}>Republish</Button>
                 )}
-                {p.state !== "deleting" && <Button variant="danger" isDisabled={deletingProjects.has(p.id)} onClick={() => {
-                  if (!window.confirm(`Delete project "${p.name}"? This cannot be undone.`)) return;
-                  setDeletingProjects(prev => new Set(prev).add(p.id));
-                  fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" }).then((r) => {
-                    if (r.ok) {
-                      r.json().then((data) => {
-                        if (data.status === "deleting") {
-                          setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deleting" } : pr));
-                        } else {
-                          setProjects(prev => prev.filter(pr => pr.id !== p.id));
-                          localStorage.removeItem(`troshka-canvas-${p.id}`);
-                        }
-                      }).catch(() => {
-                        setProjects(prev => prev.filter(pr => pr.id !== p.id));
-                      });
-                    }
-                    setDeletingProjects(prev => { const s = new Set(prev); s.delete(p.id); return s; });
-                  });
+                {p.state !== "deleting" && <Button variant="danger" isDisabled={deletingProjects.has(p.id)} onClick={(e) => {
+                  e.stopPropagation();
+                  setDeleteTarget(p);
                 }}>{deletingProjects.has(p.id) ? <><span className="project-btn-spinner" style={{ width: 12, height: 12 }} /> Deleting...</> : "Delete"}</Button>}
                 </>)}
               </CardBody>
@@ -1244,6 +1236,53 @@ export default function ProjectsPage() {
               if (d.status === "deploying") { pollUntilSettled(); }
               else { setAlertMsg(d.detail || "Republish failed"); setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "error" } : pr)); }
             });
+          }}
+        />
+      )}
+      {deleteTarget && (
+        <ConfirmModal
+          title="Delete Project"
+          message={`Delete project "${deleteTarget.name}"? This cannot be undone.`}
+          confirmLabel="Delete"
+          variant="danger"
+          onCancel={() => setDeleteTarget(null)}
+          onConfirm={() => {
+            const p = deleteTarget;
+            setDeleteTarget(null);
+            setDeletingProjects(prev => new Set(prev).add(p.id));
+            fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" }).then((r) => {
+              if (r.ok) {
+                r.json().then((data) => {
+                  if (data.status === "deleting") {
+                    setProjects(prev => prev.map(pr => pr.id === p.id ? { ...pr, state: "deleting" } : pr));
+                  } else {
+                    setProjects(prev => prev.filter(pr => pr.id !== p.id));
+                    localStorage.removeItem(`troshka-canvas-${p.id}`);
+                  }
+                }).catch(() => {
+                  setProjects(prev => prev.filter(pr => pr.id !== p.id));
+                });
+              }
+              setDeletingProjects(prev => { const s = new Set(prev); s.delete(p.id); return s; });
+            });
+          }}
+        />
+      )}
+      {bulkDeletePending && selectedProjects.size > 0 && (
+        <ConfirmModal
+          title="Delete Projects"
+          message={`Delete ${selectedProjects.size} project(s)? This cannot be undone.`}
+          confirmLabel="Delete"
+          variant="danger"
+          onCancel={() => setBulkDeletePending(false)}
+          onConfirm={() => {
+            const toDelete = projects.filter((pr) => selectedProjects.has(pr.id));
+            setBulkDeletePending(false);
+            for (const p of toDelete) {
+              fetch(`${API_BASE}/api/v1/projects/${p.id}`, { method: "DELETE" });
+            }
+            setSelectedProjects(new Set());
+            setTimeout(fetchProjects, 1000);
           }}
         />
       )}

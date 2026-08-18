@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import AlertModal from "@/components/AlertModal";
+import { appConfirm } from "@/lib/confirm";
 import {
   Button,
   Card,
@@ -32,6 +33,8 @@ interface ProviderInfo {
   console_nameservers?: string[];
   console_configured?: boolean;
   iso_pvc?: string | null;
+  pkg_repo_url?: string | null;
+  pkg_repo_username?: string | null;
   // GCP
   gcp_project_id?: string | null;
   gcp_network_id?: string | null;
@@ -83,11 +86,17 @@ export default function AdminProvidersPage() {
   const [editEndpointUrl, setEditEndpointUrl] = useState("");
   const [editCacheNamespace, setEditCacheNamespace] = useState("");
   const [editProjectPrefix, setEditProjectPrefix] = useState("");
+  const [editPkgRepoUrl, setEditPkgRepoUrl] = useState("");
+  const [editPkgRepoUsername, setEditPkgRepoUsername] = useState("");
+  const [editPkgRepoPassword, setEditPkgRepoPassword] = useState("");
   const [apiUrl, setApiUrl] = useState("");
   const [token, setToken] = useState("");
   const [namespace, setNamespace] = useState("troshka");
   const [cacheNamespace, setCacheNamespace] = useState("");
   const [projectPrefix, setProjectPrefix] = useState("");
+  const [pkgRepoUrl, setPkgRepoUrl] = useState("");
+  const [pkgRepoUsername, setPkgRepoUsername] = useState("");
+  const [pkgRepoPassword, setPkgRepoPassword] = useState("");
   const [verifySsl, setVerifySsl] = useState(true);
   // GCP fields
   const [gcpProjectId, setGcpProjectId] = useState("");
@@ -197,7 +206,15 @@ export default function AdminProvidersPage() {
       : type === "azure"
       ? { name, type, default_region: region, azure_tenant_id: azureTenantId, azure_client_id: azureClientId, azure_client_secret: azureClientSecret, azure_subscription_id: azureSubscriptionId, azure_location: azureLocation || region }
       : (type === "ocpvirt" || type === "kubevirt")
-      ? { name, type, api_url: apiUrl, token, namespace, verify_ssl: verifySsl, ...(type === "kubevirt" ? { ...(cacheNamespace ? { cache_namespace: cacheNamespace } : {}), ...(projectPrefix ? { project_prefix: projectPrefix } : {}) } : {}) }
+      ? {
+          name, type, api_url: apiUrl, token, namespace, verify_ssl: verifySsl,
+          ...(type === "kubevirt" ? { ...(cacheNamespace ? { cache_namespace: cacheNamespace } : {}), ...(projectPrefix ? { project_prefix: projectPrefix } : {}) } : {}),
+          ...(type === "ocpvirt" && pkgRepoUrl ? {
+            pkg_repo_url: pkgRepoUrl,
+            ...(pkgRepoUsername ? { pkg_repo_username: pkgRepoUsername } : {}),
+            ...(pkgRepoPassword ? { pkg_repo_password: pkgRepoPassword } : {}),
+          } : {}),
+        }
       : {
           name, type, default_region: region,
           access_key_id: accessKey, secret_access_key: secretKey,
@@ -216,6 +233,7 @@ export default function AdminProvidersPage() {
       setShowAdd(false);
       setName(""); setAccessKey(""); setSecretKey(""); setEndpointUrl(""); setUseCustomEndpoint(false);
       setApiUrl(""); setToken(""); setNamespace("troshka"); setVerifySsl(true);
+      setPkgRepoUrl(""); setPkgRepoUsername(""); setPkgRepoPassword("");
       setGcpProjectId(""); setServiceAccountJson("");
       setAzureTenantId(""); setAzureClientId(""); setAzureClientSecret(""); setAzureSubscriptionId(""); setAzureLocation("");
       loadProviders();
@@ -275,6 +293,9 @@ export default function AdminProvidersPage() {
     setEditAccessKey("");
     setEditSecretKey("");
     setEditEndpointUrl(p.endpoint_url || "");
+    setEditPkgRepoUrl(p.pkg_repo_url || "");
+    setEditPkgRepoUsername(p.pkg_repo_username || "");
+    setEditPkgRepoPassword("");
   };
 
   const saveEdit = async () => {
@@ -288,6 +309,11 @@ export default function AdminProvidersPage() {
       if (editRegion) body.namespace = editRegion;
       if (editCacheNamespace) body.cache_namespace = editCacheNamespace;
       if (editProjectPrefix) body.project_prefix = editProjectPrefix;
+      if (editProvider.type === "ocpvirt") {
+        body.pkg_repo_url = editPkgRepoUrl;
+        body.pkg_repo_username = editPkgRepoUsername;
+        if (editPkgRepoPassword) body.pkg_repo_password = editPkgRepoPassword;
+      }
     } else {
       if (editRegion) body.default_region = editRegion;
       if (editAccessKey) body.access_key_id = editAccessKey;
@@ -326,17 +352,11 @@ export default function AdminProvidersPage() {
     }
   };
 
-  const [isoSelectMode, setIsoSelectMode] = useState<Record<string, boolean>>({});
-
   const selectImage = async (providerId: string, imageId: string) => {
-    const endpoint = isoSelectMode[providerId]
-      ? `/api/v1/providers/${providerId}/set-iso?iso_pvc=${imageId}`
-      : `/api/v1/providers/${providerId}/set-image?image_id=${imageId}`;
-    const resp = await fetch(endpoint, { method: "POST" });
+    const resp = await fetch(`/api/v1/providers/${providerId}/set-image?image_id=${imageId}`, { method: "POST" });
     if (resp.ok) {
       setImageOptions((prev) => ({ ...prev, [providerId]: [] }));
       setImageResult((prev) => ({ ...prev, [providerId]: "" }));
-      setIsoSelectMode((prev) => ({ ...prev, [providerId]: false }));
       loadProviders();
     }
   };
@@ -373,7 +393,7 @@ export default function AdminProvidersPage() {
   };
 
   const createVpc = async (id: string, skipConfirm = false) => {
-    if (!skipConfirm && !window.confirm("Create a new VPC (10.100.0.0/16) with a public subnet, internet gateway, and security group?")) return;
+    if (!skipConfirm && !(await appConfirm({ message: "Create a new VPC (10.100.0.0/16) with a public subnet, internet gateway, and security group?", confirmLabel: "Create VPC" }))) return;
     setImageResult((prev) => ({ ...prev, [id]: "Creating VPC..." }));
     const resp = await fetch(`/api/v1/providers/${id}/create-vpc`, { method: "POST" });
     if (resp.ok) {
@@ -412,7 +432,12 @@ export default function AdminProvidersPage() {
   };
 
   const removeConsole = async (providerId: string) => {
-    if (!confirm("Remove console DNS? This will delete the hosted zone and all DNS records.")) return;
+    if (!(await appConfirm({
+      title: "Remove Console DNS",
+      message: "Remove console DNS? This will delete the hosted zone and all DNS records.",
+      confirmLabel: "Remove",
+      variant: "danger",
+    }))) return;
     try {
       const resp = await fetch(`/api/v1/providers/${providerId}/console`, { method: "DELETE" });
       if (resp.ok) loadProviders();
@@ -441,7 +466,7 @@ export default function AdminProvidersPage() {
   };
 
   const deleteProvider = async (id: string) => {
-    if (!window.confirm("Delete this provider?")) return;
+    if (!(await appConfirm({ message: "Delete this provider?", confirmLabel: "Delete", variant: "danger" }))) return;
     const resp = await fetch(`/api/v1/providers/${id}`, { method: "DELETE" });
     if (resp.ok) {
       loadProviders();
@@ -565,6 +590,22 @@ export default function AdminProvidersPage() {
                         </div>
                       </>
                     )}
+                    {type === "ocpvirt" && (
+                      <>
+                        <div>
+                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Package Repo URL</label>
+                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={pkgRepoUrl} onChange={(e) => setPkgRepoUrl(e.target.value)} placeholder="https://repo-troshka-images.apps.../rhel-10.2" />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Package Repo Username</label>
+                          <input style={{ ...inputStyle, fontFamily: "monospace" }} value={pkgRepoUsername} onChange={(e) => setPkgRepoUsername(e.target.value)} placeholder="troshka-repo" />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Package Repo Password</label>
+                          <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={pkgRepoPassword} onChange={(e) => setPkgRepoPassword(e.target.value)} />
+                        </div>
+                      </>
+                    )}
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <input type="checkbox" checked={verifySsl} onChange={(e) => setVerifySsl(e.target.checked)} id="verify-ssl" />
                       <label htmlFor="verify-ssl" style={{ fontSize: 12 }}>Verify SSL</label>
@@ -662,6 +703,22 @@ export default function AdminProvidersPage() {
                           </div>
                         </>
                       )}
+                      {p.type === "ocpvirt" && (
+                        <>
+                          <div>
+                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Package Repo URL</label>
+                            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editPkgRepoUrl} onChange={(e) => setEditPkgRepoUrl(e.target.value)} placeholder="https://repo-troshka-images.apps.../rhel-10.2" />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Package Repo Username</label>
+                            <input style={{ ...inputStyle, fontFamily: "monospace" }} value={editPkgRepoUsername} onChange={(e) => setEditPkgRepoUsername(e.target.value)} placeholder="troshka-repo" />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Package Repo Password <span style={{ opacity: 0.5 }}>(leave blank to keep current)</span></label>
+                            <input style={{ ...inputStyle, fontFamily: "monospace" }} type="password" value={editPkgRepoPassword} onChange={(e) => setEditPkgRepoPassword(e.target.value)} placeholder="Leave blank to keep current" />
+                          </div>
+                        </>
+                      )}
                     </>
                   ) : (
                     <>
@@ -728,9 +785,9 @@ export default function AdminProvidersPage() {
                           : <span style={{ color: "#fbbf24" }}> · ⚠ No image selected</span>
                       )}
                       {p.type === "ocpvirt" && (
-                        p.iso_pvc
-                          ? <span> · ISO: {p.iso_pvc}</span>
-                          : <span style={{ color: "#fbbf24" }}> · ⚠ No install ISO</span>
+                        p.pkg_repo_url
+                          ? <span> · Packages: <code style={{ fontSize: 11 }}>{p.pkg_repo_url}</code></span>
+                          : <span style={{ color: "#fbbf24" }}> · ⚠ No package repo</span>
                       )}
                       {p.type === "ec2" && (
                         p.vpc_id
@@ -783,7 +840,6 @@ export default function AdminProvidersPage() {
                             setImageResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));
                           } else { setImageResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
                         } else if (p.type === "ocpvirt") {
-                          setIsoSelectMode((prev) => ({ ...prev, [p.id]: false }));
                           const resp = await fetch(`/api/v1/providers/${p.id}/discover-datasources`);
                           if (resp.ok) {
                             const data = await resp.json();
@@ -1014,24 +1070,12 @@ export default function AdminProvidersPage() {
                         }
                       }}>Update Operator</Button>
                     )}
-                    {p.type === "ocpvirt" && <Button variant="secondary" onClick={async () => {
-                      setIsoSelectMode((prev) => ({ ...prev, [p.id]: true }));
-                      setImageResult((prev) => ({ ...prev, [p.id]: "Discovering ISOs..." }));
-                      const resp = await fetch(`/api/v1/providers/${p.id}/discover-isos`);
-                      if (resp.ok) {
-                        const data = await resp.json();
-                        setImageOptions((prev) => ({ ...prev, [p.id]: data.isos.map((iso: any) => ({ image_id: iso.name, label: `${iso.name} (${iso.size})`, name: iso.name, created: "", type: "" })) }));
-                        setImageResult((prev) => ({ ...prev, [p.id]: `Found ${data.isos.length} ISOs` }));
-                      } else {
-                        setImageResult((prev) => ({ ...prev, [p.id]: "FAILED to discover ISOs" }));
-                      }
-                    }}>Select Install ISO</Button>}
                     {p.type === "ec2" && !(p.vpc_id && p.subnet_id && p.security_group_id) && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
                     {p.type === "gcp" && !p.gcp_network_id && (
                       <Button
                         variant="secondary"
                         onClick={async () => {
-                          if (!window.confirm("Create a new VPC network with subnet and firewall rules?")) return;
+                          if (!(await appConfirm({ message: "Create a new VPC network with subnet and firewall rules?", confirmLabel: "Create network" }))) return;
                           setImageResult((prev) => ({ ...prev, [p.id]: "Creating network..." }));
                           const resp = await fetch(`/api/v1/providers/${p.id}/create-network-gcp`, { method: "POST" });
                           if (resp.ok) {
@@ -1051,7 +1095,7 @@ export default function AdminProvidersPage() {
                       <Button
                         variant="secondary"
                         onClick={async () => {
-                          if (!window.confirm("Create a new VNet with subnet and NSG?")) return;
+                          if (!(await appConfirm({ message: "Create a new VNet with subnet and NSG?", confirmLabel: "Create network" }))) return;
                           setImageResult((prev) => ({ ...prev, [p.id]: "Creating network..." }));
                           const resp = await fetch(`/api/v1/providers/${p.id}/create-network-azure`, { method: "POST" });
                           if (resp.ok) {

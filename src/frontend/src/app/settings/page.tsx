@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import AlertModal from "@/components/AlertModal";
+import { appConfirm } from "@/lib/confirm";
 import {
   Button,
   Card,
@@ -114,7 +115,12 @@ export default function SettingsPage() {
   };
 
   const revokeKey = async (id: string) => {
-    if (!window.confirm("Revoke this API key? This cannot be undone.")) return;
+    if (!(await appConfirm({
+      title: "Revoke API Key",
+      message: "Revoke this API key? This cannot be undone.",
+      confirmLabel: "Revoke",
+      variant: "danger",
+    }))) return;
     await fetch(`/api/v1/api-keys/${id}`, { method: "DELETE" });
     setKeys(keys.filter((k) => k.id !== id));
   };

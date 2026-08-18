@@ -98,6 +98,21 @@ _MSG_WAITING_CONSOLE = "waiting for OpenShift console"
 _MSG_CA_CERT = "CA cert"
 _VMS_DESTROY_PATH = "/vms/destroy"
 _MSG_BROWSER_CREDS = "browser credentials"
+_KILL_BROWSER_CMD = (
+    "pkill -x firefox 2>/dev/null || true; "
+    "pkill -f '[f]irefox' 2>/dev/null || true; "
+    "sleep 2; "
+    "rm -f /home/cloud-user/.mozilla/firefox/*.default*/lock "
+    "/home/cloud-user/.mozilla/firefox/*.default*/.parentlock 2>/dev/null || true"
+)
+_ENSURE_FIREFOX_PROFILE_CMD = (
+    "if ! find /home/cloud-user/.mozilla/firefox -maxdepth 2 "
+    "-name cert9.db 2>/dev/null | grep -q .; then "
+    "firefox --headless --no-remote >/dev/null 2>&1 & "
+    "FXPID=$!; sleep 5; "
+    "kill $FXPID 2>/dev/null; wait $FXPID 2>/dev/null || true; "
+    "sleep 2; fi"
+)
 _LOG_DEPLOY = "Deploy %s: %s"
 _KUBEVIRT_API = "kubevirt.io"
 _VM_START_FAILED = "Failed to start VM %s: %s"
@@ -3471,6 +3486,16 @@ def _resolve_recert_settings(s, topology):
 
 def _auto_enable_recert_on_rhcos(topology, deploy_recert, project_id):
     """Auto-enable recert on RHCOS VMs when pattern has recert enabled."""
+    from app.services.ocp_topology_flags import apply_sno_ocp_vm_flags, rhcos_vms
+
+    if len(rhcos_vms(topology)) == 1:
+        apply_sno_ocp_vm_flags(topology, recert=bool(deploy_recert))
+        if deploy_recert:
+            logger.info(
+                "Deploy %s: auto-enabled OCP flags on SNO RHCOS VM from pattern",
+                project_id[:8],
+            )
+        return
     if not deploy_recert or deploy_recert is False:
         return
     has_recert_vm = any(
@@ -4954,7 +4979,9 @@ def _exec_on_bastion_troshkad(host, project_id, bastion_ip, password, command, t
     return None
 
 
-def _verify_bastion_browser(exec_fn, push_fn, project_id, vm_name=None):
+def _verify_bastion_browser(
+    exec_fn, push_fn, project_id, vm_name=None, status_phase="browser"
+):
     """Verify and fix bastion CA trust and browser credentials.
 
     Args:
@@ -4977,10 +5004,15 @@ def _verify_bastion_browser(exec_fn, push_fn, project_id, vm_name=None):
         'if [ -n "$LIVE_FP" ] && [ "$LIVE_FP" = "$FILE_FP" ]; then echo "ca:ok"; '
         'elif [ -z "$LIVE_FP" ]; then echo "ca:pending"; '
         'else echo "ca:stale"; fi; '
-        'BOOT=$(date -d "$(uptime -s)" +%s 2>/dev/null || echo 0); '
-        "LJ=$(stat -c %Y /home/cloud-user/.mozilla/firefox/*/logins.json 2>/dev/null | head -1 || echo 0); "
-        'if [ "$LJ" -gt "$BOOT" ] 2>/dev/null; then echo "logins:ok"; '
-        'elif [ "$LJ" = "0" ]; then echo "logins:missing"; '
+        "LJ=$(find /home/cloud-user/.mozilla/firefox -name logins.json 2>/dev/null | head -1); "
+        "PW_FILE=/home/cloud-user/ocp-install/auth/kubeadmin-password; "
+        'if [ -n "$LJ" ] && grep -q encryptedUsername "$LJ" 2>/dev/null; then '
+        '  if [ -f "$PW_FILE" ]; then '
+        '    PW_MT=$(stat -c %Y "$PW_FILE" 2>/dev/null || echo 0); '
+        '    LJ_MT=$(stat -c %Y "$LJ" 2>/dev/null || echo 0); '
+        '    if [ "$LJ_MT" -ge "$PW_MT" ]; then echo "logins:ok"; else echo "logins:stale"; fi; '
+        '  else echo "logins:ok"; fi; '
+        'elif [ -z "$LJ" ]; then echo "logins:missing"; '
         'else echo "logins:stale"; fi'
     )
     _CA_UPDATE_CMD = (
@@ -5001,18 +5033,20 @@ def _verify_bastion_browser(exec_fn, push_fn, project_id, vm_name=None):
             return True
 
         if _apply_bastion_browser_fixes(
-            verify, exec_fn, push_fn, _CA_UPDATE_CMD, _AUTOLOGIN_CMD
+            verify, exec_fn, push_fn, _CA_UPDATE_CMD, _AUTOLOGIN_CMD, status_phase
         ):
             _t.sleep(5)
             continue
-        push_fn("browser", "waiting for bastion setup")
+        push_fn(status_phase, "waiting for bastion setup")
         _t.sleep(10)
 
     logger.warning("OCP monitor %s: bastion browser setup incomplete", label)
     return False
 
 
-def _apply_bastion_browser_fixes(verify, exec_fn, push_fn, ca_cmd, autologin_cmd):
+def _apply_bastion_browser_fixes(
+    verify, exec_fn, push_fn, ca_cmd, autologin_cmd, status_phase="browser"
+):
     """Check for and apply CA cert / browser credential fixes. Returns True if fixes applied."""
     needs_fix = []
     if verify and "ca:stale" in verify:
@@ -5021,10 +5055,12 @@ def _apply_bastion_browser_fixes(verify, exec_fn, push_fn, ca_cmd, autologin_cmd
         needs_fix.append(_MSG_BROWSER_CREDS)
     if not needs_fix:
         return False
-    push_fn("browser", f"bastion {', '.join(needs_fix)} stale, updating...")
+    push_fn(status_phase, f"bastion {', '.join(needs_fix)} stale, updating...")
     if _MSG_CA_CERT in needs_fix:
         exec_fn(ca_cmd, timeout=15)
     if _MSG_BROWSER_CREDS in needs_fix:
+        exec_fn(_KILL_BROWSER_CMD, timeout=10)
+        exec_fn(_ENSURE_FIREFOX_PROFILE_CMD, timeout=20)
         exec_fn(autologin_cmd, timeout=30)
     return True
 
@@ -5127,6 +5163,60 @@ def _extract_bastion_info(nodes):
                 break
         password = bastion.get("data", {}).get("ciCloudUserPassword", "")
     return bastion, bastion_ip, password
+
+
+def _extract_ocp_kubeadmin_password(nodes, vm_id=None):
+    """Return kubeadmin password from topology (set after recert)."""
+    if vm_id:
+        for n in nodes:
+            if n.get("id") == vm_id:
+                pw = n.get("data", {}).get("ocpKubeadminPassword")
+                if pw:
+                    return pw
+    for n in nodes:
+        if n.get("type") == "vmNode":
+            pw = n.get("data", {}).get("ocpKubeadminPassword")
+            if pw:
+                return pw
+    return None
+
+
+def _write_bastion_kubeadmin_password(
+    host, project_id, bastion_ip, ssh_password, kubeadmin_pw
+):
+    """Write kubeadmin password to the bastion auth directory."""
+    import base64
+
+    pw_b64 = base64.b64encode(kubeadmin_pw.encode()).decode()
+    _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        ssh_password,
+        "mkdir -p /home/cloud-user/ocp-install/auth && "
+        f"echo '{pw_b64}' | base64 -d > /home/cloud-user/ocp-install/auth/kubeadmin-password && "
+        "chown cloud-user:cloud-user /home/cloud-user/ocp-install/auth/kubeadmin-password",
+        timeout=10,
+    )
+
+
+def _deploy_bastion_autologin_script(host, project_id, bastion_ip, ssh_password):
+    """Deploy NSS-based ocp-autologin.py (replaces bastion-image Selenium variant)."""
+    import base64
+
+    from app.services.ocp_autologin import OCP_AUTOLOGIN_SCRIPT
+
+    script_b64 = base64.b64encode(OCP_AUTOLOGIN_SCRIPT.encode()).decode()
+    _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        ssh_password,
+        f"echo '{script_b64}' | base64 -d > /home/cloud-user/ocp-autologin.py && "
+        "chown cloud-user:cloud-user /home/cloud-user/ocp-autologin.py && "
+        "chmod 755 /home/cloud-user/ocp-autologin.py",
+        timeout=10,
+    )
 
 
 def _approve_csrs_if_due(approve_fn, push_fn, last_check, interval=30):
@@ -5267,6 +5357,7 @@ def _configure_bastion_and_cleanup(
     _oc,
     _push,
     vm_name=None,
+    status_phase="browser",
 ):
     """Configure bastion browser if flag is set, then clean up temp kubeconfig."""
     vm_node = next((n for n in nodes if n["id"] == vm_id), None)
@@ -5276,7 +5367,7 @@ def _configure_bastion_and_cleanup(
     if configure_browser:
         # Copy kubeconfig to bastion default locations (skip if already using bastion default)
         if kc_path:
-            _push("browser", "setting bastion kubeconfig for this cluster")
+            _push(status_phase, "setting bastion kubeconfig for this cluster")
             _exec_on_bastion(
                 host,
                 project_id,
@@ -5291,7 +5382,7 @@ def _configure_bastion_and_cleanup(
             )
 
         # Refresh bastion CA trust with this cluster's ingress cert
-        _push("browser", "refreshing bastion CA trust")
+        _push(status_phase, "refreshing bastion CA trust")
         _oc(
             "oc get secret -n openshift-ingress router-certs-default "
             "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
@@ -5300,17 +5391,39 @@ def _configure_bastion_and_cleanup(
             timeout=15,
         )
 
+        kubeadmin_pw = _extract_ocp_kubeadmin_password(nodes, vm_id)
+        if kubeadmin_pw:
+            _push(status_phase, "syncing kubeadmin password to bastion")
+            _write_bastion_kubeadmin_password(
+                host, project_id, bastion_ip, password, kubeadmin_pw
+            )
+
+        _push(status_phase, "deploying browser autologin script")
+        _deploy_bastion_autologin_script(host, project_id, bastion_ip, password)
+
+        _push(status_phase, "ensuring Firefox profile")
+        _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            _KILL_BROWSER_CMD + "; " + _ENSURE_FIREFOX_PROFILE_CMD,
+            timeout=25,
+        )
+
         # Verify CA fingerprint + run autologin with retry loop
-        _push("browser", "verifying bastion browser setup")
-        bastion_ready = _verify_bastion_browser(_oc, _push, project_id, vm_name)
-        if bastion_ready:
-            _push("browser", "bastion browser ready")
+        _push(status_phase, "verifying bastion browser setup")
+        bastion_ready = _verify_bastion_browser(
+            _oc, _push, project_id, vm_name, status_phase=status_phase
+        )
+        return bastion_ready
 
     # Cleanup temp kubeconfig (skip if we used bastion default or copied it there)
     if kc_path and not configure_browser:
         _exec_on_bastion(
             host, project_id, bastion_ip, password, f"rm -f {kc_path}", timeout=5
         )
+    return None
 
 
 def _setup_bastion_kubeconfig(
@@ -5391,7 +5504,9 @@ def _ocp_vm_wait_for_api(_oc, _push, deadline):
     return False
 
 
-def _ocp_vm_restart_ingress(_oc, _push):
+def _ocp_vm_restart_ingress(_oc, _push, skip=False):
+    if skip:
+        return
     _push("console", "restarting ingress router")
     _oc(
         "oc rollout restart deployment/router-default -n openshift-ingress 2>/dev/null || true",
@@ -5453,19 +5568,19 @@ def _ocp_vm_health_inner(
 
     def _push(phase, detail, items=None):
         detail_with_time = f"{detail} ({_elapsed()})"
-        msg = {
-            "type": "ocp-health",
-            "phase": phase,
-            "detail": detail_with_time,
-            "vm_id": vm_id,
-            "vm_name": vm_name,
-        }
-        if items:
-            msg["items"] = items
-        notify_project(project_id, msg)
+        _ocp_push_status(
+            project_id,
+            phase,
+            detail_with_time,
+            items,
+            vm_id=vm_id,
+            vm_name=vm_name,
+        )
 
     # Find bastion for exec
     nodes = topo.get("nodes", [])
+    vm_node = next((n for n in nodes if n["id"] == vm_id), None)
+    is_recert = bool(vm_node and vm_node.get("data", {}).get("recertEnabled"))
     _bastion, bastion_ip, password = _extract_bastion_info(nodes)
 
     if not bastion_ip:
@@ -5487,29 +5602,48 @@ def _ocp_vm_health_inner(
     logger.info("OCP VM monitor started for %s/%s", project_id[:8], vm_name)
 
     if not _ocp_vm_wait_for_api(_oc, _push, deadline):
+        _ocp_update_status(project_id, "error", int(_t.time() - start))
         return
 
     _ocp_vm_poll_with_csrs(_oc, _approve_csrs, _push, deadline)
-    _ocp_vm_restart_ingress(_oc, _push)
-    _t.sleep(10)
+    _ocp_vm_restart_ingress(_oc, _push, skip=is_recert)
+    if not is_recert:
+        _t.sleep(10)
     _ocp_vm_wait_for_console(_oc, _approve_csrs, _push, deadline)
+
     _ocp_vm_final_csr_sweep(_approve_csrs, _push)
 
-    # Configure bastion browser + cleanup temp kubeconfig
-    _configure_bastion_and_cleanup(
-        nodes,
-        vm_id,
-        kc_path,
-        host,
-        project_id,
-        bastion_ip,
-        password,
-        _oc,
-        _push,
-        vm_name=vm_name,
+    configure_browser = bool(
+        vm_node and vm_node.get("data", {}).get("configureBastionBrowser")
     )
+    browser_ready = True
+    if configure_browser:
+        browser_ready = bool(
+            _configure_bastion_and_cleanup(
+                nodes,
+                vm_id,
+                kc_path,
+                host,
+                project_id,
+                bastion_ip,
+                password,
+                _oc,
+                _push,
+                vm_name=vm_name,
+                status_phase="browser",
+            )
+        )
 
-    _push("ready", f"{vm_name} cluster ready")
+    elapsed_secs = int(_t.time() - start)
+    if configure_browser and not browser_ready:
+        ready_detail = f"{vm_name} cluster ready (bastion browser not configured)"
+        _push("warning", ready_detail)
+        _ocp_update_status(project_id, "warning", elapsed_secs)
+    else:
+        ready_detail = f"{vm_name} cluster ready"
+        _push("ready", ready_detail)
+        _ocp_update_status(project_id, "ready", elapsed_secs)
+
     logger.info(
         "OCP VM monitor complete for %s/%s (%s)",
         project_id[:8],
@@ -6287,6 +6421,15 @@ def _ocp_post_pattern_cert_refresh(
 
     push_fn("certs", "verifying bastion setup")
 
+    kubeadmin_pw = _extract_ocp_kubeadmin_password(topology.get("nodes", []))
+    if kubeadmin_pw:
+        push_fn("certs", "syncing kubeadmin password to bastion")
+        _write_bastion_kubeadmin_password(
+            host, project_id, bastion_ip, password, kubeadmin_pw
+        )
+
+    _deploy_bastion_autologin_script(host, project_id, bastion_ip, password)
+
     def _bastion_oc(cmd, timeout=15):
         return _exec_on_bastion(
             host,
@@ -6300,11 +6443,15 @@ def _ocp_post_pattern_cert_refresh(
     _verify_bastion_browser(_bastion_oc, push_fn, project_id)
 
 
-def _ocp_push_status(project_id, phase, detail, items=None):
+def _ocp_push_status(project_id, phase, detail, items=None, vm_id=None, vm_name=None):
     """Push OCP health status via WebSocket and persist to DB."""
     msg = {"type": "ocp-health", "phase": phase, "detail": detail}
     if items:
         msg["items"] = items
+    if vm_id:
+        msg["vm_id"] = vm_id
+    if vm_name:
+        msg["vm_name"] = vm_name
     notify_project(project_id, msg)
     try:
         from app.core.database import SessionLocal as _PushSL

@@ -390,3 +390,67 @@ def test_list_shares_non_owner_forbidden():
 def test_list_shares_pattern_not_found():
     resp = client.get("/api/v1/patterns/nonexistent-id/shares", headers=HEADERS)
     assert resp.status_code == 404
+
+
+SNO_PATTERN_TOPOLOGY = {
+    "nodes": [
+        {
+            "id": "bastion-1",
+            "type": "vmNode",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "name": "bastion",
+                "os": "rhel",
+                "vcpus": 2,
+                "ram": 4,
+                "nics": [],
+                "diskControllers": [],
+            },
+        },
+        {
+            "id": "cp0-1",
+            "type": "vmNode",
+            "position": {"x": 0, "y": 200},
+            "data": {
+                "name": "cp-0",
+                "os": "rhcos",
+                "vcpus": 8,
+                "ram": 32,
+                "nics": [],
+                "diskControllers": [],
+            },
+        },
+    ],
+    "edges": [],
+}
+
+
+def test_deploy_sno_pattern_sets_ocp_flags():
+    create_resp = client.post(
+        "/api/v1/patterns",
+        json={
+            "name": "SNO OCP Flags Test",
+            "topology": copy.deepcopy(SNO_PATTERN_TOPOLOGY),
+            "recert": True,
+        },
+        headers=HEADERS,
+    )
+    assert create_resp.status_code == 201
+    pattern_id = create_resp.json()["id"]
+
+    deploy_resp = client.post(
+        f"/api/v1/patterns/{pattern_id}/deploy",
+        json={"name": "SNO OCP Flags Deploy"},
+        headers=HEADERS,
+    )
+    assert deploy_resp.status_code == 201
+    cp0 = next(
+        n
+        for n in deploy_resp.json()["topology"]["nodes"]
+        if n.get("data", {}).get("os") == "rhcos"
+    )
+    data = cp0["data"]
+    assert data["recertEnabled"] is True
+    assert data["ocpMonitor"] is True
+    assert data["configureBastionBrowser"] is True
+    assert deploy_resp.json()["topology"]["_deploy_recert"] is True

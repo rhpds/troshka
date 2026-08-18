@@ -20,6 +20,7 @@ REGISTRY = "quay.io"
 IMAGE = "redhat-gpte/troshka-operator"
 TAG = "production"
 POLL_INTERVAL = 300
+K8S_REQUEST_TIMEOUT = 15
 
 _registry_digest: str | None = None
 
@@ -57,7 +58,9 @@ def _read_deployment_info(apps_api, operator_ns: str) -> tuple[bool, str]:
     tag = TAG
     try:
         dep = apps_api.read_namespaced_deployment(
-            name="troshka-operator", namespace=operator_ns
+            name="troshka-operator",
+            namespace=operator_ns,
+            _request_timeout=K8S_REQUEST_TIMEOUT,
         )
         desired = dep.spec.replicas or 1  # type: ignore[union-attr]
         updated = dep.status.updated_replicas or 0  # type: ignore[union-attr]
@@ -95,6 +98,7 @@ def _read_pod_digest(core_api, operator_ns: str) -> str | None:
         pods = core_api.list_namespaced_pod(
             namespace=operator_ns,
             label_selector="app=troshka-operator",
+            _request_timeout=K8S_REQUEST_TIMEOUT,
         )
         for pod in pods.items or []:  # type: ignore[union-attr]
             digest = _extract_digest_from_pod(pod)
@@ -134,6 +138,10 @@ def _get_operator_info(provider) -> tuple[str | None, bool, str]:
 
 def _poll_operator_digests():
     """Refresh the running operator digest for all kubevirt-cluster hosts."""
+    from app.core.lifecycle import audit
+
+    audit("operator_updater: poll begin")
+    t = time.monotonic()
     global _registry_digest
 
     digest = _fetch_registry_digest()
@@ -160,6 +168,7 @@ def _poll_operator_digests():
         db.rollback()
     finally:
         db.close()
+        audit(f"operator_updater: poll done ({time.monotonic() - t:.2f}s)")
 
 
 def update_operator(provider) -> dict:
@@ -204,9 +213,18 @@ def update_operator(provider) -> dict:
 
 
 def _poller_loop():
+    from app.services.app_updater import resolve_mode
+
     time.sleep(10)
+    if resolve_mode() == "dev":
+        logger.info("Operator updater: polling disabled in dev mode")
+        return
+
     logger.info("Operator updater: initial poll")
-    _poll_operator_digests()
+    try:
+        _poll_operator_digests()
+    except Exception:
+        logger.exception("Operator updater initial poll failed")
 
     while True:
         time.sleep(POLL_INTERVAL)

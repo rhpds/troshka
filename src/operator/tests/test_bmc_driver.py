@@ -183,13 +183,13 @@ class TestAssignBootOrders:
         assert ifaces[0]["bootOrder"] == 1
         assert disks[0]["bootOrder"] == 2
 
-    def test_cdrom_sets_cdrom_first(self):
+    def test_cdrom_sets_disk_first(self):
         _, _, mod = _make_driver()
         disks = [{"name": "root", "disk": {}}, {"name": "iso", "cdrom": {}}]
         ifaces = []
         mod.KubeVirtDriver._assign_boot_orders(disks, ifaces, "cdrom")
-        assert disks[1]["bootOrder"] == 1
-        assert disks[0]["bootOrder"] == 2
+        assert disks[0]["bootOrder"] == 1
+        assert disks[1]["bootOrder"] == 2
 
     def test_disk_default(self):
         _, _, mod = _make_driver()

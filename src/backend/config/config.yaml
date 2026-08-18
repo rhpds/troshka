@@ -25,6 +25,13 @@ auth:
   admin_groups: ""
   operator_groups: ""
 
+app_update:
+  mode: auto          # auto | dev | image | disabled
+  registry: quay.io
+  repo: redhat-gpte
+  tag: production
+  poll_interval: 300
+
 aws:
   default_region: "us-east-1"
   default_instance_type: "m8i.xlarge"
@@ -54,3 +61,13 @@ central_s4:
 health:
   interval_seconds: 30
   disconnect_after_seconds: 90
+
+# OCP Virt dedicated-CI: HTTP package repo (replaces per-host RHEL DVD ISO import).
+# Password belongs in config.local.yaml or TROSHKA_OCPVIRT__PKG_REPO__PASSWORD.
+ocpvirt:
+  pkg_repo:
+    url: "https://repo-troshka-images.apps.ocpv-infra01.dal12.infra.demo.redhat.com/rhel-10.2"
+    username: troshka-repo
+    password: ""
+    route_host: "repo-troshka-images.apps.ocpv-infra01.dal12.infra.demo.redhat.com"
+    iso_library_item_name: "RHEL 10.2 Binary DVD"

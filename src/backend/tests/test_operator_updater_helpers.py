@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from app.services.operator_updater import (
+    K8S_REQUEST_TIMEOUT,
     _fetch_registry_digest,
     _get_operator_info,
     _poll_operator_digests,
@@ -32,7 +33,9 @@ def test_read_deployment_info_ready():
     assert rolling_out is False
     assert tag == "v2.5.0"
     apps_api.read_namespaced_deployment.assert_called_once_with(
-        name="troshka-operator", namespace="troshka-operator"
+        name="troshka-operator",
+        namespace="troshka-operator",
+        _request_timeout=K8S_REQUEST_TIMEOUT,
     )
 
 
@@ -119,6 +122,7 @@ def test_read_pod_digest_found():
     core_api.list_namespaced_pod.assert_called_once_with(
         namespace="troshka-operator",
         label_selector="app=troshka-operator",
+        _request_timeout=K8S_REQUEST_TIMEOUT,
     )
 
 

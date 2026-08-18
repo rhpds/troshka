@@ -4568,7 +4568,7 @@ def _wire_snapshot_network_edges(networks_info, nic_list, vm_id, topology):
 @router.post(
     "/{project_id}/import-vm",
     response_model=ProjectResponse,
-    responses={403: {}, 404: {}},
+    responses={400: {}, 403: {}, 404: {}},
 )
 def import_vm_from_snapshot(
     project_id: str,

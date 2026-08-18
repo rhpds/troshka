@@ -465,6 +465,7 @@ class TestSavePatternMetadataToS3:
         }
         pattern.total_size_bytes = 10
         pattern.tags = {}
+        pattern.recert = False
         pattern.disks = [disk]
 
         _save_pattern_metadata_to_s3(pattern, "pat-1")

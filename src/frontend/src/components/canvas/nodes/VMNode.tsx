@@ -5,6 +5,7 @@ import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflo
 import type { VMNodeData } from "@/stores/canvasStore";
 import { useCanvasStore, requestDuplicateVM } from "@/stores/canvasStore";
 import AlertModal from "@/components/AlertModal";
+import { appConfirm } from "@/lib/confirm";
 
 function VMNodeComponent({ id, data, selected }: NodeProps) {
   const edges = useCanvasStore((s) => s.edges);
@@ -341,7 +342,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             <button
               className="vm-node-action power-running"
               title="Graceful Shutdown"
-              onClick={(e) => { e.stopPropagation(); if (window.confirm(`Shut down "${d.name}"?`)) vmAction("stop"); }}
+              onClick={async (e) => { e.stopPropagation(); if (await appConfirm({ message: `Shut down "${d.name}"?`, confirmLabel: "Shut down" })) vmAction("stop"); }}
               disabled={!!actionPending || isRedeploying}
             >
               {actionPending === "stop" ? <span className="vm-btn-spinner" /> : "■"}
@@ -349,13 +350,13 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
             <button
               className="vm-node-action power-running"
               title="Force Power Off"
-              onClick={(e) => { e.stopPropagation(); if (window.confirm(`Force power off "${d.name}"? This may cause data loss.`)) vmAction("forcestop"); }}
+              onClick={async (e) => { e.stopPropagation(); if (await appConfirm({ message: `Force power off "${d.name}"? This may cause data loss.`, confirmLabel: "Force off", variant: "danger" })) vmAction("forcestop"); }}
               disabled={!!actionPending || isRedeploying}
               style={{ color: "#ef4444" }}
             >
               {actionPending === "forcestop" ? <span className="vm-btn-spinner" /> : "⏻"}
             </button>
-            <button className="vm-node-action restart" title="Restart" onClick={(e) => { e.stopPropagation(); if (window.confirm(`Restart "${d.name}"?`)) vmAction("restart"); }} disabled={!!actionPending || isRedeploying}>
+            <button className="vm-node-action restart" title="Restart" onClick={async (e) => { e.stopPropagation(); if (await appConfirm({ message: `Restart "${d.name}"?`, confirmLabel: "Restart" })) vmAction("restart"); }} disabled={!!actionPending || isRedeploying}>
               {actionPending === "restart" ? <span className="vm-btn-spinner" /> : "↻"}
             </button>
           </>

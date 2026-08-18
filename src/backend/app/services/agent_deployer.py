@@ -13,6 +13,10 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+# OCP Virt host cloud-init (dnf from DVD or HTTP repo + data disk format) can exceed 5 min
+# before the install script's own work begins.
+AGENT_INSTALL_TIMEOUT = 900
+
 
 @dataclass
 class AgentDeployConfig:
@@ -788,6 +792,7 @@ def _run_install_script_via_ssh(
     ssh_opts: list,
     ssh_port_opts: list,
     deploy_start: float,
+    timeout: int = AGENT_INSTALL_TIMEOUT,
 ) -> dict:
     """Run the install script on the remote host and return the result dict.
 
@@ -809,7 +814,7 @@ def _run_install_script_via_ssh(
             input=script,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=timeout,
         )
     except subprocess.TimeoutExpired as te:
         stdout = str(te.stdout) if te.stdout else ""
@@ -817,8 +822,9 @@ def _run_install_script_via_ssh(
         partial = stdout + stderr
         last_lines = "\n".join(partial.strip().splitlines()[-15:])
         logger.error(
-            "Install script timed out on %s after 300s. Last output:\n%s",
+            "Install script timed out on %s after %ds. Last output:\n%s",
             host_ip,
+            timeout,
             last_lines,
         )
         return {

@@ -1832,8 +1832,8 @@ class TestLifespan:
             ) as mock_rsh, patch(
                 "app.main._startup_resume_pattern_captures"
             ) as mock_rpc, patch(
-                "app.main._startup_resume_storage_pools"
-            ) as mock_rsp2, patch(
+                "app.main._start_deferred_startup"
+            ) as mock_deferred, patch(
                 "app.core.redis.close_redis"
             ) as mock_close:
                 mock_redis.return_value.ping.return_value = True
@@ -1849,7 +1849,7 @@ class TestLifespan:
                     mock_rsp.assert_called_once()
                     mock_rsh.assert_called_once()
                     mock_rpc.assert_called_once()
-                    mock_rsp2.assert_called_once()
+                    mock_deferred.assert_called_once()
 
                 mock_close.assert_called_once()
 
@@ -1887,7 +1887,7 @@ class TestLifespan:
             ), patch(
                 "app.main._startup_resume_pattern_captures"
             ), patch(
-                "app.main._startup_resume_storage_pools"
+                "app.main._start_deferred_startup"
             ), patch(
                 "app.core.redis.close_redis"
             ):

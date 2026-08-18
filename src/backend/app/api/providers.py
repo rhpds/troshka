@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import require_role
 from app.core.database import get_db
 from app.core.logging_utils import sanitize_log
+from app.core.ocpvirt_pkg_repo import resolve_pkg_repo
 from app.models.provider import Provider
 from app.models.user import User
 
@@ -81,6 +82,9 @@ class ProviderUpdate(BaseModel):
     cache_namespace: str | None = None
     project_prefix: str | None = None
     state: str | None = None
+    pkg_repo_url: str | None = None
+    pkg_repo_username: str | None = None
+    pkg_repo_password: str | None = None
 
 
 class ProviderResponse(BaseModel):
@@ -96,6 +100,8 @@ class ProviderResponse(BaseModel):
     console_nameservers: list | None = None
     console_configured: bool = False
     iso_pvc: str | None = None
+    pkg_repo_url: str | None = None
+    pkg_repo_username: str | None = None
 
     # GCP
     gcp_project_id: str | None = None
@@ -143,10 +149,17 @@ def _build_cluster_credentials(
         }
         if body.iso_pvc is not None:
             creds["iso_pvc"] = body.iso_pvc
-        if body.pkg_repo_url:
-            creds["pkg_repo_url"] = body.pkg_repo_url
-            creds["pkg_repo_username"] = body.pkg_repo_username
-            creds["pkg_repo_password"] = body.pkg_repo_password
+        repo_url, repo_user, repo_pass = resolve_pkg_repo(
+            {
+                "pkg_repo_url": body.pkg_repo_url,
+                "pkg_repo_username": body.pkg_repo_username,
+                "pkg_repo_password": body.pkg_repo_password,
+            }
+        )
+        if repo_url:
+            creds["pkg_repo_url"] = repo_url
+            creds["pkg_repo_username"] = repo_user
+            creds["pkg_repo_password"] = repo_pass
         provider.default_region = body.namespace or "troshka"
         return creds
 
@@ -314,6 +327,16 @@ def _build_provider_response(
         iso_pvc=(
             provider.get_credentials().get("iso_pvc") if provider.credentials else None
         ),
+        pkg_repo_url=(
+            provider.get_credentials().get("pkg_repo_url")
+            if provider.credentials
+            else None
+        ),
+        pkg_repo_username=(
+            provider.get_credentials().get("pkg_repo_username")
+            if provider.credentials
+            else None
+        ),
         gcp_project_id=provider.gcp_project_id,
         gcp_network_id=provider.gcp_network_id,
         gcp_subnet_id=provider.gcp_subnet_id,
@@ -428,6 +451,44 @@ def _update_cluster_credentials(provider: Provider, body: ProviderUpdate) -> Non
     provider.set_credentials(creds)
 
 
+def _apply_pkg_repo_credentials(
+    creds: dict[str, Any],
+    url: str | None,
+    username: str | None,
+    password: str | None,
+) -> None:
+    """Merge package-repo fields into creds; clear when URL/password invalid."""
+    merged = dict(creds)
+    if url is not None:
+        merged["pkg_repo_url"] = url
+    if username is not None:
+        merged["pkg_repo_username"] = username
+    if password:
+        merged["pkg_repo_password"] = password
+
+    repo_url, repo_user, repo_pass = resolve_pkg_repo(merged)
+    if repo_url:
+        creds["pkg_repo_url"] = repo_url
+        creds["pkg_repo_username"] = repo_user
+        creds["pkg_repo_password"] = repo_pass
+        return
+
+    for key in ("pkg_repo_url", "pkg_repo_username", "pkg_repo_password"):
+        creds.pop(key, None)
+
+
+def _update_ocpvirt_pkg_repo(provider: Provider, body: ProviderUpdate) -> None:
+    """Update HTTP package repo settings on an OCP Virt provider."""
+    creds = provider.get_credentials()
+    _apply_pkg_repo_credentials(
+        creds,
+        body.pkg_repo_url,
+        body.pkg_repo_username,
+        body.pkg_repo_password,
+    )
+    provider.set_credentials(creds)
+
+
 def _update_aws_credentials(provider: Provider, body: ProviderUpdate) -> None:
     """Update AWS credentials (access key/secret)."""
     creds = provider.get_credentials()
@@ -455,9 +516,21 @@ def update_provider(
 
     _update_provider_basic_fields(provider, body)
 
-    if body.api_url or body.token or body.namespace:
+    if (
+        body.api_url
+        or body.token
+        or body.namespace
+        or body.cache_namespace
+        or body.project_prefix
+    ):
         _update_cluster_credentials(provider, body)
-    elif body.access_key_id or body.secret_access_key:
+    if provider.type == "ocpvirt" and (
+        body.pkg_repo_url is not None
+        or body.pkg_repo_username is not None
+        or body.pkg_repo_password is not None
+    ):
+        _update_ocpvirt_pkg_repo(provider, body)
+    if body.access_key_id or body.secret_access_key:
         _update_aws_credentials(provider, body)
 
     db.commit()
@@ -1119,25 +1192,28 @@ def _test_s3_provider(provider: Provider, creds: dict[str, Any]) -> dict[str, An
     import boto3
 
     boto_config = _fast_fail_boto_config()
+    region = provider.default_region or creds.get("region") or "us-east-1"
     endpoint_url = creds.get("endpoint_url") or None
-    s3 = boto3.client(
-        "s3",
-        region_name=provider.default_region,
-        aws_access_key_id=creds.get("access_key_id"),
-        aws_secret_access_key=creds.get("secret_access_key"),
-        endpoint_url=endpoint_url,
-        config=boto_config,
-    )
     bucket = creds.get("bucket", "troshka-images")
 
+    kwargs: dict[str, Any] = {"region_name": region, "config": boto_config}
+    if creds.get("access_key_id"):
+        kwargs["aws_access_key_id"] = creds["access_key_id"]
+    if creds.get("secret_access_key"):
+        kwargs["aws_secret_access_key"] = creds["secret_access_key"]
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+
+    s3 = boto3.client("s3", **kwargs)
+
     # STS is an AWS-only API — skip it for self-hosted S3-compatible endpoints
-    # (e.g. dev MinIO), which don't implement it and would otherwise hang
-    # trying to reach real AWS.
+    # (e.g. dev MinIO, S4/Ceph RGW), which don't implement it and would
+    # otherwise hang trying to reach real AWS.
     account_id = ""
     if not endpoint_url:
         sts = boto3.client(
             "sts",
-            region_name=provider.default_region,
+            region_name=region,
             aws_access_key_id=creds.get("access_key_id"),
             aws_secret_access_key=creds.get("secret_access_key"),
             config=boto_config,
@@ -1150,7 +1226,7 @@ def _test_s3_provider(provider: Provider, creds: dict[str, Any]) -> dict[str, An
         return {"status": "ok", "bucket": bucket, "account": account_id}
     except s3.exceptions.ClientError as e:
         code = e.response["Error"]["Code"]
-        if code == "404":
+        if code in ("404", "NoSuchBucket"):
             return {
                 "status": "ok",
                 "bucket_missing": True,
@@ -1407,25 +1483,26 @@ def create_s3_bucket(
 
     creds = provider.get_credentials()
     bucket = creds.get("bucket", "troshka-images")
+    region = provider.default_region or creds.get("region") or "us-east-1"
 
-    s3 = boto3.client(
-        "s3",
-        region_name=provider.default_region,
-        aws_access_key_id=creds.get("access_key_id"),
-        aws_secret_access_key=creds.get("secret_access_key"),
-        endpoint_url=creds.get("endpoint_url") or None,
-        config=_fast_fail_boto_config(),
-    )
+    kwargs: dict[str, Any] = {"region_name": region, "config": _fast_fail_boto_config()}
+    if creds.get("access_key_id"):
+        kwargs["aws_access_key_id"] = creds["access_key_id"]
+    if creds.get("secret_access_key"):
+        kwargs["aws_secret_access_key"] = creds["secret_access_key"]
+    if creds.get("endpoint_url"):
+        kwargs["endpoint_url"] = creds["endpoint_url"]
+
+    s3 = boto3.client("s3", **kwargs)
 
     try:
-        if provider.default_region == "us-east-1":
+        # Custom endpoints (S4/MinIO) do not use AWS LocationConstraint.
+        if creds.get("endpoint_url") or region == "us-east-1":
             s3.create_bucket(Bucket=bucket)
         else:
             s3.create_bucket(
                 Bucket=bucket,
-                CreateBucketConfiguration={
-                    "LocationConstraint": provider.default_region
-                },
+                CreateBucketConfiguration={"LocationConstraint": region},
             )
         return {"status": "created", "bucket": bucket}
     except s3.exceptions.BucketAlreadyOwnedByYou:

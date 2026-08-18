@@ -17,6 +17,7 @@ import {
 } from "@patternfly/react-core";
 import { ExclamationTriangleIcon, ExclamationCircleIcon } from "@patternfly/react-icons";
 import AlertModal from "@/components/AlertModal";
+import { appConfirm } from "@/lib/confirm";
 
 interface Host {
   id: string;
@@ -209,7 +210,7 @@ export default function AdminHostsPage() {
       const names = hostProjects.map((p: Record<string, string>) => p.name).join(", ");
       msg += `\n\n⚠ ${hostProjects.length} project(s) will be reset to draft and their disk data will be lost: ${names}`;
     }
-    if (!window.confirm(msg)) return;
+    if (!(await appConfirm({ message: msg }))) return;
     setRemovingHosts((prev) => new Set(prev).add(hostId));
     const resp = await fetch(`/api/v1/hosts/${hostId}`, { method: "DELETE" });
     if (resp.ok) {
@@ -359,7 +360,7 @@ export default function AdminHostsPage() {
   };
 
   const handleEvacuate = async (hostId: string) => {
-    if (!window.confirm("Evacuate all projects from this host? They will be migrated to other hosts in the same pool.")) return;
+    if (!(await appConfirm({ message: "Evacuate all projects from this host? They will be migrated to other hosts in the same pool.", confirmLabel: "Evacuate" }))) return;
     setError("");
     const resp = await fetch(`/api/v1/hosts/${hostId}/evacuate`, { method: "POST" });
     if (resp.ok) {
@@ -389,7 +390,7 @@ export default function AdminHostsPage() {
   };
 
   const handleExtendStorage = async (host: Host) => {
-    if (!window.confirm(`Extend storage for host "${host.instance_id || host.id.slice(0, 8)}"? This will increase EBS volume capacity by ${host.auto_extend_increment_gb} GB.`)) return;
+    if (!(await appConfirm({ message: `Extend storage for host "${host.instance_id || host.id.slice(0, 8)}"? This will increase EBS volume capacity by ${host.auto_extend_increment_gb} GB.`, confirmLabel: "Extend" }))) return;
     setExtending({ ...extending, [host.id]: true });
     const resp = await fetch(`/api/v1/hosts/${host.id}/extend-storage`, {
       method: "POST",
@@ -409,7 +410,7 @@ export default function AdminHostsPage() {
       setError(`New size must be larger than current (${host.storage_size_gb} GB)`);
       return;
     }
-    if (!window.confirm(`Resize storage for host "${host.instance_id || host.id.slice(0, 8)}" to ${sizeGb} GB? (currently ${host.storage_size_gb} GB)`)) return;
+    if (!(await appConfirm({ message: `Resize storage for host "${host.instance_id || host.id.slice(0, 8)}" to ${sizeGb} GB? (currently ${host.storage_size_gb} GB)`, confirmLabel: "Resize" }))) return;
     setResizing({ ...resizing, [host.id]: true });
     try {
       const resp = await fetch(`/api/v1/hosts/${host.id}/resize-storage`, {
@@ -741,7 +742,7 @@ export default function AdminHostsPage() {
                   {allActiveConnected && (
                     <>
                       <Button variant="secondary" size="sm" onClick={async () => {
-                        if (!window.confirm(`Update agent on ${selected.length} host(s)?`)) return;
+                        if (!(await appConfirm({ message: `Update agent on ${selected.length} host(s)?`, confirmLabel: "Update" }))) return;
                         for (const h of selected) {
                           fetch(`/api/v1/hosts/${h.id}/update-agent`, { method: "POST" });
                         }
@@ -749,7 +750,7 @@ export default function AdminHostsPage() {
                         loadData();
                       }}>Update Agent ({selected.length})</Button>
                       <Button variant="secondary" size="sm" onClick={async () => {
-                        if (!window.confirm(`Run GC on ${selected.length} host(s)?`)) return;
+                        if (!(await appConfirm({ message: `Run GC on ${selected.length} host(s)?`, confirmLabel: "Run GC" }))) return;
                         for (const h of selected) {
                           fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
                         }
@@ -760,7 +761,7 @@ export default function AdminHostsPage() {
                   )}
                   {allActive && (
                     <Button variant="secondary" size="sm" onClick={async () => {
-                      if (!window.confirm(`Power off ${selected.length} host(s)?`)) return;
+                      if (!(await appConfirm({ message: `Power off ${selected.length} host(s)?`, confirmLabel: "Power off" }))) return;
                       for (const h of selected) {
                         fetch(`/api/v1/hosts/${h.id}/poweroff`, { method: "POST" });
                       }
@@ -770,7 +771,7 @@ export default function AdminHostsPage() {
                   )}
                   {allStopped && (
                     <Button variant="secondary" size="sm" onClick={async () => {
-                      if (!window.confirm(`Power on ${selected.length} host(s)?`)) return;
+                      if (!(await appConfirm({ message: `Power on ${selected.length} host(s)?`, confirmLabel: "Power on" }))) return;
                       for (const h of selected) {
                         fetch(`/api/v1/hosts/${h.id}/poweron`, { method: "POST" });
                       }
@@ -779,7 +780,11 @@ export default function AdminHostsPage() {
                     }}>Power On ({selected.length})</Button>
                   )}
                   <Button variant="danger" size="sm" onClick={async () => {
-                    if (!window.confirm(`Remove ${selected.length} host(s)? This will terminate all EC2 instances.`)) return;
+                    if (!(await appConfirm({
+                      message: `Remove ${selected.length} host(s)? This will terminate all EC2 instances.`,
+                      confirmLabel: "Remove",
+                      variant: "danger",
+                    }))) return;
                     for (const h of selected) {
                       fetch(`/api/v1/hosts/${h.id}`, { method: "DELETE" });
                     }
@@ -938,8 +943,8 @@ export default function AdminHostsPage() {
                 );
                 return (<>
               {h.host_type !== "kubevirt-cluster" && h.state === "active" && (h.agent_status === "disconnected" || h.agent_status === "install_failed") && (
-                <Button variant="secondary" onClick={() => {
-                  if (!window.confirm(`Install agent on ${h.instance_id}? This will SSH into the host and run the install script.`)) return;
+                <Button variant="secondary" onClick={async () => {
+                  if (!(await appConfirm({ message: `Install agent on ${h.instance_id}? This will SSH into the host and run the install script.`, confirmLabel: "Install" }))) return;
                   installAgent(h.id);
                 }} isLoading={installingHosts.has(h.id)} isDisabled={hostBusy}>
                   {h.agent_status === "install_failed" ? "Retry Install" : "Install Agent"}
@@ -963,7 +968,7 @@ export default function AdminHostsPage() {
                     const msg = force
                       ? "FORCE update troshkad? This will kill any running jobs."
                       : "Update troshkad on this host? (Shift+click for force update)";
-                    if (!window.confirm(msg)) return;
+                    if (!(await appConfirm({ message: msg }))) return;
                     setUpdatingHosts((prev) => new Set(prev).add(h.id));
                     try {
                       const resp = await fetch(`/api/v1/hosts/${h.id}/update-agent?force=${force}`, { method: "POST" });
@@ -1006,14 +1011,14 @@ export default function AdminHostsPage() {
                   }}>
                     {updatingHosts.has(h.id) ? "Updating..." : "Update Agent"}
                   </Button>}
-                  <Button variant="secondary" isLoading={installingHosts.has(h.id)} isDisabled={hostBusy} onClick={() => {
-                    if (!window.confirm("Reinstall the agent on this host? This re-runs the full install script via SSH.")) return;
+                  <Button variant="secondary" isLoading={installingHosts.has(h.id)} isDisabled={hostBusy} onClick={async () => {
+                    if (!(await appConfirm({ message: "Reinstall the agent on this host? This re-runs the full install script via SSH.", confirmLabel: "Reinstall" }))) return;
                     installAgent(h.id);
                   }}>
                     {installingHosts.has(h.id) ? "Reinstalling..." : "Reinstall Agent"}
                   </Button>
                   {h.host_type !== "pattern_buffer" && <Button variant="secondary" isLoading={updatingHosts.has(`gc-${h.id}`)} isDisabled={hostBusy || updatingHosts.has(`gc-${h.id}`)} onClick={async () => {
-                    if (!window.confirm(`Run garbage collection on ${h.instance_id}? This will sync capacity, clean orphans, and repair networks.`)) return;
+                    if (!(await appConfirm({ message: `Run garbage collection on ${h.instance_id}? This will sync capacity, clean orphans, and repair networks.`, confirmLabel: "Run GC" }))) return;
                     setUpdatingHosts((prev) => new Set(prev).add(`gc-${h.id}`));
                     try {
                       const resp = await fetch(`/api/v1/hosts/${h.id}/gc`, { method: "POST" });
@@ -1038,7 +1043,7 @@ export default function AdminHostsPage() {
                         if (report.shared_cache_entries_cleaned) parts.push(`Shared cache entries cleaned: ${report.shared_cache_entries_cleaned}`);
                         if (parts.length === 0) parts.push("Nothing to do — host is clean");
                         const fullMsg = parts.join("\n");
-                        const copy = window.confirm(fullMsg + "\n\nClick OK to copy to clipboard.");
+                        const copy = await appConfirm({ message: fullMsg + "\n\nClick OK to copy to clipboard.", confirmLabel: "Copy" });
                         if (copy) navigator.clipboard.writeText(fullMsg).catch(() => {});
                         loadData();
                       } else {
@@ -1051,8 +1056,18 @@ export default function AdminHostsPage() {
                     Clean
                   </Button>}
                   {h.host_type !== "pattern_buffer" && <Button variant="danger" isLoading={updatingHosts.has(`wipe-${h.id}`)} isDisabled={hostBusy || updatingHosts.has(`wipe-${h.id}`)} onClick={async () => {
-                    if (!window.confirm("WIPE HOST: This will destroy ALL projects and clean up everything on this host. Are you sure?")) return;
-                    if (!window.confirm("FINAL WARNING: All VMs will be destroyed and all projects reset to draft. Continue?")) return;
+                    if (!(await appConfirm({
+                      title: "WIPE HOST",
+                      message: "WIPE HOST: This will destroy ALL projects and clean up everything on this host. Are you sure?",
+                      confirmLabel: "Wipe",
+                      variant: "danger",
+                    }))) return;
+                    if (!(await appConfirm({
+                      title: "Final Warning",
+                      message: "FINAL WARNING: All VMs will be destroyed and all projects reset to draft. Continue?",
+                      confirmLabel: "Continue",
+                      variant: "danger",
+                    }))) return;
                     setUpdatingHosts((prev) => new Set(prev).add(`wipe-${h.id}`));
                     try {
                       const resp = await fetch(`/api/v1/hosts/${h.id}/wipe`, { method: "POST" });
@@ -1072,11 +1087,11 @@ export default function AdminHostsPage() {
                 </>
               )}
               {h.host_type !== "kubevirt-cluster" && h.state === "active" && (
-                <Button variant="secondary" onClick={() => {
+                <Button variant="secondary" onClick={async () => {
                   const msg = h.used_vcpus > 0
                     ? `Power off ${h.instance_id}? This host has ${h.used_vcpus} vCPUs allocated — projects will be unavailable until powered back on.`
                     : `Power off ${h.instance_id}?`;
-                  if (!window.confirm(msg)) return;
+                  if (!(await appConfirm({ message: msg, confirmLabel: "Power off" }))) return;
                   powerHost(h.id, "poweroff");
                 }} isDisabled={hostBusy} isLoading={poweringHosts.has(h.id)}>
                   Power Off
@@ -1085,11 +1100,11 @@ export default function AdminHostsPage() {
               {h.state === "stopped" && (() => {
                 const willResize = resizeType[h.id] && resizeType[h.id] !== h.instance_type;
                 return (
-                  <Button variant="secondary" onClick={() => {
+                  <Button variant="secondary" onClick={async () => {
                     const msg = willResize
                       ? `Resize ${h.instance_id} from ${h.instance_type} → ${resizeType[h.id]} and power on?`
                       : `Power on ${h.instance_id}?`;
-                    if (!window.confirm(msg)) return;
+                    if (!(await appConfirm({ message: msg, confirmLabel: willResize ? "Resize & power on" : "Power on" }))) return;
                     powerHost(h.id, "poweron", resizeType[h.id] || undefined);
                   }} isLoading={poweringHosts.has(h.id)} isDisabled={poweringHosts.has(h.id)}>
                     {willResize ? "Resize & Power On" : "Power On"}

@@ -2233,6 +2233,121 @@ class TestConfigureBastionAndCleanup:
             "browser", "setting bastion kubeconfig for this cluster"
         )
 
+    @patch(f"{SVC}._verify_bastion_browser", return_value=True)
+    @patch(f"{SVC}._deploy_bastion_autologin_script")
+    @patch(f"{SVC}._write_bastion_kubeadmin_password")
+    @patch(f"{SVC}._exec_on_bastion")
+    def test_syncs_kubeadmin_password_before_verify(
+        self, mock_exec, mock_write_pw, mock_deploy_script, mock_verify
+    ):
+        """ocpKubeadminPassword from topology is written to bastion before autologin."""
+        from app.services.deploy_service import _configure_bastion_and_cleanup
+
+        nodes = [
+            {
+                "id": "vm-1",
+                "type": "vmNode",
+                "data": {
+                    "configureBastionBrowser": True,
+                    "ocpKubeadminPassword": "new-recert-password",
+                },
+            }
+        ]
+        host = _make_host()
+        oc_fn = MagicMock(return_value="")
+        push_fn = MagicMock()
+
+        _configure_bastion_and_cleanup(
+            nodes,
+            "vm-1",
+            "/tmp/kc.yaml",
+            host,
+            PROJECT_ID,
+            "10.0.0.5",
+            "password",
+            oc_fn,
+            push_fn,
+            vm_name="sno",
+        )
+
+        mock_write_pw.assert_called_once_with(
+            host, PROJECT_ID, "10.0.0.5", "password", "new-recert-password"
+        )
+        mock_deploy_script.assert_called_once_with(
+            host, PROJECT_ID, "10.0.0.5", "password"
+        )
+        push_fn.assert_any_call("browser", "syncing kubeadmin password to bastion")
+        mock_verify.assert_called_once()
+
+    @patch(f"{SVC}._ocp_update_status")
+    @patch(f"{SVC}._configure_bastion_and_cleanup")
+    @patch(f"{SVC}._ocp_vm_final_csr_sweep")
+    @patch(f"{SVC}._ocp_vm_wait_for_console")
+    @patch(f"{SVC}._ocp_vm_restart_ingress")
+    @patch(f"{SVC}._ocp_vm_poll_with_csrs")
+    @patch(f"{SVC}._ocp_vm_wait_for_api", return_value=True)
+    @patch(f"{SVC}._exec_on_bastion")
+    @patch(f"{SVC}.notify_project")
+    def test_ready_only_after_browser_config(
+        self,
+        mock_notify,
+        mock_exec,
+        mock_api,
+        mock_poll,
+        mock_ingress,
+        mock_console,
+        mock_sweep,
+        mock_bastion,
+        mock_update_status,
+    ):
+        """DB ready status is not set until after bastion browser configuration."""
+        import time
+
+        from app.services.deploy_service import _ocp_vm_health_inner
+
+        mock_exec.return_value = ""
+
+        topo = _minimal_topology(
+            vm_nodes=[
+                {
+                    "id": "vm-1",
+                    "type": "vmNode",
+                    "data": {
+                        "label": "cp-0",
+                        "configureBastionBrowser": True,
+                        "recertEnabled": True,
+                    },
+                },
+                {
+                    "id": "bastion-1",
+                    "type": "vmNode",
+                    "data": {
+                        "label": "bastion",
+                        "nics": [{"ip": "10.0.0.5"}],
+                        "ciCloudUserPassword": "pass",
+                    },
+                },
+            ],
+        )
+
+        host = _make_host()
+        project = _make_project(state="active")
+        project.deployed_topology = topo
+        project.topology = topo
+
+        db = MagicMock()
+        db.query.return_value.filter_by.return_value.first.side_effect = [host, project]
+
+        with patch(f"{SVC}._time.sleep"):
+            _ocp_vm_health_inner(
+                PROJECT_ID, HOST_ID, "vm-1", "cp-0", "", time.time(), db
+            )
+
+        mock_sweep.assert_called_once()
+        mock_bastion.assert_called_once()
+        mock_update_status.assert_called_once()
+        assert mock_update_status.call_args[0][1] == "ready"
+
     @patch(f"{SVC}._exec_on_bastion")
     def test_cleanup_kubeconfig_when_no_browser(self, mock_exec):
         """No configureBastionBrowser cleans up temp kubeconfig."""

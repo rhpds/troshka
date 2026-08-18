@@ -245,6 +245,8 @@
                           secretKeyRef:
                             name: s4-credentials
                             key: secret-key
+                      - name: AWS_DEFAULT_REGION
+                        value: us-east-1
 
     - name: Create read-only user and bucket policy
       kubernetes.core.k8s:

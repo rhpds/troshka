@@ -6,11 +6,14 @@ import logging
 import os
 
 from app.core.database import SessionLocal
+from app.core.logging_utils import sanitize_log
 from app.core.redis import enqueue_job
 from app.models.pattern import Pattern, PatternDisk
 from app.services.pattern_sync import sync_pattern_to_central
 
 log = logging.getLogger(__name__)
+
+CAPTURE_REQUEST_ANNOTATION = "troshka.redhat.com/capture-request"
 
 
 def _set_capture_progress(pattern_id: str, data: dict):
@@ -379,26 +382,28 @@ def cancel_capture(pattern_id: str, db) -> None:
     if host and host.host_type == "kubevirt-cluster":
         _cancel_kubevirt_capture(pattern_id, host, project, db)
     else:
-        _cancel_troshkad_capture(pattern_id, host, db)
+        _cancel_troshkad_capture(pattern_id, host)
 
     _clear_capture_progress(pattern_id)
 
 
-def _cancel_troshkad_capture(pattern_id, host, db):
+def _cancel_troshkad_capture(pattern_id, host):
     """Cancel troshkad-based capture jobs."""
     from app.services.troshkad_client import TroshkadError, cancel_job
 
     progress = get_capture_progress(pattern_id)
     if not progress or not host:
         return
+    pid = sanitize_log(pattern_id[:8])
+    hid = sanitize_log(host.id[:8])
     for job_id in progress.get("_job_ids", []):
         try:
             cancel_job(host, job_id)
             log.info(
                 "Cancelled capture job %s on host %s for pattern %s",
-                job_id[:8],
-                host.id[:8],
-                pattern_id[:8],
+                sanitize_log(job_id[:8]),
+                hid,
+                pid,
             )
         except TroshkadError:
             pass
@@ -429,14 +434,12 @@ def _cancel_kubevirt_capture(pattern_id, host, project, db):
             namespace=namespace,
             plural="troshkaprojects",
             name=cr_name,
-            body={
-                "metadata": {
-                    "annotations": {"troshka.redhat.com/capture-request": None}
-                }
-            },
+            body={"metadata": {"annotations": {CAPTURE_REQUEST_ANNOTATION: None}}},
         )
     except Exception:
-        log.debug("Failed to clear capture annotation for %s", pattern_id[:8])
+        log.debug(
+            "Failed to clear capture annotation for %s", sanitize_log(pattern_id[:8])
+        )
 
     from kubernetes import client as k8s_client
 
@@ -455,9 +458,9 @@ def _cancel_kubevirt_capture(pattern_id, host, project, db):
             except Exception:
                 pass
     except Exception:
-        log.debug("Failed to delete export jobs for %s", pattern_id[:8])
+        log.debug("Failed to delete export jobs for %s", sanitize_log(pattern_id[:8]))
 
-    log.info("Cancelled KubeVirt capture for pattern %s", pattern_id[:8])
+    log.info("Cancelled KubeVirt capture for pattern %s", sanitize_log(pattern_id[:8]))
 
 
 def _build_capture_disk_manifest(disk_nodes, disk_to_vm, pattern_id, vm_nodes=None):
@@ -599,6 +602,7 @@ def _save_pattern_metadata_to_s3(pattern, pattern_id):
         "description": pattern.description,
         "visibility": pattern.visibility,
         "topology": pattern.topology,
+        "recert": pattern.recert,
         "total_size_bytes": pattern.total_size_bytes,
         "tags": pattern.tags,
         "disks": [
@@ -802,9 +806,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
             body={
                 "metadata": {
                     "annotations": {
-                        "troshka.redhat.com/capture-request": _json.dumps(
-                            capture_config
-                        )
+                        CAPTURE_REQUEST_ANNOTATION: _json.dumps(capture_config)
                     }
                 }
             },
@@ -913,11 +915,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
             namespace=namespace,
             plural="troshkaprojects",
             name=cr_name,
-            body={
-                "metadata": {
-                    "annotations": {"troshka.redhat.com/capture-request": None}
-                }
-            },
+            body={"metadata": {"annotations": {CAPTURE_REQUEST_ANNOTATION: None}}},
         )
     except Exception:
         pass
@@ -1509,6 +1507,11 @@ def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
             node["data"]["patternId"] = pattern_id
             node["data"]["patternDiskId"] = pd.id
             node["data"].pop("libraryItemId", None)
+
+    if pattern.recert:
+        from app.services.ocp_topology_flags import apply_sno_ocp_vm_flags
+
+        apply_sno_ocp_vm_flags(topo, recert=True)
 
     db.execute(
         text("UPDATE patterns SET topology = :topo WHERE id = :pid"),

@@ -2383,6 +2383,47 @@ def test_update_provider_aws_credentials():
     db.close()
 
 
+def test_update_provider_pkg_repo():
+    """PATCH with pkg_repo_* updates OCP Virt package repo credentials."""
+    pid = _create_provider(
+        name=f"upd-pkg-{uuid.uuid4().hex[:8]}", provider_type="ocpvirt"
+    )
+    db = TestSession()
+    p = db.query(Provider).filter_by(id=pid).first()
+    p.set_credentials(
+        {
+            "api_url": "https://api.test:6443",
+            "token": "tok",
+            "namespace": "troshka",
+            "pkg_repo_url": "https://repo/old",
+            "pkg_repo_username": "old-user",
+            "pkg_repo_password": "old-pass",
+        }
+    )
+    db.commit()
+    db.close()
+
+    resp = client.patch(
+        f"/api/v1/providers/{pid}",
+        json={
+            "pkg_repo_url": "https://repo/new",
+            "pkg_repo_username": "new-user",
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["pkg_repo_url"] == "https://repo/new"
+    assert data["pkg_repo_username"] == "new-user"
+
+    db = TestSession()
+    p = db.query(Provider).filter_by(id=pid).first()
+    creds = p.get_credentials()
+    assert creds["pkg_repo_url"] == "https://repo/new"
+    assert creds["pkg_repo_username"] == "new-user"
+    assert creds["pkg_repo_password"] == "old-pass"
+    db.close()
+
+
 def test_update_provider_cache_and_prefix():
     """PATCH with cache_namespace/project_prefix updates kubevirt credentials."""
     pid = _create_provider(
