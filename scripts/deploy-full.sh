@@ -80,8 +80,12 @@ if [ "$SKIP_OPERATORS" = false ]; then
       continue
     fi
 
-    oc rollout restart deployment/troshka-operator -n troshka-operator --kubeconfig="$kc" 2>&1 | grep -o "restarted"
-    RESTARTED_CLUSTERS+=("$kc|$cluster")
+    if oc rollout restart deployment/troshka-operator -n troshka-operator --kubeconfig="$kc" >/dev/null 2>&1; then
+      echo "restarted"
+      RESTARTED_CLUSTERS+=("$kc|$cluster")
+    else
+      echo "FAILED"
+    fi
   done
 
   # Verify restarted operators picked up the new image
