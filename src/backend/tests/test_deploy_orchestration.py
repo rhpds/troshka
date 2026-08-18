@@ -2233,6 +2233,48 @@ class TestConfigureBastionAndCleanup:
             "browser", "setting bastion kubeconfig for this cluster"
         )
 
+    @patch(f"{SVC}._verify_bastion_browser", return_value=True)
+    @patch(f"{SVC}._write_bastion_kubeadmin_password")
+    @patch(f"{SVC}._exec_on_bastion")
+    def test_syncs_kubeadmin_password_before_verify(
+        self, mock_exec, mock_write_pw, mock_verify
+    ):
+        """ocpKubeadminPassword from topology is written to bastion before autologin."""
+        from app.services.deploy_service import _configure_bastion_and_cleanup
+
+        nodes = [
+            {
+                "id": "vm-1",
+                "type": "vmNode",
+                "data": {
+                    "configureBastionBrowser": True,
+                    "ocpKubeadminPassword": "new-recert-password",
+                },
+            }
+        ]
+        host = _make_host()
+        oc_fn = MagicMock(return_value="")
+        push_fn = MagicMock()
+
+        _configure_bastion_and_cleanup(
+            nodes,
+            "vm-1",
+            "/tmp/kc.yaml",
+            host,
+            PROJECT_ID,
+            "10.0.0.5",
+            "password",
+            oc_fn,
+            push_fn,
+            vm_name="sno",
+        )
+
+        mock_write_pw.assert_called_once_with(
+            host, PROJECT_ID, "10.0.0.5", "password", "new-recert-password"
+        )
+        push_fn.assert_any_call("browser", "syncing kubeadmin password to bastion")
+        mock_verify.assert_called_once()
+
     @patch(f"{SVC}._exec_on_bastion")
     def test_cleanup_kubeconfig_when_no_browser(self, mock_exec):
         """No configureBastionBrowser cleans up temp kubeconfig."""

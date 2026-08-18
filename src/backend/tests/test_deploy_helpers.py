@@ -509,6 +509,26 @@ class TestVerifyBastionBrowser(unittest.TestCase):
         self.assertLess(kill_idx, autologin_idx)
 
     @patch("time.sleep", return_value=None)
+    def test_stale_logins_when_password_newer(self, _mock_sleep):
+        from app.services.deploy_service import _verify_bastion_browser
+
+        exec_fn = MagicMock(
+            side_effect=[
+                "ca:ok\nlogins:stale",
+                "",
+                "Password saved to Firefox",
+                "ca:ok\nlogins:ok",
+            ]
+        )
+        push_fn = MagicMock()
+
+        result = _verify_bastion_browser(exec_fn, push_fn, "proj-1234")
+        self.assertTrue(result)
+        push_fn.assert_any_call(
+            "browser", "bastion browser credentials stale, updating..."
+        )
+
+    @patch("time.sleep", return_value=None)
     def test_timeout_returns_false(self, _mock_sleep):
         from app.services.deploy_service import _verify_bastion_browser
 

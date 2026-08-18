@@ -4988,7 +4988,13 @@ def _verify_bastion_browser(
         'elif [ -z "$LIVE_FP" ]; then echo "ca:pending"; '
         'else echo "ca:stale"; fi; '
         "LJ=$(find /home/cloud-user/.mozilla/firefox -name logins.json 2>/dev/null | head -1); "
-        'if [ -n "$LJ" ] && grep -q encryptedUsername "$LJ" 2>/dev/null; then echo "logins:ok"; '
+        "PW_FILE=/home/cloud-user/ocp-install/auth/kubeadmin-password; "
+        'if [ -n "$LJ" ] && grep -q encryptedUsername "$LJ" 2>/dev/null; then '
+        '  if [ -f "$PW_FILE" ]; then '
+        '    PW_MT=$(stat -c %Y "$PW_FILE" 2>/dev/null || echo 0); '
+        '    LJ_MT=$(stat -c %Y "$LJ" 2>/dev/null || echo 0); '
+        '    if [ "$LJ_MT" -ge "$PW_MT" ]; then echo "logins:ok"; else echo "logins:stale"; fi; '
+        '  else echo "logins:ok"; fi; '
         'elif [ -z "$LJ" ]; then echo "logins:missing"; '
         'else echo "logins:stale"; fi'
     )
@@ -5139,6 +5145,41 @@ def _extract_bastion_info(nodes):
                 break
         password = bastion.get("data", {}).get("ciCloudUserPassword", "")
     return bastion, bastion_ip, password
+
+
+def _extract_ocp_kubeadmin_password(nodes, vm_id=None):
+    """Return kubeadmin password from topology (set after recert)."""
+    if vm_id:
+        for n in nodes:
+            if n.get("id") == vm_id:
+                pw = n.get("data", {}).get("ocpKubeadminPassword")
+                if pw:
+                    return pw
+    for n in nodes:
+        if n.get("type") == "vmNode":
+            pw = n.get("data", {}).get("ocpKubeadminPassword")
+            if pw:
+                return pw
+    return None
+
+
+def _write_bastion_kubeadmin_password(
+    host, project_id, bastion_ip, ssh_password, kubeadmin_pw
+):
+    """Write kubeadmin password to the bastion auth directory."""
+    import base64
+
+    pw_b64 = base64.b64encode(kubeadmin_pw.encode()).decode()
+    _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        ssh_password,
+        "mkdir -p /home/cloud-user/ocp-install/auth && "
+        f"echo '{pw_b64}' | base64 -d > /home/cloud-user/ocp-install/auth/kubeadmin-password && "
+        "chown cloud-user:cloud-user /home/cloud-user/ocp-install/auth/kubeadmin-password",
+        timeout=10,
+    )
 
 
 def _approve_csrs_if_due(approve_fn, push_fn, last_check, interval=30):
@@ -5312,6 +5353,13 @@ def _configure_bastion_and_cleanup(
             "&& sudo update-ca-trust",
             timeout=15,
         )
+
+        kubeadmin_pw = _extract_ocp_kubeadmin_password(nodes, vm_id)
+        if kubeadmin_pw:
+            _push(status_phase, "syncing kubeadmin password to bastion")
+            _write_bastion_kubeadmin_password(
+                host, project_id, bastion_ip, password, kubeadmin_pw
+            )
 
         # Verify CA fingerprint + run autologin with retry loop
         _push(status_phase, "verifying bastion browser setup")
@@ -6314,6 +6362,13 @@ def _ocp_post_pattern_cert_refresh(
     )
 
     push_fn("certs", "verifying bastion setup")
+
+    kubeadmin_pw = _extract_ocp_kubeadmin_password(topology.get("nodes", []))
+    if kubeadmin_pw:
+        push_fn("certs", "syncing kubeadmin password to bastion")
+        _write_bastion_kubeadmin_password(
+            host, project_id, bastion_ip, password, kubeadmin_pw
+        )
 
     def _bastion_oc(cmd, timeout=15):
         return _exec_on_bastion(
