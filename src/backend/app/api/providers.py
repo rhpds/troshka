@@ -79,6 +79,9 @@ class ProviderUpdate(BaseModel):
     cache_namespace: str | None = None
     project_prefix: str | None = None
     state: str | None = None
+    pkg_repo_url: str | None = None
+    pkg_repo_username: str | None = None
+    pkg_repo_password: str | None = None
 
 
 class ProviderResponse(BaseModel):
@@ -94,6 +97,8 @@ class ProviderResponse(BaseModel):
     console_nameservers: list | None = None
     console_configured: bool = False
     iso_pvc: str | None = None
+    pkg_repo_url: str | None = None
+    pkg_repo_username: str | None = None
 
     # GCP
     gcp_project_id: str | None = None
@@ -310,6 +315,16 @@ def _build_provider_response(
         iso_pvc=(
             provider.get_credentials().get("iso_pvc") if provider.credentials else None
         ),
+        pkg_repo_url=(
+            provider.get_credentials().get("pkg_repo_url")
+            if provider.credentials
+            else None
+        ),
+        pkg_repo_username=(
+            provider.get_credentials().get("pkg_repo_username")
+            if provider.credentials
+            else None
+        ),
         gcp_project_id=provider.gcp_project_id,
         gcp_network_id=provider.gcp_network_id,
         gcp_subnet_id=provider.gcp_subnet_id,
@@ -424,6 +439,44 @@ def _update_cluster_credentials(provider: Provider, body: ProviderUpdate) -> Non
     provider.set_credentials(creds)
 
 
+def _apply_pkg_repo_credentials(
+    creds: dict[str, Any],
+    url: str | None,
+    username: str | None,
+    password: str | None,
+) -> None:
+    """Merge package-repo fields into creds; clear when URL/password invalid."""
+    merged = dict(creds)
+    if url is not None:
+        merged["pkg_repo_url"] = url
+    if username is not None:
+        merged["pkg_repo_username"] = username
+    if password:
+        merged["pkg_repo_password"] = password
+
+    repo_url, repo_user, repo_pass = resolve_pkg_repo(merged)
+    if repo_url:
+        creds["pkg_repo_url"] = repo_url
+        creds["pkg_repo_username"] = repo_user
+        creds["pkg_repo_password"] = repo_pass
+        return
+
+    for key in ("pkg_repo_url", "pkg_repo_username", "pkg_repo_password"):
+        creds.pop(key, None)
+
+
+def _update_ocpvirt_pkg_repo(provider: Provider, body: ProviderUpdate) -> None:
+    """Update HTTP package repo settings on an OCP Virt provider."""
+    creds = provider.get_credentials()
+    _apply_pkg_repo_credentials(
+        creds,
+        body.pkg_repo_url,
+        body.pkg_repo_username,
+        body.pkg_repo_password,
+    )
+    provider.set_credentials(creds)
+
+
 def _update_aws_credentials(provider: Provider, body: ProviderUpdate) -> None:
     """Update AWS credentials (access key/secret)."""
     creds = provider.get_credentials()
@@ -451,9 +504,21 @@ def update_provider(
 
     _update_provider_basic_fields(provider, body)
 
-    if body.api_url or body.token or body.namespace:
+    if (
+        body.api_url
+        or body.token
+        or body.namespace
+        or body.cache_namespace
+        or body.project_prefix
+    ):
         _update_cluster_credentials(provider, body)
-    elif body.access_key_id or body.secret_access_key:
+    if provider.type == "ocpvirt" and (
+        body.pkg_repo_url is not None
+        or body.pkg_repo_username is not None
+        or body.pkg_repo_password is not None
+    ):
+        _update_ocpvirt_pkg_repo(provider, body)
+    if body.access_key_id or body.secret_access_key:
         _update_aws_credentials(provider, body)
 
     db.commit()
