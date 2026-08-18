@@ -105,6 +105,14 @@ _KILL_BROWSER_CMD = (
     "rm -f /home/cloud-user/.mozilla/firefox/*.default*/lock "
     "/home/cloud-user/.mozilla/firefox/*.default*/.parentlock 2>/dev/null || true"
 )
+_ENSURE_FIREFOX_PROFILE_CMD = (
+    "if ! find /home/cloud-user/.mozilla/firefox -maxdepth 2 "
+    "-name cert9.db 2>/dev/null | grep -q .; then "
+    "firefox --headless --no-remote >/dev/null 2>&1 & "
+    "FXPID=$!; sleep 5; "
+    "kill $FXPID 2>/dev/null; wait $FXPID 2>/dev/null || true; "
+    "sleep 2; fi"
+)
 _LOG_DEPLOY = "Deploy %s: %s"
 _KUBEVIRT_API = "kubevirt.io"
 _VM_START_FAILED = "Failed to start VM %s: %s"
@@ -5043,6 +5051,7 @@ def _apply_bastion_browser_fixes(
         exec_fn(ca_cmd, timeout=15)
     if _MSG_BROWSER_CREDS in needs_fix:
         exec_fn(_KILL_BROWSER_CMD, timeout=10)
+        exec_fn(_ENSURE_FIREFOX_PROFILE_CMD, timeout=20)
         exec_fn(autologin_cmd, timeout=30)
     return True
 
@@ -5383,6 +5392,16 @@ def _configure_bastion_and_cleanup(
         _push(status_phase, "deploying browser autologin script")
         _deploy_bastion_autologin_script(host, project_id, bastion_ip, password)
 
+        _push(status_phase, "ensuring Firefox profile")
+        _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            _KILL_BROWSER_CMD + "; " + _ENSURE_FIREFOX_PROFILE_CMD,
+            timeout=25,
+        )
+
         # Verify CA fingerprint + run autologin with retry loop
         _push(status_phase, "verifying bastion browser setup")
         bastion_ready = _verify_bastion_browser(
@@ -5588,25 +5607,33 @@ def _ocp_vm_health_inner(
     configure_browser = bool(
         vm_node and vm_node.get("data", {}).get("configureBastionBrowser")
     )
+    browser_ready = True
     if configure_browser:
-        _configure_bastion_and_cleanup(
-            nodes,
-            vm_id,
-            kc_path,
-            host,
-            project_id,
-            bastion_ip,
-            password,
-            _oc,
-            _push,
-            vm_name=vm_name,
-            status_phase="browser",
+        browser_ready = bool(
+            _configure_bastion_and_cleanup(
+                nodes,
+                vm_id,
+                kc_path,
+                host,
+                project_id,
+                bastion_ip,
+                password,
+                _oc,
+                _push,
+                vm_name=vm_name,
+                status_phase="browser",
+            )
         )
 
     elapsed_secs = int(_t.time() - start)
-    ready_detail = f"{vm_name} cluster ready"
-    _push("ready", ready_detail)
-    _ocp_update_status(project_id, "ready", elapsed_secs)
+    if configure_browser and not browser_ready:
+        ready_detail = f"{vm_name} cluster ready (bastion browser not configured)"
+        _push("warning", ready_detail)
+        _ocp_update_status(project_id, "warning", elapsed_secs)
+    else:
+        ready_detail = f"{vm_name} cluster ready"
+        _push("ready", ready_detail)
+        _ocp_update_status(project_id, "ready", elapsed_secs)
 
     logger.info(
         "OCP VM monitor complete for %s/%s (%s)",

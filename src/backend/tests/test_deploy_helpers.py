@@ -450,6 +450,7 @@ class TestVerifyBastionBrowser(unittest.TestCase):
                 "ca:stale\nlogins:stale",  # verify
                 "updated ca",  # CA update cmd
                 "",  # kill browser
+                "",  # ensure firefox profile
                 "autologin done",  # autologin cmd
                 "ca:ok\nlogins:ok",  # verify again
             ]
@@ -472,6 +473,7 @@ class TestVerifyBastionBrowser(unittest.TestCase):
             side_effect=[
                 "ca:pending\nlogins:missing",  # verify → logins:missing triggers fix
                 "",  # kill browser
+                "",  # ensure firefox profile
                 "autologin done",  # autologin cmd
                 "ca:ok\nlogins:ok",  # verify again
             ]
@@ -491,6 +493,7 @@ class TestVerifyBastionBrowser(unittest.TestCase):
         exec_fn = MagicMock(
             side_effect=[
                 "ca:ok\nlogins:missing",
+                "",
                 "",
                 "autologin done",
                 "ca:ok\nlogins:ok",
@@ -515,6 +518,7 @@ class TestVerifyBastionBrowser(unittest.TestCase):
         exec_fn = MagicMock(
             side_effect=[
                 "ca:ok\nlogins:stale",
+                "",
                 "",
                 "Password saved to Firefox",
                 "ca:ok\nlogins:ok",

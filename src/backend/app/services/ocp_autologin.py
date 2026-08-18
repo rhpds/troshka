@@ -31,11 +31,35 @@ if len(parts) < 2:
 domain = parts[1].rstrip("/")
 oauth_url = "https://oauth-openshift.apps." + domain
 
-profiles = sorted(glob.glob("/home/cloud-user/.mozilla/firefox/*.default*/"))
-if not profiles:
-    print("ERROR: No Firefox profile found")
+
+def _has_nss_db(path):
+    return (
+        os.path.isfile(os.path.join(path, "cert9.db"))
+        and os.path.isfile(os.path.join(path, "key4.db"))
+    )
+
+
+def _find_profile():
+    candidates = []
+    for path in glob.glob("/home/cloud-user/.mozilla/firefox/*/"):
+        name = os.path.basename(path.rstrip("/"))
+        if name in ("Profile Groups", "Crash Reports", "Pending Pings"):
+            continue
+        profile = path.rstrip("/")
+        if _has_nss_db(profile):
+            candidates.append(profile)
+    if not candidates:
+        return None
+    for profile in candidates:
+        if profile.endswith(".default-default"):
+            return profile
+    return sorted(candidates)[-1]
+
+
+profile = _find_profile()
+if not profile:
+    print("ERROR: No Firefox profile with NSS database found")
     sys.exit(1)
-profile = profiles[0].rstrip("/")
 
 
 class SECItem(ctypes.Structure):
@@ -53,8 +77,14 @@ for lib in ["libnss3.so", ctypes.util.find_library("nss3") or ""]:
 if not nss:
     print("ERROR: libnss3.so not found")
     sys.exit(1)
-if nss.NSS_Init(("sql:" + profile).encode()) != 0:
-    print("ERROR: NSS_Init failed")
+
+initialized = False
+for init_path in ("sql:" + profile, profile):
+    if nss.NSS_Init(init_path.encode()) == 0:
+        initialized = True
+        break
+if not initialized:
+    print("ERROR: NSS_Init failed for profile " + profile)
     sys.exit(1)
 
 
