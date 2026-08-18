@@ -14,6 +14,7 @@ import datetime
 import hashlib
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -114,6 +115,29 @@ def _tag() -> str:
     return str(_au("tag", "production") or "production")
 
 
+def _rolling_tag() -> str:
+    """Registry tag to compare against when Deployments are pinned to commit SHAs."""
+    return str(_au("rolling_tag", "latest") or "latest")
+
+
+_COMMIT_SHA_TAG = re.compile(r"^[0-9a-f]{7,40}$", re.IGNORECASE)
+
+
+def _is_commit_sha_tag(tag: str | None) -> bool:
+    return bool(tag and _COMMIT_SHA_TAG.fullmatch(tag))
+
+
+def _comparison_tag(deploy_tag: str) -> str:
+    """Tag used to look up the newest image on the registry.
+
+    Dedicated-CI rollouts often pin Deployments to a commit SHA; those immutable
+    tags never move, so compare against the rolling tag (``latest``) instead.
+    """
+    if _is_commit_sha_tag(deploy_tag):
+        return _rolling_tag()
+    return deploy_tag
+
+
 def _poll_interval() -> int:
     return int(_au("poll_interval", 300) or 300)
 
@@ -129,6 +153,18 @@ def _extract_tag_from_ref(ref: str) -> str | None:
         return None
     tag = last_segment.rsplit(":", 1)[1]
     return tag or None
+
+
+def _read_deployment_image(suffix: str) -> tuple[str, str]:
+    """Return (container_name, image_ref) for the deployment's first container."""
+    from kubernetes import client
+    from kubernetes import config as k8s_config
+
+    k8s_config.load_incluster_config()
+    apps = client.AppsV1Api()
+    dep = apps.read_namespaced_deployment(name=suffix, namespace=_get_own_namespace())
+    container = dep.spec.template.spec.containers[0]  # type: ignore[union-attr]
+    return container.name, container.image
 
 
 def _read_deployment_tag(suffix: str) -> str:
@@ -228,10 +264,16 @@ def _build_image_snapshot() -> dict:
     comps: dict = {}
     up_to_date = True
     for name, suffix in COMPONENTS.items():
-        tag = _read_deployment_tag(suffix)
-        available = _fetch_registry_digest(f"{_repo()}/{suffix}", tag)
+        deploy_tag = _read_deployment_tag(suffix)
+        compare_tag = _comparison_tag(deploy_tag)
+        available = _fetch_registry_digest(f"{_repo()}/{suffix}", compare_tag)
         current = running.get(name)
-        comps[name] = {"current": current, "available": available}
+        comps[name] = {
+            "current": current,
+            "available": available,
+            "deploy_tag": deploy_tag,
+            "compare_tag": compare_tag,
+        }
         if current and available and current != available:
             up_to_date = False
     return {"up_to_date": up_to_date, "rolling_out": rolling, "components": comps}
@@ -320,8 +362,41 @@ def get_status() -> dict:
             "rolling_out": False,
             "components": {},
         }
+    if mode == "image" and not _snapshot:
+        try:
+            _poll()
+        except Exception:
+            logger.debug("app_updater: lazy status poll failed", exc_info=True)
     snap = _snapshot or {"up_to_date": True, "rolling_out": False, "components": {}}
     return {"mode": "image", **snap}
+
+
+def _rolling_image_ref(suffix: str) -> str:
+    return f"{_registry()}/{_repo()}/{suffix}:{_rolling_tag()}"
+
+
+def _patch_deployment_image(suffix: str, image: str) -> None:
+    from kubernetes import client
+    from kubernetes import config as k8s_config
+
+    k8s_config.load_incluster_config()
+    apps = client.AppsV1Api()
+    container_name, _ = _read_deployment_image(suffix)
+    ts = datetime.datetime.now(datetime.UTC).isoformat()
+    apps.patch_namespaced_deployment(
+        name=suffix,
+        namespace=_get_own_namespace(),
+        body={
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {"kubectl.kubernetes.io/restartedAt": ts}
+                    },
+                    "spec": {"containers": [{"name": container_name, "image": image}]},
+                }
+            }
+        },
+    )
 
 
 def _patch_restart(name: str) -> None:
@@ -348,7 +423,11 @@ def _patch_restart(name: str) -> None:
 
 def _apply_image() -> dict:
     for suffix in COMPONENTS.values():
-        _patch_restart(suffix)
+        deploy_tag = _read_deployment_tag(suffix)
+        if _comparison_tag(deploy_tag) != deploy_tag:
+            _patch_deployment_image(suffix, _rolling_image_ref(suffix))
+        else:
+            _patch_restart(suffix)
     return {"status": "rolling_out"}
 
 

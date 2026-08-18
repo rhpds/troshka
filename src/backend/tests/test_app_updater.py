@@ -193,6 +193,59 @@ def test_build_image_snapshot_uses_deployment_tag(monkeypatch):
     assert seen_tags == ["latest", "latest"]
 
 
+def test_comparison_tag_uses_rolling_tag_for_commit_sha():
+    assert app_updater._is_commit_sha_tag("d196e20f") is True
+    assert app_updater._is_commit_sha_tag("9baa7735") is True
+    assert app_updater._is_commit_sha_tag("latest") is False
+    assert app_updater._is_commit_sha_tag("production") is False
+    assert app_updater._comparison_tag("d196e20f") == "latest"
+    assert app_updater._comparison_tag("production") == "production"
+
+
+def test_build_image_snapshot_commit_pin_compares_against_latest(monkeypatch):
+    monkeypatch.setattr(app_updater, "_read_deployment_tag", lambda suffix: "d196e20f")
+    monkeypatch.setattr(
+        app_updater,
+        "_read_own_digests",
+        lambda: {"backend": "sha256:old", "frontend": "sha256:bbb"},
+    )
+    monkeypatch.setattr(app_updater, "_read_rolling_out", lambda: False)
+    seen_tags = []
+
+    def _fake_fetch(image, tag):
+        seen_tags.append(tag)
+        if image.endswith("troshka-backend"):
+            return "sha256:NEW"
+        return "sha256:bbb"
+
+    monkeypatch.setattr(app_updater, "_fetch_registry_digest", _fake_fetch)
+    snap = app_updater._build_image_snapshot()
+    assert seen_tags == ["latest", "latest"]
+    assert snap["up_to_date"] is False
+    assert snap["components"]["backend"]["compare_tag"] == "latest"
+    assert snap["components"]["backend"]["deploy_tag"] == "d196e20f"
+
+
+def test_apply_update_image_repins_commit_sha_deployments(monkeypatch):
+    _reset()
+    monkeypatch.setattr(app_updater, "resolve_mode", lambda: "image")
+    monkeypatch.setattr(app_updater, "_read_deployment_tag", lambda suffix: "d196e20f")
+    repinned = []
+    restarted = []
+    monkeypatch.setattr(
+        app_updater,
+        "_patch_deployment_image",
+        lambda suffix, image: repinned.append((suffix, image)),
+    )
+    monkeypatch.setattr(
+        app_updater, "_patch_restart", lambda name: restarted.append(name)
+    )
+    result = app_updater.apply_update()
+    assert result == {"status": "rolling_out"}
+    assert len(repinned) == 2
+    assert restarted == []
+
+
 def test_fetch_registry_digest_none_when_header_missing(monkeypatch):
     # No Docker-Content-Digest header -> must NOT fall back to config digest.
     class _FakeHeaders:
