@@ -3602,6 +3602,7 @@ class TestApplyBastionBrowserFixes:
 
     def test_logins_missing(self):
         from app.services.deploy_service import (
+            _CLEAR_BASTION_OCP_COOKIES_CMD,
             _ENSURE_FIREFOX_PROFILE_CMD,
             _KILL_BROWSER_CMD,
             _apply_bastion_browser_fixes,
@@ -3613,10 +3614,11 @@ class TestApplyBastionBrowserFixes:
             "ca:ok\nlogins:missing", exec_fn, push_fn, "ca-cmd", "autologin-cmd"
         )
         assert result is True
-        assert exec_fn.call_count == 3
+        assert exec_fn.call_count == 4
         exec_fn.assert_any_call(_KILL_BROWSER_CMD, timeout=10)
+        exec_fn.assert_any_call(_CLEAR_BASTION_OCP_COOKIES_CMD, timeout=10)
         exec_fn.assert_any_call(_ENSURE_FIREFOX_PROFILE_CMD, timeout=20)
-        exec_fn.assert_any_call("autologin-cmd", timeout=30)
+        exec_fn.assert_any_call("autologin-cmd", timeout=90)
 
     def test_both_stale(self):
         from app.services.deploy_service import _apply_bastion_browser_fixes
@@ -3627,7 +3629,7 @@ class TestApplyBastionBrowserFixes:
             "ca:stale\nlogins:stale", exec_fn, push_fn, "ca-cmd", "autologin-cmd"
         )
         assert result is True
-        assert exec_fn.call_count == 4
+        assert exec_fn.call_count == 5
 
     def test_none_verify(self):
         from app.services.deploy_service import _apply_bastion_browser_fixes
@@ -10328,7 +10330,9 @@ class TestConfigureBastionAndCleanup:
         # Should have copied kubeconfig and refreshed CA trust
         assert mock_exec.call_count >= 1
         # Should NOT have cleaned up kc_path (browser flag is set, kc stays)
-        cleanup_calls = [c for c in mock_exec.call_args_list if "rm -f" in str(c)]
+        cleanup_calls = [
+            c for c in mock_exec.call_args_list if "rm -f /tmp/kc.yaml" in str(c)
+        ]
         assert len(cleanup_calls) == 0
 
 
