@@ -236,14 +236,6 @@ export default function ProjectCanvasPage() {
               : null;
 
     if (!ws.ocpHealth) return fallback;
-    if (
-      ocpStatus === "ready" &&
-      ws.ocpHealth.phase !== "ready" &&
-      ws.ocpHealth.phase !== "error" &&
-      ws.ocpHealth.phase !== "warning"
-    ) {
-      return { ...ws.ocpHealth, phase: "ready" };
-    }
     return ws.ocpHealth;
   }, [ws.ocpHealth, ocpStatus, ocpInstallElapsed]);
 

@@ -5182,6 +5182,25 @@ def _write_bastion_kubeadmin_password(
     )
 
 
+def _deploy_bastion_autologin_script(host, project_id, bastion_ip, ssh_password):
+    """Deploy NSS-based ocp-autologin.py (replaces bastion-image Selenium variant)."""
+    import base64
+
+    from app.services.ocp_autologin import OCP_AUTOLOGIN_SCRIPT
+
+    script_b64 = base64.b64encode(OCP_AUTOLOGIN_SCRIPT.encode()).decode()
+    _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        ssh_password,
+        f"echo '{script_b64}' | base64 -d > /home/cloud-user/ocp-autologin.py && "
+        "chown cloud-user:cloud-user /home/cloud-user/ocp-autologin.py && "
+        "chmod 755 /home/cloud-user/ocp-autologin.py",
+        timeout=10,
+    )
+
+
 def _approve_csrs_if_due(approve_fn, push_fn, last_check, interval=30):
     """Approve pending CSRs if enough time has elapsed. Returns updated timestamp."""
     import time as _t
@@ -5361,19 +5380,22 @@ def _configure_bastion_and_cleanup(
                 host, project_id, bastion_ip, password, kubeadmin_pw
             )
 
+        _push(status_phase, "deploying browser autologin script")
+        _deploy_bastion_autologin_script(host, project_id, bastion_ip, password)
+
         # Verify CA fingerprint + run autologin with retry loop
         _push(status_phase, "verifying bastion browser setup")
         bastion_ready = _verify_bastion_browser(
             _oc, _push, project_id, vm_name, status_phase=status_phase
         )
-        if bastion_ready:
-            _push(status_phase, "bastion browser ready")
+        return bastion_ready
 
     # Cleanup temp kubeconfig (skip if we used bastion default or copied it there)
     if kc_path and not configure_browser:
         _exec_on_bastion(
             host, project_id, bastion_ip, password, f"rm -f {kc_path}", timeout=5
         )
+    return None
 
 
 def _setup_bastion_kubeconfig(
@@ -5561,30 +5583,30 @@ def _ocp_vm_health_inner(
         _t.sleep(10)
     _ocp_vm_wait_for_console(_oc, _approve_csrs, _push, deadline)
 
+    _ocp_vm_final_csr_sweep(_approve_csrs, _push)
+
+    configure_browser = bool(
+        vm_node and vm_node.get("data", {}).get("configureBastionBrowser")
+    )
+    if configure_browser:
+        _configure_bastion_and_cleanup(
+            nodes,
+            vm_id,
+            kc_path,
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            _oc,
+            _push,
+            vm_name=vm_name,
+            status_phase="browser",
+        )
+
     elapsed_secs = int(_t.time() - start)
     ready_detail = f"{vm_name} cluster ready"
     _push("ready", ready_detail)
     _ocp_update_status(project_id, "ready", elapsed_secs)
-
-    def _ready_push(_phase, detail, items=None):
-        _push("ready", detail, items)
-
-    _ocp_vm_final_csr_sweep(_approve_csrs, _ready_push)
-
-    # Post-ready housekeeping — keep phase "ready" so UI doesn't regress
-    _configure_bastion_and_cleanup(
-        nodes,
-        vm_id,
-        kc_path,
-        host,
-        project_id,
-        bastion_ip,
-        password,
-        _oc,
-        _ready_push,
-        vm_name=vm_name,
-        status_phase="ready",
-    )
 
     logger.info(
         "OCP VM monitor complete for %s/%s (%s)",
@@ -6369,6 +6391,8 @@ def _ocp_post_pattern_cert_refresh(
         _write_bastion_kubeadmin_password(
             host, project_id, bastion_ip, password, kubeadmin_pw
         )
+
+    _deploy_bastion_autologin_script(host, project_id, bastion_ip, password)
 
     def _bastion_oc(cmd, timeout=15):
         return _exec_on_bastion(
