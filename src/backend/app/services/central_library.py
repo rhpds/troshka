@@ -190,6 +190,10 @@ def _create_pattern_record(db, pid, meta, owner_id, provider_id):
     topology = meta.get("topology", {"nodes": [], "edges": []})
     _remap_library_refs(topology, db)
 
+    from app.services.ocp_topology_flags import apply_sno_ocp_vm_flags
+
+    apply_sno_ocp_vm_flags(topology, recert=bool(meta.get("recert")))
+
     pattern = Pattern(
         id=pid,
         name=meta.get("name", f"pattern-{pid[:8]}"),
@@ -198,6 +202,7 @@ def _create_pattern_record(db, pid, meta, owner_id, provider_id):
         visibility="public",
         topology=topology,
         state="available",
+        recert=bool(meta.get("recert")),
         total_size_bytes=meta.get("total_size_bytes", 0),
         tags={
             **(meta.get("tags") or {}),

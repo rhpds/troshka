@@ -57,6 +57,9 @@ vms:
     firmware: uefi
     bmc: true
     bmc_ip: 192.168.100.10
+    recert: true
+    ocp_monitor: true
+    configure_bastion_browser: true
     disks:
       - size_gb: 120
       - size_gb: 250

@@ -602,6 +602,7 @@ def _save_pattern_metadata_to_s3(pattern, pattern_id):
         "description": pattern.description,
         "visibility": pattern.visibility,
         "topology": pattern.topology,
+        "recert": pattern.recert,
         "total_size_bytes": pattern.total_size_bytes,
         "tags": pattern.tags,
         "disks": [
@@ -1506,6 +1507,11 @@ def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
             node["data"]["patternId"] = pattern_id
             node["data"]["patternDiskId"] = pd.id
             node["data"].pop("libraryItemId", None)
+
+    if pattern.recert:
+        from app.services.ocp_topology_flags import apply_sno_ocp_vm_flags
+
+        apply_sno_ocp_vm_flags(topo, recert=True)
 
     db.execute(
         text("UPDATE patterns SET topology = :topo WHERE id = :pid"),

@@ -3462,6 +3462,16 @@ def _resolve_recert_settings(s, topology):
 
 def _auto_enable_recert_on_rhcos(topology, deploy_recert, project_id):
     """Auto-enable recert on RHCOS VMs when pattern has recert enabled."""
+    from app.services.ocp_topology_flags import apply_sno_ocp_vm_flags, rhcos_vms
+
+    if len(rhcos_vms(topology)) == 1:
+        apply_sno_ocp_vm_flags(topology, recert=bool(deploy_recert))
+        if deploy_recert:
+            logger.info(
+                "Deploy %s: auto-enabled OCP flags on SNO RHCOS VM from pattern",
+                project_id[:8],
+            )
+        return
     if not deploy_recert or deploy_recert is False:
         return
     has_recert_vm = any(
