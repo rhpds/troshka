@@ -340,6 +340,9 @@ def _check_export_job(batch_api, ej, namespace):
         for c in conditions:
             if c.type == "Failed" and c.status == "True":
                 return "failed"
+        failed = getattr(job.status, "failed", None)
+        if failed is not None and failed >= 3:
+            return "failed"
         return "pending"
     except Exception:
         return "pending"

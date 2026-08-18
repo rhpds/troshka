@@ -633,7 +633,7 @@ class TestHandleCapture:
         p = MockPatch()
         capture_config = {
             "s3Config": {"bucket": "test"},
-            "disks": [{"diskId": "d1"}],
+            "disks": [{"diskId": "d1", "vmName": "vm1"}],
         }
         asyncio.run(_handle_capture(capture_config, "ns", "proj", p))
         assert p.status["phase"] == "CaptureComplete"
@@ -652,7 +652,7 @@ class TestHandleCapture:
 
         mock_snap.return_value = {"diskId": "d1", "jobName": "j1"}
         p = MockPatch()
-        capture_config = {"s3Config": {}, "disks": [{"diskId": "d1"}]}
+        capture_config = {"s3Config": {}, "disks": [{"diskId": "d1", "vmName": "vm1"}]}
         asyncio.run(_handle_capture(capture_config, "ns", "proj", p))
         assert p.status.get("phase") != "CaptureComplete"
         mock_cleanup.assert_called_once()

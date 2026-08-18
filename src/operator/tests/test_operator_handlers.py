@@ -4020,8 +4020,9 @@ class TestKubeVirtDriverAssignBootOrders:
 
         KubeVirtDriver._assign_boot_orders(disks, ifaces, "cdrom")
 
-        assert disks[1]["bootOrder"] == 1
-        assert disks[0]["bootOrder"] == 2
+        # Disk first so empty disks fall through to CDROM on first boot.
+        assert disks[0]["bootOrder"] == 1
+        assert disks[1]["bootOrder"] == 2
 
 
 class TestKubeVirtDriverRestoreBootOrders:
@@ -4973,7 +4974,10 @@ class TestPollExportJobs:
         batch_api = MagicMock()
         job = MagicMock()
         job.status.succeeded = None
-        job.status.failed = 3
+        failed_condition = MagicMock()
+        failed_condition.type = "Failed"
+        failed_condition.status = "True"
+        job.status.conditions = [failed_condition]
         batch_api.read_namespaced_job.return_value = job
 
         export_jobs = [{"jobName": "export-vm1-disk1"}]
@@ -5043,7 +5047,7 @@ class TestPollExportJobs:
                 patch_obj,
             )
         )
-        assert result["deadline"] == 1228 * 15
+        assert result["deadline"] == 1228 * 90
 
 
 class TestCreateVncRbac:
@@ -5449,8 +5453,10 @@ class TestKubeVirtDriverStaticMethods:
         ]
         ifaces = []
         KubeVirtDriver._assign_boot_orders(disks, ifaces, "cdrom")
+        disk_entries = [d for d in disks if "disk" in d]
         cdrom_entries = [d for d in disks if "cdrom" in d]
-        assert cdrom_entries[0].get("bootOrder") == 1
+        assert disk_entries[0].get("bootOrder") == 1
+        assert cdrom_entries[0].get("bootOrder") == 2
 
     def test_restore_boot_orders(self):
         from kubevirt_driver import KubeVirtDriver
