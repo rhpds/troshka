@@ -2797,7 +2797,9 @@ def _handle_vm_recert(job, params):
 
         kc_content = _save_kubeconfig(job, params, etc_k8s, force_expire)
         if kc_content:
-            job.setdefault("result", {})["kubeconfig"] = kc_content
+            if not isinstance(job.get("result"), dict):
+                job["result"] = {}
+            job["result"]["kubeconfig"] = kc_content
 
         _update_bastion_disk(
             job, params, etc_k8s, common_password, bastion_kubeconfig_path, force_expire
