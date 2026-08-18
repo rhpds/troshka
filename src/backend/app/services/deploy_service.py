@@ -113,6 +113,14 @@ _ENSURE_FIREFOX_PROFILE_CMD = (
     "kill $FXPID 2>/dev/null; wait $FXPID 2>/dev/null || true; "
     "sleep 2; fi"
 )
+_CLEAR_BASTION_OCP_COOKIES_CMD = (
+    'python3 -c "import glob, sqlite3; '
+    "[(lambda p: (c := sqlite3.connect(p), c.execute("
+    "'DELETE FROM moz_cookies WHERE host LIKE ?', ('%.ocp.ocp.local',)), "
+    "c.commit(), c.close()))(p) "
+    "for p in glob.glob('/home/cloud-user/.mozilla/firefox/*/cookies.sqlite')]\" "
+    "2>/dev/null || true"
+)
 _LOG_DEPLOY = "Deploy %s: %s"
 _KUBEVIRT_API = "kubevirt.io"
 _VM_START_FAILED = "Failed to start VM %s: %s"
@@ -5013,6 +5021,7 @@ def _verify_bastion_browser(
         "&& sudo update-ca-trust"
     )
     _AUTOLOGIN_CMD = (
+        "export GECKODRIVER_PATH=/usr/local/bin/geckodriver; "
         "CONSOLE_URL=$(oc whoami --show-console 2>/dev/null); "
         '[ -n "$CONSOLE_URL" ] && [ -f /home/cloud-user/ocp-autologin.py ] && '
         'python3 /home/cloud-user/ocp-autologin.py "$CONSOLE_URL" 2>&1 || true'
@@ -5051,8 +5060,9 @@ def _apply_bastion_browser_fixes(
         exec_fn(ca_cmd, timeout=15)
     if _MSG_BROWSER_CREDS in needs_fix:
         exec_fn(_KILL_BROWSER_CMD, timeout=10)
+        exec_fn(_CLEAR_BASTION_OCP_COOKIES_CMD, timeout=10)
         exec_fn(_ENSURE_FIREFOX_PROFILE_CMD, timeout=20)
-        exec_fn(autologin_cmd, timeout=30)
+        exec_fn(autologin_cmd, timeout=90)
     return True
 
 
@@ -5191,8 +5201,38 @@ def _write_bastion_kubeadmin_password(
     )
 
 
+def _ensure_bastion_geckodriver(host, project_id, bastion_ip, ssh_password):
+    """Install geckodriver on bastion if missing (bastion-builder normally includes it)."""
+    from app.services.ocp_autologin import GECKODRIVER_URL
+
+    _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        ssh_password,
+        "GECKO=/usr/local/bin/geckodriver; "
+        'if [ ! -x "$GECKO" ]; then '
+        f"curl -sfL {GECKODRIVER_URL} | sudo tar xz -C /usr/local/bin/; "
+        "sudo chmod +x /usr/local/bin/geckodriver; fi; "
+        "test -x /usr/local/bin/geckodriver && echo geckodriver:ok || echo geckodriver:missing",
+        timeout=60,
+    )
+
+
+def _ensure_bastion_selenium(host, project_id, bastion_ip, ssh_password):
+    """Ensure selenium Python package is available on the bastion."""
+    _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        ssh_password,
+        "python3 -c 'import selenium' 2>/dev/null || pip3 install --user selenium",
+        timeout=120,
+    )
+
+
 def _deploy_bastion_autologin_script(host, project_id, bastion_ip, ssh_password):
-    """Deploy NSS-based ocp-autologin.py (replaces bastion-image Selenium variant)."""
+    """Deploy Selenium-based ocp-autologin.py (replaces bastion-image variant)."""
     import base64
 
     from app.services.ocp_autologin import OCP_AUTOLOGIN_SCRIPT
@@ -5390,6 +5430,8 @@ def _configure_bastion_and_cleanup(
             )
 
         _push(status_phase, "deploying browser autologin script")
+        _ensure_bastion_geckodriver(host, project_id, bastion_ip, password)
+        _ensure_bastion_selenium(host, project_id, bastion_ip, password)
         _deploy_bastion_autologin_script(host, project_id, bastion_ip, password)
 
         _push(status_phase, "ensuring Firefox profile")
@@ -5398,7 +5440,11 @@ def _configure_bastion_and_cleanup(
             project_id,
             bastion_ip,
             password,
-            _KILL_BROWSER_CMD + "; " + _ENSURE_FIREFOX_PROFILE_CMD,
+            _KILL_BROWSER_CMD
+            + "; "
+            + _CLEAR_BASTION_OCP_COOKIES_CMD
+            + "; "
+            + _ENSURE_FIREFOX_PROFILE_CMD,
             timeout=25,
         )
 
@@ -6420,6 +6466,8 @@ def _ocp_post_pattern_cert_refresh(
         )
 
     _deploy_bastion_autologin_script(host, project_id, bastion_ip, password)
+    _ensure_bastion_geckodriver(host, project_id, bastion_ip, password)
+    _ensure_bastion_selenium(host, project_id, bastion_ip, password)
 
     def _bastion_oc(cmd, timeout=15):
         return _exec_on_bastion(
