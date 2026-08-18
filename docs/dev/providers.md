@@ -40,6 +40,7 @@
 - **Networking**: identical to AWS (VXLAN, nftables, netns) — all inside the host VM
 - **EIPs**: not supported on OCP Virt — `externalAccess` toggle disabled for ocpvirt hosts
 - **Resize**: not supported (KubeVirt requires stop → modify → start, disabled for now)
+- **Package repo** (recommended for dedicated CI): instead of importing an 11 GB RHEL DVD ISO per provision, hosts can `dnf install` from an HTTP repo with basic auth. Defaults in `src/backend/config/config.yaml` under `ocpvirt.pkg_repo`; deploy infra with `deploy/ansible/pkg-repo.yaml`. Provider registration can override per cluster. See [`ocpvirt-package-repo.md`](ocpvirt-package-repo.md).
 ### KubeVirt Native Provider Setup
 - Provider type `kubevirt` — creates KubeVirt VMs directly on OCP (no nested virt, no troshkad)
 - **Architecture**: kopf-based operator manages CRDs (`TroshkaProject`, `TroshkaNetwork`, `TroshkaVM`) that reconcile into KubeVirt VMs, OVN networks, and helper pods

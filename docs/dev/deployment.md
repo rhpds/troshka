@@ -41,6 +41,18 @@ ansible-playbook deploy/ansible/deploy.yaml \
 - Task order: namespace → RBAC → secrets → PostgreSQL → S4 → backend → migration → frontend → OAuth
 - Secrets auto-generated on first deploy, preserved on re-deploy
 - Undeploy: `ansible-playbook deploy/ansible/undeploy.yaml`
+### OCP Virt package repo
+Standalone playbook (not part of `deploy.yaml`) for dedicated-CI ocpvirt hosts:
+
+```bash
+# route_host and iso_library_item_name: see ocpvirt.pkg_repo in src/backend/config/config.yaml
+ansible-playbook deploy/ansible/pkg-repo.yaml \
+  -e pkg_repo_password='<from-vault>' \
+  -e pkg_repo_route_host='<from config.yaml>' \
+  -e pkg_repo_iso_library_item_name='<from config.yaml>'
+```
+
+Extracts RHEL `BaseOS`/`AppStream` from the central-S4 DVD ISO onto a PVC and serves them via nginx + basic auth. Backend host provisioning reads `ocpvirt.pkg_repo` from config (provider overrides optional). Full design: [`ocpvirt-package-repo.md`](ocpvirt-package-repo.md).
 ### Container Images
 - Built by GitHub Actions on push to `main` or version tags
 - Images at `quay.io/redhat-gpte/troshka-{backend,frontend,operator,dnsmasq,gateway,tools,bmc,vnc-proxy}`

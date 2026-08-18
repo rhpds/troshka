@@ -355,6 +355,7 @@ from app.services.central_library import (
     _remap_library_refs,
     _scan_bucket,
     _scan_s3_pattern_groups,
+    resolve_manifest_item_s3_key,
 )
 
 
@@ -511,6 +512,25 @@ class TestLoadManifest:
 
         result = _load_manifest(mock_s3, "bucket")
         assert result == []
+
+
+class TestResolveManifestItemS3Key:
+    def test_resolves_iso_by_display_name(self):
+        manifest = [
+            {
+                "name": "RHEL 10.2 Binary DVD",
+                "type": "iso",
+                "s3_key": "library/lib/item/RHEL 10.2 Binary DVD.iso",
+            }
+        ]
+        key = resolve_manifest_item_s3_key(
+            manifest, name="RHEL 10.2 Binary DVD", item_type="iso"
+        )
+        assert key == "library/lib/item/RHEL 10.2 Binary DVD.iso"
+
+    def test_raises_when_item_missing(self):
+        with pytest.raises(ValueError, match="not found"):
+            resolve_manifest_item_s3_key([], name="Missing ISO", item_type="iso")
 
 
 class TestRemapLibraryRefs:

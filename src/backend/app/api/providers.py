@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import require_role
 from app.core.database import get_db
 from app.core.logging_utils import sanitize_log
+from app.core.ocpvirt_pkg_repo import resolve_pkg_repo
 from app.models.provider import Provider
 from app.models.user import User
 
@@ -140,10 +141,17 @@ def _build_cluster_credentials(
         }
         if body.iso_pvc is not None:
             creds["iso_pvc"] = body.iso_pvc
-        if body.pkg_repo_url:
-            creds["pkg_repo_url"] = body.pkg_repo_url
-            creds["pkg_repo_username"] = body.pkg_repo_username
-            creds["pkg_repo_password"] = body.pkg_repo_password
+        repo_url, repo_user, repo_pass = resolve_pkg_repo(
+            {
+                "pkg_repo_url": body.pkg_repo_url,
+                "pkg_repo_username": body.pkg_repo_username,
+                "pkg_repo_password": body.pkg_repo_password,
+            }
+        )
+        if repo_url:
+            creds["pkg_repo_url"] = repo_url
+            creds["pkg_repo_username"] = repo_user
+            creds["pkg_repo_password"] = repo_pass
         provider.default_region = body.namespace or "troshka"
         return creds
 

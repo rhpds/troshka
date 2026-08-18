@@ -1,0 +1,334 @@
+---
+# Build the RHEL package repo served over HTTP with basic auth (ocpvirt hosts).
+#
+# Pulls the RHEL DVD ISO from central S4, extracts BaseOS/AppStream onto a PVC,
+# and serves them via nginx. ocpvirt hosts install troshkad's dependencies from
+# this repo instead of importing the full 11 GB DVD ISO on every provision.
+#
+# Idempotent and re-runnable (new RHEL version, new cluster, or password rotation).
+# See docs/dev/ocpvirt-package-repo.md for architecture and provider registration.
+#
+# Usage:
+#   ansible-playbook deploy/ansible/pkg-repo.yaml \
+#     -e pkg_repo_password='<from-vault>' \
+#     -e pkg_repo_route_host='repo-troshka-images.apps.<cluster-domain>' \
+#     [-e pkg_repo_iso_library_item_name='RHEL 10.2 Binary DVD'] \
+#     [-e pkg_repo_rhel_version='10.2'] \
+#     [-e pkg_repo_storage_class='ocs-storagecluster-cephfs'] \
+#     [-e pkg_repo_force_extract=true]
+#
+# See docs/dev/ocpvirt-package-repo.md — route_host and iso_library_item_name
+# defaults live in src/backend/config/config.yaml under ocpvirt.pkg_repo.
+# Requires KUBECONFIG for the cluster that hosts central S4 (troshka-images ns)
+# and kubernetes.core (+ cluster-admin for the anyuid SCC grant on the builder SA).
+- name: Build central-S4 RHEL package repo (HTTP + basic auth)
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    pkg_repo_namespace: troshka-images
+    pkg_repo_rhel_version: "10.2"
+    pkg_repo_route_host: ""
+    pkg_repo_pvc_size: 25Gi
+    pkg_repo_storage_class: ocs-storagecluster-cephfs
+    # Source ISO in central S4 (in-cluster S3 endpoint + read creds)
+    pkg_repo_s4_endpoint: http://s4.troshka-images.svc:7480
+    pkg_repo_s4_bucket: troshka-gold-images
+    pkg_repo_s4_creds_secret: s4-credentials  # pragma: allowlist secret
+    # Resolved from library/manifest.json at extraction time (same as agnosticd ISO DV)
+    pkg_repo_iso_library_item_name: "RHEL 10.2 Binary DVD"
+    # Basic auth (store password in the agnosticv vault; must match the role)
+    pkg_repo_username: troshka-repo
+    pkg_repo_password: ""  # pragma: allowlist secret
+    # Images
+    pkg_repo_builder_image: registry.fedoraproject.org/fedora:40
+    pkg_repo_nginx_image: nginxinc/nginx-unprivileged:1.27
+    # Re-extract even if the repo already exists
+    pkg_repo_force_extract: false
+
+  tasks:
+    - name: Require a basic-auth password
+      ansible.builtin.assert:
+        that: pkg_repo_password | length > 0
+        fail_msg: "Set pkg_repo_password (-e pkg_repo_password=... or from vault)"
+
+    - name: Require a Route hostname
+      ansible.builtin.assert:
+        that: pkg_repo_route_host | length > 0
+        fail_msg: "Set pkg_repo_route_host (-e pkg_repo_route_host=repo-troshka-images.apps.<cluster-domain>)"
+
+    - name: Namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ pkg_repo_namespace }}"
+
+    - name: Builder ServiceAccount (needs root for the extraction Job)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: pkg-repo-builder
+            namespace: "{{ pkg_repo_namespace }}"
+
+    - name: Grant anyuid SCC to the builder SA
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: pkg-repo-builder-anyuid
+            namespace: "{{ pkg_repo_namespace }}"
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: system:openshift:scc:anyuid
+          subjects:
+            - kind: ServiceAccount
+              name: pkg-repo-builder
+              namespace: "{{ pkg_repo_namespace }}"
+
+    - name: Repo PVC (RWX so nginx + the extractor can share it)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: troshka-pkg-repo
+            namespace: "{{ pkg_repo_namespace }}"
+          spec:
+            accessModes: [ReadWriteMany]
+            storageClassName: "{{ pkg_repo_storage_class }}"
+            resources:
+              requests:
+                storage: "{{ pkg_repo_pvc_size }}"
+
+    - name: Basic-auth credentials (htpasswd + plaintext for reference)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: pkg-repo-auth
+            namespace: "{{ pkg_repo_namespace }}"
+          type: Opaque
+          stringData:
+            username: "{{ pkg_repo_username }}"
+            password: "{{ pkg_repo_password }}"  # pragma: allowlist secret
+            htpasswd: "{{ pkg_repo_username }}:{{ pkg_repo_password | password_hash('bcrypt') }}"  # pragma: allowlist secret
+
+    - name: Remove any prior extraction Job
+      kubernetes.core.k8s:
+        state: absent
+        api_version: batch/v1
+        kind: Job
+        name: pkg-repo-extract
+        namespace: "{{ pkg_repo_namespace }}"
+        wait: true
+      when: pkg_repo_force_extract | bool
+
+    - name: Extraction Job (pull ISO from S4, extract BaseOS/AppStream to the PVC)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: pkg-repo-extract
+            namespace: "{{ pkg_repo_namespace }}"
+          spec:
+            ttlSecondsAfterFinished: 3600
+            backoffLimit: 1
+            template:
+              spec:
+                restartPolicy: Never
+                serviceAccountName: pkg-repo-builder
+                securityContext:
+                  runAsUser: 0
+                containers:
+                  - name: extract
+                    image: "{{ pkg_repo_builder_image }}"
+                    env:
+                      - name: AWS_ACCESS_KEY_ID
+                        valueFrom:
+                          secretKeyRef:  # pragma: allowlist secret
+                            name: "{{ pkg_repo_s4_creds_secret }}"
+                            key: access-key
+                      - name: AWS_SECRET_ACCESS_KEY
+                        valueFrom:
+                          secretKeyRef:  # pragma: allowlist secret
+                            name: "{{ pkg_repo_s4_creds_secret }}"
+                            key: secret-key
+                      - {name: AWS_EC2_METADATA_DISABLED, value: "true"}
+                      - {name: AWS_DEFAULT_REGION, value: "us-east-1"}
+                      - {name: ISO_LIBRARY_ITEM_NAME, value: "{{ pkg_repo_iso_library_item_name }}"}
+                    command:
+                      - /bin/bash
+                      - -c
+                      - |
+                        set -euo pipefail
+                        VER="{{ pkg_repo_rhel_version }}"
+                        DEST="/repo/rhel-${VER}"
+                        if [ -f "${DEST}/BaseOS/repodata/repomd.xml" ] && [ "{{ pkg_repo_force_extract | bool | lower }}" != "true" ]; then
+                          echo "repo already present at ${DEST}, skipping"; exit 0
+                        fi
+                        dnf install -y awscli bsdtar python3 >/tmp/dnf.log 2>&1 || { tail -20 /tmp/dnf.log; exit 1; }
+                        mkdir -p "${DEST}"
+                        aws --endpoint-url {{ pkg_repo_s4_endpoint }} s3 cp \
+                          "s3://{{ pkg_repo_s4_bucket }}/library/manifest.json" /tmp/manifest.json
+                        ISO_KEY=$(python3 -c "
+                        import json, os, sys
+                        name = os.environ['ISO_LIBRARY_ITEM_NAME']
+                        with open('/tmp/manifest.json') as f:
+                            manifest = json.load(f)
+                        for entry in manifest:
+                            if entry.get('name') == name and entry.get('type') == 'iso':
+                                key = entry.get('s3_key')
+                                if key:
+                                    print(key)
+                                    sys.exit(0)
+                        sys.exit(f'ISO library item {name!r} not found in library/manifest.json')
+                        ")
+                        aws --endpoint-url {{ pkg_repo_s4_endpoint }} s3 cp \
+                          "s3://{{ pkg_repo_s4_bucket }}/${ISO_KEY}" /repo/dvd.iso
+                        bsdtar -C "${DEST}" -xf /repo/dvd.iso BaseOS AppStream
+                        rm -f /repo/dvd.iso
+                        ls "${DEST}/BaseOS/repodata/repomd.xml" "${DEST}/AppStream/repodata/repomd.xml"
+                        echo "EXTRACT-OK"
+                    volumeMounts:
+                      - {name: repo, mountPath: /repo}
+                volumes:
+                  - name: repo
+                    persistentVolumeClaim:
+                      claimName: troshka-pkg-repo
+
+    - name: Wait for extraction to complete
+      kubernetes.core.k8s_info:
+        api_version: batch/v1
+        kind: Job
+        name: pkg-repo-extract
+        namespace: "{{ pkg_repo_namespace }}"
+      register: _extract_job
+      until: (_extract_job.resources[0].status.succeeded | default(0)) >= 1
+      retries: 60
+      delay: 15
+
+    - name: nginx config
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: pkg-repo-nginx-conf
+            namespace: "{{ pkg_repo_namespace }}"
+          data:
+            default.conf: |
+              server {
+                  listen 8080;
+                  server_name _;
+                  location / {
+                      root /repo;
+                      autoindex on;
+                      auth_basic "Troshka Package Repo";
+                      auth_basic_user_file /etc/nginx/htpasswd;
+                  }
+              }
+
+    - name: nginx Deployment
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: troshka-pkg-repo
+            namespace: "{{ pkg_repo_namespace }}"
+            labels: {app.kubernetes.io/name: troshka-pkg-repo}
+          spec:
+            replicas: 1
+            selector: {matchLabels: {app.kubernetes.io/name: troshka-pkg-repo}}
+            template:
+              metadata: {labels: {app.kubernetes.io/name: troshka-pkg-repo}}
+              spec:
+                containers:
+                  - name: nginx
+                    image: "{{ pkg_repo_nginx_image }}"
+                    ports: [{containerPort: 8080}]
+                    volumeMounts:
+                      - {name: repo, mountPath: /repo, readOnly: true}
+                      - {name: conf, mountPath: /etc/nginx/conf.d}
+                      - {name: htpasswd, mountPath: /etc/nginx/htpasswd, subPath: htpasswd, readOnly: true}
+                    resources:
+                      requests: {cpu: 50m, memory: 64Mi}
+                      limits: {memory: 256Mi}
+                volumes:
+                  - {name: repo, persistentVolumeClaim: {claimName: troshka-pkg-repo}}
+                  - {name: conf, configMap: {name: pkg-repo-nginx-conf}}
+                  - name: htpasswd
+                    secret:  # pragma: allowlist secret
+                      secretName: pkg-repo-auth  # pragma: allowlist secret
+                      items: [{key: htpasswd, path: htpasswd}]
+
+    - name: nginx Service
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: troshka-pkg-repo
+            namespace: "{{ pkg_repo_namespace }}"
+          spec:
+            selector: {app.kubernetes.io/name: troshka-pkg-repo}
+            ports: [{port: 8080, targetPort: 8080, name: http}]
+
+    - name: Route (edge TLS)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: route.openshift.io/v1
+          kind: Route
+          metadata:
+            name: troshka-pkg-repo
+            namespace: "{{ pkg_repo_namespace }}"
+          spec:
+            host: "{{ pkg_repo_route_host }}"
+            to: {kind: Service, name: troshka-pkg-repo}
+            port: {targetPort: http}
+            tls: {termination: edge, insecureEdgeTerminationPolicy: Redirect}
+
+    - name: Verify repo rejects anonymous access
+      ansible.builtin.uri:
+        url: "https://{{ pkg_repo_route_host }}/rhel-{{ pkg_repo_rhel_version }}/BaseOS/repodata/repomd.xml"
+        validate_certs: false
+        status_code: 401
+      register: _noauth
+      retries: 12
+      delay: 5
+      until: _noauth.status == 401
+
+    - name: Verify repo serves with basic auth
+      ansible.builtin.uri:
+        url: "https://{{ pkg_repo_route_host }}/rhel-{{ pkg_repo_rhel_version }}/BaseOS/repodata/repomd.xml"
+        url_username: "{{ pkg_repo_username }}"
+        url_password: "{{ pkg_repo_password }}"  # pragma: allowlist secret
+        force_basic_auth: true
+        validate_certs: false
+        status_code: 200
+
+    - name: Repo ready
+      ansible.builtin.debug:
+        msg: >-
+          Package repo ready at
+          https://{{ pkg_repo_route_host }}/rhel-{{ pkg_repo_rhel_version }}/{BaseOS,AppStream}
+          (basic auth user: {{ pkg_repo_username }})

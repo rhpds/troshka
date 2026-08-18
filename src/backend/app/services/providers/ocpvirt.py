@@ -114,6 +114,12 @@ _REPO_SETUP_HTTP = """  - |
     REPOEOF"""
 
 
+def _resolve_pkg_repo_creds(creds: dict[str, Any]) -> tuple[str, str, str]:
+    from app.core.ocpvirt_pkg_repo import resolve_pkg_repo
+
+    return resolve_pkg_repo(creds)
+
+
 def _get_k8s_clients(credentials):
     from kubernetes import client
 
@@ -478,7 +484,7 @@ class OCPVirtDriver(ProviderDriver):
                     client.V1Namespace(metadata=client.V1ObjectMeta(name=namespace))
                 )
 
-        repo_url = creds.get("pkg_repo_url", "")
+        repo_url, repo_user, repo_pass = _resolve_pkg_repo_creds(creds)
         user_data = _build_cloud_init_userdata(
             host_type,
             public_key,
@@ -487,8 +493,8 @@ class OCPVirtDriver(ProviderDriver):
             nfs_path=kwargs.get("nfs_path"),
             nfs_port=kwargs.get("nfs_port"),
             repo_url=repo_url,
-            repo_user=creds.get("pkg_repo_username", ""),
-            repo_pass=creds.get("pkg_repo_password", ""),
+            repo_user=repo_user,
+            repo_pass=repo_pass,
         )
 
         rhel_image_url = kwargs.get("rhel_image_url", "")

@@ -398,3 +398,15 @@ def _scan_bucket(client, bucket: str) -> list[dict]:
             if item:
                 items.append(item)
     return items
+
+
+def resolve_manifest_item_s3_key(
+    manifest: list[dict], *, name: str, item_type: str = "iso"
+) -> str:
+    """Look up an s3_key in library/manifest.json by display name."""
+    for entry in manifest:
+        if entry.get("name") == name and entry.get("type") == item_type:
+            key = entry.get("s3_key")
+            if key:
+                return key
+    raise ValueError(f"{item_type} library item {name!r} not found in manifest")
