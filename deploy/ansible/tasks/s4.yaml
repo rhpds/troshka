@@ -119,12 +119,28 @@
                   - /bin/sh
                   - -c
                   - |
-                    aws --endpoint-url http://troshka-s4:7480 s3 mb s3://{{ troshka_s3_bucket }} || true
+                    set -e
+                    for i in $(seq 1 60); do
+                      if aws --endpoint-url http://troshka-s4:7480 s3 ls >/dev/null 2>&1; then
+                        break
+                      fi
+                      echo "Waiting for S4 API ($i/60)..."
+                      sleep 5
+                    done
+                    if aws --endpoint-url http://troshka-s4:7480 s3 ls "s3://{{ troshka_s3_bucket }}" >/dev/null 2>&1; then
+                      echo "Bucket {{ troshka_s3_bucket }} already exists"
+                    else
+                      aws --endpoint-url http://troshka-s4:7480 s3 mb "s3://{{ troshka_s3_bucket }}"
+                      echo "Created bucket {{ troshka_s3_bucket }}"
+                    fi
+                    aws --endpoint-url http://troshka-s4:7480 s3 ls "s3://{{ troshka_s3_bucket }}"
                 env:
                   - name: AWS_ACCESS_KEY_ID
                     value: "{{ _s4_access_key }}"
                   - name: AWS_SECRET_ACCESS_KEY
                     value: "{{ _s4_secret_key }}"
+                  - name: AWS_DEFAULT_REGION
+                    value: us-east-1
 
 - name: Wait for bucket init job
   kubernetes.core.k8s_info:
@@ -134,5 +150,5 @@
     namespace: "{{ troshka_namespace }}"
   register: _init_job
   until: (_init_job.resources[0].status.succeeded | default(0)) >= 1
-  retries: 12
+  retries: 45
   delay: 10

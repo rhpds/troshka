@@ -579,6 +579,7 @@ def clean_s3_orphans(db: Session, dry_run: bool = False) -> dict:
             region_name=creds.get("region", "us-east-1"),
             aws_access_key_id=creds.get("access_key_id"),
             aws_secret_access_key=creds.get("secret_access_key"),
+            endpoint_url=creds.get("endpoint_url") or None,
         )
         bucket = s3_storage._bucket()
         op = owner_params(creds)

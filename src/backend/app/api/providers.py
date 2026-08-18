@@ -1105,16 +1105,47 @@ def _test_s3_provider(provider: Provider, creds: dict[str, Any]) -> dict[str, An
     """Test S3 provider credentials and bucket access."""
     import boto3
 
-    s3 = boto3.client(
-        "s3",
-        region_name=provider.default_region,
-        aws_access_key_id=creds.get("access_key_id"),
-        aws_secret_access_key=creds.get("secret_access_key"),
-    )
+    region = provider.default_region or creds.get("region") or "us-east-1"
+    endpoint_url = creds.get("endpoint_url") or None
     bucket = creds.get("bucket", "troshka-images")
+
+    kwargs: dict[str, str] = {"region_name": region}
+    if creds.get("access_key_id"):
+        kwargs["aws_access_key_id"] = creds["access_key_id"]
+    if creds.get("secret_access_key"):
+        kwargs["aws_secret_access_key"] = creds["secret_access_key"]
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+
+    s3 = boto3.client("s3", **kwargs)
+
+    if endpoint_url:
+        try:
+            s3.head_bucket(Bucket=bucket)
+            return {"status": "ok", "bucket": bucket, "endpoint": endpoint_url}
+        except s3.exceptions.ClientError as e:
+            code = e.response["Error"]["Code"]
+            if code in ("404", "NoSuchBucket"):
+                return {
+                    "status": "ok",
+                    "bucket_missing": True,
+                    "bucket": bucket,
+                    "endpoint": endpoint_url,
+                    "message": f"Credentials OK but bucket '{bucket}' does not exist. Click Create Bucket.",
+                }
+            if code == "403":
+                return {
+                    "status": "ok",
+                    "bucket_denied": True,
+                    "bucket": bucket,
+                    "endpoint": endpoint_url,
+                    "message": f"Credentials OK but no access to bucket '{bucket}'.",
+                }
+            raise
+
     sts = boto3.client(
         "sts",
-        region_name=provider.default_region,
+        region_name=region,
         aws_access_key_id=creds.get("access_key_id"),
         aws_secret_access_key=creds.get("secret_access_key"),
     )
