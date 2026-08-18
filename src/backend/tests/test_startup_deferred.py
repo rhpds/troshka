@@ -14,6 +14,7 @@ import app.main as main
 
 def test_run_deferred_startup_calls_remote_hooks(monkeypatch):
     called = []
+    monkeypatch.setattr("app.services.app_updater.resolve_mode", lambda: "image")
     monkeypatch.setattr(
         main, "_startup_resume_storage_pools", lambda: called.append("pools")
     )
@@ -26,6 +27,7 @@ def test_run_deferred_startup_calls_remote_hooks(monkeypatch):
 
 def test_run_deferred_startup_isolates_hook_failure(monkeypatch):
     called = []
+    monkeypatch.setattr("app.services.app_updater.resolve_mode", lambda: "image")
 
     def boom():
         raise RuntimeError("cluster unreachable")
