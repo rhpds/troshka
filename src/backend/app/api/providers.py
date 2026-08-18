@@ -1352,23 +1352,26 @@ def create_s3_bucket(
 
     creds = provider.get_credentials()
     bucket = creds.get("bucket", "troshka-images")
+    region = provider.default_region or creds.get("region") or "us-east-1"
 
-    s3 = boto3.client(
-        "s3",
-        region_name=provider.default_region,
-        aws_access_key_id=creds.get("access_key_id"),
-        aws_secret_access_key=creds.get("secret_access_key"),
-    )
+    kwargs: dict[str, str] = {"region_name": region}
+    if creds.get("access_key_id"):
+        kwargs["aws_access_key_id"] = creds["access_key_id"]
+    if creds.get("secret_access_key"):
+        kwargs["aws_secret_access_key"] = creds["secret_access_key"]
+    if creds.get("endpoint_url"):
+        kwargs["endpoint_url"] = creds["endpoint_url"]
+
+    s3 = boto3.client("s3", **kwargs)
 
     try:
-        if provider.default_region == "us-east-1":
+        # Custom endpoints (S4/MinIO) do not use AWS LocationConstraint.
+        if creds.get("endpoint_url") or region == "us-east-1":
             s3.create_bucket(Bucket=bucket)
         else:
             s3.create_bucket(
                 Bucket=bucket,
-                CreateBucketConfiguration={
-                    "LocationConstraint": provider.default_region
-                },
+                CreateBucketConfiguration={"LocationConstraint": region},
             )
         return {"status": "created", "bucket": bucket}
     except s3.exceptions.BucketAlreadyOwnedByYou:
