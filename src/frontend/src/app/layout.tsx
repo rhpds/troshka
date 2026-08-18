@@ -228,7 +228,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               if (s) {
                 setUpdateStatus(s);
                 if (s.up_to_date !== false) {
-                  setApplying(false);
+                  // Full reload: image mode rolls out a new frontend bundle; dev
+                  // mode may have left pages with failed fetches (e.g. empty projects).
+                  window.location.reload();
                   return;
                 }
               }
