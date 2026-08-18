@@ -314,17 +314,39 @@ export default function AdminProvidersPage() {
     }
   };
 
-  const [isoSelectMode, setIsoSelectMode] = useState<Record<string, boolean>>({});
+  const [isoOptions, setIsoOptions] = useState<Record<string, Array<{ name: string; size: string }>>>({});
+  const [isoResult, setIsoResult] = useState<Record<string, string>>({});
+  const [isoDetailsOpen, setIsoDetailsOpen] = useState<Record<string, boolean>>({});
+
+  const discoverIsos = async (providerId: string) => {
+    setIsoDetailsOpen((prev) => ({ ...prev, [providerId]: true }));
+    setIsoResult((prev) => ({ ...prev, [providerId]: "Discovering ISOs..." }));
+    setIsoOptions((prev) => ({ ...prev, [providerId]: [] }));
+    const resp = await fetch(`/api/v1/providers/${providerId}/discover-isos`);
+    if (resp.ok) {
+      const data = await resp.json();
+      setIsoOptions((prev) => ({ ...prev, [providerId]: data.isos || [] }));
+      setIsoResult((prev) => ({ ...prev, [providerId]: `Found ${(data.isos || []).length} ISO(s)` }));
+    } else {
+      setIsoResult((prev) => ({ ...prev, [providerId]: "FAILED to discover ISOs" }));
+    }
+  };
 
   const selectImage = async (providerId: string, imageId: string) => {
-    const endpoint = isoSelectMode[providerId]
-      ? `/api/v1/providers/${providerId}/set-iso?iso_pvc=${imageId}`
-      : `/api/v1/providers/${providerId}/set-image?image_id=${imageId}`;
-    const resp = await fetch(endpoint, { method: "POST" });
+    const resp = await fetch(`/api/v1/providers/${providerId}/set-image?image_id=${imageId}`, { method: "POST" });
     if (resp.ok) {
       setImageOptions((prev) => ({ ...prev, [providerId]: [] }));
       setImageResult((prev) => ({ ...prev, [providerId]: "" }));
-      setIsoSelectMode((prev) => ({ ...prev, [providerId]: false }));
+      loadProviders();
+    }
+  };
+
+  const selectIso = async (providerId: string, isoPvc: string) => {
+    const resp = await fetch(`/api/v1/providers/${providerId}/set-iso?iso_pvc=${encodeURIComponent(isoPvc)}`, { method: "POST" });
+    if (resp.ok) {
+      setIsoOptions((prev) => ({ ...prev, [providerId]: [] }));
+      setIsoResult((prev) => ({ ...prev, [providerId]: "" }));
+      setIsoDetailsOpen((prev) => ({ ...prev, [providerId]: false }));
       loadProviders();
     }
   };
@@ -776,7 +798,6 @@ export default function AdminProvidersPage() {
                             setImageResult((prev) => ({ ...prev, [p.id]: `Found ${data.length} image(s)` }));
                           } else { setImageResult((prev) => ({ ...prev, [p.id]: "FAILED" })); }
                         } else if (p.type === "ocpvirt") {
-                          setIsoSelectMode((prev) => ({ ...prev, [p.id]: false }));
                           const resp = await fetch(`/api/v1/providers/${p.id}/discover-datasources`);
                           if (resp.ok) {
                             const data = await resp.json();
@@ -849,6 +870,43 @@ export default function AdminProvidersPage() {
                             </div>
                             );
                           })()}
+                        </div>
+                      </details>
+                    )}
+                    {p.type === "ocpvirt" && (
+                      <details
+                        style={{ marginTop: 12 }}
+                        open={isoDetailsOpen[p.id] || false}
+                        onToggle={(e) => {
+                          const open = (e.target as HTMLDetailsElement).open;
+                          setIsoDetailsOpen((prev) => ({ ...prev, [p.id]: open }));
+                          if (open && !isoOptions[p.id]?.length) discoverIsos(p.id);
+                        }}
+                      >
+                        <summary style={{ cursor: "pointer", fontSize: 13, color: "var(--pf-t--global--text--color--subtle)" }}>
+                          Select Install ISO {p.iso_pvc ? <span style={{ fontSize: 11, opacity: 0.7 }}>— current: <code>{p.iso_pvc}</code></span> : <span style={{ fontSize: 11, color: "#fbbf24" }}>— none selected</span>}
+                        </summary>
+                        <div style={{ marginTop: 8 }}>
+                          {isoResult[p.id] && (
+                            <div style={{ fontSize: 11, marginBottom: 6, color: isoResult[p.id].includes("FAILED") ? "#f87171" : "#4ade80" }}>
+                              {isoResult[p.id]}
+                            </div>
+                          )}
+                          {isoOptions[p.id] && isoOptions[p.id].length > 0 && (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                              {isoOptions[p.id].map((iso) => (
+                                <div key={iso.name} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--pf-t--global--background--color--secondary--default)", padding: "8px 12px", borderRadius: 6 }}>
+                                  <div>
+                                    <div style={{ fontSize: 12, fontWeight: 600 }}>{iso.name}</div>
+                                    <div style={{ fontSize: 11, opacity: 0.7 }}>{iso.size}</div>
+                                  </div>
+                                  <Button variant="secondary" onClick={() => selectIso(p.id, iso.name)}>
+                                    Select
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </details>
                     )}
@@ -1007,18 +1065,7 @@ export default function AdminProvidersPage() {
                         }
                       }}>Update Operator</Button>
                     )}
-                    {p.type === "ocpvirt" && <Button variant="secondary" onClick={async () => {
-                      setIsoSelectMode((prev) => ({ ...prev, [p.id]: true }));
-                      setImageResult((prev) => ({ ...prev, [p.id]: "Discovering ISOs..." }));
-                      const resp = await fetch(`/api/v1/providers/${p.id}/discover-isos`);
-                      if (resp.ok) {
-                        const data = await resp.json();
-                        setImageOptions((prev) => ({ ...prev, [p.id]: data.isos.map((iso: any) => ({ image_id: iso.name, label: `${iso.name} (${iso.size})`, name: iso.name, created: "", type: "" })) }));
-                        setImageResult((prev) => ({ ...prev, [p.id]: `Found ${data.isos.length} ISOs` }));
-                      } else {
-                        setImageResult((prev) => ({ ...prev, [p.id]: "FAILED to discover ISOs" }));
-                      }
-                    }}>Select Install ISO</Button>}
+                    {p.type === "ocpvirt" && <Button variant="secondary" onClick={() => discoverIsos(p.id)}>Select Install ISO</Button>}
                     {p.type === "ec2" && !(p.vpc_id && p.subnet_id && p.security_group_id) && <Button variant="secondary" onClick={() => discoverVpcs(p.id)}>Setup VPC</Button>}
                     {p.type === "gcp" && !p.gcp_network_id && (
                       <Button
