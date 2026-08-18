@@ -34,7 +34,7 @@ jobs:
           DIFF=$(git diff --name-only "$BEFORE" HEAD 2>/dev/null || echo "")
           echo "Files changed since last push:"
           echo "$DIFF"
-          echo "backend=$(echo "$DIFF" | grep -qE '^src/backend/|^deploy/containerfiles/Containerfile\.backend' && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "backend=$(echo "$DIFF" | grep -qE '^src/backend/|^src/troshkad/|^src/troshka-vncd/|^deploy/containerfiles/Containerfile\.backend' && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "frontend=$(echo "$DIFF" | grep -qE '^src/frontend/|^deploy/containerfiles/Containerfile\.frontend' && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "operator=$(echo "$DIFF" | grep -q '^src/operator/' && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
