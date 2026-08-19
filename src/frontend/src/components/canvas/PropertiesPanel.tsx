@@ -111,7 +111,8 @@ function OutboundRulesEditor({
   outboundPorts: string;
   onChange: (value: string) => void;
 }) {
-  const currentRules = outboundPorts.split(",").map((p) => p.trim()).filter(Boolean);
+  const normalizedOutboundPorts = typeof outboundPorts === "string" ? outboundPorts : "";
+  const currentRules = normalizedOutboundPorts.split(",").map((p) => p.trim()).filter(Boolean);
   const [proto, setProto] = useState<"both" | "tcp" | "udp" | "icmp">("both");
   const [portInput, setPortInput] = useState("");
   const [icmpType, setIcmpType] = useState("");
