@@ -91,8 +91,8 @@ function validateDhcpRangeFull(cidr: string, start: string, end: string, gateway
 }
 
 function formatOutboundRuleLabel(entry: string): string {
-  if (entry === "icmp") return "icmp";
-  if (entry.startsWith("icmp/")) return `icmp type ${entry.slice(5)}`;
+  if (entry === "icmp") return "ICMP";
+  if (entry.startsWith("icmp/")) return `ICMP type ${entry.slice(5)}`;
   if (entry.includes("/")) return entry;
   return `${entry} tcp/udp`;
 }
@@ -128,8 +128,9 @@ function OutboundRulesEditor({
       entry = type ? `icmp/${type}` : "icmp";
     } else {
       const num = portInput.trim();
-      if (!num || isNaN(Number(num))) return;
-      entry = proto === "both" ? num : `${num}/${proto}`;
+      const port = Number(num);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return;
+      entry = proto === "both" ? String(port) : `${port}/${proto}`;
     }
     if (!currentRules.includes(entry)) {
       onChange([...currentRules, entry].join(","));
@@ -163,7 +164,14 @@ function OutboundRulesEditor({
             }}
           >
             {formatOutboundRuleLabel(rule)}
-            <span onClick={() => removeRule(rule)} style={{ cursor: "pointer", opacity: 0.6, fontSize: 10 }}>✕</span>
+            <button
+              type="button"
+              aria-label={`Remove ${formatOutboundRuleLabel(rule)}`}
+              onClick={() => removeRule(rule)}
+              style={{ cursor: "pointer", opacity: 0.6, fontSize: 10, background: "none", border: 0, padding: 0 }}
+            >
+              ✕
+            </button>
           </span>
         ))}
       </div>
@@ -172,6 +180,9 @@ function OutboundRulesEditor({
           <input
             ref={portInputRef}
             type="number"
+            min={1}
+            max={65535}
+            step={1}
             className="props-input"
             placeholder="Port"
             value={portInput}
