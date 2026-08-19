@@ -3306,6 +3306,27 @@ def _sync_transit_ports(s, provider, h, p_id, gw_node):
             )
 
 
+def _apply_eip_runtime_to_topology(s, p_id, external_ips):
+    """Copy DB EIP runtime fields onto topology externalIps for troshkad networking."""
+    from app.models.elastic_ip import ElasticIp
+
+    if not external_ips:
+        return
+    eip_by_canvas = {
+        e.canvas_eip_id: e for e in s.query(ElasticIp).filter_by(project_id=p_id).all()
+    }
+    for ext_ip in external_ips:
+        eip = eip_by_canvas.get(ext_ip.get("id", ""))
+        if not eip:
+            continue
+        ext_ip["ip"] = eip.public_ip
+        ext_ip["_private_ip"] = eip.private_ip
+        if eip.port_map:
+            ext_ip["_transit_port_map"] = dict(eip.port_map)
+        else:
+            ext_ip.pop("_transit_port_map", None)
+
+
 def _sync_eips_for_reconfigure(s, proj, h, p_id, current, errors):
     """Allocate/associate EIPs and sync security groups during reconfigure."""
     external_ips = current.get("externalIps", [])
@@ -3339,20 +3360,6 @@ def _sync_eips_for_reconfigure(s, proj, h, p_id, current, errors):
             eip = existing or allocate_eip(s, provider, p_id, canvas_id, h)
             if eip.state != "associated":
                 associate_eip(s, eip, h)
-            ext_ip["ip"] = eip.public_ip
-            ext_ip["_private_ip"] = eip.private_ip
-        import copy
-        import json
-
-        from sqlalchemy import text
-
-        new_topo = copy.deepcopy(current)
-        s.execute(
-            text("UPDATE projects SET topology = :topo WHERE id = :pid"),
-            {"topo": json.dumps(new_topo), "pid": p_id},
-        )
-        s.commit()
-        s.refresh(proj)
 
         gw_node = _find_gateway_node(current)
         if gw_node:
@@ -3369,6 +3376,21 @@ def _sync_eips_for_reconfigure(s, proj, h, p_id, current, errors):
 
         if provider.type != "ec2" and gw_node:
             _sync_transit_ports(s, provider, h, p_id, gw_node)
+
+        _apply_eip_runtime_to_topology(s, p_id, external_ips)
+
+        import copy
+        import json
+
+        from sqlalchemy import text
+
+        new_topo = copy.deepcopy(current)
+        s.execute(
+            text("UPDATE projects SET topology = :topo WHERE id = :pid"),
+            {"topo": json.dumps(new_topo), "pid": p_id},
+        )
+        s.commit()
+        s.refresh(proj)
     except Exception:
         logger.exception("EIP sync failed during reconfigure %s", p_id[:8])
         errors.append("EIP allocation/association failed — check server logs")
