@@ -1187,62 +1187,101 @@ def _fast_fail_boto_config():
     return Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 1})
 
 
-def _test_s3_provider(provider: Provider, creds: dict[str, Any]) -> dict[str, Any]:
-    """Test S3 provider credentials and bucket access."""
-    import boto3
-
-    boto_config = _fast_fail_boto_config()
-    region = provider.default_region or creds.get("region") or "us-east-1"
-    endpoint_url = creds.get("endpoint_url") or None
-    bucket = creds.get("bucket", "troshka-images")
-
-    kwargs: dict[str, Any] = {"region_name": region, "config": boto_config}
+def _s3_client_kwargs(
+    creds: dict[str, Any], region: str, endpoint_url: str | None
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"region_name": region, "config": _fast_fail_boto_config()}
     if creds.get("access_key_id"):
         kwargs["aws_access_key_id"] = creds["access_key_id"]
     if creds.get("secret_access_key"):
         kwargs["aws_secret_access_key"] = creds["secret_access_key"]
     if endpoint_url:
         kwargs["endpoint_url"] = endpoint_url
+    return kwargs
 
-    s3 = boto3.client("s3", **kwargs)
 
-    # STS is an AWS-only API — skip it for self-hosted S3-compatible endpoints
-    # (e.g. dev MinIO, S4/Ceph RGW), which don't implement it and would
-    # otherwise hang trying to reach real AWS.
-    account_id = ""
-    if not endpoint_url:
+def _s3_account_id(
+    region: str, creds: dict[str, Any], endpoint_url: str | None
+) -> str | None:
+    """Resolve the AWS account ID via STS, for ExpectedBucketOwner checks.
+
+    STS is an AWS-only API — skip it for self-hosted S3-compatible endpoints
+    (e.g. dev MinIO, S4/Ceph RGW), which don't implement it and would
+    otherwise hang trying to reach real AWS.
+    """
+    if endpoint_url:
+        return None
+
+    import boto3
+
+    try:
         sts = boto3.client(
             "sts",
             region_name=region,
             aws_access_key_id=creds.get("access_key_id"),
             aws_secret_access_key=creds.get("secret_access_key"),
-            config=boto_config,
+            config=_fast_fail_boto_config(),
         )
-        account_id = sts.get_caller_identity()["Account"]
+        return sts.get_caller_identity()["Account"]
+    except Exception:
+        return None
 
-    owner_kwargs = {"ExpectedBucketOwner": account_id} if account_id else {}
+
+def _s3_head_bucket_result(
+    s3: Any,
+    bucket: str,
+    *,
+    account_id: str | None = None,
+    endpoint_url: str | None = None,
+) -> dict[str, Any]:
+    head_kwargs: dict[str, str] = {"Bucket": bucket}
+    if account_id:
+        head_kwargs["ExpectedBucketOwner"] = account_id
     try:
-        s3.head_bucket(Bucket=bucket, **owner_kwargs)
-        return {"status": "ok", "bucket": bucket, "account": account_id}
+        s3.head_bucket(**head_kwargs)
     except s3.exceptions.ClientError as e:
         code = e.response["Error"]["Code"]
         if code in ("404", "NoSuchBucket"):
-            return {
+            result: dict[str, Any] = {
                 "status": "ok",
                 "bucket_missing": True,
                 "bucket": bucket,
-                "account": account_id,
-                "message": f"Credentials OK but bucket '{bucket}' does not exist. Click Create Bucket.",
+                "message": (
+                    f"Credentials OK but bucket '{bucket}' does not exist. "
+                    "Click Create Bucket."
+                ),
             }
-        if code == "403":
-            return {
+        elif code == "403":
+            result = {
                 "status": "ok",
                 "bucket_denied": True,
                 "bucket": bucket,
-                "account": account_id,
                 "message": f"Credentials OK but no access to bucket '{bucket}'.",
             }
-        raise
+        else:
+            raise
+    else:
+        result = {"status": "ok", "bucket": bucket}
+    if account_id:
+        result["account"] = account_id
+    if endpoint_url:
+        result["endpoint"] = endpoint_url
+    return result
+
+
+def _test_s3_provider(provider: Provider, creds: dict[str, Any]) -> dict[str, Any]:
+    """Test S3 provider credentials and bucket access."""
+    import boto3
+
+    region = provider.default_region or creds.get("region") or "us-east-1"
+    endpoint_url = creds.get("endpoint_url") or None
+    bucket = creds.get("bucket", "troshka-images")
+
+    s3 = boto3.client("s3", **_s3_client_kwargs(creds, region, endpoint_url))
+    account_id = _s3_account_id(region, creds, endpoint_url)
+    return _s3_head_bucket_result(
+        s3, bucket, account_id=account_id, endpoint_url=endpoint_url
+    )
 
 
 def _test_kubevirt_provider(
@@ -1484,20 +1523,13 @@ def create_s3_bucket(
     creds = provider.get_credentials()
     bucket = creds.get("bucket", "troshka-images")
     region = provider.default_region or creds.get("region") or "us-east-1"
+    endpoint_url = creds.get("endpoint_url") or None
 
-    kwargs: dict[str, Any] = {"region_name": region, "config": _fast_fail_boto_config()}
-    if creds.get("access_key_id"):
-        kwargs["aws_access_key_id"] = creds["access_key_id"]
-    if creds.get("secret_access_key"):
-        kwargs["aws_secret_access_key"] = creds["secret_access_key"]
-    if creds.get("endpoint_url"):
-        kwargs["endpoint_url"] = creds["endpoint_url"]
-
-    s3 = boto3.client("s3", **kwargs)
+    s3 = boto3.client("s3", **_s3_client_kwargs(creds, region, endpoint_url))
 
     try:
         # Custom endpoints (S4/MinIO) do not use AWS LocationConstraint.
-        if creds.get("endpoint_url") or region == "us-east-1":
+        if endpoint_url or region == "us-east-1":
             s3.create_bucket(Bucket=bucket)
         else:
             s3.create_bucket(

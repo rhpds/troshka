@@ -221,6 +221,7 @@ def test_update_eip_ports_patches_service(mock_clients):
     mock_core.patch_namespaced_service.assert_called_once()
     patch_call = mock_core.patch_namespaced_service.call_args
     assert patch_call[0][0] == "troshka-eip-abcdefgh"
+    assert patch_call[1]["_content_type"] == "application/merge-patch+json"
 
 
 def test_associate_eip_is_noop():

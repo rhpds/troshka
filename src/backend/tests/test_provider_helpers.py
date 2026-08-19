@@ -1484,7 +1484,8 @@ class TestTestS3ProviderEdgeCases:
         result = _test_s3_provider(provider, creds)
 
         assert result["status"] == "ok"
-        assert result["account"] == ""
+        assert "account" not in result
+        assert result["endpoint"] == "http://192.168.124.1:9000"
         mock_sts.get_caller_identity.assert_not_called()
         s3_call = next(c for c in mock_boto.call_args_list if c.args[0] == "s3")
         assert s3_call.kwargs["region_name"] == "us-east-1"

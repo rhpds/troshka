@@ -1,17 +1,19 @@
-"""NSS-based ocp-autologin.py deployed to bastion hosts for Firefox credential stash."""
+"""Selenium-based ocp-autologin.py deployed to bastion hosts for Firefox credential stash."""
+
+GECKODRIVER_VERSION = "0.37.0"
+GECKODRIVER_URL = (
+    f"https://github.com/mozilla/geckodriver/releases/download/"
+    f"v{GECKODRIVER_VERSION}/geckodriver-v{GECKODRIVER_VERSION}-linux64.tar.gz"
+)
 
 OCP_AUTOLOGIN_SCRIPT = """\
-import ctypes
-import ctypes.util
-import json
-import base64
 import glob
 import os
 import sys
 import time
-import uuid
 
 console_url = sys.argv[1]
+
 for pw_path in [
     "~/ocp-install/auth/kubeadmin-password",
     "~cloud-user/ocp-install/auth/kubeadmin-password",
@@ -23,13 +25,6 @@ for pw_path in [
 else:
     print("ERROR: kubeadmin-password not found")
     sys.exit(1)
-
-parts = console_url.split("apps.", 1)
-if len(parts) < 2:
-    print("Cannot parse domain from " + console_url)
-    sys.exit(1)
-domain = parts[1].rstrip("/")
-oauth_url = "https://oauth-openshift.apps." + domain
 
 
 def _has_nss_db(path):
@@ -61,74 +56,78 @@ if not profile:
     print("ERROR: No Firefox profile with NSS database found")
     sys.exit(1)
 
+geckodriver = os.environ.get("GECKODRIVER_PATH", "/usr/local/bin/geckodriver")
+if not os.path.isfile(geckodriver):
+    print("ERROR: geckodriver not found at " + geckodriver)
+    sys.exit(1)
 
-class SECItem(ctypes.Structure):
-    _fields_ = [("type", ctypes.c_uint), ("data", ctypes.c_void_p), ("len", ctypes.c_uint)]
+try:
+    from selenium import webdriver
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.firefox.options import Options
+    from selenium.webdriver.firefox.service import Service
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.webdriver.support.ui import WebDriverWait
+except ImportError:
+    print("ERROR: selenium Python package not installed")
+    sys.exit(1)
 
+opts = Options()
+opts.add_argument("-headless")
+opts.add_argument("-remote-allow-system-access")
+opts.add_argument("-profile")
+opts.add_argument(profile)
+opts.accept_insecure_certs = True
+opts.set_preference("signon.rememberSignons", True)
+opts.set_preference("signon.autofillForms", True)
+opts.set_preference("signon.storeWhenAutocompleteOff", True)
+opts.set_preference("browser.startup.page", 1)
 
-nss = None
-for lib in ["libnss3.so", ctypes.util.find_library("nss3") or ""]:
-    if lib:
+service = Service(geckodriver, log_output=os.devnull, service_args=["--allow-system-access"])
+driver = webdriver.Firefox(service=service, options=opts)
+try:
+    base = console_url.rstrip("/")
+    driver.get(base)
+    time.sleep(2)
+    driver.delete_all_cookies()
+    driver.get(base + "/logout")
+    time.sleep(2)
+    driver.delete_all_cookies()
+    driver.get(console_url)
+    wait = WebDriverWait(driver, 45)
+    try:
+        username = wait.until(EC.presence_of_element_located((By.ID, "inputUsername")))
+    except Exception:
+        print(
+            "ERROR: login form not found (url="
+            + driver.current_url
+            + ", title="
+            + driver.title
+            + ")"
+        )
+        sys.exit(1)
+    password = driver.find_element(By.ID, "inputPassword")
+    username.clear()
+    username.send_keys("kubeadmin")
+    password.clear()
+    password.send_keys(pw)
+    driver.find_element(By.CSS_SELECTOR, "button[type=submit]").click()
+    time.sleep(3)
+    driver.set_context("chrome")
+    for _ in range(20):
         try:
-            nss = ctypes.CDLL(lib)
+            driver.find_element(
+                By.CSS_SELECTOR,
+                "popupnotification[id*=password] "
+                "button.popup-notification-primary-button",
+            ).click()
+            print("Password saved to Firefox")
             break
-        except OSError:
-            continue
-if not nss:
-    print("ERROR: libnss3.so not found")
-    sys.exit(1)
-
-initialized = False
-for init_path in ("sql:" + profile, profile):
-    if nss.NSS_Init(init_path.encode()) == 0:
-        initialized = True
-        break
-if not initialized:
-    print("ERROR: NSS_Init failed for profile " + profile)
-    sys.exit(1)
-
-
-def encrypt(text):
-    data = text.encode("utf-8")
-    buf = ctypes.create_string_buffer(data, len(data))
-    inp = SECItem(0, ctypes.cast(buf, ctypes.c_void_p), len(data))
-    out = SECItem(0, None, 0)
-    if nss.PK11SDR_Encrypt(None, ctypes.byref(inp), ctypes.byref(out), None) != 0:
-        return None
-    return base64.b64encode(ctypes.string_at(out.data, out.len)).decode()
-
-
-eu = encrypt("kubeadmin")
-ep = encrypt(pw)
-if not eu or not ep:
-    print("ERROR: Encryption failed")
-    nss.NSS_Shutdown()
-    sys.exit(1)
-
-now_ms = int(time.time() * 1000)
-logins = {
-    "nextId": 2,
-    "logins": [
-        {
-            "id": 1,
-            "hostname": oauth_url,
-            "httpRealm": None,
-            "formSubmitURL": oauth_url,
-            "usernameField": "inputUsername",
-            "passwordField": "inputPassword",  # pragma: allowlist secret
-            "encryptedUsername": eu,
-            "encryptedPassword": ep,
-            "guid": "{" + str(uuid.uuid4()) + "}",
-            "encType": 1,
-            "timeCreated": now_ms,
-            "timeLastUsed": now_ms,
-            "timePasswordChanged": now_ms,
-            "timesUsed": 1,
-        }
-    ],
-}
-with open(os.path.join(profile, "logins.json"), "w") as f:
-    json.dump(logins, f)
-nss.NSS_Shutdown()
-print("Password saved to Firefox")
+        except Exception:
+            time.sleep(0.5)
+    else:
+        print("ERROR: Firefox did not offer to save password (url=" + driver.current_url + ")")
+        sys.exit(1)
+finally:
+    driver.quit()
 """

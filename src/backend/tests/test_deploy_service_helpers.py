@@ -407,6 +407,9 @@ class TestHttpSuffix:
     def test_000_suppressed(self):
         assert _http_suffix("000") == ""
 
+    def test_000000_suppressed(self):
+        assert _http_suffix("000000") == ""
+
     def test_empty_suppressed(self):
         assert _http_suffix("") == ""
 
@@ -3681,6 +3684,7 @@ class TestApplyBastionBrowserFixes:
 
     def test_logins_missing(self):
         from app.services.deploy_service import (
+            _CLEAR_BASTION_OCP_COOKIES_CMD,
             _ENSURE_FIREFOX_PROFILE_CMD,
             _KILL_BROWSER_CMD,
             _apply_bastion_browser_fixes,
@@ -3692,10 +3696,11 @@ class TestApplyBastionBrowserFixes:
             "ca:ok\nlogins:missing", exec_fn, push_fn, "ca-cmd", "autologin-cmd"
         )
         assert result is True
-        assert exec_fn.call_count == 3
+        assert exec_fn.call_count == 4
         exec_fn.assert_any_call(_KILL_BROWSER_CMD, timeout=10)
+        exec_fn.assert_any_call(_CLEAR_BASTION_OCP_COOKIES_CMD, timeout=10)
         exec_fn.assert_any_call(_ENSURE_FIREFOX_PROFILE_CMD, timeout=20)
-        exec_fn.assert_any_call("autologin-cmd", timeout=30)
+        exec_fn.assert_any_call("autologin-cmd", timeout=90)
 
     def test_both_stale(self):
         from app.services.deploy_service import _apply_bastion_browser_fixes
@@ -3706,7 +3711,7 @@ class TestApplyBastionBrowserFixes:
             "ca:stale\nlogins:stale", exec_fn, push_fn, "ca-cmd", "autologin-cmd"
         )
         assert result is True
-        assert exec_fn.call_count == 4
+        assert exec_fn.call_count == 5
 
     def test_none_verify(self):
         from app.services.deploy_service import _apply_bastion_browser_fixes
@@ -8362,6 +8367,23 @@ class TestOcpCheckConsoleRoute:
 
     @patch("app.services.deploy_service._exec_on_bastion")
     @patch("time.sleep", return_value=None)
+    def test_console_ok_oauth_000000_returns_false(self, mock_sleep, mock_exec):
+        from app.services.deploy_service import _ocp_check_console_route
+
+        mock_exec.side_effect = ["200", "000000"]
+        push_fn = MagicMock()
+        result = _ocp_check_console_route(
+            MagicMock(), "proj-1", "10.0.0.5", "pass", push_fn
+        )
+        assert result is False
+        oauth_calls = [
+            c for c in push_fn.call_args_list if "waiting for OAuth route" in str(c)
+        ]
+        assert oauth_calls
+        assert "HTTP" not in str(oauth_calls[-1])
+
+    @patch("app.services.deploy_service._exec_on_bastion")
+    @patch("time.sleep", return_value=None)
     def test_console_none_returns_false(self, mock_sleep, mock_exec):
         from app.services.deploy_service import _ocp_check_console_route
 
@@ -10406,12 +10428,9 @@ class TestConfigureBastionAndCleanup:
 
         # Should have copied kubeconfig and refreshed CA trust
         assert mock_exec.call_count >= 1
-        # Should NOT have cleaned up kc_path (browser flag is set, kc stays).
-        # Match the exact kc_path removal command rather than any "rm -f"
-        # substring — the Firefox-profile setup call also runs "rm -f" on
-        # stale lock files, which is unrelated to kubeconfig cleanup.
+        # Should NOT have cleaned up kc_path (browser flag is set, kc stays)
         cleanup_calls = [
-            c for c in mock_exec.call_args_list if c[0][4] == "rm -f /tmp/kc.yaml"
+            c for c in mock_exec.call_args_list if "rm -f /tmp/kc.yaml" in str(c)
         ]
         assert len(cleanup_calls) == 0
 

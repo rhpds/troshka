@@ -1185,7 +1185,10 @@ class OCPVirtDriver(ProviderDriver):
             for p in ports
         ]
         core_api.patch_namespaced_service(
-            allocation_id, namespace, {"spec": {"ports": svc_ports}}
+            allocation_id,
+            namespace,
+            {"spec": {"ports": svc_ports}},
+            _content_type="application/merge-patch+json",
         )
         logger.info(
             "Updated EIP %s ports: %s",

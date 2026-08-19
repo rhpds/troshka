@@ -1691,6 +1691,8 @@ class TestSyncEipsForReconfigure:
         mock_eip.state = "allocated"
         mock_eip.public_ip = "1.2.3.4"
         mock_eip.private_ip = "10.0.0.5"
+        mock_eip.canvas_eip_id = "eip1"
+        mock_eip.port_map = None
         mock_alloc.return_value = mock_eip
 
         s = MagicMock()
@@ -1722,6 +1724,7 @@ class TestSyncEipsForReconfigure:
 
             eip_filter = MagicMock()
             eip_filter.first.return_value = None  # no existing EIP
+            eip_filter.all.return_value = [mock_eip]
 
             provider_filter = MagicMock()
             provider_filter.first.return_value = mock_provider
@@ -1824,6 +1827,50 @@ class TestSyncEipsForReconfigure:
         _sync_eips_for_reconfigure(s, proj, MagicMock(), "p1", current, errors)
         assert len(errors) == 1
         assert "EIP" in errors[0]
+
+
+# ---------------------------------------------------------------------------
+# _apply_eip_runtime_to_topology
+# ---------------------------------------------------------------------------
+
+
+class TestApplyEipRuntimeToTopology:
+    def test_copies_transit_port_map_from_db(self):
+        from app.api.projects import _apply_eip_runtime_to_topology
+
+        eip = MagicMock()
+        eip.canvas_eip_id = "eip1"
+        eip.public_ip = "150.240.37.146"
+        eip.private_ip = None
+        eip.port_map = {"443": 40000, "2022": 40001}
+
+        s = MagicMock()
+        s.query.return_value.filter_by.return_value.all.return_value = [eip]
+
+        external_ips = [{"id": "eip1", "name": "IP-1"}]
+        _apply_eip_runtime_to_topology(s, "project1", external_ips)
+
+        assert external_ips[0]["ip"] == "150.240.37.146"
+        assert external_ips[0]["_private_ip"] is None
+        assert external_ips[0]["_transit_port_map"] == {"443": 40000, "2022": 40001}
+
+    def test_clears_stale_transit_port_map(self):
+        from app.api.projects import _apply_eip_runtime_to_topology
+
+        eip = MagicMock()
+        eip.canvas_eip_id = "eip1"
+        eip.public_ip = "1.2.3.4"
+        eip.private_ip = "10.0.0.5"
+        eip.port_map = None
+
+        s = MagicMock()
+        s.query.return_value.filter_by.return_value.all.return_value = [eip]
+
+        external_ips = [{"id": "eip1", "_transit_port_map": {"443": 40000}}]
+        _apply_eip_runtime_to_topology(s, "project1", external_ips)
+
+        assert external_ips[0]["_private_ip"] == "10.0.0.5"
+        assert "_transit_port_map" not in external_ips[0]
 
 
 # ---------------------------------------------------------------------------

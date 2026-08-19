@@ -113,6 +113,14 @@ _ENSURE_FIREFOX_PROFILE_CMD = (
     "kill $FXPID 2>/dev/null; wait $FXPID 2>/dev/null || true; "
     "sleep 2; fi"
 )
+_CLEAR_BASTION_OCP_COOKIES_CMD = (
+    'python3 -c "import glob, sqlite3; '
+    "[(lambda p: (c := sqlite3.connect(p), c.execute("
+    "'DELETE FROM moz_cookies WHERE host LIKE ?', ('%.ocp.ocp.local',)), "
+    "c.commit(), c.close()))(p) "
+    "for p in glob.glob('/home/cloud-user/.mozilla/firefox/*/cookies.sqlite')]\" "
+    "2>/dev/null || true"
+)
 _LOG_DEPLOY = "Deploy %s: %s"
 _KUBEVIRT_API = "kubevirt.io"
 _VM_START_FAILED = "Failed to start VM %s: %s"
@@ -3049,9 +3057,9 @@ def _allocate_single_eip(s, provider, project_id, host, ext_ip, topology):
                     {
                         "port": int(ep),
                         "targetPort": tp,
-                        "name": f"pf-{i}",
+                        "name": f"pf-{ep}",
                     }
-                    for i, (ep, tp) in enumerate(port_map.items())
+                    for ep, tp in port_map.items()
                 ],
             )
     if eip.port_map:
@@ -5022,6 +5030,7 @@ def _verify_bastion_browser(
         "&& sudo update-ca-trust"
     )
     _AUTOLOGIN_CMD = (
+        "export GECKODRIVER_PATH=/usr/local/bin/geckodriver; "
         "CONSOLE_URL=$(oc whoami --show-console 2>/dev/null); "
         '[ -n "$CONSOLE_URL" ] && [ -f /home/cloud-user/ocp-autologin.py ] && '
         'python3 /home/cloud-user/ocp-autologin.py "$CONSOLE_URL" 2>&1 || true'
@@ -5060,8 +5069,9 @@ def _apply_bastion_browser_fixes(
         exec_fn(ca_cmd, timeout=15)
     if _MSG_BROWSER_CREDS in needs_fix:
         exec_fn(_KILL_BROWSER_CMD, timeout=10)
+        exec_fn(_CLEAR_BASTION_OCP_COOKIES_CMD, timeout=10)
         exec_fn(_ENSURE_FIREFOX_PROFILE_CMD, timeout=20)
-        exec_fn(autologin_cmd, timeout=30)
+        exec_fn(autologin_cmd, timeout=90)
     return True
 
 
@@ -5165,20 +5175,30 @@ def _extract_bastion_info(nodes):
     return bastion, bastion_ip, password
 
 
+def _node_kubeadmin_password(node):
+    return node.get("data", {}).get("ocpKubeadminPassword")
+
+
+def _first_kubeadmin_password(nodes, predicate):
+    return next(
+        (
+            pw
+            for n in nodes
+            if predicate(n)
+            for pw in [_node_kubeadmin_password(n)]
+            if pw
+        ),
+        None,
+    )
+
+
 def _extract_ocp_kubeadmin_password(nodes, vm_id=None):
     """Return kubeadmin password from topology (set after recert)."""
     if vm_id:
-        for n in nodes:
-            if n.get("id") == vm_id:
-                pw = n.get("data", {}).get("ocpKubeadminPassword")
-                if pw:
-                    return pw
-    for n in nodes:
-        if n.get("type") == "vmNode":
-            pw = n.get("data", {}).get("ocpKubeadminPassword")
-            if pw:
-                return pw
-    return None
+        pw = _first_kubeadmin_password(nodes, lambda n: n.get("id") == vm_id)
+        if pw:
+            return pw
+    return _first_kubeadmin_password(nodes, lambda n: n.get("type") == "vmNode")
 
 
 def _write_bastion_kubeadmin_password(
@@ -5200,8 +5220,38 @@ def _write_bastion_kubeadmin_password(
     )
 
 
+def _ensure_bastion_geckodriver(host, project_id, bastion_ip, ssh_password):
+    """Install geckodriver on bastion if missing (bastion-builder normally includes it)."""
+    from app.services.ocp_autologin import GECKODRIVER_URL
+
+    _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        ssh_password,
+        "GECKO=/usr/local/bin/geckodriver; "
+        'if [ ! -x "$GECKO" ]; then '
+        f"curl -sfL {GECKODRIVER_URL} | sudo tar xz -C /usr/local/bin/; "
+        "sudo chmod +x /usr/local/bin/geckodriver; fi; "
+        "test -x /usr/local/bin/geckodriver && echo geckodriver:ok || echo geckodriver:missing",
+        timeout=60,
+    )
+
+
+def _ensure_bastion_selenium(host, project_id, bastion_ip, ssh_password):
+    """Ensure selenium Python package is available on the bastion."""
+    _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        ssh_password,
+        "python3 -c 'import selenium' 2>/dev/null || pip3 install --user selenium",
+        timeout=120,
+    )
+
+
 def _deploy_bastion_autologin_script(host, project_id, bastion_ip, ssh_password):
-    """Deploy NSS-based ocp-autologin.py (replaces bastion-image Selenium variant)."""
+    """Deploy Selenium-based ocp-autologin.py (replaces bastion-image variant)."""
     import base64
 
     from app.services.ocp_autologin import OCP_AUTOLOGIN_SCRIPT
@@ -5304,7 +5354,10 @@ def _is_route_ready(code):
 
 def _http_suffix(code):
     """Return a formatted HTTP code suffix for status messages."""
-    return f" (HTTP {code})" if code not in ("000", "") else ""
+    normalized = (code or "").strip()
+    if not normalized or set(normalized) <= {"0"}:
+        return ""
+    return f" (HTTP {normalized})"
 
 
 def _check_vm_console_and_oauth(oc_fn, push_fn, _t):
@@ -5399,6 +5452,8 @@ def _configure_bastion_and_cleanup(
             )
 
         _push(status_phase, "deploying browser autologin script")
+        _ensure_bastion_geckodriver(host, project_id, bastion_ip, password)
+        _ensure_bastion_selenium(host, project_id, bastion_ip, password)
         _deploy_bastion_autologin_script(host, project_id, bastion_ip, password)
 
         _push(status_phase, "ensuring Firefox profile")
@@ -5407,7 +5462,11 @@ def _configure_bastion_and_cleanup(
             project_id,
             bastion_ip,
             password,
-            _KILL_BROWSER_CMD + "; " + _ENSURE_FIREFOX_PROFILE_CMD,
+            _KILL_BROWSER_CMD
+            + "; "
+            + _CLEAR_BASTION_OCP_COOKIES_CMD
+            + "; "
+            + _ENSURE_FIREFOX_PROFILE_CMD,
             timeout=25,
         )
 
@@ -5525,20 +5584,11 @@ def _ocp_vm_final_csr_sweep(_approve_csrs, _push):
         _t.sleep(10)
 
 
-def _ocp_vm_health_inner(
-    project_id, host_id, vm_id, vm_name, kubeconfig_content, deploy_start, db
-):
-    import time as _t
-
+def _ocp_vm_monitor_load_context(db, project_id, host_id, vm_name):
+    """Load host/project for OCP VM monitor; return (host, topo) or None."""
     from app.models.host import Host as _Host3
     from app.models.project import Project as _VmProj
 
-    logger.info(
-        "OCP VM monitor %s/%s: inner started (host=%s)",
-        project_id[:8],
-        vm_name,
-        host_id[:8],
-    )
     host = db.query(_Host3).filter_by(id=host_id).first()
     if not host:
         logger.warning(
@@ -5547,7 +5597,7 @@ def _ocp_vm_health_inner(
             vm_name,
             host_id[:8],
         )
-        return
+        return None
 
     project = db.query(_VmProj).filter_by(id=project_id).first()
     if not project or project.state != "active":
@@ -5557,8 +5607,40 @@ def _ocp_vm_health_inner(
             vm_name,
             project.state if project else "missing",
         )
-        return
+        return None
+
     topo = project.deployed_topology or project.topology or {}
+    return host, topo
+
+
+def _ocp_vm_monitor_finalize(
+    project_id, vm_name, configure_browser, browser_ready, elapsed_secs, _push
+):
+    """Push final monitor status and persist ocp_status."""
+    if configure_browser and not browser_ready:
+        _push("warning", f"{vm_name} cluster ready (bastion browser not configured)")
+        _ocp_update_status(project_id, "warning", elapsed_secs)
+        return
+
+    _push("ready", f"{vm_name} cluster ready")
+    _ocp_update_status(project_id, "ready", elapsed_secs)
+
+
+def _ocp_vm_health_inner(
+    project_id, host_id, vm_id, vm_name, kubeconfig_content, deploy_start, db
+):
+    import time as _t
+
+    logger.info(
+        "OCP VM monitor %s/%s: inner started (host=%s)",
+        project_id[:8],
+        vm_name,
+        host_id[:8],
+    )
+    loaded = _ocp_vm_monitor_load_context(db, project_id, host_id, vm_name)
+    if not loaded:
+        return
+    host, topo = loaded
 
     start = deploy_start or _t.time()
 
@@ -5635,14 +5717,9 @@ def _ocp_vm_health_inner(
         )
 
     elapsed_secs = int(_t.time() - start)
-    if configure_browser and not browser_ready:
-        ready_detail = f"{vm_name} cluster ready (bastion browser not configured)"
-        _push("warning", ready_detail)
-        _ocp_update_status(project_id, "warning", elapsed_secs)
-    else:
-        ready_detail = f"{vm_name} cluster ready"
-        _push("ready", ready_detail)
-        _ocp_update_status(project_id, "ready", elapsed_secs)
+    _ocp_vm_monitor_finalize(
+        project_id, vm_name, configure_browser, browser_ready, elapsed_secs, _push
+    )
 
     logger.info(
         "OCP VM monitor complete for %s/%s (%s)",
@@ -6287,8 +6364,7 @@ def _ocp_check_console_route(host, project_id, bastion_ip, password, push_fn):
     ):
         push_fn(
             "console",
-            "waiting for console route"
-            + (f" (HTTP {http_code})" if http_code not in ("000", "") else ""),
+            "waiting for console route" + _http_suffix(http_code),
         )
         _t.sleep(10)
         return False
@@ -6311,8 +6387,7 @@ def _ocp_check_console_route(host, project_id, bastion_ip, password, push_fn):
     ):
         push_fn(
             "console",
-            "waiting for OAuth route"
-            + (f" (HTTP {oauth_code})" if oauth_code not in ("000", "") else ""),
+            "waiting for OAuth route" + _http_suffix(oauth_code),
         )
         _t.sleep(10)
         return False
@@ -6377,31 +6452,41 @@ def _ocp_wait_for_console_route(
     return False
 
 
-def _ocp_post_pattern_cert_refresh(
-    host, project_id, bastion_ip, password, topology, push_fn
-):
-    """Post-pattern deploy: refresh bastion certs if recert was used."""
-    used_recert = False
+def _topology_pattern_used_recert(topology):
+    """Return True if any storageNode pattern has recert enabled."""
     for node in topology.get("nodes", []):
-        if node.get("type") == "storageNode":
-            pid = node.get("data", {}).get("patternId")
-            if pid:
-                try:
-                    from app.core.database import SessionLocal as _SL
+        if node.get("type") != "storageNode":
+            continue
+        pid = node.get("data", {}).get("patternId")
+        if not pid:
+            continue
+        try:
+            from app.core.database import SessionLocal as _SL
 
-                    _db = _SL()
-                    pat = _db.query(Pattern).filter_by(id=pid).first()
-                    used_recert = bool(pat and pat.recert)
-                    _db.close()
-                except Exception:
-                    pass
-                break
+            _db = _SL()
+            pat = _db.query(Pattern).filter_by(id=pid).first()
+            used_recert = bool(pat and pat.recert)
+            _db.close()
+            return used_recert
+        except Exception:
+            return False
+    return False
 
-    rhcos_count = sum(
+
+def _topology_rhcos_vm_count(topology):
+    return sum(
         1
         for n in topology.get("nodes", [])
         if n.get("type") == "vmNode" and n.get("data", {}).get("os") == "rhcos"
     )
+
+
+def _ocp_post_pattern_cert_refresh(
+    host, project_id, bastion_ip, password, topology, push_fn
+):
+    """Post-pattern deploy: refresh bastion certs if recert was used."""
+    used_recert = _topology_pattern_used_recert(topology)
+    rhcos_count = _topology_rhcos_vm_count(topology)
     if not bastion_ip or not (used_recert or rhcos_count == 1):
         return
 
@@ -6429,6 +6514,8 @@ def _ocp_post_pattern_cert_refresh(
         )
 
     _deploy_bastion_autologin_script(host, project_id, bastion_ip, password)
+    _ensure_bastion_geckodriver(host, project_id, bastion_ip, password)
+    _ensure_bastion_selenium(host, project_id, bastion_ip, password)
 
     def _bastion_oc(cmd, timeout=15):
         return _exec_on_bastion(
