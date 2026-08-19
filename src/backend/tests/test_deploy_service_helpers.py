@@ -10406,8 +10406,13 @@ class TestConfigureBastionAndCleanup:
 
         # Should have copied kubeconfig and refreshed CA trust
         assert mock_exec.call_count >= 1
-        # Should NOT have cleaned up kc_path (browser flag is set, kc stays)
-        cleanup_calls = [c for c in mock_exec.call_args_list if "rm -f" in str(c)]
+        # Should NOT have cleaned up kc_path (browser flag is set, kc stays).
+        # Match the exact kc_path removal command rather than any "rm -f"
+        # substring — the Firefox-profile setup call also runs "rm -f" on
+        # stale lock files, which is unrelated to kubeconfig cleanup.
+        cleanup_calls = [
+            c for c in mock_exec.call_args_list if c[0][4] == "rm -f /tmp/kc.yaml"
+        ]
         assert len(cleanup_calls) == 0
 
 
