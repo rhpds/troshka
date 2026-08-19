@@ -4423,31 +4423,31 @@ def _setup_ns_nftables_forwarding(job, ns, networks, routers, pid):
 
 def _add_outbound_port_rule(job, ns, bridge, veth_ns, entry):
     """Add a single outbound port/protocol nftables rule."""
-    if entry == "icmp":
-        _run_cmd(
-            job,
-            [
-                "ip",
-                "netns",
-                "exec",
-                ns,
-                "nft",
-                "add",
-                "rule",
-                "inet",
-                "filter",
-                "forward",
-                "iifname",
-                bridge,
-                "oifname",
-                veth_ns,
-                "ip",
-                "protocol",
-                "icmp",
-                "accept",
-            ],
-            timeout=10,
-        )
+    if entry == "icmp" or entry.startswith("icmp/"):
+        icmp_type = entry.split("/", 1)[1] if "/" in entry else None
+        cmd = [
+            "ip",
+            "netns",
+            "exec",
+            ns,
+            "nft",
+            "add",
+            "rule",
+            "inet",
+            "filter",
+            "forward",
+            "iifname",
+            bridge,
+            "oifname",
+            veth_ns,
+            "ip",
+            "protocol",
+            "icmp",
+        ]
+        if icmp_type:
+            cmd.extend(["icmp", "type", icmp_type])
+        cmd.append("accept")
+        _run_cmd(job, cmd, timeout=10)
     elif "/" in entry:
         port, proto = entry.split("/", 1)
         _run_cmd(
