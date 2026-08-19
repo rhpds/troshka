@@ -185,6 +185,7 @@ function OutboundRulesEditor({
             max={65535}
             step={1}
             className="props-input"
+            aria-label="Outbound port"
             placeholder="Port"
             value={portInput}
             style={{ width: 70, fontSize: 11, fontFamily: "monospace" }}
@@ -207,6 +208,7 @@ function OutboundRulesEditor({
           value={proto}
           onChange={(e) => setProto(e.target.value as typeof proto)}
           style={selectStyle}
+          aria-label="Outbound protocol"
         >
           <option value="both">TCP+UDP</option>
           <option value="tcp">TCP</option>
