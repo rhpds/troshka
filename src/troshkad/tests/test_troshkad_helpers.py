@@ -6016,6 +6016,20 @@ class TestAddOutboundPortRule(unittest.TestCase):
         self.assertEqual(mock_run.call_count, 1)
         cmd = mock_run.call_args[0][1]
         self.assertIn("icmp", cmd)
+        self.assertNotIn("type", cmd)
+
+    @patch("troshkad._run_cmd")
+    def test_icmp_type_rule(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        job = {"job_id": "j1", "output": []}
+        troshkad._add_outbound_port_rule(
+            job, "troshka-aabb", "br-10001", "veaabbn", "icmp/echo-request"
+        )
+        self.assertEqual(mock_run.call_count, 1)
+        cmd = mock_run.call_args[0][1]
+        self.assertIn("icmp", cmd)
+        self.assertIn("type", cmd)
+        self.assertIn("echo-request", cmd)
 
     @patch("troshkad._run_cmd")
     def test_port_proto_rule(self, mock_run):

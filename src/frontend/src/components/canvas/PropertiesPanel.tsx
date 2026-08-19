@@ -90,6 +90,130 @@ function validateDhcpRangeFull(cidr: string, start: string, end: string, gateway
   return errors;
 }
 
+function formatOutboundRuleLabel(entry: string): string {
+  if (entry === "icmp") return "icmp";
+  if (entry.startsWith("icmp/")) return `icmp type ${entry.slice(5)}`;
+  if (entry.includes("/")) return entry;
+  return `${entry} tcp/udp`;
+}
+
+const ICMP_TYPE_OPTIONS = [
+  { value: "", label: "All types" },
+  { value: "echo-request", label: "echo-request (8)" },
+  { value: "destination-unreachable", label: "destination-unreachable (3)" },
+  { value: "time-exceeded", label: "time-exceeded (11)" },
+];
+
+function OutboundRulesEditor({
+  outboundPorts,
+  onChange,
+}: {
+  outboundPorts: string;
+  onChange: (value: string) => void;
+}) {
+  const currentRules = outboundPorts.split(",").map((p) => p.trim()).filter(Boolean);
+  const [proto, setProto] = useState<"both" | "tcp" | "udp" | "icmp">("both");
+  const [portInput, setPortInput] = useState("");
+  const [icmpType, setIcmpType] = useState("");
+  const portInputRef = useRef<HTMLInputElement>(null);
+
+  const removeRule = (rule: string) => {
+    onChange(currentRules.filter((r) => r !== rule).join(","));
+  };
+
+  const addRule = () => {
+    let entry: string;
+    if (proto === "icmp") {
+      const type = icmpType.trim();
+      entry = type ? `icmp/${type}` : "icmp";
+    } else {
+      const num = portInput.trim();
+      if (!num || isNaN(Number(num))) return;
+      entry = proto === "both" ? num : `${num}/${proto}`;
+    }
+    if (!currentRules.includes(entry)) {
+      onChange([...currentRules, entry].join(","));
+    }
+    setPortInput("");
+    setIcmpType("");
+    portInputRef.current?.focus();
+  };
+
+  const selectStyle = {
+    fontSize: 11,
+    padding: "3px 4px",
+    borderRadius: 3,
+    border: "1px solid var(--pf-t--global--border--color--default)",
+    background: "var(--pf-t--global--background--color--secondary--default)",
+    color: "var(--pf-t--global--text--color--regular)",
+  } as const;
+
+  return (
+    <div className="props-field">
+      <label className="props-label">Allowed Outbound Rules</label>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
+        {currentRules.map((rule) => (
+          <span
+            key={rule}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 4,
+              padding: "2px 8px", borderRadius: 12, fontSize: 11,
+              background: "rgba(0,102,204,0.15)", color: "#73bcf7",
+              border: "1px solid rgba(0,102,204,0.3)",
+            }}
+          >
+            {formatOutboundRuleLabel(rule)}
+            <span onClick={() => removeRule(rule)} style={{ cursor: "pointer", opacity: 0.6, fontSize: 10 }}>✕</span>
+          </span>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+        {proto !== "icmp" ? (
+          <input
+            ref={portInputRef}
+            type="number"
+            className="props-input"
+            placeholder="Port"
+            value={portInput}
+            style={{ width: 70, fontSize: 11, fontFamily: "monospace" }}
+            onChange={(e) => setPortInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addRule(); }}
+          />
+        ) : (
+          <select
+            value={icmpType}
+            onChange={(e) => setIcmpType(e.target.value)}
+            style={{ ...selectStyle, minWidth: 180 }}
+            aria-label="ICMP type"
+          >
+            {ICMP_TYPE_OPTIONS.map((opt) => (
+              <option key={opt.value || "all"} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+        )}
+        <select
+          value={proto}
+          onChange={(e) => setProto(e.target.value as typeof proto)}
+          style={selectStyle}
+        >
+          <option value="both">TCP+UDP</option>
+          <option value="tcp">TCP</option>
+          <option value="udp">UDP</option>
+          <option value="icmp">ICMP</option>
+        </select>
+        <button
+          onClick={addRule}
+          style={{
+            padding: "3px 8px", borderRadius: 3, fontSize: 11, cursor: "pointer",
+            border: "1px solid var(--pf-t--global--border--color--default)",
+            background: "transparent", color: "var(--pf-t--global--text--color--regular)",
+          }}
+        >Add</button>
+      </div>
+    </div>
+  );
+}
+
 interface SshKeyOption {
   id: number;
   name: string;
@@ -2524,78 +2648,12 @@ export default function PropertiesPanel() {
                       <option value="restrict">Restrict by port</option>
                     </select>
                   </div>
-                  {(data as Record<string, any>).outboundPolicy === "restrict" && (() => {
-                    const currentPorts = ((data as Record<string, any>).outboundPorts as string || "").split(",").map((p: string) => p.trim()).filter(Boolean);
-                    const removePort = (port: string) => {
-                      update("outboundPorts", currentPorts.filter((p: string) => p !== port).join(","));
-                    };
-                    let _portInputEl: HTMLInputElement | null = null;
-                    const addPortProtoRef = { current: "both" };
-                    const addPort = () => {
-                      const num = (_portInputEl?.value || "").trim();
-                      if (!num || isNaN(Number(num))) return;
-                      const proto = addPortProtoRef.current;
-                      const entry = proto === "both" ? num : `${num}/${proto}`;
-                      if (!currentPorts.includes(entry)) {
-                        update("outboundPorts", [...currentPorts, entry].join(","));
-                      }
-                      if (_portInputEl) _portInputEl.value = "";
-                    };
-                    return (
-                      <div className="props-field">
-                        <label className="props-label">Allowed Outbound Ports</label>
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6 }}>
-                          {currentPorts.map((port: string) => {
-                            const label = port.includes("/") ? port : `${port} tcp/udp`;
-                            return (
-                              <span key={port} style={{
-                                display: "inline-flex", alignItems: "center", gap: 4,
-                                padding: "2px 8px", borderRadius: 12, fontSize: 11,
-                                background: "rgba(0,102,204,0.15)", color: "#73bcf7",
-                                border: "1px solid rgba(0,102,204,0.3)",
-                              }}>
-                                {label}
-                                <span onClick={() => removePort(port)} style={{ cursor: "pointer", opacity: 0.6, fontSize: 10 }}>✕</span>
-                              </span>
-                            );
-                          })}
-                        </div>
-                        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                          <input
-                            type="number"
-                            className="props-input"
-                            placeholder="Port"
-                            style={{ width: 70, fontSize: 11, fontFamily: "monospace" }}
-                            ref={(el) => { _portInputEl = el; }}
-                            onKeyDown={(e) => { if (e.key === "Enter") addPort(); }}
-                          />
-                          <select
-                            defaultValue="both"
-                            onChange={(e) => { addPortProtoRef.current = e.target.value; }}
-                            style={{
-                              fontSize: 11, padding: "3px 4px", borderRadius: 3,
-                              border: "1px solid var(--pf-t--global--border--color--default)",
-                              background: "var(--pf-t--global--background--color--secondary--default)",
-                              color: "var(--pf-t--global--text--color--regular)",
-                            }}
-                          >
-                            <option value="both">TCP+UDP</option>
-                            <option value="tcp">TCP</option>
-                            <option value="udp">UDP</option>
-                            <option value="icmp">ICMP</option>
-                          </select>
-                          <button
-                            onClick={() => { addPort(); }}
-                            style={{
-                              padding: "3px 8px", borderRadius: 3, fontSize: 11, cursor: "pointer",
-                              border: "1px solid var(--pf-t--global--border--color--default)",
-                              background: "transparent", color: "var(--pf-t--global--text--color--regular)",
-                            }}
-                          >Add</button>
-                        </div>
-                      </div>
-                    );
-                  })()}
+                  {(data as Record<string, any>).outboundPolicy === "restrict" && (
+                    <OutboundRulesEditor
+                      outboundPorts={(data as Record<string, any>).outboundPorts as string || ""}
+                      onChange={(value) => update("outboundPorts", value)}
+                    />
+                  )}
                 </div>
 
                 {(data as Record<string, any>).gatewayMode === "nat-portforward" && (
