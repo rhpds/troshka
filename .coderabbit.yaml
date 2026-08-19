@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+inheritance: true
+reviews:
+  high_level_summary: true
+  high_level_summary_in_walkthrough: true
+  poem: false
+  path_instructions:
+    - path: '**'
+      instructions: >-
+        Focus on major issues impacting correctness, performance, readability,
+        maintainability, and security. Avoid nitpicks and avoid verbosity.
+    - path: 'src/backend/**'
+      instructions: >-
+        Prioritize correctness of async/background execution boundaries,
+        race conditions, idempotency/state transitions, and security controls.
+        Flag blocking calls in async paths, unsafe shell or subprocess usage,
+        missing authorization checks, and data consistency risks.
+    - path: 'src/frontend/**'
+      instructions: >-
+        Focus on user-visible behavior regressions, accessibility, and
+        state-management bugs. Avoid style-only comments unless they hide
+        maintainability or correctness issues.
+  auto_review:
+    ignore_title_keywords:
+      - WIP
+      - DRAFT
+      - Draft
+    labels:
+      - '!work-in-progress'
+      - '!do-not-review'
+    ignore_usernames:
+      - app/dependabot
+      - dependabot
+      - renovate[bot]
+knowledge_base:
+  opt_out: true
+  web_search:
+    enabled: false
