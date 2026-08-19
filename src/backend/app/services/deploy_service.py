@@ -3048,9 +3048,9 @@ def _allocate_single_eip(s, provider, project_id, host, ext_ip, topology):
                     {
                         "port": int(ep),
                         "targetPort": tp,
-                        "name": f"pf-{i}",
+                        "name": f"pf-{ep}",
                     }
-                    for i, (ep, tp) in enumerate(port_map.items())
+                    for ep, tp in port_map.items()
                 ],
             )
     if eip.port_map:

@@ -3294,9 +3294,9 @@ def _sync_transit_ports(s, provider, h, p_id, gw_node):
                     {
                         "port": int(ep),
                         "targetPort": tp,
-                        "name": f"pf-{i}",
+                        "name": f"pf-{ep}",
                     }
-                    for i, (ep, tp) in enumerate(port_map.items())
+                    for ep, tp in port_map.items()
                 ],
             )
             logger.info(
