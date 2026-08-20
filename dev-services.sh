@@ -22,7 +22,59 @@ lifecycle_log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') dev-services pid=$$ $*" >> "$LIFECYCLE_LOG"
 }
 
+needs_podman_machine() {
+    [[ "$(uname -s)" == "Darwin" ]] || return 1
+    podman machine list &>/dev/null
+}
+
+ensure_podman() {
+    if ! command -v podman &>/dev/null; then
+        echo "  Podman:     not found in PATH"
+        exit 1
+    fi
+
+    if podman ps &>/dev/null; then
+        return 0
+    fi
+
+    local started=false
+    if needs_podman_machine; then
+        local running=""
+        running="$(podman machine list --format '{{.Running}}' 2>/dev/null | head -1 || true)"
+        if [[ "$running" != "true" ]]; then
+            echo -n "  Podman:     starting machine..."
+            if ! podman machine start &>/dev/null; then
+                echo " FAILED"
+                echo "  Hint: try 'podman machine init' then 'podman machine start'"
+                exit 1
+            fi
+            started=true
+        fi
+    fi
+
+    if ! podman ps &>/dev/null; then
+        [[ "$started" == false ]] && echo -n "  Podman:     waiting..."
+        for _ in $(seq 1 60); do
+            if podman ps &>/dev/null; then
+                echo " ready"
+                return 0
+            fi
+            sleep 1
+        done
+        echo " FAILED"
+        if needs_podman_machine; then
+            echo "  Hint: run 'podman machine start' or recreate with 'podman machine init'"
+        fi
+        exit 1
+    fi
+
+    if [[ "$started" == true ]]; then
+        echo " ready"
+    fi
+}
+
 start_db() {
+    ensure_podman
     if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "^${DB_CONTAINER}$"; then
         echo "  PostgreSQL: already running (port $DB_PORT)"
         return
@@ -284,6 +336,15 @@ stop_frontend() {
 
 status() {
     echo "=== Troshka Dev Services ==="
+    if needs_podman_machine; then
+        local running=""
+        running="$(podman machine list --format '{{.Running}}' 2>/dev/null | head -1 || true)"
+        if [[ "$running" == "true" ]]; then
+            echo "  Podman:     machine RUNNING"
+        else
+            echo "  Podman:     machine STOPPED (containers unavailable until started)"
+        fi
+    fi
     if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "^${DB_CONTAINER}$"; then
         echo "  PostgreSQL: RUNNING (port $DB_PORT)"
     else
