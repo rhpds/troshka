@@ -73,24 +73,39 @@ ensure_podman() {
     fi
 }
 
+podman_container_running() {
+    [ -n "$(podman ps -q --filter "name=^${1}$" 2>/dev/null)" ]
+}
+
+podman_container_exists() {
+    podman container exists "$1" &>/dev/null
+}
+
 start_db() {
     ensure_podman
-    if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "^${DB_CONTAINER}$"; then
+    if podman_container_running "$DB_CONTAINER"; then
         echo "  PostgreSQL: already running (port $DB_PORT)"
         return
     fi
-    if podman ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${DB_CONTAINER}$"; then
+    if podman_container_exists "$DB_CONTAINER"; then
         podman start "$DB_CONTAINER"
     else
         podman volume create troshka-pgdata 2>/dev/null || true
-        podman run -d --name "$DB_CONTAINER" \
+        if ! podman run -d --name "$DB_CONTAINER" \
             --restart=always \
             -v troshka-pgdata:/var/lib/postgresql/data \
             -e POSTGRES_USER="$DB_USER" \
             -e POSTGRES_PASSWORD="$DB_PASS" \
             -e POSTGRES_DB="$DB_NAME" \
             -p "${DB_PORT}:5432" \
-            docker.io/library/postgres:16
+            docker.io/library/postgres:16; then
+            if podman_container_exists "$DB_CONTAINER"; then
+                podman start "$DB_CONTAINER"
+            else
+                echo "  PostgreSQL: FAILED to create container"
+                exit 1
+            fi
+        fi
     fi
     echo -n "  PostgreSQL: starting..."
     for i in $(seq 1 30); do
@@ -110,17 +125,25 @@ stop_db() {
 }
 
 start_redis() {
-    if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "^${REDIS_CONTAINER}$"; then
+    ensure_podman
+    if podman_container_running "$REDIS_CONTAINER"; then
         echo "  Redis:      already running (port $REDIS_PORT)"
         return
     fi
-    if podman ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${REDIS_CONTAINER}$"; then
+    if podman_container_exists "$REDIS_CONTAINER"; then
         podman start "$REDIS_CONTAINER"
     else
-        podman run -d --name "$REDIS_CONTAINER" \
+        if ! podman run -d --name "$REDIS_CONTAINER" \
             --restart=always \
             -p "${REDIS_PORT}:6379" \
-            docker.io/library/redis:7
+            docker.io/library/redis:7; then
+            if podman_container_exists "$REDIS_CONTAINER"; then
+                podman start "$REDIS_CONTAINER"
+            else
+                echo "  Redis:      FAILED to create container"
+                return
+            fi
+        fi
     fi
     echo -n "  Redis:      starting..."
     for i in $(seq 1 10); do
