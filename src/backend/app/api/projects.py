@@ -33,6 +33,7 @@ from app.services.deploy_service import (  # noqa: F401
 )
 from app.services.deploy_topology import (  # noqa: F401
     _disk_path,
+    _extract_containers,
     _extract_vms,
     _find_vm_disks,
     _find_vm_networks,
@@ -2113,12 +2114,29 @@ def get_vm_console(
     if not vnc_port:
         return {"error": "VNC not available"}
 
-    if not host.console_domain or not host.agent_token:
+    if not host.agent_token:
         return {"error": "Console proxy not configured for this host"}
+
+    from app.models.provider import Provider
+
+    provider = db.query(Provider).filter_by(id=host.provider_id).first()
 
     from app.services.console_dns import sign_console_jwt
 
     jwt = sign_console_jwt(dom, host.id, host.agent_token)
+
+    if provider and provider.type == "libvirt":
+        # Bring-your-own libvirt host: no console DNS/TLS available, so
+        # vncd runs --no-tls directly on the host's own IP instead of a
+        # DNS-backed console_domain (see agent_deployer.py).
+        return {
+            "ws_url": f"ws://{host.ip_address}:8080/ws/{jwt}",
+            "host_type": host.host_type,
+        }
+
+    if not host.console_domain:
+        return {"error": "Console proxy not configured for this host"}
+
     return {
         "ws_url": f"wss://{host.console_domain}/ws/{jwt}",
         "host_type": host.host_type,
@@ -2917,6 +2935,9 @@ def reconfigure_project(
             "changed_vms": [],
             "added_networks": [],
             "removed_networks": [],
+            "added_containers": [],
+            "removed_containers": [],
+            "changed_containers": [],
             "has_changes": False,
         }
     )
@@ -3151,6 +3172,9 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
                 "added_vms": [],
                 "removed_vms": [],
                 "changed_vms": [],
+                "added_containers": [],
+                "removed_containers": [],
+                "changed_containers": [],
                 "has_changes": False,
             }
         )
@@ -3374,7 +3398,11 @@ def _sync_eips_for_reconfigure(s, proj, h, p_id, current, errors):
             ]
             sync_security_group_rules(s, provider, desired_sg)
 
-        if provider.type != "ec2" and gw_node:
+        # EC2 and libvirt both DNAT directly onto a real per-EIP address
+        # (see LibvirtDriver.associate_eip) rather than needing the
+        # transit-port indirection — keep this in sync with the same
+        # exclusion in deploy_service._allocate_single_eip.
+        if provider.type not in ("ec2", "libvirt") and gw_node:
             _sync_transit_ports(s, provider, h, p_id, gw_node)
 
         _apply_eip_runtime_to_topology(s, p_id, external_ips)
@@ -3429,9 +3457,10 @@ def _deploy_added_vms(h, p_id, s, current, vni_map, added_vms, errors):
 
     _set_deploy_progress(p_id, {"step": "downloading", "detail": "0%"})
 
-    def _progress(downloaded, total):
-        pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
-        _set_deploy_progress(p_id, {"step": "downloading", "detail": pct})
+    def _progress(detail, items):
+        _set_deploy_progress(
+            p_id, {"step": "downloading", "detail": str(detail), "items": items}
+        )
 
     cache_library_images(current, h, s, progress_callback=_progress)
     _create_seed_isos_via_troshkad(h, p_id, current)
@@ -3450,8 +3479,12 @@ def _deploy_added_vms(h, p_id, s, current, vni_map, added_vms, errors):
         }
         vm_disks_add = _find_vm_disks(vm_node["id"], current)
         try:
-            _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks_add)
-            _create_vm_via_troshkad(h, p_id, vm_data, current, vni_map)
+            disk_job_ids = _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks_add)
+            for jid in disk_job_ids:
+                wait_for_job(h, jid, timeout=900)
+            vm_job_id = _create_vm_via_troshkad(h, p_id, vm_data, current, vni_map)
+            if vm_job_id:
+                wait_for_job(h, vm_job_id, timeout=120)
             # Start if auto-start not disabled
             no_auto_start = {
                 e["vmId"]
@@ -3831,9 +3864,10 @@ def _cache_images_and_metadata(h, p_id, current, vni_map, s):
 
     _set_deploy_progress(p_id, {"step": "downloading", "detail": "0%"})
 
-    def _reconfig_dl_progress(downloaded, total):
-        pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
-        _set_deploy_progress(p_id, {"step": "downloading", "detail": pct})
+    def _reconfig_dl_progress(detail, items):
+        _set_deploy_progress(
+            p_id, {"step": "downloading", "detail": str(detail), "items": items}
+        )
 
     cache_library_images(current, h, s, progress_callback=_reconfig_dl_progress)
 
@@ -3931,6 +3965,83 @@ def _reconfigure_process_vms(
         _deploy_added_vms(h, p_id, s, current, vni_map, diff["added_vms"], errors)
 
 
+def _pull_container_or_pod_image(h, ctr, s):
+    """Pull the image(s) for a single container or pod node ahead of creation."""
+    from app.services.deploy_service import _pull_pod_images, _pull_single_container_image
+
+    if ctr.get("is_pod"):
+        _pull_pod_images(h, ctr, s)
+    elif ctr.get("image"):
+        _pull_single_container_image(h, ctr, s)
+
+
+def _create_container_or_pod(h, p_id, ctr, topology, vni_map, pool):
+    from app.services.deploy_service import (
+        _create_and_start_container,
+        _create_and_start_pod,
+    )
+
+    if ctr.get("is_pod"):
+        _create_and_start_pod(h, p_id, ctr, topology, vni_map, pool)
+    else:
+        _create_and_start_container(h, p_id, ctr, topology, vni_map, pool)
+
+
+def _destroy_reconfigured_containers(h, p_id, deployed, deployed_by_id, node_ids, pool, errors):
+    """Destroy containers being removed or about to be recreated (changed)."""
+    from app.services.deploy_service import _destroy_container
+
+    for nid in node_ids:
+        old_ctr = deployed_by_id.get(nid)
+        if not old_ctr:
+            continue
+        try:
+            _destroy_container(h, p_id, old_ctr, deployed, pool)
+        except (TroshkadError, RuntimeError) as e:
+            errors.append(f"Failed to destroy container {old_ctr['name']}: {e}")
+
+
+def _create_reconfigured_containers(h, p_id, current, current_by_id, node_ids, vni_map, pool, s, errors):
+    """Pull images and create/start containers being added or recreated (changed)."""
+    for nid in node_ids:
+        ctr = current_by_id.get(nid)
+        if not ctr:
+            continue
+        try:
+            _pull_container_or_pod_image(h, ctr, s)
+            _create_container_or_pod(h, p_id, ctr, current, vni_map, pool)
+        except (TroshkadError, RuntimeError) as e:
+            errors.append(f"Failed to create container {ctr['name']}: {e}")
+
+
+def _reconfigure_process_containers(
+    h, p_id, s, current, deployed, vni_map, pool, diff, errors
+):
+    """Add, remove, and recreate containers/pods during a project reconfigure.
+
+    Podman can't live-patch an existing container's image/env/command, so
+    "changed" containers are destroyed using their old (deployed) definition
+    and recreated using the new (current) one, rather than reconfigured in
+    place — the same as a fresh deploy would create them.
+    """
+    from app.services.deploy_service import _set_deploy_progress
+
+    current_by_id = {c["node_id"]: c for c in _extract_containers(current)}
+    deployed_by_id = {c["node_id"]: c for c in _extract_containers(deployed)}
+
+    removed_ids = {n["id"] for n in diff.get("removed_containers", [])}
+    changed_ids = {n["id"] for n in diff.get("changed_containers", [])}
+    added_ids = {n["id"] for n in diff.get("added_containers", [])}
+
+    _set_deploy_progress(p_id, {"step": "containers", "detail": "reconfiguring containers"})
+    _destroy_reconfigured_containers(
+        h, p_id, deployed, deployed_by_id, removed_ids | changed_ids, pool, errors
+    )
+    _create_reconfigured_containers(
+        h, p_id, current, current_by_id, changed_ids | added_ids, vni_map, pool, s, errors
+    )
+
+
 def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
     from app.core.database import SessionLocal
     from app.services.deploy_service import (
@@ -3963,6 +4074,9 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
                 "changed_vms": [],
                 "added_networks": [],
                 "removed_networks": [],
+                "added_containers": [],
+                "removed_containers": [],
+                "changed_containers": [],
                 "has_changes": False,
             }
         )
@@ -3975,6 +4089,11 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
 
         has_vm_changes = (
             diff.get("added_vms") or diff.get("removed_vms") or diff.get("changed_vms")
+        )
+        has_container_changes = (
+            diff.get("added_containers")
+            or diff.get("removed_containers")
+            or diff.get("changed_containers")
         )
 
         if has_vm_changes:
@@ -4001,6 +4120,11 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
             diff,
             errors,
         )
+
+        if has_container_changes:
+            _reconfigure_process_containers(
+                h, p_id, s, current, deployed, vni_map, _pool, diff, errors
+            )
 
         _finalize_reconfigure(s, proj, h, p_id, current, deployed, errors)
     except Exception:
@@ -4108,9 +4232,12 @@ def _build_connected_topology(topology, target_vm_id):
 def _cache_redeploy_images(h, s, vm_topo, dom):
     _redeploy_progress[dom] = {"step": "downloading", "detail": "0%"}
 
-    def _progress(downloaded, total):
-        pct = f"{int(downloaded / max(total, 1) * 100)}%" if total > 0 else "..."
-        _redeploy_progress[dom] = {"step": "downloading", "detail": pct}
+    def _progress(detail, items):
+        _redeploy_progress[dom] = {
+            "step": "downloading",
+            "detail": str(detail),
+            "items": items,
+        }
 
     cache_library_images(vm_topo, h, s, progress_callback=_progress)
 
@@ -4120,12 +4247,20 @@ def _create_redeploy_vm(h, p_id, vm_node, topology, vni_map, pool, target_vm_id,
     _redeploy_progress[dom] = {"step": "creating", "detail": "cloud-init seed ISO"}
     _create_seed_isos_via_troshkad(h, p_id, vm_only_topo, pool)
 
-    _redeploy_progress[dom] = {"step": "creating", "detail": "VM definition"}
+    _redeploy_progress[dom] = {"step": "creating", "detail": "VM disk"}
     vm_data = _build_redeploy_vm_data(vm_node)
     disk_cache = "none" if pool and pool.mode.startswith("shared") else None
     vm_disks = _find_vm_disks(target_vm_id, topology or {})
-    _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks, pool)
-    _create_vm_via_troshkad(h, p_id, vm_data, topology or {}, vni_map, pool, disk_cache)
+    disk_job_ids = _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks, pool)
+    for jid in disk_job_ids:
+        wait_for_job(h, jid, timeout=900)
+
+    _redeploy_progress[dom] = {"step": "creating", "detail": "VM definition"}
+    vm_job_id = _create_vm_via_troshkad(
+        h, p_id, vm_data, topology or {}, vni_map, pool, disk_cache
+    )
+    if vm_job_id:
+        wait_for_job(h, vm_job_id, timeout=120)
 
 
 def _start_vm_if_needed(h, dom, was_running, vm_node):

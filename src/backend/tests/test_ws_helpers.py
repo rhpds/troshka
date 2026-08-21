@@ -9,9 +9,12 @@ from unittest.mock import MagicMock, patch
 
 from app.services.ws_pubsub import (
     _check_and_notify_project_changes,
+    _container_domain_name,
     _fetch_kubevirt_vm_states,
     _last_states,
+    _map_container_states_for_project,
     _map_vm_states_for_project,
+    _pod_domain_name,
 )
 
 # ---------------------------------------------------------------------------
@@ -208,6 +211,116 @@ class TestMapVmStatesForProject:
 
         vm_states, _, _ = _map_vm_states_for_project(project, host_batch, kv_batch=None)
         assert vm_states == {}
+
+
+# ===========================================================================
+# _map_container_states_for_project
+# ===========================================================================
+
+
+def _make_container_project(project_id="proj-1111-2222-3333", ctr_id="ctr-aaaa-1111"):
+    nodes = [
+        {
+            "id": ctr_id,
+            "type": "containerNode",
+            "data": {"id": ctr_id, "label": "ctr-00"},
+        },
+    ]
+    return SimpleNamespace(id=project_id, topology={"nodes": nodes})
+
+
+class TestMapContainerStatesForProject:
+    def test_running_container_mapped(self):
+        project = _make_container_project()
+        name = _container_domain_name(project.id, "ctr-aaaa-1111")
+        host_batch = {name: {"state": "running", "ips": ["10.0.0.10"]}}
+
+        result = _map_container_states_for_project(project, host_batch)
+
+        assert result["ctr-aaaa-1111"] == {
+            "state": "running",
+            "ips": ["10.0.0.10"],
+        }
+
+    def test_exited_and_dead_normalised_to_stopped(self):
+        project = _make_container_project()
+        name = _container_domain_name(project.id, "ctr-aaaa-1111")
+        for raw_state in ("stopped", "dead"):
+            host_batch = {name: {"state": raw_state}}
+            result = _map_container_states_for_project(project, host_batch)
+            assert result["ctr-aaaa-1111"]["state"] == "stopped"
+
+    def test_missing_container_skipped(self):
+        project = _make_container_project()
+        result = _map_container_states_for_project(project, {})
+        assert result == {}
+
+    def test_none_batch_returns_empty(self):
+        project = _make_container_project()
+        result = _map_container_states_for_project(project, None)
+        assert result == {}
+
+    def test_non_container_nodes_ignored(self):
+        project = SimpleNamespace(
+            id="proj-1",
+            topology={"nodes": [{"id": "vm-1", "type": "vmNode", "data": {}}]},
+        )
+        result = _map_container_states_for_project(project, {"anything": {"state": "running"}})
+        assert result == {}
+
+    def test_missing_ips_defaults_to_empty_list(self):
+        project = _make_container_project()
+        name = _container_domain_name(project.id, "ctr-aaaa-1111")
+        host_batch = {name: {"state": "running"}}
+        result = _map_container_states_for_project(project, host_batch)
+        assert result["ctr-aaaa-1111"]["ips"] == []
+
+
+def _make_pod_project(
+    project_id="proj-1111-2222-3333", node_id="ctr-pod-1111", pod_name="my-pod"
+):
+    nodes = [
+        {
+            "id": node_id,
+            "type": "containerNode",
+            "data": {"id": node_id, "name": pod_name, "isPod": True},
+        },
+    ]
+    return SimpleNamespace(id=project_id, topology={"nodes": nodes})
+
+
+class TestMapContainerStatesForProjectPods:
+    def test_running_pod_mapped_by_pod_name_not_node_id(self):
+        project = _make_pod_project()
+        name = _pod_domain_name(project.id, "my-pod")
+        host_batch = {name: {"state": "running", "ips": ["10.0.0.20"]}}
+
+        result = _map_container_states_for_project(project, host_batch)
+
+        assert result["ctr-pod-1111"] == {
+            "state": "running",
+            "ips": ["10.0.0.20"],
+        }
+
+    def test_pod_not_matched_by_node_id_based_key(self):
+        """A pod entry keyed by node_id[:8] (the single-container scheme) must not match."""
+        project = _make_pod_project()
+        wrong_name = _container_domain_name(project.id, "ctr-pod-1111")
+        host_batch = {wrong_name: {"state": "running"}}
+
+        result = _map_container_states_for_project(project, host_batch)
+
+        assert result == {}
+
+    def test_missing_pod_name_defaults_to_container(self):
+        project = _make_pod_project()
+        del project.topology["nodes"][0]["data"]["name"]
+        name = _pod_domain_name(project.id, "container")
+        host_batch = {name: {"state": "running"}}
+
+        result = _map_container_states_for_project(project, host_batch)
+
+        assert result["ctr-pod-1111"]["state"] == "running"
 
 
 # ===========================================================================

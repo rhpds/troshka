@@ -96,7 +96,7 @@ class TestGetCachedVmStates:
 
 class TestPollActiveProjects:
     @patch("app.services.ws_pubsub._notify_all_projects")
-    @patch("app.services.ws_pubsub._batch_fetch_vm_states", return_value=({}, {}))
+    @patch("app.services.ws_pubsub._batch_fetch_vm_states", return_value=({}, {}, {}))
     @patch("app.services.deploy_service._get_deploy_progress_data", return_value=None)
     @patch("app.core.database.SessionLocal")
     def test_fetches_and_notifies(self, mock_sl, mock_prog, mock_batch, mock_notify):
@@ -130,7 +130,7 @@ class TestPollActiveProjects:
         db.close.assert_called_once()
 
     @patch("app.services.ws_pubsub._notify_all_projects")
-    @patch("app.services.ws_pubsub._batch_fetch_vm_states", return_value=({}, {}))
+    @patch("app.services.ws_pubsub._batch_fetch_vm_states", return_value=({}, {}, {}))
     @patch("app.services.deploy_service._get_deploy_progress_data")
     @patch("app.core.database.SessionLocal")
     def test_tracks_deploying_hosts(self, mock_sl, mock_prog, mock_batch, mock_notify):

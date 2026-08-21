@@ -870,10 +870,15 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         progress_callback,
     )
     if failed:
+        failed_names = [aj["name"] for aj in active_jobs if aj["job_id"] in failed]
         logger.error(
-            "cache_library_images: %d/%d downloads failed",
+            "cache_library_images: %d/%d downloads failed: %s",
             len(failed),
             len(active_jobs),
+            ", ".join(failed_names),
+        )
+        raise TroshkadError(
+            f"Failed to cache required image(s) on host: {', '.join(failed_names)}"
         )
 
 
@@ -3035,7 +3040,11 @@ def _allocate_single_eip(s, provider, project_id, host, ext_ip, topology):
     ext_ip["ip"] = eip.public_ip
     ext_ip["_private_ip"] = eip.private_ip
 
-    if provider.type != "ec2" and not eip.port_map:
+    # EC2 and libvirt both give each EIP a real, directly-addressable IP
+    # (EC2: secondary ENI private IP; libvirt: the host's own IP) so the
+    # host-level DNAT can match on that IP directly — no transit-port
+    # indirection needed (see LibvirtDriver.associate_eip).
+    if provider.type not in ("ec2", "libvirt") and not eip.port_map:
         pf_for_eip = _find_gateway_port_forwards(topology, canvas_id)
         if pf_for_eip:
             port_map = allocate_transit_ports(s, eip, host, pf_for_eip)

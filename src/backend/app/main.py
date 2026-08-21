@@ -19,8 +19,9 @@ from contextlib import asynccontextmanager
 from datetime import UTC
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.core.auth import require_role
 from app.core.config import config
@@ -510,6 +511,10 @@ async def lifespan(app):
 
     ensure_agent_ca()
 
+    from app.services.s3_storage import ensure_dev_bucket_exists
+
+    ensure_dev_bucket_exists()
+
     start_health_poller()
     start_project_timer()
     start_state_poller()
@@ -661,6 +666,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(ValueError)
+async def value_error_handler(_request: Request, exc: ValueError):
+    """Convert unguarded service-layer ValueErrors (e.g. missing S3 config)
+    into a friendly 400 response instead of an uncaught 500."""
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 from app.api import api_keys as api_key_routes  # noqa: E402
 from app.api import auth as auth_routes  # noqa: E402

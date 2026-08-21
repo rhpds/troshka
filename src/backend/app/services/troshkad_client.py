@@ -550,15 +550,15 @@ def get_all_vm_states(host, timeout=10):
 
 
 def get_all_container_states(host, timeout=10):
-    """Get all troshka-* container states in one batch call.
+    """Get all troshka-* container and pod states in one batch call.
 
-    Returns dict mapping container_name -> {state, ips?}, or None on error.
+    Returns dict mapping container/pod name -> {state, ips?}, or None on error.
     """
     try:
         result = troshkad_request(
             host, "GET", "/containers/states", timeout=timeout, retries=1
         )
-        return result.get("containers", {})
+        return {**result.get("containers", {}), **result.get("pods", {})}
     except TroshkadError:
         return None
 

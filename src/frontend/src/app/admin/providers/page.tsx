@@ -245,31 +245,44 @@ export default function AdminProvidersPage() {
 
   const testProvider = async (id: string) => {
     setTestResult((prev) => ({ ...prev, [id]: "testing..." }));
-    const resp = await fetch(`/api/v1/providers/${id}/test`, { method: "POST" });
-    if (resp.ok) {
-      const data = await resp.json();
-      if (data.message) {
-        setTestResult((prev) => ({ ...prev, [id]: data.message }));
-      } else if (data.bucket) {
-        setTestResult((prev) => ({ ...prev, [id]: `OK — Bucket: ${data.bucket}` }));
-      } else if (data.operator !== undefined) {
-        const nsInfo = data.namespaces ? `, ${Object.entries(data.namespaces).map(([k, v]) => `${k} namespace: ${v}`).join(", ")}` : "";
-        const needsInstall = data.operator === "not installed" || !data.crds_installed;
-        const noPermission = data.crds && data.crds.includes("no permission");
-        const msg = `OK — ${data.nodes} nodes, operator: ${data.operator}, CRDs: ${data.crds || (data.crds_installed ? "installed" : "missing")}${nsInfo}`;
-        const warning = noPermission
-          ? `\n⚠ Service account lacks permissions to manage CRDs — update the ClusterRole`
-          : needsInstall
-          ? `\n⚠ Operator not installed — click Install Operator below`
-          : "";
-        setTestResult((prev) => ({ ...prev, [id]: msg + warning }));
-      } else if (data.nodes !== undefined) {
-        setTestResult((prev) => ({ ...prev, [id]: `OK — ${data.namespace} namespace, ${data.nodes} nodes` }));
-      } else {
-        setTestResult((prev) => ({ ...prev, [id]: `OK — Account: ${data.account}` }));
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+      let resp: Response;
+      try {
+        resp = await fetch(`/api/v1/providers/${id}/test`, { method: "POST", signal: controller.signal });
+      } finally {
+        clearTimeout(timeout);
       }
-    } else {
-      setTestResult((prev) => ({ ...prev, [id]: "FAILED" }));
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.message) {
+          setTestResult((prev) => ({ ...prev, [id]: data.message }));
+        } else if (data.bucket) {
+          setTestResult((prev) => ({ ...prev, [id]: `OK — Bucket: ${data.bucket}` }));
+        } else if (data.operator !== undefined) {
+          const nsInfo = data.namespaces ? `, ${Object.entries(data.namespaces).map(([k, v]) => `${k} namespace: ${v}`).join(", ")}` : "";
+          const needsInstall = data.operator === "not installed" || !data.crds_installed;
+          const noPermission = data.crds && data.crds.includes("no permission");
+          const msg = `OK — ${data.nodes} nodes, operator: ${data.operator}, CRDs: ${data.crds || (data.crds_installed ? "installed" : "missing")}${nsInfo}`;
+          const warning = noPermission
+            ? `\n⚠ Service account lacks permissions to manage CRDs — update the ClusterRole`
+            : needsInstall
+            ? `\n⚠ Operator not installed — click Install Operator below`
+            : "";
+          setTestResult((prev) => ({ ...prev, [id]: msg + warning }));
+        } else if (data.nodes !== undefined) {
+          setTestResult((prev) => ({ ...prev, [id]: `OK — ${data.namespace} namespace, ${data.nodes} nodes` }));
+        } else {
+          setTestResult((prev) => ({ ...prev, [id]: `OK — Account: ${data.account}` }));
+        }
+      } else {
+        const data = await resp.json().catch(() => ({}));
+        setTestResult((prev) => ({ ...prev, [id]: data.detail ? `FAILED — ${data.detail}` : "FAILED" }));
+      }
+    } catch (e: unknown) {
+      const timedOut = e instanceof DOMException && e.name === "AbortError";
+      setTestResult((prev) => ({ ...prev, [id]: timedOut ? "FAILED — timed out" : "FAILED — network error" }));
     }
   };
 

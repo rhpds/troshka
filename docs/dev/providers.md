@@ -109,6 +109,15 @@
 - **Data disk**: `/dev/disk/azure/scsi1/lun0` (stable symlink for LUN 0)
 - **Terminate cleanup**: must delete VM → OS disk → data disk → NIC → public IP in order (Azure doesn't auto-delete dependents)
 - **Stop vs deallocate**: always use `begin_deallocate()` not `begin_power_off()` — deallocate releases compute billing
+### Libvirt Provider Setup
+- Provider type `libvirt` — "bring your own host": adopts an existing SSH-reachable Linux box (libvirt + nested virt already set up) instead of provisioning compute via a cloud API
+- **Driver**: `src/backend/app/services/providers/libvirt.py` — `provision_host`/`terminate_host`/`get_host_status` only; Troshka never creates or destroys the underlying machine
+- **Setup**: create the provider with `{"ssh_private_key": "..."}` credentials, then `POST /hosts` with `{"provider_id": ..., "ip_address": "...", "instance_type": "manual", "disk_gb": ...}` — see `infra/libvirt-host-image/commands.md` for a full walkthrough
+- **Networking**: identical to AWS/OCP Virt (VXLAN, nftables, netns) — troshkad runs the same on the adopted host
+- **EIPs**: no real cloud "Elastic IP" resource exists for a self-hosted box, so `allocate_eip`/`associate_eip` hand back the host's own `ip_address` as both the public and private IP. This reuses the same host-level nftables DNAT path as EC2 (`ip daddr <private_ip> tcp dport <extPort> dnat to <transit_ip>:<extPort>` in `_setup_host_port_forward_dnat`, `src/troshkad/troshkad.py`) — no transit-port indirection, so the gateway's literal "Ext Port" is the port you actually connect to at `host_ip:extPort`
+- **Port-collision caveat**: every EIP on a libvirt host maps to that *same* shared address. If two projects on the same host pick the same Ext Port, `nft` will silently create two DNAT rules and only the first-matching one ever fires — there's no validation against this today, so pick distinct Ext Ports per host
+- **Testing note**: `host_ip:extPort` is only reachable from a genuinely separate client (another machine, or the far end of an SSH tunnel). Linux routes locally-generated packets addressed to one of the host's own IPs straight to the local socket, bypassing the DNAT rule — so `ssh`-ing into the host and `curl`-ing its own IP from that same shell will not exercise the port forward
+- **`max_eips`**: defaults to a non-zero cap (`DEFAULT_MAX_EIPS` in `libvirt.py`) on newly-provisioned hosts — it isn't a real hardware limit, just a safety cap on the shared address above. Hosts provisioned before this existed can be fixed via `PATCH /hosts/{id}` with `{"max_eips": N}`
 ### Red Hat Image Builder Integration
 - Builds custom RHEL host images with all packages pre-installed (qemu-kvm, libvirt, etc.) via Red Hat Insights Image Builder API
 - Eliminates RHSM registration at boot and PAYG image premium

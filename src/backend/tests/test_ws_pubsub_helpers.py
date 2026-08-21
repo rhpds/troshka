@@ -141,9 +141,12 @@ class TestBatchFetchVmStates:
         deploying = {"h1"}
         db = MagicMock()
 
-        host_states, proj_states = _batch_fetch_vm_states(projects, deploying, db)
+        host_states, proj_states, container_states = _batch_fetch_vm_states(
+            projects, deploying, db
+        )
         assert host_states == {}
         assert proj_states == {}
+        assert container_states == {}
         mock_troshkad.assert_not_called()
         mock_kv.assert_not_called()
 
@@ -165,7 +168,9 @@ class TestBatchFetchVmStates:
         db = MagicMock()
         db.query.return_value.filter_by.return_value.first.return_value = host
 
-        host_states, proj_states = _batch_fetch_vm_states(projects, set(), db)
+        host_states, proj_states, container_states = _batch_fetch_vm_states(
+            projects, set(), db
+        )
         mock_kv.assert_called_once()
         mock_troshkad.assert_not_called()
 
@@ -473,8 +478,10 @@ class TestFetchTroshkadHostStates:
         host.agent_status = "disconnected"
         host.id = "host-1"
         cache = {}
-        _fetch_troshkad_host_states(host, cache)
+        ctr_cache = {}
+        _fetch_troshkad_host_states(host, cache, ctr_cache)
         assert "host-1" not in cache
+        assert "host-1" not in ctr_cache
 
     def test_skips_already_cached(self):
         from app.services.ws_pubsub import _fetch_troshkad_host_states
@@ -483,9 +490,11 @@ class TestFetchTroshkadHostStates:
         host.agent_status = "connected"
         host.id = "host-1"
         cache = {"host-1": {"vm1": "running"}}
-        _fetch_troshkad_host_states(host, cache)
+        ctr_cache = {"host-1": {"ctr1": {"state": "running"}}}
+        _fetch_troshkad_host_states(host, cache, ctr_cache)
         # Should not overwrite
         assert cache["host-1"] == {"vm1": "running"}
+        assert ctr_cache["host-1"] == {"ctr1": {"state": "running"}}
 
     @patch("app.services.troshkad_client.get_all_vm_states")
     def test_fetches_and_caches(self, mock_get):
@@ -496,7 +505,7 @@ class TestFetchTroshkadHostStates:
         host.agent_status = "connected"
         host.id = "host-2"
         cache = {}
-        _fetch_troshkad_host_states(host, cache)
+        _fetch_troshkad_host_states(host, cache, {})
         assert cache["host-2"]["vm1"] == "running"
 
     @patch(
@@ -510,8 +519,39 @@ class TestFetchTroshkadHostStates:
         host.id = "host-3"
         cache = {}
         # Should not raise
-        _fetch_troshkad_host_states(host, cache)
+        _fetch_troshkad_host_states(host, cache, {})
         assert "host-3" not in cache
+
+    @patch("app.services.troshkad_client.get_all_container_states")
+    @patch("app.services.troshkad_client.get_all_vm_states")
+    def test_fetches_and_caches_container_states(self, mock_vm, mock_ctr):
+        from app.services.ws_pubsub import _fetch_troshkad_host_states
+
+        mock_vm.return_value = {"vm1": "running"}
+        mock_ctr.return_value = {"ctr1": {"state": "running", "ips": ["10.0.0.10"]}}
+        host = MagicMock()
+        host.agent_status = "connected"
+        host.id = "host-4"
+        host_cache = {}
+        ctr_cache = {}
+        _fetch_troshkad_host_states(host, host_cache, ctr_cache)
+        assert ctr_cache["host-4"]["ctr1"]["state"] == "running"
+
+    @patch(
+        "app.services.troshkad_client.get_all_container_states",
+        side_effect=Exception("fail"),
+    )
+    @patch("app.services.troshkad_client.get_all_vm_states", return_value={})
+    def test_handles_container_fetch_error(self, mock_vm, mock_ctr):
+        from app.services.ws_pubsub import _fetch_troshkad_host_states
+
+        host = MagicMock()
+        host.agent_status = "connected"
+        host.id = "host-5"
+        ctr_cache = {}
+        # Should not raise
+        _fetch_troshkad_host_states(host, {}, ctr_cache)
+        assert "host-5" not in ctr_cache
 
 
 # ── _maybe_scan_ocp_monitors tests ──

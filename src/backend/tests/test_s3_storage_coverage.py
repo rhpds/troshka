@@ -211,6 +211,73 @@ class TestBucket:
 
 
 # ---------------------------------------------------------------------------
+# ensure_dev_bucket_exists
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureDevBucketExists:
+    @patch("app.services.s3_storage._get_s3_config")
+    def test_noop_when_no_endpoint_url(self, mock_cfg):
+        """Real AWS S3 (no endpoint_url) is left untouched — bucket must already exist."""
+        mock_cfg.return_value = _base_config(endpoint_url="")
+
+        from app.services.s3_storage import ensure_dev_bucket_exists
+
+        ensure_dev_bucket_exists()  # should not raise, and calls no boto3 client
+
+    @patch("app.services.s3_storage._get_s3_config")
+    def test_noop_when_s3_not_configured(self, mock_cfg):
+        """When _get_s3_config raises (no provider/config at all), silently no-ops."""
+        mock_cfg.side_effect = ValueError("No S3 provider configured")
+
+        from app.services.s3_storage import ensure_dev_bucket_exists
+
+        ensure_dev_bucket_exists()  # should not raise
+
+    @patch("app.services.s3_storage._get_s3_client")
+    @patch("app.services.s3_storage._get_s3_config")
+    def test_skips_create_when_bucket_already_exists(self, mock_cfg, mock_client_fn):
+        mock_cfg.return_value = _base_config(endpoint_url="http://minio:9000")
+        mock_client = MagicMock()
+        mock_client_fn.return_value = mock_client
+
+        from app.services.s3_storage import ensure_dev_bucket_exists
+
+        ensure_dev_bucket_exists()
+        mock_client.head_bucket.assert_called_once_with(Bucket="test-bucket")
+        mock_client.create_bucket.assert_not_called()
+
+    @patch("app.services.s3_storage._get_s3_client")
+    @patch("app.services.s3_storage._get_s3_config")
+    def test_creates_bucket_when_missing(self, mock_cfg, mock_client_fn):
+        mock_cfg.return_value = _base_config(endpoint_url="http://minio:9000")
+        mock_client = MagicMock()
+        mock_client.head_bucket.side_effect = ClientError(
+            {"Error": {"Code": "404", "Message": "Not Found"}}, "HeadBucket"
+        )
+        mock_client_fn.return_value = mock_client
+
+        from app.services.s3_storage import ensure_dev_bucket_exists
+
+        ensure_dev_bucket_exists()
+        mock_client.create_bucket.assert_called_once_with(Bucket="test-bucket")
+
+    @patch("app.services.s3_storage._get_s3_client")
+    @patch("app.services.s3_storage._get_s3_config")
+    def test_swallows_create_bucket_errors(self, mock_cfg, mock_client_fn):
+        """Errors creating the bucket (e.g. MinIO unreachable) are logged, not raised."""
+        mock_cfg.return_value = _base_config(endpoint_url="http://minio:9000")
+        mock_client = MagicMock()
+        mock_client.head_bucket.side_effect = Exception("connection refused")
+        mock_client.create_bucket.side_effect = Exception("still unreachable")
+        mock_client_fn.return_value = mock_client
+
+        from app.services.s3_storage import ensure_dev_bucket_exists
+
+        ensure_dev_bucket_exists()  # should not raise
+
+
+# ---------------------------------------------------------------------------
 # _get_account_id
 # ---------------------------------------------------------------------------
 

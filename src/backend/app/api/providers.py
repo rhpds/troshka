@@ -63,6 +63,9 @@ class ProviderCreate(BaseModel):
     azure_subscription_id: str = ""
     azure_location: str = ""
 
+    # Libvirt "bring your own host" fields
+    credentials: dict[str, Any] | None = None
+
 
 class ProviderUpdate(BaseModel):
     name: str | None = None
@@ -239,6 +242,15 @@ def _build_provider_credentials(
         if body.endpoint_url:
             creds["endpoint_url"] = body.endpoint_url
         return creds
+
+    if body.type == "libvirt":
+        ssh_private_key = (body.credentials or {}).get("ssh_private_key", "")
+        if not ssh_private_key:
+            raise HTTPException(
+                status_code=400,
+                detail="libvirt providers require credentials.ssh_private_key",
+            )
+        return {"ssh_private_key": ssh_private_key}
 
     raise HTTPException(400, f"Unknown provider type: {body.type}")
 
@@ -1166,10 +1178,19 @@ def discover_datasources(
         raise HTTPException(status_code=400, detail="Failed to list DataSources")
 
 
+def _fast_fail_boto_config():
+    """Bounded connect/read timeout and no retries for interactive "Test"/
+    "Create Bucket" calls, so an unreachable or misconfigured endpoint fails
+    in seconds rather than hanging on botocore's 60s-per-attempt defaults."""
+    from botocore.config import Config
+
+    return Config(connect_timeout=5, read_timeout=10, retries={"max_attempts": 1})
+
+
 def _s3_client_kwargs(
     creds: dict[str, Any], region: str, endpoint_url: str | None
-) -> dict[str, str]:
-    kwargs: dict[str, str] = {"region_name": region}
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"region_name": region, "config": _fast_fail_boto_config()}
     if creds.get("access_key_id"):
         kwargs["aws_access_key_id"] = creds["access_key_id"]
     if creds.get("secret_access_key"):
@@ -1179,7 +1200,18 @@ def _s3_client_kwargs(
     return kwargs
 
 
-def _s3_account_id(region: str, creds: dict[str, Any]) -> str | None:
+def _s3_account_id(
+    region: str, creds: dict[str, Any], endpoint_url: str | None
+) -> str | None:
+    """Resolve the AWS account ID via STS, for ExpectedBucketOwner checks.
+
+    STS is an AWS-only API — skip it for self-hosted S3-compatible endpoints
+    (e.g. dev MinIO, S4/Ceph RGW), which don't implement it and would
+    otherwise hang trying to reach real AWS.
+    """
+    if endpoint_url:
+        return None
+
     import boto3
 
     try:
@@ -1188,6 +1220,7 @@ def _s3_account_id(region: str, creds: dict[str, Any]) -> str | None:
             region_name=region,
             aws_access_key_id=creds.get("access_key_id"),
             aws_secret_access_key=creds.get("secret_access_key"),
+            config=_fast_fail_boto_config(),
         )
         return sts.get_caller_identity()["Account"]
     except Exception:
@@ -1245,7 +1278,7 @@ def _test_s3_provider(provider: Provider, creds: dict[str, Any]) -> dict[str, An
     bucket = creds.get("bucket", "troshka-images")
 
     s3 = boto3.client("s3", **_s3_client_kwargs(creds, region, endpoint_url))
-    account_id = _s3_account_id(region, creds)
+    account_id = _s3_account_id(region, creds, endpoint_url)
     return _s3_head_bucket_result(
         s3, bucket, account_id=account_id, endpoint_url=endpoint_url
     )
@@ -1344,6 +1377,34 @@ def _ensure_namespaces(
     return ns_checks
 
 
+def _test_libvirt_provider(creds: dict[str, Any]) -> dict[str, Any]:
+    """Test a libvirt "bring your own host" provider's SSH private key.
+
+    Unlike the cloud providers, libvirt has no API to call — the only stored
+    credential is the SSH private key used to adopt hosts, so "testing" it
+    just means confirming it's present and parses as a valid private key.
+    """
+    from cryptography.hazmat.primitives.serialization import load_ssh_private_key
+
+    private_key = creds.get("ssh_private_key", "")
+    if not private_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Provider credentials are missing 'ssh_private_key'",
+        )
+    try:
+        key = load_ssh_private_key(private_key.encode(), password=None)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400, detail=f"ssh_private_key is not a valid private key: {e}"
+        )
+    return {
+        "status": "ok",
+        "key_type": type(key).__name__,
+        "message": "SSH private key is valid",
+    }
+
+
 @router.post(
     "/{provider_id}/test",
     responses={
@@ -1427,6 +1488,8 @@ def test_provider(
                 "account": identity["Account"],
                 "arn": identity["Arn"],
             }
+        if provider.type == "libvirt":
+            return _test_libvirt_provider(creds)
         raise HTTPException(400, f"Unknown provider type: {provider.type}")
     except HTTPException:
         raise
@@ -1460,20 +1523,13 @@ def create_s3_bucket(
     creds = provider.get_credentials()
     bucket = creds.get("bucket", "troshka-images")
     region = provider.default_region or creds.get("region") or "us-east-1"
+    endpoint_url = creds.get("endpoint_url") or None
 
-    kwargs: dict[str, str] = {"region_name": region}
-    if creds.get("access_key_id"):
-        kwargs["aws_access_key_id"] = creds["access_key_id"]
-    if creds.get("secret_access_key"):
-        kwargs["aws_secret_access_key"] = creds["secret_access_key"]
-    if creds.get("endpoint_url"):
-        kwargs["endpoint_url"] = creds["endpoint_url"]
-
-    s3 = boto3.client("s3", **kwargs)
+    s3 = boto3.client("s3", **_s3_client_kwargs(creds, region, endpoint_url))
 
     try:
         # Custom endpoints (S4/MinIO) do not use AWS LocationConstraint.
-        if creds.get("endpoint_url") or region == "us-east-1":
+        if endpoint_url or region == "us-east-1":
             s3.create_bucket(Bucket=bucket)
         else:
             s3.create_bucket(

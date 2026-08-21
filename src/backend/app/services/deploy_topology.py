@@ -655,9 +655,14 @@ def diff_topologies(current: dict, deployed: dict) -> dict:
     cur_nodes = {n["id"]: n for n in current.get("nodes", [])}
     dep_nodes = {n["id"]: n for n in deployed.get("nodes", [])}
 
-    added_vms, added_networks = _categorize_new_nodes(cur_nodes, dep_nodes)
-    removed_vms, removed_networks = _categorize_new_nodes(dep_nodes, cur_nodes)
+    added_vms, added_networks, added_containers = _categorize_new_nodes(
+        cur_nodes, dep_nodes
+    )
+    removed_vms, removed_networks, removed_containers = _categorize_new_nodes(
+        dep_nodes, cur_nodes
+    )
     changed_vms = _find_changed_vms(cur_nodes, dep_nodes)
+    changed_containers = _find_changed_containers(cur_nodes, dep_nodes)
 
     return {
         "added_vms": added_vms,
@@ -665,21 +670,28 @@ def diff_topologies(current: dict, deployed: dict) -> dict:
         "changed_vms": changed_vms,
         "added_networks": added_networks,
         "removed_networks": removed_networks,
+        "added_containers": added_containers,
+        "removed_containers": removed_containers,
+        "changed_containers": changed_containers,
         "has_changes": bool(
             added_vms
             or removed_vms
             or changed_vms
             or added_networks
             or removed_networks
+            or added_containers
+            or removed_containers
+            or changed_containers
         ),
     }
 
 
 def _categorize_new_nodes(
     source: dict[str, dict], reference: dict[str, dict]
-) -> tuple[list[dict], list[dict]]:
+) -> tuple[list[dict], list[dict], list[dict]]:
     vms = []
     networks = []
+    containers = []
     for nid, node in source.items():
         if nid in reference:
             continue
@@ -688,16 +700,20 @@ def _categorize_new_nodes(
             vms.append(node)
         elif ntype == "networkNode":
             networks.append(node)
-    return vms, networks
+        elif ntype == "containerNode":
+            containers.append(node)
+    return vms, networks, containers
 
 
-def _find_changed_vms(
-    cur_nodes: dict[str, dict], dep_nodes: dict[str, dict]
+def _find_changed_nodes_of_type(
+    cur_nodes: dict[str, dict],
+    dep_nodes: dict[str, dict],
+    node_type: str,
+    skip_keys: set[str],
 ) -> list[dict]:
-    skip_keys = {"status", "redeployStep", "redeployDetail", "liveBootDevs"}
     changed = []
     for nid, node in cur_nodes.items():
-        if nid not in dep_nodes or node.get("type") != "vmNode":
+        if nid not in dep_nodes or node.get("type") != node_type:
             continue
         cur_data = {k: v for k, v in node.get("data", {}).items() if k not in skip_keys}
         dep_data = {
@@ -708,6 +724,20 @@ def _find_changed_vms(
         if cur_data != dep_data:
             changed.append(node)
     return changed
+
+
+def _find_changed_vms(
+    cur_nodes: dict[str, dict], dep_nodes: dict[str, dict]
+) -> list[dict]:
+    skip_keys = {"status", "redeployStep", "redeployDetail", "liveBootDevs"}
+    return _find_changed_nodes_of_type(cur_nodes, dep_nodes, "vmNode", skip_keys)
+
+
+def _find_changed_containers(
+    cur_nodes: dict[str, dict], dep_nodes: dict[str, dict]
+) -> list[dict]:
+    skip_keys = {"status", "liveIps", "redeployStep", "redeployDetail"}
+    return _find_changed_nodes_of_type(cur_nodes, dep_nodes, "containerNode", skip_keys)
 
 
 def _auto_assign_container_ips(topology: dict) -> None:

@@ -2758,6 +2758,41 @@ def test_create_bucket_already_exists():
     assert data["status"] == "exists"
 
 
+def test_create_bucket_uses_custom_endpoint_url():
+    """POST create-bucket passes endpoint_url to boto3 for self-hosted S3 (e.g. MinIO)."""
+    pid = _create_provider(
+        name=f"bucket-minio-{uuid.uuid4().hex[:8]}", provider_type="s3"
+    )
+    db = TestSession()
+    p = db.query(Provider).filter_by(id=pid).first()
+    p.set_credentials(
+        {
+            "access_key_id": "minioadmin",
+            "secret_access_key": "minioadmin",
+            "bucket": "test-bucket",
+            "endpoint_url": "http://192.168.124.1:9000",
+        }
+    )
+    p.default_region = "us-east-1"
+    db.commit()
+    db.close()
+
+    mock_s3 = MagicMock()
+
+    with patch("boto3.client", return_value=mock_s3) as mock_boto3_client:
+        resp = client.post(f"/api/v1/providers/{pid}/create-bucket")
+    assert resp.status_code == 200
+    mock_boto3_client.assert_called_once()
+    call = mock_boto3_client.call_args
+    assert call.args[0] == "s3"
+    assert call.kwargs["region_name"] == "us-east-1"
+    assert call.kwargs["aws_access_key_id"] == "minioadmin"
+    assert call.kwargs["aws_secret_access_key"] == "minioadmin"
+    assert call.kwargs["endpoint_url"] == "http://192.168.124.1:9000"
+    assert call.kwargs["config"].connect_timeout == 5
+    assert call.kwargs["config"].read_timeout == 10
+
+
 # ===========================================================================
 # Provider helper tests — _cleanup_kubevirt_k8s_resources
 # ===========================================================================

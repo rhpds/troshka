@@ -1466,6 +1466,61 @@ class TestTestS3ProviderEdgeCases:
         assert result["status"] == "ok"
 
     @patch("boto3.client")
+    def test_s3_with_endpoint_url_skips_sts(self, mock_boto):
+        """A custom endpoint_url (e.g. dev MinIO) is passed to the S3 client,
+        and the AWS-only STS call is skipped entirely rather than hanging
+        while trying to reach real AWS."""
+        mock_s3 = MagicMock()
+        mock_sts = MagicMock()
+        mock_boto.side_effect = lambda svc, **kw: (mock_s3 if svc == "s3" else mock_sts)
+
+        provider = _make_provider(type="s3", default_region="us-east-1")
+        creds = {
+            "access_key_id": "minioadmin",
+            "secret_access_key": "minioadmin",
+            "endpoint_url": "http://192.168.124.1:9000",
+            "bucket": "test-bucket",
+        }
+        result = _test_s3_provider(provider, creds)
+
+        assert result["status"] == "ok"
+        assert "account" not in result
+        assert result["endpoint"] == "http://192.168.124.1:9000"
+        mock_sts.get_caller_identity.assert_not_called()
+        s3_call = next(c for c in mock_boto.call_args_list if c.args[0] == "s3")
+        assert s3_call.kwargs["region_name"] == "us-east-1"
+        assert s3_call.kwargs["aws_access_key_id"] == "minioadmin"
+        assert s3_call.kwargs["aws_secret_access_key"] == "minioadmin"
+        assert s3_call.kwargs["endpoint_url"] == "http://192.168.124.1:9000"
+        assert s3_call.kwargs["config"].connect_timeout == 5
+        assert s3_call.kwargs["config"].read_timeout == 10
+        assert s3_call.kwargs["config"].retries == {"max_attempts": 1}
+        mock_s3.head_bucket.assert_called_once_with(Bucket="test-bucket")
+
+    @patch("boto3.client")
+    def test_s3_without_endpoint_url_still_uses_sts(self, mock_boto):
+        """Real AWS S3 providers (no endpoint_url) keep using STS to resolve
+        the account ID for ExpectedBucketOwner, unchanged from before."""
+        mock_s3 = MagicMock()
+        mock_sts = MagicMock()
+        mock_boto.side_effect = lambda svc, **kw: (mock_s3 if svc == "s3" else mock_sts)
+        mock_sts.get_caller_identity.return_value = {"Account": "999999999999"}
+
+        provider = _make_provider(type="s3", default_region="us-east-1")
+        creds = {
+            "access_key_id": "AKID",
+            "secret_access_key": "SECRET",
+            "bucket": "test-bucket",
+        }
+        result = _test_s3_provider(provider, creds)
+
+        assert result["account"] == "999999999999"
+        mock_sts.get_caller_identity.assert_called_once()
+        mock_s3.head_bucket.assert_called_once_with(
+            Bucket="test-bucket", ExpectedBucketOwner="999999999999"
+        )
+
+    @patch("boto3.client")
     def test_s3_connection_error(self, mock_boto):
         mock_boto.side_effect = Exception("ConnectionRefused")
 

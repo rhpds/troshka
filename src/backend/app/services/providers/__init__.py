@@ -23,5 +23,9 @@ def get_provider_driver(provider) -> ProviderDriver:
         from app.services.providers.kubevirt import KubeVirtDriver
 
         return KubeVirtDriver()
+    elif provider.type == "libvirt":
+        from app.services.providers.libvirt import LibvirtDriver
+
+        return LibvirtDriver()
     else:
         raise ValueError(f"Unknown provider type: {provider.type}")

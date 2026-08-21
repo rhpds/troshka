@@ -1577,6 +1577,47 @@ class TestPodCreate(unittest.TestCase):
         self.assertGreater(len(init_create), 0, f"No init container created in cmds: {cmds}")
         self.assertGreater(len(main_create), 0, f"No main container created in cmds: {cmds}")
 
+    @patch("troshkad._run_cmd")
+    def test_pod_create_multi_word_command_is_json_entrypoint(self, mock_run_cmd):
+        """Multi-word command overrides must reach podman as a JSON --entrypoint.
+
+        Regression test: podman only treats --entrypoint as multi-argument when
+        given valid JSON (see podman-create(1)); a raw multi-word string is
+        treated as one literal executable path and fails with
+        'exec: no such file or directory'.
+        """
+        def run_cmd_side_effect(job, cmd, **kwargs):
+            if "inspect" in cmd:
+                return "12345"
+            return ""
+        mock_run_cmd.side_effect = run_cmd_side_effect
+
+        job = troshkad._create_job("pods/create", {
+            "pod_name": "mypod",
+            "project_id": "aabbccdd-1122-3344-5566-778899001122",
+            "init_containers": [
+                {"name": "init1", "image": "busybox:latest", "command": "/bin/sh -c 'echo hi'"},
+            ],
+            "containers": [
+                {
+                    "name": "app",
+                    "image": "wetty:latest",
+                    "command": "--base=/wetty/ --port=8001",
+                },
+            ],
+        })
+        result = troshkad._handle_pod_create(job, job["params"])
+        self.assertEqual(result["status"], "created")
+
+        cmds = [c[0][1] for c in mock_run_cmd.call_args_list]
+        init_create = next(c for c in cmds if "create" in c and "init-init1" in " ".join(c))
+        main_create = next(c for c in cmds if "create" in c and "-app" in " ".join(c))
+
+        init_entrypoint = init_create[init_create.index("--entrypoint") + 1]
+        main_entrypoint = main_create[main_create.index("--entrypoint") + 1]
+        self.assertEqual(json.loads(init_entrypoint), ["/bin/sh", "-c", "echo hi"])
+        self.assertEqual(json.loads(main_entrypoint), ["--base=/wetty/", "--port=8001"])
+
 
 class TestPodStart(unittest.TestCase):
     """Tests for pods/start handler."""

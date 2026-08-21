@@ -3736,6 +3736,57 @@ class TestEnsureContainerImage(unittest.TestCase):
         mock_run_cmd.assert_not_called()
 
 
+# ── _parse_command_override ──
+
+
+class TestParseCommandOverride(unittest.TestCase):
+    def test_none_returns_none(self):
+        self.assertIsNone(troshkad._parse_command_override(None))
+
+    def test_empty_string_returns_none(self):
+        self.assertIsNone(troshkad._parse_command_override(""))
+
+    def test_plain_string_is_shell_split(self):
+        result = troshkad._parse_command_override("--base=/wetty/ --port=8001")
+        self.assertEqual(result, ["--base=/wetty/", "--port=8001"])
+
+    def test_plain_string_respects_quoting(self):
+        result = troshkad._parse_command_override("/bin/sh -c 'echo hello'")
+        self.assertEqual(result, ["/bin/sh", "-c", "echo hello"])
+
+    def test_json_array_string_is_parsed(self):
+        result = troshkad._parse_command_override('["--base=/wetty/", "--port=8001"]')
+        self.assertEqual(result, ["--base=/wetty/", "--port=8001"])
+
+    def test_pasted_kubernetes_style_array_is_parsed(self):
+        # Regression test: the exact malformed input from the bug report —
+        # a Kubernetes/Docker `command:` style JSON array pasted into the
+        # plain-string field — must parse into clean argv tokens instead of
+        # naive whitespace-split garbage like '["node",'.
+        command = (
+            '["node", "./build/main.js", "--base=/wetty/", "--port=8001", '
+            '"--ssh-host=10.0.0.20", "--ssh-port=22"]'
+        )
+        result = troshkad._parse_command_override(command)
+        self.assertEqual(
+            result,
+            ["node", "./build/main.js", "--base=/wetty/", "--port=8001", "--ssh-host=10.0.0.20", "--ssh-port=22"],
+        )
+
+    def test_list_input_passthrough(self):
+        result = troshkad._parse_command_override(["--foo", "bar"])
+        self.assertEqual(result, ["--foo", "bar"])
+
+    def test_empty_list_returns_none(self):
+        self.assertIsNone(troshkad._parse_command_override([]))
+
+    def test_malformed_json_array_falls_back_to_shell_split(self):
+        # Starts with '[' but isn't valid JSON — fall back to shlex rather
+        # than raising, so we degrade gracefully instead of failing deploy.
+        result = troshkad._parse_command_override("[not json] --port=8001")
+        self.assertEqual(result, ["[not", "json]", "--port=8001"])
+
+
 # ── _build_container_cmd ──
 
 
@@ -3792,6 +3843,21 @@ class TestBuildContainerCmd(unittest.TestCase):
         self.assertIn("/bin/sh", cmd)
         self.assertIn("-c", cmd)
         self.assertIn("echo", cmd)
+
+    def test_with_json_array_command(self):
+        # Regression test: a pasted JSON-array command override must produce
+        # clean argv tokens appended after the image, not naive-split garbage.
+        cmd = troshkad._build_container_cmd(
+            "ctr", "img", 1, 512, [], [], [], [],
+            '["--base=/wetty/", "--port=8001"]', "no", False,
+        )
+        self.assertEqual(cmd[-2:], ["--base=/wetty/", "--port=8001"])
+
+    def test_no_command_appends_nothing_after_image(self):
+        cmd = troshkad._build_container_cmd(
+            "ctr", "img", 1, 512, [], [], [], [], None, "no", False,
+        )
+        self.assertEqual(cmd[-1], "img")
 
 
 # ── _get_container_states ──

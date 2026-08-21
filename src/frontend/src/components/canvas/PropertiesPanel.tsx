@@ -1744,11 +1744,14 @@ export default function PropertiesPanel() {
               <label className="props-label">Command Override</label>
               <input
                 className="props-input"
-                placeholder="Optional entrypoint override"
+                placeholder="--flag=value --other value (space-separated)"
                 value={(data as unknown as ContainerNodeData).command || ""}
                 style={{ fontFamily: "monospace", fontSize: 11 }}
                 onChange={(e) => update("command", e.target.value || null)}
               />
+              <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", display: "block", marginTop: 4 }}>
+                Extra args appended after the image&apos;s own entrypoint — space-separated, not a JSON/Kubernetes-style array. E.g. for wetty: <code>--base=/wetty/ --port=8001 --ssh-host=10.0.0.20</code>
+              </span>
             </div>
             <div className="props-field" style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <input
@@ -1814,7 +1817,7 @@ export default function PropertiesPanel() {
                   </div>
                   <div className="props-field">
                     <label className="props-label">Command</label>
-                    <input className="props-input" value={container.command || ""} placeholder="Optional entrypoint override" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
+                    <input className="props-input" value={container.command || ""} placeholder="/path/to/exe arg1 arg2 (replaces the image entrypoint)" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
                       const containers = [...((node?.data as any)?.initContainers || [])];
                       containers[i] = { ...container, command: e.target.value || null };
                       updateNodeData(node!.id, { initContainers: containers });
@@ -1960,7 +1963,7 @@ export default function PropertiesPanel() {
                   </div>
                   <div className="props-field">
                     <label className="props-label">Command</label>
-                    <input className="props-input" value={container.command || ""} placeholder="Optional entrypoint override" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
+                    <input className="props-input" value={container.command || ""} placeholder="/path/to/exe arg1 arg2 (replaces the image entrypoint)" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
                       const containers = [...((node?.data as any)?.podContainers || [])];
                       containers[i] = { ...container, command: e.target.value || null };
                       updateNodeData(node!.id, { podContainers: containers });
@@ -2769,24 +2772,25 @@ export default function PropertiesPanel() {
                               <div className="props-field" style={{ flex: 1 }}>
                                 <label className="props-label">Internal IP</label>
                                 {(() => {
-                                  const vmIps: { ip: string; vmName: string }[] = [];
+                                  const targetIps: { ip: string; name: string; kind: "vm" | "container" }[] = [];
                                   for (const n of nodes) {
-                                    if (n.type !== "vmNode") continue;
-                                    const vmData = n.data as Record<string, any>;
-                                    for (const nic of (vmData.nics || []) as Array<Record<string, any>>) {
-                                      if (nic.ip) vmIps.push({ ip: nic.ip, vmName: vmData.name || vmData.label || "" });
+                                    if (n.type !== "vmNode" && n.type !== "containerNode") continue;
+                                    const kind: "vm" | "container" = n.type === "vmNode" ? "vm" : "container";
+                                    const nodeData = n.data as Record<string, any>;
+                                    for (const nic of (nodeData.nics || []) as Array<Record<string, any>>) {
+                                      if (nic.ip) targetIps.push({ ip: nic.ip, name: nodeData.name || nodeData.label || "", kind });
                                     }
                                   }
-                                  const isCustom = (pf.intIp && !vmIps.some((v) => v.ip === pf.intIp));
+                                  const isCustom = (pf.intIp && !targetIps.some((v) => v.ip === pf.intIp));
                                   return isCustom ? (
                                     <div style={{ display: "flex", gap: 4 }}>
                                       <input className="props-input" name="intIp" defaultValue={pf.intIp.trim()} placeholder="e.g. 192.168.1.10" style={{ fontFamily: "monospace", flex: 1 }}
                                         autoFocus
                                         onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); const f = e.currentTarget.closest("form"); if (f) applyChanges(f); } }}
                                       />
-                                      {vmIps.length > 0 && (
+                                      {targetIps.length > 0 && (
                                         <button type="button" style={{ background: "none", border: "none", color: "var(--troshka-text-dim)", cursor: "pointer", padding: "0 2px", fontSize: 10, flexShrink: 0 }}
-                                          title="Switch to VM picker"
+                                          title="Switch to target picker"
                                           onClick={() => { const updated = [...portForwards]; updated[i] = { ...pf, intIp: "" }; update("portForwards", updated); }}
                                         >▾</button>
                                       )}
@@ -2801,9 +2805,9 @@ export default function PropertiesPanel() {
                                           /* dirty check handled by native listener */
                                         }
                                       }}>
-                                      <option value="">Select VM...</option>
-                                      {vmIps.map((v) => (
-                                        <option key={v.ip} value={v.ip}>{v.ip} ({v.vmName})</option>
+                                      <option value="">Select target...</option>
+                                      {targetIps.map((v) => (
+                                        <option key={v.ip} value={v.ip}>{v.kind === "container" ? "📦" : "🖥"} {v.ip} ({v.name})</option>
                                       ))}
                                       <option disabled style={{ fontSize: 9 }}>──────────</option>
                                       <option value="__other__">Other...</option>

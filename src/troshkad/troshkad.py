@@ -17,6 +17,7 @@ import signal
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -1047,12 +1048,27 @@ def _job_log(job, msg):
     logger.info("[%s] %s", job["job_id"][:8], msg)
 
 
-def _run_cmd(job, cmd, timeout=600, check=True):
-    """Run a subprocess command, appending output to job. Stores process handle in job for drain."""
+def _run_cmd(job, cmd, timeout=600, check=True, capture_output=True):
+    """Run a subprocess command, appending output to job. Stores process handle in job for drain.
+
+    capture_output=False must be used for commands that self-daemonize (double-fork
+    and detach into the background, e.g. dnsmasq, chronyd -f, haproxy -D). A piped
+    stdout/stderr is inherited by the detached grandchild, so communicate() blocks
+    waiting for EOF that never arrives -- even though the process we're tracking
+    already exited successfully -- until the timeout fires and kills it, turning a
+    successful daemon start into a spurious "Command timed out" failure. Temp files
+    avoid this: we only read them after the tracked process exits, so a lingering
+    grandchild fd on them doesn't block anything.
+    """
     _job_log(job, f"$ {' '.join(cmd)}")
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-    )
+    out_f = err_f = None
+    if capture_output:
+        stdout_dst, stderr_dst = subprocess.PIPE, subprocess.PIPE
+    else:
+        out_f = tempfile.TemporaryFile(mode="w+")
+        err_f = tempfile.TemporaryFile(mode="w+")
+        stdout_dst, stderr_dst = out_f, err_f
+    proc = subprocess.Popen(cmd, stdout=stdout_dst, stderr=stderr_dst, text=True)
     job["_process"] = proc
     try:
         stdout, stderr = proc.communicate(timeout=timeout)
@@ -1062,6 +1078,14 @@ def _run_cmd(job, cmd, timeout=600, check=True):
         raise RuntimeError(f"Command timed out after {timeout}s: {' '.join(cmd)}")
     finally:
         job["_process"] = None
+        if out_f:
+            out_f.seek(0)
+            stdout = out_f.read()
+            out_f.close()
+        if err_f:
+            err_f.seek(0)
+            stderr = err_f.read()
+            err_f.close()
     if stdout:
         for line in stdout.strip().split("\n"):
             _job_log(job, line)
@@ -1209,6 +1233,10 @@ def _handle_vm_create(job, params):
         cmd.extend(["--disk", f"path={_validate_path(seed_iso)},device=cdrom,bus=sata"])
     if video_model in ("virtio", "vga", "qxl"):
         cmd.extend(["--video", video_model])
+    # Force VNC graphics explicitly — without this, virt-install's
+    # osinfo-based defaults can pick spice on some hosts, which the
+    # console proxy (troshka-vncd) can't talk to.
+    cmd.extend(["--graphics", "vnc,listen=127.0.0.1"])
     if input_model == "virtio":
         cmd.extend(["--input", "type=keyboard,bus=virtio"])
         cmd.extend(["--input", "type=tablet,bus=virtio"])
@@ -3352,6 +3380,7 @@ def _configure_dnsmasq_tftp(job, ns, vni, tftp_root, boot_filename):
         job,
         ["ip", "netns", "exec", ns, "dnsmasq", f"--conf-file={dnsmasq_conf}"],
         timeout=10,
+        capture_output=False,
     )
     _job_log(job, "Restarted dnsmasq with TFTP enabled")
 
@@ -4107,6 +4136,7 @@ def _kill_and_restart_dnsmasq(job, ns, dnsmasq_conf, dnsmasq_pid, vni, bridge):
         job,
         ["ip", "netns", "exec", ns, "dnsmasq", f"--conf-file={dnsmasq_conf}"],
         timeout=10,
+        capture_output=False,
     )
     try:
         with open(dnsmasq_pid) as _pf:
@@ -4194,6 +4224,7 @@ def _setup_chrony_ntp(job, ns, pid, networks):
             job,
             ["ip", "netns", "exec", ns, "chronyd", "-f", chrony_conf],
             timeout=10,
+            capture_output=False,
         )
         _job_log(job, f"chronyd started on {chrony_bind_ip} in namespace {ns}")
     except RuntimeError:
@@ -5028,6 +5059,7 @@ def _handle_lb_setup(job, params):
             haproxy_pid,
         ],
         timeout=10,
+        capture_output=False,
     )
     _job_log(job, f"HAProxy started in namespace {ns}")
     return {"status": "started", "config": haproxy_conf}
@@ -6748,7 +6780,8 @@ def _s3_download(
     proc = subprocess.Popen(
         [aws_bin, "s3", "cp", s3_url, local_path],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
         env=env,
     )
     while proc.poll() is None:
@@ -6760,8 +6793,15 @@ def _s3_download(
         except OSError:
             pass
         time.sleep(5)
+    stderr_output = (proc.stderr.read() or "").strip() if proc.stderr else ""
     if proc.returncode != 0:
-        raise RuntimeError(f"S3 download failed (exit {proc.returncode})")
+        for line in stderr_output.splitlines():
+            _job_log(job, line)
+        detail = stderr_output.splitlines()[-1] if stderr_output else ""
+        raise RuntimeError(
+            f"S3 download failed (exit {proc.returncode})"
+            + (f": {detail}" if detail else "")
+        )
 
 
 def _handle_snapshot_capture(job, params):
@@ -7866,9 +7906,44 @@ def handle_update(handler, params):
     drain_thread.start()
 
 
+def _set_vncd_tls_mode(no_tls):
+    """Rewrite the troshka-vncd systemd unit's ExecStart to add/remove --no-tls.
+
+    Mirrors the install-time logic in agent_deployer.py so the lightweight
+    update-vncd push path can toggle TLS mode without a full reinstall.
+    """
+    import re
+
+    unit_path = "/etc/systemd/system/troshka-vncd.service"
+    base_exec = "/opt/troshka/venv/bin/python3 /opt/troshka/troshka-vncd.py"
+    new_exec_line = f"ExecStart={base_exec} --no-tls" if no_tls else f"ExecStart={base_exec}"
+
+    with open(unit_path) as f:
+        content = f.read()
+    content = re.sub(
+        r"^ExecStart=.*troshka-vncd\.py.*$",
+        new_exec_line,
+        content,
+        flags=re.MULTILINE,
+    )
+    with open(unit_path, "w") as f:
+        f.write(content)
+
+    if no_tls:
+        try:
+            subprocess.run(
+                ["firewall-cmd", "--add-port=8080/tcp", "--permanent"], timeout=10
+            )
+            subprocess.run(["firewall-cmd", "--reload"], timeout=10)
+        except Exception:
+            pass
+
+    subprocess.run(["systemctl", "daemon-reload"], timeout=10, check=True)
+
+
 @route("POST", "/admin/update-vncd")
 def handle_update_vncd(handler, params):
-    """Update troshka-vncd.py and restart the vncd service."""
+    """Update troshka-vncd.py, optionally flip its TLS mode, and restart it."""
     import base64
 
     body = handler._read_body()
@@ -7893,6 +7968,16 @@ def handle_update_vncd(handler, params):
     except Exception as e:
         handler._send_json(500, {"error": f"failed to write vncd: {e}"})
         return
+
+    # Optionally flip TLS mode (systemd unit ExecStart) before restarting.
+    # Absent "no_tls" means "leave the current mode alone" — keeps callers
+    # that only push the script (no mode info) from silently flipping mode.
+    if "no_tls" in body:
+        try:
+            _set_vncd_tls_mode(bool(body["no_tls"]))
+        except Exception as e:
+            handler._send_json(500, {"error": f"failed to update vncd unit: {e}"})
+            return
 
     # Restart service
     try:
@@ -8116,6 +8201,11 @@ def _restart_dead_dnsmasq(pidfile, conf_path, conf_name):
     if ns_name not in ns_check.stdout:
         return False
     try:
+        # dnsmasq self-daemonizes (double-fork); capture_output=True here would pipe
+        # stdout/stderr, which the detached grandchild inherits, so subprocess.run()
+        # would block waiting for EOF that never arrives until the timeout kills an
+        # already-successfully-started process. Use DEVNULL since we don't need the
+        # output (failures are reported via the caught exception below).
         subprocess.run(
             [
                 "ip",
@@ -8125,7 +8215,8 @@ def _restart_dead_dnsmasq(pidfile, conf_path, conf_name):
                 "dnsmasq",
                 f"--conf-file={conf_path}",
             ],
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=10,
         )
         try:
@@ -10532,6 +10623,31 @@ def _mount_container_volumes(job, volumes):
     return mount_dirs
 
 
+def _parse_command_override(command):
+    """Parse a container command override into a list of argv tokens.
+
+    Accepts a plain shell-style string (`--foo bar`), a pasted JSON array
+    string (`["--foo", "bar"]` — the Kubernetes/Docker `command:` style users
+    sometimes paste in by habit), or an already-parsed list. Returns None for
+    empty input so callers can treat it as "no override".
+    """
+    if not command:
+        return None
+    if isinstance(command, list):
+        return [str(c) for c in command] or None
+    command = command.strip()
+    if command.startswith("["):
+        try:
+            parsed = json.loads(command)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(c) for c in parsed] or None
+    import shlex
+
+    return shlex.split(command) or None
+
+
 def _build_container_cmd(
     name,
     image,
@@ -10578,8 +10694,9 @@ def _build_container_cmd(
         cmd.extend(["-v", f"{mount_dir}:{mount_path}"])
 
     cmd.append(image)
-    if command:
-        cmd.extend(command.split())
+    tokens = _parse_command_override(command)
+    if tokens:
+        cmd.extend(tokens)
     return cmd
 
 
@@ -11116,8 +11233,9 @@ def _create_init_container(job, full_pod_name, ic):
         cmd.extend(["-e", f"{k}={v}"])
     for vol in ic.get("mounts") or []:
         cmd.extend(["-v", vol])
-    if ic.get("command"):
-        cmd.extend(["--entrypoint", ic["command"]])
+    tokens = _parse_command_override(ic.get("command"))
+    if tokens:
+        cmd.extend(["--entrypoint", json.dumps(tokens)])
     cmd.append(ic["image"])
     _run_cmd(job, cmd)
     _job_log(job, f"Init container created: {ic['name']}")
@@ -11146,8 +11264,9 @@ def _create_main_container(job, full_pod_name, ctr, restart_policy, privileged):
         cmd.extend(["-v", vol])
     if privileged:
         cmd.append("--privileged")
-    if ctr.get("command"):
-        cmd.extend(["--entrypoint", ctr["command"]])
+    tokens = _parse_command_override(ctr.get("command"))
+    if tokens:
+        cmd.extend(["--entrypoint", json.dumps(tokens)])
     cmd.append(ctr["image"])
     _run_cmd(job, cmd)
     _job_log(job, f"Main container created: {ctr['name']}")

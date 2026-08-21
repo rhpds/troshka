@@ -281,6 +281,35 @@ class TestJobCacheAndStartVm:
 
         mock_db.close.assert_called_once()
 
+    @patch("app.services.deploy_service.cache_library_images")
+    @patch("app.core.database.SessionLocal")
+    def test_cache_failure_sets_error_state(self, mock_session_cls, mock_cache):
+        from app.services.troshkad_client import TroshkadError
+        from app.workers.jobs import job_cache_and_start_vm
+
+        mock_db = MagicMock()
+        mock_session_cls.return_value = mock_db
+
+        proj = MagicMock()
+        proj.deployed_topology = None
+        proj.topology = {"nodes": []}
+        host = MagicMock()
+
+        mock_db.query.return_value.filter_by.return_value.first.side_effect = [
+            proj,
+            host,
+            proj,  # re-query in the except block
+        ]
+        mock_cache.side_effect = TroshkadError("Failed to cache required image(s)")
+
+        # Should not raise — failure must be caught and surfaced on the project
+        job_cache_and_start_vm("proj-1", "h1", "vm-1")
+
+        assert proj.state == "error"
+        assert "Failed to cache required image(s)" in proj.deploy_error
+        mock_db.commit.assert_called_once()
+        mock_db.close.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # job_redeploy_bg

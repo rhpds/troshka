@@ -33,14 +33,39 @@ DbSession = Annotated[Session, Depends(get_db)]
 HostIdPath = Annotated[str, Path()]
 
 
-def _store_agent_credentials(h, result):
-    """Store troshkad credentials from agent install result on the host record."""
-    if result.get("success"):
-        creds = result.get("troshkad_credentials") or result.get("credentials") or {}
-        if creds.get("token"):
-            h.agent_token = creds["token"]
-            h.agent_cert_fingerprint = creds.get("fingerprint", "")
-            logger.info(_STORED_CREDS_MSG, h.id[:8])
+def _store_agent_credentials(h, result) -> bool:
+    """Store troshkad credentials from agent install result on the host record.
+
+    Returns True only if both a token and a cert fingerprint were captured
+    and stored. Both are required for any troshkad call to succeed (the
+    fingerprint is used for TLS pinning — see troshkad_client._get_pool),
+    so partial credentials are just as broken as none and are not stored.
+    The install script can exit 0 without ever producing real credentials
+    (e.g. if it silently failed to write to a read-only /opt on the host —
+    see infra/libvirt-host-image), so callers must check this return value
+    rather than trusting `result["success"]` alone.
+    """
+    if not result.get("success"):
+        return False
+    creds = result.get("troshkad_credentials") or result.get("credentials") or {}
+    token = creds.get("token")
+    fingerprint = creds.get("fingerprint")
+    if token and fingerprint:
+        h.agent_token = token
+        h.agent_cert_fingerprint = fingerprint
+        logger.info(_STORED_CREDS_MSG, h.id[:8])
+        return True
+    last_output = "\n".join(result.get("output", "").strip().splitlines()[-15:])
+    logger.warning(
+        "Agent install for host %s exited 0 but produced no usable troshkad "
+        "credentials (token=%s, fingerprint=%s) — marking install_failed. "
+        "Last output:\n%s",
+        h.id[:8],
+        bool(token),
+        bool(fingerprint),
+        last_output,
+    )
+    return False
 
 
 def _detach_install_iso(host, db_session):
@@ -87,6 +112,7 @@ class ProvisionRequest(BaseModel):
     image_id: str | None = None
     storage_pool_id: str | None = None
     disk_gb: int | None = None
+    ip_address: str | None = None
 
 
 @router.get("/expected-agent-version")
@@ -337,6 +363,11 @@ def _validate_provider(provider: Provider | None, body) -> Provider:
                 status_code=400,
                 detail="No VPC configured — run Setup VPC on the provider first",
             )
+    elif provider.type == "libvirt" and not body.ip_address:
+        raise HTTPException(
+            status_code=400,
+            detail="ip_address is required for a libvirt provider host",
+        )
     return provider
 
 
@@ -459,6 +490,7 @@ def add_host(
         _disk_gb,
         region,
         nfs_kwargs,
+        body.ip_address or "",
         queue_name="host_lifecycle",
         host_id=host_id,
     )
@@ -548,13 +580,14 @@ def _build_pool_install_kwargs(
         get_provider_data_disk,
         get_provider_ssh_port,
         get_provider_ssh_user,
+        get_provider_vncd_no_tls,
     )
 
     cfg = AgentDeployConfig(
         ssh_user=get_provider_ssh_user(provider_type),
         ssh_port=get_provider_ssh_port(provider_type),
         data_disk_device=get_provider_data_disk(provider_type),
-        vncd_no_tls=provider_type == "ocpvirt",
+        vncd_no_tls=get_provider_vncd_no_tls(provider_type),
         agent_ca_cert=get_agent_ca_cert(),
     )
     if h.console_domain:
@@ -702,7 +735,9 @@ def _push_vncd_update(h: Host, s: Session) -> None:
     with open(vncd_path, "rb") as vf:
         vncd_b64 = base64.b64encode(vf.read()).decode()
     prov = s.query(Provider).filter_by(id=h.provider_id).first()
-    no_tls = prov.type == "ocpvirt" if prov else False
+    from app.services.agent_deployer import get_provider_vncd_no_tls
+
+    no_tls = get_provider_vncd_no_tls(prov.type) if prov else False
     troshkad_request(
         h,
         "POST",
@@ -727,6 +762,7 @@ def _do_ssh_wait_and_install(
         deploy_agent,
         get_provider_data_disk,
         get_provider_ssh_user,
+        get_provider_vncd_no_tls,
         wait_for_ssh,
     )
 
@@ -759,20 +795,21 @@ def _do_ssh_wait_and_install(
             host_cert=_host_cert,
             host_key=_host_key,
             console_domain=h.console_domain or "",
-            vncd_no_tls=provider_type == "ocpvirt",
+            vncd_no_tls=get_provider_vncd_no_tls(provider_type),
             data_disk_device=_data_disk,
             agent_ca_cert=_get_aca(),
         ),
     )
-    h.agent_status = "connected" if result["success"] else "install_failed"
-    _store_agent_credentials(h, result)
+    creds_ok = _store_agent_credentials(h, result)
+    h.agent_status = "connected" if result["success"] and creds_ok else "install_failed"
 
     # Detach install ISO from ocpvirt hosts (unblocks live migration)
-    if result["success"] and provider_type == "ocpvirt" and h.instance_id:
+    if creds_ok and provider_type == "ocpvirt" and h.instance_id:
         _detach_install_iso(h, s)
 
     # Create console DNS/Route record
-    _setup_console_dns(h, s, provider_console_domain)
+    if creds_ok:
+        _setup_console_dns(h, s, provider_console_domain)
     s.commit()
 
 
@@ -790,6 +827,7 @@ def _provision_and_install_bg(
     _disk_gb: int = 500,
     region: str = "",
     nfs_kwargs: dict | None = None,
+    ip_address: str = "",
 ):
     if nfs_kwargs is None:
         nfs_kwargs = {}
@@ -819,6 +857,7 @@ def _provision_and_install_bg(
                 security_group_id=_sg_id,
                 subnet_override=_subnet_id,  # type: ignore[arg-type]
                 host_type="shared",
+                ip_address=ip_address,
                 **nfs_kwargs,
             )
         except Exception:
@@ -974,21 +1013,16 @@ def _install_bg(h_id: str, h_ip: str, h_key: str):
         result = deploy_agent(
             host_ip=h_ip, private_key=h_key, host_id=h_id, config=_install_config
         )
-        h.agent_status = "connected" if result["success"] else "install_failed"
-
         # Store troshkad credentials FIRST (needed for health check below)
-        creds = result.get("troshkad_credentials", {})
-        if creds.get("token") and creds.get("fingerprint"):
-            h.agent_token = creds["token"]
-            h.agent_cert_fingerprint = creds["fingerprint"]
-            logger.info(_STORED_CREDS_MSG, h.id[:8])
+        creds_ok = _store_agent_credentials(h, result)
+        h.agent_status = "connected" if result["success"] and creds_ok else "install_failed"
 
         # Verify agent version and push update if source changed during reinstall
-        if result["success"]:
+        if creds_ok:
             _verify_and_update_agent_version(h)
 
         # Detach install ISO from ocpvirt hosts (unblocks live migration)
-        if result["success"] and _provider_type == "ocpvirt" and h.instance_id:
+        if creds_ok and _provider_type == "ocpvirt" and h.instance_id:
             _detach_install_iso(h, s)
 
         s.commit()
@@ -1620,6 +1654,11 @@ def update_host(
         "auto_extend_threshold_pct": int,
         "auto_extend_increment_gb": int,
         "auto_extend_max_gb": (int, type(None)),
+        # Normally set from provider driver provisioning/resize results —
+        # exposed here so admins can raise it on hosts (e.g. libvirt BYO
+        # hosts) provisioned before a driver started returning a non-zero
+        # value, without having to re-provision.
+        "max_eips": int,
     }
     for key, val in body.items():
         if key not in allowed:

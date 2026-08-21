@@ -2514,6 +2514,7 @@ class TestSetupMesh:
 # ═══════════════════════════════════════════════════════════════════════════
 
 from app.services.deploy_service import (
+    _allocate_single_eip,
     _cleanup_stale_shared_cache,
     _create_ordered_containers,
     _deploy_allocate_eips,
@@ -2846,6 +2847,90 @@ class TestDeployAllocateEips:
         assert result is None
         # _skip key should be cleaned up
         assert "_skip" not in ext_ips[0]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _allocate_single_eip — ec2/libvirt vs. transit-port providers
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestAllocateSingleEip:
+    def _run(self, provider_type, mock_alloc, mock_assoc, mock_transit, mock_driver_fn):
+        s = MagicMock()
+        s.query.return_value.filter_by.return_value.first.return_value = None
+
+        provider = MagicMock()
+        provider.type = provider_type
+        host = _make_host(provider_id="prov-1")
+
+        mock_eip = MagicMock()
+        mock_eip.state = "allocated"
+        mock_eip.public_ip = "192.168.124.198"
+        mock_eip.private_ip = "192.168.124.198"
+        mock_eip.port_map = None
+        mock_alloc.return_value = mock_eip
+
+        ext_ip = {"id": "eip-1"}
+        topology = {
+            "nodes": [
+                {
+                    "type": "networkNode",
+                    "data": {
+                        "subtype": "gateway",
+                        "gatewayMode": "nat-portforward",
+                        "portForwards": [
+                            {"extIpId": "eip-1", "extPort": "8080", "intIp": "10.0.0.5", "intPort": "80"}
+                        ],
+                    },
+                }
+            ]
+        }
+
+        _allocate_single_eip(s, provider, PROJECT_ID, host, ext_ip, topology)
+        return ext_ip, mock_eip
+
+    @patch("app.services.providers.get_provider_driver")
+    @patch("app.services.eip_service.allocate_transit_ports")
+    @patch("app.services.eip_service.associate_eip")
+    @patch("app.services.eip_service.allocate_eip")
+    def test_libvirt_skips_transit_ports(
+        self, mock_alloc, mock_assoc, mock_transit, mock_driver_fn
+    ):
+        """Libvirt shares EC2's direct-private-IP DNAT path — no transit
+        ports, no update_eip_ports call (which libvirt doesn't implement)."""
+        ext_ip, _ = self._run(
+            "libvirt", mock_alloc, mock_assoc, mock_transit, mock_driver_fn
+        )
+        mock_transit.assert_not_called()
+        mock_driver_fn.return_value.update_eip_ports.assert_not_called()
+        assert ext_ip["_private_ip"] == "192.168.124.198"
+        assert "_transit_port_map" not in ext_ip
+
+    @patch("app.services.providers.get_provider_driver")
+    @patch("app.services.eip_service.allocate_transit_ports")
+    @patch("app.services.eip_service.associate_eip")
+    @patch("app.services.eip_service.allocate_eip")
+    def test_ec2_skips_transit_ports(
+        self, mock_alloc, mock_assoc, mock_transit, mock_driver_fn
+    ):
+        """Regression guard for the pre-existing EC2 direct-IP behavior."""
+        self._run("ec2", mock_alloc, mock_assoc, mock_transit, mock_driver_fn)
+        mock_transit.assert_not_called()
+        mock_driver_fn.return_value.update_eip_ports.assert_not_called()
+
+    @patch("app.services.providers.get_provider_driver")
+    @patch("app.services.eip_service.allocate_transit_ports")
+    @patch("app.services.eip_service.associate_eip")
+    @patch("app.services.eip_service.allocate_eip")
+    def test_gcp_still_allocates_transit_ports(
+        self, mock_alloc, mock_assoc, mock_transit, mock_driver_fn
+    ):
+        """Regression guard: providers sharing one LB IP (gcp/azure/ocpvirt/
+        kubevirt) must keep going through transit-port allocation."""
+        mock_transit.return_value = {"8080": 40001}
+        self._run("gcp", mock_alloc, mock_assoc, mock_transit, mock_driver_fn)
+        mock_transit.assert_called_once()
+        mock_driver_fn.return_value.update_eip_ports.assert_called_once()
 
 
 # ═══════════════════════════════════════════════════════════════════════════

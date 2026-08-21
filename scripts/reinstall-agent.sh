@@ -21,6 +21,7 @@ HOST_PREFIX="${1:-}"
 
 cd "$BACKEND_DIR" && exec "$VENV_PYTHON" -c "
 import sys, time
+from app.api.hosts import _store_agent_credentials
 from app.core.database import SessionLocal
 from app.models.host import Host
 from app.models.provider import Provider
@@ -54,8 +55,15 @@ try:
         print(f'{h.id[:8]} ({h.ip_address}:{ssh_port}): reinstalling...', end=' ', flush=True)
         try:
             result = deploy_agent(h.ip_address, h.private_key, h.id, ssh_port=ssh_port, ssh_user=ssh_user)
-            if not result.get('success'):
-                print('FAILED')
+            creds_ok = _store_agent_credentials(h, result)
+            db.commit()
+            if not result.get('success') or not creds_ok:
+                h.agent_status = 'install_failed'
+                db.commit()
+                if not result.get('success'):
+                    print('FAILED')
+                else:
+                    print('FAILED (script exited 0 but produced no usable credentials, see backend logs)')
                 continue
             # Wait for agent and update DB version
             for _ in range(20):

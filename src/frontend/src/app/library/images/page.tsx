@@ -88,6 +88,40 @@ export default function ImagesPage() {
     }
   }, [items]);
 
+  const errorDetail = async (resp: Response, fallback: string) => {
+    const err = await resp.json().catch(() => ({ detail: fallback }));
+    return err.detail || fallback;
+  };
+
+  // Whole-file upload through the backend — used when the S3 backend is a
+  // self-hosted endpoint (dev MinIO) whose presigned URLs aren't browser-reachable.
+  const uploadViaProxy = (id: string, file: File) =>
+    new Promise<void>((resolve, reject) => {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `/api/v1/library/${id}/upload-proxy`);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          setUploadProgress(`Uploading... ${pct}% (${formatSize(e.loaded)} / ${formatSize(e.total)})`);
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+        } else {
+          const detail = (() => {
+            try { return JSON.parse(xhr.responseText).detail; } catch { return undefined; }
+          })();
+          reject(new Error(detail || `Upload failed (HTTP ${xhr.status})`));
+        }
+      };
+      xhr.onerror = () => reject(new Error("Upload network error"));
+      xhr.send(formData);
+    });
+
   const handleUpload = async () => {
     if (!newName.trim()) { setError("Name is required"); return; }
     if (sourceMode === "file" && !selectedFile) { setError("Select a file"); return; }
@@ -112,7 +146,7 @@ export default function ImagesPage() {
         }),
       });
       if (!createResp.ok) {
-        setError("Failed to create item");
+        setError(await errorDetail(createResp, "Failed to create item"));
         setUploading(false);
         return;
       }
@@ -133,17 +167,35 @@ export default function ImagesPage() {
           showToast("Import started — download in progress on server");
           loadItems();
         } else {
-          setError("Failed to start import");
+          setError(await errorDetail(importResp, "Failed to start import"));
         }
         setUploading(false);
         return;
       }
 
-      // Step 2: Start multipart upload
+      // Step 2: Start upload — server decides proxy (self-hosted S3/MinIO) vs presigned (AWS S3)
       setUploadProgress("Preparing upload...");
       const startResp = await fetch(`/api/v1/library/${id}/upload-start`, { method: "POST" });
-      if (!startResp.ok) { setError("Failed to start upload"); setUploading(false); return; }
-      const { upload_id } = await startResp.json();
+      if (!startResp.ok) {
+        setError(await errorDetail(startResp, "Failed to start upload"));
+        setUploading(false);
+        return;
+      }
+      const { mode, upload_id } = await startResp.json();
+
+      if (mode === "proxy") {
+        setUploadProgress(`Uploading (${formatSize(file!.size)})...`);
+        await uploadViaProxy(id, file!);
+        setUploadProgress("");
+        setShowUpload(false);
+        setNewName("");
+        setNewDesc("");
+        setSelectedFile(null);
+        setSelectedFileName("");
+        loadItems();
+        setUploading(false);
+        return;
+      }
 
       // Step 3: Upload parts (500 MB chunks)
       const CHUNK_SIZE = 500 * 1024 * 1024;
@@ -160,7 +212,7 @@ export default function ImagesPage() {
         // Get presigned URL for this part
         if (partNumber === 1) setUploadProgress(`Reading file (${formatSize(file!.size)})...`);
         const partResp = await fetch(`/api/v1/library/${id}/upload-part-url?upload_id=${upload_id}&part_number=${partNumber}`, { method: "POST" });
-        if (!partResp.ok) throw new Error("Failed to get part URL");
+        if (!partResp.ok) throw new Error(await errorDetail(partResp, "Failed to get part URL"));
         const { url } = await partResp.json();
 
         // Upload the chunk
@@ -206,7 +258,7 @@ export default function ImagesPage() {
         setSelectedFileName("");
         loadItems();
       } else {
-        setError("Upload finalization failed");
+        setError(await errorDetail(completeResp, "Upload finalization failed"));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to connect to server");
