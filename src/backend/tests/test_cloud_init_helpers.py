@@ -13,6 +13,22 @@ from app.services.cloud_init import (
 # ---------------------------------------------------------------------------
 
 
+def test_generate_userdata_minimal_gold_image_login_user():
+    """Gold images can use minimal cloud-init for an existing login user."""
+    result = generate_userdata(
+        {
+            "name": "control",
+            "ciMinimalCloudInit": True,
+            "ciLoginUser": "aap",
+            "ciCloudUserPassword": "secret",
+        }
+    )
+    assert "qemu-guest-agent" not in result
+    assert "- name: aap" in result
+    assert "cloud-user" not in result
+    assert "systemctl enable --now sshd" in result
+
+
 def test_generate_userdata_minimal():
     """Minimal VM data produces valid cloud-config with defaults."""
     result = generate_userdata({"name": "test-vm"})

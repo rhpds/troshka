@@ -2,7 +2,7 @@
 disk-change detection, deploy-related helpers, and kubevirt reconfigure functions.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -1869,13 +1869,25 @@ class TestCacheRedeployImages:
 
 
 class TestCreateRedeployVm:
-    @patch("app.api.projects._create_vm_via_troshkad")
-    @patch("app.api.projects._create_vm_disks_via_troshkad")
+    @patch(
+        "app.api.projects.wait_for_job",
+        return_value={"status": "completed", "result": {}},
+    )
+    @patch("app.api.projects._wait_redeploy_disk_jobs")
+    @patch("app.api.projects._create_vm_via_troshkad", return_value="create-job")
+    @patch("app.api.projects._create_vm_disks_via_troshkad", return_value=["disk-job"])
     @patch("app.api.projects._find_vm_disks", return_value=[])
     @patch("app.api.projects._build_redeploy_vm_data", return_value={"node_id": "vm1"})
     @patch("app.api.projects._create_seed_isos_via_troshkad")
     def test_creates_seed_disks_and_vm(
-        self, mock_seed, mock_build, mock_find, mock_disks, mock_create
+        self,
+        mock_seed,
+        mock_build,
+        mock_find,
+        mock_disks,
+        mock_create,
+        mock_wait_disks,
+        mock_wait,
     ):
         from app.api.projects import _create_redeploy_vm
 
@@ -1887,7 +1899,9 @@ class TestCreateRedeployVm:
         )
         mock_seed.assert_called_once()
         mock_disks.assert_called_once()
+        mock_wait_disks.assert_called_once_with(ANY, ["disk-job"])
         mock_create.assert_called_once()
+        mock_wait.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1896,6 +1910,7 @@ class TestCreateRedeployVm:
 
 
 class TestDoRedeployBg:
+    @patch("app.api.projects._notify_redeploy_vm_state")
     @patch("app.api.projects._start_vm_if_needed")
     @patch("app.api.projects._create_redeploy_vm")
     @patch("app.api.projects._setup_pxe_via_troshkad")
@@ -1922,6 +1937,7 @@ class TestDoRedeployBg:
         mock_pxe,
         mock_create,
         mock_start,
+        mock_notify,
     ):
         from app.api.projects import _do_redeploy_bg
 
@@ -1953,6 +1969,7 @@ class TestDoRedeployBg:
         mock_cleanup.assert_called_once()
         mock_create.assert_called_once()
         mock_start.assert_called_once()
+        mock_notify.assert_called_once()
         mock_session.commit.assert_called()
 
     def test_no_project_returns_early(self):
@@ -2437,6 +2454,107 @@ class TestExecTroshkad:
         )
         assert result["method"] == "ssh"
         assert result["output"] == "uid=0"
+
+    @patch("app.api.projects.wait_for_job")
+    @patch("app.api.projects.start_job")
+    def test_auto_ssh_failure_falls_through(self, mock_start, mock_wait):
+        from app.api.projects import _exec_troshkad
+
+        mock_start.side_effect = ["job-ssh", "job-console", "job-serial"]
+
+        def wait_side_effect(host, job_id, timeout=60):
+            if job_id == "job-ssh":
+                return {
+                    "status": "completed",
+                    "result": {
+                        "output": "",
+                        "error": "connect to host 10.0.0.5 port 22: No route to host\n",
+                        "exit_code": 255,
+                    },
+                }
+            if job_id == "job-console":
+                return {
+                    "status": "completed",
+                    "result": {
+                        "output": "",
+                        "error": "Could not reach shell prompt",
+                    },
+                }
+            return {
+                "status": "completed",
+                "result": {"output": "rtr1>", "error": ""},
+            }
+
+        mock_wait.side_effect = wait_side_effect
+
+        result = _exec_troshkad(
+            host=MagicMock(),
+            project_id="p1234567",
+            vm_id="vm-abc",
+            methods=["ssh", "console", "serial"],
+            method="auto",
+            vm_ip="10.0.0.5",
+            username="admin",
+            password="pass",
+            private_key="",
+            root_password="",
+            command="show version",
+            timeout=60,
+            force_tty=False,
+        )
+        assert result["method"] == "serial"
+        assert result["output"] == "rtr1>"
+        assert mock_start.call_count == 3
+
+    @patch("app.api.projects.wait_for_job")
+    @patch("app.api.projects.start_job", return_value="job-ssh")
+    def test_explicit_ssh_returns_nonzero_exit(self, mock_start, mock_wait):
+        from app.api.projects import _exec_troshkad
+
+        mock_wait.return_value = {
+            "status": "completed",
+            "result": {
+                "output": "",
+                "error": "connect failed",
+                "exit_code": 255,
+            },
+        }
+        result = _exec_troshkad(
+            host=MagicMock(),
+            project_id="p1234567",
+            vm_id="vm-abc",
+            methods=["ssh"],
+            method="ssh",
+            vm_ip="10.0.0.5",
+            username="admin",
+            password="pass",
+            private_key="",
+            root_password="",
+            command="show version",
+            timeout=60,
+            force_tty=False,
+        )
+        assert result["method"] == "ssh"
+        assert result["exit_code"] == 255
+
+    def test_resolve_exec_params_skips_guest_agent_without_cloud_init(self):
+        from app.api.projects import _resolve_exec_params
+
+        vm_node = {"data": {"cloudInit": False, "nics": [{"ip": "10.0.0.5"}]}}
+        params = _resolve_exec_params({"method": "auto"}, vm_node)
+        assert params["methods"] == ["ssh", "console", "serial"]
+
+    def test_resolve_serial_exec_type_from_canvas(self):
+        from app.api.projects import _resolve_serial_exec_type
+
+        vm_node = {"data": {"serialExecType": "ios"}}
+        assert _resolve_serial_exec_type({}, vm_node) == "ios"
+
+    def test_resolve_serial_exec_type_from_ansible_group(self):
+        from app.api.projects import _resolve_serial_exec_type
+
+        vm_node = {"data": {"tags": {"AnsibleGroup": "routers,cisco_iosxe"}}}
+        assert _resolve_serial_exec_type({}, vm_node) == "ios"
 
     def test_single_method_failure_raises_immediately(self):
         from fastapi import HTTPException

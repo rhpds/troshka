@@ -641,3 +641,22 @@ def test_single_container_unchanged_after_pod_support():
     assert "registry" in exported["containers"]
     assert exported["containers"]["registry"]["image"] == "registry:2"
     assert "type" not in exported["containers"]["registry"]
+
+
+def test_library_item_name_sets_disk_source():
+    from app.services.template_loader import generate_topology_from_template
+
+    tmpl = {
+        "networks": {"net1": {"cidr": "10.0.0.0/24"}},
+        "vms": {
+            "vm1": {
+                "disks": [{"size_gb": 10, "library_item_name": "rhel-9.6"}],
+                "nics": [{"network": "net1"}],
+            }
+        },
+    }
+    topo = generate_topology_from_template(tmpl)
+    storage = [n for n in topo["nodes"] if n["type"] == "storageNode"]
+    assert len(storage) == 1
+    assert storage[0]["data"]["source"] == "library"
+    assert storage[0]["data"]["libraryItemName"] == "rhel-9.6"

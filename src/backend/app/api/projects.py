@@ -493,6 +493,8 @@ def create_project_from_template(
     if not block_outbound:
         resolved.setdefault("gateway", {}).pop("outbound_ports", None)
 
+    _resolve_template_library_items(db, user, resolved.get("vms", {}))
+
     topology = generate_topology_from_template(
         resolved,
         bmc_password=common_password,
@@ -624,6 +626,14 @@ def _find_library_item(db, user_id, item_id, item_name, label, missing):
             db.query(LibraryItem)
             .join(Library)
             .filter(LibraryItem.name == item_name, Library.owner_id == user_id)
+            .first()
+        )
+        if item:
+            return item
+        item = (
+            db.query(LibraryItem)
+            .join(Library)
+            .filter(LibraryItem.name == item_name, Library.type == "central")
             .first()
         )
         if item:
@@ -2254,6 +2264,35 @@ def _try_kubevirt_method(
     return None, f"{m}: unknown method"
 
 
+def _auto_exec_accepts(result: dict, method: str) -> bool:
+    """Return True if auto mode should stop at this result (not try fallbacks)."""
+    err = (result.get("error") or "").strip()
+    output = (result.get("output") or "").strip()
+    exit_code = result.get("exit_code")
+
+    if method in ("ssh", "guest-agent"):
+        if exit_code not in (None, 0):
+            return False
+        if err and not output:
+            return False
+        return True
+
+    if method in ("console", "serial"):
+        return bool(output) and not err
+
+    return bool(output) or not err
+
+
+def _auto_exec_failure_reason(result: dict, method: str) -> str:
+    err = (result.get("error") or "").strip()
+    if err:
+        return err
+    exit_code = result.get("exit_code")
+    if exit_code not in (None, 0):
+        return f"exit {exit_code}"
+    return "failed"
+
+
 def _exec_kubevirt(
     provider,
     project_id: str,
@@ -2285,6 +2324,9 @@ def _exec_kubevirt(
                 timeout,
             )
             if result is not None:
+                if is_auto and not _auto_exec_accepts(result, m):
+                    errors.append(f"{m}: {_auto_exec_failure_reason(result, m)}")
+                    continue
                 return result
             if err:
                 errors.append(err)
@@ -2363,6 +2405,7 @@ def _troshkad_exec_serial(
     password: str,
     command: str,
     timeout: int,
+    serial_exec_type: str = "linux",
 ):
     """Execute via serial console on a troshkad host. Returns (result, error)."""
     job_id = start_job(
@@ -2374,9 +2417,13 @@ def _troshkad_exec_serial(
             "password": password,
             "command": command,
             "timeout": timeout,
+            "serial_exec_type": serial_exec_type,
         },
     )
-    job = wait_for_job(host, job_id, timeout=90)
+    job_wait = min(
+        timeout + 30, 180 if serial_exec_type in ("ios", "eos", "junos") else 90
+    )
+    job = wait_for_job(host, job_id, timeout=job_wait)
     if job["status"] == "completed":
         result = job.get("result", {})
         if result.get("output") or not result.get("error"):
@@ -2441,6 +2488,7 @@ def _dispatch_troshkad_method(
     command,
     timeout,
     force_tty,
+    serial_exec_type="linux",
 ):
     """Dispatch a single exec method on a troshkad host. Returns (result, error)."""
     if m == "guest-agent":
@@ -2450,12 +2498,39 @@ def _dispatch_troshkad_method(
             host, project_id, vm_ip, username, password, private_key, command, timeout
         )
     if m == "serial":
-        return _troshkad_exec_serial(host, dom, username, password, command, timeout)
+        return _troshkad_exec_serial(
+            host, dom, username, password, command, timeout, serial_exec_type
+        )
     if m in ("console", "console-text"):
         return _troshkad_exec_console(
             host, dom, username, password, root_password, command, timeout, force_tty, m
         )
     return None, f"{m}: unknown method"
+
+
+def _resolve_serial_exec_type(body: dict, vm_node: dict | None) -> str:
+    """Resolve serial CLI type for exec (linux, ios, eos, junos)."""
+    override = (
+        body.get("serial_exec_type") or body.get("serialExecType") or ""
+    ).lower()
+    if override:
+        return override
+    if not vm_node:
+        return "linux"
+    data = vm_node.get("data", {})
+    node_type = (data.get("serialExecType") or "").lower()
+    if node_type:
+        return node_type
+    tags = data.get("tags") or {}
+    group_str = tags if isinstance(tags, str) else tags.get("AnsibleGroup", "")
+    groups = [g.strip().lower() for g in str(group_str).split(",") if g.strip()]
+    if any(g in ("cisco_iosxe", "cisco_ios", "iosxe") for g in groups):
+        return "ios"
+    if any(g in ("arista_eos", "eos") for g in groups):
+        return "eos"
+    if any(g in ("juniper_junos", "junos") for g in groups):
+        return "junos"
+    return "linux"
 
 
 def _exec_troshkad(
@@ -2472,6 +2547,7 @@ def _exec_troshkad(
     command: str,
     timeout: int,
     force_tty: bool,
+    serial_exec_type: str = "linux",
 ):
     """Dispatch exec to a troshkad-hosted VM. Returns result dict or raises HTTPException."""
     dom = _domain_name(project_id, vm_id)
@@ -2492,9 +2568,13 @@ def _exec_troshkad(
                 command,
                 timeout,
                 force_tty,
+                serial_exec_type,
             )
 
             if result is not None:
+                if method == "auto" and not _auto_exec_accepts(result, m):
+                    errors.append(f"{m}: {_auto_exec_failure_reason(result, m)}")
+                    continue
                 return result
             if err:
                 errors.append(err)
@@ -2539,6 +2619,8 @@ def _resolve_exec_params(body: dict, vm_node: dict | None) -> dict:
 
     if method == "auto":
         methods = ["guest-agent", "ssh", "console", "serial"]
+        if vm_node and not vm_node.get("data", {}).get("cloudInit"):
+            methods = ["ssh", "console", "serial"]
         force_tty = False
     else:
         methods = [method]
@@ -2553,6 +2635,7 @@ def _resolve_exec_params(body: dict, vm_node: dict | None) -> dict:
         "private_key": private_key,
         "root_password": root_password,
         "methods": methods,
+        "serial_exec_type": _resolve_serial_exec_type(body, vm_node),
     }
 
 
@@ -2574,8 +2657,11 @@ def vm_exec(
         username: SSH/console user (default: cloud-user)
         password: VM password (auto-resolved from topology if omitted)
         timeout: Command timeout in seconds (default: 600, max: 3600)
-        method: "auto" (tries guest-agent → ssh → console → serial),
+        method: "auto" (tries guest-agent → ssh → console → serial for cloud-init
+                VMs; ssh → console → serial otherwise),
                 "guest-agent", "ssh", "serial", or "console"
+        serial_exec_type: serial CLI handler — linux (default), ios, eos, junos.
+                Auto-resolved from VM serialExecType or AnsibleGroup tags.
     """
     project, host = _get_project_and_host(project_id, user, db)
     if project.state not in ("active", "stopped"):
@@ -2629,6 +2715,7 @@ def vm_exec(
         command,
         params["timeout"],
         params["force_tty"],
+        params["serial_exec_type"],
     )
 
 
@@ -4115,28 +4202,66 @@ def _cache_redeploy_images(h, s, vm_topo, dom):
     cache_library_images(vm_topo, h, s, progress_callback=_progress)
 
 
+def _wait_redeploy_disk_jobs(h, job_ids):
+    """Wait for troshkad disk-create jobs started during redeploy."""
+    for jid in job_ids or []:
+        job = wait_for_job(h, jid, timeout=900)
+        if job.get("status") == "failed":
+            err = job.get("result", {}).get("error", "disk create failed")
+            raise TroshkadError(f"Disk creation failed: {err}")
+
+
 def _create_redeploy_vm(h, p_id, vm_node, topology, vni_map, pool, target_vm_id, dom):
     vm_only_topo = {"nodes": [vm_node], "edges": []}
     _redeploy_progress[dom] = {"step": "creating", "detail": "cloud-init seed ISO"}
     _create_seed_isos_via_troshkad(h, p_id, vm_only_topo, pool)
 
-    _redeploy_progress[dom] = {"step": "creating", "detail": "VM definition"}
+    _redeploy_progress[dom] = {"step": "creating", "detail": "VM disks"}
     vm_data = _build_redeploy_vm_data(vm_node)
     disk_cache = "none" if pool and pool.mode.startswith("shared") else None
     vm_disks = _find_vm_disks(target_vm_id, topology or {})
-    _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks, pool)
-    _create_vm_via_troshkad(h, p_id, vm_data, topology or {}, vni_map, pool, disk_cache)
+    disk_jobs = _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks, pool)
+    _wait_redeploy_disk_jobs(h, disk_jobs)
+
+    _redeploy_progress[dom] = {"step": "creating", "detail": "VM definition"}
+    job_id = _create_vm_via_troshkad(
+        h, p_id, vm_data, topology or {}, vni_map, pool, disk_cache
+    )
+    if not job_id:
+        raise TroshkadError("VM create job was not started")
+    job = wait_for_job(h, job_id, timeout=300)
+    if job.get("status") == "failed":
+        err = job.get("result", {}).get("error", "unknown")
+        raise TroshkadError(f"VM creation failed: {err}")
+
+
+def _vm_state_for_ws(raw_state: str) -> str:
+    if raw_state == "running":
+        return "running"
+    if raw_state in ("shut off", "shut_off", "stopped"):
+        return "stopped"
+    return raw_state
+
+
+def _notify_redeploy_vm_state(p_id: str, vm_id: str, raw_state: str):
+    notify_project(
+        p_id,
+        {
+            "type": "vm-state",
+            "states": {vm_id: _vm_state_for_ws(raw_state)},
+            "progress": {},
+        },
+    )
 
 
 def _start_vm_if_needed(h, dom, was_running, vm_node):
     vdata = vm_node.get("data", {})
     should_start = was_running or vdata.get("powerOnAtDeploy", True)
-    if should_start:
-        try:
-            job_id = start_job(h, _VMS_START_PATH, {"domain_name": dom})
-            wait_for_job(h, job_id, timeout=60)
-        except TroshkadError as e:
-            logger.warning("Failed to start VM %s after redeploy: %s", dom, e)
+    if not should_start:
+        return False
+    job_id = start_job(h, _VMS_START_PATH, {"domain_name": dom})
+    wait_for_job(h, job_id, timeout=60)
+    return True
 
 
 def _do_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
@@ -4176,16 +4301,33 @@ def _do_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
         _create_redeploy_vm(
             h, p_id, vm_node, topology, vni_map, pool, target_vm_id, dom
         )
-        _start_vm_if_needed(h, dom, was_running, vm_node)
-
         _redeploy_progress[dom] = {"step": "starting", "detail": ""}
+        try:
+            _start_vm_if_needed(h, dom, was_running, vm_node)
+        except TroshkadError as e:
+            logger.error("Redeploy %s: failed to start VM: %s", dom, e)
+            _redeploy_progress.pop(dom, None)
+            _notify_redeploy_vm_state(
+                p_id,
+                target_vm_id,
+                troshkad_get_vm_state(h, dom).get("state", "stopped"),
+            )
+            raise
+
         proj.deployed_topology = topology
         s.commit()
         _redeploy_progress.pop(dom, None)
+        _notify_redeploy_vm_state(
+            p_id, target_vm_id, troshkad_get_vm_state(h, dom).get("state", "running")
+        )
         logger.info("Redeploy %s complete", dom)
     except Exception:
         logger.exception("Redeploy %s failed", target_vm_id[:8])
         _redeploy_progress.pop(_vm_domain_name(p_id, target_vm_id), None)
+        try:
+            _notify_redeploy_vm_state(p_id, target_vm_id, "stopped")
+        except Exception:
+            pass
     finally:
         s.close()
 

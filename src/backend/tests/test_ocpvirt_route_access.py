@@ -100,8 +100,9 @@ def test_route_name_sanitization():
 # -- OCPVirtDriver.create_route_access (mocked K8s) -------------------------
 
 
+@patch("app.services.providers.ocpvirt._setup_route_dnat")
 @patch("app.services.providers.ocpvirt._get_k8s_clients")
-def test_create_route_access_creates_service_and_route(mock_clients):
+def test_create_route_access_creates_service_and_route(mock_clients, mock_dnat):
     from app.services.providers.ocpvirt import OCPVirtDriver
 
     mock_core = MagicMock()
@@ -124,23 +125,36 @@ def test_create_route_access_creates_service_and_route(mock_clients):
 
     driver = OCPVirtDriver()
     result = driver.create_route_access(
-        provider, host, "a53cbd0d-0000-0000", "bastion", "10.0.0.50", 443
+        provider,
+        host,
+        "a53cbd0d-0000-0000",
+        "bastion",
+        "10.0.0.50",
+        443,
+        transit_port=40000,
+        setup_dnat=False,
     )
 
     assert (
         result["hostname"]
         == "troshka-pf-a53cbd0d-bastion-443-troshka.apps.cluster.example.com"
     )
+    assert result["transit_port"] == 40000
     assert mock_core.create_namespaced_service.call_count == 1
+    mock_dnat.assert_not_called()
     assert mock_custom.create_namespaced_custom_object.call_count == 1
 
-    # Verify TLS termination is edge (OCP router handles TLS, backend is plaintext)
+    svc_body = mock_core.create_namespaced_service.call_args[1]["body"]
+    assert svc_body.spec.type == "ClusterIP"
+    assert svc_body.spec.ports[0].target_port == 40000
+
     route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
-    assert route_body["spec"]["tls"]["termination"] == "edge"
+    assert route_body["spec"]["tls"]["termination"] == "passthrough"
 
 
+@patch("app.services.providers.ocpvirt._setup_route_dnat")
 @patch("app.services.providers.ocpvirt._get_k8s_clients")
-def test_create_route_access_edge_for_port_80(mock_clients):
+def test_create_route_access_edge_for_port_80(mock_clients, mock_dnat):
     from app.services.providers.ocpvirt import OCPVirtDriver
 
     mock_core = MagicMock()
@@ -160,8 +174,18 @@ def test_create_route_access_edge_for_port_80(mock_clients):
     host.instance_id = "troshka-host-abc"
 
     driver = OCPVirtDriver()
-    driver.create_route_access(provider, host, "proj-001", "bastion", "10.0.0.50", 80)
+    driver.create_route_access(
+        provider,
+        host,
+        "proj-001",
+        "bastion",
+        "10.0.0.50",
+        80,
+        transit_port=40002,
+        setup_dnat=True,
+    )
 
+    mock_dnat.assert_called_once()
     route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
     assert route_body["spec"]["tls"]["termination"] == "edge"
 

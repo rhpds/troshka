@@ -475,8 +475,14 @@ def _build_vm_nics(nics_cfg, nets_def):
 def _apply_vm_cloud_init_fields(vm_cfg, vm_data):
     if vm_cfg.get("cloud_init"):
         vm_data["cloudInit"] = True
+    if vm_cfg.get("minimal_cloud_init"):
+        vm_data["ciMinimalCloudInit"] = True
+    if vm_cfg.get("login_user"):
+        vm_data["ciLoginUser"] = vm_cfg["login_user"]
     if vm_cfg.get("cloud_user_password"):
         vm_data["ciCloudUserPassword"] = vm_cfg["cloud_user_password"]
+    if vm_cfg.get("userdata_only"):
+        vm_data["ciUserDataOnly"] = True
     if vm_cfg.get("user_data"):
         vm_data["ciUserData"] = vm_cfg["user_data"]
     if vm_cfg.get("packages"):
@@ -500,6 +506,9 @@ def _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip):
         vm_data["pxeBootIsoId"] = vm_cfg["pxe_boot_iso_id"]
     if vm_cfg.get("pxe_boot_iso_name"):
         vm_data["pxeBootIsoName"] = vm_cfg["pxe_boot_iso_name"]
+
+    if vm_cfg.get("serial_exec"):
+        vm_data["serialExecType"] = str(vm_cfg["serial_exec"]).lower()
 
     if vm_cfg.get("tags"):
         vm_data["tags"] = vm_cfg["tags"]
@@ -586,9 +595,10 @@ def _build_disk_node_and_edge(vm_name, disk_cfg, di, vm_x, vm_row_y):
     }
     if disk_cfg.get("library_item_id"):
         disk_data["libraryItemId"] = disk_cfg["library_item_id"]
-        disk_data["source"] = "library"
     if disk_cfg.get("library_item_name"):
         disk_data["libraryItemName"] = disk_cfg["library_item_name"]
+    if disk_cfg.get("library_item_id") or disk_cfg.get("library_item_name"):
+        disk_data["source"] = "library"
     if disk_cfg.get("ocp_mount"):
         disk_data["ocpMount"] = disk_cfg["ocp_mount"]
     disk_node = {
@@ -1331,6 +1341,8 @@ def _export_vm_flags(d, vm_out):
         vm_out["ocp_monitor"] = True
     if d.get("configureBastionBrowser"):
         vm_out["configure_bastion_browser"] = True
+    if d.get("serialExecType") and d.get("serialExecType") != "linux":
+        vm_out["serial_exec"] = d["serialExecType"]
     if d.get("bmcEnabled") and vm_out.get("role") != "control-plane":
         vm_out["bmc"] = True
     if d.get("bmcIp"):

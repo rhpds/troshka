@@ -49,11 +49,14 @@ def install_signal_audit() -> None:
         return
     _handlers_installed = True
 
+    from app.core.crash_report import record_signal
+
     def _wrap(_signum: int, handler):
         if handler is None or handler in (signal.SIG_DFL, signal.SIG_IGN):
             return handler
 
         def wrapped(sig, frame):
+            record_signal(sig, frame)
             audit(f"signal {signal.Signals(sig).name} received")
             handler(sig, frame)
 

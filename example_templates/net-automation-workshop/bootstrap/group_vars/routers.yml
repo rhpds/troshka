@@ -1,0 +1,13 @@
+---
+# Lab L2 — IPs match containerlab routers.clab.yml / gold-image startup-config.
+ansible_user: admin
+ansible_password: admin@123  # pragma: allowlist secret
+ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+# Per-host lab addresses (Troshka inventory may override ansible_host from topology).
+rtr1_ansible_host: 172.20.20.10
+rtr2_ansible_host: 172.20.20.20
+rtr3_ansible_host: 172.20.20.30
+rtr4_ansible_host: 172.20.20.40
+
+workshop_control_lab_ip: 172.20.20.5

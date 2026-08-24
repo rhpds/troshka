@@ -1,0 +1,49 @@
+---
+# Bootstrap workshop Linux VMs via Troshka host SSH (ip netns exec troshka-<id> ssh …).
+# Requires cloud_init + cloud_user_password on control/vscode in the template.
+- name: Verify Troshka SSH connectivity
+  hosts: workshop_control:workshop_vscode
+  gather_facts: false
+  tasks:
+    - name: Ping via troshka exec (SSH from host)
+      ansible.builtin.ping:
+
+- name: Bootstrap vscode
+  hosts: workshop_vscode
+  become: true
+  tasks:
+    - name: Install setup script
+      ansible.builtin.copy:
+        src: scripts/setup-vscode-troshka.sh
+        dest: /tmp/setup-vscode-troshka.sh
+        mode: "0755"
+    - name: Run vscode setup
+      ansible.builtin.command: /tmp/setup-vscode-troshka.sh
+      environment:
+        REG_USER: "{{ reg_user | default('') }}"
+        REG_PASS: "{{ reg_pass | default('') }}"
+        REG_ORG: "{{ reg_org | default('') }}"
+        REG_ACTIVATION_KEY: "{{ reg_activation_key | default('') }}"
+      changed_when: true
+      async: 3600
+      poll: 30
+
+- name: Bootstrap control
+  hosts: workshop_control
+  become: true
+  tasks:
+    - name: Install setup script
+      ansible.builtin.copy:
+        src: scripts/setup-control-troshka.sh
+        dest: /tmp/setup-control-troshka.sh
+        mode: "0755"
+    - name: Run control setup
+      ansible.builtin.command: /tmp/setup-control-troshka.sh
+      environment:
+        REG_USER: "{{ reg_user | default('') }}"
+        REG_PASS: "{{ reg_pass | default('') }}"
+        REG_ORG: "{{ reg_org | default('') }}"
+        REG_ACTIVATION_KEY: "{{ reg_activation_key | default('') }}"
+      changed_when: true
+      async: 3600
+      poll: 30

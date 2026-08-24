@@ -1865,7 +1865,9 @@ def _reconfigure_cdroms(job, root, domain, cdroms):
         if d.find("target") is not None
     }
     for path in cdroms:
-        _add_cdrom_element(job, devices, path, cdrom_bus, dev_prefix, used_targets, domain)
+        _add_cdrom_element(
+            job, devices, path, cdrom_bus, dev_prefix, used_targets, domain
+        )
 
 
 def _try_hot_attach_disks(job, domain, disks, vcpus, ram_mb, nics, was_active, restart):
@@ -1886,9 +1888,7 @@ def _configure_vnc_graphics(root, vnc_listen):
     import xml.etree.ElementTree as ET
 
     devices = root.find("devices")
-    graphics = (
-        devices.find("graphics[@type='vnc']") if devices is not None else None
-    )
+    graphics = devices.find("graphics[@type='vnc']") if devices is not None else None
     if graphics is not None:
         graphics.set("listen", vnc_listen)
         graphics.set("sharePolicy", "force-shared")
@@ -1951,7 +1951,9 @@ def _handle_vm_reconfigure(job, params):
         state_result.returncode == 0 and "running" in state_result.stdout.lower()
     )
 
-    hot_attach_result = _try_hot_attach_disks(job, domain, disks, vcpus, ram_mb, nics, was_active, restart)
+    hot_attach_result = _try_hot_attach_disks(
+        job, domain, disks, vcpus, ram_mb, nics, was_active, restart
+    )
     if hot_attach_result is not None:
         return hot_attach_result
 
@@ -2500,7 +2502,9 @@ def _setup_bastion_autologin(job, bastion_mount):
     _job_log(job, "Firefox auto-login scheduled for first boot")
 
 
-def _perform_bastion_disk_updates(job, bastion_mount, kubeconfig_src, bastion_kubeconfig_path, common_password):
+def _perform_bastion_disk_updates(
+    job, bastion_mount, kubeconfig_src, bastion_kubeconfig_path, common_password
+):
     kc_dest = os.path.join(bastion_mount, bastion_kubeconfig_path.lstrip("/"))
     os.makedirs(os.path.dirname(kc_dest), exist_ok=True)
     with open(kubeconfig_src) as f:
@@ -2588,7 +2592,9 @@ def _update_bastion_disk(
         )
         bastion_mounted = True
 
-        _perform_bastion_disk_updates(job, bastion_mount, kubeconfig_src, bastion_kubeconfig_path, common_password)
+        _perform_bastion_disk_updates(
+            job, bastion_mount, kubeconfig_src, bastion_kubeconfig_path, common_password
+        )
 
     except Exception as e:
         _job_log(job, f"Bastion update failed: {e}")
@@ -3229,9 +3235,7 @@ def _try_uefi_bootloader(job, mount_point, tftp_root):
             dest = os.path.join(tftp_root, fname)
             shutil.copy2(src, dest)
             os.chmod(dest, 0o600)
-    _job_log(
-        job, f"Copied EFI/BOOT/ directory ({len(os.listdir(efi_boot_dir))} files)"
-    )
+    _job_log(job, f"Copied EFI/BOOT/ directory ({len(os.listdir(efi_boot_dir))} files)")
     for bl_path in _UEFI_BOOTLOADER_PATHS:
         bl_name = os.path.basename(bl_path)
         if os.path.isfile(os.path.join(tftp_root, bl_name)):
@@ -3767,7 +3771,9 @@ def _setup_namespace_and_veth(
     if ns_exists:
         _job_log(job, f"Namespace {ns} already exists, reusing")
     else:
-        _create_new_namespace(job, ns, veth_host, veth_ns, transit_host_ip, transit_ns_ip)
+        _create_new_namespace(
+            job, ns, veth_host, veth_ns, transit_host_ip, transit_ns_ip
+        )
     try:
         _run_cmd(
             job, ["ip", "route", "add", transit_cidr, "dev", veth_host], timeout=10
@@ -3985,9 +3991,19 @@ def _setup_vxlan_bridge(job, ns, host_ip, net, _pid):
     _job_log(job, f"VXLAN {vxlan_if} (VNI {vni}) + bridge {bridge} configured")
 
 
-def _build_dnsmasq_config_lines(project_id, net, dnsmasq_pid, dnsmasq_lease, range_start, range_end, lease_time, bridge):
+def _build_dnsmasq_config_lines(
+    project_id,
+    net,
+    dnsmasq_pid,
+    dnsmasq_lease,
+    range_start,
+    range_end,
+    lease_time,
+    bridge,
+):
     pid = project_id[:8]
     bmc_bridge = f"br-bmc-{pid}"
+    gateway_ip = net.get("dhcp_config", {}).get("gateway", "")
     conf_lines = [
         f"interface={bridge}",
         "bind-interfaces",
@@ -4001,6 +4017,8 @@ def _build_dnsmasq_config_lines(project_id, net, dnsmasq_pid, dnsmasq_lease, ran
         f"dhcp-leasefile={dnsmasq_lease}",
         f"dhcp-range={range_start},{range_end},{lease_time}",
     ]
+    if gateway_ip:
+        conf_lines.append(f"listen-address={gateway_ip}")
     for dh in net.get("dhcp_hosts", []):
         safe_name = (dh.get("name") or "").replace(" ", "-").replace("_", "-")
         hostname_part = f",{safe_name}" if safe_name else ""
@@ -4034,7 +4052,16 @@ def _setup_dnsmasq_for_network(job, ns, project_id, net):
     dnsmasq_pid = f"/run/troshka-dnsmasq-{pid_short}-{vni}.pid"
     dnsmasq_lease = f"{_DNSMASQ_PREFIX}-{pid_short}-{vni}.leases"
 
-    conf_lines = _build_dnsmasq_config_lines(project_id, net, dnsmasq_pid, dnsmasq_lease, range_start, range_end, lease_time, bridge)
+    conf_lines = _build_dnsmasq_config_lines(
+        project_id,
+        net,
+        dnsmasq_pid,
+        dnsmasq_lease,
+        range_start,
+        range_end,
+        lease_time,
+        bridge,
+    )
 
     os.makedirs("/etc/dnsmasq.d", exist_ok=True)
     with open(dnsmasq_conf, "w") as f:
@@ -9218,10 +9245,217 @@ def _serial_open_pty(domain):
     )
     if result.returncode != 0:
         raise RuntimeError(f"Cannot get XML for {domain}: {result.stderr}")
+    serial_match = re.search(
+        r"<serial\s+type=['\"]pty['\"][^>]*>\s*<source\s+path=['\"](/dev/pts/\d+)['\"]",
+        result.stdout,
+    )
+    if serial_match:
+        return serial_match.group(1)
     pty_match = re.search(r"source path='(/dev/pts/\d+)'", result.stdout)
     if not pty_match:
         raise RuntimeError(f"No serial console PTY found for {domain}")
     return pty_match.group(1)
+
+
+_IOS_PROMPT = r"[>#]\s*"
+_IOS_USERNAME = r"(?i)Username:\s*"
+_IOS_PASSWORD = r"(?i)Password:\s*"
+_IOS_PRESS_RETURN = r"(?i)Press RETURN to get started"
+
+
+def _serial_strip_ansi(text):
+    import re
+
+    return re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07", "", text)
+
+
+def _serial_clean_ios_output(raw, command):
+    """Strip prompts and echoed command from IOS-XE serial output."""
+    import re
+
+    raw = _serial_strip_ansi(raw or "")
+    raw = raw.replace("\r\n", "\n").replace("\r", "")
+    lines = []
+    for line in raw.split("\n"):
+        clean = line.strip()
+        if not clean:
+            continue
+        if clean == command.strip():
+            continue
+        if re.match(r"^[\w.-]+[>#]\s*$", clean):
+            continue
+        if re.match(r"^--More--", clean):
+            continue
+        lines.append(clean)
+    return "\n".join(lines)
+
+
+def _serial_ios_poke_and_login(child, username, password, domain, timeout_secs):
+    """Reach an IOS-XE exec prompt (> or #). Returns error dict or None."""
+    from pexpect import TIMEOUT
+
+    deadline = time.time() + min(timeout_secs, 45)
+    while time.time() < deadline:
+        child.send("\r")
+        try:
+            idx = child.expect(
+                [
+                    _IOS_USERNAME,
+                    _IOS_PASSWORD,
+                    _IOS_PRESS_RETURN,
+                    _IOS_PROMPT,
+                ],
+                timeout=3,
+            )
+        except TIMEOUT:
+            continue
+        if idx == 0:
+            if not username:
+                return {"domain": domain, "output": "", "error": "Username required"}
+            child.send(username + "\r")
+        elif idx == 1:
+            if not password:
+                return {"domain": domain, "output": "", "error": "Password required"}
+            child.send(password + "\r")
+        elif idx == 2:
+            child.send("\r")
+        elif idx == 3:
+            return None
+    return {"domain": domain, "output": "", "error": "Console not responding"}
+
+
+def _serial_ios_exec_command(child, command, timeout_secs):
+    """Run a command at an IOS-XE prompt and return CLI output."""
+    from pexpect import TIMEOUT
+
+    child.send(command + "\r")
+    child.expect(_IOS_PROMPT, timeout=timeout_secs)
+    return _serial_clean_ios_output(child.before or "", command)
+
+
+def _handle_vm_serial_exec_ios(job, params, timeout_secs):
+    """Execute a command on Cisco IOS-XE via isa-serial console."""
+    domain = _validate_domain_name(params["domain_name"])
+    username = params.get("username", "admin")
+    password = params.get("password", "")
+    command = params.get("command", "")
+
+    pty_path = _serial_open_pty(domain)
+
+    for sp in [
+        "/opt/troshka/venv/lib/python3.12/site-packages",
+        "/opt/troshka/venv/lib/python3.13/site-packages",
+    ]:
+        if sp not in sys.path and os.path.isdir(sp):
+            sys.path.insert(0, sp)
+    from pexpect import fdpexpect, TIMEOUT, EOF
+
+    fd = os.open(pty_path, os.O_RDWR)
+    child = fdpexpect.fdspawn(fd, encoding="utf-8", timeout=timeout_secs)
+
+    try:
+        err = _serial_ios_poke_and_login(
+            child, username, password, domain, timeout_secs
+        )
+        if err is not None:
+            return err
+        output = _serial_ios_exec_command(child, command, timeout_secs)
+        return {"domain": domain, "output": output, "method": "serial-ios"}
+    except TIMEOUT:
+        return {"domain": domain, "output": "", "error": "Command timed out"}
+    except EOF:
+        return {"domain": domain, "output": "", "error": "Console connection closed"}
+    except RuntimeError as e:
+        return {"domain": domain, "output": "", "error": str(e)}
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _serial_junos_poke_and_login(child, username, password, domain, timeout_secs):
+    """Reach a Junos CLI prompt after FreeBSD login. Returns error dict or None."""
+    from pexpect import TIMEOUT
+
+    _JUNOS_LOGIN = r"login:\s*"
+    _JUNOS_PASSWORD = r"Password:\s*"
+    _JUNOS_PROMPT = r"[>%#]\s*"
+
+    deadline = time.time() + min(timeout_secs, 45)
+    while time.time() < deadline:
+        child.send("\r")
+        try:
+            idx = child.expect(
+                [_JUNOS_LOGIN, _JUNOS_PASSWORD, _JUNOS_PROMPT],
+                timeout=3,
+            )
+        except TIMEOUT:
+            continue
+        if idx == 0:
+            if not username:
+                return {"domain": domain, "output": "", "error": "Username required"}
+            child.send(username + "\r")
+        elif idx == 1:
+            if not password:
+                return {"domain": domain, "output": "", "error": "Password required"}
+            child.send(password + "\r")
+        elif idx == 2:
+            return None
+    return {"domain": domain, "output": "", "error": "Console not responding"}
+
+
+def _serial_junos_exec_command(child, command, timeout_secs):
+    from pexpect import TIMEOUT
+
+    child.send(command + "\r")
+    child.expect(r"[>%#]\s*", timeout=timeout_secs)
+    return _serial_clean_ios_output(child.before or "", command)
+
+
+def _handle_vm_serial_exec_junos(job, params, timeout_secs):
+    """Execute a command on Juniper vSRX via serial (FreeBSD login → Junos CLI)."""
+    domain = _validate_domain_name(params["domain_name"])
+    username = params.get("username", "root")
+    password = params.get("password", "")
+    command = params.get("command", "")
+
+    pty_path = _serial_open_pty(domain)
+    for sp in [
+        "/opt/troshka/venv/lib/python3.12/site-packages",
+        "/opt/troshka/venv/lib/python3.13/site-packages",
+    ]:
+        if sp not in sys.path and os.path.isdir(sp):
+            sys.path.insert(0, sp)
+    from pexpect import fdpexpect, TIMEOUT, EOF
+
+    fd = os.open(pty_path, os.O_RDWR)
+    child = fdpexpect.fdspawn(fd, encoding="utf-8", timeout=timeout_secs)
+    try:
+        err = _serial_junos_poke_and_login(
+            child, username, password, domain, timeout_secs
+        )
+        if err is not None:
+            return err
+        output = _serial_junos_exec_command(child, command, timeout_secs)
+        return {"domain": domain, "output": output, "method": "serial-junos"}
+    except TIMEOUT:
+        return {"domain": domain, "output": "", "error": "Command timed out"}
+    except EOF:
+        return {"domain": domain, "output": "", "error": "Console connection closed"}
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _handle_vm_serial_exec_network(job, params, timeout_secs, method_label):
+    """Shared serial exec for IOS-XE and Arista EOS (same >/# prompt model)."""
+    result = _handle_vm_serial_exec_ios(job, params, timeout_secs)
+    if result.get("method") == "serial-ios":
+        result["method"] = method_label
+    return result
 
 
 def _serial_clean_output(raw, outf, marker):
@@ -9265,7 +9499,9 @@ def _serial_poke_and_login(child, username, password, domain, any_prompt, shell_
         child.send(username + "\r")
         child.expect("[Pp]assword:", timeout=5)
         child.send(password + "\r")
-        idx = child.expect([shell_prompt, "Last login", "incorrect", any_prompt[-1]], timeout=10)
+        idx = child.expect(
+            [shell_prompt, "Last login", "incorrect", any_prompt[-1]], timeout=10
+        )
         if idx == 1:
             child.expect(shell_prompt, timeout=5)
         elif idx != 0:
@@ -9291,13 +9527,34 @@ def _serial_poke_and_login(child, username, password, domain, any_prompt, shell_
 def _handle_vm_serial_exec(job, params):
     """Execute a command on a VM via serial console using pexpect fdspawn on the raw PTY."""
     domain = _validate_domain_name(params["domain_name"])
-    username = params.get("username", "root")
-    password = params.get("password", "")
     command = params.get("command", "")
-    timeout_secs = min(params.get("timeout", 10), 60)
+    serial_type = (params.get("serial_exec_type") or "linux").lower()
+    network_types = (
+        "ios",
+        "iosxe",
+        "cisco_iosxe",
+        "eos",
+        "arista_eos",
+        "junos",
+        "juniper_junos",
+    )
+    timeout_secs = min(
+        int(params.get("timeout", 10)),
+        120 if serial_type in network_types else 60,
+    )
 
     if not command:
         raise RuntimeError(_NO_COMMAND)
+
+    if serial_type in ("ios", "iosxe", "cisco_iosxe"):
+        return _handle_vm_serial_exec_network(job, params, timeout_secs, "serial-ios")
+    if serial_type in ("eos", "arista_eos"):
+        return _handle_vm_serial_exec_network(job, params, timeout_secs, "serial-eos")
+    if serial_type in ("junos", "juniper_junos"):
+        return _handle_vm_serial_exec_junos(job, params, timeout_secs)
+
+    username = params.get("username", "root")
+    password = params.get("password", "")
 
     pty_path = _serial_open_pty(domain)
 
@@ -9316,7 +9573,9 @@ def _handle_vm_serial_exec(job, params):
     ANY_PROMPT = ["login:", SHELL, r"[>%] ", TIMEOUT]
 
     try:
-        err = _serial_poke_and_login(child, username, password, domain, ANY_PROMPT, SHELL)
+        err = _serial_poke_and_login(
+            child, username, password, domain, ANY_PROMPT, SHELL
+        )
         if err is not None:
             return err
 
@@ -10163,9 +10422,7 @@ def _reap_stale_nbd_exports():
                 os.kill(info["pid"], signal.SIGTERM)
             except ProcessLookupError:
                 pass
-        subprocess.run(
-            ["fuser", "-k", f"{port}/tcp"], capture_output=True, timeout=5
-        )
+        subprocess.run(["fuser", "-k", f"{port}/tcp"], capture_output=True, timeout=5)
 
 
 def _nbd_reaper_loop():
@@ -10320,7 +10577,9 @@ def _handle_nbd_stop(job, params):
 COMMAND_HANDLERS["nbd/stop"] = _handle_nbd_stop
 
 
-def _log_flatten_progress(job, output_path, total_bytes, total_gb, prev_bytes, prev_time):
+def _log_flatten_progress(
+    job, output_path, total_bytes, total_gb, prev_bytes, prev_time
+):
     """Compute and log flatten transfer progress."""
     if not os.path.exists(output_path):
         return
@@ -10328,9 +10587,7 @@ def _log_flatten_progress(job, output_path, total_bytes, total_gb, prev_bytes, p
     cur_gb = round(cur / (1024**3), 1)
     now = time.time()
     dt = now - prev_time[0]
-    rate_mbps = (
-        round((cur - prev_bytes[0]) / (1024**2) / dt) if dt > 0 else 0
-    )
+    rate_mbps = round((cur - prev_bytes[0]) / (1024**2) / dt) if dt > 0 else 0
     prev_bytes[0] = cur
     prev_time[0] = now
     rate_str = f" ({rate_mbps} MB/s)" if rate_mbps > 0 else ""
@@ -10351,7 +10608,9 @@ def _flatten_progress_monitor(job, output_path, total_bytes, flatten_done):
     prev_time = [time.time()]
     while not flatten_done.is_set():
         try:
-            _log_flatten_progress(job, output_path, total_bytes, total_gb, prev_bytes, prev_time)
+            _log_flatten_progress(
+                job, output_path, total_bytes, total_gb, prev_bytes, prev_time
+            )
         except OSError:
             pass
         flatten_done.wait(10)
@@ -10583,7 +10842,9 @@ def _build_container_cmd(
     return cmd
 
 
-def _setup_container_veth_pair(job, name, idx, veth_host, veth_ctr, mac, netns_name, bridge):
+def _setup_container_veth_pair(
+    job, name, idx, veth_host, veth_ctr, mac, netns_name, bridge
+):
     """Create and configure a veth pair for container networking."""
     proj_ns = "troshka-" + name.split("-")[1]
 
@@ -10754,7 +11015,9 @@ def _attach_container_to_bridges(job, name, networks):
         veth_host = f"vc{name[-8:]}{idx}h"[:15]
         veth_ctr = f"vc{name[-8:]}{idx}n"[:15]
 
-        _setup_container_veth_pair(job, name, idx, veth_host, veth_ctr, mac, netns_name, bridge)
+        _setup_container_veth_pair(
+            job, name, idx, veth_host, veth_ctr, mac, netns_name, bridge
+        )
 
         if ip:
             _configure_container_interface_ip(job, idx, ip, cidr, netns_name)
@@ -10968,7 +11231,9 @@ def _handle_container_exec(job, params):
 COMMAND_HANDLERS["containers/exec"] = _handle_container_exec
 
 
-def _setup_pod_veth_pair(job, _full_pod_name, idx, veth_host, veth_ctr, mac, netns_name, proj_ns, bridge):
+def _setup_pod_veth_pair(
+    job, _full_pod_name, idx, veth_host, veth_ctr, mac, netns_name, proj_ns, bridge
+):
     """Create and configure a veth pair for pod networking."""
     _run_cmd(
         job,
@@ -11102,7 +11367,17 @@ def _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id):
         veth_host = f"vp{full_pod_name[-8:]}{idx}h"[:15]
         veth_ctr = f"vp{full_pod_name[-8:]}{idx}n"[:15]
 
-        _setup_pod_veth_pair(job, full_pod_name, idx, veth_host, veth_ctr, mac, netns_name, proj_ns, bridge)
+        _setup_pod_veth_pair(
+            job,
+            full_pod_name,
+            idx,
+            veth_host,
+            veth_ctr,
+            mac,
+            netns_name,
+            proj_ns,
+            bridge,
+        )
 
         if ip_addr and cidr:
             _configure_pod_interface_ip(job, idx, ip_addr, cidr, netns_name)

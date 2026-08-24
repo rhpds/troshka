@@ -195,6 +195,28 @@ def allocate_transit_ports(
     return port_map
 
 
+def _used_transit_ports_on_host(db: Session, host) -> set[int]:
+    """Return transit ports already allocated on a host (EIP port maps)."""
+    used: set[int] = set()
+    for other in db.query(ElasticIp).filter(
+        ElasticIp.host_id == host.id, ElasticIp.port_map.isnot(None)
+    ):
+        if other.port_map:
+            used.update(int(v) for v in other.port_map.values())
+    return used
+
+
+def allocate_standalone_transit_port(db: Session, host) -> int:
+    """Allocate the next free host transit port (40000+) for route-only access."""
+    used = _used_transit_ports_on_host(db, host)
+    next_port = TRANSIT_PORT_START
+    while next_port in used:
+        next_port += 1
+    if next_port > TRANSIT_PORT_END:
+        raise RuntimeError("Transit port range exhausted")
+    return next_port
+
+
 def _extract_pf_rules(ip_permissions: list[dict]) -> dict:
     """Extract troshka port-forward rules from SG IpPermissions."""
     rules = {}

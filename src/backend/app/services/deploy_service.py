@@ -376,6 +376,41 @@ def _teardown_bmc_via_troshkad(host, project_id: str):
         )
 
 
+def _ensure_storage_library_ref(node, db_session):
+    """Ensure a storage node has source=library and a resolved libraryItemId."""
+    data = node.get("data", {})
+    if not data.get("libraryItemName") and not data.get("libraryItemId"):
+        return
+    if data.get("libraryItemName") or data.get("libraryItemId"):
+        data.setdefault("source", "library")
+    item_id = data.get("libraryItemId")
+    if item_id:
+        return
+    _resolve_library_item_by_name(node, item_id, db_session)
+
+
+def _prepare_topology_library_refs(topology, db_session, project=None):
+    """Resolve libraryItemName refs on storage nodes before image cache / disk create."""
+    changed = False
+    for node in topology.get("nodes", []):
+        if node.get("type") != "storageNode":
+            continue
+        before = (
+            node.get("data", {}).get("libraryItemId"),
+            node.get("data", {}).get("source"),
+        )
+        _ensure_storage_library_ref(node, db_session)
+        after = (
+            node.get("data", {}).get("libraryItemId"),
+            node.get("data", {}).get("source"),
+        )
+        if after != before:
+            changed = True
+    if changed and project is not None:
+        project.topology = topology
+        db_session.commit()
+
+
 def _collect_library_items(nodes, db_session, pool):
     """Collect library items from storage nodes for caching."""
     from app.models.library import LibraryItem
@@ -384,6 +419,7 @@ def _collect_library_items(nodes, db_session, pool):
     for node in nodes:
         if node.get("type") != "storageNode":
             continue
+        _ensure_storage_library_ref(node, db_session)
         item_id = node.get("data", {}).get("libraryItemId")
         if not item_id:
             continue
@@ -1430,7 +1466,9 @@ def _setup_metadata_via_troshkad(host, project_id, topology, vni_map):
     if not vm_configs:
         return
 
-    bridges = [f"br-{vni}" for vni in vni_map.values()]
+    from app.services.deploy_topology import metadata_bridges_for_topology
+
+    bridges = metadata_bridges_for_topology(topology, vni_map)
     ns = f"troshka-{project_id[:8]}"
 
     try:
@@ -1836,6 +1874,7 @@ def _resolve_disk_s3_paths(
         data = node.get("data", {})
         if node.get("type") != "storageNode":
             continue
+        _ensure_storage_library_ref(node, db)
         if data.get("source") == "pattern" and data.get("patternId"):
             _resolve_pattern_disk(data, db, target_provider_id)
         elif data.get("source") in ("library", "snapshot") and data.get(
@@ -2767,6 +2806,7 @@ def _deploy_vms_on_host(host, project_id, project, host_vms, topology, vni_map, 
 
     _update_deploy_progress(project_id, "images", f"caching images on {host_label}")
     logger.info("Deploy %s: caching images on %s", project_id[:8], host_label)
+    _prepare_topology_library_refs(topology, db, project)
     cache_library_images(topology, host, db)
 
     _update_deploy_progress(project_id, "seeds", f"creating seed ISOs on {host_label}")
@@ -3221,8 +3261,25 @@ def _deploy_inject_gateway_ip(topology, project_id):
         )
 
 
-def _create_routes_for_gateway(driver, provider, host, project_id, node_data, topology):
+def _lookup_transit_port(topology, pf) -> int | None:
+    """Return EIP transit port for a gateway port forward, if allocated."""
+    ext_ip_id = pf.get("extIpId", "")
+    ext_port = str(pf.get("extPort", ""))
+    for ext_ip in topology.get("externalIps", []):
+        if ext_ip.get("id") != ext_ip_id:
+            continue
+        port_map = ext_ip.get("_transit_port_map") or {}
+        tp = port_map.get(ext_port)
+        return int(tp) if tp is not None else None
+    return None
+
+
+def _create_routes_for_gateway(
+    s, driver, provider, host, project_id, node_data, topology
+):
     """Create OCP Routes for routable port forwards and return endpoint list."""
+    from app.services.eip_service import allocate_standalone_transit_port
+
     external_endpoints = []
     for pf in node_data.get("portForwards", []):
         ext_port = int(pf.get("extPort", 0))
@@ -3231,6 +3288,10 @@ def _create_routes_for_gateway(driver, provider, host, project_id, node_data, to
         int_ip = pf.get("intIp", "")
         int_port = int(pf.get("intPort", ext_port))
         vm_name = _find_vm_name_by_ip(topology, int_ip)
+        transit_port = _lookup_transit_port(topology, pf)
+        setup_dnat = transit_port is None
+        if transit_port is None:
+            transit_port = allocate_standalone_transit_port(s, host)
         try:
             result = driver.create_route_access(
                 provider,
@@ -3240,6 +3301,8 @@ def _create_routes_for_gateway(driver, provider, host, project_id, node_data, to
                 int_ip,
                 ext_port,
                 int_port,
+                transit_port=transit_port,
+                setup_dnat=setup_dnat,
             )
             external_endpoints.append(
                 {
@@ -3283,7 +3346,7 @@ def _deploy_create_ocpvirt_routes(s, host, project_id, topology):
         if node_data.get("subtype") != "gateway":
             continue
         external_endpoints = _create_routes_for_gateway(
-            driver, provider, host, project_id, node_data, topology
+            s, driver, provider, host, project_id, node_data, topology
         )
         if external_endpoints:
             node_data["externalEndpoints"] = external_endpoints
@@ -3973,7 +4036,7 @@ def _deploy_disable_guest_exec(project, topology):
                 node["data"]["guestExecEnabled"] = False
 
 
-def _deploy_cache_images_and_pxe(host, project_id, topology, vni_map, s):
+def _deploy_cache_images_and_pxe(host, project_id, topology, vni_map, s, project=None):
     """Download library images and set up PXE boot services."""
     _checkpoint(s, project_id, "images")
     _update_deploy_progress(project_id, "downloading images", "0%")
@@ -3984,6 +4047,7 @@ def _deploy_cache_images_and_pxe(host, project_id, topology, vni_map, s):
             project_id, "downloading images", str(detail), items=items
         )
 
+    _prepare_topology_library_refs(topology, s, project)
     cache_library_images(topology, host, s, progress_callback=_progress)
     logger.info("Deploy %s: setting up PXE boot services", project_id[:8])
     _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
@@ -4072,7 +4136,7 @@ def _deploy_single_host_setup(
         _delete_deploy_progress(project_id)
         return None
 
-    _deploy_cache_images_and_pxe(host, project_id, topology, vni_map, s)
+    _deploy_cache_images_and_pxe(host, project_id, topology, vni_map, s, project)
 
     _checkpoint(s, project_id, "container_pull")
     _deploy_pull_container_images(host, project_id, topology, s)
@@ -7053,6 +7117,7 @@ def _start_troshkad_host_project(s, project, host, project_id):
             s.commit()
             return False
 
+    _prepare_topology_library_refs(topology, s, project)
     cache_library_images(topology, host, s)
     _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
 

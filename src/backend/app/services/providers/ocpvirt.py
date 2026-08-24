@@ -852,12 +852,23 @@ class OCPVirtDriver(ProviderDriver):
             pass
 
     def create_route_access(
-        self, provider, host, project_id, vm_name, int_ip, port, target_port=None
+        self,
+        provider,
+        host,
+        project_id,
+        vm_name,
+        int_ip,
+        port,
+        target_port=None,
+        *,
+        transit_port=None,
+        setup_dnat=True,
     ):
         """Create a ClusterIP Service + OCP Route for external access to a VM port.
 
-        Allocates a transit port on the host and sets up nftables DNAT
-        (project namespace → VM IP) so OCP Route traffic reaches the VM.
+        Uses a host transit port (40000+, same as EIP forwards) as the Service
+        targetPort so KubeVirt forwards traffic into the guest where nftables
+        DNAT reaches the VM. Reuse the EIP transit port when available.
 
         Returns dict with hostname, route_name, service_name, transit_port.
         """
@@ -870,6 +881,8 @@ class OCPVirtDriver(ProviderDriver):
         custom_api, core_api = _get_k8s_clients(creds)
 
         vm_port = target_port or port
+        if transit_port is None:
+            raise ValueError("transit_port is required for OCP Virt route access")
 
         safe_name = re.sub(r"[^a-z0-9-]", "-", vm_name.lower())[:20]
         resource_name = f"troshka-pf-{project_id[:8]}-{safe_name}-{port}"
@@ -880,8 +893,10 @@ class OCPVirtDriver(ProviderDriver):
             "troshka/access-type": "route",
         }
 
-        # Create NodePort Service — let Kubernetes auto-assign the nodePort
-        # to avoid cluster-wide collisions across namespaces
+        if setup_dnat:
+            _setup_route_dnat(host, project_id, transit_port, int_ip, vm_port)
+
+        # ClusterIP → virt-launcher pod:transit_port (KubeVirt forwards to guest)
         svc = client.V1Service(
             metadata=client.V1ObjectMeta(
                 name=resource_name,
@@ -889,48 +904,45 @@ class OCPVirtDriver(ProviderDriver):
                 labels=labels,
             ),
             spec=client.V1ServiceSpec(
-                type="NodePort",
+                type="ClusterIP",
                 selector={_KUBEVIRT_DOMAIN_LABEL: host.instance_id},
                 ports=[
                     client.V1ServicePort(
                         port=port,
-                        target_port=port,
+                        target_port=transit_port,
                         name=f"pf-{port}",
                     )
                 ],
             ),
         )
-        created_svc = None
         try:
-            created_svc = core_api.create_namespaced_service(
-                namespace=namespace, body=svc
-            )
+            core_api.create_namespaced_service(namespace=namespace, body=svc)
         except client.ApiException as e:
             if e.status == 409:
-                created_svc = core_api.read_namespaced_service(resource_name, namespace)
+                core_api.patch_namespaced_service(
+                    resource_name,
+                    namespace,
+                    {
+                        "spec": {
+                            "type": "ClusterIP",
+                            "selector": {_KUBEVIRT_DOMAIN_LABEL: host.instance_id},
+                            "ports": [
+                                {
+                                    "port": port,
+                                    "targetPort": transit_port,
+                                    "name": f"pf-{port}",
+                                }
+                            ],
+                        }
+                    },
+                    _content_type="application/merge-patch+json",
+                )
             else:
                 raise
 
-        svc_obj: Any = created_svc
-        transit_port = svc_obj.spec.ports[0].node_port
-
-        _setup_route_dnat(host, project_id, transit_port, int_ip, vm_port)
-
-        # Update service target_port to match the assigned nodePort
-        # so OCP Router → NodePort → host transit_port → DNAT → VM
-        svc_patch = {
-            "spec": {
-                "ports": [
-                    {"port": port, "targetPort": transit_port, "name": f"pf-{port}"}
-                ]
-            }
-        }
-        try:
-            core_api.patch_namespaced_service(resource_name, namespace, svc_patch)
-        except client.ApiException:
-            pass
-
-        passthrough = port in (6443,)
+        # HTTPS backends (AAP, API servers) need passthrough — edge termination
+        # would send plaintext HTTP to ports that only speak TLS.
+        passthrough = port in (443, 6443)
         route = {
             "apiVersion": "route.openshift.io/v1",
             "kind": "Route",
@@ -941,7 +953,7 @@ class OCPVirtDriver(ProviderDriver):
             },
             "spec": {
                 "to": {"kind": "Service", "name": resource_name},
-                **({"port": {"targetPort": f"pf-{port}"}} if not passthrough else {}),
+                "port": {"targetPort": f"pf-{port}"},
                 "tls": (
                     {"termination": "passthrough"}
                     if passthrough
@@ -961,6 +973,7 @@ class OCPVirtDriver(ProviderDriver):
             "hostname": hostname,
             "route_name": resource_name,
             "service_name": resource_name,
+            "transit_port": transit_port,
         }
 
     def delete_route_access(self, provider, project_id, namespace=None):

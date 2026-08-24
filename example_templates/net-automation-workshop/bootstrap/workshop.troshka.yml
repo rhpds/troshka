@@ -1,0 +1,6 @@
+# Dynamic inventory — set TROSHKA_API_URL, TROSHKA_API_KEY, TROSHKA_PROJECT_ID
+plugin: troshka.cloud.troshka
+api_url: "{{ lookup('env', 'TROSHKA_API_URL') | default('http://localhost:8200', true) }}"
+api_key: "{{ lookup('env', 'TROSHKA_API_KEY') }}"
+project_id: "{{ lookup('env', 'TROSHKA_PROJECT_ID') }}"
+connection_mode: troshka

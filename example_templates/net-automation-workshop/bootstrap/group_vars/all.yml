@@ -1,0 +1,3 @@
+troshka_exec_method: ssh
+ansible_user: rhel
+ansible_password: ansible123!  # pragma: allowlist secret

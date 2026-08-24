@@ -69,3 +69,17 @@ def test_find_vm_disks_rotation_rate():
     assert len(disks) == 1
     assert disks[0]["rotation_rate"] == 1
     assert disks[0]["bus"] == "sata"
+
+
+def test_metadata_bridges_first_network_only():
+    from app.services.deploy_topology import metadata_bridges_for_topology
+
+    topo = {
+        "nodes": [
+            {"id": "mgmt", "type": "networkNode", "data": {"name": "mgmt"}},
+            {"id": "lab", "type": "networkNode", "data": {"name": "lab"}},
+        ],
+        "edges": [],
+    }
+    vni_map = {"mgmt": 1782, "lab": 1783}
+    assert metadata_bridges_for_topology(topo, vni_map) == ["br-1782"]

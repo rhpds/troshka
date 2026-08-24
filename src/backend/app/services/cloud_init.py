@@ -40,12 +40,18 @@ def _build_ssh_keys_lines(all_keys: list[str]) -> list[str]:
     return lines
 
 
+def _login_user_name(vm_data: dict) -> str:
+    """Primary login user for cloud-init (gold images may use aap, rhel, etc.)."""
+    return vm_data.get("ciLoginUser") or "cloud-user"
+
+
 def _build_password_lines(
     vm_data: dict,
 ) -> tuple[list[str], str | None, str | None]:
     """Build chpasswd section and return password hashes."""
     root_pw = vm_data.get("ciRootPassword", "")
     cloud_user_pw = vm_data.get("ciCloudUserPassword", "")
+    login_user = _login_user_name(vm_data)
     root_hash = _sha512_crypt(root_pw) if root_pw else None
     cloud_user_hash = _sha512_crypt(cloud_user_pw) if cloud_user_pw else None
 
@@ -61,7 +67,7 @@ def _build_password_lines(
     if cloud_user_hash:
         lines.extend(
             [
-                "    - name: cloud-user",
+                f"    - name: {login_user}",
                 f"      password: {cloud_user_hash}",
                 "      type: hash",
             ]
@@ -84,10 +90,11 @@ def _build_users_lines(
     cloud_user_hash: str | None,
 ) -> list[str]:
     """Build the users section."""
+    login_user = _login_user_name(vm_data)
     lines: list[str] = ["disable_root: false", "users:"]
     if root_hash:
         lines.extend(["  - name: root", "    lock_passwd: false"])
-    lines.extend(["  - name: cloud-user", "    lock_passwd: false"])
+    lines.extend([f"  - name: {login_user}", "    lock_passwd: false"])
     if cloud_user_hash:
         lines.append(f"    passwd: {cloud_user_hash}")
     if all_keys:
@@ -105,9 +112,11 @@ def _build_packages_and_chrony(vm_data: dict) -> tuple[list[str], list[str]]:
     ci_packages = [
         p for p in vm_data.get("ciPackages", []) if _pkg_re.fullmatch(str(p))
     ]
-    all_packages = ["qemu-guest-agent"] + [
-        p for p in ci_packages if p != "qemu-guest-agent"
-    ]
+    all_packages = list(ci_packages)
+    if not vm_data.get("ciMinimalCloudInit"):
+        all_packages = ["qemu-guest-agent"] + [
+            p for p in all_packages if p != "qemu-guest-agent"
+        ]
 
     gateway_ip = vm_data.get("gateway_ip")
     chrony_runcmd_lines: list[str] = []
@@ -128,7 +137,7 @@ def _build_packages_and_chrony(vm_data: dict) -> tuple[list[str], list[str]]:
     return pkg_lines, chrony_runcmd_lines
 
 
-def _build_bootcmd_lines(all_keys: list[str]) -> list[str]:
+def _build_bootcmd_lines(vm_data: dict, all_keys: list[str]) -> list[str]:
     """Build bootcmd section for every-boot config."""
     lines = [
         "ssh_deletekeys: false",
@@ -137,8 +146,10 @@ def _build_bootcmd_lines(all_keys: list[str]) -> list[str]:
     ]
     exec_key = next((k for k in all_keys if "troshka-exec" in k), None)
     if exec_key:
+        login_user = _login_user_name(vm_data)
+        home = f"/home/{login_user}"
         lines.append(
-            f"  - mkdir -p /home/cloud-user/.ssh && sed -i '/troshka-exec/d' /home/cloud-user/.ssh/authorized_keys 2>/dev/null; echo '{exec_key}' >> /home/cloud-user/.ssh/authorized_keys && chmod 700 /home/cloud-user/.ssh && chmod 600 /home/cloud-user/.ssh/authorized_keys && chown -R cloud-user:cloud-user /home/cloud-user/.ssh"
+            f"  - mkdir -p {home}/.ssh && sed -i '/troshka-exec/d' {home}/.ssh/authorized_keys 2>/dev/null; echo '{exec_key}' >> {home}/.ssh/authorized_keys && chmod 700 {home}/.ssh && chmod 600 {home}/.ssh/authorized_keys && chown -R {login_user}:{login_user} {home}/.ssh"
         )
     lines.append(
         "  - printf 'PasswordAuthentication yes\\nPerSourcePenaltyExemptList 10.0.0.0/8\\n' > /etc/ssh/sshd_config.d/50-cloud-init.conf"
@@ -179,7 +190,9 @@ def _build_runcmd_lines(
 ) -> list[str]:
     """Build the runcmd section."""
     lines = ["runcmd:"]
-    if vm_data.get("guestExecEnabled", True):
+    if vm_data.get("ciMinimalCloudInit"):
+        lines.append("  - systemctl enable --now sshd 2>/dev/null || true")
+    if vm_data.get("guestExecEnabled", True) and not vm_data.get("ciMinimalCloudInit"):
         lines.append(
             "  - python3 -c \"import re,pathlib;f=pathlib.Path('/etc/sysconfig/qemu-ga');t=f.read_text() if f.exists() else '';t2=re.sub(r'(--allow-rpcs=[^\\\"]*)',r'\\\\1,guest-exec,guest-exec-status',t) if 'allow-rpcs' in t else re.sub(r'guest-exec-status,|guest-exec,|,guest-exec-status|,guest-exec','',t);f.write_text(t2)\" 2>/dev/null; systemctl restart qemu-guest-agent 2>/dev/null || true"
         )
@@ -219,6 +232,14 @@ def _validate_cloud_config(result: str) -> None:
 
 def generate_userdata(vm_data: dict) -> str:
     """Generate cloud-init user-data YAML for a VM."""
+    custom = vm_data.get("ciUserData", "").strip()
+    if vm_data.get("ciUserDataOnly") and custom:
+        result = (
+            custom if custom.startswith("#cloud-config") else f"#cloud-config\n{custom}"
+        )
+        _validate_cloud_config(result)
+        return result
+
     lines = ["#cloud-config"]
 
     hostname = vm_data.get("ciHostname") or vm_data.get("name", "localhost")
@@ -234,7 +255,7 @@ def generate_userdata(vm_data: dict) -> str:
 
     pkg_lines, chrony_runcmd_lines = _build_packages_and_chrony(vm_data)
     lines.extend(pkg_lines)
-    lines.extend(_build_bootcmd_lines(all_keys))
+    lines.extend(_build_bootcmd_lines(vm_data, all_keys))
 
     custom_top_lines, custom_runcmd_lines = _parse_custom_userdata(vm_data)
     lines.extend(custom_top_lines)
@@ -335,8 +356,9 @@ def generate_metadata_service_script(
     if not vm_configs:
         return ""
 
-    # Find bridge names from VNI map
-    bridges = [f"br-{vni}" for vni in vni_map.values()]
+    from app.services.deploy_topology import metadata_bridges_for_topology
+
+    bridges = metadata_bridges_for_topology(topology, vni_map)
 
     configs_json = json.dumps(vm_configs)
 

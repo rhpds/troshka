@@ -1,3 +1,13 @@
+import os
+
+# macOS: must be set before any threads start — otherwise subprocess.Popen from
+# the running backend (e.g. app_updater restart) can abort the whole process.
+os.environ.setdefault("OBJC_DISABLE_INITIALIZE_FORK_SAFETY", "YES")
+
+from app.core.crash_report import install_crash_reporting
+
+install_crash_reporting()
+
 import faulthandler
 import logging
 import signal

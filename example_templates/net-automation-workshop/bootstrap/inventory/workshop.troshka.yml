@@ -1,0 +1,7 @@
+# Dynamic inventory from Troshka project topology (AnsibleGroup tags).
+# Set TROSHKA_PROJECT_ID and TROSHKA_API_KEY before running.
+plugin: troshka.cloud.troshka
+api_url: http://localhost:8200
+api_key: "{{ lookup('env', 'TROSHKA_API_KEY') }}"
+project_id: "{{ lookup('env', 'TROSHKA_PROJECT_ID') }}"
+connection_mode: troshka

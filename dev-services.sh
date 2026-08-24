@@ -15,6 +15,8 @@ BACKEND_PORT=8200
 FRONTEND_PORT=3100
 PID_DIR="${HOME}/.cache/troshka"
 LIFECYCLE_LOG="${PID_DIR}/lifecycle.log"
+BACKEND_EXIT_LOG="${PID_DIR}/backend-exit.log"
+BACKEND_LOG="${SCRIPT_DIR}/.dev/backend.log"
 
 mkdir -p "$PID_DIR"
 
@@ -236,18 +238,41 @@ start_backend() {
     # macOS: avoid fork-safety crashes when background threads + subprocess/ssl coexist
     export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
     alembic upgrade head 2>/dev/null || true
-    lifecycle_log "start_backend spawning uvicorn on port $BACKEND_PORT"
-    nohup uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" >>/tmp/troshka-backend.log 2>&1 &
-    local pid=$!
-    disown -h "$pid" 2>/dev/null || true
-    echo "$pid" > "$PID_DIR/backend.pid"
-    lifecycle_log "start_backend spawned pid=$pid"
+    mkdir -p "$(dirname "$BACKEND_LOG")"
+    rm -f "$PID_DIR/backend.pid" "$PID_DIR/backend-supervisor.pid"
+    lifecycle_log "start_backend spawning supervised uvicorn on port $BACKEND_PORT log=$BACKEND_LOG"
+    # posix_spawn(setsid) inside the supervisor — must NOT background this in the
+    # Agent shell PGID (that PGID is SIGKILL'd when the tool command returns).
+    python3 "$SCRIPT_DIR/scripts/supervise-backend.py" \
+        --port "$BACKEND_PORT" \
+        --backend-dir "$BACKEND_DIR" \
+        --pidfile "$PID_DIR/backend.pid" \
+        --supervisor-pidfile "$PID_DIR/backend-supervisor.pid" \
+        --log "$BACKEND_LOG"
+    local pid=""
+    local i
+    for i in $(seq 1 20); do
+        if [ -f "$PID_DIR/backend.pid" ]; then
+            pid="$(cat "$PID_DIR/backend.pid")"
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                break
+            fi
+        fi
+        sleep 0.25
+    done
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+        lifecycle_log "start_backend FAILED uvicorn did not spawn"
+        echo "  Backend:    FAILED to start — supervisor/uvicorn did not spawn (see $BACKEND_LOG, $BACKEND_EXIT_LOG, ${HOME}/.cache/troshka/backend-crash.log)"
+        rm -f "$PID_DIR/backend.pid"
+        return 1
+    fi
+    lifecycle_log "start_backend spawned uvicorn pid=$pid supervisor=$(cat "$PID_DIR/backend-supervisor.pid" 2>/dev/null || echo '?')"
     # Catch an immediate failure (crash / bind conflict). Slow startup is fine —
     # the process stays alive and binds the port once lifespan startup completes.
     sleep 3
     if ! kill -0 "$pid" 2>/dev/null; then
         lifecycle_log "start_backend FAILED pid=$pid exited immediately"
-        echo "  Backend:    FAILED to start — process exited (see /tmp/troshka-backend.log)"
+        echo "  Backend:    FAILED to start — process exited (see $BACKEND_LOG, $BACKEND_EXIT_LOG, ${HOME}/.cache/troshka/backend-crash.log)"
         rm -f "$PID_DIR/backend.pid"
         return 1
     fi
@@ -260,7 +285,7 @@ start_backend() {
         if ! kill -0 "$pid" 2>/dev/null; then
             lifecycle_log "start_backend FAILED pid=$pid died during warmup"
             rm -f "$PID_DIR/backend.pid"
-            echo "  Backend:    FAILED during warmup (see /tmp/troshka-backend.log)"
+            echo "  Backend:    FAILED during warmup (see $BACKEND_LOG, $BACKEND_EXIT_LOG, ${HOME}/.cache/troshka/backend-crash.log)"
             return 1
         fi
         sleep 2
@@ -305,12 +330,19 @@ except:
 stop_backend() {
     local force="${1:-}"
     lifecycle_log "stop_backend begin force=${force} pids=$(backend_pids | tr '\n' ' ')"
+    if [ -n "$(backend_pids)" ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') dev-services intentional stop_backend pids=$(backend_pids | tr '\n' ' ')" >> "$BACKEND_EXIT_LOG"
+    fi
     if [ -f "$PID_DIR/backend.pid" ] && kill -0 "$(cat "$PID_DIR/backend.pid")" 2>/dev/null; then
         if ! check_backend_idle 2>/dev/null; then
             echo "  Backend:    in-flight work detected — will resume after restart"
         fi
     fi
     rm -f "$PID_DIR/backend.pid"
+    # Kill uvicorn first so the supervisor's waitid() records the reason.
+    # Then reap the supervisor if it is still around.
+    pkill -f "$SCRIPT_DIR/scripts/supervise-backend.py" 2>/dev/null || true
+    rm -f "$PID_DIR/backend-supervisor.pid"
     # Kill every process on the backend port — tracked PID, stale orphans, and
     # zombies alike (matched by port AND by uvicorn command). Graceful first,
     # then force, waiting until the port is actually free.

@@ -436,10 +436,15 @@ _RESTART_COOLDOWN_SEC = 120
 
 
 def _apply_dev(initiated_by: str | None = None, client_ip: str | None = None) -> dict:
+    from app.core.crash_report import log_event
     from app.core.lifecycle import audit
 
     audit(
         f"apply_dev spawn restart initiated_by={initiated_by or 'unknown'} "
+        f"client_ip={client_ip or 'unknown'}"
+    )
+    log_event(
+        f"apply_dev restart initiated_by={initiated_by or 'unknown'} "
         f"client_ip={client_ip or 'unknown'}"
     )
 
@@ -464,19 +469,58 @@ def _apply_dev(initiated_by: str | None = None, client_ip: str | None = None) ->
     except OSError:
         logger.warning("apply_dev: could not write restart lock file")
 
-    log_fd = LOG_PATH.open("a", encoding="utf-8")
+    repo = _repo_root()
+    dev_services = repo / "dev-services.sh"
+    env = os.environ.copy()
+    env["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
+    _spawn_dev_services_restart(dev_services, repo, env, LOG_PATH)
+    return {"status": "restarting"}
+
+
+def _spawn_dev_services_restart(
+    dev_services: Path, repo: Path, env: dict[str, str], log_path: Path
+) -> None:
+    """Restart backend without fork() in this threaded process (macOS aborts on fork)."""
+    argv = [str(dev_services), "restart", "backend"]
+    log_str = str(log_path)
+    if hasattr(os, "posix_spawn"):
+        log_fd = os.open(log_str, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            file_actions = [
+                (
+                    os.POSIX_SPAWN_OPEN,
+                    log_fd,
+                    log_str,
+                    os.O_WRONLY | os.O_APPEND,
+                    0o644,
+                ),
+                (os.POSIX_SPAWN_DUP2, log_fd, 1),
+                (os.POSIX_SPAWN_DUP2, log_fd, 2),
+                (os.POSIX_SPAWN_CLOSE, log_fd),
+            ]
+            os.posix_spawn(
+                str(dev_services),
+                argv,
+                env,
+                file_actions=file_actions,
+                setsid=True,
+            )
+        finally:
+            os.close(log_fd)
+        return
+    log_fd = log_path.open("a", encoding="utf-8")
     try:
         subprocess.Popen(
-            ["./dev-services.sh", "restart", "backend"],
-            cwd=str(_repo_root()),
+            argv,
+            cwd=str(repo),
             start_new_session=True,
             stdout=log_fd,
             stderr=subprocess.STDOUT,
             close_fds=True,
+            env=env,
         )
     finally:
         log_fd.close()
-    return {"status": "restarting"}
 
 
 def apply_update(initiated_by: str | None = None, client_ip: str | None = None) -> dict:

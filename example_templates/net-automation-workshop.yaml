@@ -1,0 +1,150 @@
+name: net-automation-workshop
+display_name: "Network Automation Workshop"
+description: >-
+  Ansible Network Automation Workshop on Troshka — AAP control node, vscode
+  showroom, and four multi-vendor router VMs (IOS-XE, Arista EOS, Juniper
+  vSRX). Replaces the monolithic containerlab VM with direct vmNodes on a
+  shared lab L2 segment. VM tags AnsibleGroup feed the Troshka Ansible
+  inventory plugin (connection_mode troshka; no bastion).
+category: workshop
+install_method: agent
+deploy_time: "~15 min"
+
+networks:
+  mgmt:
+    cidr: 10.0.0.0/24
+    dhcp: true
+    gateway: true
+    domain: workshop.local
+    dns_records:
+      - name: control.workshop.local
+        target: control
+      - name: vscode.workshop.local
+        target: vscode
+  lab:
+    cidr: 172.20.20.0/24
+    dhcp: true
+
+gateway:
+  network: mgmt
+  external_access: true
+  outbound_ports: [53, 80, 443, 123, icmp]
+  port_forwards:
+    - ext_port: 443
+      int_ip: 10.0.0.10
+      int_port: 443
+    - ext_port: 8080
+      int_ip: 10.0.0.20
+      int_port: 8080
+
+vms:
+  control:
+    vcpus: 4
+    ram_gb: 32
+    os: rhel
+    firmware: uefi
+    cloud_init: true
+    login_user: rhel
+    cloud_user_password: ansible123!  # pragma: allowlist secret
+    user_data: |
+      runcmd:
+        - echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/50-cloud-init.conf
+        - systemctl reload sshd
+    tags:
+      AnsibleGroup: workshop_control,aap
+    disks:
+      - size_gb: 50
+        library_item_name: aap-2.6-2-ceh-20251103
+    nics:
+      - network: mgmt
+        model: virtio
+        ip: 10.0.0.10
+      - network: lab
+        model: virtio
+        ip: 172.20.20.5
+
+  vscode:
+    vcpus: 2
+    ram_gb: 8
+    os: rhel
+    firmware: uefi
+    cloud_init: true
+    login_user: rhel
+    cloud_user_password: ansible123!  # pragma: allowlist secret
+    user_data: |
+      runcmd:
+        - echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/50-cloud-init.conf
+        - systemctl reload sshd
+    tags:
+      AnsibleGroup: workshop_vscode
+    disks:
+      - size_gb: 40
+        library_item_name: rhel-9.6
+    nics:
+      - network: mgmt
+        model: virtio
+        ip: 10.0.0.20
+
+  rtr1:
+    vcpus: 4
+    ram_gb: 8
+    os: blank
+    firmware: bios
+    serial_exec: ios
+    tags:
+      AnsibleGroup: routers,cisco_iosxe
+    disks:
+      - size_gb: 20
+        library_item_name: c8000v-rhdp-8g
+    nics:
+      - network: lab
+        model: virtio
+        ip: 172.20.20.10
+
+  rtr2:
+    vcpus: 2
+    ram_gb: 4
+    os: blank
+    firmware: bios
+    serial_exec: eos
+    tags:
+      AnsibleGroup: routers,arista_eos
+    disks:
+      - size_gb: 10
+        library_item_name: veos-lab-4.32.0F
+    nics:
+      - network: lab
+        model: virtio
+        ip: 172.20.20.20
+
+  rtr3:
+    vcpus: 2
+    ram_gb: 12
+    os: blank
+    firmware: bios
+    serial_exec: junos
+    tags:
+      AnsibleGroup: routers,juniper_junos
+    disks:
+      - size_gb: 10
+        library_item_name: junos-vsrx3-23.2R2.21
+    nics:
+      - network: lab
+        model: virtio
+        ip: 172.20.20.30
+
+  rtr4:
+    vcpus: 2
+    ram_gb: 4
+    os: blank
+    firmware: bios
+    serial_exec: eos
+    tags:
+      AnsibleGroup: routers,arista_eos
+    disks:
+      - size_gb: 10
+        library_item_name: veos-lab-4.32.0F
+    nics:
+      - network: lab
+        model: virtio
+        ip: 172.20.20.40

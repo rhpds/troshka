@@ -884,6 +884,19 @@ export default function PropertiesPanel() {
                 />
                 Serial Console
               </label>
+            </div>
+            <div className="props-field">
+              <label className="props-label">Serial Exec CLI</label>
+              <select
+                className="props-select"
+                value={(data as Record<string, any>).serialExecType as string || "linux"}
+                onChange={(e) => update("serialExecType", e.target.value)}
+              >
+                <option value="linux">Linux / cloud-init</option>
+                <option value="ios">Cisco IOS-XE</option>
+                <option value="eos">Arista EOS</option>
+                <option value="junos">Juniper Junos</option>
+              </select>
             </div></>}
           </div>
           <div className="props-divider" />
@@ -3070,7 +3083,7 @@ export default function PropertiesPanel() {
                 }))) return;
                 const projectId = useCanvasStore.getState().currentProjectId;
                 updateNodeData(node.id, { status: "redeploying" });
-                const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmName}/redeploy`, { method: "POST" });
+                const resp = await fetch(`/api/v1/projects/${projectId}/vms/${node.id}/redeploy`, { method: "POST" });
                 const result = await resp.json();
                 if (result.status === "redeploying") {
                   updateNodeData(node.id, { status: "redeploying" });

@@ -8,7 +8,10 @@ dist/
 .venv/
 venv/
 
-# IDE
+# Generated Troshka inventory (contains API keys) — do not commit
+example_templates/**/.workshop.troshka.generated.yml
+example_templates/**/*.generated.troshka.yml
+
 .idea/
 .vscode/
 *.swp
@@ -77,3 +80,6 @@ src/backend/.vni_hwm
 
 # Local Claude Code settings (personal, not shared)
 .claude/settings.json
+
+# Local operational scripts (datacenter-specific, keep locally)
+scripts/seed-netlab-central-s4.sh

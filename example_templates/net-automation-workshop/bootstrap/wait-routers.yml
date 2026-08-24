@@ -1,0 +1,23 @@
+---
+# Run from operator laptop — waits for router mgmt from control over lab L2.
+# Usage: ./run-bootstrap.sh wait-routers.yml
+- name: Wait for routers from control
+  hosts: workshop_control
+  gather_facts: false
+  vars:
+    router_wait_hosts:
+      - { name: rtr1, host: 172.20.20.10, port: 22 }
+      - { name: rtr2, host: 172.20.20.20, port: 22 }
+      - { name: rtr3, host: 172.20.20.30, port: 22 }
+      - { name: rtr4, host: 172.20.20.40, port: 22 }
+  tasks:
+    - name: Wait for SSH on {{ item.name }} ({{ item.host }}:{{ item.port }})
+      ansible.builtin.wait_for:
+        host: "{{ item.host }}"
+        port: "{{ item.port }}"
+        timeout: 2400
+        sleep: 15
+        state: started
+      loop: "{{ router_wait_hosts }}"
+      loop_control:
+        label: "{{ item.name }}"

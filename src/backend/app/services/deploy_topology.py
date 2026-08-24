@@ -193,6 +193,25 @@ def _extract_containers(topology: dict) -> list[dict]:
     return containers
 
 
+def metadata_bridges_for_topology(topology: dict, vni_map: dict) -> list[str]:
+    """Bridges that receive the cloud-init metadata IP (169.254.169.254).
+
+    Only the project's first network (canvas order) gets the metadata address.
+    Putting it on every bridge breaks multi-network projects: each dnsmasq binds
+    169.254.169.254:53 and only one process can listen there.
+    """
+    if not vni_map:
+        return []
+    for node in topology.get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        net_id = node["id"]
+        if net_id in vni_map:
+            return [f"br-{vni_map[net_id]}"]
+    first_vni = next(iter(vni_map.values()))
+    return [f"br-{first_vni}"]
+
+
 def _find_vm_networks(
     vm_node_id: str, topology: dict, vni_map: dict, project_id: str = ""
 ) -> list[dict]:

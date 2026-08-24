@@ -1,0 +1,8 @@
+---
+# AAP CEH gold image — adjust if your image uses a different login
+ansible_user: aap
+ansible_become: true
+ansible_become_method: sudo
+
+control_ee_image: registry.redhat.io/ansible-automation-platform-26/ee-supported-rhel9:latest
+control_home: /home/aap
