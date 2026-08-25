@@ -203,6 +203,19 @@ def _hydrate_response_external_endpoints(result: dict) -> None:
                 node_data["externalEndpoints"] = deployed_eps[node_id]
 
 
+def _client_topology_snapshot(project, db=None) -> dict:
+    """Editable topology with deploy-runtime fields hydrated for API/WS clients."""
+    import copy
+
+    topo = copy.deepcopy(project.topology or {})
+    if db is not None:
+        _apply_eip_runtime_to_topology(db, project.id, topo.get("externalIps", []))
+    _hydrate_response_external_endpoints(
+        {"topology": topo, "deployed_topology": project.deployed_topology}
+    )
+    return topo
+
+
 def _strip_topology_runtime_node_fields(topology: dict) -> None:
     """Remove deploy-runtime gateway fields from editable topology saves."""
     for node in topology.get("nodes", []):
@@ -1118,7 +1131,11 @@ def update_project(
     db.refresh(project)
     if "topology" in fields:
         notify_project(
-            project_id, {"type": "topology-update", "topology": project.topology}
+            project_id,
+            {
+                "type": "topology-update",
+                "topology": _client_topology_snapshot(project, db=db),
+            },
         )
     return _project_response_dict(project, db=db)
 

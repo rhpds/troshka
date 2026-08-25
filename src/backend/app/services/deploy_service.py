@@ -2395,6 +2395,7 @@ def _allocate_kubevirt_eips(project_id, project, topology, db):
         try:
             canvas_id = ext_ip.get("id", "")
             if _should_skip_route_eip(provider, topology, canvas_id, project_id):
+                _clear_route_only_eip(db, project_id, canvas_id, ext_ip)
                 continue
             _allocate_single_kubevirt_eip(
                 project_id, ext_ip, provider, host, driver, topology, db
@@ -3178,6 +3179,34 @@ def _should_skip_ocpvirt_eip(provider, topology, canvas_id, project_id):
     return _should_skip_route_eip(provider, topology, canvas_id, project_id)
 
 
+def _clear_route_only_eip(db, project_id, canvas_id, ext_ip):
+    """Release MetalLB EIP when all forwards use OCP Routes instead."""
+    from app.models.elastic_ip import ElasticIp
+    from app.services.eip_service import release_eip
+
+    existing = (
+        db.query(ElasticIp)
+        .filter_by(project_id=project_id, canvas_eip_id=canvas_id)
+        .first()
+    )
+    if existing:
+        try:
+            release_eip(db, existing)
+            logger.info(
+                "Deploy %s: released route-only EIP %s",
+                project_id[:8],
+                canvas_id[:8],
+            )
+        except Exception:
+            logger.exception(
+                "Deploy %s: failed to release route-only EIP %s (non-fatal)",
+                project_id[:8],
+                canvas_id[:8],
+            )
+    for key in ("ip", "_private_ip", "_transit_port_map", "state"):
+        ext_ip.pop(key, None)
+
+
 def _allocate_single_eip(s, provider, project_id, host, ext_ip, topology):
     from app.models.elastic_ip import ElasticIp
     from app.services.eip_service import (
@@ -3243,6 +3272,7 @@ def _deploy_allocate_eips(s, project_id, project, host, topology, external_ips):
     for ext_ip in external_ips:
         canvas_id = ext_ip.get("id", "")
         if _should_skip_route_eip(provider, topology, canvas_id, project_id):
+            _clear_route_only_eip(s, project_id, canvas_id, ext_ip)
             ext_ip["_skip"] = True
             continue
         _allocate_single_eip(s, provider, project_id, host, ext_ip, topology)

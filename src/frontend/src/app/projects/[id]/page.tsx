@@ -193,10 +193,28 @@ export default function ProjectCanvasPage() {
     const topo = ws.topologyUpdate;
     const store = useCanvasStore.getState();
     if (topo.nodes && topo.edges) {
+      const preservedEndpoints = new Map<string, unknown[]>();
+      for (const n of store.nodes) {
+        const data = (n.data || {}) as Record<string, unknown>;
+        const eps = data.externalEndpoints as unknown[] | undefined;
+        if (n.type === "networkNode" && data.subtype === "gateway" && eps?.length) {
+          preservedEndpoints.set(n.id, eps);
+        }
+      }
+      const mergedNodes = topo.nodes.map((n: { id: string; data?: Record<string, unknown> }) => {
+        const data = n.data || {};
+        if (data.subtype !== "gateway") return n;
+        const incoming = data.externalEndpoints as unknown[] | undefined;
+        const preserved = preservedEndpoints.get(n.id);
+        if ((!incoming || incoming.length === 0) && preserved?.length) {
+          return { ...n, data: { ...data, externalEndpoints: preserved } };
+        }
+        return n;
+      });
       const currentKey = store.nodes.map((n: any) => `${n.id}:${JSON.stringify(n.data)}`).join("|");
-      const incomingKey = topo.nodes.map((n: any) => `${n.id}:${JSON.stringify(n.data)}`).join("|");
+      const incomingKey = mergedNodes.map((n: any) => `${n.id}:${JSON.stringify(n.data)}`).join("|");
       if (currentKey !== incomingKey) {
-        useCanvasStore.setState({ nodes: topo.nodes, edges: topo.edges });
+        useCanvasStore.setState({ nodes: mergedNodes, edges: topo.edges });
       }
     }
   }, [ws.topologyUpdate]);

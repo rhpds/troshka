@@ -238,8 +238,20 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
         const gw = d as Record<string, any>;
         const endpoints = (gw.externalEndpoints as Array<{hostname?: string; vmName?: string; port?: number; type?: string}>) || [];
         const routes = endpoints.filter((ep) => ep.type === "route" && ep.hostname);
-        const eips = useCanvasStore.getState().externalIps.filter((eip) => eip.ip);
         const pfs = (gw.portForwards as Array<{extPort: string; intIp: string; intPort: string; proto: string; extIpId?: string}>) || [];
+        const eips = useCanvasStore.getState().externalIps.filter((eip) => {
+          if (!eip.ip) return false;
+          const pfsForEip = pfs.filter((pf) => pf.extIpId === eip.id);
+          if (
+            pfsForEip.length > 0 &&
+            pfsForEip.every((pf) =>
+              routes.some((ep) => String(ep.port) === String(pf.extPort)),
+            )
+          ) {
+            return false;
+          }
+          return true;
+        });
         const allEips = useCanvasStore.getState().externalIps;
         return createPortal(
           <div className="nodrag nopan" onClick={(e) => { e.stopPropagation(); setRoutesOpen(false); }}

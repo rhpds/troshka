@@ -11101,6 +11101,11 @@ def _mount_container_volumes(job, volumes):
         except subprocess.TimeoutExpired:
             pass
 
+        if os.path.ismount(mount_dir):
+            _job_log(job, f"Already mounted at {mount_dir}")
+            mount_dirs.append(mount_dir)
+            continue
+
         _job_log(job, f"Mounting {os.path.basename(disk_path)} at {mount_dir}")
         _run_cmd(job, ["mount", "-o", "loop", disk_path, mount_dir], timeout=10)
         # Fresh ext4 roots are root:root 755; container images often run non-root.

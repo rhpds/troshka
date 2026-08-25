@@ -163,13 +163,8 @@ stop_redis() {
     echo "  Redis:      stopped"
 }
 
-# macOS SimpleWorker runs jobs in-process; multiple workers race on the same
-# queues and duplicate deploy jobs. Linux uses forked Worker children safely.
-if [[ "$(uname -s)" == "Darwin" ]]; then
-    WORKER_COUNT=1
-else
-    WORKER_COUNT=3
-fi
+# Parallel deploys need multiple RQ workers. Override: TROSHKA_WORKER_COUNT=3
+WORKER_COUNT="${TROSHKA_WORKER_COUNT:-5}"
 WORKER_LOG="/tmp/troshka-worker.log"
 
 _cleanup_stale_rq_workers() {

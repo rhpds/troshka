@@ -121,7 +121,6 @@ function buildPodContainers(diskId: string) {
         { key: "DOMAIN", value: "lab.local" },
       ],
       ports: [{ containerPort: 8000, hostPort: null, protocol: "tcp" }],
-      command: "/bin/sh -ec 'ln -sf /showroom/user-data /user_data 2>/dev/null || true; exec /entrypoint.sh'",
       mounts: showroomMount,
     },
   ];

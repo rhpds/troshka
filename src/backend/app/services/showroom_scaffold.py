@@ -378,10 +378,6 @@ def _build_pod_containers(disk_id: str) -> list[dict[str, Any]]:
                 {"key": "DOMAIN", "value": "workshop.local"},
             ],
             "ports": [{"containerPort": 8000, "hostPort": None, "protocol": "tcp"}],
-            "command": (
-                "/bin/sh -ec 'ln -sf /showroom/user-data /user_data 2>/dev/null || true; "
-                "exec /entrypoint.sh'"
-            ),
             "mounts": [mount],
         },
     ]

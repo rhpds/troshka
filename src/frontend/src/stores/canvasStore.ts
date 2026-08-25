@@ -1025,9 +1025,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
                 const deployedEndpoints = deployedGatewayEndpoints.get(n.id);
                 if (!deployedEndpoints?.length) return n;
                 const data = (n.data || {}) as Record<string, unknown>;
-                if (data.subtype !== "gateway" || (data.externalEndpoints as unknown[] | undefined)?.length) {
-                  return n;
-                }
+                if (data.subtype !== "gateway") return n;
                 return { ...n, data: { ...data, externalEndpoints: deployedEndpoints } };
               });
               if (!showroomNode || tabs.length === 0) return withGatewayEndpoints;
