@@ -425,3 +425,18 @@ class TestRegenerateKubevirtCloudInit:
         assert len(keys) == 2
         assert "ssh-rsa BBBB user" in keys
         assert "ssh-ed25519 CCCC troshka-exec" in keys
+
+
+class TestAllocateKubevirtEips:
+    @patch("app.services.deploy_service._patch_kubevirt_gateway_forwards")
+    @patch("app.services.deploy_service._resolve_eip_provider")
+    def test_patches_gateway_even_without_external_ips(self, mock_resolve, mock_patch):
+        from app.services.deploy_service import _allocate_kubevirt_eips
+
+        provider = MagicMock()
+        mock_resolve.return_value = (provider, MagicMock(), MagicMock())
+        topology = {"externalIps": []}
+
+        _allocate_kubevirt_eips("proj-12345678", MagicMock(), topology, MagicMock())
+
+        mock_patch.assert_called_once_with(provider, "proj-12345678", topology)

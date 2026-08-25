@@ -38,7 +38,7 @@ networks:
 gateway:
   external_access: true     # students reach lab via gateway public IP / Route53
   outbound_ports: [53/udp, 80/tcp, 443/tcp, 123/udp, icmp]  # allowed egress from lab
-  # Showroom 80/443→infra IP port-forwards are injected at deploy (not listed here).
+  # Showroom 443→infra IP:80 port-forward is injected at deploy (not listed here).
 
 # Virtual machines — each becomes a vmNode; disks reference library images by name.
 vms:
@@ -168,12 +168,14 @@ showroom:
       network: mgmt         # NIC/network used to pick VM IP for SSH/proxy (per tab)
       ssh_user: rhel
       ssh_pass: ansible123!  # pragma: allowlist secret
+      ssh_port: 22          # optional; wetty SSH target port (default 22)
     - name: Workshop terminal
       type: terminal
       vm: vscode
       network: mgmt
       ssh_user: rhel
       ssh_pass: ansible123!  # pragma: allowlist secret
+      ssh_port: 22
     - name: VS Code
       type: proxy           # nginx reverse proxy to vm:proxy_port at proxy_path
       vm: vscode

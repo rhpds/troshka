@@ -9,6 +9,14 @@ Positions nodes in a readable grid layout:
 """
 
 _WORKLOAD_TYPES = ("vmNode", "containerNode")
+_SHOWROOM_DISK_Y_OFFSET = 70
+
+
+def _is_showroom_node(node: dict) -> bool:
+    if node.get("type") != "containerNode":
+        return False
+    data = node.get("data", {})
+    return bool(data.get("isShowroom") or data.get("name") == "showroom")
 
 
 def _classify_nodes(nodes: list[dict]) -> dict[str, list[dict]]:
@@ -33,13 +41,16 @@ def _classify_nodes(nodes: list[dict]) -> dict[str, list[dict]]:
     ]
     vm_nodes = [n for n in nodes if n.get("type") == "vmNode"]
     container_nodes = [n for n in nodes if n.get("type") == "containerNode"]
+    showroom_nodes = [n for n in container_nodes if _is_showroom_node(n)]
+    workload_containers = [n for n in container_nodes if not _is_showroom_node(n)]
     storage_nodes = [n for n in nodes if n.get("type") == "storageNode"]
 
     return {
         "networks": networks,
         "routers": routers,
         "gateways": gateways,
-        "workload_nodes": vm_nodes + container_nodes,
+        "showroom_nodes": showroom_nodes,
+        "workload_nodes": vm_nodes + workload_containers,
         "storage_nodes": storage_nodes,
     }
 
@@ -244,6 +255,39 @@ def _layout_infra_row(
     return updated, current_y + net_h + gap_y
 
 
+def _layout_showroom_beside_gateway(
+    showroom_nodes: list[dict],
+    gateways: list[dict],
+    gateway_positions: dict[str, dict],
+    vm_to_storage: dict[str, list[str]],
+    vm_w: int,
+    disk_w: int,
+    gap_x: int,
+    disk_gap: int,
+) -> dict[str, dict]:
+    """Place showroom (and disk) on the gateway row, directly left of the gateway."""
+    updated: dict[str, dict] = {}
+    if not showroom_nodes or not gateways:
+        return updated
+
+    gw = gateways[0]
+    gw_pos = gateway_positions.get(gw["id"]) or gw.get("position", {})
+    gw_x = float(gw_pos.get("x", 150))
+    gw_y = float(gw_pos.get("y", 40))
+
+    showroom = showroom_nodes[0]
+    showroom_x = gw_x - gap_x - vm_w
+    updated[showroom["id"]] = {"x": showroom_x, "y": gw_y}
+
+    disks = vm_to_storage.get(showroom["id"], [])
+    for di, disk_id in enumerate(disks):
+        updated[disk_id] = {
+            "x": showroom_x - disk_w - disk_gap,
+            "y": gw_y + _SHOWROOM_DISK_Y_OFFSET + di * 100,
+        }
+    return updated
+
+
 def _layout_workloads(
     workload_nodes: list[dict],
     vm_to_storage: dict[str, list[str]],
@@ -402,6 +446,18 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
     # Row 0: Gateways
     positions, current_y = _layout_gateways(
         classified["gateways"], vm_row_width, current_y, net_w, gap_x, net_h, gap_y
+    )
+    updated.update(positions)
+
+    positions = _layout_showroom_beside_gateway(
+        classified["showroom_nodes"],
+        classified["gateways"],
+        updated,
+        vm_to_storage,
+        vm_w,
+        disk_w,
+        gap_x,
+        disk_gap,
     )
     updated.update(positions)
 

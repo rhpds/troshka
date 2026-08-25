@@ -53,6 +53,7 @@ class ProjectResponse(BaseModel):
     host_provider_type: str | None = None
     topology: dict | None = None
     deployed_topology: dict | None = None
+    vni_map: dict | None = None
     deploy_error: str | None = None
     deploy_progress: dict | None = None
     tags: dict | None = None

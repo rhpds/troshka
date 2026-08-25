@@ -25,6 +25,29 @@ import EdgeContextMenu from "./EdgeContextMenu";
 import DuplicateVMModal from "./DuplicateVMModal";
 import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM } from "@/stores/canvasStore";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
+import {
+  GATEWAY_NETWORK_SOURCE_HANDLE,
+  GATEWAY_NETWORK_TARGET_HANDLE,
+} from "@/lib/gatewayValidation";
+import {
+  isLbBackendNode,
+  isLbEdgeHandle,
+  isLbWorkloadNicHandle,
+  isLoadBalancerNode,
+} from "@/lib/loadBalancerValidation";
+import {
+  isContainerMountLeftHandle,
+  isPodContainer,
+  isStorageSourceHandle,
+  isVmDiskLeftHandle,
+} from "@/lib/storageEdgeStyle";
+import {
+  isGatewayNode,
+  isLabNetworkNode,
+  isShowroomContainer,
+  SHOWROOM_GATEWAY_SOURCE_HANDLE,
+  SHOWROOM_GATEWAY_TARGET_HANDLE,
+} from "@/lib/showroomValidation";
 
 const nodeTypes = {
   vmNode: VMNode,
@@ -439,7 +462,6 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
       const tHandle = connection.targetHandle || "";
 
       const isNicHandle = (h: string) => h.startsWith("nic-") || h === "top" || h === "bottom";
-      const isDiskControllerHandle = (h: string) => h.startsWith("dp-") || h === "left" || h === "right";
       const isRouterHandle = (h: string) => h === "left" || h === "right";
       const isVmNetHandle = (h: string) => h.startsWith("nic-") || h === "top" || h === "bottom";
 
@@ -449,22 +471,103 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
       const tIsRouter = targetNode.type === "networkNode" && tSub === "router";
       const sIsGateway = sourceNode.type === "networkNode" && sSub === "gateway";
       const tIsGateway = targetNode.type === "networkNode" && tSub === "gateway";
-      const sIsNetwork = sourceNode.type === "networkNode" && !sIsRouter && !sIsGateway;
-      const tIsNetwork = targetNode.type === "networkNode" && !tIsRouter && !tIsGateway;
+      const sIsLoadBalancer = isLoadBalancerNode(sourceNode);
+      const tIsLoadBalancer = isLoadBalancerNode(targetNode);
+      const sIsNetwork =
+        sourceNode.type === "networkNode" && !sIsRouter && !sIsGateway && !sIsLoadBalancer;
+      const tIsNetwork =
+        targetNode.type === "networkNode" && !tIsRouter && !tIsGateway && !tIsLoadBalancer;
+      const sIsShowroom = isShowroomContainer(sourceNode);
+      const tIsShowroom = isShowroomContainer(targetNode);
+      const sIsPod = isPodContainer(sourceNode);
+      const tIsPod = isPodContainer(targetNode);
 
-      // VM handles: NIC (top/bottom) for networks, disk controller (left/right) for storage
+      if (
+        (sIsShowroom && isLabNetworkNode(targetNode)) ||
+        (tIsShowroom && isLabNetworkNode(sourceNode))
+      ) {
+        return false;
+      }
+
+      if (sIsShowroom || tIsShowroom) {
+        const showroom = sIsShowroom ? sourceNode : targetNode;
+        const other = sIsShowroom ? targetNode : sourceNode;
+        if (other.type === "storageNode") {
+          const showroomHandle = sIsShowroom ? sHandle : tHandle;
+          return (
+            showroomHandle.startsWith("mnt-") && showroomHandle.endsWith("-left")
+          );
+        }
+        if (isGatewayNode(other)) {
+          const srcHandle = connection.sourceHandle || "";
+          const tgtHandle = connection.targetHandle || "";
+          return (
+            (connection.source === showroom.id &&
+              srcHandle === SHOWROOM_GATEWAY_SOURCE_HANDLE &&
+              tgtHandle === SHOWROOM_GATEWAY_TARGET_HANDLE) ||
+            (connection.target === showroom.id &&
+              tgtHandle === SHOWROOM_GATEWAY_SOURCE_HANDLE &&
+              srcHandle === SHOWROOM_GATEWAY_TARGET_HANDLE)
+          );
+        }
+        return false;
+      }
+
+      if (sIsPod || tIsPod) {
+        const pod = sIsPod ? sourceNode : targetNode;
+        const other = sIsPod ? targetNode : sourceNode;
+        if (other.type === "storageNode") {
+          const podHandle = sIsPod ? sHandle : tHandle;
+          return isContainerMountLeftHandle(podHandle);
+        }
+        if (isLoadBalancerNode(other)) {
+          const lbHandle = sIsPod ? tHandle : sHandle;
+          const podHandle = sIsPod ? sHandle : tHandle;
+          return isLbEdgeHandle(lbHandle) && isLbWorkloadNicHandle(podHandle);
+        }
+        return other.type === "networkNode";
+      }
+
+      if (sIsLoadBalancer || tIsLoadBalancer) {
+        const lb = sIsLoadBalancer ? sourceNode : targetNode;
+        const other = sIsLoadBalancer ? targetNode : sourceNode;
+        if (!isLbBackendNode(other)) return false;
+        const lbHandle = sIsLoadBalancer ? sHandle : tHandle;
+        const workloadHandle = sIsLoadBalancer ? tHandle : sHandle;
+        return isLbEdgeHandle(lbHandle) && isLbWorkloadNicHandle(workloadHandle);
+      }
+
+      // VM handles: NIC (top/bottom) for networks, disk controller left for storage
       if (sourceNode.type === "vmNode") {
-        if (targetNode.type === "storageNode" && !isDiskControllerHandle(sHandle)) return false;
+        if (targetNode.type === "storageNode" && !isVmDiskLeftHandle(sHandle)) return false;
         if (tIsNetwork && !isNicHandle(sHandle)) return false;
       }
       if (targetNode.type === "vmNode") {
-        if (sourceNode.type === "storageNode" && !isDiskControllerHandle(tHandle)) return false;
+        if (sourceNode.type === "storageNode" && !isVmDiskLeftHandle(tHandle)) return false;
         if (sIsNetwork && !isVmNetHandle(tHandle)) return false;
       }
+      if (sourceNode.type === "storageNode" && !isStorageSourceHandle(sHandle)) return false;
+      if (targetNode.type === "storageNode" && !isStorageSourceHandle(tHandle)) return false;
 
-      // Router/Gateway must connect to network's left/right handles
-      if ((sIsRouter || sIsGateway) && tIsNetwork && !isRouterHandle(tHandle)) return false;
-      if ((tIsRouter || tIsGateway) && sIsNetwork && !isRouterHandle(sHandle)) return false;
+      // Routers use network left/right; gateway uses bottom → network top
+      if (sIsRouter && tIsNetwork && !isRouterHandle(tHandle)) return false;
+      if (tIsRouter && sIsNetwork && !isRouterHandle(sHandle)) return false;
+      if (
+        sIsGateway &&
+        tIsNetwork &&
+        (sHandle !== GATEWAY_NETWORK_SOURCE_HANDLE ||
+          tHandle !== GATEWAY_NETWORK_TARGET_HANDLE)
+      ) {
+        return false;
+      }
+      if (
+        tIsGateway &&
+        sIsNetwork &&
+        (tHandle !== GATEWAY_NETWORK_SOURCE_HANDLE ||
+          sHandle !== GATEWAY_NETWORK_TARGET_HANDLE)
+      ) {
+        return false;
+      }
 
       // Network top/bottom handles only for VMs
       if (sIsNetwork && targetNode.type === "vmNode" && !isVmNetHandle(sHandle)) return false;

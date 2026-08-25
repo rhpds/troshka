@@ -1,4 +1,9 @@
 import type { Edge, Node } from "@xyflow/react";
+import {
+  buildWettyCommand,
+  WETTY_IMAGE,
+  type WettyAttrs,
+} from "@/lib/wettyContainer";
 
 export interface ShowroomTab {
   id: string;
@@ -11,6 +16,7 @@ export interface ShowroomTab {
   networkId?: string;
   sshUser?: string;
   sshPass?: string;
+  sshPort?: number;
   proxyPort?: number;
   proxyPath?: string;
   proxyTls?: boolean;
@@ -28,7 +34,6 @@ export interface ResolvedShowroomTab {
   warning?: string;
 }
 
-const WETTY_IMAGE = "quay.io/rhpds/wetty:v2.5";
 const WETTY_BASE_PORT = 8001;
 
 function slugify(name: string): string {
@@ -158,13 +163,70 @@ export function getShowroomExternalPort(nodes: Node[], showroomIp: string): numb
     const d = n.data as Record<string, unknown>;
     if (d.subtype !== "gateway") continue;
     for (const pf of (d.portForwards || []) as Array<{ extPort?: string; intIp?: string }>) {
-      if (pf.intIp === showroomIp && pf.extPort) {
+      if (showroomIp && pf.intIp === showroomIp && pf.extPort) {
         const port = parseInt(String(pf.extPort), 10);
         if (port > 0) return port;
       }
     }
   }
+  for (const n of nodes) {
+    const d = n.data as Record<string, unknown>;
+    if (d.subtype !== "gateway") continue;
+    for (const pf of (d.portForwards || []) as Array<{ extPort?: string; intPort?: string }>) {
+      if (String(pf.intPort) === "80" && pf.extPort) {
+        const port = parseInt(String(pf.extPort), 10);
+        if (port === 80 || port === 443) return port;
+      }
+    }
+  }
   return 443;
+}
+
+/** Port on the showroom pod the gateway forwards to (nginx :80). */
+export function getShowroomGatewayTargetPort(nodes: Node[], showroomIp: string): number {
+  for (const n of nodes) {
+    const d = n.data as Record<string, unknown>;
+    if (d.subtype !== "gateway") continue;
+    for (const pf of (d.portForwards || []) as Array<{
+      intPort?: string;
+      intIp?: string;
+      extPort?: string;
+    }>) {
+      const intPort = parseInt(String(pf.intPort || ""), 10);
+      if (intPort <= 0) continue;
+      if (showroomIp && pf.intIp === showroomIp) return intPort;
+      if (
+        String(pf.intPort) === "80" &&
+        pf.extPort &&
+        (String(pf.extPort) === "80" || String(pf.extPort) === "443")
+      ) {
+        return intPort;
+      }
+    }
+  }
+  return 80;
+}
+
+/** Port(s) to show on pod/showroom cards (gateway target or host-published ports). */
+export function getPodDisplayPorts(
+  nodeData: Record<string, unknown>,
+  podContainers: Array<{ ports?: Array<{ containerPort?: number; hostPort?: number | null }> }>,
+  nodes: Node[],
+  isShowroom: boolean,
+): number[] {
+  if (isShowroom) {
+    const ip =
+      ((nodeData.nics || []) as Array<{ ip?: string }>).find((n) => n.ip)?.ip || "";
+    return [getShowroomGatewayTargetPort(nodes, ip)];
+  }
+  const hostPorts = podContainers
+    .flatMap((c) => (c.ports || []).map((p) => p.hostPort))
+    .filter((p): p is number => typeof p === "number" && p > 0);
+  if (hostPorts.length > 0) return hostPorts;
+  const direct = ((nodeData.ports || []) as Array<{ hostPort?: number | null }>)
+    .map((p) => p.hostPort)
+    .filter((p): p is number => typeof p === "number" && p > 0);
+  return direct;
 }
 
 export function buildUiConfigYaml(
@@ -301,15 +363,15 @@ export function buildWettyContainers(
     const sshPass = tab?.sshPass || (vmData.ciCloudUserPassword as string) || "";
 
     const basePath = item.wettyPath?.replace(/^\//, "") || `wetty_${slugify(vmName)}`;
-    const cmd = [
-      `--base=/${basePath}/`,
-      `--port=${item.wettyPort}`,
-      `--ssh-host=${item.wettyHost}`,
-      "--ssh-port=22",
-      `--ssh-user=${sshUser}`,
-      "--ssh-auth=password",
-      `--ssh-pass=${sshPass}`,
-    ];
+    const sshPort = tab?.sshPort ?? 22;
+    const wettyAttrs: WettyAttrs = {
+      basePath,
+      port: item.wettyPort,
+      sshHost: item.wettyHost,
+      sshPort,
+      sshUser,
+      sshPass,
+    };
 
     containers.push({
       name: `wetty-${slugify(vmName)}`,
@@ -318,7 +380,7 @@ export function buildWettyContainers(
       memory: 512,
       envVars: [],
       ports: [{ containerPort: item.wettyPort, hostPort: null, protocol: "tcp" }],
-      command: cmd,
+      command: buildWettyCommand(wettyAttrs),
       mounts: [],
     });
   }

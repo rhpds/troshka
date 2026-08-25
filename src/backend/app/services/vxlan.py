@@ -306,44 +306,47 @@ def _topology_has_showroom(topology: dict) -> bool:
     return any(_is_showroom_node(n) for n in topology.get("nodes", []))
 
 
+def _is_showroom_infra_forward(pf: dict) -> bool:
+    """Gateway PF 443→172.30.{vni}.3:80 auto-managed for showroom."""
+    int_ip = (pf.get("intIp") or "").strip()
+    if not int_ip.startswith("172.30.") or not int_ip.endswith(".3"):
+        return False
+    return str(pf.get("extPort")) == "443" and str(pf.get("intPort")) == "80"
+
+
 def _inject_showroom_port_forward(
     port_forwards: list, topology: dict, first_vni: int | None
 ) -> list:
-    """Auto-add gateway PF 80/443→showroom infra IP (transit netns, not lab DHCP)."""
+    """Auto-add gateway PF 443→showroom infra:80 (transit netns, not lab DHCP)."""
     if not first_vni or not _topology_has_showroom(topology):
         return port_forwards
     octet3 = int(first_vni) & 0xFF
     infra_ip = f"172.30.{octet3}.3"
 
-    def _is_showroom_forward(pf: dict) -> bool:
-        return str(pf.get("intPort")) == "80" and str(pf.get("extPort")) in (
-            "80",
-            "443",
-        )
-
     out = [
         pf
         for pf in port_forwards
         if not (
-            _is_showroom_forward(pf) and (pf.get("intIp") or "").strip() != infra_ip
+            str(pf.get("extPort")) == "443"
+            and str(pf.get("intPort")) == "80"
+            and (pf.get("intIp") or "").strip() != infra_ip
         )
     ]
 
-    for ext_port in ("80", "443"):
-        if any(
-            str(pf.get("extPort")) == ext_port
-            and (pf.get("intIp") or "").strip() == infra_ip
-            and str(pf.get("intPort")) == "80"
-            for pf in out
-        ):
-            continue
+    if not any(
+        str(pf.get("extPort")) == "443"
+        and (pf.get("intIp") or "").strip() == infra_ip
+        and str(pf.get("intPort")) == "80"
+        for pf in out
+    ):
         out.append(
             {
-                "extPort": ext_port,
+                "extPort": "443",
                 "intIp": infra_ip,
                 "intPort": "80",
                 "proto": "tcp",
                 "extIpId": "",
+                "managedByShowroom": True,
             }
         )
     return out
@@ -425,9 +428,9 @@ def _build_router_configs(nodes: list, edges: list, vni_map: dict) -> list:
     return router_configs
 
 
-def _find_connected_vm_ids(node_id: str, nodes: list, edges: list) -> set[str]:
-    """Find VM node IDs connected to a given node via edges."""
-    vm_ids = set()
+def _find_connected_lb_backend_ids(node_id: str, nodes: list, edges: list) -> set[str]:
+    """Find VM and pod IDs connected to a load balancer via canvas edges."""
+    backend_ids: set[str] = set()
     for edge in edges:
         if edge["source"] == node_id:
             other_id = edge["target"]
@@ -436,24 +439,32 @@ def _find_connected_vm_ids(node_id: str, nodes: list, edges: list) -> set[str]:
         else:
             continue
         other_node = next((n for n in nodes if n["id"] == other_id), None)
-        if other_node and other_node.get("type") == "vmNode":
-            vm_ids.add(other_id)
-    return vm_ids
-
-
-def _build_lb_backends(vm_ids: set[str], nodes: list) -> list[dict]:
-    """Build backend entries from connected VM nodes."""
-    backends = []
-    for vm_id in vm_ids:
-        vm_node = next((n for n in nodes if n["id"] == vm_id), None)
-        if not vm_node:
+        if not other_node:
             continue
-        vm_data = vm_node.get("data", {})
-        vm_name = vm_data.get("name", vm_id[:8])
-        for nic in vm_data.get("nics", []):
+        if other_node.get("type") == "vmNode":
+            backend_ids.add(other_id)
+        elif other_node.get("type") == "containerNode":
+            data = other_node.get("data", {})
+            if data.get("isShowroom") or data.get("name") == "showroom":
+                continue
+            if data.get("isPod"):
+                backend_ids.add(other_id)
+    return backend_ids
+
+
+def _build_lb_backends(backend_ids: set[str], nodes: list) -> list[dict]:
+    """Build backend entries from connected VM and pod nodes."""
+    backends = []
+    for node_id in backend_ids:
+        node = next((n for n in nodes if n["id"] == node_id), None)
+        if not node:
+            continue
+        data = node.get("data", {})
+        name = data.get("name", node_id[:8])
+        for nic in data.get("nics", []):
             ip = nic.get("ip")
             if ip:
-                backends.append({"name": vm_name, "ip": ip})
+                backends.append({"name": name, "ip": ip})
                 break
     return backends
 
@@ -467,8 +478,8 @@ def _build_lb_config(nodes: list, edges: list) -> dict | None:
         ):
             continue
         data = node.get("data", {})
-        connected_vm_ids = _find_connected_vm_ids(node["id"], nodes, edges)
-        backends = _build_lb_backends(connected_vm_ids, nodes)
+        connected_backend_ids = _find_connected_lb_backend_ids(node["id"], nodes, edges)
+        backends = _build_lb_backends(connected_backend_ids, nodes)
 
         return {
             "name": data.get("name"),

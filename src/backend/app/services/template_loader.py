@@ -260,11 +260,11 @@ def _gw_net_edge(gw_id, net_id):
         "id": _id(),
         "source": gw_id,
         "target": net_id,
-        "sourceHandle": "left",
-        "targetHandle": "left",
+        "sourceHandle": "bottom",
+        "targetHandle": "top",
         "type": "smoothstep",
         "style": {
-            "stroke": "rgba(251,146,60,0.5)",
+            "stroke": "rgba(34,211,238,0.5)",
             "strokeWidth": 2,
             "strokeDasharray": "6 4",
         },
@@ -1041,7 +1041,12 @@ def _generate_topology_from_vms(
             nic_edges,
             showroom_meta,
         ) = build_showroom_from_config(
-            showroom_cfg, vm_name_to_id, vms_def, net_ids, vm_x, VM_ROW_Y
+            showroom_cfg,
+            vm_name_to_id,
+            vms_def,
+            net_ids,
+            gw_node["position"]["x"] - VM_SPACING,
+            gw_node["position"]["y"],
         )
         nodes.append(ctr_node)
         nodes.extend(disk_nodes)

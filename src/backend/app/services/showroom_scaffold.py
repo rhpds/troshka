@@ -12,10 +12,11 @@ NOOKBAG_BUNDLE = "https://github.com/rhpds/nookbag/releases/download/nookbag-v0.
 WETTY_IMAGE = "quay.io/rhpds/wetty:v2.5"
 WETTY_BASE_PORT = 8001
 _STORAGE_EDGE_STYLE = {
-    "stroke": "#a78bfa",
+    "stroke": "rgba(251,191,36,0.6)",
     "strokeWidth": 2,
     "strokeDasharray": "4 4",
 }
+_SHOWROOM_DISK_Y_OFFSET = 70
 
 
 def _id() -> str:
@@ -131,6 +132,8 @@ def parse_template_tabs(
             tab["sshUser"] = raw["ssh_user"]
         if raw.get("ssh_pass"):
             tab["sshPass"] = raw["ssh_pass"]
+        if raw.get("ssh_port") is not None:
+            tab["sshPort"] = int(raw["ssh_port"])
         if raw.get("proxy_path"):
             tab["proxyPath"] = raw["proxy_path"]
         if raw.get("proxy_port") is not None:
@@ -350,12 +353,13 @@ def _build_wetty_containers(
         vm_cfg = vms_def.get(vm_name, {})
         ssh_user = tab.get("sshUser") or vm_cfg.get("login_user") or "cloud-user"
         ssh_pass = tab.get("sshPass") or vm_cfg.get("cloud_user_password") or ""
+        ssh_port = tab.get("sshPort") or 22
         base_path = (item.get("wettyPath") or f"/wetty_{_slugify(vm_name)}").lstrip("/")
         cmd = [
             f"--base=/{base_path}/",
             f"--port={item['wettyPort']}",
             f"--ssh-host={item['wettyHost']}",
-            "--ssh-port=22",
+            f"--ssh-port={ssh_port}",
             f"--ssh-user={ssh_user}",
             "--ssh-auth=password",
             f"--ssh-pass={ssh_pass}",
@@ -505,7 +509,7 @@ def build_showroom_from_config(
     disk_node = {
         "id": disk_id,
         "type": "storageNode",
-        "position": {"x": vm_x - 190, "y": vm_row_y + 70},
+        "position": {"x": vm_x - 190, "y": vm_row_y + _SHOWROOM_DISK_Y_OFFSET},
         "data": {
             "label": disk_name,
             "name": disk_name,
@@ -626,6 +630,8 @@ def export_showroom_section(
             entry["ssh_user"] = tab["sshUser"]
         if tab.get("sshPass"):
             entry["ssh_pass"] = tab["sshPass"]
+        if tab.get("sshPort") is not None:
+            entry["ssh_port"] = tab["sshPort"]
         if tab.get("proxyPath"):
             entry["proxy_path"] = tab["proxyPath"]
         if tab.get("proxyPort") is not None:

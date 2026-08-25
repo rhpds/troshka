@@ -7,6 +7,7 @@ import ipaddress
 import logging
 import os
 import random
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,126 @@ def validate_showroom_topology(topology: dict) -> list[str]:
         errors.append("Showroom content repo URL is required")
 
     return errors
+
+
+def ensure_showroom_external_ips(topology: dict) -> bool:
+    """Add a canvas external IP slot when showroom + gateway need public access."""
+    from app.services.vxlan import _topology_has_showroom
+
+    if not _topology_has_showroom(topology):
+        return False
+    gateway = next(
+        (
+            n
+            for n in topology.get("nodes", [])
+            if n.get("type") == "networkNode"
+            and n.get("data", {}).get("subtype") == "gateway"
+        ),
+        None,
+    )
+    if not gateway:
+        return False
+    if topology.get("externalIps"):
+        return False
+    topology["externalIps"] = [{"id": str(uuid.uuid4()), "name": "IP-1", "ip": ""}]
+    return True
+
+
+def strip_showroom_gateway_access(topology: dict) -> bool:
+    """Remove auto-managed showroom gateway port forward and unused IP-1 slot."""
+    from app.services.vxlan import _is_showroom_infra_forward
+
+    changed = False
+    gateway = next(
+        (
+            n
+            for n in topology.get("nodes", [])
+            if n.get("type") == "networkNode"
+            and n.get("data", {}).get("subtype") == "gateway"
+        ),
+        None,
+    )
+    gateway_pfs: list = []
+    if gateway:
+        data = gateway.setdefault("data", {})
+        existing = list(data.get("portForwards") or [])
+        stripped = [pf for pf in existing if not _is_showroom_infra_forward(pf)]
+        if stripped != existing:
+            data["portForwards"] = stripped
+            gateway_pfs = stripped
+            if not stripped and data.get("gatewayMode") == "nat-portforward":
+                data["gatewayMode"] = "nat"
+            changed = True
+        else:
+            gateway_pfs = existing
+
+    ext_ips = topology.get("externalIps") or []
+    if (
+        len(ext_ips) == 1
+        and not ext_ips[0].get("ip")
+        and ext_ips[0].get("name") == "IP-1"
+        and not any(pf.get("extIpId") == ext_ips[0].get("id") for pf in gateway_pfs)
+    ):
+        topology["externalIps"] = []
+        changed = True
+    return changed
+
+
+def inject_showroom_gateway_port_forwards(topology: dict, vni_map: dict) -> bool:
+    """Sync gateway external IP + 443→showroom forward with showroom presence."""
+    from app.services.vxlan import (
+        _inject_showroom_port_forward,
+        _topology_has_showroom,
+    )
+
+    if not _topology_has_showroom(topology):
+        return strip_showroom_gateway_access(topology)
+
+    changed = ensure_showroom_external_ips(topology)
+
+    gateway = next(
+        (
+            n
+            for n in topology.get("nodes", [])
+            if n.get("type") == "networkNode"
+            and n.get("data", {}).get("subtype") == "gateway"
+        ),
+        None,
+    )
+    if not gateway:
+        return changed
+
+    first_vni = min(vni_map.values()) if vni_map else None
+    data = gateway.setdefault("data", {})
+    existing = list(data.get("portForwards") or [])
+    merged = _inject_showroom_port_forward(existing, topology, first_vni)
+
+    ext_ips = topology.get("externalIps") or []
+    eip_id = str(ext_ips[0].get("id", "")) if ext_ips else ""
+    if eip_id:
+        merged = [
+            {
+                **pf,
+                "extIpId": pf.get("extIpId") or eip_id,
+                **(
+                    {"managedByShowroom": True}
+                    if pf.get("managedByShowroom")
+                    or (
+                        str(pf.get("extPort")) == "443"
+                        and str(pf.get("intPort")) == "80"
+                        and (pf.get("intIp") or "").strip().startswith("172.30.")
+                        and (pf.get("intIp") or "").strip().endswith(".3")
+                    )
+                    else {}
+                ),
+            }
+            for pf in merged
+        ]
+
+    if merged != existing:
+        data["portForwards"] = merged
+        changed = True
+    return changed
 
 
 def showroom_transit_octet3(vni_map: dict) -> int | None:

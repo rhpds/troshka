@@ -6,6 +6,9 @@ import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NetworkNodeData } from "@/stores/canvasStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { formatOcpRouteUrl, isDeployInProgress, isOcpRoutablePort } from "@/lib/routeUrl";
+import { isShowroomContainer, SHOWROOM_GATEWAY_TARGET_HANDLE } from "@/lib/showroomValidation";
+import { isShowroomManagedForward } from "@/lib/showroomPortForwards";
+import { GATEWAY_NETWORK_SOURCE_HANDLE } from "@/lib/gatewayValidation";
 
 function RJ45Icon() {
   return (
@@ -38,6 +41,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
   const [routesOpen, setRoutesOpen] = useState(false);
   const projectState = useCanvasStore((s) => s.projectState);
   const deployedNodeData = useCanvasStore((s) => s.deployedNodeData);
+  const hasShowroom = useCanvasStore((s) => s.nodes.some((n) => isShowroomContainer(n)));
   const isDirty = React.useMemo(() => {
     const deployed = deployedNodeData[id];
     if (!deployed) return false;
@@ -52,11 +56,11 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
       className="network-node-card"
       style={(() => {
         const colors = {
-          router:  { bg: "rgba(251,146,60,0.08)", border: "rgba(251,146,60,0.6)",  glow: "rgba(251,146,60,0.2)",  selected: "#fb923c" },
-          gateway: { bg: "rgba(74,222,128,0.08)",  border: "rgba(74,222,128,0.6)",   glow: "rgba(74,222,128,0.2)",  selected: "#4ade80" },
+          router:  { bg: "rgba(74,222,128,0.08)",  border: "rgba(74,222,128,0.6)",  glow: "rgba(74,222,128,0.2)",  selected: "#4ade80" },
+          gateway: { bg: "rgba(255,255,255,0.08)", border: "rgba(255,255,255,0.55)", glow: "rgba(255,255,255,0.22)", selected: "#f8fafc" },
           network: { bg: "rgba(34,211,238,0.08)",  border: "rgba(34,211,238,0.4)",   glow: "rgba(34,211,238,0.2)",  selected: "var(--troshka-cyan)" },
           bmc:     { bg: "rgba(168,85,247,0.08)",  border: "rgba(168,85,247,0.6)",   glow: "rgba(168,85,247,0.2)",  selected: "#a855f7" },
-          loadbalancer: { bg: "rgba(59,130,246,0.08)", border: "rgba(59,130,246,0.6)", glow: "rgba(59,130,246,0.2)", selected: "#3b82f6" },
+          loadbalancer: { bg: "rgba(120,53,15,0.12)", border: "rgba(180,83,9,0.6)", glow: "rgba(180,83,9,0.25)", selected: "#d97706" },
         };
         const isLb = (d as any).networkType === "loadbalancer";
         const c = isBmc ? colors.bmc : isLb ? colors.loadbalancer : (colors[d.subtype as keyof typeof colors] || colors.network);
@@ -139,9 +143,26 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
               })()}
               {isPortFwd && (() => {
                 const externalIps = useCanvasStore.getState().externalIps;
-                const hasIncomplete = portForwards.some((pf) =>
-                  !(pf as Record<string, string>).extIpId || !pf.extPort || !pf.intIp || !pf.intPort
-                );
+                const hasIncomplete = portForwards.some((pf) => {
+                  if (
+                    isShowroomManagedForward(
+                      pf as {
+                        extPort: string;
+                        intIp: string;
+                        intPort: string;
+                        proto: string;
+                      },
+                    )
+                  ) {
+                    return false;
+                  }
+                  return (
+                    !(pf as Record<string, string>).extIpId ||
+                    !pf.extPort ||
+                    !pf.intIp ||
+                    !pf.intPort
+                  );
+                });
                 const gwEndpoints = (gw.externalEndpoints as Array<{type?: string}>) || [];
                 const hasRoutes = gwEndpoints.some((ep) => ep.type === "route");
                 const noIps = externalIps.length === 0 && portForwards.length > 0 && !hasRoutes;
@@ -179,7 +200,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
               <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                 <span className="network-node-cidr" style={{ fontSize: 10 }}>HAProxy L4</span>
                 {((d as any).external ?? true) && (
-                  <span style={{ background: "rgba(59,130,246,0.2)", color: "#3b82f6", padding: "0px 5px", borderRadius: 3, fontSize: 8, fontWeight: 600 }}>
+                  <span style={{ background: "rgba(180,83,9,0.2)", color: "#d97706", padding: "0px 5px", borderRadius: 3, fontSize: 8, fontWeight: 600 }}>
                     EXT
                   </span>
                 )}
@@ -201,7 +222,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
         })()}
       </div>
 
-      {/* Networks: top/bottom (blue) for VMs, left/right (orange) for routers/gateways */}
+      {/* Networks: top/bottom (blue) for VMs, left/right (green) for routers */}
       {d.subtype === "network" && (
         <>
           <Handle type="source" position={Position.Top} id="top" className="canvas-handle canvas-handle-network" />
@@ -219,20 +240,34 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
           <Handle type="source" position={Position.Right} id="right" className="canvas-handle canvas-handle-router" />
         </>
       )}
-      {/* Gateways: left/right only */}
+      {/* Gateways: showroom target left; lab networks attach on the bottom only */}
       {d.subtype === "gateway" && (
         <>
-          <Handle type="target" position={Position.Left} id="showroom-link" className="canvas-handle canvas-handle-router" />
-          <Handle type="source" position={Position.Left} id="left" className="canvas-handle canvas-handle-router" />
-          <Handle type="source" position={Position.Right} id="right" className="canvas-handle canvas-handle-router" />
+          {hasShowroom && (
+            <Handle
+              type="target"
+              position={Position.Left}
+              id={SHOWROOM_GATEWAY_TARGET_HANDLE}
+              className="canvas-handle canvas-handle-showroom"
+              style={{ top: "50%" }}
+            />
+          )}
+          <Handle
+            type="source"
+            position={Position.Bottom}
+            id={GATEWAY_NETWORK_SOURCE_HANDLE}
+            className="canvas-handle canvas-handle-network"
+          />
         </>
       )}
-      {/* Load Balancers: top/bottom for VM connections */}
+      {/* Load Balancers: top only — backends connect from workload NIC bottoms above */}
       {(d as any).networkType === "loadbalancer" && (
-        <>
-          <Handle type="source" position={Position.Top} id="top" className="canvas-handle canvas-handle-network" />
-          <Handle type="source" position={Position.Bottom} id="bottom" className="canvas-handle canvas-handle-network" />
-        </>
+        <Handle
+          type="target"
+          position={Position.Top}
+          id="top"
+          className="canvas-handle canvas-handle-network"
+        />
       )}
 
       {routesOpen && (() => {
@@ -339,7 +374,11 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                                 return eip?.name || "—";
                               })()}
                             </td>
-                            <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{pf.intIp || "—"}:{pf.intPort || "—"}</td>
+                            <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>
+                              {isShowroomManagedForward(pf)
+                                ? "auto"
+                                : `${pf.intIp || "—"}:${pf.intPort || "—"}`}
+                            </td>
                           </tr>
                         );
                       })}

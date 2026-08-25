@@ -145,6 +145,54 @@ def test_build_showroom_from_config_creates_canvas_node():
     assert meta["tabs"][0]["network"] == "mgmt"
 
 
+def test_parse_template_tabs_ssh_port():
+    tabs = parse_template_tabs(
+        [
+            {
+                "name": "Shell",
+                "type": "terminal",
+                "vm": "control",
+                "network": "mgmt",
+                "ssh_port": 2222,
+            },
+        ],
+        {"control": "vm-control"},
+        {"control": {"nics": [{"network": "mgmt", "ip": "10.0.0.10"}]}},
+        {"mgmt": "net-mgmt"},
+    )
+    assert tabs[0]["sshPort"] == 2222
+
+
+def test_build_wetty_uses_tab_ssh_port():
+    from app.services.showroom_scaffold import _build_wetty_containers
+
+    tabs = [
+        {
+            "id": "tab-1",
+            "name": "Shell",
+            "type": "terminal",
+            "vmId": "vm-control",
+            "network": "mgmt",
+            "sshPort": 2222,
+        },
+    ]
+    resolved = [
+        {
+            "tab": tabs[0],
+            "wettyPath": "/wetty_control",
+            "wettyPort": 8001,
+            "wettyHost": "10.0.0.10",
+        },
+    ]
+    wetty = _build_wetty_containers(
+        resolved,
+        tabs,
+        {"control": {"nics": [{"network": "mgmt", "ip": "10.0.0.10"}]}},
+        {"control": "vm-control"},
+    )
+    assert wetty[0]["command"][3] == "--ssh-port=2222"
+
+
 def test_apply_showroom_deploy_overrides():
     topology = {
         "nodes": [

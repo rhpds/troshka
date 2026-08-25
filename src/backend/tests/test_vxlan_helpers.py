@@ -611,3 +611,47 @@ def test_build_host_network_config_loadbalancer():
     assert lb["external"] is True
     assert len(lb["backends"]) == 1
     assert lb["backends"][0]["ip"] == "10.0.0.11"
+
+
+def test_build_host_network_config_loadbalancer_pod_backend():
+    topology = {
+        "nodes": [
+            {
+                "id": "lb-1",
+                "type": "networkNode",
+                "data": {
+                    "networkType": "loadbalancer",
+                    "name": "api-lb",
+                    "frontends": [
+                        {
+                            "name": "https",
+                            "bindPort": 443,
+                            "mode": "tcp",
+                            "backendPort": 443,
+                        }
+                    ],
+                    "lbIp": "10.0.0.100",
+                    "external": True,
+                },
+            },
+            {
+                "id": "pod-1",
+                "type": "containerNode",
+                "data": {
+                    "name": "router",
+                    "isPod": True,
+                    "nics": [
+                        {"id": "nic-1", "ip": "10.0.0.50", "mac": "52:54:00:00:00:01"}
+                    ],
+                },
+            },
+        ],
+        "edges": [{"source": "lb-1", "target": "pod-1"}],
+    }
+
+    result = build_host_network_config(topology, {}, [])
+    lb = result["loadbalancer"]
+    assert lb is not None
+    assert len(lb["backends"]) == 1
+    assert lb["backends"][0]["name"] == "router"
+    assert lb["backends"][0]["ip"] == "10.0.0.50"

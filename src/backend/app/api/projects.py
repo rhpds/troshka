@@ -224,6 +224,26 @@ def _strip_topology_runtime_node_fields(topology: dict) -> None:
             node_data.pop("externalEndpoints", None)
 
 
+def _sync_showroom_topology_on_save(db, project, topology: dict) -> None:
+    """Allocate VNIs, sync showroom gateway port forwards and external IP slot."""
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    vni_map = dict(project.vni_map or {})
+    needing_vni = [
+        n
+        for n in topology.get("nodes", [])
+        if n.get("type") == "networkNode"
+        and n.get("data", {}).get("subtype") == "network"
+        and n.get("data", {}).get("networkType") != "bmc"
+        and n["id"] not in vni_map
+    ]
+    if needing_vni:
+        _allocate_vnis_for_new_networks(db, {"added_networks": needing_vni}, vni_map)
+        project.vni_map = vni_map
+
+    inject_showroom_gateway_port_forwards(topology, vni_map)
+
+
 def _project_response_dict(project, db=None):
     result = {
         "id": project.id,
@@ -1116,7 +1136,9 @@ def update_project(
         adjust_clocks_async(project_id)
 
     if "topology" in fields:
-        topo = project.topology or {}
+        import copy
+
+        topo = copy.deepcopy(project.topology or {})
         _enforce_single_bastion_browser(topo)
         for ext_ip in topo.get("externalIps", []):
             ext_ip.pop("ip", None)
@@ -1125,6 +1147,7 @@ def update_project(
             ext_ip.pop("state", None)
         _strip_topology_runtime_node_fields(topo)
         _apply_eip_runtime_to_topology(db, project_id, topo.get("externalIps", []))
+        _sync_showroom_topology_on_save(db, project, topo)
         project.topology = topo
 
     db.commit()
@@ -3359,6 +3382,9 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
         h = s.query(Host).filter_by(id=h_id).first()
         if not proj or not h:
             return
+        from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+        inject_showroom_gateway_port_forwards(current, proj.vni_map or {})
         provider = (
             s.query(ProviderModel).filter_by(id=h.provider_id).first()
             if h.provider_id

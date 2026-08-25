@@ -404,26 +404,18 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
           </React.Fragment>
         );
       })}
-      {/* Storage handles — one pair (left+right) per disk port */}
+      {/* Storage handles — left side only (disk sits to the left of the VM) */}
       {(d.diskControllers || [{ id: "default" }]).map((port, i, arr) => {
         const pct = arr.length === 1 ? 50 : 20 + (i * 60) / Math.max(arr.length - 1, 1);
         return (
-          <React.Fragment key={port.id}>
-            <Handle
-              type="source"
-              position={Position.Left}
-              id={`dp-${port.id}-left`}
-              className="canvas-handle canvas-handle-storage"
-              style={{ top: `${pct}%` }}
-            />
-            <Handle
-              type="source"
-              position={Position.Right}
-              id={`dp-${port.id}-right`}
-              className="canvas-handle canvas-handle-storage"
-              style={{ top: `${pct}%` }}
-            />
-          </React.Fragment>
+          <Handle
+            key={port.id}
+            type="source"
+            position={Position.Left}
+            id={`dp-${port.id}-left`}
+            className="canvas-handle canvas-handle-storage"
+            style={{ top: `${pct}%` }}
+          />
         );
       })}
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />

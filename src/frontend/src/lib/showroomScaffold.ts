@@ -6,6 +6,8 @@ import {
 } from "@/stores/canvasStore";
 import type { ShowroomTab } from "@/lib/showroomTabs";
 import { buildNginxConfig, buildUiConfigYaml } from "@/lib/showroomTabs";
+import { isGatewayNode } from "@/lib/showroomValidation";
+import { STORAGE_EDGE_STYLE } from "@/lib/storageEdgeStyle";
 
 export type { ShowroomTab };
 
@@ -24,11 +26,20 @@ export const DEFAULT_SHOWROOM_CONFIG: ShowroomConfig = {
   build_content: true,
 };
 
-const STORAGE_EDGE_STYLE = {
-  stroke: "#a78bfa",
-  strokeWidth: 2,
-  strokeDasharray: "4 4",
-};
+const LAYOUT_VM_W = 200;
+const LAYOUT_GAP_X = 40;
+const SHOWROOM_DISK_Y_OFFSET = 70;
+
+export function defaultShowroomScaffoldPosition(nodes: Node[]): { x: number; y: number } {
+  const gateway = nodes.find((n) => isGatewayNode(n));
+  if (gateway) {
+    return {
+      x: gateway.position.x - LAYOUT_GAP_X - LAYOUT_VM_W,
+      y: gateway.position.y,
+    };
+  }
+  return { x: 40, y: 40 };
+}
 
 const NOOKBAG_BUNDLE =
   "https://github.com/rhpds/nookbag/releases/download/nookbag-v0.3.2/nookbag-v0.3.2.zip";
@@ -181,7 +192,7 @@ export function buildShowroomScaffold(
   const diskNode: Node = {
     id: diskId,
     type: "storageNode",
-    position: { x: position.x - 190, y: position.y + 70 },
+    position: { x: position.x - 190, y: position.y + SHOWROOM_DISK_Y_OFFSET },
     data: {
       label: "showroom-vol0",
       name: "showroom-vol0",

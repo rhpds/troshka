@@ -1,4 +1,5 @@
 import type { Edge, Node } from "@xyflow/react";
+import { isShowroomContainer } from "@/lib/showroomValidation";
 
 export function numToIp(num: number): string {
   return [
@@ -143,7 +144,7 @@ export function assignMissingContainerNicIps(nodes: Node[], edges: Edge[]): Node
   const usedIps = collectUsedIps(nodes);
   let changed = false;
   const nextNodes = nodes.map((node) => {
-    if (node.type !== "containerNode") return node;
+    if (node.type !== "containerNode" || isShowroomContainer(node)) return node;
     const data = node.data as Record<string, unknown>;
     const nics = ((data.nics || []) as Array<{ id: string; ip?: string }>).map((nic) => ({
       ...nic,

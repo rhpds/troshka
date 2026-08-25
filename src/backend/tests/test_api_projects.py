@@ -189,6 +189,102 @@ def test_update_project_topology():
     assert resp.json()["topology"]["nodes"][0]["id"] == "n1"
 
 
+def test_update_project_topology_showroom_injects_port_forwards():
+    net_id = str(uuid.uuid4())
+    gw_id = str(uuid.uuid4())
+    showroom_id = str(uuid.uuid4())
+    topo = {
+        "nodes": [
+            {
+                "id": net_id,
+                "type": "networkNode",
+                "data": {
+                    "name": "lab",
+                    "subtype": "network",
+                    "cidr": "192.168.1.0/24",
+                },
+            },
+            {
+                "id": gw_id,
+                "type": "networkNode",
+                "data": {
+                    "name": "gateway",
+                    "subtype": "gateway",
+                    "gatewayMode": "nat",
+                },
+            },
+            {
+                "id": showroom_id,
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True},
+            },
+        ],
+        "edges": [],
+        "externalIps": [{"id": "eip-1", "name": "IP-1", "ip": ""}],
+    }
+    pid = _create_project(name="showroom-pf-save", topology=topo)
+    resp = client.patch(
+        f"/api/v1/projects/{pid}",
+        json={"topology": topo},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["vni_map"].get(net_id) is not None
+    gw = next(n for n in data["topology"]["nodes"] if n["id"] == gw_id)
+    pfs = gw["data"]["portForwards"]
+    ext_ports = {pf["extPort"] for pf in pfs}
+    assert ext_ports == {"443"}
+    vni = data["vni_map"][net_id]
+    octet3 = vni & 0xFF
+    assert all(pf["intIp"] == f"172.30.{octet3}.3" for pf in pfs)
+
+
+def test_update_project_topology_showroom_allocates_external_ip():
+    net_id = str(uuid.uuid4())
+    gw_id = str(uuid.uuid4())
+    showroom_id = str(uuid.uuid4())
+    topo = {
+        "nodes": [
+            {
+                "id": net_id,
+                "type": "networkNode",
+                "data": {
+                    "name": "lab",
+                    "subtype": "network",
+                    "cidr": "192.168.1.0/24",
+                },
+            },
+            {
+                "id": gw_id,
+                "type": "networkNode",
+                "data": {
+                    "name": "gateway",
+                    "subtype": "gateway",
+                    "gatewayMode": "nat",
+                },
+            },
+            {
+                "id": showroom_id,
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True},
+            },
+        ],
+        "edges": [],
+    }
+    pid = _create_project(name="showroom-eip-save", topology=topo)
+    resp = client.patch(
+        f"/api/v1/projects/{pid}",
+        json={"topology": topo},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    ext_ips = data["topology"]["externalIps"]
+    assert len(ext_ips) == 1
+    assert ext_ips[0]["name"] == "IP-1"
+    gw = next(n for n in data["topology"]["nodes"] if n["id"] == gw_id)
+    assert gw["data"]["portForwards"][0]["extIpId"] == ext_ips[0]["id"]
+
+
 def test_update_project_tags():
     pid = _create_project(name="tags-update")
     resp = client.patch(

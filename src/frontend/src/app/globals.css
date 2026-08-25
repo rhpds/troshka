@@ -15,8 +15,10 @@ body {
   --troshka-accent: #6c63ff;
   --troshka-accent-glow: rgba(108, 99, 255, 0.3);
   --troshka-green: #4ade80;
+  --troshka-gateway-edge: rgba(74, 222, 128, 0.5);
   --troshka-red: #f87171;
   --troshka-yellow: #fbbf24;
+  --troshka-storage-edge: rgba(251, 191, 36, 0.6);
   --troshka-orange: #fb923c;
   --troshka-cyan: #22d3ee;
   --troshka-purple: #a855f7;
@@ -168,20 +170,28 @@ body {
   background: rgba(34, 211, 238, 0.15);
 }
 
+.palette-icon-container {
+  background: rgba(56, 189, 248, 0.15);
+}
+
+.palette-icon-pod {
+  background: rgba(168, 85, 247, 0.15);
+}
+
 .palette-icon-storage {
   background: rgba(251, 191, 36, 0.15);
 }
 
 .palette-icon-router {
-  background: rgba(251, 146, 60, 0.15);
-}
-
-.palette-icon-gateway {
   background: rgba(74, 222, 128, 0.15);
 }
 
+.palette-icon-gateway {
+  background: rgba(255, 255, 255, 0.12);
+}
+
 .palette-icon-lb {
-  background: rgba(59, 130, 246, 0.15);
+  background: rgba(180, 83, 9, 0.15);
 }
 
 .palette-icon-service {
@@ -314,11 +324,14 @@ body {
 }
 
 .canvas-handle-storage {
-  border: 2px solid var(--troshka-yellow) !important;
+  border: 2px solid var(--troshka-storage-edge) !important;
+  background: var(--troshka-storage-edge) !important;
 }
 
-.canvas-handle-router {
-  border: 2px solid #fb923c !important;
+.canvas-handle-router,
+.canvas-handle-gateway {
+  border: 2px solid var(--troshka-gateway-edge) !important;
+  background: var(--troshka-gateway-edge) !important;
 }
 
 .canvas-handle:hover {
@@ -331,10 +344,21 @@ body {
 
 .canvas-handle-storage:hover {
   background: var(--troshka-yellow) !important;
+  border-color: var(--troshka-yellow) !important;
 }
 
-.canvas-handle-router:hover {
-  background: #fb923c !important;
+.canvas-handle-router:hover,
+.canvas-handle-gateway:hover {
+  background: var(--troshka-green) !important;
+  border-color: var(--troshka-green) !important;
+}
+
+.canvas-handle-showroom {
+  border: 2px solid #3b82f6 !important;
+}
+
+.canvas-handle-showroom:hover {
+  background: #3b82f6 !important;
 }
 
 /* ---- VM Node ---- */
@@ -640,6 +664,14 @@ body {
 
 .canvas-node-container {
   border-left: 3px solid rgba(56, 189, 248, 0.5);
+}
+
+.canvas-node-pod {
+  border-left: 3px solid rgba(168, 85, 247, 0.55);
+}
+
+.canvas-node-pod .canvas-node-icon {
+  background: rgba(168, 85, 247, 0.15);
 }
 
 .canvas-node-selected {

@@ -71,7 +71,7 @@ const sections: PaletteSection[] = [
         label: "Pod",
         desc: "Container group (shared network)",
         icon: "🫛",
-        iconClass: "palette-icon-container",
+        iconClass: "palette-icon-pod",
       },
       {
         type: "showroom",

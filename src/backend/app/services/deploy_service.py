@@ -1631,6 +1631,23 @@ def _wait_troshkad_job(host, job_id, timeout, what):
     return job
 
 
+def _troshkad_network_entries(networks: list[dict]) -> list[dict]:
+    """Serialize container/pod networks for troshkad create APIs."""
+    entries: list[dict] = []
+    for n in networks:
+        entry: dict = {
+            "bridge": n["bridge"],
+            "ip": n.get("ip"),
+            "mac": n.get("mac"),
+            "cidr": n.get("cidr"),
+            "gateway": n.get("gateway"),
+        }
+        if n.get("infra_transit"):
+            entry["infra_transit"] = True
+        entries.append(entry)
+    return entries
+
+
 def _pod_create_params(host, project_id, ctr, topology, vni_map, pool=None):
     """Build troshkad /pods/create params for a container pod node."""
     pod_name = ctr["name"]
@@ -1653,16 +1670,7 @@ def _pod_create_params(host, project_id, ctr, topology, vni_map, pool=None):
     return {
         "project_id": project_id,
         "pod_name": pod_name,
-        "networks": [
-            {
-                "bridge": n["bridge"],
-                "ip": n.get("ip"),
-                "mac": n.get("mac"),
-                "cidr": n.get("cidr"),
-                "gateway": n.get("gateway"),
-            }
-            for n in networks
-        ],
+        "networks": _troshkad_network_entries(networks),
         "init_containers": [
             {
                 "name": ic["name"],
@@ -1719,16 +1727,7 @@ def _create_container(host, project_id, ctr, topology, vni_map, pool=None):
         "memory_mb": ctr["memory_mb"],
         "env_vars": ctr["env_vars"],
         "ports": ctr["ports"],
-        "networks": [
-            {
-                "bridge": n["bridge"],
-                "ip": n.get("ip"),
-                "mac": n.get("mac"),
-                "cidr": n.get("cidr"),
-                "gateway": n.get("gateway"),
-            }
-            for n in networks
-        ],
+        "networks": _troshkad_network_entries(networks),
         "volumes": [
             {
                 "disk_path": v["disk_path"],
@@ -2249,7 +2248,11 @@ def _notify_client_topology_update(project_id, project, db):
 
 def _finalize_kubevirt_deploy(project_id, project, topology, db, host=None):
     """Handle the Running phase — update project state and topology."""
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
     from app.services.ws_pubsub import notify_project
+
+    db.refresh(project)
+    inject_showroom_gateway_port_forwards(topology, project.vni_map or {})
 
     project.state = "active"
     clean_topo = copy.deepcopy(topology)
@@ -2396,33 +2399,31 @@ def _allocate_single_kubevirt_eip(
 
 def _allocate_kubevirt_eips(project_id, project, topology, db):
     """Allocate MetalLB EIPs for a kubevirt native project after operator deploy."""
-    external_ips = topology.get("externalIps", [])
-    if not external_ips:
-        return
-
     provider, host, driver = _resolve_eip_provider(project_id, project, db)
     if not provider:
         return
 
-    logger.info(
-        "Deploy %s: allocating %d MetalLB EIPs", project_id[:8], len(external_ips)
-    )
+    external_ips = topology.get("externalIps", []) or []
+    if external_ips:
+        logger.info(
+            "Deploy %s: allocating %d MetalLB EIPs", project_id[:8], len(external_ips)
+        )
 
-    for ext_ip in external_ips:
-        try:
-            canvas_id = ext_ip.get("id", "")
-            if _should_skip_route_eip(provider, topology, canvas_id, project_id):
-                _clear_route_only_eip(db, project_id, canvas_id, ext_ip)
-                continue
-            _allocate_single_kubevirt_eip(
-                project_id, ext_ip, provider, host, driver, topology, db
-            )
-        except Exception:
-            logger.exception(
-                "Deploy %s: EIP allocation failed for %s (non-fatal)",
-                project_id[:8],
-                ext_ip.get("id", "")[:8],
-            )
+        for ext_ip in external_ips:
+            try:
+                canvas_id = ext_ip.get("id", "")
+                if _should_skip_route_eip(provider, topology, canvas_id, project_id):
+                    _clear_route_only_eip(db, project_id, canvas_id, ext_ip)
+                    continue
+                _allocate_single_kubevirt_eip(
+                    project_id, ext_ip, provider, host, driver, topology, db
+                )
+            except Exception:
+                logger.exception(
+                    "Deploy %s: EIP allocation failed for %s (non-fatal)",
+                    project_id[:8],
+                    ext_ip.get("id", "")[:8],
+                )
 
     _patch_kubevirt_gateway_forwards(provider, project_id, topology)
 
@@ -2864,6 +2865,11 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
         _replace_stale_kubevirt_cr(provider, project_id)
 
     if not _resume_poll:
+        from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+        if inject_showroom_gateway_port_forwards(topology, project.vni_map or {}):
+            project.topology = topology
+            db.commit()
         logger.info(
             "Deploy %s: creating CR with exec_ssh_key=%s",
             project_id[:8],
@@ -4302,6 +4308,14 @@ def _deploy_init_context(s, project, project_id):
         project.vni_map = vni_map
         s.commit()
         logger.info("Deploy %s: allocated VNIs %s", project_id[:8], vni_map)
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    if inject_showroom_gateway_port_forwards(topology, vni_map):
+        project.topology = topology
+        s.commit()
+        logger.info(
+            "Deploy %s: injected showroom gateway port forwards", project_id[:8]
+        )
     return topology, clock_offset, vni_map
 
 

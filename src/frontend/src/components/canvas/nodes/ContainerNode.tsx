@@ -10,6 +10,7 @@ import {
   getShowroomReadiness,
   SHOWROOM_GATEWAY_SOURCE_HANDLE,
 } from "@/lib/showroomValidation";
+import { getPodDisplayPorts } from "@/lib/showroomTabs";
 
 function ContainerNodeComponent({ id, data, selected }: NodeProps) {
   const projectState = useCanvasStore((s) => s.projectState);
@@ -23,7 +24,7 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
   const [actionPending, setActionPending] = useState<string | null>(null);
   const [logModalOpen, setLogModalOpen] = useState(false);
   const [logContent, setLogContent] = useState("");
-  const [podExpanded, setPodExpanded] = useState(true);
+  const [podExpanded, setPodExpanded] = useState(false);
   const isPod = !!((d as Record<string, unknown>).isPod);
   const isShowroom = !!((d as Record<string, unknown>).isShowroom || d.name === "showroom");
   const edges = useCanvasStore((s) => s.edges);
@@ -58,13 +59,23 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
 
   return (
     <div
-      className={`canvas-node canvas-node-container ${selected ? "canvas-node-selected" : ""}`}
+      className={`canvas-node canvas-node-container ${isPod && !isShowroom ? "canvas-node-pod" : ""} ${selected ? "canvas-node-selected" : ""}`}
       style={{
         borderColor: selected
-          ? "var(--troshka-blue)"
+          ? isPod && !isShowroom
+            ? "var(--troshka-purple)"
+            : "var(--troshka-blue)"
           : isShowroom && showroomIssues.length > 0
             ? "rgba(251, 191, 36, 0.55)"
-            : "rgba(56, 189, 248, 0.3)",
+            : isPod && !isShowroom
+              ? "rgba(168, 85, 247, 0.45)"
+              : "rgba(56, 189, 248, 0.3)",
+        boxShadow:
+          selected && isPod && !isShowroom
+            ? "0 0 0 3px rgba(168, 85, 247, 0.3)"
+            : undefined,
+        opacity: projectState === "draft" ? 0.55 : 1,
+        transition: "opacity 0.3s",
       }}
     >
       <div className="canvas-node-header">
@@ -99,9 +110,15 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
           const liveIps = (d as Record<string, unknown>).liveIps as string[] | undefined;
           const staticIps = (d.nics || []).map((nic) => nic.ip).filter(Boolean);
           const ips = liveIps && liveIps.length > 0 ? liveIps : staticIps;
-          const portList = isPod
-            ? podContainers.flatMap((c) => (c.ports || []).map((p) => p.containerPort)).filter(Boolean)
-            : (d.ports || []).map((p) => p.containerPort).filter(Boolean);
+          const portList =
+            isPod || isShowroom
+              ? getPodDisplayPorts(
+                  d as Record<string, unknown>,
+                  podContainers,
+                  allNodes,
+                  isShowroom,
+                )
+              : (d.ports || []).map((p) => p.containerPort).filter(Boolean);
           if (!ips.length && !portList.length) return null;
           return (
             <div className="canvas-node-detail" style={{ fontFamily: "monospace", fontSize: 10, color: "var(--troshka-green)" }}>
@@ -391,7 +408,7 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
           type="source"
           position={Position.Right}
           id={SHOWROOM_GATEWAY_SOURCE_HANDLE}
-          className="canvas-handle canvas-handle-router"
+          className="canvas-handle canvas-handle-showroom"
           style={{ top: "35%" }}
         />
       )}
@@ -442,13 +459,15 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
               className="canvas-handle canvas-handle-storage"
               style={{ top: `${pct}%` }}
             />
-            <Handle
-              type="source"
-              position={Position.Right}
-              id={`mnt-${handleId}-right`}
-              className="canvas-handle canvas-handle-storage"
-              style={{ top: `${pct}%` }}
-            />
+            {!isPod && (
+              <Handle
+                type="source"
+                position={Position.Right}
+                id={`mnt-${handleId}-right`}
+                className="canvas-handle canvas-handle-storage"
+                style={{ top: `${pct}%` }}
+              />
+            )}
           </React.Fragment>
         );
       })}

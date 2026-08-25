@@ -259,6 +259,146 @@ def test_inject_showroom_port_forward():
     ]
     out = _inject_showroom_port_forward(stale, topo, 1000)
     ext_ports = {pf["extPort"] for pf in out}
-    assert ext_ports == {"80", "443"}
+    assert ext_ports == {"443"}
     assert all(pf["intIp"] == "172.30.232.3" for pf in out)
     assert not any(pf["intIp"] == "10.0.0.5" for pf in out)
+
+
+def test_strip_showroom_gateway_access():
+    from app.services.deploy_topology import (
+        inject_showroom_gateway_port_forwards,
+        strip_showroom_gateway_access,
+    )
+
+    gw_id = "gw-1"
+    topo = {
+        "externalIps": [{"id": "eip-1", "name": "IP-1", "ip": ""}],
+        "nodes": [
+            {
+                "id": gw_id,
+                "type": "networkNode",
+                "data": {
+                    "subtype": "gateway",
+                    "gatewayMode": "nat-portforward",
+                    "portForwards": [
+                        {
+                            "extPort": "443",
+                            "intIp": "172.30.232.3",
+                            "intPort": "80",
+                            "proto": "tcp",
+                            "extIpId": "eip-1",
+                        },
+                        {
+                            "extPort": "2222",
+                            "intIp": "10.0.0.5",
+                            "intPort": "22",
+                            "proto": "tcp",
+                            "extIpId": "eip-1",
+                        },
+                    ],
+                },
+            },
+        ],
+    }
+    assert strip_showroom_gateway_access(topo)
+    gw = next(n for n in topo["nodes"] if n["id"] == gw_id)
+    pfs = gw["data"]["portForwards"]
+    assert len(pfs) == 1
+    assert pfs[0]["extPort"] == "2222"
+    assert topo["externalIps"] == [{"id": "eip-1", "name": "IP-1", "ip": ""}]
+
+    topo_with_showroom = {
+        **topo,
+        "nodes": topo["nodes"]
+        + [
+            {
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True},
+            }
+        ],
+    }
+    topo_with_showroom["externalIps"] = [{"id": "eip-1", "name": "IP-1", "ip": ""}]
+    topo_with_showroom["nodes"][0]["data"]["portForwards"] = pfs
+    assert inject_showroom_gateway_port_forwards(topo_with_showroom, {"net-1": 1000})
+    gw = topo_with_showroom["nodes"][0]
+    assert any(pf["extPort"] == "443" for pf in gw["data"]["portForwards"])
+
+
+def test_inject_showroom_gateway_port_forwards_on_topology():
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    topo = {
+        "externalIps": [{"id": "eip-1", "name": "IP-1"}],
+        "nodes": [
+            {
+                "id": "gw-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "gateway",
+                    "gatewayMode": "nat-portforward",
+                    "portForwards": [],
+                },
+            },
+            {
+                "id": "showroom-1",
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True, "nics": []},
+            },
+        ],
+    }
+    vni_map = {"net-1": 1000}
+    assert inject_showroom_gateway_port_forwards(topo, vni_map)
+    gw = topo["nodes"][0]["data"]
+    ext_ports = {pf["extPort"] for pf in gw["portForwards"]}
+    assert ext_ports == {"443"}
+    assert all(pf["intIp"] == "172.30.232.3" for pf in gw["portForwards"])
+    assert all(pf["extIpId"] == "eip-1" for pf in gw["portForwards"])
+
+
+def test_troshkad_network_entries_includes_infra_transit():
+    from app.services.deploy_service import _troshkad_network_entries
+
+    entries = _troshkad_network_entries(
+        [
+            {
+                "bridge": "",
+                "ip": "172.30.232.3",
+                "cidr": "172.30.232.0/24",
+                "gateway": "172.30.232.2",
+                "infra_transit": True,
+            },
+        ]
+    )
+    assert entries[0]["infra_transit"] is True
+    assert entries[0]["bridge"] == ""
+
+
+def test_inject_showroom_gateway_port_forwards_net_automation_template():
+    from pathlib import Path
+
+    import yaml
+
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+    from app.services.template_loader import generate_topology_from_template
+
+    tmpl_path = (
+        Path(__file__).resolve().parents[3]
+        / "example_templates"
+        / "net-automation-workshop.yaml"
+    )
+    topo = generate_topology_from_template(yaml.safe_load(tmpl_path.read_text()))
+    vni_map = {
+        n["id"]: 1000 + i
+        for i, n in enumerate(
+            [
+                node
+                for node in topo["nodes"]
+                if node.get("type") == "networkNode"
+                and node.get("data", {}).get("subtype") == "network"
+            ]
+        )
+    }
+    assert inject_showroom_gateway_port_forwards(topo, vni_map)
+    gw = next(n for n in topo["nodes"] if n.get("data", {}).get("subtype") == "gateway")
+    ext_ports = {pf["extPort"] for pf in gw["data"]["portForwards"]}
+    assert ext_ports == {"443"}

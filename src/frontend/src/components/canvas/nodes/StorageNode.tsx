@@ -65,7 +65,6 @@ function StorageNodeComponent({ id, data, selected }: NodeProps) {
         )}
       </div>
 
-      <Handle type="source" position={Position.Left} id="left" className="canvas-handle canvas-handle-storage" />
       <Handle type="source" position={Position.Right} id="right" className="canvas-handle canvas-handle-storage" />
     </div>
   );

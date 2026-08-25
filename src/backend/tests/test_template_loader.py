@@ -754,6 +754,9 @@ def test_net_automation_workshop_showroom_import():
         "wetty-vscode",
     }
     assert len(showroom["showroomTabs"]) == 5
+    terminal_tabs = [t for t in showroom["showroomTabs"] if t.get("type") == "terminal"]
+    assert len(terminal_tabs) == 2
+    assert all(t.get("sshPort") == 22 for t in terminal_tabs)
     assert topo["showroom"]["enabled"] is True
     assert len(topo["startOrder"]) == 7
     showroom_node = pods[0]
@@ -769,6 +772,7 @@ def test_net_automation_workshop_showroom_import():
     assert len(exported["showroom"]["tabs"]) == 5
     assert exported["showroom"]["tabs"][0]["vm"] == "control"
     assert exported["showroom"]["tabs"][0]["network"] == "mgmt"
+    assert exported["showroom"]["tabs"][0]["ssh_port"] == 22
     assert (
         "network" not in exported["showroom"]
         or exported["showroom"].get("network") is None

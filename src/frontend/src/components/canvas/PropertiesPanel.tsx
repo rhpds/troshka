@@ -6,13 +6,67 @@ import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
 import { getShowroomReadiness } from "@/lib/showroomValidation";
+import { isShowroomManagedForward } from "@/lib/showroomPortForwards";
 import { newShowroomTab, resolveShowroomTabs, type ShowroomTab } from "@/lib/showroomTabs";
+import {
+  buildWettyCommand,
+  formatCommandForInput,
+  isWettyContainer,
+  parseWettyCommand,
+  type WettyAttrs,
+} from "@/lib/wettyContainer";
 import type {
   VMNodeData,
   NetworkNodeData,
   StorageNodeData,
   ContainerNodeData,
 } from "@/stores/canvasStore";
+
+function HintIcon({ text }: { text: string }) {
+  return (
+    <span
+      title={text}
+      aria-label={text}
+      style={{
+        fontSize: 9,
+        fontWeight: 600,
+        color: "var(--troshka-text-dim)",
+        cursor: "help",
+        border: "1px solid var(--troshka-border)",
+        borderRadius: "50%",
+        width: 14,
+        height: 14,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        lineHeight: 1,
+        flexShrink: 0,
+      }}
+    >
+      i
+    </span>
+  );
+}
+
+function LabelWithHint({
+  label,
+  hint,
+  style,
+}: {
+  label: string;
+  hint: string;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <label
+      className="props-label"
+      style={{ display: "flex", alignItems: "center", gap: 5, ...style }}
+    >
+      {label}
+      <HintIcon text={hint} />
+    </label>
+  );
+}
 
 function isDuplicateName(name: string, nodeId: string, nodeType: string): boolean {
   if (!name) return false;
@@ -1526,20 +1580,83 @@ export default function PropertiesPanel() {
                         )}
                         {showroomTabs.map((tab, idx) => {
                           const resolved = resolvedTabs[idx];
+                          const typeLabel =
+                            tab.type === "terminal"
+                              ? "Terminal"
+                              : tab.type === "proxy"
+                                ? "Web proxy"
+                                : "External";
                           return (
-                            <div
-                              key={tab.id}
-                              style={{
-                                border: "1px solid var(--troshka-border)",
-                                borderRadius: 6,
-                                padding: 8,
-                                marginBottom: 8,
-                                background: "var(--troshka-surface2)",
-                              }}
-                            >
-                              <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                            <details key={tab.id} style={{ marginBottom: 8 }}>
+                              <summary
+                                style={{
+                                  cursor: "pointer",
+                                  padding: "6px 8px",
+                                  background: "var(--troshka-surface2)",
+                                  borderRadius: 6,
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  alignItems: "center",
+                                  gap: 8,
+                                  border: "1px solid var(--troshka-border)",
+                                }}
+                              >
+                                <span style={{ fontSize: 12, fontWeight: 600, flex: 1, minWidth: 0 }}>
+                                  {tab.name || "Untitled tab"}
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      fontWeight: 400,
+                                      color: "var(--troshka-text-dim)",
+                                      marginLeft: 6,
+                                    }}
+                                  >
+                                    {typeLabel}
+                                  </span>
+                                  {resolved?.warning && (
+                                    <span style={{ color: "var(--troshka-yellow)", marginLeft: 6 }}>⚠</span>
+                                  )}
+                                </span>
+                                <button
+                                  type="button"
+                                  title="Remove tab"
+                                  style={{
+                                    background: "none",
+                                    border: "none",
+                                    color: "#ef4444",
+                                    cursor: "pointer",
+                                    fontSize: 12,
+                                    flexShrink: 0,
+                                  }}
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    updateShowroomTabs(
+                                      node!.id,
+                                      showroomTabs.filter((t) => t.id !== tab.id),
+                                    );
+                                  }}
+                                >
+                                  ✕
+                                </button>
+                              </summary>
+                              <div
+                                style={{
+                                  padding: 8,
+                                  border: "1px solid var(--troshka-border)",
+                                  borderTop: "none",
+                                  borderRadius: "0 0 6px 6px",
+                                  background: "var(--troshka-surface2)",
+                                }}
+                              >
+                              <div className="props-field" style={{ marginBottom: 6 }}>
+                                <LabelWithHint
+                                  label="Tab name"
+                                  hint="Label shown in the showroom tab bar."
+                                />
                                 <input
                                   className="props-input"
+                                  placeholder="e.g. control"
                                   value={tab.name}
                                   onChange={(e) => {
                                     const next = showroomTabs.map((t) =>
@@ -1547,7 +1664,12 @@ export default function PropertiesPanel() {
                                     );
                                     updateShowroomTabs(node!.id, next);
                                   }}
-                                  style={{ flex: 1 }}
+                                />
+                              </div>
+                              <div className="props-field" style={{ marginBottom: 6 }}>
+                                <LabelWithHint
+                                  label="Tab type"
+                                  hint="Terminal: wetty SSH shell. Web proxy: reverse proxy to a VM app. External: link opened in a new browser tab."
                                 />
                                 <select
                                   className="props-input"
@@ -1565,115 +1687,226 @@ export default function PropertiesPanel() {
                                   <option value="proxy">Web proxy</option>
                                   <option value="external">External link</option>
                                 </select>
-                                <button
-                                  style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer" }}
-                                  onClick={() =>
-                                    updateShowroomTabs(
-                                      node!.id,
-                                      showroomTabs.filter((t) => t.id !== tab.id),
-                                    )
-                                  }
-                                >
-                                  ✕
-                                </button>
                               </div>
                               {tab.type === "external" ? (
-                                <input
-                                  className="props-input"
-                                  placeholder="https://..."
-                                  value={tab.url || ""}
-                                  onChange={(e) => {
-                                    const next = showroomTabs.map((t) =>
-                                      t.id === tab.id ? { ...t, url: e.target.value } : t,
-                                    );
-                                    updateShowroomTabs(node!.id, next);
-                                  }}
-                                  style={{ fontFamily: "monospace", fontSize: 11 }}
-                                />
+                                <div className="props-field">
+                                  <LabelWithHint
+                                    label="External URL"
+                                    hint="Full URL opened when the user selects this tab (new browser tab)."
+                                  />
+                                  <input
+                                    className="props-input"
+                                    placeholder="https://..."
+                                    value={tab.url || ""}
+                                    onChange={(e) => {
+                                      const next = showroomTabs.map((t) =>
+                                        t.id === tab.id ? { ...t, url: e.target.value } : t,
+                                      );
+                                      updateShowroomTabs(node!.id, next);
+                                    }}
+                                    style={{ fontFamily: "monospace", fontSize: 11 }}
+                                  />
+                                </div>
                               ) : (
                                 <>
-                                  <select
-                                    className="props-input"
-                                    value={tab.vmId || ""}
-                                    onChange={(e) => {
-                                      const next = showroomTabs.map((t) =>
-                                        t.id === tab.id ? { ...t, vmId: e.target.value } : t,
-                                      );
-                                      updateShowroomTabs(node!.id, next);
-                                    }}
-                                  >
-                                    <option value="">Select VM...</option>
-                                    {vmOptions.map((vm) => (
-                                      <option key={vm.id} value={vm.id}>{vm.name}</option>
-                                    ))}
-                                  </select>
-                                  <select
-                                    className="props-input"
-                                    value={tab.networkId || ""}
-                                    onChange={(e) => {
-                                      const selected = networkOptions.find((n) => n.id === e.target.value);
-                                      const next = showroomTabs.map((t) =>
-                                        t.id === tab.id
-                                          ? {
-                                              ...t,
-                                              networkId: e.target.value || undefined,
-                                              network: selected?.name || undefined,
-                                            }
-                                          : t,
-                                      );
-                                      updateShowroomTabs(node!.id, next);
-                                    }}
-                                    style={{ marginTop: 6 }}
-                                  >
-                                    <option value="">Select network...</option>
-                                    {networkOptions.map((net) => (
-                                      <option key={net.id} value={net.id}>{net.name}</option>
-                                    ))}
-                                  </select>
-                                </>
-                              )}
-                              {tab.type === "proxy" && (
-                                <div className="props-row" style={{ marginTop: 6 }}>
-                                  <input
-                                    className="props-input"
-                                    placeholder="/vscode/"
-                                    value={tab.proxyPath || ""}
-                                    onChange={(e) => {
-                                      const next = showroomTabs.map((t) =>
-                                        t.id === tab.id ? { ...t, proxyPath: e.target.value } : t,
-                                      );
-                                      updateShowroomTabs(node!.id, next);
-                                    }}
-                                    style={{ flex: 2, fontFamily: "monospace", fontSize: 11 }}
-                                  />
-                                  <input
-                                    className="props-input"
-                                    type="number"
-                                    placeholder="Port"
-                                    value={tab.proxyPort || 80}
-                                    onChange={(e) => {
-                                      const next = showroomTabs.map((t) =>
-                                        t.id === tab.id
-                                          ? { ...t, proxyPort: parseInt(e.target.value, 10) || 80 }
-                                          : t,
-                                      );
-                                      updateShowroomTabs(node!.id, next);
-                                    }}
-                                    style={{ width: 80 }}
-                                  />
-                                  <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
-                                    <input
-                                      type="checkbox"
-                                      checked={!!tab.proxyTls}
+                                  <div className="props-field" style={{ marginBottom: 6 }}>
+                                    <LabelWithHint
+                                      label="Target VM"
+                                      hint="Canvas VM this tab connects to."
+                                    />
+                                    <select
+                                      className="props-input"
+                                      value={tab.vmId || ""}
                                       onChange={(e) => {
                                         const next = showroomTabs.map((t) =>
-                                          t.id === tab.id ? { ...t, proxyTls: e.target.checked } : t,
+                                          t.id === tab.id ? { ...t, vmId: e.target.value } : t,
                                         );
                                         updateShowroomTabs(node!.id, next);
                                       }}
+                                    >
+                                      <option value="">Select VM...</option>
+                                      {vmOptions.map((vm) => (
+                                        <option key={vm.id} value={vm.id}>{vm.name}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  <div className="props-field" style={{ marginBottom: 6 }}>
+                                    <LabelWithHint
+                                      label="Network"
+                                      hint="NIC on that VM used to reach the workload (IP from the canvas)."
                                     />
-                                    TLS
-                                  </label>
+                                    <select
+                                      className="props-input"
+                                      value={tab.networkId || ""}
+                                      onChange={(e) => {
+                                        const selected = networkOptions.find((n) => n.id === e.target.value);
+                                        const next = showroomTabs.map((t) =>
+                                          t.id === tab.id
+                                            ? {
+                                                ...t,
+                                                networkId: e.target.value || undefined,
+                                                network: selected?.name || undefined,
+                                              }
+                                            : t,
+                                        );
+                                        updateShowroomTabs(node!.id, next);
+                                      }}
+                                    >
+                                      <option value="">Select network...</option>
+                                      {networkOptions.map((net) => (
+                                        <option key={net.id} value={net.id}>{net.name}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  {tab.type === "terminal" && (
+                                    <div className="props-field" style={{ marginBottom: 6 }}>
+                                      <LabelWithHint
+                                        label="SSH credentials"
+                                        hint="Optional wetty overrides; leave blank to use the VM cloud-init user and password."
+                                      />
+                                      <div className="props-row" style={{ gap: 8 }}>
+                                        <div style={{ flex: 1 }}>
+                                          <LabelWithHint
+                                            label="User"
+                                            hint="SSH login user (default: VM cloud-init user)."
+                                            style={{ fontSize: 10 }}
+                                          />
+                                          <input
+                                            className="props-input"
+                                            placeholder="cloud-user"
+                                            value={tab.sshUser || ""}
+                                            onChange={(e) => {
+                                              const next = showroomTabs.map((t) =>
+                                                t.id === tab.id ? { ...t, sshUser: e.target.value } : t,
+                                              );
+                                              updateShowroomTabs(node!.id, next);
+                                            }}
+                                            style={{ fontSize: 11 }}
+                                          />
+                                        </div>
+                                        <div style={{ flex: 1 }}>
+                                          <LabelWithHint
+                                            label="Password"
+                                            hint="SSH password (default: VM cloud-init password)."
+                                            style={{ fontSize: 10 }}
+                                          />
+                                          <input
+                                            className="props-input"
+                                            placeholder="optional"
+                                            type="password"
+                                            value={tab.sshPass || ""}
+                                            onChange={(e) => {
+                                              const next = showroomTabs.map((t) =>
+                                                t.id === tab.id ? { ...t, sshPass: e.target.value } : t,
+                                              );
+                                              updateShowroomTabs(node!.id, next);
+                                            }}
+                                            style={{ fontSize: 11 }}
+                                          />
+                                        </div>
+                                        <div style={{ width: 72 }}>
+                                          <LabelWithHint
+                                            label="Port"
+                                            hint="SSH port on the target VM (default 22)."
+                                            style={{ fontSize: 10 }}
+                                          />
+                                          <input
+                                            className="props-input"
+                                            type="number"
+                                            placeholder="22"
+                                            value={tab.sshPort ?? ""}
+                                            onChange={(e) => {
+                                              const raw = e.target.value;
+                                              const next = showroomTabs.map((t) =>
+                                                t.id === tab.id
+                                                  ? {
+                                                      ...t,
+                                                      sshPort: raw
+                                                        ? parseInt(raw, 10) || undefined
+                                                        : undefined,
+                                                    }
+                                                  : t,
+                                              );
+                                              updateShowroomTabs(node!.id, next);
+                                            }}
+                                            style={{ fontSize: 11 }}
+                                          />
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                              {tab.type === "proxy" && (
+                                <div className="props-field" style={{ marginBottom: 6 }}>
+                                  <LabelWithHint
+                                    label="Reverse proxy"
+                                    hint="Nginx path on the showroom and backend port on the target VM."
+                                  />
+                                  <div className="props-row" style={{ gap: 8, alignItems: "flex-end" }}>
+                                    <div style={{ flex: 2 }}>
+                                      <LabelWithHint
+                                        label="Path"
+                                        hint="Browser path prefix on the showroom (nginx location), e.g. /vscode/."
+                                        style={{ fontSize: 10 }}
+                                      />
+                                      <input
+                                        className="props-input"
+                                        placeholder="/vscode/"
+                                        value={tab.proxyPath || ""}
+                                        onChange={(e) => {
+                                          const next = showroomTabs.map((t) =>
+                                            t.id === tab.id ? { ...t, proxyPath: e.target.value } : t,
+                                          );
+                                          updateShowroomTabs(node!.id, next);
+                                        }}
+                                        style={{ fontFamily: "monospace", fontSize: 11 }}
+                                      />
+                                    </div>
+                                    <div style={{ width: 80 }}>
+                                      <LabelWithHint
+                                        label="Backend port"
+                                        hint="Port of the web app on the target VM."
+                                        style={{ fontSize: 10 }}
+                                      />
+                                      <input
+                                        className="props-input"
+                                        type="number"
+                                        placeholder="80"
+                                        value={tab.proxyPort || 80}
+                                        onChange={(e) => {
+                                          const next = showroomTabs.map((t) =>
+                                            t.id === tab.id
+                                              ? { ...t, proxyPort: parseInt(e.target.value, 10) || 80 }
+                                              : t,
+                                          );
+                                          updateShowroomTabs(node!.id, next);
+                                        }}
+                                      />
+                                    </div>
+                                    <label
+                                      style={{
+                                        display: "flex",
+                                        alignItems: "center",
+                                        gap: 4,
+                                        fontSize: 11,
+                                        paddingBottom: 6,
+                                      }}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={!!tab.proxyTls}
+                                        onChange={(e) => {
+                                          const next = showroomTabs.map((t) =>
+                                            t.id === tab.id ? { ...t, proxyTls: e.target.checked } : t,
+                                          );
+                                          updateShowroomTabs(node!.id, next);
+                                        }}
+                                      />
+                                      TLS to VM
+                                      <HintIcon text="Use HTTPS when proxying to the VM backend." />
+                                    </label>
+                                  </div>
                                 </div>
                               )}
                               {resolved?.warning && (
@@ -1681,7 +1914,8 @@ export default function PropertiesPanel() {
                                   ⚠ {resolved.warning}
                                 </div>
                               )}
-                            </div>
+                              </div>
+                            </details>
                           );
                         })}
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -1695,7 +1929,7 @@ export default function PropertiesPanel() {
                               ])
                             }
                           >
-                            + Terminal
+                            + Terminal Tab
                           </button>
                           <button
                             className="props-library-btn"
@@ -1707,7 +1941,7 @@ export default function PropertiesPanel() {
                               ])
                             }
                           >
-                            + Web proxy
+                            + Web Proxy Tab
                           </button>
                           <button
                             className="props-library-btn"
@@ -1719,7 +1953,7 @@ export default function PropertiesPanel() {
                               ])
                             }
                           >
-                            + External
+                            + External Tab
                           </button>
                         </div>
                       </div>
@@ -1735,9 +1969,6 @@ export default function PropertiesPanel() {
                           Ready — content configured{showroomReadiness.hasGateway ? " (gateway present)" : ""}
                         </div>
                       )}
-                      <div style={{ marginTop: 8, fontSize: 11, color: "var(--troshka-text-dim)" }}>
-                        Networking is automatic in the project netns (transit IP at deploy). Link to the gateway on the canvas for documentation only.
-                      </div>
                     </div>
                     <div className="props-divider" />
                   </>
@@ -2082,6 +2313,29 @@ export default function PropertiesPanel() {
 
                 {isPod && (
                   <>
+          {isShowroom && (
+            <div className="props-section">
+              <div
+                className="props-section-title"
+                style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
+                onClick={() => toggleSection("podAdvanced")}
+              >
+                <span
+                  style={{
+                    fontSize: 8,
+                    transition: "transform 0.15s",
+                    transform: isCollapsed("podAdvanced") ? "rotate(-90deg)" : "rotate(0)",
+                  }}
+                >
+                  &#9660;
+                </span>
+                Advanced
+                <HintIcon text="Init and main containers are scaffolded from content and tabs; edit only for debugging or custom sidecars." />
+              </div>
+            </div>
+          )}
+          {(!isShowroom || !isCollapsed("podAdvanced")) && (
+                <>
           {/* Init Containers section */}
           <div className="props-section">
             <div className="props-section-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -2131,7 +2385,7 @@ export default function PropertiesPanel() {
                   </div>
                   <div className="props-field">
                     <label className="props-label">Command</label>
-                    <input className="props-input" value={container.command || ""} placeholder="Optional entrypoint override" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
+                    <input className="props-input" value={formatCommandForInput(container.command)} placeholder="Optional entrypoint override" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
                       const containers = [...((node?.data as any)?.initContainers || [])];
                       containers[i] = { ...container, command: e.target.value || null };
                       updateNodeData(node!.id, { initContainers: containers });
@@ -2226,8 +2480,21 @@ export default function PropertiesPanel() {
                 updateNodeData(node!.id, { podContainers: containers });
               }}>+ Add</button>
             </div>
-            {((node?.data as any)?.podContainers || []).map((container: any, i: number) => (
-              <details key={i} open style={{ marginBottom: 8 }}>
+            {((node?.data as any)?.podContainers || []).map((container: any, i: number) => {
+              if (isShowroom && isWettyContainer(container)) return null;
+              const wetty = isWettyContainer(container);
+              const wettyAttrs = wetty ? parseWettyCommand(container.command) : null;
+              const updateWettyField = (patch: Partial<WettyAttrs>) => {
+                if (!wettyAttrs) return;
+                const containers = [...((node?.data as any)?.podContainers || [])];
+                containers[i] = {
+                  ...container,
+                  command: buildWettyCommand({ ...wettyAttrs, ...patch }),
+                };
+                updateNodeData(node!.id, { podContainers: containers });
+              };
+              return (
+              <details key={i} style={{ marginBottom: 8 }}>
                 <summary style={{ cursor: "pointer", padding: "6px 8px", background: "var(--troshka-surface2)", borderRadius: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 12, fontWeight: 600 }}>{container.name || `container-${i}`}</span>
                   <button
@@ -2275,14 +2542,89 @@ export default function PropertiesPanel() {
                       }} />
                     </div>
                   </div>
+                  {wetty && wettyAttrs ? (
+                    <>
+                      <div className="props-field">
+                        <label className="props-label">SSH host</label>
+                        <input
+                          className="props-input"
+                          value={wettyAttrs.sshHost}
+                          onChange={(e) => updateWettyField({ sshHost: e.target.value })}
+                          style={{ fontFamily: "monospace", fontSize: 11 }}
+                        />
+                      </div>
+                      <div className="props-row">
+                        <div className="props-field">
+                          <label className="props-label">SSH port</label>
+                          <input
+                            className="props-input"
+                            type="number"
+                            min={1}
+                            value={wettyAttrs.sshPort}
+                            onChange={(e) =>
+                              updateWettyField({ sshPort: parseInt(e.target.value, 10) || 22 })
+                            }
+                          />
+                        </div>
+                        <div className="props-field">
+                          <label className="props-label">Wetty port</label>
+                          <input
+                            className="props-input"
+                            type="number"
+                            min={1}
+                            value={wettyAttrs.port}
+                            onChange={(e) =>
+                              updateWettyField({ port: parseInt(e.target.value, 10) || 8001 })
+                            }
+                          />
+                        </div>
+                      </div>
+                      <div className="props-row">
+                        <div className="props-field">
+                          <label className="props-label">SSH user</label>
+                          <input
+                            className="props-input"
+                            value={wettyAttrs.sshUser}
+                            onChange={(e) => updateWettyField({ sshUser: e.target.value })}
+                          />
+                        </div>
+                        <div className="props-field">
+                          <label className="props-label">SSH password</label>
+                          <input
+                            className="props-input"
+                            type="password"
+                            value={wettyAttrs.sshPass}
+                            onChange={(e) => updateWettyField({ sshPass: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                      <div className="props-field">
+                        <label className="props-label">URL base path</label>
+                        <input
+                          className="props-input"
+                          placeholder="wetty_control"
+                          value={wettyAttrs.basePath}
+                          onChange={(e) => updateWettyField({ basePath: e.target.value })}
+                          style={{ fontFamily: "monospace", fontSize: 11 }}
+                        />
+                      </div>
+                    </>
+                  ) : (
                   <div className="props-field">
                     <label className="props-label">Command</label>
-                    <input className="props-input" value={container.command || ""} placeholder="Optional entrypoint override" style={{ fontFamily: "monospace", fontSize: 11 }} onChange={(e) => {
-                      const containers = [...((node?.data as any)?.podContainers || [])];
-                      containers[i] = { ...container, command: e.target.value || null };
-                      updateNodeData(node!.id, { podContainers: containers });
-                    }} />
+                    <input
+                      className="props-input"
+                      value={formatCommandForInput(container.command)}
+                      placeholder="Optional entrypoint override"
+                      style={{ fontFamily: "monospace", fontSize: 11 }}
+                      onChange={(e) => {
+                        const containers = [...((node?.data as any)?.podContainers || [])];
+                        containers[i] = { ...container, command: e.target.value || null };
+                        updateNodeData(node!.id, { podContainers: containers });
+                      }}
+                    />
                   </div>
+                  )}
                   <div className="props-field">
                     <label className="props-label">Environment Variables</label>
                     {(container.envVars || []).map((ev: any, evIdx: number) => (
@@ -2387,8 +2729,11 @@ export default function PropertiesPanel() {
                   </div>
                 </div>
               </details>
-            ))}
+              );
+            })}
           </div>
+                </>
+          )}
           <div className="props-divider" />
                   </>
                 )}
@@ -2998,6 +3343,73 @@ export default function PropertiesPanel() {
                       {(() => {
                         const externalIps = useCanvasStore.getState().externalIps;
                         return portForwards.map((pf, i) => {
+                          const showroomManaged = isShowroomManagedForward(pf);
+                          const roFieldStyle: React.CSSProperties = {
+                            fontFamily: "monospace",
+                            fontSize: 11,
+                            padding: "6px 8px",
+                            borderRadius: 4,
+                            border: "1px solid var(--troshka-border)",
+                            background: "var(--troshka-surface)",
+                            color: "var(--troshka-text-dim)",
+                          };
+                          if (showroomManaged) {
+                            return (
+                              <div
+                                key={i}
+                                style={{
+                                  background: "var(--troshka-surface2)",
+                                  borderRadius: 6,
+                                  padding: 8,
+                                  marginBottom: 6,
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    fontSize: 10,
+                                    color: "var(--troshka-text-dim)",
+                                    marginBottom: 6,
+                                  }}
+                                >
+                                  Showroom access (auto-managed)
+                                </div>
+                                <div
+                                  className="props-row"
+                                  style={{ marginBottom: 4, alignItems: "end" }}
+                                >
+                                  <div className="props-field" style={{ flex: 1 }}>
+                                    <label className="props-label">External IP</label>
+                                    <div style={roFieldStyle}>auto</div>
+                                  </div>
+                                  <div className="props-field" style={{ flex: "0 0 64px" }}>
+                                    <label className="props-label">Ext Port</label>
+                                    <div style={roFieldStyle}>{pf.extPort}</div>
+                                  </div>
+                                </div>
+                                <div
+                                  style={{
+                                    textAlign: "center",
+                                    color: "var(--troshka-text-dim)",
+                                    fontSize: 10,
+                                    lineHeight: 1,
+                                    margin: "0",
+                                  }}
+                                >
+                                  ↓
+                                </div>
+                                <div className="props-row" style={{ alignItems: "end" }}>
+                                  <div className="props-field" style={{ flex: 1 }}>
+                                    <label className="props-label">Internal IP</label>
+                                    <div style={roFieldStyle}>auto</div>
+                                  </div>
+                                  <div className="props-field" style={{ flex: "0 0 64px" }}>
+                                    <label className="props-label">Int Port</label>
+                                    <div style={roFieldStyle}>auto</div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          }
                           const isDirty = (form: HTMLFormElement) => {
                             const fd = new FormData(form);
                             return fd.get("extPort") !== (pf.extPort || "") ||
