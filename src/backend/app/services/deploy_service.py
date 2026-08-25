@@ -1692,6 +1692,14 @@ def _pod_create_params(host, project_id, ctr, topology, vni_map, pool=None):
             }
             for pc in ctr.get("pod_containers", [])
         ],
+        "volumes": [
+            {
+                "disk_path": v["disk_path"],
+                "mount_dir": v["mount_dir"],
+                "mount_path": v["mount_path"],
+            }
+            for v in volumes
+        ],
         "restart_policy": ctr.get("restart_policy", "always"),
         "privileged": ctr.get("privileged", False),
     }

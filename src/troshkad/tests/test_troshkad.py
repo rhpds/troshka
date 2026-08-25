@@ -1579,6 +1579,35 @@ class TestPodCreate(unittest.TestCase):
         self.assertGreater(len(init_create), 0, f"No init container created in cmds: {cmds}")
         self.assertGreater(len(main_create), 0, f"No main container created in cmds: {cmds}")
 
+    @patch("troshkad._mount_container_volumes")
+    @patch("troshkad._run_cmd")
+    def test_pod_create_mounts_volumes(self, mock_run_cmd, mock_mount):
+        def run_cmd_side_effect(job, cmd, **kwargs):
+            if "inspect" in cmd:
+                return "12345"
+            return ""
+
+        mock_run_cmd.side_effect = run_cmd_side_effect
+
+        volumes = [
+            {
+                "disk_path": "/var/lib/troshka/vms/proj/disk.raw",
+                "mount_dir": "/var/lib/troshka/vms/proj/mnt-disk",
+                "mount_path": "/showroom",
+            }
+        ]
+        job = troshkad._create_job(
+            "pods/create",
+            {
+                "pod_name": "showroom",
+                "project_id": "aabbccdd-1122-3344-5566-778899001122",
+                "volumes": volumes,
+                "containers": [],
+            },
+        )
+        troshkad._handle_pod_create(job, job["params"])
+        mock_mount.assert_called_once_with(job, volumes)
+
 
 class TestPodStart(unittest.TestCase):
     """Tests for pods/start handler."""

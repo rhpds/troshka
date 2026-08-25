@@ -11710,10 +11710,13 @@ def _handle_pod_create(job, params):
     networks = params.get("networks", [])
     init_containers = params.get("init_containers", [])
     containers = params.get("containers", [])
+    volumes = params.get("volumes", [])
     restart_policy = params.get("restart_policy", "always")
     privileged = params.get("privileged", False)
 
     full_pod_name = f"troshka-{project_id[:8]}-{pod_name}"
+
+    _mount_container_volumes(job, volumes)
 
     cmd = [
         "podman",
