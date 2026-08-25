@@ -1026,6 +1026,32 @@ def _generate_topology_from_vms(
 
     container_name_to_id = {}
     containers_def = tmpl.get("containers", {})
+    showroom_cfg = tmpl.get("showroom") or {}
+    scaffold_showroom = (
+        bool(showroom_cfg.get("enabled")) and "showroom" not in containers_def
+    )
+
+    if scaffold_showroom:
+        from app.services.showroom_scaffold import build_showroom_from_config
+
+        (
+            ctr_node,
+            disk_nodes,
+            disk_edges,
+            nic_edges,
+            showroom_meta,
+        ) = build_showroom_from_config(
+            showroom_cfg, vm_name_to_id, vms_def, net_ids, vm_x, VM_ROW_Y
+        )
+        nodes.append(ctr_node)
+        nodes.extend(disk_nodes)
+        edges.extend(disk_edges)
+        edges.extend(nic_edges)
+        container_name_to_id["showroom"] = ctr_node["id"]
+        vm_x += VM_SPACING
+    else:
+        showroom_meta = None
+
     for ctr_key, ctr_cfg in containers_def.items():
         ctr_node, disk_nodes, disk_edges, nic_edges = _build_container_node(
             ctr_key, ctr_cfg, net_ids, nets_def, vm_x, VM_ROW_Y
@@ -1055,7 +1081,9 @@ def _generate_topology_from_vms(
         "startOrder": start_order,
         "hiddenNodeIds": hidden_ids,
     }
-    if tmpl.get("showroom"):
+    if showroom_meta is not None:
+        result["showroom"] = showroom_meta
+    elif tmpl.get("showroom"):
         result["showroom"] = tmpl["showroom"]
     return result
 
@@ -1716,8 +1744,17 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
         result["gateway"] = gateway
     result["vms"] = vms
 
-    # ── Containers ──
-    container_nodes = [n for n in nodes if n.get("type") == "containerNode"]
+    # ── Containers (non-showroom pods; showroom exports via showroom section) ──
+    container_nodes = [
+        n
+        for n in nodes
+        if n.get("type") == "containerNode" and not n.get("data", {}).get("isShowroom")
+    ]
+    showroom_nodes = [
+        n
+        for n in nodes
+        if n.get("type") == "containerNode" and n.get("data", {}).get("isShowroom")
+    ]
     if container_nodes:
         all_storage_nodes = {
             n["id"]: n for n in nodes if n.get("type") == "storageNode"
@@ -1732,7 +1769,7 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
         d = n.get("data", {})
         id_to_name[n["id"]] = d.get("name", d.get("label", n["id"][:8]))
 
-    so_out = _export_start_order(topology, container_nodes, id_to_name)
+    so_out = _export_start_order(topology, container_nodes + showroom_nodes, id_to_name)
     if so_out:
         result["start_order"] = so_out
 
@@ -1740,8 +1777,13 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
     if hidden:
         result["hidden_nodes"] = [id_to_name.get(h, h) for h in hidden]
 
-    if topology.get("showroom"):
-        result["showroom"] = topology["showroom"]
+    from app.services.showroom_scaffold import export_showroom_section
+
+    showroom_export = export_showroom_section(
+        topology, showroom_nodes, id_to_name, edges, net_nodes
+    )
+    if showroom_export:
+        result["showroom"] = showroom_export
 
     return result
 
@@ -1752,7 +1794,9 @@ def generate_topology_from_template(
     external_access: bool = False,  # pragma: allowlist secret
 ) -> dict:
     if not resolved.get("vms") and not resolved.get("containers"):
-        raise ValueError("Template must have a 'vms' or 'containers' section")
+        showroom = resolved.get("showroom") or {}
+        if not showroom.get("enabled"):
+            raise ValueError("Template must have a 'vms' or 'containers' section")
 
     topo = _generate_topology_from_vms(resolved, bmc_password, external_access)
     from app.services.auto_layout import auto_layout

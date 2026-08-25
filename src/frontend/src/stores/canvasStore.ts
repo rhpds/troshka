@@ -271,17 +271,22 @@ function parseShowroomFromTopology(
   topologyShowroom: unknown,
   nodes: Node[],
 ): ShowroomConfig | null {
+  const showroomNode = nodes.find((n) => isShowroomContainer(n));
+  const nodeData = showroomNode?.data as Record<string, unknown> | undefined;
   if (topologyShowroom && typeof topologyShowroom === "object") {
     const s = topologyShowroom as Record<string, unknown>;
     return {
       enabled: s.enabled !== false,
-      content_repo: String(s.content_repo || ""),
-      content_ref: String(s.content_ref || "main"),
-      build_content: s.build_content !== false,
-      tabs: Array.isArray(s.tabs) ? (s.tabs as ShowroomTab[]) : undefined,
+      content_repo: String(s.content_repo || nodeData?.contentRepo || ""),
+      content_ref: String(s.content_ref || nodeData?.contentRef || "main"),
+      build_content: s.build_content !== false && nodeData?.buildContent !== false,
+      tabs: Array.isArray(s.tabs)
+        ? (s.tabs as ShowroomTab[])
+        : Array.isArray(nodeData?.showroomTabs)
+          ? (nodeData.showroomTabs as ShowroomTab[])
+          : undefined,
     };
   }
-  const showroomNode = nodes.find((n) => isShowroomContainer(n));
   if (!showroomNode) return null;
   const d = showroomNode.data as Record<string, unknown>;
   return {
@@ -290,6 +295,21 @@ function parseShowroomFromTopology(
     content_ref: String(d.contentRef || "main"),
     build_content: d.buildContent !== false,
     tabs: Array.isArray(d.showroomTabs) ? (d.showroomTabs as ShowroomTab[]) : [],
+  };
+}
+
+function showroomConfigForSave(
+  showroom: ShowroomConfig | null,
+  nodes: Node[],
+): ShowroomConfig | null {
+  const merged = parseShowroomFromTopology(null, nodes);
+  if (!showroom && !merged) return null;
+  return {
+    enabled: showroom?.enabled ?? merged?.enabled ?? true,
+    content_repo: showroom?.content_repo || merged?.content_repo || "",
+    content_ref: showroom?.content_ref || merged?.content_ref || "main",
+    build_content: showroom?.build_content ?? merged?.build_content ?? true,
+    tabs: showroom?.tabs ?? merged?.tabs,
   };
 }
 
@@ -1406,7 +1426,8 @@ function _saveTopologyToApi(projectId: string, state: { nodes: Node[]; edges: Ed
     startOrder: state.startOrder,
     externalIps: state.externalIps,
   };
-  if (state.showroom) topology.showroom = state.showroom;
+  const showroomMeta = showroomConfigForSave(state.showroom, state.nodes);
+  if (showroomMeta) topology.showroom = showroomMeta;
   fetch(`/api/v1/projects/${projectId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },

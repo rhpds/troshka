@@ -258,5 +258,16 @@ def test_validate_showroom_topology_requires_content_repo():
 
     topo = _showroom_topology()
     topo["showroom"]["content_repo"] = ""
+    topo["nodes"][0]["data"]["contentRepo"] = ""
     errors = validate_showroom_topology(topo)
     assert any("content repo" in e for e in errors)
+
+
+def test_validate_showroom_topology_content_repo_from_node():
+    from app.services.deploy_topology import validate_showroom_topology
+
+    topo = _showroom_topology()
+    topo["showroom"] = None
+    showroom = next(n for n in topo["nodes"] if n["data"].get("isShowroom"))
+    showroom["data"]["contentRepo"] = "https://github.com/example/repo.git"
+    assert validate_showroom_topology(topo) == []

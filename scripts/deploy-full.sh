@@ -48,7 +48,7 @@ echo "=== Step 3: Promote images ==="
 ./scripts/promote-to-production.sh | grep -E "^  |^Done"
 
 OPERATOR_KUBECONFIGS=()
-for kc in ~/secrets/ocpv{01,03,05,06,07,08,09,10}*.kubeconfig; do
+for kc in ~/secrets/ocpv{01,03,06,07,08,09}*.kubeconfig; do
   [ -f "$kc" ] && OPERATOR_KUBECONFIGS+=("$kc")
 done
 OPERATOR_KUBECONFIGS+=("$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kubeconfig")

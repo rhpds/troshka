@@ -61,7 +61,7 @@ function buildInitContainers(contentRepo: string, contentRef: string) {
     },
     {
       name: "nginx-config",
-      image: "quay.io/rhpds/busybox:1.36",
+      image: "docker.io/library/busybox:1.36",
       cpus: 1,
       memory: 64,
       envVars: [

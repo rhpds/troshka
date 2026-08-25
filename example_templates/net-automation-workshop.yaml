@@ -32,7 +32,7 @@ networks:
 gateway:
   network: mgmt
   external_access: true
-  outbound_ports: [53, 80, 443, 123, icmp]
+  outbound_ports: [53/udp, 80/tcp, 443/tcp, 123/udp, icmp]
   port_forwards:
   # Only Showroom is exposed externally; AAP (/aap/) and VS Code (/vscode/) are
   # proxied by the showroom nginx sidecar on the lab network.
@@ -156,6 +156,34 @@ showroom:
   content_repo: https://github.com/rhpds/zt-network-automation-workshop.git
   content_ref: v0.0.1
   build_content: true
+  network: mgmt
+  ip: 10.0.0.5
+  disk_gb: 5
+  tabs:
+    - name: AAP terminal
+      type: terminal
+      vm: control
+      ssh_user: rhel
+      ssh_pass: ansible123!  # pragma: allowlist secret
+    - name: Workshop terminal
+      type: terminal
+      vm: vscode
+      ssh_user: rhel
+      ssh_pass: ansible123!  # pragma: allowlist secret
+    - name: VS Code
+      type: proxy
+      vm: vscode
+      proxy_path: /vscode/
+      proxy_port: 8080
+    - name: Ansible Automation Platform
+      type: proxy
+      vm: control
+      proxy_path: /aap/
+      proxy_port: 443
+      proxy_tls: true
+    - name: Open an Issue
+      type: external
+      url: https://github.com/rhpds/zt-network-automation-workshop/issues/new
 
 start_order:
   - vm: control
@@ -166,106 +194,3 @@ start_order:
   - vm: rtr4
   - container: showroom
     delay: 15
-
-containers:
-  showroom:
-    type: pod
-    build_content: true
-    nics:
-      - network: mgmt
-        ip: 10.0.0.5
-    disks:
-      - size_gb: 5
-        mount_path: /showroom
-    init_containers:
-      - name: git-cloner
-        image: quay.io/rhpds/git-cloner:v1.1.4
-        env:
-          GIT_REPO_URL: https://github.com/rhpds/zt-network-automation-workshop.git
-          GIT_REPO_REF: v0.0.1
-          CLONE_DIR: /showroom/repo
-        mounts:
-          - disk: showroom-vol0
-            mount_path: /showroom
-      - name: config-overlay
-        image: quay.io/rhpds/busybox:1.36
-        env:
-          UI_CONFIG_B64: "LS0tCiMgVHJvc2hrYSBvdmVybGF5IGZvciB6dC1uZXR3b3JrLWF1dG9tYXRpb24td29ya3Nob3AgU2hvd3Jvb20gdGFicy4KYW50b3JhOgogIG5hbWU6IG1vZHVsZXMKICBkaXI6IHd3dwogIG1vZHVsZXM6CiAgICAtIG5hbWU6IDAzLW1vZHVsZS0wMS1leHBsb3JlLWxhYgogICAgICBsYWJlbDogIjEtMTogRXhwbG9yZSB0aGUgbGFiIGVudmlyb25tZW50IgogICAgLSBuYW1lOiAwNC1tb2R1bGUtMDItZmlyc3QtcGxheWJvb2sKICAgICAgbGFiZWw6ICIxLTI6IEZpcnN0IEFuc2libGUgUGxheWJvb2siCiAgICAtIG5hbWU6IDA1LW1vZHVsZS0wMy1mYWN0cwogICAgICBsYWJlbDogIjEtMzogQW5zaWJsZSBmYWN0cyIKICAgIC0gbmFtZTogMDYtbW9kdWxlLTA0LXJlc291cmNlLW1vZHVsZXMKICAgICAgbGFiZWw6ICIxLTQ6IFJlc291cmNlIG1vZHVsZXMiCiAgICAtIG5hbWU6IDA3LW1vZHVsZS0wNS1leHBsb3JlLWNvbnRyb2xsZXIKICAgICAgbGFiZWw6ICIyLTE6IEV4cGxvcmUgQXV0b21hdGlvbiBjb250cm9sbGVyIgogICAgLSBuYW1lOiAwOC1tb2R1bGUtMDYtam9iLXRlbXBsYXRlCiAgICAgIGxhYmVsOiAiMi0yOiBKb2IgdGVtcGxhdGVzIgogICAgLSBuYW1lOiAwOS1tb2R1bGUtMDctc3VydmV5CiAgICAgIGxhYmVsOiAiMi0zOiBTdXJ2ZXlzIgogICAgLSBuYW1lOiAxMC1tb2R1bGUtMDgtcmJhYwogICAgICBsYWJlbDogIjItNDogUkJBQyIKICAgIC0gbmFtZTogMTEtbW9kdWxlLTA5LXdvcmtmbG93CiAgICAgIGxhYmVsOiAiMi01OiBXb3JrZmxvd3MiCgp0YWJzOgogIC0gbmFtZTogQUFQIHRlcm1pbmFsCiAgICB1cmw6IC93ZXR0eV9jb250cm9sCiAgLSBuYW1lOiBXb3Jrc2hvcCB0ZXJtaW5hbAogICAgdXJsOiAvd2V0dHlfdnNjb2RlCiAgLSBuYW1lOiBWUyBDb2RlCiAgICB1cmw6IC92c2NvZGUvCiAgLSBuYW1lOiBBbnNpYmxlIEF1dG9tYXRpb24gUGxhdGZvcm0KICAgIHVybDogL2FhcC8KICAtIG5hbWU6IE9wZW4gYW4gSXNzdWUKICAgIHVybDogaHR0cHM6Ly9naXRodWIuY29tL3JocGRzL3p0LW5ldHdvcmstYXV0b21hdGlvbi13b3Jrc2hvcC9pc3N1ZXMvbmV3CiAgICBleHRlcm5hbDogdHJ1ZQo="  # pragma: allowlist secret
-          USER_DATA_B64: "LS0tCmJhc3Rpb25fcGFzc3dvcmQ6IGFuc2libGUxMjMhCg=="  # pragma: allowlist secret
-          NGINX_B64: "ZXZlbnRzIHt9CmVycm9yX2xvZyAvZGV2L3N0ZG91dCBpbmZvOwpodHRwIHsKICBpbmNsdWRlIC9ldGMvbmdpbngvbWltZS50eXBlczsKICBwcm94eV9jYWNoZSBvZmY7CiAgZXhwaXJlcyAtMTsKCiAgbWFwICRodHRwX3VwZ3JhZGUgJGNvbm5lY3Rpb25fdXBncmFkZSB7CiAgICBkZWZhdWx0IHVwZ3JhZGU7CiAgICAnJyBjbG9zZTsKICB9CgogICMgU2hvd3Jvb20gYW5kIEFBUCBib3RoIHVzZSAvYXNzZXRzLyDigJQgcm91dGUgYnkgcmVmZXJlcgogIG1hcCAkaHR0cF9yZWZlcmVyICRhYXBfYXNzZXRzIHsKICAgIGRlZmF1bHQgMDsKICAgIH4qL2FhcC8gMTsKICB9CgogIHNlcnZlciB7CiAgICBsaXN0ZW4gODA7CiAgICBhYnNvbHV0ZV9yZWRpcmVjdCBvZmY7CgogICAgbG9jYXRpb24gLyB7CiAgICAgIHByb3h5X3Bhc3MgaHR0cDovLzEyNy4wLjAuMTo4MDAwOwogICAgICBwcm94eV9zZXRfaGVhZGVyIEhvc3QgJGhvc3Q7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtRm9yICRwcm94eV9hZGRfeF9mb3J3YXJkZWRfZm9yOwogICAgICBwcm94eV9zZXRfaGVhZGVyIFgtRm9yd2FyZGVkLVByb3RvICRzY2hlbWU7CiAgICB9CgogICAgbG9jYXRpb24gL3ZzY29kZS8gewogICAgICBwcm94eV9wYXNzIGh0dHA6Ly8xMC4wLjAuMjA6ODA4MC87CiAgICAgIHByb3h5X2h0dHBfdmVyc2lvbiAxLjE7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgVXBncmFkZSAkaHR0cF91cGdyYWRlOwogICAgICBwcm94eV9zZXRfaGVhZGVyIENvbm5lY3Rpb24gJGNvbm5lY3Rpb25fdXBncmFkZTsKICAgICAgcHJveHlfcmVhZF90aW1lb3V0IDg2NDAwOwogICAgICBwcm94eV9zZXRfaGVhZGVyIEhvc3QgJGhvc3Q7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtRm9yICRwcm94eV9hZGRfeF9mb3J3YXJkZWRfZm9yOwogICAgICBwcm94eV9zZXRfaGVhZGVyIFgtRm9yd2FyZGVkLVByb3RvICRzY2hlbWU7CiAgICB9CgogICAgbG9jYXRpb24gL2FhcC8gewogICAgICBwcm94eV9wYXNzIGh0dHBzOi8vMTAuMC4wLjEwOjQ0My87CiAgICAgIHByb3h5X2h0dHBfdmVyc2lvbiAxLjE7CiAgICAgIHByb3h5X3NzbF92ZXJpZnkgb2ZmOwogICAgICBwcm94eV9zc2xfc2VydmVyX25hbWUgb247CiAgICAgIHByb3h5X3NzbF9uYW1lIGFhcC5leGFtcGxlLm9yZzsKICAgICAgcHJveHlfc2V0X2hlYWRlciBIb3N0IGFhcC5leGFtcGxlLm9yZzsKICAgICAgcHJveHlfc2V0X2hlYWRlciBYLUZvcndhcmRlZC1Gb3IgJHByb3h5X2FkZF94X2ZvcndhcmRlZF9mb3I7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtUHJvdG8gaHR0cHM7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtSG9zdCAkaG9zdDsKICAgICAgcHJveHlfc2V0X2hlYWRlciBBY2NlcHQtRW5jb2RpbmcgIiI7CiAgICAgIHByb3h5X3JlZGlyZWN0IGh0dHBzOi8vYWFwLmV4YW1wbGUub3JnLyAvYWFwLzsKICAgICAgcHJveHlfcmVkaXJlY3QgaHR0cDovL2FhcC5leGFtcGxlLm9yZy8gL2FhcC87CiAgICAgIHN1Yl9maWx0ZXJfdHlwZXMgdGV4dC9odG1sIHRleHQvY3NzIGFwcGxpY2F0aW9uL2phdmFzY3JpcHQgdGV4dC9qYXZhc2NyaXB0IGFwcGxpY2F0aW9uL2pzb247CiAgICAgIHN1Yl9maWx0ZXJfb25jZSBvZmY7CiAgICAgIHN1Yl9maWx0ZXIgJ2hyZWY9Ii8nICdocmVmPSIvYWFwLyc7CiAgICAgIHN1Yl9maWx0ZXIgJ3NyYz0iLycgJ3NyYz0iL2FhcC8nOwogICAgICBzdWJfZmlsdGVyICdhY3Rpb249Ii8nICdhY3Rpb249Ii9hYXAvJzsKICAgICAgc3ViX2ZpbHRlciAnIjogIi8vLycgJyI6ICIvYWFwLyc7CiAgICAgIHN1Yl9maWx0ZXIgIicvLy8iICInL2FhcC8iOwogICAgICBzdWJfZmlsdGVyICciL2Fzc2V0cy8nICciL2FhcC9hc3NldHMvJzsKICAgICAgc3ViX2ZpbHRlciAiJy9hc3NldHMvIiAiJy9hYXAvYXNzZXRzLyI7CiAgICB9CgogICAgIyAvYXNzZXRzLyBpcyBzaGFyZWQ6IFNob3dyb29tIChkZWZhdWx0KSB2cyBBQVAgKHdoZW4gcmVmZXJlciBpcyAvYWFwLykKICAgIGxvY2F0aW9uIC9hc3NldHMvIHsKICAgICAgZXJyb3JfcGFnZSA0MTggPSBAYWFwX2Fzc2V0czsKICAgICAgaWYgKCRhYXBfYXNzZXRzID0gMSkgeyByZXR1cm4gNDE4OyB9CiAgICAgIHByb3h5X3Bhc3MgaHR0cDovLzEyNy4wLjAuMTo4MDAwOwogICAgICBwcm94eV9zZXRfaGVhZGVyIEhvc3QgJGhvc3Q7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtRm9yICRwcm94eV9hZGRfeF9mb3J3YXJkZWRfZm9yOwogICAgICBwcm94eV9zZXRfaGVhZGVyIFgtRm9yd2FyZGVkLVByb3RvICRzY2hlbWU7CiAgICB9CgogICAgbG9jYXRpb24gQGFhcF9hc3NldHMgewogICAgICBwcm94eV9wYXNzIGh0dHBzOi8vMTAuMC4wLjEwOjQ0MyRyZXF1ZXN0X3VyaTsKICAgICAgcHJveHlfaHR0cF92ZXJzaW9uIDEuMTsKICAgICAgcHJveHlfc3NsX3ZlcmlmeSBvZmY7CiAgICAgIHByb3h5X3NzbF9zZXJ2ZXJfbmFtZSBvbjsKICAgICAgcHJveHlfc3NsX25hbWUgYWFwLmV4YW1wbGUub3JnOwogICAgICBwcm94eV9zZXRfaGVhZGVyIEhvc3QgYWFwLmV4YW1wbGUub3JnOwogICAgICBwcm94eV9zZXRfaGVhZGVyIFgtRm9yd2FyZGVkLUZvciAkcHJveHlfYWRkX3hfZm9yd2FyZGVkX2ZvcjsKICAgICAgcHJveHlfc2V0X2hlYWRlciBYLUZvcndhcmRlZC1Qcm90byBodHRwczsKICAgIH0KCiAgICBsb2NhdGlvbiAvcnVubmVyLyB7CiAgICAgIHByb3h5X3Bhc3MgaHR0cHM6Ly8xMC4wLjAuMTA6NDQzL3J1bm5lci87CiAgICAgIHByb3h5X2h0dHBfdmVyc2lvbiAxLjE7CiAgICAgIHByb3h5X3NzbF92ZXJpZnkgb2ZmOwogICAgICBwcm94eV9zc2xfc2VydmVyX25hbWUgb247CiAgICAgIHByb3h5X3NzbF9uYW1lIGFhcC5leGFtcGxlLm9yZzsKICAgICAgcHJveHlfc2V0X2hlYWRlciBIb3N0IGFhcC5leGFtcGxlLm9yZzsKICAgICAgcHJveHlfc2V0X2hlYWRlciBYLUZvcndhcmRlZC1Gb3IgJHByb3h5X2FkZF94X2ZvcndhcmRlZF9mb3I7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtUHJvdG8gaHR0cHM7CiAgICB9CgogICAgbG9jYXRpb24gL2xvY2FsZXMvIHsKICAgICAgcHJveHlfcGFzcyBodHRwczovLzEwLjAuMC4xMDo0NDMvbG9jYWxlcy87CiAgICAgIHByb3h5X2h0dHBfdmVyc2lvbiAxLjE7CiAgICAgIHByb3h5X3NzbF92ZXJpZnkgb2ZmOwogICAgICBwcm94eV9zc2xfc2VydmVyX25hbWUgb247CiAgICAgIHByb3h5X3NzbF9uYW1lIGFhcC5leGFtcGxlLm9yZzsKICAgICAgcHJveHlfc2V0X2hlYWRlciBIb3N0IGFhcC5leGFtcGxlLm9yZzsKICAgICAgcHJveHlfc2V0X2hlYWRlciBYLUZvcndhcmRlZC1Gb3IgJHByb3h5X2FkZF94X2ZvcndhcmRlZF9mb3I7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtUHJvdG8gaHR0cHM7CiAgICB9CgogICAgbG9jYXRpb24gL191aS8gewogICAgICBwcm94eV9wYXNzIGh0dHBzOi8vMTAuMC4wLjEwOjQ0My9fdWkvOwogICAgICBwcm94eV9odHRwX3ZlcnNpb24gMS4xOwogICAgICBwcm94eV9zc2xfdmVyaWZ5IG9mZjsKICAgICAgcHJveHlfc3NsX3NlcnZlcl9uYW1lIG9uOwogICAgICBwcm94eV9zc2xfbmFtZSBhYXAuZXhhbXBsZS5vcmc7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgSG9zdCBhYXAuZXhhbXBsZS5vcmc7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtRm9yICRwcm94eV9hZGRfeF9mb3J3YXJkZWRfZm9yOwogICAgICBwcm94eV9zZXRfaGVhZGVyIFgtRm9yd2FyZGVkLVByb3RvIGh0dHBzOwogICAgfQoKICAgIGxvY2F0aW9uID0gL2xvZ2luIHsKICAgICAgcHJveHlfcGFzcyBodHRwczovLzEwLjAuMC4xMDo0NDMvbG9naW47CiAgICAgIHByb3h5X2h0dHBfdmVyc2lvbiAxLjE7CiAgICAgIHByb3h5X3NzbF92ZXJpZnkgb2ZmOwogICAgICBwcm94eV9zc2xfc2VydmVyX25hbWUgb247CiAgICAgIHByb3h5X3NzbF9uYW1lIGFhcC5leGFtcGxlLm9yZzsKICAgICAgcHJveHlfc2V0X2hlYWRlciBIb3N0IGFhcC5leGFtcGxlLm9yZzsKICAgICAgcHJveHlfc2V0X2hlYWRlciBYLUZvcndhcmRlZC1Gb3IgJHByb3h5X2FkZF94X2ZvcndhcmRlZF9mb3I7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtUHJvdG8gaHR0cHM7CiAgICB9CgogICAgIyBBQVAgQVBJICsgd2Vic29ja2V0CiAgICBsb2NhdGlvbiAvYXBpLyB7CiAgICAgIHByb3h5X3Bhc3MgaHR0cHM6Ly8xMC4wLjAuMTA6NDQzL2FwaS87CiAgICAgIHByb3h5X2h0dHBfdmVyc2lvbiAxLjE7CiAgICAgIHByb3h5X3NzbF92ZXJpZnkgb2ZmOwogICAgICBwcm94eV9zc2xfc2VydmVyX25hbWUgb247CiAgICAgIHByb3h5X3NzbF9uYW1lIGFhcC5leGFtcGxlLm9yZzsKICAgICAgcHJveHlfc2V0X2hlYWRlciBIb3N0IGFhcC5leGFtcGxlLm9yZzsKICAgICAgcHJveHlfc2V0X2hlYWRlciBYLUZvcndhcmRlZC1Gb3IgJHByb3h5X2FkZF94X2ZvcndhcmRlZF9mb3I7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtUHJvdG8gaHR0cHM7CiAgICB9CgogICAgbG9jYXRpb24gL3dlYnNvY2tldC8gewogICAgICBwcm94eV9wYXNzIGh0dHBzOi8vMTAuMC4wLjEwOjQ0My93ZWJzb2NrZXQvOwogICAgICBwcm94eV9odHRwX3ZlcnNpb24gMS4xOwogICAgICBwcm94eV9zc2xfdmVyaWZ5IG9mZjsKICAgICAgcHJveHlfc3NsX3NlcnZlcl9uYW1lIG9uOwogICAgICBwcm94eV9zc2xfbmFtZSBhYXAuZXhhbXBsZS5vcmc7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgSG9zdCBhYXAuZXhhbXBsZS5vcmc7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgVXBncmFkZSAkaHR0cF91cGdyYWRlOwogICAgICBwcm94eV9zZXRfaGVhZGVyIENvbm5lY3Rpb24gJGNvbm5lY3Rpb25fdXBncmFkZTsKICAgICAgcHJveHlfcmVhZF90aW1lb3V0IDg2NDAwOwogICAgfQoKICAgIGxvY2F0aW9uIF5+IC93ZXR0eV9jb250cm9sIHsKICAgICAgcHJveHlfcGFzcyBodHRwOi8vMTI3LjAuMC4xOjgwMDEvd2V0dHlfY29udHJvbDsKICAgICAgcHJveHlfaHR0cF92ZXJzaW9uIDEuMTsKICAgICAgcHJveHlfc2V0X2hlYWRlciBVcGdyYWRlICRodHRwX3VwZ3JhZGU7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgQ29ubmVjdGlvbiAkY29ubmVjdGlvbl91cGdyYWRlOwogICAgICBwcm94eV9yZWFkX3RpbWVvdXQgNDMyMDAwMDA7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgSG9zdCAkaG9zdDsKICAgICAgcHJveHlfc2V0X2hlYWRlciBYLUZvcndhcmRlZC1Gb3IgJHByb3h5X2FkZF94X2ZvcndhcmRlZF9mb3I7CiAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtUHJvdG8gJHNjaGVtZTsKICAgIH0KCiAgICBsb2NhdGlvbiBefiAvd2V0dHlfdnNjb2RlIHsKICAgICAgcHJveHlfcGFzcyBodHRwOi8vMTI3LjAuMC4xOjgwMDIvd2V0dHlfdnNjb2RlOwogICAgICBwcm94eV9odHRwX3ZlcnNpb24gMS4xOwogICAgICBwcm94eV9zZXRfaGVhZGVyIFVwZ3JhZGUgJGh0dHBfdXBncmFkZTsKICAgICAgcHJveHlfc2V0X2hlYWRlciBDb25uZWN0aW9uICRjb25uZWN0aW9uX3VwZ3JhZGU7CiAgICAgIHByb3h5X3JlYWRfdGltZW91dCA0MzIwMDAwMDsKICAgICAgcHJveHlfc2V0X2hlYWRlciBIb3N0ICRob3N0OwogICAgICBwcm94eV9zZXRfaGVhZGVyIFgtRm9yd2FyZGVkLUZvciAkcHJveHlfYWRkX3hfZm9yd2FyZGVkX2ZvcjsKICAgICAgcHJveHlfc2V0X2hlYWRlciBYLUZvcndhcmRlZC1Qcm90byAkc2NoZW1lOwogICAgfQogIH0KfQo="  # pragma: allowlist secret
-        command:
-          - /bin/sh
-          - -ec
-          - |
-            mkdir -p /showroom/user-data /showroom/nginx /showroom/repo
-            echo "$UI_CONFIG_B64" | base64 -d > /showroom/repo/ui-config.yml
-            echo "$USER_DATA_B64" | base64 -d > /showroom/user-data/user-data.yml
-            echo "$NGINX_B64" | base64 -d > /showroom/nginx/nginx.conf
-        mounts:
-          - disk: showroom-vol0
-            mount_path: /showroom
-      - name: antora-builder
-        image: quay.io/rhpds/antora:v1.2.2
-        env:
-          FILES_DIR: /showroom/repo
-          OUTPUT_DIR: /showroom/www
-          ANTORA_PLAYBOOK: site.yml
-          ZT_UI_ENABLED: "true"
-          ZT_BUNDLE: https://github.com/rhpds/nookbag/releases/download/nookbag-v0.3.2/nookbag-v0.3.2.zip
-        mounts:
-          - disk: showroom-vol0
-            mount_path: /showroom
-    containers:
-      - name: proxy
-        image: quay.io/rhpds/nginx:1.25
-        cpus: 1
-        memory_mb: 256
-        ports: [80]
-        command: ["nginx", "-c", "/showroom/nginx/nginx.conf", "-g", "daemon off;"]
-        mounts:
-          - disk: showroom-vol0
-            mount_path: /showroom
-      - name: content
-        image: quay.io/rhpds/showroom-content:v1.4.1
-        cpus: 1
-        memory_mb: 256
-        ports: [8000]
-        command:
-          - /bin/sh
-          - -ec
-          - ln -sf /showroom/user-data /user_data && exec /entrypoint.sh
-        env:
-          ANTORA_PLAYBOOK: site.yml
-          ZT_BUNDLE: https://github.com/rhpds/nookbag/releases/download/nookbag-v0.3.2/nookbag-v0.3.2.zip
-          ZT_UI_ENABLED: "true"
-          GUID: workshop
-          DOMAIN: workshop.local
-        mounts:
-          - disk: showroom-vol0
-            mount_path: /showroom
-      - name: wetty-control
-        image: quay.io/rhpds/wetty:v2.5
-        cpus: 1
-        memory_mb: 512
-        ports: [8001]
-        command:
-          - --base=/wetty_control/
-          - --port=8001
-          - --ssh-host=10.0.0.10
-          - --ssh-port=22
-          - --ssh-user=rhel
-          - --ssh-auth=password
-          - --ssh-pass=ansible123!
-      - name: wetty-vscode
-        image: quay.io/rhpds/wetty:v2.5
-        cpus: 1
-        memory_mb: 512
-        ports: [8002]
-        command:
-          - --base=/wetty_vscode/
-          - --port=8002
-          - --ssh-host=10.0.0.20
-          - --ssh-port=22
-          - --ssh-user=rhel
-          - --ssh-auth=password
-          - --ssh-pass=ansible123!

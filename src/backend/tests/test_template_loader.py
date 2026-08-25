@@ -717,7 +717,10 @@ def test_net_automation_workshop_showroom_import():
 
     import yaml
 
-    from app.services.template_loader import generate_topology_from_template
+    from app.services.template_loader import (
+        export_topology_to_template,
+        generate_topology_from_template,
+    )
 
     tmpl_path = (
         Path(__file__).resolve().parents[3]
@@ -725,6 +728,9 @@ def test_net_automation_workshop_showroom_import():
         / "net-automation-workshop.yaml"
     )
     tmpl = yaml.safe_load(tmpl_path.read_text())
+    assert "containers" not in tmpl
+    assert len(tmpl["showroom"]["tabs"]) == 5
+
     topo = generate_topology_from_template(tmpl)
 
     pods = [
@@ -735,11 +741,28 @@ def test_net_automation_workshop_showroom_import():
     assert len(pods) == 1
     showroom = pods[0]["data"]
     assert showroom["name"] == "showroom"
+    assert showroom["isShowroom"] is True
     assert showroom["buildContent"] is True
     assert len(showroom["initContainers"]) == 3
+    assert showroom["initContainers"][1]["name"] == "nginx-config"
+    assert showroom["initContainers"][1]["image"] == "docker.io/library/busybox:1.36"
     assert len(showroom["podContainers"]) == 4
+    assert {pc["name"] for pc in showroom["podContainers"]} == {
+        "proxy",
+        "content",
+        "wetty-control",
+        "wetty-vscode",
+    }
+    assert len(showroom["showroomTabs"]) == 5
     assert topo["showroom"]["enabled"] is True
     assert len(topo["startOrder"]) == 7
     gw = next(n for n in topo["nodes"] if n.get("data", {}).get("subtype") == "gateway")
     ext_ports = {pf["extPort"] for pf in gw["data"]["portForwards"]}
     assert ext_ports == {"80"}
+
+    exported = export_topology_to_template(topo)
+    assert "containers" not in exported
+    assert exported["showroom"]["content_repo"].startswith("https://github.com/rhpds/")
+    assert len(exported["showroom"]["tabs"]) == 5
+    assert exported["showroom"]["tabs"][0]["vm"] == "control"
+    assert "UI_CONFIG_B64" not in yaml.dump(exported)

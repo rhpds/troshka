@@ -140,6 +140,16 @@ def _is_plain_network(node: dict | None) -> bool:
     return subtype in (None, "network", "dhcp", "dns")
 
 
+def _showroom_content_repo(topology: dict, showroom_node: dict) -> str:
+    """Content repo from topology.showroom or the showroom container node."""
+    showroom_cfg = topology.get("showroom") or {}
+    repo = str(showroom_cfg.get("content_repo") or "").strip()
+    if repo:
+        return repo
+    data = showroom_node.get("data", {})
+    return str(data.get("contentRepo") or "").strip()
+
+
 def validate_showroom_topology(topology: dict) -> list[str]:
     """Validate showroom placement, gateway network, and port forward."""
     showroom_nodes = [n for n in topology.get("nodes", []) if _is_showroom_node(n)]
@@ -215,7 +225,8 @@ def validate_showroom_topology(topology: dict) -> list[str]:
         )
 
     showroom_cfg = topology.get("showroom") or {}
-    if showroom_cfg.get("enabled", True) and not showroom_cfg.get("content_repo"):
+    enabled = showroom_cfg.get("enabled", True)
+    if enabled and not _showroom_content_repo(topology, showroom):
         errors.append("Showroom content repo URL is required")
 
     return errors
