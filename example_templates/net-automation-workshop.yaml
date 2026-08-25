@@ -1,3 +1,7 @@
+# Troshka project template — Network Automation Workshop
+# Import via canvas "Import Template YAML" or API template_loader.
+# Defines VMs, networks, gateway, showroom (student UI), and deploy order.
+
 name: net-automation-workshop
 display_name: "Network Automation Workshop"
 description: >-
@@ -8,65 +12,62 @@ description: >-
   inventory plugin (connection_mode troshka; no bastion). Router day-0
   config (IP + SSH) is applied once via bootstrap/configure-routers.yml
   serial console, then captured in a pattern.
-category: workshop
-install_method: agent
-deploy_time: "~15 min"
+category: workshop          # catalog grouping in Troshka UI
+install_method: agent       # deploy via troshkad on libvirt hosts (not cloud/KubeVirt)
+deploy_time: "~15 min"      # rough estimate shown in catalog
 
+# Lab networks — each becomes a networkNode on the canvas and a VXLAN bridge per project.
 networks:
-  mgmt:
+  mgmt:                     # student/admin access: SSH, DNS, gateway, showroom VM targets
     cidr: 10.0.0.0/24
-    dhcp: true
-    gateway: true
-    domain: workshop.local
-    dns_records:
+    dhcp: true              # Troshka assigns IPs from pool when omitted on a NIC
+    gateway: true           # this network gets the project gateway (.1) for outbound NAT
+    domain: workshop.local  # DNS zone for dns_records below
+    dns_records:            # static A records in the project DNS forwarder
       - name: control.workshop.local
-        target: control
+        target: control     # target is VM name (resolved to mgmt IP at deploy)
       - name: vscode.workshop.local
         target: vscode
       - name: showroom.workshop.local
-        target: showroom
-  lab:
+        target: showroom    # cosmetic; showroom uses infra netns IP for external access
+  lab:                      # L2 segment for router interconnection and automation targets
     cidr: 172.20.20.0/24
     dhcp: true
 
+# Project edge router — NAT, optional external access, DNS forwarder for mgmt zone.
 gateway:
-  network: mgmt
-  external_access: true
-  outbound_ports: [53/udp, 80/tcp, 443/tcp, 123/udp, icmp]
-  port_forwards:
-  # Only Showroom is exposed externally; AAP (/aap/) and VS Code (/vscode/) are
-  # proxied by the showroom nginx sidecar on the lab network.
-    - ext_port: 443
-      int_ip: 10.0.0.5
-      int_port: 80
+  external_access: true     # students reach lab via gateway public IP / Route53
+  outbound_ports: [53/udp, 80/tcp, 443/tcp, 123/udp, icmp]  # allowed egress from lab
+  # Showroom 80/443→infra IP port-forwards are injected at deploy (not listed here).
 
+# Virtual machines — each becomes a vmNode; disks reference library images by name.
 vms:
-  control:
+  control:                  # Ansible Automation Platform controller
     vcpus: 4
     ram_gb: 32
-    os: rhel
+    os: rhel                # cloud-init OS family for defaults
     firmware: uefi
-    cloud_init: true
+    cloud_init: true        # inject user, password, and user_data on first boot
     login_user: rhel
     cloud_user_password: ansible123!  # pragma: allowlist secret
-    user_data: |
+    user_data: |            # cloud-init runcmd executed on first boot
       runcmd:
         - echo "PasswordAuthentication yes" > /etc/ssh/sshd_config.d/50-cloud-init.conf
         - systemctl reload sshd
     tags:
-      AnsibleGroup: workshop_control,aap
+      AnsibleGroup: workshop_control,aap  # Troshka Ansible inventory groups
     disks:
       - size_gb: 50
-        library_item_name: aap-2.6-2-ceh-20251103
+        library_item_name: aap-2.6-2-ceh-20251103  # image from Troshka library
     nics:
       - network: mgmt
         model: virtio
-        ip: 10.0.0.10
+        ip: 10.0.0.10       # static mgmt IP (showroom tabs use this network)
       - network: lab
         model: virtio
         ip: 172.20.20.5
 
-  vscode:
+  vscode:                   # dev / workshop helper VM (VS Code in browser via showroom proxy)
     vcpus: 2
     ram_gb: 8
     os: rhel
@@ -88,12 +89,12 @@ vms:
         model: virtio
         ip: 10.0.0.20
 
-  rtr1:
+  rtr1:                     # Cisco IOS-XE (c8000v) — configured via serial_exec at bootstrap
     vcpus: 4
     ram_gb: 8
-    os: blank
+    os: blank               # no cloud-init; network OS from disk image
     firmware: bios
-    serial_exec: ios
+    serial_exec: ios        # troshkad serial console dialect for day-0 config
     tags:
       AnsibleGroup: routers,cisco_iosxe
     disks:
@@ -104,7 +105,7 @@ vms:
         model: virtio
         ip: 172.20.20.10
 
-  rtr2:
+  rtr2:                     # Arista vEOS
     vcpus: 2
     ram_gb: 4
     os: blank
@@ -120,7 +121,7 @@ vms:
         model: virtio
         ip: 172.20.20.20
 
-  rtr3:
+  rtr3:                     # Juniper vSRX
     vcpus: 2
     ram_gb: 12
     os: blank
@@ -136,7 +137,7 @@ vms:
         model: virtio
         ip: 172.20.20.30
 
-  rtr4:
+  rtr4:                     # second Arista vEOS
     vcpus: 2
     ram_gb: 4
     os: blank
@@ -151,40 +152,46 @@ vms:
       - network: lab
         model: virtio
         ip: 172.20.20.40
+
+# Student-facing showroom pod — Antora docs + embedded terminals and web proxies.
+# Runs in project infra netns (not on mgmt DHCP); reaches VMs via routed lab bridges.
 showroom:
   enabled: true
-  content_repo: https://github.com/rhpds/zt-network-automation-workshop.git
-  content_ref: v0.0.1
-  build_content: true
-  network: mgmt
-  ip: 10.0.0.5
-  disk_gb: 5
-  tabs:
+  content_repo: https://github.com/rhpds/zt-network-automation-workshop.git  # Antora source
+  content_ref: v0.0.1       # git branch, tag, or commit
+  build_content: true       # clone repo and run Antora at deploy (false = use pre-built disk)
+  disk_gb: 5                # persistent volume for repo, built www, nginx config
+  tabs:                     # UI tabs in the showroom frame (wetty SSH or HTTP reverse proxy)
     - name: AAP terminal
-      type: terminal
+      type: terminal        # browser SSH via wetty → vm IP on tab network
       vm: control
+      network: mgmt         # NIC/network used to pick VM IP for SSH/proxy (per tab)
       ssh_user: rhel
       ssh_pass: ansible123!  # pragma: allowlist secret
     - name: Workshop terminal
       type: terminal
       vm: vscode
+      network: mgmt
       ssh_user: rhel
       ssh_pass: ansible123!  # pragma: allowlist secret
     - name: VS Code
-      type: proxy
+      type: proxy           # nginx reverse proxy to vm:proxy_port at proxy_path
       vm: vscode
+      network: mgmt
       proxy_path: /vscode/
       proxy_port: 8080
     - name: Ansible Automation Platform
       type: proxy
       vm: control
+      network: mgmt
       proxy_path: /aap/
       proxy_port: 443
-      proxy_tls: true
+      proxy_tls: true       # HTTPS upstream (self-signed OK)
     - name: Open an Issue
-      type: external
+      type: external        # plain link — no VM or network
       url: https://github.com/rhpds/zt-network-automation-workshop/issues/new
 
+# Boot sequence after deploy — VMs first, showroom last (needs content + routes).
 start_order:
   - vm: control
   - vm: vscode
@@ -193,4 +200,4 @@ start_order:
   - vm: rtr3
   - vm: rtr4
   - container: showroom
-    delay: 15
+    delay: 15               # seconds after prior entries before starting showroom pod

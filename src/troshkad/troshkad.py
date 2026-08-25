@@ -11718,6 +11718,154 @@ def _configure_pod_interface_ip(job, idx, ip_addr, cidr, netns_name, gateway="")
         )
 
 
+def _attach_pod_to_infra_transit(job, full_pod_name, infra_pid, net, project_id):
+    """Attach showroom pod to project netns transit (not a lab bridge)."""
+    netns_name = f"ctr-{full_pod_name[-8:]}"
+    os.makedirs("/var/run/netns", exist_ok=True)
+    ns_path = f"/var/run/netns/{netns_name}"
+    proc_ns = f"/proc/{infra_pid}/ns/net"
+    if os.path.exists(ns_path):
+        os.unlink(ns_path)
+    os.symlink(proc_ns, ns_path)
+
+    proj_ns = f"troshka-{project_id[:8]}"
+    veth_host = f"vi{full_pod_name[-8:]}h"[:15]
+    veth_ctr = f"vi{full_pod_name[-8:]}n"[:15]
+
+    try:
+        _run_cmd(
+            job,
+            [
+                "ip",
+                "link",
+                "add",
+                veth_host,
+                "type",
+                "veth",
+                "peer",
+                "name",
+                veth_ctr,
+            ],
+            timeout=10,
+        )
+    except RuntimeError:
+        _job_log(job, f"Infra veth {veth_host} already exists, reusing")
+
+    mac = net.get("mac", "")
+    if mac:
+        _run_cmd(job, ["ip", "link", "set", veth_ctr, "address", mac], timeout=5)
+
+    _run_cmd(job, ["ip", "link", "set", veth_ctr, "netns", netns_name])
+    _run_cmd(job, ["ip", "link", "set", veth_host, "netns", proj_ns])
+    _run_cmd(
+        job,
+        ["ip", "netns", "exec", proj_ns, "ip", "link", "set", veth_host, "up"],
+        timeout=5,
+    )
+
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            netns_name,
+            "ip",
+            "link",
+            "set",
+            veth_ctr,
+            "name",
+            "eth0",
+        ],
+        timeout=5,
+    )
+    _run_cmd(
+        job,
+        ["ip", "netns", "exec", netns_name, "ip", "link", "set", "eth0", "up"],
+        timeout=5,
+    )
+
+    ip_addr = net.get("ip", "")
+    cidr = net.get("cidr", "")
+    if ip_addr and cidr:
+        gw = net.get("gateway", "")
+        _configure_pod_interface_ip(job, 0, ip_addr, cidr, netns_name, gateway=gw)
+
+    _allow_infra_veth_forward(job, proj_ns, veth_host)
+
+
+def _allow_infra_veth_forward(job, proj_ns, veth_host):
+    """Allow showroom infra veth to reach lab bridges inside the project netns."""
+    out = _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            proj_ns,
+            "ip",
+            "-o",
+            "link",
+            "show",
+            "type",
+            "bridge",
+        ],
+        check=False,
+        timeout=10,
+    )
+    bridges = []
+    for line in out.strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split(":")
+        if len(parts) < 2:
+            continue
+        name = parts[1].strip().split("@")[0]
+        if name.startswith("br-"):
+            bridges.append(name)
+    for bridge in bridges:
+        _nft_try(
+            job,
+            [
+                "ip",
+                "netns",
+                "exec",
+                proj_ns,
+                "nft",
+                "add",
+                "rule",
+                "inet",
+                "filter",
+                "forward",
+                "iifname",
+                veth_host,
+                "oifname",
+                bridge,
+                "accept",
+            ],
+        )
+        _nft_try(
+            job,
+            [
+                "ip",
+                "netns",
+                "exec",
+                proj_ns,
+                "nft",
+                "add",
+                "rule",
+                "inet",
+                "filter",
+                "forward",
+                "iifname",
+                bridge,
+                "oifname",
+                veth_host,
+                "accept",
+            ],
+        )
+
+
 def _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id):
     """Attach a pod's infra container to VXLAN bridges via veth pairs."""
     netns_name = f"ctr-{full_pod_name[-8:]}"
@@ -11878,10 +12026,18 @@ def _handle_pod_create(job, params):
         infra_pid = int(out.strip())
 
     if networks:
-        _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id)
-        gw = _pod_dns_nameserver(networks[0])
-        if gw:
-            job["_pod_resolv_path"] = _write_pod_resolv_conf(full_pod_name, gw)
+        if networks[0].get("infra_transit"):
+            _attach_pod_to_infra_transit(
+                job, full_pod_name, infra_pid, networks[0], project_id
+            )
+            gw = networks[0].get("gateway")
+            if gw:
+                job["_pod_resolv_path"] = _write_pod_resolv_conf(full_pod_name, gw)
+        else:
+            _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id)
+            gw = _pod_dns_nameserver(networks[0])
+            if gw:
+                job["_pod_resolv_path"] = _write_pod_resolv_conf(full_pod_name, gw)
 
     _create_pod_containers(
         job, full_pod_name, init_containers, containers, restart_policy, privileged

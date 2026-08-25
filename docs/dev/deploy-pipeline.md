@@ -23,6 +23,7 @@
 - External access toggle: `externalAccess` on gateway node — when off, no EIPs or port forwards are provisioned (gateway stays for outbound NAT)
 - Topology templates: predefined OCP templates with version dropdown, deploy time estimates, auto-sizing from install results
 - **Pattern deploy `common_password`**: `PatternDeployRequest` accepts `common_password` to override BMC and cloud-init credentials baked in the pattern's topology. Without this, pattern-deployed projects get the original builder's password instead of the current deployment's. Overrides `bmcPassword` on BMC networks and `ciCloudUserPassword` on cloud-init VMs.
+- **Pattern deploy showroom overrides**: `PatternDeployRequest.showroom` accepts optional `content_repo`, `content_ref`, and `build_content`. Use when deploying from a pattern with baked showroom HTML but the catalog item should pull a newer git tag (or different repo). Changing repo or ref defaults `build_content` to `true` so git-cloner and Antora run at deploy; pass `build_content: false` explicitly to keep the pattern disk snapshot only.
 ### Clock Backdating
 - **Project-level setting**: `Project.clock_target` (DateTime, nullable) — all VMs in a project share one target datetime
 - **Hypervisor offset**: `--clock offset=variable,adjustment=N` in virt-install — guest sees target time from BIOS/UEFI, ticks forward in real time

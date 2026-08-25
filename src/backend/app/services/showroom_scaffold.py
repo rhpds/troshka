@@ -31,6 +31,67 @@ def _slugify(name: str) -> str:
     return slug or "vm"
 
 
+def _find_showroom_container(topology: dict[str, Any]) -> dict[str, Any] | None:
+    for node in topology.get("nodes", []):
+        if node.get("type") != "containerNode":
+            continue
+        data = node.get("data", {})
+        if data.get("isShowroom") or data.get("name") == "showroom":
+            return node
+    return None
+
+
+def apply_showroom_deploy_overrides(
+    topology: dict[str, Any],
+    *,
+    content_repo: str | None = None,
+    content_ref: str | None = None,
+    build_content: bool | None = None,
+) -> None:
+    """Apply showroom content overrides when deploying from a pattern snapshot."""
+    if content_repo is None and content_ref is None and build_content is None:
+        return
+
+    showroom_node = _find_showroom_container(topology)
+    showroom_meta = topology.get("showroom")
+    if not isinstance(showroom_meta, dict):
+        showroom_meta = None
+    if not showroom_node and not showroom_meta:
+        return
+
+    if build_content is None and (content_repo is not None or content_ref is not None):
+        build_content = True
+
+    data = showroom_node.get("data", {}) if showroom_node else {}
+    if content_repo is not None:
+        if showroom_node is not None:
+            data["contentRepo"] = content_repo
+        if showroom_meta is not None:
+            showroom_meta["content_repo"] = content_repo
+    if content_ref is not None:
+        if showroom_node is not None:
+            data["contentRef"] = content_ref
+        if showroom_meta is not None:
+            showroom_meta["content_ref"] = content_ref
+    if build_content is not None:
+        if showroom_node is not None:
+            data["buildContent"] = build_content
+        if showroom_meta is not None:
+            showroom_meta["build_content"] = build_content
+
+    if showroom_node is not None and (
+        content_repo is not None or content_ref is not None
+    ):
+        for ic in data.get("initContainers", []):
+            if ic.get("name") != "git-cloner":
+                continue
+            for ev in ic.get("envVars", []):
+                if content_repo is not None and ev.get("key") == "GIT_REPO_URL":
+                    ev["value"] = content_repo
+                if content_ref is not None and ev.get("key") == "GIT_REPO_REF":
+                    ev["value"] = content_ref
+
+
 def _vm_ip_on_network(vms_def: dict[str, Any], vm_name: str, network_name: str) -> str:
     for nic in vms_def.get(vm_name, {}).get("nics", []):
         if nic.get("network") == network_name:
@@ -38,18 +99,11 @@ def _vm_ip_on_network(vms_def: dict[str, Any], vm_name: str, network_name: str) 
     return ""
 
 
-def _vm_first_ip(vms_def: dict[str, Any], vm_name: str) -> str:
-    for nic in vms_def.get(vm_name, {}).get("nics", []):
-        ip = nic.get("ip")
-        if ip:
-            return str(ip)
-    return ""
-
-
 def parse_template_tabs(
     tabs_yaml: list[dict[str, Any]],
     vm_name_to_id: dict[str, str],
     vms_def: dict[str, Any],
+    net_ids: dict[str, str],
 ) -> list[dict[str, Any]]:
     """Convert template tab entries (vm names) to canvas showroomTabs (vmIds)."""
     tabs: list[dict[str, Any]] = []
@@ -65,6 +119,14 @@ def parse_template_tabs(
             if vm_name not in vm_name_to_id:
                 raise ValueError(f"Showroom tab references unknown VM '{vm_name}'")
             tab["vmId"] = vm_name_to_id[vm_name]
+        network = raw.get("network", "")
+        if tab_type != "external":
+            if not network:
+                raise ValueError(f"Showroom tab '{tab['name']}' requires network")
+            if network not in net_ids:
+                raise ValueError(f"Showroom tab references unknown network '{network}'")
+            tab["network"] = network
+            tab["networkId"] = net_ids[network]
         if raw.get("ssh_user"):
             tab["sshUser"] = raw["ssh_user"]
         if raw.get("ssh_pass"):
@@ -83,7 +145,6 @@ def parse_template_tabs(
 
 def resolve_showroom_tabs(
     tabs: list[dict[str, Any]],
-    showroom_network: str,
     vms_def: dict[str, Any],
     vm_name_to_id: dict[str, str],
 ) -> list[dict[str, Any]]:
@@ -104,12 +165,15 @@ def resolve_showroom_tabs(
             resolved.append({"tab": tab, "warning": "Select a VM for this tab"})
             continue
 
-        vm_ip = _vm_ip_on_network(vms_def, vm_name, showroom_network)
-        if not vm_ip:
-            vm_ip = _vm_first_ip(vms_def, vm_name)
+        network_name = tab.get("network", "")
+        if not network_name:
+            resolved.append({"tab": tab, "warning": "Select a network for this tab"})
+            continue
+
+        vm_ip = _vm_ip_on_network(vms_def, vm_name, network_name)
         if not vm_ip:
             resolved.append(
-                {"tab": tab, "warning": f"{vm_name} has no IP on the showroom network"}
+                {"tab": tab, "warning": f"{vm_name} has no IP on {network_name}"}
             )
             continue
 
@@ -422,21 +486,20 @@ def build_showroom_from_config(
     vm_row_y: int,
 ) -> tuple[dict[str, Any], list[dict], list[dict], list[dict], dict[str, Any]]:
     """Return showroom container node, disks, edges, and topology.showroom metadata."""
-    network = showroom_cfg.get("network", "mgmt")
-    ip = showroom_cfg.get("ip", "")
     disk_gb = int(showroom_cfg.get("disk_gb", 5))
     content_repo = str(showroom_cfg.get("content_repo", ""))
     content_ref = str(showroom_cfg.get("content_ref", "main"))
     build_content = showroom_cfg.get("build_content", True)
 
-    tabs = parse_template_tabs(showroom_cfg.get("tabs") or [], vm_name_to_id, vms_def)
-    resolved = resolve_showroom_tabs(tabs, network, vms_def, vm_name_to_id)
+    tabs = parse_template_tabs(
+        showroom_cfg.get("tabs") or [], vm_name_to_id, vms_def, net_ids
+    )
+    resolved = resolve_showroom_tabs(tabs, vms_def, vm_name_to_id)
     nginx_b64 = base64.b64encode(build_nginx_config(resolved).encode()).decode()
     ui_config_b64 = base64.b64encode(build_ui_config_yaml(resolved).encode()).decode()
 
     ctr_id = _id()
     disk_id = _id()
-    nic_id = f"nic-{_id()}"
     disk_name = "showroom-vol0"
 
     disk_node = {
@@ -462,33 +525,7 @@ def build_showroom_from_config(
     }
 
     nic_edges: list[dict] = []
-    ctr_nics = [
-        {
-            "id": nic_id,
-            "name": "eth0",
-            "mac": _mac(),
-            "model": "virtio",
-            "ip": ip,
-        }
-    ]
-    net_node_id = net_ids.get(network)
-    if net_node_id:
-        nic_edges.append(
-            {
-                "id": _id(),
-                "source": net_node_id,
-                "target": ctr_id,
-                "sourceHandle": "bottom",
-                "targetHandle": f"nic-{nic_id}-top",
-                "type": "smoothstep",
-                "style": {
-                    "stroke": "rgba(34,211,238,0.5)",
-                    "strokeWidth": 2,
-                    "strokeDasharray": "6 4",
-                },
-                "animated": True,
-            }
-        )
+    ctr_nics: list[dict] = []
 
     init_containers = _build_init_containers(
         content_repo, content_ref, nginx_b64, ui_config_b64, disk_id
@@ -512,6 +549,7 @@ def build_showroom_from_config(
             "icon": "\U0001f4d6",
             "isPod": True,
             "isShowroom": True,
+            "infraNetworking": True,
             "buildContent": bool(build_content),
             "contentRepo": content_repo,
             "contentRef": content_ref,
@@ -533,8 +571,6 @@ def build_showroom_from_config(
         "content_repo": content_repo,
         "content_ref": content_ref,
         "build_content": bool(build_content),
-        "network": network,
-        "ip": ip,
         "disk_gb": disk_gb,
         "tabs": tabs,
     }
@@ -567,17 +603,6 @@ def export_showroom_section(
     for nic in cd.get("nics", []):
         if nic.get("ip"):
             exported["ip"] = nic["ip"]
-        nic_id = nic.get("id", "")
-        for edge in edges:
-            if edge.get("target") != showroom_node["id"]:
-                continue
-            handle = edge.get("targetHandle") or ""
-            if not handle.startswith("nic-") or nic_id not in handle:
-                continue
-            net_id = edge.get("source")
-            if net_id in net_nodes:
-                net_data = net_nodes[net_id].get("data", {})
-                exported["network"] = net_data.get("name") or net_data.get("label")
 
     mounts = cd.get("mounts", [])
     if mounts:
@@ -592,6 +617,11 @@ def export_showroom_section(
         vm_id = tab.get("vmId")
         if vm_id:
             entry["vm"] = id_to_name.get(vm_id, "")
+        if tab.get("network"):
+            entry["network"] = tab["network"]
+        elif tab.get("networkId") and tab["networkId"] in net_nodes:
+            net_data = net_nodes[tab["networkId"]].get("data", {})
+            entry["network"] = net_data.get("name") or net_data.get("label")
         if tab.get("sshUser"):
             entry["ssh_user"] = tab["sshUser"]
         if tab.get("sshPass"):

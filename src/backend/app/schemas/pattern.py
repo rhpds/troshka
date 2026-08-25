@@ -89,6 +89,14 @@ class PatternShareRequest(BaseModel):
     user_email: str
 
 
+class ShowroomDeployOverrides(BaseModel):
+    """Override baked showroom content when deploying from a pattern."""
+
+    content_repo: str | None = None
+    content_ref: str | None = None
+    build_content: bool | None = None
+
+
 class PatternDeployRequest(BaseModel):
     name: str | None = None
     description: str | None = None
@@ -102,6 +110,7 @@ class PatternDeployRequest(BaseModel):
     inject_vars: dict | None = None
     ssh_keys: list[str] | None = None
     host_id: str | None = None
+    showroom: ShowroomDeployOverrides | None = None
 
 
 class PatternBulkDeployRequest(BaseModel):
@@ -111,3 +120,4 @@ class PatternBulkDeployRequest(BaseModel):
     guid_template: str | None = None
     domain: str | None = None
     dns_provider_id: str | None = None
+    showroom: ShowroomDeployOverrides | None = None

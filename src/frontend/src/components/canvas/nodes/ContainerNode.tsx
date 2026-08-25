@@ -6,7 +6,10 @@ import { Handle, Position, useUpdateNodeInternals } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import type { ContainerNodeData } from "@/stores/canvasStore";
-import { getShowroomReadiness } from "@/lib/showroomValidation";
+import {
+  getShowroomReadiness,
+  SHOWROOM_GATEWAY_SOURCE_HANDLE,
+} from "@/lib/showroomValidation";
 
 function ContainerNodeComponent({ id, data, selected }: NodeProps) {
   const projectState = useCanvasStore((s) => s.projectState);
@@ -382,8 +385,20 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
         document.body,
       )}
 
-      {/* Network handles — top/bottom, same pattern as VM */}
-      {(d.nics || [{ id: "default" }]).map((nic, i, arr) => {
+      {/* Cosmetic gateway link for infra showroom */}
+      {isShowroom && (
+        <Handle
+          type="source"
+          position={Position.Right}
+          id={SHOWROOM_GATEWAY_SOURCE_HANDLE}
+          className="canvas-handle canvas-handle-router"
+          style={{ top: "35%" }}
+        />
+      )}
+
+      {/* Network handles — top/bottom (not used for infra showroom) */}
+      {!isShowroom &&
+        (d.nics || [{ id: "default" }]).map((nic, i, arr) => {
         const pct =
           arr.length === 1
             ? 50

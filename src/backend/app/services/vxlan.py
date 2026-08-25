@@ -300,6 +300,55 @@ def _build_network_configs(
     return networks
 
 
+def _topology_has_showroom(topology: dict) -> bool:
+    from app.services.deploy_topology import _is_showroom_node
+
+    return any(_is_showroom_node(n) for n in topology.get("nodes", []))
+
+
+def _inject_showroom_port_forward(
+    port_forwards: list, topology: dict, first_vni: int | None
+) -> list:
+    """Auto-add gateway PF 80/443→showroom infra IP (transit netns, not lab DHCP)."""
+    if not first_vni or not _topology_has_showroom(topology):
+        return port_forwards
+    octet3 = int(first_vni) & 0xFF
+    infra_ip = f"172.30.{octet3}.3"
+
+    def _is_showroom_forward(pf: dict) -> bool:
+        return str(pf.get("intPort")) == "80" and str(pf.get("extPort")) in (
+            "80",
+            "443",
+        )
+
+    out = [
+        pf
+        for pf in port_forwards
+        if not (
+            _is_showroom_forward(pf) and (pf.get("intIp") or "").strip() != infra_ip
+        )
+    ]
+
+    for ext_port in ("80", "443"):
+        if any(
+            str(pf.get("extPort")) == ext_port
+            and (pf.get("intIp") or "").strip() == infra_ip
+            and str(pf.get("intPort")) == "80"
+            for pf in out
+        ):
+            continue
+        out.append(
+            {
+                "extPort": ext_port,
+                "intIp": infra_ip,
+                "intPort": "80",
+                "proto": "tcp",
+                "extIpId": "",
+            }
+        )
+    return out
+
+
 def _build_gateway_config(nodes: list, topology: dict, networks: list) -> dict | None:
     """Build gateway config from the gateway node, if present."""
     for node in nodes:
@@ -323,6 +372,11 @@ def _build_gateway_config(nodes: list, topology: dict, networks: list) -> dict |
                 pf_entry["_transit_port"] = transit_map.get(ext_port_str)
             port_forwards.append(pf_entry)
 
+        first_vni = networks[0]["vni"] if networks else None
+        port_forwards = _inject_showroom_port_forward(
+            port_forwards, topology, first_vni
+        )
+
         gw_config = {
             "name": data.get("name"),
             "mode": data.get("gatewayMode", "nat"),
@@ -335,7 +389,6 @@ def _build_gateway_config(nodes: list, topology: dict, networks: list) -> dict |
                 if eip.get("_private_ip")
             ],
         }
-        first_vni = networks[0]["vni"] if networks else None
         if first_vni:
             transit = _transit_subnet(first_vni)
             gw_config["transit_ns_ip"] = transit["ns_ip"]

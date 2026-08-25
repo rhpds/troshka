@@ -328,6 +328,78 @@ def test_deploy_pattern_with_inject_vars():
     }
 
 
+def test_deploy_pattern_with_showroom_overrides():
+    topo = copy.deepcopy(SAMPLE_TOPOLOGY)
+    topo["nodes"].append(
+        {
+            "id": "showroom-1",
+            "type": "containerNode",
+            "position": {"x": 0, "y": 200},
+            "data": {
+                "name": "showroom",
+                "isPod": True,
+                "isShowroom": True,
+                "buildContent": False,
+                "contentRepo": "https://github.com/old/repo.git",
+                "contentRef": "v0.0.1",
+                "initContainers": [
+                    {
+                        "name": "git-cloner",
+                        "envVars": [
+                            {
+                                "key": "GIT_REPO_URL",
+                                "value": "https://github.com/old/repo.git",
+                            },
+                            {"key": "GIT_REPO_REF", "value": "v0.0.1"},
+                        ],
+                    },
+                ],
+            },
+        }
+    )
+    topo["showroom"] = {
+        "enabled": True,
+        "content_repo": "https://github.com/old/repo.git",
+        "content_ref": "v0.0.1",
+        "build_content": False,
+    }
+    create_resp = client.post(
+        "/api/v1/patterns",
+        json={"name": "Showroom Override Test", "topology": topo},
+        headers=HEADERS,
+    )
+    pattern_id = create_resp.json()["id"]
+    resp = client.post(
+        f"/api/v1/patterns/{pattern_id}/deploy",
+        json={
+            "name": "Showroom Override Deploy",
+            "showroom": {
+                "content_repo": "https://github.com/new/repo.git",
+                "content_ref": "v0.0.2",
+            },
+        },
+        headers=HEADERS,
+    )
+    assert resp.status_code == 201
+    topology = resp.json()["topology"]
+    showroom = next(
+        n
+        for n in topology["nodes"]
+        if n.get("type") == "containerNode" and n["data"].get("isShowroom")
+    )
+    assert showroom["data"]["contentRepo"] == "https://github.com/new/repo.git"
+    assert showroom["data"]["contentRef"] == "v0.0.2"
+    assert showroom["data"]["buildContent"] is True
+    git_cloner = next(
+        ic for ic in showroom["data"]["initContainers"] if ic["name"] == "git-cloner"
+    )
+    assert git_cloner["envVars"][0]["value"] == "https://github.com/new/repo.git"
+    assert git_cloner["envVars"][1]["value"] == "v0.0.2"
+    assert topology["showroom"]["content_repo"] == "https://github.com/new/repo.git"
+    assert topology["showroom"]["content_ref"] == "v0.0.2"
+    assert topology["showroom"]["build_content"] is True
+
+
 def _make_other_user(email: str):
     db = TestSession()
     other = User(

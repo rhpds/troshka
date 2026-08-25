@@ -5,6 +5,10 @@ export interface ShowroomTab {
   name: string;
   type: "terminal" | "proxy" | "external";
   vmId?: string;
+  /** Template / export network name (e.g. mgmt). */
+  network?: string;
+  /** Canvas network node id. */
+  networkId?: string;
   sshUser?: string;
   sshPass?: string;
   proxyPort?: number;
@@ -40,59 +44,61 @@ function isPlainNetwork(node: Node | undefined): boolean {
   return !subtype || subtype === "network" || subtype === "dhcp" || subtype === "dns";
 }
 
-export function getShowroomNetworkId(
-  showroomId: string,
-  edges: Edge[],
-  nodesById: Map<string, Node>,
-): string | null {
-  for (const edge of edges) {
-    if (edge.source !== showroomId && edge.target !== showroomId) continue;
-    const showroomIsSource = edge.source === showroomId;
-    const handle = showroomIsSource ? edge.sourceHandle || "" : edge.targetHandle || "";
-    if (!handle.includes("nic-")) continue;
-    const otherId = showroomIsSource ? edge.target : edge.source;
-    const other = nodesById.get(otherId);
-    if (isPlainNetwork(other)) return otherId;
-  }
+function networkIdByName(name: string, nodes: Node[]): string | null {
+  const match = nodes.find(
+    (node) =>
+      node.type === "networkNode" &&
+      isPlainNetwork(node) &&
+      ((node.data as Record<string, unknown>).name as string) === name,
+  );
+  return match?.id ?? null;
+}
+
+function networkNameById(networkId: string, nodes: Node[]): string {
+  const node = nodes.find((n) => n.id === networkId);
+  if (!node) return networkId;
+  const d = node.data as Record<string, unknown>;
+  return (d.name as string) || (d.label as string) || networkId;
+}
+
+function resolveTabNetworkId(tab: ShowroomTab, nodes: Node[]): string | null {
+  if (tab.networkId) return tab.networkId;
+  if (tab.network) return networkIdByName(tab.network, nodes);
   return null;
 }
 
-function nicNetworkForVm(
-  vmId: string,
-  edges: Edge[],
-  nodesById: Map<string, Node>,
-): string | null {
-  for (const edge of edges) {
-    if (edge.source !== vmId && edge.target !== vmId) continue;
-    const vmIsSource = edge.source === vmId;
-    const handle = vmIsSource ? edge.sourceHandle || "" : edge.targetHandle || "";
-    if (!handle.includes("nic-")) continue;
-    const otherId = vmIsSource ? edge.target : edge.source;
-    const other = nodesById.get(otherId);
-    if (isPlainNetwork(other)) return otherId;
-  }
-  return null;
-}
-
-export function getVmIpOnNetwork(
+function getVmNicIpOnNetwork(
   vmId: string,
   networkId: string,
   nodes: Node[],
+  edges: Edge[],
 ): string {
   const vm = nodes.find((n) => n.id === vmId);
   if (!vm) return "";
-  const nics = ((vm.data as Record<string, unknown>).nics || []) as Array<{ ip?: string }>;
-  return nics.find((n) => n.ip)?.ip || "";
+  const nics = ((vm.data as Record<string, unknown>).nics || []) as Array<{
+    id: string;
+    ip?: string;
+  }>;
+  for (const nic of nics) {
+    const handles = [`nic-${nic.id}-top`, `nic-${nic.id}-bottom`];
+    for (const edge of edges) {
+      const onVm =
+        (edge.source === vmId && handles.includes(edge.sourceHandle || "")) ||
+        (edge.target === vmId && handles.includes(edge.targetHandle || ""));
+      if (!onVm) continue;
+      const otherId = edge.source === vmId ? edge.target : edge.source;
+      if (otherId === networkId && nic.ip) return nic.ip;
+    }
+  }
+  return "";
 }
 
 export function resolveShowroomTabs(
   tabs: ShowroomTab[],
-  showroomId: string,
   nodes: Node[],
   edges: Edge[],
 ): ResolvedShowroomTab[] {
   const nodesById = new Map(nodes.map((n) => [n.id, n]));
-  const showroomNetworkId = getShowroomNetworkId(showroomId, edges, nodesById);
   let wettyPort = WETTY_BASE_PORT;
 
   return tabs.map((tab) => {
@@ -106,20 +112,17 @@ export function resolveShowroomTabs(
     }
 
     const vmName = ((vm.data as Record<string, unknown>).name as string) || "vm";
-    let vmIp = "";
-    if (showroomNetworkId) {
-      const vmNet = nicNetworkForVm(vm.id, edges, nodesById);
-      if (vmNet === showroomNetworkId) {
-        vmIp = getVmIpOnNetwork(vm.id, showroomNetworkId, nodes);
-      } else if (vmNet) {
-        vmIp = getVmIpOnNetwork(vm.id, vmNet, nodes);
-      }
+    if (!tab.network && !tab.networkId) {
+      return { tab, warning: "Select a network for this tab" };
     }
-    if (!vmIp) {
-      vmIp = getVmIpOnNetwork(vm.id, "", nodes);
+    const networkId = resolveTabNetworkId(tab, nodes);
+    if (!networkId) {
+      return { tab, warning: `Unknown network '${tab.network || ""}'` };
     }
+    const networkName = networkNameById(networkId, nodes);
+    const vmIp = getVmNicIpOnNetwork(vm.id, networkId, nodes, edges);
     if (!vmIp) {
-      return { tab, warning: `${vmName} has no IP on the showroom network` };
+      return { tab, warning: `${vmName} has no IP on ${networkName}` };
     }
 
     if (tab.type === "terminal") {
@@ -328,12 +331,11 @@ export function applyShowroomTabsToNode(
   tabs: ShowroomTab[],
   nodes: Node[],
   edges: Edge[],
-  showroomId: string,
 ): Record<string, unknown> {
   const diskId = ((nodeData.mounts || []) as Array<{ diskNodeId: string }>)[0]?.diskNodeId;
   if (!diskId) return { ...nodeData, showroomTabs: tabs };
 
-  const resolved = resolveShowroomTabs(tabs, showroomId, nodes, edges);
+  const resolved = resolveShowroomTabs(tabs, nodes, edges);
   const showroomIp =
     ((nodeData.nics || []) as Array<{ ip?: string }>).find((n) => n.ip)?.ip || "";
   const externalPort = getShowroomExternalPort(nodes, showroomIp);

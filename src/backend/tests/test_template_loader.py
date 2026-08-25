@@ -756,13 +756,21 @@ def test_net_automation_workshop_showroom_import():
     assert len(showroom["showroomTabs"]) == 5
     assert topo["showroom"]["enabled"] is True
     assert len(topo["startOrder"]) == 7
+    showroom_node = pods[0]
+    assert showroom_node["data"]["infraNetworking"] is True
+    assert showroom_node["data"]["nics"] == []
+    assert topo["showroom"].get("ip") is None
     gw = next(n for n in topo["nodes"] if n.get("data", {}).get("subtype") == "gateway")
-    ext_ports = {pf["extPort"] for pf in gw["data"]["portForwards"]}
-    assert ext_ports == {"80"}
+    assert gw["data"]["portForwards"] == []
 
     exported = export_topology_to_template(topo)
     assert "containers" not in exported
     assert exported["showroom"]["content_repo"].startswith("https://github.com/rhpds/")
     assert len(exported["showroom"]["tabs"]) == 5
     assert exported["showroom"]["tabs"][0]["vm"] == "control"
+    assert exported["showroom"]["tabs"][0]["network"] == "mgmt"
+    assert (
+        "network" not in exported["showroom"]
+        or exported["showroom"].get("network") is None
+    )
     assert "UI_CONFIG_B64" not in yaml.dump(exported)

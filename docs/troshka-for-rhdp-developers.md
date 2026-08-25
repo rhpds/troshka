@@ -134,6 +134,12 @@ troshka_deploy_mode: pattern
 # Pattern ID (from a saved pattern)
 troshka_pattern_id: "abc123-def456"
 
+# Optional: refresh showroom docs from git even when pattern has baked HTML
+# (collection passes these to POST /patterns/{id}/deploy as showroom: {...})
+troshka_showroom_content_repo: "https://github.com/rhpds/zt-network-automation-workshop.git"
+troshka_showroom_content_ref: "{{ showroom_content_ref | default('v0.0.2') }}"
+# build_content defaults to true when repo/ref overrides are sent
+
 # Bastion services run as pre_software_workloads
 pre_software_workloads:
   - role: disconnected_registry

@@ -978,6 +978,22 @@ def _resolve_deploy_recert(pattern: Pattern, body: PatternDeployRequest) -> bool
     return bool(pattern.recert)
 
 
+def _apply_showroom_deploy_overrides(
+    topology: dict, body: PatternDeployRequest
+) -> None:
+    """Refresh showroom git source when catalog item overrides content at deploy."""
+    if not body.showroom:
+        return
+    from app.services.showroom_scaffold import apply_showroom_deploy_overrides
+
+    apply_showroom_deploy_overrides(
+        topology,
+        content_repo=body.showroom.content_repo,
+        content_ref=body.showroom.content_ref,
+        build_content=body.showroom.build_content,
+    )
+
+
 def _apply_pattern_deploy_topology(
     topology: dict, pattern: Pattern, body: PatternDeployRequest
 ) -> None:
@@ -986,6 +1002,7 @@ def _apply_pattern_deploy_topology(
 
     deploy_recert = _resolve_deploy_recert(pattern, body)
     apply_sno_ocp_vm_flags(topology, recert=deploy_recert)
+    _apply_showroom_deploy_overrides(topology, body)
     if body.recert is not None:
         topology["_deploy_recert"] = body.recert
     elif pattern.recert:
@@ -1136,7 +1153,10 @@ def _create_bulk_project(
     _apply_pattern_deploy_topology(
         new_topology,
         pattern,
-        PatternDeployRequest(recert=pattern.recert or None),
+        PatternDeployRequest(
+            recert=pattern.recert or None,
+            showroom=body.showroom,
+        ),
     )
     project = Project(
         name=name,

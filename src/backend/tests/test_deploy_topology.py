@@ -163,24 +163,12 @@ def _showroom_topology(**overrides):
         },
         "nodes": [
             {
-                "id": "net-1",
-                "type": "networkNode",
-                "data": {"name": "mgmt", "subtype": "network", "cidr": "10.0.0.0/24"},
-            },
-            {
                 "id": "gw-1",
                 "type": "networkNode",
                 "data": {
                     "name": "gateway",
                     "subtype": "gateway",
-                    "portForwards": [
-                        {
-                            "extPort": "80",
-                            "intIp": "10.0.0.5",
-                            "intPort": "80",
-                            "proto": "tcp",
-                        },
-                    ],
+                    "portForwards": [],
                 },
             },
             {
@@ -190,31 +178,12 @@ def _showroom_topology(**overrides):
                     "name": "showroom",
                     "isShowroom": True,
                     "isPod": True,
-                    "nics": [
-                        {
-                            "id": "nic-1",
-                            "name": "eth0",
-                            "mac": "52:54:00:00:00:01",
-                            "ip": "10.0.0.5",
-                        }
-                    ],
+                    "infraNetworking": True,
+                    "nics": [],
                 },
             },
         ],
-        "edges": [
-            {
-                "source": "sr-1",
-                "target": "net-1",
-                "sourceHandle": "nic-nic-1-top",
-                "targetHandle": "bottom",
-            },
-            {
-                "source": "net-1",
-                "target": "gw-1",
-                "sourceHandle": "left",
-                "targetHandle": "right",
-            },
-        ],
+        "edges": [],
     }
     topo.update(overrides)
     return topo
@@ -226,31 +195,13 @@ def test_validate_showroom_topology_ok():
     assert validate_showroom_topology(_showroom_topology()) == []
 
 
-def test_validate_showroom_topology_requires_network():
-    from app.services.deploy_topology import validate_showroom_topology
-
-    topo = _showroom_topology()
-    topo["edges"] = [topo["edges"][1]]
-    errors = validate_showroom_topology(topo)
-    assert any("connected to a network" in e for e in errors)
-
-
 def test_validate_showroom_topology_requires_gateway():
     from app.services.deploy_topology import validate_showroom_topology
 
     topo = _showroom_topology()
-    topo["edges"] = [topo["edges"][0]]
+    topo["nodes"] = [n for n in topo["nodes"] if n["id"] != "gw-1"]
     errors = validate_showroom_topology(topo)
-    assert any("gateway" in e for e in errors)
-
-
-def test_validate_showroom_topology_requires_port_forward():
-    from app.services.deploy_topology import validate_showroom_topology
-
-    topo = _showroom_topology()
-    topo["nodes"][1]["data"]["portForwards"] = []
-    errors = validate_showroom_topology(topo)
-    assert any("port forward" in e for e in errors)
+    assert any("gateway" in e.lower() for e in errors)
 
 
 def test_validate_showroom_topology_requires_content_repo():
@@ -258,7 +209,8 @@ def test_validate_showroom_topology_requires_content_repo():
 
     topo = _showroom_topology()
     topo["showroom"]["content_repo"] = ""
-    topo["nodes"][0]["data"]["contentRepo"] = ""
+    showroom = next(n for n in topo["nodes"] if n["data"].get("isShowroom"))
+    showroom["data"]["contentRepo"] = ""
     errors = validate_showroom_topology(topo)
     assert any("content repo" in e for e in errors)
 
@@ -271,3 +223,42 @@ def test_validate_showroom_topology_content_repo_from_node():
     showroom = next(n for n in topo["nodes"] if n["data"].get("isShowroom"))
     showroom["data"]["contentRepo"] = "https://github.com/example/repo.git"
     assert validate_showroom_topology(topo) == []
+
+
+def test_showroom_infra_network():
+    from app.services.deploy_topology import showroom_infra_ip, showroom_infra_network
+
+    vni_map = {"net-1": 1000}
+    assert showroom_infra_ip(vni_map) == "172.30.232.3"
+    nets = showroom_infra_network(vni_map, "52:54:00:00:00:01")
+    assert len(nets) == 1
+    assert nets[0]["infra_transit"] is True
+    assert nets[0]["ip"] == "172.30.232.3"
+    assert nets[0]["gateway"] == "172.30.232.2"
+
+
+def test_inject_showroom_port_forward():
+    from app.services.vxlan import _inject_showroom_port_forward
+
+    topo = {
+        "nodes": [
+            {
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True, "nics": []},
+            }
+        ]
+    }
+    stale = [
+        {
+            "extPort": "443",
+            "intIp": "10.0.0.5",
+            "intPort": "80",
+            "proto": "tcp",
+            "extIpId": "eip-1",
+        }
+    ]
+    out = _inject_showroom_port_forward(stale, topo, 1000)
+    ext_ports = {pf["extPort"] for pf in out}
+    assert ext_ports == {"80", "443"}
+    assert all(pf["intIp"] == "172.30.232.3" for pf in out)
+    assert not any(pf["intIp"] == "10.0.0.5" for pf in out)

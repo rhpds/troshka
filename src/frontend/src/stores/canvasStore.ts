@@ -25,7 +25,13 @@ import {
   collectUsedIps,
   pickIpForNetwork,
 } from "@/lib/dhcpIpAssignment";
-import { applyShowroomPortForward, getShowroomNode } from "@/lib/showroomValidation";
+import {
+  ensureShowroomGatewayEdge,
+  getShowroomNode,
+  isShowroomGatewayEdge,
+  SHOWROOM_GATEWAY_SOURCE_HANDLE,
+  SHOWROOM_GATEWAY_TARGET_HANDLE,
+} from "@/lib/showroomValidation";
 
 export type { ShowroomConfig, ShowroomTab };
 
@@ -331,7 +337,6 @@ function refreshShowroomTabRoutes(state: {
     tabs,
     state.nodes,
     state.edges,
-    showroom.id,
   );
   return state.nodes.map((n) =>
     n.id === showroom.id ? { ...n, data: updatedData } : n,
@@ -608,6 +613,50 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     const tIsNetwork = tType === "networkNode" && !tIsRouter && !tIsGateway && !tIsLoadBalancer;
     const sIsContainer = sType === "containerNode";
     const tIsContainer = tType === "containerNode";
+    const sIsShowroom = isShowroomContainer(sourceNode);
+    const tIsShowroom = isShowroomContainer(targetNode);
+
+    // Cosmetic showroom ↔ gateway (infra networking — not used for deploy wiring)
+    if ((sIsShowroom && tIsGateway) || (tIsShowroom && sIsGateway)) {
+      const showroomNode = sIsShowroom ? sourceNode : targetNode;
+      const gatewayNode = sIsGateway ? sourceNode : targetNode;
+      const srcHandle = connection.sourceHandle || "";
+      const tgtHandle = connection.targetHandle || "";
+      const validHandles =
+        (connection.source === showroomNode.id &&
+          srcHandle === SHOWROOM_GATEWAY_SOURCE_HANDLE &&
+          tgtHandle === SHOWROOM_GATEWAY_TARGET_HANDLE) ||
+        (connection.target === showroomNode.id &&
+          tgtHandle === SHOWROOM_GATEWAY_SOURCE_HANDLE &&
+          srcHandle === SHOWROOM_GATEWAY_TARGET_HANDLE);
+      if (!validHandles) return;
+      const duplicate = get().edges.some(
+        (e) =>
+          isShowroomGatewayEdge(e) ||
+          (e.source === showroomNode.id && e.target === gatewayNode.id) ||
+          (e.target === showroomNode.id && e.source === gatewayNode.id),
+      );
+      if (duplicate) return;
+      get().pushHistory();
+      set({
+        edges: addEdge(
+          {
+            ...connection,
+            type: "smoothstep",
+            data: { cosmetic: true },
+            style: {
+              stroke: "rgba(74,222,128,0.45)",
+              strokeWidth: 2,
+              strokeDasharray: "8 6",
+            },
+            animated: true,
+          },
+          get().edges,
+        ),
+      });
+      set({ topologyDirty: computeTopologyDirty(get()) });
+      return;
+    }
 
     // Containers can only connect to networks (via NIC handles) and storage (via mount handles)
     if (sIsContainer || tIsContainer) {
@@ -808,8 +857,9 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
     const showroom = getShowroomNode(get().nodes);
     if (showroom) {
-      let nodes = applyShowroomPortForward(get().nodes, get().edges);
-      nodes = refreshShowroomTabRoutes({ nodes, edges: get().edges });
+      const withGwEdge = ensureShowroomGatewayEdge(get().nodes, get().edges);
+      if (withGwEdge !== get().edges) set({ edges: withGwEdge });
+      const nodes = refreshShowroomTabRoutes({ nodes: get().nodes, edges: get().edges });
       if (nodes !== get().nodes) set({ nodes });
     }
   },
@@ -817,7 +867,11 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   addNode: (node) => {
     get().pushHistory();
     const nodes = [...get().nodes, node];
-    set({ nodes });
+    const edges = ensureShowroomGatewayEdge(nodes, get().edges);
+    set({
+      nodes,
+      ...(edges !== get().edges ? { edges } : {}),
+    });
     set({ topologyDirty: computeTopologyDirty(get()) });
   },
 
@@ -838,8 +892,8 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     if (!isStatusOnly && ("nics" in data || "isShowroom" in data)) {
       const showroom = getShowroomNode(get().nodes);
       if (showroom) {
-        const withPf = applyShowroomPortForward(get().nodes, get().edges);
-        if (withPf !== get().nodes) set({ nodes: withPf });
+        const nodes = refreshShowroomTabRoutes(get());
+        if (nodes !== get().nodes) set({ nodes });
       }
     }
 
@@ -1007,40 +1061,39 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
               ? { ...e, ip: dep.ip, _private_ip: dep._private_ip ?? e._private_ip, state: dep.state ?? e.state }
               : e;
           });
+          const loadedNodes = (() => {
+            const showroomNode = nodes.find((n: Node) => isShowroomContainer(n));
+            const showroomCfg = parseShowroomFromTopology(t.showroom, nodes);
+            const tabs =
+              (showroomCfg?.tabs && showroomCfg.tabs.length > 0
+                ? showroomCfg.tabs
+                : ((showroomNode?.data as Record<string, unknown> | undefined)
+                    ?.showroomTabs as ShowroomTab[] | undefined)) || [];
+            const withGatewayEndpoints = nodes.map((n: Node) => {
+              const deployedEndpoints = deployedGatewayEndpoints.get(n.id);
+              if (!deployedEndpoints?.length) return n;
+              const data = (n.data || {}) as Record<string, unknown>;
+              if (data.subtype !== "gateway") return n;
+              return { ...n, data: { ...data, externalEndpoints: deployedEndpoints } };
+            });
+            const withNicIps = assignMissingContainerNicIps(
+              withGatewayEndpoints,
+              (t.edges || []) as Edge[],
+            );
+            if (!showroomNode || tabs.length === 0) return withNicIps;
+            const updatedData = applyShowroomTabsToNode(
+              showroomNode.data as Record<string, unknown>,
+              tabs,
+              withNicIps,
+              t.edges || [],
+            );
+            return withNicIps.map((n: Node) =>
+              n.id === showroomNode.id ? { ...n, data: updatedData } : n,
+            );
+          })();
           set({
-            nodes: (() => {
-              const showroomNode = nodes.find((n: Node) => isShowroomContainer(n));
-              const showroomCfg = parseShowroomFromTopology(t.showroom, nodes);
-              const tabs =
-                (showroomCfg?.tabs && showroomCfg.tabs.length > 0
-                  ? showroomCfg.tabs
-                  : ((showroomNode?.data as Record<string, unknown> | undefined)
-                      ?.showroomTabs as ShowroomTab[] | undefined)) || [];
-              const withGatewayEndpoints = nodes.map((n: Node) => {
-                const deployedEndpoints = deployedGatewayEndpoints.get(n.id);
-                if (!deployedEndpoints?.length) return n;
-                const data = (n.data || {}) as Record<string, unknown>;
-                if (data.subtype !== "gateway") return n;
-                return { ...n, data: { ...data, externalEndpoints: deployedEndpoints } };
-              });
-              const withNicIps = assignMissingContainerNicIps(
-                withGatewayEndpoints,
-                (t.edges || []) as Edge[],
-              );
-              const withPortForward = applyShowroomPortForward(withNicIps, (t.edges || []) as Edge[]);
-              if (!showroomNode || tabs.length === 0) return withPortForward;
-              const updatedData = applyShowroomTabsToNode(
-                showroomNode.data as Record<string, unknown>,
-                tabs,
-                withPortForward,
-                t.edges || [],
-                showroomNode.id,
-              );
-              return withPortForward.map((n: Node) =>
-                n.id === showroomNode.id ? { ...n, data: updatedData } : n,
-              );
-            })(),
-            edges: t.edges || [],
+            nodes: loadedNodes,
+            edges: ensureShowroomGatewayEdge(loadedNodes, (t.edges || []) as Edge[]),
             hiddenNodeIds: t.hiddenNodeIds || [],
             startOrder: t.startOrder || [],
             externalIps,
@@ -1078,7 +1131,10 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       : [...get().startOrder, scaffold.startOrderEntry];
     set({
       nodes: [...get().nodes, scaffold.showroomNode, scaffold.diskNode],
-      edges: [...get().edges, scaffold.diskEdge],
+      edges: ensureShowroomGatewayEdge(
+        [...get().nodes, scaffold.showroomNode, scaffold.diskNode],
+        [...get().edges, scaffold.diskEdge],
+      ),
       showroom: scaffold.showroom,
       startOrder,
       selectedNodeId: scaffold.showroomNode.id,
@@ -1120,7 +1176,6 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       tabs,
       get().nodes,
       get().edges,
-      nodeId,
     );
     const current = get().showroom || parseShowroomFromTopology(null, get().nodes)!;
     set({

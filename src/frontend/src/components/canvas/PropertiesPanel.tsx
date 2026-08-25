@@ -1460,8 +1460,22 @@ export default function PropertiesPanel() {
                 id: n.id,
                 name: ((n.data as Record<string, unknown>).name as string) || n.id,
               }));
+            const networkOptions = useCanvasStore
+              .getState()
+              .nodes.filter(
+                (n) =>
+                  n.type === "networkNode" &&
+                  (!((n.data as Record<string, unknown>).subtype as string) ||
+                    ["network", "dhcp", "dns"].includes(
+                      (n.data as Record<string, unknown>).subtype as string,
+                    )),
+              )
+              .map((n) => ({
+                id: n.id,
+                name: ((n.data as Record<string, unknown>).name as string) || n.id,
+              }));
             const resolvedTabs = isShowroom
-              ? resolveShowroomTabs(showroomTabs, node!.id, useCanvasStore.getState().nodes, edges)
+              ? resolveShowroomTabs(showroomTabs, useCanvasStore.getState().nodes, edges)
               : [];
             return (
               <>
@@ -1577,21 +1591,46 @@ export default function PropertiesPanel() {
                                   style={{ fontFamily: "monospace", fontSize: 11 }}
                                 />
                               ) : (
-                                <select
-                                  className="props-input"
-                                  value={tab.vmId || ""}
-                                  onChange={(e) => {
-                                    const next = showroomTabs.map((t) =>
-                                      t.id === tab.id ? { ...t, vmId: e.target.value } : t,
-                                    );
-                                    updateShowroomTabs(node!.id, next);
-                                  }}
-                                >
-                                  <option value="">Select VM...</option>
-                                  {vmOptions.map((vm) => (
-                                    <option key={vm.id} value={vm.id}>{vm.name}</option>
-                                  ))}
-                                </select>
+                                <>
+                                  <select
+                                    className="props-input"
+                                    value={tab.vmId || ""}
+                                    onChange={(e) => {
+                                      const next = showroomTabs.map((t) =>
+                                        t.id === tab.id ? { ...t, vmId: e.target.value } : t,
+                                      );
+                                      updateShowroomTabs(node!.id, next);
+                                    }}
+                                  >
+                                    <option value="">Select VM...</option>
+                                    {vmOptions.map((vm) => (
+                                      <option key={vm.id} value={vm.id}>{vm.name}</option>
+                                    ))}
+                                  </select>
+                                  <select
+                                    className="props-input"
+                                    value={tab.networkId || ""}
+                                    onChange={(e) => {
+                                      const selected = networkOptions.find((n) => n.id === e.target.value);
+                                      const next = showroomTabs.map((t) =>
+                                        t.id === tab.id
+                                          ? {
+                                              ...t,
+                                              networkId: e.target.value || undefined,
+                                              network: selected?.name || undefined,
+                                            }
+                                          : t,
+                                      );
+                                      updateShowroomTabs(node!.id, next);
+                                    }}
+                                    style={{ marginTop: 6 }}
+                                  >
+                                    <option value="">Select network...</option>
+                                    {networkOptions.map((net) => (
+                                      <option key={net.id} value={net.id}>{net.name}</option>
+                                    ))}
+                                  </select>
+                                </>
                               )}
                               {tab.type === "proxy" && (
                                 <div className="props-row" style={{ marginTop: 6 }}>
@@ -1693,9 +1732,12 @@ export default function PropertiesPanel() {
                       )}
                       {showroomReadiness && showroomReadiness.issues.length === 0 && (
                         <div style={{ marginTop: 8, fontSize: 11, color: "var(--troshka-green)" }}>
-                          Ready — network, gateway, and port forward configured
+                          Ready — content configured{showroomReadiness.hasGateway ? " (gateway present)" : ""}
                         </div>
                       )}
+                      <div style={{ marginTop: 8, fontSize: 11, color: "var(--troshka-text-dim)" }}>
+                        Networking is automatic in the project netns (transit IP at deploy). Link to the gateway on the canvas for documentation only.
+                      </div>
                     </div>
                     <div className="props-divider" />
                   </>
@@ -1759,7 +1801,9 @@ export default function PropertiesPanel() {
                   </>
                 )}
 
-          {/* NIC section */}
+          {/* NIC section — infra showroom uses project netns, not lab NICs */}
+          {!isShowroom ? (
+          <>
           <div className="props-section">
             <div className="props-section-title">Network Interfaces</div>
             {(() => {
@@ -1844,6 +1888,8 @@ export default function PropertiesPanel() {
             })()}
           </div>
           <div className="props-divider" />
+          </>
+          ) : null}
 
                 {!isPod && (
                   <>

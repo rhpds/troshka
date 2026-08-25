@@ -1,196 +1,107 @@
 import type { Edge, Node } from "@xyflow/react";
 
 export interface ShowroomReadiness {
-  hasNetwork: boolean;
-  hasGatewayNetwork: boolean;
-  hasPortForward: boolean;
-  showroomIp: string;
-  networkName: string;
-  gatewayName: string;
+  hasContentRepo: boolean;
+  hasGateway: boolean;
   issues: string[];
 }
 
-function isGatewayNode(node: Node | undefined): boolean {
+export const SHOWROOM_GATEWAY_SOURCE_HANDLE = "gateway-link-right";
+export const SHOWROOM_GATEWAY_TARGET_HANDLE = "showroom-link";
+
+export function isShowroomContainer(node: Node | undefined): boolean {
+  if (!node || node.type !== "containerNode") return false;
+  const d = node.data as Record<string, unknown>;
+  return !!(d.isShowroom || d.name === "showroom");
+}
+
+export function isGatewayNode(node: Node | undefined): boolean {
   return (
     node?.type === "networkNode" &&
     (node.data as Record<string, unknown>).subtype === "gateway"
   );
 }
 
-function isPlainNetwork(node: Node | undefined): boolean {
-  if (node?.type !== "networkNode") return false;
-  const subtype = (node.data as Record<string, unknown>).subtype as string | undefined;
-  return !subtype || subtype === "network" || subtype === "dhcp" || subtype === "dns";
-}
-
-function nicNetworkId(
-  showroomId: string,
-  edges: Edge[],
-  nodesById: Map<string, Node>,
-): string | null {
-  for (const edge of edges) {
-    const showroomIsSource = edge.source === showroomId;
-    const showroomIsTarget = edge.target === showroomId;
-    if (!showroomIsSource && !showroomIsTarget) continue;
-
-    const handle = showroomIsSource ? edge.sourceHandle || "" : edge.targetHandle || "";
-    if (!handle.includes("nic-")) continue;
-
-    const otherId = showroomIsSource ? edge.target : edge.source;
-    const other = nodesById.get(otherId);
-    if (isPlainNetwork(other)) return otherId;
-  }
-  return null;
-}
-
-function gatewayForNetwork(
-  networkId: string,
-  edges: Edge[],
-  nodesById: Map<string, Node>,
-): Node | null {
-  for (const edge of edges) {
-    if (edge.source !== networkId && edge.target !== networkId) continue;
-    const otherId = edge.source === networkId ? edge.target : edge.source;
-    const other = nodesById.get(otherId);
-    if (!other || !isGatewayNode(other)) continue;
-    return other;
-  }
-  return null;
+export function isShowroomGatewayEdge(edge: Edge): boolean {
+  const sh = edge.sourceHandle || "";
+  const th = edge.targetHandle || "";
+  return (
+    sh === SHOWROOM_GATEWAY_SOURCE_HANDLE && th === SHOWROOM_GATEWAY_TARGET_HANDLE ||
+    th === SHOWROOM_GATEWAY_SOURCE_HANDLE && sh === SHOWROOM_GATEWAY_TARGET_HANDLE
+  );
 }
 
 export function getShowroomNode(nodes: Node[]): Node | undefined {
-  return nodes.find(
-    (n) =>
-      n.type === "containerNode" &&
-      ((n.data as Record<string, unknown>).isShowroom ||
-        (n.data as Record<string, unknown>).name === "showroom"),
+  return nodes.find((n) => isShowroomContainer(n));
+}
+
+function getGatewayNode(nodes: Node[]): Node | undefined {
+  return nodes.find((n) => isGatewayNode(n));
+}
+
+export function buildShowroomGatewayEdge(showroomId: string, gatewayId: string): Edge {
+  return {
+    id: `showroom-gw-${showroomId.slice(0, 8)}-${gatewayId.slice(0, 8)}`,
+    source: showroomId,
+    target: gatewayId,
+    sourceHandle: SHOWROOM_GATEWAY_SOURCE_HANDLE,
+    targetHandle: SHOWROOM_GATEWAY_TARGET_HANDLE,
+    type: "smoothstep",
+    data: { cosmetic: true },
+    style: {
+      stroke: "rgba(74,222,128,0.45)",
+      strokeWidth: 2,
+      strokeDasharray: "8 6",
+    },
+    animated: true,
+  };
+}
+
+/** Add cosmetic showroom→gateway edge when both nodes exist. */
+export function ensureShowroomGatewayEdge(nodes: Node[], edges: Edge[]): Edge[] {
+  const showroom = getShowroomNode(nodes);
+  const gateway = getGatewayNode(nodes);
+  if (!showroom || !gateway) return edges;
+  const has = edges.some(
+    (e) =>
+      isShowroomGatewayEdge(e) ||
+      (e.source === showroom.id && e.target === gateway.id) ||
+      (e.target === showroom.id && e.source === gateway.id),
   );
+  if (has) return edges;
+  return [...edges, buildShowroomGatewayEdge(showroom.id, gateway.id)];
 }
 
 export function getShowroomReadiness(nodes: Node[], edges: Edge[]): ShowroomReadiness {
   const showroom = getShowroomNode(nodes);
   const empty: ShowroomReadiness = {
-    hasNetwork: false,
-    hasGatewayNetwork: false,
-    hasPortForward: false,
-    showroomIp: "",
-    networkName: "",
-    gatewayName: "",
+    hasContentRepo: false,
+    hasGateway: false,
     issues: ["Add a showroom to the canvas"],
   };
   if (!showroom) return empty;
 
-  const nodesById = new Map(nodes.map((n) => [n.id, n]));
   const data = showroom.data as Record<string, unknown>;
-  const nics = (data.nics || []) as Array<{ ip?: string }>;
-  const showroomIp = nics.find((n) => n.ip)?.ip || "";
-
-  const networkId = nicNetworkId(showroom.id, edges, nodesById);
-  const network = networkId ? nodesById.get(networkId) : undefined;
-  const networkName = (network?.data as Record<string, unknown> | undefined)?.name as string || "";
-
-  const gateway = networkId ? gatewayForNetwork(networkId, edges, nodesById) : null;
-  const gatewayName = (gateway?.data as Record<string, unknown> | undefined)?.name as string || "";
-
-  const portForwards =
-    ((gateway?.data as Record<string, unknown> | undefined)?.portForwards as Array<{
-      extPort?: string;
-      intIp?: string;
-      intPort?: string;
-    }>) || [];
-
-  const hasPortForward =
-    !!showroomIp &&
-    portForwards.some(
-      (pf) =>
-        pf.intIp?.trim() === showroomIp &&
-        String(pf.intPort) === "80",
-    );
+  const buildContent = data.buildContent !== false;
+  const contentRepo = String(data.contentRepo || "").trim();
+  const hasContentRepo = !buildContent || contentRepo.length > 0;
+  const hasGateway = !!getGatewayNode(nodes);
 
   const issues: string[] = [];
-  if (!networkId) issues.push("Connect showroom to a network");
-  else if (!gateway) issues.push(`Connect network '${networkName || "network"}' to a gateway`);
-  if (!showroomIp) issues.push("Assign an IP to the showroom NIC (connect to a network with DHCP or set manually)");
-  else if (!hasPortForward) issues.push(`Add gateway port forward: 80 → ${showroomIp}:80`);
+  if (!hasContentRepo) {
+    issues.push("Content repo URL is required when build at deploy is enabled");
+  }
+  if (!hasGateway) {
+    issues.push("Add a gateway to the project for external showroom access");
+  }
 
   return {
-    hasNetwork: !!networkId,
-    hasGatewayNetwork: !!gateway,
-    hasPortForward,
-    showroomIp,
-    networkName,
-    gatewayName,
+    hasContentRepo,
+    hasGateway,
     issues,
   };
 }
 
 export function isShowroomReady(nodes: Node[], edges: Edge[]): boolean {
-  const readiness = getShowroomReadiness(nodes, edges);
-  return readiness.issues.length === 0;
-}
-
-/** Add gateway port forward 80→showroom:80 when showroom has an IP on a gateway network. */
-export function applyShowroomPortForward(nodes: Node[], edges: Edge[]): Node[] {
-  const readiness = getShowroomReadiness(nodes, edges);
-  if (!readiness.showroomIp || !readiness.hasGatewayNetwork) return nodes;
-
-  const showroom = getShowroomNode(nodes);
-  if (!showroom) return nodes;
-
-  const nodesById = new Map(nodes.map((n) => [n.id, n]));
-  const networkId = (() => {
-    for (const edge of edges) {
-      if (edge.source !== showroom.id && edge.target !== showroom.id) continue;
-      const handle =
-        edge.source === showroom.id ? edge.sourceHandle || "" : edge.targetHandle || "";
-      if (!handle.includes("nic-")) continue;
-      const otherId = edge.source === showroom.id ? edge.target : edge.source;
-      const other = nodesById.get(otherId);
-      if (isPlainNetwork(other)) return otherId;
-    }
-    return null;
-  })();
-  if (!networkId) return nodes;
-
-  const gateway = gatewayForNetwork(networkId, edges, nodesById);
-  if (!gateway) return nodes;
-
-  const gwData = gateway.data as Record<string, unknown>;
-  const portForwards = (gwData.portForwards || []) as Array<{
-    extPort?: string;
-    intIp?: string;
-    intPort?: string;
-    proto?: string;
-    extIpId?: string;
-  }>;
-
-  if (
-    portForwards.some(
-      (pf) =>
-        pf.intIp?.trim() === readiness.showroomIp &&
-        String(pf.intPort) === "80",
-    )
-  ) {
-    return nodes;
-  }
-
-  return nodes.map((n) => {
-    if (n.id !== gateway.id) return n;
-    return {
-      ...n,
-      data: {
-        ...n.data,
-        portForwards: [
-          ...portForwards,
-          {
-            extPort: "80",
-            intIp: readiness.showroomIp,
-            intPort: "80",
-            proto: "tcp",
-            extIpId: "",
-          },
-        ],
-      },
-    };
-  });
+  return getShowroomReadiness(nodes, edges).issues.length === 0;
 }

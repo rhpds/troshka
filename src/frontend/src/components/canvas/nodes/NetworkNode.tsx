@@ -222,6 +222,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
       {/* Gateways: left/right only */}
       {d.subtype === "gateway" && (
         <>
+          <Handle type="target" position={Position.Left} id="showroom-link" className="canvas-handle canvas-handle-router" />
           <Handle type="source" position={Position.Left} id="left" className="canvas-handle canvas-handle-router" />
           <Handle type="source" position={Position.Right} id="right" className="canvas-handle canvas-handle-router" />
         </>

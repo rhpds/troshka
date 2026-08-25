@@ -151,7 +151,7 @@ def _showroom_content_repo(topology: dict, showroom_node: dict) -> str:
 
 
 def validate_showroom_topology(topology: dict) -> list[str]:
-    """Validate showroom placement, gateway network, and port forward."""
+    """Validate showroom content config (infra networking is deploy-managed)."""
     showroom_nodes = [n for n in topology.get("nodes", []) if _is_showroom_node(n)]
     if not showroom_nodes:
         return []
@@ -159,70 +159,14 @@ def validate_showroom_topology(topology: dict) -> list[str]:
         return ["Only one showroom is allowed per project"]
 
     showroom = showroom_nodes[0]
-    showroom_id = showroom["id"]
-    nodes_by_id = {n["id"]: n for n in topology.get("nodes", [])}
-    edges = topology.get("edges", [])
+    errors: list[str] = []
 
-    network_id = None
-    for edge in edges:
-        if showroom_id not in (edge.get("source"), edge.get("target")):
-            continue
-        showroom_is_source = edge.get("source") == showroom_id
-        handle = edge.get("sourceHandle" if showroom_is_source else "targetHandle", "")
-        if "nic-" not in handle:
-            continue
-        other_id = edge.get("target") if showroom_is_source else edge.get("source")
-        other = nodes_by_id.get(other_id)
-        if _is_plain_network(other):
-            network_id = other_id
-            break
-
-    errors = []
-    if not network_id:
-        errors.append("Showroom must be connected to a network")
-        return errors
-
-    network_name = (
-        nodes_by_id.get(network_id, {}).get("data", {}).get("name", "network")
+    gateway = next(
+        (n for n in topology.get("nodes", []) if _is_gateway_node(n)),
+        None,
     )
-    gateway = None
-    for edge in edges:
-        if network_id not in (edge.get("source"), edge.get("target")):
-            continue
-        other_id = (
-            edge.get("target")
-            if edge.get("source") == network_id
-            else edge.get("source")
-        )
-        other = nodes_by_id.get(other_id)
-        if _is_gateway_node(other):
-            gateway = other
-            break
-
     if not gateway:
-        errors.append(
-            f"Showroom network '{network_name}' must be connected to a gateway"
-        )
-        return errors
-
-    showroom_ip = ""
-    for nic in showroom.get("data", {}).get("nics", []):
-        if nic.get("ip"):
-            showroom_ip = nic["ip"]
-            break
-    if not showroom_ip:
-        errors.append("Showroom must have an IP address on its network NIC")
-        return errors
-
-    port_forwards = gateway.get("data", {}).get("portForwards", [])
-    has_forward = any(
-        pf.get("intIp", "").strip() == showroom_ip and str(pf.get("intPort")) == "80"
-        for pf in port_forwards
-    )
-    if not has_forward:
-        errors.append(
-            f"Gateway must have a port forward for showroom (80 → {showroom_ip}:80)"
-        )
+        errors.append("A gateway is required for external showroom access")
 
     showroom_cfg = topology.get("showroom") or {}
     enabled = showroom_cfg.get("enabled", True)
@@ -230,6 +174,37 @@ def validate_showroom_topology(topology: dict) -> list[str]:
         errors.append("Showroom content repo URL is required")
 
     return errors
+
+
+def showroom_transit_octet3(vni_map: dict) -> int | None:
+    if not vni_map:
+        return None
+    first_vni = next(iter(vni_map.values()))
+    return int(first_vni) & 0xFF
+
+
+def showroom_infra_ip(vni_map: dict) -> str:
+    octet3 = showroom_transit_octet3(vni_map)
+    if octet3 is None:
+        return ""
+    return f"172.30.{octet3}.3"
+
+
+def showroom_infra_network(vni_map: dict, mac: str = "") -> list[dict]:
+    """Transit-side showroom addressing in the project netns (not lab DHCP)."""
+    octet3 = showroom_transit_octet3(vni_map)
+    if octet3 is None:
+        return []
+    return [
+        {
+            "bridge": "",
+            "mac": mac,
+            "ip": f"172.30.{octet3}.3",
+            "cidr": f"172.30.{octet3}.0/24",
+            "gateway": f"172.30.{octet3}.2",
+            "infra_transit": True,
+        }
+    ]
 
 
 def _filter_topology_for_host(topology: dict, vm_node_ids: set[str]) -> dict:
@@ -437,6 +412,11 @@ def _find_container_networks(
     )
     if not container_node:
         return results
+
+    if _is_showroom_node(container_node):
+        nics = container_node.get("data", {}).get("nics", [])
+        mac = nics[0].get("mac", "") if nics else ""
+        return showroom_infra_network(vni_map, mac)
 
     nics_by_id = {
         nic["id"]: nic for nic in container_node.get("data", {}).get("nics", [])

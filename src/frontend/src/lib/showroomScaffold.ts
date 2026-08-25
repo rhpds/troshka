@@ -2,8 +2,6 @@ import type { Edge, Node } from "@xyflow/react";
 import type { StartOrderEntry } from "@/stores/canvasStore";
 import {
   generateDiskControllerId,
-  generateMac,
-  generateNicId,
   generateNodeId,
 } from "@/stores/canvasStore";
 import type { ShowroomTab } from "@/lib/showroomTabs";
@@ -140,7 +138,6 @@ export function buildShowroomScaffold(
 ): ShowroomScaffoldResult {
   const showroomId = generateNodeId();
   const diskId = generateNodeId();
-  const nicId = generateNicId();
 
   const initContainers = buildInitContainers(config.content_repo, config.content_ref).map((ic) => ({
     ...ic,
@@ -168,14 +165,8 @@ export function buildShowroomScaffold(
       contentRepo: config.content_repo,
       contentRef: config.content_ref,
       showroomTabs: config.tabs || [],
-      nics: [
-        {
-          id: nicId,
-          name: "eth0",
-          mac: generateMac(),
-          model: "virtio",
-        },
-      ],
+      nics: [],
+      infraNetworking: true,
       envVars: [],
       ports: [],
       command: null,
