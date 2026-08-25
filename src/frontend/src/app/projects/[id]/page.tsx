@@ -106,7 +106,6 @@ export default function ProjectCanvasPage() {
         setGuestExecEnabled(data.guest_exec_enabled !== false);
         if (data.ocp_status) setOcpStatus(data.ocp_status);
         if (data.ocp_install_elapsed != null) setOcpInstallElapsed(data.ocp_install_elapsed);
-        prevStateRef.current = data.state;
         setHasDeployedTopology(!!(data.deployed_topology?.nodes?.length));
       })
       .catch(() => {});
@@ -138,19 +137,23 @@ export default function ProjectCanvasPage() {
   // WebSocket → project state
   const prevStateRef = React.useRef(projectState);
   useEffect(() => {
+    prevStateRef.current = projectState;
+  }, [projectState]);
+
+  useEffect(() => {
     if (!ws.projectState) return;
-    const wasTransitional = ["reconfiguring", "deploying", "starting", "deleting"].includes(prevStateRef.current);
+    const prev = prevStateRef.current;
     setProjectState(ws.projectState);
     setDeployError(ws.deployError || null);
     if (ws.projectState === "deploying") {
       setOcpStatus(null);
       setOcpInstallElapsed(null);
     }
-    prevStateRef.current = ws.projectState;
-    if (wasTransitional && ws.projectState === "active") {
+    if (ws.projectState === "active" && prev !== "active") {
       void useCanvasStore.getState().loadProject(projectId);
+      setDeployProgress(null);
     }
-  }, [ws.projectState, ws.deployError]);
+  }, [ws.projectState, ws.deployError, projectId]);
 
   // WebSocket → timer expiry updates (from project-state messages after stop/start/deploy)
   useEffect(() => {
@@ -174,9 +177,9 @@ export default function ProjectCanvasPage() {
           if (data?.deploy_progress) setDeployProgress(data.deploy_progress);
           if (data?.deploy_error) setDeployError(data.deploy_error);
           if (data?.state && data.state !== projectState) {
-            const wasTransitional = ["reconfiguring", "deploying", "starting", "deleting"].includes(projectState);
+            const prev = projectState;
             setProjectState(data.state);
-            if (wasTransitional && data.state === "active") {
+            if (data.state === "active" && prev !== "active") {
               void useCanvasStore.getState().loadProject(projectId);
               setDeployProgress(null);
             }
@@ -206,7 +209,8 @@ export default function ProjectCanvasPage() {
         if (data.subtype !== "gateway") return n;
         const incoming = data.externalEndpoints as unknown[] | undefined;
         const preserved = preservedEndpoints.get(n.id);
-        if ((!incoming || incoming.length === 0) && preserved?.length) {
+        if (incoming?.length) return n;
+        if (preserved?.length) {
           return { ...n, data: { ...data, externalEndpoints: preserved } };
         }
         return n;

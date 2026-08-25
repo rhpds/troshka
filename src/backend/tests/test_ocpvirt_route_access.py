@@ -131,6 +131,7 @@ def test_create_route_access_creates_service_and_route(mock_clients, mock_dnat):
         "bastion",
         "10.0.0.50",
         443,
+        443,
         transit_port=40000,
         setup_dnat=False,
     )
@@ -186,6 +187,44 @@ def test_create_route_access_edge_for_port_80(mock_clients, mock_dnat):
     )
 
     mock_dnat.assert_called_once()
+    route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
+    assert route_body["spec"]["tls"]["termination"] == "edge"
+
+
+@patch("app.services.providers.ocpvirt._setup_route_dnat")
+@patch("app.services.providers.ocpvirt._get_k8s_clients")
+def test_create_route_access_edge_for_showroom_443_to_80(mock_clients, mock_dnat):
+    from app.services.providers.ocpvirt import OCPVirtDriver
+
+    mock_core = MagicMock()
+    mock_custom = MagicMock()
+    mock_clients.return_value = (mock_custom, mock_core)
+    mock_custom.create_namespaced_custom_object.return_value = {
+        "spec": {"host": "showroom-443.apps.cluster.example.com"}
+    }
+
+    provider = MagicMock()
+    provider.get_credentials.return_value = {
+        "api_url": "https://api:6443",
+        "token": "t",
+        "namespace": "troshka",
+    }
+    host = MagicMock()
+    host.instance_id = "troshka-host-abc"
+
+    driver = OCPVirtDriver()
+    driver.create_route_access(
+        provider,
+        host,
+        "proj-001",
+        "showroom",
+        "10.0.0.5",
+        443,
+        80,
+        transit_port=40000,
+        setup_dnat=True,
+    )
+
     route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
     assert route_body["spec"]["tls"]["termination"] == "edge"
 

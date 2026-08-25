@@ -515,11 +515,18 @@ class TestCreateOrGetRoute:
         mock_custom.get_namespaced_custom_object.return_value = {
             "spec": {"host": "existing-route.apps.cluster.example.com"}
         }
+        route_body = {
+            "metadata": {"name": "my-route"},
+            "spec": {
+                "to": {"kind": "Service", "name": "my-route"},
+                "port": {"targetPort": "pf-443"},
+                "tls": {"termination": "edge"},
+            },
+        }
 
-        result = _create_or_get_route(
-            mock_custom, "troshka", {"metadata": {"name": "my-route"}}, "my-route"
-        )
+        result = _create_or_get_route(mock_custom, "troshka", route_body, "my-route")
         assert result == "existing-route.apps.cluster.example.com"
+        mock_custom.patch_namespaced_custom_object.assert_called_once()
 
     def test_route_409_then_get_fails(self):
         from kubernetes.client import ApiException

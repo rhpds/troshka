@@ -30,6 +30,7 @@ _gateway_listen_port() {
   # OpenShift/OVN blocks some inbound ports on the pod network (MetalLB path).
   case "$1" in
     80) echo 1080 ;;
+    443) echo 1443 ;;
     8080) echo 18080 ;;
     *) echo "$1" ;;
   esac

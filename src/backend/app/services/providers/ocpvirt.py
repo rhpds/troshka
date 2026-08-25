@@ -430,7 +430,7 @@ def _setup_route_dnat(host, project_id, transit_port, int_ip, vm_port):
 def _create_or_get_route(custom_api, namespace, route_body, resource_name):
     """Create an OCP Route, returning the hostname.
 
-    On 409 conflict, reads the existing route instead.
+    On 409 conflict, merge-patches spec (TLS/port/target) then returns hostname.
     """
     from kubernetes import client
 
@@ -449,6 +449,24 @@ def _create_or_get_route(custom_api, namespace, route_body, resource_name):
     except client.ApiException as e:
         if e.status == 409:
             try:
+                route_spec = route_body.get("spec", {})
+                patch_body = {
+                    "spec": {
+                        key: route_spec[key]
+                        for key in ("to", "port", "tls")
+                        if route_spec.get(key) is not None
+                    }
+                }
+                if patch_body["spec"]:
+                    custom_api.patch_namespaced_custom_object(
+                        group=_ROUTE_API,
+                        version="v1",
+                        namespace=namespace,
+                        plural="routes",
+                        name=resource_name,
+                        body=patch_body,
+                        _content_type="application/merge-patch+json",
+                    )
                 existing = cast(
                     dict[str, Any],
                     custom_api.get_namespaced_custom_object(
@@ -940,9 +958,10 @@ class OCPVirtDriver(ProviderDriver):
             else:
                 raise
 
-        # HTTPS backends (AAP, API servers) need passthrough — edge termination
-        # would send plaintext HTTP to ports that only speak TLS.
-        passthrough = port in (443, 6443)
+        # Passthrough only when the guest actually speaks TLS on the target port
+        # (e.g. API 6443, or 443→443). Showroom-style 443→80 HTTP needs edge
+        # termination so the router presents the cluster wildcard cert.
+        passthrough = port == 6443 or (port == 443 and vm_port == 443)
         route = {
             "apiVersion": "route.openshift.io/v1",
             "kind": "Route",

@@ -2233,7 +2233,21 @@ def _resolve_deploy_step(
     return last.get("step", "") or "deploying", last.get("detail", "")
 
 
-def _finalize_kubevirt_deploy(project_id, project, topology, db):
+def _notify_client_topology_update(project_id, project, db):
+    """Push hydrated topology (incl. gateway routes) to connected clients."""
+    from app.api.projects import _client_topology_snapshot
+    from app.services.ws_pubsub import notify_project
+
+    notify_project(
+        project_id,
+        {
+            "type": "topology-update",
+            "topology": _client_topology_snapshot(project, db=db),
+        },
+    )
+
+
+def _finalize_kubevirt_deploy(project_id, project, topology, db, host=None):
     """Handle the Running phase — update project state and topology."""
     from app.services.ws_pubsub import notify_project
 
@@ -2247,7 +2261,9 @@ def _finalize_kubevirt_deploy(project_id, project, topology, db):
         if node.get("type") == "vmNode" and not ndata.get("bmcIp"):
             ndata["bmcIp"] = ""
 
-    _deploy_create_provider_routes(db, project_id, clean_topo, project=project)
+    _deploy_create_provider_routes(
+        db, project_id, clean_topo, host=host, project=project
+    )
     _allocate_kubevirt_eips(project_id, project, clean_topo, db)
 
     # Read domain UUIDs from TroshkaVM CRs (assigned by KubeVirt at VM creation)
@@ -2285,6 +2301,7 @@ def _finalize_kubevirt_deploy(project_id, project, topology, db):
     project.deploy_progress = None
     db.commit()
     _delete_deploy_progress(project_id)
+    _notify_client_topology_update(project_id, project, db)
     notify_project(project_id, {"type": "project-state", "state": "active"})
     logger.info("Deploy %s: kubevirt deploy complete", project_id[:8])
 
@@ -2581,7 +2598,12 @@ def _poll_kubevirt_deploy(project_id, project, provider, driver, topology, db):
         )
 
         if phase == "Running":
-            _finalize_kubevirt_deploy(project_id, project, topology, db)
+            host = None
+            if project.host_id:
+                from app.models.host import Host
+
+                host = db.query(Host).filter_by(id=project.host_id).first()
+            _finalize_kubevirt_deploy(project_id, project, topology, db, host=host)
             return
 
         if phase == "Error":
@@ -3473,7 +3495,6 @@ def _create_routes_for_gateway(
                     vm_name,
                     int_ip,
                     ext_port,
-                    int_port,
                 )
             external_endpoints.append(
                 {
@@ -4506,6 +4527,7 @@ def _deploy_complete_and_notify(
     _deploy_store_bmc_topology(project, topology, bmc_config)
 
     s.commit()
+    _notify_client_topology_update(project_id, project, s)
     notify_project(
         project_id,
         {

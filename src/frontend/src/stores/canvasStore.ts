@@ -20,6 +20,11 @@ import {
 } from "@/lib/showroomScaffold";
 import type { ShowroomTab } from "@/lib/showroomTabs";
 import { applyShowroomTabsToNode } from "@/lib/showroomTabs";
+import {
+  assignMissingContainerNicIps,
+  collectUsedIps,
+  pickIpForNetwork,
+} from "@/lib/dhcpIpAssignment";
 import { applyShowroomPortForward, getShowroomNode } from "@/lib/showroomValidation";
 
 export type { ShowroomConfig, ShowroomTab };
@@ -743,22 +748,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       );
       if (!nicForHandle || handleAlreadyConnected) {
         const netData = netNode.data as Record<string, any>;
-        const cidr = netData.cidr || "";
-        const base = cidr ? cidr.split("/")[0].split(".").slice(0, 3).join(".") : "";
-        let autoIp = "";
-        if (base) {
-          const usedIps = new Set<string>();
-          for (const n of get().nodes) {
-            if (n.type !== "vmNode" && n.type !== "containerNode") continue;
-            for (const nic of ((n.data as Record<string, any>).nics || []) as Array<{ip?: string}>) {
-              if (nic.ip) usedIps.add(nic.ip);
-            }
-          }
-          for (let i = 10; i < 250; i++) {
-            const candidate = `${base}.${i}`;
-            if (!usedIps.has(candidate)) { autoIp = candidate; break; }
-          }
-        }
+        const autoIp = pickIpForNetwork(netData, collectUsedIps(get().nodes)) || "";
         const suffix = workloadHandle?.endsWith("-top") ? "top" : "bottom";
         const newNic = {
           id: generateNicId(),
@@ -810,6 +800,11 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       }
     }
     set({ topologyDirty: computeTopologyDirty(get()) });
+
+    if (isWorkloadNet) {
+      const withNicIps = assignMissingContainerNicIps(get().nodes, get().edges);
+      if (withNicIps !== get().nodes) set({ nodes: withNicIps });
+    }
 
     const showroom = getShowroomNode(get().nodes);
     if (showroom) {
@@ -1028,15 +1023,20 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
                 if (data.subtype !== "gateway") return n;
                 return { ...n, data: { ...data, externalEndpoints: deployedEndpoints } };
               });
-              if (!showroomNode || tabs.length === 0) return withGatewayEndpoints;
+              const withNicIps = assignMissingContainerNicIps(
+                withGatewayEndpoints,
+                (t.edges || []) as Edge[],
+              );
+              const withPortForward = applyShowroomPortForward(withNicIps, (t.edges || []) as Edge[]);
+              if (!showroomNode || tabs.length === 0) return withPortForward;
               const updatedData = applyShowroomTabsToNode(
                 showroomNode.data as Record<string, unknown>,
                 tabs,
-                withGatewayEndpoints,
+                withPortForward,
                 t.edges || [],
                 showroomNode.id,
               );
-              return withGatewayEndpoints.map((n: Node) =>
+              return withPortForward.map((n: Node) =>
                 n.id === showroomNode.id ? { ...n, data: updatedData } : n,
               );
             })(),

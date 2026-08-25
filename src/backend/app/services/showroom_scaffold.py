@@ -143,18 +143,35 @@ def resolve_showroom_tabs(
     return resolved
 
 
-def build_ui_config_yaml(resolved: list[dict[str, Any]]) -> str:
+def _yaml_name(name: str) -> str:
+    return json.dumps(name)[1:-1]
+
+
+def build_ui_config_yaml(
+    resolved: list[dict[str, Any]], external_port: int = 443
+) -> str:
+    """Build showroom UI config (format expected by quay.io/rhpds/showroom-content)."""
     lines = [
         "---",
+        "type: showroom",
+        "",
+        "default_width: 30",
+        "persist_url_state: true",
+        "",
+        "view_switcher:",
+        "  enabled: true",
+        "  default_mode: split",
+        "",
         "antora:",
         "  name: modules",
         "  dir: www",
+        "",
         "tabs:",
     ]
     for item in resolved:
         tab = item["tab"]
         tab_type = tab.get("type")
-        name = json.dumps(tab.get("name", ""))[1:-1]
+        name = _yaml_name(tab.get("name", ""))
         if tab_type == "external":
             lines.extend(
                 [
@@ -165,15 +182,28 @@ def build_ui_config_yaml(resolved: list[dict[str, Any]]) -> str:
             )
             continue
         if tab_type == "terminal" and item.get("wettyPath"):
-            lines.extend([f"  - name: {name}", f"    url: {item['wettyPath']}"])
+            lines.extend(
+                [
+                    f"  - name: {name}",
+                    f"    path: {item['wettyPath']}",
+                    f"    port: {external_port}",
+                ]
+            )
             continue
         if tab_type == "proxy" and item.get("proxyPath"):
-            lines.extend([f"  - name: {name}", f"    url: {item['proxyPath']}"])
+            proxy_path = item["proxyPath"]
+            lines.extend(
+                [
+                    f"  - name: {name}",
+                    f"    url: '{proxy_path}'",
+                ]
+            )
     return "\n".join(lines) + "\n"
 
 
 def build_nginx_config(resolved: list[dict[str, Any]]) -> str:
     blocks = [
+        "user root;",
         "events {}",
         "http {",
         "  include /etc/nginx/mime.types;",

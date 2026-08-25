@@ -28,9 +28,39 @@ def test_resolve_showroom_tabs_terminal_and_proxy():
     )
     resolved = resolve_showroom_tabs(tabs, "mgmt", vms_def, vm_name_to_id)
     nginx = build_nginx_config(resolved)
+    assert nginx.startswith("user root;\n")
     assert "/wetty_control" in nginx
     assert "10.0.0.20:8080" in nginx
     assert "/vscode/" in nginx
+
+
+def test_build_ui_config_yaml_modern_showroom_format():
+    from app.services.showroom_scaffold import build_ui_config_yaml
+
+    resolved = [
+        {
+            "tab": {"name": "AAP terminal", "type": "terminal"},
+            "wettyPath": "/wetty_control",
+        },
+        {
+            "tab": {"name": "VS Code", "type": "proxy"},
+            "proxyPath": "/vscode/",
+        },
+        {
+            "tab": {
+                "name": "Open an Issue",
+                "type": "external",
+                "url": "https://example.com/issues",
+            },
+        },
+    ]
+    yaml = build_ui_config_yaml(resolved, external_port=443)
+    assert "type: showroom" in yaml
+    assert "view_switcher:" in yaml
+    assert "path: /wetty_control" in yaml
+    assert "port: 443" in yaml
+    assert "url: '/vscode/'" in yaml
+    assert "external: true" in yaml
 
 
 def test_build_showroom_from_config_creates_canvas_node():

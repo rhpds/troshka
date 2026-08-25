@@ -221,19 +221,61 @@ start_worker() {
     fi
 }
 
-stop_worker() {
-    for i in $(seq 1 "$WORKER_COUNT"); do
-        local pidfile="$PID_DIR/worker-${i}.pid"
-        local supervisor_pidfile="$PID_DIR/worker-${i}-supervisor.pid"
-        if [ -f "$supervisor_pidfile" ]; then
-            kill "$(cat "$supervisor_pidfile")" 2>/dev/null || true
-            rm -f "$supervisor_pidfile"
-        fi
-        if [ -f "$pidfile" ]; then
-            kill "$(cat "$pidfile")" 2>/dev/null || true
-            rm -f "$pidfile"
+worker_supervisor_pids() {
+    pgrep -f "$SCRIPT_DIR/scripts/supervise-worker.py.*--backend-dir $BACKEND_DIR" 2>/dev/null || true
+}
+
+worker_deploy_pids() {
+    # venv python is a macOS framework shim — argv shows "Python -m app.workers.deploy_worker"
+    local pid cwd
+    for pid in $(pgrep -f "[Pp]ython.*-m app.workers.deploy_worker" 2>/dev/null || true); do
+        cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')"
+        if [ "$cwd" = "$BACKEND_DIR" ]; then
+            echo "$pid"
         fi
     done
+}
+
+worker_pids() {
+    {
+        worker_supervisor_pids
+        echo
+        worker_deploy_pids
+        echo
+        for f in "$PID_DIR"/worker-*.pid "$PID_DIR"/worker-*-supervisor.pid; do
+            [ -f "$f" ] || continue
+            tr -cd '0-9\n' <"$f"
+            echo
+        done
+    } | { grep -E '^[0-9]+$' || true; } | sort -un
+}
+
+stop_worker() {
+    pkill -f "$SCRIPT_DIR/scripts/supervise-worker.py.*--backend-dir $BACKEND_DIR" 2>/dev/null || true
+    local pid cwd
+    for pid in $(pgrep -f "[Pp]ython.*-m app.workers.deploy_worker" 2>/dev/null || true); do
+        cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')"
+        if [ "$cwd" = "$BACKEND_DIR" ]; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
+    local pids
+    pids="$(worker_pids)"
+    if [ -n "$pids" ]; then
+        echo "$pids" | xargs kill 2>/dev/null || true
+        for _ in $(seq 1 5); do
+            pids="$(worker_pids)"
+            [ -z "$pids" ] && break
+            sleep 0.5
+        done
+        pids="$(worker_pids)"
+        if [ -n "$pids" ]; then
+            echo "$pids" | xargs kill -9 2>/dev/null || true
+            sleep 0.5
+        fi
+    fi
+    rm -f "$PID_DIR"/worker-*.pid "$PID_DIR"/worker-*-supervisor.pid
+    _cleanup_stale_rq_workers
     echo "  Worker:     stopped"
 }
 

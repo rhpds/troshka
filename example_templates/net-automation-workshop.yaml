@@ -36,7 +36,7 @@ gateway:
   port_forwards:
   # Only Showroom is exposed externally; AAP (/aap/) and VS Code (/vscode/) are
   # proxied by the showroom nginx sidecar on the lab network.
-    - ext_port: 80
+    - ext_port: 443
       int_ip: 10.0.0.5
       int_port: 80
 

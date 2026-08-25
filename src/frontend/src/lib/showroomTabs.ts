@@ -145,30 +145,63 @@ export function resolveShowroomTabs(
   });
 }
 
-export function buildUiConfigYaml(resolved: ResolvedShowroomTab[]): string {
+function yamlName(name: string): string {
+  return JSON.stringify(name).slice(1, -1);
+}
+
+/** Browser-facing port for showroom tabs (gateway ext port → showroom IP). */
+export function getShowroomExternalPort(nodes: Node[], showroomIp: string): number {
+  for (const n of nodes) {
+    const d = n.data as Record<string, unknown>;
+    if (d.subtype !== "gateway") continue;
+    for (const pf of (d.portForwards || []) as Array<{ extPort?: string; intIp?: string }>) {
+      if (pf.intIp === showroomIp && pf.extPort) {
+        const port = parseInt(String(pf.extPort), 10);
+        if (port > 0) return port;
+      }
+    }
+  }
+  return 443;
+}
+
+export function buildUiConfigYaml(
+  resolved: ResolvedShowroomTab[],
+  externalPort = 443,
+): string {
   const lines = [
     "---",
+    "type: showroom",
+    "",
+    "default_width: 30",
+    "persist_url_state: true",
+    "",
+    "view_switcher:",
+    "  enabled: true",
+    "  default_mode: split",
+    "",
     "antora:",
     "  name: modules",
     "  dir: www",
+    "",
     "tabs:",
   ];
 
   for (const item of resolved) {
     if (item.tab.type === "external") {
-      lines.push(`  - name: ${JSON.stringify(item.tab.name).slice(1, -1)}`);
+      lines.push(`  - name: ${yamlName(item.tab.name)}`);
       lines.push(`    url: ${item.tab.url || ""}`);
       lines.push("    external: true");
       continue;
     }
     if (item.tab.type === "terminal" && item.wettyPath) {
-      lines.push(`  - name: ${JSON.stringify(item.tab.name).slice(1, -1)}`);
-      lines.push(`    url: ${item.wettyPath}`);
+      lines.push(`  - name: ${yamlName(item.tab.name)}`);
+      lines.push(`    path: ${item.wettyPath}`);
+      lines.push(`    port: ${externalPort}`);
       continue;
     }
     if (item.tab.type === "proxy" && item.proxyPath) {
-      lines.push(`  - name: ${JSON.stringify(item.tab.name).slice(1, -1)}`);
-      lines.push(`    url: ${item.proxyPath}`);
+      lines.push(`  - name: ${yamlName(item.tab.name)}`);
+      lines.push(`    url: '${item.proxyPath}'`);
     }
   }
 
@@ -177,6 +210,7 @@ export function buildUiConfigYaml(resolved: ResolvedShowroomTab[]): string {
 
 export function buildNginxConfig(resolved: ResolvedShowroomTab[]): string {
   const blocks: string[] = [
+    "user root;",
     "events {}",
     "http {",
     "  include /etc/nginx/mime.types;",
@@ -300,8 +334,11 @@ export function applyShowroomTabsToNode(
   if (!diskId) return { ...nodeData, showroomTabs: tabs };
 
   const resolved = resolveShowroomTabs(tabs, showroomId, nodes, edges);
+  const showroomIp =
+    ((nodeData.nics || []) as Array<{ ip?: string }>).find((n) => n.ip)?.ip || "";
+  const externalPort = getShowroomExternalPort(nodes, showroomIp);
   const nginxConf = buildNginxConfig(resolved);
-  const uiConfig = buildUiConfigYaml(resolved);
+  const uiConfig = buildUiConfigYaml(resolved, externalPort);
   const nginxB64 = btoa(nginxConf);
   const uiConfigB64 = btoa(uiConfig);
 

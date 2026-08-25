@@ -801,10 +801,15 @@ class TestGatewayPodListenPort:
 
         assert gateway_pod_listen_port(8080) == 18080
 
+    def test_port_443_uses_alt_listen_port(self):
+        from app.services.providers.kubevirt import gateway_pod_listen_port
+
+        assert gateway_pod_listen_port(443) == 1443
+
     def test_other_ports_unchanged(self):
         from app.services.providers.kubevirt import gateway_pod_listen_port
 
-        assert gateway_pod_listen_port(443) == 443
+        assert gateway_pod_listen_port(6443) == 6443
 
 
 # ===========================================================================
