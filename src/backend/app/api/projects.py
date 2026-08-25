@@ -136,7 +136,39 @@ def _resolve_provider_type(project) -> str | None:
     return prov.type if prov else None
 
 
-def _project_response_dict(project):
+def _hydrate_response_external_ips(db, project_id: str, result: dict) -> None:
+    """Attach allocated EIP addresses from the DB onto API topology snapshots."""
+    from app.models.elastic_ip import ElasticIp
+
+    eip_by_canvas = {
+        e.canvas_eip_id: e
+        for e in db.query(ElasticIp).filter_by(project_id=project_id).all()
+    }
+    if not eip_by_canvas:
+        return
+    for topo_key in ("topology", "deployed_topology"):
+        topo = result.get(topo_key)
+        if not isinstance(topo, dict):
+            continue
+        external_ips = topo.get("externalIps")
+        if not external_ips:
+            continue
+        hydrated = []
+        for ext_ip in external_ips:
+            entry = dict(ext_ip)
+            eip = eip_by_canvas.get(entry.get("id", ""))
+            if eip:
+                entry["ip"] = eip.public_ip
+                entry["_private_ip"] = eip.private_ip
+                if eip.port_map:
+                    entry["_transit_port_map"] = dict(eip.port_map)
+                else:
+                    entry.pop("_transit_port_map", None)
+            hydrated.append(entry)
+        topo["externalIps"] = hydrated
+
+
+def _project_response_dict(project, db=None):
     result = {
         "id": project.id,
         "name": project.name,
@@ -194,6 +226,8 @@ def _project_response_dict(project):
     prov_type = _resolve_provider_type(project)
     if prov_type:
         result["provider_type"] = prov_type
+    if db is not None:
+        _hydrate_response_external_ips(db, project.id, result)
     return result
 
 
@@ -858,7 +892,7 @@ def get_project(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
-    return _project_response_dict(project)
+    return _project_response_dict(project, db=db)
 
 
 @router.get("/{project_id}/deploy-progress", responses={403: {}, 404: {}})
@@ -1025,7 +1059,15 @@ def update_project(
         adjust_clocks_async(project_id)
 
     if "topology" in fields:
-        _enforce_single_bastion_browser(fields["topology"])
+        topo = project.topology or {}
+        _enforce_single_bastion_browser(topo)
+        for ext_ip in topo.get("externalIps", []):
+            ext_ip.pop("ip", None)
+            ext_ip.pop("_private_ip", None)
+            ext_ip.pop("_transit_port_map", None)
+            ext_ip.pop("state", None)
+        _apply_eip_runtime_to_topology(db, project_id, topo.get("externalIps", []))
+        project.topology = topo
 
     db.commit()
     db.refresh(project)
@@ -1033,7 +1075,7 @@ def update_project(
         notify_project(
             project_id, {"type": "topology-update", "topology": project.topology}
         )
-    return _project_response_dict(project)
+    return _project_response_dict(project, db=db)
 
 
 class ExtendTimerRequest(PydanticBaseModel):
@@ -1073,7 +1115,7 @@ def extend_timer(
 
     db.commit()
     db.refresh(project)
-    return _project_response_dict(project)
+    return _project_response_dict(project, db=db)
 
 
 def _validate_bmc_network(topology: dict):
@@ -1207,12 +1249,15 @@ def deploy_project(
         raise HTTPException(status_code=400, detail="Project has no topology")
 
     from app.services.deploy_topology import (
+        validate_showroom_topology,
         validate_topology_ips,
         validate_topology_names,
     )
 
-    topo_errors = validate_topology_names(project.topology) + validate_topology_ips(
-        project.topology
+    topo_errors = (
+        validate_topology_names(project.topology)
+        + validate_topology_ips(project.topology)
+        + validate_showroom_topology(project.topology)
     )
     if topo_errors:
         raise HTTPException(
@@ -2420,9 +2465,7 @@ def _troshkad_exec_serial(
             "serial_exec_type": serial_exec_type,
         },
     )
-    job_wait = min(
-        timeout + 30, 180 if serial_exec_type in ("ios", "eos", "junos") else 90
-    )
+    job_wait = min(timeout + 60, 3600)
     job = wait_for_job(host, job_id, timeout=job_wait)
     if job["status"] == "completed":
         result = job.get("result", {})
@@ -2770,17 +2813,35 @@ async def vm_upload_file(
 
     file_bytes = await file.read()
     try:
-        result = troshkad_upload_to_vm(
-            host,
-            file_bytes,
-            project_id,
-            vm_ip,
-            username,
-            pw,
-            remote_path,
-            mode,
-            private_key=private_key,
-        )
+        if host.host_type == "kubevirt-cluster":
+            from app.models.provider import Provider
+            from app.services.providers.kubevirt import kubevirt_upload_to_vm
+
+            provider = db.query(Provider).filter_by(id=host.provider_id).first()
+            if not provider:
+                raise HTTPException(status_code=503, detail="Provider not found")
+            result = kubevirt_upload_to_vm(
+                provider,
+                project_id,
+                vm_ip,
+                username,
+                pw,
+                file_bytes,
+                remote_path,
+                mode,
+            )
+        else:
+            result = troshkad_upload_to_vm(
+                host,
+                file_bytes,
+                project_id,
+                vm_ip,
+                username,
+                pw,
+                remote_path,
+                mode,
+                private_key=private_key,
+            )
         return result
     except TroshkadError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -2812,14 +2873,30 @@ def vm_download_file(
         raise HTTPException(status_code=400, detail="No password available for VM")
 
     try:
-        file_bytes = troshkad_download_from_vm(
-            host,
-            project_id,
-            vm_ip,
-            username,
-            pw,
-            remote_path,
-        )
+        if host.host_type == "kubevirt-cluster":
+            from app.models.provider import Provider
+            from app.services.providers.kubevirt import kubevirt_download_from_vm
+
+            provider = db.query(Provider).filter_by(id=host.provider_id).first()
+            if not provider:
+                raise HTTPException(status_code=503, detail="Provider not found")
+            file_bytes = kubevirt_download_from_vm(
+                provider,
+                project_id,
+                vm_ip,
+                username,
+                pw,
+                remote_path,
+            )
+        else:
+            file_bytes = troshkad_download_from_vm(
+                host,
+                project_id,
+                vm_ip,
+                username,
+                pw,
+                remote_path,
+            )
     except TroshkadError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -3991,14 +4068,20 @@ def _get_storage_pool_for_host(h, s):
 
 
 def _reconfigure_process_vms(
-    h, p_id, s, current, deployed, vni_map, restart_vm_ids, pool, diff, errors
+    h, p_id, s, proj, current, deployed, vni_map, restart_vm_ids, pool, diff, errors
 ):
     """Update existing VMs and deploy newly added VMs during reconfigure."""
+    from app.services.deploy_topology import vm_ids_needing_redeploy
+
     vms = _extract_vms(current)
     added_ids = {n["id"] for n in diff["added_vms"]}
     removed_ids = {n["id"] for n in diff["removed_vms"]}
+    redeploy_ids = vm_ids_needing_redeploy(current, deployed)
     for vm in vms:
         if vm["node_id"] in added_ids or vm["node_id"] in removed_ids:
+            continue
+        if vm["node_id"] in redeploy_ids:
+            _redeploy_vm_during_reconfigure(h, s, proj, p_id, vm["node_id"], errors)
             continue
         _reconfigure_existing_vm(
             h,
@@ -4080,6 +4163,7 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
             h,
             p_id,
             s,
+            proj,
             current,
             deployed,
             vni_map,
@@ -4162,6 +4246,9 @@ def _build_redeploy_vm_data(vm_node):
         "boot_devices": vdata.get("bootDevices"),
         "firmware": vdata.get("firmware", "bios"),
         "secure_boot": vdata.get("secureBoot", False),
+        "video_model": vdata.get("videoModel", "virtio"),
+        "input_model": vdata.get("inputModel", "virtio"),
+        "uuid": vdata.get("smbiosUuid") or vdata.get("uuid"),
     }
 
 
@@ -4264,9 +4351,80 @@ def _start_vm_if_needed(h, dom, was_running, vm_node):
     return True
 
 
+def _execute_vm_redeploy(
+    h,
+    s,
+    proj,
+    p_id: str,
+    target_vm_id: str,
+    *,
+    update_deployed_topology: bool = True,
+) -> None:
+    """Destroy and recreate a single VM. Raises on failure."""
+    from app.services.deploy_service import _get_host_pool
+    from app.services.deploy_topology import _vm_domain_name
+
+    dom = _vm_domain_name(p_id, target_vm_id)
+    _vm_dir(p_id)
+    topology = proj.topology
+    vni_map = proj.vni_map or {}
+
+    was_running = troshkad_get_vm_state(h, dom)["state"] == "running"
+    troshkad_undefine_vm(h, dom, remove_storage=False)
+
+    _redeploy_progress[dom] = {"step": "preparing", "detail": ""}
+    _cleanup_old_vm_files(h, p_id, target_vm_id, topology)
+
+    vm_node = _find_vm_node_in_topology(topology, target_vm_id)
+    if not vm_node:
+        _redeploy_progress.pop(dom, None)
+        raise ValueError(f"VM node {target_vm_id} not found in topology")
+
+    vm_topo = _build_connected_topology(topology, target_vm_id)
+    _cache_redeploy_images(h, s, vm_topo, dom)
+    _setup_pxe_via_troshkad(h, topology, vni_map, p_id)
+
+    pool = _get_host_pool(h, s)
+    _create_redeploy_vm(h, p_id, vm_node, topology, vni_map, pool, target_vm_id, dom)
+    _redeploy_progress[dom] = {"step": "starting", "detail": ""}
+    _start_vm_if_needed(h, dom, was_running, vm_node)
+
+    if update_deployed_topology:
+        proj.deployed_topology = topology
+        s.commit()
+    _redeploy_progress.pop(dom, None)
+    _notify_redeploy_vm_state(
+        p_id, target_vm_id, troshkad_get_vm_state(h, dom).get("state", "running")
+    )
+    logger.info("Redeploy %s complete", dom)
+
+
+def _redeploy_vm_during_reconfigure(h, s, proj, p_id, target_vm_id, errors):
+    """Redeploy a VM during project reconfigure (domain-defining property change)."""
+    from app.services.deploy_topology import _vm_domain_name
+
+    dom = _vm_domain_name(p_id, target_vm_id)
+    try:
+        _execute_vm_redeploy(
+            h, s, proj, p_id, target_vm_id, update_deployed_topology=False
+        )
+        logger.info(
+            "Reconfigure %s: redeployed %s (domain-defining change)",
+            p_id[:8],
+            dom,
+        )
+    except Exception as e:
+        logger.exception("Reconfigure %s: redeploy %s failed", p_id[:8], dom)
+        errors.append(f"Failed to redeploy {dom}: {e}")
+        _redeploy_progress.pop(dom, None)
+        try:
+            _notify_redeploy_vm_state(p_id, target_vm_id, "stopped")
+        except Exception:
+            pass
+
+
 def _do_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
     from app.core.database import SessionLocal
-    from app.services.deploy_service import _get_host_pool
     from app.services.deploy_topology import _vm_domain_name
 
     s = SessionLocal()
@@ -4276,51 +4434,7 @@ def _do_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
         if not proj or not h:
             return
 
-        dom = _vm_domain_name(p_id, target_vm_id)
-        _vm_dir(p_id)
-        topology = proj.topology
-        vni_map = proj.vni_map or {}
-
-        was_running = troshkad_get_vm_state(h, dom)["state"] == "running"
-        troshkad_undefine_vm(h, dom, remove_storage=False)
-
-        _redeploy_progress[dom] = {"step": "preparing", "detail": ""}
-        _cleanup_old_vm_files(h, p_id, target_vm_id, topology)
-
-        vm_node = _find_vm_node_in_topology(topology, target_vm_id)
-        if not vm_node:
-            logger.warning("Redeploy %s: node not found in topology", target_vm_id[:8])
-            _redeploy_progress.pop(dom, None)
-            return
-
-        vm_topo = _build_connected_topology(topology, target_vm_id)
-        _cache_redeploy_images(h, s, vm_topo, dom)
-        _setup_pxe_via_troshkad(h, topology, vni_map, p_id)
-
-        pool = _get_host_pool(h, s)
-        _create_redeploy_vm(
-            h, p_id, vm_node, topology, vni_map, pool, target_vm_id, dom
-        )
-        _redeploy_progress[dom] = {"step": "starting", "detail": ""}
-        try:
-            _start_vm_if_needed(h, dom, was_running, vm_node)
-        except TroshkadError as e:
-            logger.error("Redeploy %s: failed to start VM: %s", dom, e)
-            _redeploy_progress.pop(dom, None)
-            _notify_redeploy_vm_state(
-                p_id,
-                target_vm_id,
-                troshkad_get_vm_state(h, dom).get("state", "stopped"),
-            )
-            raise
-
-        proj.deployed_topology = topology
-        s.commit()
-        _redeploy_progress.pop(dom, None)
-        _notify_redeploy_vm_state(
-            p_id, target_vm_id, troshkad_get_vm_state(h, dom).get("state", "running")
-        )
-        logger.info("Redeploy %s complete", dom)
+        _execute_vm_redeploy(h, s, proj, p_id, target_vm_id)
     except Exception:
         logger.exception("Redeploy %s failed", target_vm_id[:8])
         _redeploy_progress.pop(_vm_domain_name(p_id, target_vm_id), None)
@@ -4486,6 +4600,10 @@ def delete_project(
         project.deploy_error = None
         db.commit()
         notify_project(project_id, {"type": "project-state", "state": "deleting"})
+
+        from app.services.deploy_service import _mark_deploy_cancelled
+
+        _mark_deploy_cancelled(project_id)
 
         destroy_ctx = {
             "project_id": project.id,

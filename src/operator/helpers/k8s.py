@@ -1,9 +1,15 @@
 import hashlib
 import json
+import logging
 import os
 import re
 
+from kubernetes.client.exceptions import ApiException
+
+logger = logging.getLogger(__name__)
+
 CRD_GROUP = "troshka.redhat.com"
+_KUBEMACPOOL_VM_IGNORE_LABEL = "mutatevirtualmachines.kubemacpool.io"
 
 _IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 _PREFIX_RE = re.compile(r"^\d{1,2}$")
@@ -24,6 +30,41 @@ def owner_ref(cr):
         "uid": cr["metadata"]["uid"],
         "controller": True,
     }
+
+
+def project_namespace_labels(project_name: str) -> dict[str, str]:
+    """Standard labels for a Troshka project namespace."""
+    return {
+        "app": "troshka",
+        "troshka-project": project_name,
+        _KUBEMACPOOL_VM_IGNORE_LABEL: "ignore",
+    }
+
+
+def ensure_kubemacpool_opt_out(core_api, namespace: str) -> None:
+    """Opt a project namespace out of KubeMacPool VM MAC allocation.
+
+    Troshka pins MACs from topology for dnsmasq static leases. Per-project OVN
+    overlays isolate L2, but KMP tracks requested MACs cluster-wide unless the
+    namespace is opted out (see kubemacpool opt-modes.md).
+    """
+    try:
+        ns = core_api.read_namespace(name=namespace)
+    except ApiException as e:
+        if e.status == 404:
+            return
+        raise
+
+    labels = dict(ns.metadata.labels or {})
+    if labels.get(_KUBEMACPOOL_VM_IGNORE_LABEL) == "ignore":
+        return
+
+    labels[_KUBEMACPOOL_VM_IGNORE_LABEL] = "ignore"
+    core_api.patch_namespace(
+        name=namespace,
+        body={"metadata": {"labels": labels}},
+    )
+    logger.info("Opted namespace %s out of KubeMacPool VM allocation", namespace)
 
 
 def golden_pvc_name(s3_path):

@@ -3902,6 +3902,18 @@ class TestProjectDeleted:
         with patch("app.core.database.SessionLocal", return_value=mock_db):
             assert _project_deleted("proj-123") is True
 
+    def test_project_deleting(self):
+        from app.services.deploy_service import _project_deleted
+
+        mock_db = MagicMock()
+        mock_project = MagicMock()
+        mock_project.state = "deleting"
+        mock_db.query.return_value.filter_by.return_value.first.return_value = (
+            mock_project
+        )
+        with patch("app.core.database.SessionLocal", return_value=mock_db):
+            assert _project_deleted("proj-123") is True
+
     def test_session_closed(self):
         from app.services.deploy_service import _project_deleted
 
@@ -4376,7 +4388,9 @@ class TestBuildCloneNameMapV2:
 
 
 class TestCreateAndStartContainer:
-    @patch("app.services.deploy_service.wait_for_job")
+    @patch(
+        "app.services.deploy_service.wait_for_job", return_value={"status": "completed"}
+    )
     @patch("app.services.deploy_service.start_job", return_value="job-1")
     @patch("app.services.deploy_service._find_container_volumes", return_value=[])
     @patch(
@@ -4465,7 +4479,9 @@ class TestCreateAndStartContainer:
 
 
 class TestCreateAndStartPod:
-    @patch("app.services.deploy_service.wait_for_job")
+    @patch(
+        "app.services.deploy_service.wait_for_job", return_value={"status": "completed"}
+    )
     @patch("app.services.deploy_service.start_job", return_value="job-1")
     @patch("app.services.deploy_service._find_container_volumes", return_value=[])
     @patch(
@@ -4582,6 +4598,67 @@ class TestCreateAndStartPod:
         create_params = mock_start.call_args_list[0][0][2]
         assert create_params["restart_policy"] == "always"
         assert create_params["privileged"] is False
+
+
+class TestWaitTroshkadJob:
+    def test_raises_on_failed_job(self):
+        from app.services.deploy_service import TroshkadError, _wait_troshkad_job
+
+        with patch(
+            "app.services.deploy_service.wait_for_job",
+            return_value={"status": "failed", "result": {"error": "boom"}},
+        ):
+            try:
+                _wait_troshkad_job(MagicMock(), "job-1", 30, "Pod create")
+                raise AssertionError("expected TroshkadError")
+            except TroshkadError as exc:
+                assert "Pod create failed: boom" in str(exc)
+
+
+class TestDeployStartContainers:
+    @patch("app.services.deploy_service._start_pod")
+    @patch("app.services.deploy_service._time.sleep")
+    def test_starts_ordered_pod_after_delay(self, mock_sleep, mock_start_pod):
+        from app.services.deploy_service import _deploy_start_containers
+
+        topology = {
+            "nodes": [
+                {
+                    "id": "ctr-1",
+                    "type": "containerNode",
+                    "data": {"name": "showroom", "isPod": True, "status": "stopped"},
+                }
+            ],
+            "startOrder": [
+                {
+                    "entryType": "container",
+                    "containerId": "ctr-1",
+                    "delaySeconds": 15,
+                }
+            ],
+        }
+        _deploy_start_containers(MagicMock(), "projabcd-0000-0000-0000", topology, True)
+        mock_sleep.assert_called_once_with(15)
+        mock_start_pod.assert_called_once()
+        assert mock_start_pod.call_args[0][1] == "troshka-projabcd-showroom"
+        assert mock_start_pod.call_args[1]["timeout"] == 900
+        assert topology["nodes"][0]["data"]["status"] == "running"
+
+    @patch("app.services.deploy_service._create_pod")
+    @patch("app.services.deploy_service._start_pod")
+    def test_create_ordered_containers_does_not_start(
+        self, mock_start_pod, mock_create_pod
+    ):
+        from app.services.deploy_service import _create_ordered_containers
+
+        containers = [{"node_id": "ctr-1", "name": "showroom", "is_pod": True}]
+        start_order = [{"entryType": "container", "containerId": "ctr-1"}]
+        ids = _create_ordered_containers(
+            MagicMock(), "proj-1234", containers, start_order, {}, {}, None
+        )
+        assert ids == {"ctr-1"}
+        mock_create_pod.assert_called_once()
+        mock_start_pod.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -11055,3 +11132,44 @@ class TestFillMissingDiskLabelsExtended:
         assert best["boot-disk"] == "done"  # unchanged
         assert best["data-disk"] == "waiting"  # added
         assert "scratch" not in best  # blank source not added
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _ensure_storage_library_ref / _collect_library_items (pattern disks)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestPatternStorageLibraryRefs:
+    def test_ensure_storage_library_ref_skips_pattern_disks(self):
+        from app.services.deploy_service import _ensure_storage_library_ref
+
+        node = {
+            "type": "storageNode",
+            "data": {
+                "source": "pattern",
+                "patternDiskId": "pd-1",
+                "libraryItemName": "rhel-9.6",
+            },
+        }
+        db = MagicMock()
+        _ensure_storage_library_ref(node, db)
+        assert node["data"]["source"] == "pattern"
+        assert "libraryItemId" not in node["data"]
+        db.query.assert_not_called()
+
+    def test_collect_library_items_skips_pattern_disks(self):
+        from app.services.deploy_service import _collect_library_items
+
+        nodes = [
+            {
+                "type": "storageNode",
+                "data": {
+                    "source": "pattern",
+                    "patternDiskId": "pd-1",
+                    "libraryItemName": "rhel-9.6",
+                    "format": "qcow2",
+                },
+            }
+        ]
+        items = _collect_library_items(nodes, MagicMock(), pool="shared")
+        assert items == []

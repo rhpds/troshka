@@ -55,6 +55,7 @@
   oc apply -f src/operator/deploy/clusterrole.yaml
   oc apply -f src/operator/deploy/clusterrolebinding.yaml
   ```
+- **CRD upgrades**: apply `src/operator/crds/*.yaml` when TroshkaProject schema changes (e.g. `centralS3Config`). The backend applies CRDs on Install/Update Operator and before each KubeVirt deploy; manual `oc apply` is still needed if the Troshka app is not managing the cluster.
 - **Setup flow**: Create provider in admin UI → auto-creates virtual host → background thread deploys operator + CRDs → "Install Operator" button for repair/retry
 - **Virtual host**: one Host record per provider with `host_type="kubevirt-cluster"` — represents cluster capacity, no SSH/agent
 - **Networking**: OVN layer2 secondary networks (NADs) + dnsmasq Pod (DHCP/DNS) + gateway Pod (NAT) per project

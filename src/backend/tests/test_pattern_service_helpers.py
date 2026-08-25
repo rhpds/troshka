@@ -522,13 +522,26 @@ class TestFinalizePatternCapture:
         pattern.visibility = "private"
         pattern.tags = []
         pattern.total_size_bytes = 0
+        pattern.source_provider_id = None
 
         db = MagicMock()
+        scalar_result = MagicMock()
+        scalar_result.first.return_value = None
+        db.scalars.return_value = scalar_result
         _finalize_pattern_capture(pattern, "pat-finalize", None, MagicMock(), db)
 
         assert pattern.state == "available"
         assert pattern.total_size_bytes == 1000
         db.commit.assert_called()
+        # Central PatternLocation for deploy placement
+        added = [c.args[0] for c in db.add.call_args_list if c.args]
+        from app.models.pattern_location import PatternLocation
+
+        locs = [a for a in added if isinstance(a, PatternLocation)]
+        assert len(locs) == 1
+        assert locs[0].pattern_disk_id == "pd1"
+        assert locs[0].location_type == "central"
+        assert locs[0].state == "synced"
         # S3 metadata upload was attempted
         mock_s3_client.return_value.put_object.assert_called_once()
         # Completion notification sent
@@ -536,6 +549,51 @@ class TestFinalizePatternCapture:
         assert (get_capture_progress("pat-finalize") or {}).get("step") == "complete"
         # cleanup
         _clear_capture_progress("pat-finalize")
+
+    @patch("app.services.ws_pubsub.notify_project")
+    @patch("app.services.s3_storage._get_s3_client")
+    @patch("app.services.s3_storage._bucket", return_value="b")
+    @patch("app.services.pattern_service._run_recert_force_expire")
+    def test_obc_locations_when_source_provider_set(
+        self, mock_recert, mock_bucket, mock_s3, mock_notify
+    ):
+        from app.services.pattern_service import (
+            _clear_capture_progress,
+            _finalize_pattern_capture,
+        )
+
+        disk1 = MagicMock()
+        disk1.source_disk_id = "d1"
+        disk1.id = "pd1"
+        disk1.size_bytes = 1000
+        disk1.s3_key = "patterns/pat1/d1.qcow2"
+
+        pattern = MagicMock()
+        pattern.id = "pat-obc"
+        pattern.topology = {"nodes": []}
+        pattern.disks = [disk1]
+        pattern.recert = False
+        pattern.name = "obc-pat"
+        pattern.description = ""
+        pattern.visibility = "private"
+        pattern.tags = []
+        pattern.total_size_bytes = 0
+        pattern.source_provider_id = "prov-obc"
+
+        db = MagicMock()
+        scalar_result = MagicMock()
+        scalar_result.first.return_value = None
+        db.scalars.return_value = scalar_result
+        _finalize_pattern_capture(pattern, "pat-obc", None, MagicMock(), db)
+
+        from app.models.pattern_location import PatternLocation
+
+        added = [c.args[0] for c in db.add.call_args_list if c.args]
+        locs = [a for a in added if isinstance(a, PatternLocation)]
+        assert len(locs) == 1
+        assert locs[0].location_type == "obc"
+        assert locs[0].provider_id == "prov-obc"
+        _clear_capture_progress("pat-obc")
 
     @patch("app.services.ws_pubsub.notify_project")
     @patch("app.services.s3_storage._get_s3_client")
@@ -1412,3 +1470,24 @@ class TestGetPatternBufferExtra:
         result = _get_pattern_buffer(db, host)
         assert result is None
         mock_get_pb.assert_called_once_with(db, "pool-xyz")
+
+
+def test_apply_showroom_pattern_flags():
+    from app.services.pattern_service import apply_showroom_pattern_flags
+
+    topo = {
+        "showroom": {"enabled": True, "build_content": True},
+        "nodes": [
+            {
+                "type": "containerNode",
+                "data": {
+                    "name": "showroom",
+                    "isPod": True,
+                    "buildContent": True,
+                },
+            }
+        ],
+    }
+    apply_showroom_pattern_flags(topo)
+    assert topo["showroom"]["build_content"] is False
+    assert topo["nodes"][0]["data"]["buildContent"] is False

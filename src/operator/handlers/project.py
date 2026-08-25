@@ -2,6 +2,7 @@ import asyncio
 import json
 import kopf
 import logging
+import time
 from typing import Any, cast
 from kubernetes import client
 from kubernetes.client.exceptions import ApiException
@@ -11,6 +12,7 @@ from helpers.k8s import (
     owner_ref,
     build_exec_deployment,
     build_gateway_deployment,
+    ensure_kubemacpool_opt_out,
 )
 from helpers.topology import (
     extract_networks,
@@ -18,7 +20,13 @@ from helpers.topology import (
     build_static_leases,
     resolve_vm_disks,
     resolve_nic_networks,
+    extract_containers,
+    collect_container_disk_mounts,
+    container_disk_pvc_name,
+    container_start_delay,
+    enrich_container_nics,
 )
+from helpers.kubevirt import build_blank_pvc
 
 logger = logging.getLogger(__name__)
 
@@ -963,9 +971,11 @@ async def _setup_exec_pod(
     logger.info(f"Created exec deployment for {name}")
 
 
-def _ensure_cache_namespace_and_secrets(core_api, s3_config, central_s3_config):
+def _ensure_cache_namespace_and_secrets(
+    core_api, s3_config, central_s3_config, project_namespace=None
+):
     """Ensure cache namespace exists and S3 credential secrets are up to date."""
-    from helpers.kubevirt import CACHE_NAMESPACE
+    from helpers.kubevirt import CACHE_NAMESPACE, hydrate_s3_config_from_project_secret
 
     try:
         core_api.create_namespace(
@@ -979,6 +989,16 @@ def _ensure_cache_namespace_and_secrets(core_api, s3_config, central_s3_config):
     except ApiException as e:
         if e.status != 409:
             raise
+
+    s3_config = hydrate_s3_config_from_project_secret(
+        core_api, project_namespace, s3_config
+    )
+    central_s3_config = hydrate_s3_config_from_project_secret(
+        core_api,
+        project_namespace,
+        central_s3_config,
+        default_secret_name="s3-central-credentials",  # pragma: allowlist secret
+    )
 
     for secret_name, cfg in [
         ("s3-credentials", s3_config),
@@ -1060,12 +1080,25 @@ def _create_golden_pvc_for_disk(
         disk_s3_config = s3_config
         secret_name = "s3-credentials"  # pragma: allowlist secret
 
+    from helpers.kubevirt import delete_golden_import, golden_import_matches
+
     pvc_name = golden_pvc_name(s3_path)
     try:
-        core_api.read_namespaced_persistent_volume_claim(
-            name=pvc_name, namespace=CACHE_NAMESPACE
+        existing = custom_api.get_namespaced_custom_object(
+            group="cdi.kubevirt.io",
+            version="v1beta1",
+            namespace=CACHE_NAMESPACE,
+            plural="datavolumes",
+            name=pvc_name,
         )
-        return
+        if golden_import_matches(
+            existing, s3_path, disk_s3_config, secret_name
+        ):
+            return
+        logger.warning(
+            "Golden import %s has wrong S3 source, recreating", pvc_name
+        )
+        delete_golden_import(custom_api, core_api, CACHE_NAMESPACE, pvc_name)
     except ApiException as e:
         if e.status != 404:
             raise
@@ -1093,12 +1126,14 @@ def _create_golden_pvc_for_disk(
             raise
 
 
-def _precreate_golden_pvcs(custom_api, core_api, spec, all_disks, patch):
+def _precreate_golden_pvcs(custom_api, core_api, spec, all_disks, patch, project_namespace=None):
     """Pre-create golden PVCs for parallel image downloads."""
     s3_config = spec.get("s3Config", {})
     central_s3_config = spec.get("centralS3Config", {})
 
-    _ensure_cache_namespace_and_secrets(core_api, s3_config, central_s3_config)
+    _ensure_cache_namespace_and_secrets(
+        core_api, s3_config, central_s3_config, project_namespace
+    )
 
     patch.status["deployProgress"] = {
         "percent": 30,
@@ -1434,6 +1469,8 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     custom_api = client.CustomObjectsApi()
     core_api = client.CoreV1Api()
 
+    ensure_kubemacpool_opt_out(core_api, namespace)
+
     _setup_recert_sa(core_api, custom_api, namespace)
 
     networks = extract_networks(topology)
@@ -1461,7 +1498,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
 
     all_disks = _collect_all_disks(vms, vm_disks_map, vm_cdroms_map)
     if all_disks:
-        _precreate_golden_pvcs(custom_api, core_api, spec, all_disks, patch)
+        _precreate_golden_pvcs(custom_api, core_api, spec, all_disks, patch, namespace)
 
     patch.status["deployProgress"] = {
         "percent": 40,
@@ -1874,8 +1911,70 @@ def _handle_vm_start(status, namespace, name, patch, custom_api, vm_items):
     return True
 
 
+def _provision_container_pvcs(core_api, namespace, topology, body):
+    """Create blank PVCs for disks mounted by container pods."""
+    disk_pvcs = {}
+    for ctr_id, disk_id, size_gb in collect_container_disk_mounts(topology):
+        pvc_name = container_disk_pvc_name(ctr_id, disk_id)
+        pvc = build_blank_pvc(pvc_name, namespace, size_gb)
+        pvc["metadata"]["ownerReferences"] = [owner_ref(body)]
+        try:
+            core_api.create_namespaced_persistent_volume_claim(
+                namespace=namespace, body=pvc
+            )
+            logger.info("Created container PVC %s", pvc_name)
+        except ApiException as e:
+            if e.status != 409:
+                raise
+        disk_pvcs[disk_id] = pvc_name
+    return disk_pvcs
+
+
+def _ensure_project_containers(spec, status, namespace, name, body, patch):
+    """Start container/pod workloads after VMs are ready."""
+    topology = spec.get("topology", {})
+    containers = extract_containers(topology)
+    if not containers:
+        return
+
+    if status.get("containersStarted"):
+        return
+
+    delay = container_start_delay(topology)
+    start_at = status.get("containersStartAt")
+    if not start_at:
+        patch.status["containersStartAt"] = time.time() + delay
+        patch.status["deployProgress"] = {
+            "percent": 95,
+            "stage": "Starting containers",
+            "detail": f"waiting {delay}s",
+        }
+        return
+    if time.time() < start_at:
+        return
+
+    from handlers.container import create_container_pods
+    from handlers.vm import _resolve_nad_refs
+
+    core_api = client.CoreV1Api()
+    custom_api = client.CustomObjectsApi()
+    disk_pvcs = _provision_container_pvcs(core_api, namespace, topology, body)
+    enrich_container_nics(topology, containers)
+    nad_refs = _resolve_nad_refs(custom_api, namespace)
+    create_container_pods(
+        namespace, containers, nad_refs, owner_ref(body), disk_pvcs
+    )
+    patch.status["containersStarted"] = True
+    patch.status["deployProgress"] = {
+        "percent": 100,
+        "stage": "Done",
+        "detail": "",
+    }
+    logger.info("TroshkaProject %s: started %d container(s)", name, len(containers))
+
+
 def _handle_deploying_phase(
-    status, namespace, name, patch, custom_api, vm_items, ready_count
+    spec, status, namespace, name, body, patch, custom_api, vm_items, ready_count
 ):
     """Handle all sub-phases of the Deploying state."""
     if _handle_recert(status, namespace, name, patch):
@@ -1894,6 +1993,12 @@ def _handle_deploying_phase(
     }
 
     if ready_count == len(vm_items):
+        _ensure_project_containers(spec, status, namespace, name, body, patch)
+        topology = spec.get("topology", {})
+        if extract_containers(topology) and not (
+            status.get("containersStarted") or patch.status.get("containersStarted")
+        ):
+            return
         patch.status["phase"] = "Running"
         patch.status["deployProgress"] = {
             "percent": 100,
@@ -1904,7 +2009,7 @@ def _handle_deploying_phase(
 
 
 @kopf.timer(CRD_GROUP, CRD_VERSION, "troshkaprojects", interval=10, idle=10)
-async def project_status_check(status, namespace, name, patch, **_):
+async def project_status_check(spec, status, namespace, name, body, patch, **_):
     phase = status.get("phase", "")
     if phase not in ("Deploying", "Running"):
         return
@@ -1935,10 +2040,19 @@ async def project_status_check(status, namespace, name, patch, **_):
 
     if phase == "Running":
         _ensure_bmc_deployment(vm_items, namespace)
+        _ensure_project_containers(spec, status, namespace, name, body, patch)
 
     if phase == "Deploying":
         _handle_deploying_phase(
-            status, namespace, name, patch, custom_api, vm_items, ready_count
+            spec,
+            status,
+            namespace,
+            name,
+            body,
+            patch,
+            custom_api,
+            vm_items,
+            ready_count,
         )
 
 

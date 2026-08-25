@@ -28,6 +28,143 @@ def _clear_capture_progress(pattern_id: str):
     delete_progress(f"pattern-capture:{pattern_id}")
 
 
+def apply_showroom_pattern_flags(topology: dict) -> None:
+    """Mark showroom content as pre-built after pattern capture."""
+    showroom = topology.get("showroom")
+    if isinstance(showroom, dict):
+        showroom["build_content"] = False
+    for node in topology.get("nodes", []):
+        if node.get("type") != "containerNode":
+            continue
+        data = node.get("data", {})
+        if data.get("isPod") and data.get("name") == "showroom":
+            data["buildContent"] = False
+
+
+def _collect_container_volume_disks(topology, project_id, pool):
+    """Return (container_id, disk_node) pairs for container-attached volumes."""
+    from app.services.deploy_topology import (
+        _extract_containers,
+        _find_container_volumes,
+    )
+
+    pairs = []
+    for ctr in _extract_containers(topology):
+        if not ctr.get("is_pod"):
+            continue
+        for vol in _find_container_volumes(ctr["node_id"], topology, project_id, pool):
+            disk_node = next(
+                (n for n in topology.get("nodes", []) if n["id"] == vol["node_id"]),
+                None,
+            )
+            if disk_node:
+                pairs.append((ctr["node_id"], disk_node, vol))
+    return pairs
+
+
+def _stop_showroom_pods(host, project_id, topology):
+    """Stop showroom pods so container volumes can be captured consistently."""
+    from app.services.deploy_topology import _extract_containers
+    from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
+
+    for ctr in _extract_containers(topology):
+        if not ctr.get("is_pod") or ctr.get("name") != "showroom":
+            continue
+        pod_name = f"troshka-{project_id[:8]}-{ctr['name']}"
+        try:
+            job_id = start_job(host, "/pods/destroy", {"pod_name": pod_name})
+            wait_for_job(host, job_id, timeout=120)
+        except TroshkadError as exc:
+            log.warning(
+                "Pattern capture: could not stop showroom pod %s: %s",
+                pod_name,
+                exc,
+            )
+
+
+def _capture_container_volumes(
+    host, topology, project_id, pattern_id, creds, pool, pattern, db
+):
+    """Capture raw volumes attached to container pods (e.g. showroom content)."""
+    from app.services.s3_storage import capture_bucket
+    from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
+
+    volume_disks = _collect_container_volume_disks(topology, project_id, pool)
+    if not volume_disks:
+        return True
+
+    _stop_showroom_pods(host, project_id, topology)
+
+    bucket = capture_bucket(creds)
+    disks_params = []
+    disk_metadata = []
+    for container_id, disk_node, vol in volume_disks:
+        disk_id = disk_node["id"]
+        fmt = disk_node.get("data", {}).get("format", "raw")
+        s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
+        cache_path = (
+            f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
+        )
+        vsize = int(disk_node.get("data", {}).get("size", 0)) * 1073741824
+        disks_params.append(
+            {
+                "disk_path": vol["disk_path"],
+                "s3_url": f"s3://{bucket}/{s3_key}",
+                "cache_path": cache_path,
+                "virtual_size_bytes": vsize,
+            }
+        )
+        disk_metadata.append(
+            {
+                "disk_id": disk_id,
+                "vm_id": container_id,
+                "s3_key": s3_key,
+                "format": fmt,
+                "virtual_size_bytes": vsize,
+            }
+        )
+
+    try:
+        job_id = start_job(
+            host,
+            "/patterns/capture-direct",
+            {
+                "disks": disks_params,
+                "domain_name": "",
+                "aws_access_key_id": creds.get("access_key_id", ""),
+                "aws_secret_access_key": creds.get("secret_access_key", ""),
+                "aws_region": creds.get("region", "us-east-1"),
+                "aws_endpoint_url": creds.get("endpoint_url", ""),
+            },
+        )
+        job = wait_for_job(host, job_id, timeout=3600)
+        if job.get("status") == "failed":
+            pattern.state = "error"
+            db.commit()
+            log.error(
+                "Pattern %s: container volume capture failed: %s",
+                pattern_id[:8],
+                job.get("result", {}).get("error", "unknown"),
+            )
+            return False
+        _save_vm_disks(job, {"disk_metadata": disk_metadata}, pattern_id, db)
+        log.info(
+            "Pattern %s: captured %d container volume(s)",
+            pattern_id[:8],
+            len(disk_metadata),
+        )
+        return True
+    except TroshkadError as exc:
+        log.exception(
+            "Pattern %s: container volume capture troshkad error: %s",
+            pattern_id[:8],
+            exc,
+        )
+        pattern.state = "error"
+        db.commit()
+        return False
+
+
 def _run_recert_force_expire(host, pattern_id, topology, disks, db):
     """Run recert --force-expire on the RHCOS boot disk to expire all certs.
 
@@ -960,15 +1097,16 @@ def _build_disk_to_vm_map(topology):
     return disk_nodes, vm_nodes, disk_to_vm, vm_to_disks
 
 
-def _build_nbd_vm_tasks(vm_to_disks, vm_nodes, project_id, pattern_id, pool):
+def _build_nbd_vm_tasks(vm_to_disks, vm_nodes, project_id, pattern_id, pool, creds):
     """Build the per-VM task list for NBD capture.
 
     Returns a list of dicts, each with vm_id, vm_name, domain_name,
     disks_params, and disk_metadata.
     """
-    from app.services import s3_storage
     from app.services.deploy_topology import _disk_path
+    from app.services.s3_storage import capture_bucket
 
+    bucket = capture_bucket(creds)
     vm_tasks = []
     for vm_id, vm_disk_nodes in vm_to_disks.items():
         disks_params = []
@@ -980,7 +1118,6 @@ def _build_nbd_vm_tasks(vm_to_disks, vm_nodes, project_id, pattern_id, pool):
                 continue
             disk_path = _disk_path(project_id, vm_id, disk_id, fmt, pool=pool)
             s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
-            bucket = s3_storage._bucket()
             s3_url = f"s3://{bucket}/{s3_key}"
             cache_path = (
                 f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
@@ -1045,7 +1182,9 @@ def _capture_via_nbd(
         worker_host.id[:8],
     )
 
-    vm_tasks = _build_nbd_vm_tasks(vm_to_disks, vm_nodes, project_id, pattern_id, pool)
+    vm_tasks = _build_nbd_vm_tasks(
+        vm_to_disks, vm_nodes, project_id, pattern_id, pool, creds
+    )
 
     vm_count = len(vm_tasks)
     vm_status = {t["vm_id"]: "waiting" for t in vm_tasks}
@@ -1281,8 +1420,10 @@ def _capture_direct(
     """
     import time as _time
 
-    from app.services import s3_storage
     from app.services.deploy_topology import _disk_path
+    from app.services.s3_storage import capture_bucket
+
+    bucket = capture_bucket(creds)
     from app.services.troshkad_client import TroshkadError, poll_job, start_job
     from app.services.ws_pubsub import notify_pattern
 
@@ -1301,7 +1442,6 @@ def _capture_direct(
             disk_path = _disk_path(project_id, vm_id, disk_id, fmt, pool=pool)
 
             s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
-            bucket = s3_storage._bucket()
             s3_url = f"s3://{bucket}/{s3_key}"
             cache_path = (
                 f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
@@ -1484,6 +1624,93 @@ def _capture_container_images(host, topology, pattern_id, creds, pattern, db):
     return True
 
 
+def _clear_pattern_locations(db, pattern) -> None:
+    """Remove stale location rows before re-writing after capture."""
+    from sqlalchemy import delete
+
+    from app.models.pattern_location import PatternLocation
+
+    disk_ids = [pd.id for pd in pattern.disks]
+    if not disk_ids:
+        return
+    db.execute(
+        delete(PatternLocation).where(PatternLocation.pattern_disk_id.in_(disk_ids))
+    )
+
+
+def _ensure_obc_pattern_locations(db, pattern, provider_id: str) -> None:
+    """Ensure each PatternDisk has a synced OBC PatternLocation on provider_id."""
+    import datetime
+
+    from sqlalchemy import select
+
+    from app.models.pattern_location import PatternLocation
+
+    now = datetime.datetime.now(datetime.UTC)
+    for pd in pattern.disks:
+        existing = db.scalars(
+            select(PatternLocation).filter_by(
+                pattern_disk_id=pd.id,
+                provider_id=provider_id,
+                location_type="obc",
+                state="synced",
+            )
+        ).first()
+        if existing:
+            continue
+        if not pd.s3_key:
+            continue
+        db.add(
+            PatternLocation(
+                pattern_disk_id=pd.id,
+                provider_id=provider_id,
+                location_type="obc",
+                s3_key=pd.s3_key,
+                state="synced",
+                synced_at=now,
+                size_bytes=pd.size_bytes or 0,
+            )
+        )
+
+
+def _ensure_central_pattern_locations(db, pattern) -> None:
+    """Ensure each PatternDisk has a synced central PatternLocation row.
+
+    Troshkad (libvirt) capture uploads directly to central S4 but historically
+    only created PatternDisk rows. Deploy placement requires PatternLocation.
+    """
+    import datetime
+
+    from sqlalchemy import select
+
+    from app.models.pattern_location import PatternLocation
+
+    now = datetime.datetime.now(datetime.UTC)
+    for pd in pattern.disks:
+        existing = db.scalars(
+            select(PatternLocation).filter_by(
+                pattern_disk_id=pd.id,
+                location_type="central",
+                state="synced",
+            )
+        ).first()
+        if existing:
+            continue
+        if not pd.s3_key:
+            continue
+        db.add(
+            PatternLocation(
+                pattern_disk_id=pd.id,
+                provider_id=None,
+                location_type="central",
+                s3_key=pd.s3_key,
+                state="synced",
+                synced_at=now,
+                size_bytes=pd.size_bytes or 0,
+            )
+        )
+
+
 def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
     """Update topology, run recert, save metadata, and send completion notification."""
     import copy
@@ -1513,6 +1740,8 @@ def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
 
         apply_sno_ocp_vm_flags(topo, recert=True)
 
+    apply_showroom_pattern_flags(topo)
+
     db.execute(
         text("UPDATE patterns SET topology = :topo WHERE id = :pid"),
         {"topo": json.dumps(copy.deepcopy(topo)), "pid": pattern_id},
@@ -1525,6 +1754,11 @@ def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
 
     pattern.state = "available"
     pattern.total_size_bytes = sum(d.size_bytes for d in pattern.disks)
+    _clear_pattern_locations(db, pattern)
+    if pattern.source_provider_id:
+        _ensure_obc_pattern_locations(db, pattern, pattern.source_provider_id)
+    else:
+        _ensure_central_pattern_locations(db, pattern)
     db.commit()
 
     # Save the canonical metadata.json to central S4 for recovery after DB loss
@@ -1560,7 +1794,7 @@ def _run_capture_pipeline(
     Returns True on success, False on failure (pattern state set to 'error'
     by the individual capture functions).
     """
-    from app.services.s3_storage import _get_s3_config
+    from app.services.s3_storage import resolve_capture_s3_config
 
     topology = (
         project.deployed_topology or project.topology or {"nodes": [], "edges": []}
@@ -1590,7 +1824,17 @@ def _run_capture_pipeline(
 
         pool = db.query(StoragePool).filter_by(id=host.storage_pool_id).first()
 
-    creds = _get_s3_config()
+    creds, capture_provider_id = resolve_capture_s3_config(db, host)
+    pattern.source_provider_id = capture_provider_id
+    db.commit()
+    if capture_provider_id:
+        log.info(
+            "Pattern %s: capturing to cluster OBC (provider %s)",
+            pattern_id[:8],
+            capture_provider_id[:8],
+        )
+    else:
+        log.info("Pattern %s: capturing to central S3", pattern_id[:8])
 
     # Capture VM disks via NBD (pattern buffer) or direct (on-host)
     if worker_host:
@@ -1619,6 +1863,11 @@ def _run_capture_pipeline(
             db,
         )
     if not success:
+        return False
+
+    if not _capture_container_volumes(
+        host, topology, project_id, pattern_id, creds, pool, pattern, db
+    ):
         return False
 
     # Capture container images
@@ -1685,9 +1934,13 @@ def capture_pattern_disks(
             _capture_kubevirt_native(db, pattern, project, host, restart_after)
             return
 
+        _set_capture_progress(
+            pattern_id,
+            {"step": "preparing", "detail": "Waking pattern buffer..."},
+        )
         worker_host = _get_pattern_buffer(db, host)
 
-        _run_capture_pipeline(
+        success = _run_capture_pipeline(
             db,
             pattern,
             host,
@@ -1697,6 +1950,9 @@ def capture_pattern_disks(
             pattern_id,
             quiesce_cluster,
         )
+        if not success:
+            _mark_capture_error(db, pattern_id)
+            return
 
     except Exception as e:
         log.exception("Pattern capture failed for %s: %s", pattern_id, e)
@@ -1705,5 +1961,8 @@ def capture_pattern_disks(
         import time
 
         time.sleep(2)
-        _clear_capture_progress(pattern_id)
+        # Only clear live progress after a successful capture (finalize sets step=complete).
+        prog = get_capture_progress(pattern_id) or {}
+        if prog.get("step") == "complete":
+            _clear_capture_progress(pattern_id)
         db.close()

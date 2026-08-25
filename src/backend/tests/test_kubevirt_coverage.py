@@ -139,6 +139,47 @@ class TestEnsureS3Secret:
         assert body.string_data["AWS_ENDPOINT_URL"] == "https://minio.local"
 
 
+class TestEnsureCacheS3Secrets:
+    @patch("app.services.providers.kubevirt._ensure_s3_secret")
+    @patch("app.services.providers.kubevirt._get_k8s_clients")
+    def test_mirrors_primary_and_central(self, mock_clients, mock_ensure):
+        core = MagicMock()
+        mock_clients.return_value = (MagicMock(), core, MagicMock())
+        provider = _make_provider()
+        s3 = {"access_key_id": "AKID", "secret_access_key": "SKEY"}
+        central = {"access_key_id": "CENT", "secret_access_key": "CKEY"}
+        from app.services.providers.kubevirt import (
+            CACHE_NAMESPACE,
+            _ensure_cache_s3_secrets,
+        )
+
+        _ensure_cache_s3_secrets(provider, s3, central_s3=central)
+        core.create_namespace.assert_called_once()
+        assert (
+            core.create_namespace.call_args.kwargs["body"].metadata.name
+            == CACHE_NAMESPACE
+        )
+        assert mock_ensure.call_count == 2
+        mock_ensure.assert_any_call(provider, CACHE_NAMESPACE, s3, "s3-credentials")
+        mock_ensure.assert_any_call(
+            provider, CACHE_NAMESPACE, central, "s3-central-credentials"
+        )
+
+    @patch("app.services.providers.kubevirt._ensure_s3_secret")
+    @patch("app.services.providers.kubevirt._get_k8s_clients")
+    def test_skips_namespace_create_when_exists(self, mock_clients, mock_ensure):
+        core = MagicMock()
+        core.create_namespace.side_effect = Exception("AlreadyExists")
+        mock_clients.return_value = (MagicMock(), core, MagicMock())
+        provider = _make_provider()
+        from app.services.providers.kubevirt import _ensure_cache_s3_secrets
+
+        _ensure_cache_s3_secrets(
+            provider, {"access_key_id": "A", "secret_access_key": "B"}
+        )
+        mock_ensure.assert_called_once()
+
+
 # ===========================================================================
 # _try_existing_cluster_resource
 # ===========================================================================
@@ -746,7 +787,24 @@ class TestUpdateEipPorts:
         assert patched_ports[0]["port"] == 443
         assert patched_ports[0]["targetPort"] == 8443
         assert patched_ports[1]["name"] == "port-80"
-        assert patched_ports[1]["targetPort"] == 80
+        assert patched_ports[1]["targetPort"] == 1080
+
+
+class TestGatewayPodListenPort:
+    def test_port_80_uses_alt_listen_port(self):
+        from app.services.providers.kubevirt import gateway_pod_listen_port
+
+        assert gateway_pod_listen_port(80) == 1080
+
+    def test_port_8080_uses_alt_listen_port(self):
+        from app.services.providers.kubevirt import gateway_pod_listen_port
+
+        assert gateway_pod_listen_port(8080) == 18080
+
+    def test_other_ports_unchanged(self):
+        from app.services.providers.kubevirt import gateway_pod_listen_port
+
+        assert gateway_pod_listen_port(443) == 443
 
 
 # ===========================================================================

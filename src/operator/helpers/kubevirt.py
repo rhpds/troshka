@@ -4,6 +4,44 @@ CACHE_NAMESPACE = "troshka-cache"
 STORAGE_CLASS = "ocs-storagecluster-ceph-rbd-virtualization"
 
 
+def s3_keys_from_secret(secret) -> dict:
+    """Extract CDI-compatible S3 keys from a Kubernetes Secret."""
+    data = secret.string_data or {}
+    if not data and secret.data:
+        data = {
+            k: base64.b64decode(v).decode() for k, v in secret.data.items()
+        }
+    return {
+        "accessKeyId": data.get("accessKeyId") or data.get("AWS_ACCESS_KEY_ID", ""),
+        "secretKey": data.get("secretKey") or data.get("AWS_SECRET_ACCESS_KEY", ""),
+    }
+
+
+def hydrate_s3_config_from_project_secret(
+    core_api,
+    project_namespace: str | None,
+    s3_config: dict | None,
+    default_secret_name: str = "s3-credentials",  # pragma: allowlist secret
+) -> dict:
+    """Fill accessKeyId/secretKey from a project-namespace secret when CR omits them."""
+    from kubernetes.client.exceptions import ApiException
+
+    cfg = dict(s3_config or {})
+    if cfg.get("accessKeyId") or not project_namespace:
+        return cfg
+    secret_name = cfg.get("credentialsSecret") or default_secret_name
+    try:
+        secret = core_api.read_namespaced_secret(secret_name, project_namespace)
+    except ApiException as e:
+        if e.status == 404:
+            return cfg
+        raise
+    keys = s3_keys_from_secret(secret)
+    if keys.get("accessKeyId"):
+        cfg.update(keys)
+    return cfg
+
+
 def _build_base_domain(spec):
     """Build the base domain configuration for KubeVirt VM."""
     domain = {
@@ -192,18 +230,12 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
             "name": kv_name,
             "namespace": vm_cr["metadata"]["namespace"],
             "labels": {"app": "troshka", "troshka-vm": name},
-            "annotations": {
-                "mutatevirtualmachines.kubemacpool.io": "ignore",
-            },
         },
         "spec": {
             "running": False,
             "template": {
                 "metadata": {
                     "labels": {"app": "troshka", "troshka-vm": name},
-                    "annotations": {
-                        "mutatevirtualmachines.kubemacpool.io": "ignore",
-                    },
                 },
                 "spec": template_spec,
             },
@@ -251,6 +283,50 @@ def build_cloudinit_secret(vm_cr):
     }
 
 
+def s3_import_url(s3_path, s3_config):
+    """Build the CDI S3 import URL for a bucket/path pair."""
+    bucket = s3_config.get("bucket", "")
+    endpoint = s3_config.get("endpoint", "")
+    region = s3_config.get("region", "us-east-1")
+    if endpoint and "://" in endpoint:
+        return f"{endpoint.rstrip('/')}/{bucket}/{s3_path}"
+    return f"https://s3.{region}.amazonaws.com/{bucket}/{s3_path}"
+
+
+def golden_import_matches(dv, s3_path, s3_config, secret_name):
+    """Return True when an existing golden DataVolume matches the desired import."""
+    src = dv.get("spec", {}).get("source", {}).get("s3", {})
+    return (
+        src.get("url") == s3_import_url(s3_path, s3_config)
+        and src.get("secretRef") == secret_name
+    )
+
+
+def delete_golden_import(custom_api, core_api, namespace, pvc_name):
+    """Delete a golden DataVolume/PVC pair so it can be recreated."""
+    from kubernetes.client.exceptions import ApiException
+
+    for plural in ("datavolumes",):
+        try:
+            custom_api.delete_namespaced_custom_object(
+                group="cdi.kubevirt.io",
+                version="v1beta1",
+                namespace=namespace,
+                plural=plural,
+                name=pvc_name,
+            )
+        except ApiException as e:
+            if e.status != 404:
+                raise
+    try:
+        core_api.delete_namespaced_persistent_volume_claim(
+            name=pvc_name, namespace=namespace
+        )
+    except ApiException as e:
+        if e.status != 404:
+            raise
+
+
 def build_datavolume_from_s3(
     name,
     namespace,
@@ -259,13 +335,7 @@ def build_datavolume_from_s3(
     s3_config,
     secret_name="s3-credentials",  # pragma: allowlist secret
 ):
-    bucket = s3_config.get("bucket", "")
-    endpoint = s3_config.get("endpoint", "")
-    region = s3_config.get("region", "us-east-1")
-    if endpoint and "://" in endpoint:
-        s3_url = f"{endpoint}/{bucket}/{s3_path}"
-    else:
-        s3_url = f"https://s3.{region}.amazonaws.com/{bucket}/{s3_path}"
+    s3_url = s3_import_url(s3_path, s3_config)
     return {
         "apiVersion": "cdi.kubevirt.io/v1beta1",
         "kind": "DataVolume",

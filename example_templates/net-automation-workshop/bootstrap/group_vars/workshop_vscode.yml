@@ -1,8 +1,0 @@
----
-ansible_user: rhel
-ansible_become: true
-ansible_become_method: sudo
-
-vscode_user: rhel
-vscode_home: /home/rhel
-code_server_port: 8080

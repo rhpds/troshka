@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
+import { hasShowroomNode } from "@/lib/showroomScaffold";
 
 const TIMER_PRESETS = [
   { label: "None", value: null },
@@ -70,6 +71,13 @@ const sections: PaletteSection[] = [
         label: "Pod",
         desc: "Container group (shared network)",
         icon: "🫛",
+        iconClass: "palette-icon-container",
+      },
+      {
+        type: "showroom",
+        label: "Showroom",
+        desc: "Lab guide UI (pod)",
+        icon: "📖",
         iconClass: "palette-icon-container",
       },
     ],
@@ -239,6 +247,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   const [customDeleteH, setCustomDeleteH] = useState(0);
   const [customDeleteM, setCustomDeleteM] = useState(0);
   const nodes = useCanvasStore((s) => s.nodes);
+  const showroomExists = hasShowroomNode(nodes);
 
   useEffect(() => {
     if (!hostId) return;
@@ -566,12 +575,22 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
               <span style={{ fontSize: 9 }}>{collapsedSections.has(section.title) ? "▸" : "▾"}</span>
             </div>
             {!collapsedSections.has(section.title) && (<>
-              {section.items.map((item) => (
+              {section.items.map((item) => {
+                const disabled = item.type === "showroom" && showroomExists;
+                return (
                 <div
                   key={item.type}
                   className="palette-item"
-                  draggable
-                  onDragStart={(e) => onDragStart(e, item)}
+                  draggable={!disabled}
+                  onDragStart={(e) => {
+                    if (disabled) {
+                      e.preventDefault();
+                      return;
+                    }
+                    onDragStart(e, item);
+                  }}
+                  style={disabled ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+                  title={disabled ? "One showroom per project" : undefined}
                 >
                   <PaletteIcon icon={item.icon} iconClass={item.iconClass} />
                   <div>
@@ -579,7 +598,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                     <div className="palette-item-desc">{item.desc}</div>
                   </div>
                 </div>
-              ))}
+              );})}
             {section.title === "Networking" && (
               <div className="palette-item" onClick={onOpenExternalIps} style={{ cursor: "pointer" }}>
                 <div className="palette-icon palette-icon-gateway">🌍</div>

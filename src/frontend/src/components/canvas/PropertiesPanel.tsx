@@ -5,6 +5,8 @@ import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
+import { getShowroomReadiness } from "@/lib/showroomValidation";
+import { newShowroomTab, resolveShowroomTabs, type ShowroomTab } from "@/lib/showroomTabs";
 import type {
   VMNodeData,
   NetworkNodeData,
@@ -1440,8 +1442,264 @@ export default function PropertiesPanel() {
         <>
           {(() => {
             const isPod = !!(node?.data as Record<string, unknown>)?.isPod;
+            const isShowroom = !!(
+              (node?.data as Record<string, unknown>)?.isShowroom ||
+              (node?.data as Record<string, unknown>)?.name === "showroom"
+            );
+            const showroomReadiness = isShowroom
+              ? getShowroomReadiness(useCanvasStore.getState().nodes, edges)
+              : null;
+            const updateShowroomConfig = useCanvasStore.getState().updateShowroomConfig;
+            const updateShowroomTabs = useCanvasStore.getState().updateShowroomTabs;
+            const showroomTabs = ((node?.data as Record<string, unknown>)?.showroomTabs ||
+              []) as ShowroomTab[];
+            const vmOptions = useCanvasStore
+              .getState()
+              .nodes.filter((n) => n.type === "vmNode")
+              .map((n) => ({
+                id: n.id,
+                name: ((n.data as Record<string, unknown>).name as string) || n.id,
+              }));
+            const resolvedTabs = isShowroom
+              ? resolveShowroomTabs(showroomTabs, node!.id, useCanvasStore.getState().nodes, edges)
+              : [];
             return (
               <>
+                {isShowroom && (
+                  <>
+                    <div className="props-section">
+                      <div className="props-section-title">Showroom</div>
+                      <div className="props-field">
+                        <label className="props-label">Content repo</label>
+                        <input
+                          className="props-input"
+                          placeholder="https://github.com/org/lab-repo.git"
+                          value={String((node?.data as Record<string, unknown>).contentRepo || "")}
+                          onChange={(e) =>
+                            updateShowroomConfig(node!.id, { content_repo: e.target.value })
+                          }
+                          style={{ fontFamily: "monospace", fontSize: 11 }}
+                        />
+                      </div>
+                      <div className="props-field">
+                        <label className="props-label">Content ref</label>
+                        <input
+                          className="props-input"
+                          placeholder="main"
+                          value={String((node?.data as Record<string, unknown>).contentRef || "main")}
+                          onChange={(e) =>
+                            updateShowroomConfig(node!.id, { content_ref: e.target.value })
+                          }
+                          style={{ fontFamily: "monospace", fontSize: 11 }}
+                        />
+                      </div>
+                      <div className="props-field" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <input
+                          type="checkbox"
+                          checked={(node?.data as Record<string, unknown>).buildContent !== false}
+                          onChange={(e) =>
+                            updateShowroomConfig(node!.id, { build_content: e.target.checked })
+                          }
+                        />
+                        <label className="props-label" style={{ marginBottom: 0 }}>Build content at deploy</label>
+                      </div>
+                      <div className="props-field" style={{ marginTop: 12 }}>
+                        <div className="props-section-title" style={{ marginBottom: 8 }}>Tabs</div>
+                        {showroomTabs.length === 0 && (
+                          <div style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginBottom: 8 }}>
+                            Add terminal or web proxy tabs linked to canvas VMs.
+                          </div>
+                        )}
+                        {showroomTabs.map((tab, idx) => {
+                          const resolved = resolvedTabs[idx];
+                          return (
+                            <div
+                              key={tab.id}
+                              style={{
+                                border: "1px solid var(--troshka-border)",
+                                borderRadius: 6,
+                                padding: 8,
+                                marginBottom: 8,
+                                background: "var(--troshka-surface2)",
+                              }}
+                            >
+                              <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+                                <input
+                                  className="props-input"
+                                  value={tab.name}
+                                  onChange={(e) => {
+                                    const next = showroomTabs.map((t) =>
+                                      t.id === tab.id ? { ...t, name: e.target.value } : t,
+                                    );
+                                    updateShowroomTabs(node!.id, next);
+                                  }}
+                                  style={{ flex: 1 }}
+                                />
+                                <select
+                                  className="props-input"
+                                  value={tab.type}
+                                  onChange={(e) => {
+                                    const next = showroomTabs.map((t) =>
+                                      t.id === tab.id
+                                        ? { ...newShowroomTab(e.target.value as ShowroomTab["type"], t.name), id: t.id }
+                                        : t,
+                                    );
+                                    updateShowroomTabs(node!.id, next);
+                                  }}
+                                >
+                                  <option value="terminal">Terminal</option>
+                                  <option value="proxy">Web proxy</option>
+                                  <option value="external">External link</option>
+                                </select>
+                                <button
+                                  style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer" }}
+                                  onClick={() =>
+                                    updateShowroomTabs(
+                                      node!.id,
+                                      showroomTabs.filter((t) => t.id !== tab.id),
+                                    )
+                                  }
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                              {tab.type === "external" ? (
+                                <input
+                                  className="props-input"
+                                  placeholder="https://..."
+                                  value={tab.url || ""}
+                                  onChange={(e) => {
+                                    const next = showroomTabs.map((t) =>
+                                      t.id === tab.id ? { ...t, url: e.target.value } : t,
+                                    );
+                                    updateShowroomTabs(node!.id, next);
+                                  }}
+                                  style={{ fontFamily: "monospace", fontSize: 11 }}
+                                />
+                              ) : (
+                                <select
+                                  className="props-input"
+                                  value={tab.vmId || ""}
+                                  onChange={(e) => {
+                                    const next = showroomTabs.map((t) =>
+                                      t.id === tab.id ? { ...t, vmId: e.target.value } : t,
+                                    );
+                                    updateShowroomTabs(node!.id, next);
+                                  }}
+                                >
+                                  <option value="">Select VM...</option>
+                                  {vmOptions.map((vm) => (
+                                    <option key={vm.id} value={vm.id}>{vm.name}</option>
+                                  ))}
+                                </select>
+                              )}
+                              {tab.type === "proxy" && (
+                                <div className="props-row" style={{ marginTop: 6 }}>
+                                  <input
+                                    className="props-input"
+                                    placeholder="/vscode/"
+                                    value={tab.proxyPath || ""}
+                                    onChange={(e) => {
+                                      const next = showroomTabs.map((t) =>
+                                        t.id === tab.id ? { ...t, proxyPath: e.target.value } : t,
+                                      );
+                                      updateShowroomTabs(node!.id, next);
+                                    }}
+                                    style={{ flex: 2, fontFamily: "monospace", fontSize: 11 }}
+                                  />
+                                  <input
+                                    className="props-input"
+                                    type="number"
+                                    placeholder="Port"
+                                    value={tab.proxyPort || 80}
+                                    onChange={(e) => {
+                                      const next = showroomTabs.map((t) =>
+                                        t.id === tab.id
+                                          ? { ...t, proxyPort: parseInt(e.target.value, 10) || 80 }
+                                          : t,
+                                      );
+                                      updateShowroomTabs(node!.id, next);
+                                    }}
+                                    style={{ width: 80 }}
+                                  />
+                                  <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
+                                    <input
+                                      type="checkbox"
+                                      checked={!!tab.proxyTls}
+                                      onChange={(e) => {
+                                        const next = showroomTabs.map((t) =>
+                                          t.id === tab.id ? { ...t, proxyTls: e.target.checked } : t,
+                                        );
+                                        updateShowroomTabs(node!.id, next);
+                                      }}
+                                    />
+                                    TLS
+                                  </label>
+                                </div>
+                              )}
+                              {resolved?.warning && (
+                                <div style={{ fontSize: 10, color: "var(--troshka-yellow)", marginTop: 4 }}>
+                                  ⚠ {resolved.warning}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <button
+                            className="props-library-btn"
+                            style={{ fontSize: 11 }}
+                            onClick={() =>
+                              updateShowroomTabs(node!.id, [
+                                ...showroomTabs,
+                                newShowroomTab("terminal", "Terminal"),
+                              ])
+                            }
+                          >
+                            + Terminal
+                          </button>
+                          <button
+                            className="props-library-btn"
+                            style={{ fontSize: 11 }}
+                            onClick={() =>
+                              updateShowroomTabs(node!.id, [
+                                ...showroomTabs,
+                                newShowroomTab("proxy", "Web app"),
+                              ])
+                            }
+                          >
+                            + Web proxy
+                          </button>
+                          <button
+                            className="props-library-btn"
+                            style={{ fontSize: 11 }}
+                            onClick={() =>
+                              updateShowroomTabs(node!.id, [
+                                ...showroomTabs,
+                                newShowroomTab("external", "External"),
+                              ])
+                            }
+                          >
+                            + External
+                          </button>
+                        </div>
+                      </div>
+                      {showroomReadiness && showroomReadiness.issues.length > 0 && (
+                        <div style={{ marginTop: 8, fontSize: 11, color: "var(--troshka-yellow)" }}>
+                          {showroomReadiness.issues.map((issue) => (
+                            <div key={issue}>⚠ {issue}</div>
+                          ))}
+                        </div>
+                      )}
+                      {showroomReadiness && showroomReadiness.issues.length === 0 && (
+                        <div style={{ marginTop: 8, fontSize: 11, color: "var(--troshka-green)" }}>
+                          Ready — network, gateway, and port forward configured
+                        </div>
+                      )}
+                    </div>
+                    <div className="props-divider" />
+                  </>
+                )}
                 {!isPod && (
                   <>
           {/* Image section */}

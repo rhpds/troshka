@@ -1094,12 +1094,61 @@ class TestReconfigureProcessVms:
         }
         errors = []
         _reconfigure_process_vms(
-            MagicMock(), "p1", MagicMock(), {}, {}, {}, set(), None, diff, errors
+            MagicMock(),
+            "p1",
+            MagicMock(),
+            MagicMock(),
+            {},
+            {},
+            {},
+            set(),
+            None,
+            diff,
+            errors,
         )
         # Only vm1 should be processed (not vm2=added, vm3=removed)
         mock_reconfig.assert_called_once()
         assert mock_reconfig.call_args[0][6] == {}  # vni_map
         mock_deploy.assert_called_once()
+
+    @patch("app.api.projects._deploy_added_vms")
+    @patch("app.api.projects._redeploy_vm_during_reconfigure")
+    @patch("app.api.projects._reconfigure_existing_vm")
+    @patch("app.api.projects._extract_vms")
+    @patch(
+        "app.services.deploy_topology.vm_ids_needing_redeploy",
+        return_value={"vm-fw"},
+    )
+    def test_domain_defining_change_triggers_redeploy(
+        self, mock_fw_ids, mock_extract, mock_reconfig, mock_redeploy, mock_deploy
+    ):
+        from app.api.projects import _reconfigure_process_vms
+
+        mock_extract.return_value = [
+            {"node_id": "vm-fw", "name": "fw-change"},
+            {"node_id": "vm-ok", "name": "unchanged"},
+        ]
+        diff = {"added_vms": [], "removed_vms": []}
+        errors = []
+        proj = MagicMock()
+        _reconfigure_process_vms(
+            MagicMock(),
+            "p1",
+            MagicMock(),
+            proj,
+            {"nodes": []},
+            {"nodes": []},
+            {},
+            set(),
+            None,
+            diff,
+            errors,
+        )
+        mock_redeploy.assert_called_once()
+        assert mock_redeploy.call_args[0][4] == "vm-fw"
+        mock_reconfig.assert_called_once()
+        assert mock_reconfig.call_args[0][5]["node_id"] == "vm-ok"
+        mock_deploy.assert_not_called()
 
     @patch("app.api.projects._deploy_added_vms")
     @patch("app.api.projects._reconfigure_existing_vm")
@@ -1111,7 +1160,17 @@ class TestReconfigureProcessVms:
         diff = {"added_vms": [], "removed_vms": []}
         errors = []
         _reconfigure_process_vms(
-            MagicMock(), "p1", MagicMock(), {}, {}, {}, set(), None, diff, errors
+            MagicMock(),
+            "p1",
+            MagicMock(),
+            MagicMock(),
+            {},
+            {},
+            {},
+            set(),
+            None,
+            diff,
+            errors,
         )
         mock_reconfig.assert_called_once()
         mock_deploy.assert_not_called()

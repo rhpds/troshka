@@ -179,10 +179,10 @@ def file_exists(key: str) -> bool:
 
 
 def get_cluster_s3_config(db, provider_id: str) -> dict | None:
-    """Get the OBC-based S3 config for a KubeVirt cluster.
+    """Get the OBC-based S3 config for a cluster provider.
 
-    The config is stored in the provider's credentials JSON under 's3_config'.
-    Returns None for non-KubeVirt providers (they use the global S3 config).
+    Stored in the provider credentials JSON under ``s3_config`` (synced from the
+    cluster's ``troshka-patterns`` OBC). Returns None when not configured.
     """
     from app.models.provider import Provider
 
@@ -191,6 +191,117 @@ def get_cluster_s3_config(db, provider_id: str) -> dict | None:
         return None
     creds = provider.get_credentials()
     return creds.get("s3_config")
+
+
+def cluster_s3_to_upload_creds(cluster_s3: dict) -> dict:
+    """Normalize cluster OBC config for troshkad S3 upload/download."""
+    endpoint = cluster_s3.get("endpoint") or cluster_s3.get("endpoint_url", "")
+    return {
+        "access_key_id": cluster_s3.get("access_key_id", ""),
+        "secret_access_key": cluster_s3.get("secret_access_key", ""),
+        "region": cluster_s3.get("region", "us-east-1"),
+        "endpoint_url": endpoint,
+        "bucket": cluster_s3.get("bucket", ""),
+    }
+
+
+def resolve_capture_s3_config(db, host) -> tuple[dict, str | None]:
+    """S3 creds for pattern capture on a host.
+
+    Prefers cluster-local OBC when the host's provider has ``s3_config``.
+    Falls back to the global primary S3 provider (``_get_s3_config()``).
+
+    Returns ``(upload_creds, source_provider_id)`` where *source_provider_id*
+    is set when uploading to cluster OBC.
+    """
+    provider_id = getattr(host, "provider_id", None)
+    if provider_id:
+        cluster = get_cluster_s3_config(db, provider_id)
+        if cluster and cluster.get("bucket"):
+            return cluster_s3_to_upload_creds(cluster), provider_id
+    return _get_s3_config(), None
+
+
+def capture_bucket(creds: dict) -> str:
+    """Bucket name from capture/upload creds."""
+    return creds.get("bucket") or _bucket()
+
+
+def _rgw_external_endpoint(custom_api) -> str | None:
+    """HTTPS route host for cluster RGW (reachable from troshkad hosts)."""
+    for name in (
+        "ocs-storagecluster-cephobjectstore-secure",
+        "ocs-storagecluster-cephobjectstore",
+    ):
+        try:
+            route = custom_api.get_namespaced_custom_object(
+                group="route.openshift.io",
+                version="v1",
+                namespace="openshift-storage",
+                plural="routes",
+                name=name,
+            )
+            host = route.get("spec", {}).get("host")
+            if host:
+                scheme = "https" if "secure" in name else "http"
+                return f"{scheme}://{host}"
+        except Exception:
+            continue
+    return None
+
+
+def _provider_k8s_clients(provider):
+    """Kubernetes CustomObjects + CoreV1 clients for a cluster-backed provider."""
+    creds = provider.get_credentials()
+    if provider.type == "ocpvirt":
+        from app.services.providers.ocpvirt import _get_k8s_clients
+
+        return _get_k8s_clients(creds)
+    if provider.type in ("kubevirt", "kubevirt_native"):
+        from app.services.providers.kubevirt import _get_k8s_clients
+
+        custom_api, core_api, _ = _get_k8s_clients(provider)
+        return custom_api, core_api
+    raise ValueError(f"unsupported provider type for OBC sync: {provider.type}")
+
+
+def sync_provider_obc_credentials(provider) -> bool:
+    """Read troshka-patterns OBC creds from a cluster into provider credentials.
+
+    Returns True when credentials were updated.
+    """
+    import base64
+
+    from app.constants.rgw import RGW_IN_CLUSTER_ENDPOINT
+
+    custom_api, core_api = _provider_k8s_clients(provider)
+    obc_name = "troshka-patterns"
+    ns = "troshka-operator"
+    secret = core_api.read_namespaced_secret(obc_name, ns, _request_timeout=15)
+    cm = core_api.read_namespaced_config_map(obc_name, ns, _request_timeout=15)
+
+    secret_data = getattr(secret, "data", None) or {}
+    cm_data = getattr(cm, "data", None) or {}
+    endpoint = _rgw_external_endpoint(custom_api) or RGW_IN_CLUSTER_ENDPOINT
+    s3_config = {
+        "bucket": cm_data.get("BUCKET_NAME", ""),
+        "endpoint": endpoint,
+        "region": cm_data.get("BUCKET_REGION", "us-east-1") or "us-east-1",
+        "access_key_id": base64.b64decode(
+            secret_data.get("AWS_ACCESS_KEY_ID", "")
+        ).decode(),
+        "secret_access_key": base64.b64decode(
+            secret_data.get("AWS_SECRET_ACCESS_KEY", "")
+        ).decode(),
+    }
+
+    creds = provider.get_credentials()
+    if creds.get("s3_config") == s3_config:
+        return False
+    creds["s3_config"] = s3_config
+    provider.set_credentials(creds)
+    logger.info("Synced OBC credentials for provider %s", provider.name)
+    return True
 
 
 def _get_readonly_s3_config() -> dict | None:

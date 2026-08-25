@@ -1722,7 +1722,7 @@ class TestCreateSingleContainer:
             "env": {},
         }
 
-        _create_single_container(core_api, "ns1", ctr, {}, {"ref": "owner"})
+        _create_single_container(core_api, "ns1", ctr, {}, {"ref": "owner"}, {})
 
         call_kwargs = core_api.create_namespaced_pod.call_args
         body = call_kwargs[1]["body"]
@@ -1742,7 +1742,7 @@ class TestCreateSingleContainer:
             "env": {},
         }
 
-        _create_single_container(core_api, "ns1", ctr, {}, {})
+        _create_single_container(core_api, "ns1", ctr, {}, {}, {})
 
         body = core_api.create_namespaced_pod.call_args[1]["body"]
         container = body["spec"]["containers"][0]
@@ -1761,7 +1761,7 @@ class TestCreateSingleContainer:
             "env": {"FOO": "bar", "COUNT": 42},
         }
 
-        _create_single_container(core_api, "ns1", ctr, {}, {})
+        _create_single_container(core_api, "ns1", ctr, {}, {}, {})
 
         body = core_api.create_namespaced_pod.call_args[1]["body"]
         env = body["spec"]["containers"][0]["env"]
@@ -1783,7 +1783,7 @@ class TestCreateSingleContainer:
         }
         nad_refs = {"net-abc": "my-nad-name"}
 
-        _create_single_container(core_api, "ns1", ctr, nad_refs, {})
+        _create_single_container(core_api, "ns1", ctr, nad_refs, {}, {})
 
         body = core_api.create_namespaced_pod.call_args[1]["body"]
         ann = body["metadata"]["annotations"]["k8s.v1.cni.cncf.io/networks"]
@@ -1805,7 +1805,7 @@ class TestCreateSingleContainer:
             "env": {},
         }
         # Should not raise
-        _create_single_container(core_api, "ns1", ctr, {}, {})
+        _create_single_container(core_api, "ns1", ctr, {}, {}, {})
 
 
 class TestCreatePodGroup:
@@ -1823,7 +1823,7 @@ class TestCreatePodGroup:
             "podContainers": [{"name": "app", "image": "myapp:1.0", "env": {"X": "1"}}],
         }
 
-        _create_pod_group(core_api, "ns1", ctr, {}, {})
+        _create_pod_group(core_api, "ns1", ctr, {}, {}, {})
 
         body = core_api.create_namespaced_pod.call_args[1]["body"]
         assert body["metadata"]["name"] == "pod-podid123"
@@ -1843,7 +1843,7 @@ class TestCreatePodGroup:
             "podContainers": [],
         }
 
-        _create_pod_group(core_api, "ns1", ctr, {}, {})
+        _create_pod_group(core_api, "ns1", ctr, {}, {}, {})
 
         body = core_api.create_namespaced_pod.call_args[1]["body"]
         assert len(body["spec"]["containers"]) == 1
@@ -1869,7 +1869,7 @@ class TestCreatePodGroup:
             ],
         }
 
-        _create_pod_group(core_api, "ns1", ctr, {}, {})
+        _create_pod_group(core_api, "ns1", ctr, {}, {}, {})
 
         body = core_api.create_namespaced_pod.call_args[1]["body"]
         ports = body["spec"]["containers"][0]["ports"]
@@ -1892,7 +1892,7 @@ class TestCreatePodGroup:
         }
 
         # Should not raise
-        _create_pod_group(core_api, "ns1", ctr, {}, {})
+        _create_pod_group(core_api, "ns1", ctr, {}, {}, {})
 
 
 class TestCreateContainerPods:
@@ -1998,6 +1998,63 @@ class TestBuildNad:
         assert len(refs) == 1
         assert refs[0]["kind"] == "TroshkaNetwork"
         assert refs[0]["uid"] == "uid-4"
+
+
+class TestKubeMacPoolOptOut:
+    def test_project_namespace_labels_include_kmp_ignore(self):
+        from helpers.k8s import project_namespace_labels
+
+        labels = project_namespace_labels("81252cc5")
+        assert labels["mutatevirtualmachines.kubemacpool.io"] == "ignore"
+        assert labels["troshka-project"] == "81252cc5"
+
+    def test_ensure_kubemacpool_opt_out_patches_missing_label(self):
+        from helpers.k8s import ensure_kubemacpool_opt_out
+
+        core_api = MagicMock()
+        ns = MagicMock()
+        ns.metadata.labels = {"app": "troshka"}
+        core_api.read_namespace.return_value = ns
+
+        ensure_kubemacpool_opt_out(core_api, "troshka-81252cc5")
+
+        core_api.patch_namespace.assert_called_once_with(
+            name="troshka-81252cc5",
+            body={
+                "metadata": {
+                    "labels": {
+                        "app": "troshka",
+                        "mutatevirtualmachines.kubemacpool.io": "ignore",
+                    }
+                }
+            },
+        )
+
+    def test_ensure_kubemacpool_opt_out_skips_when_labeled(self):
+        from helpers.k8s import ensure_kubemacpool_opt_out
+
+        core_api = MagicMock()
+        ns = MagicMock()
+        ns.metadata.labels = {
+            "app": "troshka",
+            "mutatevirtualmachines.kubemacpool.io": "ignore",
+        }
+        core_api.read_namespace.return_value = ns
+
+        ensure_kubemacpool_opt_out(core_api, "troshka-81252cc5")
+
+        core_api.patch_namespace.assert_not_called()
+
+    def test_ensure_kubemacpool_opt_out_ignores_missing_namespace(self):
+        from helpers.k8s import ensure_kubemacpool_opt_out
+        from kubernetes.client.exceptions import ApiException
+
+        core_api = MagicMock()
+        core_api.read_namespace.side_effect = ApiException(status=404)
+
+        ensure_kubemacpool_opt_out(core_api, "troshka-missing")
+
+        core_api.patch_namespace.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -4600,6 +4657,43 @@ class TestEnsureCacheNamespaceAndSecrets:
         core_api.create_namespaced_secret.assert_not_called()
 
     @patch("handlers.project.client")
+    @patch("helpers.obc.get_obc_s3_config", return_value=None)
+    def test_hydrates_credentials_from_project_namespace(self, _mock_obc, mock_client):
+        from handlers.project import _ensure_cache_namespace_and_secrets
+        from kubernetes.client import ApiException
+
+        core_api = MagicMock()
+        secret = MagicMock()
+        secret.string_data = None
+        secret.data = {
+            "accessKeyId": "QUtJ...",
+            "secretKey": "c2VjcmV0",  # pragma: allowlist secret
+        }
+
+        def _read_secret(name, namespace):
+            if name == "s3-credentials":
+                return secret
+            raise ApiException(status=404)
+
+        core_api.read_namespaced_secret.side_effect = _read_secret
+
+        _ensure_cache_namespace_and_secrets(
+            core_api,
+            {"credentialsSecret": "s3-credentials", "bucket": "troshka-images"},  # pragma: allowlist secret
+            {},
+            project_namespace="troshka-b1677acf",
+        )
+
+        core_api.read_namespaced_secret.assert_any_call(
+            "s3-credentials", "troshka-b1677acf"
+        )
+        core_api.create_namespaced_secret.assert_called_once()
+        assert (
+            core_api.create_namespaced_secret.call_args.kwargs["namespace"]
+            == "troshka-cache"
+        )
+
+    @patch("handlers.project.client")
     def test_non_409_namespace_raises(self, mock_client):
         from handlers.project import _ensure_cache_namespace_and_secrets
         from kubernetes.client import ApiException
@@ -4629,19 +4723,71 @@ class TestCreateGoldenPvcForDisk:
 
         custom_api.create_namespaced_custom_object.assert_called_once()
 
-    def test_skips_when_golden_pvc_exists(self):
+    def test_skips_when_golden_import_matches(self):
         from handlers.project import _create_golden_pvc_for_disk
+        from helpers.k8s import golden_pvc_name
+        from helpers.kubevirt import s3_import_url
 
         custom_api = MagicMock()
         core_api = MagicMock()
-        # PVC already exists (no exception)
-        core_api.read_namespaced_persistent_volume_claim.return_value = MagicMock()
+        s3_config = {"bucket": "troshka-images", "region": "us-east-1"}
+        s3_path = "library/rhel.qcow2"
+        custom_api.get_namespaced_custom_object.return_value = {
+            "spec": {
+                "source": {
+                    "s3": {
+                        "url": s3_import_url(s3_path, s3_config),
+                        "secretRef": "s3-credentials",  # pragma: allowlist secret
+                    }
+                }
+            }
+        }
 
-        disk = {"libraryImage": {"s3Path": "library/rhel.qcow2"}}
+        disk = {"libraryImage": {"s3Path": s3_path}}
 
-        _create_golden_pvc_for_disk(custom_api, core_api, disk, {}, {})
+        _create_golden_pvc_for_disk(custom_api, core_api, disk, s3_config, {})
 
         custom_api.create_namespaced_custom_object.assert_not_called()
+        assert custom_api.get_namespaced_custom_object.call_args[1]["name"] == (
+            golden_pvc_name(s3_path)
+        )
+
+    def test_recreates_when_golden_import_mismatched(self):
+        from handlers.project import _create_golden_pvc_for_disk
+        from kubernetes.client import ApiException
+
+        custom_api = MagicMock()
+        core_api = MagicMock()
+        s3_config = {"bucket": "troshka-images", "region": "us-east-1"}
+        central_config = {
+            "bucket": "troshka-gold-images",
+            "endpoint": "https://s4.example.com",
+        }
+        custom_api.get_namespaced_custom_object.return_value = {
+            "spec": {
+                "source": {
+                    "s3": {
+                        "url": "https://s3.us-east-1.amazonaws.com/troshka-images/library/rhel.qcow2",
+                        "secretRef": "s3-credentials",  # pragma: allowlist secret
+                    }
+                }
+            }
+        }
+        core_api.read_namespaced_persistent_volume_claim.side_effect = ApiException(
+            status=404
+        )
+
+        disk = {
+            "libraryImage": {"s3Path": "library/rhel.qcow2", "central": True},
+            "sizeGb": 20,
+        }
+
+        _create_golden_pvc_for_disk(
+            custom_api, core_api, disk, s3_config, central_config
+        )
+
+        custom_api.delete_namespaced_custom_object.assert_called_once()
+        custom_api.create_namespaced_custom_object.assert_called_once()
 
     def test_skips_blank_disk(self):
         from handlers.project import _create_golden_pvc_for_disk

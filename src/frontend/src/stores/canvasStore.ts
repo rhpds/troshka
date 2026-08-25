@@ -12,6 +12,17 @@ import {
   addEdge,
 } from "@xyflow/react";
 import { appConfirm } from "@/lib/confirm";
+import {
+  type ShowroomConfig,
+  buildShowroomScaffold,
+  hasShowroomNode,
+  syncShowroomContentEnv,
+} from "@/lib/showroomScaffold";
+import type { ShowroomTab } from "@/lib/showroomTabs";
+import { applyShowroomTabsToNode } from "@/lib/showroomTabs";
+import { applyShowroomPortForward, getShowroomNode } from "@/lib/showroomValidation";
+
+export type { ShowroomConfig, ShowroomTab };
 
 /* ---------- Node data shapes ---------- */
 
@@ -182,6 +193,11 @@ interface CanvasState {
   setStartOrder: (order: StartOrderEntry[]) => void;
   externalIps: ExternalIp[];
   setExternalIps: (ips: ExternalIp[]) => void;
+  showroom: ShowroomConfig | null;
+  setShowroom: (config: ShowroomConfig | null) => void;
+  addShowroomScaffold: (position: { x: number; y: number }) => boolean;
+  updateShowroomConfig: (nodeId: string, patch: Partial<ShowroomConfig>) => void;
+  updateShowroomTabs: (nodeId: string, tabs: ShowroomTab[]) => void;
   hideNode: (nodeId: string) => void;
   unhideNode: (nodeId: string) => void;
   unhideAll: () => void;
@@ -222,6 +238,79 @@ export function generateDiskControllerId(): string {
 export function generateMac(): string {
   const hex = () => Math.floor(Math.random() * 256).toString(16).padStart(2, "0");
   return `52:54:00:${hex()}:${hex()}:${hex()}`;
+}
+
+function isShowroomContainer(node: Node | undefined): boolean {
+  if (!node || node.type !== "containerNode") return false;
+  const d = node.data as Record<string, unknown>;
+  return !!(d.isShowroom || d.name === "showroom");
+}
+
+function showroomDiskIds(node: Node): string[] {
+  const mounts = (node.data as Record<string, unknown>).mounts as
+    | Array<{ diskNodeId?: string }>
+    | undefined;
+  return (mounts || []).map((m) => m.diskNodeId).filter(Boolean) as string[];
+}
+
+function removalExtrasForNodes(removedIds: Set<string>, nodes: Node[]) {
+  const extraDiskIds = new Set<string>();
+  let clearShowroom = false;
+  let removedShowroomId: string | null = null;
+  for (const id of removedIds) {
+    const node = nodes.find((n) => n.id === id);
+    if (!isShowroomContainer(node)) continue;
+    clearShowroom = true;
+    removedShowroomId = id;
+    for (const diskId of showroomDiskIds(node!)) extraDiskIds.add(diskId);
+  }
+  return { extraDiskIds, clearShowroom, removedShowroomId };
+}
+
+function parseShowroomFromTopology(
+  topologyShowroom: unknown,
+  nodes: Node[],
+): ShowroomConfig | null {
+  if (topologyShowroom && typeof topologyShowroom === "object") {
+    const s = topologyShowroom as Record<string, unknown>;
+    return {
+      enabled: s.enabled !== false,
+      content_repo: String(s.content_repo || ""),
+      content_ref: String(s.content_ref || "main"),
+      build_content: s.build_content !== false,
+      tabs: Array.isArray(s.tabs) ? (s.tabs as ShowroomTab[]) : undefined,
+    };
+  }
+  const showroomNode = nodes.find((n) => isShowroomContainer(n));
+  if (!showroomNode) return null;
+  const d = showroomNode.data as Record<string, unknown>;
+  return {
+    enabled: true,
+    content_repo: String(d.contentRepo || ""),
+    content_ref: String(d.contentRef || "main"),
+    build_content: d.buildContent !== false,
+    tabs: Array.isArray(d.showroomTabs) ? (d.showroomTabs as ShowroomTab[]) : [],
+  };
+}
+
+function refreshShowroomTabRoutes(state: {
+  nodes: Node[];
+  edges: Edge[];
+}): Node[] {
+  const showroom = getShowroomNode(state.nodes);
+  if (!showroom) return state.nodes;
+  const tabs = ((showroom.data as Record<string, unknown>).showroomTabs ||
+    []) as ShowroomTab[];
+  const updatedData = applyShowroomTabsToNode(
+    showroom.data as Record<string, unknown>,
+    tabs,
+    state.nodes,
+    state.edges,
+    showroom.id,
+  );
+  return state.nodes.map((n) =>
+    n.id === showroom.id ? { ...n, data: updatedData } : n,
+  );
 }
 
 const _transitionalStatuses = new Set(["stopping", "restarting", "starting"]);
@@ -374,6 +463,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   topologyDirty: false,
   startOrder: [] as StartOrderEntry[],
   externalIps: [] as ExternalIp[],
+  showroom: null as ShowroomConfig | null,
 
   onNodesChange: (changes) => {
     const removals = changes.filter((c) => c.type === "remove");
@@ -406,10 +496,20 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           if (!confirmed) return;
           get().pushHistory();
           const removedIds = new Set(removals.map((r) => (r as { id: string }).id));
+          const { extraDiskIds, clearShowroom, removedShowroomId } = removalExtrasForNodes(
+            removedIds,
+            get().nodes,
+          );
+          for (const diskId of extraDiskIds) removedIds.add(diskId);
+          const nextStartOrder = removedShowroomId
+            ? get().startOrder.filter((e) => e.vmId !== removedShowroomId)
+            : get().startOrder;
           set({
-            nodes: applyNodeChanges(removals, get().nodes),
+            nodes: applyNodeChanges(removals, get().nodes).filter((n) => !extraDiskIds.has(n.id)),
             edges: get().edges.filter((e) => !removedIds.has(e.source) && !removedIds.has(e.target)),
             selectedNodeId: removedIds.has(get().selectedNodeId || "") ? null : get().selectedNodeId,
+            ...(clearShowroom ? { showroom: null } : {}),
+            startOrder: nextStartOrder,
           });
           set({ topologyDirty: computeTopologyDirty(get()) });
         });
@@ -417,10 +517,20 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       }
       get().pushHistory();
       const removedIds = new Set(removals.map((r) => (r as { id: string }).id));
+      const { extraDiskIds, clearShowroom, removedShowroomId } = removalExtrasForNodes(
+        removedIds,
+        updatedNodes,
+      );
+      for (const diskId of extraDiskIds) removedIds.add(diskId);
+      const nextStartOrder = removedShowroomId
+        ? get().startOrder.filter((e) => e.vmId !== removedShowroomId)
+        : get().startOrder;
       set({
-        nodes: applyNodeChanges(removals, updatedNodes),
+        nodes: applyNodeChanges(removals, updatedNodes).filter((n) => !extraDiskIds.has(n.id)),
         edges: get().edges.filter((e) => !removedIds.has(e.source) && !removedIds.has(e.target)),
         selectedNodeId: removedIds.has(get().selectedNodeId || "") ? null : get().selectedNodeId,
+        ...(clearShowroom ? { showroom: null } : {}),
+        startOrder: nextStartOrder,
       });
       set({ topologyDirty: computeTopologyDirty(get()) });
     } else {
@@ -591,21 +701,24 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       animated = true;
     }
 
-    // Auto-add NIC before creating edge when connecting a network to a VM with no matching handle
+    // Auto-add NIC before creating edge when connecting a network to a VM/container with no matching handle
     const finalConnection = { ...connection };
-    if ((sType === "networkNode" && tType === "vmNode") || (tType === "networkNode" && sType === "vmNode")) {
-      const vmNode = sType === "vmNode" ? sourceNode : targetNode;
+    const isWorkloadNet =
+      (sType === "networkNode" && (tType === "vmNode" || tType === "containerNode")) ||
+      (tType === "networkNode" && (sType === "vmNode" || sType === "containerNode"));
+    if (isWorkloadNet) {
+      const workloadNode = sType === "vmNode" || sType === "containerNode" ? sourceNode : targetNode;
       const netNode = sType === "networkNode" ? sourceNode : targetNode;
-      const vmHandle = sType === "vmNode" ? connection.sourceHandle : connection.targetHandle;
-      const vmNics = ((vmNode.data as Record<string, any>).nics || []) as Array<{id: string; name: string; mac: string; model: string; ip?: string}>;
-      const nicForHandle = vmNics.find((nic) =>
-        vmHandle === `nic-${nic.id}-top` || vmHandle === `nic-${nic.id}-bottom`
+      const workloadHandle = (sType === "vmNode" || sType === "containerNode") ? connection.sourceHandle : connection.targetHandle;
+      const workloadNics = ((workloadNode.data as Record<string, any>).nics || []) as Array<{id: string; name: string; mac: string; model: string; ip?: string}>;
+      const nicForHandle = workloadNics.find((nic) =>
+        workloadHandle === `nic-${nic.id}-top` || workloadHandle === `nic-${nic.id}-bottom`
       );
       const nicHandleTop = nicForHandle ? `nic-${nicForHandle.id}-top` : null;
       const nicHandleBottom = nicForHandle ? `nic-${nicForHandle.id}-bottom` : null;
       const handleAlreadyConnected = nicForHandle && get().edges.some((e) =>
-        (e.source === vmNode.id && (e.sourceHandle === nicHandleTop || e.sourceHandle === nicHandleBottom)) ||
-        (e.target === vmNode.id && (e.targetHandle === nicHandleTop || e.targetHandle === nicHandleBottom))
+        (e.source === workloadNode.id && (e.sourceHandle === nicHandleTop || e.sourceHandle === nicHandleBottom)) ||
+        (e.target === workloadNode.id && (e.targetHandle === nicHandleTop || e.targetHandle === nicHandleBottom))
       );
       if (!nicForHandle || handleAlreadyConnected) {
         const netData = netNode.data as Record<string, any>;
@@ -615,7 +728,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         if (base) {
           const usedIps = new Set<string>();
           for (const n of get().nodes) {
-            if (n.type !== "vmNode") continue;
+            if (n.type !== "vmNode" && n.type !== "containerNode") continue;
             for (const nic of ((n.data as Record<string, any>).nics || []) as Array<{ip?: string}>) {
               if (nic.ip) usedIps.add(nic.ip);
             }
@@ -625,21 +738,21 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             if (!usedIps.has(candidate)) { autoIp = candidate; break; }
           }
         }
-        const suffix = vmHandle?.endsWith("-top") ? "top" : "bottom";
+        const suffix = workloadHandle?.endsWith("-top") ? "top" : "bottom";
         const newNic = {
           id: generateNicId(),
-          name: `eth${vmNics.length}`,
+          name: `eth${workloadNics.length}`,
           mac: generateMac(),
           model: "virtio",
           ...(autoIp ? { ip: autoIp } : {}),
         };
         const newHandle = `nic-${newNic.id}-${suffix}`;
-        if (sType === "vmNode") finalConnection.sourceHandle = newHandle;
+        if (sType === "vmNode" || sType === "containerNode") finalConnection.sourceHandle = newHandle;
         else finalConnection.targetHandle = newHandle;
         set({
           nodes: get().nodes.map((n) =>
-            n.id === vmNode.id
-              ? { ...n, data: { ...n.data, nics: [...vmNics, newNic] } }
+            n.id === workloadNode.id
+              ? { ...n, data: { ...n.data, nics: [...workloadNics, newNic] } }
               : n
           ),
         });
@@ -676,6 +789,13 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       }
     }
     set({ topologyDirty: computeTopologyDirty(get()) });
+
+    const showroom = getShowroomNode(get().nodes);
+    if (showroom) {
+      let nodes = applyShowroomPortForward(get().nodes, get().edges);
+      nodes = refreshShowroomTabRoutes({ nodes, edges: get().edges });
+      if (nodes !== get().nodes) set({ nodes });
+    }
   },
 
   addNode: (node) => {
@@ -698,6 +818,19 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       ...(handlesChanged ? { edges: get().edges.map((e) => ({ ...e })) } : {}),
     });
     if (!isStatusOnly) set({ topologyDirty: computeTopologyDirty(get()) });
+
+    if (!isStatusOnly && ("nics" in data || "isShowroom" in data)) {
+      const showroom = getShowroomNode(get().nodes);
+      if (showroom) {
+        const withPf = applyShowroomPortForward(get().nodes, get().edges);
+        if (withPf !== get().nodes) set({ nodes: withPf });
+      }
+    }
+
+    if (!isStatusOnly && nodeId && get().nodes.find((n) => n.id === nodeId)?.type === "vmNode" && "nics" in data) {
+      const refreshed = refreshShowroomTabRoutes(get());
+      if (refreshed !== get().nodes) set({ nodes: refreshed });
+    }
   },
 
   setAllVmStatus: (status) => {
@@ -712,13 +845,24 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
   deleteNode: (nodeId) => {
     get().pushHistory();
+    const removedIds = new Set([nodeId]);
+    const { extraDiskIds, clearShowroom, removedShowroomId } = removalExtrasForNodes(
+      removedIds,
+      get().nodes,
+    );
+    for (const diskId of extraDiskIds) removedIds.add(diskId);
+    const nextStartOrder = removedShowroomId
+      ? get().startOrder.filter((e) => e.vmId !== removedShowroomId)
+      : get().startOrder;
     set({
-      nodes: get().nodes.filter((n) => n.id !== nodeId),
+      nodes: get().nodes.filter((n) => !removedIds.has(n.id)),
       edges: get().edges.filter(
-        (e) => e.source !== nodeId && e.target !== nodeId,
+        (e) => !removedIds.has(e.source) && !removedIds.has(e.target),
       ),
       selectedNodeId:
         get().selectedNodeId === nodeId ? null : get().selectedNodeId,
+      ...(clearShowroom ? { showroom: null } : {}),
+      startOrder: nextStartOrder,
     });
     set({ topologyDirty: computeTopologyDirty(get()) });
   },
@@ -826,7 +970,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
         if (project.topology) {
           const t = project.topology;
-          const nodes = (t.nodes || []).map((n: Record<string, unknown>) => n);
+          const nodes = (t.nodes || []).map((n: Record<string, unknown>) => n) as Node[];
           // Surface the allocated EIP address: it is written to deployed_topology
           // at deploy time but the editable topology keeps ip="". Merge it back by
           // id so the canvas shows the assigned IP (only when live ip is empty).
@@ -839,11 +983,31 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
               : e;
           });
           set({
-            nodes,
+            nodes: (() => {
+              const showroomNode = nodes.find((n: Node) => isShowroomContainer(n));
+              const showroomCfg = parseShowroomFromTopology(t.showroom, nodes);
+              const tabs =
+                (showroomCfg?.tabs && showroomCfg.tabs.length > 0
+                  ? showroomCfg.tabs
+                  : ((showroomNode?.data as Record<string, unknown> | undefined)
+                      ?.showroomTabs as ShowroomTab[] | undefined)) || [];
+              if (!showroomNode || tabs.length === 0) return nodes;
+              const updatedData = applyShowroomTabsToNode(
+                showroomNode.data as Record<string, unknown>,
+                tabs,
+                nodes,
+                t.edges || [],
+                showroomNode.id,
+              );
+              return nodes.map((n: Node) =>
+                n.id === showroomNode.id ? { ...n, data: updatedData } : n,
+              );
+            })(),
             edges: t.edges || [],
             hiddenNodeIds: t.hiddenNodeIds || [],
             startOrder: t.startOrder || [],
             externalIps,
+            showroom: parseShowroomFromTopology(t.showroom, nodes),
           });
           _lastSavedNodeCount = (t.nodes || []).length;
         }
@@ -860,6 +1024,74 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
   setExternalIps: (ips) => {
     set({ externalIps: ips });
+    set({ topologyDirty: computeTopologyDirty(get()) });
+  },
+
+  setShowroom: (config) => {
+    set({ showroom: config });
+    set({ topologyDirty: computeTopologyDirty(get()) });
+  },
+
+  addShowroomScaffold: (position) => {
+    if (hasShowroomNode(get().nodes)) return false;
+    const scaffold = buildShowroomScaffold(position);
+    get().pushHistory();
+    const startOrder = get().startOrder.some((e) => e.vmId === scaffold.startOrderEntry.vmId)
+      ? get().startOrder
+      : [...get().startOrder, scaffold.startOrderEntry];
+    set({
+      nodes: [...get().nodes, scaffold.showroomNode, scaffold.diskNode],
+      edges: [...get().edges, scaffold.diskEdge],
+      showroom: scaffold.showroom,
+      startOrder,
+      selectedNodeId: scaffold.showroomNode.id,
+    });
+    set({ topologyDirty: computeTopologyDirty(get()) });
+    return true;
+  },
+
+  updateShowroomConfig: (nodeId, patch) => {
+    const node = get().nodes.find((n) => n.id === nodeId);
+    if (!node || !isShowroomContainer(node)) return;
+    const current = get().showroom || parseShowroomFromTopology(null, get().nodes)!;
+    const next: ShowroomConfig = {
+      enabled: patch.enabled ?? current.enabled,
+      content_repo: patch.content_repo ?? current.content_repo,
+      content_ref: patch.content_ref ?? current.content_ref,
+      build_content: patch.build_content ?? current.build_content,
+    };
+    const syncedData = syncShowroomContentEnv(
+      node.data as Record<string, unknown>,
+      next.content_repo,
+      next.content_ref,
+      next.build_content,
+    );
+    set({
+      showroom: next,
+      nodes: get().nodes.map((n) =>
+        n.id === nodeId ? { ...n, data: syncedData } : n,
+      ),
+    });
+    set({ topologyDirty: computeTopologyDirty(get()) });
+  },
+
+  updateShowroomTabs: (nodeId, tabs) => {
+    const node = get().nodes.find((n) => n.id === nodeId);
+    if (!node || !isShowroomContainer(node)) return;
+    const updatedData = applyShowroomTabsToNode(
+      node.data as Record<string, unknown>,
+      tabs,
+      get().nodes,
+      get().edges,
+      nodeId,
+    );
+    const current = get().showroom || parseShowroomFromTopology(null, get().nodes)!;
+    set({
+      showroom: { ...current, tabs },
+      nodes: get().nodes.map((n) =>
+        n.id === nodeId ? { ...n, data: updatedData } : n,
+      ),
+    });
     set({ topologyDirty: computeTopologyDirty(get()) });
   },
 
@@ -1161,19 +1393,20 @@ export function allocateBmcIp(): string {
 }
 
 // Save topology to API
-function _saveTopologyToApi(projectId: string, state: { nodes: Node[]; edges: Edge[]; hiddenNodeIds: string[]; startOrder: StartOrderEntry[]; externalIps: ExternalIp[] }) {
+function _saveTopologyToApi(projectId: string, state: { nodes: Node[]; edges: Edge[]; hiddenNodeIds: string[]; startOrder: StartOrderEntry[]; externalIps: ExternalIp[]; showroom: ShowroomConfig | null }) {
   const cleanNodes = state.nodes.map((n) => {
     if (n.type !== "vmNode") return n;
     const { status, redeployStep, redeployDetail, ...rest } = n.data as Record<string, any>;
     return { ...n, data: rest };
   });
-  const topology = {
+  const topology: Record<string, unknown> = {
     nodes: cleanNodes,
     edges: state.edges,
     hiddenNodeIds: state.hiddenNodeIds,
     startOrder: state.startOrder,
     externalIps: state.externalIps,
   };
+  if (state.showroom) topology.showroom = state.showroom;
   fetch(`/api/v1/projects/${projectId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -1208,7 +1441,7 @@ useCanvasStore.subscribe((state) => {
     if (s.nodes.length === 0) return;
     const topoKey = s.nodes.map((n) =>
       `${n.id}:${JSON.stringify(stableNodeData((n.data || {}) as Record<string, unknown>))}`,
-    ).join("|") + "||" + s.edges.map((e) => `${e.source}-${e.target}`).join("|") + "||so:" + JSON.stringify(s.startOrder) + "||eip:" + stableExternalIpsKey(s.externalIps);
+    ).join("|") + "||" + s.edges.map((e) => `${e.source}-${e.target}`).join("|") + "||so:" + JSON.stringify(s.startOrder) + "||eip:" + stableExternalIpsKey(s.externalIps) + "||sr:" + JSON.stringify(s.showroom);
     if (topoKey === _lastSavedTopologyKey) return;
     _lastSavedTopologyKey = topoKey;
     _lastSavedNodeCount = s.nodes.length;

@@ -674,9 +674,10 @@ class TestMetadataHandlers(unittest.TestCase):
     """Unit tests for metadata service deployment."""
 
     @patch("troshkad.subprocess.Popen")
+    @patch("troshkad._cleanup_stale_metadata_ips")
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("troshkad.os.makedirs")
-    def test_metadata_deploy(self, mock_makedirs, mock_open, mock_popen):
+    def test_metadata_deploy(self, mock_makedirs, mock_open, mock_cleanup, mock_popen):
         mock_popen.return_value = _mock_popen()
         job = troshkad._create_job("metadata/deploy", {
             "project_id": "aabbccdd-1122-3344-5566-778899001122",
@@ -692,6 +693,7 @@ class TestMetadataHandlers(unittest.TestCase):
         })
         result = troshkad._handle_metadata_deploy(job, job["params"])
         self.assertEqual(result["status"], "started")
+        mock_cleanup.assert_called_once_with(job, "troshka-aabbccdd", ["br-10001"])
         self.assertIn("pid", result)
 
         # Verify script was written

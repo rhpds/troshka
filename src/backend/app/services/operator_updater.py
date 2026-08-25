@@ -172,8 +172,16 @@ def _poll_operator_digests():
 
 
 def update_operator(provider) -> dict:
-    """Force rollout restart of the operator deployment. Returns status dict."""
+    """Apply operator CRDs and restart the deployment. Returns status dict."""
     from kubernetes import client
+
+    from app.services.providers.kubevirt import _ensure_operator_crds
+
+    try:
+        _ensure_operator_crds(provider)
+    except Exception as e:
+        logger.exception("Failed to apply operator CRDs on %s: %s", provider.name, e)
+        return {"status": "error", "message": f"Failed to apply operator CRDs: {e}"}
 
     creds = provider.get_credentials()
     config = client.Configuration()

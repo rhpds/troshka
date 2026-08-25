@@ -146,6 +146,7 @@ def resolve_inline_template(template_yaml: str | dict) -> dict:
         "hidden_nodes",
         "pull_through_registry",
         "clock_target",
+        "showroom",
     ):
         if tmpl.get(section):
             resolved[section] = tmpl[section]
@@ -233,12 +234,17 @@ def _bmc_mac():
 
 def _net_edge(net_id, vm_node, nic_index=0, vm_handle="top"):
     nic = vm_node["data"]["nics"][nic_index]
+    return _workload_net_edge(net_id, vm_node["id"], nic["id"], vm_handle)
+
+
+def _workload_net_edge(net_id, workload_id, nic_id, workload_handle="top"):
+    """Network-to-workload edge (VM or container): network above, workload below."""
     return {
         "id": _id(),
         "source": net_id,
-        "target": vm_node["id"],
-        "sourceHandle": "bottom" if vm_handle == "top" else "top",
-        "targetHandle": f"nic-{nic['id']}-{vm_handle}",
+        "target": workload_id,
+        "sourceHandle": "bottom" if workload_handle == "top" else "top",
+        "targetHandle": f"nic-{nic_id}-{workload_handle}",
         "type": "smoothstep",
         "style": {
             "stroke": "rgba(34,211,238,0.5)",
@@ -726,17 +732,7 @@ def _build_container_nics_and_edges(ctr_id, ctr_cfg, net_ids):
         net_name = nic_cfg.get("network", "")
         net_node_id = net_ids.get(net_name)
         if net_node_id:
-            nic_edges.append(
-                {
-                    "id": _id(),
-                    "source": ctr_id,
-                    "target": net_node_id,
-                    "sourceHandle": f"{nic_id}-bottom",
-                    "targetHandle": "top",
-                    "type": "smoothstep",
-                    "style": {"stroke": "rgba(96,165,250,0.5)", "strokeWidth": 2},
-                }
-            )
+            nic_edges.append(_workload_net_edge(net_node_id, ctr_id, nic_id, "top"))
     return ctr_nics, nic_edges
 
 
@@ -834,6 +830,8 @@ def _build_container_node(ctr_key, ctr_cfg, net_ids, _nets_def, vm_x, vm_row_y):
     if is_pod:
         ctr_node["data"]["isPod"] = True
         ctr_node["data"]["icon"] = "\U0001fadb"
+        if "build_content" in ctr_cfg:
+            ctr_node["data"]["buildContent"] = bool(ctr_cfg["build_content"])
 
         init_ctrs = []
         for ic_cfg in ctr_cfg.get("init_containers", []):
@@ -918,12 +916,14 @@ def _generate_ocp_dns_records(ocp_cfg, top_dns):
 
 
 def _collect_vm_ips(nodes):
+    """Collect first-NIC IPs for VMs and containers (for DNS target resolution)."""
     vm_ips = {}
     for n in nodes:
-        if n.get("type") == "vmNode":
-            nics = n.get("data", {}).get("nics", [])
-            if nics:
-                vm_ips[n["data"].get("name", "")] = nics[0].get("ip", "")
+        if n.get("type") not in ("vmNode", "containerNode"):
+            continue
+        nics = n.get("data", {}).get("nics", [])
+        if nics:
+            vm_ips[n["data"].get("name", "")] = nics[0].get("ip", "")
     return vm_ips
 
 
@@ -1048,13 +1048,16 @@ def _generate_topology_from_vms(
         if nid:
             hidden_ids.append(nid)
 
-    return {
+    result = {
         "nodes": nodes,
         "edges": edges,
         "externalIps": external_ips,
         "startOrder": start_order,
         "hiddenNodeIds": hidden_ids,
     }
+    if tmpl.get("showroom"):
+        result["showroom"] = tmpl["showroom"]
+    return result
 
 
 def _collect_iso_item_ids(nodes: list[dict], db) -> set[str]:
@@ -1521,6 +1524,8 @@ def _export_sub_container(sc, all_storage_nodes):
 
 def _export_pod_container(cd, nics_export, disks_export, all_storage_nodes):
     ctr_export: dict = {"type": "pod"}
+    if "buildContent" in cd:
+        ctr_export["build_content"] = bool(cd["buildContent"])
     if nics_export:
         ctr_export["nics"] = nics_export
     if cd.get("restartPolicy", "always") != "always":
@@ -1734,6 +1739,9 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
     hidden = topology.get("hiddenNodeIds", [])
     if hidden:
         result["hidden_nodes"] = [id_to_name.get(h, h) for h in hidden]
+
+    if topology.get("showroom"):
+        result["showroom"] = topology["showroom"]
 
     return result
 

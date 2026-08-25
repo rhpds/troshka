@@ -142,13 +142,24 @@ async def _ensure_golden_pvc(
 ):
     if not secret_name:
         secret_name = "s3-credentials"  # pragma: allowlist secret
+    from helpers.kubevirt import delete_golden_import, golden_import_matches
+
     pvc_name = golden_pvc_name(s3_path)
     try:
-        core_api.read_namespaced_persistent_volume_claim(
-            name=pvc_name, namespace=CACHE_NAMESPACE
+        existing = custom_api.get_namespaced_custom_object(
+            group=_CDI_API,
+            version="v1beta1",
+            namespace=CACHE_NAMESPACE,
+            plural="datavolumes",
+            name=pvc_name,
         )
-        logger.info(f"Golden PVC {pvc_name} already exists")
-        return pvc_name
+        if golden_import_matches(existing, s3_path, s3_config, secret_name):
+            logger.info(f"Golden PVC {pvc_name} already exists")
+            return pvc_name
+        logger.warning(
+            f"Golden import {pvc_name} has wrong S3 source, recreating"
+        )
+        delete_golden_import(custom_api, core_api, CACHE_NAMESPACE, pvc_name)
     except client.ApiException as e:
         if e.status != 404:
             raise

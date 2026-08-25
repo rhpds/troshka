@@ -1047,6 +1047,26 @@ def _job_log(job, msg):
     logger.info("[%s] %s", job["job_id"][:8], msg)
 
 
+class _CmdResult:
+    """Subprocess result with stdout helpers and returncode access."""
+
+    __slots__ = ("stdout", "stderr", "returncode")
+
+    def __init__(self, stdout, stderr, returncode):
+        self.stdout = stdout or ""
+        self.stderr = stderr or ""
+        self.returncode = returncode
+
+    def strip(self):
+        return self.stdout.strip()
+
+    def __bool__(self):
+        return self.returncode == 0
+
+    def __str__(self):
+        return self.stdout
+
+
 def _run_cmd(job, cmd, timeout=600, check=True):
     """Run a subprocess command, appending output to job. Stores process handle in job for drain."""
     _job_log(job, f"$ {' '.join(cmd)}")
@@ -1070,7 +1090,7 @@ def _run_cmd(job, cmd, timeout=600, check=True):
             _job_log(job, line)
     if check and proc.returncode != 0:
         raise RuntimeError(f"Command failed (exit {proc.returncode}): {' '.join(cmd)}")
-    return proc
+    return _CmdResult(stdout, stderr, proc.returncode)
 
 
 def _chown_qemu(path):
@@ -5836,6 +5856,58 @@ server.serve_forever()
 """
 
 
+_METADATA_IP = "169.254.169.254/32"
+
+
+def _list_namespace_bridges(namespace):
+    """List bridge interfaces inside a project network namespace."""
+    result = subprocess.run(
+        ["ip", "netns", "exec", namespace, "ip", "-o", "link", "show", "type", "bridge"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    bridges = []
+    if result.returncode != 0:
+        return bridges
+    for line in result.stdout.strip().split("\n"):
+        parts = line.split(":", 2)
+        if len(parts) >= 2:
+            name = parts[1].strip().split("@")[0]
+            if name.startswith("br-"):
+                bridges.append(name)
+    return bridges
+
+
+def _remove_metadata_ip_from_bridge(job, namespace, bridge):
+    """Remove cloud-init metadata IP from a bridge (no-op if absent)."""
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            namespace,
+            "ip",
+            "addr",
+            "del",
+            _METADATA_IP,
+            "dev",
+            bridge,
+        ],
+        timeout=10,
+        check=False,
+    )
+
+
+def _cleanup_stale_metadata_ips(job, namespace, allowed_bridges):
+    """Drop metadata IP from bridges that should not host it."""
+    allowed = set(allowed_bridges or [])
+    for bridge in _list_namespace_bridges(namespace):
+        if bridge not in allowed:
+            _remove_metadata_ip_from_bridge(job, namespace, bridge)
+
+
 def _handle_metadata_deploy(job, params):
     """Deploy the cloud-init metadata service inside a network namespace."""
     project_id = _validate_project_id(params["project_id"])
@@ -5854,7 +5926,8 @@ def _handle_metadata_deploy(job, params):
     except RuntimeError:
         _job_log(job, "No existing metadata service to kill")
 
-    # Step 2: Add metadata IP to each bridge inside namespace
+    # Step 2: Metadata IP on allowed bridges only — remove from all others first
+    _cleanup_stale_metadata_ips(job, namespace, bridges)
     for bridge in bridges:
         try:
             _run_cmd(
@@ -5867,7 +5940,7 @@ def _handle_metadata_deploy(job, params):
                     "ip",
                     "addr",
                     "add",
-                    "169.254.169.254/32",
+                    _METADATA_IP,
                     "dev",
                     bridge,
                 ],
@@ -9261,6 +9334,30 @@ _IOS_PROMPT = r"[>#]\s*"
 _IOS_USERNAME = r"(?i)Username:\s*"
 _IOS_PASSWORD = r"(?i)Password:\s*"
 _IOS_PRESS_RETURN = r"(?i)Press RETURN to get started"
+_IOS_INIT_DIALOG = r"(?i)initial configuration dialog\?"
+_IOS_ENABLE_SECRET = r"(?i)Enter enable secret:"
+_IOS_CONFIRM_SECRET = r"(?i)Confirm enable secret:"
+_IOS_SETUP_SELECT = r"Enter your selection \[2\]:"
+_IOS_MORE = r"--More--"
+_DEFAULT_IOS_ENABLE_SECRET = "Admin12345!"  # pragma: allowlist secret
+
+
+def _ios_enable_secret(password: str) -> str:
+    """Pick an enable secret that satisfies IOS-XE setup wizard rules."""
+    if password and len(password) >= 10:
+        return password
+    return _DEFAULT_IOS_ENABLE_SECRET
+
+
+def _split_serial_commands(command: str) -> list[str]:
+    """Split a multiline serial script into individual CLI lines."""
+    if "\n" not in (command or ""):
+        return [command]
+    return [
+        line
+        for line in command.splitlines()
+        if line.strip() and not line.strip().startswith("!")
+    ]
 
 
 def _serial_strip_ansi(text):
@@ -9294,12 +9391,18 @@ def _serial_ios_poke_and_login(child, username, password, domain, timeout_secs):
     """Reach an IOS-XE exec prompt (> or #). Returns error dict or None."""
     from pexpect import TIMEOUT
 
-    deadline = time.time() + min(timeout_secs, 45)
+    enable_secret = _ios_enable_secret(password)
+    deadline = time.time() + min(timeout_secs, 90)
     while time.time() < deadline:
         child.send("\r")
         try:
             idx = child.expect(
                 [
+                    _IOS_INIT_DIALOG,
+                    _IOS_ENABLE_SECRET,
+                    _IOS_CONFIRM_SECRET,
+                    _IOS_SETUP_SELECT,
+                    _IOS_MORE,
                     _IOS_USERNAME,
                     _IOS_PASSWORD,
                     _IOS_PRESS_RETURN,
@@ -9310,27 +9413,65 @@ def _serial_ios_poke_and_login(child, username, password, domain, timeout_secs):
         except TIMEOUT:
             continue
         if idx == 0:
+            child.send("no\r")
+        elif idx == 1:
+            child.send(enable_secret + "\r")
+        elif idx == 2:
+            child.send(enable_secret + "\r")
+        elif idx == 3:
+            child.send("2\r")
+        elif idx == 4:
+            child.send(" ")
+        elif idx == 5:
             if not username:
                 return {"domain": domain, "output": "", "error": "Username required"}
             child.send(username + "\r")
-        elif idx == 1:
+        elif idx == 6:
             if not password:
                 return {"domain": domain, "output": "", "error": "Password required"}
             child.send(password + "\r")
-        elif idx == 2:
+        elif idx == 7:
             child.send("\r")
-        elif idx == 3:
+        elif idx == 8:
             return None
     return {"domain": domain, "output": "", "error": "Console not responding"}
 
 
 def _serial_ios_exec_command(child, command, timeout_secs):
     """Run a command at an IOS-XE prompt and return CLI output."""
+    import re
     from pexpect import TIMEOUT
 
     child.send(command + "\r")
-    child.expect(_IOS_PROMPT, timeout=timeout_secs)
-    return _serial_clean_ios_output(child.before or "", command)
+    chunks = []
+    deadline = time.time() + timeout_secs
+    try:
+        child.expect(re.escape(command), timeout=min(10, timeout_secs))
+    except TIMEOUT:
+        pass
+    while time.time() < deadline:
+        try:
+            idx = child.expect(
+                [_IOS_PROMPT, _IOS_MORE],
+                timeout=max(1, min(10, deadline - time.time())),
+            )
+        except TIMEOUT:
+            break
+        if child.before:
+            chunks.append(child.before)
+        if idx == 0:
+            break
+        child.send(" ")
+    return _serial_clean_ios_output("".join(chunks), command)
+
+
+def _serial_ios_exec_commands(child, commands, timeout_secs):
+    """Run multiple IOS-XE commands in one serial session."""
+    chunks = []
+    per_cmd = max(30, timeout_secs // max(len(commands), 1))
+    for cmd in commands:
+        chunks.append(_serial_ios_exec_command(child, cmd, per_cmd))
+    return "\n".join(chunk for chunk in chunks if chunk)
 
 
 def _handle_vm_serial_exec_ios(job, params, timeout_secs):
@@ -9359,7 +9500,11 @@ def _handle_vm_serial_exec_ios(job, params, timeout_secs):
         )
         if err is not None:
             return err
-        output = _serial_ios_exec_command(child, command, timeout_secs)
+        commands = _split_serial_commands(command)
+        if len(commands) == 1:
+            output = _serial_ios_exec_command(child, commands[0], timeout_secs)
+        else:
+            output = _serial_ios_exec_commands(child, commands, timeout_secs)
         return {"domain": domain, "output": output, "method": "serial-ios"}
     except TIMEOUT:
         return {"domain": domain, "output": "", "error": "Command timed out"}
@@ -9374,50 +9519,169 @@ def _handle_vm_serial_exec_ios(job, params, timeout_secs):
             pass
 
 
-def _serial_junos_poke_and_login(child, username, password, domain, timeout_secs):
-    """Reach a Junos CLI prompt after FreeBSD login. Returns error dict or None."""
+_FREEBSD_SHELL = r"(?:root@|admin@|[%#$]\s)"
+_FREEBSD_SHELL_PROMPT = r"root@[^\r\n]+#\s*"
+_JUNOS_CLI_PROMPT = r"[>#]\s*"
+_JUNOS_EDIT_PROMPT = r"\[edit\]"
+_JUNOS_BOOT_MORE = r"---\(more \d+%\)---"
+_JUNOS_CLI_MORE = r"---\(more\)---"
+
+
+def _serial_junos_clean_output(raw, command):
+    """Strip echoed command and shell prompts from Junos CLI output."""
+    import re
+
+    raw = _serial_strip_ansi(raw or "")
+    raw = raw.replace("\r\n", "\n").replace("\r", "")
+    lines = []
+    for line in raw.split("\n"):
+        clean = line.strip()
+        if not clean or clean == command.strip():
+            continue
+        if clean.startswith("root@") and clean.endswith("#"):
+            continue
+        if re.match(r"^---\(more(?: \d+%)?\)---$", clean):
+            continue
+        lines.append(clean)
+    return "\n".join(lines)
+
+
+def _serial_junos_wrap_command(command: str) -> str:
+    """Wrap a Junos CLI command for execution from the vSRX FreeBSD shell."""
+    cmd = (command or "").strip()
+    if not cmd:
+        return cmd
+    if cmd.startswith("cli "):
+        return cmd
+    return f"cli {cmd}"
+
+
+def _serial_junos_poke_and_login(child, domain, timeout_secs):
+    """Reach vSRX FreeBSD shell via serial (root login, empty password)."""
     from pexpect import TIMEOUT
 
-    _JUNOS_LOGIN = r"login:\s*"
-    _JUNOS_PASSWORD = r"Password:\s*"
-    _JUNOS_PROMPT = r"[>%#]\s*"
+    _FREEBSD_LOGIN = r"login:\s*"
+    _FREEBSD_PASSWORD = r"Password:\s*"
 
-    deadline = time.time() + min(timeout_secs, 45)
+    deadline = time.time() + min(timeout_secs, 120)
     while time.time() < deadline:
         child.send("\r")
         try:
             idx = child.expect(
-                [_JUNOS_LOGIN, _JUNOS_PASSWORD, _JUNOS_PROMPT],
+                [
+                    _JUNOS_BOOT_MORE,
+                    _FREEBSD_LOGIN,
+                    _FREEBSD_PASSWORD,
+                    _FREEBSD_SHELL,
+                    _JUNOS_CLI_PROMPT,
+                ],
                 timeout=3,
             )
         except TIMEOUT:
             continue
         if idx == 0:
-            if not username:
-                return {"domain": domain, "output": "", "error": "Username required"}
-            child.send(username + "\r")
+            child.send(" ")
         elif idx == 1:
-            if not password:
-                return {"domain": domain, "output": "", "error": "Password required"}
-            child.send(password + "\r")
+            child.send("root\r")
         elif idx == 2:
+            child.send("\r")
+        elif idx == 3:
             return None
+        elif idx == 4:
+            child.send("exit\r")
     return {"domain": domain, "output": "", "error": "Console not responding"}
 
 
 def _serial_junos_exec_command(child, command, timeout_secs):
+    import re
+
+    wrapped = _serial_junos_wrap_command(command)
+    child.send(wrapped + "\r")
+    chunks = []
+    deadline = time.time() + timeout_secs
+    prompt = re.compile(_FREEBSD_SHELL_PROMPT, re.MULTILINE)
+    try:
+        child.expect(re.escape(wrapped), timeout=min(10, timeout_secs))
+    except Exception:
+        pass
+    while time.time() < deadline:
+        try:
+            idx = child.expect(
+                [_JUNOS_BOOT_MORE, _JUNOS_CLI_MORE, prompt],
+                timeout=max(1, min(10, deadline - time.time())),
+            )
+        except Exception:
+            break
+        if child.before:
+            chunks.append(child.before)
+        if idx == 2:
+            break
+        child.send(" ")
+    return _serial_junos_clean_output("".join(chunks), wrapped)
+
+
+def _serial_junos_needs_configure_session(commands: list[str]) -> bool:
+    for cmd in commands:
+        stripped = cmd.strip()
+        if stripped.startswith(("configure", "set ", "delete ", "activate ", "deactivate ")):
+            return True
+    return False
+
+
+def _serial_junos_exec_configure(child, commands, timeout_secs):
+    """Run Junos configure/set/commit lines in one interactive CLI session."""
     from pexpect import TIMEOUT
 
-    child.send(command + "\r")
-    child.expect(r"[>%#]\s*", timeout=timeout_secs)
-    return _serial_clean_ios_output(child.before or "", command)
+    child.send("cli\r")
+    child.expect(
+        [_JUNOS_EDIT_PROMPT, _JUNOS_CLI_PROMPT, _JUNOS_BOOT_MORE, _JUNOS_CLI_MORE],
+        timeout=30,
+    )
+    chunks = []
+    deadline = time.time() + timeout_secs
+    per_cmd = max(60, timeout_secs // max(len(commands), 1))
+    for cmd in commands:
+        child.send(cmd.strip() + "\r")
+        cmd_deadline = time.time() + per_cmd
+        while time.time() < cmd_deadline:
+            try:
+                idx = child.expect(
+                    [
+                        _JUNOS_BOOT_MORE,
+                        _JUNOS_CLI_MORE,
+                        _JUNOS_EDIT_PROMPT,
+                        _JUNOS_CLI_PROMPT,
+                    ],
+                    timeout=max(1, min(15, cmd_deadline - time.time())),
+                )
+            except TIMEOUT:
+                break
+            if child.before:
+                chunks.append(child.before)
+            if idx in (2, 3):
+                break
+            child.send(" ")
+    try:
+        child.send("exit\r")
+        child.expect(_FREEBSD_SHELL, timeout=10)
+    except TIMEOUT:
+        pass
+    return _serial_junos_clean_output("".join(chunks), "configure")
+
+
+def _serial_junos_exec_commands(child, commands, timeout_secs):
+    if _serial_junos_needs_configure_session(commands):
+        return _serial_junos_exec_configure(child, commands, timeout_secs)
+    chunks = []
+    per_cmd = max(30, timeout_secs // max(len(commands), 1))
+    for cmd in commands:
+        chunks.append(_serial_junos_exec_command(child, cmd, per_cmd))
+    return "\n".join(chunk for chunk in chunks if chunk)
 
 
 def _handle_vm_serial_exec_junos(job, params, timeout_secs):
-    """Execute a command on Juniper vSRX via serial (FreeBSD login → Junos CLI)."""
+    """Execute a command on Juniper vSRX via serial (FreeBSD → cli -c)."""
     domain = _validate_domain_name(params["domain_name"])
-    username = params.get("username", "root")
-    password = params.get("password", "")
     command = params.get("command", "")
 
     pty_path = _serial_open_pty(domain)
@@ -9432,12 +9696,14 @@ def _handle_vm_serial_exec_junos(job, params, timeout_secs):
     fd = os.open(pty_path, os.O_RDWR)
     child = fdpexpect.fdspawn(fd, encoding="utf-8", timeout=timeout_secs)
     try:
-        err = _serial_junos_poke_and_login(
-            child, username, password, domain, timeout_secs
-        )
+        err = _serial_junos_poke_and_login(child, domain, timeout_secs)
         if err is not None:
             return err
-        output = _serial_junos_exec_command(child, command, timeout_secs)
+        commands = _split_serial_commands(command)
+        if len(commands) == 1:
+            output = _serial_junos_exec_command(child, commands[0], timeout_secs)
+        else:
+            output = _serial_junos_exec_commands(child, commands, timeout_secs)
         return {"domain": domain, "output": output, "method": "serial-junos"}
     except TIMEOUT:
         return {"domain": domain, "output": "", "error": "Command timed out"}
@@ -9538,10 +9804,9 @@ def _handle_vm_serial_exec(job, params):
         "junos",
         "juniper_junos",
     )
-    timeout_secs = min(
-        int(params.get("timeout", 10)),
-        120 if serial_type in network_types else 60,
-    )
+    requested = int(params.get("timeout", 10))
+    max_timeout = 900 if serial_type in network_types else 60
+    timeout_secs = min(requested, max_timeout)
 
     if not command:
         raise RuntimeError(_NO_COMMAND)

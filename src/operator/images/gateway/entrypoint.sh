@@ -26,6 +26,15 @@ nft add rule inet nat postrouting oifname "eth0" masquerade
 nft add table inet filter
 nft add chain inet filter forward '{ type filter hook forward priority 0 ; policy accept ; }'
 
+_gateway_listen_port() {
+  # OpenShift/OVN blocks some inbound ports on the pod network (MetalLB path).
+  case "$1" in
+    80) echo 1080 ;;
+    8080) echo 18080 ;;
+    *) echo "$1" ;;
+  esac
+}
+
 # Port forwarding DNAT rules (format: extPort:intIp:intPort:proto,...)
 IFS=',' read -ra FORWARDS <<< "${PORT_FORWARDS:-}"
 for fwd in "${FORWARDS[@]}"; do
@@ -34,7 +43,9 @@ for fwd in "${FORWARDS[@]}"; do
   proto="${proto:-tcp}"
   if [[ -n "$ext_port" && -n "$int_ip" && -n "$int_port" ]]; then
     nft add rule inet nat prerouting "$proto" dport "$ext_port" dnat ip to "${int_ip}:${int_port}"
-    echo "Port forward: ${proto}/:${ext_port} -> ${int_ip}:${int_port}"
+    listen_port="$(_gateway_listen_port "$ext_port")"
+    socat "TCP-LISTEN:${listen_port},fork,reuseaddr" "TCP:${int_ip}:${int_port}" &
+    echo "Port forward: ${proto}/:${ext_port} -> ${int_ip}:${int_port} (listen ${listen_port})"
   fi
 done
 

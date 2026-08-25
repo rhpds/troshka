@@ -24,6 +24,7 @@ import NodeContextMenu from "./NodeContextMenu";
 import EdgeContextMenu from "./EdgeContextMenu";
 import DuplicateVMModal from "./DuplicateVMModal";
 import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM } from "@/stores/canvasStore";
+import { hasShowroomNode } from "@/lib/showroomScaffold";
 
 const nodeTypes = {
   vmNode: VMNode,
@@ -97,6 +98,7 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
   const onConnect = useCanvasStore((s) => s.onConnect);
   const setSelectedNode = useCanvasStore((s) => s.setSelectedNode);
   const addNode = useCanvasStore((s) => s.addNode);
+  const addShowroomScaffold = useCanvasStore((s) => s.addShowroomScaffold);
   const deleteNode = useCanvasStore((s) => s.deleteNode);
   const duplicateNode = useCanvasStore((s) => s.duplicateNode);
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
@@ -392,6 +394,10 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
             ],
           },
         };
+      } else if (item.type === "showroom") {
+        if (hasShowroomNode(useCanvasStore.getState().nodes)) return;
+        addShowroomScaffold(position);
+        return;
       } else if (item.type === "snapshot") {
         const snapshotId = (item.defaults as Record<string, any>)?.snapshotId as string;
         if (!snapshotId) return;
@@ -416,7 +422,7 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
 
       addNode(newNode);
     },
-    [addNode],
+    [addNode, addShowroomScaffold],
   );
 
   const stableNodeTypes = useMemo(() => nodeTypes, []);

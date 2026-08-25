@@ -472,7 +472,7 @@ class TestHandleDeployingPhase:
 
         vm_items = [{"spec": {}}, {"spec": {}}]
         p = MockPatch()
-        _handle_deploying_phase({}, "ns", "proj", p, MagicMock(), vm_items, 2)
+        _handle_deploying_phase({}, {}, "ns", "proj", {}, p, MagicMock(), vm_items, 2)
         assert p.status["phase"] == "Running"
         assert p.status["deployProgress"]["percent"] == 100
 
@@ -483,7 +483,7 @@ class TestHandleDeployingPhase:
 
         vm_items = [{"spec": {}}, {"spec": {}}]
         p = MockPatch()
-        _handle_deploying_phase({}, "ns", "proj", p, MagicMock(), vm_items, 1)
+        _handle_deploying_phase({}, {}, "ns", "proj", {}, p, MagicMock(), vm_items, 1)
         assert p.status["deployProgress"]["percent"] == 95
         assert "phase" not in p.status
 
@@ -492,7 +492,7 @@ class TestHandleDeployingPhase:
         from handlers.project import _handle_deploying_phase
 
         p = MockPatch()
-        _handle_deploying_phase({}, "ns", "proj", p, MagicMock(), [], 0)
+        _handle_deploying_phase({}, {}, "ns", "proj", {}, p, MagicMock(), [], 0)
         assert "phase" not in p.status
 
     @patch("handlers.project._handle_vm_start", return_value=False)
@@ -502,7 +502,7 @@ class TestHandleDeployingPhase:
 
         p = MockPatch()
         status = {"recertDone": True}
-        _handle_deploying_phase(status, "ns", "proj", p, MagicMock(), [], 0)
+        _handle_deploying_phase({}, status, "ns", "proj", {}, p, MagicMock(), [], 0)
         assert p.status["recertCleaned"] is True
 
 

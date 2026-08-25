@@ -10,6 +10,8 @@ logger = logging.getLogger(__name__)
 
 CRD_GROUP = "troshka.redhat.com"
 CRD_VERSION = "v1alpha1"
+CACHE_NAMESPACE = "troshka-cache"
+_KUBEMACPOOL_VM_IGNORE_LABEL = "mutatevirtualmachines.kubemacpool.io"
 _KUBEVIRT_API_GROUP = "kubevirt.io"
 _QEMU_SESSION_URI = "qemu:///session"
 _ROUTE_API = "route.openshift.io"
@@ -27,6 +29,27 @@ def _project_ns(provider, project_id):
     creds = provider.get_credentials()
     prefix = creds.get("project_prefix", "troshka-")
     return f"{prefix}{project_id[:8]}"
+
+
+def _project_namespace_labels(project_id: str) -> dict[str, str]:
+    return {
+        "app": "troshka",
+        "troshka-project": project_id[:8],
+        _KUBEMACPOOL_VM_IGNORE_LABEL: "ignore",
+    }
+
+
+_GW_BLOCKED_POD_PORTS = {80: 1080, 8080: 18080}
+
+
+def gateway_pod_listen_port(ext_port: int) -> int:
+    """TCP port the gateway pod listens on for a given external/LB port.
+
+    OpenShift/OVN rejects inbound connections to some pod-network ports, so the
+    gateway socat proxy listens on alternate ports while the LoadBalancer still
+    exposes the original external port.
+    """
+    return _GW_BLOCKED_POD_PORTS.get(ext_port, ext_port)
 
 
 def _get_k8s_clients(provider):
@@ -112,6 +135,42 @@ def _apply_crds(ext_api, operator_dir):
                 raise
 
 
+def _ensure_operator_crds(provider):
+    """Create or patch Troshka CRDs before deploy/operator updates."""
+    from kubernetes import client
+
+    _, _, api_client = _get_k8s_clients(provider)
+    ext_api = client.ApiextensionsV1Api(api_client)
+    _apply_crds(ext_api, os.path.normpath(OPERATOR_DIR))
+
+
+def _ensure_cache_s3_secrets(provider, s3_config, central_s3=None, obc_s3=None):
+    """Mirror S3 credentials into troshka-cache for CDI golden-image imports."""
+    from kubernetes import client as k8s_client
+
+    _, core_api, _ = _get_k8s_clients(provider)
+    try:
+        core_api.create_namespace(
+            body=k8s_client.V1Namespace(
+                metadata=k8s_client.V1ObjectMeta(
+                    name=CACHE_NAMESPACE,
+                    labels={"app": "troshka-cache"},
+                )
+            )
+        )
+    except Exception as e:
+        if "AlreadyExists" not in str(e):
+            raise
+
+    _ensure_s3_secret(provider, CACHE_NAMESPACE, s3_config, "s3-credentials")
+    if central_s3:
+        _ensure_s3_secret(
+            provider, CACHE_NAMESPACE, central_s3, "s3-central-credentials"
+        )
+    if obc_s3:
+        _ensure_s3_secret(provider, CACHE_NAMESPACE, obc_s3, "s3-obc-credentials")
+
+
 def _try_existing_cluster_resource(kind, name, body, rbac_api):
     """Try to read/patch an existing cluster-scoped resource. Returns True if handled."""
     from kubernetes.client.exceptions import ApiException
@@ -177,7 +236,7 @@ def _deploy_operator(provider):
 
     operator_dir = os.path.normpath(OPERATOR_DIR)
 
-    _apply_crds(ext_api, operator_dir)
+    _apply_crds(ext_api, operator_dir)  # same helper as _ensure_operator_crds
 
     deploy_dir = os.path.join(operator_dir, "deploy")
     manifest_order = [
@@ -841,15 +900,20 @@ class KubeVirtDriver(ProviderDriver):
     def update_eip_ports(self, provider, host, allocation_id, ports, namespace=None):
         _, core_api, _ = _get_k8s_clients(provider)
         ns = namespace or _operator_ns(provider)
-        svc_ports = [
-            {
-                "name": p.get("name", f"port-{p['port']}"),
-                "port": p["port"],
-                "targetPort": p.get("target_port", p["port"]),
-                "protocol": p.get("protocol", "TCP"),
-            }
-            for p in ports
-        ]
+        svc_ports = []
+        for p in ports:
+            ext_port = int(p["port"])
+            target_port = p.get("target_port", ext_port)
+            if target_port == ext_port:
+                target_port = gateway_pod_listen_port(ext_port)
+            svc_ports.append(
+                {
+                    "name": p.get("name", f"port-{ext_port}"),
+                    "port": ext_port,
+                    "targetPort": target_port,
+                    "protocol": p.get("protocol", "TCP"),
+                }
+            )
         core_api.patch_namespaced_service(
             name=allocation_id,
             namespace=ns,
@@ -961,6 +1025,8 @@ class KubeVirtDriver(ProviderDriver):
             pass
 
     def deploy_project(self, provider, project_id, topology, s3_config, **kwargs):
+        _ensure_operator_crds(provider)
+
         custom_api, core_api, _ = _get_k8s_clients(provider)
         namespace = _project_ns(provider, project_id)
 
@@ -971,7 +1037,7 @@ class KubeVirtDriver(ProviderDriver):
                 body=k8s_client.V1Namespace(
                     metadata=k8s_client.V1ObjectMeta(
                         name=namespace,
-                        labels={"app": "troshka", "troshka-project": project_id[:8]},
+                        labels=_project_namespace_labels(project_id),
                     )
                 )
             )
@@ -984,6 +1050,7 @@ class KubeVirtDriver(ProviderDriver):
 
         db = kwargs.get("db")
         cluster_s3 = get_cluster_s3_config(db, provider.id) if db else None
+        obc_s3 = None
         if cluster_s3:
             obc_s3 = {
                 "access_key_id": cluster_s3.get("access_key_id", ""),
@@ -999,6 +1066,8 @@ class KubeVirtDriver(ProviderDriver):
         central_s3 = kwargs.get("central_s3_config")
         if central_s3:
             _ensure_s3_secret(provider, namespace, central_s3, "s3-central-credentials")
+
+        _ensure_cache_s3_secrets(provider, s3_config, central_s3, obc_s3)
 
         s3_cr_config = {
             "bucket": s3_config.get("bucket", ""),
@@ -1403,6 +1472,85 @@ def kubevirt_exec_ssh(
         "exit_code": 0,
         "method": "ssh",
     }
+
+
+def kubevirt_upload_to_vm(
+    provider,
+    project_id,
+    vm_ip,
+    username,
+    password,
+    file_bytes,
+    remote_path,
+    mode="0644",
+    timeout=600,
+):
+    """Upload a file to a VM via SSH from the project exec pod."""
+    import base64
+    import shlex
+    import uuid
+
+    if not password:
+        raise RuntimeError("No password for KubeVirt file upload")
+
+    tmp = f"/tmp/troshka-up-{uuid.uuid4().hex}"
+    tmp_q = shlex.quote(tmp)
+    dest_q = shlex.quote(remote_path)
+    parent_q = shlex.quote(os.path.dirname(remote_path) or ".")
+
+    payload = base64.b64encode(file_bytes).decode("ascii")
+    chunk_size = 24000
+    for idx in range(0, len(payload), chunk_size):
+        chunk = payload[idx : idx + chunk_size]
+        redir = ">" if idx == 0 else ">>"
+        cmd = f"printf '%s' {shlex.quote(chunk)} | base64 -d {redir} {tmp_q}"
+        kubevirt_exec_ssh(
+            provider,
+            project_id,
+            None,
+            vm_ip,
+            username,
+            password,
+            cmd,
+            timeout=timeout,
+        )
+
+    finalize = f"mkdir -p {parent_q} && mv {tmp_q} {dest_q} && chmod {mode} {dest_q}"
+    return kubevirt_exec_ssh(
+        provider,
+        project_id,
+        None,
+        vm_ip,
+        username,
+        password,
+        finalize,
+        timeout=timeout,
+    )
+
+
+def kubevirt_download_from_vm(
+    provider, project_id, vm_ip, username, password, remote_path, timeout=600
+):
+    """Download a file from a VM via SSH from the project exec pod."""
+    import base64
+    import shlex
+
+    if not password:
+        raise RuntimeError("No password for KubeVirt file download")
+
+    cmd = f"base64 -w0 {shlex.quote(remote_path)}"
+    result = kubevirt_exec_ssh(
+        provider,
+        project_id,
+        None,
+        vm_ip,
+        username,
+        password,
+        cmd,
+        timeout=timeout,
+    )
+    raw = (result.get("output") or "").strip()
+    return base64.b64decode(raw)
 
 
 _CHAR_TO_KEYS = {}

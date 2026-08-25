@@ -91,7 +91,10 @@ def test_deploy_project_creates_namespace_and_cr():
         )
 
     assert result == "project-12345678"
-    mock_core.create_namespace.assert_called_once()
+    project_ns_call = mock_core.create_namespace.call_args_list[0]
+    ns_body = project_ns_call.kwargs["body"]
+    assert ns_body.metadata.name == "troshka-12345678"
+    assert ns_body.metadata.labels["mutatevirtualmachines.kubemacpool.io"] == "ignore"
     mock_custom.create_namespaced_custom_object.assert_called_once()
     call_args = mock_custom.create_namespaced_custom_object.call_args
     assert call_args.kwargs["namespace"] == "troshka-12345678"

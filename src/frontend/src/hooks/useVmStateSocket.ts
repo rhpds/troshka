@@ -29,6 +29,7 @@ interface VmStateSocket {
   deployProgress: DeployProgress | null;
   ocpHealth: OcpHealth | null;
   topologyUpdate: any | null;
+  externalIpsUpdate: Array<{ id: string; name: string; ip?: string; _private_ip?: string; state?: string }> | null;
   deleted: boolean;
   timerWarning: { timer: string; expires_at: string; minutes_remaining: number } | null;
   timerFired: string | null;
@@ -50,6 +51,7 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
   const [deployProgress, setDeployProgress] = useState<DeployProgress | null>(null);
   const [ocpHealth, setOcpHealth] = useState<OcpHealth | null>(null);
   const [topologyUpdate, setTopologyUpdate] = useState<any | null>(null);
+  const [externalIpsUpdate, setExternalIpsUpdate] = useState<VmStateSocket["externalIpsUpdate"]>(null);
   const [deleted, setDeleted] = useState(false);
   const [timerWarning, setTimerWarning] = useState<VmStateSocket["timerWarning"]>(null);
   const [timerFired, setTimerFired] = useState<string | null>(null);
@@ -128,6 +130,9 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
           case "topology-update":
             setTopologyUpdate(msg.topology || null);
             break;
+          case "external-ips-updated":
+            setExternalIpsUpdate(msg.externalIps || []);
+            break;
           case "project-deleted":
             setDeleted(true);
             break;
@@ -172,5 +177,5 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
     };
   }, [connect]);
 
-  return { connected, vmStates, vmProgress, vmBootDevs, projectState, deployError, deployProgress, ocpHealth, topologyUpdate, deleted, timerWarning, timerFired, autoStopExpiresAt, lifetimeExpiresAt, autoStopped };
+  return { connected, vmStates, vmProgress, vmBootDevs, projectState, deployError, deployProgress, ocpHealth, topologyUpdate, externalIpsUpdate, deleted, timerWarning, timerFired, autoStopExpiresAt, lifetimeExpiresAt, autoStopped };
 }

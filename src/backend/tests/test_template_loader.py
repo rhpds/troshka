@@ -500,6 +500,16 @@ def test_pod_import_creates_pod_node():
     assert len(pod["data"]["nics"]) == 1
     assert pod["data"]["nics"][0]["ip"] == "10.0.0.100"
 
+    net_edges = [
+        e
+        for e in topo["edges"]
+        if e.get("target") == pod["id"]
+        and (e.get("targetHandle") or "").startswith("nic-")
+    ]
+    assert len(net_edges) == 1
+    assert net_edges[0]["sourceHandle"] == "bottom"
+    assert net_edges[0]["targetHandle"].endswith("-top")
+
 
 def test_pod_export_round_trip():
     from app.services.template_loader import (
@@ -660,3 +670,76 @@ def test_library_item_name_sets_disk_source():
     assert len(storage) == 1
     assert storage[0]["data"]["source"] == "library"
     assert storage[0]["data"]["libraryItemName"] == "rhel-9.6"
+
+
+def test_pod_build_content_flag_round_trip():
+    from app.services.template_loader import (
+        export_topology_to_template,
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "template_name": "pod-build-content",
+        "networks": {"mgmt": {"cidr": "10.0.0.0/24"}},
+        "vms": {},
+        "showroom": {"enabled": True, "build_content": False},
+        "containers": {
+            "showroom": {
+                "type": "pod",
+                "build_content": False,
+                "nics": [{"network": "mgmt", "ip": "10.0.0.5"}],
+                "init_containers": [
+                    {"name": "builder", "image": "quay.io/rhpds/antora:v1"},
+                ],
+                "containers": [
+                    {
+                        "name": "proxy",
+                        "image": "quay.io/rhpds/nginx:1.25",
+                        "ports": [80],
+                    },
+                ],
+            },
+        },
+    }
+    topo = generate_topology_from_template(resolve_inline_template(tmpl))
+    pod = next(n for n in topo["nodes"] if n.get("type") == "containerNode")
+    assert pod["data"]["buildContent"] is False
+    assert topo["showroom"]["build_content"] is False
+
+    exported = export_topology_to_template(topo)
+    assert exported["containers"]["showroom"]["build_content"] is False
+    assert exported["showroom"]["build_content"] is False
+
+
+def test_net_automation_workshop_showroom_import():
+    from pathlib import Path
+
+    import yaml
+
+    from app.services.template_loader import generate_topology_from_template
+
+    tmpl_path = (
+        Path(__file__).resolve().parents[3]
+        / "example_templates"
+        / "net-automation-workshop.yaml"
+    )
+    tmpl = yaml.safe_load(tmpl_path.read_text())
+    topo = generate_topology_from_template(tmpl)
+
+    pods = [
+        n
+        for n in topo["nodes"]
+        if n.get("type") == "containerNode" and n.get("data", {}).get("isPod")
+    ]
+    assert len(pods) == 1
+    showroom = pods[0]["data"]
+    assert showroom["name"] == "showroom"
+    assert showroom["buildContent"] is True
+    assert len(showroom["initContainers"]) == 3
+    assert len(showroom["podContainers"]) == 4
+    assert topo["showroom"]["enabled"] is True
+    assert len(topo["startOrder"]) == 7
+    gw = next(n for n in topo["nodes"] if n.get("data", {}).get("subtype") == "gateway")
+    ext_ports = {pf["extPort"] for pf in gw["data"]["portForwards"]}
+    assert ext_ports == {"80"}

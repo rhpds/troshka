@@ -8,7 +8,7 @@ import Palette from "@/components/canvas/Palette";
 import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
-import { useCanvasStore, computeTopologyDirty, setLatestVmStates, setLatestContainerStates } from "@/stores/canvasStore";
+import { useCanvasStore, computeTopologyDirty, setLatestVmStates, setLatestContainerStates, type ExternalIp } from "@/stores/canvasStore";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
@@ -200,6 +200,40 @@ export default function ProjectCanvasPage() {
       }
     }
   }, [ws.topologyUpdate]);
+
+  // WebSocket → EIP allocation during/after deploy
+  useEffect(() => {
+    if (!ws.externalIpsUpdate?.length) return;
+    const incoming = ws.externalIpsUpdate;
+    const byId = new Map(incoming.map((e) => [e.id, e]));
+    const current = useCanvasStore.getState().externalIps;
+    const merged: ExternalIp[] = current.map((e) => {
+      const upd = byId.get(e.id);
+      if (!upd) return e;
+      return {
+        ...e,
+        ...upd,
+        ip: upd.ip ?? e.ip,
+        state:
+          upd.state === "pending" || upd.state === "allocated" || upd.state === "associated"
+            ? upd.state
+            : e.state,
+      };
+    });
+    for (const e of incoming) {
+      if (merged.some((m) => m.id === e.id)) continue;
+      merged.push({
+        id: e.id,
+        name: e.name,
+        ip: e.ip ?? "",
+        ...(e._private_ip ? { _private_ip: e._private_ip } : {}),
+        ...(e.state === "pending" || e.state === "allocated" || e.state === "associated"
+          ? { state: e.state }
+          : {}),
+      });
+    }
+    useCanvasStore.getState().setExternalIps(merged);
+  }, [ws.externalIpsUpdate]);
 
   useEffect(() => {
     if (ws.ocpHealth?.phase === "ready") setOcpStatus("ready");

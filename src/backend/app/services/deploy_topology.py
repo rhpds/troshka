@@ -118,6 +118,109 @@ def validate_topology_passwords(topology: dict) -> list[str]:
     return errors
 
 
+def _is_showroom_node(node: dict) -> bool:
+    if node.get("type") != "containerNode":
+        return False
+    data = node.get("data", {})
+    return bool(data.get("isShowroom") or data.get("name") == "showroom")
+
+
+def _is_gateway_node(node: dict | None) -> bool:
+    return bool(
+        node
+        and node.get("type") == "networkNode"
+        and node.get("data", {}).get("subtype") == "gateway"
+    )
+
+
+def _is_plain_network(node: dict | None) -> bool:
+    if not node or node.get("type") != "networkNode":
+        return False
+    subtype = node.get("data", {}).get("subtype")
+    return subtype in (None, "network", "dhcp", "dns")
+
+
+def validate_showroom_topology(topology: dict) -> list[str]:
+    """Validate showroom placement, gateway network, and port forward."""
+    showroom_nodes = [n for n in topology.get("nodes", []) if _is_showroom_node(n)]
+    if not showroom_nodes:
+        return []
+    if len(showroom_nodes) > 1:
+        return ["Only one showroom is allowed per project"]
+
+    showroom = showroom_nodes[0]
+    showroom_id = showroom["id"]
+    nodes_by_id = {n["id"]: n for n in topology.get("nodes", [])}
+    edges = topology.get("edges", [])
+
+    network_id = None
+    for edge in edges:
+        if showroom_id not in (edge.get("source"), edge.get("target")):
+            continue
+        showroom_is_source = edge.get("source") == showroom_id
+        handle = edge.get("sourceHandle" if showroom_is_source else "targetHandle", "")
+        if "nic-" not in handle:
+            continue
+        other_id = edge.get("target") if showroom_is_source else edge.get("source")
+        other = nodes_by_id.get(other_id)
+        if _is_plain_network(other):
+            network_id = other_id
+            break
+
+    errors = []
+    if not network_id:
+        errors.append("Showroom must be connected to a network")
+        return errors
+
+    network_name = (
+        nodes_by_id.get(network_id, {}).get("data", {}).get("name", "network")
+    )
+    gateway = None
+    for edge in edges:
+        if network_id not in (edge.get("source"), edge.get("target")):
+            continue
+        other_id = (
+            edge.get("target")
+            if edge.get("source") == network_id
+            else edge.get("source")
+        )
+        other = nodes_by_id.get(other_id)
+        if _is_gateway_node(other):
+            gateway = other
+            break
+
+    if not gateway:
+        errors.append(
+            f"Showroom network '{network_name}' must be connected to a gateway"
+        )
+        return errors
+
+    showroom_ip = ""
+    for nic in showroom.get("data", {}).get("nics", []):
+        if nic.get("ip"):
+            showroom_ip = nic["ip"]
+            break
+    if not showroom_ip:
+        errors.append("Showroom must have an IP address on its network NIC")
+        return errors
+
+    port_forwards = gateway.get("data", {}).get("portForwards", [])
+    has_forward = any(
+        pf.get("intIp", "").strip() == showroom_ip and str(pf.get("intPort")) == "80"
+        for pf in port_forwards
+    )
+    if not has_forward:
+        errors.append(
+            f"Gateway must have a port forward for showroom (80 → {showroom_ip}:80)"
+        )
+
+    showroom_cfg = topology.get("showroom") or {}
+    if showroom_cfg.get("enabled", True) and not showroom_cfg.get("content_repo"):
+        errors.append("Showroom content repo URL is required")
+
+    return errors
+
+
 def _filter_topology_for_host(topology: dict, vm_node_ids: set[str]) -> dict:
     """Return a copy of topology with only the specified VM nodes."""
     filtered_nodes = [
@@ -188,6 +291,7 @@ def _extract_containers(topology: dict) -> list[dict]:
                 "is_pod": data.get("isPod", False),
                 "init_containers": data.get("initContainers", []),
                 "pod_containers": data.get("podContainers", []),
+                "build_content": data.get("buildContent", True),
             }
         )
     return containers
@@ -708,6 +812,60 @@ def _categorize_new_nodes(
         elif ntype == "networkNode":
             networks.append(node)
     return vms, networks
+
+
+def _normalize_disk_controllers(controllers: list | None) -> list[dict]:
+    """Normalize disk controller list for stable redeploy comparison."""
+    return sorted(
+        (
+            {
+                "id": dc.get("id"),
+                "bus": dc.get("bus", "virtio"),
+                "rotationRate": dc.get("rotationRate"),
+            }
+            for dc in (controllers or [])
+        ),
+        key=lambda dc: dc.get("id") or "",
+    )
+
+
+def _vm_redeploy_spec(data: dict) -> dict:
+    """Domain-defining VM fields that require destroy+recreate when changed."""
+    return {
+        "firmware": data.get("firmware", "bios"),
+        "secureBoot": data.get("secureBoot", False),
+        "videoModel": data.get("videoModel", "virtio"),
+        "inputModel": data.get("inputModel", "virtio"),
+        "smbiosUuid": data.get("smbiosUuid")
+        or data.get("uuid")
+        or data.get("domainUuid"),
+        "diskControllers": _normalize_disk_controllers(data.get("diskControllers")),
+        "pxeBootIsoId": data.get("pxeBootIsoId"),
+        "pxeBootIsoName": data.get("pxeBootIsoName"),
+    }
+
+
+def vm_ids_needing_redeploy(current: dict, deployed: dict) -> set[str]:
+    """VM node IDs whose domain-defining properties changed and need redeploy."""
+    cur_nodes = {
+        n["id"]: n for n in current.get("nodes", []) if n.get("type") == "vmNode"
+    }
+    dep_nodes = {
+        n["id"]: n for n in deployed.get("nodes", []) if n.get("type") == "vmNode"
+    }
+    need: set[str] = set()
+    for nid, node in cur_nodes.items():
+        if nid not in dep_nodes:
+            continue
+        cur = node.get("data", {})
+        dep = dep_nodes[nid].get("data", {})
+        if _vm_redeploy_spec(cur) != _vm_redeploy_spec(dep):
+            need.add(nid)
+    return need
+
+
+# Backward-compatible alias for callers/tests added before the broader check.
+vm_ids_needing_firmware_redeploy = vm_ids_needing_redeploy
 
 
 def _find_changed_vms(

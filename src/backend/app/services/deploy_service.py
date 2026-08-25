@@ -379,6 +379,8 @@ def _teardown_bmc_via_troshkad(host, project_id: str):
 def _ensure_storage_library_ref(node, db_session):
     """Ensure a storage node has source=library and a resolved libraryItemId."""
     data = node.get("data", {})
+    if data.get("source") == "pattern" or data.get("patternDiskId"):
+        return
     if not data.get("libraryItemName") and not data.get("libraryItemId"):
         return
     if data.get("libraryItemName") or data.get("libraryItemId"):
@@ -418,6 +420,9 @@ def _collect_library_items(nodes, db_session, pool):
     items = []
     for node in nodes:
         if node.get("type") != "storageNode":
+            continue
+        data = node.get("data", {})
+        if data.get("source") == "pattern" or data.get("patternDiskId"):
             continue
         _ensure_storage_library_ref(node, db_session)
         item_id = node.get("data", {}).get("libraryItemId")
@@ -469,7 +474,7 @@ def _resolve_library_item_by_name(node, item_id, db_session):
     if item:
         logger.info(
             "Library item %s not found by ID, resolved by name '%s' → %s",
-            item_id[:8],
+            item_id[:8] if item_id else "?",
             item_name,
             item.id[:8],
         )
@@ -507,9 +512,15 @@ def _collect_pxe_boot_isos(nodes, db_session, pool):
     return items
 
 
-def _collect_pattern_disks(nodes, db_session, pool):
+def _collect_pattern_disks(nodes, db_session, pool, provider_id=None):
     """Collect pattern disk items from storage nodes for caching."""
     from app.models.pattern import Pattern, PatternDisk
+    from app.services.pattern_locations import pattern_disk_source_for_cluster
+    from app.services.s3_storage import (
+        _get_s3_config,
+        cluster_s3_to_upload_creds,
+        get_cluster_s3_config,
+    )
 
     items = []
     for node in nodes:
@@ -535,18 +546,28 @@ def _collect_pattern_disks(nodes, db_session, pool):
         )
         disk_name = data.get("label") or data.get("name") or node.get("id", "")[:8]
         pattern_obj = db_session.query(Pattern).filter_by(id=pattern_id).first()
-        pattern_tags = (pattern_obj.tags or {}) if pattern_obj else {}
-        items.append(
-            {
-                "item_id": pattern_disk_id,
-                "name": disk_name,
-                "s3_key": pd.s3_key,
-                "cache_path": cache_path,
-                "expected_size": pd.size_bytes,
-                "source": pattern_tags.get("source", "local"),
-                "source_provider_id": pattern_tags.get("source_provider_id"),
-            }
+        source = pattern_disk_source_for_cluster(
+            db_session, pattern_disk_id, provider_id
         )
+        source_provider_id = (
+            pattern_obj.source_provider_id if source == "obc" and pattern_obj else None
+        )
+        item = {
+            "item_id": pattern_disk_id,
+            "name": disk_name,
+            "s3_key": pd.s3_key,
+            "cache_path": cache_path,
+            "expected_size": pd.size_bytes,
+            "source": source or "local",
+            "source_provider_id": source_provider_id,
+        }
+        if source == "obc" and source_provider_id:
+            obc_cfg = get_cluster_s3_config(db_session, source_provider_id)
+            if obc_cfg:
+                item["download_creds"] = cluster_s3_to_upload_creds(obc_cfg)
+        elif source == "central":
+            item["download_creds"] = _get_s3_config()
+        items.append(item)
     return items
 
 
@@ -686,7 +707,10 @@ def _start_download_jobs(items_to_download, host):
     central_creds = _get_readonly_s3_config()
     active_jobs = []
     for ic in items_to_download:
-        if ic.get("source") == "central" and central_creds:
+        if ic.get("download_creds"):
+            dl_creds = ic["download_creds"]
+            dl_bucket = dl_creds.get("bucket", s3_bucket)
+        elif ic.get("source") == "central" and central_creds:
             dl_creds = central_creds
             dl_bucket = central_creds["bucket"]
         else:
@@ -862,7 +886,8 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
     items_to_cache = []
     items_to_cache.extend(_collect_library_items(nodes, db_session, pool))
     items_to_cache.extend(_collect_pxe_boot_isos(nodes, db_session, pool))
-    items_to_cache.extend(_collect_pattern_disks(nodes, db_session, pool))
+    provider_id = getattr(host, "provider_id", None)
+    items_to_cache.extend(_collect_pattern_disks(nodes, db_session, pool, provider_id))
     items_to_cache.extend(_collect_snapshot_disks(nodes, db_session))
 
     # Deduplicate
@@ -1583,19 +1608,97 @@ def _start_vms_via_troshkad(host, project_id, topology):
 
 
 def _project_deleted(project_id: str) -> bool:
-    """Check if a project was deleted mid-deploy."""
+    """Check if a project was deleted or destroy started mid-deploy."""
     from app.core.database import SessionLocal
     from app.models.project import Project
 
     check_s = SessionLocal()
     try:
-        return check_s.query(Project).filter_by(id=project_id).first() is None
+        project = check_s.query(Project).filter_by(id=project_id).first()
+        if project is None:
+            return True
+        return project.state == "deleting"
     finally:
         check_s.close()
 
 
-def _create_and_start_container(host, project_id, ctr, topology, vni_map, pool=None):
-    """Create and start a container via troshkad."""
+def _wait_troshkad_job(host, job_id, timeout, what):
+    """Poll a troshkad job and raise if it failed."""
+    job = wait_for_job(host, job_id, timeout=timeout)
+    if job.get("status") == "failed":
+        error = job.get("result", {}).get("error", "unknown")
+        raise TroshkadError(f"{what} failed: {error}")
+    return job
+
+
+def _pod_create_params(host, project_id, ctr, topology, vni_map, pool=None):
+    """Build troshkad /pods/create params for a container pod node."""
+    pod_name = ctr["name"]
+    networks = _find_container_networks(ctr["node_id"], topology, vni_map, project_id)
+    volumes = _find_container_volumes(ctr["node_id"], topology, project_id, pool)
+    vol_by_disk = {v["node_id"]: v for v in volumes}
+
+    def _resolve_mounts(sub_mounts):
+        result = []
+        for m in sub_mounts:
+            vol = vol_by_disk.get(m.get("diskNodeId", ""))
+            if vol:
+                result.append(f"{vol['mount_dir']}:{m.get('mountPath', '/data')}")
+        return result
+
+    init_containers = ctr.get("init_containers", [])
+    if ctr.get("build_content") is False:
+        init_containers = []
+
+    return {
+        "project_id": project_id,
+        "pod_name": pod_name,
+        "networks": [
+            {
+                "bridge": n["bridge"],
+                "ip": n.get("ip"),
+                "mac": n.get("mac"),
+                "cidr": n.get("cidr"),
+            }
+            for n in networks
+        ],
+        "init_containers": [
+            {
+                "name": ic["name"],
+                "image": ic.get("image", ""),
+                "env": {
+                    ev["key"]: ev["value"]
+                    for ev in ic.get("envVars", [])
+                    if ev.get("key")
+                },
+                "mounts": _resolve_mounts(ic.get("mounts", [])),
+                "command": ic.get("command"),
+            }
+            for ic in init_containers
+        ],
+        "containers": [
+            {
+                "name": pc["name"],
+                "image": pc.get("image", ""),
+                "cpus": pc.get("cpus", 1),
+                "memory": pc.get("memory", 512),
+                "env": {
+                    ev["key"]: ev["value"]
+                    for ev in pc.get("envVars", [])
+                    if ev.get("key")
+                },
+                "mounts": _resolve_mounts(pc.get("mounts", [])),
+                "command": pc.get("command"),
+            }
+            for pc in ctr.get("pod_containers", [])
+        ],
+        "restart_policy": ctr.get("restart_policy", "always"),
+        "privileged": ctr.get("privileged", False),
+    }
+
+
+def _create_container(host, project_id, ctr, topology, vni_map, pool=None):
+    """Create a container via troshkad (does not start it)."""
     container_name = f"troshka-{project_id[:8]}-{ctr['node_id'][:8]}"
     networks = _find_container_networks(ctr["node_id"], topology, vni_map, project_id)
     volumes = _find_container_volumes(ctr["node_id"], topology, project_id, pool)
@@ -1629,79 +1732,40 @@ def _create_and_start_container(host, project_id, ctr, topology, vni_map, pool=N
         "privileged": ctr.get("privileged", False),
     }
     job_id = start_job(host, "/containers/create", create_params)
-    wait_for_job(host, job_id, timeout=120)
+    _wait_troshkad_job(host, job_id, 120, "Container create")
+    return container_name
 
+
+def _start_container(host, container_name):
+    """Start a previously created container."""
     job_id = start_job(host, "/containers/start", {"container_name": container_name})
-    wait_for_job(host, job_id, timeout=30)
+    _wait_troshkad_job(host, job_id, 30, "Container start")
+
+
+def _create_pod(host, project_id, ctr, topology, vni_map, pool=None):
+    """Create a pod via troshkad (does not start it)."""
+    create_params = _pod_create_params(host, project_id, ctr, topology, vni_map, pool)
+    job_id = start_job(host, "/pods/create", create_params)
+    _wait_troshkad_job(host, job_id, 120, "Pod create")
+    return f"troshka-{project_id[:8]}-{ctr['name']}"
+
+
+def _start_pod(host, full_pod_name, timeout=120):
+    """Start a previously created pod (runs init containers first)."""
+    job_id = start_job(host, "/pods/start", {"pod_name": full_pod_name})
+    _wait_troshkad_job(host, job_id, timeout, "Pod start")
+
+
+def _create_and_start_container(host, project_id, ctr, topology, vni_map, pool=None):
+    """Create and start a container via troshkad."""
+    container_name = _create_container(host, project_id, ctr, topology, vni_map, pool)
+    _start_container(host, container_name)
 
 
 def _create_and_start_pod(host, project_id, ctr, topology, vni_map, pool=None):
     """Create and start a pod via troshkad."""
-    pod_name = ctr["name"]
-    networks = _find_container_networks(ctr["node_id"], topology, vni_map, project_id)
-    volumes = _find_container_volumes(ctr["node_id"], topology, project_id, pool)
-
-    vol_by_disk = {v["node_id"]: v for v in volumes}
-
-    def _resolve_mounts(sub_mounts):
-        result = []
-        for m in sub_mounts:
-            vol = vol_by_disk.get(m.get("diskNodeId", ""))
-            if vol:
-                result.append(f"{vol['mount_dir']}:{m.get('mountPath', '/data')}")
-        return result
-
-    create_params = {
-        "project_id": project_id,
-        "pod_name": pod_name,
-        "networks": [
-            {
-                "bridge": n["bridge"],
-                "ip": n.get("ip"),
-                "mac": n.get("mac"),
-                "cidr": n.get("cidr"),
-            }
-            for n in networks
-        ],
-        "init_containers": [
-            {
-                "name": ic["name"],
-                "image": ic.get("image", ""),
-                "env": {
-                    ev["key"]: ev["value"]
-                    for ev in ic.get("envVars", [])
-                    if ev.get("key")
-                },
-                "mounts": _resolve_mounts(ic.get("mounts", [])),
-                "command": ic.get("command"),
-            }
-            for ic in ctr.get("init_containers", [])
-        ],
-        "containers": [
-            {
-                "name": pc["name"],
-                "image": pc.get("image", ""),
-                "cpus": pc.get("cpus", 1),
-                "memory": pc.get("memory", 512),
-                "env": {
-                    ev["key"]: ev["value"]
-                    for ev in pc.get("envVars", [])
-                    if ev.get("key")
-                },
-                "mounts": _resolve_mounts(pc.get("mounts", [])),
-                "command": pc.get("command"),
-            }
-            for pc in ctr.get("pod_containers", [])
-        ],
-        "restart_policy": ctr.get("restart_policy", "always"),
-        "privileged": ctr.get("privileged", False),
-    }
-    job_id = start_job(host, "/pods/create", create_params)
-    wait_for_job(host, job_id, timeout=120)
-
-    full_pod_name = f"troshka-{project_id[:8]}-{pod_name}"
-    job_id = start_job(host, "/pods/start", {"pod_name": full_pod_name})
-    wait_for_job(host, job_id, timeout=120)
+    full_pod_name = _create_pod(host, project_id, ctr, topology, vni_map, pool)
+    _start_pod(host, full_pod_name)
 
 
 # ---------------------------------------------------------------------------
@@ -1893,6 +1957,38 @@ def _resolve_disk_s3_paths(
                 central_bucket,
                 central_op,
             )
+
+
+def _preflight_verify_library_disks(
+    topology,
+    s3_client,
+    bucket,
+    s3_op,
+    central_s3_client,
+    central_bucket,
+    central_op,
+):
+    """HEAD central-only library disks before deploy."""
+    if not central_s3_client:
+        return
+    for node in topology.get("nodes", []):
+        data = node.get("data", {})
+        if node.get("type") != "storageNode":
+            continue
+        if data.get("source") not in ("library", "snapshot"):
+            continue
+        if not data.get("centralSource"):
+            continue
+        key = data.get("resolvedS3Path", "")
+        if not key:
+            continue
+        try:
+            central_s3_client.head_object(Bucket=central_bucket, Key=key, **central_op)
+        except Exception as exc:
+            label = data.get("label", key[:16])
+            raise DeployError(
+                f"library disk {label} not found in central S4 ({key})"
+            ) from exc
 
 
 def _preflight_verify_pattern_disks(topology, s3_client, bucket, s3_op):
@@ -2680,8 +2776,15 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
             central_bucket,
             central_op,
         )
-        _preflight_verify_pattern_disks(
-            topology, central_s3_client, central_bucket, central_op
+        _preflight_verify_pattern_disks(topology, s3_client, bucket, s3_op)
+        _preflight_verify_library_disks(
+            topology,
+            s3_client,
+            bucket,
+            s3_op,
+            central_s3_client,
+            central_bucket,
+            central_op,
         )
     except DeployError as e:
         project.state = "error"
@@ -3125,6 +3228,10 @@ def _deploy_allocate_eips(s, project_id, project, host, topology, external_ips):
         ext_ip.pop("_skip", None)
     project.topology = topology
     s.commit()
+    notify_project(
+        project_id,
+        {"type": "external-ips-updated", "externalIps": external_ips},
+    )
     return None
 
 
@@ -3492,11 +3599,27 @@ def _deploy_create_disks(host, project_id, topology, pool):
     for ctr in containers:
         ctr_vols = _find_container_volumes(ctr["node_id"], topology, project_id, pool)
         for vol in ctr_vols:
-            jid = start_job(
-                host,
-                "/disks/create",
-                {"path": vol["disk_path"], "size_gb": vol["size_gb"], "format": "raw"},
+            disk_node = next(
+                (n for n in topology.get("nodes", []) if n["id"] == vol["node_id"]),
+                None,
             )
+            disk_data = (disk_node or {}).get("data", {})
+            disk_info = {
+                "source": disk_data.get("source"),
+                "patternId": disk_data.get("patternId"),
+                "patternDiskId": disk_data.get("patternDiskId"),
+                "format": disk_data.get("format", "raw"),
+                "node_id": vol["node_id"],
+            }
+            params = {
+                "path": vol["disk_path"],
+                "size_gb": vol["size_gb"],
+                "format": "raw",
+            }
+            backing = _resolve_disk_backing(disk_info, pool)
+            if backing:
+                params["backing_file"] = backing
+            jid = start_job(host, "/disks/create", params)
             disk_jobs.append(jid)
     for di, jid in enumerate(disk_jobs):
         try:
@@ -3703,25 +3826,20 @@ def _deploy_setup_bmc(host, project_id, topology):
 def _create_ordered_containers(
     host, project_id, containers, start_order, topology, vni_map, pool
 ):
-    """Create containers that appear in start_order, respecting delays. Returns set of ordered IDs."""
+    """Create containers that appear in start_order. Returns set of ordered IDs."""
     ordered_ids = set()
     for entry in start_order:
-        if entry.get("entryType") == "container":
-            ctr_id = entry.get("containerId", entry.get("vmId", ""))
-            ctr = next((c for c in containers if c["node_id"] == ctr_id), None)  # type: ignore[arg-type]
-            if ctr:
-                ordered_ids.add(ctr_id)
-                delay = entry.get("delaySeconds", 0)
-                if delay > 0:
-                    _time.sleep(delay)
-                if ctr.get("is_pod"):
-                    _create_and_start_pod(
-                        host, project_id, ctr, topology, vni_map, pool
-                    )
-                else:
-                    _create_and_start_container(
-                        host, project_id, ctr, topology, vni_map, pool
-                    )
+        if entry.get("entryType") != "container":
+            continue
+        ctr_id = entry.get("containerId", entry.get("vmId", ""))
+        ctr = next((c for c in containers if c["node_id"] == ctr_id), None)  # type: ignore[arg-type]
+        if not ctr:
+            continue
+        ordered_ids.add(ctr_id)
+        if ctr.get("is_pod"):
+            _create_pod(host, project_id, ctr, topology, vni_map, pool)
+        else:
+            _create_container(host, project_id, ctr, topology, vni_map, pool)
     return ordered_ids
 
 
@@ -3743,11 +3861,65 @@ def _deploy_create_containers(host, project_id, topology, vni_map, pool):
     for ctr in containers:
         if ctr["node_id"] not in ordered_ids:
             if ctr.get("is_pod"):
-                _create_and_start_pod(host, project_id, ctr, topology, vni_map, pool)
+                _create_pod(host, project_id, ctr, topology, vni_map, pool)
             else:
-                _create_and_start_container(
-                    host, project_id, ctr, topology, vni_map, pool
-                )
+                _create_container(host, project_id, ctr, topology, vni_map, pool)
+
+
+def _start_ordered_containers(
+    host, project_id, containers, start_order, topology, auto_start
+):
+    """Start containers from start_order after VMs, respecting delays."""
+    started_ids = set()
+    for entry in start_order:
+        if entry.get("entryType") != "container":
+            continue
+        if not auto_start or entry.get("autoStart", True) is False:
+            continue
+        ctr_id = entry.get("containerId", entry.get("vmId", ""))
+        ctr = next((c for c in containers if c["node_id"] == ctr_id), None)  # type: ignore[arg-type]
+        if not ctr:
+            continue
+        started_ids.add(ctr_id)
+        delay = entry.get("delaySeconds", 0)
+        if delay > 0:
+            _time.sleep(delay)
+        if ctr.get("is_pod"):
+            full_pod_name = f"troshka-{project_id[:8]}-{ctr['name']}"
+            timeout = 900 if ctr.get("build_content", True) else 120
+            _start_pod(host, full_pod_name, timeout=timeout)
+        else:
+            container_name = f"troshka-{project_id[:8]}-{ctr['node_id'][:8]}"
+            _start_container(host, container_name)
+        for node in topology.get("nodes", []):
+            if node["id"] == ctr_id:
+                node.setdefault("data", {})["status"] = "running"
+                break
+    return started_ids
+
+
+def _deploy_start_containers(host, project_id, topology, auto_start):
+    containers = _extract_containers(topology)
+    if not containers or not auto_start:
+        return
+    start_order = topology.get("startOrder", [])
+    started_ids = _start_ordered_containers(
+        host, project_id, containers, start_order, topology, auto_start
+    )
+    for ctr in containers:
+        if ctr["node_id"] in started_ids:
+            continue
+        if ctr.get("is_pod"):
+            full_pod_name = f"troshka-{project_id[:8]}-{ctr['name']}"
+            timeout = 900 if ctr.get("build_content", True) else 120
+            _start_pod(host, full_pod_name, timeout=timeout)
+        else:
+            container_name = f"troshka-{project_id[:8]}-{ctr['node_id'][:8]}"
+            _start_container(host, container_name)
+        for node in topology.get("nodes", []):
+            if node["id"] == ctr["node_id"]:
+                node.setdefault("data", {})["status"] = "running"
+                break
 
 
 def _deploy_start_vms(s, host, project_id, project, topology, auto_start):
@@ -4208,6 +4380,10 @@ def _deploy_single_host_execute(
     if not _deploy_start_vms(s, host, project_id, project, topology, auto_start):
         return
 
+    _deploy_start_containers(host, project_id, topology, auto_start)
+    project.topology = topology
+    s.commit()
+
     _deploy_complete_and_notify(
         s,
         project_id,
@@ -4264,6 +4440,11 @@ def _deploy_complete_and_notify(
             ),
         },
     )
+    if external_ips:
+        notify_project(
+            project_id,
+            {"type": "external-ips-updated", "externalIps": external_ips},
+        )
     vm_states = {vm["node_id"]: "running" for vm in vms}
     notify_project(
         project_id, {"type": "vm-state", "states": vm_states, "progress": {}}

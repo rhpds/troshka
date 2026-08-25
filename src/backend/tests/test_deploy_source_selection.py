@@ -154,6 +154,62 @@ def test_preflight_skips_obc_disks():
     s3_client.head_object.assert_not_called()
 
 
+def test_preflight_raises_on_missing_central_library_disk():
+    central_client = MagicMock()
+    central_client.head_object.side_effect = Exception("404 NoSuchKey")
+    topology = {
+        "nodes": [
+            {
+                "type": "storageNode",
+                "data": {
+                    "source": "library",
+                    "centralSource": True,
+                    "resolvedS3Path": "library/rhel-9.6.qcow2",
+                    "label": "vscode-disk0",
+                },
+            }
+        ]
+    }
+    with pytest.raises(deploy_service.DeployError) as ei:
+        deploy_service._preflight_verify_library_disks(
+            topology,
+            MagicMock(),
+            "troshka-images",
+            {},
+            central_client,
+            "troshka-gold-images",
+            {},
+        )
+    assert "vscode-disk0" in str(ei.value)
+
+
+def test_preflight_skips_local_library_disks():
+    central_client = MagicMock()
+    topology = {
+        "nodes": [
+            {
+                "type": "storageNode",
+                "data": {
+                    "source": "library",
+                    "centralSource": False,
+                    "resolvedS3Path": "library/local.qcow2",
+                    "label": "disk0",
+                },
+            }
+        ]
+    }
+    deploy_service._preflight_verify_library_disks(
+        topology,
+        MagicMock(),
+        "troshka-images",
+        {},
+        central_client,
+        "troshka-gold-images",
+        {},
+    )
+    central_client.head_object.assert_not_called()
+
+
 def _library_item(db, s3_key, fmt, source="local", item_type="snapshot"):
     from app.models.library import Library, LibraryItem
 

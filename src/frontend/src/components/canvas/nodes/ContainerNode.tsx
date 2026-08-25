@@ -6,6 +6,7 @@ import { Handle, Position, useUpdateNodeInternals } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import type { ContainerNodeData } from "@/stores/canvasStore";
+import { getShowroomReadiness } from "@/lib/showroomValidation";
 
 function ContainerNodeComponent({ id, data, selected }: NodeProps) {
   const projectState = useCanvasStore((s) => s.projectState);
@@ -21,6 +22,10 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
   const [logContent, setLogContent] = useState("");
   const [podExpanded, setPodExpanded] = useState(true);
   const isPod = !!((d as Record<string, unknown>).isPod);
+  const isShowroom = !!((d as Record<string, unknown>).isShowroom || d.name === "showroom");
+  const edges = useCanvasStore((s) => s.edges);
+  const allNodes = useCanvasStore((s) => s.nodes);
+  const showroomIssues = isShowroom ? getShowroomReadiness(allNodes, edges).issues : [];
   const podContainers = ((d as Record<string, unknown>).podContainers || []) as Array<{name: string; image: string; ports: Array<{containerPort: number}>}>;
   const initContainers = ((d as Record<string, unknown>).initContainers || []) as Array<{name: string; image: string}>;
 
@@ -54,12 +59,17 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
       style={{
         borderColor: selected
           ? "var(--troshka-blue)"
-          : "rgba(56, 189, 248, 0.3)",
+          : isShowroom && showroomIssues.length > 0
+            ? "rgba(251, 191, 36, 0.55)"
+            : "rgba(56, 189, 248, 0.3)",
       }}
     >
       <div className="canvas-node-header">
-        <span className="canvas-node-icon">{isPod ? "🫛" : "📦"}</span>
+        <span className="canvas-node-icon">{isShowroom ? "📖" : isPod ? "🫛" : "📦"}</span>
         <span className="canvas-node-label">{d.name || "container"}</span>
+        {isShowroom && showroomIssues.length > 0 && (
+          <span title={showroomIssues.join("\n")} style={{ fontSize: 10, color: "var(--troshka-yellow)" }}>⚠</span>
+        )}
         <span
           className="canvas-node-status-dot"
           style={{ background: statusColor }}

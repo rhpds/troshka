@@ -163,7 +163,33 @@ stop_redis() {
     echo "  Redis:      stopped"
 }
 
-WORKER_COUNT=3
+# macOS SimpleWorker runs jobs in-process; multiple workers race on the same
+# queues and duplicate deploy jobs. Linux uses forked Worker children safely.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    WORKER_COUNT=1
+else
+    WORKER_COUNT=3
+fi
+WORKER_LOG="/tmp/troshka-worker.log"
+
+_cleanup_stale_rq_workers() {
+    cd "$BACKEND_DIR" || return 0
+    [ -d "venv" ] || return 0
+    ./venv/bin/python3 - <<'PY' 2>/dev/null || true
+from app.core.redis import get_redis_raw
+r = get_redis_raw()
+dead = []
+for w in r.smembers("rq:workers"):
+    ws = w.decode() if isinstance(w, bytes) else w
+    if not r.exists(f"{ws}:heartbeat"):
+        dead.append(w)
+for w in dead:
+    r.srem("rq:workers", w)
+    r.delete(f"{w}:heartbeat")
+if dead:
+    print(f"  Worker:     pruned {len(dead)} stale RQ worker registration(s)")
+PY
+}
 
 start_worker() {
     cd "$BACKEND_DIR"
@@ -171,21 +197,27 @@ start_worker() {
         echo "  Worker:     skipped (no venv — start backend first)"
         return
     fi
-    source venv/bin/activate
+    _cleanup_stale_rq_workers
     local started=0
     for i in $(seq 1 "$WORKER_COUNT"); do
         local pidfile="$PID_DIR/worker-${i}.pid"
-        if [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+        local supervisor_pidfile="$PID_DIR/worker-${i}-supervisor.pid"
+        if [ -f "$supervisor_pidfile" ] && kill -0 "$(cat "$supervisor_pidfile")" 2>/dev/null; then
             continue
         fi
-        python3 -m app.workers.deploy_worker >>/tmp/troshka-worker.log 2>&1 &
-        echo $! > "$pidfile"
+        rm -f "$pidfile" "$supervisor_pidfile"
+        python3 "$SCRIPT_DIR/scripts/supervise-worker.py" \
+            --backend-dir "$BACKEND_DIR" \
+            --worker-pidfile "$pidfile" \
+            --supervisor-pidfile "$supervisor_pidfile" \
+            --log "$WORKER_LOG"
         started=$((started + 1))
     done
     local running=0
+    sleep 0.5
     for i in $(seq 1 "$WORKER_COUNT"); do
-        local pidfile="$PID_DIR/worker-${i}.pid"
-        [ -f "$pidfile" ] && kill -0 "$(cat "$pidfile")" 2>/dev/null && running=$((running + 1))
+        local supervisor_pidfile="$PID_DIR/worker-${i}-supervisor.pid"
+        [ -f "$supervisor_pidfile" ] && kill -0 "$(cat "$supervisor_pidfile")" 2>/dev/null && running=$((running + 1))
     done
     if [ "$started" -gt 0 ]; then
         echo "  Worker:     started $started ($running total)"
@@ -197,6 +229,11 @@ start_worker() {
 stop_worker() {
     for i in $(seq 1 "$WORKER_COUNT"); do
         local pidfile="$PID_DIR/worker-${i}.pid"
+        local supervisor_pidfile="$PID_DIR/worker-${i}-supervisor.pid"
+        if [ -f "$supervisor_pidfile" ]; then
+            kill "$(cat "$supervisor_pidfile")" 2>/dev/null || true
+            rm -f "$supervisor_pidfile"
+        fi
         if [ -f "$pidfile" ]; then
             kill "$(cat "$pidfile")" 2>/dev/null || true
             rm -f "$pidfile"
@@ -417,7 +454,9 @@ status() {
     fi
     local running_workers=0
     for i in $(seq 1 "$WORKER_COUNT"); do
-        [ -f "$PID_DIR/worker-${i}.pid" ] && kill -0 "$(cat "$PID_DIR/worker-${i}.pid")" 2>/dev/null && running_workers=$((running_workers + 1))
+        if [ -f "$PID_DIR/worker-${i}-supervisor.pid" ] && kill -0 "$(cat "$PID_DIR/worker-${i}-supervisor.pid")" 2>/dev/null; then
+            running_workers=$((running_workers + 1))
+        fi
     done
     if [ "$running_workers" -gt 0 ]; then
         echo "  Worker:     RUNNING ($running_workers of $WORKER_COUNT)"

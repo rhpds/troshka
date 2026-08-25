@@ -302,7 +302,7 @@ def get_job_info(project_id: str) -> dict | None:
 
 
 def set_progress(key: str, data: dict, ttl: int = 7200):
-    if _redis_available:
+    if is_redis_available():
         try:
             get_redis().set(f"progress:{key}", json.dumps(data), ex=ttl)
             return
@@ -313,7 +313,7 @@ def set_progress(key: str, data: dict, ttl: int = 7200):
 
 
 def get_progress(key: str) -> dict | None:
-    if _redis_available:
+    if is_redis_available():
         try:
             raw = get_redis().get(f"progress:{key}")
             if raw:
@@ -326,7 +326,7 @@ def get_progress(key: str) -> dict | None:
 
 
 def delete_progress(key: str):
-    if _redis_available:
+    if is_redis_available():
         try:
             get_redis().delete(f"progress:{key}")
         except _redis.ConnectionError:

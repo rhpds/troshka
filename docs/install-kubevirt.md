@@ -23,7 +23,7 @@ Each target cluster needs:
 
 ## Cluster Preparation
 
-All steps below must be run by a cluster admin. The setup script at `~/secrets/troshka-shared-ocpv/setup-ocpv-providers.sh` automates steps 1-4 — run it with admin kubeconfigs for each cluster.
+All steps below must be run by a cluster admin. The setup script at `~/secrets/troshka-shared-ocpv/setup-ocpv-providers.sh` automates steps 1–3 — run it with admin kubeconfigs for each cluster, then apply CRDs (step 4) before registering the provider.
 
 ### Step 1: Apply Provider RBAC
 
@@ -67,7 +67,34 @@ This creates:
 - **SCC** `troshka-gateway` — NET_ADMIN, NET_RAW for gateway/NAT pods
 - Updates `troshka-virt-exec` and `troshka-privileged-jobs` SCCs
 
-### Step 4: Create Service Account Token
+### Step 4: Apply Operator CRDs
+
+TroshkaProject schema changes (for example `centralS3Config`) are delivered as CRD updates. Apply them on every cluster **before** deploying projects that rely on new fields. Restarting the operator pod alone is not enough — the API server drops unknown CR fields when the CRD schema is stale.
+
+```bash
+oc apply -f src/operator/crds/troshkaproject.yaml
+oc apply -f src/operator/crds/troshkanetwork.yaml
+oc apply -f src/operator/crds/troshkavm.yaml
+```
+
+Or apply the full operator kustomize bundle (CRDs + deployment):
+
+```bash
+oc apply -k src/operator/deploy/
+```
+
+The Troshka backend also re-applies CRDs when you click **Install Operator** or **Update Operator** in Admin → Providers. New KubeVirt deploys apply CRDs automatically before creating a TroshkaProject CR.
+
+Verify `centralS3Config` is in the live schema:
+
+```bash
+oc get crd troshkaprojects.troshka.redhat.com \
+  -o jsonpath='{.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties}' \
+  | python3 -c "import json,sys; print('centralS3Config' in json.load(sys.stdin))"
+# Expected: True
+```
+
+### Step 5: Create Service Account Token
 
 Create a long-lived token (1 year) for the Troshka backend to authenticate to the cluster:
 
@@ -77,7 +104,7 @@ oc create token troshka -n troshka --duration=8760h
 
 Save this token — it's used when registering the provider with the Troshka API.
 
-### Step 5: Register Provider
+### Step 6: Register Provider
 
 Register the cluster as a KubeVirt native provider via the Troshka API or UI:
 
@@ -251,7 +278,7 @@ oc logs <importer-pod> -n troshka-cache
 Common causes:
 - **S3 endpoint not reachable** — target cluster can't reach the S3 Route. Verify with `curl` from a pod on the target cluster.
 - **S3 credentials incorrect** — check the `s3-credentials` and `s3-central-credentials` Secrets in `troshka-cache` namespace. CDI expects `accessKeyId` and `secretKey` keys.
-- **Wrong S3 bucket** — if the importer shows `NoSuchKey`, the disk exists in the central bucket but the DataVolume was created with the local S3 config. Check that `centralS3Config` is set on the TroshkaProject CR and that the storage node's `centralSource` flag is `true` in the topology.
+- **Wrong S3 bucket** — if the importer shows `NoSuchKey`, the disk exists in the central bucket but the DataVolume was created with the local S3 config. Check that `centralS3Config` is set on the TroshkaProject CR and that the storage node's `centralSource` flag is `true` in the topology. If `centralS3Config` is missing from the CR spec, the cluster CRD is probably stale — re-apply `src/operator/crds/troshkaproject.yaml` (see Step 4) and redeploy.
 - **Stale cache** — golden PVCs from previous failed deploys may be reused. Delete all DataVolumes and PVCs in `troshka-cache` and redeploy.
 - **CDI not installed** — verify `oc get cdi` returns a healthy CDI instance.
 

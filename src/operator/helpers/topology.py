@@ -139,9 +139,79 @@ def extract_containers(topology):
                     "cpus": data.get("cpus", 1),
                     "memory": data.get("memory", 512),
                     "nics": data.get("nics", []),
+                    "mounts": data.get("mounts", []),
                 }
             )
     return containers
+
+
+def container_disk_pvc_name(ctr_id, disk_node_id):
+    """PVC name for a blank disk attached to a container pod."""
+    return f"pod-{ctr_id[:8]}-disk-{disk_node_id[:8]}"
+
+
+def collect_container_disk_mounts(topology):
+    """Return unique (container_id, disk_node_id, size_gb) tuples from mount refs."""
+    containers = extract_containers(topology)
+    if not containers:
+        return []
+
+    node_map = {n["id"]: n for n in topology.get("nodes", [])}
+    seen = set()
+    mounts = []
+
+    def _add_disk(ctr_id, disk_node_id):
+        key = (ctr_id, disk_node_id)
+        if key in seen:
+            return
+        seen.add(key)
+        node = node_map.get(disk_node_id, {})
+        size = node.get("data", {}).get("size", 5)
+        mounts.append((ctr_id, disk_node_id, int(size) if size else 5))
+
+    for ctr in containers:
+        ctr_id = ctr["id"]
+        for mount in ctr.get("mounts", []):
+            if mount.get("diskNodeId"):
+                _add_disk(ctr_id, mount["diskNodeId"])
+        for ic in ctr.get("initContainers", []):
+            for mount in ic.get("mounts", []):
+                if mount.get("diskNodeId"):
+                    _add_disk(ctr_id, mount["diskNodeId"])
+        for pc in ctr.get("podContainers", []):
+            for mount in pc.get("mounts", []):
+                if mount.get("diskNodeId"):
+                    _add_disk(ctr_id, mount["diskNodeId"])
+    return mounts
+
+
+def container_start_delay(topology):
+    """Seconds to wait after VMs are ready before starting containers."""
+    delay = 0
+    for entry in topology.get("startOrder", []):
+        if entry.get("entryType") != "container":
+            continue
+        delay = max(delay, int(entry.get("delaySeconds", 0) or 0))
+    return delay
+
+
+def enrich_container_nics(topology, containers):
+    """Attach networkRef and CIDR to container NICs from topology edges."""
+    nic_map = resolve_nic_networks(topology)
+    net_cidrs = {}
+    for node in topology.get("nodes", []):
+        if node.get("type") == "networkNode":
+            node_id = node.get("id", node.get("data", {}).get("id", ""))
+            net_cidrs[f"net-{node_id[:8]}"] = node.get("data", {}).get("cidr", "")
+
+    for ctr in containers:
+        for nic in ctr.get("nics", []):
+            if not nic.get("networkRef"):
+                nic_id = nic.get("id", "")
+                nic["networkRef"] = nic_map.get(nic_id, "")
+            net_ref = nic.get("networkRef", "")
+            if net_ref in net_cidrs:
+                nic["cidr"] = net_cidrs[net_ref]
 
 
 def _extract_nic_id(handle):
@@ -177,16 +247,16 @@ def resolve_nic_networks(topology):
         target = edge.get("target", "")
         target_handle = edge.get("targetHandle", "")
 
-        if (
-            node_types.get(source) == "networkNode"
-            and node_types.get(target) == "vmNode"
+        if node_types.get(source) == "networkNode" and node_types.get(target) in (
+            "vmNode",
+            "containerNode",
         ):
             nic_id = _extract_nic_id(target_handle)
             if nic_id:
                 nic_to_network[nic_id] = f"net-{source[:8]}"
-        elif (
-            node_types.get(target) == "networkNode"
-            and node_types.get(source) == "vmNode"
+        elif node_types.get(target) == "networkNode" and node_types.get(source) in (
+            "vmNode",
+            "containerNode",
         ):
             source_handle = edge.get("sourceHandle", "")
             nic_id = _extract_nic_id(source_handle)

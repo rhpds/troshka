@@ -62,6 +62,10 @@ def run_worker():
     else:
         url = getattr(url, "url", "redis://localhost:6379/0")
 
+    from app.core.redis import get_redis
+
+    get_redis()  # ensure progress keys use Redis, not per-process memory
+
     conn = Redis.from_url(url)
     queues = ["project_lifecycle", "host_lifecycle", "default"]
     worker_name = f"{_POD_NAME}.{os.getpid()}"

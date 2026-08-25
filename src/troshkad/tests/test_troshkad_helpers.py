@@ -9842,6 +9842,81 @@ class TestHandleVmConsoleExec(unittest.TestCase):
         self.assertGreaterEqual(mock_keys.call_count, 2)
 
 
+# ── Junos serial exec helpers ──
+
+
+class TestSerialJunosHelpers(unittest.TestCase):
+    def test_wrap_command_adds_cli_c(self):
+        self.assertEqual(
+            troshkad._serial_junos_wrap_command("show version"),
+            "cli show version",
+        )
+
+    def test_wrap_command_passes_through_cli(self):
+        self.assertEqual(
+            troshkad._serial_junos_wrap_command("cli show version"),
+            "cli show version",
+        )
+
+    def test_wrap_command_escapes_quotes(self):
+        self.assertEqual(
+            troshkad._serial_junos_wrap_command('show interfaces ge-0/0/0'),
+            "cli show interfaces ge-0/0/0",
+        )
+
+    def test_clean_output_strips_shell_prompt(self):
+        raw = 'cli show version\r\nHostname: rtr3\r\nroot@rtr3:~ #\r\n'
+        out = troshkad._serial_junos_clean_output(raw, "cli show version")
+        self.assertIn("Hostname: rtr3", out)
+        self.assertNotIn("root@", out)
+
+    def test_ios_enable_secret_uses_password_when_long_enough(self):
+        self.assertEqual(troshkad._ios_enable_secret("admin@123456"), "admin@123456")
+
+    def test_ios_enable_secret_default_for_short_password(self):
+        self.assertEqual(troshkad._ios_enable_secret("admin"), "Admin12345!")
+
+    @patch("troshkad.time.time")
+    def test_poke_logs_in_as_root(self, mock_time):
+        mock_time.side_effect = [0] + [i * 0.5 for i in range(1, 40)]
+        child = MagicMock()
+        child.expect.side_effect = [1, 2, 3]
+        with patch.dict(
+            "sys.modules",
+            {"pexpect": MagicMock(TIMEOUT=type("TIMEOUT", (Exception,), {}))},
+        ):
+            err = troshkad._serial_junos_poke_and_login(child, "dom", 30)
+        self.assertIsNone(err)
+        child.send.assert_any_call("root\r")
+        child.send.assert_any_call("\r")
+
+
+    def test_needs_configure_session_for_set_commands(self):
+        self.assertTrue(
+            troshkad._serial_junos_needs_configure_session(
+                ["configure", "set system host-name rtr3"]
+            )
+        )
+
+    def test_split_serial_commands_skips_comments(self):
+        cmds = troshkad._split_serial_commands("enable\n! comment\nconfigure terminal\n")
+        self.assertEqual(cmds, ["enable", "configure terminal"])
+
+
+class TestSerialMultilineHelpers(unittest.TestCase):
+    def test_ios_exec_commands_calls_each_line(self):
+        child = MagicMock()
+        with patch.object(
+            troshkad, "_serial_ios_exec_command", side_effect=["ok1", "ok2"]
+        ) as mock_exec:
+            out = troshkad._serial_ios_exec_commands(
+                child, ["enable", "configure terminal"], 120
+            )
+        self.assertEqual(mock_exec.call_count, 2)
+        self.assertIn("ok1", out)
+        self.assertIn("ok2", out)
+
+
 # ── _handle_vm_serial_exec ──
 
 

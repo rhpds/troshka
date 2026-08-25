@@ -815,3 +815,37 @@ class TestGeneratePresignedUrlForConfig:
         generate_presigned_url_for_config(_base_config(), "k")
         call_args = mock_client.generate_presigned_url.call_args
         assert call_args[1]["ExpiresIn"] == 3600
+
+
+class TestResolveCaptureS3Config:
+    @patch("app.services.s3_storage.get_cluster_s3_config")
+    @patch("app.services.s3_storage._get_s3_config")
+    def test_prefers_cluster_obc(self, mock_primary, mock_cluster):
+        from app.services.s3_storage import resolve_capture_s3_config
+
+        mock_cluster.return_value = {
+            "bucket": "obc-bucket",
+            "endpoint": "https://rgw.example",
+            "region": "us-east-1",
+            "access_key_id": "obc-key",
+            "secret_access_key": "obc-secret",
+        }
+        host = MagicMock(provider_id="prov-1")
+        db = MagicMock()
+        creds, provider_id = resolve_capture_s3_config(db, host)
+        assert provider_id == "prov-1"
+        assert creds["bucket"] == "obc-bucket"
+        assert creds["endpoint_url"] == "https://rgw.example"
+        mock_primary.assert_not_called()
+
+    @patch("app.services.s3_storage.get_cluster_s3_config", return_value=None)
+    @patch("app.services.s3_storage._get_s3_config")
+    def test_falls_back_to_primary(self, mock_primary, _mock_cluster):
+        from app.services.s3_storage import resolve_capture_s3_config
+
+        mock_primary.return_value = _base_config(bucket="troshka-images")
+        host = MagicMock(provider_id="prov-1")
+        db = MagicMock()
+        creds, provider_id = resolve_capture_s3_config(db, host)
+        assert provider_id is None
+        assert creds["bucket"] == "troshka-images"

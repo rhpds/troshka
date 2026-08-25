@@ -6,6 +6,8 @@ os.environ["TROSHKA_DATABASE__URL"] = "sqlite:///./test.db"
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # _project_ns — pure string logic
 # ---------------------------------------------------------------------------
@@ -590,6 +592,30 @@ class TestApplyCrds:
 
         assert ext_api.create_custom_resource_definition.call_count == 3
         assert ext_api.patch_custom_resource_definition.call_count == 3
+
+    def test_create_non_409_raises(self, tmp_path):
+        """Non-conflict ApiException is propagated."""
+        from kubernetes.client.exceptions import ApiException
+
+        ext_api = MagicMock()
+        ext_api.create_custom_resource_definition.side_effect = ApiException(
+            status=403, reason="Forbidden"
+        )
+
+        crds_dir = tmp_path / "crds"
+        crds_dir.mkdir()
+        (crds_dir / "troshkaproject.yaml").write_text(
+            "kind: CustomResourceDefinition\nmetadata:\n  name: troshkaproject\n"
+        )
+        (crds_dir / "troshkanetwork.yaml").write_text(
+            "kind: CustomResourceDefinition\nmetadata:\n  name: troshkanetwork\n"
+        )
+        (crds_dir / "troshkavm.yaml").write_text(
+            "kind: CustomResourceDefinition\nmetadata:\n  name: troshkavm\n"
+        )
+
+        with pytest.raises(ApiException):
+            _apply_crds(ext_api, str(tmp_path))
 
 
 # ---------------------------------------------------------------------------

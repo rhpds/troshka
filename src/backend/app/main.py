@@ -391,10 +391,19 @@ def _startup_sync_obc_credentials():
 
     db = SessionLocal()
     try:
-        providers = db.query(Provider).filter_by(type="kubevirt", state="active").all()
+        providers = (
+            db.query(Provider)
+            .filter(
+                Provider.type.in_(("kubevirt", "kubevirt_native", "ocpvirt")),
+                Provider.state == "active",
+            )
+            .all()
+        )
         for provider in providers:
             try:
-                _sync_provider_obc(provider)
+                from app.services.s3_storage import sync_provider_obc_credentials
+
+                sync_provider_obc_credentials(provider)
             except Exception:
                 logger.debug(
                     "OBC sync skipped for %s (cluster may be unreachable)",
@@ -405,42 +414,6 @@ def _startup_sync_obc_credentials():
         logger.debug("OBC credential sync failed", exc_info=True)
     finally:
         db.close()
-
-
-def _sync_provider_obc(provider):
-    """Read OBC credentials from a KubeVirt cluster and store in provider record."""
-    import base64
-
-    from app.constants.rgw import RGW_IN_CLUSTER_ENDPOINT
-    from app.services.providers.kubevirt import _get_k8s_clients
-
-    _, core_api, _ = _get_k8s_clients(provider)
-
-    obc_name = "troshka-patterns"
-    ns = "troshka-operator"
-    k8s_timeout = 15
-    secret = core_api.read_namespaced_secret(obc_name, ns, _request_timeout=k8s_timeout)
-    cm = core_api.read_namespaced_config_map(obc_name, ns, _request_timeout=k8s_timeout)
-
-    secret_data = getattr(secret, "data", None) or {}
-    cm_data = getattr(cm, "data", None) or {}
-    s3_config = {
-        "bucket": cm_data.get("BUCKET_NAME", ""),
-        "endpoint": RGW_IN_CLUSTER_ENDPOINT,
-        "region": cm_data.get("BUCKET_REGION", "us-east-1") or "us-east-1",
-        "access_key_id": base64.b64decode(
-            secret_data.get("AWS_ACCESS_KEY_ID", "")
-        ).decode(),
-        "secret_access_key": base64.b64decode(
-            secret_data.get("AWS_SECRET_ACCESS_KEY", "")
-        ).decode(),
-    }
-
-    creds = provider.get_credentials()
-    if creds.get("s3_config") != s3_config:
-        creds["s3_config"] = s3_config
-        provider.set_credentials(creds)
-        logger.info("Synced OBC credentials for provider %s", provider.name)
 
 
 def _run_deferred_startup():
