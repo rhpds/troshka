@@ -3812,3 +3812,8 @@ class TestCreateAndStartPod:
         pod_ctr = create_params["containers"][0]
         assert len(pod_ctr["mounts"]) == 1
         assert "/var/lib/troshka/vms/proj/mnt-disk:/mnt/data" in pod_ctr["mounts"][0]
+        assert len(create_params["volumes"]) == 1
+        assert (
+            create_params["volumes"][0]["mount_dir"]
+            == "/var/lib/troshka/vms/proj/mnt-disk"
+        )

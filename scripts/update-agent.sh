@@ -86,11 +86,6 @@ try:
         try:
             push_update(h, script_bytes, version, force=force)
             pushed = True
-            if vncd_bytes and h.host_type != 'pattern_buffer':
-                try:
-                    push_vncd_update(h, vncd_bytes)
-                except Exception as ve:
-                    print(f'  vncd update failed: {ve}')
         except TroshkadError:
             pass  # agent may be mid-restart from a previous push — just poll
 
@@ -102,6 +97,11 @@ try:
                 if health and health.get('version') == version:
                     h.agent_version = version
                     db.commit()
+                    if vncd_bytes and h.host_type != 'pattern_buffer':
+                        try:
+                            push_vncd_update(h, vncd_bytes)
+                        except Exception as ve:
+                            print(f'  vncd update failed: {ve}')
                     print('done')
                     break
             except Exception:

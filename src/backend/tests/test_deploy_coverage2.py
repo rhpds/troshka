@@ -23,6 +23,7 @@ from app.services.deploy_service import (
     _resolve_eip_provider,
     _resolve_multihost_ips,
     _should_skip_ocpvirt_eip,
+    _should_skip_route_eip,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -299,6 +300,28 @@ class TestShouldSkipOcpvirtEip:
                         "subtype": "gateway",
                         "portForwards": [
                             {"extIpId": "eip-1", "extPort": 443},
+                            {"extIpId": "eip-1", "extPort": 8080},
+                        ],
+                    },
+                }
+            ]
+        }
+        assert (
+            _should_skip_route_eip(provider, topology, "eip-1", "proj-12345678")
+            is False
+        )
+
+    def test_kubevirt_all_routable_ports_skips(self):
+        provider = MagicMock()
+        provider.type = "kubevirt"
+        topology = {
+            "nodes": [
+                {
+                    "type": "networkNode",
+                    "data": {
+                        "subtype": "gateway",
+                        "portForwards": [
+                            {"extIpId": "eip-1", "extPort": 80},
                             {"extIpId": "eip-1", "extPort": 6443},
                         ],
                     },
@@ -306,8 +329,7 @@ class TestShouldSkipOcpvirtEip:
             ]
         }
         assert (
-            _should_skip_ocpvirt_eip(provider, topology, "eip-1", "proj-12345678")
-            is False
+            _should_skip_route_eip(provider, topology, "eip-1", "proj-12345678") is True
         )
 
 

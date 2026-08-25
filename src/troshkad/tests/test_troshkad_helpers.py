@@ -6335,8 +6335,17 @@ class TestMountContainerVolumes(unittest.TestCase):
             ],
         )
         self.assertEqual(len(result), 1)
-        # Only mount call, no mkfs since blkid succeeded
-        self.assertEqual(mock_runcmd.call_count, 1)
+        # mount + chmod + chcon for container write access
+        self.assertEqual(mock_runcmd.call_count, 3)
+        mock_runcmd.assert_any_call(
+            job, ["chmod", "1777", "/var/lib/troshka/vms/proj/mnt"], timeout=5, check=False
+        )
+        mock_runcmd.assert_any_call(
+            job,
+            ["chcon", "-R", "-t", "container_file_t", "/var/lib/troshka/vms/proj/mnt"],
+            timeout=10,
+            check=False,
+        )
 
     @patch("troshkad._run_cmd")
     @patch("troshkad.subprocess.run")
@@ -6363,8 +6372,8 @@ class TestMountContainerVolumes(unittest.TestCase):
             ],
         )
         self.assertEqual(len(result), 1)
-        # mkfs + mount = 2
-        self.assertEqual(mock_runcmd.call_count, 2)
+        # mkfs + mount + chmod + chcon
+        self.assertEqual(mock_runcmd.call_count, 4)
 
     @patch("troshkad.subprocess.run")
     @patch("troshkad.os.makedirs")

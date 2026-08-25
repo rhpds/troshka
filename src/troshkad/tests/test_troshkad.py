@@ -1608,6 +1608,197 @@ class TestPodCreate(unittest.TestCase):
         troshkad._handle_pod_create(job, job["params"])
         mock_mount.assert_called_once_with(job, volumes)
 
+    @patch("troshkad._mount_container_volumes")
+    @patch("troshkad._run_cmd")
+    def test_pod_create_infers_volumes_from_mounts(self, mock_run_cmd, mock_mount):
+        def run_cmd_side_effect(job, cmd, **kwargs):
+            if "inspect" in cmd:
+                return "12345"
+            return ""
+
+        mock_run_cmd.side_effect = run_cmd_side_effect
+
+        with tempfile.TemporaryDirectory() as tmp:
+            disk_path = os.path.join(tmp, "2db53adf-4d48b930.raw")
+            mount_dir = os.path.join(tmp, "mnt-4d48b930")
+            open(disk_path, "wb").close()
+
+            job = troshkad._create_job(
+                "pods/create",
+                {
+                    "pod_name": "showroom",
+                    "project_id": "ce198e19-243c-4afd-865f-17f3f2b9504f",
+                    "init_containers": [
+                        {
+                            "name": "git-cloner",
+                            "image": "quay.io/rhpds/git-cloner:v1.1.4",
+                            "mounts": [f"{mount_dir}:/showroom"],
+                        }
+                    ],
+                    "containers": [],
+                },
+            )
+            troshkad._handle_pod_create(job, job["params"])
+
+        expected = [
+            {
+                "disk_path": disk_path,
+                "mount_dir": mount_dir,
+                "mount_path": "/showroom",
+            }
+        ]
+        mock_mount.assert_called_once_with(job, expected)
+
+    @patch("troshkad._mount_container_volumes")
+    @patch("troshkad._run_cmd")
+    def test_pod_create_main_container_argv_command(self, mock_run_cmd, mock_mount):
+        def run_cmd_side_effect(job, cmd, **kwargs):
+            if "inspect" in cmd:
+                return "12345"
+            return ""
+
+        mock_run_cmd.side_effect = run_cmd_side_effect
+
+        job = troshkad._create_job(
+            "pods/create",
+            {
+                "pod_name": "showroom",
+                "project_id": "aabbccdd-1122-3344-5566-778899001122",
+                "containers": [
+                    {
+                        "name": "proxy",
+                        "image": "quay.io/rhpds/nginx:1.25",
+                        "cpus": 1,
+                        "memory": 256,
+                        "command": [
+                            "nginx",
+                            "-c",
+                            "/showroom/nginx/nginx.conf",
+                            "-g",
+                            "daemon off;",
+                        ],
+                    }
+                ],
+            },
+        )
+        troshkad._handle_pod_create(job, job["params"])
+
+        create_cmds = [c[0][1] for c in mock_run_cmd.call_args_list if c[0][1][1] == "create"]
+        proxy_cmds = [
+            c for c in create_cmds if "troshka-aabbccdd-showroom-proxy" in c
+        ]
+        self.assertEqual(len(proxy_cmds), 1)
+        self.assertIn("--entrypoint", proxy_cmds[0])
+        self.assertIn("nginx", proxy_cmds[0])
+        self.assertIn("-c", proxy_cmds[0])
+
+class TestPodResolvConf(unittest.TestCase):
+    def test_gateway_from_ip(self):
+        self.assertEqual(troshkad._gateway_from_ip("10.0.0.5"), "10.0.0.1")
+
+    def test_pod_dns_nameserver_uses_configured_gateway(self):
+        net = {"ip": "10.0.0.5", "gateway": "10.0.0.254"}
+        self.assertEqual(troshkad._pod_dns_nameserver(net), "10.0.0.254")
+
+    def test_pod_dns_nameserver_falls_back_to_subnet_dot_one(self):
+        net = {"ip": "172.20.20.5"}
+        self.assertEqual(troshkad._pod_dns_nameserver(net), "172.20.20.1")
+
+    def test_append_pod_resolv_mount(self):
+        cmd = ["podman", "create"]
+        troshkad._append_pod_resolv_mount(cmd, "/tmp/troshka-resolv-test.conf")
+        self.assertEqual(
+            cmd,
+            [
+                "podman",
+                "create",
+                "-v",
+                "/tmp/troshka-resolv-test.conf:/etc/resolv.conf:ro,z",
+            ],
+        )
+
+
+class TestAppendPodmanImageCommand(unittest.TestCase):
+    """Tests for podman argv command handling."""
+
+    def test_argv_entrypoint(self):
+        cmd = ["podman", "create"]
+        troshkad._append_podman_image_command(
+            cmd,
+            "quay.io/rhpds/nginx:1.25",
+            ["nginx", "-c", "/showroom/nginx/nginx.conf", "-g", "daemon off;"],
+        )
+        self.assertEqual(
+            cmd,
+            [
+                "podman",
+                "create",
+                "--entrypoint",
+                "nginx",
+                "quay.io/rhpds/nginx:1.25",
+                "-c",
+                "/showroom/nginx/nginx.conf",
+                "-g",
+                "daemon off;",
+            ],
+        )
+
+    def test_argv_flags_only(self):
+        cmd = ["podman", "create"]
+        troshkad._append_podman_image_command(
+            cmd,
+            "quay.io/rhpds/wetty:latest",
+            ["--base=/wetty_aap/", "--port=8001"],
+        )
+        self.assertEqual(
+            cmd,
+            [
+                "podman",
+                "create",
+                "quay.io/rhpds/wetty:latest",
+                "--base=/wetty_aap/",
+                "--port=8001",
+            ],
+        )
+
+    def test_shell_entrypoint_string(self):
+        cmd = ["podman", "create"]
+        troshkad._append_podman_image_command(
+            cmd, "busybox:1.36", "/bin/sh -ec 'echo hi'"
+        )
+        self.assertEqual(
+            cmd,
+            [
+                "podman",
+                "create",
+                "--entrypoint",
+                "/bin/sh",
+                "busybox:1.36",
+                "-ec",
+                "echo hi",
+            ],
+        )
+
+    def test_shell_script_string(self):
+        cmd = ["podman", "create"]
+        script = (
+            'mkdir -p /showroom/nginx && echo "$NGINX_B64" | base64 -d '
+            "> /showroom/nginx/nginx.conf"
+        )
+        troshkad._append_podman_image_command(cmd, "busybox:1.36", script)
+        self.assertEqual(
+            cmd,
+            [
+                "podman",
+                "create",
+                "--entrypoint",
+                "/bin/sh",
+                "busybox:1.36",
+                "-c",
+                script,
+            ],
+        )
+
 
 class TestPodStart(unittest.TestCase):
     """Tests for pods/start handler."""
@@ -1641,6 +1832,79 @@ class TestPodStart(unittest.TestCase):
         })
         result = troshkad._handle_pod_start(job, job["params"])
         self.assertEqual(result["status"], "started")
+
+    @patch("troshkad._run_cmd")
+    def test_pod_start_init_container_order(self, mock_run_cmd):
+        started = []
+
+        def run_cmd_side_effect(job, cmd, **kwargs):
+            if "ps" in cmd:
+                return (
+                    "troshka-aabbccdd-showroom-init-git-cloner\n"
+                    "troshka-aabbccdd-showroom-init-nginx-config\n"
+                    "troshka-aabbccdd-showroom-init-antora-builder\n"
+                )
+            if "start" in cmd and "init-" in " ".join(cmd):
+                started.append(cmd[-1])
+            if "wait" in cmd:
+                return "0"
+            return ""
+
+        mock_run_cmd.side_effect = run_cmd_side_effect
+
+        job = troshkad._create_job(
+            "pods/start",
+            {"pod_name": "troshka-aabbccdd-showroom"},
+        )
+        troshkad._handle_pod_start(job, job["params"])
+        self.assertEqual(
+            started,
+            [
+                "troshka-aabbccdd-showroom-init-git-cloner",
+                "troshka-aabbccdd-showroom-init-nginx-config",
+                "troshka-aabbccdd-showroom-init-antora-builder",
+            ],
+        )
+
+    @patch("troshkad._run_cmd")
+    def test_pod_start_starts_main_containers_only(self, mock_run_cmd):
+        started = []
+
+        def run_cmd_side_effect(job, cmd, **kwargs):
+            if cmd[:3] == ["podman", "ps", "-a"] and "init-" in " ".join(cmd):
+                return "troshka-aabbccdd-showroom-init-git-cloner\n"
+            if cmd[:3] == ["podman", "ps", "-a"] and "pod=" in " ".join(cmd):
+                return (
+                    "troshka-aabbccdd-showroom-infra\n"
+                    "troshka-aabbccdd-showroom-init-git-cloner\n"
+                    "troshka-aabbccdd-showroom-proxy\n"
+                )
+            if cmd[:2] == ["podman", "start"]:
+                started.append(cmd[-1])
+            if "wait" in cmd:
+                return "0"
+            return ""
+
+        mock_run_cmd.side_effect = run_cmd_side_effect
+
+        job = troshkad._create_job(
+            "pods/start",
+            {"pod_name": "troshka-aabbccdd-showroom"},
+        )
+        troshkad._handle_pod_start(job, job["params"])
+        self.assertEqual(
+            started,
+            [
+                "troshka-aabbccdd-showroom-init-git-cloner",
+                "troshka-aabbccdd-showroom-proxy",
+            ],
+        )
+        pod_start_cmds = [
+            c[0][1]
+            for c in mock_run_cmd.call_args_list
+            if c[0][1][:3] == ["podman", "pod", "start"]
+        ]
+        self.assertEqual(pod_start_cmds, [])
 
     @patch("troshkad._run_cmd")
     def test_pod_start_init_container_failure(self, mock_run_cmd):

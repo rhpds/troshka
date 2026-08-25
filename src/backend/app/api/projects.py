@@ -168,6 +168,49 @@ def _hydrate_response_external_ips(db, project_id: str, result: dict) -> None:
         topo["externalIps"] = hydrated
 
 
+def _gateway_external_endpoints_by_id(topology: dict | None) -> dict[str, list]:
+    """Map gateway node id → externalEndpoints from a topology snapshot."""
+    endpoints_by_id: dict[str, list] = {}
+    if not isinstance(topology, dict):
+        return endpoints_by_id
+    for node in topology.get("nodes", []):
+        node_data = node.get("data", {})
+        if node_data.get("subtype") != "gateway":
+            continue
+        endpoints = node_data.get("externalEndpoints") or []
+        if endpoints:
+            endpoints_by_id[node.get("id", "")] = endpoints
+    return endpoints_by_id
+
+
+def _hydrate_response_external_endpoints(result: dict) -> None:
+    """Attach deploy-time OCP Route endpoints from deployed_topology onto API snapshots."""
+    deployed_eps = _gateway_external_endpoints_by_id(result.get("deployed_topology"))
+    if not deployed_eps:
+        return
+    for topo_key in ("topology", "deployed_topology"):
+        topo = result.get(topo_key)
+        if not isinstance(topo, dict):
+            continue
+        for node in topo.get("nodes", []):
+            node_data = node.get("data", {})
+            if node_data.get("subtype") != "gateway":
+                continue
+            if node_data.get("externalEndpoints"):
+                continue
+            node_id = node.get("id", "")
+            if node_id in deployed_eps:
+                node_data["externalEndpoints"] = deployed_eps[node_id]
+
+
+def _strip_topology_runtime_node_fields(topology: dict) -> None:
+    """Remove deploy-runtime gateway fields from editable topology saves."""
+    for node in topology.get("nodes", []):
+        node_data = node.get("data", {})
+        if node_data.get("subtype") == "gateway":
+            node_data.pop("externalEndpoints", None)
+
+
 def _project_response_dict(project, db=None):
     result = {
         "id": project.id,
@@ -228,6 +271,7 @@ def _project_response_dict(project, db=None):
         result["provider_type"] = prov_type
     if db is not None:
         _hydrate_response_external_ips(db, project.id, result)
+    _hydrate_response_external_endpoints(result)
     return result
 
 
@@ -1066,6 +1110,7 @@ def update_project(
             ext_ip.pop("_private_ip", None)
             ext_ip.pop("_transit_port_map", None)
             ext_ip.pop("state", None)
+        _strip_topology_runtime_node_fields(topo)
         _apply_eip_runtime_to_topology(db, project_id, topo.get("externalIps", []))
         project.topology = topo
 

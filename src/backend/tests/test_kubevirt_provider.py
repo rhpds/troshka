@@ -190,6 +190,28 @@ def test_create_route_access_creates_service_and_route():
     mock_core.create_namespaced_service.assert_called_once()
 
 
+def test_create_route_access_edge_for_port_80():
+    provider = _make_provider()
+    driver = get_provider_driver(provider)
+
+    with patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients:
+        mock_custom = MagicMock()
+        mock_core = MagicMock()
+        mock_custom.create_namespaced_custom_object.return_value = {
+            "spec": {"host": "showroom-80.apps.cluster.example.com"}
+        }
+        mock_clients.return_value = (mock_custom, mock_core, MagicMock())
+
+        host = MagicMock()
+        result = driver.create_route_access(
+            provider, host, "proj-1234-5678", "showroom", "10.0.0.5", 80
+        )
+
+    assert result["hostname"] == "showroom-80.apps.cluster.example.com"
+    route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
+    assert route_body["spec"]["tls"]["termination"] == "edge"
+
+
 def test_delete_route_access_cleans_up_by_label():
     provider = _make_provider()
     driver = get_provider_driver(provider)

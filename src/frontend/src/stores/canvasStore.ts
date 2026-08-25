@@ -380,6 +380,7 @@ export function setLatestContainerStates(states: Record<string, { state: string;
 const DEPLOY_TRANSIENT_NODE_KEYS = [
   "status", "redeployStep", "redeployDetail", "liveBootDevs",
   "resolvedS3Path", "presignedUrl", "ciGeneratedUserData",
+  "externalEndpoints",
 ] as const;
 
 function stableNodeData(data: Record<string, unknown>): Record<string, unknown> {
@@ -996,6 +997,15 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           // id so the canvas shows the assigned IP (only when live ip is empty).
           const deployedEips: ExternalIp[] = project.deployed_topology?.externalIps || [];
           const deployedEipById = new Map(deployedEips.map((e) => [e.id, e]));
+          const deployedGatewayEndpoints = new Map<string, Array<Record<string, unknown>>>(
+            (project.deployed_topology?.nodes || [])
+              .filter((n: { data?: Record<string, unknown> }) => n.data?.subtype === "gateway")
+              .map((n: { id: string; data?: Record<string, unknown> }) => [
+                n.id,
+                (n.data?.externalEndpoints as Array<Record<string, unknown>>) || [],
+              ] as [string, Array<Record<string, unknown>>])
+              .filter(([, eps]: [string, Array<Record<string, unknown>>]) => eps.length > 0),
+          );
           const externalIps = (t.externalIps || []).map((e: ExternalIp) => {
             const dep = deployedEipById.get(e.id);
             return dep && !e.ip
@@ -1011,15 +1021,24 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
                   ? showroomCfg.tabs
                   : ((showroomNode?.data as Record<string, unknown> | undefined)
                       ?.showroomTabs as ShowroomTab[] | undefined)) || [];
-              if (!showroomNode || tabs.length === 0) return nodes;
+              const withGatewayEndpoints = nodes.map((n: Node) => {
+                const deployedEndpoints = deployedGatewayEndpoints.get(n.id);
+                if (!deployedEndpoints?.length) return n;
+                const data = (n.data || {}) as Record<string, unknown>;
+                if (data.subtype !== "gateway" || (data.externalEndpoints as unknown[] | undefined)?.length) {
+                  return n;
+                }
+                return { ...n, data: { ...data, externalEndpoints: deployedEndpoints } };
+              });
+              if (!showroomNode || tabs.length === 0) return withGatewayEndpoints;
               const updatedData = applyShowroomTabsToNode(
                 showroomNode.data as Record<string, unknown>,
                 tabs,
-                nodes,
+                withGatewayEndpoints,
                 t.edges || [],
                 showroomNode.id,
               );
-              return nodes.map((n: Node) =>
+              return withGatewayEndpoints.map((n: Node) =>
                 n.id === showroomNode.id ? { ...n, data: updatedData } : n,
               );
             })(),

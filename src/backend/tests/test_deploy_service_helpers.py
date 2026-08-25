@@ -3847,6 +3847,42 @@ class TestFindContainerNetworks:
         assert nets[0]["bridge"] == "br-100"
         assert nets[0]["ip"] == "10.0.0.5"
         assert nets[0]["cidr"] == "10.0.0.0/24"
+        assert nets[0]["gateway"] == "10.0.0.1"
+
+    def test_uses_configured_dhcp_gateway(self):
+        from app.services.deploy_topology import _find_container_networks
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "ctr1",
+                    "type": "containerNode",
+                    "data": {
+                        "nics": [
+                            {"id": "nic1", "mac": "52:54:00:aa:bb:cc", "ip": "10.0.0.5"}
+                        ]
+                    },
+                },
+                {
+                    "id": "net1",
+                    "type": "networkNode",
+                    "data": {
+                        "cidr": "10.0.0.0/24",
+                        "dhcpGateway": "10.0.0.254",
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "source": "ctr1",
+                    "target": "net1",
+                    "sourceHandle": "nic-nic1-top",
+                    "targetHandle": "net-in",
+                }
+            ],
+        }
+        nets = _find_container_networks("ctr1", topo, {"net1": 100})
+        assert nets[0]["gateway"] == "10.0.0.254"
 
     def test_no_matching_node(self):
         from app.services.deploy_topology import _find_container_networks
@@ -5439,6 +5475,7 @@ class TestFindContainerNetworksV2:
         assert len(nets) == 1
         assert nets[0]["bridge"] == "br-2001"
         assert nets[0]["ip"] == "10.0.0.5"
+        assert nets[0]["gateway"] == "10.0.0.1"
 
     def test_no_container_node(self):
         from app.services.deploy_topology import _find_container_networks

@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NetworkNodeData } from "@/stores/canvasStore";
 import { useCanvasStore } from "@/stores/canvasStore";
+import { formatOcpRouteUrl, isDeployInProgress, isOcpRoutablePort } from "@/lib/routeUrl";
 
 function RJ45Icon() {
   return (
@@ -293,8 +294,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                             <td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 11 }}>
                               {(() => {
                                 if (routeMatch) {
-                                  const port = String(pf.extPort);
-                                  const url = port === "443" ? `https://${routeMatch.hostname}` : `https://${routeMatch.hostname}:${port}`;
+                                  const url = formatOcpRouteUrl(routeMatch.hostname!, pf.extPort);
                                   return (
                                     <>
                                       <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--troshka-green)", textDecoration: "none" }}>{url}</a>
@@ -311,6 +311,16 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                                       <span style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
                                         onClick={() => navigator.clipboard.writeText(addr)} title="Copy">Copy</span>
                                     </>
+                                  );
+                                }
+                                if (
+                                  isDeployInProgress(projectState) &&
+                                  isOcpRoutablePort(pf.extPort)
+                                ) {
+                                  return (
+                                    <span style={{ color: "var(--troshka-text-dim)", fontStyle: "italic" }}>
+                                      Building route…
+                                    </span>
                                   );
                                 }
                                 return eip?.name || "—";

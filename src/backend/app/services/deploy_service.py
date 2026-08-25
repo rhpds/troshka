@@ -1659,6 +1659,7 @@ def _pod_create_params(host, project_id, ctr, topology, vni_map, pool=None):
                 "ip": n.get("ip"),
                 "mac": n.get("mac"),
                 "cidr": n.get("cidr"),
+                "gateway": n.get("gateway"),
             }
             for n in networks
         ],
@@ -1724,6 +1725,7 @@ def _create_container(host, project_id, ctr, topology, vni_map, pool=None):
                 "ip": n.get("ip"),
                 "mac": n.get("mac"),
                 "cidr": n.get("cidr"),
+                "gateway": n.get("gateway"),
             }
             for n in networks
         ],
@@ -2245,6 +2247,7 @@ def _finalize_kubevirt_deploy(project_id, project, topology, db):
         if node.get("type") == "vmNode" and not ndata.get("bmcIp"):
             ndata["bmcIp"] = ""
 
+    _deploy_create_provider_routes(db, project_id, clean_topo, project=project)
     _allocate_kubevirt_eips(project_id, project, clean_topo, db)
 
     # Read domain UUIDs from TroshkaVM CRs (assigned by KubeVirt at VM creation)
@@ -2390,6 +2393,9 @@ def _allocate_kubevirt_eips(project_id, project, topology, db):
 
     for ext_ip in external_ips:
         try:
+            canvas_id = ext_ip.get("id", "")
+            if _should_skip_route_eip(provider, topology, canvas_id, project_id):
+                continue
             _allocate_single_kubevirt_eip(
                 project_id, ext_ip, provider, host, driver, topology, db
             )
@@ -3141,8 +3147,12 @@ def _deploy_multihost(project_id: str, project, db):
     notify_project(project_id, {"type": "project-state", "state": "active"})
 
 
-def _should_skip_ocpvirt_eip(provider, topology, canvas_id, project_id):
-    if provider.type != "ocpvirt":
+_ROUTE_ACCESS_PORTS = frozenset({80, 443, 6443})
+
+
+def _should_skip_route_eip(provider, topology, canvas_id, project_id):
+    """Skip MetalLB/EIP allocation when all forwards use OCP Routes (ocpvirt/kubevirt)."""
+    if provider.type not in ("ocpvirt", "kubevirt"):
         return False
     pf_ports = set()
     for node in topology.get("nodes", []):
@@ -3152,7 +3162,7 @@ def _should_skip_ocpvirt_eip(provider, topology, canvas_id, project_id):
                 if pf.get("extIpId") == canvas_id:
                     pf_ports.add(int(pf.get("extPort", 0)))
             break
-    if pf_ports and pf_ports.issubset({80, 443}):
+    if pf_ports and pf_ports.issubset(_ROUTE_ACCESS_PORTS):
         logger.info(
             "Deploy %s: skipping EIP for %s — all ports (%s) handled by Routes",
             project_id[:8],
@@ -3161,6 +3171,11 @@ def _should_skip_ocpvirt_eip(provider, topology, canvas_id, project_id):
         )
         return True
     return False
+
+
+def _should_skip_ocpvirt_eip(provider, topology, canvas_id, project_id):
+    """Backward-compatible alias."""
+    return _should_skip_route_eip(provider, topology, canvas_id, project_id)
 
 
 def _allocate_single_eip(s, provider, project_id, host, ext_ip, topology):
@@ -3227,7 +3242,7 @@ def _deploy_allocate_eips(s, project_id, project, host, topology, external_ips):
 
     for ext_ip in external_ips:
         canvas_id = ext_ip.get("id", "")
-        if _should_skip_ocpvirt_eip(provider, topology, canvas_id, project_id):
+        if _should_skip_route_eip(provider, topology, canvas_id, project_id):
             ext_ip["_skip"] = True
             continue
         _allocate_single_eip(s, provider, project_id, host, ext_ip, topology)
@@ -3398,27 +3413,38 @@ def _create_routes_for_gateway(
     external_endpoints = []
     for pf in node_data.get("portForwards", []):
         ext_port = int(pf.get("extPort", 0))
-        if ext_port not in (80, 443, 6443):
+        if ext_port not in _ROUTE_ACCESS_PORTS:
             continue
         int_ip = pf.get("intIp", "")
         int_port = int(pf.get("intPort", ext_port))
         vm_name = _find_vm_name_by_ip(topology, int_ip)
-        transit_port = _lookup_transit_port(topology, pf)
-        setup_dnat = transit_port is None
-        if transit_port is None:
-            transit_port = allocate_standalone_transit_port(s, host)
         try:
-            result = driver.create_route_access(
-                provider,
-                host,
-                project_id,
-                vm_name,
-                int_ip,
-                ext_port,
-                int_port,
-                transit_port=transit_port,
-                setup_dnat=setup_dnat,
-            )
+            if provider.type == "ocpvirt":
+                transit_port = _lookup_transit_port(topology, pf)
+                setup_dnat = transit_port is None
+                if transit_port is None:
+                    transit_port = allocate_standalone_transit_port(s, host)
+                result = driver.create_route_access(
+                    provider,
+                    host,
+                    project_id,
+                    vm_name,
+                    int_ip,
+                    ext_port,
+                    int_port,
+                    transit_port=transit_port,
+                    setup_dnat=setup_dnat,
+                )
+            else:
+                result = driver.create_route_access(
+                    provider,
+                    host,
+                    project_id,
+                    vm_name,
+                    int_ip,
+                    ext_port,
+                    int_port,
+                )
             external_endpoints.append(
                 {
                     "vmName": vm_name,
@@ -3446,15 +3472,32 @@ def _create_routes_for_gateway(
     return external_endpoints
 
 
-def _deploy_create_ocpvirt_routes(s, host, project_id, topology):
-    if not host or not host.provider_id:
-        return
+def _resolve_project_provider(s, host, project):
+    from app.models.host import Host
     from app.models.provider import Provider
+
+    if host and host.provider_id:
+        provider = s.query(Provider).filter_by(id=host.provider_id).first()
+        if provider:
+            return provider
+    if project and project.provider_id:
+        provider = s.query(Provider).filter_by(id=project.provider_id).first()
+        if provider:
+            return provider
+    if project and project.host_id:
+        project_host = s.query(Host).filter_by(id=project.host_id).first()
+        if project_host and project_host.provider_id:
+            return s.query(Provider).filter_by(id=project_host.provider_id).first()
+    return None
+
+
+def _deploy_create_provider_routes(s, project_id, topology, host=None, project=None):
+    """Create OCP Routes for routable port forwards on ocpvirt and kubevirt native."""
+    provider = _resolve_project_provider(s, host, project)
+    if not provider or provider.type not in ("ocpvirt", "kubevirt"):
+        return
     from app.services.providers import get_provider_driver
 
-    provider = s.query(Provider).filter_by(id=host.provider_id).first()
-    if not provider or provider.type != "ocpvirt":
-        return
     driver = get_provider_driver(provider)
     for node in topology.get("nodes", []):
         node_data = node.get("data", {})
@@ -3465,8 +3508,11 @@ def _deploy_create_ocpvirt_routes(s, host, project_id, topology):
         )
         if external_endpoints:
             node_data["externalEndpoints"] = external_endpoints
-        break
-    s.commit()
+
+
+def _deploy_create_ocpvirt_routes(s, host, project_id, topology):
+    """Backward-compatible wrapper."""
+    _deploy_create_provider_routes(s, project_id, topology, host=host)
 
 
 def _detect_pattern_id(topology):
@@ -4301,7 +4347,7 @@ def _deploy_single_host_setup(
 
     _deploy_inject_gateway_ip(topology, project_id)
     _deploy_disable_guest_exec(project, topology)
-    _deploy_create_ocpvirt_routes(s, host, project_id, topology)
+    _deploy_create_provider_routes(s, project_id, topology, host=host)
 
     _checkpoint(s, project_id, "seeds")
     _update_deploy_progress(project_id, "cloud-init", "creating seed ISOs")

@@ -954,6 +954,7 @@ class KubeVirtDriver(ProviderDriver):
             if "AlreadyExists" not in str(e):
                 raise
 
+        passthrough = port in (443, 6443)
         route_body = {
             "apiVersion": "route.openshift.io/v1",
             "kind": "Route",
@@ -968,11 +969,15 @@ class KubeVirtDriver(ProviderDriver):
             },
             "spec": {
                 "to": {"kind": "Service", "name": svc_name},
-                "port": {"targetPort": tgt_port},
-                "tls": {
-                    "termination": "edge",
-                    "insecureEdgeTerminationPolicy": "Redirect",
-                },
+                "port": {"targetPort": port},
+                "tls": (
+                    {"termination": "passthrough"}
+                    if passthrough
+                    else {
+                        "termination": "edge",
+                        "insecureEdgeTerminationPolicy": "Redirect",
+                    }
+                ),
             },
         }
         try:
@@ -987,7 +992,14 @@ class KubeVirtDriver(ProviderDriver):
         except Exception as e:
             if "AlreadyExists" not in str(e):
                 raise
-            hostname = ""
+            existing = custom_api.get_namespaced_custom_object(
+                group=_ROUTE_API,
+                version="v1",
+                namespace=namespace,
+                plural="routes",
+                name=route_name,
+            )
+            hostname = dict(existing).get("spec", {}).get("host", "")  # type: ignore[call-overload]
 
         return {
             "hostname": hostname,

@@ -12,6 +12,7 @@ import hmac
 import json
 import logging
 import os
+import shlex
 import shutil
 import signal
 import ssl
@@ -11023,6 +11024,56 @@ def _handle_container_pull(job, params):
 COMMAND_HANDLERS["containers/pull"] = _handle_container_pull
 
 
+def _infer_pod_volumes(params):
+    """Resolve pod volume specs from params or container mount paths.
+
+    Older backends may send bind-mount paths in init/main containers without a
+    top-level volumes array; infer disk paths from mnt-<suffix> directories.
+    """
+    volumes = params.get("volumes") or []
+    if volumes:
+        return volumes
+
+    inferred = []
+    seen_dirs = set()
+    mount_specs = []
+    for ic in params.get("init_containers") or []:
+        mount_specs.extend(ic.get("mounts") or [])
+    for ctr in params.get("containers") or []:
+        mount_specs.extend(ctr.get("mounts") or [])
+
+    for spec in mount_specs:
+        if not spec or ":" not in spec:
+            continue
+        host_path, container_path = spec.split(":", 1)
+        if host_path in seen_dirs:
+            continue
+        base = os.path.basename(host_path)
+        if not base.startswith("mnt-"):
+            continue
+        suffix = base[4:]
+        parent = os.path.dirname(host_path)
+        disk_path = None
+        try:
+            for entry in os.listdir(parent):
+                if entry.endswith(f"-{suffix}.raw"):
+                    disk_path = os.path.join(parent, entry)
+                    break
+        except OSError:
+            continue
+        if not disk_path:
+            continue
+        seen_dirs.add(host_path)
+        inferred.append(
+            {
+                "disk_path": disk_path,
+                "mount_dir": host_path,
+                "mount_path": container_path,
+            }
+        )
+    return inferred
+
+
 def _mount_container_volumes(job, volumes):
     """Format (if needed) and loop-mount raw disk volumes for a container."""
     mount_dirs = []
@@ -11052,8 +11103,57 @@ def _mount_container_volumes(job, volumes):
 
         _job_log(job, f"Mounting {os.path.basename(disk_path)} at {mount_dir}")
         _run_cmd(job, ["mount", "-o", "loop", disk_path, mount_dir], timeout=10)
+        # Fresh ext4 roots are root:root 755; container images often run non-root.
+        _run_cmd(job, ["chmod", "1777", mount_dir], timeout=5, check=False)
+        # Loop mounts on shared NFS storage get unlabeled_t; label for podman writes.
+        _run_cmd(
+            job,
+            ["chcon", "-R", "-t", "container_file_t", mount_dir],
+            timeout=10,
+            check=False,
+        )
         mount_dirs.append(mount_dir)
     return mount_dirs
+
+
+def _append_podman_image_command(cmd, image, command):
+    """Add image and optional command override/args to a podman create argv."""
+    if not command:
+        cmd.append(image)
+        return
+    if isinstance(command, (list, tuple)):
+        if not command:
+            cmd.append(image)
+            return
+        args = [str(a) for a in command]
+        if args[0].startswith("-"):
+            cmd.append(image)
+            cmd.extend(args)
+            return
+        cmd.extend(["--entrypoint", args[0]])
+        cmd.append(image)
+        if len(args) > 1:
+            cmd.extend(args[1:])
+        return
+
+    command_str = str(command).strip()
+    if command_str.startswith("/bin/sh"):
+        cmd.extend(["--entrypoint", "/bin/sh"])
+        cmd.append(image)
+        rest = command_str[len("/bin/sh") :].strip()
+        if rest:
+            cmd.extend(shlex.split(rest))
+        return
+
+    shell_markers = ("&&", "||", "|", ">", "<", ";", "$", "`")
+    if any(m in command_str for m in shell_markers) or " " in command_str:
+        cmd.extend(["--entrypoint", "/bin/sh"])
+        cmd.append(image)
+        cmd.extend(["-c", command_str])
+        return
+
+    cmd.extend(["--entrypoint", command_str])
+    cmd.append(image)
 
 
 def _build_container_cmd(
@@ -11572,7 +11672,7 @@ def _setup_pod_veth_pair(
     )
 
 
-def _configure_pod_interface_ip(job, idx, ip_addr, cidr, netns_name):
+def _configure_pod_interface_ip(job, idx, ip_addr, cidr, netns_name, gateway=""):
     """Configure IP address and default route for pod interface."""
     prefix = cidr.split("/")[1] if "/" in cidr else "24"
     _run_cmd(
@@ -11592,8 +11692,9 @@ def _configure_pod_interface_ip(job, idx, ip_addr, cidr, netns_name):
     )
 
     if idx == 0:
-        parts = ip_addr.split(".")
-        gw = f"{parts[0]}.{parts[1]}.{parts[2]}.1"
+        gw = gateway or _gateway_from_ip(ip_addr)
+        if not gw:
+            return
         _run_cmd(
             job,
             [
@@ -11645,7 +11746,37 @@ def _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id):
         )
 
         if ip_addr and cidr:
-            _configure_pod_interface_ip(job, idx, ip_addr, cidr, netns_name)
+            gw = net.get("gateway") or _gateway_from_ip(ip_addr)
+            _configure_pod_interface_ip(
+                job, idx, ip_addr, cidr, netns_name, gateway=gw
+            )
+
+
+def _gateway_from_ip(ip_addr):
+    """Derive a default gateway (.1 in same /24) when none is configured."""
+    parts = ip_addr.split(".")
+    if len(parts) != 4:
+        return ""
+    return f"{parts[0]}.{parts[1]}.{parts[2]}.1"
+
+
+def _pod_dns_nameserver(net):
+    """Nameserver for pod resolv.conf: configured gateway, else subnet .1."""
+    return (net or {}).get("gateway") or _gateway_from_ip((net or {}).get("ip", ""))
+
+
+def _write_pod_resolv_conf(pod_name, nameserver):
+    """Write a resolv.conf for pod containers (podman --network none has no DNS)."""
+    path = f"/tmp/troshka-resolv-{pod_name}.conf"
+    with open(path, "w") as f:
+        f.write(f"nameserver {nameserver}\n")
+    return path
+
+
+def _append_pod_resolv_mount(cmd, resolv_path):
+    if resolv_path:
+        # :z relabels for container read access under SELinux Enforcing
+        cmd.extend(["-v", f"{resolv_path}:/etc/resolv.conf:ro,z"])
 
 
 def _create_init_container(job, full_pod_name, ic):
@@ -11656,9 +11787,8 @@ def _create_init_container(job, full_pod_name, ic):
         cmd.extend(["-e", f"{k}={v}"])
     for vol in ic.get("mounts") or []:
         cmd.extend(["-v", vol])
-    if ic.get("command"):
-        cmd.extend(["--entrypoint", ic["command"]])
-    cmd.append(ic["image"])
+    _append_pod_resolv_mount(cmd, job.get("_pod_resolv_path"))
+    _append_podman_image_command(cmd, ic["image"], ic.get("command"))
     _run_cmd(job, cmd)
     _job_log(job, f"Init container created: {ic['name']}")
 
@@ -11686,9 +11816,8 @@ def _create_main_container(job, full_pod_name, ctr, restart_policy, privileged):
         cmd.extend(["-v", vol])
     if privileged:
         cmd.append("--privileged")
-    if ctr.get("command"):
-        cmd.extend(["--entrypoint", ctr["command"]])
-    cmd.append(ctr["image"])
+    _append_pod_resolv_mount(cmd, job.get("_pod_resolv_path"))
+    _append_podman_image_command(cmd, ctr["image"], ctr.get("command"))
     _run_cmd(job, cmd)
     _job_log(job, f"Main container created: {ctr['name']}")
 
@@ -11710,7 +11839,7 @@ def _handle_pod_create(job, params):
     networks = params.get("networks", [])
     init_containers = params.get("init_containers", [])
     containers = params.get("containers", [])
-    volumes = params.get("volumes", [])
+    volumes = _infer_pod_volumes(params)
     restart_policy = params.get("restart_policy", "always")
     privileged = params.get("privileged", False)
 
@@ -11745,6 +11874,9 @@ def _handle_pod_create(job, params):
 
     if networks:
         _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id)
+        gw = _pod_dns_nameserver(networks[0])
+        if gw:
+            job["_pod_resolv_path"] = _write_pod_resolv_conf(full_pod_name, gw)
 
     _create_pod_containers(
         job, full_pod_name, init_containers, containers, restart_policy, privileged
@@ -11754,6 +11886,55 @@ def _handle_pod_create(job, params):
 
 
 COMMAND_HANDLERS["pods/create"] = _handle_pod_create
+
+
+def _list_pod_container_names(job, pod_name):
+    """Return container names belonging to a pod."""
+    out = _run_cmd(
+        job,
+        [
+            "podman",
+            "ps",
+            "-a",
+            "--filter",
+            f"pod={pod_name}",
+            "--format",
+            _PODMAN_NAMES_FMT,
+        ],
+        check=False,
+    )
+    return [n.strip() for n in out.strip().split("\n") if n.strip()]
+
+
+def _init_container_already_succeeded(job, ic_name):
+    """True when an init container already exited successfully."""
+    status = _run_cmd(
+        job,
+        ["podman", "inspect", "--format", "{{.State.Status}}", ic_name],
+        check=False,
+    ).strip()
+    if status != "exited":
+        return False
+    exit_out = _run_cmd(
+        job,
+        ["podman", "inspect", "--format", "{{.State.ExitCode}}", ic_name],
+        check=False,
+    ).strip()
+    try:
+        return int(exit_out) == 0
+    except ValueError:
+        return False
+
+
+def _start_pod_main_containers(job, pod_name, init_names):
+    """Start main pod containers without re-running completed init containers."""
+    skip = set(init_names)
+    skip.add(f"{pod_name}-infra")
+    for ctr_name in _list_pod_container_names(job, pod_name):
+        if ctr_name in skip:
+            continue
+        _run_cmd(job, ["podman", "start", ctr_name], check=False)
+    _job_log(job, f"Main containers started for pod: {pod_name}")
 
 
 def _handle_pod_start(job, params):
@@ -11774,7 +11955,10 @@ def _handle_pod_start(job, params):
     )
     init_names = [n.strip() for n in out.strip().split("\n") if n.strip()]
 
-    for ic_name in sorted(init_names):
+    for ic_name in init_names:
+        if _init_container_already_succeeded(job, ic_name):
+            _job_log(job, f"Init container {ic_name} already completed, skipping")
+            continue
         _job_log(job, f"Starting init container: {ic_name}")
         _run_cmd(job, ["podman", "start", ic_name])
         out = _run_cmd(job, ["podman", "wait", ic_name])
@@ -11788,7 +11972,7 @@ def _handle_pod_start(job, params):
             )
         _job_log(job, f"Init container {ic_name} completed (exit 0)")
 
-    _run_cmd(job, ["podman", "pod", "start", pod_name])
+    _start_pod_main_containers(job, pod_name, init_names)
     _job_log(job, f"Pod started: {pod_name}")
     return {"pod_name": pod_name, "status": "started"}
 

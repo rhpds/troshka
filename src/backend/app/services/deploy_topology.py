@@ -412,6 +412,20 @@ def _build_bmc_network_entry(
     }
 
 
+def _resolve_network_gateway(net_data: dict, cidr: str) -> str:
+    """Return DHCP gateway from network node data, or derive from CIDR."""
+    gateway = (net_data or {}).get("dhcpGateway", "")
+    if gateway:
+        return gateway
+    if not cidr:
+        return ""
+    try:
+        network = ipaddress.ip_network(cidr, strict=False)
+        return str(next(network.hosts()))
+    except (ValueError, StopIteration):
+        return ""
+
+
 def _find_container_networks(
     container_node_id: str, topology: dict, vni_map: dict, project_id: str = ""
 ) -> list[dict]:
@@ -452,7 +466,8 @@ def _find_container_networks(
         net_node = next(
             (n for n in topology.get("nodes", []) if n["id"] == net_node_id), None
         )
-        cidr = net_node.get("data", {}).get("cidr", "") if net_node else ""
+        net_data = net_node.get("data", {}) if net_node else {}
+        cidr = net_data.get("cidr", "")
 
         results.append(
             {
@@ -462,6 +477,7 @@ def _find_container_networks(
                 "model": nic.get("model", "virtio"),
                 "ip": nic.get("ip", ""),
                 "cidr": cidr,
+                "gateway": _resolve_network_gateway(net_data, cidr),
             }
         )
 
