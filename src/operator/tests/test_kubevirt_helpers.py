@@ -2,6 +2,7 @@ import json
 
 from helpers import kubevirt as kv_helpers
 from helpers.kubevirt import (
+    _apply_serial_console,
     _apply_video_and_input_devices,
     admission_api_error_summary,
     build_kubevirt_vm,
@@ -131,6 +132,34 @@ def test_apply_input_ps2_omits_tablet():
     domain: dict = {"devices": {}}
     _apply_video_and_input_devices(domain, {"inputModel": "ps2"})
     assert "inputs" not in domain["devices"]
+
+
+def test_apply_serial_console_enabled_by_default():
+    domain: dict = {"devices": {}}
+    _apply_serial_console(domain, {})
+    assert domain["devices"]["autoattachSerialConsole"] is True
+
+
+def test_apply_serial_console_disabled():
+    domain: dict = {"devices": {}}
+    _apply_serial_console(domain, {"serialConsole": False})
+    assert domain["devices"]["autoattachSerialConsole"] is False
+
+
+def test_build_kubevirt_vm_includes_serial_console():
+    vm_cr = {
+        "metadata": {"name": "vm-abc12345", "namespace": "troshka-test"},
+        "spec": {
+            "cpus": 2,
+            "memory": 4096,
+            "serialConsole": False,
+            "disks": [],
+            "nics": [],
+        },
+    }
+    body = build_kubevirt_vm(vm_cr, {}, {}, None)
+    devices = body["spec"]["template"]["spec"]["domain"]["devices"]
+    assert devices["autoattachSerialConsole"] is False
 
 
 def test_build_kubevirt_vm_includes_video_and_input():

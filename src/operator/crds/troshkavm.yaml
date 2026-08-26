@@ -87,6 +87,13 @@ spec:
                   type: string
                   enum: [virtio, usb, ps2]
                   default: virtio
+                serialModel:
+                  type: string
+                  enum: [virtio, isa]
+                  default: isa
+                serialConsole:
+                  type: boolean
+                  default: true
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

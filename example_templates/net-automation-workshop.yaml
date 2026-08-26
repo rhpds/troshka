@@ -126,12 +126,12 @@ vms:
     ram_gb: 12
     os: blank
     firmware: bios
-    machine_type: i440fx
     serial_exec: junos
     tags:
       AnsibleGroup: routers,juniper_junos
     disks:
-      - size_gb: 10
+      - size_gb: 20
+        bus: sata
         library_item_name: junos-vsrx3-23.2R2.21
     nics:
       - network: lab

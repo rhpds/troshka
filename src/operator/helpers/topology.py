@@ -114,6 +114,8 @@ def extract_vms(topology):
                 "bootOrder": data.get("bootDevices", []),
                 "videoModel": data.get("videoModel", "virtio"),
                 "inputModel": data.get("inputModel", "virtio"),
+                "serialModel": data.get("serialModel", "isa"),
+                "serialConsole": data.get("serialConsole", True),
                 "cdrom": {},
                 "guestfishCommands": data.get("guestfishCommands", []),
             }

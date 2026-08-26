@@ -222,6 +222,53 @@ def test_build_troshkavm_vm_spec_video_and_input():
     assert spec["inputModel"] == "usb"
 
 
+def test_build_troshkavm_vm_spec_serial_defaults():
+    from app.services.deploy_topology import build_troshkavm_vm_spec
+
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {"id": "vm1", "nics": []},
+            }
+        ]
+    }
+    spec = build_troshkavm_vm_spec(
+        "vm1",
+        {"name": "vm", "vcpus": 2, "ram_gb": 4},
+        topo,
+    )
+    assert spec["serialModel"] == "isa"
+    assert spec["serialConsole"] is True
+
+
+def test_build_troshkavm_vm_spec_serial_custom():
+    from app.services.deploy_topology import build_troshkavm_vm_spec
+
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "id": "vm1",
+                    "serialModel": "virtio",
+                    "serialConsole": False,
+                    "nics": [],
+                },
+            }
+        ]
+    }
+    spec = build_troshkavm_vm_spec(
+        "vm1",
+        {"name": "vm", "vcpus": 2, "ram_gb": 4},
+        topo,
+    )
+    assert spec["serialModel"] == "virtio"
+    assert spec["serialConsole"] is False
+
+
 def test_build_troshkavm_nic_specs_includes_network_ref():
     from app.services.deploy_topology import build_troshkavm_vm_spec
 

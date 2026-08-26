@@ -209,6 +209,17 @@ def _apply_video_and_input_devices(domain, spec, *, video_config_enabled=False):
     # ps2: omit inputs — KubeVirt/QEMU default PS/2 keyboard and mouse apply
 
 
+def _apply_serial_console(domain, spec):
+    """Configure KubeVirt serial console attachment from canvas I/O settings."""
+    devices = domain.setdefault("devices", {})
+    if spec.get("serialConsole") is False:
+        devices["autoattachSerialConsole"] = False
+        return
+    # KubeVirt exposes an isa-serial guest port via virtio-serial; serialModel is
+    # stored for canvas parity (network appliances should use isa).
+    devices["autoattachSerialConsole"] = True
+
+
 def _build_base_domain(spec):
     """Build the base domain configuration for KubeVirt VM."""
     domain = {
@@ -390,6 +401,7 @@ def build_kubevirt_vm(
 
     domain = _build_base_domain(spec)
     _apply_firmware_settings(domain, spec)
+    _apply_serial_console(domain, spec)
     _apply_video_and_input_devices(
         domain, spec, video_config_enabled=video_config_enabled
     )

@@ -2726,3 +2726,31 @@ class TestExecKubevirt:
         except HTTPException as exc:
             assert exc.status_code == 503
             assert "ssh: no VM IP or credentials" in exc.detail
+
+    def test_serial_junos_success(self):
+        from app.api.projects import _exec_kubevirt
+
+        with patch(
+            "app.services.providers.kubevirt_serial.kubevirt_exec_serial",
+            return_value={
+                "output": "Hostname: rtr3",
+                "error": "",
+                "exit_code": 0,
+                "method": "serial-junos",
+            },
+        ):
+            result = _exec_kubevirt(
+                provider=MagicMock(),
+                project_id="p1",
+                vm_id="vm1",
+                methods=["serial"],
+                vm_ip="",
+                username="root",
+                password="",
+                root_password="",
+                command="show version",
+                timeout=60,
+                serial_exec_type="junos",
+            )
+        assert result["method"] == "serial-junos"
+        assert result["output"] == "Hostname: rtr3"

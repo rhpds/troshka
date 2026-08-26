@@ -2326,6 +2326,7 @@ def _try_kubevirt_method(
     root_password: str,
     command: str,
     timeout: int,
+    serial_exec_type: str = "linux",
 ):
     """Try a single KubeVirt exec method. Returns (result, error_string | None)."""
     from app.services.providers.kubevirt import (
@@ -2334,6 +2335,7 @@ def _try_kubevirt_method(
         kubevirt_exec_ssh,
         kubevirt_exec_vnc,
     )
+    from app.services.providers.kubevirt_serial import kubevirt_exec_serial
 
     if m == "guest-agent":
         return (
@@ -2362,6 +2364,20 @@ def _try_kubevirt_method(
             None,
         )
     if m in ("console", "serial"):
+        if m == "serial":
+            return (
+                kubevirt_exec_serial(
+                    provider,
+                    project_id,
+                    vm_id,
+                    command,
+                    timeout,
+                    serial_exec_type=serial_exec_type,
+                    username=username or "root",
+                    password=password or root_password,
+                ),
+                None,
+            )
         user_, pass_, err = _resolve_console_credentials(
             root_password, password, username, "console"
         )
@@ -2416,6 +2432,7 @@ def _exec_kubevirt(
     root_password: str,
     command: str,
     timeout: int,
+    serial_exec_type: str = "linux",
 ):
     """Dispatch exec to a KubeVirt-hosted VM. Returns result dict or raises HTTPException."""
     is_auto = len(methods) > 1
@@ -2434,6 +2451,7 @@ def _exec_kubevirt(
                 root_password,
                 command,
                 timeout,
+                serial_exec_type=serial_exec_type,
             )
             if result is not None:
                 if is_auto and not _auto_exec_accepts(result, m):
@@ -2796,7 +2814,19 @@ def vm_exec(
 
         kv_methods = params["methods"]
         if params["method"] == "auto":
-            kv_methods = ["guest-agent", "ssh", "vnc", "console"]
+            network_serial = {
+                "junos",
+                "juniper_junos",
+                "ios",
+                "iosxe",
+                "cisco_iosxe",
+                "eos",
+                "arista_eos",
+            }
+            if params["serial_exec_type"] in network_serial:
+                kv_methods = ["serial", "ssh", "vnc", "console"]
+            else:
+                kv_methods = ["guest-agent", "ssh", "vnc", "console"]
 
         return _exec_kubevirt(
             provider,
@@ -2809,6 +2839,7 @@ def vm_exec(
             params["root_password"],
             command,
             params["timeout"],
+            serial_exec_type=params["serial_exec_type"],
         )
 
     return _exec_troshkad(

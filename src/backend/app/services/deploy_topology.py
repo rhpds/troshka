@@ -1353,6 +1353,8 @@ def build_troshkavm_vm_spec(vm_id: str, vm: dict, topology: dict) -> dict:
         "bmcEnabled": vm_data.get("bmcEnabled", False),
         "videoModel": vm_data.get("videoModel", "virtio"),
         "inputModel": vm_data.get("inputModel", "virtio"),
+        "serialModel": vm_data.get("serialModel", "isa"),
+        "serialConsole": vm_data.get("serialConsole", True),
         "disks": disk_specs,
         "nics": build_troshkavm_nic_specs(vm_data, topology),
         "bootOrder": vm_data.get("bootDevices", []),

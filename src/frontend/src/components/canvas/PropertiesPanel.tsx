@@ -984,7 +984,7 @@ export default function PropertiesPanel() {
               <label className="props-label">Serial</label>
               <select
                 className="props-select"
-                value={(data as Record<string, any>).serialModel as string || "virtio"}
+                value={(data as Record<string, any>).serialModel as string || "isa"}
                 onChange={(e) => update("serialModel", e.target.value)}
               >
                 <option value="virtio">VirtIO</option>

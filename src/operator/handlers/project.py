@@ -1217,6 +1217,8 @@ def _build_vm_cr(
             "bootOrder": vm.get("bootOrder", []),
             "videoModel": vm.get("videoModel", "virtio"),
             "inputModel": vm.get("inputModel", "virtio"),
+            "serialModel": vm.get("serialModel", "isa"),
+            "serialConsole": vm.get("serialConsole", True),
         },
     }
     cdrom = vm_cdroms_map.get(vm["id"]) or vm.get("cdrom")
