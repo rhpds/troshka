@@ -1,3 +1,6 @@
+"""Topology helpers for the Troshka KubeVirt operator."""
+
+
 def _gateway_ip_for_cidr(cidr):
     if not cidr or "/" not in cidr:
         return ""
