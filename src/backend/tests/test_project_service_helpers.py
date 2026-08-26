@@ -579,6 +579,7 @@ class TestWaitKubevirtVmsReady(unittest.TestCase):
         s,
         deadline_secs=300,
         changed_cr_names=None,
+        pre_domain_uuids=None,
     ):
         from app.api.projects import _wait_kubevirt_vms_ready
 
@@ -589,6 +590,7 @@ class TestWaitKubevirtVmsReady(unittest.TestCase):
             proj,
             s,
             changed_cr_names=changed_cr_names,
+            pre_domain_uuids=pre_domain_uuids,
             deadline_secs=deadline_secs,
         )
 
@@ -622,7 +624,10 @@ class TestWaitKubevirtVmsReady(unittest.TestCase):
                 "items": [
                     {
                         "metadata": {"name": "vm-281550eb"},
-                        "status": {"state": "Running"},
+                        "status": {
+                            "state": "Running",
+                            "domainUuid": "old-domain-uuid",
+                        },
                         "spec": {"name": "rtr3"},
                     }
                 ]
@@ -640,7 +645,10 @@ class TestWaitKubevirtVmsReady(unittest.TestCase):
                 "items": [
                     {
                         "metadata": {"name": "vm-281550eb"},
-                        "status": {"state": "Running"},
+                        "status": {
+                            "state": "Running",
+                            "domainUuid": "old-domain-uuid",
+                        },
                         "spec": {"name": "rtr3"},
                     }
                 ]
@@ -653,10 +661,44 @@ class TestWaitKubevirtVmsReady(unittest.TestCase):
             MagicMock(),
             MagicMock(),
             changed_cr_names=["vm-281550eb"],
+            pre_domain_uuids={"vm-281550eb": "old-domain-uuid"},
             deadline_secs=30,
         )
         assert result is None
         assert custom_api.list_namespaced_custom_object.call_count == 3
+
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._set_deploy_progress")
+    @patch("time.sleep")
+    @patch("time.time", side_effect=[1000, 1000])
+    def test_changed_vm_fast_reconfigure_domain_uuid(
+        self, _mt, _ms, _mock_set, _mock_del
+    ):
+        custom_api = MagicMock()
+        custom_api.list_namespaced_custom_object.return_value = {
+            "items": [
+                {
+                    "metadata": {"name": "vm-281550eb"},
+                    "status": {
+                        "state": "Running",
+                        "domainUuid": "new-domain-uuid",
+                    },
+                    "spec": {"name": "rtr3"},
+                }
+            ]
+        }
+        result = self._call(
+            custom_api,
+            "ns-1",
+            "p1",
+            MagicMock(),
+            MagicMock(),
+            changed_cr_names=["vm-281550eb"],
+            pre_domain_uuids={"vm-281550eb": "old-domain-uuid"},
+            deadline_secs=30,
+        )
+        assert result is None
+        assert custom_api.list_namespaced_custom_object.call_count == 1
 
     @patch("app.services.deploy_service._delete_deploy_progress")
     @patch("app.services.deploy_service._set_deploy_progress")

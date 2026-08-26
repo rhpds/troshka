@@ -3180,6 +3180,26 @@ def _build_kubevirt_vm_spec(vm_id: str, vm: dict, current: dict) -> dict:
     return build_troshkavm_vm_spec(vm_id, vm, current)
 
 
+def _snapshot_troshkavm_domain_uuids(
+    custom_api, ns, cr_names: list[str]
+) -> dict[str, str]:
+    """Capture TroshkaVM domainUuid values before a spec patch."""
+    snapshots: dict[str, str] = {}
+    for cr_name in cr_names:
+        try:
+            vm = custom_api.get_namespaced_custom_object(  # type: ignore[assignment]
+                group=_TROSHKA_DOMAIN,
+                version="v1alpha1",
+                namespace=ns,
+                plural="troshkavms",
+                name=cr_name,
+            )
+            snapshots[cr_name] = vm.get("status", {}).get("domainUuid", "")  # type: ignore[union-attr]
+        except Exception:
+            snapshots[cr_name] = ""
+    return snapshots
+
+
 def _wait_kubevirt_vms_ready(
     custom_api,
     ns,
@@ -3187,6 +3207,7 @@ def _wait_kubevirt_vms_ready(
     proj,
     s,
     changed_cr_names=None,
+    pre_domain_uuids=None,
     deadline_secs=300,
 ):
     """Poll TroshkaVM CRs until all are ready. Returns error string or None."""
@@ -3200,6 +3221,7 @@ def _wait_kubevirt_vms_ready(
 
     _set_deploy_progress(p_id, {"step": "reconfigure", "detail": "waiting for VMs"})
     pending = set(changed_cr_names or [])
+    pre_domain_uuids = pre_domain_uuids or {}
     seen_reconfiguring: set[str] = set()
     wait_started = time.time()
     deadline = wait_started + deadline_secs
@@ -3237,8 +3259,13 @@ def _wait_kubevirt_vms_ready(
                     if cr_name in pending and state == "Reconfiguring":
                         seen_reconfiguring.add(cr_name)
                 elif cr_name in pending and cr_name not in seen_reconfiguring:
-                    # Stale Running/Stopped before the operator picks up the patch.
-                    all_ready = False
+                    domain_uuid = vm.get("status", {}).get("domainUuid", "")
+                    if domain_uuid and domain_uuid != pre_domain_uuids.get(cr_name):
+                        # Operator recreated the VM between polls (fast reconfigure).
+                        seen_reconfiguring.add(cr_name)
+                    else:
+                        # Stale Running/Stopped before the operator picks up the patch.
+                        all_ready = False
         except Exception:
             all_ready = False
         if all_ready:
@@ -3435,6 +3462,11 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             )
             return
 
+        changed_cr_names = [f"vm-{vm_id[:8]}" for vm_id in changed_vm_ids]
+        pre_domain_uuids = _snapshot_troshkavm_domain_uuids(
+            custom_api, ns, changed_cr_names
+        )
+
         _apply_kubevirt_vm_changes(
             custom_api,
             ns,
@@ -3445,11 +3477,15 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             current,
         )
 
-        changed_cr_names = [f"vm-{vm_id[:8]}" for vm_id in changed_vm_ids]
-
         # Wait for all VMs to settle
         err = _wait_kubevirt_vms_ready(
-            custom_api, ns, p_id, proj, s, changed_cr_names=changed_cr_names
+            custom_api,
+            ns,
+            p_id,
+            proj,
+            s,
+            changed_cr_names=changed_cr_names,
+            pre_domain_uuids=pre_domain_uuids,
         )
         if err:
             return
@@ -3833,14 +3869,15 @@ def _accumulate_disk_info(info, result):
         result["files_to_remove"].append(info["path"])
     if info["is_library"]:
         result["needs_library_download"] = True
-    result["disks_to_create"].append(
-        {
-            "path": info["path"],
-            "size_gb": info["size_gb"],
-            "format": info["format"],
-            "backing_file": info["backing_file"],
-        }
-    )
+    if info["is_new"] or info["image_changed"]:
+        result["disks_to_create"].append(
+            {
+                "path": info["path"],
+                "size_gb": info["size_gb"],
+                "format": info["format"],
+                "backing_file": info["backing_file"],
+            }
+        )
     if info["size_grew"] and not info["image_changed"]:
         result["disks_to_resize"].append(
             {"path": info["path"], "new_size_gb": info["size_gb"]}

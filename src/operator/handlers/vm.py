@@ -1,6 +1,7 @@
 import asyncio
 import kopf
 import logging
+import time
 from kubernetes import client
 from helpers.k8s import CRD_GROUP, CRD_VERSION, golden_pvc_name, owner_ref, TOOLS_IMAGE
 from helpers.kubevirt import (
@@ -15,6 +16,7 @@ from helpers.kubevirt import (
     collect_kubevirt_vm_warnings,
     is_video_config_enabled,
     parse_admission_api_warnings,
+    storage_quantity_gi,
 )
 
 from helpers.topology import collect_vm_nic_network_errors, enrich_vm_nics
@@ -1091,6 +1093,71 @@ def _delete_removed_disks(old_disks, new_disks, name, namespace, core_api, custo
         _try_delete_pvc(core_api, namespace, old_pvc)
 
 
+def _resize_existing_pvcs(old_disks, new_disks, name, namespace, core_api):
+    """Expand PVCs when an existing disk's sizeGb grows."""
+    expanded: list[tuple[str, int]] = []
+    for disk_id, new_disk in new_disks.items():
+        if disk_id not in old_disks:
+            continue
+        old_size = int(old_disks[disk_id].get("sizeGb", 20) or 20)
+        new_size = int(new_disk.get("sizeGb", 20) or 20)
+        if new_size <= old_size:
+            continue
+
+        pvc_name = f"{name}-disk-{disk_id[:8]}"
+        try:
+            pvc = core_api.read_namespaced_persistent_volume_claim(
+                name=pvc_name, namespace=namespace
+            )
+        except client.ApiException as e:
+            if e.status == 404:
+                logger.warning(f"PVC {pvc_name} not found for disk resize")
+            else:
+                raise
+            continue
+
+        current_qty = pvc.spec.resources.requests.get("storage", "0Gi")
+        current_gi = storage_quantity_gi(current_qty)
+        if new_size <= current_gi:
+            continue
+
+        core_api.patch_namespaced_persistent_volume_claim(
+            name=pvc_name,
+            namespace=namespace,
+            body={
+                "spec": {
+                    "resources": {"requests": {"storage": f"{new_size}Gi"}},
+                }
+            },
+        )
+        logger.info(
+            f"Expanded PVC {pvc_name} from {current_qty} to {new_size}Gi"
+        )
+        expanded.append((pvc_name, new_size))
+    return expanded
+
+
+async def _wait_for_pvc_expansion(
+    core_api, namespace, pvc_name, target_gi, timeout_secs=120
+):
+    """Wait until PVC status capacity reflects the requested expansion."""
+    deadline = time.time() + timeout_secs
+    while time.time() < deadline:
+        pvc = core_api.read_namespaced_persistent_volume_claim(
+            name=pvc_name, namespace=namespace
+        )
+        status_qty = ""
+        if pvc.status and pvc.status.capacity:
+            status_qty = pvc.status.capacity.get("storage", "")
+        if storage_quantity_gi(status_qty) >= target_gi:
+            return True
+        await asyncio.sleep(2)
+    logger.warning(
+        f"PVC {pvc_name} expansion to {target_gi}Gi not confirmed after {timeout_secs}s"
+    )
+    return False
+
+
 async def _stop_kubevirt_vm(custom_api, namespace, kv_name):
     """Stop a KubeVirt VM and wait for the VMI to terminate."""
     try:
@@ -1162,6 +1229,11 @@ async def _reconcile_disks(
         central_s3_config,
         patch,
     )
+    expanded_pvcs = _resize_existing_pvcs(
+        old_disks, new_disks, name, namespace, core_api
+    )
+    for pvc_name, new_size in expanded_pvcs:
+        await _wait_for_pvc_expansion(core_api, namespace, pvc_name, new_size)
     _delete_removed_disks(old_disks, new_disks, name, namespace, core_api, custom_api)
     return disk_pvcs
 

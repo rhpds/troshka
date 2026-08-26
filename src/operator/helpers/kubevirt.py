@@ -8,6 +8,22 @@ CACHE_NAMESPACE = "troshka-cache"
 STORAGE_CLASS = "ocs-storagecluster-ceph-rbd-virtualization"
 
 
+def storage_quantity_gi(quantity: str) -> int:
+    """Parse a Kubernetes storage quantity into whole gibibytes."""
+    if not quantity:
+        return 0
+    q = quantity.strip()
+    if q.endswith("Gi"):
+        return int(q[:-2])
+    if q.endswith("Ti"):
+        return int(q[:-2]) * 1024
+    if q.endswith("Mi"):
+        return max(1, (int(q[:-2]) + 1023) // 1024)
+    if q.endswith("G"):
+        return max(1, round(float(q[:-1]) * 1000 / 1024))
+    return 0
+
+
 def s3_keys_from_secret(secret) -> dict:
     """Extract CDI-compatible S3 keys from a Kubernetes Secret."""
     data = secret.string_data or {}

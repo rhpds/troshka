@@ -789,13 +789,22 @@ class TestProvisionNewDisks:
 
 
 class TestReconcileDisks:
+    @patch("handlers.vm._wait_for_pvc_expansion", return_value=True)
+    @patch("handlers.vm._resize_existing_pvcs", return_value=[])
     @patch("handlers.vm._delete_removed_disks")
     @patch("handlers.vm._provision_new_disks", return_value={"d1": "pvc-1"})
     @patch("handlers.vm._get_central_s3_config_from_project", return_value={})
     @patch("handlers.vm._get_s3_config_from_project", return_value={})
     @patch("handlers.vm.client")
     def test_reconcile_calls_provision_and_delete(
-        self, mock_client, mock_s3, mock_central, mock_provision, mock_delete
+        self,
+        mock_client,
+        mock_s3,
+        mock_central,
+        mock_provision,
+        mock_delete,
+        mock_resize,
+        mock_wait,
     ):
         from handlers.vm import _reconcile_disks
 
@@ -810,7 +819,98 @@ class TestReconcileDisks:
         )
         assert result == {"d1": "pvc-1"}
         mock_provision.assert_called_once()
+        mock_resize.assert_called_once()
         mock_delete.assert_called_once()
+        mock_wait.assert_not_called()
+
+    @patch("handlers.vm._wait_for_pvc_expansion", return_value=True)
+    @patch("handlers.vm._delete_removed_disks")
+    @patch("handlers.vm._provision_new_disks", return_value={"d1": "pvc-1"})
+    @patch("handlers.vm._get_central_s3_config_from_project", return_value={})
+    @patch("handlers.vm._get_s3_config_from_project", return_value={})
+    @patch("handlers.vm.client")
+    def test_reconcile_waits_for_pvc_expansion(
+        self,
+        mock_client,
+        mock_s3,
+        mock_central,
+        mock_provision,
+        mock_delete,
+        mock_wait,
+    ):
+        from handlers.vm import _reconcile_disks
+
+        p = MockPatch()
+        body = {"kind": "TroshkaVM", "metadata": {"name": "vm-1", "uid": "u1"}}
+        disk_id = "d1aaaaaa-0000-0000-0000-000000000000"
+        old_spec = {"disks": [{"id": disk_id, "sizeGb": 20}]}
+        new_spec = {"disks": [{"id": disk_id, "sizeGb": 40}]}
+        core_api = MagicMock()
+        pvc = MagicMock()
+        pvc.spec.resources.requests = {"storage": "20Gi"}
+        core_api.read_namespaced_persistent_volume_claim.return_value = pvc
+
+        with patch("handlers.vm._resize_existing_pvcs") as mock_resize:
+            mock_resize.return_value = [("vm-1-disk-d1aaaaaa", 40)]
+            asyncio.run(
+                _reconcile_disks(
+                    old_spec,
+                    new_spec,
+                    "vm-1",
+                    "ns",
+                    body,
+                    core_api,
+                    MagicMock(),
+                    p,
+                )
+            )
+        mock_wait.assert_called_once_with(core_api, "ns", "vm-1-disk-d1aaaaaa", 40)
+
+
+class TestResizeExistingPvcs:
+    def test_expands_pvc_when_size_grows(self):
+        from handlers.vm import _resize_existing_pvcs
+
+        disk_id = "e3ee9bf4-2919-4e2b-b8a6-f6bb1a53d80a"
+        core_api = MagicMock()
+        pvc = MagicMock()
+        pvc.spec.resources.requests = {"storage": "20Gi"}
+        core_api.read_namespaced_persistent_volume_claim.return_value = pvc
+
+        expanded = _resize_existing_pvcs(
+            {disk_id: {"id": disk_id, "sizeGb": 20}},
+            {disk_id: {"id": disk_id, "sizeGb": 21}},
+            "vm-281550eb",
+            "troshka-ns",
+            core_api,
+        )
+
+        assert expanded == [("vm-281550eb-disk-e3ee9bf4", 21)]
+        core_api.patch_namespaced_persistent_volume_claim.assert_called_once()
+
+    def test_skips_when_size_unchanged(self):
+        from handlers.vm import _resize_existing_pvcs
+
+        disk_id = "e3ee9bf4-2919-4e2b-b8a6-f6bb1a53d80a"
+        core_api = MagicMock()
+        expanded = _resize_existing_pvcs(
+            {disk_id: {"id": disk_id, "sizeGb": 20}},
+            {disk_id: {"id": disk_id, "sizeGb": 20}},
+            "vm-281550eb",
+            "troshka-ns",
+            core_api,
+        )
+        assert expanded == []
+        core_api.read_namespaced_persistent_volume_claim.assert_not_called()
+
+
+class TestStorageQuantityGi:
+    def test_parse_gi(self):
+        from helpers.kubevirt import storage_quantity_gi
+
+        assert storage_quantity_gi("21Gi") == 21
+        assert storage_quantity_gi("20Gi") == 20
+        assert storage_quantity_gi("1Ti") == 1024
 
 
 # ---------------------------------------------------------------------------

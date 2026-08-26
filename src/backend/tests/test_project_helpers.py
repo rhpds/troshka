@@ -1034,7 +1034,7 @@ class TestAccumulateDiskInfo:
         assert len(result["disk_list"]) == 1
         assert result["disk_list"][0]["path"] == "/vms/disk.qcow2"
         assert result["any_disk_changed"] is False
-        assert len(result["disks_to_create"]) == 1
+        assert len(result["disks_to_create"]) == 0
 
     def test_image_changed_flags(self):
         result = self._make_result()
@@ -1070,6 +1070,7 @@ class TestAccumulateDiskInfo:
         assert result["any_disk_changed"] is True
         assert len(result["disks_to_resize"]) == 1
         assert result["disks_to_resize"][0]["new_size_gb"] == 50
+        assert len(result["disks_to_create"]) == 0
 
     def test_is_library_sets_needs_download(self):
         result = self._make_result()
