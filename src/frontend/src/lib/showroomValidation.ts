@@ -1,4 +1,9 @@
 import type { Edge, Node } from "@xyflow/react";
+import { effectiveShowroomDnsNetwork } from "@/lib/showroomScaffold";
+import {
+  gatewayAllowsDnsUpstream,
+  isGatewayConnectedLabNetwork,
+} from "@/lib/gatewayValidation";
 
 export interface ShowroomReadiness {
   hasContentRepo: boolean;
@@ -162,6 +167,14 @@ export function ensureShowroomGatewayEdge(nodes: Node[], edges: Edge[]): Edge[] 
   return [...normalized, canonical];
 }
 
+export function isDnsEnabledLabNetwork(node: Node | undefined): boolean {
+  if (!node || node.type !== "networkNode") return false;
+  const d = node.data as Record<string, unknown>;
+  const sub = d.subtype as string | undefined;
+  if (sub && !["network", "dhcp", "dns"].includes(sub)) return false;
+  return !!(d.dns || sub === "dns");
+}
+
 export function getShowroomReadiness(nodes: Node[], edges: Edge[]): ShowroomReadiness {
   const showroom = getShowroomNode(nodes);
   const empty: ShowroomReadiness = {
@@ -176,13 +189,45 @@ export function getShowroomReadiness(nodes: Node[], edges: Edge[]): ShowroomRead
   const contentRepo = String(data.contentRepo || "").trim();
   const hasContentRepo = !buildContent || contentRepo.length > 0;
   const hasGateway = !!getGatewayNode(nodes);
+  const dnsNetwork = effectiveShowroomDnsNetwork(
+    nodes,
+    String(data.dnsNetwork || ""),
+    edges,
+  );
+  const dnsNetworkNode = dnsNetwork
+    ? nodes.find(
+        (n) =>
+          n.type === "networkNode" &&
+          ((n.data as Record<string, unknown>).name === dnsNetwork ||
+            (n.data as Record<string, unknown>).label === dnsNetwork),
+      )
+    : undefined;
 
   const issues: string[] = [];
   if (!hasContentRepo) {
     issues.push("Content repo URL is required when build at deploy is enabled");
   }
+  const gateway = getGatewayNode(nodes);
   if (!hasGateway) {
     issues.push("Add a gateway to the project for external showroom access");
+  } else if (
+    gateway &&
+    !gatewayAllowsDnsUpstream(gateway.data as Record<string, unknown>)
+  ) {
+    issues.push(
+      "Gateway outbound must allow DNS (port 53) so showroom can resolve external names",
+    );
+  }
+  if (!dnsNetwork) {
+    issues.push("Enable DNS on at least one network connected to the gateway");
+  } else if (!dnsNetworkNode) {
+    issues.push(`DNS network '${dnsNetwork}' was not found on the canvas`);
+  } else if (!isDnsEnabledLabNetwork(dnsNetworkNode)) {
+    issues.push(`DNS network '${dnsNetwork}' must have DNS enabled`);
+  } else if (!(dnsNetworkNode.data as Record<string, unknown>).cidr) {
+    issues.push(`DNS network '${dnsNetwork}' must have a CIDR`);
+  } else if (!isGatewayConnectedLabNetwork(dnsNetworkNode, nodes, edges)) {
+    issues.push(`DNS network '${dnsNetwork}' must be connected to the gateway`);
   }
 
   return {

@@ -5,7 +5,13 @@ import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
-import { getShowroomReadiness } from "@/lib/showroomValidation";
+import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
+import {
+  getShowroomReadiness,
+  isDnsEnabledLabNetwork,
+} from "@/lib/showroomValidation";
+import { effectiveShowroomDnsNetwork } from "@/lib/showroomScaffold";
+import { isGatewayConnectedLabNetwork } from "@/lib/gatewayValidation";
 import { isShowroomManagedForward } from "@/lib/showroomPortForwards";
 import { newShowroomTab, resolveShowroomTabs, type ShowroomTab } from "@/lib/showroomTabs";
 import {
@@ -360,6 +366,7 @@ export default function PropertiesPanel() {
   const nodeId = useCanvasStore((s) => s.selectedNodeId);
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
+  const vniMap = useCanvasStore((s) => s.vniMap);
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
   const deleteNode = useCanvasStore((s) => s.deleteNode);
   const projectState = useCanvasStore((s) => s.projectState);
@@ -1514,20 +1521,22 @@ export default function PropertiesPanel() {
                 id: n.id,
                 name: ((n.data as Record<string, unknown>).name as string) || n.id,
               }));
-            const networkOptions = useCanvasStore
-              .getState()
-              .nodes.filter(
+            const canvasNodes = useCanvasStore.getState().nodes;
+            const networkOptions = canvasNodes
+              .filter(
                 (n) =>
-                  n.type === "networkNode" &&
-                  (!((n.data as Record<string, unknown>).subtype as string) ||
-                    ["network", "dhcp", "dns"].includes(
-                      (n.data as Record<string, unknown>).subtype as string,
-                    )),
+                  isDnsEnabledLabNetwork(n) &&
+                  isGatewayConnectedLabNetwork(n, canvasNodes, edges),
               )
               .map((n) => ({
                 id: n.id,
                 name: ((n.data as Record<string, unknown>).name as string) || n.id,
               }));
+            const dnsNetworkValue = effectiveShowroomDnsNetwork(
+              canvasNodes,
+              String((node?.data as Record<string, unknown>).dnsNetwork || ""),
+              edges,
+            );
             const resolvedTabs = isShowroom
               ? resolveShowroomTabs(showroomTabs, useCanvasStore.getState().nodes, edges)
               : [];
@@ -1570,6 +1579,28 @@ export default function PropertiesPanel() {
                           }
                         />
                         <label className="props-label" style={{ marginBottom: 0 }}>Build content at deploy</label>
+                      </div>
+                      <div className="props-field">
+                        <LabelWithHint
+                          label="DNS network"
+                          hint="Lab network connected to the gateway whose dnsmasq serves showroom DNS (needs gateway outbound port 53 for external names like github.com)."
+                        />
+                        <select
+                          className="props-select"
+                          value={dnsNetworkValue}
+                          onChange={(e) =>
+                            updateShowroomConfig(node!.id, {
+                              dns_network: e.target.value,
+                            })
+                          }
+                        >
+                          <option value="">Select network…</option>
+                          {networkOptions.map((opt) => (
+                            <option key={opt.id} value={opt.name}>
+                              {opt.name}
+                            </option>
+                          ))}
+                        </select>
                       </div>
                       <div className="props-field" style={{ marginTop: 12 }}>
                         <div className="props-section-title" style={{ marginBottom: 8 }}>Tabs</div>
@@ -2958,7 +2989,15 @@ export default function PropertiesPanel() {
                             }}>+</button>
                           </div>
                           <div style={{ overflowX: "auto" }}>
-                          {((data as Record<string, any>).dnsRecords as Array<{name: string; type?: string; ip: string}>).map((rec, i) => (
+                          {((data as Record<string, any>).dnsRecords as Array<{name: string; type?: string; ip: string; target?: string}>).map((rec, i) => {
+                            const displayIp = resolveDnsRecordDisplayIp(
+                              rec,
+                              nodes,
+                              edges,
+                              node!.id,
+                              vniMap,
+                            );
+                            return (
                             <div key={i} style={{ display: "flex", gap: 4, marginBottom: 3, alignItems: "center", minWidth: 320 }}>
                               <input className="props-input" style={{ flex: 3, fontSize: 10, fontFamily: "monospace" }} value={rec.name} placeholder="hostname" onChange={(e) => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
@@ -2975,7 +3014,7 @@ export default function PropertiesPanel() {
                                 <option value="TXT">TXT</option>
                                 <option value="SRV">SRV</option>
                               </select>
-                              <input className="props-input" style={{ flex: 2, fontSize: 10, fontFamily: "monospace" }} value={rec.ip} placeholder={rec.type === "CNAME" ? "target" : "IP"} onChange={(e) => {
+                              <input className="props-input" style={{ flex: 2, fontSize: 10, fontFamily: "monospace" }} value={rec.ip || displayIp} placeholder={rec.type === "CNAME" ? "target" : displayIp ? displayIp : "IP"} onChange={(e) => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
                                 records[i] = { ...records[i], ip: e.target.value };
                                 update("dnsRecords", records);
@@ -2986,7 +3025,8 @@ export default function PropertiesPanel() {
                                 update("dnsRecords", records);
                               }}>×</button>
                             </div>
-                          ))}
+                            );
+                          })}
                           </div>
                         </div>
                       )}

@@ -915,28 +915,70 @@ def _generate_ocp_dns_records(ocp_cfg, top_dns):
         top_dns.append({"name": apps_name, "ip": ingress_vip})
 
 
-def _collect_vm_ips(nodes):
-    """Collect first-NIC IPs for VMs and containers (for DNS target resolution)."""
-    vm_ips = {}
+def _collect_workload_ips(nodes: list) -> dict[str, str]:
+    """Map VM/container name (and label) to first static NIC IP."""
+    ips: dict[str, str] = {}
     for n in nodes:
         if n.get("type") not in ("vmNode", "containerNode"):
             continue
-        nics = n.get("data", {}).get("nics", [])
-        if nics:
-            vm_ips[n["data"].get("name", "")] = nics[0].get("ip", "")
-    return vm_ips
+        data = n.get("data", {})
+        ip = ""
+        for nic in data.get("nics", []):
+            if nic.get("ip"):
+                ip = nic["ip"]
+                break
+        if not ip:
+            continue
+        name = data.get("name", "")
+        label = data.get("label", "")
+        if name:
+            ips[name] = ip
+        if label:
+            ips[label] = ip
+    return ips
 
 
-def _merge_dns_to_network(net_node, top_dns, vm_ips):
+def _resolve_dns_record_entry(rec: dict, workload_ips: dict[str, str]) -> dict:
+    """Resolve template target=vm_name to ip when ip is omitted."""
+    name = rec.get("name", "")
+    if not name:
+        return dict(rec)
+    ip = str(rec.get("ip") or "").strip()
+    target = str(rec.get("target") or "").strip()
+    if not ip and target:
+        ip = workload_ips.get(target, "")
+    out = dict(rec)
+    out["ip"] = ip
+    return out
+
+
+def _resolve_dns_records_on_networks(nodes: list) -> None:
+    """Resolve dnsRecords targets on each lab network after VMs are built."""
+    workload_ips = _collect_workload_ips(nodes)
+    for net_node in nodes:
+        if net_node.get("type") != "networkNode":
+            continue
+        data = net_node.get("data", {})
+        if data.get("subtype", "network") != "network":
+            continue
+        if data.get("networkType") == "bmc":
+            continue
+        records = data.get("dnsRecords")
+        if not records:
+            continue
+        data["dnsRecords"] = [
+            _resolve_dns_record_entry(r, workload_ips) for r in records
+        ]
+
+
+def _merge_dns_to_network(net_node, top_dns, workload_ips):
     existing = net_node["data"].get("dnsRecords", [])
     existing_names = {r["name"] for r in existing}
     for rec in top_dns:
-        target = rec.get("target", "")
-        ip = rec.get("ip", "")
-        if target and not ip:
-            ip = vm_ips.get(target, "")
-        if ip and rec.get("name") and rec["name"] not in existing_names:
-            existing.append({"name": rec["name"], "ip": ip})
+        resolved = _resolve_dns_record_entry(rec, workload_ips)
+        ip = resolved.get("ip", "")
+        if ip and resolved.get("name") and resolved["name"] not in existing_names:
+            existing.append({"name": resolved["name"], "ip": ip})
     if existing:
         net_node["data"]["dnsRecords"] = existing
 
@@ -949,14 +991,14 @@ def _apply_dns_records(tmpl, nodes):
     if not top_dns:
         return
 
-    vm_ips = _collect_vm_ips(nodes)
+    workload_ips = _collect_workload_ips(nodes)
     for net_node in nodes:
         if (
             net_node.get("type") == "networkNode"
             and net_node.get("data", {}).get("subtype") == "network"
             and net_node.get("data", {}).get("networkType") != "bmc"
         ):
-            _merge_dns_to_network(net_node, top_dns, vm_ips)
+            _merge_dns_to_network(net_node, top_dns, workload_ips)
             break
 
 
@@ -971,6 +1013,20 @@ def _validate_uuid_uniqueness(nodes):
                     f"Duplicate uuid '{u}' on VMs '{seen_uuids[u]}' and '{d.get('name')}'"
                 )
             seen_uuids[u] = d.get("name", "")
+
+
+def _default_dns_network_name(
+    nets_def: dict, gateway_network: str | None = None
+) -> str:
+    """Gateway-outbound default: gateway.network when it has DNS enabled."""
+    gw_net = (gateway_network or "").strip()
+    if gw_net and gw_net in nets_def:
+        net_cfg = nets_def[gw_net]
+        if net_cfg.get("type") != "bmc" and (
+            net_cfg.get("domain") or net_cfg.get("dns") or net_cfg.get("dns_upstream")
+        ):
+            return gw_net
+    return ""
 
 
 def _generate_topology_from_vms(
@@ -1053,6 +1109,11 @@ def _generate_topology_from_vms(
         edges.extend(disk_edges)
         edges.extend(nic_edges)
         container_name_to_id["showroom"] = ctr_node["id"]
+        if not showroom_meta.get("dns_network"):
+            default_dns = _default_dns_network_name(nets_def, gw_net_name)
+            if default_dns:
+                showroom_meta["dns_network"] = default_dns
+                ctr_node["data"]["dnsNetwork"] = default_dns
         vm_x += VM_SPACING
     else:
         showroom_meta = None
@@ -1070,6 +1131,7 @@ def _generate_topology_from_vms(
 
     start_order = _build_start_order(tmpl, vm_name_to_id, container_name_to_id)
     _apply_dns_records(tmpl, nodes)
+    _resolve_dns_records_on_networks(nodes)
     _validate_uuid_uniqueness(nodes)
 
     hidden_ids = []

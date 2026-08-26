@@ -174,6 +174,36 @@ def validate_showroom_topology(topology: dict) -> list[str]:
     if enabled and not _showroom_content_repo(topology, showroom):
         errors.append("Showroom content repo URL is required")
 
+    if enabled:
+        dns_net_name = _showroom_dns_network_name(topology)
+        if not dns_net_name:
+            errors.append("Enable DNS on at least one network connected to the gateway")
+        else:
+            dns_net = _find_lab_network_by_name(topology, dns_net_name)
+            if not dns_net:
+                errors.append(
+                    f"Showroom DNS network '{dns_net_name}' was not found on the canvas"
+                )
+            else:
+                dns_data = dns_net.get("data", {})
+                if not _network_dns_enabled(dns_data):
+                    errors.append(
+                        f"Showroom DNS network '{dns_net_name}' must have DNS enabled"
+                    )
+                elif not dns_data.get("cidr"):
+                    errors.append(
+                        f"Showroom DNS network '{dns_net_name}' must have a CIDR"
+                    )
+                elif not _is_network_gateway_connected(topology, dns_net["id"]):
+                    errors.append(
+                        f"Showroom DNS network '{dns_net_name}' must be connected to the gateway"
+                    )
+
+        if gateway and not _gateway_allows_dns_upstream(gateway.get("data", {})):
+            errors.append(
+                "Gateway outbound must allow DNS (port 53) so showroom can resolve external names"
+            )
+
     return errors
 
 
@@ -201,7 +231,7 @@ def ensure_showroom_external_ips(topology: dict) -> bool:
 
 
 def strip_showroom_gateway_access(topology: dict) -> bool:
-    """Remove auto-managed showroom gateway port forward and unused IP-1 slot."""
+    """Remove auto-managed showroom gateway port forward, outbound ports, and IP-1."""
     from app.services.vxlan import _is_showroom_infra_forward
 
     changed = False
@@ -228,6 +258,17 @@ def strip_showroom_gateway_access(topology: dict) -> bool:
         else:
             gateway_pfs = existing
 
+        if data.get("outboundPolicy") == "restrict":
+            managed = list(data.get("showroomManagedOutbound") or [])
+            if managed:
+                new_ports = _strip_showroom_outbound_ports(
+                    str(data.get("outboundPorts") or ""), managed
+                )
+                if new_ports != str(data.get("outboundPorts") or ""):
+                    data["outboundPorts"] = new_ports
+                    changed = True
+                data.pop("showroomManagedOutbound", None)
+
     ext_ips = topology.get("externalIps") or []
     if (
         len(ext_ips) == 1
@@ -238,6 +279,55 @@ def strip_showroom_gateway_access(topology: dict) -> bool:
         topology["externalIps"] = []
         changed = True
     return changed
+
+
+SHOWROOM_MANAGED_OUTBOUND_PORTS = ("53", "443")
+
+
+def _parse_outbound_port_entries(outbound_ports: str) -> list[str]:
+    return [p.strip() for p in str(outbound_ports or "").split(",") if p.strip()]
+
+
+def _outbound_entries_include_port(entries: list[str], port: str) -> bool:
+    for entry in entries:
+        if entry == port:
+            return True
+        if "/" in entry and entry.split("/", 1)[0] == port:
+            return True
+    return False
+
+
+def _gateway_allows_dns_upstream(gateway_data: dict) -> bool:
+    """dnsmasq upstream (e.g. github.com) needs outbound 53 or allow-all."""
+    policy = gateway_data.get("outboundPolicy", "allow-all")
+    if policy != "restrict":
+        return True
+    entries = _parse_outbound_port_entries(str(gateway_data.get("outboundPorts") or ""))
+    return _outbound_entries_include_port(entries, "53")
+
+
+def _inject_showroom_outbound_ports(outbound_ports: str) -> tuple[str, list[str]]:
+    """Ensure DNS (53) and git (443) when showroom uses restrict outbound."""
+    entries = _parse_outbound_port_entries(outbound_ports)
+    added: list[str] = []
+    for port in SHOWROOM_MANAGED_OUTBOUND_PORTS:
+        if not _outbound_entries_include_port(entries, port):
+            entries.append(port)
+            added.append(port)
+    return ",".join(entries), added
+
+
+def _strip_showroom_outbound_ports(outbound_ports: str, managed: list[str]) -> str:
+    if not managed:
+        return outbound_ports
+    managed_set = set(managed)
+    stripped = [
+        entry
+        for entry in _parse_outbound_port_entries(outbound_ports)
+        if entry not in managed_set
+        and not ("/" in entry and entry.split("/", 1)[0] in managed_set)
+    ]
+    return ",".join(stripped)
 
 
 def inject_showroom_gateway_port_forwards(topology: dict, vni_map: dict) -> bool:
@@ -294,6 +384,17 @@ def inject_showroom_gateway_port_forwards(topology: dict, vni_map: dict) -> bool
     if merged != existing:
         data["portForwards"] = merged
         changed = True
+
+    if data.get("outboundPolicy") == "restrict":
+        new_ports, added = _inject_showroom_outbound_ports(
+            str(data.get("outboundPorts") or "")
+        )
+        if added:
+            data["outboundPorts"] = new_ports
+            managed = list(data.get("showroomManagedOutbound") or [])
+            data["showroomManagedOutbound"] = list(dict.fromkeys(managed + added))
+            changed = True
+
     return changed
 
 
@@ -304,6 +405,14 @@ def showroom_transit_octet3(vni_map: dict) -> int | None:
     return int(first_vni) & 0xFF
 
 
+def is_showroom_infra_ip(ip: str) -> bool:
+    """Transit-side showroom address (172.30.{vni}.3), not a lab NIC."""
+    parts = (ip or "").split(".")
+    return (
+        len(parts) == 4 and parts[0] == "172" and parts[1] == "30" and parts[3] == "3"
+    )
+
+
 def showroom_infra_ip(vni_map: dict) -> str:
     octet3 = showroom_transit_octet3(vni_map)
     if octet3 is None:
@@ -311,21 +420,150 @@ def showroom_infra_ip(vni_map: dict) -> str:
     return f"172.30.{octet3}.3"
 
 
-def showroom_infra_network(vni_map: dict, mac: str = "") -> list[dict]:
+def _network_dns_enabled(data: dict) -> bool:
+    return bool(data.get("dns") or data.get("subtype") == "dns")
+
+
+def _peer_lab_network_on_gateway_edge(
+    edge: dict, gateway_id: str, nodes_by_id: dict[str, dict]
+) -> dict | None:
+    src_id, tgt_id = edge.get("source", ""), edge.get("target", "")
+    if src_id == gateway_id:
+        peer = nodes_by_id.get(tgt_id)
+    elif tgt_id == gateway_id:
+        peer = nodes_by_id.get(src_id)
+    else:
+        return None
+    return peer if _is_plain_network(peer) else None
+
+
+def _resolve_network_dns_nameserver(net_data: dict, cidr: str) -> str:
+    """IP where project dnsmasq listens (explicit dnsServerIp or DHCP gateway)."""
+    server = str((net_data or {}).get("dnsServerIp") or "").strip()
+    if server:
+        return server
+    return _resolve_network_gateway(net_data, cidr)
+
+
+def _gateway_connected_dns_network_name(topology: dict) -> str:
+    """First gateway-connected lab network with DNS (gateway must allow upstream DNS)."""
+    gateway = next(
+        (n for n in topology.get("nodes", []) if _is_gateway_node(n)),
+        None,
+    )
+    if not gateway:
+        return ""
+    gateway_data = gateway.get("data", {})
+    if not _gateway_allows_dns_upstream(gateway_data):
+        return ""
+    nodes_by_id = {n["id"]: n for n in topology.get("nodes", [])}
+    gateway_id = gateway["id"]
+    for edge in topology.get("edges", []):
+        peer = _peer_lab_network_on_gateway_edge(edge, gateway_id, nodes_by_id)
+        if not peer:
+            continue
+        data = peer.get("data", {})
+        if not _network_dns_enabled(data):
+            continue
+        name = str(data.get("name") or data.get("label") or "").strip()
+        if name:
+            return name
+    return ""
+
+
+def _is_network_gateway_connected(topology: dict, network_id: str) -> bool:
+    gateway = next(
+        (n for n in topology.get("nodes", []) if _is_gateway_node(n)),
+        None,
+    )
+    if not gateway:
+        return False
+    nodes_by_id = {n["id"]: n for n in topology.get("nodes", [])}
+    gateway_id = gateway["id"]
+    for edge in topology.get("edges", []):
+        peer = _peer_lab_network_on_gateway_edge(edge, gateway_id, nodes_by_id)
+        if peer and peer.get("id") == network_id:
+            return True
+    return False
+
+
+def _first_dns_enabled_network_name(topology: dict) -> str:
+    """Implicit showroom DNS network: gateway-outbound with DNS enabled."""
+    return _gateway_connected_dns_network_name(topology)
+
+
+def _showroom_dns_network_name(topology: dict) -> str:
+    """Configured lab network name for showroom DNS, or first DNS-enabled network."""
+    showroom_cfg = topology.get("showroom") or {}
+    name = str(showroom_cfg.get("dns_network") or "").strip()
+    if name:
+        return name
+    for node in topology.get("nodes", []):
+        if not _is_showroom_node(node):
+            continue
+        name = str(node.get("data", {}).get("dnsNetwork") or "").strip()
+        if name:
+            return name
+    return _first_dns_enabled_network_name(topology)
+
+
+def _find_lab_network_by_name(topology: dict, name: str) -> dict | None:
+    name = (name or "").strip()
+    if not name:
+        return None
+    for node in topology.get("nodes", []):
+        if not _is_plain_network(node):
+            continue
+        data = node.get("data", {})
+        if data.get("name") == name or data.get("label") == name:
+            return node
+    return None
+
+
+def _nameserver_for_lab_network(node: dict | None) -> str:
+    if not node:
+        return ""
+    data = node.get("data", {})
+    cidr = data.get("cidr", "")
+    if not cidr:
+        return ""
+    return _resolve_network_dns_nameserver(data, cidr)
+
+
+def _gateway_connected_dns_nameserver(topology: dict) -> str:
+    """Fallback nameserver from first gateway-connected DNS network."""
+    name = _gateway_connected_dns_network_name(topology)
+    if not name:
+        return ""
+    return _nameserver_for_lab_network(_find_lab_network_by_name(topology, name))
+
+
+def _showroom_dns_nameserver(topology: dict) -> str:
+    """Showroom pod DNS: configured dns_network gateway, not transit .2."""
+    name = _showroom_dns_network_name(topology)
+    if name:
+        return _nameserver_for_lab_network(_find_lab_network_by_name(topology, name))
+    return _gateway_connected_dns_nameserver(topology)
+
+
+def showroom_infra_network(
+    vni_map: dict, mac: str = "", dns_nameserver: str = ""
+) -> list[dict]:
     """Transit-side showroom addressing in the project netns (not lab DHCP)."""
     octet3 = showroom_transit_octet3(vni_map)
     if octet3 is None:
         return []
-    return [
-        {
-            "bridge": "",
-            "mac": mac,
-            "ip": f"172.30.{octet3}.3",
-            "cidr": f"172.30.{octet3}.0/24",
-            "gateway": f"172.30.{octet3}.2",
-            "infra_transit": True,
-        }
-    ]
+    net: dict = {
+        "bridge": "",
+        "mac": mac,
+        "ip": f"172.30.{octet3}.3",
+        "cidr": f"172.30.{octet3}.0/24",
+        "gateway": f"172.30.{octet3}.2",
+        "infra_transit": True,
+    }
+    if dns_nameserver:
+        net["dns_nameserver"] = dns_nameserver
+    return [net]
 
 
 def _filter_topology_for_host(topology: dict, vm_node_ids: set[str]) -> dict:
@@ -537,7 +775,8 @@ def _find_container_networks(
     if _is_showroom_node(container_node):
         nics = container_node.get("data", {}).get("nics", [])
         mac = nics[0].get("mac", "") if nics else ""
-        return showroom_infra_network(vni_map, mac)
+        dns = _showroom_dns_nameserver(topology)
+        return showroom_infra_network(vni_map, mac, dns_nameserver=dns)
 
     nics_by_id = {
         nic["id"]: nic for nic in container_node.get("data", {}).get("nics", [])
@@ -586,7 +825,12 @@ def _find_container_networks(
 
 
 def _find_vm_name_by_ip(topology, ip):
-    """Find the VM name that has a NIC with the given IP address."""
+    """Find the VM/showroom name for a port-forward internal IP."""
+    if is_showroom_infra_ip(ip):
+        for node in topology.get("nodes", []):
+            if _is_showroom_node(node):
+                data = node.get("data", {})
+                return data.get("name", "showroom")
     for node in topology.get("nodes", []):
         if node.get("type") != "vmNode":
             continue

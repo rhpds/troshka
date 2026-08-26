@@ -157,6 +157,7 @@ vms:
 # Runs in project infra netns (not on mgmt DHCP); reaches VMs via routed lab bridges.
 showroom:
   enabled: true
+  dns_network: mgmt         # Network to use for DNS resolution
   content_repo: https://github.com/rhpds/zt-network-automation-workshop.git  # Antora source
   content_ref: v0.0.1       # git branch, tag, or commit
   build_content: true       # clone repo and run Antora at deploy (false = use pre-built disk)

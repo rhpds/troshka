@@ -99,3 +99,96 @@ export function normalizeInfraNetworkEdges(nodes: Node[], edges: Edge[]): Edge[]
 
 /** @deprecated Use normalizeInfraNetworkEdges */
 export const normalizeGatewayNetworkEdges = normalizeInfraNetworkEdges;
+
+export function peerLabNetworkOnGatewayEdge(
+  edge: Edge,
+  gatewayId: string,
+  nodes: Node[],
+): Node | undefined {
+  const source = nodes.find((n) => n.id === edge.source);
+  const target = nodes.find((n) => n.id === edge.target);
+  if (edge.source === gatewayId && isLabNetworkNode(target)) return target;
+  if (edge.target === gatewayId && isLabNetworkNode(source)) return source;
+  return undefined;
+}
+
+export function isGatewayConnectedLabNetwork(
+  network: Node,
+  nodes: Node[],
+  edges: Edge[],
+): boolean {
+  const gateway = nodes.find(isGatewayNode);
+  if (!gateway || !isLabNetworkNode(network)) return false;
+  return edges.some((edge) => {
+    const peer = peerLabNetworkOnGatewayEdge(edge, gateway.id, nodes);
+    return peer?.id === network.id;
+  });
+}
+
+export const SHOWROOM_MANAGED_OUTBOUND_PORTS = ["53", "443"];
+
+function parseOutboundPortEntries(outboundPorts: string): string[] {
+  return outboundPorts
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+}
+
+function outboundEntriesIncludePort(entries: string[], port: string): boolean {
+  return entries.some(
+    (entry) => entry === port || (entry.includes("/") && entry.split("/", 1)[0] === port),
+  );
+}
+
+export function gatewayAllowsDnsUpstream(gatewayData: Record<string, unknown>): boolean {
+  const policy = String(gatewayData.outboundPolicy || "allow-all");
+  if (policy !== "restrict") return true;
+  const entries = parseOutboundPortEntries(String(gatewayData.outboundPorts || ""));
+  return outboundEntriesIncludePort(entries, "53");
+}
+
+export function injectShowroomOutboundPorts(outboundPorts: string): {
+  ports: string;
+  added: string[];
+} {
+  const entries = parseOutboundPortEntries(outboundPorts);
+  const added: string[] = [];
+  for (const port of SHOWROOM_MANAGED_OUTBOUND_PORTS) {
+    if (!outboundEntriesIncludePort(entries, port)) {
+      entries.push(port);
+      added.push(port);
+    }
+  }
+  return { ports: entries.join(","), added };
+}
+
+export function stripShowroomOutboundPorts(
+  outboundPorts: string,
+  managed: string[],
+): string {
+  if (!managed.length) return outboundPorts;
+  const managedSet = new Set(managed);
+  const stripped = parseOutboundPortEntries(outboundPorts).filter(
+    (entry) =>
+      !managedSet.has(entry) &&
+      !(entry.includes("/") && managedSet.has(entry.split("/", 1)[0])),
+  );
+  return stripped.join(",");
+}
+
+/** First gateway-connected lab network with DNS enabled (edge order). */
+export function gatewayConnectedDnsNetworkName(nodes: Node[], edges: Edge[]): string {
+  const gateway = nodes.find(isGatewayNode);
+  if (!gateway) return "";
+  if (!gatewayAllowsDnsUpstream(gateway.data as Record<string, unknown>)) return "";
+  for (const edge of edges) {
+    const net = peerLabNetworkOnGatewayEdge(edge, gateway.id, nodes);
+    if (!net) continue;
+    const d = net.data as Record<string, unknown>;
+    const sub = d.subtype as string | undefined;
+    if (sub && !["network", "dhcp", "dns"].includes(sub)) continue;
+    if (!d.dns && sub !== "dns") continue;
+    return String(d.name || d.label || "");
+  }
+  return "";
+}

@@ -457,6 +457,53 @@ class TestExtractContainers:
         assert ctrs[0]["isPod"] is False
 
 
+class TestEnrichShowroomInfraNetworks:
+    def test_adds_lab_nad_nics_for_showroom(self):
+        from helpers.topology import extract_containers, enrich_showroom_infra_networks
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "net-mgmt",
+                    "type": "networkNode",
+                    "data": {
+                        "name": "mgmt",
+                        "subtype": "network",
+                        "cidr": "10.0.0.0/24",
+                        "dns": True,
+                    },
+                },
+                {
+                    "id": "net-cluster",
+                    "type": "networkNode",
+                    "data": {
+                        "name": "cluster",
+                        "subtype": "network",
+                        "cidr": "192.168.50.0/24",
+                    },
+                },
+                {
+                    "id": "sr-1",
+                    "type": "containerNode",
+                    "data": {
+                        "id": "sr-1",
+                        "label": "showroom",
+                        "isShowroom": True,
+                        "isPod": True,
+                        "infraNetworking": True,
+                        "nics": [],
+                    },
+                },
+            ],
+        }
+        ctrs = extract_containers(topo)
+        enrich_showroom_infra_networks(topo, ctrs)
+        assert len(ctrs[0]["nics"]) == 2
+        refs = {n["networkRef"] for n in ctrs[0]["nics"]}
+        assert refs == {"net-net-mgmt", "net-net-clus"}
+        assert ctrs[0]["nics"][0]["ip"].endswith(".250")
+
+
 class TestExtractNicId:
     def test_basic_nic_handle(self):
         from helpers.topology import _extract_nic_id
@@ -4679,7 +4726,10 @@ class TestEnsureCacheNamespaceAndSecrets:
 
         _ensure_cache_namespace_and_secrets(
             core_api,
-            {"credentialsSecret": "s3-credentials", "bucket": "troshka-images"},  # pragma: allowlist secret
+            {
+                "credentialsSecret": "s3-credentials",  # pragma: allowlist secret
+                "bucket": "troshka-images",
+            },
             {},
             project_namespace="troshka-b1677acf",
         )

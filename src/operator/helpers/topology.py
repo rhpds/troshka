@@ -134,6 +134,8 @@ def extract_containers(topology):
                     "env": data.get("env", {}),
                     "volumes": data.get("volumes", []),
                     "isPod": data.get("isPod", False),
+                    "isShowroom": data.get("isShowroom", False),
+                    "infraNetworking": data.get("infraNetworking", False),
                     "initContainers": data.get("initContainers", []),
                     "podContainers": data.get("podContainers", []),
                     "cpus": data.get("cpus", 1),
@@ -212,6 +214,91 @@ def enrich_container_nics(topology, containers):
             net_ref = nic.get("networkRef", "")
             if net_ref in net_cidrs:
                 nic["cidr"] = net_cidrs[net_ref]
+
+
+def _is_showroom_container(ctr):
+    name = (ctr.get("name") or "").strip().lower()
+    return ctr.get("isShowroom") or name == "showroom"
+
+
+def _lab_network_nodes(topology):
+    """Lab networks (not gateway/router/LB/BMC) as (node_id, cidr)."""
+    nets = []
+    for node in topology.get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        data = node.get("data", {})
+        subtype = data.get("subtype", "")
+        if subtype in ("gateway", "router", "loadbalancer"):
+            continue
+        if data.get("networkType") == "bmc":
+            continue
+        node_id = node.get("id", data.get("id", ""))
+        if node_id:
+            nets.append((node_id, data.get("cidr", "")))
+    return nets
+
+
+def _showroom_ip_for_cidr(cidr, used_ips):
+    """Pick a high host IP on the lab subnet for showroom multus (SSH to VMs)."""
+    if not cidr or "/" not in cidr:
+        return ""
+    base = cidr.split("/", 1)[0]
+    octets = base.split(".")
+    if len(octets) != 4:
+        return ""
+    for last in range(250, 200, -1):
+        ip = f"{octets[0]}.{octets[1]}.{octets[2]}.{last}"
+        if ip not in used_ips:
+            return ip
+    return ""
+
+
+def _collect_used_ips(topology):
+    used = set()
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        for nic in node.get("data", {}).get("nics", []):
+            ip = nic.get("ip", "")
+            if ip:
+                used.add(ip)
+    return used
+
+
+def enrich_showroom_infra_networks(topology, containers):
+    """KubeVirt: attach showroom pod to all lab NADs so wetty can SSH VM IPs."""
+    lab_nets = _lab_network_nodes(topology)
+    if not lab_nets:
+        return
+
+    used_ips = _collect_used_ips(topology)
+
+    for ctr in containers:
+        if not _is_showroom_container(ctr):
+            continue
+        if not ctr.get("infraNetworking") and ctr.get("nics"):
+            continue
+
+        existing_refs = {n.get("networkRef") for n in ctr.get("nics", [])}
+        new_nics = list(ctr.get("nics", []))
+        for net_id, cidr in lab_nets:
+            net_ref = f"net-{net_id[:8]}"
+            if net_ref in existing_refs:
+                continue
+            ip = _showroom_ip_for_cidr(cidr, used_ips)
+            if ip:
+                used_ips.add(ip)
+            new_nics.append(
+                {
+                    "id": f"infra-{net_id[:8]}",
+                    "networkRef": net_ref,
+                    "ip": ip,
+                    "cidr": cidr,
+                    "model": "virtio",
+                }
+            )
+        ctr["nics"] = new_nics
 
 
 def _extract_nic_id(handle):

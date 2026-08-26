@@ -494,6 +494,7 @@ def build_showroom_from_config(
     content_repo = str(showroom_cfg.get("content_repo", ""))
     content_ref = str(showroom_cfg.get("content_ref", "main"))
     build_content = showroom_cfg.get("build_content", True)
+    dns_network = str(showroom_cfg.get("dns_network") or "").strip()
 
     tabs = parse_template_tabs(
         showroom_cfg.get("tabs") or [], vm_name_to_id, vms_def, net_ids
@@ -557,6 +558,7 @@ def build_showroom_from_config(
             "buildContent": bool(build_content),
             "contentRepo": content_repo,
             "contentRef": content_ref,
+            "dnsNetwork": dns_network,
             "showroomTabs": tabs,
             "nics": ctr_nics,
             "envVars": [],
@@ -578,6 +580,8 @@ def build_showroom_from_config(
         "disk_gb": disk_gb,
         "tabs": tabs,
     }
+    if dns_network:
+        showroom_meta["dns_network"] = dns_network
 
     return ctr_node, [disk_node], [disk_edge], nic_edges, showroom_meta
 
@@ -603,6 +607,12 @@ def export_showroom_section(
         "content_ref": cd.get("contentRef", "main"),
         "build_content": cd.get("buildContent", True),
     }
+    dns_network = str(cd.get("dnsNetwork") or "").strip()
+    if not dns_network:
+        showroom_meta = topology.get("showroom") or {}
+        dns_network = str(showroom_meta.get("dns_network") or "").strip()
+    if dns_network:
+        exported["dns_network"] = dns_network
 
     for nic in cd.get("nics", []):
         if nic.get("ip"):

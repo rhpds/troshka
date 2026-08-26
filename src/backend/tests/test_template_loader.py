@@ -302,6 +302,73 @@ def test_dns_records_from_template():
     assert "infra.example.local" in dns_names
 
 
+def test_network_dns_records_resolve_vm_targets():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "template_name": "dns-target-test",
+        "networks": {
+            "mgmt": {
+                "cidr": "10.0.0.0/24",
+                "domain": "workshop.local",
+                "dns_records": [
+                    {"name": "control.workshop.local", "target": "control"},
+                    {"name": "vscode.workshop.local", "target": "vscode"},
+                ],
+            },
+        },
+        "gateway": {"outbound_ports": [53, 80, 443]},
+        "vms": {
+            "control": {
+                "vcpus": 2,
+                "ram_gb": 4,
+                "os": "rhel-10",
+                "disks": [{"size_gb": 50}],
+                "nics": [{"network": "mgmt", "ip": "10.0.0.11"}],
+            },
+            "vscode": {
+                "vcpus": 2,
+                "ram_gb": 4,
+                "os": "rhel-10",
+                "disks": [{"size_gb": 50}],
+                "nics": [{"network": "mgmt", "ip": "10.0.0.12"}],
+            },
+        },
+    }
+    topo = generate_topology_from_template(resolve_inline_template(tmpl))
+    mgmt = next(
+        n
+        for n in topo["nodes"]
+        if n.get("type") == "networkNode" and n["data"].get("name") == "mgmt"
+    )
+    by_name = {r["name"]: r["ip"] for r in mgmt["data"]["dnsRecords"]}
+    assert by_name["control.workshop.local"] == "10.0.0.11"
+    assert by_name["vscode.workshop.local"] == "10.0.0.12"
+
+
+def test_example_template_resolves_top_level_dns_target():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_template,
+    )
+
+    topo = generate_topology_from_template(
+        resolve_template("example", templates_dir=TEMPLATES_DIR)
+    )
+    cluster = next(
+        n
+        for n in topo["nodes"]
+        if n.get("type") == "networkNode" and n["data"].get("name") == "cluster"
+    )
+    infra = next(
+        r for r in cluster["data"]["dnsRecords"] if r["name"] == "infra.example.local"
+    )
+    assert infra["ip"] == "10.0.0.50"
+
+
 def test_export_import_round_trip():
     from app.services.template_loader import (
         export_topology_to_template,

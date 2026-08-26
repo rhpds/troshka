@@ -249,6 +249,31 @@ def _build_pxe_config(
     return pxe_config
 
 
+def _resolved_dns_records_for_network(
+    net_data: dict, nodes: list, vni_map: dict[str, int]
+) -> list[dict]:
+    """Resolve dnsRecords targets (incl. showroom infra IP) for dnsmasq."""
+    from app.services.deploy_topology import _is_showroom_node, showroom_infra_ip
+    from app.services.template_loader import (
+        _collect_workload_ips,
+        _resolve_dns_record_entry,
+    )
+
+    workload_ips = _collect_workload_ips(nodes)
+    if any(_is_showroom_node(n) for n in nodes):
+        infra_ip = showroom_infra_ip(vni_map)
+        if infra_ip:
+            workload_ips["showroom"] = infra_ip
+    out: list[dict] = []
+    for rec in net_data.get("dnsRecords", []):
+        resolved = _resolve_dns_record_entry(rec, workload_ips)
+        name = resolved.get("name", "")
+        ip = resolved.get("ip", "")
+        if name and ip:
+            out.append({"name": name, "ip": ip})
+    return out
+
+
 def _build_network_configs(
     nodes: list, edges: list, vni_map: dict, peer_ips: list
 ) -> list:
@@ -283,7 +308,7 @@ def _build_network_configs(
             "dhcp_enabled": data.get("dhcp", False),
             "dns_enabled": data.get("dns", False),
             "dns_domain": data.get("dnsDomain", ""),
-            "dns_records": data.get("dnsRecords", []),
+            "dns_records": _resolved_dns_records_for_network(data, nodes, vni_map),
             "connected_vms": connected_vms,
             "dhcp_hosts": dhcp_hosts,
             "peers": peer_ips,

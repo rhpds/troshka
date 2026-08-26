@@ -11718,6 +11718,31 @@ def _configure_pod_interface_ip(job, idx, ip_addr, cidr, netns_name, gateway="")
         )
 
 
+def _set_pod_gateway_neigh(job, netns_name, gateway, lladdr):
+    """Static ARP for infra-transit gateway (IP lives on vecc042940n, not the pod veth)."""
+    if not gateway or not lladdr:
+        return
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            netns_name,
+            "ip",
+            "neigh",
+            "replace",
+            gateway,
+            "lladdr",
+            lladdr,
+            "dev",
+            "eth0",
+        ],
+        check=False,
+        timeout=5,
+    )
+
+
 def _attach_pod_to_infra_transit(job, full_pod_name, infra_pid, net, project_id):
     """Attach showroom pod to project netns transit (not a lab bridge)."""
     netns_name = f"ctr-{full_pod_name[-8:]}"
@@ -11762,6 +11787,20 @@ def _attach_pod_to_infra_transit(job, full_pod_name, infra_pid, net, project_id)
         ["ip", "netns", "exec", proj_ns, "ip", "link", "set", veth_host, "up"],
         timeout=5,
     )
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            proj_ns,
+            "sysctl",
+            "-w",
+            f"net.ipv4.conf.{veth_host}.rp_filter=0",
+        ],
+        check=False,
+        timeout=5,
+    )
 
     _run_cmd(
         job,
@@ -11787,11 +11826,76 @@ def _attach_pod_to_infra_transit(job, full_pod_name, infra_pid, net, project_id)
 
     ip_addr = net.get("ip", "")
     cidr = net.get("cidr", "")
+    gw = net.get("gateway", "")
+    veth_mac = ""
+    try:
+        veth_mac = _run_cmd(
+            job,
+            [
+                "ip",
+                "netns",
+                "exec",
+                proj_ns,
+                "cat",
+                f"/sys/class/net/{veth_host}/address",
+            ],
+            timeout=5,
+        ).strip()
+    except RuntimeError:
+        pass
     if ip_addr and cidr:
-        gw = net.get("gateway", "")
+        _run_cmd(
+            job,
+            [
+                "ip",
+                "netns",
+                "exec",
+                proj_ns,
+                "ip",
+                "route",
+                "add",
+                f"{ip_addr}/32",
+                "dev",
+                veth_host,
+            ],
+            check=False,
+            timeout=5,
+        )
         _configure_pod_interface_ip(job, 0, ip_addr, cidr, netns_name, gateway=gw)
+        if gw and veth_mac:
+            _set_pod_gateway_neigh(job, netns_name, gw, veth_mac)
 
     _allow_infra_veth_forward(job, proj_ns, veth_host)
+    transit_veth = f"ve{project_id[:8]}n"
+    _allow_infra_transit_internet(job, proj_ns, veth_host, transit_veth)
+
+
+def _allow_infra_transit_internet(job, proj_ns, infra_veth_host, transit_veth_ns):
+    """Allow showroom pod outbound via project transit veth (git clone, etc.)."""
+    for in_if, out_if in (
+        (infra_veth_host, transit_veth_ns),
+        (transit_veth_ns, infra_veth_host),
+    ):
+        _nft_try(
+            job,
+            [
+                "ip",
+                "netns",
+                "exec",
+                proj_ns,
+                "nft",
+                "add",
+                "rule",
+                "inet",
+                "filter",
+                "forward",
+                "iifname",
+                in_if,
+                "oifname",
+                out_if,
+                "accept",
+            ],
+        )
 
 
 def _allow_infra_veth_forward(job, proj_ns, veth_host):
@@ -12030,9 +12134,9 @@ def _handle_pod_create(job, params):
             _attach_pod_to_infra_transit(
                 job, full_pod_name, infra_pid, networks[0], project_id
             )
-            gw = networks[0].get("gateway")
-            if gw:
-                job["_pod_resolv_path"] = _write_pod_resolv_conf(full_pod_name, gw)
+            dns = networks[0].get("dns_nameserver") or networks[0].get("gateway")
+            if dns:
+                job["_pod_resolv_path"] = _write_pod_resolv_conf(full_pod_name, dns)
         else:
             _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id)
             gw = _pod_dns_nameserver(networks[0])

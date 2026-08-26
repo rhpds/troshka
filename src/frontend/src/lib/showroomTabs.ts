@@ -72,7 +72,7 @@ function resolveTabNetworkId(tab: ShowroomTab, nodes: Node[]): string | null {
   return null;
 }
 
-function getVmNicIpOnNetwork(
+export function getVmNicIpOnNetwork(
   vmId: string,
   networkId: string,
   nodes: Node[],

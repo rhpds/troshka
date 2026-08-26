@@ -52,6 +52,47 @@ def gateway_pod_listen_port(ext_port: int) -> int:
     return _GW_BLOCKED_POD_PORTS.get(ext_port, ext_port)
 
 
+def ensure_showroom_cluster_service(
+    provider, project_id: str, showroom_node_id: str
+) -> str:
+    """ClusterIP Service for showroom nginx; returns in-namespace DNS name."""
+    _, core_api, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+    pid = project_id[:8]
+    ctr_short = showroom_node_id[:8]
+    svc_name = f"showroom-{pid}"
+    svc_body = {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {
+            "name": svc_name,
+            "namespace": namespace,
+            "labels": {
+                "app": "troshka-showroom",
+                "troshka-project": pid,
+            },
+        },
+        "spec": {
+            "type": "ClusterIP",
+            "selector": {"troshka-pod": ctr_short},
+            "ports": [
+                {
+                    "name": "http",
+                    "port": 80,
+                    "targetPort": 80,
+                    "protocol": "TCP",
+                }
+            ],
+        },
+    }
+    try:
+        core_api.create_namespaced_service(namespace=namespace, body=svc_body)
+    except Exception as e:
+        if "AlreadyExists" not in str(e):
+            raise
+    return svc_name
+
+
 def _get_k8s_clients(provider):
     from kubernetes import client
 

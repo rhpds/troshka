@@ -14,7 +14,10 @@ import {
 import { appConfirm } from "@/lib/confirm";
 import {
   type ShowroomConfig,
+  DEFAULT_SHOWROOM_CONFIG,
   buildShowroomScaffold,
+  defaultDnsNetworkName,
+  effectiveShowroomDnsNetwork,
   defaultShowroomScaffoldPosition,
   hasShowroomNode,
   syncShowroomContentEnv,
@@ -313,6 +316,7 @@ function removalExtrasForNodes(removedIds: Set<string>, nodes: Node[]) {
 function parseShowroomFromTopology(
   topologyShowroom: unknown,
   nodes: Node[],
+  edges: Edge[] = [],
 ): ShowroomConfig | null {
   const showroomNode = nodes.find((n) => isShowroomContainer(n));
   const nodeData = showroomNode?.data as Record<string, unknown> | undefined;
@@ -323,6 +327,12 @@ function parseShowroomFromTopology(
       content_repo: String(s.content_repo || nodeData?.contentRepo || ""),
       content_ref: String(s.content_ref || nodeData?.contentRef || "main"),
       build_content: s.build_content !== false && nodeData?.buildContent !== false,
+      dns_network:
+        effectiveShowroomDnsNetwork(
+          nodes,
+          String(s.dns_network || nodeData?.dnsNetwork || ""),
+          edges,
+        ) || undefined,
       tabs: Array.isArray(s.tabs)
         ? (s.tabs as ShowroomTab[])
         : Array.isArray(nodeData?.showroomTabs)
@@ -337,6 +347,7 @@ function parseShowroomFromTopology(
     content_repo: String(d.contentRepo || ""),
     content_ref: String(d.contentRef || "main"),
     build_content: d.buildContent !== false,
+    dns_network: effectiveShowroomDnsNetwork(nodes, String(d.dnsNetwork || ""), edges) || undefined,
     tabs: Array.isArray(d.showroomTabs) ? (d.showroomTabs as ShowroomTab[]) : [],
   };
 }
@@ -344,14 +355,21 @@ function parseShowroomFromTopology(
 function showroomConfigForSave(
   showroom: ShowroomConfig | null,
   nodes: Node[],
+  edges: Edge[],
 ): ShowroomConfig | null {
-  const merged = parseShowroomFromTopology(null, nodes);
+  const merged = parseShowroomFromTopology(null, nodes, edges);
   if (!showroom && !merged) return null;
   return {
     enabled: showroom?.enabled ?? merged?.enabled ?? true,
     content_repo: showroom?.content_repo || merged?.content_repo || "",
     content_ref: showroom?.content_ref || merged?.content_ref || "main",
     build_content: showroom?.build_content ?? merged?.build_content ?? true,
+    dns_network:
+      effectiveShowroomDnsNetwork(
+        nodes,
+        showroom?.dns_network || merged?.dns_network || "",
+        edges,
+      ) || undefined,
     tabs: showroom?.tabs ?? merged?.tabs,
   };
 }
@@ -1233,7 +1251,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           });
           const loadedNodes = (() => {
             const showroomNode = nodes.find((n: Node) => isShowroomContainer(n));
-            const showroomCfg = parseShowroomFromTopology(t.showroom, nodes);
+            const showroomCfg = parseShowroomFromTopology(t.showroom, nodes, (t.edges || []) as Edge[]);
             const tabs =
               (showroomCfg?.tabs && showroomCfg.tabs.length > 0
                 ? showroomCfg.tabs
@@ -1293,7 +1311,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             startOrder: t.startOrder || [],
             externalIps: synced.externalIps,
             vniMap,
-            showroom: parseShowroomFromTopology(t.showroom, nodes),
+            showroom: parseShowroomFromTopology(t.showroom, nodes, lbEdges),
           });
           _lastSavedNodeCount = (t.nodes || []).length;
         } else {
@@ -1338,7 +1356,11 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     const scaffoldPosition = getGatewayNode(nodes)
       ? defaultShowroomScaffoldPosition(nodes)
       : position;
-    const scaffold = buildShowroomScaffold(scaffoldPosition);
+    const dnsNetwork = defaultDnsNetworkName(nodes, get().edges);
+    const scaffold = buildShowroomScaffold(scaffoldPosition, {
+      ...DEFAULT_SHOWROOM_CONFIG,
+      dns_network: dnsNetwork || undefined,
+    });
     get().pushHistory();
     const startOrder = get().startOrder.some((e) => e.vmId === scaffold.startOrderEntry.vmId)
       ? get().startOrder
@@ -1370,19 +1392,23 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   updateShowroomConfig: (nodeId, patch) => {
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node || !isShowroomContainer(node)) return;
-    const current = get().showroom || parseShowroomFromTopology(null, get().nodes)!;
+    const current = get().showroom || parseShowroomFromTopology(null, get().nodes, get().edges)!;
     const next: ShowroomConfig = {
       enabled: patch.enabled ?? current.enabled,
       content_repo: patch.content_repo ?? current.content_repo,
       content_ref: patch.content_ref ?? current.content_ref,
       build_content: patch.build_content ?? current.build_content,
+      dns_network: patch.dns_network ?? current.dns_network,
     };
-    const syncedData = syncShowroomContentEnv(
-      node.data as Record<string, unknown>,
-      next.content_repo,
-      next.content_ref,
-      next.build_content,
-    );
+    const syncedData = {
+      ...syncShowroomContentEnv(
+        node.data as Record<string, unknown>,
+        next.content_repo,
+        next.content_ref,
+        next.build_content,
+      ),
+      dnsNetwork: next.dns_network || "",
+    };
     set({
       showroom: next,
       nodes: get().nodes.map((n) =>
@@ -1401,7 +1427,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       get().nodes,
       get().edges,
     );
-    const current = get().showroom || parseShowroomFromTopology(null, get().nodes)!;
+    const current = get().showroom || parseShowroomFromTopology(null, get().nodes, get().edges)!;
     set({
       showroom: { ...current, tabs },
       nodes: get().nodes.map((n) =>
@@ -1732,7 +1758,7 @@ function _saveTopologyToApi(
     startOrder: state.startOrder,
     externalIps: state.externalIps,
   };
-  const showroomMeta = showroomConfigForSave(state.showroom, state.nodes);
+  const showroomMeta = showroomConfigForSave(state.showroom, state.nodes, state.edges);
   if (showroomMeta) topology.showroom = showroomMeta;
   return fetch(`/api/v1/projects/${projectId}`, {
     method: "PATCH",

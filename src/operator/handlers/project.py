@@ -25,6 +25,7 @@ from helpers.topology import (
     container_disk_pvc_name,
     container_start_delay,
     enrich_container_nics,
+    enrich_showroom_infra_networks,
 )
 from helpers.kubevirt import build_blank_pvc
 
@@ -238,7 +239,9 @@ async def _wait_volume_snapshot_ready(
 
 def _create_namespaced_pvc(core_api, namespace: str, body: dict) -> None:
     try:
-        core_api.create_namespaced_persistent_volume_claim(namespace=namespace, body=body)
+        core_api.create_namespaced_persistent_volume_claim(
+            namespace=namespace, body=body
+        )
     except ApiException as e:
         if e.status != 409:
             raise
@@ -1091,13 +1094,9 @@ def _create_golden_pvc_for_disk(
             plural="datavolumes",
             name=pvc_name,
         )
-        if golden_import_matches(
-            existing, s3_path, disk_s3_config, secret_name
-        ):
+        if golden_import_matches(existing, s3_path, disk_s3_config, secret_name):
             return
-        logger.warning(
-            "Golden import %s has wrong S3 source, recreating", pvc_name
-        )
+        logger.warning("Golden import %s has wrong S3 source, recreating", pvc_name)
         delete_golden_import(custom_api, core_api, CACHE_NAMESPACE, pvc_name)
     except ApiException as e:
         if e.status != 404:
@@ -1126,7 +1125,9 @@ def _create_golden_pvc_for_disk(
             raise
 
 
-def _precreate_golden_pvcs(custom_api, core_api, spec, all_disks, patch, project_namespace=None):
+def _precreate_golden_pvcs(
+    custom_api, core_api, spec, all_disks, patch, project_namespace=None
+):
     """Pre-create golden PVCs for parallel image downloads."""
     s3_config = spec.get("s3Config", {})
     central_s3_config = spec.get("centralS3Config", {})
@@ -1960,10 +1961,9 @@ def _ensure_project_containers(spec, status, namespace, name, body, patch):
     custom_api = client.CustomObjectsApi()
     disk_pvcs = _provision_container_pvcs(core_api, namespace, topology, body)
     enrich_container_nics(topology, containers)
+    enrich_showroom_infra_networks(topology, containers)
     nad_refs = _resolve_nad_refs(custom_api, namespace)
-    create_container_pods(
-        namespace, containers, nad_refs, owner_ref(body), disk_pvcs
-    )
+    create_container_pods(namespace, containers, nad_refs, owner_ref(body), disk_pvcs)
     patch.status["containersStarted"] = True
     patch.status["deployProgress"] = {
         "percent": 100,

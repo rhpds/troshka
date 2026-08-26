@@ -1,5 +1,9 @@
 import type { Edge, Node } from "@xyflow/react";
 import {
+  injectShowroomOutboundPorts,
+  stripShowroomOutboundPorts,
+} from "@/lib/gatewayValidation";
+import {
   ensureShowroomGatewayEdge,
   getGatewayNode,
   getShowroomNode,
@@ -111,11 +115,26 @@ function stripShowroomGatewayPortForwardsOnNodes(nodes: Node[]): Node[] {
     ...pf,
   }));
   const stripped = existing.filter((pf) => !isShowroomInfraForward(pf));
-  if (portForwardsEqual(stripped, existing)) return nodes;
+  const managedOutbound = (gwData.showroomManagedOutbound as string[]) || [];
+  const strippedOutbound =
+    gwData.outboundPolicy === "restrict" && managedOutbound.length
+      ? stripShowroomOutboundPorts(String(gwData.outboundPorts || ""), managedOutbound)
+      : String(gwData.outboundPorts || "");
 
-  const nextData: Record<string, unknown> = { ...gwData, portForwards: stripped };
-  if (stripped.length === 0 && gwData.gatewayMode === "nat-portforward") {
-    nextData.gatewayMode = "nat";
+  const pfChanged = !portForwardsEqual(stripped, existing);
+  const outboundChanged = strippedOutbound !== String(gwData.outboundPorts || "");
+  if (!pfChanged && !outboundChanged) return nodes;
+
+  const nextData: Record<string, unknown> = { ...gwData };
+  if (pfChanged) {
+    nextData.portForwards = stripped;
+    if (stripped.length === 0 && gwData.gatewayMode === "nat-portforward") {
+      nextData.gatewayMode = "nat";
+    }
+  }
+  if (outboundChanged) {
+    nextData.outboundPorts = strippedOutbound;
+    delete nextData.showroomManagedOutbound;
   }
 
   return nodes.map((n) =>
@@ -151,16 +170,33 @@ function ensureShowroomGatewayPortForwardsOnNodes(
 
   const needsMode = gwData.gatewayMode !== "nat-portforward";
   const needsPf = !portForwardsEqual(withEip, existing);
-  if (!needsMode && !needsPf) return nodes;
+  const outboundInject =
+    gwData.outboundPolicy === "restrict"
+      ? injectShowroomOutboundPorts(String(gwData.outboundPorts || ""))
+      : { ports: String(gwData.outboundPorts || ""), added: [] as string[] };
+  const needsOutbound = outboundInject.added.length > 0;
+  if (!needsMode && !needsPf && !needsOutbound) return nodes;
 
   return nodes.map((n) => {
     if (n.id !== gateway.id) return n;
+    const managed = [
+      ...new Set([
+        ...((gwData.showroomManagedOutbound as string[]) || []),
+        ...outboundInject.added,
+      ]),
+    ];
     return {
       ...n,
       data: {
         ...n.data,
         ...(needsMode ? { gatewayMode: "nat-portforward" } : {}),
         ...(needsPf ? { portForwards: withEip } : {}),
+        ...(needsOutbound
+          ? {
+              outboundPorts: outboundInject.ports,
+              showroomManagedOutbound: managed,
+            }
+          : {}),
       },
     };
   });

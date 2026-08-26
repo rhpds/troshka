@@ -160,6 +160,7 @@ def _showroom_topology(**overrides):
             "content_repo": "https://github.com/example/lab.git",
             "content_ref": "main",
             "build_content": True,
+            "dns_network": "mgmt",
         },
         "nodes": [
             {
@@ -172,6 +173,16 @@ def _showroom_topology(**overrides):
                 },
             },
             {
+                "id": "net-mgmt",
+                "type": "networkNode",
+                "data": {
+                    "name": "mgmt",
+                    "subtype": "network",
+                    "cidr": "10.0.0.0/24",
+                    "dns": True,
+                },
+            },
+            {
                 "id": "sr-1",
                 "type": "containerNode",
                 "data": {
@@ -179,11 +190,20 @@ def _showroom_topology(**overrides):
                     "isShowroom": True,
                     "isPod": True,
                     "infraNetworking": True,
+                    "dnsNetwork": "mgmt",
                     "nics": [],
                 },
             },
         ],
-        "edges": [],
+        "edges": [
+            {
+                "id": "gw-net",
+                "source": "gw-1",
+                "target": "net-mgmt",
+                "sourceHandle": "bottom",
+                "targetHandle": "top",
+            },
+        ],
     }
     topo.update(overrides)
     return topo
@@ -222,7 +242,136 @@ def test_validate_showroom_topology_content_repo_from_node():
     topo["showroom"] = None
     showroom = next(n for n in topo["nodes"] if n["data"].get("isShowroom"))
     showroom["data"]["contentRepo"] = "https://github.com/example/repo.git"
+    showroom["data"]["dnsNetwork"] = "mgmt"
     assert validate_showroom_topology(topo) == []
+
+
+def test_validate_showroom_topology_requires_dns_network():
+    from app.services.deploy_topology import validate_showroom_topology
+
+    topo = _showroom_topology()
+    topo["showroom"]["dns_network"] = ""
+    showroom = next(n for n in topo["nodes"] if n["data"].get("isShowroom"))
+    showroom["data"]["dnsNetwork"] = ""
+    # mgmt has DNS — implicit default applies
+    assert validate_showroom_topology(topo) == []
+
+    topo["nodes"] = [n for n in topo["nodes"] if n["id"] != "net-mgmt"]
+    errors = validate_showroom_topology(topo)
+    assert any("gateway" in e.lower() for e in errors)
+
+
+def test_showroom_dns_network_implicit_default():
+    from app.services.deploy_topology import _showroom_dns_network_name
+
+    topo = _showroom_topology()
+    topo["showroom"]["dns_network"] = ""
+    showroom = next(n for n in topo["nodes"] if n["data"].get("isShowroom"))
+    showroom["data"]["dnsNetwork"] = ""
+    assert _showroom_dns_network_name(topo) == "mgmt"
+
+
+def test_showroom_dns_network_implicit_default_ignores_non_gateway_dns():
+    from app.services.deploy_topology import _showroom_dns_network_name
+
+    topo = _showroom_topology()
+    topo["showroom"]["dns_network"] = ""
+    showroom = next(n for n in topo["nodes"] if n["data"].get("isShowroom"))
+    showroom["data"]["dnsNetwork"] = ""
+    topo["nodes"].append(
+        {
+            "id": "net-cluster",
+            "type": "networkNode",
+            "data": {
+                "name": "cluster",
+                "subtype": "network",
+                "cidr": "192.168.50.0/24",
+                "dns": True,
+            },
+        }
+    )
+    assert _showroom_dns_network_name(topo) == "mgmt"
+
+
+def test_validate_showroom_topology_requires_gateway_connected_dns():
+    from app.services.deploy_topology import validate_showroom_topology
+
+    topo = _showroom_topology()
+    topo["showroom"]["dns_network"] = "cluster"
+    showroom = next(n for n in topo["nodes"] if n["data"].get("isShowroom"))
+    showroom["data"]["dnsNetwork"] = "cluster"
+    topo["nodes"].append(
+        {
+            "id": "net-cluster",
+            "type": "networkNode",
+            "data": {
+                "name": "cluster",
+                "subtype": "network",
+                "cidr": "192.168.50.0/24",
+                "dns": True,
+            },
+        }
+    )
+    errors = validate_showroom_topology(topo)
+    assert any("connected to the gateway" in e for e in errors)
+
+
+def test_inject_showroom_gateway_outbound_ports_restrict():
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    topo = _showroom_topology()
+    gw = next(n for n in topo["nodes"] if n["id"] == "gw-1")
+    gw["data"]["outboundPolicy"] = "restrict"
+    gw["data"]["outboundPorts"] = "80"
+    assert inject_showroom_gateway_port_forwards(topo, {"net-mgmt": 1000})
+    ports = [p.strip() for p in gw["data"]["outboundPorts"].split(",")]
+    assert "53" in ports
+    assert "443" in ports
+    assert "53" in gw["data"]["showroomManagedOutbound"]
+
+
+def test_validate_showroom_topology_after_inject_allows_restrict_dns():
+    from app.services.deploy_topology import (
+        inject_showroom_gateway_port_forwards,
+        validate_showroom_topology,
+    )
+
+    topo = _showroom_topology()
+    gw = next(n for n in topo["nodes"] if n["id"] == "gw-1")
+    gw["data"]["outboundPolicy"] = "restrict"
+    gw["data"]["outboundPorts"] = "80"
+    inject_showroom_gateway_port_forwards(topo, {"net-mgmt": 1000})
+    assert validate_showroom_topology(topo) == []
+
+
+def test_showroom_dns_nameserver_from_configured_network():
+    from app.services.deploy_topology import _showroom_dns_nameserver
+
+    topo = _showroom_topology()
+    topo["nodes"].append(
+        {
+            "id": "net-cluster",
+            "type": "networkNode",
+            "data": {
+                "name": "cluster",
+                "subtype": "network",
+                "cidr": "192.168.50.0/24",
+                "dns": True,
+                "dhcpGateway": "192.168.50.1",
+            },
+        }
+    )
+    topo["showroom"]["dns_network"] = "cluster"
+    assert _showroom_dns_nameserver(topo) == "192.168.50.1"
+
+
+def test_showroom_dns_nameserver_prefers_dns_server_ip():
+    from app.services.deploy_topology import _showroom_dns_nameserver
+
+    topo = _showroom_topology()
+    mgmt = next(n for n in topo["nodes"] if n["id"] == "net-mgmt")
+    mgmt["data"]["dnsServerIp"] = "10.0.0.254"
+    assert _showroom_dns_nameserver(topo) == "10.0.0.254"
 
 
 def test_showroom_infra_network():
@@ -237,7 +386,14 @@ def test_showroom_infra_network():
     assert nets[0]["gateway"] == "172.30.232.2"
 
 
-def test_inject_showroom_port_forward():
+def test_showroom_infra_network_dns_nameserver():
+    from app.services.deploy_topology import showroom_infra_network
+
+    nets = showroom_infra_network(
+        {"net-1": 1000}, "52:54:00:00:00:01", dns_nameserver="10.0.0.1"
+    )
+    assert nets[0]["dns_nameserver"] == "10.0.0.1"
+
     from app.services.vxlan import _inject_showroom_port_forward
 
     topo = {

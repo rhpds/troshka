@@ -6,6 +6,9 @@ import {
 } from "@/stores/canvasStore";
 import type { ShowroomTab } from "@/lib/showroomTabs";
 import { buildNginxConfig, buildUiConfigYaml } from "@/lib/showroomTabs";
+import {
+  gatewayConnectedDnsNetworkName,
+} from "@/lib/gatewayValidation";
 import { isGatewayNode } from "@/lib/showroomValidation";
 import { STORAGE_EDGE_STYLE } from "@/lib/storageEdgeStyle";
 
@@ -16,6 +19,8 @@ export interface ShowroomConfig {
   content_repo: string;
   content_ref: string;
   build_content: boolean;
+  /** Lab network name where showroom pod resolves DNS (dnsmasq gateway). */
+  dns_network?: string;
   tabs?: ShowroomTab[];
 }
 
@@ -29,6 +34,21 @@ export const DEFAULT_SHOWROOM_CONFIG: ShowroomConfig = {
 const LAYOUT_VM_W = 200;
 const LAYOUT_GAP_X = 40;
 const SHOWROOM_DISK_Y_OFFSET = 70;
+
+export function defaultDnsNetworkName(nodes: Node[], edges: Edge[] = []): string {
+  return gatewayConnectedDnsNetworkName(nodes, edges);
+}
+
+/** Explicit dns_network from config/node, or first gateway-connected DNS network. */
+export function effectiveShowroomDnsNetwork(
+  nodes: Node[],
+  explicit?: string,
+  edges: Edge[] = [],
+): string {
+  const configured = String(explicit || "").trim();
+  if (configured) return configured;
+  return defaultDnsNetworkName(nodes, edges);
+}
 
 export function defaultShowroomScaffoldPosition(nodes: Node[]): { x: number; y: number } {
   const gateway = nodes.find((n) => isGatewayNode(n));
@@ -175,6 +195,7 @@ export function buildShowroomScaffold(
       buildContent: config.build_content,
       contentRepo: config.content_repo,
       contentRef: config.content_ref,
+      dnsNetwork: config.dns_network || "",
       showroomTabs: config.tabs || [],
       nics: [],
       infraNetworking: true,

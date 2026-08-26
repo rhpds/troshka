@@ -178,6 +178,17 @@ def _startup_reset_stuck_projects():
         for p in stuck:
             old_state = p.state
             if old_state == "deploying" and p.deploy_step:
+                if is_redis_available():
+                    from app.core.redis import get_job_info
+
+                    job_info = get_job_info(p.id)
+                    if job_info and job_info.get("status") in ("queued", "started"):
+                        logger.info(
+                            "Startup: project %s (%s) has active RQ job, skipping resume",
+                            p.name,
+                            p.id[:8],
+                        )
+                        continue
                 logger.info(
                     "Startup: resuming deploy for %s (%s) from step '%s'",
                     p.name,

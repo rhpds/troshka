@@ -1644,6 +1644,8 @@ def _troshkad_network_entries(networks: list[dict]) -> list[dict]:
         }
         if n.get("infra_transit"):
             entry["infra_transit"] = True
+        if n.get("dns_nameserver"):
+            entry["dns_nameserver"] = n["dns_nameserver"]
         entries.append(entry)
     return entries
 
@@ -2469,6 +2471,25 @@ def _read_kubevirt_domain_uuids(project, db):
 
 def _patch_kubevirt_gateway_forwards(provider, project_id, topology):
     """Patch the gateway Deployment with PORT_FORWARDS env var for DNAT rules."""
+    from app.services.deploy_topology import _is_showroom_node, is_showroom_infra_ip
+    from app.services.providers.kubevirt import ensure_showroom_cluster_service
+
+    showroom_node = next(
+        (n for n in topology.get("nodes", []) if _is_showroom_node(n)),
+        None,
+    )
+    showroom_svc = ""
+    if showroom_node:
+        try:
+            showroom_svc = ensure_showroom_cluster_service(
+                provider, project_id, showroom_node["id"]
+            )
+        except Exception:
+            logger.exception(
+                "Deploy %s: failed to create showroom service (non-fatal)",
+                project_id[:8],
+            )
+
     all_forwards = []
     for node in topology.get("nodes", []):
         node_data = node.get("data", {})
@@ -2476,6 +2497,8 @@ def _patch_kubevirt_gateway_forwards(provider, project_id, topology):
             for pf in node_data.get("portForwards", []):
                 ext_port = pf.get("extPort", "")
                 int_ip = pf.get("intIp", "")
+                if showroom_svc and is_showroom_infra_ip(int_ip):
+                    int_ip = showroom_svc
                 int_port = pf.get("intPort", "")
                 if ext_port and int_ip and int_port:
                     proto = pf.get("proto", "tcp")
@@ -4385,52 +4408,59 @@ def _deploy_single_host_setup(
 
     _auto_assign_container_ips(topology)
 
-    _checkpoint(s, project_id, "networks")
-    _update_deploy_progress(project_id, "networking", "waiting for lock")
-    with _get_network_lock(host.id):
-        _update_deploy_progress(project_id, "networking", "configuring VXLAN")
-        logger.info(
-            "Deploy %s: setting up networks on %s", project_id[:8], host.ip_address
-        )
-        net_result = _setup_networks_via_troshkad(
-            host, topology, vni_map, s, project_id
-        )
-    if net_result is not True:
-        logger.error(_LOG_DEPLOY, project_id[:8], net_result)
-        _set_deploy_error(s, project, net_result)
-        _delete_deploy_progress(project_id)
-        return None
+    lb_config = None
+    if not _should_skip(resume_from, "networks"):
+        _checkpoint(s, project_id, "networks")
+        _update_deploy_progress(project_id, "networking", "waiting for lock")
+        with _get_network_lock(host.id):
+            _update_deploy_progress(project_id, "networking", "configuring VXLAN")
+            logger.info(
+                "Deploy %s: setting up networks on %s",
+                project_id[:8],
+                host.ip_address,
+            )
+            net_result = _setup_networks_via_troshkad(
+                host, topology, vni_map, s, project_id
+            )
+        if net_result is not True:
+            logger.error(_LOG_DEPLOY, project_id[:8], net_result)
+            _set_deploy_error(s, project, net_result)
+            _delete_deploy_progress(project_id)
+            return None
 
-    lb_config = _deploy_setup_lb(host, project_id, topology, vni_map)
+        lb_config = _deploy_setup_lb(host, project_id, topology, vni_map)
 
-    if external_ips:
-        _deploy_sync_sg_rules(s, project_id, project, host, topology, lb_config)
+        if external_ips:
+            _deploy_sync_sg_rules(s, project_id, project, host, topology, lb_config)
 
-    if _project_deleted(project_id):
-        _delete_deploy_progress(project_id)
-        return None
+        if _project_deleted(project_id):
+            _delete_deploy_progress(project_id)
+            return None
 
-    _deploy_inject_gateway_ip(topology, project_id)
-    _deploy_disable_guest_exec(project, topology)
-    _deploy_create_provider_routes(s, project_id, topology, host=host)
+        _deploy_inject_gateway_ip(topology, project_id)
+        _deploy_disable_guest_exec(project, topology)
+        _deploy_create_provider_routes(s, project_id, topology, host=host)
 
-    _checkpoint(s, project_id, "seeds")
-    _update_deploy_progress(project_id, "cloud-init", "creating seed ISOs")
-    logger.info("Deploy %s: creating cloud-init seed ISOs", project_id[:8])
-    _create_seed_isos_via_troshkad(host, project_id, topology, pool)
+    if not _should_skip(resume_from, "seeds"):
+        _checkpoint(s, project_id, "seeds")
+        _update_deploy_progress(project_id, "cloud-init", "creating seed ISOs")
+        logger.info("Deploy %s: creating cloud-init seed ISOs", project_id[:8])
+        _create_seed_isos_via_troshkad(host, project_id, topology, pool)
 
-    _update_deploy_progress(project_id, "cloud-init", "deploying metadata service")
-    logger.info("Deploy %s: deploying metadata service", project_id[:8])
-    _setup_metadata_via_troshkad(host, project_id, topology, vni_map)
+        _update_deploy_progress(project_id, "cloud-init", "deploying metadata service")
+        logger.info("Deploy %s: deploying metadata service", project_id[:8])
+        _setup_metadata_via_troshkad(host, project_id, topology, vni_map)
 
-    if _project_deleted(project_id):
-        _delete_deploy_progress(project_id)
-        return None
+        if _project_deleted(project_id):
+            _delete_deploy_progress(project_id)
+            return None
 
-    _deploy_cache_images_and_pxe(host, project_id, topology, vni_map, s, project)
+    if not _should_skip(resume_from, "images"):
+        _deploy_cache_images_and_pxe(host, project_id, topology, vni_map, s, project)
 
-    _checkpoint(s, project_id, "container_pull")
-    _deploy_pull_container_images(host, project_id, topology, s)
+    if not _should_skip(resume_from, "container_pull"):
+        _checkpoint(s, project_id, "container_pull")
+        _deploy_pull_container_images(host, project_id, topology, s)
 
     if _project_deleted(project_id):
         _delete_deploy_progress(project_id)
@@ -4465,43 +4495,50 @@ def _deploy_single_host_execute(
     auto_start,
     lb_config,
     external_ips,
+    resume_from: str | None = None,
 ):
     """Create VMs, start them, and finalize single-host deploy."""
-    _checkpoint(s, project_id, "disks")
-    _update_deploy_progress(project_id, "creating", "VMs")
-    logger.info("Deploy %s: creating VMs", project_id[:8])
-    vms = _deploy_create_disks(host, project_id, topology, pool)
+    vms = _extract_vms(topology)
+    bmc_config = None
 
-    _deploy_handle_recert(s, host, project_id, topology, pool)
+    if not _should_skip(resume_from, "disks"):
+        _checkpoint(s, project_id, "disks")
+        _update_deploy_progress(project_id, "creating", "VMs")
+        logger.info("Deploy %s: creating VMs", project_id[:8])
+        vms = _deploy_create_disks(host, project_id, topology, pool)
+        _deploy_handle_recert(s, host, project_id, topology, pool)
 
-    _checkpoint(s, project_id, "vms")
-    _deploy_define_vms(
-        host, project_id, vms, topology, vni_map, pool, disk_cache, clock_offset
-    )
+    if not _should_skip(resume_from, "vms"):
+        _checkpoint(s, project_id, "vms")
+        _deploy_define_vms(
+            host, project_id, vms, topology, vni_map, pool, disk_cache, clock_offset
+        )
 
-    project.topology = topology
-    s.commit()
+        project.topology = topology
+        s.commit()
 
-    bmc_err, bmc_config = _deploy_setup_bmc(host, project_id, topology)
-    if bmc_err:
-        _set_deploy_error(s, project, bmc_err)
-        _delete_deploy_progress(project_id)
-        return
+        bmc_err, bmc_config = _deploy_setup_bmc(host, project_id, topology)
+        if bmc_err:
+            _set_deploy_error(s, project, bmc_err)
+            _delete_deploy_progress(project_id)
+            return
 
-    _checkpoint(s, project_id, "containers")
-    _deploy_create_containers(host, project_id, topology, vni_map, pool)
+    if not _should_skip(resume_from, "containers"):
+        _checkpoint(s, project_id, "containers")
+        _deploy_create_containers(host, project_id, topology, vni_map, pool)
 
     if _project_deleted(project_id):
         _delete_deploy_progress(project_id)
         return
 
-    _checkpoint(s, project_id, "starting")
-    if not _deploy_start_vms(s, host, project_id, project, topology, auto_start):
-        return
+    if not _should_skip(resume_from, "starting"):
+        _checkpoint(s, project_id, "starting")
+        if not _deploy_start_vms(s, host, project_id, project, topology, auto_start):
+            return
 
-    _deploy_start_containers(host, project_id, topology, auto_start)
-    project.topology = topology
-    s.commit()
+        _deploy_start_containers(host, project_id, topology, auto_start)
+        project.topology = topology
+        s.commit()
 
     _deploy_complete_and_notify(
         s,
@@ -4679,6 +4716,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             auto_start,
             ctx["lb_config"],
             ctx["external_ips"],
+            resume_from,
         )
     except Exception as e:
         _deploy_handle_failure(s, project_id, e)

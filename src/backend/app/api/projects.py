@@ -1,3 +1,4 @@
+import copy
 import datetime
 import logging
 import time
@@ -1334,15 +1335,19 @@ def deploy_project(
         raise HTTPException(status_code=400, detail="Project has no topology")
 
     from app.services.deploy_topology import (
+        inject_showroom_gateway_port_forwards,
         validate_showroom_topology,
         validate_topology_ips,
         validate_topology_names,
     )
 
+    topology = copy.deepcopy(project.topology)
+    inject_showroom_gateway_port_forwards(topology, project.vni_map or {})
+
     topo_errors = (
-        validate_topology_names(project.topology)
-        + validate_topology_ips(project.topology)
-        + validate_showroom_topology(project.topology)
+        validate_topology_names(topology)
+        + validate_topology_ips(topology)
+        + validate_showroom_topology(topology)
     )
     if topo_errors:
         raise HTTPException(
