@@ -17,6 +17,8 @@ from helpers.kubevirt import (
     parse_admission_api_warnings,
 )
 
+from helpers.topology import collect_vm_nic_network_errors, enrich_vm_nics
+
 logger = logging.getLogger(__name__)
 
 _CDI_API = "cdi.kubevirt.io"
@@ -62,6 +64,46 @@ def _get_central_s3_config_from_project(namespace):
     if items:
         return items[0].get("spec", {}).get("centralS3Config", {})  # type: ignore[union-attr]
     return {}
+
+
+def _get_project_topology(custom_api, namespace):
+    """Return TroshkaProject topology for a namespace, or None."""
+    try:
+        projects = custom_api.list_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkaprojects",
+        )
+        items = projects.get("items", [])
+        if items:
+            return items[0].get("spec", {}).get("topology") or {}
+    except Exception as e:
+        logger.warning("Could not load project topology in %s: %s", namespace, e)
+    return None
+
+
+def _backfill_vm_nic_network_refs(body, custom_api, namespace, vm_name):
+    """Restore networkRef on VM NICs from project topology when missing."""
+    spec = body.get("spec", {})
+    nics = spec.get("nics") or []
+    if not nics or all(n.get("networkRef") for n in nics):
+        return
+    topology = _get_project_topology(custom_api, namespace)
+    if not topology:
+        return
+    enrich_vm_nics(topology, spec)
+    logger.info("Backfilled networkRef on %s NICs from project topology", vm_name)
+
+
+def _raise_on_missing_network_refs(spec, patch):
+    """Stop reconcile with a clear error when NICs still lack networkRef."""
+    errors = collect_vm_nic_network_errors(spec)
+    if not errors:
+        return
+    message = errors[0]
+    _apply_vm_warnings(patch, errors, message=message, state="Error")
+    raise kopf.PermanentError(message)
 
 
 def _check_owner_exists(custom_api, owner_name, owner_namespace):
@@ -853,6 +895,9 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
 
     await _run_guestfish_job(spec, name, namespace, body, disk_pvcs)
 
+    _backfill_vm_nic_network_refs(body, custom_api, namespace, name)
+    _raise_on_missing_network_refs(spec, patch)
+
     nad_refs = _resolve_nad_refs(custom_api, namespace)
 
     video_config_enabled = is_video_config_enabled(custom_api)
@@ -1155,6 +1200,9 @@ async def vm_update(
 
     nad_refs = _resolve_nad_refs(custom_api, namespace)
     cloudinit_secret_name = _upsert_cloudinit_secret(body, namespace, core_api)
+
+    _backfill_vm_nic_network_refs(body, custom_api, namespace, name)
+    _raise_on_missing_network_refs(new_spec, patch)
 
     # Rebuild and create KubeVirt VM with new spec
     video_config_enabled = is_video_config_enabled(custom_api)

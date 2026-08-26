@@ -1346,7 +1346,8 @@ class TestStopProjectAsync:
 
         mock_custom_api.patch_namespaced_custom_object.assert_called_once()
         call_kwargs = mock_custom_api.patch_namespaced_custom_object.call_args
-        assert call_kwargs[1]["body"] == {"spec": {"running": False}}
+        body = call_kwargs[1]["body"]
+        assert {"op": "add", "path": "/spec/runStrategy", "value": "Halted"} in body
         assert project.state == "stopped"
 
 
@@ -1478,7 +1479,8 @@ class TestStartProjectAsync:
 
         mock_custom_api.patch_namespaced_custom_object.assert_called_once()
         call_kwargs = mock_custom_api.patch_namespaced_custom_object.call_args
-        assert call_kwargs[1]["body"] == {"spec": {"running": True}}
+        body = call_kwargs[1]["body"]
+        assert {"op": "add", "path": "/spec/runStrategy", "value": "Always"} in body
         assert project.state == "active"
         assert project.auto_stopped is False
         # Auto-stop timer should be set

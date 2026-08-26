@@ -95,6 +95,12 @@ def _kubevirt_project_ns(provider, project_id):
     return _project_ns(provider, project_id)
 
 
+def _patch_kv_run_strategy(custom_api, namespace, kv_name, strategy: str):
+    from app.services.providers.kubevirt import patch_kubevirt_run_strategy
+
+    patch_kubevirt_run_strategy(custom_api, namespace, kv_name, strategy)
+
+
 def _resolve_deploy_progress(project) -> dict | None:
     """Return deploy progress data for a project in a transitional state."""
     if project.state not in ("deploying", "reconfiguring", "starting", "stopping"):
@@ -1461,14 +1467,7 @@ def _ensure_kubevirt_vm_pod(core_api, custom_api, namespace, kv_name):
     if pods.items:  # type: ignore[union-attr]
         return pods.items[0].metadata.name  # type: ignore[union-attr]
 
-    custom_api.patch_namespaced_custom_object(
-        group=_KUBEVIRT_API,
-        version="v1",
-        namespace=namespace,
-        plural="virtualmachines",
-        name=kv_name,
-        body={"spec": {"running": True}},
-    )
+    _patch_kv_run_strategy(custom_api, namespace, kv_name, "Always")
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         pods = core_api.list_namespaced_pod(
@@ -1484,14 +1483,7 @@ def _ensure_kubevirt_vm_pod(core_api, custom_api, namespace, kv_name):
 def _stop_kubevirt_vm_and_wait(custom_api, core_api, namespace, kv_name, pod_name):
     """Stop a KubeVirt VM and wait for its pod to terminate."""
     try:
-        custom_api.patch_namespaced_custom_object(
-            group=_KUBEVIRT_API,
-            version="v1",
-            namespace=namespace,
-            plural="virtualmachines",
-            name=kv_name,
-            body={"spec": {"running": False}},
-        )
+        _patch_kv_run_strategy(custom_api, namespace, kv_name, "Halted")
     except Exception:
         pass
     try:
@@ -1561,14 +1553,7 @@ def _do_kubevirt_wipe(
 
     if restart:
         try:
-            custom_api.patch_namespaced_custom_object(
-                group=_KUBEVIRT_API,
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachines",
-                name=kv_name,
-                body={"spec": {"running": True}},
-            )
+            _patch_kv_run_strategy(custom_api, namespace, kv_name, "Always")
         except Exception as e:
             logger.warning("Failed to restart VM after wipe: %s", e)
 
@@ -1633,14 +1618,7 @@ def _force_stop_kubevirt_vms(host, project_id, vms, db):
     for vm in vms:
         kv_name = f"troshka-vm-{vm['id'][:8]}"
         try:
-            custom_api.patch_namespaced_custom_object(
-                group=_KUBEVIRT_API,
-                version="v1",
-                namespace=namespace,
-                plural="virtualmachines",
-                name=kv_name,
-                body={"spec": {"running": False}},
-            )
+            _patch_kv_run_strategy(custom_api, namespace, kv_name, "Halted")
         except Exception as e:
             logger.warning("Failed to force-stop KubeVirt VM %s: %s", kv_name, e)
 
@@ -1883,14 +1861,7 @@ def start_vm(
             kv_name = f"troshka-vm-{vm_id[:8]}"
             namespace = _kubevirt_project_ns(provider, project_id)
             try:
-                custom_api.patch_namespaced_custom_object(
-                    group=_KUBEVIRT_API,
-                    version="v1",
-                    namespace=namespace,
-                    plural="virtualmachines",
-                    name=kv_name,
-                    body={"spec": {"running": True}},
-                )
+                _patch_kv_run_strategy(custom_api, namespace, kv_name, "Always")
             except Exception as e:
                 raise HTTPException(500, f"Failed to start VM: {e}")
         if project.state == "stopped":
@@ -1961,14 +1932,7 @@ def stop_vm(
             kv_name = f"troshka-vm-{vm_id[:8]}"
             namespace = _kubevirt_project_ns(provider, project_id)
             try:
-                custom_api.patch_namespaced_custom_object(
-                    group=_KUBEVIRT_API,
-                    version="v1",
-                    namespace=namespace,
-                    plural="virtualmachines",
-                    name=kv_name,
-                    body={"spec": {"running": False}},
-                )
+                _patch_kv_run_strategy(custom_api, namespace, kv_name, "Halted")
                 notify_project(
                     project_id,
                     {"type": "vm-state", "states": {vm_id: "stopped"}, "progress": {}},
@@ -2042,14 +2006,7 @@ def forcestop_vm(
             kv_name = f"troshka-vm-{vm_id[:8]}"
             namespace = _kubevirt_project_ns(provider, project_id)
             try:
-                custom_api.patch_namespaced_custom_object(
-                    group=_KUBEVIRT_API,
-                    version="v1",
-                    namespace=namespace,
-                    plural="virtualmachines",
-                    name=kv_name,
-                    body={"spec": {"running": False}},
-                )
+                _patch_kv_run_strategy(custom_api, namespace, kv_name, "Halted")
                 # Delete VMI for immediate effect (gracePeriodSeconds=0)
                 try:
                     custom_api.delete_namespaced_custom_object(
@@ -2100,7 +2057,7 @@ def restart_vm(
 ):
     _, host = _get_project_and_host(project_id, user, db)
 
-    # KubeVirt native: delete VMI to trigger restart (VM CR stays running=true)
+    # KubeVirt native: ensure runStrategy Always, then delete VMI to restart
     if host.host_type == "kubevirt-cluster":
         from app.models.provider import Provider
 
@@ -2110,6 +2067,7 @@ def restart_vm(
             kv_name = f"troshka-vm-{vm_id[:8]}"
             namespace = _kubevirt_project_ns(provider, project_id)
             try:
+                _patch_kv_run_strategy(custom_api, namespace, kv_name, "Always")
                 custom_api.delete_namespaced_custom_object(
                     group=_KUBEVIRT_API,
                     version="v1",

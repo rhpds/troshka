@@ -16,6 +16,33 @@ _KUBEVIRT_API_GROUP = "kubevirt.io"
 _QEMU_SESSION_URI = "qemu:///session"
 _ROUTE_API = "route.openshift.io"
 
+
+def patch_kubevirt_run_strategy(custom_api, namespace, kv_name, strategy: str):
+    """Set KubeVirt runStrategy, clearing deprecated spec.running if present."""
+    patch_ops = [{"op": "add", "path": "/spec/runStrategy", "value": strategy}]
+    try:
+        vm = custom_api.get_namespaced_custom_object(
+            group=_KUBEVIRT_API_GROUP,
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+            name=kv_name,
+        )
+        if vm.get("spec", {}).get("running") is not None:
+            patch_ops.insert(0, {"op": "remove", "path": "/spec/running"})
+    except Exception:
+        pass
+    custom_api.patch_namespaced_custom_object(
+        group=_KUBEVIRT_API_GROUP,
+        version="v1",
+        namespace=namespace,
+        plural="virtualmachines",
+        name=kv_name,
+        body=patch_ops,
+        _content_type="application/json-patch+json",
+    )
+
+
 OPERATOR_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "..", "operator"
 )
@@ -314,7 +341,7 @@ def _deploy_operator(provider):
 
 
 def _stop_vms_gracefully(custom_api, namespace):
-    """Set running=False on all VMs so QEMU flushes I/O and releases RBD watchers."""
+    """Halt all VMs so QEMU flushes I/O and releases RBD watchers."""
     try:
         vms = custom_api.list_namespaced_custom_object(
             group=_KUBEVIRT_API_GROUP,
@@ -324,13 +351,8 @@ def _stop_vms_gracefully(custom_api, namespace):
         )
         for vm in dict(vms).get("items", []):  # type: ignore[call-overload]
             try:
-                custom_api.patch_namespaced_custom_object(
-                    group=_KUBEVIRT_API_GROUP,
-                    version="v1",
-                    namespace=namespace,
-                    plural="virtualmachines",
-                    name=vm["metadata"]["name"],
-                    body={"spec": {"running": False}},
+                patch_kubevirt_run_strategy(
+                    custom_api, namespace, vm["metadata"]["name"], "Halted"
                 )
             except Exception:
                 pass

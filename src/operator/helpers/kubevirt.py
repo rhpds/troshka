@@ -344,6 +344,11 @@ def _build_networks(spec, nad_refs):
         nic_id = nic.get("id", f"nic-{i}")[:8]
         iface_name = f"nic-{nic_id}"
         net_ref = nic.get("networkRef", "")
+        if not net_ref:
+            raise ValueError(
+                f"NIC {nic.get('id', nic_id)} missing networkRef — "
+                "cannot attach multus network"
+            )
         nad_name = nad_refs.get(net_ref, f"{net_ref}-nad")
 
         networks.append(

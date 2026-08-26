@@ -151,6 +151,15 @@ def test_build_kubevirt_vm_includes_video_and_input():
     assert devices["inputs"] == [{"type": "tablet", "bus": "usb", "name": "tablet0"}]
 
 
+def test_build_kubevirt_vm_rejects_missing_network_ref():
+    import pytest
+
+    from helpers.kubevirt import _build_networks
+
+    with pytest.raises(ValueError, match="missing networkRef"):
+        _build_networks({"nics": [{"id": "nic-abc"}]}, {})
+
+
 def test_is_video_config_enabled_reads_kubevirt_cr():
     from helpers import kubevirt as kv_helpers
 

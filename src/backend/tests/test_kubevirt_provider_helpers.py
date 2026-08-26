@@ -41,11 +41,14 @@ class TestProjectNs:
 # _stop_vms_gracefully — mock K8s API
 # ---------------------------------------------------------------------------
 
-from app.services.providers.kubevirt import _stop_vms_gracefully
+from app.services.providers.kubevirt import (
+    _stop_vms_gracefully,
+    patch_kubevirt_run_strategy,
+)
 
 
 class TestStopVmsGracefully:
-    def test_patches_running_false_on_each_vm(self):
+    def test_patches_halted_on_each_vm(self):
         custom_api = MagicMock()
         custom_api.list_namespaced_custom_object.return_value = {
             "items": [
@@ -57,7 +60,8 @@ class TestStopVmsGracefully:
 
         assert custom_api.patch_namespaced_custom_object.call_count == 2
         for c in custom_api.patch_namespaced_custom_object.call_args_list:
-            assert c.kwargs["body"] == {"spec": {"running": False}}
+            body = c.kwargs["body"]
+            assert {"op": "add", "path": "/spec/runStrategy", "value": "Halted"} in body
 
     def test_handles_list_exception(self):
         custom_api = MagicMock()
@@ -79,6 +83,25 @@ class TestStopVmsGracefully:
         custom_api.list_namespaced_custom_object.return_value = {"items": []}
         _stop_vms_gracefully(custom_api, "ns-test")
         custom_api.patch_namespaced_custom_object.assert_not_called()
+
+
+class TestPatchKubevirtRunStrategy:
+    def test_sets_run_strategy(self):
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {"spec": {}}
+        patch_kubevirt_run_strategy(custom_api, "ns", "vm-1", "Always")
+        body = custom_api.patch_namespaced_custom_object.call_args.kwargs["body"]
+        assert body == [{"op": "add", "path": "/spec/runStrategy", "value": "Always"}]
+
+    def test_removes_deprecated_running_field(self):
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "spec": {"running": False}
+        }
+        patch_kubevirt_run_strategy(custom_api, "ns", "vm-1", "Halted")
+        body = custom_api.patch_namespaced_custom_object.call_args.kwargs["body"]
+        assert body[0] == {"op": "remove", "path": "/spec/running"}
+        assert body[1] == {"op": "add", "path": "/spec/runStrategy", "value": "Halted"}
 
 
 # ---------------------------------------------------------------------------

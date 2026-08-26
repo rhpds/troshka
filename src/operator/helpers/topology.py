@@ -224,6 +224,29 @@ def enrich_container_nics(topology, containers):
                 nic["cidr"] = net_cidrs[net_ref]
 
 
+def enrich_vm_nics(topology, spec):
+    """Backfill networkRef on VM NICs from topology edges."""
+    nic_map = resolve_nic_networks(topology)
+    for nic in spec.get("nics", []):
+        if not nic.get("networkRef"):
+            nic_id = nic.get("id", "")
+            ref = nic_map.get(nic_id, "")
+            if ref:
+                nic["networkRef"] = ref
+
+
+def collect_vm_nic_network_errors(spec):
+    """Fatal errors for VM NICs missing networkRef after topology backfill."""
+    errors = []
+    for i, nic in enumerate(spec.get("nics", [])):
+        if not nic.get("networkRef"):
+            nic_id = nic.get("id", f"nic-{i}")
+            errors.append(
+                f"NIC {nic_id} missing networkRef — cannot attach multus network"
+            )
+    return errors
+
+
 def _is_showroom_container(ctr):
     name = (ctr.get("name") or "").strip().lower()
     return ctr.get("isShowroom") or name == "showroom"

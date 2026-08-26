@@ -591,6 +591,35 @@ class TestResolveNicNetworks:
         assert "nic-def456" in result
 
 
+class TestEnrichVmNics:
+    def test_backfills_missing_network_ref(self):
+        from helpers.topology import enrich_vm_nics
+
+        topo = {
+            "nodes": [
+                {"id": "net1", "type": "networkNode", "data": {"id": "net1"}},
+                {"id": "vm1", "type": "vmNode", "data": {"id": "vm1"}},
+            ],
+            "edges": [
+                {
+                    "source": "net1",
+                    "target": "vm1",
+                    "targetHandle": "nic-nic-abc12345-bottom",
+                }
+            ],
+        }
+        spec = {"nics": [{"id": "nic-abc12345", "mac": "aa:bb:cc:dd:ee:ff"}]}
+        enrich_vm_nics(topo, spec)
+        assert spec["nics"][0]["networkRef"] == f"net-{('net1')[:8]}"
+
+    def test_preserves_existing_network_ref(self):
+        from helpers.topology import enrich_vm_nics
+
+        spec = {"nics": [{"id": "nic-1", "networkRef": "net-existing"}]}
+        enrich_vm_nics({"nodes": [], "edges": []}, spec)
+        assert spec["nics"][0]["networkRef"] == "net-existing"
+
+
 class TestResolveVmDisks:
     def test_empty_topology(self):
         from helpers.topology import resolve_vm_disks

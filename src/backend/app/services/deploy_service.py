@@ -7143,36 +7143,14 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
     )
 
 
-def _patch_kubevirt_run_strategy(custom_api, namespace, kv_name, strategy: str):
-    """Set KubeVirt runStrategy, clearing deprecated spec.running if present."""
-    patch_ops = [{"op": "add", "path": "/spec/runStrategy", "value": strategy}]
-    try:
-        vm = custom_api.get_namespaced_custom_object(
-            group=_KUBEVIRT_API,
-            version="v1",
-            namespace=namespace,
-            plural="virtualmachines",
-            name=kv_name,
-        )
-        if vm.get("spec", {}).get("running") is not None:
-            patch_ops.insert(0, {"op": "remove", "path": "/spec/running"})
-    except Exception:
-        pass
-    custom_api.patch_namespaced_custom_object(
-        group=_KUBEVIRT_API,
-        version="v1",
-        namespace=namespace,
-        plural="virtualmachines",
-        name=kv_name,
-        body=patch_ops,
-        _content_type="application/json-patch+json",
-    )
-
-
 def _stop_kubevirt_vms(s, host, project_id, vms):
-    """Patch KubeVirt VMs to running=False via K8s API."""
+    """Patch KubeVirt VMs to Halted via K8s API."""
     from app.models.provider import Provider
-    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+    from app.services.providers.kubevirt import (
+        _get_k8s_clients,
+        _project_ns,
+        patch_kubevirt_run_strategy,
+    )
 
     provider = s.query(Provider).filter_by(id=host.provider_id).first()
     if not provider:
@@ -7182,7 +7160,7 @@ def _stop_kubevirt_vms(s, host, project_id, vms):
     for vm in vms:
         kv_name = f"troshka-vm-{vm['node_id'][:8]}"
         try:
-            _patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Halted")
+            patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Halted")
         except Exception as e:
             logger.warning(
                 "Stop %s: failed to stop KubeVirt VM %s: %s",
@@ -7309,7 +7287,11 @@ def stop_project_async(project_id: str):
 def _start_kubevirt_vms(s, host, project_id, vms):
     """Start KubeVirt VMs via runStrategy (not deprecated spec.running)."""
     from app.models.provider import Provider
-    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+    from app.services.providers.kubevirt import (
+        _get_k8s_clients,
+        _project_ns,
+        patch_kubevirt_run_strategy,
+    )
 
     provider = s.query(Provider).filter_by(id=host.provider_id).first()
     if not provider:
@@ -7319,7 +7301,7 @@ def _start_kubevirt_vms(s, host, project_id, vms):
     for vm in vms:
         kv_name = f"troshka-vm-{vm['node_id'][:8]}"
         try:
-            _patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Always")
+            patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Always")
         except Exception as e:
             logger.warning(
                 "Start %s: failed to start KubeVirt VM %s: %s",
