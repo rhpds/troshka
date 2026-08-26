@@ -81,7 +81,7 @@ rules:
   # Troshka CRDs — kubevirt native operator
   - apiGroups: ["troshka.redhat.com"]
     resources: ["troshkaprojects", "troshkanetworks", "troshkavms"]
-    verbs: ["create", "delete", "get", "list", "patch"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
   - apiGroups: ["troshka.redhat.com"]
     resources: ["troshkaprojects/status", "troshkanetworks/status", "troshkavms/status"]
     verbs: ["get", "patch"]
