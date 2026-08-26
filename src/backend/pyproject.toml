@@ -1,7 +1,7 @@
 [project]
 name = "troshka"
 version = "0.1.0"
-description = "Nested VM Environment Builder"
+description = "Nested VM Environment Builder (Troshka)"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.115.0",
