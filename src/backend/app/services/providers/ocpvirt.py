@@ -393,6 +393,65 @@ def _cleanup_host_k8s_resources(custom_api, core_api, namespace, instance_id):
         pass
 
 
+def _ensure_host_transit_port(provider, host, transit_port: int) -> None:
+    """Expose a guest transit port on the host LB so KubeVirt forwards into the VM.
+
+    Route-only projects skip EIP allocation; without this, ClusterIP routes target
+    virt-launcher:transit_port but nothing reaches the guest for nftables DNAT.
+    """
+    from kubernetes import client
+
+    creds = provider.get_credentials()
+    namespace = creds.get("namespace", "troshka")
+    lb_name = f"troshka-lb-{host.id[:8]}"
+    _, core_api = _get_k8s_clients(creds)
+
+    try:
+        svc = cast(Any, core_api.read_namespaced_service(lb_name, namespace))
+    except client.ApiException as e:
+        if e.status == 404:
+            logger.warning(
+                "Host LB %s not found — cannot expose transit port %d",
+                lb_name,
+                transit_port,
+            )
+            return
+        raise
+
+    existing = svc.spec.ports or []
+    if any(p.port == transit_port or p.target_port == transit_port for p in existing):
+        return
+
+    merged = [
+        {
+            "name": p.name,
+            "port": p.port,
+            "targetPort": p.target_port,
+            "protocol": p.protocol or "TCP",
+        }
+        for p in existing
+    ]
+    merged.append(
+        {
+            "name": f"pf-{transit_port}",
+            "port": transit_port,
+            "targetPort": transit_port,
+            "protocol": "TCP",
+        }
+    )
+    core_api.patch_namespaced_service(
+        lb_name,
+        namespace,
+        {"spec": {"ports": merged}},
+        _content_type="application/merge-patch+json",
+    )
+    logger.info(
+        "Exposed transit port %d on host LB %s for route access",
+        transit_port,
+        lb_name,
+    )
+
+
 def _setup_route_dnat(host, project_id, transit_port, int_ip, vm_port):
     """Set up nftables DNAT rule on the host for route access."""
     from app.services.troshkad_client import start_job, wait_for_job
@@ -910,6 +969,8 @@ class OCPVirtDriver(ProviderDriver):
             "troshka/project-id": project_id[:8],
             "troshka/access-type": "route",
         }
+
+        _ensure_host_transit_port(provider, host, transit_port)
 
         if setup_dnat:
             _setup_route_dnat(host, project_id, transit_port, int_ip, vm_port)

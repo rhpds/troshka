@@ -100,9 +100,12 @@ def test_route_name_sanitization():
 # -- OCPVirtDriver.create_route_access (mocked K8s) -------------------------
 
 
+@patch("app.services.providers.ocpvirt._ensure_host_transit_port")
 @patch("app.services.providers.ocpvirt._setup_route_dnat")
 @patch("app.services.providers.ocpvirt._get_k8s_clients")
-def test_create_route_access_creates_service_and_route(mock_clients, mock_dnat):
+def test_create_route_access_creates_service_and_route(
+    mock_clients, mock_dnat, mock_ensure
+):
     from app.services.providers.ocpvirt import OCPVirtDriver
 
     mock_core = MagicMock()
@@ -121,6 +124,7 @@ def test_create_route_access_creates_service_and_route(mock_clients, mock_dnat):
         "namespace": "troshka",
     }
     host = MagicMock()
+    host.id = "c73f2e79-e12a-4597-8ac2-219624a26a57"
     host.instance_id = "troshka-host-abc12345"
 
     driver = OCPVirtDriver()
@@ -141,6 +145,7 @@ def test_create_route_access_creates_service_and_route(mock_clients, mock_dnat):
         == "troshka-pf-a53cbd0d-bastion-443-troshka.apps.cluster.example.com"
     )
     assert result["transit_port"] == 40000
+    mock_ensure.assert_called_once_with(provider, host, 40000)
     assert mock_core.create_namespaced_service.call_count == 1
     mock_dnat.assert_not_called()
     assert mock_custom.create_namespaced_custom_object.call_count == 1
@@ -153,9 +158,10 @@ def test_create_route_access_creates_service_and_route(mock_clients, mock_dnat):
     assert route_body["spec"]["tls"]["termination"] == "passthrough"
 
 
+@patch("app.services.providers.ocpvirt._ensure_host_transit_port")
 @patch("app.services.providers.ocpvirt._setup_route_dnat")
 @patch("app.services.providers.ocpvirt._get_k8s_clients")
-def test_create_route_access_edge_for_port_80(mock_clients, mock_dnat):
+def test_create_route_access_edge_for_port_80(mock_clients, mock_dnat, mock_ensure):
     from app.services.providers.ocpvirt import OCPVirtDriver
 
     mock_core = MagicMock()
@@ -172,6 +178,7 @@ def test_create_route_access_edge_for_port_80(mock_clients, mock_dnat):
         "namespace": "troshka",
     }
     host = MagicMock()
+    host.id = "c73f2e79-e12a-4597-8ac2-219624a26a57"
     host.instance_id = "troshka-host-abc"
 
     driver = OCPVirtDriver()
@@ -186,14 +193,18 @@ def test_create_route_access_edge_for_port_80(mock_clients, mock_dnat):
         setup_dnat=True,
     )
 
+    mock_ensure.assert_called_once_with(provider, host, 40002)
     mock_dnat.assert_called_once()
     route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
     assert route_body["spec"]["tls"]["termination"] == "edge"
 
 
+@patch("app.services.providers.ocpvirt._ensure_host_transit_port")
 @patch("app.services.providers.ocpvirt._setup_route_dnat")
 @patch("app.services.providers.ocpvirt._get_k8s_clients")
-def test_create_route_access_edge_for_showroom_443_to_80(mock_clients, mock_dnat):
+def test_create_route_access_edge_for_showroom_443_to_80(
+    mock_clients, mock_dnat, mock_ensure
+):
     from app.services.providers.ocpvirt import OCPVirtDriver
 
     mock_core = MagicMock()
@@ -210,6 +221,7 @@ def test_create_route_access_edge_for_showroom_443_to_80(mock_clients, mock_dnat
         "namespace": "troshka",
     }
     host = MagicMock()
+    host.id = "c73f2e79-e12a-4597-8ac2-219624a26a57"
     host.instance_id = "troshka-host-abc"
 
     driver = OCPVirtDriver()
@@ -225,8 +237,41 @@ def test_create_route_access_edge_for_showroom_443_to_80(mock_clients, mock_dnat
         setup_dnat=True,
     )
 
+    mock_ensure.assert_called_once_with(provider, host, 40000)
+    mock_dnat.assert_called_once()
+
     route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
     assert route_body["spec"]["tls"]["termination"] == "edge"
+
+
+@patch("app.services.providers.ocpvirt._get_k8s_clients")
+def test_ensure_host_transit_port_appends_to_lb(mock_clients):
+    from app.services.providers.ocpvirt import _ensure_host_transit_port
+
+    mock_core = MagicMock()
+    mock_clients.return_value = (MagicMock(), mock_core)
+    existing_port = MagicMock()
+    existing_port.name = "ssh"
+    existing_port.port = 22000
+    existing_port.target_port = 22
+    existing_port.protocol = "TCP"
+    svc = MagicMock()
+    svc.spec.ports = [existing_port]
+    mock_core.read_namespaced_service.return_value = svc
+
+    provider = MagicMock()
+    provider.get_credentials.return_value = {"namespace": "troshka"}
+    host = MagicMock()
+    host.id = "c73f2e79-e12a-4597-8ac2-219624a26a57"
+
+    _ensure_host_transit_port(provider, host, 40000)
+
+    mock_core.patch_namespaced_service.assert_called_once()
+    patch_body = mock_core.patch_namespaced_service.call_args[0][2]
+    ports = patch_body["spec"]["ports"]
+    assert len(ports) == 2
+    assert ports[1]["port"] == 40000
+    assert ports[1]["targetPort"] == 40000
 
 
 # -- OCPVirtDriver.delete_route_access (mocked K8s) -------------------------

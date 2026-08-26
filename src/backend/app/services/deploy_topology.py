@@ -401,8 +401,9 @@ def inject_showroom_gateway_port_forwards(topology: dict, vni_map: dict) -> bool
 def showroom_transit_octet3(vni_map: dict) -> int | None:
     if not vni_map:
         return None
-    first_vni = next(iter(vni_map.values()))
-    return int(first_vni) & 0xFF
+    # Match inject_showroom_gateway_port_forwards (min VNI → stable octet).
+    vni = min(int(v) for v in vni_map.values())
+    return vni & 0xFF
 
 
 def is_showroom_infra_ip(ip: str) -> bool:

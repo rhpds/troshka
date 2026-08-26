@@ -386,6 +386,14 @@ def test_showroom_infra_network():
     assert nets[0]["gateway"] == "172.30.232.2"
 
 
+def test_showroom_transit_octet3_uses_min_vni():
+    from app.services.deploy_topology import showroom_infra_ip, showroom_transit_octet3
+
+    vni_map = {"net-a": 1899, "net-b": 1898}
+    assert showroom_transit_octet3(vni_map) == 106
+    assert showroom_infra_ip(vni_map) == "172.30.106.3"
+
+
 def test_showroom_infra_network_dns_nameserver():
     from app.services.deploy_topology import showroom_infra_network
 
