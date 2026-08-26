@@ -48,9 +48,8 @@ def _apply_video_and_input_devices(domain, spec):
     """Configure display and pointer devices supported by KubeVirt."""
     video_model = spec.get("videoModel", "virtio")
     if video_model in _KV_VIDEO_MODELS:
-        domain.setdefault("devices", {})["video"] = [
-            {"name": "default", video_model: {}}
-        ]
+        # KubeVirt API: devices.video is a VideoDevice object, not a list.
+        domain.setdefault("devices", {})["video"] = {"type": video_model}
 
     input_model = spec.get("inputModel", "virtio")
     if input_model in _KV_INPUT_TABLET_BUSES:

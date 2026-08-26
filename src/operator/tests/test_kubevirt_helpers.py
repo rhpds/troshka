@@ -65,7 +65,7 @@ def test_apply_video_and_input_virtio():
     _apply_video_and_input_devices(
         domain, {"videoModel": "qxl", "inputModel": "virtio"}
     )
-    assert domain["devices"]["video"] == [{"name": "default", "qxl": {}}]
+    assert domain["devices"]["video"] == {"type": "qxl"}
     assert domain["devices"]["inputs"] == [
         {"type": "tablet", "bus": "virtio", "name": "tablet0"}
     ]
@@ -74,7 +74,7 @@ def test_apply_video_and_input_virtio():
 def test_apply_video_and_input_usb():
     domain: dict = {"devices": {}}
     _apply_video_and_input_devices(domain, {"inputModel": "usb"})
-    assert domain["devices"]["video"] == [{"name": "default", "virtio": {}}]
+    assert domain["devices"]["video"] == {"type": "virtio"}
     assert domain["devices"]["inputs"][0]["bus"] == "usb"
 
 
@@ -98,5 +98,5 @@ def test_build_kubevirt_vm_includes_video_and_input():
     }
     body = build_kubevirt_vm(vm_cr, {}, {}, None)
     devices = body["spec"]["template"]["spec"]["domain"]["devices"]
-    assert devices["video"] == [{"name": "default", "vga": {}}]
+    assert devices["video"] == {"type": "vga"}
     assert devices["inputs"] == [{"type": "tablet", "bus": "usb", "name": "tablet0"}]
