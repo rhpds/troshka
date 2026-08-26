@@ -389,6 +389,7 @@ def build_kubevirt_vm(
     if spec.get("bmcEnabled"):
         template_spec["rebootPolicy"] = "Terminate"
 
+    power_on = spec.get("powerOnAtDeploy", True)
     vm_body = {
         "apiVersion": "kubevirt.io/v1",
         "kind": "VirtualMachine",
@@ -398,7 +399,7 @@ def build_kubevirt_vm(
             "labels": {"app": "troshka", "troshka-vm": name},
         },
         "spec": {
-            "running": False,
+            "runStrategy": "Always" if power_on else "Halted",
             "template": {
                 "metadata": {
                     "labels": {"app": "troshka", "troshka-vm": name},

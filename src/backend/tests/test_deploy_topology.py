@@ -222,6 +222,40 @@ def test_build_troshkavm_vm_spec_video_and_input():
     assert spec["inputModel"] == "usb"
 
 
+def test_build_troshkavm_nic_specs_includes_network_ref():
+    from app.services.deploy_topology import build_troshkavm_vm_spec
+
+    nic_id = "nic-f76ca5cd-0051-4081-bf7f-f2a206e2245e"
+    net_id = "fa889200-1cac-43e9-b49c-5d84a80abd6f"
+    vm_id = "281550eb-d04b-40ef-be8f-5bf8debe9fa4"
+    topo = {
+        "nodes": [
+            {"id": net_id, "type": "networkNode", "data": {"name": "lab"}},
+            {
+                "id": vm_id,
+                "type": "vmNode",
+                "data": {
+                    "id": vm_id,
+                    "nics": [{"id": nic_id, "mac": "52:54:00:11:87:a6"}],
+                },
+            },
+        ],
+        "edges": [
+            {
+                "source": net_id,
+                "target": vm_id,
+                "targetHandle": f"nic-{nic_id}-bottom",
+            }
+        ],
+    }
+    spec = build_troshkavm_vm_spec(
+        vm_id,
+        {"name": "rtr3", "vcpus": 2, "ram_gb": 4},
+        topo,
+    )
+    assert spec["nics"][0]["networkRef"] == "net-fa889200"
+
+
 @pytest.mark.parametrize(
     "cur_data,dep_data,expected",
     [

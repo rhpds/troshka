@@ -1288,16 +1288,33 @@ def build_troshkavm_disk_spec(disk: dict, topology: dict) -> dict:
     return spec
 
 
-def build_troshkavm_nic_specs(vm_data: dict) -> list[dict]:
+def _nic_network_ref(nic_id: str, topology: dict) -> str:
+    """Map a canvas NIC id to TroshkaNetwork CR name (net-{node_id[:8]})."""
+    nodes_by_id = {n["id"]: n for n in topology.get("nodes", [])}
+    nic_map = _build_nic_to_network_map(topology, nodes_by_id)
+    net_node_id = nic_map.get(nic_id, "")
+    if not net_node_id:
+        return ""
+    return f"net-{net_node_id[:8]}"
+
+
+def build_troshkavm_nic_specs(
+    vm_data: dict, topology: dict | None = None
+) -> list[dict]:
     """Build TroshkaVM CR NIC entries from canvas VM node data."""
-    return [
-        {
+    specs = []
+    for nic in vm_data.get("nics", []):
+        entry = {
             "id": nic.get("id", ""),
             "mac": nic.get("mac", ""),
             "model": nic.get("model", "virtio"),
         }
-        for nic in vm_data.get("nics", [])
-    ]
+        if topology:
+            net_ref = _nic_network_ref(nic.get("id", ""), topology)
+            if net_ref:
+                entry["networkRef"] = net_ref
+        specs.append(entry)
+    return specs
 
 
 def _resolve_vm_firmware(vm: dict, vm_data: dict) -> str:
@@ -1337,7 +1354,7 @@ def build_troshkavm_vm_spec(vm_id: str, vm: dict, topology: dict) -> dict:
         "videoModel": vm_data.get("videoModel", "virtio"),
         "inputModel": vm_data.get("inputModel", "virtio"),
         "disks": disk_specs,
-        "nics": build_troshkavm_nic_specs(vm_data),
+        "nics": build_troshkavm_nic_specs(vm_data, topology),
         "bootOrder": vm_data.get("bootDevices", []),
         "cloudInit": {
             "userData": vm_data.get("ciGeneratedUserData", "")
