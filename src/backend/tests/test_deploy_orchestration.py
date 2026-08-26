@@ -574,6 +574,35 @@ class TestCreateVmViaTroshkad:
         assert params["secure_boot"] is False
         assert "clock_offset" not in params
         assert "disk_cache" not in params
+        assert "machine_type" not in params
+
+    @patch(f"{SVC}.start_job", return_value="job-create-1b")
+    @patch(f"{SVC}._find_vm_networks", return_value=[])
+    @patch(f"{SVC}._find_vm_disks", return_value=[])
+    def test_machine_type_forwarded_when_set(self, mock_disks, mock_nets, mock_start):
+        from app.services.deploy_service import _create_vm_via_troshkad
+
+        host = _make_host()
+        vm = {
+            "node_id": VM_NODE_ID,
+            "name": "test-vm",
+            "vcpus": 2,
+            "ram_gb": 4,
+            "cloud_init": False,
+            "boot_devices": [],
+            "uuid": "uuid-1234",
+            "firmware": "bios",
+            "secure_boot": False,
+            "machine_type": "i440fx",
+            "video_model": "virtio",
+            "input_model": "virtio",
+        }
+        topo = _minimal_topology()
+
+        _create_vm_via_troshkad(host, PROJECT_ID, vm, topo, {})
+
+        params = mock_start.call_args[0][2]
+        assert params["machine_type"] == "i440fx"
 
     @patch(f"{SVC}.start_job", return_value="job-create-2")
     @patch(f"{SVC}._find_vm_networks", return_value=[])

@@ -79,6 +79,14 @@ spec:
                   type: array
                   items:
                     type: string
+                videoModel:
+                  type: string
+                  enum: [virtio, vga, qxl]
+                  default: virtio
+                inputModel:
+                  type: string
+                  enum: [virtio, usb, ps2]
+                  default: virtio
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

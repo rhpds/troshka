@@ -652,6 +652,25 @@ export default function PropertiesPanel() {
                 </label>
               </div>
             )}
+            {["kubevirt", "ocpvirt"].includes(useCanvasStore.getState().providerType || "") && (
+              <div className="props-field">
+                <label className="props-label">Machine Type</label>
+                <select
+                  className="props-select"
+                  value={
+                    useCanvasStore.getState().providerType === "kubevirt"
+                      ? "q35"
+                      : ((data as Record<string, any>).machineType as string || "q35")
+                  }
+                  onChange={(e) => update("machineType", e.target.value)}
+                >
+                  <option value="q35">Q35 (pc-q35)</option>
+                  {useCanvasStore.getState().providerType !== "kubevirt" && (
+                    <option value="i440fx">i440fx (pc)</option>
+                  )}
+                </select>
+              </div>
+            )}
             {(node.data as Record<string, any>).liveBootDevs && (
               <div style={{ background: "rgba(168,85,247,0.1)", border: "1px solid rgba(168,85,247,0.3)", borderRadius: 6, padding: "6px 8px", marginBottom: 8, fontSize: 11 }}>
                 <label className="props-label" style={{ color: "rgba(168,85,247,0.9)", fontSize: 10 }}>BMC Live Boot Order</label>

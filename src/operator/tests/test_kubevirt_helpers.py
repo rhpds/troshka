@@ -1,4 +1,9 @@
-from helpers.kubevirt import golden_import_matches, s3_import_url
+from helpers.kubevirt import (
+    _apply_video_and_input_devices,
+    build_kubevirt_vm,
+    golden_import_matches,
+    s3_import_url,
+)
 
 
 def test_s3_import_url_aws_style():
@@ -6,7 +11,10 @@ def test_s3_import_url_aws_style():
         "library/rhel-9.6.qcow2",
         {"bucket": "troshka-images", "region": "us-east-1"},
     )
-    assert url == "https://s3.us-east-1.amazonaws.com/troshka-images/library/rhel-9.6.qcow2"
+    assert (
+        url
+        == "https://s3.us-east-1.amazonaws.com/troshka-images/library/rhel-9.6.qcow2"
+    )
 
 
 def test_s3_import_url_custom_endpoint():
@@ -50,3 +58,45 @@ def test_golden_import_matches_false_on_bucket():
         }
     }
     assert not golden_import_matches(dv, path, cfg, "s3-central-credentials")
+
+
+def test_apply_video_and_input_virtio():
+    domain: dict = {"devices": {}}
+    _apply_video_and_input_devices(
+        domain, {"videoModel": "qxl", "inputModel": "virtio"}
+    )
+    assert domain["devices"]["video"] == [{"name": "default", "qxl": {}}]
+    assert domain["devices"]["inputs"] == [
+        {"type": "tablet", "bus": "virtio", "name": "tablet0"}
+    ]
+
+
+def test_apply_video_and_input_usb():
+    domain: dict = {"devices": {}}
+    _apply_video_and_input_devices(domain, {"inputModel": "usb"})
+    assert domain["devices"]["video"] == [{"name": "default", "virtio": {}}]
+    assert domain["devices"]["inputs"][0]["bus"] == "usb"
+
+
+def test_apply_input_ps2_omits_tablet():
+    domain: dict = {"devices": {}}
+    _apply_video_and_input_devices(domain, {"inputModel": "ps2"})
+    assert "inputs" not in domain["devices"]
+
+
+def test_build_kubevirt_vm_includes_video_and_input():
+    vm_cr = {
+        "metadata": {"name": "vm-abc12345", "namespace": "troshka-test"},
+        "spec": {
+            "cpus": 2,
+            "memory": 4096,
+            "videoModel": "vga",
+            "inputModel": "usb",
+            "disks": [],
+            "nics": [],
+        },
+    }
+    body = build_kubevirt_vm(vm_cr, {}, {}, None)
+    devices = body["spec"]["template"]["spec"]["domain"]["devices"]
+    assert devices["video"] == [{"name": "default", "vga": {}}]
+    assert devices["inputs"] == [{"type": "tablet", "bus": "usb", "name": "tablet0"}]

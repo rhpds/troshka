@@ -933,6 +933,7 @@ _URL_RE = re.compile(r"^https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$")
 _SOURCE_BRIDGE_RE = re.compile(r"source bridge='([^']+)'")
 _BUS_TYPES = {"virtio", "scsi", "sata", "ide", "usb"}
 _NET_MODELS = {"virtio", "e1000", "e1000e", "igb", "rtl8139"}
+_MACHINE_TYPES = {"q35", "i440fx"}
 
 
 def _validate_domain_name(name):
@@ -1022,6 +1023,22 @@ def _validate_net_model(model):
     if model not in _NET_MODELS:
         raise ValueError(f"Invalid network model: {model}")
     return model
+
+
+def _validate_machine_type(machine_type):
+    if machine_type not in _MACHINE_TYPES:
+        raise ValueError(f"Invalid machine type: {machine_type}")
+    return machine_type
+
+
+def _resolve_vm_machine_type(params):
+    """Return explicit machine type or firmware-based default for virt-install."""
+    machine_type = params.get("machine_type") or params.get("machineType")
+    if machine_type:
+        return _validate_machine_type(machine_type)
+    if params.get("firmware", "bios") == "uefi":
+        return "q35"
+    return None
 
 
 def _validate_network_name(name):
@@ -1205,8 +1222,9 @@ def _handle_vm_create(job, params):
         "mac_in_use=off",
     ]
 
-    if firmware == "uefi":
-        cmd.extend(["--machine", "q35"])
+    machine_type = _resolve_vm_machine_type(params)
+    if machine_type:
+        cmd.extend(["--machine", machine_type])
 
     _hwuuid = domain_uuid
 
@@ -1233,6 +1251,9 @@ def _handle_vm_create(job, params):
     if input_model == "virtio":
         cmd.extend(["--input", "type=keyboard,bus=virtio"])
         cmd.extend(["--input", "type=tablet,bus=virtio"])
+    elif input_model == "usb":
+        cmd.extend(["--input", "type=keyboard,bus=usb"])
+        cmd.extend(["--input", "type=tablet,bus=usb"])
     cmd.extend(
         ["--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0"]
     )
@@ -5890,7 +5911,18 @@ _METADATA_IP = "169.254.169.254/32"
 def _list_namespace_bridges(namespace):
     """List bridge interfaces inside a project network namespace."""
     result = subprocess.run(
-        ["ip", "netns", "exec", namespace, "ip", "-o", "link", "show", "type", "bridge"],
+        [
+            "ip",
+            "netns",
+            "exec",
+            namespace,
+            "ip",
+            "-o",
+            "link",
+            "show",
+            "type",
+            "bridge",
+        ],
         capture_output=True,
         text=True,
         timeout=10,
@@ -9651,7 +9683,9 @@ def _serial_junos_exec_command(child, command, timeout_secs):
 def _serial_junos_needs_configure_session(commands: list[str]) -> bool:
     for cmd in commands:
         stripped = cmd.strip()
-        if stripped.startswith(("configure", "set ", "delete ", "activate ", "deactivate ")):
+        if stripped.startswith(
+            ("configure", "set ", "delete ", "activate ", "deactivate ")
+        ):
             return True
     return False
 
@@ -12031,9 +12065,7 @@ def _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id):
 
         if ip_addr and cidr:
             gw = net.get("gateway") or _gateway_from_ip(ip_addr)
-            _configure_pod_interface_ip(
-                job, idx, ip_addr, cidr, netns_name, gateway=gw
-            )
+            _configure_pod_interface_ip(job, idx, ip_addr, cidr, netns_name, gateway=gw)
 
 
 def _gateway_from_ip(ip_addr):

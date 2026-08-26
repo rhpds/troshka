@@ -192,6 +192,27 @@ class TestValidateNetModel(unittest.TestCase):
             troshkad._validate_net_model("vmxnet3")
 
 
+class TestValidateMachineType(unittest.TestCase):
+    def test_valid_machine_types(self):
+        for machine in ("q35", "i440fx"):
+            assert troshkad._validate_machine_type(machine) == machine
+
+    def test_invalid_machine_type_raises(self):
+        with self.assertRaises(ValueError):
+            troshkad._validate_machine_type("pc-q35")
+
+
+class TestResolveVmMachineType(unittest.TestCase):
+    def test_explicit_machine_type(self):
+        assert troshkad._resolve_vm_machine_type({"machine_type": "i440fx"}) == "i440fx"
+
+    def test_uefi_defaults_to_q35(self):
+        assert troshkad._resolve_vm_machine_type({"firmware": "uefi"}) == "q35"
+
+    def test_bios_without_override_returns_none(self):
+        assert troshkad._resolve_vm_machine_type({"firmware": "bios"}) is None
+
+
 class TestValidateNetworkName(unittest.TestCase):
     def test_valid_name(self):
         assert (
@@ -6338,7 +6359,10 @@ class TestMountContainerVolumes(unittest.TestCase):
         # mount + chmod + chcon for container write access
         self.assertEqual(mock_runcmd.call_count, 3)
         mock_runcmd.assert_any_call(
-            job, ["chmod", "1777", "/var/lib/troshka/vms/proj/mnt"], timeout=5, check=False
+            job,
+            ["chmod", "1777", "/var/lib/troshka/vms/proj/mnt"],
+            timeout=5,
+            check=False,
         )
         mock_runcmd.assert_any_call(
             job,
@@ -9869,12 +9893,12 @@ class TestSerialJunosHelpers(unittest.TestCase):
 
     def test_wrap_command_escapes_quotes(self):
         self.assertEqual(
-            troshkad._serial_junos_wrap_command('show interfaces ge-0/0/0'),
+            troshkad._serial_junos_wrap_command("show interfaces ge-0/0/0"),
             "cli show interfaces ge-0/0/0",
         )
 
     def test_clean_output_strips_shell_prompt(self):
-        raw = 'cli show version\r\nHostname: rtr3\r\nroot@rtr3:~ #\r\n'
+        raw = "cli show version\r\nHostname: rtr3\r\nroot@rtr3:~ #\r\n"
         out = troshkad._serial_junos_clean_output(raw, "cli show version")
         self.assertIn("Hostname: rtr3", out)
         self.assertNotIn("root@", out)
@@ -9899,7 +9923,6 @@ class TestSerialJunosHelpers(unittest.TestCase):
         child.send.assert_any_call("root\r")
         child.send.assert_any_call("\r")
 
-
     def test_needs_configure_session_for_set_commands(self):
         self.assertTrue(
             troshkad._serial_junos_needs_configure_session(
@@ -9908,7 +9931,9 @@ class TestSerialJunosHelpers(unittest.TestCase):
         )
 
     def test_split_serial_commands_skips_comments(self):
-        cmds = troshkad._split_serial_commands("enable\n! comment\nconfigure terminal\n")
+        cmds = troshkad._split_serial_commands(
+            "enable\n! comment\nconfigure terminal\n"
+        )
         self.assertEqual(cmds, ["enable", "configure terminal"])
 
 

@@ -3198,61 +3198,9 @@ def reconfigure_project(
 
 def _build_kubevirt_vm_spec(vm_id: str, vm: dict, current: dict) -> dict:
     """Build a TroshkaVM CR spec dict from topology data."""
-    from app.services.deploy_topology import _find_vm_disks
+    from app.services.deploy_topology import build_troshkavm_vm_spec
 
-    vm_disks = _find_vm_disks(vm_id, current)
-    disk_specs = []
-    for d in vm_disks:
-        disk_spec = {
-            "id": d.get("node_id", d.get("id", "")),
-            "sizeGb": int(d.get("size", 20)),
-            "bus": "virtio",
-            "format": d.get("format", "qcow2"),
-        }
-        if d.get("source") == "pattern" and d.get("patternId"):
-            disk_spec["patternImage"] = {
-                "s3Path": d.get("resolvedS3Path", ""),
-                "format": "qcow2",
-                "central": d.get("centralSource", False),
-                "source": d.get("diskSource", "central"),
-            }
-        elif d.get("source") == "library" and d.get("libraryItemId"):
-            disk_spec["libraryImage"] = {
-                "s3Path": d.get("resolvedS3Path", ""),
-                "format": d.get("format", "qcow2"),
-                "central": d.get("centralSource", False),
-            }
-        else:
-            disk_spec["blank"] = True
-        disk_specs.append(disk_spec)
-    vm_data = {}
-    for n in current.get("nodes", []):
-        if n.get("id") == vm_id and n.get("type") == "vmNode":
-            vm_data = n.get("data", {})
-            break
-    return {
-        "vmId": vm_data.get("id", vm_id),
-        "name": vm.get("name", "vm"),
-        "cpus": vm.get("vcpus", 2),
-        "memory": vm.get("ram_gb", 4) * 1024,
-        "firmware": vm.get("firmware", "bios"),
-        "machineType": "q35",
-        "smbiosUuid": vm_data.get("smbiosUuid") or vm_data.get("domainUuid", ""),
-        "os": vm.get("os", ""),
-        "powerOnAtDeploy": vm_data.get("powerOnAtDeploy", True),
-        "recertEnabled": vm_data.get("recertEnabled", False),
-        "ocpMonitor": vm_data.get("ocpMonitor", False),
-        "configureBastionBrowser": vm_data.get("configureBastionBrowser", False),
-        "bmcEnabled": vm_data.get("bmcEnabled", False),
-        "disks": disk_specs,
-        "nics": vm_data.get("nics", []),
-        "bootOrder": vm_data.get("bootDevices", []),
-        "cloudInit": {
-            "userData": vm_data.get("ciGeneratedUserData", "")
-            or vm_data.get("ciUserData", ""),
-            "networkConfig": vm_data.get("ciNetworkConfig", ""),
-        },
-    }
+    return build_troshkavm_vm_spec(vm_id, vm, current)
 
 
 def _wait_kubevirt_vms_ready(custom_api, ns, p_id, proj, s, deadline_secs=300):
@@ -3399,6 +3347,42 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             proj.state = "error"
             proj.deploy_error = "No provider found for host"
             s.commit()
+            return
+
+        from app.services.deploy_service import (
+            DeployError,
+            _resolve_disk_s3_paths,
+            _setup_kubevirt_s3_clients,
+        )
+
+        try:
+            (
+                _s3_config,
+                _central_s3_config,
+                s3_client,
+                bucket,
+                s3_op,
+                central_s3_client,
+                central_bucket,
+                central_op,
+            ) = _setup_kubevirt_s3_clients()
+            _resolve_disk_s3_paths(
+                current,
+                s,
+                h.provider_id,
+                s3_client,
+                bucket,
+                s3_op,
+                central_s3_client,
+                central_bucket,
+                central_op,
+            )
+        except DeployError as e:
+            proj.state = "error"
+            proj.deploy_error = str(e)
+            s.commit()
+            _delete_deploy_progress(p_id)
+            notify_project(p_id, {"type": "project-state", "state": "error"})
             return
 
         diff = (
@@ -3917,7 +3901,8 @@ def _reconfigure_existing_vm(
     boot_devs = _resolve_boot_devs(vm, vm_disks, current)
     vm_networks = _find_vm_networks(vm["node_id"], current, vni_map, p_id)
     nics = [
-        {"bridge": n["bridge"], "mac": n["mac"], "model": "virtio"} for n in vm_networks
+        {"bridge": n["bridge"], "mac": n["mac"], "model": n.get("model", "virtio")}
+        for n in vm_networks
     ] or None
 
     changes = _detect_disk_changes(p_id, vm["node_id"], vm_disks, deployed, pool)
@@ -4339,6 +4324,7 @@ def _build_redeploy_vm_data(vm_node):
         "boot_devices": vdata.get("bootDevices"),
         "firmware": vdata.get("firmware", "bios"),
         "secure_boot": vdata.get("secureBoot", False),
+        "machine_type": vdata.get("machineType") or "",
         "video_model": vdata.get("videoModel", "virtio"),
         "input_model": vdata.get("inputModel", "virtio"),
         "uuid": vdata.get("smbiosUuid") or vdata.get("uuid"),

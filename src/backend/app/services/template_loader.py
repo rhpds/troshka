@@ -516,6 +516,10 @@ def _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip):
     if vm_cfg.get("serial_exec"):
         vm_data["serialExecType"] = str(vm_cfg["serial_exec"]).lower()
 
+    machine_type = vm_cfg.get("machine_type") or vm_cfg.get("machineType")
+    if machine_type:
+        vm_data["machineType"] = str(machine_type)
+
     if vm_cfg.get("tags"):
         vm_data["tags"] = vm_cfg["tags"]
     elif role == "control-plane":
@@ -1330,7 +1334,11 @@ def _find_disk_for_controller(dc, storage_ids, storage_nodes, vm_edges, _iso_ite
         if not sn:
             continue
         for e in vm_edges:
-            if e["source"] == sid and dc["id"] in e.get("targetHandle", ""):
+            th = e.get("targetHandle", "")
+            sh = e.get("sourceHandle", "")
+            if (e["source"] == sid and dc["id"] in th) or (
+                e["target"] == sid and dc["id"] in sh
+            ):
                 if _is_iso_storage_node(sn, _iso_item_ids):
                     break
                 return _build_disk_output(sn, dc)
@@ -1385,7 +1393,11 @@ def _check_iso_from_controller(dc, storage_ids, storage_nodes, vm_edges, _iso_it
         if not sn:
             continue
         for e in vm_edges:
-            if e["source"] == sid and dc["id"] in e.get("targetHandle", ""):
+            th = e.get("targetHandle", "")
+            sh = e.get("sourceHandle", "")
+            if (e["source"] == sid and dc["id"] in th) or (
+                e["target"] == sid and dc["id"] in sh
+            ):
                 entry = _extract_iso_entry(sn, is_cdrom, _iso_item_ids)
                 if entry:
                     isos.append(entry)
@@ -1441,6 +1453,8 @@ def _export_vm_flags(d, vm_out):
         vm_out["configure_bastion_browser"] = True
     if d.get("serialExecType") and d.get("serialExecType") != "linux":
         vm_out["serial_exec"] = d["serialExecType"]
+    if d.get("machineType"):
+        vm_out["machine_type"] = d["machineType"]
     if d.get("bmcEnabled") and vm_out.get("role") != "control-plane":
         vm_out["bmc"] = True
     if d.get("bmcIp"):
@@ -1512,9 +1526,12 @@ def _export_vm(
     _export_vm_cloud_init(d, vm_out)
 
     vm_edges = edge_by_target.get(vm["id"], [])
-    storage_ids = [
-        e["source"] for e in vm_edges if e.get("targetHandle", "").startswith("dp-")
-    ]
+    storage_ids = []
+    for e in vm_edges:
+        if e.get("targetHandle", "").startswith("dp-"):
+            storage_ids.append(e["source"])
+        elif e.get("sourceHandle", "").startswith("dp-"):
+            storage_ids.append(e["target"])
     storage_nodes = {n["id"]: n for n in nodes if n.get("type") == "storageNode"}
 
     vm_out["disks"] = _export_vm_disks(

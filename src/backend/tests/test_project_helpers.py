@@ -418,7 +418,9 @@ class TestBuildKubevirtVmSpec:
         assert spec["powerOnAtDeploy"] is True
         assert spec["recertEnabled"] is False
         assert spec["disks"] == []
-        assert spec["nics"] == [{"id": "nic-1", "mac": "00:11:22:33:44:55"}]
+        assert spec["nics"] == [
+            {"id": "nic-1", "mac": "00:11:22:33:44:55", "model": "virtio"}
+        ]
         assert spec["bootOrder"] == ["disk-1"]
         assert spec["cloudInit"] == {"userData": "", "networkConfig": ""}
 

@@ -1215,6 +1215,8 @@ def _build_vm_cr(
             "bmcEnabled": vm.get("bmcEnabled", False),
             "bmcIp": vm.get("bmcIp", ""),
             "bootOrder": vm.get("bootOrder", []),
+            "videoModel": vm.get("videoModel", "virtio"),
+            "inputModel": vm.get("inputModel", "virtio"),
         },
     }
     cdrom = vm_cdroms_map.get(vm["id"]) or vm.get("cdrom")

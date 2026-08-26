@@ -600,6 +600,7 @@ def _extract_vms(topology: dict) -> list[dict]:
                 "cloud_init": data.get("cloudInit", False),
                 "firmware": data.get("firmware", "bios"),
                 "secure_boot": data.get("secureBoot", False),
+                "machine_type": data.get("machineType") or "",
                 "video_model": data.get("videoModel", "virtio"),
                 "input_model": data.get("inputModel", "virtio"),
                 "uuid": data.get("smbiosUuid") or data.get("uuid"),
@@ -790,10 +791,10 @@ def _find_container_networks(
         nic_id = None
         net_node_id = None
         if src == container_node_id and src_h.startswith("nic-"):
-            nic_id = src_h.split("-", 1)[1].rsplit("-", 1)[0]
+            nic_id = _extract_nic_id(src_h)
             net_node_id = tgt
         elif tgt == container_node_id and tgt_h.startswith("nic-"):
-            nic_id = tgt_h.split("-", 1)[1].rsplit("-", 1)[0]
+            nic_id = _extract_nic_id(tgt_h)
             net_node_id = src
 
         if not nic_id or not net_node_id:
@@ -886,6 +887,37 @@ def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
     return disks
 
 
+def _normalize_disk_port_id(handle: str) -> str | None:
+    """Map a React Flow disk port handle to diskControllers[].id."""
+    if not handle or not handle.startswith("dp-"):
+        return None
+    body = handle[3:]
+    if body.endswith("-left"):
+        body = body[:-5]
+    elif body.endswith("-right"):
+        body = body[:-6]
+    # Canvas handles are dp-{controllerId}-left where controllerId is dp-{uuid}.
+    # Legacy edges may use the bare controller id without side suffix.
+    if body and not body.startswith("dp-"):
+        return f"dp-{body}"
+    return body or None
+
+
+def _extract_nic_id(handle: str) -> str:
+    """Extract NIC ID from edge handle like 'nic-nic-UUID-direction'."""
+    if not handle or "nic-" not in handle:
+        return ""
+    for suffix in ("-top", "-bottom", "-left", "-right"):
+        if handle.endswith(suffix):
+            handle = handle[: -len(suffix)]
+            break
+    if handle.startswith("nic-"):
+        handle = handle[4:]
+    if handle.startswith("nic-"):
+        return handle
+    return f"nic-{handle}" if handle else ""
+
+
 def _extract_disk_edge(edge: dict, vm_node_id: str) -> tuple[str | None, str | None]:
     if edge.get("source") == vm_node_id:
         handle = edge.get("sourceHandle", "")
@@ -905,10 +937,11 @@ def _resolve_disk_bus(
     vm_node_id: str, handle: str, nodes: list[dict]
 ) -> tuple[str, int | None]:
     vm_node = next((n for n in nodes if n["id"] == vm_node_id), None)
-    if not vm_node:
+    port_id = _normalize_disk_port_id(handle)
+    if not vm_node or not port_id:
         return "virtio", None
     for dc in vm_node.get("data", {}).get("diskControllers", []):
-        if dc["id"] == handle:
+        if dc["id"] == port_id:
             return dc.get("bus", "virtio"), dc.get("rotationRate")
     return "virtio", None
 
@@ -1187,6 +1220,144 @@ def _categorize_new_nodes(
     return vms, networks
 
 
+def _storage_node_data(topology: dict, storage_id: str) -> dict:
+    """Return storage node data dict for a canvas storage node id."""
+    for node in topology.get("nodes", []):
+        if node.get("id") == storage_id and node.get("type") == "storageNode":
+            return node.get("data", {})
+    return {}
+
+
+def build_troshkavm_disk_spec(disk: dict, topology: dict) -> dict:
+    """Build a TroshkaVM CR disk entry from _find_vm_disks() output."""
+    storage_id = disk.get("node_id", "")
+    sd = dict(_storage_node_data(topology, storage_id))
+    if disk.get("resolvedS3Path") and not sd.get("resolvedS3Path"):
+        sd["resolvedS3Path"] = disk["resolvedS3Path"]
+    if disk.get("centralSource") is not None and "centralSource" not in sd:
+        sd["centralSource"] = disk["centralSource"]
+    if disk.get("diskSource") and "diskSource" not in sd:
+        sd["diskSource"] = disk["diskSource"]
+    fmt = disk.get("format", sd.get("format", "qcow2"))
+    size_gb = disk.get("size_gb", disk.get("size", sd.get("size", 20)))
+    source = disk.get("source") or sd.get("source", "blank")
+    central = sd.get("centralSource", False)
+
+    spec: dict = {
+        "id": storage_id,
+        "sizeGb": int(size_gb) if size_gb else 20,
+        "bus": disk.get("bus", "virtio"),
+        "format": fmt,
+    }
+    if disk.get("rotation_rate") is not None:
+        spec["rotationRate"] = disk["rotation_rate"]
+
+    if source == "pattern" and (disk.get("patternId") or sd.get("patternId")):
+        pattern_id = disk.get("patternId") or sd.get("patternId", "")
+        pattern_disk_id = sd.get("patternDiskId", "")
+        spec["patternImage"] = {
+            "s3Path": sd.get("resolvedS3Path")
+            or f"patterns/{pattern_id}/{pattern_disk_id}.qcow2",
+            "format": "qcow2",
+            "central": central,
+            "source": sd.get("diskSource", "central"),
+        }
+    elif source == "library" and (
+        disk.get("library_item_id")
+        or disk.get("libraryItemId")
+        or sd.get("libraryItemId")
+    ):
+        lib_id = (
+            disk.get("library_item_id")
+            or disk.get("libraryItemId")
+            or sd.get("libraryItemId", "")
+        )
+        spec["libraryImage"] = {
+            "s3Path": sd.get("resolvedS3Path") or f"library/{lib_id}.{fmt}",
+            "format": fmt,
+            "central": central,
+        }
+    elif source == "snapshot" and sd.get("resolvedS3Path"):
+        spec["libraryImage"] = {
+            "s3Path": sd["resolvedS3Path"],
+            "format": fmt,
+            "central": central,
+        }
+    else:
+        spec["blank"] = True
+    return spec
+
+
+def build_troshkavm_nic_specs(vm_data: dict) -> list[dict]:
+    """Build TroshkaVM CR NIC entries from canvas VM node data."""
+    return [
+        {
+            "id": nic.get("id", ""),
+            "mac": nic.get("mac", ""),
+            "model": nic.get("model", "virtio"),
+        }
+        for nic in vm_data.get("nics", [])
+    ]
+
+
+def _resolve_vm_firmware(vm: dict, vm_data: dict) -> str:
+    """Map canvas firmware + secureBoot to TroshkaVM firmware enum."""
+    firmware = vm.get("firmware") or vm_data.get("firmware", "bios")
+    if firmware == "uefi" and vm_data.get("secureBoot"):
+        return "uefi-secure"
+    return firmware
+
+
+def build_troshkavm_vm_spec(vm_id: str, vm: dict, topology: dict) -> dict:
+    """Build a TroshkaVM CR spec from canvas topology (KubeVirt + shared semantics)."""
+    vm_data: dict = {}
+    for node in topology.get("nodes", []):
+        if node.get("id") == vm_id and node.get("type") == "vmNode":
+            vm_data = node.get("data", {})
+            break
+
+    disk_specs = [
+        build_troshkavm_disk_spec(d, topology) for d in _find_vm_disks(vm_id, topology)
+    ]
+
+    spec: dict = {
+        "vmId": vm_data.get("id", vm_id),
+        "name": vm.get("name", "vm"),
+        "cpus": vm.get("vcpus", 2),
+        "memory": vm.get("ram_gb", 4) * 1024,
+        "firmware": _resolve_vm_firmware(vm, vm_data),
+        "machineType": vm_data.get("machineType") or "q35",
+        "smbiosUuid": vm_data.get("smbiosUuid") or vm_data.get("domainUuid", ""),
+        "os": vm.get("os", ""),
+        "powerOnAtDeploy": vm_data.get("powerOnAtDeploy", True),
+        "recertEnabled": vm_data.get("recertEnabled", False),
+        "ocpMonitor": vm_data.get("ocpMonitor", False),
+        "configureBastionBrowser": vm_data.get("configureBastionBrowser", False),
+        "bmcEnabled": vm_data.get("bmcEnabled", False),
+        "videoModel": vm_data.get("videoModel", "virtio"),
+        "inputModel": vm_data.get("inputModel", "virtio"),
+        "disks": disk_specs,
+        "nics": build_troshkavm_nic_specs(vm_data),
+        "bootOrder": vm_data.get("bootDevices", []),
+        "cloudInit": {
+            "userData": vm_data.get("ciGeneratedUserData", "")
+            or vm_data.get("ciUserData", ""),
+            "networkConfig": vm_data.get("ciNetworkConfig", ""),
+        },
+    }
+    if vm_data.get("bmcIp"):
+        spec["bmcIp"] = vm_data["bmcIp"]
+    if vm_data.get("guestfishCommands"):
+        spec["guestfishCommands"] = vm_data["guestfishCommands"]
+    pxe_path = vm_data.get("pxeBootIsoS3Path") or vm_data.get("pxeBootIsoResolvedPath")
+    if vm_data.get("pxeBootIsoId") and pxe_path:
+        spec["cdrom"] = {
+            "libraryIsoId": vm_data.get("pxeBootIsoId", ""),
+            "s3Path": pxe_path,
+        }
+    return spec
+
+
 def _normalize_disk_controllers(controllers: list | None) -> list[dict]:
     """Normalize disk controller list for stable redeploy comparison."""
     return sorted(
@@ -1207,6 +1378,7 @@ def _vm_redeploy_spec(data: dict) -> dict:
     return {
         "firmware": data.get("firmware", "bios"),
         "secureBoot": data.get("secureBoot", False),
+        "machineType": data.get("machineType") or "",
         "videoModel": data.get("videoModel", "virtio"),
         "inputModel": data.get("inputModel", "virtio"),
         "smbiosUuid": data.get("smbiosUuid")

@@ -20,24 +20,43 @@ TEST_TOKEN = "a" * 64
 TEST_PORT = 31338  # avoid clashing with a real troshkad
 
 # Generate self-signed cert for tests
-subprocess.run([
-    "openssl", "req", "-x509", "-newkey", "ec",
-    "-pkeyopt", "ec_paramgen_curve:prime256v1",
-    "-nodes", "-days", "1", "-subj", "/CN=localhost",
-    "-keyout", KEY_PATH, "-out", CERT_PATH,
-], capture_output=True, check=True)
+subprocess.run(
+    [
+        "openssl",
+        "req",
+        "-x509",
+        "-newkey",
+        "ec",
+        "-pkeyopt",
+        "ec_paramgen_curve:prime256v1",
+        "-nodes",
+        "-days",
+        "1",
+        "-subj",
+        "/CN=localhost",
+        "-keyout",
+        KEY_PATH,
+        "-out",
+        CERT_PATH,
+    ],
+    capture_output=True,
+    check=True,
+)
 
 # Write test config
 with open(CONF_PATH, "w") as f:
-    json.dump({
-        "port": TEST_PORT,
-        "token": TEST_TOKEN,
-        "tls_cert": CERT_PATH,
-        "tls_key": KEY_PATH,
-        "host_id": "test-host-id",
-        "max_concurrent_jobs": 2,
-        "drain_timeout_seconds": 5,
-    }, f)
+    json.dump(
+        {
+            "port": TEST_PORT,
+            "token": TEST_TOKEN,
+            "tls_cert": CERT_PATH,
+            "tls_key": KEY_PATH,
+            "host_id": "test-host-id",
+            "max_concurrent_jobs": 2,
+            "drain_timeout_seconds": 5,
+        },
+        f,
+    )
 
 # Import troshkad — add its directory to sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -61,7 +80,9 @@ def _make_request(path, method="GET", body=None, token=TEST_TOKEN, expect_status
         resp = urllib.request.urlopen(req, context=ctx, timeout=10)
         result = json.loads(resp.read().decode())
         if expect_status:
-            assert resp.status == expect_status, f"Expected {expect_status}, got {resp.status}"
+            assert (
+                resp.status == expect_status
+            ), f"Expected {expect_status}, got {resp.status}"
         return resp.status, result
     except urllib.error.HTTPError as e:
         result = json.loads(e.read().decode()) if e.fp else {}
@@ -80,7 +101,9 @@ class TestTroshkadServer(unittest.TestCase):
     def setUpClass(cls):
         troshkad._config = troshkad.load_config(CONF_PATH)
         cls.server = troshkad.create_server(troshkad._config)
-        cls.server_thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.server_thread = threading.Thread(
+            target=cls.server.serve_forever, daemon=True
+        )
         cls.server_thread.start()
         time.sleep(0.3)  # let server start
 
@@ -115,15 +138,19 @@ class TestTroshkadServer(unittest.TestCase):
 
     def test_job_dispatch_and_poll(self):
         """Test job dispatch, polling until completion, and result retrieval."""
+
         # Register a test handler
         def test_echo_handler(job, params):
             time.sleep(0.2)
             return {"echo": params.get("msg")}
+
         troshkad.COMMAND_HANDLERS["_test/echo"] = test_echo_handler
 
         try:
             # Dispatch job
-            status, body = _make_request("/commands/_test/echo", method="POST", body={"msg": "hello"})
+            status, body = _make_request(
+                "/commands/_test/echo", method="POST", body={"msg": "hello"}
+            )
             self.assertEqual(status, 202)
             self.assertIn("job_id", body)
             self.assertEqual(body["status"], "running")
@@ -155,13 +182,19 @@ class TestTroshkadServer(unittest.TestCase):
 
         try:
             # Fill up 2 slots (max_concurrent_jobs=2 in test config)
-            status1, body1 = _make_request("/commands/_test/slow", method="POST", body={})
+            status1, body1 = _make_request(
+                "/commands/_test/slow", method="POST", body={}
+            )
             self.assertEqual(status1, 202)
-            status2, body2 = _make_request("/commands/_test/slow", method="POST", body={})
+            status2, body2 = _make_request(
+                "/commands/_test/slow", method="POST", body={}
+            )
             self.assertEqual(status2, 202)
 
             # Third should return 503
-            status3, body3 = _make_request("/commands/_test/slow", method="POST", body={})
+            status3, body3 = _make_request(
+                "/commands/_test/slow", method="POST", body={}
+            )
             self.assertEqual(status3, 503)
             self.assertIn("max_concurrent_jobs", body3["error"])
         finally:
@@ -170,6 +203,7 @@ class TestTroshkadServer(unittest.TestCase):
 
     def test_draining_rejects_new_jobs(self):
         """Test that draining status rejects new jobs."""
+
         def test_handler(job, params):
             return {"done": True}
 
@@ -177,7 +211,9 @@ class TestTroshkadServer(unittest.TestCase):
 
         try:
             troshkad._draining = True
-            status, body = _make_request("/commands/_test/drain", method="POST", body={})
+            status, body = _make_request(
+                "/commands/_test/drain", method="POST", body={}
+            )
             self.assertEqual(status, 503)
             self.assertEqual(body["status"], "draining")
         finally:
@@ -187,6 +223,7 @@ class TestTroshkadServer(unittest.TestCase):
     def test_update_validates_syntax(self):
         """Test that update endpoint rejects invalid Python syntax."""
         import base64
+
         invalid_script = "def broken("
         encoded_script = base64.b64encode(invalid_script.encode()).decode()
         status, body = _make_request(
@@ -214,7 +251,9 @@ class TestTroshkadServer(unittest.TestCase):
             restart_event.set()
 
         try:
-            with unittest.mock.patch.object(troshkad, "_do_update_restart", mock_restart):
+            with unittest.mock.patch.object(
+                troshkad, "_do_update_restart", mock_restart
+            ):
                 status, body = _make_request(
                     "/admin/update",
                     method="POST",
@@ -264,14 +303,22 @@ class TestVmHandlers(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_vm_create_calls_virt_install(self, mock_popen):
         mock_popen.return_value = _mock_popen(stdout="Domain created")
-        job = troshkad._create_job("vms/create", {
-            "domain_name": "troshka-aabbccdd-11223344",
-            "vcpus": 2,
-            "ram_mb": 4096,
-            "disks": [{"path": "/var/lib/troshka/vms/proj/aabb-1122.qcow2", "bus": "virtio"}],
-            "networks": [{"bridge": "br-troshka-abc", "model": "virtio"}],
-            "seed_iso": "/var/lib/troshka/vms/proj/aabb-seed.iso",
-        })
+        job = troshkad._create_job(
+            "vms/create",
+            {
+                "domain_name": "troshka-aabbccdd-11223344",
+                "vcpus": 2,
+                "ram_mb": 4096,
+                "disks": [
+                    {
+                        "path": "/var/lib/troshka/vms/proj/aabb-1122.qcow2",
+                        "bus": "virtio",
+                    }
+                ],
+                "networks": [{"bridge": "br-troshka-abc", "model": "virtio"}],
+                "seed_iso": "/var/lib/troshka/vms/proj/aabb-seed.iso",
+            },
+        )
         _result = troshkad._handle_vm_create(job, job["params"])
         self.assertTrue(mock_popen.called)
         cmd = mock_popen.call_args_list[0][0][0]
@@ -280,9 +327,110 @@ class TestVmHandlers(unittest.TestCase):
         self.assertIn("troshka-aabbccdd-11223344", cmd)
 
     @patch("troshkad.subprocess.Popen")
+    def test_vm_create_uefi_uses_q35(self, mock_popen):
+        mock_popen.return_value = _mock_popen(stdout="Domain created")
+        job = troshkad._create_job(
+            "vms/create",
+            {
+                "domain_name": "troshka-aabbccdd-11223344",
+                "vcpus": 2,
+                "ram_mb": 4096,
+                "disks": [
+                    {
+                        "path": "/var/lib/troshka/vms/proj/aabb-1122.qcow2",
+                        "bus": "virtio",
+                    }
+                ],
+                "networks": [{"bridge": "br-troshka-abc", "model": "virtio"}],
+                "firmware": "uefi",
+            },
+        )
+        troshkad._handle_vm_create(job, job["params"])
+        cmd = mock_popen.call_args_list[0][0][0]
+        machine_idx = cmd.index("--machine")
+        self.assertEqual(cmd[machine_idx + 1], "q35")
+
+    @patch("troshkad.subprocess.Popen")
+    def test_vm_create_explicit_i440fx(self, mock_popen):
+        mock_popen.return_value = _mock_popen(stdout="Domain created")
+        job = troshkad._create_job(
+            "vms/create",
+            {
+                "domain_name": "troshka-aabbccdd-11223344",
+                "vcpus": 2,
+                "ram_mb": 4096,
+                "disks": [
+                    {
+                        "path": "/var/lib/troshka/vms/proj/aabb-1122.qcow2",
+                        "bus": "virtio",
+                    }
+                ],
+                "networks": [{"bridge": "br-troshka-abc", "model": "virtio"}],
+                "firmware": "bios",
+                "machine_type": "i440fx",
+            },
+        )
+        troshkad._handle_vm_create(job, job["params"])
+        cmd = mock_popen.call_args_list[0][0][0]
+        machine_idx = cmd.index("--machine")
+        self.assertEqual(cmd[machine_idx + 1], "i440fx")
+
+    @patch("troshkad.subprocess.Popen")
+    def test_vm_create_bios_without_machine_omits_flag(self, mock_popen):
+        mock_popen.return_value = _mock_popen(stdout="Domain created")
+        job = troshkad._create_job(
+            "vms/create",
+            {
+                "domain_name": "troshka-aabbccdd-11223344",
+                "vcpus": 2,
+                "ram_mb": 4096,
+                "disks": [
+                    {
+                        "path": "/var/lib/troshka/vms/proj/aabb-1122.qcow2",
+                        "bus": "virtio",
+                    }
+                ],
+                "networks": [{"bridge": "br-troshka-abc", "model": "virtio"}],
+                "firmware": "bios",
+            },
+        )
+        troshkad._handle_vm_create(job, job["params"])
+        cmd = mock_popen.call_args_list[0][0][0]
+        self.assertNotIn("--machine", cmd)
+
+    @patch("troshkad.subprocess.Popen")
+    def test_vm_create_usb_input(self, mock_popen):
+        mock_popen.return_value = _mock_popen(stdout="Domain created")
+        job = troshkad._create_job(
+            "vms/create",
+            {
+                "domain_name": "troshka-aabbccdd-11223344",
+                "vcpus": 2,
+                "ram_mb": 4096,
+                "disks": [
+                    {
+                        "path": "/var/lib/troshka/vms/proj/aabb-1122.qcow2",
+                        "bus": "virtio",
+                    }
+                ],
+                "networks": [{"bridge": "br-troshka-abc", "model": "virtio"}],
+                "video_model": "vga",
+                "input_model": "usb",
+            },
+        )
+        troshkad._handle_vm_create(job, job["params"])
+        cmd = mock_popen.call_args_list[0][0][0]
+        video_idx = cmd.index("--video")
+        self.assertEqual(cmd[video_idx + 1], "vga")
+        self.assertIn("type=keyboard,bus=usb", cmd)
+        self.assertIn("type=tablet,bus=usb", cmd)
+
+    @patch("troshkad.subprocess.Popen")
     def test_vm_destroy_calls_virsh(self, mock_popen):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("vms/destroy", {"domain_name": "troshka-aabb1122-11223344"})
+        job = troshkad._create_job(
+            "vms/destroy", {"domain_name": "troshka-aabb1122-11223344"}
+        )
         troshkad._handle_vm_destroy(job, job["params"])
         calls = [c[0][0] for c in mock_popen.call_args_list]
         self.assertTrue(any("destroy" in c for c in calls))
@@ -293,7 +441,9 @@ class TestVmHandlers(unittest.TestCase):
     def test_vm_start(self, mock_popen, mock_run):
         mock_popen.return_value = _mock_popen(stdout="Domain started")
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        job = troshkad._create_job("vms/start", {"domain_name": "troshka-aabb1122-11223344"})
+        job = troshkad._create_job(
+            "vms/start", {"domain_name": "troshka-aabb1122-11223344"}
+        )
         troshkad._handle_vm_start(job, job["params"])
         cmd = mock_popen.call_args[0][0]
         self.assertEqual(cmd[:2], ["virsh", "start"])
@@ -303,17 +453,25 @@ class TestVmHandlers(unittest.TestCase):
     def test_vm_stop(self, mock_popen, mock_run):
         mock_popen.return_value = _mock_popen(stdout="Domain stopped")
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
-        job = troshkad._create_job("vms/stop", {"domain_name": "troshka-aabb1122-11223344"})
+        job = troshkad._create_job(
+            "vms/stop", {"domain_name": "troshka-aabb1122-11223344"}
+        )
         troshkad._handle_vm_stop(job, job["params"])
         cmd = mock_popen.call_args[0][0]
         self.assertEqual(cmd[:2], ["virsh", "shutdown"])
 
     def test_vm_create_rejects_invalid_domain(self):
         """Domain name must match troshka-{hex}-{hex} pattern."""
-        job = troshkad._create_job("vms/create", {
-            "domain_name": "evil; rm -rf /",
-            "vcpus": 2, "ram_mb": 4096, "disks": [], "networks": [],
-        })
+        job = troshkad._create_job(
+            "vms/create",
+            {
+                "domain_name": "evil; rm -rf /",
+                "vcpus": 2,
+                "ram_mb": 4096,
+                "disks": [],
+                "networks": [],
+            },
+        )
         with self.assertRaises(ValueError):
             troshkad._handle_vm_create(job, job["params"])
 
@@ -324,11 +482,14 @@ class TestStorageHandlers(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_disk_create_qcow2(self, mock_popen, mock_makedirs):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("disks/create", {
-            "path": "/var/lib/troshka/vms/proj-id/aabb-1122.qcow2",
-            "size_gb": 20,
-            "format": "qcow2",
-        })
+        job = troshkad._create_job(
+            "disks/create",
+            {
+                "path": "/var/lib/troshka/vms/proj-id/aabb-1122.qcow2",
+                "size_gb": 20,
+                "format": "qcow2",
+            },
+        )
         result = troshkad._handle_disk_create(job, job["params"])
         cmd = mock_popen.call_args[0][0]
         self.assertEqual(cmd[0], "qemu-img")
@@ -339,12 +500,15 @@ class TestStorageHandlers(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_disk_create_with_backing(self, mock_popen, mock_makedirs):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("disks/create", {
-            "path": "/var/lib/troshka/vms/proj-id/aabb-1122.qcow2",
-            "size_gb": 20,
-            "format": "qcow2",
-            "backing_file": "/var/lib/troshka/images/base.qcow2",
-        })
+        job = troshkad._create_job(
+            "disks/create",
+            {
+                "path": "/var/lib/troshka/vms/proj-id/aabb-1122.qcow2",
+                "size_gb": 20,
+                "format": "qcow2",
+                "backing_file": "/var/lib/troshka/images/base.qcow2",
+            },
+        )
         troshkad._handle_disk_create(job, job["params"])
         cmd = mock_popen.call_args[0][0]
         self.assertIn("-b", cmd)
@@ -352,10 +516,13 @@ class TestStorageHandlers(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_disk_resize(self, mock_popen):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("disks/resize", {
-            "path": "/var/lib/troshka/vms/proj-id/aabb-1122.qcow2",
-            "new_size_gb": 40,
-        })
+        job = troshkad._create_job(
+            "disks/resize",
+            {
+                "path": "/var/lib/troshka/vms/proj-id/aabb-1122.qcow2",
+                "new_size_gb": 40,
+            },
+        )
         troshkad._handle_disk_resize(job, job["params"])
         cmd = mock_popen.call_args[0][0]
         self.assertEqual(cmd[:2], ["qemu-img", "resize"])
@@ -366,21 +533,28 @@ class TestStorageHandlers(unittest.TestCase):
         mock_popen.return_value = _mock_popen()
         with patch("tempfile.TemporaryDirectory") as mock_tempdir:
             mock_tempdir.return_value.__enter__.return_value = "/tmp/test-tmpdir"
-            job = troshkad._create_job("seeds/create", {
-                "path": "/var/lib/troshka/vms/proj-id/aabb-seed.iso",
-                "meta_data": "instance-id: test",
-                "user_data": "#cloud-config\npassword: test",
-            })
+            job = troshkad._create_job(
+                "seeds/create",
+                {
+                    "path": "/var/lib/troshka/vms/proj-id/aabb-seed.iso",
+                    "meta_data": "instance-id: test",
+                    "user_data": "#cloud-config\npassword: test",
+                },
+            )
             with patch("builtins.open", unittest.mock.mock_open()):
                 troshkad._handle_seed_create(job, job["params"])
             cmd = mock_popen.call_args[0][0]
             self.assertEqual(cmd[0], "xorriso")
 
     def test_disk_create_rejects_bad_path(self):
-        job = troshkad._create_job("disks/create", {
-            "path": "/etc/passwd",
-            "size_gb": 20, "format": "qcow2",
-        })
+        job = troshkad._create_job(
+            "disks/create",
+            {
+                "path": "/etc/passwd",
+                "size_gb": 20,
+                "format": "qcow2",
+            },
+        )
         with self.assertRaises(ValueError):
             troshkad._handle_disk_create(job, job["params"])
 
@@ -390,23 +564,29 @@ class TestNetworkHandlers(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_network_setup(self, mock_popen):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("networks/setup", {
-            "network_name": "troshka-net-aabb",
-            "cidr": "192.168.100.0/24",
-            "vni": 10001,
-            "bridge_name": "br-troshka-aabb",
-            "project_id": "aabbccdd-1122-3344-5566-778899001122",
-        })
+        job = troshkad._create_job(
+            "networks/setup",
+            {
+                "network_name": "troshka-net-aabb",
+                "cidr": "192.168.100.0/24",
+                "vni": 10001,
+                "bridge_name": "br-troshka-aabb",
+                "project_id": "aabbccdd-1122-3344-5566-778899001122",
+            },
+        )
         result = troshkad._handle_network_setup(job, job["params"])
         self.assertEqual(result["status"], "configured")
 
     @patch("troshkad.subprocess.Popen")
     def test_network_teardown(self, mock_popen):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("networks/teardown", {
-            "network_name": "troshka-net-aabb",
-            "project_id": "aabbccdd-1122-3344-5566-778899001122",
-        })
+        job = troshkad._create_job(
+            "networks/teardown",
+            {
+                "network_name": "troshka-net-aabb",
+                "project_id": "aabbccdd-1122-3344-5566-778899001122",
+            },
+        )
         result = troshkad._handle_network_teardown(job, job["params"])
         self.assertEqual(result["status"], "removed")
 
@@ -431,10 +611,13 @@ class TestOpsHandlers(unittest.TestCase):
             return result
 
         mock_run.side_effect = run_side_effect
-        job = troshkad._create_job("snapshots/create", {
-            "domain_name": "troshka-aabbccdd-11223344",
-            "output_path": "/var/lib/troshka/tmp/snapshot.qcow2",
-        })
+        job = troshkad._create_job(
+            "snapshots/create",
+            {
+                "domain_name": "troshka-aabbccdd-11223344",
+                "output_path": "/var/lib/troshka/tmp/snapshot.qcow2",
+            },
+        )
         result = troshkad._handle_snapshot_create(job, job["params"])
         self.assertEqual(result["status"], "created")
 
@@ -448,15 +631,19 @@ class TestHostEndpoints(unittest.TestCase):
         mock_popen.return_value = _mock_popen(stdout="Done")
         proc_mounts_content = "/dev/nvme1n1p1 /var/lib/troshka xfs rw 0 0\n"
         import io
+
         real_open = open
+
         def mock_open(path, *args, **kwargs):
             if path == "/proc/mounts":
                 return io.StringIO(proc_mounts_content)
             return real_open(path, *args, **kwargs)
+
         job = troshkad._create_job("host/resize-storage", {})
         with patch("builtins.open", side_effect=mock_open):
-            with patch("troshkad.os.statvfs") as mock_statvfs, \
-                 patch("troshkad.os.path.exists", return_value=False):
+            with patch("troshkad.os.statvfs") as mock_statvfs, patch(
+                "troshkad.os.path.exists", return_value=False
+            ):
                 mock_statvfs.return_value = MagicMock(f_blocks=1000, f_frsize=4096)
                 result = troshkad._handle_resize_storage(job, job["params"])
         self.assertTrue(mock_popen.called)
@@ -467,18 +654,16 @@ class TestHostEndpoints(unittest.TestCase):
     @patch("troshkad.os.remove")
     def test_files_remove(self, mock_remove):
         """Test that files/remove removes valid paths."""
-        job = troshkad._create_job("files/remove", {
-            "paths": ["/var/lib/troshka/vms/test/disk.qcow2"]
-        })
+        job = troshkad._create_job(
+            "files/remove", {"paths": ["/var/lib/troshka/vms/test/disk.qcow2"]}
+        )
         result = troshkad._handle_files_remove(job, job["params"])
         mock_remove.assert_called_once_with("/var/lib/troshka/vms/test/disk.qcow2")
         self.assertEqual(result["removed"], 1)
 
     def test_files_remove_rejects_bad_path(self):
         """Test that files/remove rejects paths outside /var/lib/troshka."""
-        job = troshkad._create_job("files/remove", {
-            "paths": ["/etc/passwd"]
-        })
+        job = troshkad._create_job("files/remove", {"paths": ["/etc/passwd"]})
         with self.assertRaises(ValueError) as ctx:
             troshkad._handle_files_remove(job, job["params"])
         self.assertIn("/var/lib/troshka", str(ctx.exception))
@@ -491,7 +676,9 @@ class TestGcEndpoints(unittest.TestCase):
     @patch("troshkad.os.listdir")
     @patch("troshkad.os.path.exists")
     @patch("troshkad.os.path.isdir")
-    def test_gc_discover_finds_orphans(self, mock_isdir, mock_exists, mock_listdir, mock_run):
+    def test_gc_discover_finds_orphans(
+        self, mock_isdir, mock_exists, mock_listdir, mock_run
+    ):
         """Test gc/discover scans and finds orphaned resources."""
         # Mock filesystem
         mock_exists.return_value = True
@@ -513,10 +700,13 @@ class TestGcEndpoints(unittest.TestCase):
 
         mock_run.side_effect = run_side_effect
 
-        job = troshkad._create_job("gc/discover", {
-            "known_project_ids": ["known-uuid"],
-            "known_domains": ["troshka-aabb-1122"],
-        })
+        job = troshkad._create_job(
+            "gc/discover",
+            {
+                "known_project_ids": ["known-uuid"],
+                "known_domains": ["troshka-aabb-1122"],
+            },
+        )
         result = troshkad._handle_gc_discover(job, job["params"])
 
         # Check orphan dirs found
@@ -536,13 +726,16 @@ class TestGcEndpoints(unittest.TestCase):
         mock_popen.return_value = _mock_popen()
         mock_isdir.return_value = True
 
-        job = troshkad._create_job("gc/clean", {
-            "orphan_dirs": ["/var/lib/troshka/vms/dead-uuid/"],
-            "orphan_domains": ["troshka-dead-beef"],
-            "orphan_bridges": ["br-troshka-dead"],
-            "orphan_namespaces": ["troshka-deadbeef"],
-            "cache_items": [],
-        })
+        job = troshkad._create_job(
+            "gc/clean",
+            {
+                "orphan_dirs": ["/var/lib/troshka/vms/dead-uuid/"],
+                "orphan_domains": ["troshka-dead-beef"],
+                "orphan_bridges": ["br-troshka-dead"],
+                "orphan_namespaces": ["troshka-deadbeef"],
+                "cache_items": [],
+            },
+        )
         result = troshkad._handle_gc_clean(job, job["params"])
 
         # Check that rmtree was called for orphan dirs
@@ -562,10 +755,13 @@ class TestLibraryImportEndpoint(unittest.TestCase):
         mock_popen.return_value = _mock_popen()
         mock_getsize.return_value = 1024
 
-        job = troshkad._create_job("library/import", {
-            "download_url": "https://example.com/image.qcow2",
-            "cache_path": "/var/lib/troshka/images/item-123.qcow2",
-        })
+        job = troshkad._create_job(
+            "library/import",
+            {
+                "download_url": "https://example.com/image.qcow2",
+                "cache_path": "/var/lib/troshka/images/item-123.qcow2",
+            },
+        )
         result = troshkad._handle_library_import(job, job["params"])
 
         self.assertEqual(result["status"], "completed")
@@ -578,16 +774,21 @@ class TestLibraryImportEndpoint(unittest.TestCase):
     @patch("troshkad.os.path.getsize")
     @patch("troshkad.os.makedirs")
     @patch("troshkad.subprocess.Popen")
-    def test_import_with_flatten(self, mock_popen, mock_makedirs, mock_getsize, mock_rename):
+    def test_import_with_flatten(
+        self, mock_popen, mock_makedirs, mock_getsize, mock_rename
+    ):
         """Test import with flatten=true runs qemu-img convert."""
         mock_popen.return_value = _mock_popen()
         mock_getsize.return_value = 2048
 
-        job = troshkad._create_job("library/import", {
-            "download_url": "https://example.com/image.qcow2",
-            "cache_path": "/var/lib/troshka/images/item-123.qcow2",
-            "flatten": True,
-        })
+        job = troshkad._create_job(
+            "library/import",
+            {
+                "download_url": "https://example.com/image.qcow2",
+                "cache_path": "/var/lib/troshka/images/item-123.qcow2",
+                "flatten": True,
+            },
+        )
         _result = troshkad._handle_library_import(job, job["params"])
 
         # Check that qemu-img convert was called
@@ -597,10 +798,13 @@ class TestLibraryImportEndpoint(unittest.TestCase):
     @patch("troshkad.os.makedirs")
     def test_import_rejects_bad_url(self, mock_makedirs):
         """Test that import rejects non-http(s) URLs."""
-        job = troshkad._create_job("library/import", {
-            "download_url": "file:///etc/passwd",
-            "cache_path": "/var/lib/troshka/images/item-123.qcow2",
-        })
+        job = troshkad._create_job(
+            "library/import",
+            {
+                "download_url": "file:///etc/passwd",
+                "cache_path": "/var/lib/troshka/images/item-123.qcow2",
+            },
+        )
         with self.assertRaises(ValueError):
             troshkad._handle_library_import(job, job["params"])
 
@@ -613,7 +817,9 @@ class TestCaptureEndpoints(unittest.TestCase):
     @patch("troshkad.os.makedirs")
     @patch("troshkad.subprocess.run")
     @patch("troshkad.subprocess.Popen")
-    def test_snapshot_capture(self, mock_popen, mock_run, mock_makedirs, mock_getsize, mock_copy):
+    def test_snapshot_capture(
+        self, mock_popen, mock_run, mock_makedirs, mock_getsize, mock_copy
+    ):
         """Test snapshot capture: get disk path, flatten, upload, cache."""
         mock_popen.return_value = _mock_popen()
         mock_run.return_value = MagicMock(
@@ -626,12 +832,15 @@ class TestCaptureEndpoints(unittest.TestCase):
         with patch("tempfile.TemporaryDirectory") as mock_tempdir:
             mock_tempdir.return_value.__enter__.return_value = "/tmp/test-tmpdir"
 
-            job = troshkad._create_job("snapshots/capture", {
-                "domain_name": "troshka-aabbccdd-11223344",
-                "disk_index": 0,
-                "presigned_url": "https://s3.example.com/upload",
-                "cache_path": "/var/lib/troshka/cache/snapshots/item/disk.qcow2",
-            })
+            job = troshkad._create_job(
+                "snapshots/capture",
+                {
+                    "domain_name": "troshka-aabbccdd-11223344",
+                    "disk_index": 0,
+                    "presigned_url": "https://s3.example.com/upload",
+                    "cache_path": "/var/lib/troshka/cache/snapshots/item/disk.qcow2",
+                },
+            )
             result = troshkad._handle_snapshot_capture(job, job["params"])
 
         self.assertEqual(result["status"], "uploaded")
@@ -644,8 +853,16 @@ class TestCaptureEndpoints(unittest.TestCase):
     @patch("troshkad.os.path.realpath", side_effect=lambda p: p)
     @patch("troshkad.subprocess.check_output")
     @patch("troshkad.subprocess.Popen")
-    def test_pattern_capture(self, mock_popen, mock_check_output, mock_realpath,
-                             mock_exists, mock_makedirs, mock_getsize, mock_copy):
+    def test_pattern_capture(
+        self,
+        mock_popen,
+        mock_check_output,
+        mock_realpath,
+        mock_exists,
+        mock_makedirs,
+        mock_getsize,
+        mock_copy,
+    ):
         """Test pattern capture-direct: capture multiple disks."""
         mock_popen.return_value = _mock_popen()
         mock_check_output.return_value = b'{"virtual-size": 107374182400}'
@@ -655,14 +872,19 @@ class TestCaptureEndpoints(unittest.TestCase):
         with patch("tempfile.TemporaryDirectory") as mock_tempdir:
             mock_tempdir.return_value.__enter__.return_value = "/tmp/test-tmpdir"
             with patch.object(troshkad, "_s3_upload_with_cache"):
-                job = troshkad._create_job("patterns/capture-direct", {
-                    "domain_name": "troshka-aabbccdd-11223344",
-                    "disks": [{
-                        "disk_path": "/var/lib/troshka/vms/proj/disk.qcow2",
-                        "s3_url": "https://s3.example.com/upload",
-                        "cache_path": "/var/lib/troshka/cache/patterns/pat/disk.qcow2",
-                    }],
-                })
+                job = troshkad._create_job(
+                    "patterns/capture-direct",
+                    {
+                        "domain_name": "troshka-aabbccdd-11223344",
+                        "disks": [
+                            {
+                                "disk_path": "/var/lib/troshka/vms/proj/disk.qcow2",
+                                "s3_url": "https://s3.example.com/upload",
+                                "cache_path": "/var/lib/troshka/cache/patterns/pat/disk.qcow2",
+                            }
+                        ],
+                    },
+                )
                 result = troshkad._handle_pattern_capture_direct(job, job["params"])
 
         self.assertEqual(result["status"], "uploaded")
@@ -679,18 +901,21 @@ class TestMetadataHandlers(unittest.TestCase):
     @patch("troshkad.os.makedirs")
     def test_metadata_deploy(self, mock_makedirs, mock_open, mock_cleanup, mock_popen):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("metadata/deploy", {
-            "project_id": "aabbccdd-1122-3344-5566-778899001122",
-            "bridges": ["br-10001"],
-            "vm_configs": {
-                "aa:bb:cc:dd:ee:ff": {
-                    "vm_name": "test",
-                    "userdata": "#cloud-config\nhostname: test",
-                    "metadata": '{"instance-id": "test-vm"}'
-                }
+        job = troshkad._create_job(
+            "metadata/deploy",
+            {
+                "project_id": "aabbccdd-1122-3344-5566-778899001122",
+                "bridges": ["br-10001"],
+                "vm_configs": {
+                    "aa:bb:cc:dd:ee:ff": {
+                        "vm_name": "test",
+                        "userdata": "#cloud-config\nhostname: test",
+                        "metadata": '{"instance-id": "test-vm"}',
+                    }
+                },
+                "namespace": "troshka-aabbccdd",
             },
-            "namespace": "troshka-aabbccdd",
-        })
+        )
         result = troshkad._handle_metadata_deploy(job, job["params"])
         self.assertEqual(result["status"], "started")
         mock_cleanup.assert_called_once_with(job, "troshka-aabbccdd", ["br-10001"])
@@ -704,7 +929,9 @@ class TestMetadataHandlers(unittest.TestCase):
         # Verify metadata IP was added to bridge
         calls = [c[0][0] for c in mock_popen.call_args_list]
         ip_add_calls = [c for c in calls if "ip" in c and "addr" in c and "add" in c]
-        self.assertGreater(len(ip_add_calls), 0, "Should have added metadata IP to bridge")
+        self.assertGreater(
+            len(ip_add_calls), 0, "Should have added metadata IP to bridge"
+        )
 
 
 class TestVmStateHandler(unittest.TestCase):
@@ -713,7 +940,9 @@ class TestVmStateHandler(unittest.TestCase):
     @patch("troshkad.subprocess.run")
     def test_vm_state_running(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="running\n", stderr="")
-        job = troshkad._create_job("vms/state", {"domain_name": "troshka-aabbccdd-11223344"})
+        job = troshkad._create_job(
+            "vms/state", {"domain_name": "troshka-aabbccdd-11223344"}
+        )
         result = troshkad._handle_vm_state(job, job["params"])
         self.assertEqual(result["domain"], "troshka-aabbccdd-11223344")
         self.assertEqual(result["state"], "running")
@@ -721,14 +950,20 @@ class TestVmStateHandler(unittest.TestCase):
     @patch("troshkad.subprocess.run")
     def test_vm_state_shut_off(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="shut off\n", stderr="")
-        job = troshkad._create_job("vms/state", {"domain_name": "troshka-aabbccdd-11223344"})
+        job = troshkad._create_job(
+            "vms/state", {"domain_name": "troshka-aabbccdd-11223344"}
+        )
         result = troshkad._handle_vm_state(job, job["params"])
         self.assertEqual(result["state"], "shut_off")
 
     @patch("troshkad.subprocess.run")
     def test_vm_state_not_found(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Domain not found")
-        job = troshkad._create_job("vms/state", {"domain_name": "troshka-aabbccdd-11223344"})
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="Domain not found"
+        )
+        job = troshkad._create_job(
+            "vms/state", {"domain_name": "troshka-aabbccdd-11223344"}
+        )
         result = troshkad._handle_vm_state(job, job["params"])
         self.assertEqual(result["state"], "not_found")
 
@@ -755,6 +990,7 @@ class TestVmListHandler(unittest.TestCase):
                     result.stdout = "shut off\n"
             result.stderr = ""
             return result
+
         mock_run.side_effect = run_side_effect
         job = troshkad._create_job("vms/list", {})
         result = troshkad._handle_vm_list(job, job["params"])
@@ -769,32 +1005,40 @@ class TestVmVncPortHandler(unittest.TestCase):
 
     @patch("troshkad.subprocess.run")
     def test_vnc_port_found(self, mock_run):
-        xml = '''<domain>
+        xml = """<domain>
           <devices>
             <graphics type='vnc' port='5900' autoport='yes' listen='127.0.0.1'/>
           </devices>
-        </domain>'''
+        </domain>"""
         mock_run.return_value = MagicMock(returncode=0, stdout=xml, stderr="")
-        job = troshkad._create_job("vms/vnc-port", {"domain_name": "troshka-aabbccdd-11223344"})
+        job = troshkad._create_job(
+            "vms/vnc-port", {"domain_name": "troshka-aabbccdd-11223344"}
+        )
         result = troshkad._handle_vm_vnc_port(job, job["params"])
         self.assertEqual(result["vnc_port"], 5900)
 
     @patch("troshkad.subprocess.run")
     def test_vnc_port_autoport(self, mock_run):
-        xml = '''<domain>
+        xml = """<domain>
           <devices>
             <graphics type='vnc' port='-1' autoport='yes'/>
           </devices>
-        </domain>'''
+        </domain>"""
         mock_run.return_value = MagicMock(returncode=0, stdout=xml, stderr="")
-        job = troshkad._create_job("vms/vnc-port", {"domain_name": "troshka-aabbccdd-11223344"})
+        job = troshkad._create_job(
+            "vms/vnc-port", {"domain_name": "troshka-aabbccdd-11223344"}
+        )
         result = troshkad._handle_vm_vnc_port(job, job["params"])
         self.assertIsNone(result["vnc_port"])
 
     @patch("troshkad.subprocess.run")
     def test_vnc_port_domain_not_found(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Domain not found")
-        job = troshkad._create_job("vms/vnc-port", {"domain_name": "troshka-aabbccdd-11223344"})
+        mock_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="Domain not found"
+        )
+        job = troshkad._create_job(
+            "vms/vnc-port", {"domain_name": "troshka-aabbccdd-11223344"}
+        )
         result = troshkad._handle_vm_vnc_port(job, job["params"])
         self.assertIsNone(result["vnc_port"])
 
@@ -804,7 +1048,7 @@ class TestVmConfigHandler(unittest.TestCase):
 
     @patch("troshkad.subprocess.run")
     def test_vm_config(self, mock_run):
-        xml = '''<domain type='kvm'>
+        xml = """<domain type='kvm'>
           <vcpu placement='static'>4</vcpu>
           <memory unit='KiB'>8388608</memory>
           <os>
@@ -826,9 +1070,11 @@ class TestVmConfigHandler(unittest.TestCase):
               <target dev='sda' bus='sata'/>
             </disk>
           </devices>
-        </domain>'''
+        </domain>"""
         mock_run.return_value = MagicMock(returncode=0, stdout=xml, stderr="")
-        job = troshkad._create_job("vms/config", {"domain_name": "troshka-aabbccdd-11223344"})
+        job = troshkad._create_job(
+            "vms/config", {"domain_name": "troshka-aabbccdd-11223344"}
+        )
         result = troshkad._handle_vm_config(job, job["params"])
         self.assertEqual(result["vcpus"], 4)
         self.assertEqual(result["ram_mb"], 8192)
@@ -843,7 +1089,7 @@ class TestVmConfigHandler(unittest.TestCase):
 class TestVmReconfigureHandler(unittest.TestCase):
     """Tests for vms/reconfigure handler."""
 
-    SAMPLE_XML = '''<domain type='kvm'>
+    SAMPLE_XML = """<domain type='kvm'>
       <name>troshka-aabbccdd-11223344</name>
       <vcpu placement='static'>2</vcpu>
       <memory unit='KiB'>4194304</memory>
@@ -867,29 +1113,32 @@ class TestVmReconfigureHandler(unittest.TestCase):
           <listen type='address' address='127.0.0.1'/>
         </graphics>
       </devices>
-    </domain>'''
+    </domain>"""
 
     @patch("troshkad.subprocess.Popen")
     @patch("troshkad.subprocess.run")
     def test_reconfigure_vcpus_and_ram(self, mock_run, mock_popen):
         # domstate: running
         mock_run.side_effect = [
-            MagicMock(returncode=0, stdout="running\n", stderr=""),   # domstate
+            MagicMock(returncode=0, stdout="running\n", stderr=""),  # domstate
             MagicMock(returncode=0, stdout=self.SAMPLE_XML, stderr=""),  # dumpxml
         ]
         # virsh destroy, virsh define /dev/stdin, virsh start
         mock_popen.side_effect = [
-            _mock_popen(stdout="Domain destroyed"),   # destroy
-            _mock_popen(stdout="Domain defined"),      # define
-            _mock_popen(stdout="Domain started"),      # start
+            _mock_popen(stdout="Domain destroyed"),  # destroy
+            _mock_popen(stdout="Domain defined"),  # define
+            _mock_popen(stdout="Domain started"),  # start
         ]
 
-        job = troshkad._create_job("vms/reconfigure", {
-            "domain_name": "troshka-aabbccdd-11223344",
-            "vcpus": 8,
-            "ram_mb": 16384,
-            "restart": True,
-        })
+        job = troshkad._create_job(
+            "vms/reconfigure",
+            {
+                "domain_name": "troshka-aabbccdd-11223344",
+                "vcpus": 8,
+                "ram_mb": 16384,
+                "restart": True,
+            },
+        )
         result = troshkad._handle_vm_reconfigure(job, job["params"])
         self.assertEqual(result["status"], "reconfigured")
         self.assertTrue(result["restarted"])
@@ -902,17 +1151,20 @@ class TestVmReconfigureHandler(unittest.TestCase):
     @patch("troshkad.subprocess.run")
     def test_reconfigure_no_restart_when_stopped(self, mock_run, mock_popen):
         mock_run.side_effect = [
-            MagicMock(returncode=0, stdout="shut off\n", stderr=""),   # domstate
+            MagicMock(returncode=0, stdout="shut off\n", stderr=""),  # domstate
             MagicMock(returncode=0, stdout=self.SAMPLE_XML, stderr=""),  # dumpxml
         ]
         mock_popen.side_effect = [
             _mock_popen(stdout="Domain defined"),  # define
         ]
 
-        job = troshkad._create_job("vms/reconfigure", {
-            "domain_name": "troshka-aabbccdd-11223344",
-            "boot_devs": ["network", "hd"],
-        })
+        job = troshkad._create_job(
+            "vms/reconfigure",
+            {
+                "domain_name": "troshka-aabbccdd-11223344",
+                "boot_devs": ["network", "hd"],
+            },
+        )
         result = troshkad._handle_vm_reconfigure(job, job["params"])
         self.assertEqual(result["status"], "reconfigured")
         self.assertFalse(result["restarted"])
@@ -931,10 +1183,13 @@ class TestVmUndefineHandler(unittest.TestCase):
     def test_undefine_with_storage(self, mock_popen, mock_run):
         mock_popen.return_value = _mock_popen()
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-        job = troshkad._create_job("vms/undefine", {
-            "domain_name": "troshka-aabbccdd-11223344",
-            "remove_storage": True,
-        })
+        job = troshkad._create_job(
+            "vms/undefine",
+            {
+                "domain_name": "troshka-aabbccdd-11223344",
+                "remove_storage": True,
+            },
+        )
         result = troshkad._handle_vm_undefine(job, job["params"])
         self.assertEqual(result["status"], "undefined")
         # Disks are deleted manually via _delete_vm_disks, then undefine with --nvram
@@ -946,10 +1201,13 @@ class TestVmUndefineHandler(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_undefine_without_storage(self, mock_popen):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("vms/undefine", {
-            "domain_name": "troshka-aabbccdd-11223344",
-            "remove_storage": False,
-        })
+        job = troshkad._create_job(
+            "vms/undefine",
+            {
+                "domain_name": "troshka-aabbccdd-11223344",
+                "remove_storage": False,
+            },
+        )
         result = troshkad._handle_vm_undefine(job, job["params"])
         self.assertEqual(result["status"], "undefined")
         calls = [c[0][0] for c in mock_popen.call_args_list]
@@ -970,19 +1228,26 @@ class TestMeshSetup(unittest.TestCase):
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("troshkad.os.makedirs")
     @patch("troshkad.subprocess.Popen")
-    def test_mesh_setup_creates_wg_interface(self, mock_popen, mock_makedirs, mock_open_fn, mock_chmod):
+    def test_mesh_setup_creates_wg_interface(
+        self, mock_popen, mock_makedirs, mock_open_fn, mock_chmod
+    ):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("mesh/setup", {
-            "project_id": "aabbccdd-1122-3344-5566-778899001122",
-            "wg_private_key": "dGVzdC1rZXk=",  # pragma: allowlist secret
-            "wg_address": "10.252.1.1/24",
-            "wg_port": 51820,
-            "peers": [{
-                "public_key": "cGVlcl9rZXk=",
-                "endpoint": "10.0.0.2:51820",
-                "allowed_ips": "10.252.1.2/32",
-            }],
-        })
+        job = troshkad._create_job(
+            "mesh/setup",
+            {
+                "project_id": "aabbccdd-1122-3344-5566-778899001122",
+                "wg_private_key": "dGVzdC1rZXk=",  # pragma: allowlist secret
+                "wg_address": "10.252.1.1/24",
+                "wg_port": 51820,
+                "peers": [
+                    {
+                        "public_key": "cGVlcl9rZXk=",
+                        "endpoint": "10.0.0.2:51820",
+                        "allowed_ips": "10.252.1.2/32",
+                    }
+                ],
+            },
+        )
         result = troshkad._handle_mesh_setup(job, job["params"])
 
         self.assertEqual(result["status"], "ok")
@@ -991,11 +1256,15 @@ class TestMeshSetup(unittest.TestCase):
         # Verify commands were issued
         cmds = [c[0][0] for c in mock_popen.call_args_list]
         # Should delete old interface, add new one, setconf, addr add, link set up, ping
-        ip_link_add = [c for c in cmds if "link" in c and "add" in c and "wireguard" in c]
+        ip_link_add = [
+            c for c in cmds if "link" in c and "add" in c and "wireguard" in c
+        ]
         self.assertEqual(len(ip_link_add), 1)
         wg_setconf = [c for c in cmds if "wg" in c and "setconf" in c]
         self.assertEqual(len(wg_setconf), 1)
-        addr_add = [c for c in cmds if "addr" in c and "add" in c and "10.252.1.1/24" in c]
+        addr_add = [
+            c for c in cmds if "addr" in c and "add" in c and "10.252.1.1/24" in c
+        ]
         self.assertEqual(len(addr_add), 1)
 
         # Verify conf written
@@ -1010,26 +1279,31 @@ class TestMeshSetup(unittest.TestCase):
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("troshkad.os.makedirs")
     @patch("troshkad.subprocess.Popen")
-    def test_mesh_setup_multiple_peers(self, mock_popen, mock_makedirs, mock_open_fn, mock_chmod):
+    def test_mesh_setup_multiple_peers(
+        self, mock_popen, mock_makedirs, mock_open_fn, mock_chmod
+    ):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("mesh/setup", {
-            "project_id": "aabbccdd-1122-3344-5566-778899001122",
-            "wg_private_key": "dGVzdC1rZXk=",  # pragma: allowlist secret
-            "wg_address": "10.252.1.1/24",
-            "wg_port": 51820,
-            "peers": [
-                {
-                    "public_key": "a2V5MQ==",
-                    "endpoint": "10.0.0.2:51820",
-                    "allowed_ips": "10.252.1.2/32",
-                },
-                {
-                    "public_key": "a2V5Mg==",
-                    "endpoint": "10.0.0.3:51820",
-                    "allowed_ips": "10.252.1.3/32",
-                },
-            ],
-        })
+        job = troshkad._create_job(
+            "mesh/setup",
+            {
+                "project_id": "aabbccdd-1122-3344-5566-778899001122",
+                "wg_private_key": "dGVzdC1rZXk=",  # pragma: allowlist secret
+                "wg_address": "10.252.1.1/24",
+                "wg_port": 51820,
+                "peers": [
+                    {
+                        "public_key": "a2V5MQ==",
+                        "endpoint": "10.0.0.2:51820",
+                        "allowed_ips": "10.252.1.2/32",
+                    },
+                    {
+                        "public_key": "a2V5Mg==",
+                        "endpoint": "10.0.0.3:51820",
+                        "allowed_ips": "10.252.1.3/32",
+                    },
+                ],
+            },
+        )
         result = troshkad._handle_mesh_setup(job, job["params"])
         self.assertEqual(result["status"], "ok")
         # Verify ping was called for each peer
@@ -1041,30 +1315,39 @@ class TestMeshSetup(unittest.TestCase):
     @patch("builtins.open", new_callable=unittest.mock.mock_open)
     @patch("troshkad.os.makedirs")
     @patch("troshkad.subprocess.Popen")
-    def test_mesh_setup_peer_unreachable_does_not_fail(self, mock_popen, mock_makedirs, mock_open_fn, mock_chmod):
+    def test_mesh_setup_peer_unreachable_does_not_fail(
+        self, mock_popen, mock_makedirs, mock_open_fn, mock_chmod
+    ):
         """Unreachable peer logs a warning but still returns ok."""
         mock_popen.return_value = _mock_popen(returncode=1)
-        job = troshkad._create_job("mesh/setup", {
-            "project_id": "aabbccdd-1122-3344-5566-778899001122",
-            "wg_private_key": "dGVzdC1rZXk=",  # pragma: allowlist secret
-            "wg_address": "10.252.1.1/24",
-            "wg_port": 51820,
-            "peers": [{
-                "public_key": "cGVlcl9rZXk=",
-                "endpoint": "10.0.0.2:51820",
-                "allowed_ips": "10.252.1.2/32",
-            }],
-        })
+        job = troshkad._create_job(
+            "mesh/setup",
+            {
+                "project_id": "aabbccdd-1122-3344-5566-778899001122",
+                "wg_private_key": "dGVzdC1rZXk=",  # pragma: allowlist secret
+                "wg_address": "10.252.1.1/24",
+                "wg_port": 51820,
+                "peers": [
+                    {
+                        "public_key": "cGVlcl9rZXk=",
+                        "endpoint": "10.0.0.2:51820",
+                        "allowed_ips": "10.252.1.2/32",
+                    }
+                ],
+            },
+        )
         # _run_cmd for ping has check=False so returncode=1 is fine,
         # but other commands also use _run_cmd which checks by default.
         # We need a smarter mock.
         call_count = [0]
+
         def popen_side_effect(*args, **kwargs):
             call_count[0] += 1
             cmd = args[0] if args else kwargs.get("cmd", [])
             if isinstance(cmd, list) and "ping" in cmd:
                 return _mock_popen(returncode=1)
             return _mock_popen(returncode=0)
+
         mock_popen.side_effect = popen_side_effect
 
         result = troshkad._handle_mesh_setup(job, job["params"])
@@ -1077,15 +1360,20 @@ class TestMeshJoinNetwork(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_join_network_single_network(self, mock_popen):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("mesh/join-network", {
-            "project_id": "aabbccdd-1122-3344-5566-778899001122",
-            "wg_local_ip": "10.252.1.2",
-            "networks": [{
-                "vni": 10001,
-                "bridge_name": "br-10001",
-                "wg_peer_ips": ["10.252.1.1", "10.252.1.2"],
-            }],
-        })
+        job = troshkad._create_job(
+            "mesh/join-network",
+            {
+                "project_id": "aabbccdd-1122-3344-5566-778899001122",
+                "wg_local_ip": "10.252.1.2",
+                "networks": [
+                    {
+                        "vni": 10001,
+                        "bridge_name": "br-10001",
+                        "wg_peer_ips": ["10.252.1.1", "10.252.1.2"],
+                    }
+                ],
+            },
+        )
         result = troshkad._handle_mesh_join_network(job, job["params"])
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["namespace"], "troshka-aabbccdd")
@@ -1105,15 +1393,20 @@ class TestMeshJoinNetwork(unittest.TestCase):
     def test_join_network_fdb_skips_self(self, mock_popen):
         """FDB entries should NOT be added for the local IP."""
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("mesh/join-network", {
-            "project_id": "aabbccdd-1122-3344-5566-778899001122",
-            "wg_local_ip": "10.252.1.2",
-            "networks": [{
-                "vni": 10001,
-                "bridge_name": "br-10001",
-                "wg_peer_ips": ["10.252.1.1", "10.252.1.2", "10.252.1.3"],
-            }],
-        })
+        job = troshkad._create_job(
+            "mesh/join-network",
+            {
+                "project_id": "aabbccdd-1122-3344-5566-778899001122",
+                "wg_local_ip": "10.252.1.2",
+                "networks": [
+                    {
+                        "vni": 10001,
+                        "bridge_name": "br-10001",
+                        "wg_peer_ips": ["10.252.1.1", "10.252.1.2", "10.252.1.3"],
+                    }
+                ],
+            },
+        )
         result = troshkad._handle_mesh_join_network(job, job["params"])
         self.assertEqual(result["status"], "ok")
 
@@ -1128,14 +1421,25 @@ class TestMeshJoinNetwork(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_join_network_multiple_networks(self, mock_popen):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("mesh/join-network", {
-            "project_id": "aabbccdd-1122-3344-5566-778899001122",
-            "wg_local_ip": "10.252.1.2",
-            "networks": [
-                {"vni": 10001, "bridge_name": "br-10001", "wg_peer_ips": ["10.252.1.1"]},
-                {"vni": 10002, "bridge_name": "br-10002", "wg_peer_ips": ["10.252.1.1"]},
-            ],
-        })
+        job = troshkad._create_job(
+            "mesh/join-network",
+            {
+                "project_id": "aabbccdd-1122-3344-5566-778899001122",
+                "wg_local_ip": "10.252.1.2",
+                "networks": [
+                    {
+                        "vni": 10001,
+                        "bridge_name": "br-10001",
+                        "wg_peer_ips": ["10.252.1.1"],
+                    },
+                    {
+                        "vni": 10002,
+                        "bridge_name": "br-10002",
+                        "wg_peer_ips": ["10.252.1.1"],
+                    },
+                ],
+            },
+        )
         result = troshkad._handle_mesh_join_network(job, job["params"])
         self.assertEqual(result["status"], "ok")
 
@@ -1150,12 +1454,16 @@ class TestMeshTeardown(unittest.TestCase):
     @patch("troshkad.os.path.exists", return_value=True)
     @patch("troshkad.os.remove")
     @patch("troshkad.subprocess.run")
-    def test_teardown_removes_interface_and_config(self, mock_run, mock_remove, mock_exists):
+    def test_teardown_removes_interface_and_config(
+        self, mock_run, mock_remove, mock_exists
+    ):
         mock_run.return_value = MagicMock(returncode=0)
         handler = MagicMock()
         handler.path = "/mesh/teardown?project_id=aabbccdd-1122-3344-5566-778899001122"
 
-        troshkad.handle_mesh_teardown(handler, {"project_id": "aabbccdd-1122-3344-5566-778899001122"})
+        troshkad.handle_mesh_teardown(
+            handler, {"project_id": "aabbccdd-1122-3344-5566-778899001122"}
+        )
 
         # Should call ip link del
         mock_run.assert_called()
@@ -1172,7 +1480,9 @@ class TestMeshTeardown(unittest.TestCase):
     def test_teardown_skips_missing_conf(self, mock_run, mock_exists):
         handler = MagicMock()
         handler.path = "/mesh/teardown"
-        troshkad.handle_mesh_teardown(handler, {"project_id": "aabbccdd-1122-3344-5566-778899001122"})
+        troshkad.handle_mesh_teardown(
+            handler, {"project_id": "aabbccdd-1122-3344-5566-778899001122"}
+        )
         handler._send_json.assert_called_with(200, {"status": "ok"})
 
     def test_teardown_rejects_missing_project_id(self):
@@ -1194,7 +1504,9 @@ class TestMeshStatus(unittest.TestCase):
     @patch("troshkad.subprocess.check_output")
     @patch("troshkad.os.listdir")
     @patch("troshkad.os.path.isdir", return_value=True)
-    def test_status_returns_peer_info(self, mock_isdir, mock_listdir, mock_check_output):
+    def test_status_returns_peer_info(
+        self, mock_isdir, mock_listdir, mock_check_output
+    ):
         mock_listdir.return_value = ["aabbccdd-1122-3344-5566-778899001122.conf"]
         mock_check_output.return_value = "cGVlcl9rZXk=\t1723456789\n"
         handler = MagicMock()
@@ -1209,10 +1521,15 @@ class TestMeshStatus(unittest.TestCase):
         self.assertIn("peers", projects[pid])
         self.assertEqual(projects[pid]["peers"]["cGVlcl9rZXk="], 1723456789)
 
-    @patch("troshkad.subprocess.check_output", side_effect=Exception("wg: interface not found"))
+    @patch(
+        "troshkad.subprocess.check_output",
+        side_effect=Exception("wg: interface not found"),
+    )
     @patch("troshkad.os.listdir")
     @patch("troshkad.os.path.isdir", return_value=True)
-    def test_status_reports_error_for_down_interface(self, mock_isdir, mock_listdir, mock_check_output):
+    def test_status_reports_error_for_down_interface(
+        self, mock_isdir, mock_listdir, mock_check_output
+    ):
         mock_listdir.return_value = ["deadbeef-1111-2222-3333-444455556666.conf"]
         handler = MagicMock()
         troshkad.handle_mesh_status(handler, {})
@@ -1238,9 +1555,12 @@ class TestContainerPull(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_pull_without_credentials(self, mock_popen):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("containers/pull", {
-            "image": "quay.io/test/image:latest",
-        })
+        job = troshkad._create_job(
+            "containers/pull",
+            {
+                "image": "quay.io/test/image:latest",
+            },
+        )
         result = troshkad._handle_container_pull(job, job["params"])
         self.assertEqual(result["status"], "pulled")
         self.assertEqual(result["image"], "quay.io/test/image:latest")
@@ -1253,12 +1573,15 @@ class TestContainerPull(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_pull_with_credentials(self, mock_popen):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("containers/pull", {
-            "image": "registry.example.com/app:v1",
-            "registry": "registry.example.com",
-            "username": "user",
-            "password": "test-pass",  # pragma: allowlist secret
-        })
+        job = troshkad._create_job(
+            "containers/pull",
+            {
+                "image": "registry.example.com/app:v1",
+                "registry": "registry.example.com",
+                "username": "user",
+                "password": "test-pass",  # pragma: allowlist secret
+            },
+        )
         result = troshkad._handle_container_pull(job, job["params"])
         self.assertEqual(result["status"], "pulled")
         # Should call login first, then pull
@@ -1274,9 +1597,12 @@ class TestContainerStart(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_start_container(self, mock_popen):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("containers/start", {
-            "container_name": "troshka-aabbccdd-mycontainer",
-        })
+        job = troshkad._create_job(
+            "containers/start",
+            {
+                "container_name": "troshka-aabbccdd-mycontainer",
+            },
+        )
         result = troshkad._handle_container_start(job, job["params"])
         self.assertEqual(result["status"], "started")
         self.assertEqual(result["container_name"], "troshka-aabbccdd-mycontainer")
@@ -1290,9 +1616,12 @@ class TestContainerStop(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_stop_container_default_timeout(self, mock_popen):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("containers/stop", {
-            "container_name": "troshka-aabbccdd-mycontainer",
-        })
+        job = troshkad._create_job(
+            "containers/stop",
+            {
+                "container_name": "troshka-aabbccdd-mycontainer",
+            },
+        )
         result = troshkad._handle_container_stop(job, job["params"])
         self.assertEqual(result["status"], "stopped")
         cmd = mock_popen.call_args[0][0]
@@ -1302,10 +1631,13 @@ class TestContainerStop(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_stop_container_custom_timeout(self, mock_popen):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("containers/stop", {
-            "container_name": "troshka-aabbccdd-mycontainer",
-            "timeout": 30,
-        })
+        job = troshkad._create_job(
+            "containers/stop",
+            {
+                "container_name": "troshka-aabbccdd-mycontainer",
+                "timeout": 30,
+            },
+        )
         result = troshkad._handle_container_stop(job, job["params"])
         self.assertEqual(result["status"], "stopped")
         cmd = mock_popen.call_args[0][0]
@@ -1318,9 +1650,12 @@ class TestContainerDestroy(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_destroy_container_no_volumes(self, mock_popen):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("containers/destroy", {
-            "container_name": "troshka-aabbccdd-mycontainer",
-        })
+        job = troshkad._create_job(
+            "containers/destroy",
+            {
+                "container_name": "troshka-aabbccdd-mycontainer",
+            },
+        )
         result = troshkad._handle_container_destroy(job, job["params"])
         self.assertEqual(result["status"], "destroyed")
         cmds = [c[0][0] for c in mock_popen.call_args_list]
@@ -1335,10 +1670,13 @@ class TestContainerDestroy(unittest.TestCase):
     def test_destroy_container_unmounts_volumes(self, mock_popen, mock_ismount):
         mock_popen.return_value = _mock_popen()
         mock_ismount.return_value = True
-        job = troshkad._create_job("containers/destroy", {
-            "container_name": "troshka-aabbccdd-mycontainer",
-            "volumes": [{"mount_dir": "/var/lib/troshka/vms/proj/vol1"}],
-        })
+        job = troshkad._create_job(
+            "containers/destroy",
+            {
+                "container_name": "troshka-aabbccdd-mycontainer",
+                "volumes": [{"mount_dir": "/var/lib/troshka/vms/proj/vol1"}],
+            },
+        )
         result = troshkad._handle_container_destroy(job, job["params"])
         self.assertEqual(result["status"], "destroyed")
         cmds = [c[0][0] for c in mock_popen.call_args_list]
@@ -1350,10 +1688,13 @@ class TestContainerDestroy(unittest.TestCase):
     def test_destroy_skips_unmounted_volumes(self, mock_popen, mock_ismount):
         mock_popen.return_value = _mock_popen()
         mock_ismount.return_value = False
-        job = troshkad._create_job("containers/destroy", {
-            "container_name": "troshka-aabbccdd-mycontainer",
-            "volumes": [{"mount_dir": "/var/lib/troshka/vms/proj/vol1"}],
-        })
+        job = troshkad._create_job(
+            "containers/destroy",
+            {
+                "container_name": "troshka-aabbccdd-mycontainer",
+                "volumes": [{"mount_dir": "/var/lib/troshka/vms/proj/vol1"}],
+            },
+        )
         result = troshkad._handle_container_destroy(job, job["params"])
         self.assertEqual(result["status"], "destroyed")
         cmds = [c[0][0] for c in mock_popen.call_args_list]
@@ -1369,9 +1710,12 @@ class TestContainerLogs(unittest.TestCase):
         mock_run.return_value = MagicMock(
             returncode=0, stdout="line1\nline2\nline3\n", stderr=""
         )
-        job = troshkad._create_job("containers/logs", {
-            "container_name": "troshka-aabbccdd-mycontainer",
-        })
+        job = troshkad._create_job(
+            "containers/logs",
+            {
+                "container_name": "troshka-aabbccdd-mycontainer",
+            },
+        )
         result = troshkad._handle_container_logs(job, job["params"])
         self.assertEqual(result["container_name"], "troshka-aabbccdd-mycontainer")
         self.assertIn("line1", result["logs"])
@@ -1380,11 +1724,16 @@ class TestContainerLogs(unittest.TestCase):
 
     @patch("troshkad.subprocess.run")
     def test_logs_custom_tail(self, mock_run):
-        mock_run.return_value = MagicMock(returncode=0, stdout="log output\n", stderr="")
-        job = troshkad._create_job("containers/logs", {
-            "container_name": "troshka-aabbccdd-mycontainer",
-            "tail": 100,
-        })
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="log output\n", stderr=""
+        )
+        job = troshkad._create_job(
+            "containers/logs",
+            {
+                "container_name": "troshka-aabbccdd-mycontainer",
+                "tail": 100,
+            },
+        )
         _result = troshkad._handle_container_logs(job, job["params"])
         cmd = mock_run.call_args[0][0]
         self.assertIn("100", cmd)
@@ -1394,9 +1743,12 @@ class TestContainerLogs(unittest.TestCase):
         mock_run.return_value = MagicMock(
             returncode=1, stdout="", stderr="Error: no such container"
         )
-        job = troshkad._create_job("containers/logs", {
-            "container_name": "troshka-aabbccdd-nonexistent",
-        })
+        job = troshkad._create_job(
+            "containers/logs",
+            {
+                "container_name": "troshka-aabbccdd-nonexistent",
+            },
+        )
         with self.assertRaises(RuntimeError):
             troshkad._handle_container_logs(job, job["params"])
 
@@ -1407,32 +1759,45 @@ class TestContainerExec(unittest.TestCase):
     @patch("troshkad.subprocess.run")
     def test_exec_default_command(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="output", stderr="")
-        job = troshkad._create_job("containers/exec", {
-            "container_name": "troshka-aabbccdd-mycontainer",
-        })
+        job = troshkad._create_job(
+            "containers/exec",
+            {
+                "container_name": "troshka-aabbccdd-mycontainer",
+            },
+        )
         result = troshkad._handle_container_exec(job, job["params"])
         self.assertEqual(result["stdout"], "output")
         cmd = mock_run.call_args[0][0]
-        self.assertEqual(cmd, ["podman", "exec", "troshka-aabbccdd-mycontainer", "/bin/sh"])
+        self.assertEqual(
+            cmd, ["podman", "exec", "troshka-aabbccdd-mycontainer", "/bin/sh"]
+        )
 
     @patch("troshkad.subprocess.run")
     def test_exec_custom_command(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stdout="hello", stderr="")
-        job = troshkad._create_job("containers/exec", {
-            "container_name": "troshka-aabbccdd-mycontainer",
-            "command": ["echo", "hello"],
-        })
+        job = troshkad._create_job(
+            "containers/exec",
+            {
+                "container_name": "troshka-aabbccdd-mycontainer",
+                "command": ["echo", "hello"],
+            },
+        )
         result = troshkad._handle_container_exec(job, job["params"])
         self.assertEqual(result["stdout"], "hello")
         cmd = mock_run.call_args[0][0]
-        self.assertEqual(cmd, ["podman", "exec", "troshka-aabbccdd-mycontainer", "echo", "hello"])
+        self.assertEqual(
+            cmd, ["podman", "exec", "troshka-aabbccdd-mycontainer", "echo", "hello"]
+        )
 
     @patch("troshkad.subprocess.run")
     def test_exec_failure_raises(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="exec failed")
-        job = troshkad._create_job("containers/exec", {
-            "container_name": "troshka-aabbccdd-mycontainer",
-        })
+        job = troshkad._create_job(
+            "containers/exec",
+            {
+                "container_name": "troshka-aabbccdd-mycontainer",
+            },
+        )
         with self.assertRaises(RuntimeError):
             troshkad._handle_container_exec(job, job["params"])
 
@@ -1448,10 +1813,13 @@ class TestContainerSaveImage(unittest.TestCase):
         proc.returncode = 0
         proc.communicate.return_value = ("", "")
         mock_popen.return_value = proc
-        job = troshkad._create_job("containers/save-image", {
-            "image": "quay.io/test/image:latest",
-            "output_path": "/var/lib/troshka/cache/image.tar.gz",
-        })
+        job = troshkad._create_job(
+            "containers/save-image",
+            {
+                "image": "quay.io/test/image:latest",
+                "output_path": "/var/lib/troshka/cache/image.tar.gz",
+            },
+        )
         result = troshkad._handle_container_save_image(job, job["params"])
         self.assertEqual(result["size_bytes"], 10485760)
         self.assertEqual(result["output_path"], "/var/lib/troshka/cache/image.tar.gz")
@@ -1463,10 +1831,13 @@ class TestContainerSaveImage(unittest.TestCase):
         proc.returncode = 1
         proc.communicate.return_value = ("", "save failed")
         mock_popen.return_value = proc
-        job = troshkad._create_job("containers/save-image", {
-            "image": "quay.io/test/image:latest",
-            "output_path": "/var/lib/troshka/cache/image.tar.gz",
-        })
+        job = troshkad._create_job(
+            "containers/save-image",
+            {
+                "image": "quay.io/test/image:latest",
+                "output_path": "/var/lib/troshka/cache/image.tar.gz",
+            },
+        )
         with self.assertRaises(RuntimeError):
             troshkad._handle_container_save_image(job, job["params"])
 
@@ -1481,10 +1852,13 @@ class TestContainerSaveImage(unittest.TestCase):
             ("", ""),
         ]
         mock_popen.return_value = proc
-        job = troshkad._create_job("containers/save-image", {
-            "image": "quay.io/test/image:latest",
-            "output_path": "/var/lib/troshka/cache/image.tar.gz",
-        })
+        job = troshkad._create_job(
+            "containers/save-image",
+            {
+                "image": "quay.io/test/image:latest",
+                "output_path": "/var/lib/troshka/cache/image.tar.gz",
+            },
+        )
         with self.assertRaises(RuntimeError) as ctx:
             troshkad._handle_container_save_image(job, job["params"])
         self.assertIn("timed out", str(ctx.exception))
@@ -1500,17 +1874,23 @@ class TestContainerLoadImage(unittest.TestCase):
         proc.returncode = 0
         proc.communicate.return_value = ("Loaded image: quay.io/test:latest", "")
         mock_popen.return_value = proc
-        job = troshkad._create_job("containers/load-image", {
-            "input_path": "/var/lib/troshka/cache/image.tar.gz",
-        })
+        job = troshkad._create_job(
+            "containers/load-image",
+            {
+                "input_path": "/var/lib/troshka/cache/image.tar.gz",
+            },
+        )
         result = troshkad._handle_container_load_image(job, job["params"])
         self.assertEqual(result["status"], "loaded")
 
     @patch("troshkad.os.path.isfile", return_value=False)
     def test_load_image_not_found(self, mock_isfile):
-        job = troshkad._create_job("containers/load-image", {
-            "input_path": "/var/lib/troshka/cache/nonexistent.tar.gz",
-        })
+        job = troshkad._create_job(
+            "containers/load-image",
+            {
+                "input_path": "/var/lib/troshka/cache/nonexistent.tar.gz",
+            },
+        )
         with self.assertRaises(FileNotFoundError):
             troshkad._handle_container_load_image(job, job["params"])
 
@@ -1521,9 +1901,12 @@ class TestContainerLoadImage(unittest.TestCase):
         proc.returncode = 1
         proc.communicate.return_value = ("", "load failed")
         mock_popen.return_value = proc
-        job = troshkad._create_job("containers/load-image", {
-            "input_path": "/var/lib/troshka/cache/image.tar.gz",
-        })
+        job = troshkad._create_job(
+            "containers/load-image",
+            {
+                "input_path": "/var/lib/troshka/cache/image.tar.gz",
+            },
+        )
         with self.assertRaises(RuntimeError):
             troshkad._handle_container_load_image(job, job["params"])
 
@@ -1534,18 +1917,23 @@ class TestPodCreate(unittest.TestCase):
     @patch("troshkad._run_cmd")
     def test_pod_create_simple(self, mock_run_cmd):
         """Create a pod with no networks, init containers, or main containers."""
+
         # _run_cmd for inspect returns a proc-like object whose .strip() works
         def run_cmd_side_effect(job, cmd, **kwargs):
             if "inspect" in cmd:
                 return "12345"
             return ""
+
         mock_run_cmd.side_effect = run_cmd_side_effect
 
-        job = troshkad._create_job("pods/create", {
-            "pod_name": "mypod",
-            "project_id": "aabbccdd-1122-3344-5566-778899001122",
-            "containers": [],
-        })
+        job = troshkad._create_job(
+            "pods/create",
+            {
+                "pod_name": "mypod",
+                "project_id": "aabbccdd-1122-3344-5566-778899001122",
+                "containers": [],
+            },
+        )
         result = troshkad._handle_pod_create(job, job["params"])
         self.assertEqual(result["status"], "created")
         self.assertEqual(result["pod_name"], "troshka-aabbccdd-mypod")
@@ -1553,22 +1941,31 @@ class TestPodCreate(unittest.TestCase):
     @patch("troshkad._run_cmd")
     def test_pod_create_with_containers(self, mock_run_cmd):
         """Create a pod with init and main containers."""
+
         def run_cmd_side_effect(job, cmd, **kwargs):
             if "inspect" in cmd:
                 return "12345"
             return ""
+
         mock_run_cmd.side_effect = run_cmd_side_effect
 
-        job = troshkad._create_job("pods/create", {
-            "pod_name": "mypod",
-            "project_id": "aabbccdd-1122-3344-5566-778899001122",
-            "init_containers": [
-                {"name": "init1", "image": "busybox:latest", "command": "/bin/sh -c 'echo init'"},
-            ],
-            "containers": [
-                {"name": "app", "image": "nginx:latest", "cpus": 2, "memory": 1024},
-            ],
-        })
+        job = troshkad._create_job(
+            "pods/create",
+            {
+                "pod_name": "mypod",
+                "project_id": "aabbccdd-1122-3344-5566-778899001122",
+                "init_containers": [
+                    {
+                        "name": "init1",
+                        "image": "busybox:latest",
+                        "command": "/bin/sh -c 'echo init'",
+                    },
+                ],
+                "containers": [
+                    {"name": "app", "image": "nginx:latest", "cpus": 2, "memory": 1024},
+                ],
+            },
+        )
         result = troshkad._handle_pod_create(job, job["params"])
         self.assertEqual(result["status"], "created")
 
@@ -1576,8 +1973,12 @@ class TestPodCreate(unittest.TestCase):
         # Should have created init container and main container
         init_create = [c for c in cmds if "create" in c and "init-init1" in " ".join(c)]
         main_create = [c for c in cmds if "create" in c and "-app" in " ".join(c)]
-        self.assertGreater(len(init_create), 0, f"No init container created in cmds: {cmds}")
-        self.assertGreater(len(main_create), 0, f"No main container created in cmds: {cmds}")
+        self.assertGreater(
+            len(init_create), 0, f"No init container created in cmds: {cmds}"
+        )
+        self.assertGreater(
+            len(main_create), 0, f"No main container created in cmds: {cmds}"
+        )
 
     @patch("troshkad._mount_container_volumes")
     @patch("troshkad._run_cmd")
@@ -1683,14 +2084,15 @@ class TestPodCreate(unittest.TestCase):
         )
         troshkad._handle_pod_create(job, job["params"])
 
-        create_cmds = [c[0][1] for c in mock_run_cmd.call_args_list if c[0][1][1] == "create"]
-        proxy_cmds = [
-            c for c in create_cmds if "troshka-aabbccdd-showroom-proxy" in c
+        create_cmds = [
+            c[0][1] for c in mock_run_cmd.call_args_list if c[0][1][1] == "create"
         ]
+        proxy_cmds = [c for c in create_cmds if "troshka-aabbccdd-showroom-proxy" in c]
         self.assertEqual(len(proxy_cmds), 1)
         self.assertIn("--entrypoint", proxy_cmds[0])
         self.assertIn("nginx", proxy_cmds[0])
         self.assertIn("-c", proxy_cmds[0])
+
 
 class TestPodResolvConf(unittest.TestCase):
     def test_gateway_from_ip(self):
@@ -1809,11 +2211,15 @@ class TestPodStart(unittest.TestCase):
             if "ps" in cmd:
                 return ""  # no init containers
             return ""
+
         mock_run_cmd.side_effect = run_cmd_side_effect
 
-        job = troshkad._create_job("pods/start", {
-            "pod_name": "troshka-aabbccdd-mypod",
-        })
+        job = troshkad._create_job(
+            "pods/start",
+            {
+                "pod_name": "troshka-aabbccdd-mypod",
+            },
+        )
         result = troshkad._handle_pod_start(job, job["params"])
         self.assertEqual(result["status"], "started")
 
@@ -1825,11 +2231,15 @@ class TestPodStart(unittest.TestCase):
             elif "wait" in cmd:
                 return "0"
             return ""
+
         mock_run_cmd.side_effect = run_cmd_side_effect
 
-        job = troshkad._create_job("pods/start", {
-            "pod_name": "troshka-aabbccdd-mypod",
-        })
+        job = troshkad._create_job(
+            "pods/start",
+            {
+                "pod_name": "troshka-aabbccdd-mypod",
+            },
+        )
         result = troshkad._handle_pod_start(job, job["params"])
         self.assertEqual(result["status"], "started")
 
@@ -1916,11 +2326,15 @@ class TestPodStart(unittest.TestCase):
             elif "logs" in cmd:
                 return "init failed: missing config"
             return ""
+
         mock_run_cmd.side_effect = run_cmd_side_effect
 
-        job = troshkad._create_job("pods/start", {
-            "pod_name": "troshka-aabbccdd-mypod",
-        })
+        job = troshkad._create_job(
+            "pods/start",
+            {
+                "pod_name": "troshka-aabbccdd-mypod",
+            },
+        )
         with self.assertRaises(RuntimeError) as ctx:
             troshkad._handle_pod_start(job, job["params"])
         self.assertIn("exit code 1", str(ctx.exception))
@@ -1934,9 +2348,12 @@ class TestPodDestroy(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_pod_destroy_cleans_up(self, mock_popen, mock_unlink, mock_exists):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("pods/destroy", {
-            "pod_name": "troshka-aabbccdd-mypod",
-        })
+        job = troshkad._create_job(
+            "pods/destroy",
+            {
+                "pod_name": "troshka-aabbccdd-mypod",
+            },
+        )
         result = troshkad._handle_pod_destroy(job, job["params"])
         self.assertEqual(result["status"], "destroyed")
         # Should remove netns symlink
@@ -1951,10 +2368,13 @@ class TestPodDestroy(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     def test_pod_destroy_unmounts_volumes(self, mock_popen, mock_exists, mock_ismount):
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("pods/destroy", {
-            "pod_name": "troshka-aabbccdd-mypod",
-            "volumes": [{"mount_dir": "/var/lib/troshka/vms/proj/vol"}],
-        })
+        job = troshkad._create_job(
+            "pods/destroy",
+            {
+                "pod_name": "troshka-aabbccdd-mypod",
+                "volumes": [{"mount_dir": "/var/lib/troshka/vms/proj/vol"}],
+            },
+        )
         result = troshkad._handle_pod_destroy(job, job["params"])
         self.assertEqual(result["status"], "destroyed")
         cmds = [c[0][0] for c in mock_popen.call_args_list]
@@ -1966,9 +2386,12 @@ class TestPodDestroy(unittest.TestCase):
     def test_pod_destroy_no_netns_symlink(self, mock_popen, mock_exists):
         """Should not fail if netns symlink doesn't exist."""
         mock_popen.return_value = _mock_popen()
-        job = troshkad._create_job("pods/destroy", {
-            "pod_name": "troshka-aabbccdd-mypod",
-        })
+        job = troshkad._create_job(
+            "pods/destroy",
+            {
+                "pod_name": "troshka-aabbccdd-mypod",
+            },
+        )
         result = troshkad._handle_pod_destroy(job, job["params"])
         self.assertEqual(result["status"], "destroyed")
 
@@ -2032,15 +2455,22 @@ class TestNfsRecovery(unittest.TestCase):
         result = troshkad._try_nfs_recovery()
         self.assertFalse(result)
 
-    @patch("builtins.open", new_callable=unittest.mock.mock_open, read_data="# empty fstab\n")
+    @patch(
+        "builtins.open",
+        new_callable=unittest.mock.mock_open,
+        read_data="# empty fstab\n",
+    )
     def test_recovery_fails_no_entry(self, mock_open_fn):
         troshkad._config["shared_mount"] = "/var/lib/troshka/shared"
         result = troshkad._try_nfs_recovery()
         self.assertFalse(result)
 
     @patch("troshkad.subprocess.run")
-    @patch("builtins.open", new_callable=unittest.mock.mock_open,
-           read_data="nfs-server:/export /var/lib/troshka/shared nfs soft,timeo=50 0 0\n")
+    @patch(
+        "builtins.open",
+        new_callable=unittest.mock.mock_open,
+        read_data="nfs-server:/export /var/lib/troshka/shared nfs soft,timeo=50 0 0\n",
+    )
     def test_recovery_succeeds(self, mock_open_fn, mock_run):
         troshkad._config["shared_mount"] = "/var/lib/troshka/shared"
         mock_run.side_effect = [
@@ -2051,8 +2481,11 @@ class TestNfsRecovery(unittest.TestCase):
         self.assertTrue(result)
 
     @patch("troshkad.subprocess.run")
-    @patch("builtins.open", new_callable=unittest.mock.mock_open,
-           read_data="nfs-server:/export /var/lib/troshka/shared nfs soft,timeo=50 0 0\n")
+    @patch(
+        "builtins.open",
+        new_callable=unittest.mock.mock_open,
+        read_data="nfs-server:/export /var/lib/troshka/shared nfs soft,timeo=50 0 0\n",
+    )
     def test_recovery_fails_mount_error(self, mock_open_fn, mock_run):
         troshkad._config["shared_mount"] = "/var/lib/troshka/shared"
         mock_run.side_effect = [

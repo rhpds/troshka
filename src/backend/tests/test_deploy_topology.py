@@ -73,9 +73,163 @@ def test_find_vm_disks_rotation_rate():
     assert disks[0]["bus"] == "sata"
 
 
+def test_find_vm_disks_ide_bus_from_dp_left_handle():
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "diskControllers": [
+                        {
+                            "id": "dp-a47aec13-d604-4fbf-84a8-8eb99ae9b82b",
+                            "bus": "ide",
+                            "name": "disk0",
+                        }
+                    ]
+                },
+            },
+            {
+                "id": "stor1",
+                "type": "storageNode",
+                "data": {"format": "qcow2", "size": 10},
+            },
+        ],
+        "edges": [
+            {
+                "source": "stor1",
+                "target": "vm1",
+                "sourceHandle": "right",
+                "targetHandle": "dp-dp-a47aec13-d604-4fbf-84a8-8eb99ae9b82b-left",
+            }
+        ],
+    }
+    disks = _find_vm_disks("vm1", topo)
+    assert len(disks) == 1
+    assert disks[0]["bus"] == "ide"
+
+
+def test_normalize_disk_port_id_formats():
+    from app.services.deploy_topology import _normalize_disk_port_id
+
+    assert (
+        _normalize_disk_port_id("dp-dp-a47aec13-d604-4fbf-84a8-8eb99ae9b82b-left")
+        == "dp-a47aec13-d604-4fbf-84a8-8eb99ae9b82b"
+    )
+    assert _normalize_disk_port_id("dp-ctrl1") == "dp-ctrl1"
+    assert _normalize_disk_port_id("dp-dp-ctrl1-left") == "dp-ctrl1"
+
+
+def test_build_troshkavm_disk_spec_uses_controller_bus():
+    from app.services.deploy_topology import build_troshkavm_vm_spec
+
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "id": "vm1",
+                    "name": "rtr",
+                    "diskControllers": [
+                        {"id": "dp-ctrl1", "bus": "ide", "name": "disk0"},
+                    ],
+                    "nics": [
+                        {"id": "nic1", "mac": "52:54:00:00:00:01", "model": "e1000"}
+                    ],
+                    "machineType": "i440fx",
+                },
+            },
+            {
+                "id": "stor1",
+                "type": "storageNode",
+                "data": {
+                    "id": "stor1",
+                    "source": "library",
+                    "libraryItemId": "lib-1",
+                    "format": "qcow2",
+                    "size": 20,
+                    "resolvedS3Path": "library/lib-1.qcow2",
+                },
+            },
+        ],
+        "edges": [
+            {
+                "source": "vm1",
+                "target": "stor1",
+                "sourceHandle": "dp-dp-ctrl1-left",
+            }
+        ],
+    }
+    spec = build_troshkavm_vm_spec(
+        "vm1",
+        {"name": "rtr", "vcpus": 2, "ram_gb": 4, "firmware": "bios"},
+        topo,
+    )
+    assert spec["machineType"] == "i440fx"
+    assert spec["disks"][0]["bus"] == "ide"
+    assert spec["nics"][0]["model"] == "e1000"
+
+
+def test_build_troshkavm_vm_spec_secure_boot_firmware():
+    from app.services.deploy_topology import build_troshkavm_vm_spec
+
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "id": "vm1",
+                    "firmware": "uefi",
+                    "secureBoot": True,
+                    "nics": [],
+                },
+            }
+        ]
+    }
+    spec = build_troshkavm_vm_spec(
+        "vm1",
+        {"name": "vm", "vcpus": 2, "ram_gb": 4, "firmware": "uefi"},
+        topo,
+    )
+    assert spec["firmware"] == "uefi-secure"
+
+
+def test_build_troshkavm_vm_spec_video_and_input():
+    from app.services.deploy_topology import build_troshkavm_vm_spec
+
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "id": "vm1",
+                    "videoModel": "qxl",
+                    "inputModel": "usb",
+                    "nics": [],
+                },
+            }
+        ]
+    }
+    spec = build_troshkavm_vm_spec(
+        "vm1",
+        {"name": "vm", "vcpus": 2, "ram_gb": 4},
+        topo,
+    )
+    assert spec["videoModel"] == "qxl"
+    assert spec["inputModel"] == "usb"
+
+
 @pytest.mark.parametrize(
     "cur_data,dep_data,expected",
     [
+        (
+            {"machineType": "q35"},
+            {"machineType": "i440fx"},
+            {"vm1"},
+        ),
         (
             {"firmware": "bios"},
             {"firmware": "uefi"},

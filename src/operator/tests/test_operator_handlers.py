@@ -629,6 +629,45 @@ class TestResolveVmDisks:
         assert "libraryImage" in disks["vm1"][0]
         assert disks["vm1"][0]["sizeGb"] == 40
 
+    def test_disk_bus_from_controller(self):
+        from helpers.topology import resolve_vm_disks
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "stor1",
+                    "type": "storageNode",
+                    "data": {
+                        "id": "stor1",
+                        "source": "library",
+                        "libraryItemId": "lib-001",
+                        "format": "qcow2",
+                        "size": 40,
+                    },
+                },
+                {
+                    "id": "vm1",
+                    "type": "vmNode",
+                    "data": {
+                        "id": "vm1",
+                        "diskControllers": [
+                            {"id": "dp-1", "bus": "ide", "name": "disk0"},
+                        ],
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "source": "stor1",
+                    "target": "vm1",
+                    "sourceHandle": "right",
+                    "targetHandle": "dp-dp-1-left",
+                }
+            ],
+        }
+        disks, _ = resolve_vm_disks(topo)
+        assert disks["vm1"][0]["bus"] == "ide"
+
     def test_pattern_disk(self):
         from helpers.topology import resolve_vm_disks
 

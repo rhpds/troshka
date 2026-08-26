@@ -126,6 +126,7 @@ vms:
     ram_gb: 12
     os: blank
     firmware: bios
+    machine_type: i440fx
     serial_exec: junos
     tags:
       AnsibleGroup: routers,juniper_junos

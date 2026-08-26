@@ -8,9 +8,7 @@ def s3_keys_from_secret(secret) -> dict:
     """Extract CDI-compatible S3 keys from a Kubernetes Secret."""
     data = secret.string_data or {}
     if not data and secret.data:
-        data = {
-            k: base64.b64decode(v).decode() for k, v in secret.data.items()
-        }
+        data = {k: base64.b64decode(v).decode() for k, v in secret.data.items()}
     return {
         "accessKeyId": data.get("accessKeyId") or data.get("AWS_ACCESS_KEY_ID", ""),
         "secretKey": data.get("secretKey") or data.get("AWS_SECRET_ACCESS_KEY", ""),
@@ -40,6 +38,26 @@ def hydrate_s3_config_from_project_secret(
     if keys.get("accessKeyId"):
         cfg.update(keys)
     return cfg
+
+
+_KV_VIDEO_MODELS = frozenset({"virtio", "vga", "qxl"})
+_KV_INPUT_TABLET_BUSES = frozenset({"virtio", "usb"})
+
+
+def _apply_video_and_input_devices(domain, spec):
+    """Configure display and pointer devices supported by KubeVirt."""
+    video_model = spec.get("videoModel", "virtio")
+    if video_model in _KV_VIDEO_MODELS:
+        domain.setdefault("devices", {})["video"] = [
+            {"name": "default", video_model: {}}
+        ]
+
+    input_model = spec.get("inputModel", "virtio")
+    if input_model in _KV_INPUT_TABLET_BUSES:
+        domain.setdefault("devices", {})["inputs"] = [
+            {"type": "tablet", "bus": input_model, "name": "tablet0"}
+        ]
+    # ps2: omit inputs — KubeVirt/QEMU default PS/2 keyboard and mouse apply
 
 
 def _build_base_domain(spec):
@@ -96,7 +114,12 @@ def _add_disks_to_domain(spec, disk_pvcs, domain, volumes):
         vol_name = f"disk-{disk_id}"
         bus = disk_info.get("bus", "virtio")
 
-        disk_entry = {"name": vol_name, "disk": {"bus": bus}}
+        disk_target: dict = {"bus": bus}
+        rotation = disk_info.get("rotationRate") or disk_info.get("rotation_rate")
+        if rotation is not None and bus in ("scsi", "sata", "ide"):
+            disk_target["rotationRate"] = int(rotation)
+
+        disk_entry = {"name": vol_name, "disk": disk_target}
 
         order_idx = _find_boot_order_index(
             disk_info.get("id"), "disk", boot_order, boot_idx
@@ -206,6 +229,7 @@ def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
 
     domain = _build_base_domain(spec)
     _apply_firmware_settings(domain, spec)
+    _apply_video_and_input_devices(domain, spec)
 
     volumes = []
     boot_idx = _add_disks_to_domain(spec, disk_pvcs, domain, volumes)

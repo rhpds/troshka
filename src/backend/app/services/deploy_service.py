@@ -1455,6 +1455,8 @@ def _create_vm_via_troshkad(
         "video_model": vm.get("video_model", "virtio"),
         "input_model": vm.get("input_model", "virtio"),
     }
+    if vm.get("machine_type"):
+        params["machine_type"] = vm["machine_type"]
     if disk_cache:
         params["disk_cache"] = disk_cache
     if clock_offset is not None:

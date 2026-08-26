@@ -369,6 +369,37 @@ def test_example_template_resolves_top_level_dns_target():
     assert infra["ip"] == "10.0.0.50"
 
 
+def test_template_machine_type_round_trip():
+    from app.services.template_loader import (
+        export_topology_to_template,
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "name": "machine-type-test",
+        "networks": {"lab": {"cidr": "172.20.20.0/24", "dhcp": True}},
+        "vms": {
+            "rtr3": {
+                "vcpus": 2,
+                "ram_gb": 12,
+                "os": "blank",
+                "firmware": "bios",
+                "machine_type": "i440fx",
+                "serial_exec": "junos",
+                "disks": [{"size_gb": 10}],
+                "nics": [{"network": "lab", "model": "virtio"}],
+            },
+        },
+    }
+    topo = generate_topology_from_template(resolve_inline_template(tmpl))
+    vm = next(n for n in topo["nodes"] if n["data"].get("name") == "rtr3")
+    assert vm["data"]["machineType"] == "i440fx"
+
+    exported = export_topology_to_template(topo)
+    assert exported["vms"]["rtr3"]["machine_type"] == "i440fx"
+
+
 def test_export_import_round_trip():
     from app.services.template_loader import (
         export_topology_to_template,

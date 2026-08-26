@@ -85,12 +85,15 @@ def extract_vms(topology):
     for node in nodes:
         data = node.get("data", {})
         if node.get("type") == "vmNode":
+            firmware = data.get("firmware", "bios")
+            if firmware == "uefi" and data.get("secureBoot"):
+                firmware = "uefi-secure"
             vm = {
                 "id": data.get("id", node.get("id", "")),
                 "name": data.get("label", ""),
                 "cpus": data.get("cpus") or data.get("vcpus", 2),
                 "memory": data.get("memory") or data.get("ram", 4) * 1024,
-                "firmware": data.get("firmware", "bios"),
+                "firmware": firmware,
                 "machineType": data.get("machineType", "q35"),
                 "smbiosUuid": data.get("domainUuid", ""),
                 "os": data.get("os", ""),
@@ -106,6 +109,8 @@ def extract_vms(topology):
                 "bmcEnabled": data.get("bmcEnabled", False),
                 "bmcIp": data.get("bmcIp", ""),
                 "bootOrder": data.get("bootDevices", []),
+                "videoModel": data.get("videoModel", "virtio"),
+                "inputModel": data.get("inputModel", "virtio"),
                 "cdrom": {},
                 "guestfishCommands": data.get("guestfishCommands", []),
             }
@@ -353,18 +358,53 @@ def resolve_nic_networks(topology):
     return nic_to_network
 
 
-def _find_storage_vm_pair(edge, node_map):
-    """Given an edge and node_map, return (storage_id, vm_id) or (None, None)."""
+def _find_storage_vm_pair(edge, nodes_by_id):
+    """Given an edge and node map, return (storage_id, vm_id) or (None, None)."""
     source = edge.get("source", "")
     target = edge.get("target", "")
-    source_info = node_map.get(source, {})
-    target_info = node_map.get(target, {})
+    source_node = nodes_by_id.get(source, {})
+    target_node = nodes_by_id.get(target, {})
 
-    if source_info.get("type") == "storageNode" and target_info.get("type") == "vmNode":
+    if source_node.get("type") == "storageNode" and target_node.get("type") == "vmNode":
         return source, target
-    if target_info.get("type") == "storageNode" and source_info.get("type") == "vmNode":
+    if target_node.get("type") == "storageNode" and source_node.get("type") == "vmNode":
         return target, source
     return None, None
+
+
+def _normalize_disk_port_id(handle):
+    """Map a React Flow disk port handle to diskControllers[].id."""
+    if not handle or not str(handle).startswith("dp-"):
+        return None
+    body = handle[3:]
+    if body.endswith("-left"):
+        body = body[:-5]
+    elif body.endswith("-right"):
+        body = body[:-6]
+    if body and not body.startswith("dp-"):
+        return f"dp-{body}"
+    return body or None
+
+
+def _extract_disk_edge(edge, vm_node_id):
+    """Return (disk_port_handle, storage_node_id) for a VM storage edge."""
+    if edge.get("source") == vm_node_id:
+        return edge.get("sourceHandle", ""), edge.get("target")
+    if edge.get("target") == vm_node_id:
+        return edge.get("targetHandle", ""), edge.get("source")
+    return None, None
+
+
+def _resolve_disk_bus(vm_node_id, handle, nodes_by_id):
+    """Resolve disk bus and rotation rate from a VM disk controller port."""
+    vm_node = nodes_by_id.get(vm_node_id)
+    port_id = _normalize_disk_port_id(handle)
+    if not vm_node or not port_id:
+        return "virtio", None
+    for dc in vm_node.get("data", {}).get("diskControllers", []):
+        if dc.get("id") == port_id:
+            return dc.get("bus", "virtio"), dc.get("rotationRate")
+    return "virtio", None
 
 
 def _apply_pattern_disk_source(disk: dict, sd: dict, central: bool) -> None:
@@ -400,7 +440,7 @@ def _apply_snapshot_disk_source(disk: dict, sd: dict, fmt: str, central: bool) -
         }
 
 
-def _build_disk_from_storage(sd, storage_id):
+def _build_disk_from_storage(sd, storage_id, bus="virtio", rotation_rate=None):
     """Build a disk dict from storage node data with pattern/library/blank source."""
     fmt = sd.get("format", "qcow2")
     size_gb = sd.get("size", sd.get("sizeGb", 20))
@@ -420,9 +460,11 @@ def _build_disk_from_storage(sd, storage_id):
     disk = {
         "id": storage_id,
         "sizeGb": int(size_gb) if size_gb else 20,
-        "bus": "virtio",
+        "bus": bus,
         "format": fmt,
     }
+    if rotation_rate is not None:
+        disk["rotationRate"] = rotation_rate
 
     if source_type == "pattern":
         _apply_pattern_disk_source(disk, sd, central)
@@ -444,22 +486,22 @@ def resolve_vm_disks(topology):
     nodes = topology.get("nodes", [])
     edges = topology.get("edges", [])
 
-    node_map = {}
-    for node in nodes:
-        data = node.get("data", {})
-        node_id = data.get("id", node.get("id", ""))
-        node_map[node_id] = {"type": node.get("type"), "data": data}
+    nodes_by_id = {n.get("id"): n for n in nodes}
 
     vm_disks = {}
     vm_cdroms = {}
 
     for edge in edges:
-        storage_id, vm_id = _find_storage_vm_pair(edge, node_map)
+        storage_id, vm_id = _find_storage_vm_pair(edge, nodes_by_id)
         if not storage_id or not vm_id:
             continue
 
-        sd = node_map[storage_id]["data"]
-        result = _build_disk_from_storage(sd, storage_id)
+        handle, _ = _extract_disk_edge(edge, vm_id)
+        bus, rotation_rate = _resolve_disk_bus(vm_id, handle, nodes_by_id)
+        sd = nodes_by_id[storage_id].get("data", {})
+        result = _build_disk_from_storage(
+            sd, storage_id, bus=bus, rotation_rate=rotation_rate
+        )
 
         if "cdrom" in result:
             vm_cdroms[vm_id] = result["cdrom"]
