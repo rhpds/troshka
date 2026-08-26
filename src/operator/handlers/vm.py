@@ -11,6 +11,10 @@ from helpers.kubevirt import (
     build_clone_datavolume,
     build_recert_job,
     CACHE_NAMESPACE,
+    admission_api_error_summary,
+    collect_kubevirt_vm_warnings,
+    is_video_config_enabled,
+    parse_admission_api_warnings,
 )
 
 logger = logging.getLogger(__name__)
@@ -508,7 +512,9 @@ async def _delete_and_wait_for_kubevirt_vm(custom_api, namespace, kv_vm_name):
             raise
 
 
-async def _recreate_kubevirt_vm(custom_api, namespace, kv_vm, kv_vm_name):
+async def _recreate_kubevirt_vm(
+    custom_api, namespace, kv_vm, kv_vm_name, patch=None, proactive_warnings=None
+):
     """Delete an existing KubeVirt VM and recreate it."""
     logger.info(f"KubeVirt VM {kv_vm_name} already exists, deleting and recreating")
     await _delete_and_wait_for_kubevirt_vm(custom_api, namespace, kv_vm_name)
@@ -524,12 +530,22 @@ async def _recreate_kubevirt_vm(custom_api, namespace, kv_vm, kv_vm_name):
     except client.ApiException as ce:
         if ce.status == 409:
             logger.info(f"KubeVirt VM {kv_vm_name} still exists, adopting")
+        elif patch is not None and ce.status in (400, 422):
+            raise _kubevirt_admission_error(
+                patch, ce, proactive_warnings=proactive_warnings
+            ) from ce
         else:
             raise
 
 
 async def _create_or_adopt_kubevirt_vm(
-    custom_api, namespace, kv_vm, kv_vm_name, existing_kv_name
+    custom_api,
+    namespace,
+    kv_vm,
+    kv_vm_name,
+    existing_kv_name,
+    patch=None,
+    proactive_warnings=None,
 ):
     """Create a KubeVirt VM, handling 409 conflict with delete-and-recreate."""
     try:
@@ -542,14 +558,26 @@ async def _create_or_adopt_kubevirt_vm(
         )
         logger.info(f"Created KubeVirt VM {kv_vm_name}")
     except client.ApiException as e:
-        if e.status != 409:
-            raise
-        if existing_kv_name:
-            logger.info(
-                f"KubeVirt VM {kv_vm_name} already exists (previously created), adopting"
+        if e.status == 409:
+            if existing_kv_name:
+                logger.info(
+                    f"KubeVirt VM {kv_vm_name} already exists (previously created), adopting"
+                )
+                return
+            await _recreate_kubevirt_vm(
+                custom_api,
+                namespace,
+                kv_vm,
+                kv_vm_name,
+                patch=patch,
+                proactive_warnings=proactive_warnings,
             )
-            return
-        await _recreate_kubevirt_vm(custom_api, namespace, kv_vm, kv_vm_name)
+        elif patch is not None and e.status in (400, 422):
+            raise _kubevirt_admission_error(
+                patch, e, proactive_warnings=proactive_warnings
+            ) from e
+        else:
+            raise
 
 
 def _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api):
@@ -729,6 +757,51 @@ def _resolve_nad_refs(custom_api, namespace):
     return nad_refs
 
 
+def _apply_vm_warnings(
+    patch,
+    warnings: list[str],
+    *,
+    message: str | None = None,
+    state: str | None = None,
+) -> None:
+    """Log and persist user-visible VM spec warnings on the TroshkaVM status."""
+    patch.status["warnings"] = warnings
+    for msg in warnings:
+        logger.warning(msg)
+    if message is not None:
+        patch.status["message"] = message
+    if state is not None:
+        patch.status["state"] = state
+
+
+def _merge_vm_warnings(
+    proactive_warnings: list[str] | None, admission_warnings: list[str]
+) -> list[str]:
+    merged = list(proactive_warnings or [])
+    for msg in admission_warnings:
+        if msg not in merged:
+            merged.append(msg)
+    return merged
+
+
+def _kubevirt_admission_error(
+    patch,
+    exc: client.ApiException,
+    *,
+    proactive_warnings: list[str] | None = None,
+) -> kopf.PermanentError:
+    """Record admission failure on TroshkaVM status and stop reconciling."""
+    admission = parse_admission_api_warnings(exc)
+    summary = admission_api_error_summary(exc)
+    _apply_vm_warnings(
+        patch,
+        _merge_vm_warnings(proactive_warnings, admission),
+        message=summary,
+        state="Error",
+    )
+    return kopf.PermanentError(summary)
+
+
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkavms")
 async def vm_create(spec, meta, namespace, name, body, patch, **_):
     logger.info(f"Creating VM {name} in {namespace}")
@@ -782,7 +855,18 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
 
     nad_refs = _resolve_nad_refs(custom_api, namespace)
 
-    kv_vm = build_kubevirt_vm(body, disk_pvcs, nad_refs, cloudinit_secret_name)
+    video_config_enabled = is_video_config_enabled(custom_api)
+    proactive_warnings = collect_kubevirt_vm_warnings(
+        spec, video_config_enabled=video_config_enabled
+    )
+    _apply_vm_warnings(patch, proactive_warnings)
+    kv_vm = build_kubevirt_vm(
+        body,
+        disk_pvcs,
+        nad_refs,
+        cloudinit_secret_name,
+        video_config_enabled=video_config_enabled,
+    )
     kv_vm["metadata"]["ownerReferences"] = [owner_ref(body)]
 
     kv_vm_name = kv_vm["metadata"]["name"]
@@ -793,6 +877,8 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         kv_vm,
         kv_vm_name,
         existing_kv_name,
+        patch=patch,
+        proactive_warnings=proactive_warnings,
     )
 
     # Read back the KubeVirt VM's UID as the domain UUID (same pattern as
@@ -816,6 +902,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         "Running" if spec.get("powerOnAtDeploy", True) else "Stopped"
     )
     patch.status["kubevirtVmName"] = kv_vm["metadata"]["name"]
+    patch.status.pop("message", None)
     logger.info(f"TroshkaVM {name} reconciled")
 
 
@@ -1070,7 +1157,18 @@ async def vm_update(
     cloudinit_secret_name = _upsert_cloudinit_secret(body, namespace, core_api)
 
     # Rebuild and create KubeVirt VM with new spec
-    kv_vm = build_kubevirt_vm(body, disk_pvcs, nad_refs, cloudinit_secret_name)
+    video_config_enabled = is_video_config_enabled(custom_api)
+    proactive_warnings = collect_kubevirt_vm_warnings(
+        new_spec, video_config_enabled=video_config_enabled
+    )
+    _apply_vm_warnings(patch, proactive_warnings)
+    kv_vm = build_kubevirt_vm(
+        body,
+        disk_pvcs,
+        nad_refs,
+        cloudinit_secret_name,
+        video_config_enabled=video_config_enabled,
+    )
     kv_vm["metadata"]["ownerReferences"] = [owner_ref(body)]
     try:
         custom_api.create_namespaced_custom_object(
@@ -1082,9 +1180,14 @@ async def vm_update(
         )
         logger.info(f"Recreated KubeVirt VM {kv_name} with updated spec")
     except client.ApiException as e:
-        if e.status != 409:
+        if e.status == 409:
+            logger.info(f"KubeVirt VM {kv_name} already exists after reconfigure")
+        elif e.status in (400, 422):
+            raise _kubevirt_admission_error(
+                patch, e, proactive_warnings=proactive_warnings
+            ) from e
+        else:
             raise
-        logger.info(f"KubeVirt VM {kv_name} already exists after reconfigure")
 
     try:
         recreated_vm = custom_api.get_namespaced_custom_object(
@@ -1104,6 +1207,7 @@ async def vm_update(
     power_on = new_spec.get("powerOnAtDeploy", True)
     patch.status["state"] = "Running" if power_on else "Stopped"
     patch.status["kubevirtVmName"] = kv_vm["metadata"]["name"]
+    patch.status.pop("message", None)
     logger.info(f"TroshkaVM {name} reconfigure complete")
 
 

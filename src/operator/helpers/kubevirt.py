@@ -1,4 +1,8 @@
 import base64
+import json
+import time
+
+from kubernetes.client.exceptions import ApiException
 
 CACHE_NAMESPACE = "troshka-cache"
 STORAGE_CLASS = "ocs-storagecluster-ceph-rbd-virtualization"
@@ -42,13 +46,143 @@ def hydrate_s3_config_from_project_secret(
 
 _KV_VIDEO_MODELS = frozenset({"virtio", "vga", "qxl"})
 _KV_INPUT_TABLET_BUSES = frozenset({"virtio", "usb"})
+_KUBEVIRT_INSTALL_NAMESPACES = ("openshift-cnv", "kubevirt")
+_VIDEO_CONFIG_GATE = "VideoConfig"
+_FEATURE_GATE_CACHE_TTL = 60.0
+_feature_gate_cache: tuple[float, frozenset[str]] | None = None
 
 
-def _apply_video_and_input_devices(domain, spec):
+def _normalize_feature_gates(raw) -> frozenset[str]:
+    if not raw:
+        return frozenset()
+    return frozenset(str(gate) for gate in raw)
+
+
+def _is_gate_enabled(gates: frozenset[str], name: str) -> bool:
+    if f"-{name}" in gates:
+        return False
+    return name in gates or f"+{name}" in gates
+
+
+def _get_kubevirt_feature_gates(custom_api) -> frozenset[str]:
+    """Read feature gates from the cluster KubeVirt CR (cached briefly)."""
+    global _feature_gate_cache
+    now = time.monotonic()
+    if _feature_gate_cache and now - _feature_gate_cache[0] < _FEATURE_GATE_CACHE_TTL:
+        return _feature_gate_cache[1]
+
+    gates = frozenset()
+    for namespace in _KUBEVIRT_INSTALL_NAMESPACES:
+        try:
+            resp = custom_api.list_namespaced_custom_object(
+                group="kubevirt.io",
+                version="v1",
+                namespace=namespace,
+                plural="kubevirts",
+            )
+            items = resp.get("items") or []
+            if not items:
+                continue
+            dev_cfg = (
+                items[0]
+                .get("spec", {})
+                .get("configuration", {})
+                .get("developerConfiguration", {})
+            )
+            gates = _normalize_feature_gates(dev_cfg.get("featureGates"))
+            break
+        except ApiException as exc:
+            if exc.status not in (403, 404):
+                raise
+
+    _feature_gate_cache = (now, gates)
+    return gates
+
+
+def is_video_config_enabled(custom_api) -> bool:
+    """True when the cluster KubeVirt CR has the VideoConfig feature gate on."""
+    return _is_gate_enabled(_get_kubevirt_feature_gates(custom_api), _VIDEO_CONFIG_GATE)
+
+
+def video_config_skipped_warning(spec, *, video_config_enabled: bool) -> str | None:
+    """Return a user-visible warning when canvas videoModel cannot be applied."""
+    video_model = spec.get("videoModel", "virtio")
+    if video_config_enabled or video_model not in _KV_VIDEO_MODELS:
+        return None
+    return (
+        f"videoModel={video_model!r} not applied: VideoConfig feature gate is "
+        "disabled on this cluster; using default VGA display"
+    )
+
+
+def collect_kubevirt_vm_warnings(spec, *, video_config_enabled: bool) -> list[str]:
+    """Warnings for spec fields ignored due to cluster capability limits."""
+    warnings = []
+    skipped = video_config_skipped_warning(
+        spec, video_config_enabled=video_config_enabled
+    )
+    if skipped:
+        warnings.append(skipped)
+    return warnings
+
+
+def parse_admission_api_warnings(exc: ApiException) -> list[str]:
+    """Extract user-visible messages from a Kubernetes admission API error."""
+    if getattr(exc, "status", None) not in (400, 422):
+        return []
+
+    data: dict | None = None
+    body = getattr(exc, "body", None)
+    try:
+        if isinstance(body, bytes):
+            body = body.decode()
+        if isinstance(body, str) and body:
+            data = json.loads(body)
+        elif isinstance(body, dict):
+            data = body
+    except (json.JSONDecodeError, TypeError):
+        data = None
+
+    if not data:
+        reason = getattr(exc, "reason", None)
+        return [reason] if reason else []
+
+    messages: list[str] = []
+    for cause in data.get("details", {}).get("causes", []) or []:
+        msg = (cause.get("message") or "").strip()
+        if not msg:
+            continue
+        field = (cause.get("field") or "").strip()
+        messages.append(f"{msg} ({field})" if field else msg)
+
+    if messages:
+        return messages
+
+    top = (data.get("message") or "").strip()
+    if top:
+        # Drop noisy webhook prefix when we only have the aggregate message.
+        if ": " in top and top.lower().startswith("admission webhook"):
+            top = top.split(": ", 1)[1]
+        return [top]
+
+    reason = getattr(exc, "reason", None)
+    return [reason] if reason else []
+
+
+def admission_api_error_summary(exc: ApiException) -> str:
+    """Single-line summary for kopf PermanentError / status.message."""
+    warnings = parse_admission_api_warnings(exc)
+    if warnings:
+        return "; ".join(warnings)
+    return getattr(exc, "reason", None) or "KubeVirt VM admission failed"
+
+
+def _apply_video_and_input_devices(domain, spec, *, video_config_enabled=False):
     """Configure display and pointer devices supported by KubeVirt."""
     video_model = spec.get("videoModel", "virtio")
-    if video_model in _KV_VIDEO_MODELS:
+    if video_config_enabled and video_model in _KV_VIDEO_MODELS:
         # KubeVirt API: devices.video is a VideoDevice object, not a list.
+        # Omit entirely when VideoConfig gate is off — admission rejects it.
         domain.setdefault("devices", {})["video"] = {"type": video_model}
 
     input_model = spec.get("inputModel", "virtio")
@@ -221,14 +355,23 @@ def _build_networks(spec, nad_refs):
     return networks
 
 
-def build_kubevirt_vm(vm_cr, disk_pvcs, nad_refs, cloudinit_secret_name):
+def build_kubevirt_vm(
+    vm_cr,
+    disk_pvcs,
+    nad_refs,
+    cloudinit_secret_name,
+    *,
+    video_config_enabled=False,
+):
     spec = vm_cr["spec"]
     name = vm_cr["metadata"]["name"]
     kv_name = f"troshka-{name}"
 
     domain = _build_base_domain(spec)
     _apply_firmware_settings(domain, spec)
-    _apply_video_and_input_devices(domain, spec)
+    _apply_video_and_input_devices(
+        domain, spec, video_config_enabled=video_config_enabled
+    )
 
     volumes = []
     boot_idx = _add_disks_to_domain(spec, disk_pvcs, domain, volumes)
