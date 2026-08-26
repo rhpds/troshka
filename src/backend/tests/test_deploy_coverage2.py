@@ -16,6 +16,7 @@ Covers:
 from unittest.mock import MagicMock, patch
 
 from app.services.deploy_service import (
+    _create_routes_for_gateway,
     _find_gateway_port_forwards,
     _generate_exec_ssh_keypair,
     _handle_kubevirt_deploy_error,
@@ -440,3 +441,49 @@ class TestAllocateKubevirtEips:
         _allocate_kubevirt_eips("proj-12345678", MagicMock(), topology, MagicMock())
 
         mock_patch.assert_called_once_with(provider, "proj-12345678", topology)
+
+
+class TestCreateRoutesForGatewayShowroom:
+    @patch("app.services.deploy_service._lookup_transit_port")
+    @patch("app.services.eip_service.allocate_standalone_transit_port")
+    def test_ocpvirt_showroom_forces_setup_dnat(self, mock_alloc, mock_lookup):
+        mock_lookup.return_value = (
+            30443  # EIP already mapped — showroom still needs DNAT
+        )
+        mock_alloc.return_value = 30443
+        driver = MagicMock()
+        driver.create_route_access.return_value = {
+            "hostname": "troshka-pf-test.apps.example.com"
+        }
+        provider = MagicMock(type="ocpvirt")
+        topology = {
+            "nodes": [
+                {"id": "showroom", "type": "vmNode", "data": {"name": "showroom"}}
+            ],
+            "showroom": {"enabled": True},
+            "externalIps": [
+                {
+                    "vmId": "showroom",
+                    "port": 443,
+                    "internalIp": "172.30.10.3",
+                    "internalPort": 80,
+                },
+            ],
+        }
+        node_data = {
+            "portForwards": [
+                {"extPort": 443, "intIp": "172.30.10.3", "intPort": 80},
+            ],
+        }
+        _create_routes_for_gateway(
+            MagicMock(),
+            driver,
+            provider,
+            MagicMock(),
+            "proj-12345678",
+            node_data,
+            topology,
+        )
+        driver.create_route_access.assert_called_once()
+        assert driver.create_route_access.call_args.kwargs["setup_dnat"] is True
+        assert driver.create_route_access.call_args.kwargs["transit_port"] == 30443

@@ -5717,9 +5717,36 @@ def _handle_network_add_dnat(job, params):
         timeout=10,
     )
 
+    # OCP Route path: Service → virt-launcher:transit_port (no host EIP hop).
+    # Match on dport alone so traffic reaches dst even when daddr != pf_transit_ip.
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            ns,
+            "nft",
+            "add",
+            "rule",
+            "inet",
+            "nat",
+            "prerouting",
+            "tcp",
+            "dport",
+            str(transit_port),
+            "dnat",
+            "ip",
+            "to",
+            f"{dst_ip}:{dst_port}",
+        ],
+        timeout=10,
+    )
+
     _job_log(
         job,
-        f"DNAT: :{transit_port} → {pf_transit_ip}:{transit_port} → {dst_ip}:{dst_port}",
+        f"DNAT: :{transit_port} → {pf_transit_ip}:{transit_port} → {dst_ip}:{dst_port}"
+        f" (+ route dport:{transit_port} → {dst_ip}:{dst_port})",
     )
     return {
         "namespace": ns,

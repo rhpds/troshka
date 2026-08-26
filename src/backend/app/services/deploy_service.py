@@ -3489,6 +3489,7 @@ def _create_routes_for_gateway(
     s, driver, provider, host, project_id, node_data, topology
 ):
     """Create OCP Routes for routable port forwards and return endpoint list."""
+    from app.services.deploy_topology import is_showroom_infra_ip
     from app.services.eip_service import allocate_standalone_transit_port
 
     external_endpoints = []
@@ -3502,7 +3503,8 @@ def _create_routes_for_gateway(
         try:
             if provider.type == "ocpvirt":
                 transit_port = _lookup_transit_port(topology, pf)
-                setup_dnat = transit_port is None
+                # Showroom infra (172.30.*.3) always needs its own DNAT target.
+                setup_dnat = transit_port is None or is_showroom_infra_ip(int_ip)
                 if transit_port is None:
                     transit_port = allocate_standalone_transit_port(s, host)
                 result = driver.create_route_access(

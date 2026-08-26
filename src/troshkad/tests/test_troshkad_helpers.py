@@ -5244,8 +5244,8 @@ class TestHandleNetworkAddDnat(unittest.TestCase):
         self.assertEqual(result["namespace"], "troshka-12345678")
         self.assertEqual(result["transit_port"], 443)
         self.assertEqual(result["transit_ip"], "172.30.5.10")
-        # 3 _run_cmd calls: add secondary IP, host DNAT, namespace DNAT
-        self.assertEqual(mock_runcmd.call_count, 3)
+        # 4 _run_cmd calls: secondary IP, host DNAT, EIP DNAT, route-path DNAT
+        self.assertEqual(mock_runcmd.call_count, 4)
 
     @patch("troshkad.subprocess.run")
     def test_raises_if_no_transit_ip(self, mock_run):
