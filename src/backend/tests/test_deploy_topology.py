@@ -256,6 +256,48 @@ def test_build_troshkavm_nic_specs_includes_network_ref():
     assert spec["nics"][0]["networkRef"] == "net-fa889200"
 
 
+def test_validate_kubevirt_vm_disk_buses_rejects_ide():
+    from app.services.deploy_topology import validate_kubevirt_vm_disk_buses
+
+    vm_id = "281550eb-d04b-40ef-be8f-5bf8debe9fa4"
+    storage_id = "disk-storage-1"
+    topo = {
+        "nodes": [
+            {
+                "id": storage_id,
+                "type": "storageNode",
+                "data": {"name": "rtr3-disk0", "format": "qcow2"},
+            },
+            {
+                "id": vm_id,
+                "type": "vmNode",
+                "data": {
+                    "id": vm_id,
+                    "name": "rtr3",
+                    "diskControllers": [
+                        {"id": "dp-ctrl1", "bus": "ide", "name": "disk0"},
+                    ],
+                },
+            },
+        ],
+        "edges": [
+            {
+                "source": storage_id,
+                "target": vm_id,
+                "targetHandle": "dp-ctrl1-left",
+            }
+        ],
+    }
+    err = validate_kubevirt_vm_disk_buses(
+        topo,
+        [vm_id],
+        capabilities={"diskBuses": ["virtio", "scsi", "sata", "usb"]},
+    )
+    assert err is not None
+    assert "IDE" in err
+    assert "rtr3" in err
+
+
 @pytest.mark.parametrize(
     "cur_data,dep_data,expected",
     [

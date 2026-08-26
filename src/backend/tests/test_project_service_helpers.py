@@ -570,10 +570,27 @@ class TestCleanupOldVmFiles(unittest.TestCase):
 
 
 class TestWaitKubevirtVmsReady(unittest.TestCase):
-    def _call(self, custom_api, ns, p_id, proj, s, deadline_secs=300):
+    def _call(
+        self,
+        custom_api,
+        ns,
+        p_id,
+        proj,
+        s,
+        deadline_secs=300,
+        changed_cr_names=None,
+    ):
         from app.api.projects import _wait_kubevirt_vms_ready
 
-        return _wait_kubevirt_vms_ready(custom_api, ns, p_id, proj, s, deadline_secs)
+        return _wait_kubevirt_vms_ready(
+            custom_api,
+            ns,
+            p_id,
+            proj,
+            s,
+            changed_cr_names=changed_cr_names,
+            deadline_secs=deadline_secs,
+        )
 
     @patch("app.services.deploy_service._delete_deploy_progress")
     @patch("app.services.deploy_service._set_deploy_progress")
@@ -590,6 +607,56 @@ class TestWaitKubevirtVmsReady(unittest.TestCase):
 
         result = self._call(custom_api, "ns-1", "p1", MagicMock(), MagicMock())
         assert result is None
+
+    @patch("app.services.ws_pubsub.notify_project")
+    @patch("app.services.deploy_service._delete_deploy_progress")
+    @patch("app.services.deploy_service._set_deploy_progress")
+    @patch("time.sleep")
+    @patch("time.time", side_effect=[1000, 1000, 1000, 1000, 1005, 1005])
+    def test_changed_vm_stale_running_waits_for_reconfigure(
+        self, _mt, _ms, _mock_set, _mock_del, _notify
+    ):
+        custom_api = MagicMock()
+        custom_api.list_namespaced_custom_object.side_effect = [
+            {
+                "items": [
+                    {
+                        "metadata": {"name": "vm-281550eb"},
+                        "status": {"state": "Running"},
+                        "spec": {"name": "rtr3"},
+                    }
+                ]
+            },
+            {
+                "items": [
+                    {
+                        "metadata": {"name": "vm-281550eb"},
+                        "status": {"state": "Reconfiguring"},
+                        "spec": {"name": "rtr3"},
+                    }
+                ]
+            },
+            {
+                "items": [
+                    {
+                        "metadata": {"name": "vm-281550eb"},
+                        "status": {"state": "Running"},
+                        "spec": {"name": "rtr3"},
+                    }
+                ]
+            },
+        ]
+        result = self._call(
+            custom_api,
+            "ns-1",
+            "p1",
+            MagicMock(),
+            MagicMock(),
+            changed_cr_names=["vm-281550eb"],
+            deadline_secs=30,
+        )
+        assert result is None
+        assert custom_api.list_namespaced_custom_object.call_count == 3
 
     @patch("app.services.deploy_service._delete_deploy_progress")
     @patch("app.services.deploy_service._set_deploy_progress")

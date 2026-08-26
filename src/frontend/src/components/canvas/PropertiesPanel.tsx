@@ -13,6 +13,14 @@ import {
 import { effectiveShowroomDnsNetwork } from "@/lib/showroomScaffold";
 import { isGatewayConnectedLabNetwork } from "@/lib/gatewayValidation";
 import { isShowroomManagedForward } from "@/lib/showroomPortForwards";
+import {
+  allowedDiskBuses,
+  allowedMachineTypes,
+  allowedVideoModels,
+  DISK_BUS_LABELS,
+  MACHINE_TYPE_LABELS,
+  VIDEO_MODEL_LABELS,
+} from "@/lib/kubevirtCapabilities";
 import { newShowroomTab, resolveShowroomTabs, type ShowroomTab } from "@/lib/showroomTabs";
 import {
   buildWettyCommand,
@@ -652,25 +660,34 @@ export default function PropertiesPanel() {
                 </label>
               </div>
             )}
-            {["kubevirt", "ocpvirt"].includes(useCanvasStore.getState().providerType || "") && (
+            {["kubevirt", "ocpvirt"].includes(useCanvasStore.getState().providerType || "") && (() => {
+              const providerType = useCanvasStore.getState().providerType;
+              const clusterCapabilities = useCanvasStore.getState().clusterCapabilities;
+              const machineTypes = allowedMachineTypes(clusterCapabilities, providerType);
+              const currentMachineType = (data as Record<string, any>).machineType as string || "q35";
+              const effectiveMachineType = machineTypes.includes(currentMachineType)
+                ? currentMachineType
+                : (machineTypes[0] || "q35");
+              return (
               <div className="props-field">
                 <label className="props-label">Machine Type</label>
                 <select
                   className="props-select"
-                  value={
-                    useCanvasStore.getState().providerType === "kubevirt"
-                      ? "q35"
-                      : ((data as Record<string, any>).machineType as string || "q35")
-                  }
+                  value={effectiveMachineType}
                   onChange={(e) => update("machineType", e.target.value)}
                 >
-                  <option value="q35">Q35 (pc-q35)</option>
-                  {useCanvasStore.getState().providerType !== "kubevirt" && (
-                    <option value="i440fx">i440fx (pc)</option>
-                  )}
+                  {machineTypes.map((mt) => (
+                    <option key={mt} value={mt}>{MACHINE_TYPE_LABELS[mt] || mt}</option>
+                  ))}
                 </select>
+                {!machineTypes.includes(currentMachineType) && currentMachineType && (
+                  <span style={{ fontSize: 10, color: "var(--troshka-red)", display: "block", marginTop: 4 }}>
+                    {MACHINE_TYPE_LABELS[currentMachineType] || currentMachineType} is not supported on this cluster.
+                  </span>
+                )}
               </div>
-            )}
+              );
+            })()}
             {(node.data as Record<string, any>).liveBootDevs && (
               <div style={{ background: "rgba(168,85,247,0.1)", border: "1px solid rgba(168,85,247,0.3)", borderRadius: 6, padding: "6px 8px", marginBottom: 8, fontSize: 11 }}>
                 <label className="props-label" style={{ color: "rgba(168,85,247,0.9)", fontSize: 10 }}>BMC Live Boot Order</label>
@@ -922,17 +939,34 @@ export default function PropertiesPanel() {
               <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("io") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
               I/O
             </div>
-            {!isCollapsed("io") && <><div className="props-field">
+            {!isCollapsed("io") && (() => {
+              const providerType = useCanvasStore.getState().providerType;
+              const clusterCapabilities = useCanvasStore.getState().clusterCapabilities;
+              const videoModels = allowedVideoModels(clusterCapabilities, providerType);
+              const currentVideo = (data as Record<string, any>).videoModel as string || "virtio";
+              return (<>
+            <div className="props-field">
               <label className="props-label">Video</label>
-              <select
-                className="props-select"
-                value={(data as Record<string, any>).videoModel as string || "virtio"}
-                onChange={(e) => update("videoModel", e.target.value)}
-              >
-                <option value="virtio">VirtIO (recommended)</option>
-                <option value="vga">VGA</option>
-                <option value="qxl">QXL</option>
-              </select>
+              {videoModels.length > 0 ? (
+                <select
+                  className="props-select"
+                  value={videoModels.includes(currentVideo) ? currentVideo : videoModels[0]}
+                  onChange={(e) => update("videoModel", e.target.value)}
+                >
+                  {videoModels.map((model) => (
+                    <option key={model} value={model}>{VIDEO_MODEL_LABELS[model] || model}</option>
+                  ))}
+                </select>
+              ) : (
+                <>
+                  <select className="props-select" value="default" disabled>
+                    <option value="default">Default (VGA)</option>
+                  </select>
+                  <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", display: "block", marginTop: 4 }}>
+                    VideoConfig is disabled on this cluster; explicit video models are ignored.
+                  </span>
+                </>
+              )}
             </div>
             <div className="props-field">
               <label className="props-label">Input</label>
@@ -979,7 +1013,8 @@ export default function PropertiesPanel() {
                 <option value="eos">Arista EOS</option>
                 <option value="junos">Juniper Junos</option>
               </select>
-            </div></>}
+            </div></>);
+            })()}
           </div>
           <div className="props-divider" />
 
@@ -1225,6 +1260,9 @@ export default function PropertiesPanel() {
               Disk Controllers
             </div>
             {!isCollapsed("disks") && (() => {
+              const providerType = useCanvasStore.getState().providerType;
+              const clusterCapabilities = useCanvasStore.getState().clusterCapabilities;
+              const diskBuses = allowedDiskBuses(clusterCapabilities, providerType);
               let ports = ((data as unknown as VMNodeData).diskControllers || []) as Array<{id: string; name: string; bus: string; rotationRate?: number}>;
               if (ports.length === 0) {
                 ports = [{ id: generateDiskControllerId(), name: "disk0", bus: "virtio" }];
@@ -1252,8 +1290,9 @@ export default function PropertiesPanel() {
                         <label className="props-label">Bus</label>
                         <select className="props-select" value={port.bus || "virtio"} onChange={(e) => {
                           const bus = e.target.value;
+                          if (!diskBuses.includes(bus)) return;
                           const patch: Record<string, unknown> = { ...port, bus };
-                          const isKubevirt = useCanvasStore.getState().providerType === "kubevirt";
+                          const isKubevirt = providerType === "kubevirt";
                           if (["scsi", "sata", "ide"].includes(bus) && port.rotationRate === undefined && !isKubevirt) {
                             patch.rotationRate = 1;
                           } else if (bus === "virtio" || bus === "usb") {
@@ -1261,14 +1300,17 @@ export default function PropertiesPanel() {
                           }
                           const updated = [...ports]; updated[i] = patch as typeof port; update("diskControllers", updated);
                         }}>
-                          <option value="virtio">virtio-blk</option>
-                          <option value="scsi">virtio-scsi</option>
-                          <option value="sata">SATA (AHCI)</option>
-                          <option value="ide">IDE</option>
-                          <option value="usb">USB</option>
+                          {diskBuses.map((bus) => (
+                            <option key={bus} value={bus}>{DISK_BUS_LABELS[bus] || bus}</option>
+                          ))}
                         </select>
+                        {port.bus && !diskBuses.includes(port.bus) && (
+                          <span style={{ fontSize: 10, color: "var(--troshka-red)", display: "block", marginTop: 4 }}>
+                            {DISK_BUS_LABELS[port.bus] || port.bus} is not supported on this cluster.
+                          </span>
+                        )}
                       </div>
-                      {["scsi", "sata", "ide"].includes(port.bus) && useCanvasStore.getState().providerType !== "kubevirt" && (
+                      {["scsi", "sata", "ide"].includes(port.bus) && providerType !== "kubevirt" && (
                         <div className="props-field">
                           <label className="props-label">Rotation Rate</label>
                           <select className="props-select" value={port.rotationRate ?? 1} onChange={(e) => {

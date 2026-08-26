@@ -303,6 +303,25 @@ def _project_response_dict(project, db=None):
     prov_type = _resolve_provider_type(project)
     if prov_type:
         result["provider_type"] = prov_type
+    if prov_type == "kubevirt" and db is not None:
+        from app.models.provider import Provider
+
+        host = (
+            db.query(Host).filter_by(id=project.host_id).first()
+            if project.host_id
+            else None
+        )
+        provider = (
+            db.query(Provider).filter_by(id=host.provider_id).first()
+            if host and host.provider_id
+            else None
+        )
+        if provider:
+            from app.services.providers.kubevirt_capabilities import (
+                fetch_cluster_capabilities,
+            )
+
+            result["cluster_capabilities"] = fetch_cluster_capabilities(provider)
     if db is not None:
         _hydrate_response_external_ips(db, project.id, result)
     _hydrate_response_external_endpoints(result)
@@ -3203,7 +3222,15 @@ def _build_kubevirt_vm_spec(vm_id: str, vm: dict, current: dict) -> dict:
     return build_troshkavm_vm_spec(vm_id, vm, current)
 
 
-def _wait_kubevirt_vms_ready(custom_api, ns, p_id, proj, s, deadline_secs=300):
+def _wait_kubevirt_vms_ready(
+    custom_api,
+    ns,
+    p_id,
+    proj,
+    s,
+    changed_cr_names=None,
+    deadline_secs=300,
+):
     """Poll TroshkaVM CRs until all are ready. Returns error string or None."""
     import time
 
@@ -3211,9 +3238,13 @@ def _wait_kubevirt_vms_ready(custom_api, ns, p_id, proj, s, deadline_secs=300):
         _delete_deploy_progress,
         _set_deploy_progress,
     )
+    from app.services.ws_pubsub import notify_project
 
     _set_deploy_progress(p_id, {"step": "reconfigure", "detail": "waiting for VMs"})
-    deadline = time.time() + deadline_secs
+    pending = set(changed_cr_names or [])
+    seen_reconfiguring: set[str] = set()
+    wait_started = time.time()
+    deadline = wait_started + deadline_secs
     while time.time() < deadline:
         all_ready = True
         try:
@@ -3224,10 +3255,9 @@ def _wait_kubevirt_vms_ready(custom_api, ns, p_id, proj, s, deadline_secs=300):
                 plural="troshkavms",
             )
             for vm in dict(vms).get("items", []):  # type: ignore[call-overload]
+                cr_name = vm.get("metadata", {}).get("name", "")
                 state = vm.get("status", {}).get("state", "")
-                if state in ("Creating", "Reconfiguring", ""):
-                    all_ready = False
-                elif state == "Error":
+                if state == "Error":
                     msg = vm.get("status", {}).get("message", "")
                     proj.state = "error"
                     proj.deploy_error = (
@@ -3235,7 +3265,22 @@ def _wait_kubevirt_vms_ready(custom_api, ns, p_id, proj, s, deadline_secs=300):
                     )
                     s.commit()
                     _delete_deploy_progress(p_id)
+                    notify_project(
+                        p_id,
+                        {
+                            "type": "project-state",
+                            "state": "error",
+                            "deploy_error": proj.deploy_error,
+                        },
+                    )
                     return "vm_error"
+                if state in ("Creating", "Reconfiguring", ""):
+                    all_ready = False
+                    if cr_name in pending and state == "Reconfiguring":
+                        seen_reconfiguring.add(cr_name)
+                elif cr_name in pending and cr_name not in seen_reconfiguring:
+                    # Stale Running/Stopped before the operator picks up the patch.
+                    all_ready = False
         except Exception:
             all_ready = False
         if all_ready:
@@ -3408,6 +3453,30 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
         current_vms = {v["node_id"]: v for v in _extract_vms(current)}
         changed_vm_ids = _find_changed_kubevirt_vms(current, deployed)
 
+        from app.services.deploy_topology import validate_kubevirt_vm_disk_buses
+        from app.services.providers.kubevirt_capabilities import (
+            get_kubevirt_capabilities,
+        )
+
+        kv_caps = get_kubevirt_capabilities(provider)
+        bus_err = validate_kubevirt_vm_disk_buses(
+            current, changed_vm_ids, capabilities=kv_caps
+        )
+        if bus_err:
+            proj.state = "error"
+            proj.deploy_error = bus_err
+            s.commit()
+            _delete_deploy_progress(p_id)
+            notify_project(
+                p_id,
+                {
+                    "type": "project-state",
+                    "state": "error",
+                    "deploy_error": bus_err,
+                },
+            )
+            return
+
         _apply_kubevirt_vm_changes(
             custom_api,
             ns,
@@ -3418,8 +3487,12 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             current,
         )
 
+        changed_cr_names = [f"vm-{vm_id[:8]}" for vm_id in changed_vm_ids]
+
         # Wait for all VMs to settle
-        err = _wait_kubevirt_vms_ready(custom_api, ns, p_id, proj, s)
+        err = _wait_kubevirt_vms_ready(
+            custom_api, ns, p_id, proj, s, changed_cr_names=changed_cr_names
+        )
         if err:
             return
 

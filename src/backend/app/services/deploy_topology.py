@@ -1375,6 +1375,38 @@ def build_troshkavm_vm_spec(vm_id: str, vm: dict, topology: dict) -> dict:
     return spec
 
 
+_KUBEVIRT_UNSUPPORTED_DISK_BUSES = frozenset({"ide"})
+
+
+def validate_kubevirt_vm_disk_buses(
+    current: dict, vm_ids: list[str], capabilities: dict | None = None
+) -> str | None:
+    """Return an error message when a VM uses disk buses rejected by KubeVirt."""
+    if capabilities:
+        from app.services.providers.kubevirt_capabilities import (
+            validate_vm_disk_buses_against_capabilities,
+        )
+
+        return validate_vm_disk_buses_against_capabilities(
+            current, vm_ids, capabilities
+        )
+
+    vms = {v["node_id"]: v for v in _extract_vms(current)}
+    for vm_id in vm_ids:
+        vm = vms.get(vm_id)
+        if not vm:
+            continue
+        spec = build_troshkavm_vm_spec(vm_id, vm, current)
+        for disk in spec.get("disks", []):
+            bus = disk.get("bus", "virtio")
+            if bus in _KUBEVIRT_UNSUPPORTED_DISK_BUSES:
+                vm_name = vm.get("name", vm_id[:8])
+                return (
+                    f"VM {vm_name}: {bus.upper()} disk bus is not supported on KubeVirt"
+                )
+    return None
+
+
 def _normalize_disk_controllers(controllers: list | None) -> list[dict]:
     """Normalize disk controller list for stable redeploy comparison."""
     return sorted(

@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.core.auth import require_role
+from app.core.auth import get_current_user, require_role
 from app.core.database import get_db
 from app.core.logging_utils import sanitize_log
 from app.core.ocpvirt_pkg_repo import resolve_pkg_repo
@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/providers", tags=["providers"])
 
 AdminUser = Annotated[User, Depends(require_role("admin"))]
+CurrentUser = Annotated[User, Depends(get_current_user)]
 DbSession = Annotated[Session, Depends(get_db)]
 
 _PROVIDER_NOT_FOUND = "Provider not found"
@@ -1583,6 +1584,39 @@ def install_operator(
         db.commit()
 
     return {"status": "ok", "message": "Operator installed successfully"}
+
+
+@router.get(
+    "/{provider_id}/capabilities",
+    responses={
+        400: {"description": "Provider type does not expose cluster capabilities"},
+        404: {"description": _PROVIDER_NOT_FOUND},
+    },
+)
+def get_provider_capabilities(
+    provider_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """Return KubeVirt cluster limits published by the troshka-operator."""
+    provider = db.query(Provider).filter_by(id=provider_id).first()
+    if not provider:
+        raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
+    if provider.type != "kubevirt":
+        raise HTTPException(
+            status_code=400,
+            detail="Cluster capabilities are only available for kubevirt providers",
+        )
+
+    from app.services.providers.kubevirt_capabilities import fetch_cluster_capabilities
+
+    capabilities = fetch_cluster_capabilities(provider)
+    if not capabilities:
+        raise HTTPException(
+            status_code=503,
+            detail="Cluster capabilities not yet published by the operator",
+        )
+    return capabilities
 
 
 @router.get(

@@ -216,6 +216,7 @@ interface CanvasState {
   suppressDeleteWarning: boolean;
   panMode: boolean;
   providerType: string | null;
+  clusterCapabilities: import("@/lib/kubevirtCapabilities").ClusterCapabilities | null;
 
   // React Flow callbacks
   onNodesChange: OnNodesChange;
@@ -563,6 +564,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   suppressDeleteWarning: false,
   panMode: true,
   providerType: null,
+  clusterCapabilities: null,
   currentProjectId: null as string | null,
   projectState: "draft" as string,
   deployedVmIds: new Set<string>(),
@@ -1312,10 +1314,16 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             externalIps: synced.externalIps,
             vniMap,
             showroom: parseShowroomFromTopology(t.showroom, nodes, lbEdges),
+            providerType: project.provider_type || null,
+            clusterCapabilities: project.cluster_capabilities || null,
           });
           _lastSavedNodeCount = (t.nodes || []).length;
         } else {
-          set({ vniMap: vniMapFromProject });
+          set({
+            vniMap: vniMapFromProject,
+            providerType: project.provider_type || null,
+            clusterCapabilities: project.cluster_capabilities || null,
+          });
         }
 
         if (needsShowroomVniSync(get().nodes, get().vniMap)) {

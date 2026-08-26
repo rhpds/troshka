@@ -94,7 +94,10 @@ export default function ProjectCanvasPage() {
         setProjectGuid(data.guid || "");
         setProjectState(data.state);
         setProjectHostId(data.host_id || "");
-        useCanvasStore.setState({ providerType: data.provider_type || null });
+        useCanvasStore.setState({
+          providerType: data.provider_type || null,
+          clusterCapabilities: data.cluster_capabilities || null,
+        });
         setDeployError(data.deploy_error || null);
         if (data.deploy_progress) setDeployProgress(data.deploy_progress);
         setAutoStopMinutes(data.auto_stop_minutes ?? null);
