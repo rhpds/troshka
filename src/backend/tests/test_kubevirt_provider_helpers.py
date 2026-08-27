@@ -688,6 +688,86 @@ class TestFindVirtLauncher:
 
 
 # ---------------------------------------------------------------------------
+# Serial console via virt-launcher
+# ---------------------------------------------------------------------------
+
+from app.services.providers.kubevirt import (
+    _create_console_ws,
+    _serial_socket_path,
+    _VirtLauncherSerialConnection,
+)
+
+
+class TestSerialSocketPath:
+    def test_builds_path_from_vmi_uid(self):
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "metadata": {"uid": "abc-123"},
+        }
+        path = _serial_socket_path(custom_api, "ns-test", "troshka-vm-abcdef12")
+        assert path == "/var/run/kubevirt-private/abc-123/virt-serial0"
+
+    def test_raises_without_uid(self):
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {"metadata": {}}
+        import pytest
+
+        with pytest.raises(RuntimeError, match="no UID"):
+            _serial_socket_path(custom_api, "ns-test", "troshka-vm-abcdef12")
+
+
+class TestVirtLauncherSerialConnection:
+    def test_recv_returns_stdout(self):
+        stream = MagicMock()
+        stream.is_open.return_value = True
+        stream.peek_stdout.side_effect = [False, True]
+        stream.read_stdout.return_value = "login:"
+        conn = _VirtLauncherSerialConnection(stream)
+        conn.settimeout(1)
+        assert conn.recv() == "login:"
+        stream.write_stdin.assert_not_called()
+
+    def test_send_writes_stdin(self):
+        stream = MagicMock()
+        conn = _VirtLauncherSerialConnection(stream)
+        conn.send(b"admin\r")
+        stream.write_stdin.assert_called_once_with("admin\r")
+
+
+class TestCreateConsoleWs:
+    @patch("app.services.providers.kubevirt._VirtLauncherSerialConnection")
+    @patch("app.services.providers.kubevirt._serial_socket_path", return_value="/sock")
+    @patch("app.services.providers.kubevirt._find_virt_launcher")
+    @patch("app.services.providers.kubevirt._get_k8s_clients")
+    @patch("kubernetes.stream.stream")
+    def test_uses_virt_launcher_socat(
+        self, mock_stream, mock_clients, mock_find, _mock_path, mock_conn_cls
+    ):
+        mock_custom = MagicMock()
+        mock_core = MagicMock()
+        mock_clients.return_value = (mock_custom, mock_core, MagicMock())
+        launcher = MagicMock()
+        launcher.metadata.name = "virt-launcher-troshka-vm-abcdef12-xyz"
+        mock_find.return_value = launcher
+        mock_stream.return_value = MagicMock()
+        mock_conn_cls.return_value = MagicMock()
+
+        provider = MagicMock()
+        result = _create_console_ws(provider, "ns-test", "troshka-vm-abcdef12", 60)
+
+        mock_stream.assert_called_once()
+        args, kwargs = mock_stream.call_args
+        assert kwargs["container"] == "compute"
+        assert kwargs["stdin"] is True
+        assert kwargs["command"] == [
+            "socat",
+            "-",
+            "UNIX-CONNECT:/sock",
+        ]
+        assert result is mock_conn_cls.return_value
+
+
+# ---------------------------------------------------------------------------
 # _poll_guest_exec — mock pod_exec_fn
 # ---------------------------------------------------------------------------
 

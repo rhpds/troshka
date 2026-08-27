@@ -23,7 +23,6 @@ CAPABILITIES_LABEL = "troshka.redhat.com/cluster-capabilities"
 CAPABILITIES_VERSION = 1
 
 _ALL_DISK_BUSES = ("virtio", "scsi", "sata", "ide", "usb")
-_CANVAS_MACHINE_TYPES = (("q35", "q35"), ("i440fx", "pc"))
 _ALL_INPUT_MODELS = ("virtio", "usb", "ps2")
 
 
@@ -125,21 +124,11 @@ def _probe_video_models(custom_api, namespace: str) -> list[str]:
     return supported
 
 
-def _probe_machine_types(custom_api, namespace: str) -> list[str]:
-    supported: list[str] = []
-    for canvas_value, kv_value in _CANVAS_MACHINE_TYPES:
-        body = _probe_vm_body(namespace, {"machine": {"type": kv_value}})
-        if _admission_allows(custom_api, namespace, body):
-            supported.append(canvas_value)
-    return supported
-
-
 def collect_kubevirt_cluster_capabilities(custom_api, namespace: str) -> dict:
     """Probe admission and feature gates; return a capabilities document."""
     feature_gates = sorted(_get_kubevirt_feature_gates(custom_api))
     video_config_enabled = is_video_config_enabled(custom_api)
     disk_buses = _probe_disk_buses(custom_api, namespace)
-    machine_types = _probe_machine_types(custom_api, namespace)
     video_models = (
         _probe_video_models(custom_api, namespace) if video_config_enabled else []
     )
@@ -151,7 +140,6 @@ def collect_kubevirt_cluster_capabilities(custom_api, namespace: str) -> dict:
             "videoConfigEnabled": video_config_enabled,
             "diskBuses": disk_buses,
             "videoModels": video_models,
-            "machineTypes": machine_types or ["q35"],
             "inputModels": list(_ALL_INPUT_MODELS),
         },
     }
@@ -193,9 +181,8 @@ def refresh_cluster_capabilities(custom_api, core_api, namespace: str | None = N
     upsert_capabilities_configmap(core_api, ns, capabilities)
     kv = capabilities.get("kubevirt", {})
     logger.info(
-        "Published cluster capabilities: diskBuses=%s videoModels=%s machineTypes=%s",
+        "Published cluster capabilities: diskBuses=%s videoModels=%s",
         kv.get("diskBuses"),
         kv.get("videoModels"),
-        kv.get("machineTypes"),
     )
     return capabilities

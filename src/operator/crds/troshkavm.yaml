@@ -28,10 +28,6 @@ spec:
                   type: string
                   enum: [bios, uefi, uefi-secure]
                   default: bios
-                machineType:
-                  type: string
-                  enum: [q35, i440fx]
-                  default: q35
                 smbiosUuid:
                   type: string
                 os:
@@ -75,6 +71,9 @@ spec:
                       type: string
                     s3Path:
                       type: string
+                    central:
+                      type: boolean
+                      default: false
                 guestfishCommands:
                   type: array
                   items:

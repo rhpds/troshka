@@ -122,5 +122,6 @@ Deep per-subsystem reference lives in `docs/dev/` (read on demand — not loaded
 - [`docs/dev/networking.md`](docs/dev/networking.md) — multi-host WireGuard/VXLAN mesh, PXE boot, VNC console + Route53, OCP Routes, oc-exec DNS
 - [`docs/dev/storage.md`](docs/dev/storage.md) — shared storage & live migration, storage auto-extend, garbage collector
 - [`docs/dev/deploy-pipeline.md`](docs/dev/deploy-pipeline.md) — deploy pipeline, clock backdating, cloud-init, AgnosticD-v2, pull-through registry, template import/export
+- [`docs/dev/network-router-bootstrap.md`](docs/dev/network-router-bootstrap.md) — vrnetlab vs Troshka day-0 config (ISO vs serial per NOS), net-automation workshop rtr1–rtr4
 - [`docs/dev/subsystems.md`](docs/dev/subsystems.md) — Redis job queue, group access control, exec API, container/pod nodes, registry creds, timers, WS pubsub, offline FS, pattern save, DNS providers
 - [`docs/dev/deployment.md`](docs/dev/deployment.md) — Helm chart, Kustomize overlays, Ansible playbooks, container images

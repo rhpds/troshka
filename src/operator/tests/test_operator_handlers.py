@@ -319,7 +319,6 @@ class TestExtractVms:
                         "cpus": 4,
                         "memory": 8192,
                         "firmware": "uefi",
-                        "machineType": "q35",
                     },
                 }
             ]
@@ -337,7 +336,7 @@ class TestExtractVms:
         topo = {"nodes": [{"id": "vm1", "type": "vmNode", "data": {"id": "vm1"}}]}
         vms = extract_vms(topo)
         assert vms[0]["firmware"] == "bios"
-        assert vms[0]["machineType"] == "q35"
+        assert "machineType" not in vms[0]
         assert vms[0]["powerOnAtDeploy"] is True
         assert vms[0]["recertEnabled"] is False
 
@@ -2640,7 +2639,6 @@ class TestBuildVmCr:
             "cpus": 4,
             "memory": 8192,
             "firmware": "uefi",
-            "machineType": "q35",
             "nics": [{"id": "nic-aaa", "mac": "52:54:00:01:02:03"}],
             "powerOnAtDeploy": True,
             "cloudInit": {},
@@ -2698,10 +2696,17 @@ class TestBuildVmCr:
         from handlers.project import _build_vm_cr
 
         vm = self._make_vm()
-        cdroms = {vm["id"]: {"s3Path": "library/iso.iso", "libraryIsoId": "iso-1"}}
+        cdroms = {
+            vm["id"]: {
+                "s3Path": "library/iso.iso",
+                "libraryIsoId": "iso-1",
+                "central": True,
+            }
+        }
         cr = _build_vm_cr(vm, {}, cdroms, {}, None, "ns1", "proj1", self._make_body())
 
         assert cr["spec"]["cdrom"]["s3Path"] == "library/iso.iso"
+        assert cr["spec"]["cdrom"]["central"] is True
 
     def test_cdrom_from_vm_data(self):
         from handlers.project import _build_vm_cr

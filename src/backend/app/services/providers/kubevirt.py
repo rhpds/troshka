@@ -1893,32 +1893,89 @@ def kubevirt_exec_vnc(
     }
 
 
+class _VirtLauncherSerialConnection:
+    """Bidirectional serial stream via virt-launcher pod exec + socat."""
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._timeout = 0.5
+
+    def settimeout(self, timeout):
+        self._timeout = timeout
+
+    def send(self, data):
+        if isinstance(data, bytes):
+            data = data.decode("utf-8", errors="replace")
+        self._stream.write_stdin(data)
+
+    def recv(self):
+        import websocket
+
+        deadline = time.time() + self._timeout
+        while time.time() < deadline:
+            if not self._stream.is_open():
+                raise websocket.WebSocketConnectionClosedException(
+                    "serial stream closed"
+                )
+            remaining = max(0.1, deadline - time.time())
+            self._stream.update(timeout=remaining)
+            if self._stream.peek_stdout():
+                chunk = self._stream.read_stdout()
+                if isinstance(chunk, bytes):
+                    return chunk.decode("utf-8", errors="replace")
+                return chunk
+        raise websocket.WebSocketTimeoutException("serial read timed out")
+
+    def close(self):
+        try:
+            self._stream.close()
+        except Exception:
+            pass
+
+
+def _serial_socket_path(custom_api, namespace, vm_name):
+    """Return the virt-serial0 unix socket path inside the virt-launcher pod."""
+    vmi = custom_api.get_namespaced_custom_object(
+        group="kubevirt.io",
+        version="v1",
+        namespace=namespace,
+        plural="virtualmachineinstances",
+        name=vm_name,
+    )
+    uid = (vmi.get("metadata") or {}).get("uid")
+    if not uid:
+        raise RuntimeError(f"VMI {vm_name} has no UID")
+    return f"/var/run/kubevirt-private/{uid}/virt-serial0"
+
+
 def _create_console_ws(provider, namespace, vm_name, timeout):
-    """Create a WebSocket connection to the KubeVirt serial console."""
-    import ssl
+    """Open a serial console stream to a KubeVirt VMI.
 
-    import websocket
+    The KubeVirt API WebSocket console subresource does not reliably deliver
+    guest output through the apiserver proxy (virtctl works via client-go's
+    wrapped dialer).  Connect directly to virt-serial0 in the virt-launcher
+    pod instead — same socket virt-handler proxies for the API console.
+    """
+    from kubernetes.stream import stream as k8s_stream
 
-    creds = provider.get_credentials()
-    api_url = creds["api_url"]
-    token = creds["token"]
-    verify = creds.get("verify_ssl", False)
-    ssl_opts = (
-        {"cert_reqs": ssl.CERT_REQUIRED} if verify else {"cert_reqs": ssl.CERT_NONE}
+    custom_api, core_v1, _ = _get_k8s_clients(provider)
+    launcher = _find_virt_launcher(core_v1, namespace, vm_name)
+    socket_path = _serial_socket_path(custom_api, namespace, vm_name)
+    req_timeout = min(timeout, 30)
+    stream = k8s_stream(
+        core_v1.connect_get_namespaced_pod_exec,
+        launcher.metadata.name,
+        namespace,
+        container="compute",
+        command=["socat", "-", f"UNIX-CONNECT:{socket_path}"],
+        stderr=True,
+        stdout=True,
+        stdin=True,
+        tty=False,
+        _preload_content=False,
+        _request_timeout=req_timeout,
     )
-    ws_url = api_url.replace("https://", "wss://").replace("http://", "ws://")
-    console_path = (
-        f"/apis/subresources.kubevirt.io/v1/namespaces/{namespace}"
-        f"/virtualmachineinstances/{vm_name}/console"
-    )
-    full_url = f"{ws_url}{console_path}"
-    return websocket.create_connection(
-        full_url,
-        header=[f"Authorization: Bearer {token}"],
-        subprotocols=["plain.kubevirt.io"],
-        sslopt=ssl_opts,
-        timeout=min(timeout, 30),
-    )
+    return _VirtLauncherSerialConnection(stream)
 
 
 def _console_ws_read(ws, secs):

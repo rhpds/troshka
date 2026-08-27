@@ -97,7 +97,6 @@ def extract_vms(topology):
                 "cpus": data.get("cpus") or data.get("vcpus", 2),
                 "memory": data.get("memory") or data.get("ram", 4) * 1024,
                 "firmware": firmware,
-                "machineType": data.get("machineType", "q35"),
                 "smbiosUuid": data.get("domainUuid", ""),
                 "os": data.get("os", ""),
                 "powerOnAtDeploy": data.get("powerOnAtDeploy", True),

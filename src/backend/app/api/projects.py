@@ -3361,6 +3361,19 @@ def _apply_kubevirt_vm_changes(
             )
 
 
+_KUBEVIRT_VM_RUNTIME_DATA_KEYS = frozenset({"status", "machineType"})
+
+
+def _vm_data_for_kubevirt_diff(data: dict | None) -> dict:
+    """Strip runtime-only canvas fields before comparing topologies for reconfigure."""
+    if not data:
+        return {}
+    cleaned = dict(data)
+    for key in _KUBEVIRT_VM_RUNTIME_DATA_KEYS:
+        cleaned.pop(key, None)
+    return cleaned
+
+
 def _find_changed_kubevirt_vms(current: dict, deployed: dict) -> list[str]:
     """Find VM node IDs with any data change between current and deployed topologies."""
     cur_nodes = {
@@ -3372,7 +3385,9 @@ def _find_changed_kubevirt_vms(current: dict, deployed: dict) -> list[str]:
     return [
         nid
         for nid in cur_nodes
-        if nid in dep_nodes and cur_nodes[nid].get("data") != dep_nodes[nid].get("data")
+        if nid in dep_nodes
+        and _vm_data_for_kubevirt_diff(cur_nodes[nid].get("data"))
+        != _vm_data_for_kubevirt_diff(dep_nodes[nid].get("data"))
     ]
 
 

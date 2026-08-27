@@ -400,6 +400,43 @@ def test_template_machine_type_round_trip():
     assert exported["vms"]["rtr3"]["machine_type"] == "i440fx"
 
 
+def test_blank_vm_with_bootstrap_iso_gets_cdrom_controller():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "name": "bootstrap-iso-test",
+        "networks": {"lab": {"cidr": "172.20.20.0/24", "dhcp": True}},
+        "vms": {
+            "rtr1": {
+                "os": "blank",
+                "firmware": "bios",
+                "disks": [{"size_gb": 20}],
+                "isos": [
+                    {
+                        "name": "rtr1-bootstrap",
+                        "library_item_name": "net-automation-rtr1-bootstrap",
+                    }
+                ],
+                "nics": [{"network": "lab"}],
+            },
+        },
+    }
+    topo = generate_topology_from_template(resolve_inline_template(tmpl))
+    vm = next(n for n in topo["nodes"] if n["data"].get("name") == "rtr1")
+    controllers = vm["data"]["diskControllers"]
+    assert any(c.get("name", "").startswith("cdrom") for c in controllers)
+    iso_nodes = [
+        n
+        for n in topo["nodes"]
+        if n.get("type") == "storageNode" and n["data"].get("format") == "iso"
+    ]
+    assert len(iso_nodes) == 1
+    assert iso_nodes[0]["data"]["bootableIso"] is False
+
+
 def test_export_import_round_trip():
     from app.services.template_loader import (
         export_topology_to_template,

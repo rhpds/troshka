@@ -137,7 +137,6 @@ def test_build_troshkavm_disk_spec_uses_controller_bus():
                     "nics": [
                         {"id": "nic1", "mac": "52:54:00:00:00:01", "model": "e1000"}
                     ],
-                    "machineType": "i440fx",
                 },
             },
             {
@@ -166,7 +165,7 @@ def test_build_troshkavm_disk_spec_uses_controller_bus():
         {"name": "rtr", "vcpus": 2, "ram_gb": 4, "firmware": "bios"},
         topo,
     )
-    assert spec["machineType"] == "i440fx"
+    assert "machineType" not in spec
     assert spec["disks"][0]["bus"] == "ide"
     assert spec["nics"][0]["model"] == "e1000"
 
@@ -348,11 +347,6 @@ def test_validate_kubevirt_vm_disk_buses_rejects_ide():
 @pytest.mark.parametrize(
     "cur_data,dep_data,expected",
     [
-        (
-            {"machineType": "q35"},
-            {"machineType": "i440fx"},
-            {"vm1"},
-        ),
         (
             {"firmware": "bios"},
             {"firmware": "uefi"},

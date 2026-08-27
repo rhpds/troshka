@@ -27,12 +27,17 @@ METHOD=""
 TIMEOUT=600
 BACKGROUND=false
 LOG_FILE=""
+PROJECT_PREFIX=""
+VM_NAME=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --project|-P) PROJECT_PREFIX="$2"; shift 2 ;;
+        --vm|-V) VM_NAME="$2"; shift 2 ;;
         --user|-u) USERNAME="$2"; shift 2 ;;
         --password|-p) PASSWORD="$2"; shift 2 ;;
         --timeout|-t) TIMEOUT="$2"; shift 2 ;;
+        --method|-m) METHOD="$2"; shift 2 ;;
         --serial|-s) METHOD="serial"; shift ;;
         --console|-c) METHOD="console"; shift ;;
         --console-text) METHOD="console-text"; shift ;;
@@ -40,11 +45,15 @@ while [[ $# -gt 0 ]]; do
         --log|-l) LOG_FILE="$2"; shift 2 ;;
         --help|-h)
             echo "Usage: vm-exec.sh [options] <project> <vm-name> <command...>"
+            echo "       vm-exec.sh [options] --project <project> --vm <vm-name> <command...>"
             echo ""
             echo "Options:"
+            echo "  --project, -P    Project name or ID prefix"
+            echo "  --vm, -V         VM name or ID prefix"
             echo "  --user, -u       SSH username (default: cloud-user)"
             echo "  --password, -p   Password for serial console login"
-            echo "  --serial, -s     Force serial console exec"
+            echo "  --method, -m     Exec method: auto, serial, ssh, guest-agent, console, vnc"
+            echo "  --serial, -s     Shorthand for --method serial"
             echo "  --console, -c    Force VNC console exec (send-key + screenshot + OCR)"
             echo "  --console-text   Console exec, switch to TTY2 first (for graphical VMs)"
             echo "  --timeout, -t    Command timeout in seconds (default: 600)"
@@ -53,7 +62,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Examples:"
             echo "  ./vm-exec.sh 768d8 bastion 'oc get nodes'"
-            echo "  ./vm-exec.sh 768d8 bastion 'python3 -c \"print(1+2)\"'"
+            echo "  ./vm-exec.sh --project net-automation --vm rtr3 --serial 'show version'"
             echo "  ./vm-exec.sh --user root 768d8 bastion 'systemctl status sshd'"
             echo "  ./vm-exec.sh --bg --log ~/build.log 768d8 bastion './build.sh'"
             exit 0
@@ -62,10 +71,19 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-PROJECT_PREFIX="${1:-}"
-VM_NAME="${2:-}"
-shift 2 2>/dev/null || true
+if [[ -z "$PROJECT_PREFIX" ]]; then
+    PROJECT_PREFIX="${1:-}"
+    shift || true
+fi
+if [[ -z "$VM_NAME" ]]; then
+    VM_NAME="${1:-}"
+    shift || true
+fi
 COMMAND="$*"
+# Drop leading "--" separator if present
+if [[ "$COMMAND" == --* ]]; then
+    COMMAND="${COMMAND#-- }"
+fi
 
 if [[ -z "$PROJECT_PREFIX" || -z "$VM_NAME" || -z "$COMMAND" ]]; then
     echo "Usage: vm-exec.sh [options] <project> <vm-name> <command...>" >&2

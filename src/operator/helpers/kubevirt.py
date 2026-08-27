@@ -231,9 +231,6 @@ def _build_base_domain(spec):
         },
     }
 
-    if spec.get("machineType"):
-        domain["machine"] = {"type": spec["machineType"]}
-
     if spec.get("smbiosUuid"):
         domain.setdefault("firmware", {})["uuid"] = spec["smbiosUuid"]
 

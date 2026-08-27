@@ -176,6 +176,29 @@ class TestFindChangedKubevirtVms:
         deployed = {"nodes": [{"id": "n1", "type": "networkNode", "data": {"a": 2}}]}
         assert _find_changed_kubevirt_vms(current, deployed) == []
 
+    def test_ignores_runtime_status_field(self):
+        from app.api.projects import _find_changed_kubevirt_vms
+
+        current = {
+            "nodes": [
+                {
+                    "id": "vm1",
+                    "type": "vmNode",
+                    "data": {"vcpus": 2, "status": "running"},
+                }
+            ]
+        }
+        deployed = {
+            "nodes": [
+                {
+                    "id": "vm1",
+                    "type": "vmNode",
+                    "data": {"vcpus": 2, "status": "stopped"},
+                }
+            ]
+        }
+        assert _find_changed_kubevirt_vms(current, deployed) == []
+
 
 # ---------------------------------------------------------------------------
 # _get_deployed_disk_info

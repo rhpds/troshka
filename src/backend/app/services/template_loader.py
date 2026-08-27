@@ -562,6 +562,8 @@ def _build_vm_iso_nodes(
             iso_data["libraryItemId"] = iso_cfg["library_item_id"]
         if iso_cfg.get("library_item_name"):
             iso_data["libraryItemName"] = iso_cfg["library_item_name"]
+        # Config-only bootstrap ISOs (IOS-XE CVAC, Junos KVM) must not become boot device.
+        iso_data["bootableIso"] = bool(iso_cfg.get("boot", False))
         iso_node = {
             "id": iso_id,
             "type": "storageNode",
@@ -665,7 +667,8 @@ def _build_vm_data(vm_name, vm_cfg, _vms_def, nets_def, net_ids, vm_x, vm_row_y)
         disk_nodes.append(disk_node)
         disk_edges_list.append(disk_edge)
 
-    if os_type != "blank":
+    isos_cfg = vm_cfg.get("isos", [])
+    if os_type != "blank" or isos_cfg:
         dc_cdrom = {"id": f"dp-{_id()}", "name": "cdrom0", "bus": "sata"}
         disk_controllers.append(dc_cdrom)
 

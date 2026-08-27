@@ -89,23 +89,26 @@ vms:
         model: virtio
         ip: 10.0.0.20
 
-  rtr1:                     # Cisco IOS-XE (c8000v) — configured via serial_exec at bootstrap
+  rtr1:                     # Cisco IOS-XE (c8000v) — day-0 via bootstrap ISO (CVAC)
     vcpus: 4
     ram_gb: 8
     os: blank               # no cloud-init; network OS from disk image
     firmware: bios
-    serial_exec: ios        # troshkad serial console dialect for day-0 config
+    serial_exec: ios        # operational serial; day-0 config from bootstrap ISO
     tags:
       AnsibleGroup: routers,cisco_iosxe
     disks:
       - size_gb: 20
         library_item_name: c8000v-rhdp-8g
+    isos:
+      - name: rtr1-bootstrap
+        library_item_name: net-automation-rtr1-bootstrap
     nics:
       - network: lab
         model: virtio
         ip: 172.20.20.10
 
-  rtr2:                     # Arista vEOS
+  rtr2:                     # Arista vEOS — day-0 via serial (configure_routers)
     vcpus: 2
     ram_gb: 4
     os: blank
@@ -115,13 +118,14 @@ vms:
       AnsibleGroup: routers,arista_eos
     disks:
       - size_gb: 10
+        bus: sata           # KubeVirt: virtio hangs vEOS after kexec; libvirt OK either way
         library_item_name: veos-lab-4.32.0F
     nics:
       - network: lab
         model: virtio
         ip: 172.20.20.20
 
-  rtr3:                     # Juniper vSRX
+  rtr3:                     # Juniper vSRX — day-0 via bootstrap ISO (juniper.conf)
     vcpus: 2
     ram_gb: 12
     os: blank
@@ -133,12 +137,15 @@ vms:
       - size_gb: 20
         bus: sata
         library_item_name: junos-vsrx3-23.2R2.21
+    isos:
+      - name: rtr3-bootstrap
+        library_item_name: net-automation-rtr3-bootstrap
     nics:
       - network: lab
         model: virtio
         ip: 172.20.20.30
 
-  rtr4:                     # second Arista vEOS
+  rtr4:                     # second Arista vEOS — day-0 via serial
     vcpus: 2
     ram_gb: 4
     os: blank
@@ -148,6 +155,7 @@ vms:
       AnsibleGroup: routers,arista_eos
     disks:
       - size_gb: 10
+        bus: sata           # KubeVirt: virtio hangs vEOS after kexec; libvirt OK either way
         library_item_name: veos-lab-4.32.0F
     nics:
       - network: lab

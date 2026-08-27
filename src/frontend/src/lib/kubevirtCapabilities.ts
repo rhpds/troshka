@@ -66,10 +66,6 @@ export function allowedMachineTypes(
   clusterCapabilities: ClusterCapabilities | null | undefined,
   providerType: string | null,
 ): string[] {
-  if (providerType === "kubevirt") {
-    const caps = getKubevirtCapabilities(clusterCapabilities);
-    return caps?.machineTypes?.length ? caps.machineTypes : ["q35"];
-  }
   if (providerType === "ocpvirt") {
     const caps = getKubevirtCapabilities(clusterCapabilities);
     return caps?.machineTypes?.length ? caps.machineTypes : DEFAULT_MACHINE_TYPES;

@@ -1,0 +1,25 @@
+hostname rtr1
+username admin privilege 15 password admin@123
+ip domain name lab.local
+crypto key generate rsa modulus 2048
+!
+interface GigabitEthernet1
+ ip address 172.20.20.10 255.255.255.0
+ no shutdown
+!
+ip ssh version 2
+ip ssh server algorithm mac hmac-sha2-512
+ip ssh maxstartups 128
+!
+line con 0
+ logging synchronous
+!
+line vty 0 4
+ login local
+ transport input all
+!
+netconf-yang
+netconf max-sessions 16
+netconf detailed-error
+!
+restconf

@@ -9392,6 +9392,7 @@ def _serial_open_pty(domain):
 
 _IOS_PROMPT = r"[>#]\s*"
 _IOS_USERNAME = r"(?i)Username:\s*"
+_IOS_LOGIN = r"(?i)login:\s*"
 _IOS_PASSWORD = r"(?i)Password:\s*"
 _IOS_PRESS_RETURN = r"(?i)Press RETURN to get started"
 _IOS_INIT_DIALOG = r"(?i)initial configuration dialog\?"
@@ -9447,13 +9448,29 @@ def _serial_clean_ios_output(raw, command):
     return "\n".join(lines)
 
 
+_SERIAL_BLANK_MESSAGE = (
+    "Serial console has no output — guest may be on VGA only. "
+    "Use the VNC console for boot/login output."
+)
+
+
 def _serial_ios_poke_and_login(child, username, password, domain, timeout_secs):
     """Reach an IOS-XE exec prompt (> or #). Returns error dict or None."""
     from pexpect import TIMEOUT
 
     enable_secret = _ios_enable_secret(password)
-    deadline = time.time() + min(timeout_secs, 90)
+    poke_timeout = min(timeout_secs, 30)
+    blank_deadline = min(15, poke_timeout / 2)
+    deadline = time.time() + poke_timeout
+    started = time.time()
+    saw_output = False
     while time.time() < deadline:
+        if not saw_output and (time.time() - started) >= blank_deadline:
+            return {
+                "domain": domain,
+                "output": "",
+                "error": _SERIAL_BLANK_MESSAGE,
+            }
         child.send("\r")
         try:
             idx = child.expect(
@@ -9463,6 +9480,7 @@ def _serial_ios_poke_and_login(child, username, password, domain, timeout_secs):
                     _IOS_CONFIRM_SECRET,
                     _IOS_SETUP_SELECT,
                     _IOS_MORE,
+                    _IOS_LOGIN,
                     _IOS_USERNAME,
                     _IOS_PASSWORD,
                     _IOS_PRESS_RETURN,
@@ -9471,7 +9489,11 @@ def _serial_ios_poke_and_login(child, username, password, domain, timeout_secs):
                 timeout=3,
             )
         except TIMEOUT:
+            if (child.before or "").strip():
+                saw_output = True
             continue
+        if (child.before or "").strip():
+            saw_output = True
         if idx == 0:
             child.send("no\r")
         elif idx == 1:
@@ -9483,16 +9505,17 @@ def _serial_ios_poke_and_login(child, username, password, domain, timeout_secs):
         elif idx == 4:
             child.send(" ")
         elif idx == 5:
+            user = username or "admin"
+            child.send(user + "\r")
+        elif idx == 6:
             if not username:
                 return {"domain": domain, "output": "", "error": "Username required"}
             child.send(username + "\r")
-        elif idx == 6:
-            if not password:
-                return {"domain": domain, "output": "", "error": "Password required"}
-            child.send(password + "\r")
         elif idx == 7:
-            child.send("\r")
+            child.send((password or "") + "\r")
         elif idx == 8:
+            child.send("\r")
+        elif idx == 9:
             return None
     return {"domain": domain, "output": "", "error": "Console not responding"}
 
@@ -9623,8 +9646,18 @@ def _serial_junos_poke_and_login(child, domain, timeout_secs):
     _FREEBSD_LOGIN = r"login:\s*"
     _FREEBSD_PASSWORD = r"Password:\s*"
 
-    deadline = time.time() + min(timeout_secs, 120)
+    poke_timeout = min(timeout_secs, 45)
+    blank_deadline = min(15, poke_timeout / 2)
+    deadline = time.time() + poke_timeout
+    started = time.time()
+    saw_output = False
     while time.time() < deadline:
+        if not saw_output and (time.time() - started) >= blank_deadline:
+            return {
+                "domain": domain,
+                "output": "",
+                "error": _SERIAL_BLANK_MESSAGE,
+            }
         child.send("\r")
         try:
             idx = child.expect(
@@ -9638,7 +9671,11 @@ def _serial_junos_poke_and_login(child, domain, timeout_secs):
                 timeout=3,
             )
         except TIMEOUT:
+            if (child.before or "").strip():
+                saw_output = True
             continue
+        if (child.before or "").strip():
+            saw_output = True
         if idx == 0:
             child.send(" ")
         elif idx == 1:

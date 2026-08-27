@@ -17,7 +17,6 @@ _DEFAULT_KUBEVIRT_CAPABILITIES: dict[str, Any] = {
     "videoConfigEnabled": False,
     "diskBuses": ["virtio", "scsi", "sata"],
     "videoModels": [],
-    "machineTypes": ["q35"],
     "inputModels": ["virtio", "usb", "ps2"],
 }
 

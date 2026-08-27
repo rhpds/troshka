@@ -412,7 +412,7 @@ class TestBuildKubevirtVmSpec:
         assert spec["cpus"] == 4
         assert spec["memory"] == 16 * 1024
         assert spec["firmware"] == "uefi"
-        assert spec["machineType"] == "q35"
+        assert "machineType" not in spec
         assert spec["smbiosUuid"] == "uuid-123"
         assert spec["os"] == "rhel9"
         assert spec["powerOnAtDeploy"] is True

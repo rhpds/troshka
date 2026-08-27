@@ -882,6 +882,8 @@ def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
         }
         if rotation_rate is not None:
             disk_entry["rotation_rate"] = rotation_rate
+        if sdata.get("format") == "iso":
+            disk_entry["bootable_iso"] = bool(sdata.get("bootableIso", False))
         disks.append(disk_entry)
 
     return disks
@@ -1129,17 +1131,21 @@ def _resolve_boot_devs(vm: dict, vm_disks: list[dict], topology: dict) -> list[s
     storage_nodes = {n["id"]: n for n in all_nodes if n.get("type") == "storageNode"}
 
     raw_boot_devs = vm.get("boot_devices") or None
-    has_iso = any(d["format"] == "iso" for d in vm_disks)
+    has_bootable_iso = any(
+        d["format"] == "iso" and d.get("bootable_iso", False) for d in vm_disks
+    )
     has_disk = any(d["format"] != "iso" for d in vm_disks)
     has_cdrom_controller = any(
         dc.get("bus") == "sata" and "cdrom" in dc.get("name", "")
         for dc in vm.get("disk_controllers", [])
     )
 
-    if raw_boot_devs is None or (raw_boot_devs == ["hd"] and has_iso):
-        return _auto_detect_boot_devs(has_iso, has_disk)
+    if raw_boot_devs is None or (raw_boot_devs == ["hd"] and has_bootable_iso):
+        return _auto_detect_boot_devs(has_bootable_iso, has_disk)
 
-    return _map_boot_dev_entries(raw_boot_devs, storage_nodes, has_cdrom_controller)
+    return _map_boot_dev_entries(
+        raw_boot_devs, storage_nodes, has_cdrom_controller, has_bootable_iso
+    )
 
 
 def _auto_detect_boot_devs(has_iso: bool, has_disk: bool) -> list[str]:
@@ -1156,6 +1162,7 @@ def _map_boot_dev_entries(
     raw_boot_devs: list[str],
     storage_nodes: dict[str, dict],
     has_cdrom_controller: bool,
+    has_bootable_iso: bool = False,
 ) -> list[str]:
     boot_type_map = {"hd": "hd", "disk": "hd", "network": "network", "cdrom": "cdrom"}
     boot_devs = []
@@ -1174,7 +1181,7 @@ def _map_boot_dev_entries(
         if dev not in seen:
             boot_devs.append(dev)
             seen.add(dev)
-    if has_cdrom_controller and "cdrom" not in seen:
+    if has_cdrom_controller and has_bootable_iso and "cdrom" not in seen:
         boot_devs.append("cdrom")
     return boot_devs or ["hd"]
 
@@ -1343,7 +1350,6 @@ def build_troshkavm_vm_spec(vm_id: str, vm: dict, topology: dict) -> dict:
         "cpus": vm.get("vcpus", 2),
         "memory": vm.get("ram_gb", 4) * 1024,
         "firmware": _resolve_vm_firmware(vm, vm_data),
-        "machineType": vm_data.get("machineType") or "q35",
         "smbiosUuid": vm_data.get("smbiosUuid") or vm_data.get("domainUuid", ""),
         "os": vm.get("os", ""),
         "powerOnAtDeploy": vm_data.get("powerOnAtDeploy", True),
@@ -1429,7 +1435,6 @@ def _vm_redeploy_spec(data: dict) -> dict:
     return {
         "firmware": data.get("firmware", "bios"),
         "secureBoot": data.get("secureBoot", False),
-        "machineType": data.get("machineType") or "",
         "videoModel": data.get("videoModel", "virtio"),
         "inputModel": data.get("inputModel", "virtio"),
         "smbiosUuid": data.get("smbiosUuid")

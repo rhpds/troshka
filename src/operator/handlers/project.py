@@ -1205,7 +1205,6 @@ def _build_vm_cr(
             "cpus": vm["cpus"],
             "memory": vm["memory"],
             "firmware": vm.get("firmware", "bios"),
-            "machineType": vm.get("machineType", "q35"),
             "smbiosUuid": vm.get("smbiosUuid", ""),
             "os": vm.get("os", ""),
             "powerOnAtDeploy": vm.get("powerOnAtDeploy", True),

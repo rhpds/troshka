@@ -3298,11 +3298,19 @@ class TestResolveBootDevs:
         topo = {"nodes": []}
         assert _resolve_boot_devs(vm, disks, topo) == ["hd"]
 
-    def test_defaults_iso_only(self):
+    def test_defaults_iso_only_non_bootable(self):
         from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {"boot_devices": None}
-        disks = [{"format": "iso"}]
+        disks = [{"format": "iso", "bootable_iso": False}]
+        topo = {"nodes": []}
+        assert _resolve_boot_devs(vm, disks, topo) == ["network"]
+
+    def test_defaults_bootable_iso_only(self):
+        from app.services.deploy_topology import _resolve_boot_devs
+
+        vm = {"boot_devices": None}
+        disks = [{"format": "iso", "bootable_iso": True}]
         topo = {"nodes": []}
         assert _resolve_boot_devs(vm, disks, topo) == ["cdrom"]
 
@@ -3310,10 +3318,24 @@ class TestResolveBootDevs:
         from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {"boot_devices": None}
-        disks = [{"format": "iso"}, {"format": "qcow2"}]
+        disks = [
+            {"format": "iso", "bootable_iso": True},
+            {"format": "qcow2"},
+        ]
         topo = {"nodes": []}
         result = _resolve_boot_devs(vm, disks, topo)
         assert result == ["cdrom", "hd"]
+
+    def test_config_iso_and_disk_boots_hd_only(self):
+        from app.services.deploy_topology import _resolve_boot_devs
+
+        vm = {"boot_devices": None}
+        disks = [
+            {"format": "iso", "bootable_iso": False},
+            {"format": "qcow2"},
+        ]
+        topo = {"nodes": []}
+        assert _resolve_boot_devs(vm, disks, topo) == ["hd"]
 
     def test_defaults_no_disks(self):
         from app.services.deploy_topology import _resolve_boot_devs
@@ -3331,15 +3353,28 @@ class TestResolveBootDevs:
         topo = {"nodes": []}
         assert _resolve_boot_devs(vm, disks, topo) == ["network"]
 
-    def test_explicit_hd_with_iso_overrides(self):
+    def test_explicit_hd_with_non_bootable_iso(self):
         from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {"boot_devices": ["hd"], "disk_controllers": []}
-        disks = [{"format": "iso"}, {"format": "qcow2"}]
+        disks = [
+            {"format": "iso", "bootable_iso": False},
+            {"format": "qcow2"},
+        ]
         topo = {"nodes": []}
-        # When boot_devices == ["hd"] but there's an ISO, auto-detect kicks in
+        assert _resolve_boot_devs(vm, disks, topo) == ["hd"]
+
+    def test_explicit_hd_with_bootable_iso_overrides(self):
+        from app.services.deploy_topology import _resolve_boot_devs
+
+        vm = {"boot_devices": ["hd"], "disk_controllers": []}
+        disks = [
+            {"format": "iso", "bootable_iso": True},
+            {"format": "qcow2"},
+        ]
+        topo = {"nodes": []}
         result = _resolve_boot_devs(vm, disks, topo)
-        assert "cdrom" in result
+        assert result == ["cdrom", "hd"]
 
     def test_storage_node_id_as_boot_dev(self):
         from app.services.deploy_topology import _resolve_boot_devs
@@ -8987,8 +9022,8 @@ class TestResolveBootDevsUnknownId:
         result = _resolve_boot_devs(vm, disks, topo)
         assert result == ["hd"]
 
-    def test_cdrom_controller_fallback(self):
-        """Line 884: VM has a cdrom controller but no cdrom in explicit boot order."""
+    def test_cdrom_controller_not_added_for_config_iso(self):
+        """Config ISO attached but not bootable — do not append cdrom to boot order."""
         from app.services.deploy_topology import _resolve_boot_devs
 
         vm = {
@@ -8998,8 +9033,7 @@ class TestResolveBootDevsUnknownId:
         disks = [{"format": "qcow2"}]
         topo = {"nodes": []}
         result = _resolve_boot_devs(vm, disks, topo)
-        assert "cdrom" in result
-        assert "hd" in result
+        assert result == ["hd"]
 
     def test_all_unknown_boot_devs_fallback_to_hd(self):
         """Line 885: boot_devs ends up empty, returns ['hd'] fallback."""

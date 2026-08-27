@@ -15,7 +15,6 @@ def _api_error(status: int, body: str):
 
 
 class TestCollectKubevirtClusterCapabilities:
-    @patch.object(cc, "_probe_machine_types", return_value=["q35"])
     @patch.object(cc, "_probe_video_models", return_value=["vga"])
     @patch.object(cc, "_probe_disk_buses", return_value=["virtio", "scsi", "sata", "usb"])
     @patch.object(cc, "is_video_config_enabled", return_value=True)
@@ -26,13 +25,12 @@ class TestCollectKubevirtClusterCapabilities:
         _video_gate,
         _disk_probe,
         _video_probe,
-        _machine_probe,
     ):
         custom_api = MagicMock()
         doc = cc.collect_kubevirt_cluster_capabilities(custom_api, "troshka-operator")
         assert doc["kubevirt"]["diskBuses"] == ["virtio", "scsi", "sata", "usb"]
         assert doc["kubevirt"]["videoModels"] == ["vga"]
-        assert doc["kubevirt"]["machineTypes"] == ["q35"]
+        assert "machineTypes" not in doc["kubevirt"]
         assert doc["kubevirt"]["videoConfigEnabled"] is True
 
 

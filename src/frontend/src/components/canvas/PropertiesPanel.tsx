@@ -660,8 +660,9 @@ export default function PropertiesPanel() {
                 </label>
               </div>
             )}
-            {["kubevirt", "ocpvirt"].includes(useCanvasStore.getState().providerType || "") && (() => {
+            {(() => {
               const providerType = useCanvasStore.getState().providerType;
+              if (providerType !== "ocpvirt") return null;
               const clusterCapabilities = useCanvasStore.getState().clusterCapabilities;
               const machineTypes = allowedMachineTypes(clusterCapabilities, providerType);
               const currentMachineType = (data as Record<string, any>).machineType as string || "q35";
