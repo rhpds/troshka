@@ -3330,6 +3330,22 @@ class TestStartKubevirtVms:
         result = _start_kubevirt_vms(custom_api, vm_items, "ns1")
         assert result == 0
 
+    def test_skips_already_running_vms(self):
+        from handlers.project import _start_kubevirt_vms
+
+        custom_api = MagicMock()
+        vm_items = [
+            {
+                "spec": {"powerOnAtDeploy": True},
+                "status": {"kubevirtVmName": "kv-1", "state": "Running"},
+            },
+        ]
+
+        result = _start_kubevirt_vms(custom_api, vm_items, "ns1")
+
+        assert result == 1
+        custom_api.patch_namespaced_custom_object.assert_not_called()
+
     def test_patch_failure_swallowed(self):
         from handlers.project import _start_kubevirt_vms
 
@@ -7202,7 +7218,7 @@ class TestCheckRecertPvcsReadyExtended:
 class TestStartKubevirtVmsExtended:
     """Cover _start_kubevirt_vms."""
 
-    def test_patches_running_true(self):
+    def test_patches_run_strategy_always(self):
         from handlers.project import _start_kubevirt_vms
 
         custom_api = MagicMock()
@@ -7217,6 +7233,9 @@ class TestStartKubevirtVmsExtended:
         count = _start_kubevirt_vms(custom_api, vm_items, "ns1")
         assert count == 1
         custom_api.patch_namespaced_custom_object.assert_called_once()
+        assert custom_api.patch_namespaced_custom_object.call_args[1]["body"] == {
+            "spec": {"runStrategy": "Always"}
+        }
 
     def test_skips_power_off_vm(self):
         from handlers.project import _start_kubevirt_vms

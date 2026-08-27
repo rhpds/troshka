@@ -1774,7 +1774,7 @@ def _pod_uses_pvc_on_node(core_api, namespace, node, pvc_name):
 
 
 def _start_kubevirt_vms(custom_api, vm_items, namespace):
-    """Patch running=true on all KubeVirt VMs. Returns count of started VMs."""
+    """Start KubeVirt VMs that are not already running. Returns count started."""
     started = 0
     for vm in vm_items:
         kv_name = vm.get("status", {}).get("kubevirtVmName", "")
@@ -1784,6 +1784,9 @@ def _start_kubevirt_vms(custom_api, vm_items, namespace):
         if not power_on:
             started += 1
             continue
+        if vm.get("status", {}).get("state") == "Running":
+            started += 1
+            continue
         try:
             custom_api.patch_namespaced_custom_object(
                 group=_KUBEVIRT_GROUP,
@@ -1791,7 +1794,7 @@ def _start_kubevirt_vms(custom_api, vm_items, namespace):
                 namespace=namespace,
                 plural="virtualmachines",
                 name=kv_name,
-                body={"spec": {"running": True}},
+                body={"spec": {"runStrategy": "Always"}},
             )
             started += 1
         except Exception:
