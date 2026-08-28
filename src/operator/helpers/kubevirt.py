@@ -209,6 +209,28 @@ def _apply_video_and_input_devices(domain, spec, *, video_config_enabled=False):
     # ps2: omit inputs — KubeVirt/QEMU default PS/2 keyboard and mouse apply
 
 
+_NETWORK_SERIAL_EXEC_TYPES = frozenset(
+    {
+        "eos",
+        "arista_eos",
+        "ios",
+        "iosxe",
+        "cisco_iosxe",
+        "junos",
+        "juniper_junos",
+    }
+)
+
+
+def _serial_exec_needs_headless(spec) -> bool:
+    """Network OS images (vEOS, IOS-XE, vSRX) use UART when VGA is absent."""
+    headless = spec.get("headless")
+    if headless is not None:
+        return bool(headless)
+    serial_exec = (spec.get("serialExecType") or "").lower()
+    return serial_exec in _NETWORK_SERIAL_EXEC_TYPES
+
+
 def _apply_serial_console(domain, spec):
     """Configure KubeVirt serial console attachment from canvas I/O settings."""
     devices = domain.setdefault("devices", {})
@@ -218,6 +240,11 @@ def _apply_serial_console(domain, spec):
     # KubeVirt exposes an isa-serial guest port via virtio-serial; serialModel is
     # stored for canvas parity (network appliances should use isa).
     devices["autoattachSerialConsole"] = True
+    # vEOS and similar NOS route the login prompt to VGA when a display device is
+    # present (vrnetlab uses qemu -display none).  Drop the graphics device so the
+    # guest writes to ttyS0/COM1 like on libvirt/ocpvirt.
+    if _serial_exec_needs_headless(spec):
+        devices["autoattachGraphicsDevice"] = False
 
 
 def _build_base_domain(spec):

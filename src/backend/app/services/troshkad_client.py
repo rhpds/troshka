@@ -565,11 +565,19 @@ def get_all_container_states(host, timeout=10):
 
 def get_vnc_port(host, domain_name, timeout=15):
     """Get VNC port for a VM. Returns port int or None."""
+    info = get_vm_console_info(host, domain_name, timeout=timeout)
+    if not info:
+        return None
+    return info.get("vnc_port")
+
+
+def get_vm_console_info(host, domain_name, timeout=15):
+    """Get libvirt console metadata: vnc_port and headless flag."""
     try:
         job_id = start_job(host, "/vms/vnc-port", {"domain_name": domain_name})
         job = wait_for_job(host, job_id, timeout=timeout, poll_interval=2)
         if job["status"] == "completed":
-            return job["result"].get("vnc_port")
+            return job["result"]
         return None
     except TroshkadError:
         return None

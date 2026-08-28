@@ -63,8 +63,13 @@ repo). Key gotchas discovered in practice:
    `.generated/${TROSHKA_PROJECT_ID}/inventory.troshka.yml`, not
    `troshka_inventory.yml`.
 2. **RHSM** — required for vscode package install on unregistered `rhel-9.6`
-   images. Portal creds (`redhat_username`/`redhat_password`) in
-   `~/agnosticv/includes/secrets/aap2-casc-registry-creds.yaml` — not satellite.
+   images. Demosat activation key in
+   `~/zt-ansiblebu-agnosticv/includes/secrets/demosat-rhel-8-and-9-latest.yaml`
+   (`satellite_org`, `satellite_activationkey` via `vault_var` — not portal
+   creds). The secret sets `set_repositories_satellite_ha: true`; registration
+   must use the Satellite HA `subscription-manager` path (`server.hostname` +
+   `/rhsm` prefix, `--serverurl` / `--baseurl`). See
+   `demo_workloads/playbooks/net-automation-workshop/PATTERN-BUILD.md`.
    Original zt-ansiblebu CI applies demosat content views at provision time instead.
 3. **Showroom networking** — showroom listens on the transit infra IP;
    gateway 80/443→infra port-forwards are injected at deploy.

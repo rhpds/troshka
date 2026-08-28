@@ -24,7 +24,7 @@ import sys, time
 from app.core.database import SessionLocal
 from app.models.host import Host
 from app.models.provider import Provider
-from app.services.agent_deployer import deploy_agent, get_provider_ssh_port, get_provider_ssh_user
+from app.services.agent_deployer import AgentDeployConfig, deploy_agent, get_provider_ssh_port, get_provider_ssh_user
 from app.services.troshkad_client import check_health
 
 prefix = '${HOST_PREFIX}'
@@ -51,9 +51,10 @@ try:
             continue
         ssh_port = get_provider_ssh_port(prov.type)
         ssh_user = get_provider_ssh_user(prov.type)
+        cfg = AgentDeployConfig(ssh_port=ssh_port, ssh_user=ssh_user)
         print(f'{h.id[:8]} ({h.ip_address}:{ssh_port}): reinstalling...', end=' ', flush=True)
         try:
-            result = deploy_agent(h.ip_address, h.private_key, h.id, ssh_port=ssh_port, ssh_user=ssh_user)
+            result = deploy_agent(h.ip_address, h.private_key, h.id, config=cfg)
             if not result.get('success'):
                 print('FAILED')
                 continue

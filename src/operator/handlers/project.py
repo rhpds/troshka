@@ -1218,6 +1218,7 @@ def _build_vm_cr(
             "inputModel": vm.get("inputModel", "virtio"),
             "serialModel": vm.get("serialModel", "isa"),
             "serialConsole": vm.get("serialConsole", True),
+            "serialExecType": vm.get("serialExecType", ""),
         },
     }
     cdrom = vm_cdroms_map.get(vm["id"]) or vm.get("cdrom")

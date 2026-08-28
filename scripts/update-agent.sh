@@ -32,20 +32,21 @@ import hashlib, os, sys, time
 
 from app.core.database import SessionLocal
 from app.models.host import Host
+from app.services.agent_deployer import deploy_troshka_serial_for_host
 from app.services.troshkad_client import push_update, push_vncd_update, check_health, TroshkadError
 
 prefix = '${HOST_PREFIX}'
 force = ${FORCE:-False}
 
-troshkad_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath('.'))),
-    'src', 'troshkad', 'troshkad.py')
+repo_root = os.path.dirname(os.path.dirname(os.path.abspath('.')))
+troshkad_path = os.path.join(repo_root, 'src', 'troshkad', 'troshkad.py')
 with open(troshkad_path, 'rb') as f:
     script_bytes = f.read()
 version = hashlib.sha256(script_bytes).hexdigest()[:12]
 script_text = script_bytes.decode().replace('VERSION = \"dev\"', f'VERSION = \"{version}\"')
 script_bytes = script_text.encode()
 
-vncd_path = os.path.join(os.path.dirname(troshkad_path), '..', 'troshka-vncd', 'troshka-vncd.py')
+vncd_path = os.path.join(repo_root, 'src', 'troshka-vncd', 'troshka-vncd.py')
 vncd_bytes = b''
 if os.path.exists(vncd_path):
     with open(vncd_path, 'rb') as f:
@@ -67,11 +68,13 @@ try:
 
     for h in hosts:
         if not force and h.agent_version == version:
-            print(f'{h.id[:8]} ({h.ip_address}): already up to date ({version})')
+            if deploy_troshka_serial_for_host(h):
+                print(f'{h.id[:8]} ({h.ip_address}): troshka_serial synced')
+            else:
+                print(f'{h.id[:8]} ({h.ip_address}): already up to date ({version})')
             continue
 
         old_ver = h.agent_version or 'unknown'
-        # Skip hosts that aren't actually reachable
         try:
             health = check_health(h)
             if not health:
@@ -82,14 +85,17 @@ try:
             continue
 
         print(f'{h.id[:8]} ({h.ip_address}): updating {old_ver} -> {version}...', end=' ', flush=True)
+        if not deploy_troshka_serial_for_host(h):
+            print('serial package deploy failed')
+            continue
+
         pushed = False
         try:
             push_update(h, script_bytes, version, force=force)
             pushed = True
         except TroshkadError:
-            pass  # agent may be mid-restart from a previous push — just poll
+            pass
 
-        # Wait for the new version to appear (agent restarts after push)
         for i in range(60):
             time.sleep(3)
             try:
@@ -105,7 +111,7 @@ try:
                     print('done')
                     break
             except Exception:
-                pass  # agent restarting, retry
+                pass
         else:
             if pushed:
                 print('pushed but timed out waiting for restart')

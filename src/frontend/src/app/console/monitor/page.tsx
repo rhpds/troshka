@@ -175,6 +175,10 @@ function MegaConsolePage() {
         return;
       }
       const data = await resp.json();
+      if (data.headless) {
+        setRfbStatuses((prev) => ({ ...prev, [vmId]: "headless" }));
+        return;
+      }
       if (!data.ws_url) {
         setRfbStatuses((prev) => ({ ...prev, [vmId]: "waiting" }));
         reconnectTimers.current[vmId] = setTimeout(() => connectVm(vmId), 3000);
@@ -224,8 +228,14 @@ function MegaConsolePage() {
       const rfbStatus = rfbStatuses[vm.id];
       const hasRfb = !!_rfbInstances[vm.id];
 
-      // Connect if running and not already connected/connecting
-      if (vmState === "running" && !hasRfb && rfbStatus !== "connecting" && rfbStatus !== "connected") {
+      // Connect if running and not already connected/connecting/headless
+      if (
+        vmState === "running"
+        && !hasRfb
+        && rfbStatus !== "connecting"
+        && rfbStatus !== "connected"
+        && rfbStatus !== "headless"
+      ) {
         connectVm(vm.id);
       }
 
@@ -364,6 +374,7 @@ function MegaConsolePage() {
           const rfbStatus = rfbStatuses[vm.id] || "";
           const isRunning = vmState === "running";
           const isConnected = rfbStatus === "connected";
+          const isHeadless = rfbStatus === "headless";
           const isFocused = focusedVm === vm.id;
 
           return (
@@ -422,12 +433,29 @@ function MegaConsolePage() {
                 )}
                 {isRunning && !isConnected && (
                   <div className="mc-console-overlay">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" strokeWidth="2" strokeLinecap="round" style={{ animation: "mc-spin 1s linear infinite" }}>
-                      <path d="M12 2a10 10 0 0 1 10 10" />
-                    </svg>
-                    <span style={{ fontSize: 11, color: "#8b949e" }}>
-                      {rfbStatus === "unavailable" ? "Console unavailable" : "Connecting..."}
-                    </span>
+                    {isHeadless ? (
+                      <>
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#8b949e" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="2" y="3" width="20" height="14" rx="2" />
+                          <line x1="8" y1="21" x2="16" y2="21" />
+                          <line x1="12" y1="17" x2="12" y2="21" />
+                          <path d="M6 7h12M6 11h8" />
+                        </svg>
+                        <span style={{ fontSize: 12, color: "#8b949e", fontWeight: 500 }}>Headless Mode</span>
+                        <span style={{ fontSize: 10, color: "#484f58", textAlign: "center", maxWidth: 180, lineHeight: 1.4 }}>
+                          Serial only — use VM exec or bootstrap playbook
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" strokeWidth="2" strokeLinecap="round" style={{ animation: "mc-spin 1s linear infinite" }}>
+                          <path d="M12 2a10 10 0 0 1 10 10" />
+                        </svg>
+                        <span style={{ fontSize: 11, color: "#8b949e" }}>
+                          {rfbStatus === "unavailable" ? "Console unavailable" : "Connecting..."}
+                        </span>
+                      </>
+                    )}
                   </div>
                 )}
               </div>

@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.services.providers.kubevirt_serial import (
     _SERIAL_BLANK_MESSAGE,
     _ios_clean_output,
@@ -23,6 +25,11 @@ def test_junos_clean_output_strips_prompt_noise():
     assert _junos_clean_output(raw, "cli show version") == "Hostname: rtr3"
 
 
+def test_ios_clean_output_strips_config_prompt_noise():
+    raw = "ok\r\nrtr2(config-if-Et1)#"
+    assert _ios_clean_output(raw, "interface Ethernet1") == "ok"
+
+
 def test_ios_clean_output_strips_prompt_noise():
     raw = "show version\r\nCisco IOS XE Software\r\nRouter>"
     assert _ios_clean_output(raw, "show version") == "Cisco IOS XE Software"
@@ -36,25 +43,28 @@ def test_split_serial_commands_skips_comments():
     ]
 
 
-def test_kubevirt_exec_serial_junos():
-    mock_ws = MagicMock()
+def _mock_kubevirt_serial_session(return_value):
+    return patch(
+        "app.services.providers.kubevirt_serial.run_stream_pexpect_session",
+        side_effect=lambda _open_stream, _timeout, work: return_value
+        if not callable(return_value)
+        else work(MagicMock()),
+    )
 
+
+def test_kubevirt_exec_serial_junos():
     with (
         patch(
             "app.services.providers.kubevirt._get_k8s_clients",
             return_value=(MagicMock(), MagicMock()),
         ),
-        patch(
-            "app.services.providers.kubevirt_serial._create_console_ws",
-            return_value=mock_ws,
-        ),
-        patch(
-            "app.services.providers.kubevirt_serial._junos_poke_and_login",
-            return_value=None,
-        ),
-        patch(
-            "app.services.providers.kubevirt_serial._junos_exec_command",
-            return_value="Hostname: rtr3",
+        _mock_kubevirt_serial_session(
+            {
+                "output": "Hostname: rtr3",
+                "error": "",
+                "exit_code": 0,
+                "method": "serial-junos",
+            }
         ),
     ):
         result = kubevirt_exec_serial(
@@ -69,29 +79,21 @@ def test_kubevirt_exec_serial_junos():
     assert result["method"] == "serial-junos"
     assert result["output"] == "Hostname: rtr3"
     assert result["exit_code"] == 0
-    mock_ws.close.assert_called_once()
 
 
 def test_kubevirt_exec_serial_ios():
-    mock_ws = MagicMock()
-
     with (
         patch(
             "app.services.providers.kubevirt._get_k8s_clients",
             return_value=(MagicMock(), MagicMock()),
         ),
-        patch(
-            "app.services.providers.kubevirt_serial._create_console_ws",
-            return_value=mock_ws,
-        ),
-        patch(
-            "app.services.providers.kubevirt_serial._network_serial_exec",
-            return_value={
+        _mock_kubevirt_serial_session(
+            {
                 "output": "Cisco IOS XE Software",
                 "error": "",
-                "exit_code": 0,
+                "exit_code": None,
                 "method": "serial-ios",
-            },
+            }
         ),
     ):
         result = kubevirt_exec_serial(
@@ -110,22 +112,14 @@ def test_kubevirt_exec_serial_ios():
 
 
 def test_kubevirt_exec_serial_junos_blank_console():
-    import pytest
-
-    mock_ws = MagicMock()
-
     with (
         patch(
             "app.services.providers.kubevirt._get_k8s_clients",
             return_value=(MagicMock(), MagicMock()),
         ),
         patch(
-            "app.services.providers.kubevirt_serial._create_console_ws",
-            return_value=mock_ws,
-        ),
-        patch(
-            "app.services.providers.kubevirt_serial._junos_poke_and_login",
-            return_value=_SERIAL_BLANK_MESSAGE,
+            "app.services.providers.kubevirt_serial.run_stream_pexpect_session",
+            side_effect=RuntimeError(_SERIAL_BLANK_MESSAGE),
         ),
     ):
         with pytest.raises(RuntimeError, match="VGA only"):
@@ -140,22 +134,14 @@ def test_kubevirt_exec_serial_junos_blank_console():
 
 
 def test_kubevirt_exec_serial_ios_blank_console():
-    import pytest
-
-    mock_ws = MagicMock()
-
     with (
         patch(
             "app.services.providers.kubevirt._get_k8s_clients",
             return_value=(MagicMock(), MagicMock()),
         ),
         patch(
-            "app.services.providers.kubevirt_serial._create_console_ws",
-            return_value=mock_ws,
-        ),
-        patch(
-            "app.services.providers.kubevirt_serial._ios_poke_and_login",
-            return_value=_SERIAL_BLANK_MESSAGE,
+            "app.services.providers.kubevirt_serial.run_stream_pexpect_session",
+            side_effect=RuntimeError(_SERIAL_BLANK_MESSAGE),
         ),
     ):
         with pytest.raises(RuntimeError, match="VGA only"):
@@ -170,25 +156,18 @@ def test_kubevirt_exec_serial_ios_blank_console():
 
 
 def test_kubevirt_exec_serial_eos():
-    mock_ws = MagicMock()
-
     with (
         patch(
             "app.services.providers.kubevirt._get_k8s_clients",
             return_value=(MagicMock(), MagicMock()),
         ),
-        patch(
-            "app.services.providers.kubevirt_serial._create_console_ws",
-            return_value=mock_ws,
-        ),
-        patch(
-            "app.services.providers.kubevirt_serial._network_serial_exec",
-            return_value={
+        _mock_kubevirt_serial_session(
+            {
                 "output": "Arista EOS",
                 "error": "",
-                "exit_code": 0,
+                "exit_code": None,
                 "method": "serial-eos",
-            },
+            }
         ),
     ):
         result = kubevirt_exec_serial(

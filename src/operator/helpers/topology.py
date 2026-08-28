@@ -115,6 +115,7 @@ def extract_vms(topology):
                 "inputModel": data.get("inputModel", "virtio"),
                 "serialModel": data.get("serialModel", "isa"),
                 "serialConsole": data.get("serialConsole", True),
+                "serialExecType": data.get("serialExecType", ""),
                 "cdrom": {},
                 "guestfishCommands": data.get("guestfishCommands", []),
             }

@@ -2102,6 +2102,120 @@ class TestDoRedeployBg:
         mock_session.commit.assert_not_called()
 
 
+class TestKubevirtVmRedeploy:
+    @patch("app.api.projects._notify_redeploy_vm_state")
+    @patch("app.api.projects._wait_troshkavm_redeploy_ready", return_value="Running")
+    @patch("app.api.projects._create_troshkavm_cr")
+    @patch("app.api.projects._wait_kubevirt_pvcs_deleted")
+    @patch("app.api.projects._wait_troshkavm_deleted")
+    @patch("app.api.projects._delete_troshkavm_cr")
+    @patch(
+        "app.api.projects._build_kubevirt_vm_spec",
+        return_value={"disks": [{"id": "disk0001"}]},
+    )
+    @patch("app.api.projects._kubevirt_vm_was_running", return_value=True)
+    @patch("app.api.projects._resolve_kubevirt_topology_for_redeploy")
+    @patch("app.api.projects._kubevirt_project_ns", return_value="troshka-p1")
+    @patch("app.api.projects._get_k8s_clients_for_kubevirt")
+    @patch(
+        "app.api.projects._find_vm_node_in_topology",
+        return_value={"id": "vm1", "type": "vmNode", "data": {}},
+    )
+    @patch(
+        "app.services.deploy_topology._extract_vms",
+        return_value=[{"node_id": "vm1", "name": "rtr2", "vcpus": 2, "ram_gb": 4}],
+    )
+    def test_execute_kubevirt_redeploy_recreates_troshkavm(
+        self,
+        mock_extract,
+        mock_find_node,
+        mock_clients,
+        mock_ns,
+        mock_resolve,
+        mock_was_running,
+        mock_build_spec,
+        mock_delete_cr,
+        mock_wait_deleted,
+        mock_wait_pvcs,
+        mock_create_cr,
+        mock_wait_ready,
+        mock_notify,
+    ):
+        from app.api.projects import _execute_kubevirt_vm_redeploy
+
+        mock_custom = MagicMock()
+        mock_custom.get_namespaced_custom_object.return_value = {
+            "metadata": {
+                "ownerReferences": [{"kind": "TroshkaProject"}],
+                "labels": {"troshka-project": "p1"},
+            }
+        }
+        mock_clients.return_value = (mock_custom, MagicMock(), None)
+
+        mock_host = MagicMock()
+        mock_host.provider_id = "prov-1"
+        mock_host.host_type = "kubevirt-cluster"
+        mock_proj = MagicMock()
+        mock_proj.topology = {"nodes": []}
+        mock_proj.vni_map = {}
+        mock_session = MagicMock()
+        mock_session.query.return_value.filter_by.return_value.first.return_value = (
+            MagicMock()
+        )
+
+        with patch(
+            "app.services.deploy_topology._vm_domain_name",
+            return_value="dom-vm1",
+        ):
+            _execute_kubevirt_vm_redeploy(
+                mock_host, mock_session, mock_proj, "p1", "vm1"
+            )
+
+        mock_delete_cr.assert_called_once()
+        mock_wait_deleted.assert_called_once()
+        mock_wait_pvcs.assert_called_once()
+        mock_create_cr.assert_called_once()
+        mock_wait_ready.assert_called_once()
+        mock_notify.assert_called_once()
+        mock_session.commit.assert_called_once()
+
+    @patch("app.api.projects._execute_kubevirt_vm_redeploy")
+    def test_execute_vm_redeploy_dispatches_kubevirt(self, mock_kv_redeploy):
+        from app.api.projects import _execute_vm_redeploy
+
+        mock_host = MagicMock()
+        mock_host.host_type = "kubevirt-cluster"
+        mock_proj = MagicMock()
+        mock_session = MagicMock()
+
+        _execute_vm_redeploy(mock_host, mock_session, mock_proj, "p1", "vm1")
+
+        mock_kv_redeploy.assert_called_once_with(
+            mock_host,
+            mock_session,
+            mock_proj,
+            "p1",
+            "vm1",
+            update_deployed_topology=True,
+        )
+
+    def test_kubevirt_redeploy_pvc_names(self):
+        from app.api.projects import _kubevirt_redeploy_pvc_names
+
+        names = _kubevirt_redeploy_pvc_names(
+            "vm-abcdef01",
+            {
+                "disks": [{"id": "disk0001"}, {"id": "disk0002"}],
+                "cdrom": {"s3Path": "s3://bucket/iso"},
+            },
+        )
+        assert names == [
+            "vm-abcdef01-disk-disk0001",
+            "vm-abcdef01-disk-disk0002",
+            "vm-abcdef01-cdrom",
+        ]
+
+
 # ---------------------------------------------------------------------------
 # _wait_kubevirt_vms_ready  (lines ~2544-2582)
 # ---------------------------------------------------------------------------

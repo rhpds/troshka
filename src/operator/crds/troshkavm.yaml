@@ -93,6 +93,15 @@ spec:
                 serialConsole:
                   type: boolean
                   default: true
+                serialExecType:
+                  type: string
+                  description: >-
+                    Serial exec handler for Troshka API (linux, ios, eos, junos).
+                    eos/ios/junos also enable headless mode (no VGA) in the operator.
+                headless:
+                  type: boolean
+                  description: >-
+                    When true, omit graphics device so network OS writes to serial console.
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

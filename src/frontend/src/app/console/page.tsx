@@ -24,6 +24,7 @@ function ConsolePage() {
   const vmName = searchParams.get("name") || vmId.slice(0, 8) || "VM";
   const canvasRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("Connecting...");
+  const [headless, setHeadless] = useState(false);
   const [wsUrl, setWsUrl] = useState<string | null>(null);
   const [scaled, setScaled] = useState(true);
   const [focused, setFocused] = useState(false);
@@ -95,13 +96,19 @@ function ConsolePage() {
   }, [projectId, vmId]);
 
   // Fetch console WebSocket URL from API
-  const fetchConsoleUrl = useCallback(async (force?: boolean): Promise<{url: string; hostType: string} | null> => {
+  const fetchConsoleUrl = useCallback(async (force?: boolean): Promise<{url: string; hostType: string; headless?: boolean} | null> => {
     if (!projectId || !vmId || projectDeleted) return null;
     try {
       const q = force ? "?force=true" : "";
       const resp = await fetch(`/api/v1/projects/${projectId}/vms/${vmId}/console${q}`);
       if (resp.status === 404) { setProjectDeleted(true); setStatus("Project deleted"); return null; }
       const data = await resp.json();
+      if (data.headless) {
+        setHeadless(true);
+        setStatus("Headless Mode");
+        return { url: "", hostType: data.host_type || "", headless: true };
+      }
+      setHeadless(false);
       if (data.ws_url) return { url: data.ws_url, hostType: data.host_type || "" };
     } catch { /* ignore */ }
     return null;
@@ -142,6 +149,7 @@ function ConsolePage() {
         reconnectTimer.current = setTimeout(pollForPort, 3000);
         return;
       }
+      if (result.headless) return;
       const { url, hostType } = result;
       if (hostType === "kubevirt-cluster") {
         // KubeVirt: pre-flight check for session-in-use detection
@@ -382,8 +390,8 @@ function ConsolePage() {
   }
 
   const poweredOff = vmState !== null && vmState !== "running";
-  const displayStatus = startingRef.current ? "Starting..." : poweredOff && status !== "Connected" ? "Powered Off" : status;
-  const statusColor = displayStatus === "Connected" ? "#4ade80" : displayStatus === "Starting..." ? "#4ade80" : displayStatus === "Powered Off" ? "#ef4444" : displayStatus.startsWith("Waiting") ? "#94a3b8" : "#fbbf24";
+  const displayStatus = headless ? "Headless Mode" : startingRef.current ? "Starting..." : poweredOff && status !== "Connected" ? "Powered Off" : status;
+  const statusColor = headless ? "#94a3b8" : displayStatus === "Connected" ? "#4ade80" : displayStatus === "Starting..." ? "#4ade80" : displayStatus === "Powered Off" ? "#ef4444" : displayStatus.startsWith("Waiting") ? "#94a3b8" : "#fbbf24";
 
   return (
     <div style={{ background: "#000", height: "100vh", display: "flex", flexDirection: "column" }}>
@@ -678,7 +686,21 @@ function ConsolePage() {
             background: "#000", color: "#555", gap: 12,
             pointerEvents: displayStatus === "Console in use by another session" ? "auto" : "none",
           }}>
-            {displayStatus === "Console in use by another session" ? (
+            {headless ? (
+              <>
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="2" y="3" width="20" height="14" rx="2" />
+                  <line x1="8" y1="21" x2="16" y2="21" />
+                  <line x1="12" y1="17" x2="12" y2="21" />
+                  <path d="M6 7h12M6 11h8" />
+                </svg>
+                <span style={{ fontSize: 15, color: "#94a3b8", fontWeight: 500 }}>Headless Mode</span>
+                <span style={{ fontSize: 12, color: "#666", maxWidth: 360, textAlign: "center", lineHeight: 1.5 }}>
+                  VNC is disabled so the guest uses the serial port (ttyS0).
+                  Use VM exec with <code style={{ color: "#888" }}>method: serial</code> or the bootstrap playbook.
+                </span>
+              </>
+            ) : displayStatus === "Console in use by another session" ? (
               <>
                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="2" y="3" width="20" height="14" rx="2" />

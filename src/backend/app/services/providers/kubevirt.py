@@ -1313,6 +1313,43 @@ class KubeVirtDriver(ProviderDriver):
         return status.get("vmStates", {})
 
 
+def kubevirt_vm_is_headless(provider, project_id, vm_id, vm_node_data=None) -> bool:
+    """True when the VM has no graphical display (serial-only console)."""
+    namespace = _project_ns(provider, project_id)
+    kv_name = f"troshka-vm-{vm_id[:8]}"
+    try:
+        custom_api, _, _ = _get_k8s_clients(provider)
+        vm = custom_api.get_namespaced_custom_object(
+            group="kubevirt.io",
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+            name=kv_name,
+        )
+        vm_body = dict(vm) if isinstance(vm, dict) else {}
+        spec = vm_body.get("spec") or {}
+        template = spec.get("template") if isinstance(spec, dict) else {}
+        template = template if isinstance(template, dict) else {}
+        template_spec = template.get("spec") if isinstance(template, dict) else {}
+        template_spec = template_spec if isinstance(template_spec, dict) else {}
+        domain = template_spec.get("domain") if isinstance(template_spec, dict) else {}
+        domain = domain if isinstance(domain, dict) else {}
+        devices = domain.get("devices") if isinstance(domain, dict) else {}
+        devices = devices if isinstance(devices, dict) else {}
+        graphics = devices.get("autoattachGraphicsDevice")
+        if graphics is False:
+            return True
+        return False
+    except Exception:
+        pass
+    from app.services.headless import serial_exec_needs_headless
+
+    return serial_exec_needs_headless(
+        headless=(vm_node_data or {}).get("headless"),
+        serial_exec_type=(vm_node_data or {}).get("serialExecType") or "",
+    )
+
+
 def _find_virt_launcher(core_v1, namespace, vm_name):
     """Find the running virt-launcher pod for a VM, or raise RuntimeError."""
     pod_list: list = getattr(
@@ -1948,21 +1985,15 @@ def _serial_socket_path(custom_api, namespace, vm_name):
     return f"/var/run/kubevirt-private/{uid}/virt-serial0"
 
 
-def _create_console_ws(provider, namespace, vm_name, timeout):
-    """Open a serial console stream to a KubeVirt VMI.
-
-    The KubeVirt API WebSocket console subresource does not reliably deliver
-    guest output through the apiserver proxy (virtctl works via client-go's
-    wrapped dialer).  Connect directly to virt-serial0 in the virt-launcher
-    pod instead — same socket virt-handler proxies for the API console.
-    """
+def _open_virt_launcher_serial_stream(provider, namespace, vm_name, timeout):
+    """Open a raw exec stream to virt-serial0 inside the virt-launcher pod."""
     from kubernetes.stream import stream as k8s_stream
 
     custom_api, core_v1, _ = _get_k8s_clients(provider)
     launcher = _find_virt_launcher(core_v1, namespace, vm_name)
     socket_path = _serial_socket_path(custom_api, namespace, vm_name)
     req_timeout = min(timeout, 30)
-    stream = k8s_stream(
+    return k8s_stream(
         core_v1.connect_get_namespaced_pod_exec,
         launcher.metadata.name,
         namespace,
@@ -1975,7 +2006,19 @@ def _create_console_ws(provider, namespace, vm_name, timeout):
         _preload_content=False,
         _request_timeout=req_timeout,
     )
-    return _VirtLauncherSerialConnection(stream)
+
+
+def _create_console_ws(provider, namespace, vm_name, timeout):
+    """Open a serial console stream to a KubeVirt VMI.
+
+    The KubeVirt API WebSocket console subresource does not reliably deliver
+    guest output through the apiserver proxy (virtctl works via client-go's
+    wrapped dialer).  Connect directly to virt-serial0 in the virt-launcher
+    pod instead — same socket virt-handler proxies for the API console.
+    """
+    return _VirtLauncherSerialConnection(
+        _open_virt_launcher_serial_stream(provider, namespace, vm_name, timeout)
+    )
 
 
 def _console_ws_read(ws, secs):
@@ -2022,20 +2065,15 @@ def _console_handle_login(ws, combined, username, password):
 
 def _parse_console_output(raw_output):
     """Strip ANSI codes and extract output between TROSHKA markers."""
-    import re
+    import sys
+    from pathlib import Path
 
-    clean = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", raw_output)
-    begin_idx = clean.find("TROSHKA_BEGIN")
-    end_idx = clean.find("TROSHKA_END")
-    if begin_idx >= 0 and end_idx >= 0:
-        body = clean[begin_idx + len("TROSHKA_BEGIN") : end_idx].strip()
-        end_line = clean[end_idx:].split("\n")[0]
-        exit_code_match = re.search(r"TROSHKA_END\s+(\d+)", end_line)
-        exit_code = int(exit_code_match.group(1)) if exit_code_match else None
-    else:
-        body = clean
-        exit_code = None
-    return body, exit_code
+    src = Path(__file__).resolve().parents[4]
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    from troshka_serial.linux import parse_marker_output
+
+    return parse_marker_output(raw_output)
 
 
 def kubevirt_exec_console(

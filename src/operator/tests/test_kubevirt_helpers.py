@@ -146,6 +146,20 @@ def test_apply_serial_console_disabled():
     assert domain["devices"]["autoattachSerialConsole"] is False
 
 
+def test_apply_serial_console_headless_for_eos():
+    domain: dict = {"devices": {}}
+    _apply_serial_console(domain, {"serialExecType": "eos"})
+    assert domain["devices"]["autoattachSerialConsole"] is True
+    assert domain["devices"]["autoattachGraphicsDevice"] is False
+
+
+def test_apply_serial_console_keeps_graphics_for_linux():
+    domain: dict = {"devices": {}}
+    _apply_serial_console(domain, {"serialExecType": "linux"})
+    assert domain["devices"]["autoattachSerialConsole"] is True
+    assert "autoattachGraphicsDevice" not in domain["devices"]
+
+
 def test_build_kubevirt_vm_includes_serial_console():
     vm_cr = {
         "metadata": {"name": "vm-abc12345", "namespace": "troshka-test"},

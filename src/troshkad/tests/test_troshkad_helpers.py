@@ -3010,6 +3010,39 @@ class TestCollectExistingDiskPaths(unittest.TestCase):
         self.assertEqual(result, set())
 
 
+# ── headless console helpers ──
+
+
+class TestHeadlessHelpers(unittest.TestCase):
+    def test_apply_headless_removes_graphics_and_video(self):
+        import xml.etree.ElementTree as ET
+
+        root = ET.fromstring(
+            "<domain><devices>"
+            "<graphics type='vnc' port='5900'/>"
+            "<video><model type='virtio'/></video>"
+            "</devices></domain>"
+        )
+        troshkad._apply_headless_graphics(root)
+        devices = root.find("devices")
+        self.assertIsNone(devices.find("graphics"))
+        self.assertIsNone(devices.find("video"))
+
+    def test_domain_is_headless_without_vnc(self):
+        import xml.etree.ElementTree as ET
+
+        root = ET.fromstring("<domain><devices><serial type='pty'/></devices></domain>")
+        self.assertTrue(troshkad._domain_is_headless(root))
+
+    def test_resolve_headless_from_serial_exec_type(self):
+        self.assertTrue(
+            troshkad._resolve_headless({"serial_exec_type": "eos"})
+        )
+        self.assertFalse(
+            troshkad._resolve_headless({"serial_exec_type": "linux"})
+        )
+
+
 # ── _configure_vnc_graphics ──
 
 
@@ -4596,6 +4629,7 @@ class TestHandleVmVncPort(unittest.TestCase):
             job, {"domain_name": "troshka-abcdef01-12345678"}
         )
         self.assertEqual(result["vnc_port"], 5901)
+        self.assertFalse(result["headless"])
 
     @patch("troshkad.subprocess.run")
     def test_not_found(self, mock_run):
@@ -9987,8 +10021,10 @@ class TestHandleVmSerialExec(unittest.TestCase):
             },
         ):
             mock_fdpexpect.fdspawn.return_value = mock_child
-            mock_child.expect.side_effect = TIMEOUT_cls()
-            with patch("troshkad._serial_poke_and_login", return_value=None):
+            with patch(
+                "troshkad._linux_serial_exec",
+                side_effect=TIMEOUT_cls(),
+            ):
                 result = troshkad._handle_vm_serial_exec(
                     self._make_job(),
                     {

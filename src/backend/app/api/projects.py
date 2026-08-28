@@ -53,6 +53,9 @@ from app.services.troshkad_client import (
     get_vm_config as troshkad_get_vm_config,
 )
 from app.services.troshkad_client import (
+    get_vm_console_info as troshkad_get_vm_console_info,
+)
+from app.services.troshkad_client import (
     get_vm_state as troshkad_get_vm_state,
 )
 from app.services.troshkad_client import (
@@ -1718,7 +1721,7 @@ def _get_project_and_host(
         not host.private_key or not host.ip_address
     ):
         raise HTTPException(status_code=503, detail=_HOST_NOT_AVAILABLE)
-    if check_disk:
+    if check_disk and host.host_type != "kubevirt-cluster":
         from app.services.troshkad_client import check_disk_usage
 
         disk = check_disk_usage(host)
@@ -2214,10 +2217,22 @@ def get_vm_console(
         kv_vm_name = f"troshka-vm-{vm_id[:8]}"
         from app.models.provider import Provider
         from app.services.providers import get_provider_driver
+        from app.services.providers.kubevirt import kubevirt_vm_is_headless
 
         provider = db.query(Provider).filter_by(id=host.provider_id).first()
         if not provider:
             return {"error": "Provider not found"}
+        vm_node = next(
+            (n for n in (project.topology or {}).get("nodes", []) if n["id"] == vm_id),
+            None,
+        )
+        vm_data = vm_node.get("data", {}) if vm_node else {}
+        if kubevirt_vm_is_headless(provider, project_id, vm_id, vm_data):
+            return {
+                "headless": True,
+                "host_type": host.host_type,
+                "message": "Headless Mode — VNC disabled; use serial exec for bootstrap",
+            }
         driver = get_provider_driver(provider)
         cr_status = driver.get_project_status(provider, project_id)
         console_route = (
@@ -2227,10 +2242,26 @@ def get_vm_console(
             return {"error": "Console not ready — VNC proxy route not yet available"}
         return {
             "ws_url": f"wss://{console_route}/{kv_vm_name}",
+            "host_type": host.host_type,
         }
 
     dom = _domain_name(project_id, vm_id)
-    vnc_port = troshkad_get_vnc_port(host, dom)
+    vm_node = next(
+        (n for n in (project.topology or {}).get("nodes", []) if n["id"] == vm_id),
+        None,
+    )
+    vm_data = vm_node.get("data", {}) if vm_node else {}
+    console_info = troshkad_get_vm_console_info(host, dom) or {}
+    if console_info.get("headless"):
+        return {
+            "headless": True,
+            "host_type": host.host_type,
+            "message": "Headless Mode — VNC disabled; use serial exec for bootstrap",
+        }
+
+    vnc_port = console_info.get("vnc_port")
+    if vnc_port is None:
+        vnc_port = troshkad_get_vnc_port(host, dom)
 
     if not vnc_port:
         return {"error": "VNC not available"}
@@ -4544,6 +4575,328 @@ def _start_vm_if_needed(h, dom, was_running, vm_node):
     return True
 
 
+_CDI_API = "cdi.kubevirt.io"
+_TROSHKA_CR_VERSION = "v1alpha1"
+
+
+def _kubevirt_redeploy_pvc_names(cr_name: str, vm_spec: dict) -> list[str]:
+    """PVC names the operator creates for a TroshkaVM spec."""
+    names = [
+        f"{cr_name}-disk-{disk['id'][:8]}"
+        for disk in vm_spec.get("disks", [])
+        if disk.get("id")
+    ]
+    if vm_spec.get("cdrom", {}).get("s3Path"):
+        names.append(f"{cr_name}-cdrom")
+    return names
+
+
+def _kubevirt_vm_was_running(
+    p_id: str, target_vm_id: str, custom_api, ns: str, cr_name: str
+) -> bool:
+    """Return whether the VM was running before redeploy."""
+    from app.services.ws_pubsub import get_cached_vm_states
+
+    cached = get_cached_vm_states(p_id)
+    if cached:
+        state = cached.get("states", {}).get(target_vm_id, "")
+        if state == "running":
+            return True
+        if state in ("stopped", "shut off", "shut_off"):
+            return False
+
+    try:
+        vm = custom_api.get_namespaced_custom_object(  # type: ignore[assignment]
+            group=_TROSHKA_DOMAIN,
+            version=_TROSHKA_CR_VERSION,
+            namespace=ns,
+            plural="troshkavms",
+            name=cr_name,
+        )
+        return vm.get("status", {}).get("state") == "Running"  # type: ignore[union-attr]
+    except Exception:
+        return True
+
+
+def _delete_troshkavm_cr(custom_api, ns: str, cr_name: str) -> None:
+    """Delete a TroshkaVM CR so the operator tears down disks and the KubeVirt VM."""
+    from kubernetes.client.exceptions import ApiException
+
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group=_TROSHKA_DOMAIN,
+            version=_TROSHKA_CR_VERSION,
+            namespace=ns,
+            plural="troshkavms",
+            name=cr_name,
+        )
+    except ApiException as e:
+        if e.status != 404:
+            raise
+
+
+def _wait_troshkavm_deleted(
+    custom_api, ns: str, cr_name: str, timeout: int = 120
+) -> None:
+    """Poll until the TroshkaVM CR is gone."""
+    import time
+
+    from kubernetes.client.exceptions import ApiException
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            custom_api.get_namespaced_custom_object(
+                group=_TROSHKA_DOMAIN,
+                version=_TROSHKA_CR_VERSION,
+                namespace=ns,
+                plural="troshkavms",
+                name=cr_name,
+            )
+        except ApiException as e:
+            if e.status == 404:
+                return
+            raise
+        time.sleep(2)
+    raise TimeoutError(f"TroshkaVM {cr_name} not deleted within {timeout}s")
+
+
+def _wait_kubevirt_pvcs_deleted(
+    core_api, ns: str, pvc_names: list[str], timeout: int = 600
+) -> None:
+    """Poll until redeploy disk PVCs are removed."""
+    import time
+
+    from kubernetes.client.exceptions import ApiException
+
+    if not pvc_names:
+        return
+    deadline = time.time() + timeout
+    remaining: list[str] = []
+    while time.time() < deadline:
+        remaining = []
+        for pvc_name in pvc_names:
+            try:
+                core_api.read_namespaced_persistent_volume_claim(
+                    name=pvc_name, namespace=ns
+                )
+                remaining.append(pvc_name)
+            except ApiException as e:
+                if e.status != 404:
+                    raise
+        if not remaining:
+            return
+        time.sleep(3)
+    raise TimeoutError(f"PVCs not deleted within {timeout}s: {', '.join(remaining)}")
+
+
+def _build_kubevirt_troshkavm_cr(
+    cr_name: str,
+    ns: str,
+    project_id: str,
+    vm_spec: dict,
+    owner_refs: list | None,
+    labels: dict | None,
+) -> dict:
+    """Build a TroshkaVM CR body for create after redeploy."""
+    return {
+        "apiVersion": f"{_TROSHKA_DOMAIN}/{_TROSHKA_CR_VERSION}",
+        "kind": "TroshkaVM",
+        "metadata": {
+            "name": cr_name,
+            "namespace": ns,
+            "ownerReferences": owner_refs or [],
+            "labels": labels or {"troshka-project": project_id[:8]},
+        },
+        "spec": vm_spec,
+    }
+
+
+def _create_troshkavm_cr(custom_api, ns: str, body: dict) -> None:
+    """Create a TroshkaVM CR."""
+    from kubernetes.client.exceptions import ApiException
+
+    try:
+        custom_api.create_namespaced_custom_object(
+            group=_TROSHKA_DOMAIN,
+            version=_TROSHKA_CR_VERSION,
+            namespace=ns,
+            plural="troshkavms",
+            body=body,
+        )
+    except ApiException as e:
+        if e.status != 409:
+            raise
+
+
+def _wait_troshkavm_redeploy_ready(
+    custom_api, ns: str, cr_name: str, dom: str, timeout: int = 900
+) -> str:
+    """Poll until operator finishes redeploy. Returns final TroshkaVM state."""
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            vm = custom_api.get_namespaced_custom_object(  # type: ignore[assignment]
+                group=_TROSHKA_DOMAIN,
+                version=_TROSHKA_CR_VERSION,
+                namespace=ns,
+                plural="troshkavms",
+                name=cr_name,
+            )
+        except Exception:
+            _redeploy_progress[dom] = {"step": "creating", "detail": "waiting"}
+            time.sleep(3)
+            continue
+
+        state = vm.get("status", {}).get("state", "")  # type: ignore[union-attr]
+        if state == "Error":
+            msg = vm.get("status", {}).get("message", "redeploy failed")  # type: ignore[union-attr]
+            raise RuntimeError(msg)
+        if state in ("Running", "Stopped"):
+            return state
+        _redeploy_progress[dom] = {
+            "step": "creating",
+            "detail": state or "provisioning",
+        }
+        time.sleep(5)
+    raise TimeoutError(f"TroshkaVM {cr_name} not ready within {timeout}s")
+
+
+def _resolve_kubevirt_topology_for_redeploy(proj, h, s, topology: dict) -> None:
+    """Resolve disk S3 paths on topology before rebuilding TroshkaVM spec."""
+    from app.models.provider import Provider as ProviderModel
+    from app.services.deploy_service import (
+        DeployError,
+        _resolve_disk_s3_paths,
+        _setup_kubevirt_s3_clients,
+    )
+
+    provider = (
+        s.query(ProviderModel).filter_by(id=h.provider_id).first()
+        if h.provider_id
+        else None
+    )
+    if not provider:
+        raise DeployError("No provider found for host")
+
+    (
+        _s3_config,
+        _central_s3_config,
+        s3_client,
+        bucket,
+        s3_op,
+        central_s3_client,
+        central_bucket,
+        central_op,
+    ) = _setup_kubevirt_s3_clients()
+    _resolve_disk_s3_paths(
+        topology,
+        s,
+        h.provider_id,
+        s3_client,
+        bucket,
+        s3_op,
+        central_s3_client,
+        central_bucket,
+        central_op,
+    )
+
+
+def _execute_kubevirt_vm_redeploy(
+    h,
+    s,
+    proj,
+    p_id: str,
+    target_vm_id: str,
+    *,
+    update_deployed_topology: bool = True,
+) -> None:
+    """Destroy and recreate a KubeVirt VM with fresh disks."""
+    from app.models.provider import Provider as ProviderModel
+    from app.services.deploy_topology import (
+        _extract_vms,
+        _vm_domain_name,
+        inject_showroom_gateway_port_forwards,
+    )
+
+    dom = _vm_domain_name(p_id, target_vm_id)
+    topology = proj.topology or {}
+    inject_showroom_gateway_port_forwards(topology, proj.vni_map or {})
+    _resolve_kubevirt_topology_for_redeploy(proj, h, s, topology)
+
+    vm_node = _find_vm_node_in_topology(topology, target_vm_id)
+    if not vm_node:
+        raise ValueError(f"VM node {target_vm_id} not found in topology")
+
+    current_vms = {v["node_id"]: v for v in _extract_vms(topology)}
+    vm = current_vms.get(target_vm_id)
+    if not vm:
+        raise ValueError(f"VM {target_vm_id} not found in topology")
+
+    provider = (
+        s.query(ProviderModel).filter_by(id=h.provider_id).first()
+        if h.provider_id
+        else None
+    )
+    if not provider:
+        raise RuntimeError("No provider found for host")
+
+    custom_api, core_api, _ = _get_k8s_clients_for_kubevirt(provider)
+    ns = _kubevirt_project_ns(provider, p_id)
+    cr_name = f"vm-{target_vm_id[:8]}"
+    kv_name = f"troshka-vm-{target_vm_id[:8]}"
+
+    was_running = _kubevirt_vm_was_running(p_id, target_vm_id, custom_api, ns, cr_name)
+    vm_spec = _build_kubevirt_vm_spec(target_vm_id, vm, topology)
+
+    _redeploy_progress[dom] = {"step": "preparing", "detail": "removing VM and disks"}
+
+    existing_meta: dict = {}
+    try:
+        existing = custom_api.get_namespaced_custom_object(  # type: ignore[assignment]
+            group=_TROSHKA_DOMAIN,
+            version=_TROSHKA_CR_VERSION,
+            namespace=ns,
+            plural="troshkavms",
+            name=cr_name,
+        )
+        existing_meta = existing.get("metadata", {})  # type: ignore[union-attr]
+    except Exception as e:
+        raise ValueError(f"TroshkaVM {cr_name} not found") from e
+
+    owner_refs = existing_meta.get("ownerReferences")
+    labels = existing_meta.get("labels")
+    pvc_names = _kubevirt_redeploy_pvc_names(cr_name, vm_spec)
+
+    _delete_troshkavm_cr(custom_api, ns, cr_name)
+    _wait_troshkavm_deleted(custom_api, ns, cr_name)
+    _redeploy_progress[dom] = {
+        "step": "preparing",
+        "detail": "waiting for disk cleanup",
+    }
+    _wait_kubevirt_pvcs_deleted(core_api, ns, pvc_names)
+
+    _redeploy_progress[dom] = {"step": "creating", "detail": "provisioning disks"}
+    vm_cr = _build_kubevirt_troshkavm_cr(cr_name, ns, p_id, vm_spec, owner_refs, labels)
+    _create_troshkavm_cr(custom_api, ns, vm_cr)
+
+    final_state = _wait_troshkavm_redeploy_ready(custom_api, ns, cr_name, dom)
+    if was_running and final_state == "Stopped":
+        _redeploy_progress[dom] = {"step": "starting", "detail": ""}
+        _patch_kv_run_strategy(custom_api, ns, kv_name, "Always")
+        final_state = "Running"
+
+    if update_deployed_topology:
+        proj.deployed_topology = topology
+        s.commit()
+    _redeploy_progress.pop(dom, None)
+    notify_state = "running" if final_state == "Running" else "stopped"
+    _notify_redeploy_vm_state(p_id, target_vm_id, notify_state)
+    logger.info("KubeVirt redeploy %s complete", dom)
+
+
 def _execute_vm_redeploy(
     h,
     s,
@@ -4556,6 +4909,17 @@ def _execute_vm_redeploy(
     """Destroy and recreate a single VM. Raises on failure."""
     from app.services.deploy_service import _get_host_pool
     from app.services.deploy_topology import _vm_domain_name
+
+    if h.host_type == "kubevirt-cluster":
+        _execute_kubevirt_vm_redeploy(
+            h,
+            s,
+            proj,
+            p_id,
+            target_vm_id,
+            update_deployed_topology=update_deployed_topology,
+        )
+        return
 
     dom = _vm_domain_name(p_id, target_vm_id)
     _vm_dir(p_id)

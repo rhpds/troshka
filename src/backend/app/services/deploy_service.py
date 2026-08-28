@@ -1440,7 +1440,15 @@ def _create_vm_via_troshkad(
             entry["mac"] = net["mac"]
         networks.append(entry)
 
+    from app.services.headless import serial_exec_needs_headless
+
     boot_devs = _translate_boot_devices(vm, topology)
+
+    headless = vm.get("headless")
+    if headless is None:
+        headless = serial_exec_needs_headless(
+            serial_exec_type=vm.get("serial_exec_type", "")
+        )
 
     params = {
         "domain_name": vm_name,
@@ -1454,7 +1462,10 @@ def _create_vm_via_troshkad(
         "boot_devs": boot_devs,
         "video_model": vm.get("video_model", "virtio"),
         "input_model": vm.get("input_model", "virtio"),
+        "serial_exec_type": vm.get("serial_exec_type", ""),
     }
+    if headless:
+        params["headless"] = True
     if vm.get("machine_type"):
         params["machine_type"] = vm["machine_type"]
     if disk_cache:

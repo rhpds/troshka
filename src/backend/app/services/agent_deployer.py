@@ -763,6 +763,137 @@ def _scp_file_to_host(
     return True
 
 
+def _src_root() -> str:
+    return os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    )
+
+
+def deploy_troshka_serial_over_ssh(
+    host_ip: str,
+    ssh_user: str,
+    ssh_opts: list,
+    ssh_port_opts: list,
+    scp_port_opts: list,
+) -> bool:
+    """Deploy troshka_serial package to /opt/troshka/troshka_serial on a host."""
+    import tarfile
+    import tempfile
+
+    serial_dir = os.path.join(_src_root(), "troshka_serial")
+    if not os.path.isdir(serial_dir):
+        logger.warning("troshka_serial not found at %s", serial_dir)
+        return False
+
+    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tf:
+        tar_path = tf.name
+    try:
+        with tarfile.open(tar_path, "w:gz") as tar:
+            tar.add(serial_dir, arcname="troshka_serial")
+        tmp_remote = "/tmp/troshka_serial.tar.gz"
+        scp_result = subprocess.run(
+            [
+                "scp",
+                *scp_port_opts,
+                *ssh_opts,
+                tar_path,
+                f"{ssh_user}@{host_ip}:{tmp_remote}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if scp_result.returncode != 0:
+            logger.warning("SCP troshka_serial failed: %s", scp_result.stderr.strip())
+            return False
+        extract = subprocess.run(
+            [
+                "ssh",
+                *ssh_opts,
+                *ssh_port_opts,
+                f"{ssh_user}@{host_ip}",
+                "sudo",
+                "mkdir",
+                "-p",
+                "/opt/troshka",
+                "&&",
+                "sudo",
+                "tar",
+                "xzf",
+                tmp_remote,
+                "-C",
+                "/opt/troshka",
+                "&&",
+                "rm",
+                "-f",
+                tmp_remote,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if extract.returncode != 0:
+            logger.warning("troshka_serial extract failed: %s", extract.stderr.strip())
+            return False
+        return True
+    finally:
+        try:
+            os.unlink(tar_path)
+        except OSError:
+            pass
+
+
+def deploy_troshka_serial_for_host(host) -> bool:
+    """Deploy troshka_serial to a host using its stored SSH credentials."""
+    import tempfile
+
+    from app.core.database import SessionLocal
+    from app.models.provider import Provider
+
+    if not host.provider_id or not host.private_key or not host.ip_address:
+        return False
+    db = SessionLocal()
+    try:
+        prov = db.query(Provider).filter_by(id=host.provider_id).first()
+    finally:
+        db.close()
+    if not prov:
+        return False
+    ssh_port = get_provider_ssh_port(prov.type)
+    ssh_user = get_provider_ssh_user(prov.type)
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False) as kf:
+        kf.write(host.private_key)
+        key_path = kf.name
+    os.chmod(key_path, 0o600)
+    ssh_opts = [
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "ConnectTimeout=30",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-i",
+        key_path,
+    ]
+    ssh_port_opts = ["-p", str(ssh_port)] if ssh_port != 22 else []
+    scp_port_opts = ["-P", str(ssh_port)] if ssh_port != 22 else []
+    try:
+        return deploy_troshka_serial_over_ssh(
+            host.ip_address,
+            ssh_user,
+            ssh_opts,
+            ssh_port_opts,
+            scp_port_opts,
+        )
+    finally:
+        try:
+            os.unlink(key_path)
+        except OSError:
+            pass
+
+
 def _run_install_script_via_ssh(
     script: str,
     host_ip: str,
@@ -934,9 +1065,7 @@ def deploy_agent(
         deploy_start = time.time()
 
         # SCP troshkad.py to host
-        src_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        )
+        src_root = _src_root()
         troshkad_path = os.path.join(src_root, "troshkad", "troshkad.py")
         _scp_file_to_host(
             troshkad_path,
@@ -947,6 +1076,13 @@ def deploy_agent(
             ssh_port_opts,
             scp_port_opts,
             create_parent_dir=True,
+        )
+        deploy_troshka_serial_over_ssh(
+            host_ip,
+            config.ssh_user,
+            ssh_opts,
+            ssh_port_opts,
+            scp_port_opts,
         )
 
         # SCP vncd.py to host

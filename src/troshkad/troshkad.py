@@ -1246,14 +1246,18 @@ def _handle_vm_create(job, params):
         cmd.extend(["--network", net_arg])
     if seed_iso:
         cmd.extend(["--disk", f"path={_validate_path(seed_iso)},device=cdrom,bus=sata"])
-    if video_model in ("virtio", "vga", "qxl"):
+    headless = _resolve_headless(params)
+    if headless:
+        cmd.extend(["--graphics", "none"])
+    elif video_model in ("virtio", "vga", "qxl"):
         cmd.extend(["--video", video_model])
-    if input_model == "virtio":
-        cmd.extend(["--input", "type=keyboard,bus=virtio"])
-        cmd.extend(["--input", "type=tablet,bus=virtio"])
-    elif input_model == "usb":
-        cmd.extend(["--input", "type=keyboard,bus=usb"])
-        cmd.extend(["--input", "type=tablet,bus=usb"])
+    if not headless:
+        if input_model == "virtio":
+            cmd.extend(["--input", "type=keyboard,bus=virtio"])
+            cmd.extend(["--input", "type=tablet,bus=virtio"])
+        elif input_model == "usb":
+            cmd.extend(["--input", "type=keyboard,bus=usb"])
+            cmd.extend(["--input", "type=tablet,bus=usb"])
     cmd.extend(
         ["--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0"]
     )
@@ -1566,7 +1570,11 @@ def _handle_vm_vnc_port(job, params):
         port = graphics.get("port")
         if port and port != "-1":
             vnc_port = int(port)
-    return {"domain": domain, "vnc_port": vnc_port}
+    return {
+        "domain": domain,
+        "vnc_port": vnc_port,
+        "headless": _domain_is_headless(root),
+    }
 
 
 COMMAND_HANDLERS["vms/vnc-port"] = _handle_vm_vnc_port
@@ -1926,6 +1934,35 @@ def _try_hot_attach_disks(job, domain, disks, vcpus, ram_mb, nics, was_active, r
     return None
 
 
+def _resolve_headless(params):
+    """True when the VM should have no graphical display (serial-only bootstrap)."""
+    from troshka_serial.headless import serial_exec_needs_headless
+
+    return serial_exec_needs_headless(
+        headless=params.get("headless"),
+        serial_exec_type=params.get("serial_exec_type")
+        or params.get("serial_execType")
+        or "",
+    )
+
+
+def _apply_headless_graphics(root):
+    """Remove VNC/video devices so the guest uses the serial console."""
+    devices = root.find("devices")
+    if devices is None:
+        return
+    for tag in ("graphics", "video"):
+        for elem in list(devices.findall(tag)):
+            devices.remove(elem)
+
+
+def _domain_is_headless(root):
+    devices = root.find("devices")
+    if devices is None:
+        return True
+    return devices.find("graphics[@type='vnc']") is None
+
+
 def _configure_vnc_graphics(root, vnc_listen):
     import xml.etree.ElementTree as ET
 
@@ -2028,7 +2065,10 @@ def _handle_vm_reconfigure(job, params):
     if cdroms is not None:
         _reconfigure_cdroms(job, root, domain, cdroms)
 
-    if vnc_listen:
+    headless = _resolve_headless(params)
+    if headless:
+        _apply_headless_graphics(root)
+    elif vnc_listen:
         _configure_vnc_graphics(root, vnc_listen)
 
     # Write new XML via virsh define
@@ -9390,171 +9430,105 @@ def _serial_open_pty(domain):
     return pty_match.group(1)
 
 
-_IOS_PROMPT = r"[>#]\s*"
-_IOS_USERNAME = r"(?i)Username:\s*"
-_IOS_LOGIN = r"(?i)login:\s*"
-_IOS_PASSWORD = r"(?i)Password:\s*"
-_IOS_PRESS_RETURN = r"(?i)Press RETURN to get started"
-_IOS_INIT_DIALOG = r"(?i)initial configuration dialog\?"
-_IOS_ENABLE_SECRET = r"(?i)Enter enable secret:"
-_IOS_CONFIRM_SECRET = r"(?i)Confirm enable secret:"
-_IOS_SETUP_SELECT = r"Enter your selection \[2\]:"
-_IOS_MORE = r"--More--"
-_DEFAULT_IOS_ENABLE_SECRET = "Admin12345!"  # pragma: allowlist secret
+_TROSHKA_SRC = os.path.abspath(os.path.dirname(__file__))
+_TROSHKA_SRC_PARENT = os.path.abspath(os.path.join(_TROSHKA_SRC, ".."))
+for _path in (_TROSHKA_SRC, _TROSHKA_SRC_PARENT):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
-
-def _ios_enable_secret(password: str) -> str:
-    """Pick an enable secret that satisfies IOS-XE setup wizard rules."""
-    if password and len(password) >= 10:
-        return password
-    return _DEFAULT_IOS_ENABLE_SECRET
-
-
-def _split_serial_commands(command: str) -> list[str]:
-    """Split a multiline serial script into individual CLI lines."""
-    if "\n" not in (command or ""):
-        return [command]
-    return [
-        line
-        for line in command.splitlines()
-        if line.strip() and not line.strip().startswith("!")
-    ]
-
-
-def _serial_strip_ansi(text):
-    import re
-
-    return re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07", "", text)
-
-
-def _serial_clean_ios_output(raw, command):
-    """Strip prompts and echoed command from IOS-XE serial output."""
-    import re
-
-    raw = _serial_strip_ansi(raw or "")
-    raw = raw.replace("\r\n", "\n").replace("\r", "")
-    lines = []
-    for line in raw.split("\n"):
-        clean = line.strip()
-        if not clean:
-            continue
-        if clean == command.strip():
-            continue
-        if re.match(r"^[\w.-]+[>#]\s*$", clean):
-            continue
-        if re.match(r"^--More--", clean):
-            continue
-        lines.append(clean)
-    return "\n".join(lines)
-
-
-_SERIAL_BLANK_MESSAGE = (
-    "Serial console has no output — guest may be on VGA only. "
-    "Use the VNC console for boot/login output."
+from troshka_serial.ios import (  # noqa: E402
+    SERIAL_BLANK_MESSAGE as _SERIAL_BLANK_MESSAGE,
+    clean_ios_output as _serial_clean_ios_output,
+    ios_enable_secret as _ios_enable_secret,
+    ios_exec_command as _ios_exec_command_impl,
+    ios_poke_and_login as _ios_poke_and_login_impl,
+    network_serial_exec as _network_serial_exec,
+    split_serial_commands as _split_serial_commands,
 )
+from troshka_serial.junos import (  # noqa: E402
+    junos_clean_output as _serial_junos_clean_output,
+    junos_needs_configure_session as _serial_junos_needs_configure_session,
+    junos_poke_and_login as _junos_poke_and_login_impl,
+    junos_wrap_command as _serial_junos_wrap_command,
+    network_junos_serial_exec as _network_junos_serial_exec,
+)
+from troshka_serial.linux import (  # noqa: E402
+    clean_linux_tempfile_output as _serial_clean_output,
+    linux_poke_and_login as _linux_poke_and_login_impl,
+    linux_serial_exec as _linux_serial_exec,
+)
+from troshka_serial.exec import (  # noqa: E402
+    cap_serial_timeout as _cap_serial_timeout,
+    exec_serial_on_transport as _exec_serial_on_transport,
+)
+from troshka_serial.pexpect_session import run_fd_pexpect_session  # noqa: E402
+from troshka_serial.pexpect_transport import PexpectSerialTransport  # noqa: E402
 
 
 def _serial_ios_poke_and_login(child, username, password, domain, timeout_secs):
-    """Reach an IOS-XE exec prompt (> or #). Returns error dict or None."""
-    from pexpect import TIMEOUT
-
-    enable_secret = _ios_enable_secret(password)
-    poke_timeout = min(timeout_secs, 30)
-    blank_deadline = min(15, poke_timeout / 2)
-    deadline = time.time() + poke_timeout
-    started = time.time()
-    saw_output = False
-    while time.time() < deadline:
-        if not saw_output and (time.time() - started) >= blank_deadline:
-            return {
-                "domain": domain,
-                "output": "",
-                "error": _SERIAL_BLANK_MESSAGE,
-            }
-        child.send("\r")
-        try:
-            idx = child.expect(
-                [
-                    _IOS_INIT_DIALOG,
-                    _IOS_ENABLE_SECRET,
-                    _IOS_CONFIRM_SECRET,
-                    _IOS_SETUP_SELECT,
-                    _IOS_MORE,
-                    _IOS_LOGIN,
-                    _IOS_USERNAME,
-                    _IOS_PASSWORD,
-                    _IOS_PRESS_RETURN,
-                    _IOS_PROMPT,
-                ],
-                timeout=3,
-            )
-        except TIMEOUT:
-            if (child.before or "").strip():
-                saw_output = True
-            continue
-        if (child.before or "").strip():
-            saw_output = True
-        if idx == 0:
-            child.send("no\r")
-        elif idx == 1:
-            child.send(enable_secret + "\r")
-        elif idx == 2:
-            child.send(enable_secret + "\r")
-        elif idx == 3:
-            child.send("2\r")
-        elif idx == 4:
-            child.send(" ")
-        elif idx == 5:
-            user = username or "admin"
-            child.send(user + "\r")
-        elif idx == 6:
-            if not username:
-                return {"domain": domain, "output": "", "error": "Username required"}
-            child.send(username + "\r")
-        elif idx == 7:
-            child.send((password or "") + "\r")
-        elif idx == 8:
-            child.send("\r")
-        elif idx == 9:
-            return None
-    return {"domain": domain, "output": "", "error": "Console not responding"}
+    """Reach an IOS-XE / EOS exec prompt (> or #). Returns error dict or None."""
+    err = _ios_poke_and_login_impl(
+        PexpectSerialTransport(child), username, password, timeout_secs
+    )
+    if err is None:
+        return None
+    return {"domain": domain, "output": "", "error": err}
 
 
 def _serial_ios_exec_command(child, command, timeout_secs):
-    """Run a command at an IOS-XE prompt and return CLI output."""
-    import re
-    from pexpect import TIMEOUT
-
-    child.send(command + "\r")
-    chunks = []
-    deadline = time.time() + timeout_secs
-    try:
-        child.expect(re.escape(command), timeout=min(10, timeout_secs))
-    except TIMEOUT:
-        pass
-    while time.time() < deadline:
-        try:
-            idx = child.expect(
-                [_IOS_PROMPT, _IOS_MORE],
-                timeout=max(1, min(10, deadline - time.time())),
-            )
-        except TIMEOUT:
-            break
-        if child.before:
-            chunks.append(child.before)
-        if idx == 0:
-            break
-        child.send(" ")
-    return _serial_clean_ios_output("".join(chunks), command)
+    """Run a command at an IOS-XE / EOS prompt and return CLI output."""
+    return _ios_exec_command_impl(
+        PexpectSerialTransport(child), command, timeout_secs
+    )
 
 
 def _serial_ios_exec_commands(child, commands, timeout_secs):
-    """Run multiple IOS-XE commands in one serial session."""
+    """Run multiple IOS-XE / EOS commands in one serial session."""
     chunks = []
     per_cmd = max(30, timeout_secs // max(len(commands), 1))
     for cmd in commands:
         chunks.append(_serial_ios_exec_command(child, cmd, per_cmd))
     return "\n".join(chunk for chunk in chunks if chunk)
+
+
+def _ensure_pexpect_on_path():
+    for sp in (
+        "/opt/troshka/venv/lib/python3.12/site-packages",
+        "/opt/troshka/venv/lib/python3.13/site-packages",
+    ):
+        if sp not in sys.path and os.path.isdir(sp):
+            sys.path.insert(0, sp)
+
+
+def _run_serial_session(domain, timeout_secs, work):
+    """Open a libvirt serial PTY and run work(transport)."""
+    _ensure_pexpect_on_path()
+    pty_path = _serial_open_pty(domain)
+    fd = os.open(pty_path, os.O_RDWR)
+    try:
+        return run_fd_pexpect_session(fd, timeout_secs, work)
+    except RuntimeError as e:
+        return {"domain": domain, "output": "", "error": str(e)}
+
+
+def _serial_junos_poke_and_login(child, domain, timeout_secs):
+    """Reach vSRX FreeBSD shell via serial. Returns error dict or None."""
+    err = _junos_poke_and_login_impl(
+        PexpectSerialTransport(child), timeout_secs
+    )
+    if err is None:
+        return None
+    return {"domain": domain, "output": "", "error": err}
+
+
+def _serial_poke_and_login(child, username, password, domain, any_prompt, shell_prompt):
+    """Poke the serial console and handle login if needed. Returns error dict or None."""
+    err = _linux_poke_and_login_impl(
+        PexpectSerialTransport(child), username, password, 60
+    )
+    if err is None:
+        return None
+    return {"domain": domain, "output": "", "error": err}
 
 
 def _handle_vm_serial_exec_ios(job, params, timeout_secs):
@@ -9563,256 +9537,34 @@ def _handle_vm_serial_exec_ios(job, params, timeout_secs):
     username = params.get("username", "admin")
     password = params.get("password", "")
     command = params.get("command", "")
+    serial_type = params.get("serial_exec_type", "ios")
 
-    pty_path = _serial_open_pty(domain)
-
-    for sp in [
-        "/opt/troshka/venv/lib/python3.12/site-packages",
-        "/opt/troshka/venv/lib/python3.13/site-packages",
-    ]:
-        if sp not in sys.path and os.path.isdir(sp):
-            sys.path.insert(0, sp)
-    from pexpect import fdpexpect, TIMEOUT, EOF
-
-    fd = os.open(pty_path, os.O_RDWR)
-    child = fdpexpect.fdspawn(fd, encoding="utf-8", timeout=timeout_secs)
-
-    try:
-        err = _serial_ios_poke_and_login(
-            child, username, password, domain, timeout_secs
+    def work(transport):
+        output, _, method = _exec_serial_on_transport(
+            transport,
+            serial_type,
+            command,
+            timeout_secs,
+            username=username,
+            password=password,
         )
-        if err is not None:
-            return err
-        commands = _split_serial_commands(command)
-        if len(commands) == 1:
-            output = _serial_ios_exec_command(child, commands[0], timeout_secs)
-        else:
-            output = _serial_ios_exec_commands(child, commands, timeout_secs)
-        return {"domain": domain, "output": output, "method": "serial-ios"}
-    except TIMEOUT:
-        return {"domain": domain, "output": "", "error": "Command timed out"}
-    except EOF:
-        return {"domain": domain, "output": "", "error": "Console connection closed"}
-    except RuntimeError as e:
-        return {"domain": domain, "output": "", "error": str(e)}
-    finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+        return {"domain": domain, "output": output, "method": method}
 
-
-_FREEBSD_SHELL = r"(?:root@|admin@|[%#$]\s)"
-_FREEBSD_SHELL_PROMPT = r"root@[^\r\n]+#\s*"
-_JUNOS_CLI_PROMPT = r"[>#]\s*"
-_JUNOS_EDIT_PROMPT = r"\[edit\]"
-_JUNOS_BOOT_MORE = r"---\(more \d+%\)---"
-_JUNOS_CLI_MORE = r"---\(more\)---"
-
-
-def _serial_junos_clean_output(raw, command):
-    """Strip echoed command and shell prompts from Junos CLI output."""
-    import re
-
-    raw = _serial_strip_ansi(raw or "")
-    raw = raw.replace("\r\n", "\n").replace("\r", "")
-    lines = []
-    for line in raw.split("\n"):
-        clean = line.strip()
-        if not clean or clean == command.strip():
-            continue
-        if clean.startswith("root@") and clean.endswith("#"):
-            continue
-        if re.match(r"^---\(more(?: \d+%)?\)---$", clean):
-            continue
-        lines.append(clean)
-    return "\n".join(lines)
-
-
-def _serial_junos_wrap_command(command: str) -> str:
-    """Wrap a Junos CLI command for execution from the vSRX FreeBSD shell."""
-    cmd = (command or "").strip()
-    if not cmd:
-        return cmd
-    if cmd.startswith("cli "):
-        return cmd
-    return f"cli {cmd}"
-
-
-def _serial_junos_poke_and_login(child, domain, timeout_secs):
-    """Reach vSRX FreeBSD shell via serial (root login, empty password)."""
-    from pexpect import TIMEOUT
-
-    _FREEBSD_LOGIN = r"login:\s*"
-    _FREEBSD_PASSWORD = r"Password:\s*"
-
-    poke_timeout = min(timeout_secs, 45)
-    blank_deadline = min(15, poke_timeout / 2)
-    deadline = time.time() + poke_timeout
-    started = time.time()
-    saw_output = False
-    while time.time() < deadline:
-        if not saw_output and (time.time() - started) >= blank_deadline:
-            return {
-                "domain": domain,
-                "output": "",
-                "error": _SERIAL_BLANK_MESSAGE,
-            }
-        child.send("\r")
-        try:
-            idx = child.expect(
-                [
-                    _JUNOS_BOOT_MORE,
-                    _FREEBSD_LOGIN,
-                    _FREEBSD_PASSWORD,
-                    _FREEBSD_SHELL,
-                    _JUNOS_CLI_PROMPT,
-                ],
-                timeout=3,
-            )
-        except TIMEOUT:
-            if (child.before or "").strip():
-                saw_output = True
-            continue
-        if (child.before or "").strip():
-            saw_output = True
-        if idx == 0:
-            child.send(" ")
-        elif idx == 1:
-            child.send("root\r")
-        elif idx == 2:
-            child.send("\r")
-        elif idx == 3:
-            return None
-        elif idx == 4:
-            child.send("exit\r")
-    return {"domain": domain, "output": "", "error": "Console not responding"}
-
-
-def _serial_junos_exec_command(child, command, timeout_secs):
-    import re
-
-    wrapped = _serial_junos_wrap_command(command)
-    child.send(wrapped + "\r")
-    chunks = []
-    deadline = time.time() + timeout_secs
-    prompt = re.compile(_FREEBSD_SHELL_PROMPT, re.MULTILINE)
-    try:
-        child.expect(re.escape(wrapped), timeout=min(10, timeout_secs))
-    except Exception:
-        pass
-    while time.time() < deadline:
-        try:
-            idx = child.expect(
-                [_JUNOS_BOOT_MORE, _JUNOS_CLI_MORE, prompt],
-                timeout=max(1, min(10, deadline - time.time())),
-            )
-        except Exception:
-            break
-        if child.before:
-            chunks.append(child.before)
-        if idx == 2:
-            break
-        child.send(" ")
-    return _serial_junos_clean_output("".join(chunks), wrapped)
-
-
-def _serial_junos_needs_configure_session(commands: list[str]) -> bool:
-    for cmd in commands:
-        stripped = cmd.strip()
-        if stripped.startswith(
-            ("configure", "set ", "delete ", "activate ", "deactivate ")
-        ):
-            return True
-    return False
-
-
-def _serial_junos_exec_configure(child, commands, timeout_secs):
-    """Run Junos configure/set/commit lines in one interactive CLI session."""
-    from pexpect import TIMEOUT
-
-    child.send("cli\r")
-    child.expect(
-        [_JUNOS_EDIT_PROMPT, _JUNOS_CLI_PROMPT, _JUNOS_BOOT_MORE, _JUNOS_CLI_MORE],
-        timeout=30,
-    )
-    chunks = []
-    deadline = time.time() + timeout_secs
-    per_cmd = max(60, timeout_secs // max(len(commands), 1))
-    for cmd in commands:
-        child.send(cmd.strip() + "\r")
-        cmd_deadline = time.time() + per_cmd
-        while time.time() < cmd_deadline:
-            try:
-                idx = child.expect(
-                    [
-                        _JUNOS_BOOT_MORE,
-                        _JUNOS_CLI_MORE,
-                        _JUNOS_EDIT_PROMPT,
-                        _JUNOS_CLI_PROMPT,
-                    ],
-                    timeout=max(1, min(15, cmd_deadline - time.time())),
-                )
-            except TIMEOUT:
-                break
-            if child.before:
-                chunks.append(child.before)
-            if idx in (2, 3):
-                break
-            child.send(" ")
-    try:
-        child.send("exit\r")
-        child.expect(_FREEBSD_SHELL, timeout=10)
-    except TIMEOUT:
-        pass
-    return _serial_junos_clean_output("".join(chunks), "configure")
-
-
-def _serial_junos_exec_commands(child, commands, timeout_secs):
-    if _serial_junos_needs_configure_session(commands):
-        return _serial_junos_exec_configure(child, commands, timeout_secs)
-    chunks = []
-    per_cmd = max(30, timeout_secs // max(len(commands), 1))
-    for cmd in commands:
-        chunks.append(_serial_junos_exec_command(child, cmd, per_cmd))
-    return "\n".join(chunk for chunk in chunks if chunk)
+    return _run_serial_session(domain, timeout_secs, work)
 
 
 def _handle_vm_serial_exec_junos(job, params, timeout_secs):
-    """Execute a command on Juniper vSRX via serial (FreeBSD → cli -c)."""
+    """Execute a command on Juniper vSRX via serial (FreeBSD → cli)."""
     domain = _validate_domain_name(params["domain_name"])
     command = params.get("command", "")
 
-    pty_path = _serial_open_pty(domain)
-    for sp in [
-        "/opt/troshka/venv/lib/python3.12/site-packages",
-        "/opt/troshka/venv/lib/python3.13/site-packages",
-    ]:
-        if sp not in sys.path and os.path.isdir(sp):
-            sys.path.insert(0, sp)
-    from pexpect import fdpexpect, TIMEOUT, EOF
+    def work(transport):
+        output, _, method = _exec_serial_on_transport(
+            transport, "junos", command, timeout_secs
+        )
+        return {"domain": domain, "output": output, "method": method}
 
-    fd = os.open(pty_path, os.O_RDWR)
-    child = fdpexpect.fdspawn(fd, encoding="utf-8", timeout=timeout_secs)
-    try:
-        err = _serial_junos_poke_and_login(child, domain, timeout_secs)
-        if err is not None:
-            return err
-        commands = _split_serial_commands(command)
-        if len(commands) == 1:
-            output = _serial_junos_exec_command(child, commands[0], timeout_secs)
-        else:
-            output = _serial_junos_exec_commands(child, commands, timeout_secs)
-        return {"domain": domain, "output": output, "method": "serial-junos"}
-    except TIMEOUT:
-        return {"domain": domain, "output": "", "error": "Command timed out"}
-    except EOF:
-        return {"domain": domain, "output": "", "error": "Console connection closed"}
-    finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+    return _run_serial_session(domain, timeout_secs, work)
 
 
 def _handle_vm_serial_exec_network(job, params, timeout_secs, method_label):
@@ -9823,89 +9575,13 @@ def _handle_vm_serial_exec_network(job, params, timeout_secs, method_label):
     return result
 
 
-def _serial_clean_output(raw, outf, marker):
-    """Strip ANSI escapes, echoed commands, and prompts from serial output."""
-    import re
-
-    raw = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07", "", raw)
-    raw = raw.replace("\r\n", "\n").replace("\r", "")
-    out_lines = []
-    for line in raw.split("\n"):
-        clean = line.strip()
-        if not clean:
-            continue
-        # Skip echoed command line and marker artifacts
-        if (
-            "__a=" in clean
-            or "__b=" in clean
-            or f"cat {outf}" in clean
-            or marker in clean
-        ):
-            continue
-        # Strip custom prompt prefix if present
-        if re.match(r"^\S+[>#\$%]\s", clean):
-            clean = re.sub(r"^\S+[>#\$%]\s+", "", clean).strip()
-        if clean:
-            out_lines.append(clean)
-    return "\n".join(out_lines)
-
-
-def _serial_poke_and_login(child, username, password, domain, any_prompt, shell_prompt):
-    """Poke the serial console and handle login if needed. Returns error dict or None."""
-    child.send("stty echo 2>/dev/null\r")
-    time.sleep(0.3)
-
-    child.send("\x03\r")
-    time.sleep(0.5)
-
-    def _login():
-        if not password:
-            raise RuntimeError("VM is at login prompt but no password provided")
-        child.send(username + "\r")
-        child.expect("[Pp]assword:", timeout=5)
-        child.send(password + "\r")
-        idx = child.expect(
-            [shell_prompt, "Last login", "incorrect", any_prompt[-1]], timeout=10
-        )
-        if idx == 1:
-            child.expect(shell_prompt, timeout=5)
-        elif idx != 0:
-            raise RuntimeError("Login failed")
-
-    idx = child.expect(any_prompt, timeout=3)
-    if idx == 0:
-        _login()
-    elif idx == 3:
-        child.send("\r")
-        idx2 = child.expect(any_prompt, timeout=3)
-        if idx2 == 0:
-            _login()
-        elif idx2 == 3:
-            return {
-                "domain": domain,
-                "output": "",
-                "error": "Console not responding",
-            }
-    return None
-
-
 def _handle_vm_serial_exec(job, params):
     """Execute a command on a VM via serial console using pexpect fdspawn on the raw PTY."""
     domain = _validate_domain_name(params["domain_name"])
     command = params.get("command", "")
     serial_type = (params.get("serial_exec_type") or "linux").lower()
-    network_types = (
-        "ios",
-        "iosxe",
-        "cisco_iosxe",
-        "eos",
-        "arista_eos",
-        "junos",
-        "juniper_junos",
-    )
     requested = int(params.get("timeout", 10))
-    max_timeout = 900 if serial_type in network_types else 60
-    timeout_secs = min(requested, max_timeout)
+    timeout_secs = _cap_serial_timeout(serial_type, requested)
 
     if not command:
         raise RuntimeError(_NO_COMMAND)
@@ -9920,53 +9596,18 @@ def _handle_vm_serial_exec(job, params):
     username = params.get("username", "root")
     password = params.get("password", "")
 
-    pty_path = _serial_open_pty(domain)
-
-    for sp in [
-        "/opt/troshka/venv/lib/python3.12/site-packages",
-        "/opt/troshka/venv/lib/python3.13/site-packages",
-    ]:
-        if sp not in sys.path and os.path.isdir(sp):
-            sys.path.insert(0, sp)
-    from pexpect import fdpexpect, TIMEOUT, EOF
-
-    fd = os.open(pty_path, os.O_RDWR)
-    child = fdpexpect.fdspawn(fd, encoding="utf-8", timeout=timeout_secs)
-
-    SHELL = r"[#\$] "
-    ANY_PROMPT = ["login:", SHELL, r"[>%] ", TIMEOUT]
-
-    try:
-        err = _serial_poke_and_login(
-            child, username, password, domain, ANY_PROMPT, SHELL
+    def work(transport):
+        output, _, method = _exec_serial_on_transport(
+            transport,
+            "linux",
+            command,
+            timeout_secs,
+            username=username,
+            password=password,
         )
-        if err is not None:
-            return err
+        return {"domain": domain, "output": output, "method": method}
 
-        import random
-
-        rid = random.randint(10000, 99999)
-        outf = f"/tmp/.t{rid}"
-        marker = f"XDONE{rid}X"
-        child.send(
-            f"__a=XDONE; __b={rid}X; ({command}) > {outf} 2>&1; cat {outf}; rm -f {outf}; echo $__a$__b; unset __a __b\r"
-        )
-        child.expect(marker, timeout=timeout_secs)
-        raw = child.before or ""
-
-        output = _serial_clean_output(raw, outf, marker)
-        return {"domain": domain, "output": output}
-    except TIMEOUT:
-        return {"domain": domain, "output": "", "error": "Command timed out"}
-    except EOF:
-        return {"domain": domain, "output": "", "error": "Console connection closed"}
-    except RuntimeError as e:
-        return {"domain": domain, "output": "", "error": str(e)}
-    finally:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+    return _run_serial_session(domain, timeout_secs, work)
 
 
 COMMAND_HANDLERS["vm/serial-exec"] = _handle_vm_serial_exec

@@ -695,7 +695,92 @@ from app.services.providers.kubevirt import (
     _create_console_ws,
     _serial_socket_path,
     _VirtLauncherSerialConnection,
+    kubevirt_vm_is_headless,
 )
+
+
+class TestKubevirtVmHeadless:
+    def test_true_when_graphics_disabled(self):
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "domain": {
+                            "devices": {"autoattachGraphicsDevice": False},
+                        }
+                    }
+                }
+            }
+        }
+        provider = MagicMock()
+        with patch(
+            "app.services.providers.kubevirt._get_k8s_clients",
+            return_value=(custom_api, MagicMock(), MagicMock()),
+        ):
+            assert kubevirt_vm_is_headless(provider, "proj-id", "c35fea41") is True
+
+    def test_false_when_graphics_enabled(self):
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "domain": {
+                            "devices": {"autoattachGraphicsDevice": True},
+                        }
+                    }
+                }
+            }
+        }
+        provider = MagicMock()
+        with patch(
+            "app.services.providers.kubevirt._get_k8s_clients",
+            return_value=(custom_api, MagicMock(), MagicMock()),
+        ):
+            assert kubevirt_vm_is_headless(provider, "proj-id", "c35fea41") is False
+
+    def test_false_when_graphics_default(self):
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "domain": {"devices": {}},
+                    }
+                }
+            }
+        }
+        provider = MagicMock()
+        with patch(
+            "app.services.providers.kubevirt._get_k8s_clients",
+            return_value=(custom_api, MagicMock(), MagicMock()),
+        ):
+            assert (
+                kubevirt_vm_is_headless(
+                    provider, "proj-id", "c35fea41", {"serialExecType": "eos"}
+                )
+                is False
+            )
+
+    def test_fallback_serial_exec_type(self):
+        provider = MagicMock()
+        with patch(
+            "app.services.providers.kubevirt._get_k8s_clients",
+            side_effect=RuntimeError("no cluster"),
+        ):
+            assert (
+                kubevirt_vm_is_headless(
+                    provider, "proj-id", "c35fea41", {"serialExecType": "eos"}
+                )
+                is True
+            )
+            assert (
+                kubevirt_vm_is_headless(
+                    provider, "proj-id", "c35fea41", {"serialExecType": "linux"}
+                )
+                is False
+            )
 
 
 class TestSerialSocketPath:
@@ -736,34 +821,18 @@ class TestVirtLauncherSerialConnection:
 
 class TestCreateConsoleWs:
     @patch("app.services.providers.kubevirt._VirtLauncherSerialConnection")
-    @patch("app.services.providers.kubevirt._serial_socket_path", return_value="/sock")
-    @patch("app.services.providers.kubevirt._find_virt_launcher")
-    @patch("app.services.providers.kubevirt._get_k8s_clients")
-    @patch("kubernetes.stream.stream")
-    def test_uses_virt_launcher_socat(
-        self, mock_stream, mock_clients, mock_find, _mock_path, mock_conn_cls
-    ):
-        mock_custom = MagicMock()
-        mock_core = MagicMock()
-        mock_clients.return_value = (mock_custom, mock_core, MagicMock())
-        launcher = MagicMock()
-        launcher.metadata.name = "virt-launcher-troshka-vm-abcdef12-xyz"
-        mock_find.return_value = launcher
-        mock_stream.return_value = MagicMock()
+    @patch("app.services.providers.kubevirt._open_virt_launcher_serial_stream")
+    def test_uses_virt_launcher_socat(self, mock_open, mock_conn_cls):
+        mock_open.return_value = MagicMock()
         mock_conn_cls.return_value = MagicMock()
-
         provider = MagicMock()
+
         result = _create_console_ws(provider, "ns-test", "troshka-vm-abcdef12", 60)
 
-        mock_stream.assert_called_once()
-        args, kwargs = mock_stream.call_args
-        assert kwargs["container"] == "compute"
-        assert kwargs["stdin"] is True
-        assert kwargs["command"] == [
-            "socat",
-            "-",
-            "UNIX-CONNECT:/sock",
-        ]
+        mock_open.assert_called_once_with(
+            provider, "ns-test", "troshka-vm-abcdef12", 60
+        )
+        mock_conn_cls.assert_called_once()
         assert result is mock_conn_cls.return_value
 
 

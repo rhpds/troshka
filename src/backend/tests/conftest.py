@@ -1,4 +1,9 @@
 import os
+import sys
+
+_SRC_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _SRC_ROOT not in sys.path:
+    sys.path.insert(0, _SRC_ROOT)
 
 os.environ["TROSHKA_DATABASE__URL"] = "sqlite:///./test.db"
 

@@ -604,6 +604,35 @@ class TestCreateVmViaTroshkad:
         params = mock_start.call_args[0][2]
         assert params["machine_type"] == "i440fx"
 
+    @patch(f"{SVC}.start_job", return_value="job-create-headless")
+    @patch(f"{SVC}._find_vm_networks", return_value=[])
+    @patch(f"{SVC}._find_vm_disks", return_value=[])
+    def test_headless_when_serial_exec_eos(self, mock_disks, mock_nets, mock_start):
+        from app.services.deploy_service import _create_vm_via_troshkad
+
+        host = _make_host()
+        vm = {
+            "node_id": VM_NODE_ID,
+            "name": "rtr2",
+            "vcpus": 2,
+            "ram_gb": 4,
+            "cloud_init": False,
+            "boot_devices": [],
+            "uuid": "uuid-eos",
+            "firmware": "bios",
+            "secure_boot": False,
+            "serial_exec_type": "eos",
+            "video_model": "virtio",
+            "input_model": "virtio",
+        }
+        topo = _minimal_topology()
+
+        _create_vm_via_troshkad(host, PROJECT_ID, vm, topo, {})
+
+        params = mock_start.call_args[0][2]
+        assert params["headless"] is True
+        assert params["serial_exec_type"] == "eos"
+
     @patch(f"{SVC}.start_job", return_value="job-create-2")
     @patch(f"{SVC}._find_vm_networks", return_value=[])
     @patch(f"{SVC}._find_vm_disks", return_value=[])

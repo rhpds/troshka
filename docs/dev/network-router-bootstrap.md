@@ -97,6 +97,7 @@ experience).
 | Capability | libvirt (troshkad) | KubeVirt |
 |------------|-------------------|----------|
 | Hypervisor serial port | `isa-serial` PTY | `autoattachSerialConsole` + WebSocket |
+| vEOS / NOS guest on UART | Works (`virt-install --graphics none` on serial-exec VMs) | Requires `autoattachGraphicsDevice: false` — vEOS sends login to VGA when a display is attached (vrnetlab uses `qemu -display none`) |
 | `serial_exec: ios` | Works (rtr1 tested) | Implemented (`kubevirt_serial.py`) |
 | `serial_exec: eos` | Works | Implemented |
 | `serial_exec: junos` | Code present; **vSRX guest silent on UART** | Same |
