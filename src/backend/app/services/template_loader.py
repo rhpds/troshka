@@ -520,6 +520,12 @@ def _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip):
     if machine_type:
         vm_data["machineType"] = str(machine_type)
 
+    legacy_root_bus = vm_cfg.get("legacy_root_bus")
+    if legacy_root_bus is None:
+        legacy_root_bus = vm_cfg.get("legacyRootBus")
+    if legacy_root_bus:
+        vm_data["legacyRootBus"] = True
+
     if vm_cfg.get("tags"):
         vm_data["tags"] = vm_cfg["tags"]
     elif role == "control-plane":
@@ -1458,6 +1464,8 @@ def _export_vm_flags(d, vm_out):
         vm_out["serial_exec"] = d["serialExecType"]
     if d.get("machineType"):
         vm_out["machine_type"] = d["machineType"]
+    if d.get("legacyRootBus"):
+        vm_out["legacy_root_bus"] = True
     if d.get("bmcEnabled") and vm_out.get("role") != "control-plane":
         vm_out["bmc"] = True
     if d.get("bmcIp"):

@@ -1014,7 +1014,23 @@ export default function PropertiesPanel() {
                 <option value="eos">Arista EOS</option>
                 <option value="junos">Juniper Junos</option>
               </select>
-            </div></>);
+            </div>
+            {providerType === "ocpvirt" && (
+              <div className="props-field">
+                <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean((data as Record<string, any>).legacyRootBus)}
+                    onChange={(e) => update("legacyRootBus", e.target.checked || undefined)}
+                  />
+                  Legacy root PCI bus (NICs)
+                </label>
+                <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", display: "block", marginTop: 4 }}>
+                  Place NICs on q35 bus 00:xx (slots 03+) instead of PCIe root ports.
+                  Required for vEOS and similar NOS on KubeVirt.
+                </span>
+              </div>
+            )}</>);
             })()}
           </div>
           <div className="props-divider" />

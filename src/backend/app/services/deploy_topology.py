@@ -1377,6 +1377,8 @@ def build_troshkavm_vm_spec(vm_id: str, vm: dict, topology: dict) -> dict:
         spec["bmcIp"] = vm_data["bmcIp"]
     if vm_data.get("guestfishCommands"):
         spec["guestfishCommands"] = vm_data["guestfishCommands"]
+    if vm_data.get("legacyRootBus"):
+        spec["legacyRootBus"] = True
     pxe_path = vm_data.get("pxeBootIsoS3Path") or vm_data.get("pxeBootIsoResolvedPath")
     if vm_data.get("pxeBootIsoId") and pxe_path:
         spec["cdrom"] = {

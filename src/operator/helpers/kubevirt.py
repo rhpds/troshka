@@ -221,14 +221,26 @@ _NETWORK_SERIAL_EXEC_TYPES = frozenset(
     }
 )
 
+_HEADLESS_SERIAL_EXEC_TYPES = frozenset(
+    {
+        "eos",
+        "arista_eos",
+    }
+)
+
+# KubeVirt's default NIC placement hangs devices off PCIe root ports (01:00, 02:00,
+# …). Some NOS images (e.g. vEOS on q35) only enumerate legacy PCI on bus 00:xx.
+# Enable via canvas/template legacyRootBus — slots start at 0x03 like vrnetlab i440fx.
+_LEGACY_PCI_ROOT_SLOT_START = 3
+
 
 def _serial_exec_needs_headless(spec) -> bool:
-    """Network OS images (vEOS, IOS-XE, vSRX) use UART when VGA is absent."""
+    """vEOS routes login to VGA when a display is present; Junos/IOS use ISO boot."""
     headless = spec.get("headless")
     if headless is not None:
         return bool(headless)
     serial_exec = (spec.get("serialExecType") or "").lower()
-    return serial_exec in _NETWORK_SERIAL_EXEC_TYPES
+    return serial_exec in _HEADLESS_SERIAL_EXEC_TYPES
 
 
 def _apply_serial_console(domain, spec):
@@ -343,9 +355,21 @@ def _add_cdrom_if_present(spec, disk_pvcs, domain, volumes):
         )
 
 
+def _needs_legacy_root_pci_placement(spec) -> bool:
+    """True when canvas/template requests root-bus pciAddress for each NIC."""
+    return bool(spec.get("legacyRootBus"))
+
+
+def _legacy_root_pci_address(nic_index: int) -> str:
+    """PCI address on q35 root bus matching vrnetlab i440fx mgmt-NIC placement."""
+    slot = _LEGACY_PCI_ROOT_SLOT_START + nic_index
+    return f"0000:00:{slot:02x}.0"
+
+
 def _add_nics_to_domain(spec, domain, boot_idx):
     """Add network interface devices to domain configuration."""
     boot_order = spec.get("bootOrder", [])
+    legacy_pci = _needs_legacy_root_pci_placement(spec)
 
     for i, nic in enumerate(spec.get("nics", [])):
         nic_id = nic.get("id", f"nic-{i}")[:8]
@@ -358,6 +382,8 @@ def _add_nics_to_domain(spec, domain, boot_idx):
             iface["macAddress"] = mac
         if model and model != "virtio":
             iface["model"] = model
+        if legacy_pci:
+            iface["pciAddress"] = _legacy_root_pci_address(i)
 
         order_idx = _find_boot_order_index(
             nic.get("id"), "network", boot_order, boot_idx

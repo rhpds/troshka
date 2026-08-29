@@ -268,6 +268,30 @@ def test_build_troshkavm_vm_spec_serial_custom():
     assert spec["serialConsole"] is False
 
 
+def test_build_troshkavm_vm_spec_legacy_root_bus():
+    from app.services.deploy_topology import build_troshkavm_vm_spec
+
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "id": "vm1",
+                    "legacyRootBus": True,
+                    "nics": [],
+                },
+            }
+        ]
+    }
+    spec = build_troshkavm_vm_spec(
+        "vm1",
+        {"name": "rtr2", "vcpus": 2, "ram_gb": 4},
+        topo,
+    )
+    assert spec["legacyRootBus"] is True
+
+
 def test_build_troshkavm_nic_specs_includes_network_ref():
     from app.services.deploy_topology import build_troshkavm_vm_spec
 

@@ -1221,6 +1221,8 @@ def _build_vm_cr(
             "serialExecType": vm.get("serialExecType", ""),
         },
     }
+    if vm.get("legacyRootBus"):
+        vm_cr["spec"]["legacyRootBus"] = True
     cdrom = vm_cdroms_map.get(vm["id"]) or vm.get("cdrom")
     if cdrom and cdrom.get("s3Path"):
         vm_cr["spec"]["cdrom"] = cdrom

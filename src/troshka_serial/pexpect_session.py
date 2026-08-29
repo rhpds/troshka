@@ -47,11 +47,38 @@ def run_stream_pexpect_session(
     work: Callable[[PexpectSerialTransport], T],
 ) -> T:
     """Open a Kubernetes/exec stream, bridge it to pexpect, and run *work*."""
+    from pexpect import EOF, TIMEOUT, fdpexpect
+
+    class _StreamBridgedFdSpawn(fdpexpect.fdspawn):
+        """fdspawn that sends keystrokes to the exec stream instead of the PTY."""
+
+        def __init__(self, fd: int, stream: Any, **kwargs: Any) -> None:
+            super().__init__(fd, **kwargs)
+            self._bridge_stream = stream
+
+        def send(self, s: str | bytes) -> int:
+            text = self._coerce_send_string(s)
+            self._log(text, "send")
+            if self._bridge_stream.is_open():
+                self._bridge_stream.write_stdin(text)
+            return len(text)
+
     stream = open_stream()
     bridge = StreamPtyBridge(stream)
     try:
-        return run_fd_pexpect_session(
-            bridge.fd(), timeout_secs, work, close_fd=False
+        child = _StreamBridgedFdSpawn(
+            bridge.fd(), stream, encoding="utf-8", timeout=timeout_secs
         )
+        try:
+            return work(PexpectSerialTransport(child))
+        except TIMEOUT as exc:
+            raise RuntimeError("Command timed out") from exc
+        except EOF as exc:
+            raise RuntimeError("Console connection closed") from exc
+        finally:
+            try:
+                child.close(force=True)
+            except Exception:
+                pass
     finally:
         bridge.close()

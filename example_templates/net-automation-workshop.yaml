@@ -30,9 +30,18 @@ networks:
         target: vscode
       - name: showroom.workshop.local
         target: showroom    # cosmetic; showroom uses infra netns IP for external access
-  lab:                      # L2 segment for router interconnection and automation targets
+  lab:                      # router mgmt (containerlab mgmt-ipv4 / vrnetlab p00)
     cidr: 172.20.20.0/24
     dhcp: true
+  link-r1-r2:               # rtr1 Gi2 <-> rtr2 Ethernet1 (vrnetlab tap1)
+    cidr: 10.1.12.0/30
+    dhcp: false
+  link-r1-r3:               # rtr1 Gi3 <-> rtr3 ge-0/0/0 (vrnetlab tap2 / tap1)
+    cidr: 10.1.13.0/30
+    dhcp: false
+  link-r2-r4:               # rtr2 Ethernet2 <-> rtr4 Ethernet1
+    cidr: 10.1.24.0/30
+    dhcp: false
 
 # Project edge router — NAT, optional external access, DNS forwarder for mgmt zone.
 gateway:
@@ -89,6 +98,13 @@ vms:
         model: virtio
         ip: 10.0.0.20
 
+  # Router NIC layout mirrors vrnetlab QEMU adapter order + containerlab links.
+  # Adapter 1 = mgmt on lab (172.20.20.x); adapters 2+ = dataplane taps on /30 link nets.
+  #   rtr1: 3x virtio  (Gi1, Gi2, Gi3)
+  #   rtr2: 3x e1000   (Management1, Ethernet1, Ethernet2)
+  #   rtr3: 2x virtio  (fxp0, ge-0/0/0)
+  #   rtr4: 2x e1000   (Management1, Ethernet1)
+
   rtr1:                     # Cisco IOS-XE (c8000v) — day-0 via bootstrap ISO (CVAC)
     vcpus: 4
     ram_gb: 8
@@ -105,8 +121,12 @@ vms:
         library_item_name: net-automation-rtr1-bootstrap
     nics:
       - network: lab
-        model: virtio
+        model: virtio       # p00 -> GigabitEthernet1 (mgmt)
         ip: 172.20.20.10
+      - network: link-r1-r2
+        model: virtio       # p01 -> GigabitEthernet2
+      - network: link-r1-r3
+        model: virtio       # p02 -> GigabitEthernet3
 
   rtr2:                     # Arista vEOS — day-0 via serial (configure_routers)
     vcpus: 2
@@ -116,14 +136,19 @@ vms:
     serial_exec: eos
     tags:
       AnsibleGroup: routers,arista_eos
+    legacy_root_bus: true   # KubeVirt q35: NICs on root PCI bus (00:03+)
     disks:
       - size_gb: 10
-        bus: sata           # KubeVirt: virtio hangs vEOS after kexec; libvirt OK either way
+        bus: sata           # KubeVirt: virtio disk hangs vEOS after kexec; libvirt OK either way
         library_item_name: veos-lab-4.32.0F
     nics:
       - network: lab
-        model: virtio
+        model: e1000        # p00 -> Management1
         ip: 172.20.20.20
+      - network: link-r1-r2
+        model: e1000        # p01 -> Ethernet1
+      - network: link-r2-r4
+        model: e1000        # p02 -> Ethernet2
 
   rtr3:                     # Juniper vSRX — day-0 via bootstrap ISO (juniper.conf)
     vcpus: 2
@@ -142,8 +167,10 @@ vms:
         library_item_name: net-automation-rtr3-bootstrap
     nics:
       - network: lab
-        model: virtio
+        model: virtio       # p00 -> fxp0
         ip: 172.20.20.30
+      - network: link-r1-r3
+        model: virtio       # p01 -> ge-0/0/0
 
   rtr4:                     # second Arista vEOS — day-0 via serial
     vcpus: 2
@@ -153,14 +180,17 @@ vms:
     serial_exec: eos
     tags:
       AnsibleGroup: routers,arista_eos
+    legacy_root_bus: true   # KubeVirt q35: NICs on root PCI bus (00:03+)
     disks:
       - size_gb: 10
-        bus: sata           # KubeVirt: virtio hangs vEOS after kexec; libvirt OK either way
+        bus: sata           # KubeVirt: virtio disk hangs vEOS after kexec; libvirt OK either way
         library_item_name: veos-lab-4.32.0F
     nics:
       - network: lab
-        model: virtio
+        model: e1000        # p00 -> Management1
         ip: 172.20.20.40
+      - network: link-r2-r4
+        model: e1000        # p01 -> Ethernet1
 
 # Student-facing showroom pod — Antora docs + embedded terminals and web proxies.
 # Runs in project infra netns (not on mgmt DHCP); reaches VMs via routed lab bridges.

@@ -400,6 +400,37 @@ def test_template_machine_type_round_trip():
     assert exported["vms"]["rtr3"]["machine_type"] == "i440fx"
 
 
+def test_template_legacy_root_bus_round_trip():
+    from app.services.template_loader import (
+        export_topology_to_template,
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "name": "legacy-root-bus-test",
+        "networks": {"lab": {"cidr": "172.20.20.0/24", "dhcp": True}},
+        "vms": {
+            "rtr2": {
+                "vcpus": 2,
+                "ram_gb": 4,
+                "os": "blank",
+                "firmware": "bios",
+                "legacy_root_bus": True,
+                "serial_exec": "eos",
+                "disks": [{"size_gb": 10, "bus": "sata"}],
+                "nics": [{"network": "lab", "model": "e1000"}],
+            },
+        },
+    }
+    topo = generate_topology_from_template(resolve_inline_template(tmpl))
+    vm = next(n for n in topo["nodes"] if n["data"].get("name") == "rtr2")
+    assert vm["data"]["legacyRootBus"] is True
+
+    exported = export_topology_to_template(topo)
+    assert exported["vms"]["rtr2"]["legacy_root_bus"] is True
+
+
 def test_blank_vm_with_bootstrap_iso_gets_cdrom_controller():
     from app.services.template_loader import (
         generate_topology_from_template,

@@ -4,8 +4,10 @@ from troshka_serial.ios import (
     SERIAL_BLANK_MESSAGE,
     clean_ios_output,
     ios_enable_secret,
+    ios_ensure_prompt,
     ios_login_response,
     ios_poke_and_login,
+    ios_send_line,
     network_serial_exec,
     split_serial_commands,
 )
@@ -69,6 +71,57 @@ def test_ios_poke_and_login_reaches_prompt():
     transport = FakeTransport(expect_script=[(9, "localhost>")])
     assert ios_poke_and_login(transport, "admin", "", 30) is None
     assert transport.sent  # poke + login responses
+
+
+def test_ios_ensure_prompt_accepts_exec_prompt():
+    transport = FakeTransport(expect_script=[(9, "rtr4#")])
+    assert ios_ensure_prompt(transport, 10) is None
+
+
+def test_ios_ensure_prompt_logs_in_when_at_login():
+    transport = FakeTransport(
+        expect_script=[
+            (5, "rtr2 login: "),
+            (7, "Password: "),
+            (9, "rtr2>"),
+        ]
+    )
+    assert ios_ensure_prompt(transport, 30, username="admin", password="secret") is None  # pragma: allowlist secret
+    assert "admin\r" in transport.sent
+    assert "secret\r" in transport.sent
+
+
+def test_ios_poke_and_login_reports_incorrect_password():
+    transport = FakeTransport(
+        expect_script=[
+            (5, "rtr2 login: "),
+            (7, "Password: "),
+            (None, "Login incorrect\r\nrtr2 login: "),
+        ]
+    )
+    assert ios_poke_and_login(transport, "admin", "wrong", 30) == (
+        "Login failed (incorrect password)"
+    )
+
+
+def test_ios_poke_and_login_reports_auth_required_at_login():
+    transport = FakeTransport(expect_script=[(5, "rtr2 login: ")] * 20)
+    assert ios_poke_and_login(transport, "admin", "", 2) == (
+        "Console at login prompt (authentication required)"
+    )
+
+
+def test_ios_poke_and_login_waits_through_blank_when_blank_abort_disabled():
+    transport = FakeTransport(expect_script=[(None, "")] * 3 + [(9, "rtr4>")])
+    assert (
+        ios_poke_and_login(transport, "admin", "", 5, allow_blank_abort=False) is None
+    )
+
+
+def test_ios_send_line_paces_chunks():
+    transport = FakeTransport()
+    ios_send_line(transport, "configure terminal", chunk_size=8, chunk_delay=0)
+    assert transport.sent == ["configur", "e termin", "al", "\r"]
 
 
 def test_network_serial_exec_runs_commands():

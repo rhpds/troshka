@@ -19,6 +19,16 @@ _IOS_ENABLE_SECRET = re.compile(r"(?i)Enter enable secret:")
 _IOS_CONFIRM_SECRET = re.compile(r"(?i)Confirm enable secret:")
 _IOS_SETUP_SELECT = re.compile(r"Enter your selection \[2\]:")
 _IOS_MORE = re.compile(r"--More--", re.I)
+_IOS_LOGIN_FAILED = re.compile(
+    r"(?i)(login incorrect|authentication failed|failed login|access denied)"
+)
+# Exec completion: hostname-style prompt at end of a line (not bare '>' in echo).
+_IOS_EXEC_PROMPT = re.compile(r"(?m)[\w.-]+(?:\([^)]*\))*[#>] ?$")
+
+_DEFAULT_LINE_CHUNK_SIZE = 32
+_DEFAULT_LINE_CHUNK_DELAY = 0.02
+_POST_LINE_DELAY = 0.05
+_INTER_COMMAND_DELAY = 0.35
 
 IOS_LOGIN_PATTERNS = [
     _IOS_INIT_DIALOG,
@@ -115,21 +125,32 @@ def ios_login_response(
     return "\r"
 
 
+def _ios_auth_required_message(last_state: str) -> str:
+    if last_state == "password":
+        return "Console at password prompt (authentication required)"
+    if last_state in ("login", "username"):
+        return "Console at login prompt (authentication required)"
+    return "Console not responding"
+
+
 def ios_poke_and_login(
     transport: SerialTransport,
     username: str,
     password: str,
     timeout_secs: float,
+    *,
+    allow_blank_abort: bool = True,
 ) -> str | None:
     """Reach an IOS-XE / EOS prompt (> or #). Returns error message or None."""
     enable_secret = ios_enable_secret(password)
     poke_timeout = min(timeout_secs, 45)
-    blank_deadline = min(15, poke_timeout / 3)
+    blank_deadline = min(30, poke_timeout) if allow_blank_abort else poke_timeout + 1
     deadline = time.time() + poke_timeout
     started = time.time()
     saw_output = False
+    last_state = ""
     while time.time() < deadline:
-        if not saw_output and (time.time() - started) >= blank_deadline:
+        if allow_blank_abort and not saw_output and (time.time() - started) >= blank_deadline:
             return SERIAL_BLANK_MESSAGE
         transport.poke()
         idx, buf = transport.expect(
@@ -137,8 +158,18 @@ def ios_poke_and_login(
         )
         if buf.strip():
             saw_output = True
+        if buf and _IOS_LOGIN_FAILED.search(buf):
+            return "Login failed (incorrect password)"
         if idx is None:
             continue
+        if idx == 5:
+            last_state = "login"
+        elif idx == 6:
+            last_state = "username"
+        elif idx == 7:
+            last_state = "password"
+        elif idx == 9:
+            last_state = "prompt"
         try:
             response = ios_login_response(
                 idx,
@@ -151,26 +182,67 @@ def ios_poke_and_login(
         if response is None:
             return None
         transport.send(response)
-    return "Console not responding"
+    return _ios_auth_required_message(last_state)
+
+
+def ios_ensure_prompt(
+    transport: SerialTransport,
+    timeout_secs: float,
+    *,
+    username: str = "admin",
+    password: str = "",
+) -> str | None:
+    """Re-sync to an exec prompt on a fresh serial session (login if needed)."""
+    return ios_poke_and_login(
+        transport,
+        username,
+        password,
+        timeout_secs,
+        allow_blank_abort=False,
+    )
+
+
+def ios_send_line(
+    transport: SerialTransport,
+    line: str,
+    *,
+    chunk_size: int = _DEFAULT_LINE_CHUNK_SIZE,
+    chunk_delay: float = _DEFAULT_LINE_CHUNK_DELAY,
+) -> None:
+    """Send one CLI line, paced to avoid overrunning serial/exec buffers."""
+    text = (line or "").rstrip("\r\n")
+    if not text:
+        transport.send("\r")
+        return
+    for offset in range(0, len(text), chunk_size):
+        transport.send(text[offset : offset + chunk_size])
+        if chunk_delay > 0:
+            time.sleep(chunk_delay)
+    transport.send("\r")
+    if _POST_LINE_DELAY > 0:
+        time.sleep(_POST_LINE_DELAY)
 
 
 def ios_exec_command(
     transport: SerialTransport, command: str, timeout_secs: float
 ) -> str:
-    transport.read(0.3)
-    transport.send(command + "\r")
+    ios_send_line(transport, command)
     buf = ""
     deadline = time.time() + timeout_secs
     while time.time() < deadline:
-        chunk = transport.read(0.5)
+        remaining = min(1.0, deadline - time.time())
+        if remaining <= 0:
+            break
+        idx, chunk = transport.expect(
+            [_IOS_MORE, _IOS_EXEC_PROMPT], remaining
+        )
         if chunk:
             buf += chunk
-        if _IOS_MORE.search(buf):
+        if idx == 0:
             transport.send(" ")
             continue
-        if _IOS_PROMPT.search(buf):
+        if idx == 1:
             break
-    time.sleep(0.15)
     return clean_ios_output(buf, command)
 
 
@@ -181,7 +253,7 @@ def ios_exec_commands(
     per_cmd = max(30, timeout_secs // max(len(commands), 1))
     for cmd in commands:
         chunks.append(ios_exec_command(transport, cmd, per_cmd))
-        time.sleep(0.2)
+        time.sleep(_INTER_COMMAND_DELAY)
     return "\n".join(chunk for chunk in chunks if chunk)
 
 
@@ -196,6 +268,6 @@ def network_serial_exec(
     if err:
         raise RuntimeError(err)
     commands = split_serial_commands(command)
-    if len(commands) == 1:
-        return ios_exec_command(transport, commands[0], timeout_secs)
+    if len(commands) <= 1:
+        return ios_exec_command(transport, commands[0] if commands else command, timeout_secs)
     return ios_exec_commands(transport, commands, timeout_secs)

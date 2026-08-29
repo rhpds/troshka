@@ -119,6 +119,8 @@ def extract_vms(topology):
                 "cdrom": {},
                 "guestfishCommands": data.get("guestfishCommands", []),
             }
+            if data.get("legacyRootBus"):
+                vm["legacyRootBus"] = True
             if data.get("pxeBootIsoId"):
                 vm["cdrom"] = {
                     "libraryIsoId": data.get("pxeBootIsoId", ""),

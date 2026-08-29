@@ -153,6 +153,13 @@ def test_apply_serial_console_headless_for_eos():
     assert domain["devices"]["autoattachGraphicsDevice"] is False
 
 
+def test_apply_serial_console_keeps_graphics_for_junos():
+    domain: dict = {"devices": {}}
+    _apply_serial_console(domain, {"serialExecType": "junos"})
+    assert domain["devices"]["autoattachSerialConsole"] is True
+    assert "autoattachGraphicsDevice" not in domain["devices"]
+
+
 def test_apply_serial_console_keeps_graphics_for_linux():
     domain: dict = {"devices": {}}
     _apply_serial_console(domain, {"serialExecType": "linux"})
@@ -192,6 +199,62 @@ def test_build_kubevirt_vm_includes_video_and_input():
     devices = body["spec"]["template"]["spec"]["domain"]["devices"]
     assert devices["video"] == {"type": "vga"}
     assert devices["inputs"] == [{"type": "tablet", "bus": "usb", "name": "tablet0"}]
+
+
+def test_build_kubevirt_vm_eos_nics_use_legacy_root_pci_addresses():
+    vm_cr = {
+        "metadata": {"name": "vm-abc12345", "namespace": "troshka-test"},
+        "spec": {
+            "cpus": 2,
+            "memory": 4096,
+            "legacyRootBus": True,
+            "disks": [],
+            "nics": [
+                {
+                    "id": "nic-0663165c-467b-4445-b9ce-cf5588a68105",
+                    "mac": "52:54:00:00:01",
+                    "model": "e1000",
+                    "networkRef": "net-lab",
+                },
+                {
+                    "id": "nic-199c831c-bdc5-4f1c-8906-5343d4ee3571",
+                    "mac": "52:54:00:00:02",
+                    "model": "e1000",
+                    "networkRef": "net-link",
+                },
+            ],
+        },
+    }
+    body = build_kubevirt_vm(
+        vm_cr, {}, {"net-lab": "net-lab-nad", "net-link": "net-link-nad"}, None
+    )
+    ifaces = body["spec"]["template"]["spec"]["domain"]["devices"]["interfaces"]
+    assert ifaces[0]["pciAddress"] == "0000:00:03.0"
+    assert ifaces[1]["pciAddress"] == "0000:00:04.0"
+    assert ifaces[0]["model"] == "e1000"
+
+
+def test_build_kubevirt_vm_ios_nics_omit_pci_address():
+    vm_cr = {
+        "metadata": {"name": "vm-abc12345", "namespace": "troshka-test"},
+        "spec": {
+            "cpus": 2,
+            "memory": 4096,
+            "legacyRootBus": False,
+            "disks": [],
+            "nics": [
+                {
+                    "id": "nic-a96cfdfa-b6ca-4682-b89a-ad50a1806c65",
+                    "mac": "52:54:00:00:01",
+                    "model": "virtio",
+                    "networkRef": "net-lab",
+                },
+            ],
+        },
+    }
+    body = build_kubevirt_vm(vm_cr, {}, {"net-lab": "net-lab-nad"}, None)
+    iface = body["spec"]["template"]["spec"]["domain"]["devices"]["interfaces"][0]
+    assert "pciAddress" not in iface
 
 
 def test_build_kubevirt_vm_rejects_missing_network_ref():

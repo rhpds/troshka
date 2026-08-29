@@ -59,6 +59,8 @@ def exec_serial_on_transport(
 
     if st in ("ios", "iosxe", "cisco_iosxe", "eos", "arista_eos"):
         user = username or "admin"
+        if user in ("root", "cloud-user"):
+            user = "admin"
         output = network_serial_exec(
             transport, command, timeout_secs, user, password or ""
         )

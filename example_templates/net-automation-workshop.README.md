@@ -45,13 +45,18 @@ VMs still boot from disk; the NOS reads config from the ISO during boot.
 
 ### KubeVirt disk bus notes
 
-| Router | Disk bus | Why |
-|--------|----------|-----|
-| rtr2, rtr4 (vEOS) | `sata` | virtio hangs after `kexec_core: Starting new kernel` on KubeVirt |
-| rtr3 (vSRX) | `sata` | matches Junos KVM expectations on KubeVirt |
-| rtr1 (IOS-XE) | virtio (default) | boots from disk + bootstrap ISO |
+| Router | NICs | Disk bus | NIC model | Guest interfaces |
+|--------|------|----------|-----------|------------------|
+| rtr1 (IOS-XE) | 3 | virtio (default) | virtio | Gi1 (lab), Gi2/Gi3 (link nets) |
+| rtr2, rtr4 (vEOS) | 3 / 2 | `sata` | **e1000** | Management1 (lab), Ethernet1/2 (link nets) |
+| rtr3 (vSRX) | 2 | `sata` | virtio | fxp0 (lab), ge-0/0/0 (link net) |
 
-On libvirt (ocpvirt) virtio works for vEOS; SATA is safe on both providers.
+Mirrors containerlab vrnetlab: adapter count/model order match QEMU; `lab` = mgmt
+(172.20.20.x); `link-r1-r2`, `link-r1-r3`, `link-r2-r4` = dataplane /30 segments
+(rtr1 Gi2↔rtr2 Eth1, rtr1 Gi3↔rtr3 ge-0/0/0, rtr2 Eth2↔rtr4 Eth1). Dataplane
+NICs have no template IP — configure in lab exercises if needed.
+
+On libvirt (ocpvirt) virtio works for vEOS disk; SATA is safe on both providers.
 
 ## Bootstrap notes
 
@@ -77,4 +82,5 @@ repo). Key gotchas discovered in practice:
    different mechanisms per platform (ISO vs serial). See
    [`docs/dev/network-router-bootstrap.md`](../docs/dev/network-router-bootstrap.md).
    rtr1/rtr3 use bootstrap ISOs; rtr2/rtr4 use serial (`configure_routers`).
-   On KubeVirt, vEOS VMs need **SATA** disk bus (template sets `bus: sata`).
+   On KubeVirt, vEOS VMs need **SATA** disk bus (template sets `bus: sata`) and
+   **`legacy_root_bus: true`** so NICs land on the q35 root PCI bus (slots 03+).

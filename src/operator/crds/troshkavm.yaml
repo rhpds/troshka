@@ -97,11 +97,16 @@ spec:
                   type: string
                   description: >-
                     Serial exec handler for Troshka API (linux, ios, eos, junos).
-                    eos/ios/junos also enable headless mode (no VGA) in the operator.
+                    vEOS (serialExecType eos) enables headless mode (no VGA) in the operator.
                 headless:
                   type: boolean
                   description: >-
                     When true, omit graphics device so network OS writes to serial console.
+                legacyRootBus:
+                  type: boolean
+                  description: >-
+                    Place NICs on the q35 root PCI bus (0000:00:03.0, …) instead of
+                    PCIe root ports. Required for some network OS images (e.g. vEOS) on KubeVirt.
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

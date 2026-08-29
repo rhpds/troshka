@@ -777,6 +777,12 @@ class TestKubevirtVmHeadless:
             )
             assert (
                 kubevirt_vm_is_headless(
+                    provider, "proj-id", "c35fea41", {"serialExecType": "junos"}
+                )
+                is False
+            )
+            assert (
+                kubevirt_vm_is_headless(
                     provider, "proj-id", "c35fea41", {"serialExecType": "linux"}
                 )
                 is False

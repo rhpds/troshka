@@ -180,3 +180,48 @@ def test_kubevirt_exec_serial_eos():
         )
 
     assert result["method"] == "serial-eos"
+
+
+def test_kubevirt_exec_serial_eos_multisession():
+    session_calls: list[int] = []
+
+    def fake_session(_open_stream, timeout, work):
+        session_calls.append(timeout)
+        return work(MagicMock()) or f"line-{len(session_calls)}"
+
+    with (
+        patch(
+            "app.services.providers.kubevirt._get_k8s_clients",
+            return_value=(MagicMock(), MagicMock()),
+        ),
+        patch(
+            "app.services.providers.kubevirt_serial.run_stream_pexpect_session",
+            side_effect=fake_session,
+        ),
+        patch(
+            "app.services.providers.kubevirt_serial.ios_poke_and_login",
+            return_value=None,
+        ),
+        patch(
+            "app.services.providers.kubevirt_serial.ios_ensure_prompt",
+            return_value=None,
+        ),
+        patch(
+            "app.services.providers.kubevirt_serial.ios_exec_command",
+            side_effect=lambda _t, cmd, _to: f"ok:{cmd}",
+        ),
+    ):
+        result = kubevirt_exec_serial(
+            provider=MagicMock(),
+            project_id="proj-1",
+            vm_id="4c0df6dd-7129-4cc7-be82-20d5f04838dc",
+            command="enable\nhostname rtr4",
+            timeout=600,
+            serial_exec_type="eos",
+        )
+
+    assert len(session_calls) == 2
+    assert all(timeout <= 45 for timeout in session_calls)
+    assert result["method"] == "serial-eos"
+    assert "ok:enable" in result["output"]
+    assert "ok:hostname rtr4" in result["output"]

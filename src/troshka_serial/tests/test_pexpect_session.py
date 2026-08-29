@@ -1,5 +1,6 @@
 """Tests for stream PTY bridge and pexpect session helpers."""
 
+import fcntl
 import os
 import threading
 import time
@@ -43,8 +44,8 @@ def test_stream_pty_bridge_relays_guest_output():
     stream = _FakeStream(b"rtr2 login: ")
     bridge = StreamPtyBridge(stream)
     try:
-        flags = os.fcntl(bridge.fd(), os.F_GETFL)
-        os.fcntl(bridge.fd(), os.F_SETFL, flags | os.O_NONBLOCK)
+        flags = fcntl.fcntl(bridge.fd(), fcntl.F_GETFL)
+        fcntl.fcntl(bridge.fd(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
         ready = b""
         deadline = time.time() + 2
         while time.time() < deadline and b"login" not in ready:
@@ -65,8 +66,8 @@ def test_run_fd_pexpect_session_invokes_work():
     def work(_transport):
         return "done"
 
-    with patch("troshka_serial.pexpect_session.fdpexpect") as mock_fdpexpect:
+    with patch("pexpect.fdpexpect.fdspawn") as mock_fdspawn:
         child = MagicMock()
-        mock_fdpexpect.fdspawn.return_value = child
+        mock_fdspawn.return_value = child
         assert run_fd_pexpect_session(5, 10, work) == "done"
-        mock_fdpexpect.fdspawn.assert_called_once()
+        mock_fdspawn.assert_called_once()

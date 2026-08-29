@@ -11,10 +11,16 @@ class PexpectSerialTransport:
         self.child.send(text)
 
     def read(self, timeout_secs: float) -> str:
-        import time
+        from pexpect import EOF, TIMEOUT
 
-        time.sleep(timeout_secs)
-        return self.child.before or ""
+        try:
+            return self.child.read_nonblocking(
+                size=65536, timeout=max(0.1, timeout_secs)
+            )
+        except TIMEOUT:
+            return ""
+        except EOF:
+            return ""
 
     def expect(self, patterns: list, timeout_secs: float) -> tuple[int | None, str]:
         from pexpect import TIMEOUT
