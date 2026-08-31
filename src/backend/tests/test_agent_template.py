@@ -143,3 +143,61 @@ def test_bastion_cloud_init_pull_through_registry():
     assert "registries.conf.d/rhdp-cache.conf" in user_data
     assert "registry-quay.apps.example.com/registry_redhat_io" in user_data
     assert "registry-quay.apps.example.com/quay_io" in user_data
+
+
+def test_bastion_network_check_uses_tcp_not_icmp():
+    """The install network-wait must not use ICMP ping (gateway egress may block
+    icmp); it should test a TCP DNS reach to 8.8.8.8 instead."""
+    from app.services.ocp.agent_template import customize_topology
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "template_name": "test-net",
+        "install_method": "agent",
+        "networks": {
+            "cluster": {"cidr": "10.0.0.0/24", "dhcp": True, "domain": "test.local"},
+            "bmc": {"cidr": "192.168.50.0/24", "type": "bmc"},
+        },
+        "ocp": {
+            "cluster_name": "test",
+            "base_domain": "test.local",
+            "api_vip": "10.0.0.2",
+            "ingress_vip": "10.0.0.3",
+        },
+        "vms": {
+            "bastion": {
+                "role": "bastion",
+                "vcpus": 2,
+                "ram_gb": 4,
+                "os": "rhel9",
+                "disks": [{"size_gb": 50}],
+                "nics": [
+                    {"network": "cluster", "ip": "10.0.0.50"},
+                    {"network": "bmc", "ip": "192.168.50.50"},
+                ],
+            },
+        },
+    }
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+    customize_topology(
+        topo,
+        "test-net",
+        {
+            "cluster_name": "test",
+            "base_domain": "test.local",
+            "ocp_version": "4.20",
+            "common_password": "testpass",
+            "auto_install_ocp": True,
+            "resolved": resolved,
+        },
+    )
+    bastion = next(
+        n for n in topo["nodes"] if n.get("data", {}).get("name") == "bastion"
+    )
+    user_data = bastion["data"].get("ciUserData", "")
+    assert "ping -c1 -W2 8.8.8.8" not in user_data
+    assert "/dev/tcp/8.8.8.8/53" in user_data
