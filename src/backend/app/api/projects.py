@@ -3140,6 +3140,47 @@ def restart_container(
         raise HTTPException(status_code=503, detail=str(e))
 
 
+@router.post(
+    "/{project_id}/containers/{container_id}/redeploy",
+    responses={403: {}, 404: {}, 409: {}},
+)
+def redeploy_container(
+    project_id: str,
+    container_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """Redeploy a single container/pod node: destroy + recreate so its init
+    containers re-run (re-clone content_repo/ref, rebuild). VMs untouched —
+    e.g. to pull updated showroom content after the repo changes."""
+    from app.services.deploy_topology import _extract_containers
+
+    project, _host = _get_project_and_host(project_id, user, db)
+    if project.state != "active":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Project is {project.state}, cannot redeploy container",
+        )
+    ctr = next(
+        (
+            c
+            for c in _extract_containers(project.topology or {})
+            if c["node_id"] == container_id
+        ),
+        None,
+    )
+    if not ctr:
+        raise HTTPException(status_code=404, detail="Container not found in topology")
+
+    from app.core.redis import enqueue_job
+    from app.workers.jobs import job_container_redeploy_bg
+
+    enqueue_job(
+        job_container_redeploy_bg, project_id, container_id, project_id=project_id
+    )
+    return {"status": "redeploying", "container_id": container_id}
+
+
 def _allocate_vnis_for_new_networks(db, diff, vni_map):
     """Allocate VNIs for newly added networks. Modifies vni_map in place."""
     if not diff["added_networks"]:

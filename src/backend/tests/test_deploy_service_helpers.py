@@ -11248,3 +11248,49 @@ class TestPatternStorageLibraryRefs:
         ]
         items = _collect_library_items(nodes, MagicMock(), pool="shared")
         assert items == []
+
+
+class TestSyncDeployedContainerNode:
+    def test_updates_deployed_node_and_showroom_meta(self):
+        from types import SimpleNamespace
+
+        from app.services.deploy_service import _sync_deployed_container_node
+
+        project = SimpleNamespace(
+            deployed_topology={
+                "nodes": [
+                    {
+                        "id": "sr-1",
+                        "type": "containerNode",
+                        "data": {"name": "showroom", "contentRepo": "old"},
+                    },
+                    {"id": "vm-1", "type": "vmNode", "data": {"name": "bastion"}},
+                ],
+                "showroom": {"content_repo": "old"},
+            }
+        )
+        topo = {
+            "nodes": [
+                {
+                    "id": "sr-1",
+                    "type": "containerNode",
+                    "data": {"name": "showroom", "contentRepo": "new"},
+                },
+            ],
+            "showroom": {"content_repo": "new"},
+        }
+        _sync_deployed_container_node(project, "sr-1", topo)
+        node = next(n for n in project.deployed_topology["nodes"] if n["id"] == "sr-1")
+        assert node["data"]["contentRepo"] == "new"
+        assert project.deployed_topology["showroom"]["content_repo"] == "new"
+        # unrelated nodes untouched
+        assert any(n["id"] == "vm-1" for n in project.deployed_topology["nodes"])
+
+    def test_noop_when_node_absent(self):
+        from types import SimpleNamespace
+
+        from app.services.deploy_service import _sync_deployed_container_node
+
+        project = SimpleNamespace(deployed_topology={"nodes": []})
+        _sync_deployed_container_node(project, "missing", {"nodes": []})
+        assert project.deployed_topology == {"nodes": []}

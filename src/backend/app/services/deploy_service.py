@@ -1792,6 +1792,89 @@ def _create_and_start_pod(host, project_id, ctr, topology, vni_map, pool=None):
     _start_pod(host, full_pod_name)
 
 
+def _sync_deployed_container_node(project, container_id: str, topo: dict) -> None:
+    """Update the deployed_topology's container node (+ showroom meta) to match
+    the current topology after a container redeploy, so the canvas snapshot
+    reflects the newly-applied config (e.g. a changed showroom content_repo)."""
+    deployed = copy.deepcopy(project.deployed_topology or {})
+    cur_node = next(
+        (n for n in topo.get("nodes", []) if n.get("id") == container_id), None
+    )
+    if not cur_node:
+        return
+    replaced = False
+    for i, node in enumerate(deployed.get("nodes", [])):
+        if node.get("id") == container_id:
+            deployed["nodes"][i] = copy.deepcopy(cur_node)
+            replaced = True
+            break
+    if replaced and "showroom" in topo:
+        deployed["showroom"] = copy.deepcopy(topo["showroom"])
+    if replaced:
+        project.deployed_topology = deployed
+
+
+def redeploy_container_bg(project_id: str, container_id: str) -> None:
+    """Redeploy a single container/pod node: destroy then recreate so its init
+    containers re-run (re-clone content_repo/ref and rebuild). VMs are left
+    untouched. Used e.g. to pull updated showroom content after the repo changes.
+    """
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+    from app.services.deploy_topology import _extract_containers
+
+    prog_key = f"redeploy-container:{project_id}:{container_id}"
+    db = SessionLocal()
+    try:
+        project = db.query(Project).filter_by(id=project_id).first()
+        if not project:
+            return
+        host = (
+            db.query(Host).filter_by(id=project.host_id).first()
+            if project.host_id
+            else None
+        )
+        topo = copy.deepcopy(project.topology or {})
+        ctr = next(
+            (c for c in _extract_containers(topo) if c["node_id"] == container_id), None
+        )
+        if not host or not ctr:
+            set_progress(
+                prog_key,
+                {"step": "error", "detail": "Container or host not found"},
+            )
+            return
+        name = ctr.get("name", "container")
+        pool = _get_host_pool(host, db)
+        vni_map = project.vni_map or {}
+        set_progress(prog_key, {"step": "redeploy", "detail": f"Recreating {name}..."})
+        _destroy_container(host, project_id, ctr, topo, pool)
+        if ctr.get("is_pod"):
+            _create_and_start_pod(host, project_id, ctr, topo, vni_map, pool)
+        else:
+            _create_and_start_container(host, project_id, ctr, topo, vni_map, pool)
+        _sync_deployed_container_node(project, container_id, topo)
+        db.commit()
+        notify_project(
+            project_id,
+            {"type": "container-redeployed", "containerId": container_id},
+        )
+        logger.info(
+            "Redeploy container %s/%s: complete", project_id[:8], container_id[:8]
+        )
+    except Exception as e:  # noqa: BLE001 - report failure via progress
+        logger.exception(
+            "Redeploy container %s/%s failed", project_id[:8], container_id[:8]
+        )
+        try:
+            set_progress(prog_key, {"step": "error", "detail": str(e)})
+        except Exception:
+            pass
+    finally:
+        delete_progress(prog_key)
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # KubeVirt native deploy helpers (extracted to reduce cognitive complexity)
 # ---------------------------------------------------------------------------

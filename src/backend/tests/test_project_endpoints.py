@@ -1069,6 +1069,36 @@ class TestContainerLifecycle:
         assert "/containers/stop" in str(calls[0])
         assert "/containers/start" in str(calls[1])
 
+    def test_redeploy_container_enqueues_job(self):
+        pid, _hid = _create_active_project_with_host()
+        cid = str(uuid.uuid4())
+        with patch(
+            "app.services.deploy_topology._extract_containers",
+            return_value=[{"node_id": cid, "name": "showroom", "is_pod": True}],
+        ), patch("app.core.redis.enqueue_job") as mock_enq:
+            resp = client.post(
+                f"/api/v1/projects/{pid}/containers/{cid}/redeploy",
+                headers=HEADERS,
+            )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "redeploying"
+        mock_enq.assert_called_once()
+        # enqueued with (job_fn, project_id, container_id)
+        args = mock_enq.call_args[0]
+        assert args[1] == pid and args[2] == cid
+
+    def test_redeploy_container_not_found(self):
+        pid, _hid = _create_active_project_with_host()
+        with patch(
+            "app.services.deploy_topology._extract_containers", return_value=[]
+        ), patch("app.core.redis.enqueue_job") as mock_enq:
+            resp = client.post(
+                f"/api/v1/projects/{pid}/containers/{uuid.uuid4()}/redeploy",
+                headers=HEADERS,
+            )
+        assert resp.status_code == 404
+        mock_enq.assert_not_called()
+
     def test_get_container_logs(self):
         pid, _hid = _create_active_project_with_host()
         cid = str(uuid.uuid4())

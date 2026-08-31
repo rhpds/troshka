@@ -252,6 +252,23 @@ function ContainerNodeComponent({ id, data, selected }: NodeProps) {
               >
                 {actionPending === "restart" ? <span className="vm-btn-spinner" /> : "↻"}
               </button>
+              <button
+                className="vm-node-action redeploy"
+                title="Redeploy (rebuild content from repo)"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (!projectId || actionPending) return;
+                  if (!window.confirm("Redeploy this container? It is destroyed and recreated (content is rebuilt from the repo). VMs are not affected.")) return;
+                  setActionPending("redeploy");
+                  try {
+                    await fetch(`/api/v1/projects/${projectId}/containers/${id}/redeploy`, { method: "POST" });
+                  } catch { /* */ }
+                  setActionPending(null);
+                }}
+                disabled={!!actionPending}
+              >
+                {actionPending === "redeploy" ? <span className="vm-btn-spinner" /> : "♻"}
+              </button>
             </>
           )}
           <button

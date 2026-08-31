@@ -215,6 +215,14 @@ def job_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list):
     _do_reconfigure_bg(p_id, h_id, restart_vm_ids)
 
 
+def job_container_redeploy_bg(project_id: str, container_id: str):
+    """Redeploy a single container/pod node (destroy + recreate so init
+    containers re-run). Entrypoint in jobs.py for RQ resolution."""
+    from app.services.deploy_service import redeploy_container_bg
+
+    redeploy_container_bg(project_id, container_id)
+
+
 def job_bulk_deploy_projects(project_ids: list[str]):
     """Place and deploy multiple projects — each deploy enqueued as a separate job."""
     from app.api.patterns import _bulk_deploy_projects

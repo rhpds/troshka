@@ -3949,6 +3949,37 @@ export default function PropertiesPanel() {
         </>
       )}
 
+      {/* Redeploy container/showroom button */}
+      {nodeType === "containerNode" && projectState === "active" && (
+        <>
+          <div className="props-divider" />
+          <div className="props-section">
+            <button
+              className="props-library-btn"
+              onClick={async () => {
+                const label = (node.data as Record<string, unknown>)?.isShowroom
+                  ? "showroom"
+                  : ((node.data as Record<string, unknown>)?.name as string) || "container";
+                if (!(await appConfirm({
+                  title: "Redeploy Container",
+                  message: `Redeploy the ${label}? It is destroyed and recreated, rebuilding content from the repo. VMs are not affected.`,
+                  confirmLabel: "Redeploy",
+                }))) return;
+                const projectId = useCanvasStore.getState().currentProjectId;
+                if (!projectId) return;
+                const resp = await fetch(`/api/v1/projects/${projectId}/containers/${node.id}/redeploy`, { method: "POST" });
+                if (!resp.ok) {
+                  const err = await resp.json().catch(() => ({ detail: "Redeploy failed" }));
+                  setAlertMsg(err.detail || "Redeploy failed");
+                }
+              }}
+            >
+              ♻ Redeploy This Container
+            </button>
+          </div>
+        </>
+      )}
+
       {/* Delete button */}
       <div className="props-divider" />
       <div className="props-section">
