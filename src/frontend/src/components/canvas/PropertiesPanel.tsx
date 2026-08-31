@@ -2065,7 +2065,7 @@ export default function PropertiesPanel() {
                                       <button
                                         className="props-library-btn"
                                         style={{ fontSize: 11 }}
-                                        title="Fill console + oauth hosts"
+                                        title="Fill in the console + oauth hosts for embedding the OpenShift web console"
                                         onClick={() => {
                                           const next = showroomTabs.map((t) =>
                                             t.id === tab.id
@@ -2083,7 +2083,7 @@ export default function PropertiesPanel() {
                                           updateShowroomTabs(node!.id, next);
                                         }}
                                       >
-                                        OCP console
+                                        Insert OCP console hosts
                                       </button>
                                     </div>
                                   </div>
