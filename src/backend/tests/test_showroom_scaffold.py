@@ -300,56 +300,48 @@ def test_apply_showroom_deploy_overrides():
     assert git_cloner["envVars"][1]["value"] == "v1.0.0"
 
 
-def test_build_app_proxy_config_maps_and_rewrites():
-    """App-proxy vhost maps public->internal, preserves Host/SNI, rewrites redirects,
-    and strips X-Frame-Options so the console embeds in the iframe."""
+def test_build_app_proxy_config_per_host_literal_blocks():
+    """One server block per internal host, matched by the deterministic public
+    hostname (pid + suffix captured from Host). Literal upstream (no resolver),
+    generic redirect rewrites .local->public while leaving redirect_uri .local,
+    and X-Frame-Options is stripped so the console embeds in the iframe."""
     from app.services.showroom_scaffold import build_app_proxy_config
 
-    mappings = [
-        {
-            "internal_host": "console-openshift-console.apps.ocp.ocp.local",
-            "public_host": "troshka-pf-6fcf0e3e-console-443-tr.apps.ocpvdev01.example.com",
-        },
-        {
-            "internal_host": "oauth-openshift.apps.ocp.ocp.local",
-            "public_host": "troshka-pf-6fcf0e3e-oauth-443-tr.apps.ocpvdev01.example.com",
-        },
-    ]
-    conf = build_app_proxy_config(mappings)
-
-    # resolver is required for a variable ($troshka_backend) upstream
-    assert "resolver" in conf
-    # forward map: public host -> internal host
-    assert "map $host $troshka_backend {" in conf
-    assert (
-        "troshka-pf-6fcf0e3e-console-443-tr.apps.ocpvdev01.example.com"
-        "   console-openshift-console.apps.ocp.ocp.local" in conf
-        or "console-openshift-console.apps.ocp.ocp.local" in conf
+    conf = build_app_proxy_config(
+        [
+            "console-openshift-console.apps.ocp.ocp.local",
+            "oauth-openshift.apps.ocp.ocp.local",
+        ]
     )
-    # single server block handles all public hosts
-    assert "server_name" in conf
-    assert "oauth-openshift.apps.ocp.ocp.local" in conf
-    # proxied with backend Host + SNI
-    assert "proxy_pass https://$troshka_backend" in conf
-    assert "proxy_ssl_name $troshka_backend;" in conf
-    assert "proxy_set_header Host $troshka_backend;" in conf
-    # Defect C: allow embedding in the showroom iframe
+
+    # deterministic public hostname match; pid + suffix captured from the request
+    assert (
+        'server_name "~^troshka-pf-(?<troshka_pid>[0-9a-f]{8})-console-openshift-console'
+        '\\.(?<troshka_suffix>apps\\..+)$";' in conf
+    )
+    assert (
+        'server_name "~^troshka-pf-(?<troshka_pid>[0-9a-f]{8})-oauth-openshift'
+        '\\.(?<troshka_suffix>apps\\..+)$";' in conf
+    )
+    # literal upstream => no resolver / map needed
+    assert "proxy_pass https://console-openshift-console.apps.ocp.ocp.local;" in conf
+    assert "proxy_set_header Host console-openshift-console.apps.ocp.ocp.local;" in conf
+    assert "proxy_ssl_name oauth-openshift.apps.ocp.ocp.local;" in conf
+    assert "resolver" not in conf
+    assert "map " not in conf
+    # embedding
     assert "proxy_hide_header X-Frame-Options;" in conf
-    # redirect host .local -> public, per app (redirect_uri query param untouched)
+    # generic redirect: any .local host -> troshka-pf-$troshka_pid-<label>.$suffix
     assert (
-        "proxy_redirect https://console-openshift-console.apps.ocp.ocp.local/ "
-        "https://troshka-pf-6fcf0e3e-console-443-tr.apps.ocpvdev01.example.com/;"
-    ) in conf
-    assert (
-        "proxy_redirect https://oauth-openshift.apps.ocp.ocp.local/ "
-        "https://troshka-pf-6fcf0e3e-oauth-443-tr.apps.ocpvdev01.example.com/;"
-    ) in conf
-    # cookie domain rewrite so the session cookie applies on the public host
-    assert "proxy_cookie_domain" in conf
+        "proxy_redirect ~^https://(?<troshka_h>[^.]+)\\.apps\\.ocp\\.ocp\\.local"
+        "(?<troshka_rest>.*)$ https://troshka-pf-$troshka_pid-$troshka_h.$troshka_suffix"
+        "$troshka_rest;" in conf
+    )
+    assert "proxy_cookie_domain .apps.ocp.ocp.local $host;" in conf
 
 
 def test_build_app_proxy_config_empty_is_blank():
-    """No app proxies -> empty snippet (safe to include before deploy fills it)."""
+    """No app proxies -> empty string (nothing to bake)."""
     from app.services.showroom_scaffold import build_app_proxy_config
 
     assert build_app_proxy_config([]) == ""
@@ -406,11 +398,11 @@ def test_proxy_hosts_use_app_proxy_not_location():
         "oauth-openshift.apps.ocp.ocp.local",
     ]
     nginx = build_nginx_config(resolved)
-    # app-proxy tabs are served by the deploy-time vhost, not an inline location
+    # app-proxy tabs are served by dedicated server blocks, not a path location
     assert "location /console" not in nginx
-    assert "console-openshift-console" not in nginx
-    # base config loads whatever the deploy writes into conf.d
-    assert "include /showroom/nginx/conf.d/*.conf;" in nginx
+    # the app-proxy vhost is baked inline (literal upstream)
+    assert "proxy_pass https://console-openshift-console.apps.ocp.ocp.local;" in nginx
+    assert "proxy_pass https://oauth-openshift.apps.ocp.ocp.local;" in nginx
 
 
 def test_app_proxy_internal_hosts_dedupes_and_orders():
@@ -466,9 +458,9 @@ def test_build_ui_config_app_proxy_emits_placeholder_url():
     assert "__TROSHKA_APP_PROXY__console-openshift-console.apps.ocp.ocp.local__" in yaml
 
 
-def test_build_nginx_config_sets_hash_sizes_before_first_map():
-    """Hash bucket sizes must precede the first map ($http_upgrade); nginx commits
-    map_hash_bucket_size when it parses the first map, so a later one errors."""
+def test_build_nginx_config_bakes_app_proxy_server_blocks():
+    """App-proxy server blocks are baked inline in the main nginx config (no
+    deploy-time injection): a dedicated server per internal host."""
     resolved = [
         {
             "tab": {"name": "OCP Console", "type": "proxy"},
@@ -479,6 +471,10 @@ def test_build_nginx_config_sets_hash_sizes_before_first_map():
         },
     ]
     nginx = build_nginx_config(resolved)
-    assert "map_hash_bucket_size" in nginx
-    assert "server_names_hash_bucket_size" in nginx
-    assert nginx.index("map_hash_bucket_size") < nginx.index("map $http_upgrade")
+    assert (
+        'server_name "~^troshka-pf-(?<troshka_pid>[0-9a-f]{8})-console-openshift-console'
+        '\\.(?<troshka_suffix>apps\\..+)$";' in nginx
+    )
+    assert "proxy_pass https://oauth-openshift.apps.ocp.ocp.local;" in nginx
+    # no deploy-time include needed
+    assert "conf.d" not in nginx

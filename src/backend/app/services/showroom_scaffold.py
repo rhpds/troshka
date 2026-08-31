@@ -346,16 +346,10 @@ def build_nginx_config(resolved: list[dict[str, Any]]) -> str:
         "http {",
         "  include /etc/nginx/mime.types;",
         "  proxy_cache off;",
-        # Must precede any map: nginx locks the hash size at the first map, and
-        # app-proxy public/internal FQDNs overflow the defaults.
-        "  map_hash_bucket_size 128;",
-        "  server_names_hash_bucket_size 128;",
         "  map $http_upgrade $connection_upgrade {",
         "    default upgrade;",
         "    '' close;",
         "  }",
-        # Deploy writes app-proxy vhosts (console/oauth) here after routes exist.
-        "  include /showroom/nginx/conf.d/*.conf;",
         "  server {",
         "    listen 80;",
         "    location / {",
@@ -411,64 +405,66 @@ def build_nginx_config(resolved: list[dict[str, Any]]) -> str:
                     blocks.append("      proxy_ssl_server_name on;")
                     blocks.append(f"      proxy_ssl_name {proxy_host};")
             blocks.append("    }")
-    blocks.extend(["  }", "}"])
+    blocks.append("  }")  # close main server
+    app_hosts: list[str] = []
+    for item in resolved:
+        for host in item.get("appProxyHosts", []):
+            if host not in app_hosts:
+                app_hosts.append(host)
+    if app_hosts:
+        blocks.append(build_app_proxy_config(app_hosts).rstrip("\n"))
+    blocks.append("}")  # close http
     return "\n".join(blocks) + "\n"
 
 
-def build_app_proxy_config(mappings: list[dict[str, Any]]) -> str:
-    """Deploy-time nginx snippet proxying public app hostnames to internal ones.
+def build_app_proxy_config(internal_hosts: list[str]) -> str:
+    """nginx server blocks that embed OAuth-protected cluster apps (console, oauth)
+    in the showroom iframe, baked at scaffold time.
 
-    Each mapping is ``{"internal_host": ..., "public_host": ...}``. The browser
-    only ever sees public hosts; redirect ``Location`` headers are rewritten
-    ``.local`` -> public per app, while OAuth ``redirect_uri`` query params (left
-    ``.local``) still match the untouched cluster OAuthClient. A ``resolver`` is
-    required because ``$troshka_backend`` is a runtime variable upstream.
+    Each internal host (``<label>.apps.ocp.ocp.local``) gets one server block
+    matched by its deterministic public hostname
+    ``troshka-pf-<pid>-<label>.apps.<cluster>``. ``pid`` and the cluster suffix are
+    captured from the request ``Host`` (server_name regex), so the config is
+    project- and cluster-agnostic. The upstream is a literal internal host, so no
+    ``resolver`` is needed. A single generic ``proxy_redirect`` rewrites any
+    redirect ``Location`` host ``.local`` -> the public equivalent, while leaving
+    the OAuth ``redirect_uri`` query param ``.local`` so the untouched cluster
+    OAuthClient still validates.
     """
-    if not mappings:
-        return ""
-    public_hosts = " ".join(m["public_host"] for m in mappings)
-    # Hash bucket sizes are set once in the base http{} before the first map;
-    # they cannot be repeated here (nginx locks them at the first map).
-    lines = [
-        "resolver 10.0.0.1 valid=30s;",
-        "map $host $troshka_backend {",
-    ]
-    for m in mappings:
-        lines.append(f"  {m['public_host']}   {m['internal_host']};")
-    lines.extend(
-        [
-            "}",
-            "server {",
-            "  listen 80;",
-            f"  server_name {public_hosts};",
-            "  location / {",
-            "    proxy_pass https://$troshka_backend$request_uri;",
-            "    proxy_ssl_server_name on;",
-            "    proxy_ssl_name $troshka_backend;",
-            "    proxy_ssl_verify off;",
-            "    proxy_set_header Host $troshka_backend;",
-            "    proxy_set_header X-Forwarded-Proto https;",
-            "    proxy_http_version 1.1;",
-            "    proxy_set_header Upgrade $http_upgrade;",
-            "    proxy_set_header Connection $connection_upgrade;",
-            "    proxy_read_timeout 86400;",
-            # Allow the console to render inside the showroom iframe.
-            "    proxy_hide_header X-Frame-Options;",
-        ]
-    )
-    for m in mappings:
-        lines.append(
-            f"    proxy_redirect https://{m['internal_host']}/ "
-            f"https://{m['public_host']}/;"
+    blocks: list[str] = []
+    for host in internal_hosts:
+        label = host.split(".")[0]
+        blocks.extend(
+            [
+                "server {",
+                "  listen 80;",
+                # Quote the regex: nginx treats bare {8} as block syntax.
+                f'  server_name "~^troshka-pf-(?<troshka_pid>[0-9a-f]{{8}})-{label}'
+                '\\.(?<troshka_suffix>apps\\..+)$";',
+                "  location / {",
+                f"    proxy_pass https://{host};",
+                "    proxy_ssl_server_name on;",
+                f"    proxy_ssl_name {host};",
+                "    proxy_ssl_verify off;",
+                f"    proxy_set_header Host {host};",
+                "    proxy_set_header X-Forwarded-Proto https;",
+                "    proxy_http_version 1.1;",
+                "    proxy_set_header Upgrade $http_upgrade;",
+                "    proxy_set_header Connection $connection_upgrade;",
+                "    proxy_read_timeout 86400;",
+                # Allow the app to render inside the showroom iframe.
+                "    proxy_hide_header X-Frame-Options;",
+                # Rewrite redirect Location host .local -> public (redirect_uri
+                # query params are left .local so the OAuthClient still validates).
+                "    proxy_redirect ~^https://(?<troshka_h>[^.]+)"
+                "\\.apps\\.ocp\\.ocp\\.local(?<troshka_rest>.*)$ "
+                "https://troshka-pf-$troshka_pid-$troshka_h.$troshka_suffix$troshka_rest;",
+                "    proxy_cookie_domain .apps.ocp.ocp.local $host;",
+                "  }",
+                "}",
+            ]
         )
-    lines.extend(
-        [
-            "    proxy_cookie_domain .apps.ocp.ocp.local $host;",
-            "  }",
-            "}",
-        ]
-    )
-    return "\n".join(lines) + "\n"
+    return "\n".join(blocks) + "\n" if blocks else ""
 
 
 def _build_wetty_containers(
