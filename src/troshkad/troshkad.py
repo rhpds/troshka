@@ -11795,6 +11795,28 @@ def _allow_infra_veth_forward(job, proj_ns, veth_host):
                 "accept",
             ],
         )
+        # SNAT showroom->lab-bridge traffic to the bridge gateway IP. The
+        # showroom pod lives on the project transit subnet, so without this the
+        # lab VMs (e.g. a nested OCP node) receive packets from a foreign source
+        # subnet they will not route replies back to, and the proxy hangs (504).
+        _nft_try(
+            job,
+            [
+                "ip",
+                "netns",
+                "exec",
+                proj_ns,
+                "nft",
+                "add",
+                "rule",
+                "inet",
+                "nat",
+                "postrouting",
+                "oifname",
+                bridge,
+                "masquerade",
+            ],
+        )
 
 
 def _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id):

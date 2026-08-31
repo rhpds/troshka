@@ -2548,5 +2548,72 @@ class TestRateLimitingEdgeCases(unittest.TestCase):
         self.assertEqual(len(troshkad._fail_tracker[ip]), 1)
 
 
+class TestShowroomInfraForward(unittest.TestCase):
+    """Showroom pod -> lab-bridge forwarding + SNAT rule generation."""
+
+    def _run_and_capture(self):
+        """Run _allow_infra_veth_forward with a mocked _run_cmd, return calls."""
+        bridge_listing = "\n".join(
+            [
+                "2: br-1929: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500",
+                "9: br-bmc-6fcf0e3e: <BROADCAST,MULTICAST,UP> mtu 1500",
+            ]
+        )
+
+        def fake_run_cmd(job, cmd, **kwargs):
+            if "link" in cmd and "show" in cmd and "bridge" in cmd:
+                return bridge_listing
+            return ""
+
+        with patch("troshkad._run_cmd", side_effect=fake_run_cmd) as mock_run:
+            troshkad._allow_infra_veth_forward(
+                {"log": []}, "troshka-6fcf0e3e", "vishowroomh"
+            )
+        return [call.args[1] for call in mock_run.call_args_list]
+
+    def test_masquerade_added_per_bridge(self):
+        """A NAT postrouting masquerade must be added for each lab bridge."""
+        cmds = self._run_and_capture()
+        for bridge in ("br-1929", "br-bmc-6fcf0e3e"):
+            masq = [
+                "ip",
+                "netns",
+                "exec",
+                "troshka-6fcf0e3e",
+                "nft",
+                "add",
+                "rule",
+                "inet",
+                "nat",
+                "postrouting",
+                "oifname",
+                bridge,
+                "masquerade",
+            ]
+            self.assertIn(masq, cmds, f"missing masquerade rule for {bridge}")
+
+    def test_forward_accept_still_added(self):
+        """Forward accept rules (both directions) remain for each bridge."""
+        cmds = self._run_and_capture()
+        fwd_out = [
+            "ip",
+            "netns",
+            "exec",
+            "troshka-6fcf0e3e",
+            "nft",
+            "add",
+            "rule",
+            "inet",
+            "filter",
+            "forward",
+            "iifname",
+            "vishowroomh",
+            "oifname",
+            "br-1929",
+            "accept",
+        ]
+        self.assertIn(fwd_out, cmds)
+
+
 if __name__ == "__main__":
     unittest.main()
