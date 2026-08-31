@@ -49,6 +49,9 @@ out/
 *.pyc
 build/
 
+# Generated build artifacts (e.g. router bootstrap ISOs from build-router-bootstrap-isos.sh)
+.generated/
+
 # Logs
 *.log
 /tmp/
