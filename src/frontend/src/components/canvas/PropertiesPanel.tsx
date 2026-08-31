@@ -625,6 +625,19 @@ export default function PropertiesPanel() {
                 onChange={(e) => update("separateHost", e.target.value || undefined)}
               />
             </div>
+            {useCanvasStore.getState().providerType === "kubevirt" && (
+              <div className="props-field">
+                <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean((data as Record<string, any>).nestedVirt)}
+                    onChange={(e) => update("nestedVirt", e.target.checked || undefined)}
+                  />
+                  Nested virtualization
+                  <HintIcon text="Expose the host CPU (host-passthrough) so this VM can run its own VMs. Pins the VM to compatible CPUs and disables live migration. Requires nested virt enabled on the cluster nodes." />
+                </label>
+              </div>
+            )}
             </>)}
           </div>
           <div className="props-divider" />

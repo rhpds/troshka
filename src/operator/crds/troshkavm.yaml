@@ -107,6 +107,14 @@ spec:
                   description: >-
                     Place NICs on the q35 root PCI bus (0000:00:03.0, …) instead of
                     PCIe root ports. Required for some network OS images (e.g. vEOS) on KubeVirt.
+                nestedVirt:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Expose the host CPU (cpu.model=host-passthrough, incl. vmx/svm) to the
+                    guest so it can run its own KVM-accelerated VMs. Pins the VM to compatible
+                    CPUs and precludes cross-CPU live migration. Requires nested virtualization
+                    enabled on the underlying cluster nodes.
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true

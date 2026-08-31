@@ -182,6 +182,38 @@ def test_build_kubevirt_vm_includes_serial_console():
     assert devices["autoattachSerialConsole"] is False
 
 
+def test_build_kubevirt_vm_nested_virt_uses_host_passthrough():
+    vm_cr = {
+        "metadata": {"name": "vm-abc12345", "namespace": "troshka-test"},
+        "spec": {
+            "cpus": 2,
+            "memory": 4096,
+            "nestedVirt": True,
+            "disks": [],
+            "nics": [],
+        },
+    }
+    body = build_kubevirt_vm(vm_cr, {}, {}, None)
+    cpu = body["spec"]["template"]["spec"]["domain"]["cpu"]
+    assert cpu["model"] == "host-passthrough"
+    assert cpu["cores"] == 2
+
+
+def test_build_kubevirt_vm_no_cpu_model_by_default():
+    vm_cr = {
+        "metadata": {"name": "vm-abc12345", "namespace": "troshka-test"},
+        "spec": {
+            "cpus": 2,
+            "memory": 4096,
+            "disks": [],
+            "nics": [],
+        },
+    }
+    body = build_kubevirt_vm(vm_cr, {}, {}, None)
+    cpu = body["spec"]["template"]["spec"]["domain"]["cpu"]
+    assert "model" not in cpu
+
+
 def test_build_kubevirt_vm_includes_video_and_input():
     vm_cr = {
         "metadata": {"name": "vm-abc12345", "namespace": "troshka-test"},

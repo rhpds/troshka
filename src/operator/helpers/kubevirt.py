@@ -270,6 +270,12 @@ def _build_base_domain(spec):
         },
     }
 
+    # Nested virtualization: expose the host CPU (incl. vmx/svm) to the guest so
+    # it can run its own KVM-accelerated VMs. host-passthrough pins the VM to
+    # compatible CPUs and precludes cross-CPU live migration, hence opt-in.
+    if spec.get("nestedVirt"):
+        domain["cpu"]["model"] = "host-passthrough"
+
     if spec.get("smbiosUuid"):
         domain.setdefault("firmware", {})["uuid"] = spec["smbiosUuid"]
 

@@ -95,6 +95,7 @@ export interface VMNodeData {
   bootOrder?: number;
   bootMethod?: string;
   cloudInit?: boolean;
+  nestedVirt?: boolean;
   icon: string;
   nics: VMNic[];
   diskControllers: VMDiskController[];

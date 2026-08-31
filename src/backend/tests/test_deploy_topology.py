@@ -292,6 +292,50 @@ def test_build_troshkavm_vm_spec_legacy_root_bus():
     assert spec["legacyRootBus"] is True
 
 
+def test_build_troshkavm_vm_spec_nested_virt():
+    from app.services.deploy_topology import build_troshkavm_vm_spec
+
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "id": "vm1",
+                    "nestedVirt": True,
+                    "nics": [],
+                },
+            }
+        ]
+    }
+    spec = build_troshkavm_vm_spec(
+        "vm1",
+        {"name": "hypervisor", "vcpus": 2, "ram_gb": 4},
+        topo,
+    )
+    assert spec["nestedVirt"] is True
+
+
+def test_build_troshkavm_vm_spec_nested_virt_absent_by_default():
+    from app.services.deploy_topology import build_troshkavm_vm_spec
+
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {"id": "vm1", "nics": []},
+            }
+        ]
+    }
+    spec = build_troshkavm_vm_spec(
+        "vm1",
+        {"name": "plain", "vcpus": 2, "ram_gb": 4},
+        topo,
+    )
+    assert "nestedVirt" not in spec
+
+
 def test_build_troshkavm_nic_specs_includes_network_ref():
     from app.services.deploy_topology import build_troshkavm_vm_spec
 
