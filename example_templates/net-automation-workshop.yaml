@@ -168,10 +168,10 @@ vms:
         library_item_name: net-automation-rtr3-bootstrap
     nics:
       - network: lab
-        model: virtio       # p00 -> fxp0
+        model: e1000        # p00 -> fxp0 (mgmt needs em driver; vSRX has no vtnet for fxp0)
         ip: 172.20.20.30
       - network: link-r1-r3
-        model: virtio       # p01 -> ge-0/0/0
+        model: virtio       # p01 -> ge-0/0/0 (revenue port, DPDK/nic_uio binds virtio)
 
   rtr4:                     # second Arista vEOS — day-0 via serial
     vcpus: 2
