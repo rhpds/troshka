@@ -178,6 +178,32 @@ def app_proxy_internal_hosts(tabs: list[dict[str, Any]]) -> list[str]:
     return seen
 
 
+def app_proxy_public_host(project_id: str, internal_host: str, apps_domain: str) -> str:
+    """Deterministic public hostname for an internal app host, matching the nginx
+    app-proxy server_name regex: troshka-pf-<pid8>-<label>.<apps_domain>."""
+    label = internal_host.split(".")[0]
+    return f"troshka-pf-{project_id[:8]}-{label}.{apps_domain}"
+
+
+def derive_apps_domain(route_hostname: str) -> str:
+    """Cluster apps wildcard domain from any admitted route hostname
+    (<label>.apps.<cluster> -> apps.<cluster>)."""
+    if "." not in (route_hostname or ""):
+        return ""
+    return route_hostname.split(".", 1)[1]
+
+
+def fill_app_proxy_tab_urls(ui_yaml: str, project_id: str, apps_domain: str) -> str:
+    """Replace __TROSHKA_APP_PROXY__<internal>__ placeholders in the rendered
+    ui-config with the deterministic public https URL (deploy-time substitution)."""
+
+    def _repl(m: re.Match[str]) -> str:
+        internal = m.group(1)
+        return "https://" + app_proxy_public_host(project_id, internal, apps_domain)
+
+    return re.sub(r"__TROSHKA_APP_PROXY__([a-z0-9.-]+)__", _repl, ui_yaml)
+
+
 def _resolve_name_based_proxy(tab: dict[str, Any]) -> dict[str, Any]:
     """Resolve a proxy tab whose upstream is a hostname (Host + SNI)."""
     host = tab["proxyHost"]

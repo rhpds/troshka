@@ -1077,6 +1077,65 @@ class KubeVirtDriver(ProviderDriver):
             "service_name": svc_name,
         }
 
+    def create_app_proxy_route(
+        self, provider, project_id, public_host, source_route_name
+    ):
+        """Clone the showroom route under an explicit public host so an
+        OAuth-protected app (console/oauth) is reachable at a deterministic
+        hostname the showroom's app-proxy nginx can Host-route. Returns the host."""
+        custom_api, _core_api, _ = _get_k8s_clients(provider)
+        ns = _project_ns(provider, project_id)
+        try:
+            raw = custom_api.get_namespaced_custom_object(
+                group=_ROUTE_API,
+                version="v1",
+                namespace=ns,
+                plural="routes",
+                name=source_route_name,
+            )
+        except Exception:
+            logger.warning(
+                "App-proxy route: source route %s not found", source_route_name
+            )
+            return ""
+        src_spec: dict = {}
+        if isinstance(raw, dict):
+            _s = raw.get("spec")
+            if isinstance(_s, dict):
+                src_spec = _s
+        name = public_host.split(".")[0][:63]
+        route_body = {
+            "apiVersion": "route.openshift.io/v1",
+            "kind": "Route",
+            "metadata": {
+                "name": name,
+                "namespace": ns,
+                "labels": {
+                    "app": "troshka-route-access",
+                    "troshka-project": project_id[:8],
+                },
+                "annotations": {"haproxy.router.openshift.io/timeout": "3600s"},
+            },
+            "spec": {
+                "host": public_host,
+                "to": src_spec.get("to"),
+                "port": src_spec.get("port"),
+                "tls": src_spec.get("tls"),
+            },
+        }
+        try:
+            custom_api.create_namespaced_custom_object(
+                group=_ROUTE_API,
+                version="v1",
+                namespace=ns,
+                plural="routes",
+                body=route_body,
+            )
+        except Exception as e:
+            if "AlreadyExists" not in str(e):
+                raise
+        return public_host
+
     def delete_route_access(self, provider, project_id, namespace=None):
         custom_api, core_api, _ = _get_k8s_clients(provider)
         ns = namespace or _project_ns(provider, project_id)

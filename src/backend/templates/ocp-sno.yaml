@@ -42,7 +42,7 @@ vms:
     ram_gb: 4
     os: rhel
     disks:
-      - size_gb: 50
+      - size_gb: 80
     nics:
       - network: cluster
         ip: 10.0.0.50

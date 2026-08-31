@@ -295,3 +295,44 @@ def test_resolve_snapshot_iso_uses_central_library_key():
     finally:
         db.rollback()
         db.close()
+
+
+def test_resolve_library_disk_bumps_size_from_virtual_size_bytes():
+    from app.models.library import LibraryItemDisk
+
+    db = _make_db()
+    try:
+        item = _library_item(db, "snapshots/abc/disk-a.qcow2", "qcow2", source="local")
+        db.add(
+            LibraryItemDisk(
+                library_item_id=item.id,
+                s3_key=item.s3_key,
+                format="qcow2",
+                size_bytes=2_000_000_000,
+                virtual_size_bytes=80 * 1073741824,
+                boot_order=0,
+                state="available",
+            )
+        )
+        db.flush()
+        topology = {
+            "nodes": [
+                {
+                    "type": "storageNode",
+                    "data": {
+                        "source": "library",
+                        "libraryItemId": item.id,
+                        "label": "bastion-disk0",
+                        "size": 50,
+                    },
+                }
+            ]
+        }
+        deploy_service._resolve_disk_s3_paths(
+            topology, db, PROV, None, "troshka-images", {}, None, "", {}
+        )
+        data = topology["nodes"][0]["data"]
+        assert data["size"] >= 80
+    finally:
+        db.rollback()
+        db.close()

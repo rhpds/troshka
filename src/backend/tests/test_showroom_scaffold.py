@@ -492,3 +492,45 @@ def test_build_nginx_config_bakes_app_proxy_server_blocks():
     assert "proxy_pass https://oauth-openshift.apps.ocp.ocp.local;" in nginx
     # no deploy-time include needed
     assert "conf.d" not in nginx
+
+
+def test_app_proxy_public_host():
+    from app.services.showroom_scaffold import app_proxy_public_host
+
+    assert (
+        app_proxy_public_host(
+            "6fcf0e3e-08d8-4911",
+            "console-openshift-console.apps.ocp.ocp.local",
+            "apps.ocpvdev01.dal13.infra.demo.redhat.com",
+        )
+        == "troshka-pf-6fcf0e3e-console-openshift-console.apps.ocpvdev01.dal13.infra.demo.redhat.com"
+    )
+
+
+def test_fill_app_proxy_tab_urls():
+    from app.services.showroom_scaffold import fill_app_proxy_tab_urls
+
+    ui = (
+        "tabs:\n"
+        "  - name: OCP Console\n"
+        "    url: '__TROSHKA_APP_PROXY__console-openshift-console.apps.ocp.ocp.local__'\n"
+    )
+    out = fill_app_proxy_tab_urls(ui, "6fcf0e3e", "apps.ocpvdev01.example.com")
+    assert (
+        "url: 'https://troshka-pf-6fcf0e3e-console-openshift-console.apps.ocpvdev01.example.com'"
+        in out
+    )
+    assert "__TROSHKA_APP_PROXY__" not in out
+
+
+def test_derive_apps_domain():
+    from app.services.showroom_scaffold import derive_apps_domain
+
+    assert (
+        derive_apps_domain(
+            "troshka-pf-6fcf0e3e-showroom-443-troshka.apps.ocpvdev01.dal13.infra.demo.redhat.com"
+        )
+        == "apps.ocpvdev01.dal13.infra.demo.redhat.com"
+    )
+    assert derive_apps_domain("") == ""
+    assert derive_apps_domain("nohost") == ""
