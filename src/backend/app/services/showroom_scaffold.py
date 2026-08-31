@@ -122,7 +122,9 @@ def parse_template_tabs(
             tab["vmId"] = vm_name_to_id[vm_name]
         # Name-based proxy tabs resolve their upstream via the showroom's DNS,
         # so they need neither a VM nor a per-tab network.
-        name_based_proxy = tab_type == "proxy" and bool(raw.get("proxy_host"))
+        name_based_proxy = tab_type == "proxy" and bool(
+            raw.get("proxy_host") or raw.get("proxy_hosts")
+        )
         network = raw.get("network", "")
         if tab_type != "external" and not name_based_proxy and not network:
             raise ValueError(f"Showroom tab '{tab['name']}' requires network")
@@ -145,10 +147,44 @@ def parse_template_tabs(
             tab["proxyTls"] = bool(raw["proxy_tls"])
         if raw.get("proxy_host"):
             tab["proxyHost"] = raw["proxy_host"]
+        proxy_hosts = _resolve_proxy_hosts(raw)
+        if proxy_hosts:
+            tab["proxyHosts"] = proxy_hosts
         if raw.get("url"):
             tab["url"] = raw["url"]
         tabs.append(tab)
     return tabs
+
+
+def _resolve_proxy_hosts(raw: dict[str, Any]) -> list[str]:
+    """Ordered internal hosts a proxy tab must expose; [0] is the iframe target.
+
+    An explicit ``proxy_hosts`` list wins. Otherwise a lone ``proxy_host`` that is
+    an OpenShift console auto-includes its ``oauth-openshift`` companion, since the
+    console's login flow redirects the browser to oauth on the same wildcard.
+    """
+    if raw.get("proxy_hosts"):
+        return list(raw["proxy_hosts"])
+    host = raw.get("proxy_host") or ""
+    prefix = "console-openshift-console."
+    if host.startswith(prefix):
+        suffix = host[len(prefix) :]
+        return [host, f"oauth-openshift.{suffix}"]
+    return []
+
+
+def app_proxy_internal_hosts(tabs: list[dict[str, Any]]) -> list[str]:
+    """Ordered, de-duplicated internal hosts across all app-proxy tabs.
+
+    Deploy creates one public route per host and builds the nginx public->internal
+    map from this list.
+    """
+    seen: list[str] = []
+    for tab in tabs:
+        for host in tab.get("proxyHosts", []):
+            if host not in seen:
+                seen.append(host)
+    return seen
 
 
 def _resolve_name_based_proxy(tab: dict[str, Any]) -> dict[str, Any]:
@@ -182,6 +218,12 @@ def resolve_showroom_tabs(
         tab_type = tab.get("type")
         if tab_type == "external":
             resolved.append({"tab": tab})
+            continue
+
+        # App-proxy: multiple internal hosts (console + oauth) served by the
+        # deploy-time vhost. Marked here; no inline location is emitted.
+        if tab_type == "proxy" and tab.get("proxyHosts"):
+            resolved.append({"tab": tab, "appProxyHosts": list(tab["proxyHosts"])})
             continue
 
         # Name-based proxy: target a hostname resolved via the showroom's
@@ -285,6 +327,16 @@ def build_ui_config_yaml(
                 ]
             )
             continue
+        if tab_type == "proxy" and item.get("appProxyHosts"):
+            # url is filled at deploy time with the public host for proxyHosts[0].
+            target = item["appProxyHosts"][0]
+            lines.extend(
+                [
+                    f"  - name: {name}",
+                    f"    url: '__TROSHKA_APP_PROXY__{target}__'",
+                ]
+            )
+            continue
         if tab_type == "proxy" and item.get("proxyPath"):
             proxy_path = item["proxyPath"]
             lines.extend(
@@ -307,6 +359,8 @@ def build_nginx_config(resolved: list[dict[str, Any]]) -> str:
         "    default upgrade;",
         "    '' close;",
         "  }",
+        # Deploy writes app-proxy vhosts (console/oauth) here after routes exist.
+        "  include /showroom/nginx/conf.d/*.conf;",
         "  server {",
         "    listen 80;",
         "    location / {",
@@ -364,6 +418,60 @@ def build_nginx_config(resolved: list[dict[str, Any]]) -> str:
             blocks.append("    }")
     blocks.extend(["  }", "}"])
     return "\n".join(blocks) + "\n"
+
+
+def build_app_proxy_config(mappings: list[dict[str, Any]]) -> str:
+    """Deploy-time nginx snippet proxying public app hostnames to internal ones.
+
+    Each mapping is ``{"internal_host": ..., "public_host": ...}``. The browser
+    only ever sees public hosts; redirect ``Location`` headers are rewritten
+    ``.local`` -> public per app, while OAuth ``redirect_uri`` query params (left
+    ``.local``) still match the untouched cluster OAuthClient. A ``resolver`` is
+    required because ``$troshka_backend`` is a runtime variable upstream.
+    """
+    if not mappings:
+        return ""
+    public_hosts = " ".join(m["public_host"] for m in mappings)
+    lines = [
+        "resolver 10.0.0.1 valid=30s;",
+        "map $host $troshka_backend {",
+    ]
+    for m in mappings:
+        lines.append(f"  {m['public_host']}   {m['internal_host']};")
+    lines.extend(
+        [
+            "}",
+            "server {",
+            "  listen 80;",
+            f"  server_name {public_hosts};",
+            "  location / {",
+            "    proxy_pass https://$troshka_backend$request_uri;",
+            "    proxy_ssl_server_name on;",
+            "    proxy_ssl_name $troshka_backend;",
+            "    proxy_ssl_verify off;",
+            "    proxy_set_header Host $troshka_backend;",
+            "    proxy_set_header X-Forwarded-Proto https;",
+            "    proxy_http_version 1.1;",
+            "    proxy_set_header Upgrade $http_upgrade;",
+            "    proxy_set_header Connection $connection_upgrade;",
+            "    proxy_read_timeout 86400;",
+            # Allow the console to render inside the showroom iframe.
+            "    proxy_hide_header X-Frame-Options;",
+        ]
+    )
+    for m in mappings:
+        lines.append(
+            f"    proxy_redirect https://{m['internal_host']}/ "
+            f"https://{m['public_host']}/;"
+        )
+    lines.extend(
+        [
+            "    proxy_cookie_domain .apps.ocp.ocp.local $host;",
+            "  }",
+            "}",
+        ]
+    )
+    return "\n".join(lines) + "\n"
 
 
 def _build_wetty_containers(

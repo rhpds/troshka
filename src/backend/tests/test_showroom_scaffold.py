@@ -43,8 +43,9 @@ def test_resolve_showroom_tabs_terminal_and_proxy():
 
 
 def test_resolve_showroom_tabs_name_based_proxy():
-    """A proxy tab with proxy_host targets the hostname (Host + SNI), not a VM IP."""
-    host = "console-openshift-console.apps.ocp.ocp.local"
+    """A generic (non-console) proxy_host targets the hostname (Host + SNI) via a
+    single location block. Console hosts upgrade to the app-proxy vhost instead."""
+    host = "myapp.apps.ocp.ocp.local"
     vms_def = {"control": {"nics": [{"network": "cluster", "ip": "10.0.0.10"}]}}
     vm_name_to_id = {"control": "vm-control"}
     tabs = parse_template_tabs(
@@ -297,3 +298,184 @@ def test_apply_showroom_deploy_overrides():
     assert topology["showroom"]["build_content"] is True
     git_cloner = node["initContainers"][0]
     assert git_cloner["envVars"][1]["value"] == "v1.0.0"
+
+
+def test_build_app_proxy_config_maps_and_rewrites():
+    """App-proxy vhost maps public->internal, preserves Host/SNI, rewrites redirects,
+    and strips X-Frame-Options so the console embeds in the iframe."""
+    from app.services.showroom_scaffold import build_app_proxy_config
+
+    mappings = [
+        {
+            "internal_host": "console-openshift-console.apps.ocp.ocp.local",
+            "public_host": "troshka-pf-6fcf0e3e-console-443-tr.apps.ocpvdev01.example.com",
+        },
+        {
+            "internal_host": "oauth-openshift.apps.ocp.ocp.local",
+            "public_host": "troshka-pf-6fcf0e3e-oauth-443-tr.apps.ocpvdev01.example.com",
+        },
+    ]
+    conf = build_app_proxy_config(mappings)
+
+    # resolver is required for a variable ($troshka_backend) upstream
+    assert "resolver" in conf
+    # forward map: public host -> internal host
+    assert "map $host $troshka_backend {" in conf
+    assert (
+        "troshka-pf-6fcf0e3e-console-443-tr.apps.ocpvdev01.example.com"
+        "   console-openshift-console.apps.ocp.ocp.local" in conf
+        or "console-openshift-console.apps.ocp.ocp.local" in conf
+    )
+    # single server block handles all public hosts
+    assert "server_name" in conf
+    assert "oauth-openshift.apps.ocp.ocp.local" in conf
+    # proxied with backend Host + SNI
+    assert "proxy_pass https://$troshka_backend" in conf
+    assert "proxy_ssl_name $troshka_backend;" in conf
+    assert "proxy_set_header Host $troshka_backend;" in conf
+    # Defect C: allow embedding in the showroom iframe
+    assert "proxy_hide_header X-Frame-Options;" in conf
+    # redirect host .local -> public, per app (redirect_uri query param untouched)
+    assert (
+        "proxy_redirect https://console-openshift-console.apps.ocp.ocp.local/ "
+        "https://troshka-pf-6fcf0e3e-console-443-tr.apps.ocpvdev01.example.com/;"
+    ) in conf
+    assert (
+        "proxy_redirect https://oauth-openshift.apps.ocp.ocp.local/ "
+        "https://troshka-pf-6fcf0e3e-oauth-443-tr.apps.ocpvdev01.example.com/;"
+    ) in conf
+    # cookie domain rewrite so the session cookie applies on the public host
+    assert "proxy_cookie_domain" in conf
+
+
+def test_build_app_proxy_config_empty_is_blank():
+    """No app proxies -> empty snippet (safe to include before deploy fills it)."""
+    from app.services.showroom_scaffold import build_app_proxy_config
+
+    assert build_app_proxy_config([]) == ""
+
+
+def test_parse_template_tabs_proxy_hosts_list():
+    """A proxy tab may declare proxy_hosts[]; [0] is the iframe target."""
+    tabs = parse_template_tabs(
+        [
+            {
+                "name": "OCP Console",
+                "type": "proxy",
+                "proxy_hosts": [
+                    "console-openshift-console.apps.ocp.ocp.local",
+                    "oauth-openshift.apps.ocp.ocp.local",
+                ],
+                "proxy_tls": True,
+                "proxy_port": 443,
+            },
+        ],
+        {},
+        {},
+        {},
+    )
+    assert tabs[0]["proxyHosts"] == [
+        "console-openshift-console.apps.ocp.ocp.local",
+        "oauth-openshift.apps.ocp.ocp.local",
+    ]
+
+
+def test_parse_template_tabs_console_proxy_host_auto_appends_oauth():
+    """Back-compat: a lone console proxy_host auto-includes its oauth companion."""
+    tabs = parse_template_tabs(
+        [
+            {
+                "name": "OCP Console",
+                "type": "proxy",
+                "proxy_host": "console-openshift-console.apps.ocp.ocp.local",
+                "proxy_tls": True,
+                "proxy_port": 443,
+            },
+        ],
+        {},
+        {},
+        {},
+    )
+    assert tabs[0]["proxyHosts"] == [
+        "console-openshift-console.apps.ocp.ocp.local",
+        "oauth-openshift.apps.ocp.ocp.local",
+    ]
+
+
+def test_console_proxy_host_uses_app_proxy_not_location():
+    """A console proxy_host resolves to an app-proxy tab: no inline location block,
+    and the base config includes the deploy-written conf.d snippet."""
+    tabs = parse_template_tabs(
+        [
+            {
+                "name": "OCP Console",
+                "type": "proxy",
+                "proxy_host": "console-openshift-console.apps.ocp.ocp.local",
+                "proxy_port": 443,
+                "proxy_tls": True,
+            },
+        ],
+        {},
+        {},
+        {},
+    )
+    resolved = resolve_showroom_tabs(tabs, {}, {})
+    assert resolved[0]["appProxyHosts"] == [
+        "console-openshift-console.apps.ocp.ocp.local",
+        "oauth-openshift.apps.ocp.ocp.local",
+    ]
+    nginx = build_nginx_config(resolved)
+    # app-proxy tabs are served by the deploy-time vhost, not an inline location
+    assert "location /console" not in nginx
+    assert "console-openshift-console" not in nginx
+    # base config loads whatever the deploy writes into conf.d
+    assert "include /showroom/nginx/conf.d/*.conf;" in nginx
+
+
+def test_app_proxy_internal_hosts_dedupes_and_orders():
+    """Deploy needs the ordered, de-duplicated internal hosts to create routes."""
+    from app.services.showroom_scaffold import app_proxy_internal_hosts
+
+    tabs = parse_template_tabs(
+        [
+            {
+                "name": "OCP Console",
+                "type": "proxy",
+                "proxy_hosts": [
+                    "console-openshift-console.apps.ocp.ocp.local",
+                    "oauth-openshift.apps.ocp.ocp.local",
+                ],
+            },
+            {
+                "name": "Console again",
+                "type": "proxy",
+                "proxy_host": "console-openshift-console.apps.ocp.ocp.local",
+            },
+        ],
+        {},
+        {},
+        {},
+    )
+    assert app_proxy_internal_hosts(tabs) == [
+        "console-openshift-console.apps.ocp.ocp.local",
+        "oauth-openshift.apps.ocp.ocp.local",
+    ]
+
+
+def test_build_ui_config_app_proxy_emits_placeholder_url():
+    """App-proxy tabs render with a deploy-substituted URL placeholder for the
+    iframe target (proxyHosts[0]); deploy swaps in the public host."""
+    from app.services.showroom_scaffold import build_ui_config_yaml
+
+    resolved = [
+        {
+            "tab": {"name": "OCP Console", "type": "proxy"},
+            "appProxyHosts": [
+                "console-openshift-console.apps.ocp.ocp.local",
+                "oauth-openshift.apps.ocp.ocp.local",
+            ],
+        },
+    ]
+    yaml = build_ui_config_yaml(resolved, external_port=443)
+    assert "name: OCP Console" in yaml
+    assert "__TROSHKA_APP_PROXY__console-openshift-console.apps.ocp.ocp.local__" in yaml
