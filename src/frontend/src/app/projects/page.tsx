@@ -226,30 +226,14 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts, setAler
           setAlertMsg(err.detail || "Failed to create project");
         } else {
           const data = await resp.json();
-          // Load topology into canvas store, auto-arrange, save back before deploying
-          const projResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}`);
-          if (projResp.ok) {
-            const proj = await projResp.json();
-            const t = proj.topology || {};
-            if ((t.nodes || []).length > 0) {
-              const { useCanvasStore } = await import("@/stores/canvasStore");
-              useCanvasStore.setState({
-                currentProjectId: data.id,
-                nodes: t.nodes || [],
-                edges: t.edges || [],
-                hiddenNodeIds: t.hiddenNodeIds || [],
-                startOrder: t.startOrder || [],
-                externalIps: t.externalIps || [],
-              });
-              useCanvasStore.getState().autoLayout();
-              const s = useCanvasStore.getState();
-              await fetch(`${API_BASE}/api/v1/projects/${data.id}`, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ topology: { nodes: s.nodes, edges: s.edges, hiddenNodeIds: s.hiddenNodeIds, startOrder: s.startOrder, externalIps: s.externalIps } }),
-              });
-            }
-          }
+          // Load the new project into the canvas via the same path as a normal
+          // template import (loadProject), so showroom and every other template
+          // entry are preserved. The backend already generated and stored a
+          // laid-out topology, so no client-side setState/PATCH round-trip is
+          // needed — that bespoke path dropped the showroom node and blanked
+          // content_repo.
+          const { useCanvasStore } = await import("@/stores/canvasStore");
+          await useCanvasStore.getState().loadProject(data.id);
           if (autoDeploy) {
             const deployParams = new URLSearchParams();
             if (deployHostId) deployParams.set("host_id", deployHostId);

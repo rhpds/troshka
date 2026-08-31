@@ -43,6 +43,36 @@ def test_resolve_sno_has_vms():
     assert "cp-0" in resolved["vms"]
 
 
+def test_resolve_template_carries_showroom():
+    """resolve_template (quickstart path) must carry the showroom section,
+    same as resolve_inline_template (normal import). Otherwise a quickstart
+    silently drops the template's showroom."""
+    from app.services.template_loader import resolve_template
+
+    resolved = resolve_template("ocp-sno", templates_dir=TEMPLATES_DIR)
+    assert resolved.get("showroom", {}).get("enabled") is True
+    assert resolved["showroom"]["content_repo"].endswith(
+        "showroom-troshka-ocp-base.git"
+    )
+    assert resolved["showroom"]["tabs"], "showroom tabs must be carried through"
+
+
+def test_resolve_template_matches_inline_content_sections():
+    """resolve_template and resolve_inline_template must carry the same set of
+    topology content sections so quickstart == normal import."""
+    from app.services.template_loader import (
+        load_template,
+        resolve_inline_template,
+        resolve_template,
+    )
+
+    raw = load_template("ocp-sno", templates_dir=TEMPLATES_DIR)
+    by_id = resolve_template("ocp-sno", templates_dir=TEMPLATES_DIR)
+    inline = resolve_inline_template(raw)
+    for section in ("showroom", "start_order", "hidden_nodes"):
+        assert (section in by_id) == (section in inline), section
+
+
 def test_resolve_rejects_unknown_override():
     from app.services.template_loader import resolve_template
 

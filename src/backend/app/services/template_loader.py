@@ -10,6 +10,33 @@ _DEFAULT_TEMPLATES_DIR = os.path.join(
 )
 _STORAGE_EDGE_STROKE = "rgba(251,191,36,0.6)"
 
+# Topology "content" sections carried verbatim from a template into the resolved
+# form. Both resolve_template (quickstart by id) and resolve_inline_template
+# (normal import) MUST copy the same set, or a quickstart silently drops entries
+# (e.g. showroom). Keep this the single source of truth for that list.
+_TEMPLATE_CONTENT_SECTIONS = (
+    "ocp",
+    "dns_records",
+    "disconnected",
+    "bastion_services",
+    "start_order",
+    "hidden_nodes",
+    "pull_through_registry",
+    "clock_target",
+    "showroom",
+)
+
+
+def _copy_template_content_sections(tmpl: dict, resolved: dict) -> None:
+    """Copy vms/containers and all topology content sections from tmpl."""
+    if tmpl.get("vms"):
+        resolved["vms"] = tmpl["vms"]
+    if tmpl.get("containers"):
+        resolved["containers"] = tmpl["containers"]
+    for section in _TEMPLATE_CONTENT_SECTIONS:
+        if tmpl.get(section):
+            resolved[section] = tmpl[section]
+
 
 def load_template(name: str, templates_dir: str = _DEFAULT_TEMPLATES_DIR) -> dict:
     base = Path(templates_dir).resolve()
@@ -89,18 +116,7 @@ def resolve_template(
     resolved["networks"] = tmpl.get("networks") or base_for_versions.get("networks", {})
     resolved["gateway"] = tmpl.get("gateway") or base_for_versions.get("gateway", {})
 
-    if tmpl.get("vms"):
-        resolved["vms"] = tmpl["vms"]
-
-    for section in (
-        "ocp",
-        "dns_records",
-        "disconnected",
-        "bastion_services",
-        "pull_through_registry",
-    ):
-        if tmpl.get(section):
-            resolved[section] = tmpl[section]
+    _copy_template_content_sections(tmpl, resolved)
 
     return resolved
 
@@ -131,25 +147,7 @@ def resolve_inline_template(template_yaml: str | dict) -> dict:
     resolved["gateway"] = tmpl.get("gateway", {})
     resolved["parameters"] = tmpl.get("parameters", {})
 
-    if tmpl.get("vms"):
-        resolved["vms"] = tmpl["vms"]
-
-    if tmpl.get("containers"):
-        resolved["containers"] = tmpl["containers"]
-
-    for section in (
-        "ocp",
-        "dns_records",
-        "disconnected",
-        "bastion_services",
-        "start_order",
-        "hidden_nodes",
-        "pull_through_registry",
-        "clock_target",
-        "showroom",
-    ):
-        if tmpl.get(section):
-            resolved[section] = tmpl[section]
+    _copy_template_content_sections(tmpl, resolved)
 
     return resolved
 
