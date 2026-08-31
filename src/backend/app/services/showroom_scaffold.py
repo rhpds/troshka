@@ -355,6 +355,10 @@ def build_nginx_config(resolved: list[dict[str, Any]]) -> str:
         "http {",
         "  include /etc/nginx/mime.types;",
         "  proxy_cache off;",
+        # Must precede any map: nginx locks the hash size at the first map, and
+        # app-proxy public/internal FQDNs overflow the defaults.
+        "  map_hash_bucket_size 128;",
+        "  server_names_hash_bucket_size 128;",
         "  map $http_upgrade $connection_upgrade {",
         "    default upgrade;",
         "    '' close;",
@@ -432,6 +436,8 @@ def build_app_proxy_config(mappings: list[dict[str, Any]]) -> str:
     if not mappings:
         return ""
     public_hosts = " ".join(m["public_host"] for m in mappings)
+    # Hash bucket sizes are set once in the base http{} before the first map;
+    # they cannot be repeated here (nginx locks them at the first map).
     lines = [
         "resolver 10.0.0.1 valid=30s;",
         "map $host $troshka_backend {",

@@ -479,3 +479,21 @@ def test_build_ui_config_app_proxy_emits_placeholder_url():
     yaml = build_ui_config_yaml(resolved, external_port=443)
     assert "name: OCP Console" in yaml
     assert "__TROSHKA_APP_PROXY__console-openshift-console.apps.ocp.ocp.local__" in yaml
+
+
+def test_build_nginx_config_sets_hash_sizes_before_first_map():
+    """Hash bucket sizes must precede the first map ($http_upgrade); nginx commits
+    map_hash_bucket_size when it parses the first map, so a later one errors."""
+    resolved = [
+        {
+            "tab": {"name": "OCP Console", "type": "proxy"},
+            "appProxyHosts": [
+                "console-openshift-console.apps.ocp.ocp.local",
+                "oauth-openshift.apps.ocp.ocp.local",
+            ],
+        },
+    ]
+    nginx = build_nginx_config(resolved)
+    assert "map_hash_bucket_size" in nginx
+    assert "server_names_hash_bucket_size" in nginx
+    assert nginx.index("map_hash_bucket_size") < nginx.index("map $http_upgrade")
