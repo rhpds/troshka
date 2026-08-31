@@ -201,3 +201,21 @@ def test_bastion_network_check_uses_tcp_not_icmp():
     user_data = bastion["data"].get("ciUserData", "")
     assert "ping -c1 -W2 8.8.8.8" not in user_data
     assert "/dev/tcp/8.8.8.8/53" in user_data
+
+
+def test_build_install_script_uses_selenium_autologin_not_nss():
+    from app.services.ocp.agent_template import _build_install_script
+
+    script = _build_install_script(
+        "4.22",
+        auto_install=True,
+        bmc_password="pass",
+        bmc_ips_str="192.168.100.10",
+        cluster_name="ocp",
+        base_domain="ocp.local",
+    )
+    assert "PK11SDR_Encrypt" not in script
+    assert "PWSAVEEOF" not in script
+    assert "geckodriver" in script
+    assert "ocp-autologin.py" in script
+    assert "console-openshift-console.apps.ocp.ocp.local" in script
