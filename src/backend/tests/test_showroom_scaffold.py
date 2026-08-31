@@ -338,6 +338,20 @@ def test_build_app_proxy_config_per_host_literal_blocks():
         "$troshka_rest;" in conf
     )
     assert "proxy_cookie_domain .apps.ocp.ocp.local $host;" in conf
+    # body rewrite: SERVER_FLAGS .local host refs -> public. Match "//<host>"
+    # (the // from https://) so the URL-encoded redirect_uri stays .local.
+    assert 'proxy_set_header Accept-Encoding "";' in conf
+    assert "sub_filter_once off;" in conf
+    assert (
+        'sub_filter "//console-openshift-console.apps.ocp.ocp.local" '
+        '"//troshka-pf-$troshka_pid-console-openshift-console.$troshka_suffix";' in conf
+    )
+    assert (
+        'sub_filter "//oauth-openshift.apps.ocp.ocp.local" '
+        '"//troshka-pf-$troshka_pid-oauth-openshift.$troshka_suffix";' in conf
+    )
+    # must NOT rewrite the bare host (would corrupt the encoded redirect_uri)
+    assert 'sub_filter "console-openshift-console.apps.ocp.ocp.local"' not in conf
 
 
 def test_build_app_proxy_config_empty_is_blank():

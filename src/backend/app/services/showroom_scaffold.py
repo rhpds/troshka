@@ -431,6 +431,25 @@ def build_app_proxy_config(internal_hosts: list[str]) -> str:
     the OAuth ``redirect_uri`` query param ``.local`` so the untouched cluster
     OAuthClient still validates.
     """
+    # Body rewrites: the app (e.g. the console's window.SERVER_FLAGS) embeds
+    # absolute .local host URLs that the browser can't resolve, so rewrite each
+    # to its public equivalent. Applied in every block so console pages fix oauth
+    # refs and vice versa.
+    sub_filters: list[str] = [
+        # sub_filter needs an uncompressed upstream response.
+        '    proxy_set_header Accept-Encoding "";',
+        "    sub_filter_once off;",
+        "    sub_filter_types *;",
+    ]
+    for h in internal_hosts:
+        # Match the "//" from https:// so SERVER_FLAGS host refs are rewritten but
+        # the URL-encoded redirect_uri (https%3A%2F%2F...) is left .local, keeping
+        # the OAuthClient validation intact.
+        sub_filters.append(
+            f'    sub_filter "//{h}" '
+            f'"//troshka-pf-$troshka_pid-{h.split(".")[0]}.$troshka_suffix";'
+        )
+
     blocks: list[str] = []
     for host in internal_hosts:
         label = host.split(".")[0]
@@ -459,6 +478,7 @@ def build_app_proxy_config(internal_hosts: list[str]) -> str:
                 "    proxy_redirect ~^https://(?<troshka_h>[^.]+)"
                 "\\.apps\\.ocp\\.ocp\\.local(?<troshka_rest>.*)$ "
                 "https://troshka-pf-$troshka_pid-$troshka_h.$troshka_suffix$troshka_rest;",
+                *sub_filters,
                 "    proxy_cookie_domain .apps.ocp.ocp.local $host;",
                 "  }",
                 "}",
