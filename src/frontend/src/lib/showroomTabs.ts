@@ -20,6 +20,8 @@ export interface ShowroomTab {
   proxyPort?: number;
   proxyPath?: string;
   proxyTls?: boolean;
+  /** Backend hostname (FQDN). When set, proxy by name (Host + SNI) via internal DNS instead of the VM IP. */
+  proxyHost?: string;
   url?: string;
 }
 
@@ -31,6 +33,7 @@ export interface ResolvedShowroomTab {
   proxyTarget?: string;
   proxyPath?: string;
   proxyTls?: boolean;
+  proxyHost?: string;
   warning?: string;
 }
 
@@ -98,6 +101,21 @@ export function getVmNicIpOnNetwork(
   return "";
 }
 
+function resolveNameBasedProxy(tab: ShowroomTab): ResolvedShowroomTab {
+  const host = tab.proxyHost as string;
+  const rawPath = tab.proxyPath || `/${slugify(host)}/`;
+  const proxyPath = rawPath.endsWith("/") ? rawPath : `${rawPath}/`;
+  const port = tab.proxyPort || 80;
+  const scheme = tab.proxyTls ? "https" : "http";
+  return {
+    tab,
+    proxyPath,
+    proxyTarget: `${scheme}://${host}:${port}`,
+    proxyTls: tab.proxyTls,
+    proxyHost: host,
+  };
+}
+
 export function resolveShowroomTabs(
   tabs: ShowroomTab[],
   nodes: Node[],
@@ -109,6 +127,12 @@ export function resolveShowroomTabs(
   return tabs.map((tab) => {
     if (tab.type === "external") {
       return { tab };
+    }
+
+    // Name-based proxy: target a hostname resolved via the showroom's internal
+    // DNS (Host header + TLS SNI = the hostname). No VM/IP needed.
+    if (tab.type === "proxy" && tab.proxyHost) {
+      return resolveNameBasedProxy(tab);
     }
 
     const vm = tab.vmId ? nodesById.get(tab.vmId) : undefined;
@@ -310,17 +334,23 @@ export function buildNginxConfig(resolved: ResolvedShowroomTab[]): string {
     }
     if (item.tab.type === "proxy" && item.proxyPath && item.proxyTarget) {
       const loc = item.proxyPath.endsWith("/") ? item.proxyPath : `${item.proxyPath}/`;
+      const hostValue = item.proxyHost || "$host";
       blocks.push(
         `    location ${loc} {`,
         `      proxy_pass ${item.proxyTarget};`,
         "      proxy_http_version 1.1;",
         "      proxy_set_header Upgrade $http_upgrade;",
         "      proxy_set_header Connection $connection_upgrade;",
-        "      proxy_set_header Host $host;",
+        `      proxy_set_header Host ${hostValue};`,
         "      proxy_read_timeout 86400;",
       );
       if (item.proxyTls) {
         blocks.push("      proxy_ssl_verify off;");
+        // Send SNI matching the backend vhost so a router can route it.
+        if (item.proxyHost) {
+          blocks.push("      proxy_ssl_server_name on;");
+          blocks.push(`      proxy_ssl_name ${item.proxyHost};`);
+        }
       }
       blocks.push("    }");
     }

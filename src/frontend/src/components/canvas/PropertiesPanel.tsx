@@ -1949,6 +1949,25 @@ export default function PropertiesPanel() {
                                     label="Reverse proxy"
                                     hint="Nginx path on the showroom and backend port on the target VM."
                                   />
+                                  <div style={{ marginBottom: 6 }}>
+                                    <LabelWithHint
+                                      label="Backend host"
+                                      hint="Optional FQDN (e.g. console-openshift-console.apps.ocp.local). When set, proxy by name via internal DNS — nginx sends this as the Host header and TLS SNI so an OpenShift router routes correctly. Overrides Target VM."
+                                      style={{ fontSize: 10 }}
+                                    />
+                                    <input
+                                      className="props-input"
+                                      placeholder="console-openshift-console.apps.ocp.local"
+                                      value={tab.proxyHost || ""}
+                                      onChange={(e) => {
+                                        const next = showroomTabs.map((t) =>
+                                          t.id === tab.id ? { ...t, proxyHost: e.target.value } : t,
+                                        );
+                                        updateShowroomTabs(node!.id, next);
+                                      }}
+                                      style={{ fontFamily: "monospace", fontSize: 11 }}
+                                    />
+                                  </div>
                                   <div className="props-row" style={{ gap: 8, alignItems: "flex-end" }}>
                                     <div style={{ flex: 2 }}>
                                       <LabelWithHint

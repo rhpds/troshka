@@ -42,6 +42,66 @@ def test_resolve_showroom_tabs_terminal_and_proxy():
     assert "/vscode/" in nginx
 
 
+def test_resolve_showroom_tabs_name_based_proxy():
+    """A proxy tab with proxy_host targets the hostname (Host + SNI), not a VM IP."""
+    host = "console-openshift-console.apps.ocp.ocp.local"
+    vms_def = {"control": {"nics": [{"network": "cluster", "ip": "10.0.0.10"}]}}
+    vm_name_to_id = {"control": "vm-control"}
+    tabs = parse_template_tabs(
+        [
+            {
+                "name": "OCP Console",
+                "type": "proxy",
+                "network": "cluster",
+                "proxy_host": host,
+                "proxy_path": "/console/",
+                "proxy_port": 443,
+                "proxy_tls": True,
+            },
+        ],
+        vm_name_to_id,
+        vms_def,
+        {"cluster": "net-cluster"},
+    )
+    assert tabs[0]["proxyHost"] == host
+    resolved = resolve_showroom_tabs(tabs, vms_def, vm_name_to_id)
+    assert resolved[0].get("warning") is None
+    assert resolved[0]["proxyTarget"] == f"https://{host}:443"
+    nginx = build_nginx_config(resolved)
+    assert f"proxy_pass https://{host}:443;" in nginx
+    assert f"proxy_set_header Host {host};" in nginx
+    assert "proxy_ssl_server_name on;" in nginx
+    assert f"proxy_ssl_name {host};" in nginx
+    assert "proxy_ssl_verify off;" in nginx
+    # Host header must be the backend vhost, not the browser $host
+    assert "location /console/ {" in nginx
+    console_block = nginx.split("location /console/ {", 1)[1]
+    assert "proxy_set_header Host $host;" not in console_block.split("}", 1)[0]
+
+
+def test_parse_template_tabs_name_based_proxy_no_vm_or_network():
+    """A name-based proxy tab needs neither vm nor network (proxy_host is enough)."""
+    host = "console-openshift-console.apps.ocp.ocp.local"
+    tabs = parse_template_tabs(
+        [
+            {
+                "name": "OCP Console",
+                "type": "proxy",
+                "proxy_host": host,
+                "proxy_path": "/console/",
+                "proxy_port": 443,
+                "proxy_tls": True,
+            },
+        ],
+        {},
+        {},
+        {},
+    )
+    assert tabs[0]["proxyHost"] == host
+    assert "network" not in tabs[0]
+    assert "vmId" not in tabs[0]
+
+
 def test_resolve_showroom_tabs_per_tab_network():
     vms_def = {
         "control": {

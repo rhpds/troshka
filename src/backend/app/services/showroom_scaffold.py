@@ -120,10 +120,13 @@ def parse_template_tabs(
             if vm_name not in vm_name_to_id:
                 raise ValueError(f"Showroom tab references unknown VM '{vm_name}'")
             tab["vmId"] = vm_name_to_id[vm_name]
+        # Name-based proxy tabs resolve their upstream via the showroom's DNS,
+        # so they need neither a VM nor a per-tab network.
+        name_based_proxy = tab_type == "proxy" and bool(raw.get("proxy_host"))
         network = raw.get("network", "")
-        if tab_type != "external":
-            if not network:
-                raise ValueError(f"Showroom tab '{tab['name']}' requires network")
+        if tab_type != "external" and not name_based_proxy and not network:
+            raise ValueError(f"Showroom tab '{tab['name']}' requires network")
+        if network:
             if network not in net_ids:
                 raise ValueError(f"Showroom tab references unknown network '{network}'")
             tab["network"] = network
@@ -140,10 +143,29 @@ def parse_template_tabs(
             tab["proxyPort"] = int(raw["proxy_port"])
         if raw.get("proxy_tls"):
             tab["proxyTls"] = bool(raw["proxy_tls"])
+        if raw.get("proxy_host"):
+            tab["proxyHost"] = raw["proxy_host"]
         if raw.get("url"):
             tab["url"] = raw["url"]
         tabs.append(tab)
     return tabs
+
+
+def _resolve_name_based_proxy(tab: dict[str, Any]) -> dict[str, Any]:
+    """Resolve a proxy tab whose upstream is a hostname (Host + SNI)."""
+    host = tab["proxyHost"]
+    proxy_path = tab.get("proxyPath") or f"/{_slugify(host)}/"
+    if not proxy_path.endswith("/"):
+        proxy_path = f"{proxy_path}/"
+    port = int(tab.get("proxyPort") or 80)
+    scheme = "https" if tab.get("proxyTls") else "http"
+    return {
+        "tab": tab,
+        "proxyPath": proxy_path,
+        "proxyTarget": f"{scheme}://{host}:{port}",
+        "proxyTls": bool(tab.get("proxyTls")),
+        "proxyHost": host,
+    }
 
 
 def resolve_showroom_tabs(
@@ -160,6 +182,12 @@ def resolve_showroom_tabs(
         tab_type = tab.get("type")
         if tab_type == "external":
             resolved.append({"tab": tab})
+            continue
+
+        # Name-based proxy: target a hostname resolved via the showroom's
+        # internal DNS (Host header + TLS SNI = the hostname). No VM/IP needed.
+        if tab_type == "proxy" and tab.get("proxyHost"):
+            resolved.append(_resolve_name_based_proxy(tab))
             continue
 
         vm_id = tab.get("vmId", "")
@@ -314,6 +342,8 @@ def build_nginx_config(resolved: list[dict[str, Any]]) -> str:
             and item.get("proxyTarget")
         ):
             loc = item["proxyPath"]
+            proxy_host = item.get("proxyHost")
+            host_value = proxy_host if proxy_host else "$host"
             blocks.extend(
                 [
                     f"    location {loc} {{",
@@ -321,12 +351,16 @@ def build_nginx_config(resolved: list[dict[str, Any]]) -> str:
                     "      proxy_http_version 1.1;",
                     "      proxy_set_header Upgrade $http_upgrade;",
                     "      proxy_set_header Connection $connection_upgrade;",
-                    "      proxy_set_header Host $host;",
+                    f"      proxy_set_header Host {host_value};",
                     "      proxy_read_timeout 86400;",
                 ]
             )
             if item.get("proxyTls"):
                 blocks.append("      proxy_ssl_verify off;")
+                # Send SNI matching the backend vhost so a router can route it.
+                if proxy_host:
+                    blocks.append("      proxy_ssl_server_name on;")
+                    blocks.append(f"      proxy_ssl_name {proxy_host};")
             blocks.append("    }")
     blocks.extend(["  }", "}"])
     return "\n".join(blocks) + "\n"

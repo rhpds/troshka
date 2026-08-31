@@ -230,6 +230,18 @@ showroom:
       proxy_path: /aap/
       proxy_port: 443
       proxy_tls: true       # HTTPS upstream (self-signed OK)
+    # Name-based proxy (proxy_host): target a hostname resolved via the
+    # showroom's internal DNS instead of a VM IP. nginx sends proxy_host as the
+    # Host header + TLS SNI so a router/ingress that routes by vhost (e.g. an
+    # OpenShift router) selects the right backend. proxy_host overrides vm, so
+    # no vm is needed. Example (needs a network whose DNS resolves the FQDN):
+    #   - name: OCP Console
+    #     type: proxy
+    #     network: cluster
+    #     proxy_host: console-openshift-console.apps.ocp.ocp.local
+    #     proxy_path: /console/
+    #     proxy_port: 443
+    #     proxy_tls: true
     - name: Open an Issue
       type: external        # plain link — no VM or network
       url: https://github.com/rhpds/zt-network-automation-workshop/issues/new
