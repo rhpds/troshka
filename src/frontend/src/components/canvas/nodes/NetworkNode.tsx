@@ -65,9 +65,9 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
         const isLb = (d as any).networkType === "loadbalancer";
         const c = isBmc ? colors.bmc : isLb ? colors.loadbalancer : (colors[d.subtype as keyof typeof colors] || colors.network);
         return {
-          background: c.bg,
+          background: "var(--troshka-surface)",
           borderColor: selected ? c.selected : c.border,
-          boxShadow: selected ? `0 0 0 3px ${c.glow}` : "none",
+          boxShadow: selected ? `0 0 0 3px ${c.glow}` : `inset 0 0 0 1px ${c.bg}`,
           opacity: projectState === "draft" ? 0.55 : 1,
           transition: "opacity 0.3s",
         };

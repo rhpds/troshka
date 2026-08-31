@@ -1015,7 +1015,7 @@ export default function PropertiesPanel() {
                 <option value="junos">Juniper Junos</option>
               </select>
             </div>
-            {providerType === "ocpvirt" && (
+            {(providerType === "ocpvirt" || providerType === "kubevirt") && (
               <div className="props-field">
                 <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <input
@@ -1024,11 +1024,8 @@ export default function PropertiesPanel() {
                     onChange={(e) => update("legacyRootBus", e.target.checked || undefined)}
                   />
                   Legacy root PCI bus (NICs)
+                  <HintIcon text="Place NICs on bus 00:xx (slots 03+) instead of PCIe root ports." />
                 </label>
-                <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", display: "block", marginTop: 4 }}>
-                  Place NICs on q35 bus 00:xx (slots 03+) instead of PCIe root ports.
-                  Required for vEOS and similar NOS on KubeVirt.
-                </span>
               </div>
             )}</>);
             })()}

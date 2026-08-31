@@ -239,6 +239,14 @@ body {
   width: 100%;
 }
 
+.canvas-wrapper .react-flow__edges {
+  z-index: 0;
+}
+
+.canvas-wrapper .react-flow__nodes {
+  z-index: 1;
+}
+
 .canvas-wrapper .react-flow__background {
   opacity: 0.8;
 }
