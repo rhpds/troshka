@@ -1686,6 +1686,14 @@ export default function PropertiesPanel() {
                         )}
                         {showroomTabs.map((tab, idx) => {
                           const resolved = resolvedTabs[idx];
+                          // Proxy sub-mode: VM (network) app, named DNS host, or
+                          // embedded OAuth app (console). Inferred from set fields.
+                          const proxyMode: "vm" | "named" | "oauth" =
+                            tab.proxyHosts && tab.proxyHosts.length > 0
+                              ? "oauth"
+                              : tab.proxyHost
+                                ? "named"
+                                : "vm";
                           const typeLabel =
                             tab.type === "terminal"
                               ? "Terminal"
@@ -1815,6 +1823,53 @@ export default function PropertiesPanel() {
                                 </div>
                               ) : (
                                 <>
+                                  {tab.type === "proxy" && (
+                                    <div className="props-field" style={{ marginBottom: 6 }}>
+                                      <LabelWithHint
+                                        label="Proxy mode"
+                                        hint="VM app: proxy a web app on a canvas VM (by IP). Named host: proxy a hostname via the showroom's internal DNS (Host + SNI). Embedded OAuth app: embed an OAuth-protected app like the OCP console at public routes so login works inside the iframe."
+                                      />
+                                      <select
+                                        className="props-input"
+                                        value={proxyMode}
+                                        onChange={(e) => {
+                                          const mode = e.target.value;
+                                          const next = showroomTabs.map((t) => {
+                                            if (t.id !== tab.id) return t;
+                                            if (mode === "vm")
+                                              return { ...t, proxyHost: undefined, proxyHosts: undefined };
+                                            if (mode === "named")
+                                              return {
+                                                ...t,
+                                                proxyHosts: undefined,
+                                                vmId: undefined,
+                                                networkId: undefined,
+                                                network: undefined,
+                                                proxyHost: t.proxyHost || "",
+                                              };
+                                            return {
+                                              ...t,
+                                              proxyHost: undefined,
+                                              vmId: undefined,
+                                              networkId: undefined,
+                                              network: undefined,
+                                              proxyHosts:
+                                                t.proxyHosts && t.proxyHosts.length
+                                                  ? t.proxyHosts
+                                                  : ["", ""],
+                                            };
+                                          });
+                                          updateShowroomTabs(node!.id, next);
+                                        }}
+                                      >
+                                        <option value="vm">VM app (network)</option>
+                                        <option value="named">Named host (DNS)</option>
+                                        <option value="oauth">Embedded OAuth app</option>
+                                      </select>
+                                    </div>
+                                  )}
+                                  {(tab.type === "terminal" || proxyMode === "vm") && (
+                                  <>
                                   <div className="props-field" style={{ marginBottom: 6 }}>
                                     <LabelWithHint
                                       label="Target VM"
@@ -1864,6 +1919,8 @@ export default function PropertiesPanel() {
                                       ))}
                                     </select>
                                   </div>
+                                  </>
+                                  )}
                                   {tab.type === "terminal" && (
                                     <div className="props-field" style={{ marginBottom: 6 }}>
                                       <LabelWithHint
@@ -1950,6 +2007,7 @@ export default function PropertiesPanel() {
                                     hint="Nginx path on the showroom and backend port on the target VM."
                                   />
                                   {/* App-proxy: embed an OAuth-protected app (e.g. OCP console) at public routes */}
+                                  {proxyMode === "oauth" && (
                                   <div style={{ marginBottom: 8 }}>
                                     <LabelWithHint
                                       label="Embedded app hosts (OAuth)"
@@ -2029,6 +2087,8 @@ export default function PropertiesPanel() {
                                       </button>
                                     </div>
                                   </div>
+                                  )}
+                                  {proxyMode === "named" && (
                                   <div style={{ marginBottom: 6 }}>
                                     <LabelWithHint
                                       label="Backend host"
@@ -2048,6 +2108,8 @@ export default function PropertiesPanel() {
                                       style={{ fontFamily: "monospace", fontSize: 11 }}
                                     />
                                   </div>
+                                  )}
+                                  {proxyMode !== "oauth" && (
                                   <div className="props-row" style={{ gap: 8, alignItems: "flex-end" }}>
                                     <div style={{ flex: 2 }}>
                                       <LabelWithHint
@@ -2112,6 +2174,7 @@ export default function PropertiesPanel() {
                                       <HintIcon text="Use HTTPS when proxying to the VM backend." />
                                     </label>
                                   </div>
+                                  )}
                                 </div>
                               )}
                               {resolved?.warning && (
