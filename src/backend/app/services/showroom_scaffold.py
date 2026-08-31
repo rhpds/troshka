@@ -122,7 +122,9 @@ def parse_template_tabs(
             tab["vmId"] = vm_name_to_id[vm_name]
         # Name-based proxy tabs resolve their upstream via the showroom's DNS,
         # so they need neither a VM nor a per-tab network.
-        name_based_proxy = tab_type == "proxy" and bool(raw.get("proxy_host"))
+        name_based_proxy = tab_type == "proxy" and bool(
+            raw.get("proxy_host") or raw.get("proxy_hosts")
+        )
         network = raw.get("network", "")
         if tab_type != "external" and not name_based_proxy and not network:
             raise ValueError(f"Showroom tab '{tab['name']}' requires network")
@@ -145,10 +147,62 @@ def parse_template_tabs(
             tab["proxyTls"] = bool(raw["proxy_tls"])
         if raw.get("proxy_host"):
             tab["proxyHost"] = raw["proxy_host"]
+        proxy_hosts = _resolve_proxy_hosts(raw)
+        if proxy_hosts:
+            tab["proxyHosts"] = proxy_hosts
         if raw.get("url"):
             tab["url"] = raw["url"]
         tabs.append(tab)
     return tabs
+
+
+def _resolve_proxy_hosts(raw: dict[str, Any]) -> list[str]:
+    """Ordered internal hosts an app-proxy tab must expose; [0] is the iframe
+    target, the rest are companions (e.g. oauth). Requires an explicit
+    ``proxy_hosts`` list; a lone ``proxy_host`` remains a generic location proxy.
+    """
+    return list(raw.get("proxy_hosts") or [])
+
+
+def app_proxy_internal_hosts(tabs: list[dict[str, Any]]) -> list[str]:
+    """Ordered, de-duplicated internal hosts across all app-proxy tabs.
+
+    Deploy creates one public route per host and builds the nginx public->internal
+    map from this list.
+    """
+    seen: list[str] = []
+    for tab in tabs:
+        for host in tab.get("proxyHosts", []):
+            host = (host or "").strip()
+            if host and host not in seen:
+                seen.append(host)
+    return seen
+
+
+def app_proxy_public_host(project_id: str, internal_host: str, apps_domain: str) -> str:
+    """Deterministic public hostname for an internal app host, matching the nginx
+    app-proxy server_name regex: troshka-pf-<pid8>-<label>.<apps_domain>."""
+    label = internal_host.split(".")[0]
+    return f"troshka-pf-{project_id[:8]}-{label}.{apps_domain}"
+
+
+def derive_apps_domain(route_hostname: str) -> str:
+    """Cluster apps wildcard domain from any admitted route hostname
+    (<label>.apps.<cluster> -> apps.<cluster>)."""
+    if "." not in (route_hostname or ""):
+        return ""
+    return route_hostname.split(".", 1)[1]
+
+
+def fill_app_proxy_tab_urls(ui_yaml: str, project_id: str, apps_domain: str) -> str:
+    """Replace __TROSHKA_APP_PROXY__<internal>__ placeholders in the rendered
+    ui-config with the deterministic public https URL (deploy-time substitution)."""
+
+    def _repl(m: re.Match[str]) -> str:
+        internal = m.group(1)
+        return "https://" + app_proxy_public_host(project_id, internal, apps_domain)
+
+    return re.sub(r"__TROSHKA_APP_PROXY__([a-z0-9.-]+)__", _repl, ui_yaml)
 
 
 def _resolve_name_based_proxy(tab: dict[str, Any]) -> dict[str, Any]:
@@ -182,6 +236,12 @@ def resolve_showroom_tabs(
         tab_type = tab.get("type")
         if tab_type == "external":
             resolved.append({"tab": tab})
+            continue
+
+        # App-proxy: multiple internal hosts (console + oauth) served by the
+        # deploy-time vhost. Marked here; no inline location is emitted.
+        if tab_type == "proxy" and tab.get("proxyHosts"):
+            resolved.append({"tab": tab, "appProxyHosts": list(tab["proxyHosts"])})
             continue
 
         # Name-based proxy: target a hostname resolved via the showroom's
@@ -285,6 +345,16 @@ def build_ui_config_yaml(
                 ]
             )
             continue
+        if tab_type == "proxy" and item.get("appProxyHosts"):
+            # url is filled at deploy time with the public host for proxyHosts[0].
+            target = item["appProxyHosts"][0]
+            lines.extend(
+                [
+                    f"  - name: {name}",
+                    f"    url: '__TROSHKA_APP_PROXY__{target}__'",
+                ]
+            )
+            continue
         if tab_type == "proxy" and item.get("proxyPath"):
             proxy_path = item["proxyPath"]
             lines.extend(
@@ -362,8 +432,89 @@ def build_nginx_config(resolved: list[dict[str, Any]]) -> str:
                     blocks.append("      proxy_ssl_server_name on;")
                     blocks.append(f"      proxy_ssl_name {proxy_host};")
             blocks.append("    }")
-    blocks.extend(["  }", "}"])
+    blocks.append("  }")  # close main server
+    app_hosts: list[str] = []
+    for item in resolved:
+        for host in item.get("appProxyHosts", []):
+            if host not in app_hosts:
+                app_hosts.append(host)
+    if app_hosts:
+        blocks.append(build_app_proxy_config(app_hosts).rstrip("\n"))
+    blocks.append("}")  # close http
     return "\n".join(blocks) + "\n"
+
+
+def build_app_proxy_config(internal_hosts: list[str]) -> str:
+    """nginx server blocks that embed OAuth-protected cluster apps (console, oauth)
+    in the showroom iframe, baked at scaffold time.
+
+    Each internal host (``<label>.apps.ocp.ocp.local``) gets one server block
+    matched by its deterministic public hostname
+    ``troshka-pf-<pid>-<label>.apps.<cluster>``. ``pid`` and the cluster suffix are
+    captured from the request ``Host`` (server_name regex), so the config is
+    project- and cluster-agnostic. The upstream is a literal internal host, so no
+    ``resolver`` is needed. A single generic ``proxy_redirect`` rewrites any
+    redirect ``Location`` host ``.local`` -> the public equivalent, while leaving
+    the OAuth ``redirect_uri`` query param ``.local`` so the untouched cluster
+    OAuthClient still validates.
+    """
+    # Skip blank hosts: an empty entry would emit `proxy_pass https://;`, which
+    # nginx rejects and the showroom proxy would fail to start.
+    internal_hosts = [h.strip() for h in internal_hosts if (h or "").strip()]
+    # Body rewrites: the app (e.g. the console's window.SERVER_FLAGS) embeds
+    # absolute .local host URLs that the browser can't resolve, so rewrite each
+    # to its public equivalent. Applied in every block so console pages fix oauth
+    # refs and vice versa.
+    sub_filters: list[str] = [
+        # sub_filter needs an uncompressed upstream response.
+        '    proxy_set_header Accept-Encoding "";',
+        "    sub_filter_once off;",
+        "    sub_filter_types *;",
+    ]
+    for h in internal_hosts:
+        # Match the "//" from https:// so SERVER_FLAGS host refs are rewritten but
+        # the URL-encoded redirect_uri (https%3A%2F%2F...) is left .local, keeping
+        # the OAuthClient validation intact.
+        sub_filters.append(
+            f'    sub_filter "//{h}" '
+            f'"//troshka-pf-$troshka_pid-{h.split(".")[0]}.$troshka_suffix";'
+        )
+
+    blocks: list[str] = []
+    for host in internal_hosts:
+        label = host.split(".")[0]
+        blocks.extend(
+            [
+                "server {",
+                "  listen 80;",
+                # Quote the regex: nginx treats bare {8} as block syntax.
+                f'  server_name "~^troshka-pf-(?<troshka_pid>[0-9a-f]{{8}})-{label}'
+                '\\.(?<troshka_suffix>apps\\..+)$";',
+                "  location / {",
+                f"    proxy_pass https://{host};",
+                "    proxy_ssl_server_name on;",
+                f"    proxy_ssl_name {host};",
+                "    proxy_ssl_verify off;",
+                f"    proxy_set_header Host {host};",
+                "    proxy_set_header X-Forwarded-Proto https;",
+                "    proxy_http_version 1.1;",
+                "    proxy_set_header Upgrade $http_upgrade;",
+                "    proxy_set_header Connection $connection_upgrade;",
+                "    proxy_read_timeout 86400;",
+                # Allow the app to render inside the showroom iframe.
+                "    proxy_hide_header X-Frame-Options;",
+                # Rewrite redirect Location host .local -> public (redirect_uri
+                # query params are left .local so the OAuthClient still validates).
+                "    proxy_redirect ~^https://(?<troshka_h>[^.]+)"
+                "\\.apps\\.ocp\\.ocp\\.local(?<troshka_rest>.*)$ "
+                "https://troshka-pf-$troshka_pid-$troshka_h.$troshka_suffix$troshka_rest;",
+                *sub_filters,
+                "    proxy_cookie_domain .apps.ocp.ocp.local $host;",
+                "  }",
+                "}",
+            ]
+        )
+    return "\n".join(blocks) + "\n" if blocks else ""
 
 
 def _build_wetty_containers(

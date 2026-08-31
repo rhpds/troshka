@@ -230,16 +230,16 @@ showroom:
       proxy_path: /aap/
       proxy_port: 443
       proxy_tls: true       # HTTPS upstream (self-signed OK)
-    # Name-based proxy (proxy_host): target a hostname resolved via the
-    # showroom's internal DNS instead of a VM IP. nginx sends proxy_host as the
-    # Host header + TLS SNI so a router/ingress that routes by vhost (e.g. an
-    # OpenShift router) selects the right backend. proxy_host overrides vm, so
-    # no vm is needed. Example (needs a network whose DNS resolves the FQDN):
+    # App-proxy (proxy_hosts): embed an OAuth-protected cluster app (e.g. the
+    # OCP console) in the showroom iframe. Deploy mints a public route per host,
+    # and nginx rewrites redirects public<->.local while leaving the OAuth
+    # redirect_uri .local so the cluster's OAuthClient still validates.
+    # proxy_hosts[0] is the iframe target; the rest are login companions.
     #   - name: OCP Console
     #     type: proxy
-    #     network: cluster
-    #     proxy_host: console-openshift-console.apps.ocp.ocp.local
-    #     proxy_path: /console/
+    #     proxy_hosts:
+    #       - console-openshift-console.apps.ocp.ocp.local
+    #       - oauth-openshift.apps.ocp.ocp.local
     #     proxy_port: 443
     #     proxy_tls: true
     - name: Open an Issue

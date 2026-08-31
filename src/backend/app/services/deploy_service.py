@@ -1946,6 +1946,63 @@ def _check_central_source(
             return False
 
 
+def _library_disk_virtual_size_bytes(db, lib_item, s3_path: str) -> int:
+    """Return qcow2 virtual size for a library disk (bytes), or 0 if unknown."""
+    from sqlalchemy import select
+
+    from app.models.library import LibraryItemDisk
+
+    disks = list(
+        db.scalars(select(LibraryItemDisk).filter_by(library_item_id=lib_item.id)).all()
+    )
+    for disk in disks:
+        if s3_path and disk.s3_key != s3_path:
+            continue
+        if disk.virtual_size_bytes:
+            return disk.virtual_size_bytes
+    if len(disks) == 1 and disks[0].virtual_size_bytes:
+        return disks[0].virtual_size_bytes
+
+    max_gb = 0
+    for disk in (lib_item.vm_config or {}).get("disks", []):
+        size = disk.get("size") or disk.get("size_gb") or 0
+        max_gb = max(max_gb, int(size))
+    if max_gb:
+        return max_gb * 1073741824
+    return 0
+
+
+def library_item_deploy_size_gb(lib_item, db=None) -> int:
+    """Size in GB for deploy/PVC sizing — virtual disk size, not sparse file size."""
+    import math
+
+    virtual_bytes = 0
+    if db is not None:
+        virtual_bytes = _library_disk_virtual_size_bytes(
+            db, lib_item, lib_item.s3_key or ""
+        )
+    elif lib_item.item_disks:
+        virtual_bytes = max((d.virtual_size_bytes or 0) for d in lib_item.item_disks)
+    if not virtual_bytes:
+        for disk in (lib_item.vm_config or {}).get("disks", []):
+            size = disk.get("size") or disk.get("size_gb") or 0
+            virtual_bytes = max(virtual_bytes, int(size) * 1073741824)
+    if virtual_bytes:
+        return max(1, math.ceil(virtual_bytes / (1024**3)))
+    return max(1, (lib_item.size_bytes or 0) // (1024**3))
+
+
+def _apply_virtual_size_to_disk_data(data, virtual_size_bytes: int) -> None:
+    """Bump topology disk size when image virtual size exceeds the template."""
+    import math
+
+    if not virtual_size_bytes:
+        return
+    real_gb = math.ceil(virtual_size_bytes / (1024**3))
+    if real_gb > (data.get("size", 0) or 0):
+        data["size"] = real_gb
+
+
 def _resolve_pattern_disk(data, db, target_provider_id):
     """Resolve source (obc|central) + S3 path for a pattern-sourced disk.
 
@@ -2021,6 +2078,9 @@ def _resolve_library_disk(
         )
     data["resolvedS3Path"] = s3_path
     data["centralSource"] = use_central
+    if lib_item:
+        virtual_bytes = _library_disk_virtual_size_bytes(db, lib_item, s3_path)
+        _apply_virtual_size_to_disk_data(data, virtual_bytes)
     logger.info(
         "Deploy: disk %s s3=%s central=%s",
         data.get("label", "?"),
@@ -2173,11 +2233,26 @@ def _format_import_progress(friendly, dv, dv_progress):
             return f"{friendly}: downloading {dv_progress}"
     if running_reason == "TransferRunning":
         return f"{friendly}: downloading starting"
-    return f"{friendly}: starting"
+    return f"{friendly}: importing image"
+
+
+def _dv_running_error(dv) -> str | None:
+    """Return CDI Running/Error message when a DV is stuck with a hidden failure."""
+    for cond in dv.get("status", {}).get("conditions", []):
+        if cond.get("type") == "Running" and cond.get("reason") == "Error":
+            msg = cond.get("message", "")
+            if msg:
+                return msg
+    return None
 
 
 def _format_dv_status_line(friendly, dv):
     """Format a single DataVolume into a human-readable status line."""
+    err = _dv_running_error(dv)
+    if err:
+        short_err = err[:60]
+        return f"{friendly}: error — {short_err}"
+
     dv_phase = dv.get("status", {}).get("phase", "")
     dv_progress = dv.get("status", {}).get("progress", "N/A")
 
@@ -2185,8 +2260,10 @@ def _format_dv_status_line(friendly, dv):
         return f"{friendly}: done"
     if dv_phase == "ImportInProgress":
         return _format_import_progress(friendly, dv, dv_progress)
-    if dv_phase in ("CloneInProgress", "CloneScheduled"):
+    if dv_phase == "CloneInProgress":
         return f"{friendly}: cloning"
+    if dv_phase == "CloneScheduled":
+        return f"{friendly}: waiting to clone"
     if dv_phase in ("ImportScheduled", "Pending"):
         return f"{friendly}: scheduled"
     if dv_phase == "Failed":
@@ -2204,6 +2281,33 @@ def _format_dv_status_line(friendly, dv):
     if dv_phase:
         return f"{friendly}: {dv_phase.lower()}"
     return f"{friendly}: waiting"
+
+
+def _dv_status_suffix(line: str) -> str:
+    return line.split(": ", 1)[1] if ": " in line else line
+
+
+def _pick_disk_dv_status(friendly, cache_dv, clone_dv) -> str:
+    """Pick the deploy status to show for a disk across cache and clone DVs."""
+    if clone_dv:
+        clone_phase = clone_dv.get("status", {}).get("phase", "")
+        if clone_phase == "Succeeded":
+            return _dv_status_suffix(_format_dv_status_line(friendly, clone_dv))
+        if clone_phase == "CloneInProgress":
+            return _dv_status_suffix(_format_dv_status_line(friendly, clone_dv))
+        if clone_phase in ("CloneScheduled", "Pending", "ImportScheduled") and cache_dv:
+            cache_phase = cache_dv.get("status", {}).get("phase", "")
+            if cache_phase and cache_phase != "Succeeded":
+                return _dv_status_suffix(_format_dv_status_line(friendly, cache_dv))
+            if cache_phase == "Succeeded":
+                return "waiting to clone"
+        if clone_phase == "Failed":
+            return _dv_status_suffix(_format_dv_status_line(friendly, clone_dv))
+    if cache_dv:
+        return _dv_status_suffix(_format_dv_status_line(friendly, cache_dv))
+    if clone_dv:
+        return _dv_status_suffix(_format_dv_status_line(friendly, clone_dv))
+    return "waiting"
 
 
 def _best_dv_status(lines):
@@ -2272,21 +2376,40 @@ def _collect_dv_progress(project_id, provider, topology):
                 pass
 
         clone_name_map = _build_clone_name_map(topology)
-        cache_lines: list[str] = []
-        clone_lines: list[str] = []
+        clone_by_label: dict[str, dict] = {}
+        golden_ref_map: dict[str, str] = {}
         for dv in all_dvs:
-            ns = dv["metadata"]["namespace"]
+            if dv["metadata"]["namespace"] == "troshka-cache":
+                continue
             raw_name = dv["metadata"]["name"]
-            friendly = golden_name_map.get(raw_name) or clone_name_map.get(raw_name)
+            friendly = clone_name_map.get(raw_name)
             if not friendly:
                 continue
-            line = _format_dv_status_line(friendly[:24], dv)
-            if ns == "troshka-cache":
-                cache_lines.append(line)
-            else:
-                clone_lines.append(line)
+            label = friendly[:24]
+            clone_by_label[label] = dv
+            pvc_src = dv.get("spec", {}).get("source", {}).get("pvc", {})
+            if pvc_src.get("namespace") == "troshka-cache":
+                golden_name = pvc_src.get("name", "")
+                if golden_name:
+                    golden_ref_map[golden_name] = label
 
-        best_status = _best_dv_status(cache_lines + clone_lines)
+        cache_by_label: dict[str, dict] = {}
+        for dv in all_dvs:
+            if dv["metadata"]["namespace"] != "troshka-cache":
+                continue
+            raw_name = dv["metadata"]["name"]
+            friendly = golden_name_map.get(raw_name) or golden_ref_map.get(raw_name)
+            if not friendly:
+                continue
+            cache_by_label[friendly[:24]] = dv
+
+        all_labels = set(cache_by_label) | set(clone_by_label)
+        best_status = {
+            label: _pick_disk_dv_status(
+                label, cache_by_label.get(label), clone_by_label.get(label)
+            )
+            for label in all_labels
+        }
         _fill_missing_disk_labels(topology, best_status)
         dv_lines = [f"{k}: {v}" for k, v in best_status.items()]
     except Exception:
@@ -3589,6 +3712,7 @@ def _create_routes_for_gateway(
     from app.services.eip_service import allocate_standalone_transit_port
 
     external_endpoints = []
+    showroom_route = None
     for pf in node_data.get("portForwards", []):
         ext_port = int(pf.get("extPort", 0))
         if ext_port not in _ROUTE_ACCESS_PORTS:
@@ -3632,6 +3756,8 @@ def _create_routes_for_gateway(
                     "hostname": result["hostname"],
                 }
             )
+            if is_showroom_infra_ip(int_ip):
+                showroom_route = result
             logger.info(
                 "Deploy %s: created Route for %s:%d → %s",
                 project_id[:8],
@@ -3647,7 +3773,69 @@ def _create_routes_for_gateway(
                 ext_port,
                 exc_info=True,
             )
+    _create_app_proxy_routes(driver, provider, project_id, topology, showroom_route)
     return external_endpoints
+
+
+def _create_app_proxy_routes(driver, provider, project_id, topology, showroom_route):
+    """Create a public route per app-proxy host (console/oauth) cloning the showroom
+    route, and fill the console tab URL. No-op unless the showroom has proxy_hosts."""
+    from app.services.showroom_scaffold import (
+        app_proxy_internal_hosts,
+        app_proxy_public_host,
+        derive_apps_domain,
+    )
+
+    if not showroom_route or not hasattr(driver, "create_app_proxy_route"):
+        return
+    showroom_node = next(
+        (n for n in topology.get("nodes", []) if n.get("data", {}).get("isShowroom")),
+        None,
+    )
+    if not showroom_node:
+        return
+    hosts = app_proxy_internal_hosts(showroom_node["data"].get("showroomTabs", []))
+    if not hosts:
+        return
+    apps_domain = derive_apps_domain(showroom_route.get("hostname", ""))
+    src_route = showroom_route.get("route_name")
+    if not apps_domain or not src_route:
+        return
+    for internal in hosts:
+        public = app_proxy_public_host(project_id, internal, apps_domain)
+        try:
+            driver.create_app_proxy_route(provider, project_id, public, src_route)
+            logger.info(
+                "Deploy %s: app-proxy route %s → %s", project_id[:8], public, internal
+            )
+        except Exception:
+            logger.warning(
+                "Deploy %s: app-proxy route failed for %s",
+                project_id[:8],
+                internal,
+                exc_info=True,
+            )
+    _fill_showroom_app_proxy_urls(showroom_node, project_id, apps_domain)
+
+
+def _fill_showroom_app_proxy_urls(showroom_node, project_id, apps_domain):
+    """Substitute the __TROSHKA_APP_PROXY__ placeholder in the showroom pod's baked
+    ui-config (UI_CONFIG_B64 init env) with the deterministic public host URL."""
+    import base64
+
+    from app.services.showroom_scaffold import fill_app_proxy_tab_urls
+
+    for ic in showroom_node.get("data", {}).get("initContainers", []):
+        for ev in ic.get("envVars", []):
+            if ev.get("key") != "UI_CONFIG_B64":
+                continue
+            try:
+                ui = base64.b64decode(ev["value"]).decode()
+            except Exception:
+                continue
+            filled = fill_app_proxy_tab_urls(ui, project_id, apps_domain)
+            if filled != ui:
+                ev["value"] = base64.b64encode(filled.encode()).decode()
 
 
 def _resolve_project_provider(s, host, project):
@@ -5706,6 +5894,41 @@ def _extract_ocp_kubeadmin_password(nodes, vm_id=None):
     return _first_kubeadmin_password(nodes, lambda n: n.get("type") == "vmNode")
 
 
+def _persist_ocp_kubeadmin_password(project_id, vm_id, pw):
+    """Store the installer-generated kubeadmin password on the VM node so the UI
+    shows the real value. Recert sets ocpKubeadminPassword directly; the Agent
+    Installer generates it on the bastion, so the monitor reads it back here."""
+    try:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        from app.core.database import SessionLocal
+        from app.models.project import Project
+
+        db = SessionLocal()
+        try:
+            p = db.query(Project).filter_by(id=project_id).first()
+            if not p:
+                return
+            changed = False
+            for attr in ("deployed_topology", "topology"):
+                topo = getattr(p, attr, None)
+                if not topo:
+                    continue
+                for n in topo.get("nodes", []):
+                    if n.get("id") == vm_id and n.get("type") == "vmNode":
+                        data = n.setdefault("data", {})
+                        if data.get("ocpKubeadminPassword") != pw:
+                            data["ocpKubeadminPassword"] = pw
+                            flag_modified(p, attr)
+                            changed = True
+            if changed:
+                db.commit()
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Failed to persist kubeadmin password for %s", project_id[:8])
+
+
 def _write_bastion_kubeadmin_password(
     host, project_id, bastion_ip, ssh_password, kubeadmin_pw
 ):
@@ -5955,6 +6178,18 @@ def _configure_bastion_and_cleanup(
             _write_bastion_kubeadmin_password(
                 host, project_id, bastion_ip, password, kubeadmin_pw
             )
+        elif vm_id:
+            # Agent Installer generated the kubeadmin password on the bastion;
+            # read it back so the UI shows the real value (not the bastion pw).
+            read_pw = _oc(
+                "cat /home/cloud-user/ocp-install/auth/kubeadmin-password "
+                "2>/dev/null",
+                timeout=10,
+            )
+            read_pw = (read_pw or "").strip()
+            if read_pw:
+                _push(status_phase, "reading kubeadmin password from bastion")
+                _persist_ocp_kubeadmin_password(project_id, vm_id, read_pw)
 
         _push(status_phase, "deploying browser autologin script")
         _ensure_bastion_geckodriver(host, project_id, bastion_ip, password)

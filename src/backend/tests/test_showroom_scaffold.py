@@ -43,8 +43,9 @@ def test_resolve_showroom_tabs_terminal_and_proxy():
 
 
 def test_resolve_showroom_tabs_name_based_proxy():
-    """A proxy tab with proxy_host targets the hostname (Host + SNI), not a VM IP."""
-    host = "console-openshift-console.apps.ocp.ocp.local"
+    """A generic (non-console) proxy_host targets the hostname (Host + SNI) via a
+    single location block. Console hosts upgrade to the app-proxy vhost instead."""
+    host = "myapp.apps.ocp.ocp.local"
     vms_def = {"control": {"nics": [{"network": "cluster", "ip": "10.0.0.10"}]}}
     vm_name_to_id = {"control": "vm-control"}
     tabs = parse_template_tabs(
@@ -297,3 +298,262 @@ def test_apply_showroom_deploy_overrides():
     assert topology["showroom"]["build_content"] is True
     git_cloner = node["initContainers"][0]
     assert git_cloner["envVars"][1]["value"] == "v1.0.0"
+
+
+def test_build_app_proxy_config_per_host_literal_blocks():
+    """One server block per internal host, matched by the deterministic public
+    hostname (pid + suffix captured from Host). Literal upstream (no resolver),
+    generic redirect rewrites .local->public while leaving redirect_uri .local,
+    and X-Frame-Options is stripped so the console embeds in the iframe."""
+    from app.services.showroom_scaffold import build_app_proxy_config
+
+    conf = build_app_proxy_config(
+        [
+            "console-openshift-console.apps.ocp.ocp.local",
+            "oauth-openshift.apps.ocp.ocp.local",
+        ]
+    )
+
+    # deterministic public hostname match; pid + suffix captured from the request
+    assert (
+        'server_name "~^troshka-pf-(?<troshka_pid>[0-9a-f]{8})-console-openshift-console'
+        '\\.(?<troshka_suffix>apps\\..+)$";' in conf
+    )
+    assert (
+        'server_name "~^troshka-pf-(?<troshka_pid>[0-9a-f]{8})-oauth-openshift'
+        '\\.(?<troshka_suffix>apps\\..+)$";' in conf
+    )
+    # literal upstream => no resolver / map needed
+    assert "proxy_pass https://console-openshift-console.apps.ocp.ocp.local;" in conf
+    assert "proxy_set_header Host console-openshift-console.apps.ocp.ocp.local;" in conf
+    assert "proxy_ssl_name oauth-openshift.apps.ocp.ocp.local;" in conf
+    assert "resolver" not in conf
+    assert "map " not in conf
+    # embedding
+    assert "proxy_hide_header X-Frame-Options;" in conf
+    # generic redirect: any .local host -> troshka-pf-$troshka_pid-<label>.$suffix
+    assert (
+        "proxy_redirect ~^https://(?<troshka_h>[^.]+)\\.apps\\.ocp\\.ocp\\.local"
+        "(?<troshka_rest>.*)$ https://troshka-pf-$troshka_pid-$troshka_h.$troshka_suffix"
+        "$troshka_rest;" in conf
+    )
+    assert "proxy_cookie_domain .apps.ocp.ocp.local $host;" in conf
+    # body rewrite: SERVER_FLAGS .local host refs -> public. Match "//<host>"
+    # (the // from https://) so the URL-encoded redirect_uri stays .local.
+    assert 'proxy_set_header Accept-Encoding "";' in conf
+    assert "sub_filter_once off;" in conf
+    assert (
+        'sub_filter "//console-openshift-console.apps.ocp.ocp.local" '
+        '"//troshka-pf-$troshka_pid-console-openshift-console.$troshka_suffix";' in conf
+    )
+    assert (
+        'sub_filter "//oauth-openshift.apps.ocp.ocp.local" '
+        '"//troshka-pf-$troshka_pid-oauth-openshift.$troshka_suffix";' in conf
+    )
+    # must NOT rewrite the bare host (would corrupt the encoded redirect_uri)
+    assert 'sub_filter "console-openshift-console.apps.ocp.ocp.local"' not in conf
+
+
+def test_build_app_proxy_config_empty_is_blank():
+    """No app proxies -> empty string (nothing to bake)."""
+    from app.services.showroom_scaffold import build_app_proxy_config
+
+    assert build_app_proxy_config([]) == ""
+
+
+def test_parse_template_tabs_proxy_hosts_list():
+    """A proxy tab may declare proxy_hosts[]; [0] is the iframe target."""
+    tabs = parse_template_tabs(
+        [
+            {
+                "name": "OCP Console",
+                "type": "proxy",
+                "proxy_hosts": [
+                    "console-openshift-console.apps.ocp.ocp.local",
+                    "oauth-openshift.apps.ocp.ocp.local",
+                ],
+                "proxy_tls": True,
+                "proxy_port": 443,
+            },
+        ],
+        {},
+        {},
+        {},
+    )
+    assert tabs[0]["proxyHosts"] == [
+        "console-openshift-console.apps.ocp.ocp.local",
+        "oauth-openshift.apps.ocp.ocp.local",
+    ]
+
+
+def test_proxy_hosts_use_app_proxy_not_location():
+    """An explicit proxy_hosts tab resolves to an app-proxy tab: no inline location
+    block, and the base config includes the deploy-written conf.d snippet."""
+    tabs = parse_template_tabs(
+        [
+            {
+                "name": "OCP Console",
+                "type": "proxy",
+                "proxy_hosts": [
+                    "console-openshift-console.apps.ocp.ocp.local",
+                    "oauth-openshift.apps.ocp.ocp.local",
+                ],
+                "proxy_port": 443,
+                "proxy_tls": True,
+            },
+        ],
+        {},
+        {},
+        {},
+    )
+    resolved = resolve_showroom_tabs(tabs, {}, {})
+    assert resolved[0]["appProxyHosts"] == [
+        "console-openshift-console.apps.ocp.ocp.local",
+        "oauth-openshift.apps.ocp.ocp.local",
+    ]
+    nginx = build_nginx_config(resolved)
+    # app-proxy tabs are served by dedicated server blocks, not a path location
+    assert "location /console" not in nginx
+    # the app-proxy vhost is baked inline (literal upstream)
+    assert "proxy_pass https://console-openshift-console.apps.ocp.ocp.local;" in nginx
+    assert "proxy_pass https://oauth-openshift.apps.ocp.ocp.local;" in nginx
+
+
+def test_app_proxy_internal_hosts_dedupes_and_orders():
+    """Deploy needs the ordered, de-duplicated internal hosts to create routes."""
+    from app.services.showroom_scaffold import app_proxy_internal_hosts
+
+    tabs = parse_template_tabs(
+        [
+            {
+                "name": "OCP Console",
+                "type": "proxy",
+                "proxy_hosts": [
+                    "console-openshift-console.apps.ocp.ocp.local",
+                    "oauth-openshift.apps.ocp.ocp.local",
+                ],
+            },
+            {
+                "name": "Console again",
+                "type": "proxy",
+                "proxy_hosts": [
+                    "console-openshift-console.apps.ocp.ocp.local",
+                    "argocd.apps.ocp.ocp.local",
+                ],
+            },
+        ],
+        {},
+        {},
+        {},
+    )
+    assert app_proxy_internal_hosts(tabs) == [
+        "console-openshift-console.apps.ocp.ocp.local",
+        "oauth-openshift.apps.ocp.ocp.local",
+        "argocd.apps.ocp.ocp.local",
+    ]
+
+
+def test_build_ui_config_app_proxy_emits_placeholder_url():
+    """App-proxy tabs render with a deploy-substituted URL placeholder for the
+    iframe target (proxyHosts[0]); deploy swaps in the public host."""
+    from app.services.showroom_scaffold import build_ui_config_yaml
+
+    resolved = [
+        {
+            "tab": {"name": "OCP Console", "type": "proxy"},
+            "appProxyHosts": [
+                "console-openshift-console.apps.ocp.ocp.local",
+                "oauth-openshift.apps.ocp.ocp.local",
+            ],
+        },
+    ]
+    yaml = build_ui_config_yaml(resolved, external_port=443)
+    assert "name: OCP Console" in yaml
+    assert "__TROSHKA_APP_PROXY__console-openshift-console.apps.ocp.ocp.local__" in yaml
+
+
+def test_build_nginx_config_bakes_app_proxy_server_blocks():
+    """App-proxy server blocks are baked inline in the main nginx config (no
+    deploy-time injection): a dedicated server per internal host."""
+    resolved = [
+        {
+            "tab": {"name": "OCP Console", "type": "proxy"},
+            "appProxyHosts": [
+                "console-openshift-console.apps.ocp.ocp.local",
+                "oauth-openshift.apps.ocp.ocp.local",
+            ],
+        },
+    ]
+    nginx = build_nginx_config(resolved)
+    assert (
+        'server_name "~^troshka-pf-(?<troshka_pid>[0-9a-f]{8})-console-openshift-console'
+        '\\.(?<troshka_suffix>apps\\..+)$";' in nginx
+    )
+    assert "proxy_pass https://oauth-openshift.apps.ocp.ocp.local;" in nginx
+    # no deploy-time include needed
+    assert "conf.d" not in nginx
+
+
+def test_app_proxy_public_host():
+    from app.services.showroom_scaffold import app_proxy_public_host
+
+    assert (
+        app_proxy_public_host(
+            "6fcf0e3e-08d8-4911",
+            "console-openshift-console.apps.ocp.ocp.local",
+            "apps.ocpvdev01.dal13.infra.demo.redhat.com",
+        )
+        == "troshka-pf-6fcf0e3e-console-openshift-console.apps.ocpvdev01.dal13.infra.demo.redhat.com"
+    )
+
+
+def test_fill_app_proxy_tab_urls():
+    from app.services.showroom_scaffold import fill_app_proxy_tab_urls
+
+    ui = (
+        "tabs:\n"
+        "  - name: OCP Console\n"
+        "    url: '__TROSHKA_APP_PROXY__console-openshift-console.apps.ocp.ocp.local__'\n"
+    )
+    out = fill_app_proxy_tab_urls(ui, "6fcf0e3e", "apps.ocpvdev01.example.com")
+    assert (
+        "url: 'https://troshka-pf-6fcf0e3e-console-openshift-console.apps.ocpvdev01.example.com'"
+        in out
+    )
+    assert "__TROSHKA_APP_PROXY__" not in out
+
+
+def test_derive_apps_domain():
+    from app.services.showroom_scaffold import derive_apps_domain
+
+    assert (
+        derive_apps_domain(
+            "troshka-pf-6fcf0e3e-showroom-443-troshka.apps.ocpvdev01.dal13.infra.demo.redhat.com"
+        )
+        == "apps.ocpvdev01.dal13.infra.demo.redhat.com"
+    )
+    assert derive_apps_domain("") == ""
+    assert derive_apps_domain("nohost") == ""
+
+
+def test_build_app_proxy_config_skips_empty_hosts():
+    """Empty proxy_hosts entries must not emit `proxy_pass https://;` (nginx rejects
+    it and the showroom proxy fails to start)."""
+    from app.services.showroom_scaffold import build_app_proxy_config
+
+    conf = build_app_proxy_config(
+        ["", "  ", "console-openshift-console.apps.ocp.ocp.local"]
+    )
+    assert "proxy_pass https://;" not in conf
+    assert "proxy_pass https://console-openshift-console.apps.ocp.ocp.local;" in conf
+    # only one server block (the valid host)
+    assert conf.count("server {") == 1
+
+
+def test_app_proxy_internal_hosts_skips_empty():
+    from app.services.showroom_scaffold import app_proxy_internal_hosts
+
+    tabs = [{"proxyHosts": ["", "console-openshift-console.apps.ocp.ocp.local", "  "]}]
+    assert app_proxy_internal_hosts(tabs) == [
+        "console-openshift-console.apps.ocp.ocp.local"
+    ]

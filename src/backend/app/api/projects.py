@@ -486,10 +486,12 @@ def _resolve_bastion_image(db, user, bastion_image_id):
             .first()
         )
     if item:
+        from app.services.deploy_service import library_item_deploy_size_gb
+
         return {
             "id": item.id,
             "name": item.name,
-            "size_gb": max(1, (item.size_bytes or 0) // (1024**3)),
+            "size_gb": library_item_deploy_size_gb(item, db),
         }
     return None
 

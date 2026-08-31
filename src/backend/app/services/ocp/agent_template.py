@@ -14,6 +14,7 @@ Flow:
 
 import ipaddress
 import re
+import shlex
 import uuid
 from dataclasses import dataclass
 
@@ -1178,6 +1179,40 @@ def _build_agent_config(
     return "\n".join(ac_lines)
 
 
+def _build_bastion_autologin_steps(cluster_name: str, base_domain: str) -> str:
+    """Shell steps to stash kubeadmin creds in Firefox via Selenium (not NSS ctypes)."""
+    import base64
+
+    from app.services.ocp_autologin import GECKODRIVER_URL, OCP_AUTOLOGIN_SCRIPT
+
+    script_b64 = base64.b64encode(OCP_AUTOLOGIN_SCRIPT.encode()).decode()
+    console_url = f"https://console-openshift-console.apps.{cluster_name}.{base_domain}"
+    return (
+        "    # Save kubeadmin password into Firefox via headless Selenium\n"
+        "    if ! find /home/cloud-user/.mozilla/firefox -maxdepth 2 "
+        "-name cert9.db 2>/dev/null | grep -q .; then\n"
+        "      firefox --headless --no-remote >/dev/null 2>&1 &\n"
+        "      FXPID=$!\n"
+        "      sleep 5\n"
+        "      kill $FXPID 2>/dev/null; wait $FXPID 2>/dev/null || true\n"
+        "      sleep 2\n"
+        "    fi\n"
+        "    if [ ! -x /usr/local/bin/geckodriver ]; then\n"
+        f"      curl -sfL {GECKODRIVER_URL} | sudo tar xz -C /usr/local/bin/ || true\n"
+        "      sudo chmod +x /usr/local/bin/geckodriver 2>/dev/null || true\n"
+        "    fi\n"
+        "    python3 -c 'import selenium' 2>/dev/null "
+        "|| pip3 install --user selenium 2>/dev/null || true\n"
+        f"    echo '{script_b64}' | base64 -d > /home/cloud-user/ocp-autologin.py\n"
+        "    chown cloud-user:cloud-user /home/cloud-user/ocp-autologin.py\n"
+        "    chmod 755 /home/cloud-user/ocp-autologin.py\n"
+        "    pkill -x firefox 2>/dev/null || true\n"
+        "    sleep 2\n"
+        "    export GECKODRIVER_PATH=/usr/local/bin/geckodriver\n"
+        f"    python3 /home/cloud-user/ocp-autologin.py {shlex.quote(console_url)} 2>&1 || true\n"
+    )
+
+
 def _build_install_script(
     ocp_version,
     auto_install,
@@ -1320,92 +1355,13 @@ def _build_install_script(
             "    # Trust the OCP CA so Firefox doesn't show cert warnings\n"
             "    export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig\n"
             "    oc get secret -n openshift-ingress router-certs-default -o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d | sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null && sudo update-ca-trust\n"
-            "    # Save kubeadmin password into Firefox password manager via NSS\n"
-            "    # Create Firefox profile if it doesn't exist\n"
-            "    if ! ls /home/cloud-user/.mozilla/firefox/*.default* >/dev/null 2>&1; then\n"
-            "      firefox --headless --no-remote >/dev/null 2>&1 &\n"
-            "      FXPID=$!\n"
-            "      sleep 3\n"
-            "      kill $FXPID 2>/dev/null; wait $FXPID 2>/dev/null || true\n"
-            "    fi\n"
-            "    cat > /home/cloud-user/ocp-autologin.py << 'PWSAVEEOF'\n"
-            "    import ctypes, ctypes.util, json, base64, glob, os, sys, time, uuid\n"
-            "    console_url = sys.argv[1]\n"
-            "    for pw_path in ['~/ocp-install/auth/kubeadmin-password',\n"
-            "                    '~cloud-user/ocp-install/auth/kubeadmin-password']:\n"
-            "        p = os.path.expanduser(pw_path)\n"
-            "        if os.path.exists(p):\n"
-            "            pw = open(p).read().strip()\n"
-            "            break\n"
-            "    else:\n"
-            "        print('ERROR: kubeadmin-password not found'); sys.exit(1)\n"
-            "    parts = console_url.split('apps.', 1)\n"
-            "    if len(parts) < 2:\n"
-            "        print('Cannot parse domain from ' + console_url); sys.exit(1)\n"
-            "    domain = parts[1].rstrip('/')\n"
-            "    oauth_url = 'https://oauth-openshift.apps.' + domain\n"
-            "    profiles = sorted(glob.glob('/home/cloud-user/.mozilla/firefox/*.default*/'))\n"
-            "    if not profiles:\n"
-            "        print('ERROR: No Firefox profile found'); sys.exit(1)\n"
-            "    profile = profiles[0].rstrip('/')\n"
-            "    class SECItem(ctypes.Structure):\n"
-            "        _fields_ = [('type', ctypes.c_uint), ('data', ctypes.c_void_p), ('len', ctypes.c_uint)]\n"
-            "    nss = None\n"
-            "    for lib in ['libnss3.so', ctypes.util.find_library('nss3') or '']:\n"
-            "        if lib:\n"
-            "            try:\n"
-            "                nss = ctypes.CDLL(lib)\n"
-            "                break\n"
-            "            except OSError:\n"
-            "                continue\n"
-            "    if not nss:\n"
-            "        print('ERROR: libnss3.so not found'); sys.exit(1)\n"
-            "    if nss.NSS_Init(('sql:' + profile).encode()) != 0:\n"
-            "        print('ERROR: NSS_Init failed'); sys.exit(1)\n"
-            "    def encrypt(text):\n"
-            "        data = text.encode('utf-8')\n"
-            "        buf = ctypes.create_string_buffer(data, len(data))\n"
-            "        inp = SECItem(0, ctypes.cast(buf, ctypes.c_void_p), len(data))\n"
-            "        out = SECItem(0, None, 0)\n"
-            "        if nss.PK11SDR_Encrypt(None, ctypes.byref(inp), ctypes.byref(out), None) != 0:\n"
-            "            return None\n"
-            "        return base64.b64encode(ctypes.string_at(out.data, out.len)).decode()\n"
-            "    eu = encrypt('kubeadmin')\n"
-            "    ep = encrypt(pw)\n"
-            "    if not eu or not ep:\n"
-            "        print('ERROR: Encryption failed'); nss.NSS_Shutdown(); sys.exit(1)\n"
-            "    now_ms = int(time.time() * 1000)\n"
-            "    logins = {\n"
-            "        'nextId': 2,\n"
-            "        'logins': [{\n"
-            "            'id': 1,\n"
-            "            'hostname': oauth_url,\n"
-            "            'httpRealm': None,\n"
-            "            'formSubmitURL': oauth_url,\n"
-            "            'usernameField': 'inputUsername',\n"
-            "            'passwordField': 'inputPassword',\n"  # pragma: allowlist secret
-            "            'encryptedUsername': eu,\n"
-            "            'encryptedPassword': ep,\n"
-            "            'guid': '{' + str(uuid.uuid4()) + '}',\n"
-            "            'encType': 1,\n"
-            "            'timeCreated': now_ms,\n"
-            "            'timeLastUsed': now_ms,\n"
-            "            'timePasswordChanged': now_ms,\n"
-            "            'timesUsed': 1\n"
-            "        }]\n"
-            "    }\n"
-            "    with open(os.path.join(profile, 'logins.json'), 'w') as f:\n"
-            "        json.dump(logins, f)\n"
-            "    nss.NSS_Shutdown()\n"
-            "    print('Password saved to Firefox')\n"
-            "    PWSAVEEOF\n"
-            f"    python3 /home/cloud-user/ocp-autologin.py https://console-openshift-console.apps.{cluster_name}.{base_domain} 2>&1 || true\n"
-            "    # Cleanup: remove cached ISO, temp files, and pull secret from disk\n"
-            "    rm -f /home/cloud-user/pull-secret.json\n"
-            "    rm -rf /home/cloud-user/.cache/agent/ /tmp/http-server.log /tmp/cookies /tmp/*.zip /var/tmp/dnf-*\n"
-            "    dnf clean all 2>/dev/null\n"
-            "    # Kill the HTTP server used to serve the agent ISO\n"
-            "    kill $HTTP_PID 2>/dev/null\n"
+            + _build_bastion_autologin_steps(cluster_name, base_domain)
+            + "    # Cleanup: remove cached ISO, temp files, and pull secret from disk\n"
+            + "    rm -f /home/cloud-user/pull-secret.json\n"
+            + "    rm -rf /home/cloud-user/.cache/agent/ /tmp/http-server.log /tmp/cookies /tmp/*.zip /var/tmp/dnf-*\n"
+            + "    dnf clean all 2>/dev/null\n"
+            + "    # Kill the HTTP server used to serve the agent ISO\n"
+            + "    kill $HTTP_PID 2>/dev/null\n"
             if auto_install
             else ""
         )

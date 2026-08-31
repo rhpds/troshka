@@ -46,10 +46,16 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumes"]
     verbs: ["get", "list"]
-  # Routes — console edge termination
+  # Routes — console edge termination (patch/update: _create_or_get_route
+  # merge-patches the route spec on 409 conflict, e.g. on re-deploy)
   - apiGroups: ["route.openshift.io"]
     resources: ["routes"]
-    verbs: ["create", "delete", "get", "list"]
+    verbs: ["create", "delete", "get", "list", "patch", "update"]
+  # routes/custom-host — set an explicit spec.host on app-proxy routes
+  # (deterministic public hostnames for the embedded OCP console/oauth)
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes/custom-host"]
+    verbs: ["create", "update"]
   # Secrets — cloud-init userdata
   - apiGroups: [""]
     resources: ["secrets"]

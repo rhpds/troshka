@@ -1586,14 +1586,14 @@ class TestFormatImportProgress:
 
         dv = {"status": {"conditions": []}}
         result = _format_import_progress("disk", dv, "")
-        assert result == "disk: starting"
+        assert result == "disk: importing image"
 
     def test_na_progress_treated_as_empty(self):
         from app.services.deploy_service import _format_import_progress
 
         dv = {"status": {"conditions": []}}
         result = _format_import_progress("disk", dv, "N/A")
-        assert result == "disk: starting"
+        assert result == "disk: importing image"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1618,7 +1618,7 @@ class TestFormatDvStatusLine:
         from app.services.deploy_service import _format_dv_status_line
 
         dv = {"status": {"phase": "CloneScheduled"}}
-        assert _format_dv_status_line("disk", dv) == "disk: cloning"
+        assert _format_dv_status_line("disk", dv) == "disk: waiting to clone"
 
     def test_pending(self):
         from app.services.deploy_service import _format_dv_status_line
@@ -1700,6 +1700,137 @@ class TestBestDvStatus:
         lines = ["disk: waiting", "disk: cloning"]
         result = _best_dv_status(lines)
         assert result["disk"] == "cloning"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _pick_disk_dv_status
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestPickDiskDvStatus:
+    def test_clone_scheduled_shows_cache_import(self):
+        from app.services.deploy_service import _pick_disk_dv_status
+
+        cache_dv = {
+            "status": {"phase": "ImportInProgress", "progress": "N/A", "conditions": []}
+        }
+        clone_dv = {"status": {"phase": "CloneScheduled"}}
+        assert _pick_disk_dv_status("bastion", cache_dv, clone_dv) == "importing image"
+
+    def test_cache_done_clone_scheduled(self):
+        from app.services.deploy_service import _pick_disk_dv_status
+
+        cache_dv = {"status": {"phase": "Succeeded"}}
+        clone_dv = {"status": {"phase": "CloneScheduled"}}
+        assert _pick_disk_dv_status("bastion", cache_dv, clone_dv) == "waiting to clone"
+
+    def test_clone_in_progress(self):
+        from app.services.deploy_service import _pick_disk_dv_status
+
+        cache_dv = {"status": {"phase": "Succeeded"}}
+        clone_dv = {"status": {"phase": "CloneInProgress"}}
+        assert _pick_disk_dv_status("bastion", cache_dv, clone_dv) == "cloning"
+
+    def test_clone_done(self):
+        from app.services.deploy_service import _pick_disk_dv_status
+
+        clone_dv = {"status": {"phase": "Succeeded"}}
+        assert _pick_disk_dv_status("bastion", None, clone_dv) == "done"
+
+    def test_running_error_shown_despite_import_phase(self):
+        from app.services.deploy_service import _format_dv_status_line
+
+        dv = {
+            "status": {
+                "phase": "ImportInProgress",
+                "conditions": [
+                    {
+                        "type": "Running",
+                        "reason": "Error",
+                        "message": "DataVolume too small to contain image",
+                    }
+                ],
+            }
+        }
+        result = _format_dv_status_line("bastion-disk0", dv)
+        assert "error" in result
+        assert "too small" in result
+
+    def test_golden_linked_via_clone_pvc_source(self):
+        from app.services.deploy_service import _collect_dv_progress
+
+        provider = MagicMock()
+        topology = {
+            "nodes": [
+                {
+                    "type": "storageNode",
+                    "id": "ef9f41c1-0000-0000-0000-000000000001",
+                    "data": {
+                        "id": "ef9f41c1-0000-0000-0000-000000000001",
+                        "label": "bastion-disk0",
+                        "source": "library",
+                    },
+                },
+                {
+                    "type": "vmNode",
+                    "id": "57895c80-0000-0000-0000-000000000001",
+                    "data": {"id": "57895c80-0000-0000-0000-000000000001"},
+                },
+            ],
+            "edges": [
+                {
+                    "source": "ef9f41c1-0000-0000-0000-000000000001",
+                    "target": "57895c80-0000-0000-0000-000000000001",
+                }
+            ],
+        }
+
+        with patch(
+            "app.services.providers.kubevirt._get_k8s_clients"
+        ) as mock_k8s, patch("app.services.providers.kubevirt._project_ns") as mock_ns:
+            mock_custom = MagicMock()
+            mock_k8s.return_value = (mock_custom, MagicMock(), MagicMock())
+            mock_ns.return_value = "troshka-proj-1"
+            mock_custom.list_namespaced_custom_object.side_effect = [
+                {
+                    "items": [
+                        {
+                            "metadata": {
+                                "namespace": "troshka-cache",
+                                "name": "golden-abc123",
+                            },
+                            "status": {
+                                "phase": "ImportInProgress",
+                                "progress": "N/A",
+                                "conditions": [],
+                            },
+                        }
+                    ]
+                },
+                {
+                    "items": [
+                        {
+                            "metadata": {
+                                "namespace": "troshka-proj-1",
+                                "name": "vm-57895c80-disk-ef9f41c1",
+                            },
+                            "spec": {
+                                "source": {
+                                    "pvc": {
+                                        "name": "golden-abc123",
+                                        "namespace": "troshka-cache",
+                                    }
+                                }
+                            },
+                            "status": {"phase": "CloneScheduled"},
+                        }
+                    ]
+                },
+            ]
+
+            result = _collect_dv_progress("proj-1", provider, topology)
+
+        assert result == ["bastion-disk0: importing image"]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -8728,7 +8859,7 @@ class TestFormatDvStatusLineImportInProgress:
             "status": {"phase": "ImportInProgress", "progress": "N/A", "conditions": []}
         }
         result = _format_dv_status_line("disk", dv)
-        assert "starting" in result
+        assert "importing image" in result
 
     def test_import_scheduled(self):
         from app.services.deploy_service import _format_dv_status_line

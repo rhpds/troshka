@@ -1686,6 +1686,14 @@ export default function PropertiesPanel() {
                         )}
                         {showroomTabs.map((tab, idx) => {
                           const resolved = resolvedTabs[idx];
+                          // Proxy sub-mode: VM (network) app, named DNS host, or
+                          // embedded OAuth app (console). Inferred from set fields.
+                          const proxyMode: "vm" | "named" | "oauth" =
+                            tab.proxyHosts && tab.proxyHosts.length > 0
+                              ? "oauth"
+                              : tab.proxyHost
+                                ? "named"
+                                : "vm";
                           const typeLabel =
                             tab.type === "terminal"
                               ? "Terminal"
@@ -1815,6 +1823,53 @@ export default function PropertiesPanel() {
                                 </div>
                               ) : (
                                 <>
+                                  {tab.type === "proxy" && (
+                                    <div className="props-field" style={{ marginBottom: 6 }}>
+                                      <LabelWithHint
+                                        label="Proxy mode"
+                                        hint="VM app: proxy a web app on a canvas VM (by IP). Named host: proxy a hostname via the showroom's internal DNS (Host + SNI). Embedded OAuth app: embed an OAuth-protected app like the OCP console at public routes so login works inside the iframe."
+                                      />
+                                      <select
+                                        className="props-input"
+                                        value={proxyMode}
+                                        onChange={(e) => {
+                                          const mode = e.target.value;
+                                          const next = showroomTabs.map((t) => {
+                                            if (t.id !== tab.id) return t;
+                                            if (mode === "vm")
+                                              return { ...t, proxyHost: undefined, proxyHosts: undefined };
+                                            if (mode === "named")
+                                              return {
+                                                ...t,
+                                                proxyHosts: undefined,
+                                                vmId: undefined,
+                                                networkId: undefined,
+                                                network: undefined,
+                                                proxyHost: t.proxyHost || "",
+                                              };
+                                            return {
+                                              ...t,
+                                              proxyHost: undefined,
+                                              vmId: undefined,
+                                              networkId: undefined,
+                                              network: undefined,
+                                              proxyHosts:
+                                                t.proxyHosts && t.proxyHosts.length
+                                                  ? t.proxyHosts
+                                                  : ["", ""],
+                                            };
+                                          });
+                                          updateShowroomTabs(node!.id, next);
+                                        }}
+                                      >
+                                        <option value="vm">VM app (network)</option>
+                                        <option value="named">Named host (DNS)</option>
+                                        <option value="oauth">Embedded OAuth app</option>
+                                      </select>
+                                    </div>
+                                  )}
+                                  {(tab.type === "terminal" || proxyMode === "vm") && (
+                                  <>
                                   <div className="props-field" style={{ marginBottom: 6 }}>
                                     <LabelWithHint
                                       label="Target VM"
@@ -1864,6 +1919,8 @@ export default function PropertiesPanel() {
                                       ))}
                                     </select>
                                   </div>
+                                  </>
+                                  )}
                                   {tab.type === "terminal" && (
                                     <div className="props-field" style={{ marginBottom: 6 }}>
                                       <LabelWithHint
@@ -1949,6 +2006,100 @@ export default function PropertiesPanel() {
                                     label="Reverse proxy"
                                     hint="Nginx path on the showroom and backend port on the target VM."
                                   />
+                                  {/* App-proxy: embed an OAuth-protected app (e.g. OCP console) at public routes */}
+                                  {proxyMode === "oauth" && (
+                                  <div style={{ marginBottom: 8 }}>
+                                    {(tab.proxyHosts || []).map((h, hi) => (
+                                      <div key={hi} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
+                                        <input
+                                          className="props-input"
+                                          placeholder="console-openshift-console.apps.ocp.ocp.local"
+                                          value={h}
+                                          onChange={(e) => {
+                                            const hosts = [...(tab.proxyHosts || [])];
+                                            hosts[hi] = e.target.value;
+                                            const next = showroomTabs.map((t) =>
+                                              t.id === tab.id ? { ...t, proxyHosts: hosts } : t,
+                                            );
+                                            updateShowroomTabs(node!.id, next);
+                                          }}
+                                          style={{ fontFamily: "monospace", fontSize: 11, flex: 1, minWidth: 0 }}
+                                        />
+                                        <button
+                                          className="props-library-btn"
+                                          style={{ fontSize: 11, flex: "0 0 auto", width: 28, padding: "0 4px" }}
+                                          title="Remove host"
+                                          onClick={() => {
+                                            const hosts = (tab.proxyHosts || []).filter((_, i) => i !== hi);
+                                            const next = showroomTabs.map((t) =>
+                                              t.id === tab.id
+                                                ? { ...t, proxyHosts: hosts.length ? hosts : undefined }
+                                                : t,
+                                            );
+                                            updateShowroomTabs(node!.id, next);
+                                          }}
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    ))}
+                                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                      <button
+                                        className="props-library-btn"
+                                        style={{ fontSize: 11 }}
+                                        onClick={() => {
+                                          const hosts = [...(tab.proxyHosts || []), ""];
+                                          const next = showroomTabs.map((t) =>
+                                            t.id === tab.id ? { ...t, proxyHosts: hosts } : t,
+                                          );
+                                          updateShowroomTabs(node!.id, next);
+                                        }}
+                                      >
+                                        + Add app host
+                                      </button>
+                                      {!(
+                                        (tab.proxyHosts || []).some((h) =>
+                                          h.startsWith("console-openshift-console."),
+                                        ) &&
+                                        (tab.proxyHosts || []).some((h) =>
+                                          h.startsWith("oauth-openshift."),
+                                        )
+                                      ) && (
+                                        <button
+                                          className="props-library-btn"
+                                          style={{ fontSize: 11 }}
+                                          title="Fill in the console + oauth hosts for embedding the OpenShift web console"
+                                          onClick={() => {
+                                            const next = showroomTabs.map((t) =>
+                                              t.id === tab.id
+                                                ? {
+                                                    ...t,
+                                                    proxyHosts: [
+                                                      "console-openshift-console.apps.ocp.ocp.local",
+                                                      "oauth-openshift.apps.ocp.ocp.local",
+                                                    ],
+                                                    proxyTls: true,
+                                                    proxyPort: 443,
+                                                  }
+                                                : t,
+                                            );
+                                            updateShowroomTabs(node!.id, next);
+                                          }}
+                                        >
+                                          Insert OCP console hosts
+                                        </button>
+                                      )}
+                                    </div>
+                                    <div style={{ marginTop: 6 }}>
+                                      <LabelWithHint
+                                        label="Embedded app hosts (OAuth)"
+                                        hint="For an OAuth-protected cluster app like the OCP console. List the internal .local hosts — [0] is the iframe target, the rest are login companions (oauth). Deploy publishes each at a public route and the showroom proxies + rewrites redirects so login works embedded."
+                                        style={{ fontSize: 10 }}
+                                      />
+                                    </div>
+                                  </div>
+                                  )}
+                                  {proxyMode === "named" && (
                                   <div style={{ marginBottom: 6 }}>
                                     <LabelWithHint
                                       label="Backend host"
@@ -1968,6 +2119,8 @@ export default function PropertiesPanel() {
                                       style={{ fontFamily: "monospace", fontSize: 11 }}
                                     />
                                   </div>
+                                  )}
+                                  {proxyMode !== "oauth" && (
                                   <div className="props-row" style={{ gap: 8, alignItems: "flex-end" }}>
                                     <div style={{ flex: 2 }}>
                                       <LabelWithHint
@@ -2032,6 +2185,7 @@ export default function PropertiesPanel() {
                                       <HintIcon text="Use HTTPS when proxying to the VM backend." />
                                     </label>
                                   </div>
+                                  )}
                                 </div>
                               )}
                               {resolved?.warning && (
