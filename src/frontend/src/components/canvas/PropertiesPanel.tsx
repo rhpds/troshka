@@ -2057,8 +2057,13 @@ export default function PropertiesPanel() {
                                       >
                                         + Add app host
                                       </button>
-                                      {!(tab.proxyHosts || []).some((h) =>
-                                        h.startsWith("console-openshift-console."),
+                                      {!(
+                                        (tab.proxyHosts || []).some((h) =>
+                                          h.startsWith("console-openshift-console."),
+                                        ) &&
+                                        (tab.proxyHosts || []).some((h) =>
+                                          h.startsWith("oauth-openshift."),
+                                        )
                                       ) && (
                                         <button
                                           className="props-library-btn"
