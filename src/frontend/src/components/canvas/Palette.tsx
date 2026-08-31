@@ -478,11 +478,14 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                   // Don't fall back to the bastion password — it is NOT the
                   // kubeadmin password. The monitor reads the real one from the
                   // bastion shortly after the cluster is ready; until then, point
-                  // to where it lives on the bastion.
+                  // to where it lives on the bastion (stacked so the long path
+                  // doesn't overlap the label in the narrow panel).
                   return (
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
-                      <span style={{ color: "var(--pf-t--global--text--color--subtle)", minWidth: 0, flex: 1 }}>kubeadmin</span>
-                      <code style={{ fontSize: 10, opacity: 0.7 }}>~/ocp-install/auth/kubeadmin-password</code>
+                    <div style={{ marginTop: 4 }}>
+                      <div style={{ color: "var(--pf-t--global--text--color--subtle)" }}>kubeadmin</div>
+                      <div style={{ fontSize: 10, opacity: 0.6, wordBreak: "break-all" }}>
+                        on bastion: <code>~/ocp-install/auth/kubeadmin-password</code>
+                      </div>
                     </div>
                   );
                 }
