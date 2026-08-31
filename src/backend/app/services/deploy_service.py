@@ -3820,8 +3820,11 @@ def _deploy_validate_bmc(project_id, topology):
 
 
 def _deploy_create_disks(host, project_id, topology, pool):
-    _update_deploy_progress(project_id, "creating disks", "preparing VM disks")
     vms = _extract_vms(topology)
+    disk_items = _build_disk_progress_items(vms)
+    _update_deploy_progress(
+        project_id, "creating disks", "preparing VM disks", items=disk_items
+    )
     disk_jobs = []
     for vm in vms:
         vm_disks = _find_vm_disks(vm["node_id"], topology)
@@ -3962,6 +3965,16 @@ def _build_vm_progress_items(vms, current_index):
         else:
             items.append(f"{n}: pending")
     return items
+
+
+def _build_disk_progress_items(vms):
+    """Build progress items for the disk-creation phase (runs before defining).
+
+    Disks are created in parallel up front, so every VM shows 'creating disks'
+    together — distinct from the later per-VM 'defining' phase so the UI does
+    not conflate slow disk work with domain definition.
+    """
+    return [f"{v.get('name', v['node_id'][:8])}: creating disks..." for v in vms]
 
 
 def _clean_stale_domain(host, project_id, domain_name):

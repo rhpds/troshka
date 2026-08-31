@@ -885,6 +885,18 @@ class TestBuildVmProgressItems:
             "worker2: pending",
         ]
 
+    def test_disk_phase_items(self):
+        from app.services.deploy_service import _build_disk_progress_items
+
+        vms = [
+            {"node_id": "vm-1", "name": "bastion"},
+            {"node_id": "vm-2", "name": "cp-0"},
+        ]
+        assert _build_disk_progress_items(vms) == [
+            "bastion: creating disks...",
+            "cp-0: creating disks...",
+        ]
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # _deploy_store_bmc_topology
