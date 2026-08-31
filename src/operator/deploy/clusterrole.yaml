@@ -27,6 +27,11 @@ rules:
   - apiGroups: ["route.openshift.io"]
     resources: ["routes"]
     verbs: ["*"]
+  # routes/custom-host — set an explicit spec.host on app-proxy routes
+  # (subresource is not covered by routes: ["*"])
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes/custom-host"]
+    verbs: ["create", "update"]
   - apiGroups: ["snapshot.storage.k8s.io"]
     resources: ["volumesnapshots"]
     verbs: ["*"]

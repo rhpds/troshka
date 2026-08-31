@@ -2015,7 +2015,7 @@ export default function PropertiesPanel() {
                                       style={{ fontSize: 10 }}
                                     />
                                     {(tab.proxyHosts || []).map((h, hi) => (
-                                      <div key={hi} style={{ display: "flex", gap: 4, marginBottom: 4 }}>
+                                      <div key={hi} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
                                         <input
                                           className="props-input"
                                           placeholder="console-openshift-console.apps.ocp.ocp.local"
@@ -2028,11 +2028,11 @@ export default function PropertiesPanel() {
                                             );
                                             updateShowroomTabs(node!.id, next);
                                           }}
-                                          style={{ fontFamily: "monospace", fontSize: 11, flex: 1 }}
+                                          style={{ fontFamily: "monospace", fontSize: 11, flex: 1, minWidth: 0 }}
                                         />
                                         <button
                                           className="props-library-btn"
-                                          style={{ fontSize: 11 }}
+                                          style={{ fontSize: 11, flex: "0 0 auto", width: 28, padding: "0 4px" }}
                                           title="Remove host"
                                           onClick={() => {
                                             const hosts = (tab.proxyHosts || []).filter((_, i) => i !== hi);

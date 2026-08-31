@@ -50,6 +50,11 @@ rules:
   - apiGroups: ["route.openshift.io"]
     resources: ["routes"]
     verbs: ["create", "delete", "get", "list"]
+  # routes/custom-host — set an explicit spec.host on app-proxy routes
+  # (deterministic public hostnames for the embedded OCP console/oauth)
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes/custom-host"]
+    verbs: ["create", "update"]
   # Secrets — cloud-init userdata
   - apiGroups: [""]
     resources: ["secrets"]
