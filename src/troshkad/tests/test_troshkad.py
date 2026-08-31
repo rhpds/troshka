@@ -2586,6 +2586,8 @@ class TestShowroomInfraForward(unittest.TestCase):
                 "inet",
                 "nat",
                 "postrouting",
+                "iifname",
+                "vishowroomh",
                 "oifname",
                 bridge,
                 "masquerade",

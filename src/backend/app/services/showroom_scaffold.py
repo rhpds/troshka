@@ -173,7 +173,8 @@ def app_proxy_internal_hosts(tabs: list[dict[str, Any]]) -> list[str]:
     seen: list[str] = []
     for tab in tabs:
         for host in tab.get("proxyHosts", []):
-            if host not in seen:
+            host = (host or "").strip()
+            if host and host not in seen:
                 seen.append(host)
     return seen
 
@@ -457,6 +458,9 @@ def build_app_proxy_config(internal_hosts: list[str]) -> str:
     the OAuth ``redirect_uri`` query param ``.local`` so the untouched cluster
     OAuthClient still validates.
     """
+    # Skip blank hosts: an empty entry would emit `proxy_pass https://;`, which
+    # nginx rejects and the showroom proxy would fail to start.
+    internal_hosts = [h.strip() for h in internal_hosts if (h or "").strip()]
     # Body rewrites: the app (e.g. the console's window.SERVER_FLAGS) embeds
     # absolute .local host URLs that the browser can't resolve, so rewrite each
     # to its public equivalent. Applied in every block so console pages fix oauth

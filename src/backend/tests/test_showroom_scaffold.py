@@ -534,3 +534,26 @@ def test_derive_apps_domain():
     )
     assert derive_apps_domain("") == ""
     assert derive_apps_domain("nohost") == ""
+
+
+def test_build_app_proxy_config_skips_empty_hosts():
+    """Empty proxy_hosts entries must not emit `proxy_pass https://;` (nginx rejects
+    it and the showroom proxy fails to start)."""
+    from app.services.showroom_scaffold import build_app_proxy_config
+
+    conf = build_app_proxy_config(
+        ["", "  ", "console-openshift-console.apps.ocp.ocp.local"]
+    )
+    assert "proxy_pass https://;" not in conf
+    assert "proxy_pass https://console-openshift-console.apps.ocp.ocp.local;" in conf
+    # only one server block (the valid host)
+    assert conf.count("server {") == 1
+
+
+def test_app_proxy_internal_hosts_skips_empty():
+    from app.services.showroom_scaffold import app_proxy_internal_hosts
+
+    tabs = [{"proxyHosts": ["", "console-openshift-console.apps.ocp.ocp.local", "  "]}]
+    assert app_proxy_internal_hosts(tabs) == [
+        "console-openshift-console.apps.ocp.ocp.local"
+    ]

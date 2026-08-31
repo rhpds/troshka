@@ -11812,6 +11812,8 @@ def _allow_infra_veth_forward(job, proj_ns, veth_host):
                 "inet",
                 "nat",
                 "postrouting",
+                "iifname",
+                veth_host,
                 "oifname",
                 bridge,
                 "masquerade",
