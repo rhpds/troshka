@@ -90,3 +90,26 @@ vms:
     nics:
       - network: cluster
         ip: 10.0.0.12
+
+showroom:
+  enabled: true
+  dns_network: cluster        # resolves *.apps.ocp.ocp.local -> ingress VIP
+  content_repo: https://github.com/rhpds/showroom-troshka-ocp-base.git
+  content_ref: main
+  build_content: true
+  disk_gb: 5
+  tabs:
+    - name: Bastion Terminal
+      type: terminal
+      vm: bastion
+      network: cluster
+    # Name-based proxy: reach the OCP console by hostname (resolved via the
+    # showroom's cluster DNS). nginx sends proxy_host as the Host header + TLS
+    # SNI so the ingress router selects the console route. No vm needed.
+    - name: OCP Console
+      type: proxy
+      network: cluster
+      proxy_host: console-openshift-console.apps.ocp.ocp.local
+      proxy_path: /console/
+      proxy_port: 443
+      proxy_tls: true
