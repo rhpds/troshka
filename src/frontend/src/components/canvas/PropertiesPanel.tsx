@@ -2009,11 +2009,6 @@ export default function PropertiesPanel() {
                                   {/* App-proxy: embed an OAuth-protected app (e.g. OCP console) at public routes */}
                                   {proxyMode === "oauth" && (
                                   <div style={{ marginBottom: 8 }}>
-                                    <LabelWithHint
-                                      label="Embedded app hosts (OAuth)"
-                                      hint="For an OAuth-protected cluster app like the OCP console. List the internal .local hosts — [0] is the iframe target, the rest are login companions (oauth). Deploy publishes each at a public route and the showroom proxies + rewrites redirects so login works embedded. Takes precedence over the path proxy below."
-                                      style={{ fontSize: 10 }}
-                                    />
                                     {(tab.proxyHosts || []).map((h, hi) => (
                                       <div key={hi} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
                                         <input
@@ -2060,7 +2055,7 @@ export default function PropertiesPanel() {
                                           updateShowroomTabs(node!.id, next);
                                         }}
                                       >
-                                        + Add host
+                                        + Add app host
                                       </button>
                                       <button
                                         className="props-library-btn"
@@ -2085,6 +2080,13 @@ export default function PropertiesPanel() {
                                       >
                                         Insert OCP console hosts
                                       </button>
+                                    </div>
+                                    <div style={{ marginTop: 6 }}>
+                                      <LabelWithHint
+                                        label="Embedded app hosts (OAuth)"
+                                        hint="For an OAuth-protected cluster app like the OCP console. List the internal .local hosts — [0] is the iframe target, the rest are login companions (oauth). Deploy publishes each at a public route and the showroom proxies + rewrites redirects so login works embedded."
+                                        style={{ fontSize: 10 }}
+                                      />
                                     </div>
                                   </div>
                                   )}
