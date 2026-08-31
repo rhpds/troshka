@@ -474,16 +474,15 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
               )}
               {ocpHealth.phase === "ready" && (() => {
                 const ocpVms = nodes.filter((n: any) => n.type === "vmNode" && (n.data as any)?.ocpKubeadminPassword);
-                const bastionPw = passwords.find(p => p.label.includes("bastion"));
-                if (ocpVms.length === 0 && bastionPw) {
-                  const pw = bastionPw.value || "";
+                if (ocpVms.length === 0) {
+                  // Don't fall back to the bastion password — it is NOT the
+                  // kubeadmin password. The monitor reads the real one from the
+                  // bastion shortly after the cluster is ready; until then, point
+                  // to where it lives on the bastion.
                   return (
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
                       <span style={{ color: "var(--pf-t--global--text--color--subtle)", minWidth: 0, flex: 1 }}>kubeadmin</span>
-                      <code style={{ fontSize: 11, cursor: "pointer", userSelect: "all" }}
-                        onClick={() => setRevealedPasswords((prev) => { const s = new Set(prev); if (s.has("kubeadmin")) s.delete("kubeadmin"); else s.add("kubeadmin"); return s; })}
-                      >{revealedPasswords.has("kubeadmin") ? pw : "••••••"}</code>
-                      <span style={{ cursor: "pointer", fontSize: 10, opacity: 0.6 }} onClick={() => navigator.clipboard.writeText(pw)} title="Copy">Copy</span>
+                      <code style={{ fontSize: 10, opacity: 0.7 }}>~/ocp-install/auth/kubeadmin-password</code>
                     </div>
                   );
                 }

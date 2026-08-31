@@ -5706,6 +5706,41 @@ def _extract_ocp_kubeadmin_password(nodes, vm_id=None):
     return _first_kubeadmin_password(nodes, lambda n: n.get("type") == "vmNode")
 
 
+def _persist_ocp_kubeadmin_password(project_id, vm_id, pw):
+    """Store the installer-generated kubeadmin password on the VM node so the UI
+    shows the real value. Recert sets ocpKubeadminPassword directly; the Agent
+    Installer generates it on the bastion, so the monitor reads it back here."""
+    try:
+        from sqlalchemy.orm.attributes import flag_modified
+
+        from app.core.database import SessionLocal
+        from app.models.project import Project
+
+        db = SessionLocal()
+        try:
+            p = db.query(Project).filter_by(id=project_id).first()
+            if not p:
+                return
+            changed = False
+            for attr in ("deployed_topology", "topology"):
+                topo = getattr(p, attr, None)
+                if not topo:
+                    continue
+                for n in topo.get("nodes", []):
+                    if n.get("id") == vm_id and n.get("type") == "vmNode":
+                        data = n.setdefault("data", {})
+                        if data.get("ocpKubeadminPassword") != pw:
+                            data["ocpKubeadminPassword"] = pw
+                            flag_modified(p, attr)
+                            changed = True
+            if changed:
+                db.commit()
+        finally:
+            db.close()
+    except Exception:
+        logger.exception("Failed to persist kubeadmin password for %s", project_id[:8])
+
+
 def _write_bastion_kubeadmin_password(
     host, project_id, bastion_ip, ssh_password, kubeadmin_pw
 ):
@@ -5955,6 +5990,18 @@ def _configure_bastion_and_cleanup(
             _write_bastion_kubeadmin_password(
                 host, project_id, bastion_ip, password, kubeadmin_pw
             )
+        elif vm_id:
+            # Agent Installer generated the kubeadmin password on the bastion;
+            # read it back so the UI shows the real value (not the bastion pw).
+            read_pw = _oc(
+                "cat /home/cloud-user/ocp-install/auth/kubeadmin-password "
+                "2>/dev/null",
+                timeout=10,
+            )
+            read_pw = (read_pw or "").strip()
+            if read_pw:
+                _push(status_phase, "reading kubeadmin password from bastion")
+                _persist_ocp_kubeadmin_password(project_id, vm_id, read_pw)
 
         _push(status_phase, "deploying browser autologin script")
         _ensure_bastion_geckodriver(host, project_id, bastion_ip, password)
