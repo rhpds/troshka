@@ -158,6 +158,7 @@ vms:
     serial_exec: junos
     tags:
       AnsibleGroup: routers,juniper_junos
+    legacy_root_bus: true   # KubeVirt q35: vSRX (FreeBSD) only enumerates root PCI bus (00:03+)
     disks:
       - size_gb: 20
         bus: sata

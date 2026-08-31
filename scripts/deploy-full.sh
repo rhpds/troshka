@@ -55,6 +55,24 @@ OPERATOR_KUBECONFIGS+=("$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kube
 
 if [ "$SKIP_OPERATORS" = false ]; then
   echo ""
+  echo "=== Step 3b: Apply operator CRDs ==="
+  # Operator images are promoted above, but CRD schema changes (new spec fields)
+  # only reach a cluster when the CRDs are applied. Do this before the operator
+  # restart so the new reconcile logic sees the updated schema (unknown fields are
+  # otherwise pruned on write). Applying CRDs is additive/idempotent.
+  for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
+    cluster=$(basename "$kc" .kubeconfig | cut -d. -f1)
+    printf "  %s: " "$cluster"
+    if oc apply -f src/operator/crds/ --kubeconfig="$kc" >/dev/null 2>&1; then
+      echo "applied"
+    else
+      echo "FAILED"
+    fi
+  done
+fi
+
+if [ "$SKIP_OPERATORS" = false ]; then
+  echo ""
   echo "=== Step 4: Restart stale operators ==="
 
   # Get the expected digest from the freshly-promoted production tag
