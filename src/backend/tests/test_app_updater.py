@@ -362,24 +362,21 @@ def test_apply_update_dev_spawns_restart(monkeypatch, tmp_path):
     monkeypatch.setattr(app_updater, "_RESTART_LOCK", tmp_path / "restart.lock")
     calls = {}
 
-    class FakePopen:
-        def __init__(
-            self,
-            args,
-            cwd=None,
-            start_new_session=False,
-            stdout=None,
-            stderr=None,
-            close_fds=False,
-        ):
-            calls["args"] = args
-            calls["cwd"] = cwd
-            calls["detached"] = start_new_session
+    def fake_posix_spawn(path, argv, env, file_actions=None, setsid=False):
+        calls["path"] = path
+        calls["args"] = argv
+        calls["detached"] = setsid
+        return 4242
 
-    monkeypatch.setattr(app_updater.subprocess, "Popen", FakePopen)
+    # Production prefers os.posix_spawn (avoids fork() abort on macOS), falling
+    # back to subprocess.Popen only when posix_spawn is unavailable.
+    monkeypatch.setattr(app_updater.os, "posix_spawn", fake_posix_spawn)
+    monkeypatch.setattr(app_updater.os, "open", lambda *a, **k: 3)
+    monkeypatch.setattr(app_updater.os, "close", lambda fd: None)
     result = app_updater.apply_update(initiated_by="admin@test", client_ip="127.0.0.1")
     assert result == {"status": "restarting"}
-    assert calls["args"] == ["./dev-services.sh", "restart", "backend"]
+    assert calls["args"][0].endswith("dev-services.sh")
+    assert calls["args"][1:] == ["restart", "backend"]
     assert calls["detached"] is True
 
 

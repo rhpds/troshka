@@ -1196,12 +1196,21 @@ class TestCapturePatternDisks:
         # Set some progress that should be cleaned up
         _set_capture_progress("pat-cleanup", {"step": "test"})
 
+        def _finalize_capture(*args, **kwargs):
+            # A successful capture ends with finalize setting step="complete";
+            # only then does the finally block clear progress.
+            _set_capture_progress("pat-cleanup", {"step": "complete"})
+            return True
+
         with patch(
             "app.services.pattern_service._get_pattern_buffer", return_value=None
-        ), patch("app.services.pattern_service._run_capture_pipeline"):
+        ), patch(
+            "app.services.pattern_service._run_capture_pipeline",
+            side_effect=_finalize_capture,
+        ):
             capture_pattern_disks("pat-cleanup", "proj-1")
 
-        # Progress must be cleaned up in finally block
+        # Progress must be cleaned up in finally block after a successful capture
         assert get_capture_progress("pat-cleanup") is None
 
     @patch("app.services.pattern_service.SessionLocal")

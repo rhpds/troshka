@@ -764,7 +764,7 @@ class TestBuildNbdVmTasks:
         }
         vm_nodes = {"vm-1234abcd": {"id": "vm-1234abcd", "data": {"label": "master"}}}
         tasks = _build_nbd_vm_tasks(
-            vm_to_disks, vm_nodes, "proj-1234", "pat-5678", None
+            vm_to_disks, vm_nodes, "proj-1234", "pat-5678", None, {}
         )
         assert len(tasks) == 1
         task = tasks[0]
@@ -791,7 +791,7 @@ class TestBuildNbdVmTasks:
             ]
         }
         vm_nodes = {"vm-1": {"id": "vm-1", "data": {"label": "worker"}}}
-        tasks = _build_nbd_vm_tasks(vm_to_disks, vm_nodes, "proj", "pat", None)
+        tasks = _build_nbd_vm_tasks(vm_to_disks, vm_nodes, "proj", "pat", None, {})
         assert tasks == []
 
     @patch("app.services.s3_storage._bucket", return_value="bucket")
@@ -806,7 +806,7 @@ class TestBuildNbdVmTasks:
             ]
         }
         vm_nodes = {"vm-1": {"id": "vm-1", "data": {"label": "sno"}}}
-        tasks = _build_nbd_vm_tasks(vm_to_disks, vm_nodes, "proj", "pat", None)
+        tasks = _build_nbd_vm_tasks(vm_to_disks, vm_nodes, "proj", "pat", None, {})
         assert len(tasks) == 1
         assert len(tasks[0]["disks_params"]) == 1
         assert tasks[0]["disk_metadata"][0]["disk_id"] == "d-qcow"
@@ -823,7 +823,7 @@ class TestBuildNbdVmTasks:
         }
         # VM node with no data.label
         vm_nodes = {"vm-longid12": {"id": "vm-longid12", "data": {}}}
-        tasks = _build_nbd_vm_tasks(vm_to_disks, vm_nodes, "proj", "pat", None)
+        tasks = _build_nbd_vm_tasks(vm_to_disks, vm_nodes, "proj", "pat", None, {})
         assert tasks[0]["vm_name"] == "vm-longi"  # id[:8]
 
     @patch("app.services.s3_storage._bucket", return_value="bucket")
@@ -833,7 +833,7 @@ class TestBuildNbdVmTasks:
 
         vm_to_disks = {"vm-1": [{"id": "d1", "data": {}}]}  # no format key
         vm_nodes = {"vm-1": {"id": "vm-1", "data": {"label": "test"}}}
-        tasks = _build_nbd_vm_tasks(vm_to_disks, vm_nodes, "proj", "pat", None)
+        tasks = _build_nbd_vm_tasks(vm_to_disks, vm_nodes, "proj", "pat", None, {})
         assert len(tasks) == 1
         assert tasks[0]["disk_metadata"][0]["format"] == "qcow2"
 

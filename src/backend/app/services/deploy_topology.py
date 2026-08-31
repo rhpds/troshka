@@ -908,7 +908,13 @@ def _normalize_disk_port_id(handle: str) -> str | None:
 
 
 def _extract_nic_id(handle: str) -> str:
-    """Extract NIC ID from edge handle like 'nic-nic-UUID-direction'."""
+    """Extract NIC ID from edge handle 'nic-{nicId}-{direction}'.
+
+    Handles are built as f"nic-{nic.id}-{dir}" (nic.id is itself "nic-<uuid>"),
+    so stripping the leading "nic-" prefix and the trailing direction suffix
+    yields the original nic id. Do not re-prepend "nic-": that corrupts ids
+    that do not already start with the prefix.
+    """
     if not handle or "nic-" not in handle:
         return ""
     for suffix in ("-top", "-bottom", "-left", "-right"):
@@ -917,9 +923,7 @@ def _extract_nic_id(handle: str) -> str:
             break
     if handle.startswith("nic-"):
         handle = handle[4:]
-    if handle.startswith("nic-"):
-        return handle
-    return f"nic-{handle}" if handle else ""
+    return handle
 
 
 def _extract_disk_edge(edge: dict, vm_node_id: str) -> tuple[str | None, str | None]:

@@ -3203,11 +3203,12 @@ class TestVmOperationEndpoints:
         assert resp.status_code == 200
         assert resp.json()["success"] is False
 
+    @patch("app.api.projects.troshkad_get_vm_console_info", return_value={})
     @patch("app.services.console_dns.sign_console_jwt", return_value="test-jwt")
     @patch("app.api.projects.troshkad_get_vnc_port", return_value=5900)
     @patch("app.api.projects._domain_name", return_value="troshka-p-vm")
     @patch("app.api.projects._get_project_and_host")
-    def test_get_vm_console(self, mock_gph, mock_dom, mock_vnc, mock_jwt):
+    def test_get_vm_console(self, mock_gph, mock_dom, mock_vnc, mock_jwt, mock_info):
         project = _ep_project(state="active", host_id="host-1")
         host = _ep_host()
         mock_gph.return_value = (project, host)
@@ -3216,10 +3217,11 @@ class TestVmOperationEndpoints:
         assert resp.status_code == 200
         assert resp.json()["ws_url"] == "wss://console.example.com/ws/test-jwt"
 
+    @patch("app.api.projects.troshkad_get_vm_console_info", return_value={})
     @patch("app.api.projects.troshkad_get_vnc_port", return_value=None)
     @patch("app.api.projects._domain_name", return_value="troshka-p-vm")
     @patch("app.api.projects._get_project_and_host")
-    def test_get_vm_console_no_vnc(self, mock_gph, mock_dom, mock_vnc):
+    def test_get_vm_console_no_vnc(self, mock_gph, mock_dom, mock_vnc, mock_info):
         project = _ep_project(state="active", host_id="host-1")
         host = _ep_host()
         mock_gph.return_value = (project, host)
@@ -3228,10 +3230,13 @@ class TestVmOperationEndpoints:
         assert resp.status_code == 200
         assert "error" in resp.json()
 
+    @patch("app.api.projects.troshkad_get_vm_console_info", return_value={})
     @patch("app.api.projects.troshkad_get_vnc_port", return_value=5900)
     @patch("app.api.projects._domain_name", return_value="troshka-p-vm")
     @patch("app.api.projects._get_project_and_host")
-    def test_get_vm_console_no_console_domain(self, mock_gph, mock_dom, mock_vnc):
+    def test_get_vm_console_no_console_domain(
+        self, mock_gph, mock_dom, mock_vnc, mock_info
+    ):
         project = _ep_project(state="active", host_id="host-1")
         host = _ep_host(console_domain=None)
         mock_gph.return_value = (project, host)

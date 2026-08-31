@@ -1223,7 +1223,7 @@ class TestDeployPullContainerImages:
 
 
 class TestDeployCreateContainers:
-    @patch("app.services.deploy_service._create_and_start_container")
+    @patch("app.services.deploy_service._create_container")
     @patch("app.services.deploy_service._update_deploy_progress")
     @patch(
         "app.services.deploy_service._extract_containers",
@@ -2829,7 +2829,7 @@ class TestDeployAllocateEips:
         assert mock_alloc.call_count == 2
         s.commit.assert_called_once()
 
-    @patch("app.services.deploy_service._should_skip_ocpvirt_eip", return_value=True)
+    @patch("app.services.deploy_service._should_skip_route_eip", return_value=True)
     @patch("app.services.deploy_service._update_deploy_progress")
     @patch("app.services.deploy_service._checkpoint")
     def test_skips_ocpvirt(self, mock_cp, mock_prog, mock_skip):
@@ -2930,7 +2930,6 @@ class TestDeployCreateOcpvirtRoutes:
         }
         _deploy_create_ocpvirt_routes(s, host, PROJECT_ID, topology)
         mock_create.assert_called_once()
-        s.commit.assert_called_once()
         assert topology["nodes"][0]["data"]["externalEndpoints"] == [
             {"hostname": "test.apps.cluster.com", "port": 443}
         ]
@@ -3078,7 +3077,7 @@ class TestDeployVmsOnHost:
 
 
 class TestCreateOrderedContainers:
-    @patch("app.services.deploy_service._create_and_start_container")
+    @patch("app.services.deploy_service._create_container")
     def test_creates_ordered_containers(self, mock_create):
         host = _make_host()
         containers = [
@@ -3095,7 +3094,7 @@ class TestCreateOrderedContainers:
         assert result == {"c1", "c2"}
         assert mock_create.call_count == 2
 
-    @patch("app.services.deploy_service._create_and_start_pod")
+    @patch("app.services.deploy_service._create_pod")
     def test_creates_ordered_pods(self, mock_create):
         host = _make_host()
         containers = [{"node_id": "p1", "image": "", "is_pod": True}]

@@ -672,9 +672,17 @@ def test_pod_import_creates_pod_node():
         if e.get("target") == pod["id"]
         and (e.get("targetHandle") or "").startswith("nic-")
     ]
+    net_node = next(n for n in topo["nodes"] if n.get("type") == "networkNode")
     assert len(net_edges) == 1
-    assert net_edges[0]["sourceHandle"] == "bottom"
-    assert net_edges[0]["targetHandle"].endswith("-top")
+    # generate_topology_from_template runs auto_layout, which orients the edge
+    # handles by final node position, so assert the wiring (network -> pod nic)
+    # rather than a fixed top/bottom side.
+    assert net_edges[0]["source"] == net_node["id"]
+    assert net_edges[0]["targetHandle"].startswith(
+        f"nic-{pod['data']['nics'][0]['id']}"
+    )
+    assert net_edges[0]["sourceHandle"] in ("top", "bottom")
+    assert net_edges[0]["targetHandle"].endswith(("-top", "-bottom"))
 
 
 def test_pod_export_round_trip():

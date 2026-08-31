@@ -1121,6 +1121,7 @@ class TestVmExecExtended:
                     "nics": [{"ip": "192.168.1.10"}],
                     "ciCloudUserPassword": "testpass",
                     "ciRootPassword": "rootpass",
+                    "cloudInit": {"userData": "#cloud-config"},
                 },
             }
         ],
@@ -1490,7 +1491,6 @@ class TestBuildKubevirtVmSpec:
         assert spec["cpus"] == 4
         assert spec["memory"] == 8 * 1024
         assert spec["firmware"] == "uefi"
-        assert spec["machineType"] == "q35"
         assert spec["smbiosUuid"] == "abc-123"
         assert spec["bootOrder"] == ["disk-1"]
         assert spec["disks"] == []

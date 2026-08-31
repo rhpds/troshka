@@ -2229,9 +2229,10 @@ class TestOcpBuildProgressItems:
 
 
 class TestFinalizeKubevirtDeploy:
+    @patch("app.services.deploy_service._allocate_kubevirt_eips")
     @patch("app.services.deploy_service._delete_deploy_progress")
     @patch("app.services.ws_pubsub.notify_project")
-    def test_sets_active_state(self, mock_notify, mock_del):
+    def test_sets_active_state(self, mock_notify, mock_del, mock_eip):
         from app.services.deploy_service import _finalize_kubevirt_deploy
 
         project = MagicMock()
@@ -2242,13 +2243,15 @@ class TestFinalizeKubevirtDeploy:
         assert project.state == "active"
         assert project.deploy_error is None
         db.commit.assert_called_once()
-        mock_notify.assert_called_once()
-        msg = mock_notify.call_args[0][1]
-        assert msg["state"] == "active"
+        # finalize emits a topology-update then the project-state notification.
+        mock_notify.assert_any_call(
+            "proj-1", {"type": "project-state", "state": "active"}
+        )
 
+    @patch("app.services.deploy_service._allocate_kubevirt_eips")
     @patch("app.services.deploy_service._delete_deploy_progress")
     @patch("app.services.ws_pubsub.notify_project")
-    def test_strips_resolved_s3_path(self, mock_notify, mock_del):
+    def test_strips_resolved_s3_path(self, mock_notify, mock_del, mock_eip):
         from app.services.deploy_service import _finalize_kubevirt_deploy
 
         project = MagicMock()
@@ -2271,9 +2274,10 @@ class TestFinalizeKubevirtDeploy:
             assert "resolvedS3Path" not in node["data"]
             assert "presignedUrl" not in node["data"]
 
+    @patch("app.services.deploy_service._allocate_kubevirt_eips")
     @patch("app.services.deploy_service._delete_deploy_progress")
     @patch("app.services.ws_pubsub.notify_project")
-    def test_ocp_monitor_enabled(self, mock_notify, mock_del):
+    def test_ocp_monitor_enabled(self, mock_notify, mock_del, mock_eip):
         from app.services.deploy_service import _finalize_kubevirt_deploy
 
         project = MagicMock()
@@ -9639,12 +9643,13 @@ class TestStartVmsViaTroshkad:
 
 
 class TestFinalizeKubevirtDeployExtended:
+    @patch("app.services.deploy_service._allocate_kubevirt_eips")
     @patch("app.services.deploy_service._delete_deploy_progress")
     @patch("app.services.ws_pubsub.notify_project")
     @patch("app.services.deploy_service._extract_bmc_config", return_value=None)
     @patch("app.services.deploy_service._has_ocp_monitor", return_value=False)
     def test_basic_finalize_no_bmc_no_ocp(
-        self, mock_ocp, mock_bmc, mock_notify, mock_del
+        self, mock_ocp, mock_bmc, mock_notify, mock_del, mock_eip
     ):
         from app.services.deploy_service import _finalize_kubevirt_deploy
 
@@ -9663,18 +9668,16 @@ class TestFinalizeKubevirtDeployExtended:
         assert project.deploy_progress is None
         db.commit.assert_called()
         mock_del.assert_called_once_with(pid)
-        mock_notify.assert_called_once()
-        call_args = mock_notify.call_args[0]
-        assert call_args[0] == pid
-        assert call_args[1]["type"] == "project-state"
-        assert call_args[1]["state"] == "active"
+        # finalize emits a topology-update then the project-state notification.
+        mock_notify.assert_any_call(pid, {"type": "project-state", "state": "active"})
 
+    @patch("app.services.deploy_service._allocate_kubevirt_eips")
     @patch("app.services.deploy_service._delete_deploy_progress")
     @patch("app.services.ws_pubsub.notify_project")
     @patch("app.services.deploy_service._has_ocp_monitor", return_value=True)
     @patch("app.services.deploy_service._extract_bmc_config")
     def test_finalize_with_bmc_and_ocp_monitor(
-        self, mock_bmc, mock_ocp, mock_notify, mock_del
+        self, mock_bmc, mock_ocp, mock_notify, mock_del, mock_eip
     ):
         from app.services.deploy_service import _finalize_kubevirt_deploy
 
@@ -9704,12 +9707,13 @@ class TestFinalizeKubevirtDeployExtended:
         assert "redfish_url" in vm_bmc
         assert "ipmi_address" in vm_bmc
 
+    @patch("app.services.deploy_service._allocate_kubevirt_eips")
     @patch("app.services.deploy_service._delete_deploy_progress")
     @patch("app.services.ws_pubsub.notify_project")
     @patch("app.services.deploy_service._has_ocp_monitor", return_value=False)
     @patch("app.services.deploy_service._extract_bmc_config", return_value=None)
     def test_finalize_cleans_s3_from_topology(
-        self, mock_bmc, mock_ocp, mock_notify, mock_del
+        self, mock_bmc, mock_ocp, mock_notify, mock_del, mock_eip
     ):
         from app.services.deploy_service import _finalize_kubevirt_deploy
 

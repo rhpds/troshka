@@ -4,6 +4,7 @@ disk-change detection, deploy-related helpers, and kubevirt reconfigure function
 
 from unittest.mock import ANY, MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.core.auth import create_jwt, hash_password
@@ -922,14 +923,15 @@ class TestStartVmIfNeeded:
         mock_start.assert_called_once()
 
     @patch("app.api.projects.start_job")
-    def test_swallows_troshkad_error(self, mock_start):
+    def test_propagates_troshkad_error(self, mock_start):
         from app.api.projects import _start_vm_if_needed
         from app.services.troshkad_client import TroshkadError
 
         mock_start.side_effect = TroshkadError("connection refused")
         vm_node = {"data": {"powerOnAtDeploy": True}}
-        # Should not raise
-        _start_vm_if_needed(MagicMock(), "dom-1", True, vm_node)
+        # Start failures must propagate so a redeploy fails visibly.
+        with pytest.raises(TroshkadError):
+            _start_vm_if_needed(MagicMock(), "dom-1", True, vm_node)
 
 
 # ---------------------------------------------------------------------------
@@ -1383,13 +1385,25 @@ class TestApplyKubevirtVmChanges:
 
 
 class TestDoReconfigureKubevirt:
+    @patch("app.services.deploy_service._resolve_disk_s3_paths")
+    @patch(
+        "app.services.deploy_service._setup_kubevirt_s3_clients",
+        return_value=(None, None, MagicMock(), "bucket", {}, None, "", {}),
+    )
     @patch("app.api.projects._finalize_kubevirt_reconfigure")
     @patch("app.api.projects._sync_eips_for_reconfigure")
     @patch("app.api.projects._wait_kubevirt_vms_ready", return_value=None)
     @patch("app.api.projects._apply_kubevirt_vm_changes")
     @patch("app.api.projects._find_changed_kubevirt_vms", return_value=[])
     def test_happy_path(
-        self, mock_find, mock_apply, mock_wait, mock_eips, mock_finalize
+        self,
+        mock_find,
+        mock_apply,
+        mock_wait,
+        mock_eips,
+        mock_finalize,
+        mock_s3,
+        mock_resolve,
     ):
         from app.api.projects import _do_reconfigure_kubevirt
 

@@ -37,7 +37,10 @@ _host = Host(
     total_ram_mb=65536,
     used_vcpus=10,
     used_ram_mb=40960,
-    agent_status="connected",
+    # Disconnected so foreign place_project()/_prepare_hosts calls elsewhere in
+    # the full suite don't select this shared host and reconcile its used_vcpus
+    # away from the drifted 10 that test_sync_capacity_corrects_drift asserts.
+    agent_status="disconnected",
     storage_size_gb=500,
 )
 _db.add(_host)
