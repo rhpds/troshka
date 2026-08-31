@@ -30,7 +30,7 @@ test-operator:
   script:
     - cd src/operator
     - pip install --upgrade pip
-    - pip install kubernetes kopf pytest pytest-cov
+    - pip install kubernetes kopf pytest pytest-cov pytest-timeout
     - pytest tests/ --cov-config=.coveragerc --cov --cov-report=xml:../../operator-coverage.xml -v || true
     - cd ../..
     - sed -i 's|<source>handlers</source>|<source>src/operator/handlers</source>|' operator-coverage.xml || true

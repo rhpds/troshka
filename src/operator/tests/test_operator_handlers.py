@@ -3541,9 +3541,21 @@ class TestEnsureGoldenPvc:
     @patch("handlers.vm._wait_for_datavolume")
     def test_existing_pvc_returns_name(self, mock_wait):
         from handlers.vm import _ensure_golden_pvc
+        from helpers.kubevirt import s3_import_url
 
         custom_api = MagicMock()
         core_api = MagicMock()
+        # Matching golden DataVolume already exists -> early return, no wait.
+        custom_api.get_namespaced_custom_object.return_value = {
+            "spec": {
+                "source": {
+                    "s3": {
+                        "url": s3_import_url("library/abc.qcow2", {"bucket": "b"}),
+                        "secretRef": "s3-credentials",  # pragma: allowlist secret
+                    }
+                }
+            }
+        }
 
         result = asyncio.run(
             _ensure_golden_pvc(
@@ -6325,11 +6337,21 @@ class TestEnsureGoldenPvcExtended:
 
     def test_returns_existing_pvc(self):
         from handlers.vm import _ensure_golden_pvc
+        from helpers.kubevirt import s3_import_url
 
         custom_api = MagicMock()
         core_api = MagicMock()
-        # PVC already exists
-        core_api.read_namespaced_persistent_volume_claim.return_value = MagicMock()
+        # Matching golden DataVolume already exists -> return its name, no import.
+        custom_api.get_namespaced_custom_object.return_value = {
+            "spec": {
+                "source": {
+                    "s3": {
+                        "url": s3_import_url("lib/x.qcow2", {}),
+                        "secretRef": "s3-credentials",  # pragma: allowlist secret
+                    }
+                }
+            }
+        }
 
         result = asyncio.run(
             _ensure_golden_pvc(custom_api, core_api, "lib/x.qcow2", 20, {})
@@ -6417,25 +6439,36 @@ class TestEnsureGoldenPvcExtended:
 
         asyncio.run(_ensure_golden_pvc(custom_api, core_api, "lib/a.qcow2", 20, {}))
 
-    def test_pvc_read_non_404_raises(self):
+    def test_existing_dv_read_non_404_raises(self):
         from handlers.vm import _ensure_golden_pvc
         from kubernetes.client import ApiException
 
         custom_api = MagicMock()
         core_api = MagicMock()
-        core_api.read_namespaced_persistent_volume_claim.side_effect = ApiException(
-            status=500
-        )
+        # Reading the existing golden DataVolume errors with a non-404 -> propagate.
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=500)
 
         with pytest.raises(ApiException):
             asyncio.run(_ensure_golden_pvc(custom_api, core_api, "lib/b.qcow2", 20, {}))
 
     def test_default_secret_name_when_none(self):
         from handlers.vm import _ensure_golden_pvc
+        from helpers.kubevirt import s3_import_url
 
         custom_api = MagicMock()
         core_api = MagicMock()
-        core_api.read_namespaced_persistent_volume_claim.return_value = MagicMock()
+        # secret_name=None defaults to "s3-credentials"; a matching DV lets us
+        # exercise that branch without falling into the import/wait path.
+        custom_api.get_namespaced_custom_object.return_value = {
+            "spec": {
+                "source": {
+                    "s3": {
+                        "url": s3_import_url("lib/c.qcow2", {}),
+                        "secretRef": "s3-credentials",  # pragma: allowlist secret
+                    }
+                }
+            }
+        }
 
         asyncio.run(
             _ensure_golden_pvc(
@@ -7729,9 +7762,8 @@ class TestCreateGoldenPvcForDiskNon404:
 
         custom_api = MagicMock()
         core_api = MagicMock()
-        core_api.read_namespaced_persistent_volume_claim.side_effect = ApiException(
-            status=500
-        )
+        # Reading the existing golden DataVolume errors with a non-404 -> propagate.
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=500)
 
         disk = {"libraryImage": {"s3Path": "library/img.qcow2"}, "sizeGb": 20}
 
