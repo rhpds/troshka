@@ -1048,3 +1048,45 @@ class TestParseConsoleOutput:
         body, code = _parse_console_output(raw)
         assert "partial" in body
         assert code is None
+
+
+class TestKubevirtWsPodExec:
+    """_kubevirt_ws_pod_exec: retry/guard for the 'NoneType'.decode stream crash."""
+
+    def test_returns_stream_output(self):
+        from app.services.providers.kubevirt import _kubevirt_ws_pod_exec
+
+        core = MagicMock()
+        with patch("kubernetes.stream.stream", return_value="hello\n"):
+            out = _kubevirt_ws_pod_exec(core, "pod", "ns", ["echo", "hi"], 30)
+        assert out == "hello\n"
+
+    def test_none_response_returns_empty_string(self):
+        from app.services.providers.kubevirt import _kubevirt_ws_pod_exec
+
+        core = MagicMock()
+        with patch("kubernetes.stream.stream", return_value=None):
+            out = _kubevirt_ws_pod_exec(core, "pod", "ns", ["x"], 30)
+        assert out == ""
+
+    def test_retries_on_nonetype_decode_then_succeeds(self):
+        from app.services.providers.kubevirt import _kubevirt_ws_pod_exec
+
+        core = MagicMock()
+        err = AttributeError("'NoneType' object has no attribute 'decode'")
+        with patch("time.sleep"), patch(
+            "kubernetes.stream.stream", side_effect=[err, "ok"]
+        ):
+            out = _kubevirt_ws_pod_exec(core, "pod", "ns", ["x"], 30, attempts=3)
+        assert out == "ok"
+
+    def test_raises_clean_error_after_all_attempts_fail(self):
+        import pytest
+
+        from app.services.providers.kubevirt import _kubevirt_ws_pod_exec
+
+        core = MagicMock()
+        err = AttributeError("'NoneType' object has no attribute 'decode'")
+        with patch("time.sleep"), patch("kubernetes.stream.stream", side_effect=err):
+            with pytest.raises(RuntimeError, match="websocket closed or idle timeout"):
+                _kubevirt_ws_pod_exec(core, "pod", "ns", ["x"], 30, attempts=2)

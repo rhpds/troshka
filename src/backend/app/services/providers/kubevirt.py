@@ -1555,8 +1555,6 @@ def kubevirt_exec_ssh(
             "No password for SSH exec (key auth not supported on KubeVirt)"
         )
 
-    from kubernetes.stream import stream as k8s_stream
-
     ssh_cmd = [
         "sshpass",
         "-p",
@@ -1573,17 +1571,8 @@ def kubevirt_exec_ssh(
         f"{username}@{vm_ip}",
         command,
     ]
-    resp = k8s_stream(
-        core_v1.connect_get_namespaced_pod_exec,
-        exec_pod.metadata.name,
-        namespace,
-        command=ssh_cmd,
-        stderr=True,
-        stdout=True,
-        stdin=False,
-        tty=False,
-        _preload_content=True,
-        _request_timeout=timeout + 10,
+    resp = _kubevirt_ws_pod_exec(
+        core_v1, exec_pod.metadata.name, namespace, ssh_cmd, timeout
     )
     return {
         "output": resp,
@@ -1591,6 +1580,46 @@ def kubevirt_exec_ssh(
         "exit_code": 0,
         "method": "ssh",
     }
+
+
+def _kubevirt_ws_pod_exec(core_v1, pod_name, namespace, command, timeout, attempts=3):
+    """Run a pod-exec websocket stream, tolerating transient empty responses.
+
+    k8s_stream(_preload_content=True) raises AttributeError("'NoneType' object has
+    no attribute 'decode'") when the websocket yields no body — e.g. the API
+    server closed the stream or the exec outlived its idle timeout (seen when a
+    long-running SSH wait_for holds the exec open). Retry briefly, then surface a
+    clean error instead of the confusing NoneType crash. Returns "" if the stream
+    legitimately produced no output.
+    """
+    import time
+
+    from kubernetes.stream import stream as k8s_stream
+
+    last_err = None
+    for attempt in range(attempts):
+        try:
+            resp = k8s_stream(
+                core_v1.connect_get_namespaced_pod_exec,
+                pod_name,
+                namespace,
+                command=command,
+                stderr=True,
+                stdout=True,
+                stdin=False,
+                tty=False,
+                _preload_content=True,
+                _request_timeout=timeout + 10,
+            )
+            return resp or ""
+        except AttributeError as e:
+            # 'NoneType' object has no attribute 'decode' — empty/closed stream.
+            last_err = e
+            if attempt + 1 < attempts:
+                time.sleep(1 + attempt)
+    raise RuntimeError(
+        "pod exec stream returned no data (websocket closed or idle timeout)"
+    ) from last_err
 
 
 def kubevirt_upload_to_vm(

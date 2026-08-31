@@ -204,9 +204,7 @@ async def _ensure_golden_pvc(
         if golden_import_matches(existing, s3_path, s3_config, secret_name):
             logger.info(f"Golden PVC {pvc_name} already exists")
             return pvc_name
-        logger.warning(
-            f"Golden import {pvc_name} has wrong S3 source, recreating"
-        )
+        logger.warning(f"Golden import {pvc_name} has wrong S3 source, recreating")
         delete_golden_import(custom_api, core_api, CACHE_NAMESPACE, pvc_name)
     except client.ApiException as e:
         if e.status != 404:
@@ -326,6 +324,25 @@ def _create_clone_datavolume(custom_api, namespace, pvc_name, clone_dv):
                 raise
 
 
+def _golden_requested_gb(core_api, golden_name):
+    """Return the golden PVC's requested storage in GiB (0 if unavailable).
+
+    Passed to build_clone_datavolume so the clone request is floored at the
+    source size; otherwise CDI rejects the clone with CloneValidationFailed when
+    the golden was cached under a larger size_gb than the current disk.
+    """
+    try:
+        golden = core_api.read_namespaced_persistent_volume_claim(
+            name=golden_name, namespace=CACHE_NAMESPACE
+        )
+        requested = golden.spec.resources.requests.get("storage", "")
+        if requested:
+            return int(str(requested).rstrip("Gi"))
+    except Exception:
+        pass
+    return 0
+
+
 async def _provision_disk_pvcs(
     spec,
     name,
@@ -356,7 +373,12 @@ async def _provision_disk_pvcs(
                 secret_name=secret,
             )
             clone_dv = build_clone_datavolume(
-                pvc_name, namespace, golden_name, CACHE_NAMESPACE, size_gb
+                pvc_name,
+                namespace,
+                golden_name,
+                CACHE_NAMESPACE,
+                size_gb,
+                source_size_gb=_golden_requested_gb(core_api, golden_name),
             )
             clone_dv["metadata"]["ownerReferences"] = [owner_ref(body)]
             _create_clone_datavolume(custom_api, namespace, pvc_name, clone_dv)
@@ -423,17 +445,13 @@ async def _provision_cdrom(
         golden_name = await _ensure_golden_pvc(
             custom_api, core_api, cdrom_s3, 10, cdrom_cfg, secret_name=cdrom_secret
         )
-        cdrom_size = 10
-        try:
-            golden_pvc = core_api.read_namespaced_persistent_volume_claim(
-                name=golden_name, namespace=CACHE_NAMESPACE
-            )
-            golden_storage = golden_pvc.spec.resources.requests.get("storage", "10Gi")
-            cdrom_size = max(cdrom_size, int(golden_storage.rstrip("Gi")))
-        except Exception:
-            pass
         clone_dv = build_clone_datavolume(
-            cdrom_pvc, namespace, golden_name, CACHE_NAMESPACE, cdrom_size
+            cdrom_pvc,
+            namespace,
+            golden_name,
+            CACHE_NAMESPACE,
+            10,
+            source_size_gb=_golden_requested_gb(core_api, golden_name),
         )
         clone_dv["metadata"]["ownerReferences"] = [owner_ref(body)]
         try:
@@ -981,7 +999,12 @@ async def _clone_s3_disk(
         secret_name=secret,
     )
     clone_dv = build_clone_datavolume(
-        pvc_name, namespace, golden_name, CACHE_NAMESPACE, size_gb
+        pvc_name,
+        namespace,
+        golden_name,
+        CACHE_NAMESPACE,
+        size_gb,
+        source_size_gb=_golden_requested_gb(core_api, golden_name),
     )
     clone_dv["metadata"]["ownerReferences"] = [owner_ref(body)]
     try:
@@ -1130,9 +1153,7 @@ def _resize_existing_pvcs(old_disks, new_disks, name, namespace, core_api):
                 }
             },
         )
-        logger.info(
-            f"Expanded PVC {pvc_name} from {current_qty} to {new_size}Gi"
-        )
+        logger.info(f"Expanded PVC {pvc_name} from {current_qty} to {new_size}Gi")
         expanded.append((pvc_name, new_size))
     return expanded
 

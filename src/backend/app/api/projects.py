@@ -3223,9 +3223,10 @@ def reconfigure_project(
     h_id = host.id
 
     from app.core.redis import enqueue_job
+    from app.workers.jobs import job_reconfigure_bg
 
     enqueue_job(
-        _do_reconfigure_bg,
+        job_reconfigure_bg,
         p_id,
         h_id,
         list(restart_vm_ids),
@@ -4427,9 +4428,15 @@ def redeploy_vm(
     target_vm_id = vm_id
 
     from app.core.redis import enqueue_job
+    from app.workers.jobs import job_vm_redeploy_bg
 
     enqueue_job(
-        _do_redeploy_bg, p_id, host_id, target_vm_id, project_id=p_id, host_id=host_id
+        job_vm_redeploy_bg,
+        p_id,
+        host_id,
+        target_vm_id,
+        project_id=p_id,
+        host_id=host_id,
     )
     return {"status": "redeploying"}
 

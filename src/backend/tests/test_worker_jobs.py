@@ -639,3 +639,30 @@ class TestJobProvisionKubevirt:
         assert host.state == "error"
         assert host.agent_status == "provision_failed"
         mock_db.close.assert_called_once()
+
+
+class TestRedeployReconfigureWrappers:
+    """jobs.py wrappers so RQ resolves the entrypoint on the worker
+    (enqueuing app.api.projects._do_* directly fails import_attribute)."""
+
+    def test_job_vm_redeploy_bg_delegates(self):
+        with patch("app.api.projects._do_redeploy_bg") as mock_fn:
+            from app.workers.jobs import job_vm_redeploy_bg
+
+            job_vm_redeploy_bg("p1", "h1", "vm1")
+        mock_fn.assert_called_once_with("p1", "h1", "vm1")
+
+    def test_job_reconfigure_bg_delegates(self):
+        with patch("app.api.projects._do_reconfigure_bg") as mock_fn:
+            from app.workers.jobs import job_reconfigure_bg
+
+            job_reconfigure_bg("p1", "h1", ["vm1", "vm2"])
+        mock_fn.assert_called_once_with("p1", "h1", ["vm1", "vm2"])
+
+    def test_wrappers_live_in_jobs_module_for_rq(self):
+        # RQ serializes func as "<module>.<qualname>"; the worker imports that
+        # module. jobs.py imports cleanly; app.api.projects does not resolve.
+        from app.workers.jobs import job_reconfigure_bg, job_vm_redeploy_bg
+
+        assert job_vm_redeploy_bg.__module__ == "app.workers.jobs"
+        assert job_reconfigure_bg.__module__ == "app.workers.jobs"

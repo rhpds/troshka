@@ -5,6 +5,7 @@ from helpers.kubevirt import (
     _apply_serial_console,
     _apply_video_and_input_devices,
     admission_api_error_summary,
+    build_clone_datavolume,
     build_kubevirt_vm,
     collect_kubevirt_vm_warnings,
     golden_import_matches,
@@ -104,9 +105,7 @@ def test_apply_video_omitted_when_video_config_gate_off():
 
 def test_collect_kubevirt_vm_warnings_empty_when_gate_on():
     assert (
-        collect_kubevirt_vm_warnings(
-            {"videoModel": "vga"}, video_config_enabled=True
-        )
+        collect_kubevirt_vm_warnings({"videoModel": "vga"}, video_config_enabled=True)
         == []
     )
 
@@ -363,3 +362,25 @@ def test_admission_api_error_summary_joins_causes():
     summary = admission_api_error_summary(exc)
     assert "IDE bus is not supported" in summary
     assert "VideoConfig" in summary
+
+
+def _clone_storage(dv):
+    return dv["spec"]["pvc"]["resources"]["requests"]["storage"]
+
+
+def test_build_clone_datavolume_pads_size_when_source_smaller():
+    # No source floor: request is the padded disk size (max(size+10, size*1.2)).
+    dv = build_clone_datavolume("d", "ns", "golden", "cache", 20)
+    assert _clone_storage(dv) == "30Gi"
+
+
+def test_build_clone_datavolume_floors_at_source_size():
+    # Golden cached larger (30Gi) than the current 10Gi disk -> clone must be >= 30
+    # or CDI rejects it with CloneValidationFailed. Regression for rtr3 ISO clone.
+    dv = build_clone_datavolume("d", "ns", "golden", "cache", 10, source_size_gb=30)
+    assert _clone_storage(dv) == "30Gi"
+
+
+def test_build_clone_datavolume_source_floor_ignored_when_smaller():
+    dv = build_clone_datavolume("d", "ns", "golden", "cache", 50, source_size_gb=30)
+    assert _clone_storage(dv) == "60Gi"

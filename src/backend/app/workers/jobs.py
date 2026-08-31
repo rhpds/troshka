@@ -198,6 +198,23 @@ def job_redeploy_bg(project_id: str, destroy_ctx: dict | None, old_host_id: str 
     deploy_project_async(project_id)
 
 
+def job_vm_redeploy_bg(p_id: str, host_id: str, target_vm_id: str):
+    """Redeploy a single VM. Entrypoint lives in jobs.py so RQ resolves it on the
+    worker — enqueuing app.api.projects._do_redeploy_bg directly fails RQ's
+    import_attribute (worker can't resolve the app.api.projects submodule)."""
+    from app.api.projects import _do_redeploy_bg
+
+    _do_redeploy_bg(p_id, host_id, target_vm_id)
+
+
+def job_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list):
+    """Reconfigure a project's VMs. Entrypoint in jobs.py for RQ resolution
+    (see job_vm_redeploy_bg)."""
+    from app.api.projects import _do_reconfigure_bg
+
+    _do_reconfigure_bg(p_id, h_id, restart_vm_ids)
+
+
 def job_bulk_deploy_projects(project_ids: list[str]):
     """Place and deploy multiple projects — each deploy enqueued as a separate job."""
     from app.api.patterns import _bulk_deploy_projects

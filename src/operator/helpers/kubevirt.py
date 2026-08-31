@@ -629,7 +629,13 @@ def build_blank_pvc(name, namespace, size_gb):
     }
 
 
-def build_clone_datavolume(name, namespace, source_pvc, source_namespace, size_gb):
+def build_clone_datavolume(
+    name, namespace, source_pvc, source_namespace, size_gb, source_size_gb=0
+):
+    # CDI rejects a clone whose target request is smaller than the source PVC
+    # (CloneValidationFailed). A golden cached under an older/larger size_gb can
+    # exceed the current disk's size_gb, so floor the request at the source size.
+    request_gb = max(size_gb + 10, int(size_gb * 1.2), int(source_size_gb or 0))
     return {
         "apiVersion": "cdi.kubevirt.io/v1beta1",
         "kind": "DataVolume",
@@ -646,11 +652,7 @@ def build_clone_datavolume(name, namespace, source_pvc, source_namespace, size_g
             },
             "pvc": {
                 "accessModes": ["ReadWriteOnce"],
-                "resources": {
-                    "requests": {
-                        "storage": f"{max(size_gb + 10, int(size_gb * 1.2))}Gi"
-                    }
-                },
+                "resources": {"requests": {"storage": f"{request_gb}Gi"}},
                 "storageClassName": STORAGE_CLASS,
             },
         },
