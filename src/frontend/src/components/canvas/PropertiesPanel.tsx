@@ -2057,29 +2057,33 @@ export default function PropertiesPanel() {
                                       >
                                         + Add app host
                                       </button>
-                                      <button
-                                        className="props-library-btn"
-                                        style={{ fontSize: 11 }}
-                                        title="Fill in the console + oauth hosts for embedding the OpenShift web console"
-                                        onClick={() => {
-                                          const next = showroomTabs.map((t) =>
-                                            t.id === tab.id
-                                              ? {
-                                                  ...t,
-                                                  proxyHosts: [
-                                                    "console-openshift-console.apps.ocp.ocp.local",
-                                                    "oauth-openshift.apps.ocp.ocp.local",
-                                                  ],
-                                                  proxyTls: true,
-                                                  proxyPort: 443,
-                                                }
-                                              : t,
-                                          );
-                                          updateShowroomTabs(node!.id, next);
-                                        }}
-                                      >
-                                        Insert OCP console hosts
-                                      </button>
+                                      {!(tab.proxyHosts || []).some((h) =>
+                                        h.startsWith("console-openshift-console."),
+                                      ) && (
+                                        <button
+                                          className="props-library-btn"
+                                          style={{ fontSize: 11 }}
+                                          title="Fill in the console + oauth hosts for embedding the OpenShift web console"
+                                          onClick={() => {
+                                            const next = showroomTabs.map((t) =>
+                                              t.id === tab.id
+                                                ? {
+                                                    ...t,
+                                                    proxyHosts: [
+                                                      "console-openshift-console.apps.ocp.ocp.local",
+                                                      "oauth-openshift.apps.ocp.ocp.local",
+                                                    ],
+                                                    proxyTls: true,
+                                                    proxyPort: 443,
+                                                  }
+                                                : t,
+                                            );
+                                            updateShowroomTabs(node!.id, next);
+                                          }}
+                                        >
+                                          Insert OCP console hosts
+                                        </button>
+                                      )}
                                     </div>
                                     <div style={{ marginTop: 6 }}>
                                       <LabelWithHint
