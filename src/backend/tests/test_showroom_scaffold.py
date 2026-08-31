@@ -380,37 +380,18 @@ def test_parse_template_tabs_proxy_hosts_list():
     ]
 
 
-def test_parse_template_tabs_console_proxy_host_auto_appends_oauth():
-    """Back-compat: a lone console proxy_host auto-includes its oauth companion."""
+def test_proxy_hosts_use_app_proxy_not_location():
+    """An explicit proxy_hosts tab resolves to an app-proxy tab: no inline location
+    block, and the base config includes the deploy-written conf.d snippet."""
     tabs = parse_template_tabs(
         [
             {
                 "name": "OCP Console",
                 "type": "proxy",
-                "proxy_host": "console-openshift-console.apps.ocp.ocp.local",
-                "proxy_tls": True,
-                "proxy_port": 443,
-            },
-        ],
-        {},
-        {},
-        {},
-    )
-    assert tabs[0]["proxyHosts"] == [
-        "console-openshift-console.apps.ocp.ocp.local",
-        "oauth-openshift.apps.ocp.ocp.local",
-    ]
-
-
-def test_console_proxy_host_uses_app_proxy_not_location():
-    """A console proxy_host resolves to an app-proxy tab: no inline location block,
-    and the base config includes the deploy-written conf.d snippet."""
-    tabs = parse_template_tabs(
-        [
-            {
-                "name": "OCP Console",
-                "type": "proxy",
-                "proxy_host": "console-openshift-console.apps.ocp.ocp.local",
+                "proxy_hosts": [
+                    "console-openshift-console.apps.ocp.ocp.local",
+                    "oauth-openshift.apps.ocp.ocp.local",
+                ],
                 "proxy_port": 443,
                 "proxy_tls": True,
             },
@@ -449,7 +430,10 @@ def test_app_proxy_internal_hosts_dedupes_and_orders():
             {
                 "name": "Console again",
                 "type": "proxy",
-                "proxy_host": "console-openshift-console.apps.ocp.ocp.local",
+                "proxy_hosts": [
+                    "console-openshift-console.apps.ocp.ocp.local",
+                    "argocd.apps.ocp.ocp.local",
+                ],
             },
         ],
         {},
@@ -459,6 +443,7 @@ def test_app_proxy_internal_hosts_dedupes_and_orders():
     assert app_proxy_internal_hosts(tabs) == [
         "console-openshift-console.apps.ocp.ocp.local",
         "oauth-openshift.apps.ocp.ocp.local",
+        "argocd.apps.ocp.ocp.local",
     ]
 
 

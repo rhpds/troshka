@@ -157,20 +157,11 @@ def parse_template_tabs(
 
 
 def _resolve_proxy_hosts(raw: dict[str, Any]) -> list[str]:
-    """Ordered internal hosts a proxy tab must expose; [0] is the iframe target.
-
-    An explicit ``proxy_hosts`` list wins. Otherwise a lone ``proxy_host`` that is
-    an OpenShift console auto-includes its ``oauth-openshift`` companion, since the
-    console's login flow redirects the browser to oauth on the same wildcard.
+    """Ordered internal hosts an app-proxy tab must expose; [0] is the iframe
+    target, the rest are companions (e.g. oauth). Requires an explicit
+    ``proxy_hosts`` list; a lone ``proxy_host`` remains a generic location proxy.
     """
-    if raw.get("proxy_hosts"):
-        return list(raw["proxy_hosts"])
-    host = raw.get("proxy_host") or ""
-    prefix = "console-openshift-console."
-    if host.startswith(prefix):
-        suffix = host[len(prefix) :]
-        return [host, f"oauth-openshift.{suffix}"]
-    return []
+    return list(raw.get("proxy_hosts") or [])
 
 
 def app_proxy_internal_hosts(tabs: list[dict[str, Any]]) -> list[str]:

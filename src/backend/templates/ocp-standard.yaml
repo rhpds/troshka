@@ -131,13 +131,15 @@ showroom:
       type: terminal
       vm: bastion
       network: cluster
-    # Name-based proxy: reach the OCP console by hostname (resolved via the
-    # showroom's cluster DNS). nginx sends proxy_host as the Host header + TLS
-    # SNI so the ingress router selects the console route. No vm needed.
+    # App-proxy: embed the OCP console in the showroom iframe. Deploy mints a
+    # public route per host (browser can't resolve .local), and nginx rewrites
+    # console<->oauth redirects public<->.local while leaving the OAuth
+    # redirect_uri .local so the cluster's OAuthClient still validates.
+    # proxy_hosts[0] is the iframe target; the rest are login companions.
     - name: OCP Console
       type: proxy
-      network: cluster
-      proxy_host: console-openshift-console.apps.ocp.ocp.local
-      proxy_path: /console/
+      proxy_hosts:
+        - console-openshift-console.apps.ocp.ocp.local   # iframe target
+        - oauth-openshift.apps.ocp.ocp.local             # login companion
       proxy_port: 443
       proxy_tls: true
