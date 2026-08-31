@@ -1,15 +1,30 @@
 """Auto-layout engine for canvas topologies.
 
-Positions nodes in a readable grid layout:
-  Row 0: gateways
-  Row 1: top networks (cluster, sriov, ptp, etc.)
-  Row 2: VMs with disks to the left
-  Row 3: bottom networks (BMC)
-  Row 4: unattached storage
+Layout strategy (top to bottom):
+  Row 0: showroom + gateway
+  Row 1+: point-to-point link networks above VMs (stacked when overlapping)
+  Row backbone: mgmt / cluster networks above VMs
+  VM row: workloads with disks to the left
+  Bottom link row: link networks that would cross or crowd the top
+  Bottom wide row: lab, BMC, and other broadcast segments
+  Last: unattached storage
 """
+
+from __future__ import annotations
+
+import re
+from collections import defaultdict
 
 _WORKLOAD_TYPES = ("vmNode", "containerNode")
 _SHOWROOM_DISK_Y_OFFSET = 70
+
+# Fixed row anchors tuned to match workshop-style canvases
+_LINK_ROW_Y = 70
+_LINK_ROW_STEP = 68
+_BACKBONE_ROW_Y = 185
+_VM_ROW_Y = 340
+_TOP_ROW_CLEARANCE = 24
+_LAB_ROW_GAP = 210  # below VM row bottom → lab y ≈ 780
 
 
 def _is_showroom_node(node: dict) -> bool:
@@ -17,6 +32,24 @@ def _is_showroom_node(node: dict) -> bool:
         return False
     data = node.get("data", {})
     return bool(data.get("isShowroom") or data.get("name") == "showroom")
+
+
+def _node_name(node: dict) -> str:
+    data = node.get("data", {})
+    return str(data.get("name") or data.get("label") or "")
+
+
+def _workload_sort_key(node: dict) -> tuple:
+    """Order workloads left-to-right: control, vscode, rtr1..rtrN, then alpha."""
+    name = _node_name(node).lower()
+    if name == "control":
+        return (0, 0, name)
+    if name == "vscode":
+        return (0, 1, name)
+    match = re.match(r"rtr(\d+)", name)
+    if match:
+        return (1, int(match.group(1)), name)
+    return (2, 0, name)
 
 
 def _classify_nodes(nodes: list[dict]) -> dict[str, list[dict]]:
@@ -39,10 +72,15 @@ def _classify_nodes(nodes: list[dict]) -> dict[str, list[dict]]:
         if n.get("type") == "networkNode"
         and n.get("data", {}).get("subtype") == "gateway"
     ]
-    vm_nodes = [n for n in nodes if n.get("type") == "vmNode"]
+    vm_nodes = sorted(
+        [n for n in nodes if n.get("type") == "vmNode"], key=_workload_sort_key
+    )
     container_nodes = [n for n in nodes if n.get("type") == "containerNode"]
     showroom_nodes = [n for n in container_nodes if _is_showroom_node(n)]
-    workload_containers = [n for n in container_nodes if not _is_showroom_node(n)]
+    workload_containers = sorted(
+        [n for n in container_nodes if not _is_showroom_node(n)],
+        key=_workload_sort_key,
+    )
     storage_nodes = [n for n in nodes if n.get("type") == "storageNode"]
 
     return {
@@ -103,24 +141,21 @@ def _build_connection_maps(
     return vm_to_storage, storage_to_vm, network_to_vms
 
 
-def _classify_network_by_handle(
-    handle: str, net_id: str, top_ids: set, bottom_ids: set
-):
-    """Place a network ID into top or bottom set based on a workload edge handle."""
-    if "top" in handle:
-        top_ids.add(net_id)
-    elif "bottom" in handle:
-        bottom_ids.add(net_id)
-    else:
-        top_ids.add(net_id)
+def _network_side_from_vm_handle(vm_handle: str) -> str | None:
+    """Map VM attachment handle to network row (top=above VMs, bottom=below)."""
+    handle = (vm_handle or "").lower()
+    if handle.endswith("-top") or handle == "top":
+        return "top"
+    if handle.endswith("-bottom") or handle == "bottom":
+        return "bottom"
+    return None
 
 
-def _classify_networks_from_edges(
+def _collect_network_side_votes(
     nodes: list[dict], edges: list[dict]
-) -> tuple[set[str], set[str]]:
-    """Classify networks as top/bottom based on workload edge handle positions."""
-    top_net_ids: set[str] = set()
-    bottom_net_ids: set[str] = set()
+) -> dict[str, dict[str, int]]:
+    """Tally above/below votes from VM NIC handles for each network."""
+    votes: dict[str, dict[str, int]] = defaultdict(lambda: {"top": 0, "bottom": 0})
     for e in edges:
         src = _find(nodes, e.get("source", ""))
         tgt = _find(nodes, e.get("target", ""))
@@ -129,31 +164,87 @@ def _classify_networks_from_edges(
         src_type = src.get("type", "")
         tgt_type = tgt.get("type", "")
         if src_type in _WORKLOAD_TYPES and tgt_type == "networkNode":
-            handle = (e.get("sourceHandle") or "").lower()
-            _classify_network_by_handle(handle, tgt["id"], top_net_ids, bottom_net_ids)
+            side = _network_side_from_vm_handle(e.get("sourceHandle", ""))
+            if side:
+                votes[tgt["id"]][side] += 1
         if tgt_type in _WORKLOAD_TYPES and src_type == "networkNode":
-            handle = (e.get("targetHandle") or "").lower()
-            _classify_network_by_handle(handle, src["id"], top_net_ids, bottom_net_ids)
-    return top_net_ids, bottom_net_ids
+            side = _network_side_from_vm_handle(e.get("targetHandle", ""))
+            if side:
+                votes[src["id"]][side] += 1
+    return votes
 
 
-def _classify_network_positions(
-    nodes: list[dict], edges: list[dict], networks: list[dict]
-) -> tuple[list[dict], list[dict]]:
-    """Determine which networks go on top vs bottom based on edge handles."""
-    top_net_ids, bottom_net_ids = _classify_networks_from_edges(nodes, edges)
+def _is_link_network(net: dict) -> bool:
+    """True for /30 point-to-point style segments between routers."""
+    name = _node_name(net).lower()
+    cidr = str(net.get("data", {}).get("cidr") or "")
+    if name.startswith("link-"):
+        return True
+    return "/30" in cidr
 
-    for n in networks:
-        if n.get("data", {}).get("networkType") == "bmc":
-            top_net_ids.discard(n["id"])
-            bottom_net_ids.add(n["id"])
-    for n in networks:
-        if n["id"] not in top_net_ids and n["id"] not in bottom_net_ids:
-            top_net_ids.add(n["id"])
 
-    top_nets = [n for n in networks if n["id"] in top_net_ids]
-    bottom_nets = [n for n in networks if n["id"] in bottom_net_ids]
-    return top_nets, bottom_nets
+def _is_backbone_network(net: dict) -> bool:
+    """Broadcast / shared infrastructure networks that span multiple workloads."""
+    name = _node_name(net).lower()
+    if name in ("mgmt", "management", "cluster"):
+        return True
+    cidr = str(net.get("data", {}).get("cidr") or "")
+    if re.search(r"/(2[0-4]|1[6-9]|[89]|[0-9])\b", cidr):
+        return True
+    return False
+
+
+def _is_lab_network(net: dict) -> bool:
+    name = _node_name(net).lower()
+    return name in ("lab", "datacenter")
+
+
+def _is_wide_bottom_network(net: dict, conn_vm_count: int) -> bool:
+    """Lab-style segments that should sit below the VM row."""
+    if net.get("data", {}).get("networkType") == "bmc":
+        return True
+    if _is_lab_network(net):
+        return True
+    return conn_vm_count >= 4
+
+
+def _preferred_network_side(
+    net: dict, votes: dict[str, dict[str, int]], conn_vm_count: int
+) -> str:
+    """Choose above (top) or below (bottom) VMs using name rules then NIC votes."""
+    if _is_wide_bottom_network(net, conn_vm_count):
+        return "bottom"
+    if _is_backbone_network(net):
+        return "top"
+    if _is_link_network(net):
+        return "top"
+
+    net_votes = votes.get(net["id"], {})
+    if net_votes.get("top", 0) > net_votes.get("bottom", 0):
+        return "top"
+    if net_votes.get("bottom", 0) > net_votes.get("top", 0):
+        return "bottom"
+    return "top"
+
+
+def _classify_network_placements(
+    networks: list[dict],
+    votes: dict[str, dict[str, int]],
+    network_to_vms: dict[str, list[str]],
+) -> dict[str, dict[str, str]]:
+    """Classify each network's vertical side and tier (link/backbone/wide)."""
+    placements: dict[str, dict[str, str]] = {}
+    for net in networks:
+        conn_count = len(network_to_vms.get(net["id"], []))
+        side = _preferred_network_side(net, votes, conn_count)
+        if _is_link_network(net):
+            tier = "link"
+        elif _is_wide_bottom_network(net, conn_count):
+            tier = "wide"
+        else:
+            tier = "backbone"
+        placements[net["id"]] = {"side": side, "tier": tier}
+    return placements
 
 
 def _build_router_connections(
@@ -194,6 +285,136 @@ def _calc_vm_row_width(
     return max(vm_row_width, 400)
 
 
+def _vm_center_x(vm_id: str, positions: dict[str, dict], vm_w: int) -> float | None:
+    pos = positions.get(vm_id)
+    if not pos:
+        return None
+    return float(pos["x"]) + vm_w / 2
+
+
+def _net_x_centered_on_vms(
+    net_id: str,
+    network_to_vms: dict[str, list[str]],
+    positions: dict[str, dict],
+    net_w: int,
+    vm_w: int,
+) -> float:
+    """Center a network pill on connected VM(s); span min..max for multi-VM links."""
+    centers = [
+        c
+        for vm_id in network_to_vms.get(net_id, [])
+        if (c := _vm_center_x(vm_id, positions, vm_w)) is not None
+    ]
+    if not centers:
+        return 40.0
+    if len(centers) >= 2:
+        center = (min(centers) + max(centers)) / 2
+    else:
+        center = centers[0]
+    return center - net_w / 2
+
+
+def _net_x_interval(
+    net_id: str,
+    network_to_vms: dict[str, list[str]],
+    positions: dict[str, dict],
+    net_w: int,
+    vm_w: int,
+) -> tuple[float, float]:
+    x = _net_x_centered_on_vms(net_id, network_to_vms, positions, net_w, vm_w)
+    return (x, x + net_w)
+
+
+def _intervals_overlap(
+    left: tuple[float, float], right: tuple[float, float], margin: float = 16.0
+) -> bool:
+    return left[0] < right[1] - margin and right[0] < left[1] - margin
+
+
+def _link_net_span_center(
+    net_id: str,
+    network_to_vms: dict[str, list[str]],
+    positions: dict[str, dict],
+    vm_w: int,
+) -> float:
+    centers = [
+        c
+        for vm_id in network_to_vms.get(net_id, [])
+        if (c := _vm_center_x(vm_id, positions, vm_w)) is not None
+    ]
+    if len(centers) >= 2:
+        return (min(centers) + max(centers)) / 2
+    if centers:
+        return centers[0]
+    return 0.0
+
+
+def _shared_vm_ids(
+    net_a: str, net_b: str, network_to_vms: dict[str, list[str]]
+) -> bool:
+    return bool(set(network_to_vms.get(net_a, [])) & set(network_to_vms.get(net_b, [])))
+
+
+def _assign_top_link_rows(
+    link_nets: list[dict],
+    network_to_vms: dict[str, list[str]],
+    positions: dict[str, dict],
+    net_w: int,
+    vm_w: int,
+) -> dict[str, float]:
+    """Stack link networks above VMs; separate rows when sharing a VM or x-span."""
+    if not link_nets:
+        return {}
+
+    sorted_nets = sorted(
+        link_nets,
+        key=lambda n: _link_net_span_center(n["id"], network_to_vms, positions, vm_w),
+    )
+    row_intervals: list[list[tuple[float, float]]] = []
+    row_net_ids: list[list[str]] = []
+    row_y: dict[str, float] = {}
+
+    for net in sorted_nets:
+        interval = _net_x_interval(net["id"], network_to_vms, positions, net_w, vm_w)
+        placed = False
+        for idx, intervals in enumerate(row_intervals):
+            if any(_intervals_overlap(interval, existing) for existing in intervals):
+                continue
+            if any(
+                _shared_vm_ids(net["id"], other_id, network_to_vms)
+                for other_id in row_net_ids[idx]
+            ):
+                continue
+            intervals.append(interval)
+            row_net_ids[idx].append(net["id"])
+            row_y[net["id"]] = _LINK_ROW_Y + idx * _LINK_ROW_STEP
+            placed = True
+            break
+        if not placed:
+            row_intervals.append([interval])
+            row_net_ids.append([net["id"]])
+            idx = len(row_intervals) - 1
+            row_y[net["id"]] = _LINK_ROW_Y + idx * _LINK_ROW_STEP
+
+    return row_y
+
+
+def _compute_backbone_row_y(
+    updated: dict[str, dict],
+    showroom_nodes: list[dict],
+    vm_to_storage: dict[str, list[str]],
+    disk_h: int,
+) -> float:
+    """Keep backbone networks below showroom disks and other top-row obstacles."""
+    min_y = float(_BACKBONE_ROW_Y)
+    for showroom in showroom_nodes:
+        for disk_id in vm_to_storage.get(showroom["id"], []):
+            pos = updated.get(disk_id, {})
+            bottom = float(pos.get("y", 0)) + disk_h
+            min_y = max(min_y, bottom + _TOP_ROW_CLEARANCE)
+    return min_y
+
+
 def _layout_gateways(
     gateways: list[dict],
     vm_row_width: int,
@@ -211,47 +432,6 @@ def _layout_gateways(
     gw_start_x = 40 + max(0, (vm_row_width - gw_total) / 2 - vm_row_width * 0.15)
     for i, n in enumerate(gateways):
         updated[n["id"]] = {"x": gw_start_x + i * (net_w + gap_x), "y": current_y}
-    return updated, current_y + net_h + gap_y
-
-
-def _layout_infra_row(
-    top_nets: list[dict],
-    routers: list[dict],
-    router_to_nets: dict[str, list[str]],
-    vm_row_width: int,
-    current_y: float,
-    net_w: int,
-    gap_x: int,
-    net_h: int,
-    gap_y: int,
-) -> tuple[dict[str, dict], float]:
-    """Layout top networks + routers. Returns (updates, new_y)."""
-    updated: dict[str, dict] = {}
-    if not top_nets and not routers:
-        return updated, current_y
-
-    placed_infra: set[str] = set()
-    infra_items: list[dict] = []
-    for net in top_nets:
-        infra_items.append(net)
-        placed_infra.add(net["id"])
-        for r in routers:
-            if r["id"] in placed_infra:
-                continue
-            if net["id"] in router_to_nets.get(r["id"], []):
-                infra_items.append(r)
-                placed_infra.add(r["id"])
-    for r in routers:
-        if r["id"] not in placed_infra:
-            infra_items.append(r)
-
-    infra_total = len(infra_items) * (net_w + gap_x) - gap_x
-    infra_start_x = 40 + max(0, (vm_row_width - infra_total) / 2 + vm_row_width * 0.15)
-    for i, n in enumerate(infra_items):
-        updated[n["id"]] = {
-            "x": infra_start_x + i * (net_w + gap_x),
-            "y": current_y,
-        }
     return updated, current_y + net_h + gap_y
 
 
@@ -291,18 +471,16 @@ def _layout_showroom_beside_gateway(
 def _layout_workloads(
     workload_nodes: list[dict],
     vm_to_storage: dict[str, list[str]],
-    current_y: float,
+    vm_row_y: float,
     vm_w: int,
     vm_h: int,
     disk_w: int,
     disk_h: int,
     gap_x: int,
     disk_gap: int,
-    gap_y: int,
 ) -> tuple[dict[str, dict], float, float]:
-    """Layout VMs/containers with their disks. Returns (updates, cursor_x, new_y)."""
+    """Layout VMs/containers with their disks. Returns (updates, cursor_x, row_bottom)."""
     updated: dict[str, dict] = {}
-    vm_row_y = current_y
     cursor_x = 40.0
     max_vm_bottom = vm_row_y
 
@@ -312,79 +490,172 @@ def _layout_workloads(
 
         if has_disk:
             disk_spacing = disk_h + 20
+            disk_y = vm_row_y + max(20, (vm_h - disk_h) // 2)
             for di, disk_id in enumerate(disks):
                 updated[disk_id] = {
                     "x": cursor_x,
-                    "y": vm_row_y + 20 + di * disk_spacing,
+                    "y": disk_y + di * disk_spacing,
                 }
-            disks_bottom = vm_row_y + 20 + len(disks) * disk_spacing
-            if disks_bottom > max_vm_bottom:
-                max_vm_bottom = disks_bottom
+            disks_bottom = disk_y + len(disks) * disk_spacing
+            max_vm_bottom = max(max_vm_bottom, disks_bottom)
             cursor_x += disk_w + disk_gap
 
         updated[vm["id"]] = {"x": cursor_x, "y": vm_row_y}
-        vm_bottom = vm_row_y + vm_h
-        if vm_bottom > max_vm_bottom:
-            max_vm_bottom = vm_bottom
-
+        max_vm_bottom = max(max_vm_bottom, vm_row_y + vm_h)
         cursor_x += vm_w + gap_x
 
-    return updated, cursor_x, max_vm_bottom + gap_y
+    return updated, cursor_x, max_vm_bottom
 
 
-def _layout_bottom_nets(
-    bottom_nets: list[dict],
+def _layout_network_group(
+    nets: list[dict],
     network_to_vms: dict[str, list[str]],
-    already_placed: dict[str, dict],
-    cursor_x: float,
-    current_y: float,
+    positions: dict[str, dict],
     net_w: int,
-    gap_x: int,
+    vm_w: int,
+    y_by_id: dict[str, float] | None = None,
+    default_y: float | None = None,
+) -> dict[str, dict]:
+    """Place networks centered on their connected VMs at a fixed or per-net Y."""
+    updated: dict[str, dict] = {}
+    for net in nets:
+        y = (y_by_id or {}).get(
+            net["id"], default_y if default_y is not None else _LINK_ROW_Y
+        )
+        updated[net["id"]] = {
+            "x": _net_x_centered_on_vms(
+                net["id"], network_to_vms, positions, net_w, vm_w
+            ),
+            "y": y,
+        }
+    return updated
+
+
+def _layout_routers_near_nets(
+    routers: list[dict],
+    router_to_nets: dict[str, list[str]],
+    net_positions: dict[str, dict],
+) -> dict[str, dict]:
+    """Place router nodes near their connected networks."""
+    updated: dict[str, dict] = {}
+    for router in routers:
+        connected = router_to_nets.get(router["id"], [])
+        net_positions_list = [
+            net_positions[nid] for nid in connected if nid in net_positions
+        ]
+        if net_positions_list:
+            avg_x = sum(p["x"] for p in net_positions_list) / len(net_positions_list)
+            avg_y = sum(p["y"] for p in net_positions_list) / len(net_positions_list)
+            updated[router["id"]] = {"x": avg_x, "y": avg_y}
+        else:
+            updated[router["id"]] = {"x": 40.0, "y": _BACKBONE_ROW_Y}
+    return updated
+
+
+def _layout_bottom_network_rows(
+    bottom_wide_nets: list[dict],
+    network_to_vms: dict[str, list[str]],
+    positions: dict[str, dict],
+    vm_row_bottom: float,
+    vm_row_y: float,
+    vm_h: int,
+    net_w: int,
+    vm_w: int,
     net_h: int,
     gap_y: int,
 ) -> tuple[dict[str, dict], float]:
-    """Layout bottom networks under connected VMs. Returns (updates, new_y)."""
+    """Layout broadcast networks in a single row under VMs."""
     updated: dict[str, dict] = {}
-    if not bottom_nets:
-        return updated, current_y
+    current_y = vm_row_bottom + gap_y
+    lab_anchor_y = vm_row_y + vm_h + _LAB_ROW_GAP
 
-    unplaced_bottom: list[dict] = []
-    for n in bottom_nets:
-        conn_vms = network_to_vms.get(n["id"], [])
-        conn_vm_pos = [already_placed[vid] for vid in conn_vms if vid in already_placed]
-        if conn_vm_pos:
-            avg_x = sum(p["x"] for p in conn_vm_pos) / len(conn_vm_pos)
-            updated[n["id"]] = {"x": avg_x, "y": current_y}
-        else:
-            unplaced_bottom.append(n)
-    if unplaced_bottom:
-        vm_area_width = cursor_x - 40
-        net_total_width = len(unplaced_bottom) * (net_w + gap_x) - gap_x
-        net_start_x = 40 + (vm_area_width - net_total_width) / 2
-        for i, n in enumerate(unplaced_bottom):
-            updated[n["id"]] = {
-                "x": max(40, net_start_x + i * (net_w + gap_x)),
-                "y": current_y,
-            }
-    return updated, current_y + net_h + gap_y
+    for net in bottom_wide_nets:
+        y = lab_anchor_y if _is_lab_network(net) else current_y
+        updated[net["id"]] = {
+            "x": _net_x_centered_on_vms(
+                net["id"], network_to_vms, positions, net_w, vm_w
+            ),
+            "y": y,
+        }
+        current_y = max(current_y, y + net_h + gap_y)
+
+    return updated, current_y
 
 
 def _apply_positions(nodes: list[dict], updated: dict[str, dict]) -> list[dict]:
-    """Apply computed positions to nodes, returning new list."""
+    """Apply computed positions to nodes, clearing any prior layoutWidth."""
     new_nodes = []
     for n in nodes:
+        new_n = dict(n)
         pos = updated.get(n["id"])
         if pos:
-            new_nodes.append({**n, "position": pos})
-        else:
-            new_nodes.append(n)
+            new_n["position"] = pos
+        if n.get("type") == "networkNode" and n.get("data", {}).get("layoutWidth"):
+            data = dict(new_n.get("data", n.get("data", {})))
+            data.pop("layoutWidth", None)
+            new_n["data"] = data
+        new_nodes.append(new_n)
     return new_nodes
 
 
-def _fix_bottom_edges(
-    edges: list[dict], nodes: list[dict], bottom_net_ids: set[str]
+def _set_nic_handle_side(handle: str, side: str) -> str:
+    """Preserve NIC id in a handle, switching between -top and -bottom."""
+    if not handle.startswith("nic-"):
+        return handle
+    if handle.endswith("-top"):
+        base = handle[:-4]
+    elif handle.endswith("-bottom"):
+        base = handle[:-7]
+    else:
+        return handle
+    return f"{base}-{side}"
+
+
+def _parse_network_workload_edge(
+    e: dict, src: dict, tgt: dict
+) -> tuple[dict, dict, bool] | None:
+    """Return (network, workload, network_is_source) for network↔workload edges."""
+    src_type = src.get("type", "")
+    tgt_type = tgt.get("type", "")
+    src_sub = src.get("data", {}).get("subtype", "")
+    tgt_sub = tgt.get("data", {}).get("subtype", "")
+    if (
+        src_type == "networkNode"
+        and src_sub == "network"
+        and tgt_type in _WORKLOAD_TYPES
+    ):
+        return src, tgt, True
+    if (
+        tgt_type == "networkNode"
+        and tgt_sub == "network"
+        and src_type in _WORKLOAD_TYPES
+    ):
+        return tgt, src, False
+    return None
+
+
+def _network_is_above_workload(
+    net_id: str,
+    workload_id: str,
+    positions: dict[str, dict],
+    net_h: int,
+    workload_h: int,
+) -> bool:
+    net_pos = positions.get(net_id) or {}
+    wl_pos = positions.get(workload_id) or {}
+    net_cy = float(net_pos.get("y", 0)) + net_h / 2
+    wl_cy = float(wl_pos.get("y", 0)) + workload_h / 2
+    return net_cy < wl_cy
+
+
+def _fix_network_edge_handles(
+    edges: list[dict],
+    nodes: list[dict],
+    positions: dict[str, dict],
+    net_h: int,
+    workload_h: int,
 ) -> list[dict]:
-    """Fix edge handles so bottom-network edges connect from the bottom."""
+    """Point network↔workload edges at the correct top/bottom handles."""
     new_edges = []
     for e in edges:
         src = _find(nodes, e.get("source", ""))
@@ -392,24 +663,185 @@ def _fix_bottom_edges(
         if not src or not tgt:
             new_edges.append(e)
             continue
-        src_type = src.get("type", "")
-        tgt_type = tgt.get("type", "")
-        if (
-            src_type == "networkNode"
-            and tgt_type in _WORKLOAD_TYPES
-            and src["id"] in bottom_net_ids
-        ):
-            handle = (e.get("targetHandle") or "").replace("-top", "-bottom")
-            new_edges.append({**e, "sourceHandle": "top", "targetHandle": handle})
-        elif (
-            tgt_type == "networkNode"
-            and src_type in _WORKLOAD_TYPES
-            and tgt["id"] in bottom_net_ids
-        ):
-            handle = (e.get("sourceHandle") or "").replace("-top", "-bottom")
-            new_edges.append({**e, "sourceHandle": handle, "targetHandle": "top"})
-        else:
+
+        parsed = _parse_network_workload_edge(e, src, tgt)
+        if not parsed:
             new_edges.append(e)
+            continue
+
+        net_node, wl_node, net_is_source = parsed
+        above = _network_is_above_workload(
+            net_node["id"], wl_node["id"], positions, net_h, workload_h
+        )
+
+        if net_is_source:
+            vm_handle = e.get("targetHandle", "")
+            if above:
+                new_edges.append(
+                    {
+                        **e,
+                        "sourceHandle": "bottom",
+                        "targetHandle": _set_nic_handle_side(vm_handle, "top"),
+                    }
+                )
+            else:
+                new_edges.append(
+                    {
+                        **e,
+                        "sourceHandle": "top",
+                        "targetHandle": _set_nic_handle_side(vm_handle, "bottom"),
+                    }
+                )
+        else:
+            vm_handle = e.get("sourceHandle", "")
+            if above:
+                new_edges.append(
+                    {
+                        **e,
+                        "sourceHandle": _set_nic_handle_side(vm_handle, "top"),
+                        "targetHandle": "bottom",
+                    }
+                )
+            else:
+                new_edges.append(
+                    {
+                        **e,
+                        "sourceHandle": _set_nic_handle_side(vm_handle, "bottom"),
+                        "targetHandle": "top",
+                    }
+                )
+    return new_edges
+
+
+def _lab_outer_vm_ids(
+    lab_vm_ids: list[str],
+    positions: dict[str, dict],
+    vm_w: int,
+) -> set[str]:
+    """Leftmost and rightmost lab-connected VMs use bottom→bottom attachment."""
+    if len(lab_vm_ids) <= 2:
+        return set(lab_vm_ids)
+    sorted_vms = sorted(
+        lab_vm_ids,
+        key=lambda vid: _vm_center_x(vid, positions, vm_w) or 0.0,
+    )
+    return {sorted_vms[0], sorted_vms[-1]}
+
+
+def _vm_nic_handle_from_edge(e: dict, vm_id: str) -> str:
+    """Preserve NIC id from an existing edge, defaulting to bottom attachment."""
+    if e.get("source") == vm_id:
+        handle = e.get("sourceHandle", "")
+    else:
+        handle = e.get("targetHandle", "")
+    if handle.startswith("nic-"):
+        return _set_nic_handle_side(handle, "bottom")
+    return "nic-0-bottom"
+
+
+def _fix_lab_edges(
+    edges: list[dict],
+    nodes: list[dict],
+    positions: dict[str, dict],
+    network_to_vms: dict[str, list[str]],
+    vm_w: int,
+) -> list[dict]:
+    """Route lab edges: outer VMs bottom→lab bottom, inner VMs lab top→VM bottom."""
+    lab_ids = {
+        n["id"] for n in nodes if n.get("type") == "networkNode" and _is_lab_network(n)
+    }
+    if not lab_ids:
+        return edges
+
+    outer_by_lab = {
+        lab_id: _lab_outer_vm_ids(network_to_vms.get(lab_id, []), positions, vm_w)
+        for lab_id in lab_ids
+    }
+
+    result: list[dict] = []
+    for e in edges:
+        src_id = e.get("source", "")
+        tgt_id = e.get("target", "")
+        lab_id: str | None = None
+        vm_id: str | None = None
+        if src_id in lab_ids:
+            wl = _find(nodes, tgt_id)
+            if wl and wl.get("type") in _WORKLOAD_TYPES:
+                lab_id, vm_id = src_id, tgt_id
+        elif tgt_id in lab_ids:
+            wl = _find(nodes, src_id)
+            if wl and wl.get("type") in _WORKLOAD_TYPES:
+                lab_id, vm_id = tgt_id, src_id
+        if not lab_id or not vm_id:
+            result.append(e)
+            continue
+
+        nic = _vm_nic_handle_from_edge(e, vm_id)
+        if vm_id in outer_by_lab.get(lab_id, set()):
+            result.append(
+                {
+                    **e,
+                    "source": vm_id,
+                    "target": lab_id,
+                    "sourceHandle": nic,
+                    "targetHandle": "bottom",
+                }
+            )
+        else:
+            result.append(
+                {
+                    **e,
+                    "source": lab_id,
+                    "target": vm_id,
+                    "sourceHandle": "top",
+                    "targetHandle": nic,
+                }
+            )
+    return result
+
+
+def _apply_edge_path_options(
+    edges: list[dict],
+    nodes: list[dict],
+    positions: dict[str, dict],
+    net_w: int,
+    vm_w: int,
+    net_h: int,
+    vm_h: int,
+) -> list[dict]:
+    """Bias smoothstep bends so corridors avoid the disk row between VMs and networks."""
+    new_edges: list[dict] = []
+    for e in edges:
+        src = _find(nodes, e.get("source", ""))
+        tgt = _find(nodes, e.get("target", ""))
+        if not src or not tgt:
+            new_edges.append(e)
+            continue
+
+        parsed = _parse_network_workload_edge(e, src, tgt)
+        if not parsed:
+            new_edges.append(e)
+            continue
+
+        net_node, wl_node, _net_is_source = parsed
+        vm_cx = _vm_center_x(wl_node["id"], positions, vm_w) or 0.0
+        net_pos = positions.get(net_node["id"], {})
+        net_cx = float(net_pos.get("x", 0)) + net_w / 2
+        x_delta = abs(vm_cx - net_cx)
+
+        if _is_link_network(net_node):
+            offset = 72
+        elif _is_lab_network(net_node):
+            # Outer VM→lab edges need a wider bend to clear disk pills.
+            vm_is_source = wl_node["id"] == e.get("source")
+            if vm_is_source:
+                offset = min(180, 72 + x_delta * 0.08)
+            else:
+                offset = min(140, 36 + x_delta * 0.05)
+        else:
+            offset = min(96, 28 + x_delta * 0.04)
+
+        new_edges.append({**e, "pathOptions": {"offset": offset, "borderRadius": 6}})
     return new_edges
 
 
@@ -420,8 +852,9 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
 
     classified = _classify_nodes(nodes)
     vm_to_storage, storage_to_vm, network_to_vms = _build_connection_maps(nodes, edges)
-    top_nets, bottom_nets = _classify_network_positions(
-        nodes, edges, classified["networks"]
+    side_votes = _collect_network_side_votes(nodes, edges)
+    placements = _classify_network_placements(
+        classified["networks"], side_votes, network_to_vms
     )
 
     # Sizing constants (match frontend)
@@ -443,8 +876,7 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
     updated: dict[str, dict] = {}
     current_y: float = 40
 
-    # Row 0: Gateways
-    positions, current_y = _layout_gateways(
+    positions, _current_y = _layout_gateways(
         classified["gateways"], vm_row_width, current_y, net_w, gap_x, net_h, gap_y
     )
     updated.update(positions)
@@ -461,50 +893,86 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
     )
     updated.update(positions)
 
-    # Row 1: Top networks + routers
-    positions, current_y = _layout_infra_row(
-        top_nets,
-        classified["routers"],
-        router_to_nets,
-        vm_row_width,
-        current_y,
-        net_w,
-        gap_x,
-        net_h,
-        gap_y,
-    )
-    updated.update(positions)
-
-    # Row 2: VMs and containers with disks
-    positions, cursor_x, current_y = _layout_workloads(
+    positions, _cursor_x, vm_row_bottom = _layout_workloads(
         classified["workload_nodes"],
         vm_to_storage,
-        current_y,
+        _VM_ROW_Y,
         vm_w,
         vm_h,
         disk_w,
         disk_h,
         gap_x,
         disk_gap,
-        gap_y,
     )
     updated.update(positions)
 
-    # Row 3: Bottom networks
-    positions, current_y = _layout_bottom_nets(
-        bottom_nets,
+    top_backbone = [
+        n
+        for n in classified["networks"]
+        if placements[n["id"]]["side"] == "top"
+        and placements[n["id"]]["tier"] == "backbone"
+    ]
+    top_links = [
+        n
+        for n in classified["networks"]
+        if placements[n["id"]]["side"] == "top"
+        and placements[n["id"]]["tier"] == "link"
+    ]
+    bottom_wide = [
+        n
+        for n in classified["networks"]
+        if placements[n["id"]]["tier"] == "wide"
+        or (
+            placements[n["id"]]["side"] == "bottom"
+            and placements[n["id"]]["tier"] == "backbone"
+        )
+    ]
+
+    link_row_y = _assign_top_link_rows(top_links, network_to_vms, updated, net_w, vm_w)
+    backbone_row_y = _compute_backbone_row_y(
+        updated,
+        classified["showroom_nodes"],
+        vm_to_storage,
+        disk_h,
+    )
+    updated.update(
+        _layout_network_group(
+            [n for n in top_links if n["id"] in link_row_y],
+            network_to_vms,
+            updated,
+            net_w,
+            vm_w,
+            y_by_id=link_row_y,
+        )
+    )
+    updated.update(
+        _layout_network_group(
+            top_backbone,
+            network_to_vms,
+            updated,
+            net_w,
+            vm_w,
+            default_y=backbone_row_y,
+        )
+    )
+    updated.update(
+        _layout_routers_near_nets(classified["routers"], router_to_nets, updated)
+    )
+
+    positions, current_y = _layout_bottom_network_rows(
+        bottom_wide,
         network_to_vms,
         updated,
-        cursor_x,
-        current_y,
+        vm_row_bottom,
+        _VM_ROW_Y,
+        vm_h,
         net_w,
-        gap_x,
+        vm_w,
         net_h,
         gap_y,
     )
     updated.update(positions)
 
-    # Row 4: Unattached storage
     unattached = [
         n for n in classified["storage_nodes"] if n["id"] not in storage_to_vm
     ]
@@ -513,7 +981,11 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
             updated[n["id"]] = {"x": 40 + i * (disk_w + gap_x), "y": current_y}
 
     new_nodes = _apply_positions(nodes, updated)
-    new_edges = _fix_bottom_edges(edges, nodes, {n["id"] for n in bottom_nets})
+    new_edges = _fix_network_edge_handles(edges, nodes, updated, net_h, vm_h)
+    new_edges = _fix_lab_edges(new_edges, nodes, updated, network_to_vms, vm_w)
+    new_edges = _apply_edge_path_options(
+        new_edges, nodes, updated, net_w, vm_w, net_h, vm_h
+    )
     return new_nodes, new_edges
 
 
