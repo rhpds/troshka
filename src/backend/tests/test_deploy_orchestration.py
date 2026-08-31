@@ -3100,6 +3100,13 @@ class TestDestroyTroshkadResources:
         mock_bmc.assert_called_once()
         mock_teardown.assert_called_once()
         mock_sync.assert_called_once()
+        # Must undefine the per-project storage pool (via /pools/cleanup) so it
+        # doesn't leak and wedge virt-install on future deploys.
+        pool_calls = [
+            c for c in mock_start.call_args_list if c.args[1] == "/pools/cleanup"
+        ]
+        assert len(pool_calls) == 1
+        assert pool_calls[0].args[2]["target_dir"].endswith(PROJECT_ID)
 
     @patch("app.services.placement.sync_host_capacity")
     @patch(f"{SVC}._teardown_networks_via_troshkad")

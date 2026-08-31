@@ -7797,6 +7797,16 @@ def _destroy_troshkad_resources(host, project_id, topo, vni_map, session):
     # Remove project VM directory
     pool = _get_host_pool(host, session)
     vm_dir = _vm_dir(project_id, pool)
+
+    # Undefine the per-project storage pool libvirt/virt-install auto-created for
+    # the VM disk directory. Do this before deleting the dir so it deactivates
+    # cleanly; leaked pools accumulate and wedge virt-install on new deploys.
+    try:
+        job_id = start_job(host, "/pools/cleanup", {"target_dir": vm_dir})
+        wait_for_job(host, job_id, timeout=20)
+    except TroshkadError as e:
+        logger.warning("Destroy %s: pool cleanup failed: %s", project_id[:8], e)
+
     paths_to_remove = [vm_dir]
     if pool and pool.mode.startswith("shared"):
         paths_to_remove.append(f"/var/lib/troshka/seeds/{project_id}")

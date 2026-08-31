@@ -6419,6 +6419,7 @@ def _handle_gc_discover(job, params):
     orphan_dirs = _discover_orphan_dirs(job, known_project_ids)
     orphan_containers = _discover_orphan_containers(job, known_project_ids)
     orphan_domains = _discover_orphan_domains(job, known_domains)
+    orphan_pools = _discover_orphan_pools(job, known_project_ids)
     orphan_bridges = _discover_orphan_bridges(job)
     orphan_namespaces = _discover_orphan_namespaces(job, known_project_ids)
     cache_items = _discover_cache_items(job)
@@ -6430,6 +6431,7 @@ def _handle_gc_discover(job, params):
     return {
         "orphan_dirs": orphan_dirs,
         "orphan_domains": orphan_domains,
+        "orphan_pools": orphan_pools,
         "orphan_containers": orphan_containers,
         "orphan_bridges": orphan_bridges,
         "orphan_namespaces": orphan_namespaces,
@@ -6507,6 +6509,94 @@ def _clean_orphan_containers(job, orphan_containers):
         except Exception as e:
             _job_log(job, f"Failed to remove container {ctr}: {e}")
     return removed
+
+
+_VMS_POOL_PREFIXES = (f"{_SHARED_DIR}/vms/", f"{_TROSHKA_DIR}/vms/")
+
+
+def _list_all_pool_names():
+    """All defined libvirt storage pool names."""
+    try:
+        r = subprocess.run(
+            ["virsh", "pool-list", "--all", "--name"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return [p for p in r.stdout.split() if p]
+    except Exception:
+        return []
+
+
+def _pool_target_path(pool_name):
+    """Target <path> of a storage pool, or '' if unknown."""
+    try:
+        out = subprocess.check_output(
+            ["virsh", "pool-dumpxml", pool_name], text=True, timeout=10
+        )
+        m = re.search(r"<path>([^<]+)</path>", out)
+        return m.group(1).strip() if m else ""
+    except Exception:
+        return ""
+
+
+def _undefine_pool(job, pool_name):
+    """Deactivate + undefine a storage pool. Returns True on undefine success."""
+    subprocess.run(
+        ["virsh", "pool-destroy", pool_name], capture_output=True, timeout=10
+    )
+    r = subprocess.run(
+        ["virsh", "pool-undefine", pool_name], capture_output=True, timeout=10
+    )
+    return r.returncode == 0
+
+
+def _project_from_vms_target(target):
+    """Project id from a vms-dir pool target, or '' if not a vms pool."""
+    for pref in _VMS_POOL_PREFIXES:
+        if target.startswith(pref):
+            return target[len(pref) :].strip("/").split("/")[0]
+    return ""
+
+
+def _discover_orphan_pools(job, known_project_ids):
+    """Per-project VMS storage pools whose project is not known. libvirt/virt-install
+    auto-creates a dir pool for the VM disk directory; project destroy leaked them
+    (which also wedged virt-install, since it enumerates all domains/pools)."""
+    known = set(known_project_ids)
+    orphans = []
+    for name in _list_all_pool_names():
+        proj = _project_from_vms_target(_pool_target_path(name))
+        if proj and proj not in known:
+            orphans.append(name)
+    return orphans
+
+
+def _clean_orphan_pools(job, orphan_pools):
+    """Undefine orphan VMS storage pools. Safety: only touches pools under vms dirs."""
+    removed = 0
+    for name in orphan_pools:
+        if not _project_from_vms_target(_pool_target_path(name)):
+            continue
+        if _undefine_pool(job, name):
+            _job_log(job, f"Removed storage pool: {name}")
+            removed += 1
+    return removed
+
+
+def _handle_pool_cleanup(job, params):
+    """Undefine the storage pool(s) whose target matches a project's vms dir.
+    Called during project destroy so the auto-created dir pool doesn't leak."""
+    target = _validate_path(params["target_dir"]).rstrip("/")
+    removed = []
+    for name in _list_all_pool_names():
+        if _pool_target_path(name).rstrip("/") == target and _undefine_pool(job, name):
+            removed.append(name)
+            _job_log(job, f"Removed storage pool: {name}")
+    return {"removed_pools": removed}
+
+
+COMMAND_HANDLERS["pools/cleanup"] = _handle_pool_cleanup
 
 
 def _kill_bmc_processes(job, bmc_dir):
@@ -6671,6 +6761,7 @@ def _handle_gc_clean(job, params):
     """Remove specific orphaned resources provided by the backend."""
     removed_dirs = _clean_orphan_dirs(job, params.get("orphan_dirs", []))
     removed_domains = _clean_orphan_domains(job, params.get("orphan_domains", []))
+    removed_pools = _clean_orphan_pools(job, params.get("orphan_pools", []))
     removed_containers = _clean_orphan_containers(
         job, params.get("orphan_containers", [])
     )
@@ -6688,6 +6779,7 @@ def _handle_gc_clean(job, params):
     return {
         "removed_dirs": removed_dirs,
         "removed_domains": removed_domains,
+        "removed_pools": removed_pools,
         "removed_containers": removed_containers,
         "removed_bridges": removed_bridges,
         "removed_namespaces": removed_namespaces,
@@ -9477,9 +9569,7 @@ def _serial_ios_poke_and_login(child, username, password, domain, timeout_secs):
 
 def _serial_ios_exec_command(child, command, timeout_secs):
     """Run a command at an IOS-XE / EOS prompt and return CLI output."""
-    return _ios_exec_command_impl(
-        PexpectSerialTransport(child), command, timeout_secs
-    )
+    return _ios_exec_command_impl(PexpectSerialTransport(child), command, timeout_secs)
 
 
 def _serial_ios_exec_commands(child, commands, timeout_secs):
@@ -9513,9 +9603,7 @@ def _run_serial_session(domain, timeout_secs, work):
 
 def _serial_junos_poke_and_login(child, domain, timeout_secs):
     """Reach vSRX FreeBSD shell via serial. Returns error dict or None."""
-    err = _junos_poke_and_login_impl(
-        PexpectSerialTransport(child), timeout_secs
-    )
+    err = _junos_poke_and_login_impl(PexpectSerialTransport(child), timeout_secs)
     if err is None:
         return None
     return {"domain": domain, "output": "", "error": err}

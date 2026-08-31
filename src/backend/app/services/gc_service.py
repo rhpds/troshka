@@ -227,6 +227,7 @@ def clean_orphans(host, orphans: dict, db: Session | None = None) -> dict:
         {
             "orphan_dirs": list(set(orphans.get("orphan_dirs", []))),
             "orphan_domains": list(set(orphans.get("orphan_domains", []))),
+            "orphan_pools": list(set(orphans.get("orphan_pools", []))),
             "orphan_containers": orphans.get("orphan_containers", []),
             "orphan_bridges": orphans.get("orphan_bridges", []),
             "orphan_namespaces": orphans.get("orphan_namespaces", []),
