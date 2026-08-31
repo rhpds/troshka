@@ -22,6 +22,13 @@ export interface ShowroomTab {
   proxyTls?: boolean;
   /** Backend hostname (FQDN). When set, proxy by name (Host + SNI) via internal DNS instead of the VM IP. */
   proxyHost?: string;
+  /**
+   * App-proxy hosts for embedding an OAuth-protected cluster app (e.g. the OCP
+   * console). [0] is the iframe target; the rest are login companions (oauth).
+   * Deploy mints one public route per host; nginx Host-routes each to its
+   * internal .local upstream.
+   */
+  proxyHosts?: string[];
   url?: string;
 }
 
@@ -34,6 +41,7 @@ export interface ResolvedShowroomTab {
   proxyPath?: string;
   proxyTls?: boolean;
   proxyHost?: string;
+  appProxyHosts?: string[];
   warning?: string;
 }
 
@@ -127,6 +135,12 @@ export function resolveShowroomTabs(
   return tabs.map((tab) => {
     if (tab.type === "external") {
       return { tab };
+    }
+
+    // App-proxy: embed an OAuth-protected app (console/oauth) at deterministic
+    // public hosts. Served by deploy-time server blocks, not an inline location.
+    if (tab.type === "proxy" && tab.proxyHosts && tab.proxyHosts.length > 0) {
+      return { tab, appProxyHosts: tab.proxyHosts };
     }
 
     // Name-based proxy: target a hostname resolved via the showroom's internal

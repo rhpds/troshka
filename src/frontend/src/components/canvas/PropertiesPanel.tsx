@@ -1949,6 +1949,86 @@ export default function PropertiesPanel() {
                                     label="Reverse proxy"
                                     hint="Nginx path on the showroom and backend port on the target VM."
                                   />
+                                  {/* App-proxy: embed an OAuth-protected app (e.g. OCP console) at public routes */}
+                                  <div style={{ marginBottom: 8 }}>
+                                    <LabelWithHint
+                                      label="Embedded app hosts (OAuth)"
+                                      hint="For an OAuth-protected cluster app like the OCP console. List the internal .local hosts — [0] is the iframe target, the rest are login companions (oauth). Deploy publishes each at a public route and the showroom proxies + rewrites redirects so login works embedded. Takes precedence over the path proxy below."
+                                      style={{ fontSize: 10 }}
+                                    />
+                                    {(tab.proxyHosts || []).map((h, hi) => (
+                                      <div key={hi} style={{ display: "flex", gap: 4, marginBottom: 4 }}>
+                                        <input
+                                          className="props-input"
+                                          placeholder="console-openshift-console.apps.ocp.ocp.local"
+                                          value={h}
+                                          onChange={(e) => {
+                                            const hosts = [...(tab.proxyHosts || [])];
+                                            hosts[hi] = e.target.value;
+                                            const next = showroomTabs.map((t) =>
+                                              t.id === tab.id ? { ...t, proxyHosts: hosts } : t,
+                                            );
+                                            updateShowroomTabs(node!.id, next);
+                                          }}
+                                          style={{ fontFamily: "monospace", fontSize: 11, flex: 1 }}
+                                        />
+                                        <button
+                                          className="props-library-btn"
+                                          style={{ fontSize: 11 }}
+                                          title="Remove host"
+                                          onClick={() => {
+                                            const hosts = (tab.proxyHosts || []).filter((_, i) => i !== hi);
+                                            const next = showroomTabs.map((t) =>
+                                              t.id === tab.id
+                                                ? { ...t, proxyHosts: hosts.length ? hosts : undefined }
+                                                : t,
+                                            );
+                                            updateShowroomTabs(node!.id, next);
+                                          }}
+                                        >
+                                          ✕
+                                        </button>
+                                      </div>
+                                    ))}
+                                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                      <button
+                                        className="props-library-btn"
+                                        style={{ fontSize: 11 }}
+                                        onClick={() => {
+                                          const hosts = [...(tab.proxyHosts || []), ""];
+                                          const next = showroomTabs.map((t) =>
+                                            t.id === tab.id ? { ...t, proxyHosts: hosts } : t,
+                                          );
+                                          updateShowroomTabs(node!.id, next);
+                                        }}
+                                      >
+                                        + Add host
+                                      </button>
+                                      <button
+                                        className="props-library-btn"
+                                        style={{ fontSize: 11 }}
+                                        title="Fill console + oauth hosts"
+                                        onClick={() => {
+                                          const next = showroomTabs.map((t) =>
+                                            t.id === tab.id
+                                              ? {
+                                                  ...t,
+                                                  proxyHosts: [
+                                                    "console-openshift-console.apps.ocp.ocp.local",
+                                                    "oauth-openshift.apps.ocp.ocp.local",
+                                                  ],
+                                                  proxyTls: true,
+                                                  proxyPort: 443,
+                                                }
+                                              : t,
+                                          );
+                                          updateShowroomTabs(node!.id, next);
+                                        }}
+                                      >
+                                        OCP console
+                                      </button>
+                                    </div>
+                                  </div>
                                   <div style={{ marginBottom: 6 }}>
                                     <LabelWithHint
                                       label="Backend host"
