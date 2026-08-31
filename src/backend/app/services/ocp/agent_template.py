@@ -14,6 +14,7 @@ Flow:
 
 import ipaddress
 import re
+import shlex
 import uuid
 from dataclasses import dataclass
 
@@ -1208,7 +1209,7 @@ def _build_bastion_autologin_steps(cluster_name: str, base_domain: str) -> str:
         "    pkill -x firefox 2>/dev/null || true\n"
         "    sleep 2\n"
         "    export GECKODRIVER_PATH=/usr/local/bin/geckodriver\n"
-        f"    python3 /home/cloud-user/ocp-autologin.py '{console_url}' 2>&1 || true\n"
+        f"    python3 /home/cloud-user/ocp-autologin.py {shlex.quote(console_url)} 2>&1 || true\n"
     )
 
 
