@@ -2,7 +2,7 @@
 
 import React, { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { useCanvasStore, type StorageNodeData } from "@/stores/canvasStore";
+import { useCanvasStore, stableNodeData, type StorageNodeData } from "@/stores/canvasStore";
 
 function StorageNodeComponent({ id, data, selected }: NodeProps) {
   const d = data as unknown as StorageNodeData;
@@ -11,13 +11,8 @@ function StorageNodeComponent({ id, data, selected }: NodeProps) {
   const isDirty = React.useMemo(() => {
     const deployed = deployedNodeData[id];
     if (!deployed) return false;
-    const transient = ["resolvedS3Path", "presignedUrl"];
-    const clean = (obj: Record<string, unknown>) => {
-      const copy = { ...obj };
-      for (const k of transient) delete copy[k];
-      return JSON.stringify(copy);
-    };
-    return clean(d as Record<string, unknown>) !== clean(JSON.parse(deployed));
+    // Match the deployed baseline's normalization to avoid false 💾.
+    return JSON.stringify(stableNodeData(d as Record<string, unknown>)) !== deployed;
   }, [id, d, deployedNodeData]);
 
   const formatLabel =

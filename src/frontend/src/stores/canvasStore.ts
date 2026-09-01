@@ -445,9 +445,48 @@ const DEPLOY_TRANSIENT_NODE_KEYS = [
   "externalEndpoints",
 ] as const;
 
-function stableNodeData(data: Record<string, unknown>): Record<string, unknown> {
+// The showroom scaffold's containers are regenerated at deploy from
+// runtime-resolved values the frontend can't reproduce pre-deploy (VM IPs and
+// the route baked into NGINX_B64, the ssh password in wetty commands, and a
+// deploy-normalized wetty memory). Strip exactly those so a clean showroom
+// doesn't read dirty, while user-editable bits (content repo, tab structure)
+// still compare. Applied to both live nodes and the deployed baseline.
+function normalizeShowroomContainer(c: unknown): unknown {
+  if (!c || typeof c !== "object") return c;
+  const out = { ...(c as Record<string, unknown>) };
+  if (Array.isArray(out.envVars)) {
+    out.envVars = (out.envVars as Array<Record<string, unknown>>).filter(
+      (e) => e?.key !== "NGINX_B64" && e?.key !== "UI_CONFIG_B64",
+    );
+  }
+  const name = String(out.name || "");
+  const image = String(out.image || "");
+  if (name.startsWith("wetty-") || image.includes("wetty")) {
+    delete out.memory;
+    if (Array.isArray(out.command)) {
+      out.command = (out.command as unknown[]).filter(
+        (a) => !String(a).startsWith("--ssh-pass="),
+      );
+    } else if (typeof out.command === "string") {
+      out.command = out.command.replace(/--ssh-pass=\S*/, "").trim();
+    }
+  }
+  return out;
+}
+
+export function stableNodeData(
+  data: Record<string, unknown>,
+): Record<string, unknown> {
   const stable = { ...data };
   for (const k of DEPLOY_TRANSIENT_NODE_KEYS) delete stable[k];
+  if (stable.isShowroom) {
+    if (Array.isArray(stable.initContainers)) {
+      stable.initContainers = stable.initContainers.map(normalizeShowroomContainer);
+    }
+    if (Array.isArray(stable.podContainers)) {
+      stable.podContainers = stable.podContainers.map(normalizeShowroomContainer);
+    }
+  }
   return stable;
 }
 
@@ -468,6 +507,7 @@ function buildDeployedBaseline(deployed: DeployedTopologySnapshot | null | undef
     depNodeData[n.id] = JSON.stringify(stableNodeData(n.data || {}));
   }
   const depEdgeKey = (deployed?.edges || [])
+    .filter((e) => !isShowroomGatewayEdge(e as unknown as Edge))
     .map((e) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
     .sort()
     .join("|");
@@ -514,7 +554,11 @@ export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; depl
   const currentNodeIds = nodes.map((n) => n.id).sort().join(",");
   const deployedNodeIds = Object.keys(deployedNodeData).sort().join(",");
   if (currentNodeIds !== deployedNodeIds) return true;
-  const edgeKey = edges.map((e) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`).sort().join("|");
+  const edgeKey = edges
+    .filter((e) => !isShowroomGatewayEdge(e))
+    .map((e) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
+    .sort()
+    .join("|");
   if (edgeKey !== deployedEdgeKey) return true;
   for (const n of nodes) {
     const deployed = deployedNodeData[n.id];

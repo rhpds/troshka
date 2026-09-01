@@ -421,7 +421,7 @@ export function buildWettyContainers(
       name: `wetty-${slugify(vmName)}`,
       image: WETTY_IMAGE,
       cpus: 1,
-      memory: 512,
+      memory: 256, // match deploy (showroom_scaffold._build_wetty_containers)
       envVars: [],
       ports: [{ containerPort: item.wettyPort, hostPort: null, protocol: "tcp" }],
       command: buildWettyCommand(wettyAttrs),
