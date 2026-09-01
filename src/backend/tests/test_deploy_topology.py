@@ -1112,6 +1112,64 @@ def test_inject_showroom_strips_stale_auto_eip_web_only_route_provider():
     assert not pfs["443"].get("extIpId")
 
 
+def test_inject_showroom_strips_allocated_eip_web_only_route_provider():
+    """A previously-allocated (real-IP) web-only EIP is self-healed on redeploy."""
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    topo = {
+        "externalIps": [{"id": "eip-1", "name": "IP-1", "ip": "67.228.103.10"}],
+        "nodes": [
+            {
+                "id": "gw-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "gateway",
+                    "gatewayMode": "nat-portforward",
+                    "portForwards": [],
+                },
+            },
+            {
+                "id": "showroom-1",
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True, "nics": []},
+            },
+        ],
+    }
+    inject_showroom_gateway_port_forwards(topo, {"net-1": 1000}, "ocpvirt")
+    assert topo["externalIps"] == []
+
+
+def test_inject_showroom_keeps_vm_assigned_external_ip_on_route_provider():
+    """A VM-assigned external IP must not be stripped even on route providers."""
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    topo = {
+        "externalIps": [
+            {"id": "eip-1", "name": "vm-eip", "ip": "1.2.3.4", "vmId": "vm-9"}
+        ],
+        "nodes": [
+            {
+                "id": "gw-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "gateway",
+                    "gatewayMode": "nat-portforward",
+                    "portForwards": [],
+                },
+            },
+            {
+                "id": "showroom-1",
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True, "nics": []},
+            },
+        ],
+    }
+    inject_showroom_gateway_port_forwards(topo, {"net-1": 1000}, "ocpvirt")
+    assert topo["externalIps"] == [
+        {"id": "eip-1", "name": "vm-eip", "ip": "1.2.3.4", "vmId": "vm-9"}
+    ]
+
+
 def test_inject_showroom_allocates_eip_for_web_only_cloud_provider():
     """Cloud providers have no ingress, so a showroom still needs its EIP."""
     from app.services.deploy_topology import inject_showroom_gateway_port_forwards

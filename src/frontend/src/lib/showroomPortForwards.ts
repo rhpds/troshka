@@ -171,16 +171,21 @@ function ensureShowroomGatewayPortForwardsOnNodes(
   const merged = injectShowroomPortForwards(existing, firstVni);
   const eipId = externalIps[0]?.id || "";
   const routeWeb = ROUTE_PROVIDERS.has(providerType || "");
-  const withEip = merged.map((pf) => ({
-    ...pf,
-    // On OpenShift-ingress providers, 443/80 are served by a Route — never bind
-    // them to the EIP, and strip any stale binding so saved topologies self-heal
-    // (matches backend deploy_topology.inject_showroom_gateway_port_forwards).
-    extIpId: routeWeb && isWebForward(pf) ? "" : pf.extIpId || eipId,
-    ...(isShowroomInfraForward(pf) || pf.managedByShowroom
-      ? { managedByShowroom: true }
-      : {}),
-  }));
+  const withEip = merged.map((pf) => {
+    const entry: PortForward = { ...pf };
+    if (routeWeb && isWebForward(pf)) {
+      // On OpenShift-ingress providers, 443/80 are served by a Route — never
+      // bind them to the EIP. Remove the key entirely (not "") to match the
+      // backend's entry.pop("extIpId") so the topology doesn't read dirty.
+      delete entry.extIpId;
+    } else {
+      entry.extIpId = pf.extIpId || eipId;
+    }
+    if (isShowroomInfraForward(pf) || pf.managedByShowroom) {
+      entry.managedByShowroom = true;
+    }
+    return entry;
+  });
 
   const needsMode = gwData.gatewayMode !== "nat-portforward";
   const needsPf = !portForwardsEqual(withEip, existing);

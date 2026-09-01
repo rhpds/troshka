@@ -336,9 +336,15 @@ def _strip_showroom_outbound_ports(outbound_ports: str, managed: list[str]) -> s
 
 
 def _strip_auto_showroom_external_ip(topology: dict) -> bool:
-    """Drop the auto-allocated IP-1 slot (route providers serve web via Route)."""
+    """Drop the gateway auto IP-1 (route providers serve web via a Route).
+
+    Only called when no forward needs an EIP, so the auto IP-1 is provably
+    unused — strip it even if a real IP was already allocated (self-heals
+    projects deployed before this fix). A VM-assigned external IP (has vmId) is
+    left untouched.
+    """
     ext = topology.get("externalIps") or []
-    if len(ext) == 1 and not ext[0].get("ip") and ext[0].get("name") == "IP-1":
+    if len(ext) == 1 and ext[0].get("name") == "IP-1" and not ext[0].get("vmId"):
         topology["externalIps"] = []
         return True
     return False
