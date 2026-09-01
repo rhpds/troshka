@@ -350,3 +350,21 @@ def test_migrate_adds_cluster_node():
         if n.get("id") == "cluster-ocp" and n.get("type") == "clusterNode"
     ]
     assert len(cluster_nodes) == 1
+    # 1 cp + 0 workers => sno; assert the node's data mirrors the inferred cluster.
+    cdata = cluster_nodes[0]["data"]
+    assert cdata["name"] == "ocp"
+    assert cdata["type"] == "sno"
+    assert cdata["controlPlane"] == 1
+    assert cdata["workers"] == 0
+    assert cdata["baseDomain"] == "ocp.local"
+    assert "apiVip" in cdata and "ingressVip" in cdata
+    assert cdata["apiVip"] is None and cdata["ingressVip"] is None
+    # The clusters[] entry must carry the generator's sizing/registry defaults.
+    cluster = out["clusters"][0]
+    assert cluster["controlPlaneCpu"] == 8
+    assert cluster["controlPlaneMemory"] == 16384
+    assert cluster["controlPlaneDisk"] == 120
+    assert cluster["workerCpu"] == 4
+    assert cluster["workerMemory"] == 8192
+    assert cluster["workerDisk"] == 100
+    assert cluster["pullThroughRegistry"] is None

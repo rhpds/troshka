@@ -12,6 +12,12 @@ _CLUSTER_ID = "ocp"
 _CLUSTER_NODE_ID = "cluster-ocp"
 _BASE_DOMAIN = "ocp.local"
 
+# Mirror the generator's size defaults (build_topology_clusters in
+# template_loader.py). Defined here rather than imported to avoid a circular
+# import; values MUST stay in sync with _CP_SIZE_DEFAULTS / _WORKER_SIZE_DEFAULTS.
+_CP_SIZE_DEFAULTS = {"cpu": 8, "memory": 16384, "disk": 120}
+_WORKER_SIZE_DEFAULTS = {"cpu": 4, "memory": 8192, "disk": 100}
+
 
 def _is_ocp_node(node: dict) -> bool:
     return node.get("data", {}).get("os") == "rhcos"
@@ -83,10 +89,17 @@ def migrate_topology_clusters(topology: dict) -> dict:
             "type": ctype,
             "controlPlane": control_plane,
             "workers": wk,
+            "controlPlaneCpu": _CP_SIZE_DEFAULTS["cpu"],
+            "controlPlaneMemory": _CP_SIZE_DEFAULTS["memory"],
+            "controlPlaneDisk": _CP_SIZE_DEFAULTS["disk"],
+            "workerCpu": _WORKER_SIZE_DEFAULTS["cpu"],
+            "workerMemory": _WORKER_SIZE_DEFAULTS["memory"],
+            "workerDisk": _WORKER_SIZE_DEFAULTS["disk"],
             "baseDomain": _BASE_DOMAIN,
             "apiVip": None,
             "ingressVip": None,
             "ocpVersion": "4.20",
+            "pullThroughRegistry": None,
         }
     ]
     return topology
