@@ -1007,6 +1007,63 @@ class TestVmUpdate:
 
 
 # ---------------------------------------------------------------------------
+# handlers/vm.py — observedGeneration (reconfigure waiter signal)
+# ---------------------------------------------------------------------------
+
+
+class TestVmObservedGeneration:
+    @staticmethod
+    def _get_handler(name):
+        import importlib
+        import kopf
+
+        importlib.import_module("handlers.vm")
+        for on_handler in (kopf.on.update, kopf.on.resume):
+            for call_args in reversed(on_handler.return_value.call_args_list):
+                fn = call_args[0][0]
+                if asyncio.iscoroutinefunction(fn) and fn.__name__ == name:
+                    return fn
+        raise RuntimeError(f"Could not find {name} in kopf mock call args")
+
+    @patch("handlers.vm.client")
+    def test_noop_update_records_observed_generation(self, _mock_client):
+        vm_update = self._get_handler("vm_update")
+        p = MockPatch()
+        spec = {"disks": []}
+        asyncio.run(
+            vm_update(
+                spec=spec,
+                old={"spec": spec},
+                new={"spec": spec},
+                diff=[],
+                status={},
+                meta={"generation": 7},
+                namespace="ns",
+                name="vm-1",
+                body={},
+                patch=p,
+            )
+        )
+        # No-op reconcile still tells the waiter this generation was observed.
+        assert p.status["observedGeneration"] == 7
+        assert "state" not in p.status
+
+    def test_resume_backfills_observed_generation_when_absent(self):
+        vm_resume = self._get_handler("vm_resume")
+        p = MockPatch()
+        asyncio.run(vm_resume(meta={"generation": 3}, status={}, patch=p))
+        assert p.status["observedGeneration"] == 3
+
+    def test_resume_does_not_overwrite_existing_observed_generation(self):
+        vm_resume = self._get_handler("vm_resume")
+        p = MockPatch()
+        asyncio.run(
+            vm_resume(meta={"generation": 9}, status={"observedGeneration": 4}, patch=p)
+        )
+        assert "observedGeneration" not in p.status
+
+
+# ---------------------------------------------------------------------------
 # helpers/topology.py — _find_storage_vm_pair
 # ---------------------------------------------------------------------------
 

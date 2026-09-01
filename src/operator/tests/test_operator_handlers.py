@@ -3537,6 +3537,131 @@ class TestWaitForDatavolume:
         assert result is False
 
 
+class TestCheckDatavolumeStatusTerminalConditions:
+    """Cover terminal clone-validation conditions in _check_datavolume_status."""
+
+    def test_clone_validation_failed_reason_returns_failed(self):
+        from handlers.vm import _check_datavolume_status
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "status": {
+                "phase": "CloneScheduled",
+                "conditions": [
+                    {"type": "Bound", "status": "True", "reason": "Bound"},
+                    {
+                        "type": "Running",
+                        "status": "False",
+                        "reason": "CloneValidationFailed",
+                        "message": "clone validation failed",
+                    },
+                ],
+            }
+        }
+
+        assert _check_datavolume_status(custom_api, "dv-1", "ns1") == "failed"
+
+    def test_target_smaller_than_source_returns_failed(self):
+        from handlers.vm import _check_datavolume_status
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "status": {
+                "phase": "Pending",
+                "conditions": [
+                    {"type": "Bound", "status": "True", "reason": "Bound"},
+                    {
+                        "type": "Running",
+                        "status": "False",
+                        "reason": "Error",
+                        "message": (
+                            "target resources requests storage size is "
+                            "smaller than the source"
+                        ),
+                    },
+                ],
+            }
+        }
+
+        assert _check_datavolume_status(custom_api, "dv-1", "ns1") == "failed"
+
+    def test_clone_validation_failed_in_message_returns_failed(self):
+        from handlers.vm import _check_datavolume_status
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "status": {
+                "phase": "Pending",
+                "conditions": [
+                    {
+                        "type": "Bound",
+                        "status": "False",
+                        "reason": "Error",
+                        "message": "CloneValidationFailed: something bad",
+                    },
+                ],
+            }
+        }
+
+        assert _check_datavolume_status(custom_api, "dv-1", "ns1") == "failed"
+
+    def test_in_progress_clone_still_pending(self):
+        from handlers.vm import _check_datavolume_status
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "status": {
+                "phase": "CloneInProgress",
+                "conditions": [
+                    {"type": "Bound", "status": "True", "reason": "Bound"},
+                    {
+                        "type": "Running",
+                        "status": "True",
+                        "reason": "Pod is running",
+                        "message": "Clone from ns/src in progress (42.0%)",
+                    },
+                    {"type": "Ready", "status": "False"},
+                ],
+            }
+        }
+
+        assert _check_datavolume_status(custom_api, "dv-1", "ns1") == "pending"
+
+    def test_no_conditions_still_pending(self):
+        from handlers.vm import _check_datavolume_status
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "status": {"phase": "ImportInProgress"}
+        }
+
+        assert _check_datavolume_status(custom_api, "dv-1", "ns1") == "pending"
+
+    def test_terminal_condition_makes_wait_return_false_fast(self):
+        """A clone-validation-failed DV must NOT block on the 3600s timeout."""
+        from handlers.vm import _wait_for_datavolume
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "status": {
+                "phase": "CloneScheduled",
+                "conditions": [
+                    {
+                        "type": "Running",
+                        "status": "False",
+                        "reason": "CloneValidationFailed",
+                        "message": "clone validation failed",
+                    },
+                ],
+            }
+        }
+
+        with patch("handlers.vm.asyncio.sleep") as mock_sleep:
+            result = asyncio.run(_wait_for_datavolume(custom_api, "dv-1", "ns1"))
+        assert result is False
+        mock_sleep.assert_not_called()
+
+
 class TestEnsureGoldenPvc:
     @patch("handlers.vm._wait_for_datavolume")
     def test_existing_pvc_returns_name(self, mock_wait):
@@ -9241,6 +9366,54 @@ class TestProvisionBlankDiskEdgeCases:
         assert "disk-dflt" in result
         # Verify the PVC was created (size checked inside build_blank_pvc)
         core_api.create_namespaced_persistent_volume_claim.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _golden_requested_gb — source-size floor for clone targets
+# ---------------------------------------------------------------------------
+
+
+class TestGoldenRequestedGb:
+    """_golden_requested_gb must reflect the golden PVC's ACTUAL capacity.
+
+    CDI validates a clone target against the source PVC's real bound capacity
+    (status.capacity), which can exceed its requested size (Ceph RBD rounds up;
+    CDI expands the import to fit the source). Flooring the clone at the
+    requested size under-sizes it and CDI rejects with CloneValidationFailed.
+    """
+
+    def test_prefers_capacity_over_requested(self):
+        from handlers.vm import _golden_requested_gb
+
+        core_api = MagicMock()
+        golden = MagicMock()
+        golden.status.capacity = {"storage": "30Gi"}
+        golden.spec.resources.requests = {"storage": "20Gi"}
+        core_api.read_namespaced_persistent_volume_claim.return_value = golden
+
+        # Real incident: requested 20Gi, actual capacity 30Gi -> must return 30.
+        assert _golden_requested_gb(core_api, "golden-abc") == 30
+
+    def test_falls_back_to_requested_when_capacity_absent(self):
+        from handlers.vm import _golden_requested_gb
+
+        core_api = MagicMock()
+        golden = MagicMock()
+        golden.status.capacity = None
+        golden.spec.resources.requests = {"storage": "20Gi"}
+        core_api.read_namespaced_persistent_volume_claim.return_value = golden
+
+        assert _golden_requested_gb(core_api, "golden-abc") == 20
+
+    def test_returns_zero_when_read_fails(self):
+        from handlers.vm import _golden_requested_gb
+
+        core_api = MagicMock()
+        core_api.read_namespaced_persistent_volume_claim.side_effect = Exception(
+            "PVC not found"
+        )
+
+        assert _golden_requested_gb(core_api, "golden-abc") == 0
 
 
 # ---------------------------------------------------------------------------

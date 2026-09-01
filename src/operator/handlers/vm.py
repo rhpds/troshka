@@ -127,6 +127,35 @@ def _check_owner_exists(custom_api, owner_name, owner_namespace):
         return True
 
 
+def _is_terminal_dv_condition(conditions):
+    """Return True if a DataVolume condition indicates an unrecoverable error.
+
+    CDI clone-validation failures leave the DataVolume in a non-terminal phase
+    (e.g. CloneScheduled/Pending) forever, so we must detect them via the
+    conditions rather than waiting for phase Failed/Error. Be conservative:
+    only clearly-terminal conditions count, so in-progress import/clone states
+    keep waiting.
+    """
+    for cond in conditions or []:
+        if not isinstance(cond, dict):
+            continue
+        ctype = str(cond.get("type", ""))
+        status = str(cond.get("status", ""))
+        reason = str(cond.get("reason", ""))
+        message = str(cond.get("message", ""))
+        # Explicit clone validation failure (by reason or message).
+        if "CloneValidationFailed" in reason or "CloneValidationFailed" in message:
+            return True
+        # A Bound/Running condition that is False with a terminal size mismatch.
+        if (
+            ctype in ("Bound", "Running")
+            and status == "False"
+            and "smaller than the source" in message
+        ):
+            return True
+    return False
+
+
 def _check_datavolume_status(custom_api, name, namespace):
     """Check DataVolume phase. Returns 'ready', 'failed', 'deleted', or 'pending'."""
     try:
@@ -137,13 +166,18 @@ def _check_datavolume_status(custom_api, name, namespace):
             plural="datavolumes",
             name=name,
         )
-        phase = dv.get("status", {}).get("phase", "")
+        status_obj = dv.get("status", {})
+        phase = status_obj.get("phase", "")
+        conditions = status_obj.get("conditions", [])
         if phase == "Succeeded":
             return "ready"
         if phase in ("Failed", "Error"):
+            logger.error(f"DataVolume {name} failed: {conditions}")
+            return "failed"
+        if _is_terminal_dv_condition(conditions):
             logger.error(
-                f"DataVolume {name} failed: "
-                f"{dv.get('status', {}).get('conditions', [])}"
+                f"DataVolume {name} is in a terminal error state, "
+                f"failing fast: {conditions}"
             )
             return "failed"
         return "pending"
@@ -325,16 +359,23 @@ def _create_clone_datavolume(custom_api, namespace, pvc_name, clone_dv):
 
 
 def _golden_requested_gb(core_api, golden_name):
-    """Return the golden PVC's requested storage in GiB (0 if unavailable).
+    """Return the golden PVC's storage size in GiB (0 if unavailable).
 
-    Passed to build_clone_datavolume so the clone request is floored at the
-    source size; otherwise CDI rejects the clone with CloneValidationFailed when
-    the golden was cached under a larger size_gb than the current disk.
+    Prefers the golden's ACTUAL bound capacity (status.capacity) over its
+    requested size (spec.resources.requests): CDI validates a clone target
+    against the source PVC's real capacity, which can exceed the request (Ceph
+    RBD rounds up; CDI expands the import to fit the source; or the golden was
+    first created under a smaller disk's sizeGb). Passed to
+    build_clone_datavolume so the clone request is floored at the source size;
+    otherwise CDI rejects the clone with CloneValidationFailed.
     """
     try:
         golden = core_api.read_namespaced_persistent_volume_claim(
             name=golden_name, namespace=CACHE_NAMESPACE
         )
+        capacity = getattr(golden.status, "capacity", None)
+        if isinstance(capacity, dict) and capacity.get("storage"):
+            return int(str(capacity["storage"]).rstrip("Gi"))
         requested = golden.spec.resources.requests.get("storage", "")
         if requested:
             return int(str(requested).rstrip("Gi"))
@@ -864,6 +905,27 @@ def _kubevirt_admission_error(
     return kopf.PermanentError(summary)
 
 
+def _mark_observed(patch, meta):
+    """Record the reconciled spec generation on the CR status.
+
+    The reconfigure waiter (_wait_kubevirt_vms_ready) treats a changed VM as
+    settled once observedGeneration >= metadata.generation. Writing it at the end
+    of every reconcile — including the no-op path — makes that wait deterministic
+    instead of burning the full deadline when a reconcile changes nothing.
+    """
+    generation = meta.get("generation")
+    if generation is not None:
+        patch.status["observedGeneration"] = generation
+
+
+@kopf.on.resume(CRD_GROUP, CRD_VERSION, "troshkavms")
+async def vm_resume(meta, status, patch, **_):
+    """Backfill observedGeneration for VMs reconciled before this field existed,
+    so the reconfigure waiter has a signal immediately after an operator restart."""
+    if status.get("observedGeneration") is None:
+        _mark_observed(patch, meta)
+
+
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkavms")
 async def vm_create(spec, meta, namespace, name, body, patch, **_):
     logger.info(f"Creating VM {name} in {namespace}")
@@ -968,6 +1030,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
     )
     patch.status["kubevirtVmName"] = kv_vm["metadata"]["name"]
     patch.status.pop("message", None)
+    _mark_observed(patch, meta)
     logger.info(f"TroshkaVM {name} reconciled")
 
 
@@ -1267,6 +1330,7 @@ async def vm_update(
     old_spec = (old or {}).get("spec", {})
     new_spec = (new or {}).get("spec", {})
     if old_spec == new_spec:
+        _mark_observed(patch, meta)
         return
 
     kv_name = status.get("kubevirtVmName", f"troshka-{name}")
@@ -1349,6 +1413,7 @@ async def vm_update(
     patch.status["state"] = "Running" if power_on else "Stopped"
     patch.status["kubevirtVmName"] = kv_vm["metadata"]["name"]
     patch.status.pop("message", None)
+    _mark_observed(patch, meta)
     logger.info(f"TroshkaVM {name} reconfigure complete")
 
 

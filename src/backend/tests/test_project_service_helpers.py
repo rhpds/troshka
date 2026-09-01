@@ -579,7 +579,6 @@ class TestWaitKubevirtVmsReady(unittest.TestCase):
         s,
         deadline_secs=300,
         changed_cr_names=None,
-        pre_domain_uuids=None,
     ):
         from app.api.projects import _wait_kubevirt_vms_ready
 
@@ -590,7 +589,6 @@ class TestWaitKubevirtVmsReady(unittest.TestCase):
             proj,
             s,
             changed_cr_names=changed_cr_names,
-            pre_domain_uuids=pre_domain_uuids,
             deadline_secs=deadline_secs,
         )
 
@@ -615,19 +613,18 @@ class TestWaitKubevirtVmsReady(unittest.TestCase):
     @patch("app.services.deploy_service._set_deploy_progress")
     @patch("time.sleep")
     @patch("time.time", side_effect=[1000, 1000, 1000, 1000, 1005, 1005])
-    def test_changed_vm_stale_running_waits_for_reconfigure(
+    def test_changed_vm_stale_generation_waits_then_settles(
         self, _mt, _ms, _mock_set, _mock_del, _notify
     ):
+        # observedGeneration lags the spec generation until the operator finishes
+        # reconciling; the waiter must keep polling until it catches up.
         custom_api = MagicMock()
         custom_api.list_namespaced_custom_object.side_effect = [
             {
                 "items": [
                     {
-                        "metadata": {"name": "vm-281550eb"},
-                        "status": {
-                            "state": "Running",
-                            "domainUuid": "old-domain-uuid",
-                        },
+                        "metadata": {"name": "vm-281550eb", "generation": 3},
+                        "status": {"state": "Running", "observedGeneration": 2},
                         "spec": {"name": "rtr3"},
                     }
                 ]
@@ -635,8 +632,8 @@ class TestWaitKubevirtVmsReady(unittest.TestCase):
             {
                 "items": [
                     {
-                        "metadata": {"name": "vm-281550eb"},
-                        "status": {"state": "Reconfiguring"},
+                        "metadata": {"name": "vm-281550eb", "generation": 3},
+                        "status": {"state": "Reconfiguring", "observedGeneration": 2},
                         "spec": {"name": "rtr3"},
                     }
                 ]
@@ -644,11 +641,8 @@ class TestWaitKubevirtVmsReady(unittest.TestCase):
             {
                 "items": [
                     {
-                        "metadata": {"name": "vm-281550eb"},
-                        "status": {
-                            "state": "Running",
-                            "domainUuid": "old-domain-uuid",
-                        },
+                        "metadata": {"name": "vm-281550eb", "generation": 3},
+                        "status": {"state": "Running", "observedGeneration": 3},
                         "spec": {"name": "rtr3"},
                     }
                 ]
@@ -661,7 +655,6 @@ class TestWaitKubevirtVmsReady(unittest.TestCase):
             MagicMock(),
             MagicMock(),
             changed_cr_names=["vm-281550eb"],
-            pre_domain_uuids={"vm-281550eb": "old-domain-uuid"},
             deadline_secs=30,
         )
         assert result is None
@@ -671,18 +664,18 @@ class TestWaitKubevirtVmsReady(unittest.TestCase):
     @patch("app.services.deploy_service._set_deploy_progress")
     @patch("time.sleep")
     @patch("time.time", side_effect=[1000, 1000])
-    def test_changed_vm_fast_reconfigure_domain_uuid(
+    def test_changed_vm_observed_generation_ready_immediately(
         self, _mt, _ms, _mock_set, _mock_del
     ):
+        # observedGeneration already matches the spec generation and the VM is
+        # Running: the operator finished (or the change was a no-op), so the
+        # waiter must return at once instead of burning the full deadline.
         custom_api = MagicMock()
         custom_api.list_namespaced_custom_object.return_value = {
             "items": [
                 {
-                    "metadata": {"name": "vm-281550eb"},
-                    "status": {
-                        "state": "Running",
-                        "domainUuid": "new-domain-uuid",
-                    },
+                    "metadata": {"name": "vm-281550eb", "generation": 4},
+                    "status": {"state": "Running", "observedGeneration": 4},
                     "spec": {"name": "rtr3"},
                 }
             ]
@@ -694,8 +687,7 @@ class TestWaitKubevirtVmsReady(unittest.TestCase):
             MagicMock(),
             MagicMock(),
             changed_cr_names=["vm-281550eb"],
-            pre_domain_uuids={"vm-281550eb": "old-domain-uuid"},
-            deadline_secs=30,
+            deadline_secs=300,
         )
         assert result is None
         assert custom_api.list_namespaced_custom_object.call_count == 1
