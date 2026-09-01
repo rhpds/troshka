@@ -402,7 +402,9 @@ def inject_showroom_gateway_port_forwards(
 
     ext_ips = topology.get("externalIps") or []
     eip_id = str(ext_ips[0].get("id", "")) if ext_ips else ""
-    if eip_id:
+    # Run whenever there's an EIP to bind OR a route provider that must strip
+    # extIpId from 443/80 — the latter matters even when no EIP exists.
+    if eip_id or route_web:
         new_merged = []
         for pf in merged:
             is_showroom = pf.get("managedByShowroom") or (
@@ -415,19 +417,27 @@ def inject_showroom_gateway_port_forwards(
             if is_showroom:
                 entry["managedByShowroom"] = True
             # On OpenShift-ingress providers, 443/80 are served by a Route — strip
-            # any extIpId so they stay Route-only (also self-heals topologies where
-            # an EIP was wrongly assigned to the showroom 443). On cloud providers
-            # there is no ingress, so 443/80 stay bound to the EIP like everything
-            # else.
+            # any extIpId (removing the key, not setting "") so they stay
+            # Route-only and match the frontend. Otherwise bind to the EIP.
             if route_web and str(pf.get("extPort")) in ("443", "80"):
                 entry.pop("extIpId", None)
-            else:
+            elif eip_id:
                 entry["extIpId"] = pf.get("extIpId") or eip_id
             new_merged.append(entry)
         merged = new_merged
 
     if merged != existing:
         data["portForwards"] = merged
+        changed = True
+
+    # gatewayMode is nat-portforward only when a forward is actually EIP-bound;
+    # route-served (no extIpId) forwards need only plain NAT. Keeps the deployed
+    # topology in step with the frontend so it doesn't read dirty.
+    desired_mode = (
+        "nat-portforward" if any(pf.get("extIpId") for pf in merged) else "nat"
+    )
+    if data.get("gatewayMode") != desired_mode:
+        data["gatewayMode"] = desired_mode
         changed = True
 
     if data.get("outboundPolicy") == "restrict":

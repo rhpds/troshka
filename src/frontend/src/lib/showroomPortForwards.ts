@@ -187,7 +187,11 @@ function ensureShowroomGatewayPortForwardsOnNodes(
     return entry;
   });
 
-  const needsMode = gwData.gatewayMode !== "nat-portforward";
+  // nat-portforward only when a forward is actually EIP-bound; route-served
+  // (no extIpId) forwards need only plain NAT. Mirrors the backend so the
+  // topology doesn't read dirty.
+  const desiredMode = withEip.some((pf) => pf.extIpId) ? "nat-portforward" : "nat";
+  const needsMode = gwData.gatewayMode !== desiredMode;
   const needsPf = !portForwardsEqual(withEip, existing);
   const outboundInject =
     gwData.outboundPolicy === "restrict"
@@ -208,7 +212,7 @@ function ensureShowroomGatewayPortForwardsOnNodes(
       ...n,
       data: {
         ...n.data,
-        ...(needsMode ? { gatewayMode: "nat-portforward" } : {}),
+        ...(needsMode ? { gatewayMode: desiredMode } : {}),
         ...(needsPf ? { portForwards: withEip } : {}),
         ...(needsOutbound
           ? {

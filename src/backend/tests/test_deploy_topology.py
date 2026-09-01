@@ -1079,8 +1079,11 @@ def test_inject_showroom_no_eip_for_web_only_route_provider():
     }
     inject_showroom_gateway_port_forwards(topo, {"net-1": 1000}, "ocpvirt")
     assert topo["externalIps"] == []
-    pfs = {pf["extPort"]: pf for pf in topo["nodes"][0]["data"]["portForwards"]}
-    assert not pfs["443"].get("extIpId")
+    gw = topo["nodes"][0]["data"]
+    pfs = {pf["extPort"]: pf for pf in gw["portForwards"]}
+    # Route-served: no extIpId key at all (not ""), and plain NAT (no EIP forward)
+    assert "extIpId" not in pfs["443"]
+    assert gw["gatewayMode"] == "nat"
 
 
 def test_inject_showroom_strips_stale_auto_eip_web_only_route_provider():
@@ -1195,8 +1198,11 @@ def test_inject_showroom_allocates_eip_for_web_only_cloud_provider():
     }
     inject_showroom_gateway_port_forwards(topo, {"net-1": 1000}, "ec2")
     assert len(topo["externalIps"]) == 1
-    pfs = {pf["extPort"]: pf for pf in topo["nodes"][0]["data"]["portForwards"]}
+    gw = topo["nodes"][0]["data"]
+    pfs = {pf["extPort"]: pf for pf in gw["portForwards"]}
     assert pfs["443"].get("extIpId") == topo["externalIps"][0]["id"]
+    # EIP-bound forward -> nat-portforward
+    assert gw["gatewayMode"] == "nat-portforward"
 
 
 def test_troshkad_network_entries_includes_infra_transit():
