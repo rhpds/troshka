@@ -201,3 +201,74 @@ def test_generated_topology_has_clusters_and_member_refs():
     members = [n for n in topo["nodes"] if n.get("data", {}).get("clusterId") == "prod"]
     assert len(members) == 5  # 3 cp + 2 workers
     assert all(n.get("parentNode") == "cluster-prod" for n in members)
+
+
+def test_generate_topology_multi_cluster_membership():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "name": "t",
+        "install_method": "agent",
+        "category": "openshift",
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "ocp": [
+            {"name": "prod", "type": "standard", "workers": 2},
+            {"name": "dev", "type": "sno"},
+        ],
+    }
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+
+    # Two clusters and two boundary nodes.
+    assert {c["id"] for c in topo["clusters"]} == {"prod", "dev"}
+    cluster_node_ids = {
+        n["id"] for n in topo["nodes"] if n.get("type") == "clusterNode"
+    }
+    assert cluster_node_ids == {"cluster-prod", "cluster-dev"}
+
+    prod_members = [
+        n for n in topo["nodes"] if n.get("data", {}).get("clusterId") == "prod"
+    ]
+    dev_members = [
+        n for n in topo["nodes"] if n.get("data", {}).get("clusterId") == "dev"
+    ]
+    # prod = 3 cp + 2 workers, dev (sno) = 1 cp.
+    assert len(prod_members) == 5
+    assert len(dev_members) == 1
+    assert all(n.get("parentNode") == "cluster-prod" for n in prod_members)
+    assert all(n.get("parentNode") == "cluster-dev" for n in dev_members)
+
+
+def test_non_rhcos_vm_excluded_from_cluster():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "name": "t",
+        "install_method": "agent",
+        "category": "openshift",
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "ocp": [
+            {"name": "prod", "type": "sno"},
+            {"name": "dev", "type": "sno"},
+        ],
+        # A non-RHCOS VM tagged with a cluster must NOT become a member.
+        "vms": {
+            "bastion": {"role": "bastion", "os": "rhel", "cluster": "prod"},
+        },
+    }
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+
+    bastion = next(
+        n
+        for n in topo["nodes"]
+        if n.get("type") == "vmNode" and n["data"]["name"] == "bastion"
+    )
+    assert "clusterId" not in bastion["data"]
+    assert "parentNode" not in bastion

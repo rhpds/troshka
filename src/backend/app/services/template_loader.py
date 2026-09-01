@@ -183,9 +183,14 @@ def materialize_cluster_vms(clusters: list[dict], vms_def: dict) -> dict:
 
 
 def _member_cluster_id(cfg, by_name, single, only_id):
-    """Return the cluster id a single VM config belongs to (or None)."""
+    """Return the cluster id a single VM config belongs to (or None).
+
+    Only RHCOS VMs are treated as cluster members (single- and multi-cluster).
+    """
+    if cfg.get("os", "rhcos") != "rhcos":
+        return None
     if single:
-        return only_id if cfg.get("os", "rhcos") == "rhcos" else None
+        return only_id
     return by_name.get(cfg.get("cluster"))
 
 
@@ -222,6 +227,14 @@ def _prepare_ocp_clusters(tmpl, vms_def):
             c["nodeId"] = f"cluster-{c['id']}"
     vm_cluster_map = _cluster_id_for_vm(vms_def, clusters)
     return vms_def, clusters, vm_cluster_map
+
+
+def _stamp_cluster_membership(vm_node, vm_cluster_map, vm_name):
+    """Stamp cluster membership (clusterId + parentNode) on a member VM node."""
+    cluster_id = vm_cluster_map.get(vm_name)
+    if cluster_id:
+        vm_node["data"]["clusterId"] = cluster_id
+        vm_node["parentNode"] = f"cluster-{cluster_id}"
 
 
 def _build_cluster_boundary_nodes(clusters):
@@ -1318,10 +1331,7 @@ def _generate_topology_from_vms(
         vm_node, disk_nodes, disk_edges, iso_nodes_edges, nic_edges = _build_vm_data(
             vm_name, vm_cfg, vms_def, nets_def, net_ids, vm_x, VM_ROW_Y
         )
-        cluster_id = vm_cluster_map.get(vm_name)
-        if cluster_id:
-            vm_node["data"]["clusterId"] = cluster_id
-            vm_node["parentNode"] = f"cluster-{cluster_id}"
+        _stamp_cluster_membership(vm_node, vm_cluster_map, vm_name)
         nodes.append(vm_node)
         nodes.extend(disk_nodes)
         edges.extend(disk_edges)
@@ -1399,9 +1409,8 @@ def _generate_topology_from_vms(
         "externalIps": external_ips,
         "startOrder": start_order,
         "hiddenNodeIds": hidden_ids,
+        "clusters": clusters,
     }
-    if clusters:
-        result["clusters"] = clusters
     if showroom_meta is not None:
         result["showroom"] = showroom_meta
     elif tmpl.get("showroom"):
