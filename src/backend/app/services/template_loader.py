@@ -140,11 +140,18 @@ def _make_node(cluster, role, cpu, memory, disk):
 
 def _topup(vms, cluster, role, want, cpu, memory, disk, single):
     have = _existing_role_names(vms, cluster["name"], role, single)
+    shortfall = want - len(have)
+    if shortfall <= 0:
+        return
     prefix = "cp" if role == "control-plane" else "worker"
-    for i in range(len(have), want):
-        vms[f"{cluster['id']}-{prefix}-{i}"] = _make_node(
-            cluster, role, cpu, memory, disk
-        )
+    i = 0
+    while shortfall > 0:
+        name = f"{cluster['id']}-{prefix}-{i}"
+        i += 1
+        if name in vms:
+            continue
+        vms[name] = _make_node(cluster, role, cpu, memory, disk)
+        shortfall -= 1
 
 
 def materialize_cluster_vms(clusters: list[dict], vms_def: dict) -> dict:

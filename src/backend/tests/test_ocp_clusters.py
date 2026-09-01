@@ -131,6 +131,24 @@ def test_materialize_preserves_enumerated_vms():
     assert len([c for c in vms.values() if c.get("role") == "control-plane"]) == 3
 
 
+def test_materialize_does_not_overwrite_gapped_enumerated_vm():
+    from app.services.template_loader import (
+        build_topology_clusters,
+        materialize_cluster_vms,
+        normalize_ocp_section,
+    )
+
+    ocp = normalize_ocp_section([{"name": "prod", "type": "standard", "workers": 0}])
+    # enumerated CP at a gapped/high index carrying a distinctive field
+    vms_in = {"prod-cp-2": {"role": "control-plane", "cluster": "prod", "cpu": 32}}
+    clusters = build_topology_clusters(ocp, vms_def=vms_in)
+    vms = materialize_cluster_vms(clusters, vms_def=vms_in)
+    # the enumerated node must survive untouched
+    assert vms["prod-cp-2"]["cpu"] == 32
+    # exactly 3 control-plane VMs total (enumerated + generated)
+    assert len([c for c in vms.values() if c.get("role") == "control-plane"]) == 3
+
+
 def test_materialize_sno_single_node():
     from app.services.template_loader import (
         build_topology_clusters,
