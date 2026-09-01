@@ -398,6 +398,28 @@ def test_apply_update_dev_backend_only_when_workers_opted_out(monkeypatch, tmp_p
     assert calls["args"][1:] == ["restart", "backend"]
 
 
+def test_apply_update_dev_strips_detached_env(monkeypatch, tmp_path):
+    """The spawned restart must not inherit the supervisor 'detached' markers, or
+    the fresh supervisor won't re-detach and dev-services.sh hangs."""
+    _reset()
+    monkeypatch.setattr(app_updater, "resolve_mode", lambda: "dev")
+    monkeypatch.setattr(app_updater, "_RESTART_LOCK", tmp_path / "restart.lock")
+    monkeypatch.setenv("TROSHKA_SUPERVISOR_DETACHED", "1")
+    monkeypatch.setenv("TROSHKA_WORKER_SUPERVISOR_DETACHED", "1")
+    calls = {}
+
+    def fake_posix_spawn(path, argv, env, file_actions=None, setsid=False):
+        calls["env"] = env
+        return 4242
+
+    monkeypatch.setattr(app_updater.os, "posix_spawn", fake_posix_spawn)
+    monkeypatch.setattr(app_updater.os, "open", lambda *a, **k: 3)
+    monkeypatch.setattr(app_updater.os, "close", lambda fd: None)
+    app_updater.apply_update(initiated_by="admin@test")
+    assert "TROSHKA_SUPERVISOR_DETACHED" not in calls["env"]
+    assert "TROSHKA_WORKER_SUPERVISOR_DETACHED" not in calls["env"]
+
+
 def test_apply_update_image_patches_both_deployments(monkeypatch):
     _reset()
     monkeypatch.setattr(app_updater, "resolve_mode", lambda: "image")

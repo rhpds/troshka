@@ -477,6 +477,12 @@ def _apply_dev(
     dev_services = repo / "dev-services.sh"
     env = os.environ.copy()
     env["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
+    # The backend runs with these "already detached" markers set by its own
+    # supervisor. If inherited, the freshly-spawned supervise-backend.py /
+    # supervise-worker.py skip re-detaching and run in the foreground, so
+    # dev-services.sh never returns and the restart hangs. Drop them.
+    env.pop("TROSHKA_SUPERVISOR_DETACHED", None)
+    env.pop("TROSHKA_WORKER_SUPERVISOR_DETACHED", None)
     target = "backend-worker" if restart_workers else "backend"
     _spawn_dev_services_restart(dev_services, repo, env, LOG_PATH, target=target)
     return {"status": "restarting"}
