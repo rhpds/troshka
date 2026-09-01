@@ -182,6 +182,71 @@ def materialize_cluster_vms(clusters: list[dict], vms_def: dict) -> dict:
     return vms
 
 
+def _member_cluster_id(cfg, by_name, single, only_id):
+    """Return the cluster id a single VM config belongs to (or None)."""
+    if single:
+        return only_id if cfg.get("os", "rhcos") == "rhcos" else None
+    return by_name.get(cfg.get("cluster"))
+
+
+def _cluster_id_for_vm(vms_def, clusters):
+    """Map each VM name to its owning cluster id.
+
+    Single-cluster templates attach every RHCOS VM to the cluster; multi-cluster
+    templates map by the VM's explicit ``cluster`` field.
+    """
+    if not clusters:
+        return {}
+    by_name = {c["name"]: c["id"] for c in clusters}
+    single = len(clusters) == 1
+    only_id = clusters[0]["id"] if single else None
+    mapping = {}
+    for name, cfg in (vms_def or {}).items():
+        cid = _member_cluster_id(cfg, by_name, single, only_id)
+        if cid:
+            mapping[name] = cid
+    return mapping
+
+
+def _prepare_ocp_clusters(tmpl, vms_def):
+    """Normalize the ocp section, materialize VMs, and map membership.
+
+    Returns ``(vms_def, clusters, vm_cluster_map)``. ``vms_def`` may be replaced
+    with a materialized copy that includes generated control-plane/worker VMs.
+    """
+    ocp_list = normalize_ocp_section(tmpl.get("ocp"))
+    clusters = build_topology_clusters(ocp_list, vms_def)
+    if clusters:
+        vms_def = materialize_cluster_vms(clusters, vms_def)
+        for c in clusters:
+            c["nodeId"] = f"cluster-{c['id']}"
+    vm_cluster_map = _cluster_id_for_vm(vms_def, clusters)
+    return vms_def, clusters, vm_cluster_map
+
+
+def _build_cluster_boundary_nodes(clusters):
+    """Build React Flow group (``clusterNode``) nodes for each cluster."""
+    cnodes = []
+    for i, c in enumerate(clusters):
+        cnodes.append(
+            {
+                "id": f"cluster-{c['id']}",
+                "type": "clusterNode",
+                "position": {"x": 100 + i * 900, "y": 250},
+                "data": {
+                    "name": c["name"],
+                    "type": c["type"],
+                    "controlPlane": c["controlPlane"],
+                    "workers": c["workers"],
+                    "baseDomain": c["baseDomain"],
+                    "apiVip": c["apiVip"],
+                    "ingressVip": c["ingressVip"],
+                },
+            }
+        )
+    return cnodes
+
+
 def _copy_template_content_sections(tmpl: dict, resolved: dict) -> None:
     """Copy vms/containers and all topology content sections from tmpl."""
     if tmpl.get("vms"):
@@ -1222,6 +1287,10 @@ def _generate_topology_from_vms(
     nets_def = tmpl.get("networks", {})
     gw_def = tmpl.get("gateway", {})
 
+    # Multi-cluster OCP: normalize the ocp section, materialize any missing
+    # control-plane/worker VMs, and stamp cluster membership on member nodes.
+    vms_def, clusters, vm_cluster_map = _prepare_ocp_clusters(tmpl, vms_def)
+
     VM_SPACING = 400
     GW_Y = 0
     NET_ROW_Y = 150
@@ -1240,12 +1309,19 @@ def _generate_topology_from_vms(
     if gw_net_name and gw_net_name in net_ids:
         edges.append(_gw_net_edge(gw_node["id"], net_ids[gw_net_name]))
 
+    # Cluster boundary group nodes must precede their child VM nodes.
+    nodes.extend(_build_cluster_boundary_nodes(clusters))
+
     vm_name_to_id = {}
     vm_x = 150
     for vm_name, vm_cfg in vms_def.items():
         vm_node, disk_nodes, disk_edges, iso_nodes_edges, nic_edges = _build_vm_data(
             vm_name, vm_cfg, vms_def, nets_def, net_ids, vm_x, VM_ROW_Y
         )
+        cluster_id = vm_cluster_map.get(vm_name)
+        if cluster_id:
+            vm_node["data"]["clusterId"] = cluster_id
+            vm_node["parentNode"] = f"cluster-{cluster_id}"
         nodes.append(vm_node)
         nodes.extend(disk_nodes)
         edges.extend(disk_edges)
@@ -1324,6 +1400,8 @@ def _generate_topology_from_vms(
         "startOrder": start_order,
         "hiddenNodeIds": hidden_ids,
     }
+    if clusters:
+        result["clusters"] = clusters
     if showroom_meta is not None:
         result["showroom"] = showroom_meta
     elif tmpl.get("showroom"):
@@ -2051,7 +2129,11 @@ def generate_topology_from_template(
     bmc_password: str = "password",
     external_access: bool = False,  # pragma: allowlist secret
 ) -> dict:
-    if not resolved.get("vms") and not resolved.get("containers"):
+    if (
+        not resolved.get("vms")
+        and not resolved.get("containers")
+        and not resolved.get("ocp")
+    ):
         showroom = resolved.get("showroom") or {}
         if not showroom.get("enabled"):
             raise ValueError("Template must have a 'vms' or 'containers' section")

@@ -161,3 +161,43 @@ def test_materialize_sno_single_node():
     vms = materialize_cluster_vms(clusters, vms_def={})
     assert len([c for c in vms.values() if c.get("role") == "control-plane"]) == 1
     assert len([c for c in vms.values() if c.get("role") == "worker"]) == 0
+
+
+def test_generated_topology_has_clusters_and_member_refs():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "name": "t",
+        "install_method": "agent",
+        "category": "openshift",
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "ocp": [
+            {
+                "name": "prod",
+                "type": "standard",
+                "workers": 2,
+                "api_vip": "10.0.0.10",
+                "ingress_vip": "10.0.0.11",
+            }
+        ],
+    }
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+
+    assert "clusters" in topo and len(topo["clusters"]) == 1
+    prod = topo["clusters"][0]
+    assert prod["id"] == "prod" and prod["nodeId"] == "cluster-prod"
+
+    cluster_nodes = [
+        n
+        for n in topo["nodes"]
+        if n.get("type") == "clusterNode" and n.get("id") == "cluster-prod"
+    ]
+    assert len(cluster_nodes) == 1
+
+    members = [n for n in topo["nodes"] if n.get("data", {}).get("clusterId") == "prod"]
+    assert len(members) == 5  # 3 cp + 2 workers
+    assert all(n.get("parentNode") == "cluster-prod" for n in members)
