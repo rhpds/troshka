@@ -1,3 +1,34 @@
+def test_remap_topology_remaps_cluster_refs():
+    from app.api.patterns import _remap_topology
+
+    topo = {
+        "clusters": [{"id": "prod", "nodeId": "cluster-prod", "name": "prod"}],
+        "nodes": [
+            {"id": "cluster-prod", "type": "clusterNode", "data": {"name": "prod"}},
+            {
+                "id": "n1",
+                "type": "vmNode",
+                "parentNode": "cluster-prod",
+                "data": {
+                    "os": "rhcos",
+                    "clusterId": "prod",
+                    "nics": [{"id": "nic1", "mac": "52:54:00:aa:bb:cc"}],
+                },
+            },
+        ],
+        "edges": [],
+    }
+    out = _remap_topology(topo)
+    new_cluster = out["clusters"][0]
+    assert new_cluster["id"] != "prod"
+    member = next(n for n in out["nodes"] if n["type"] == "vmNode")
+    assert member["data"]["clusterId"] == new_cluster["id"]
+    assert member["parentNode"] == new_cluster["nodeId"]
+    # the cluster node itself got a new id matching nodeId
+    cluster_node = next(n for n in out["nodes"] if n["type"] == "clusterNode")
+    assert cluster_node["id"] == new_cluster["nodeId"]
+
+
 def test_normalize_legacy_mapping_wraps_to_list():
     from app.services.template_loader import normalize_ocp_section
 

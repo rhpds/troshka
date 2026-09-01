@@ -31,6 +31,7 @@ from app.schemas.pattern import (
     PatternUpdate,
 )
 from app.services.pattern_service import get_capture_progress
+from app.services.template_loader import _slug
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/patterns", tags=["patterns"])
@@ -158,6 +159,36 @@ def _clear_external_endpoints(nodes: list) -> None:
             node["data"]["externalEndpoints"] = []
 
 
+def _remap_clusters(topo: dict, id_map: dict) -> None:
+    """Remap clusters[] ids/nodeIds and member clusterId/parentNode refs.
+
+    ``_remap_node_ids`` has already assigned a fresh bare UUID to every node
+    (including the ``clusterNode``), recorded in ``id_map``. Reuse that map so
+    each cluster's ``nodeId`` points at its remapped node, and mint a fresh
+    unique cluster id independent of the node id so two clones of the same
+    pattern into one project never collide.
+    """
+    old_to_new: dict[str, str] = {}
+    for cluster in topo.get("clusters", []):
+        old_cluster_id = cluster.get("id")
+        old_node_id = cluster.get("nodeId")
+        new_node_id = id_map.get(old_node_id, old_node_id)
+        new_cluster_id = old_cluster_id
+        if new_node_id:
+            new_cluster_id = f"{_slug(cluster.get('name'))}-{new_node_id[:6]}"
+        cluster["nodeId"] = new_node_id
+        cluster["id"] = new_cluster_id
+        if old_cluster_id is not None:
+            old_to_new[old_cluster_id] = new_cluster_id
+
+    for node in topo.get("nodes", []):
+        data = node.get("data", {})
+        if data.get("clusterId") in old_to_new:
+            data["clusterId"] = old_to_new[data["clusterId"]]
+        if node.get("parentNode") in id_map:
+            node["parentNode"] = id_map[node["parentNode"]]
+
+
 def _remap_topology(topology: dict) -> dict:
     """Clone a topology dict with all-new UUIDs, MACs, and controller IDs.
 
@@ -188,6 +219,8 @@ def _remap_topology(topology: dict) -> dict:
     ]
 
     _clear_external_endpoints(nodes)
+
+    _remap_clusters(topo, id_map)
 
     return topo
 
