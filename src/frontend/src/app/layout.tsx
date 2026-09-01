@@ -169,6 +169,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const [updateStatus, setUpdateStatus] = useState<any>(null);
   const [applying, setApplying] = useState(false);
   const [updateError, setUpdateError] = useState<string | null>(null);
+  // Dev mode: restart RQ workers alongside the backend so deploy/job code
+  // reloads too (workers run separate processes that don't hot-reload).
+  const [restartWorkers, setRestartWorkers] = useState(true);
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   useEffect(() => { setDismissedKey(localStorage.getItem("troshka-update-dismissed")); }, []);
   useEffect(() => {
@@ -212,7 +215,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     if (applying) return;
     setApplying(true);
     setUpdateError(null);
-    fetch("/api/v1/update/apply", { method: "POST" })
+    fetch("/api/v1/update/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ restart_workers: restartWorkers }),
+    })
       .then((r) => {
         if (!r.ok) {
           setApplying(false);
@@ -482,6 +489,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     ? "Restart backend"
                     : "Apply update"}
               </Button>
+              {updateStatus?.mode === "dev" && (
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={restartWorkers}
+                    disabled={updateBusy}
+                    onChange={(e) => setRestartWorkers(e.target.checked)}
+                  />
+                  Also restart workers
+                </label>
+              )}
               {updateError && (
                 <span style={{ color: "#fca5a5", fontWeight: 500 }}>{updateError}</span>
               )}

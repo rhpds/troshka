@@ -435,7 +435,11 @@ _RESTART_LOCK = RUNTIME_DIR / "backend-restart.lock"
 _RESTART_COOLDOWN_SEC = 120
 
 
-def _apply_dev(initiated_by: str | None = None, client_ip: str | None = None) -> dict:
+def _apply_dev(
+    initiated_by: str | None = None,
+    client_ip: str | None = None,
+    restart_workers: bool = True,
+) -> dict:
     from app.core.crash_report import log_event
     from app.core.lifecycle import audit
 
@@ -473,15 +477,20 @@ def _apply_dev(initiated_by: str | None = None, client_ip: str | None = None) ->
     dev_services = repo / "dev-services.sh"
     env = os.environ.copy()
     env["OBJC_DISABLE_INITIALIZE_FORK_SAFETY"] = "YES"
-    _spawn_dev_services_restart(dev_services, repo, env, LOG_PATH)
+    target = "backend-worker" if restart_workers else "backend"
+    _spawn_dev_services_restart(dev_services, repo, env, LOG_PATH, target=target)
     return {"status": "restarting"}
 
 
 def _spawn_dev_services_restart(
-    dev_services: Path, repo: Path, env: dict[str, str], log_path: Path
+    dev_services: Path,
+    repo: Path,
+    env: dict[str, str],
+    log_path: Path,
+    target: str = "backend",
 ) -> None:
     """Restart backend without fork() in this threaded process (macOS aborts on fork)."""
-    argv = [str(dev_services), "restart", "backend"]
+    argv = [str(dev_services), "restart", target]
     log_str = str(log_path)
     if hasattr(os, "posix_spawn"):
         log_fd = os.open(log_str, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
@@ -523,7 +532,11 @@ def _spawn_dev_services_restart(
         log_fd.close()
 
 
-def apply_update(initiated_by: str | None = None, client_ip: str | None = None) -> dict:
+def apply_update(
+    initiated_by: str | None = None,
+    client_ip: str | None = None,
+    restart_workers: bool = True,
+) -> dict:
     from app.core.lifecycle import audit
 
     mode = resolve_mode()
@@ -531,5 +544,9 @@ def apply_update(initiated_by: str | None = None, client_ip: str | None = None) 
     if mode == "image":
         return _apply_image()
     if mode == "dev":
-        return _apply_dev(initiated_by=initiated_by, client_ip=client_ip)
+        return _apply_dev(
+            initiated_by=initiated_by,
+            client_ip=client_ip,
+            restart_workers=restart_workers,
+        )
     raise ValueError(f"apply_update not supported in mode={mode}")

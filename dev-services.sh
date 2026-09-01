@@ -577,6 +577,18 @@ case "${1:-status}" in
                 echo ""
                 echo "  Backend:    http://localhost:$BACKEND_PORT"
                 ;;
+            backend-worker)
+                # Reload both API code (backend) and deploy/job code (workers) —
+                # used by the in-UI "Restart backend" action (dev mode).
+                FORCE="${3:-}"
+                echo "=== Restarting Backend + Worker ==="
+                stop_worker
+                stop_backend "$FORCE"
+                start_backend
+                start_worker
+                echo ""
+                echo "  Backend:    http://localhost:$BACKEND_PORT"
+                ;;
             frontend)
                 echo "=== Restarting Frontend ==="
                 stop_frontend

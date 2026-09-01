@@ -376,8 +376,26 @@ def test_apply_update_dev_spawns_restart(monkeypatch, tmp_path):
     result = app_updater.apply_update(initiated_by="admin@test", client_ip="127.0.0.1")
     assert result == {"status": "restarting"}
     assert calls["args"][0].endswith("dev-services.sh")
-    assert calls["args"][1:] == ["restart", "backend"]
+    # Default restarts workers too so deploy/job code reloads.
+    assert calls["args"][1:] == ["restart", "backend-worker"]
     assert calls["detached"] is True
+
+
+def test_apply_update_dev_backend_only_when_workers_opted_out(monkeypatch, tmp_path):
+    _reset()
+    monkeypatch.setattr(app_updater, "resolve_mode", lambda: "dev")
+    monkeypatch.setattr(app_updater, "_RESTART_LOCK", tmp_path / "restart.lock")
+    calls = {}
+
+    def fake_posix_spawn(path, argv, env, file_actions=None, setsid=False):
+        calls["args"] = argv
+        return 4242
+
+    monkeypatch.setattr(app_updater.os, "posix_spawn", fake_posix_spawn)
+    monkeypatch.setattr(app_updater.os, "open", lambda *a, **k: 3)
+    monkeypatch.setattr(app_updater.os, "close", lambda fd: None)
+    app_updater.apply_update(initiated_by="admin@test", restart_workers=False)
+    assert calls["args"][1:] == ["restart", "backend"]
 
 
 def test_apply_update_image_patches_both_deployments(monkeypatch):
