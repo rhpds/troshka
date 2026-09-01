@@ -515,6 +515,23 @@ type DeployedTopologySnapshot = {
   bmc?: unknown;
 };
 
+// Cosmetic node-side handles (which edge of the node an edge visually attaches
+// to) drift between the frontend and the deploy-normalized topology — e.g. a
+// gateway→network edge saved as bottom→top comes back left→left. The connection
+// is identical, so normalize these away for dirty comparison. Semantic handles
+// (nic-*, mnt-*, dp-*, disk controllers, …) are kept — they identify a real
+// endpoint and a genuine change should still mark dirty.
+const DIRECTIONAL_HANDLES = new Set(["top", "bottom", "left", "right"]);
+function edgeCompareKey(e: {
+  source: string;
+  sourceHandle?: string | null;
+  target: string;
+  targetHandle?: string | null;
+}): string {
+  const h = (x?: string | null) => (DIRECTIONAL_HANDLES.has(x || "") ? "" : x || "");
+  return `${e.source}-${h(e.sourceHandle)}-${e.target}-${h(e.targetHandle)}`;
+}
+
 function buildDeployedBaseline(deployed: DeployedTopologySnapshot | null | undefined) {
   const depNodeData: Record<string, string> = {};
   const depSizes: Record<string, number> = {};
@@ -526,7 +543,7 @@ function buildDeployedBaseline(deployed: DeployedTopologySnapshot | null | undef
   }
   const depEdgeKey = (deployed?.edges || [])
     .filter((e) => !isShowroomGatewayEdge(e as unknown as Edge))
-    .map((e) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
+    .map(edgeCompareKey)
     .sort()
     .join("|");
   return {
@@ -574,7 +591,7 @@ export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; depl
   if (currentNodeIds !== deployedNodeIds) return true;
   const edgeKey = edges
     .filter((e) => !isShowroomGatewayEdge(e))
-    .map((e) => `${e.source}-${e.sourceHandle || ""}-${e.target}-${e.targetHandle || ""}`)
+    .map(edgeCompareKey)
     .sort()
     .join("|");
   if (edgeKey !== deployedEdgeKey) return true;
