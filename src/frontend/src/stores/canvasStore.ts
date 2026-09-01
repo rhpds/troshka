@@ -532,8 +532,15 @@ function syncShowroomGatewayState(
   edges: Edge[],
   externalIps: ExternalIp[],
   vniMap: Record<string, number>,
+  providerType?: string | null,
 ): { nodes: Node[]; edges: Edge[]; externalIps: ExternalIp[] } {
-  return syncShowroomGatewayAccess(nodes, edges, externalIps, vniMap);
+  // During loadProject the store's providerType isn't set yet, so callers there
+  // pass it explicitly; everywhere else fall back to the current store value.
+  const provider =
+    providerType !== undefined
+      ? providerType
+      : useCanvasStore.getState().providerType;
+  return syncShowroomGatewayAccess(nodes, edges, externalIps, vniMap, provider);
 }
 
 function applyShowroomGatewaySync(
@@ -1297,6 +1304,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             lbEdges,
             externalIps,
             vniMap,
+            project.provider_type || null,
           );
           set({
             nodes: synced.nodes,

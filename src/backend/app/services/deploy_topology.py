@@ -335,6 +335,24 @@ def _strip_showroom_outbound_ports(outbound_ports: str, managed: list[str]) -> s
     return ",".join(stripped)
 
 
+def _strip_auto_showroom_external_ip(topology: dict) -> bool:
+    """Drop the auto-allocated IP-1 slot (route providers serve web via Route)."""
+    ext = topology.get("externalIps") or []
+    if len(ext) == 1 and not ext[0].get("ip") and ext[0].get("name") == "IP-1":
+        topology["externalIps"] = []
+        return True
+    return False
+
+
+def _showroom_needs_eip(gateway: dict | None, route_web: bool) -> bool:
+    """An EIP is needed unless every gateway forward is web (443/80) on a route
+    provider — those are served by an OpenShift Route, not the EIP."""
+    if not route_web:
+        return True
+    pfs = (gateway.get("data", {}).get("portForwards") if gateway else None) or []
+    return any(str(pf.get("extPort")) not in ("443", "80") for pf in pfs)
+
+
 def inject_showroom_gateway_port_forwards(
     topology: dict, vni_map: dict, provider_type: str | None = None
 ) -> bool:
@@ -352,8 +370,6 @@ def inject_showroom_gateway_port_forwards(
     if not _topology_has_showroom(topology):
         return strip_showroom_gateway_access(topology)
 
-    changed = ensure_showroom_external_ips(topology)
-
     gateway = next(
         (
             n
@@ -363,6 +379,13 @@ def inject_showroom_gateway_port_forwards(
         ),
         None,
     )
+
+    route_web = provider_type in _ROUTE_PROVIDERS
+    if _showroom_needs_eip(gateway, route_web):
+        changed = ensure_showroom_external_ips(topology)
+    else:
+        changed = _strip_auto_showroom_external_ip(topology)
+
     if not gateway:
         return changed
 
@@ -374,7 +397,6 @@ def inject_showroom_gateway_port_forwards(
     ext_ips = topology.get("externalIps") or []
     eip_id = str(ext_ips[0].get("id", "")) if ext_ips else ""
     if eip_id:
-        route_web = provider_type in _ROUTE_PROVIDERS
         new_merged = []
         for pf in merged:
             is_showroom = pf.get("managedByShowroom") or (

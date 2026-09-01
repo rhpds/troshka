@@ -36,6 +36,15 @@ export function firstProjectVni(vniMap: Record<string, number>): number | null {
   return Math.min(...values);
 }
 
+// Providers with OpenShift ingress: 443/80 forwards are served by a Route and
+// must never bind to the EIP (mirror backend deploy_topology._ROUTE_PROVIDERS).
+// Cloud providers have no ingress, so their 443/80 forwards stay on the EIP.
+const ROUTE_PROVIDERS = new Set(["ocpvirt", "kubevirt"]);
+
+function isWebForward(pf: PortForward): boolean {
+  return pf.extPort === "443" || pf.extPort === "80";
+}
+
 export function isShowroomInfraForward(pf: PortForward): boolean {
   const intIp = (pf.intIp || "").trim();
   if (!intIp.startsWith("172.30.") || !intIp.endsWith(".3")) return false;
@@ -146,6 +155,7 @@ function ensureShowroomGatewayPortForwardsOnNodes(
   nodes: Node[],
   externalIps: ShowroomExternalIp[],
   vniMap: Record<string, number>,
+  providerType?: string | null,
 ): Node[] {
   const showroom = getShowroomNode(nodes);
   const gateway = getGatewayNode(nodes);
@@ -160,9 +170,13 @@ function ensureShowroomGatewayPortForwardsOnNodes(
   }));
   const merged = injectShowroomPortForwards(existing, firstVni);
   const eipId = externalIps[0]?.id || "";
+  const routeWeb = ROUTE_PROVIDERS.has(providerType || "");
   const withEip = merged.map((pf) => ({
     ...pf,
-    extIpId: pf.extIpId || eipId,
+    // On OpenShift-ingress providers, 443/80 are served by a Route — never bind
+    // them to the EIP, and strip any stale binding so saved topologies self-heal
+    // (matches backend deploy_topology.inject_showroom_gateway_port_forwards).
+    extIpId: routeWeb && isWebForward(pf) ? "" : pf.extIpId || eipId,
     ...(isShowroomInfraForward(pf) || pf.managedByShowroom
       ? { managedByShowroom: true }
       : {}),
@@ -208,6 +222,7 @@ export function syncShowroomGatewayAccess(
   edges: Edge[],
   externalIps: ShowroomExternalIp[],
   vniMap: Record<string, number>,
+  providerType?: string | null,
 ): { nodes: Node[]; edges: Edge[]; externalIps: ShowroomExternalIp[] } {
   const showroom = getShowroomNode(nodes);
   const gateway = getGatewayNode(nodes);
@@ -227,8 +242,23 @@ export function syncShowroomGatewayAccess(
     };
   }
 
-  const ips = ensureShowroomExternalIps(externalIps);
-  const withPf = ensureShowroomGatewayPortForwardsOnNodes(nodes, ips, vniMap);
+  const routeWeb = ROUTE_PROVIDERS.has(providerType || "");
+  const gwForwards =
+    ((gateway.data as Record<string, unknown>)?.portForwards as
+      | PortForward[]
+      | undefined) || [];
+  // On route providers the showroom 443/80 is served by an OpenShift Route, so
+  // an EIP is only needed when a non-web forward requires one.
+  const needEip = !routeWeb || gwForwards.some((pf) => !isWebForward(pf));
+  const ips = needEip
+    ? ensureShowroomExternalIps(externalIps)
+    : stripShowroomAutoExternalIps(externalIps, []);
+  const withPf = ensureShowroomGatewayPortForwardsOnNodes(
+    nodes,
+    ips,
+    vniMap,
+    providerType,
+  );
   const withEdge = ensureShowroomGatewayEdge(withPf, edges);
   return { nodes: withPf, edges: withEdge, externalIps: ips };
 }

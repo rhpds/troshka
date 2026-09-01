@@ -1054,6 +1054,93 @@ def test_inject_showroom_keeps_443_off_eip_but_binds_other_ports():
     assert pfs["9090"]["extIpId"] == "eip-1"  # other ports -> EIP LB
 
 
+def test_inject_showroom_no_eip_for_web_only_route_provider():
+    """ocpvirt/kubevirt showroom-only: 443 is Route-served, so no EIP is allocated."""
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    topo = {
+        "externalIps": [],
+        "nodes": [
+            {
+                "id": "gw-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "gateway",
+                    "gatewayMode": "nat-portforward",
+                    "portForwards": [],
+                },
+            },
+            {
+                "id": "showroom-1",
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True, "nics": []},
+            },
+        ],
+    }
+    inject_showroom_gateway_port_forwards(topo, {"net-1": 1000}, "ocpvirt")
+    assert topo["externalIps"] == []
+    pfs = {pf["extPort"]: pf for pf in topo["nodes"][0]["data"]["portForwards"]}
+    assert not pfs["443"].get("extIpId")
+
+
+def test_inject_showroom_strips_stale_auto_eip_web_only_route_provider():
+    """A stale auto IP-1 on a web-only route-provider showroom is self-healed away."""
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    topo = {
+        "externalIps": [{"id": "eip-1", "name": "IP-1", "ip": ""}],
+        "nodes": [
+            {
+                "id": "gw-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "gateway",
+                    "gatewayMode": "nat-portforward",
+                    "portForwards": [],
+                },
+            },
+            {
+                "id": "showroom-1",
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True, "nics": []},
+            },
+        ],
+    }
+    inject_showroom_gateway_port_forwards(topo, {"net-1": 1000}, "kubevirt")
+    assert topo["externalIps"] == []
+    pfs = {pf["extPort"]: pf for pf in topo["nodes"][0]["data"]["portForwards"]}
+    assert not pfs["443"].get("extIpId")
+
+
+def test_inject_showroom_allocates_eip_for_web_only_cloud_provider():
+    """Cloud providers have no ingress, so a showroom still needs its EIP."""
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    topo = {
+        "externalIps": [],
+        "nodes": [
+            {
+                "id": "gw-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "gateway",
+                    "gatewayMode": "nat-portforward",
+                    "portForwards": [],
+                },
+            },
+            {
+                "id": "showroom-1",
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True, "nics": []},
+            },
+        ],
+    }
+    inject_showroom_gateway_port_forwards(topo, {"net-1": 1000}, "ec2")
+    assert len(topo["externalIps"]) == 1
+    pfs = {pf["extPort"]: pf for pf in topo["nodes"][0]["data"]["portForwards"]}
+    assert pfs["443"].get("extIpId") == topo["externalIps"][0]["id"]
+
+
 def test_troshkad_network_entries_includes_infra_transit():
     from app.services.deploy_service import _troshkad_network_entries
 
