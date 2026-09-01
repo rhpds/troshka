@@ -1147,13 +1147,32 @@ class TestBuildDiskFromStorage:
             "source": "library",
             "libraryItemId": "lib-1",
             "format": "qcow2",
+            "resolvedS3Path": "library/lib-1/disk-1/rhel.qcow2",
         }
         result = _build_disk_from_storage(sd, "disk-3")
         disk = result["disk"]
         assert "libraryImage" in disk
-        assert disk["libraryImage"]["s3Path"] == "library/lib-1.qcow2"
+        assert disk["libraryImage"]["s3Path"] == "library/lib-1/disk-1/rhel.qcow2"
         assert disk["libraryImage"]["format"] == "qcow2"
         assert "blank" not in disk
+
+    def test_library_no_resolved_path_does_not_guess_key(self):
+        """BUG #2: a library disk without resolvedS3Path must NOT guess a key.
+
+        Guessing library/<id>.qcow2 creates a golden that 404-crashloops and
+        starves CDI. Instead the disk is marked blank (no libraryImage source).
+        """
+        from helpers.topology import _build_disk_from_storage
+
+        sd = {
+            "source": "library",
+            "libraryItemId": "lib-1",
+            "format": "qcow2",
+        }
+        result = _build_disk_from_storage(sd, "disk-3b")
+        disk = result["disk"]
+        assert "libraryImage" not in disk
+        assert disk.get("blank") is True
 
     def test_iso_returns_cdrom(self):
         from helpers.topology import _build_disk_from_storage
@@ -1161,9 +1180,80 @@ class TestBuildDiskFromStorage:
         sd = {
             "format": "iso",
             "libraryItemId": "iso-1",
+            "resolvedS3Path": "library/iso-1/disk-1/rhel.iso",
         }
         result = _build_disk_from_storage(sd, "disk-4")
         assert "cdrom" in result
         assert "disk" not in result
         assert result["cdrom"]["libraryIsoId"] == "iso-1"
-        assert result["cdrom"]["s3Path"] == "library/iso-1.iso"
+        assert result["cdrom"]["s3Path"] == "library/iso-1/disk-1/rhel.iso"
+
+    def test_iso_no_resolved_path_does_not_guess_key(self):
+        """BUG #2: an iso without resolvedS3Path must NOT guess library/<id>.iso."""
+        from helpers.topology import _build_disk_from_storage
+
+        sd = {
+            "format": "iso",
+            "libraryItemId": "iso-1",
+        }
+        result = _build_disk_from_storage(sd, "disk-4b")
+        assert "cdrom" in result
+        # No guessed key -> no s3Path -> no golden pre-created.
+        assert not result["cdrom"].get("s3Path")
+
+    def test_regular_disk_includes_source_size_gb(self):
+        """BUG #1: sourceSizeGb from the storage node flows onto the disk dict."""
+        from helpers.topology import _build_disk_from_storage
+
+        sd = {
+            "source": "library",
+            "libraryItemId": "lib-1",
+            "format": "qcow2",
+            "resolvedS3Path": "library/lib-1/disk-1/rhel.qcow2",
+            "size": 100,
+            "sourceSizeGb": 80,
+        }
+        result = _build_disk_from_storage(sd, "disk-ss")
+        assert result["disk"]["sourceSizeGb"] == 80
+
+    def test_regular_disk_omits_source_size_when_zero(self):
+        from helpers.topology import _build_disk_from_storage
+
+        sd = {
+            "source": "library",
+            "libraryItemId": "lib-1",
+            "format": "qcow2",
+            "resolvedS3Path": "library/lib-1/disk-1/rhel.qcow2",
+            "sourceSizeGb": 0,
+        }
+        result = _build_disk_from_storage(sd, "disk-ss0")
+        assert "sourceSizeGb" not in result["disk"]
+
+        sd2 = dict(sd)
+        del sd2["sourceSizeGb"]
+        result2 = _build_disk_from_storage(sd2, "disk-ss-absent")
+        assert "sourceSizeGb" not in result2["disk"]
+
+    def test_iso_includes_source_size_gb(self):
+        """BUG #1: sourceSizeGb flows onto the cdrom dict for isos."""
+        from helpers.topology import _build_disk_from_storage
+
+        sd = {
+            "format": "iso",
+            "libraryItemId": "iso-1",
+            "resolvedS3Path": "library/iso-1/disk-1/rhel.iso",
+            "sourceSizeGb": 11,
+        }
+        result = _build_disk_from_storage(sd, "disk-iso-ss")
+        assert result["cdrom"]["sourceSizeGb"] == 11
+
+    def test_iso_omits_source_size_when_absent(self):
+        from helpers.topology import _build_disk_from_storage
+
+        sd = {
+            "format": "iso",
+            "libraryItemId": "iso-1",
+            "resolvedS3Path": "library/iso-1/disk-1/rhel.iso",
+        }
+        result = _build_disk_from_storage(sd, "disk-iso-ss0")
+        assert "sourceSizeGb" not in result["cdrom"]

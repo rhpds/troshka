@@ -415,6 +415,26 @@ def test_library_disk_virtual_size_returns_zero_when_unknown():
         db.close()
 
 
+def test_library_disk_virtual_size_uses_library_item_size_bytes_for_iso():
+    # ISO library items have no LibraryItemDisk rows and no vm_config disks, but
+    # the LibraryItem itself records the real file size. Sizing must use it so the
+    # golden/clone aren't sized by the (tiny) per-disk sizeGb heuristic.
+    db = _make_db()
+    try:
+        item = _library_item(
+            db, "library/x/RHEL.iso", "iso", source="local", item_type="iso"
+        )
+        item.size_bytes = 11 * 1073741824
+        db.flush()
+        result = deploy_service._library_disk_virtual_size_bytes(
+            db, item, item.s3_key or ""
+        )
+        assert result == 11 * 1073741824
+    finally:
+        db.rollback()
+        db.close()
+
+
 def test_resolve_pattern_disk_records_source_size_gb():
     db = _make_db()
     try:

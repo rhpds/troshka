@@ -1055,6 +1055,64 @@ def _upsert_s3_secret(core_api, namespace, secret_name, cfg):
             raise
 
 
+def _get_existing_golden(custom_api, pvc_name):
+    """Return the existing golden DataVolume dict, or None if absent (404)."""
+    from helpers.kubevirt import CACHE_NAMESPACE
+
+    try:
+        return custom_api.get_namespaced_custom_object(
+            group="cdi.kubevirt.io",
+            version="v1beta1",
+            namespace=CACHE_NAMESPACE,
+            plural="datavolumes",
+            name=pvc_name,
+        )
+    except ApiException as e:
+        if e.status == 404:
+            return None
+        raise
+
+
+def _golden_importer_crashlooping(core_api, namespace, pvc_name):
+    """True if the CDI importer/prime pod for this golden is crashlooping.
+
+    A wrong-key golden's importer pod 404s on NoSuchKey and CrashLoopBackOffs
+    forever, holding a scarce CDI import slot and starving real deploys.
+    """
+    try:
+        pods = core_api.list_namespaced_pod(namespace=namespace)
+        items = list(pods.items or [])
+    except Exception:
+        return False
+    for pod in items:
+        pod_name = getattr(pod.metadata, "name", "") or ""
+        if pvc_name not in pod_name:
+            continue
+        for cs in getattr(pod.status, "container_statuses", None) or []:
+            restart_count = getattr(cs, "restart_count", 0) or 0
+            waiting = getattr(getattr(cs, "state", None), "waiting", None)
+            reason = getattr(waiting, "reason", "") if waiting else ""
+            if reason == "CrashLoopBackOff" or restart_count >= 3:
+                return True
+    return False
+
+
+def _golden_is_stuck(dv, core_api, namespace, pvc_name):
+    """True if an existing golden DV is in a failed/stuck (non-recoverable) state.
+
+    Conservative: a Succeeded or actively-importing (progressing) golden is left
+    alone; only terminal conditions or a crashlooping importer count as stuck.
+    """
+    from handlers.vm import _is_terminal_dv_condition
+
+    status = dv.get("status", {}) or {}
+    if status.get("phase") == "Succeeded":
+        return False
+    if _is_terminal_dv_condition(status.get("conditions", [])):
+        return True
+    return _golden_importer_crashlooping(core_api, namespace, pvc_name)
+
+
 def _create_golden_pvc_for_disk(
     custom_api, core_api, disk, s3_config, central_s3_config
 ):
@@ -1086,23 +1144,23 @@ def _create_golden_pvc_for_disk(
     from helpers.kubevirt import delete_golden_import, golden_import_matches
 
     pvc_name = golden_pvc_name(s3_path)
-    try:
-        existing = custom_api.get_namespaced_custom_object(
-            group="cdi.kubevirt.io",
-            version="v1beta1",
-            namespace=CACHE_NAMESPACE,
-            plural="datavolumes",
-            name=pvc_name,
-        )
-        if golden_import_matches(existing, s3_path, disk_s3_config, secret_name):
+    existing = _get_existing_golden(custom_api, pvc_name)
+    if existing is not None:
+        matches = golden_import_matches(existing, s3_path, disk_s3_config, secret_name)
+        if matches and not _golden_is_stuck(
+            existing, core_api, CACHE_NAMESPACE, pvc_name
+        ):
             return
-        logger.warning("Golden import %s has wrong S3 source, recreating", pvc_name)
+        reason = "wrong S3 source" if not matches else "stuck/failed import"
+        logger.warning("Golden import %s has %s, recreating", pvc_name, reason)
         delete_golden_import(custom_api, core_api, CACHE_NAMESPACE, pvc_name)
-    except ApiException as e:
-        if e.status != 404:
-            raise
 
     size_gb = disk.get("sizeGb", 20)
+    source_size_gb = (
+        disk.get("sourceSizeGb", 0)
+        or disk.get("libraryImage", {}).get("sourceSizeGb", 0)
+        or 0
+    )
     dv = build_datavolume_from_s3(
         pvc_name,
         CACHE_NAMESPACE,
@@ -1110,6 +1168,7 @@ def _create_golden_pvc_for_disk(
         size_gb,
         disk_s3_config,
         secret_name=secret_name,
+        source_size_gb=source_size_gb,
     )
     try:
         custom_api.create_namespaced_custom_object(

@@ -639,6 +639,7 @@ class TestResolveVmDisks:
                         "id": "stor1",
                         "source": "library",
                         "libraryItemId": "lib-001",
+                        "resolvedS3Path": "library/lib-001/disk-1/rhel.qcow2",
                         "format": "qcow2",
                         "size": 40,
                     },
@@ -792,6 +793,7 @@ class TestResolveVmDisks:
                         "id": "stor1",
                         "source": "library",
                         "libraryItemId": "lib-001",
+                        "resolvedS3Path": "library/lib-001/disk-1/rhel.qcow2",
                         "centralSource": True,
                     },
                 },
@@ -5248,6 +5250,120 @@ class TestCreateGoldenPvcForDisk:
         )
 
         custom_api.create_namespaced_custom_object.assert_called_once()
+
+    def test_passes_source_size_for_normal_disk(self):
+        """BUG #1: top-level sourceSizeGb is forwarded to build_datavolume_from_s3."""
+        from handlers.project import _create_golden_pvc_for_disk
+        from kubernetes.client import ApiException
+
+        custom_api = MagicMock()
+        core_api = MagicMock()
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
+
+        disk = {
+            "libraryImage": {"s3Path": "library/rhel/disk/rhel.qcow2"},
+            "sizeGb": 100,
+            "sourceSizeGb": 80,
+        }
+        s3_config = {"bucket": "b", "endpoint": "s3.example.com"}
+
+        with patch("helpers.kubevirt.build_datavolume_from_s3") as mock_build:
+            mock_build.return_value = {"metadata": {"name": "g"}}
+            _create_golden_pvc_for_disk(custom_api, core_api, disk, s3_config, {})
+
+        assert mock_build.call_args.kwargs["source_size_gb"] == 80
+
+    def test_passes_source_size_for_cdrom_shaped_disk(self):
+        """BUG #1: cdrom-shaped {'libraryImage': {...sourceSizeGb...}} forwards it."""
+        from handlers.project import _create_golden_pvc_for_disk
+        from kubernetes.client import ApiException
+
+        custom_api = MagicMock()
+        core_api = MagicMock()
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
+
+        disk = {
+            "libraryImage": {
+                "s3Path": "library/iso/disk/rhel.iso",
+                "libraryIsoId": "iso-1",
+                "sourceSizeGb": 11,
+            }
+        }
+        s3_config = {"bucket": "b", "endpoint": "s3.example.com"}
+
+        with patch("helpers.kubevirt.build_datavolume_from_s3") as mock_build:
+            mock_build.return_value = {"metadata": {"name": "g"}}
+            _create_golden_pvc_for_disk(custom_api, core_api, disk, s3_config, {})
+
+        assert mock_build.call_args.kwargs["source_size_gb"] == 11
+
+    def test_reaps_golden_with_terminal_condition(self):
+        """BUG #2: a matching-but-terminal golden is deleted and recreated."""
+        from handlers.project import _create_golden_pvc_for_disk
+        from helpers.kubevirt import s3_import_url
+
+        custom_api = MagicMock()
+        core_api = MagicMock()
+        s3_config = {"bucket": "troshka-images", "region": "us-east-1"}
+        s3_path = "library/rhel/disk/rhel.qcow2"
+        # DV matches the desired source but is stuck in a terminal clone failure.
+        custom_api.get_namespaced_custom_object.return_value = {
+            "spec": {
+                "source": {
+                    "s3": {
+                        "url": s3_import_url(s3_path, s3_config),
+                        "secretRef": "s3-credentials",  # pragma: allowlist secret
+                    }
+                }
+            },
+            "status": {
+                "phase": "CloneScheduled",
+                "conditions": [
+                    {
+                        "type": "Running",
+                        "status": "False",
+                        "reason": "CloneValidationFailed",
+                        "message": "target is smaller than the source",
+                    }
+                ],
+            },
+        }
+
+        disk = {"libraryImage": {"s3Path": s3_path}, "sizeGb": 40}
+
+        _create_golden_pvc_for_disk(custom_api, core_api, disk, s3_config, {})
+
+        custom_api.delete_namespaced_custom_object.assert_called_once()
+        custom_api.create_namespaced_custom_object.assert_called_once()
+
+    def test_leaves_healthy_importing_golden_alone(self):
+        """BUG #2: a matching golden that is still importing must be left alone."""
+        from handlers.project import _create_golden_pvc_for_disk
+        from helpers.kubevirt import s3_import_url
+
+        custom_api = MagicMock()
+        core_api = MagicMock()
+        core_api.list_namespaced_pod.return_value = MagicMock(items=[])
+        s3_config = {"bucket": "troshka-images", "region": "us-east-1"}
+        s3_path = "library/rhel/disk/rhel.qcow2"
+        custom_api.get_namespaced_custom_object.return_value = {
+            "spec": {
+                "source": {
+                    "s3": {
+                        "url": s3_import_url(s3_path, s3_config),
+                        "secretRef": "s3-credentials",  # pragma: allowlist secret
+                    }
+                }
+            },
+            "status": {"phase": "ImportInProgress", "conditions": []},
+        }
+
+        disk = {"libraryImage": {"s3Path": s3_path}, "sizeGb": 40}
+
+        _create_golden_pvc_for_disk(custom_api, core_api, disk, s3_config, {})
+
+        custom_api.delete_namespaced_custom_object.assert_not_called()
+        custom_api.create_namespaced_custom_object.assert_not_called()
 
 
 class TestPrecreateGoldenPvcs:

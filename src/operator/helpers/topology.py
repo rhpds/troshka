@@ -1,5 +1,9 @@
 """Topology helpers for the Troshka KubeVirt operator."""
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def _gateway_ip_for_cidr(cidr):
     if not cidr or "/" not in cidr:
@@ -450,15 +454,29 @@ def _apply_pattern_disk_source(disk: dict, sd: dict, central: bool) -> None:
         }
 
 
-def _apply_library_disk_source(disk: dict, sd: dict, fmt: str, central: bool) -> None:
-    lib_id = sd.get("libraryItemId", "")
+def _apply_library_disk_source(disk: dict, sd: dict, fmt: str, central: bool) -> bool:
+    """Attach a library image source to ``disk``. Returns True if one was set.
+
+    A missing ``resolvedS3Path`` means we cannot know the real (possibly nested)
+    S3 key. Guessing ``library/<id>.<fmt>`` creates a golden that 404-crashloops
+    forever and starves CDI, so we refuse to guess and leave the disk sourceless.
+    """
     resolved = sd.get("resolvedS3Path", "")
-    if lib_id or resolved:
-        disk["libraryImage"] = {
-            "s3Path": resolved or f"library/{lib_id}.{fmt}",
-            "format": fmt,
-            "central": central,
-        }
+    if not resolved:
+        lib_id = sd.get("libraryItemId", "")
+        if lib_id:
+            logger.warning(
+                "Library disk %s has no resolvedS3Path; refusing to guess an S3 "
+                "key (would 404-crashloop CDI). Leaving disk without a source.",
+                lib_id,
+            )
+        return False
+    disk["libraryImage"] = {
+        "s3Path": resolved,
+        "format": fmt,
+        "central": central,
+    }
+    return True
 
 
 def _apply_snapshot_disk_source(disk: dict, sd: dict, fmt: str, central: bool) -> None:
@@ -477,15 +495,25 @@ def _build_disk_from_storage(sd, storage_id, bus="virtio", rotation_rate=None):
     source_type = sd.get("source", "")
     central = sd.get("centralSource", False)
 
+    source_size_gb = int(sd.get("sourceSizeGb", 0) or 0)
+
     if fmt == "iso":
         resolved = sd.get("resolvedS3Path", "")
-        return {
-            "cdrom": {
-                "libraryIsoId": sd.get("libraryItemId", ""),
-                "s3Path": resolved or f"library/{sd.get('libraryItemId', '')}.iso",
-                "central": central,
-            }
+        if not resolved and sd.get("libraryItemId"):
+            # Refuse to guess a key: a wrong library/<id>.iso 404-crashloops CDI.
+            logger.warning(
+                "ISO %s has no resolvedS3Path; refusing to guess an S3 key "
+                "(would 404-crashloop CDI). Leaving cdrom without a source.",
+                sd.get("libraryItemId", ""),
+            )
+        cdrom = {
+            "libraryIsoId": sd.get("libraryItemId", ""),
+            "s3Path": resolved,
+            "central": central,
         }
+        if source_size_gb > 0:
+            cdrom["sourceSizeGb"] = source_size_gb
+        return {"cdrom": cdrom}
 
     disk = {
         "id": storage_id,
@@ -493,13 +521,16 @@ def _build_disk_from_storage(sd, storage_id, bus="virtio", rotation_rate=None):
         "bus": bus,
         "format": fmt,
     }
+    if source_size_gb > 0:
+        disk["sourceSizeGb"] = source_size_gb
     if rotation_rate is not None:
         disk["rotationRate"] = rotation_rate
 
     if source_type == "pattern":
         _apply_pattern_disk_source(disk, sd, central)
     elif source_type == "library":
-        _apply_library_disk_source(disk, sd, fmt, central)
+        if not _apply_library_disk_source(disk, sd, fmt, central):
+            disk["blank"] = True
     elif source_type == "snapshot":
         if sd.get("resolvedS3Path"):
             _apply_snapshot_disk_source(disk, sd, fmt, central)

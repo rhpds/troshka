@@ -1975,6 +1975,10 @@ def _library_disk_virtual_size_bytes(db, lib_item, s3_path: str) -> int:
         max_gb = max(max_gb, int(size))
     if max_gb:
         return max_gb * 1073741824
+    # ISOs and other single-file items have no LibraryItemDisk rows or vm_config
+    # disks, but the LibraryItem itself records the real file size.
+    if getattr(lib_item, "size_bytes", 0):
+        return lib_item.size_bytes
     return 0
 
 
