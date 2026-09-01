@@ -3756,6 +3756,33 @@ class TestCheckDatavolumeStatusTerminalConditions:
 
         assert _check_datavolume_status(custom_api, "dv-1", "ns1") == "failed"
 
+    def test_golden_import_too_small_returns_failed(self):
+        """A golden whose PVC is too small for the image is terminal.
+
+        CDI leaves the DV in ImportInProgress with a Running=False/Error
+        condition forever; the request size can't grow, so it must be
+        recreated rather than waited on.
+        """
+        from handlers.vm import _check_datavolume_status
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "status": {
+                "phase": "ImportInProgress",
+                "conditions": [
+                    {"type": "Bound", "status": "False", "reason": "Pending"},
+                    {
+                        "type": "Running",
+                        "status": "False",
+                        "reason": "Error",
+                        "message": "DataVolume too small to contain image",
+                    },
+                ],
+            }
+        }
+
+        assert _check_datavolume_status(custom_api, "dv-1", "ns1") == "failed"
+
     def test_in_progress_clone_still_pending(self):
         from handlers.vm import _check_datavolume_status
 
@@ -5330,6 +5357,51 @@ class TestCreateGoldenPvcForDisk:
         }
 
         disk = {"libraryImage": {"s3Path": s3_path}, "sizeGb": 40}
+
+        _create_golden_pvc_for_disk(custom_api, core_api, disk, s3_config, {})
+
+        custom_api.delete_namespaced_custom_object.assert_called_once()
+        custom_api.create_namespaced_custom_object.assert_called_once()
+
+    def test_reaps_golden_with_import_too_small(self):
+        """An undersized golden import (too small to contain image) is recreated.
+
+        The golden sits in ImportInProgress with a Running=False/Error condition
+        forever; deleting the project never clears the shared golden, so the
+        operator must reap and recreate it (at the now-correct sourceSizeGb).
+        """
+        from handlers.project import _create_golden_pvc_for_disk
+        from helpers.kubevirt import s3_import_url
+
+        custom_api = MagicMock()
+        core_api = MagicMock()
+        core_api.list_namespaced_pod.return_value = MagicMock(items=[])
+        s3_config = {"bucket": "troshka-images", "region": "us-east-1"}
+        s3_path = "patterns/p1/content.qcow2"
+        custom_api.get_namespaced_custom_object.return_value = {
+            "spec": {
+                "source": {
+                    "s3": {
+                        "url": s3_import_url(s3_path, s3_config),
+                        "secretRef": "s3-credentials",  # pragma: allowlist secret
+                    }
+                }
+            },
+            "status": {
+                "phase": "ImportInProgress",
+                "conditions": [
+                    {"type": "Bound", "status": "False", "reason": "Pending"},
+                    {
+                        "type": "Running",
+                        "status": "False",
+                        "reason": "Error",
+                        "message": "DataVolume too small to contain image",
+                    },
+                ],
+            },
+        }
+
+        disk = {"libraryImage": {"s3Path": s3_path}, "sizeGb": 50, "sourceSizeGb": 80}
 
         _create_golden_pvc_for_disk(custom_api, core_api, disk, s3_config, {})
 

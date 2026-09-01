@@ -146,11 +146,17 @@ def _is_terminal_dv_condition(conditions):
         # Explicit clone validation failure (by reason or message).
         if "CloneValidationFailed" in reason or "CloneValidationFailed" in message:
             return True
-        # A Bound/Running condition that is False with a terminal size mismatch.
+        # A Bound/Running condition that is False with a terminal size mismatch:
+        #   - clone target smaller than source, or
+        #   - golden import PVC too small to contain the image.
+        # Neither can grow in place, so the DV/PVC must be recreated.
         if (
             ctype in ("Bound", "Running")
             and status == "False"
-            and "smaller than the source" in message
+            and (
+                "smaller than the source" in message
+                or "too small to contain image" in message
+            )
         ):
             return True
     return False

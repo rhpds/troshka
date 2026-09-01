@@ -2014,15 +2014,82 @@ def _apply_virtual_size_to_disk_data(data, virtual_size_bytes: int) -> None:
         data["size"] = real_gb
 
 
-def _resolve_pattern_disk(data, db, target_provider_id):
+def _qcow2_virtual_size_from_s3(client, bucket, key, op) -> int:
+    """Return a qcow2 image's virtual size (bytes) by reading its header from S3.
+
+    Reads only the first 72 bytes via a ranged GET — the qcow2 magic is at
+    offset 0 and the virtual disk size is a big-endian u64 at offset 24. Returns
+    0 when the object is unreachable, not a qcow2 (ISO/raw), or truncated, so
+    callers fall back to the recorded size and never fail a deploy on this.
+    """
+    import struct
+
+    if client is None:
+        return 0
+    try:
+        resp = client.get_object(
+            Bucket=bucket, Key=key, Range="bytes=0-71", **(op or {})
+        )
+        header = resp["Body"].read()
+    except Exception:
+        return 0
+    if len(header) < 32 or header[:4] != b"QFI\xfb":
+        return 0
+    return struct.unpack(">Q", header[24:32])[0]
+
+
+def _measure_disk_virtual_size(key, candidates) -> int:
+    """Measure a disk's qcow2 virtual size from the first reachable S3 source.
+
+    ``candidates`` is a list of ``(client, bucket, op)`` tuples tried in order;
+    returns the first qcow2 size found, or 0 if none are reachable/qcow2.
+    """
+    for client, bucket, op in candidates:
+        size = _qcow2_virtual_size_from_s3(client, bucket, key, op)
+        if size:
+            return size
+    return 0
+
+
+def _persist_library_disk_size(db, lib_item, s3_path, measured) -> None:
+    """Heal a LibraryItemDisk's recorded virtual size after measuring from S3."""
+    from sqlalchemy import select
+
+    from app.models.library import LibraryItemDisk
+
+    disks = list(
+        db.scalars(select(LibraryItemDisk).filter_by(library_item_id=lib_item.id)).all()
+    )
+    match = next((d for d in disks if s3_path and d.s3_key == s3_path), None)
+    if match is None and len(disks) == 1:
+        match = disks[0]
+    if match is not None and match.virtual_size_bytes != measured:
+        match.virtual_size_bytes = measured
+        db.add(match)
+
+
+def _resolve_pattern_disk(
+    data,
+    db,
+    target_provider_id,
+    s3_client=None,
+    bucket=None,
+    s3_op=None,
+    central_s3_client=None,
+    central_bucket=None,
+    central_op=None,
+):
     """Resolve source (obc|central) + S3 path for a pattern-sourced disk.
 
     Uses PatternLocation on the target cluster. Raises DeployError if the disk
     is not synced anywhere reachable from that cluster (placement should
     prevent this; this is the correctness backstop).
-    """
-    import math
 
+    When an S3 client can reach the resolved object, the disk's true qcow2
+    virtual size is measured from the image header and used for sizing (and
+    written back to the PatternDisk row), correcting stale/nominal capture
+    metadata. Unreachable objects fall back to the recorded size.
+    """
     from sqlalchemy import select
 
     from app.models.pattern import PatternDisk as PatternDiskModel
@@ -2059,11 +2126,20 @@ def _resolve_pattern_disk(data, db, target_provider_id):
         s3_path[:40],
         source,
     )
-    if pd_record and pd_record.virtual_size_bytes:
-        real_gb = math.ceil(pd_record.virtual_size_bytes / (1024**3))
-        data["sourceSizeGb"] = real_gb
-        if real_gb > (data.get("size", 0) or 0):
-            data["size"] = real_gb
+    measured = _measure_disk_virtual_size(
+        s3_path,
+        [
+            (s3_client, bucket, s3_op),
+            (central_s3_client, central_bucket, central_op),
+        ],
+    )
+    if measured:
+        _apply_virtual_size_to_disk_data(data, measured)
+        if pd_record and pd_record.virtual_size_bytes != measured:
+            pd_record.virtual_size_bytes = measured
+            db.add(pd_record)
+    elif pd_record and pd_record.virtual_size_bytes:
+        _apply_virtual_size_to_disk_data(data, pd_record.virtual_size_bytes)
 
 
 def _resolve_library_disk(
@@ -2091,8 +2167,18 @@ def _resolve_library_disk(
     data["resolvedS3Path"] = s3_path
     data["centralSource"] = use_central
     if lib_item:
-        virtual_bytes = _library_disk_virtual_size_bytes(db, lib_item, s3_path)
-        _apply_virtual_size_to_disk_data(data, virtual_bytes)
+        candidate = (
+            (central_s3_client, central_bucket, central_op)
+            if use_central
+            else (s3_client, bucket, s3_op)
+        )
+        measured = _measure_disk_virtual_size(s3_path, [candidate])
+        if measured:
+            _apply_virtual_size_to_disk_data(data, measured)
+            _persist_library_disk_size(db, lib_item, s3_path, measured)
+        else:
+            virtual_bytes = _library_disk_virtual_size_bytes(db, lib_item, s3_path)
+            _apply_virtual_size_to_disk_data(data, virtual_bytes)
     logger.info(
         "Deploy: disk %s s3=%s central=%s",
         data.get("label", "?"),
@@ -2119,7 +2205,17 @@ def _resolve_disk_s3_paths(
             continue
         _ensure_storage_library_ref(node, db)
         if data.get("source") == "pattern" and data.get("patternId"):
-            _resolve_pattern_disk(data, db, target_provider_id)
+            _resolve_pattern_disk(
+                data,
+                db,
+                target_provider_id,
+                s3_client=s3_client,
+                bucket=bucket,
+                s3_op=s3_op,
+                central_s3_client=central_s3_client,
+                central_bucket=central_bucket,
+                central_op=central_op,
+            )
         elif data.get("source") in ("library", "snapshot") and data.get(
             "libraryItemId"
         ):

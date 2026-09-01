@@ -11427,3 +11427,169 @@ class TestSyncDeployedContainerNode:
         project = SimpleNamespace(deployed_topology={"nodes": []})
         _sync_deployed_container_node(project, "missing", {"nodes": []})
         assert project.deployed_topology == {"nodes": []}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _qcow2_virtual_size_from_s3
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _fake_qcow2_header(size_bytes, magic=b"QFI\xfb", length=72):
+    """Build a minimal qcow2 header with virtual size at offset 24 (u64 BE)."""
+    import struct
+
+    header = bytearray(length)
+    header[0:4] = magic
+    struct.pack_into(">Q", header, 24, size_bytes)
+    return bytes(header)
+
+
+def _mock_s3_returning(header_bytes):
+    client = MagicMock()
+    body = MagicMock()
+    body.read.return_value = header_bytes
+    client.get_object.return_value = {"Body": body}
+    return client
+
+
+class TestQcow2VirtualSizeFromS3:
+    def test_parses_virtual_size_from_valid_header(self):
+        from app.services.deploy_service import _qcow2_virtual_size_from_s3
+
+        client = _mock_s3_returning(_fake_qcow2_header(85899345920))  # 80 GiB
+        size = _qcow2_virtual_size_from_s3(client, "bkt", "patterns/p/d.qcow2", {})
+        assert size == 85899345920
+
+    def test_requests_only_the_header_range(self):
+        from app.services.deploy_service import _qcow2_virtual_size_from_s3
+
+        client = _mock_s3_returning(_fake_qcow2_header(1073741824))
+        _qcow2_virtual_size_from_s3(client, "bkt", "k.qcow2", {"a": 1})
+        _, kwargs = client.get_object.call_args
+        assert kwargs["Range"] == "bytes=0-71"
+        assert kwargs["Bucket"] == "bkt"
+        assert kwargs["Key"] == "k.qcow2"
+        assert kwargs["a"] == 1
+
+    def test_returns_zero_for_non_qcow2_magic(self):
+        from app.services.deploy_service import _qcow2_virtual_size_from_s3
+
+        client = _mock_s3_returning(_fake_qcow2_header(500, magic=b"XXXX"))
+        assert _qcow2_virtual_size_from_s3(client, "b", "iso.iso", {}) == 0
+
+    def test_returns_zero_for_short_body(self):
+        from app.services.deploy_service import _qcow2_virtual_size_from_s3
+
+        client = _mock_s3_returning(b"QFI\xfb\x00\x00")
+        assert _qcow2_virtual_size_from_s3(client, "b", "k", {}) == 0
+
+    def test_returns_zero_on_s3_error(self):
+        from app.services.deploy_service import _qcow2_virtual_size_from_s3
+
+        client = MagicMock()
+        client.get_object.side_effect = Exception("connection refused")
+        assert _qcow2_virtual_size_from_s3(client, "b", "k", {}) == 0
+
+    def test_returns_zero_for_none_client(self):
+        from app.services.deploy_service import _qcow2_virtual_size_from_s3
+
+        assert _qcow2_virtual_size_from_s3(None, "b", "k", {}) == 0
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _resolve_pattern_disk — measured size takes priority over recorded
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestResolvePatternDiskMeasured:
+    @patch(
+        "app.services.pattern_locations.pattern_disk_source_for_cluster",
+        return_value="central",
+    )
+    def test_prefers_measured_size_and_heals_db_row(self, mock_source):
+        from app.services.deploy_service import _resolve_pattern_disk
+
+        data = {
+            "patternId": "pat-1",
+            "patternDiskId": "pd-1",
+            "label": "bastion-disk0",
+            "size": 50,
+        }
+        mock_db = MagicMock()
+        mock_pd = MagicMock()
+        mock_pd.s3_key = "patterns/pat-1/content.qcow2"
+        mock_pd.virtual_size_bytes = 53687091200  # 50 GiB (wrong/nominal)
+        mock_db.scalars.return_value.first.return_value = mock_pd
+
+        client = _mock_s3_returning(_fake_qcow2_header(85899345920))  # true 80 GiB
+        _resolve_pattern_disk(
+            data,
+            mock_db,
+            "provider-1",
+            s3_client=client,
+            bucket="troshka-images",
+            s3_op={},
+        )
+        # sizing uses measured 80 GiB, not recorded 50 GiB
+        assert data["sourceSizeGb"] == 80
+        assert data["size"] == 80
+        # source of truth healed
+        assert mock_pd.virtual_size_bytes == 85899345920
+        mock_db.add.assert_called_with(mock_pd)
+
+    @patch(
+        "app.services.pattern_locations.pattern_disk_source_for_cluster",
+        return_value="obc",
+    )
+    def test_falls_back_to_recorded_when_unreachable(self, mock_source):
+        from app.services.deploy_service import _resolve_pattern_disk
+
+        data = {
+            "patternId": "pat-1",
+            "patternDiskId": "pd-1",
+            "label": "disk",
+            "size": 50,
+        }
+        mock_db = MagicMock()
+        mock_pd = MagicMock()
+        mock_pd.s3_key = "patterns/pat-1/content.qcow2"
+        mock_pd.virtual_size_bytes = 214748364800  # 200 GiB recorded
+        mock_db.scalars.return_value.first.return_value = mock_pd
+
+        client = MagicMock()
+        client.get_object.side_effect = Exception("unreachable OBC")
+        _resolve_pattern_disk(
+            data, mock_db, "provider-1", s3_client=client, bucket="b", s3_op={}
+        )
+        # unreachable -> uses recorded 200 GiB, does not overwrite the row
+        assert data["size"] == 200
+        assert mock_pd.virtual_size_bytes == 214748364800
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _resolve_library_disk — measured size takes priority over recorded
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestResolveLibraryDiskMeasured:
+    def test_prefers_measured_size_over_recorded(self):
+        from app.services.deploy_service import _resolve_library_disk
+
+        data = {
+            "libraryItemId": "lib-1",
+            "label": "RHEL",
+            "format": "qcow2",
+            "size": 20,
+        }
+        mock_db = MagicMock()
+        mock_item = MagicMock()
+        mock_item.s3_key = "library/lib-1.qcow2"
+        mock_item.source = "local"
+        mock_item.size_bytes = 0
+        mock_item.vm_config = {}
+        mock_db.get.return_value = mock_item
+
+        client = _mock_s3_returning(_fake_qcow2_header(42949672960))  # 40 GiB
+        _resolve_library_disk(data, mock_db, client, "bkt", {}, None, "", {})
+        assert data["sourceSizeGb"] == 40
+        assert data["size"] == 40
