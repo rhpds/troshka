@@ -119,6 +119,62 @@ def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[
     return out
 
 
+def _existing_role_names(vms_def, cluster_name, role, single):
+    return [
+        n
+        for n, c in vms_def.items()
+        if c.get("role") == role and (single or c.get("cluster") == cluster_name)
+    ]
+
+
+def _make_node(cluster, role, cpu, memory, disk):
+    return {
+        "role": role,
+        "os": "rhcos",
+        "cluster": cluster["name"],
+        "cpu": cpu,
+        "memory": memory,
+        "disk": disk,
+    }
+
+
+def _topup(vms, cluster, role, want, cpu, memory, disk, single):
+    have = _existing_role_names(vms, cluster["name"], role, single)
+    prefix = "cp" if role == "control-plane" else "worker"
+    for i in range(len(have), want):
+        vms[f"{cluster['id']}-{prefix}-{i}"] = _make_node(
+            cluster, role, cpu, memory, disk
+        )
+
+
+def materialize_cluster_vms(clusters: list[dict], vms_def: dict) -> dict:
+    """Top up each cluster's control-plane/worker VMs to match its counts."""
+    vms = dict(vms_def or {})
+    single = len(clusters) == 1
+    for cluster in clusters:
+        _topup(
+            vms,
+            cluster,
+            "control-plane",
+            cluster["controlPlane"],
+            cluster["controlPlaneCpu"],
+            cluster["controlPlaneMemory"],
+            cluster["controlPlaneDisk"],
+            single,
+        )
+        _topup(
+            vms,
+            cluster,
+            "worker",
+            cluster["workers"],
+            cluster["workerCpu"],
+            cluster["workerMemory"],
+            cluster["workerDisk"],
+            single,
+        )
+    return vms
+
+
 def _copy_template_content_sections(tmpl: dict, resolved: dict) -> None:
     """Copy vms/containers and all topology content sections from tmpl."""
     if tmpl.get("vms"):

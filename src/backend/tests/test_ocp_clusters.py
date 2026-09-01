@@ -95,3 +95,51 @@ def test_build_clusters_infer_sno():
     clusters = build_topology_clusters(ocp, vms_def=vms)
     assert clusters[0]["type"] == "sno" and clusters[0]["controlPlane"] == 1
     assert clusters[0]["workers"] == 0
+
+
+def test_materialize_generates_missing_cp_and_workers():
+    from app.services.template_loader import (
+        build_topology_clusters,
+        materialize_cluster_vms,
+        normalize_ocp_section,
+    )
+
+    ocp = normalize_ocp_section([{"name": "prod", "type": "standard", "workers": 2}])
+    clusters = build_topology_clusters(ocp, vms_def={})
+    vms = materialize_cluster_vms(clusters, vms_def={})
+    cps = [n for n, c in vms.items() if c.get("role") == "control-plane"]
+    wks = [n for n, c in vms.items() if c.get("role") == "worker"]
+    assert len(cps) == 3 and len(wks) == 2
+    sample = vms[cps[0]]
+    assert sample["os"] == "rhcos" and sample["cluster"] == "prod"
+    assert sample["cpu"] == 8 and sample["memory"] == 16384 and sample["disk"] == 120
+
+
+def test_materialize_preserves_enumerated_vms():
+    from app.services.template_loader import (
+        build_topology_clusters,
+        materialize_cluster_vms,
+        normalize_ocp_section,
+    )
+
+    ocp = normalize_ocp_section([{"name": "prod", "type": "standard", "workers": 2}])
+    vms_in = {"cp-0": {"role": "control-plane", "cluster": "prod", "cpu": 16}}
+    clusters = build_topology_clusters(ocp, vms_def=vms_in)
+    vms = materialize_cluster_vms(clusters, vms_def=vms_in)
+    # keeps the custom cp-0 (cpu 16), tops up to 3 CP total
+    assert vms["cp-0"]["cpu"] == 16
+    assert len([c for c in vms.values() if c.get("role") == "control-plane"]) == 3
+
+
+def test_materialize_sno_single_node():
+    from app.services.template_loader import (
+        build_topology_clusters,
+        materialize_cluster_vms,
+        normalize_ocp_section,
+    )
+
+    ocp = normalize_ocp_section([{"name": "dev", "type": "sno"}])
+    clusters = build_topology_clusters(ocp, vms_def={})
+    vms = materialize_cluster_vms(clusters, vms_def={})
+    assert len([c for c in vms.values() if c.get("role") == "control-plane"]) == 1
+    assert len([c for c in vms.values() if c.get("role") == "worker"]) == 0
