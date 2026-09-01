@@ -221,6 +221,7 @@ async def _ensure_golden_pvc(
     size_gb,
     s3_config,
     secret_name: str | None = "s3-credentials",  # pragma: allowlist secret
+    source_size_gb=0,
 ):
     if not secret_name:
         secret_name = "s3-credentials"  # pragma: allowlist secret
@@ -264,6 +265,7 @@ async def _ensure_golden_pvc(
         size_gb,
         s3_config,
         secret_name=secret_name,
+        source_size_gb=source_size_gb,
     )
     try:
         custom_api.create_namespaced_custom_object(
@@ -435,6 +437,7 @@ async def _provision_disk_pvcs(
                 size_gb,
                 disk_s3,
                 secret_name=secret,
+                source_size_gb=disk.get("sourceSizeGb", 0),
             )
             clone_dv = build_clone_datavolume(
                 pvc_name,
@@ -507,7 +510,13 @@ async def _provision_cdrom(
     )
     try:
         golden_name = await _ensure_golden_pvc(
-            custom_api, core_api, cdrom_s3, 10, cdrom_cfg, secret_name=cdrom_secret
+            custom_api,
+            core_api,
+            cdrom_s3,
+            10,
+            cdrom_cfg,
+            secret_name=cdrom_secret,
+            source_size_gb=spec["cdrom"].get("sourceSizeGb", 0),
         )
         clone_dv = build_clone_datavolume(
             cdrom_pvc,
@@ -1083,6 +1092,7 @@ async def _clone_s3_disk(
         size_gb,
         disk_s3,
         secret_name=secret,
+        source_size_gb=disk.get("sourceSizeGb", 0),
     )
     clone_dv = build_clone_datavolume(
         pvc_name,

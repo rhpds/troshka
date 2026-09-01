@@ -6,6 +6,7 @@ from helpers.kubevirt import (
     _apply_video_and_input_devices,
     admission_api_error_summary,
     build_clone_datavolume,
+    build_datavolume_from_s3,
     build_kubevirt_vm,
     collect_kubevirt_vm_warnings,
     golden_import_matches,
@@ -416,3 +417,27 @@ def test_build_clone_datavolume_floors_at_source_size():
 def test_build_clone_datavolume_source_floor_ignored_when_smaller():
     dv = build_clone_datavolume("d", "ns", "golden", "cache", 50, source_size_gb=30)
     assert _clone_storage(dv) == "60Gi"
+
+
+def _s3_storage(dv):
+    return dv["spec"]["pvc"]["resources"]["requests"]["storage"]
+
+
+def test_build_datavolume_from_s3_uses_source_size_when_provided():
+    # Golden must be sized from the actual image (11Gi), not the requesting
+    # disk's sizeGb heuristic. max(11+2, ceil(11*1.15)=ceil(12.65)=13) = 13Gi.
+    dv = build_datavolume_from_s3(
+        "g", "cache", "lib/x.qcow2", 100, {}, source_size_gb=11
+    )
+    assert _s3_storage(dv) == "13Gi"
+
+    # A tiny requesting disk must not shrink the golden below the image size.
+    dv = build_datavolume_from_s3("g", "cache", "lib/x.qcow2", 5, {}, source_size_gb=11)
+    assert _s3_storage(dv) == "13Gi"
+
+
+def test_build_datavolume_from_s3_falls_back_to_size_gb():
+    # No source size known -> keep the legacy disk-driven heuristic
+    # max(20+10, int(20*1.2)=24) = 30Gi.
+    dv = build_datavolume_from_s3("g", "cache", "lib/x.qcow2", 20, {})
+    assert _s3_storage(dv) == "30Gi"

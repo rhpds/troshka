@@ -1,5 +1,6 @@
 import base64
 import json
+import math
 import time
 
 from kubernetes.client.exceptions import ApiException
@@ -590,8 +591,16 @@ def build_datavolume_from_s3(
     size_gb,
     s3_config,
     secret_name="s3-credentials",  # pragma: allowlist secret
+    source_size_gb=0,
 ):
     s3_url = s3_import_url(s3_path, s3_config)
+    # Size the golden from the ACTUAL image when known, so disks referencing the
+    # same image with different sizeGb share one right-sized golden. Fall back to
+    # the legacy disk-driven heuristic only when the source size is unknown.
+    if source_size_gb and source_size_gb > 0:
+        request_gb = max(source_size_gb + 2, math.ceil(source_size_gb * 1.15))
+    else:
+        request_gb = max(size_gb + 10, int(size_gb * 1.2))
     return {
         "apiVersion": "cdi.kubevirt.io/v1beta1",
         "kind": "DataVolume",
@@ -608,11 +617,7 @@ def build_datavolume_from_s3(
             },
             "pvc": {
                 "accessModes": ["ReadWriteOnce"],
-                "resources": {
-                    "requests": {
-                        "storage": f"{max(size_gb + 10, int(size_gb * 1.2))}Gi"
-                    }
-                },
+                "resources": {"requests": {"storage": f"{request_gb}Gi"}},
                 "storageClassName": STORAGE_CLASS,
             },
         },

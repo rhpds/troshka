@@ -170,6 +170,134 @@ def test_build_troshkavm_disk_spec_uses_controller_bus():
     assert spec["nics"][0]["model"] == "e1000"
 
 
+def _disk_spec_topology(source_size_gb=None):
+    data = {
+        "id": "stor1",
+        "source": "library",
+        "libraryItemId": "lib-1",
+        "format": "qcow2",
+        "size": 20,
+        "resolvedS3Path": "library/lib-1.qcow2",
+    }
+    if source_size_gb is not None:
+        data["sourceSizeGb"] = source_size_gb
+    return {
+        "nodes": [
+            {"id": "stor1", "type": "storageNode", "data": data},
+        ],
+        "edges": [],
+    }
+
+
+def test_build_troshkavm_disk_spec_emits_source_size_gb_for_library():
+    from app.services.deploy_topology import build_troshkavm_disk_spec
+
+    topo = _disk_spec_topology(source_size_gb=11)
+    disk = {
+        "node_id": "stor1",
+        "size": 20,
+        "format": "qcow2",
+        "source": "library",
+        "libraryItemId": "lib-1",
+        "resolvedS3Path": "library/lib-1.qcow2",
+    }
+    spec = build_troshkavm_disk_spec(disk, topo)
+    assert "libraryImage" in spec
+    assert spec["sourceSizeGb"] == 11
+
+
+def test_build_troshkavm_disk_spec_omits_source_size_gb_when_absent():
+    from app.services.deploy_topology import build_troshkavm_disk_spec
+
+    topo = _disk_spec_topology(source_size_gb=None)
+    disk = {
+        "node_id": "stor1",
+        "size": 20,
+        "format": "qcow2",
+        "source": "library",
+        "libraryItemId": "lib-1",
+        "resolvedS3Path": "library/lib-1.qcow2",
+    }
+    spec = build_troshkavm_disk_spec(disk, topo)
+    assert "sourceSizeGb" not in spec
+
+
+def test_build_troshkavm_disk_spec_omits_source_size_gb_when_zero():
+    from app.services.deploy_topology import build_troshkavm_disk_spec
+
+    topo = _disk_spec_topology(source_size_gb=0)
+    disk = {
+        "node_id": "stor1",
+        "size": 20,
+        "format": "qcow2",
+        "source": "library",
+        "libraryItemId": "lib-1",
+        "resolvedS3Path": "library/lib-1.qcow2",
+    }
+    spec = build_troshkavm_disk_spec(disk, topo)
+    assert "sourceSizeGb" not in spec
+
+
+def test_build_troshkavm_disk_spec_emits_source_size_gb_for_pattern():
+    from app.services.deploy_topology import build_troshkavm_disk_spec
+
+    topo = {
+        "nodes": [
+            {
+                "id": "stor1",
+                "type": "storageNode",
+                "data": {
+                    "id": "stor1",
+                    "source": "pattern",
+                    "patternId": "pat-1",
+                    "patternDiskId": "pd-1",
+                    "format": "qcow2",
+                    "size": 40,
+                    "resolvedS3Path": "patterns/pat-1/pd-1.qcow2",
+                    "sourceSizeGb": 40,
+                },
+            }
+        ],
+        "edges": [],
+    }
+    disk = {
+        "node_id": "stor1",
+        "size": 40,
+        "format": "qcow2",
+        "source": "pattern",
+        "patternId": "pat-1",
+        "resolvedS3Path": "patterns/pat-1/pd-1.qcow2",
+    }
+    spec = build_troshkavm_disk_spec(disk, topo)
+    assert "patternImage" in spec
+    assert spec["sourceSizeGb"] == 40
+
+
+def test_build_troshkavm_disk_spec_no_source_size_gb_for_blank():
+    from app.services.deploy_topology import build_troshkavm_disk_spec
+
+    topo = {
+        "nodes": [
+            {
+                "id": "stor1",
+                "type": "storageNode",
+                "data": {
+                    "id": "stor1",
+                    "source": "blank",
+                    "size": 100,
+                    "format": "qcow2",
+                    "sourceSizeGb": 100,
+                },
+            }
+        ],
+        "edges": [],
+    }
+    disk = {"node_id": "stor1", "size": 100, "format": "qcow2", "source": "blank"}
+    spec = build_troshkavm_disk_spec(disk, topo)
+    assert spec["blank"] is True
+    assert "sourceSizeGb" not in spec
+
+
 def test_build_troshkavm_vm_spec_secure_boot_firmware():
     from app.services.deploy_topology import build_troshkavm_vm_spec
 

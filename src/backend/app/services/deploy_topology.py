@@ -1265,6 +1265,7 @@ def build_troshkavm_disk_spec(disk: dict, topology: dict) -> dict:
     if disk.get("rotation_rate") is not None:
         spec["rotationRate"] = disk["rotation_rate"]
 
+    source_size_gb = int(sd.get("sourceSizeGb", 0) or 0)
     if source == "pattern" and (disk.get("patternId") or sd.get("patternId")):
         pattern_id = disk.get("patternId") or sd.get("patternId", "")
         pattern_disk_id = sd.get("patternDiskId", "")
@@ -1275,6 +1276,8 @@ def build_troshkavm_disk_spec(disk: dict, topology: dict) -> dict:
             "central": central,
             "source": sd.get("diskSource", "central"),
         }
+        if source_size_gb > 0:
+            spec["sourceSizeGb"] = source_size_gb
     elif source == "library" and (
         disk.get("library_item_id")
         or disk.get("libraryItemId")
@@ -1290,6 +1293,8 @@ def build_troshkavm_disk_spec(disk: dict, topology: dict) -> dict:
             "format": fmt,
             "central": central,
         }
+        if source_size_gb > 0:
+            spec["sourceSizeGb"] = source_size_gb
     elif source == "snapshot" and sd.get("resolvedS3Path"):
         spec["libraryImage"] = {
             "s3Path": sd["resolvedS3Path"],

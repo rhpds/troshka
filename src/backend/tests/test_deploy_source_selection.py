@@ -333,6 +333,105 @@ def test_resolve_library_disk_bumps_size_from_virtual_size_bytes():
         )
         data = topology["nodes"][0]["data"]
         assert data["size"] >= 80
+        # sourceSizeGb recorded from virtual size (80 GiB)
+        assert data["sourceSizeGb"] == 80
+    finally:
+        db.rollback()
+        db.close()
+
+
+def test_library_disk_virtual_size_falls_back_to_size_bytes_for_iso():
+    # Raw ISO images have virtual_size_bytes=0 but a real size_bytes (~11GB).
+    # Sizing must fall back to size_bytes so goldens/clones are sized correctly.
+    from app.models.library import LibraryItemDisk
+
+    db = _make_db()
+    try:
+        item = _library_item(
+            db,
+            "library/lib-x/iso-1/RHEL 10.2 Binary DVD.iso",
+            "iso",
+            source="central",
+            item_type="iso",
+        )
+        db.add(
+            LibraryItemDisk(
+                library_item_id=item.id,
+                s3_key=item.s3_key,
+                format="iso",
+                size_bytes=11 * 1073741824,
+                virtual_size_bytes=0,
+                boot_order=0,
+                state="available",
+            )
+        )
+        db.flush()
+        result = deploy_service._library_disk_virtual_size_bytes(
+            db, item, item.s3_key or ""
+        )
+        assert result == 11 * 1073741824
+    finally:
+        db.rollback()
+        db.close()
+
+
+def test_library_disk_virtual_size_prefers_virtual_over_size_bytes():
+    from app.models.library import LibraryItemDisk
+
+    db = _make_db()
+    try:
+        item = _library_item(db, "library/lib-y/disk-a.qcow2", "qcow2", source="local")
+        db.add(
+            LibraryItemDisk(
+                library_item_id=item.id,
+                s3_key=item.s3_key,
+                format="qcow2",
+                size_bytes=2 * 1073741824,
+                virtual_size_bytes=80 * 1073741824,
+                boot_order=0,
+                state="available",
+            )
+        )
+        db.flush()
+        result = deploy_service._library_disk_virtual_size_bytes(
+            db, item, item.s3_key or ""
+        )
+        assert result == 80 * 1073741824
+    finally:
+        db.rollback()
+        db.close()
+
+
+def test_library_disk_virtual_size_returns_zero_when_unknown():
+    db = _make_db()
+    try:
+        item = _library_item(db, "library/lib-z/disk-a.qcow2", "qcow2", source="local")
+        result = deploy_service._library_disk_virtual_size_bytes(
+            db, item, item.s3_key or ""
+        )
+        assert result == 0
+    finally:
+        db.rollback()
+        db.close()
+
+
+def test_resolve_pattern_disk_records_source_size_gb():
+    db = _make_db()
+    try:
+        pat, pd = _pattern_disk(db, virtual_bytes=40 * 1073741824)
+        db.add(
+            PatternLocation(
+                pattern_disk_id=pd.id,
+                provider_id=PROV,
+                location_type="obc",
+                s3_key=pd.s3_key,
+                state="synced",
+            )
+        )
+        db.flush()
+        data = _data(pat, pd)
+        deploy_service._resolve_pattern_disk(data, db, PROV)
+        assert data["sourceSizeGb"] == 40
     finally:
         db.rollback()
         db.close()

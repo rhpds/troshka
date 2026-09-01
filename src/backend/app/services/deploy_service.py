@@ -1960,8 +1960,14 @@ def _library_disk_virtual_size_bytes(db, lib_item, s3_path: str) -> int:
             continue
         if disk.virtual_size_bytes:
             return disk.virtual_size_bytes
+        # Raw images (e.g. ISOs) have no qcow2 virtual size but a real file
+        # size — fall back to size_bytes so goldens/clones are sized correctly.
+        if disk.size_bytes:
+            return disk.size_bytes
     if len(disks) == 1 and disks[0].virtual_size_bytes:
         return disks[0].virtual_size_bytes
+    if len(disks) == 1 and disks[0].size_bytes:
+        return disks[0].size_bytes
 
     max_gb = 0
     for disk in (lib_item.vm_config or {}).get("disks", []):
@@ -1999,6 +2005,7 @@ def _apply_virtual_size_to_disk_data(data, virtual_size_bytes: int) -> None:
     if not virtual_size_bytes:
         return
     real_gb = math.ceil(virtual_size_bytes / (1024**3))
+    data["sourceSizeGb"] = real_gb
     if real_gb > (data.get("size", 0) or 0):
         data["size"] = real_gb
 
@@ -2050,6 +2057,7 @@ def _resolve_pattern_disk(data, db, target_provider_id):
     )
     if pd_record and pd_record.virtual_size_bytes:
         real_gb = math.ceil(pd_record.virtual_size_bytes / (1024**3))
+        data["sourceSizeGb"] = real_gb
         if real_gb > (data.get("size", 0) or 0):
             data["size"] = real_gb
 
