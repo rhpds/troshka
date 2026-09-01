@@ -1,5 +1,6 @@
 import os
 import random
+import re
 import uuid
 from pathlib import Path
 
@@ -44,6 +45,78 @@ def normalize_ocp_section(ocp) -> list[dict]:
         c.pop("cluster_name", None)
         clusters.append(c)
     return clusters
+
+
+_CP_SIZE_DEFAULTS = {"cpu": 8, "memory": 16384, "disk": 120}
+_WORKER_SIZE_DEFAULTS = {"cpu": 4, "memory": 8192, "disk": 100}
+
+
+def _slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (name or "ocp").lower()).strip("-") or "ocp"
+
+
+def _count_cluster_roles(cluster_name, vms_def, single_cluster):
+    cp = wk = 0
+    for cfg in (vms_def or {}).values():
+        if not single_cluster and cfg.get("cluster") != cluster_name:
+            continue
+        role = cfg.get("role")
+        if role == "control-plane":
+            cp += 1
+        elif role == "worker":
+            wk += 1
+    return cp, wk
+
+
+def _infer_type(cp, wk):
+    if cp <= 1 and wk == 0:
+        return "sno"
+    if wk == 0:
+        return "compact"
+    return "standard"
+
+
+def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[dict]:
+    """Build camelCase cluster objects for ``topology['clusters']``."""
+    single = len(ocp_list) == 1
+    out = []
+    for entry in ocp_list:
+        name = entry["name"]
+        cp_count, wk_count = _count_cluster_roles(name, vms_def, single)
+        ctype = entry.get("type") or _infer_type(cp_count, wk_count)
+        control_plane = 1 if ctype == "sno" else 3
+        workers = entry.get("workers")
+        if workers is None:
+            workers = wk_count
+        out.append(
+            {
+                "id": _slug(name),
+                "name": name,
+                "type": ctype,
+                "controlPlane": control_plane,
+                "workers": int(workers),
+                "controlPlaneCpu": entry.get(
+                    "control_plane_cpu", _CP_SIZE_DEFAULTS["cpu"]
+                ),
+                "controlPlaneMemory": entry.get(
+                    "control_plane_memory", _CP_SIZE_DEFAULTS["memory"]
+                ),
+                "controlPlaneDisk": entry.get(
+                    "control_plane_disk", _CP_SIZE_DEFAULTS["disk"]
+                ),
+                "workerCpu": entry.get("worker_cpu", _WORKER_SIZE_DEFAULTS["cpu"]),
+                "workerMemory": entry.get(
+                    "worker_memory", _WORKER_SIZE_DEFAULTS["memory"]
+                ),
+                "workerDisk": entry.get("worker_disk", _WORKER_SIZE_DEFAULTS["disk"]),
+                "baseDomain": entry.get("base_domain", "ocp.local"),
+                "apiVip": entry.get("api_vip"),
+                "ingressVip": entry.get("ingress_vip"),
+                "ocpVersion": entry.get("ocp_version", "4.20"),
+                "pullThroughRegistry": entry.get("pull_through_registry"),
+            }
+        )
+    return out
 
 
 def _copy_template_content_sections(tmpl: dict, resolved: dict) -> None:
