@@ -421,6 +421,30 @@ def _patch_restart(name: str) -> None:
     )
 
 
+_WORKER_DEPLOYMENT = "troshka-worker"
+
+
+def _apply_worker_image() -> None:
+    """Roll out the worker deployment too.
+
+    The worker runs the BACKEND image (worker-deployment.yaml uses
+    troshka.backendImage) but is a separate deployment, so updating only
+    backend/frontend leaves the worker on the old code — backend/worker version
+    skew that breaks deploy jobs (e.g. a signature that changed between them).
+    Patch it with the backend image ref, or restart it if the tag is unchanged.
+    Best-effort: deployments without a separate worker are skipped.
+    """
+    backend = COMPONENTS["backend"]
+    try:
+        deploy_tag = _read_deployment_tag(_WORKER_DEPLOYMENT)
+        if _comparison_tag(deploy_tag) != deploy_tag:
+            _patch_deployment_image(_WORKER_DEPLOYMENT, _rolling_image_ref(backend))
+        else:
+            _patch_restart(_WORKER_DEPLOYMENT)
+    except Exception:
+        logger.warning("app_updater: worker rollout skipped", exc_info=True)
+
+
 def _apply_image() -> dict:
     for suffix in COMPONENTS.values():
         deploy_tag = _read_deployment_tag(suffix)
@@ -428,6 +452,7 @@ def _apply_image() -> dict:
             _patch_deployment_image(suffix, _rolling_image_ref(suffix))
         else:
             _patch_restart(suffix)
+    _apply_worker_image()
     return {"status": "rolling_out"}
 
 
