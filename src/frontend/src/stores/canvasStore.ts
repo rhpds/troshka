@@ -474,6 +474,24 @@ function normalizeShowroomContainer(c: unknown): unknown {
   return out;
 }
 
+// Order-insensitive JSON: the frontend (TS) and backend (Python) generate
+// showroom/gateway objects independently and may emit the same fields in a
+// different key order. A plain JSON.stringify would read that as "changed", so
+// dirty comparisons canonicalize with sorted keys instead.
+export function stableStringify(v: unknown): string {
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+  const obj = v as Record<string, unknown>;
+  return (
+    "{" +
+    Object.keys(obj)
+      .sort()
+      .map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k]))
+      .join(",") +
+    "}"
+  );
+}
+
 export function stableNodeData(
   data: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -504,7 +522,7 @@ function buildDeployedBaseline(deployed: DeployedTopologySnapshot | null | undef
     if (n.type === "storageNode" && n.data?.size) {
       depSizes[n.id] = n.data.size as number;
     }
-    depNodeData[n.id] = JSON.stringify(stableNodeData(n.data || {}));
+    depNodeData[n.id] = stableStringify(stableNodeData(n.data || {}));
   }
   const depEdgeKey = (deployed?.edges || [])
     .filter((e) => !isShowroomGatewayEdge(e as unknown as Edge))
@@ -563,7 +581,7 @@ export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; depl
   for (const n of nodes) {
     const deployed = deployedNodeData[n.id];
     if (!deployed) return true;
-    if (JSON.stringify(stableNodeData((n.data || {}) as Record<string, unknown>)) !== deployed) return true;
+    if (stableStringify(stableNodeData((n.data || {}) as Record<string, unknown>)) !== deployed) return true;
   }
   // External IPs (add/remove/rename) — compared by desired fields only. Set
   // together with deployedNodeData on load, so it is populated by this point.

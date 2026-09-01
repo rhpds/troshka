@@ -2918,3 +2918,27 @@ class TestExecKubevirt:
             )
         assert result["method"] == "serial-junos"
         assert result["output"] == "Hostname: rtr3"
+
+
+def test_sync_showroom_prunes_stale_vni(monkeypatch):
+    """A VNI for a deleted network is pruned from vni_map on save, so it can't
+    corrupt min(vni_map) (which drives the showroom infra IP)."""
+    from types import SimpleNamespace
+
+    from app.api import projects as proj_api
+
+    monkeypatch.setattr(proj_api, "_resolve_provider_type", lambda p: "ocpvirt")
+    monkeypatch.setattr(
+        "app.services.deploy_topology.inject_showroom_gateway_port_forwards",
+        lambda *a, **k: None,
+    )
+    project = SimpleNamespace(
+        vni_map={"live-net": 1952, "deleted-net": 1000}, provider=None
+    )
+    topology = {
+        "nodes": [
+            {"id": "live-net", "type": "networkNode", "data": {"subtype": "network"}},
+        ]
+    }
+    proj_api._sync_showroom_topology_on_save(None, project, topology)
+    assert project.vni_map == {"live-net": 1952}

@@ -161,7 +161,14 @@ function ensureShowroomGatewayPortForwardsOnNodes(
   const gateway = getGatewayNode(nodes);
   if (!showroom || !gateway) return nodes;
 
-  const firstVni = firstProjectVni(vniMap);
+  // Derive the showroom infra IP only from VNIs of networks still on the canvas.
+  // A stale vniMap entry (a deleted network whose VNI wasn't pruned) could
+  // otherwise become min(vniMap) and move the infra IP, causing false dirty.
+  const liveIds = new Set(nodes.map((n) => n.id));
+  const liveVniMap = Object.fromEntries(
+    Object.entries(vniMap).filter(([k]) => liveIds.has(k)),
+  );
+  const firstVni = firstProjectVni(liveVniMap);
   if (!firstVni) return nodes;
 
   const gwData = gateway.data as Record<string, unknown>;

@@ -239,6 +239,17 @@ def _sync_showroom_topology_on_save(db, project, topology: dict) -> None:
     from app.services.deploy_topology import inject_showroom_gateway_port_forwards
 
     vni_map = dict(project.vni_map or {})
+    # Drop VNIs for networks no longer in the topology. A leaked entry (e.g. a
+    # network added then deleted) would otherwise stay in vni_map and could
+    # become min(vni_map), which drives the showroom infra IP — silently moving
+    # it (false "dirty" now, wrong Route/transit on the next deploy).
+    current_node_ids = {n["id"] for n in topology.get("nodes", [])}
+    stale = [k for k in vni_map if k not in current_node_ids]
+    changed = False
+    for k in stale:
+        vni_map.pop(k, None)
+        changed = True
+
     needing_vni = [
         n
         for n in topology.get("nodes", [])
@@ -249,6 +260,8 @@ def _sync_showroom_topology_on_save(db, project, topology: dict) -> None:
     ]
     if needing_vni:
         _allocate_vnis_for_new_networks(db, {"added_networks": needing_vni}, vni_map)
+        changed = True
+    if changed:
         project.vni_map = vni_map
 
     inject_showroom_gateway_port_forwards(

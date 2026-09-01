@@ -4,7 +4,7 @@ import React, { memo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NetworkNodeData } from "@/stores/canvasStore";
-import { useCanvasStore, stableNodeData } from "@/stores/canvasStore";
+import { useCanvasStore, stableNodeData, stableStringify } from "@/stores/canvasStore";
 import { formatOcpRouteUrl, isDeployInProgress, isOcpRoutablePort } from "@/lib/routeUrl";
 import { isShowroomContainer, SHOWROOM_GATEWAY_TARGET_HANDLE } from "@/lib/showroomValidation";
 import { isShowroomManagedForward } from "@/lib/showroomPortForwards";
@@ -47,7 +47,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
     if (!deployed) return false;
     // Use the same normalization the deployed baseline was built with, so
     // deploy-transient/machine-managed fields don't show a false 💾.
-    return JSON.stringify(stableNodeData(d as Record<string, unknown>)) !== deployed;
+    return stableStringify(stableNodeData(d as Record<string, unknown>)) !== deployed;
   }, [id, d, deployedNodeData]);
 
   const networkType = (data as Record<string, any>).networkType;

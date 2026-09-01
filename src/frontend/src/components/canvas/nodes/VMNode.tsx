@@ -3,7 +3,7 @@
 import React, { memo, useState, useEffect } from "react";
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
 import type { VMNodeData } from "@/stores/canvasStore";
-import { useCanvasStore, requestDuplicateVM, stableNodeData } from "@/stores/canvasStore";
+import { useCanvasStore, requestDuplicateVM, stableNodeData, stableStringify } from "@/stores/canvasStore";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 
@@ -40,7 +40,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
     const deployed = deployedNodeData[id];
     if (!deployed) return false;
     // Match the deployed baseline's normalization to avoid false 💾.
-    return JSON.stringify(stableNodeData(d as Record<string, unknown>)) !== deployed;
+    return stableStringify(stableNodeData(d as Record<string, unknown>)) !== deployed;
   }, [id, d, deployedNodeData]);
 
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
