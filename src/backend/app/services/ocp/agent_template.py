@@ -394,7 +394,10 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     resolved = config.get("resolved", {})
     pull_through_registry = resolved.get("pull_through_registry")
 
-    ocp_cfg = resolved.get("ocp", {})
+    from app.services.template_loader import normalize_ocp_section
+
+    ocp_clusters = normalize_ocp_section(resolved.get("ocp"))
+    ocp_cfg = ocp_clusters[0] if ocp_clusters else {}
     api_vip, ingress_vip = _resolve_ocp_vips(topology, ocp_cfg)
 
     dns_api = api_vip

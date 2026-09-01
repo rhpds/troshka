@@ -27,6 +27,25 @@ _TEMPLATE_CONTENT_SECTIONS = (
 )
 
 
+def normalize_ocp_section(ocp) -> list[dict]:
+    """Normalize the template ``ocp:`` section to a list of cluster dicts.
+
+    Accepts the legacy singular mapping (wrapped into a one-element list) or
+    the new list form. Each cluster is guaranteed a ``name`` (from ``name`` or
+    legacy ``cluster_name``, default ``"ocp"``).
+    """
+    if not ocp:
+        return []
+    entries = [ocp] if isinstance(ocp, dict) else list(ocp)
+    clusters = []
+    for entry in entries:
+        c = dict(entry)
+        c["name"] = c.get("name") or c.get("cluster_name") or "ocp"
+        c.pop("cluster_name", None)
+        clusters.append(c)
+    return clusters
+
+
 def _copy_template_content_sections(tmpl: dict, resolved: dict) -> None:
     """Copy vms/containers and all topology content sections from tmpl."""
     if tmpl.get("vms"):
@@ -35,7 +54,10 @@ def _copy_template_content_sections(tmpl: dict, resolved: dict) -> None:
         resolved["containers"] = tmpl["containers"]
     for section in _TEMPLATE_CONTENT_SECTIONS:
         if tmpl.get(section):
-            resolved[section] = tmpl[section]
+            if section == "ocp":
+                resolved["ocp"] = normalize_ocp_section(tmpl["ocp"])
+            else:
+                resolved[section] = tmpl[section]
 
 
 def load_template(name: str, templates_dir: str = _DEFAULT_TEMPLATES_DIR) -> dict:
@@ -388,7 +410,8 @@ def _create_gateway_node(gw_def, vms_def, tmpl, external_access, gw_y, nets_def)
 
         # Auto-generate OCP port forwards if no custom ones and OCP config exists
         if not port_forwards:
-            ocp_cfg = tmpl.get("ocp", {})
+            ocp_clusters = normalize_ocp_section(tmpl.get("ocp"))
+            ocp_cfg = ocp_clusters[0] if ocp_clusters else {}
             port_forwards = _generate_ocp_port_forwards(eip_id, vms_def, ocp_cfg)
 
     gw_node = {
@@ -909,11 +932,11 @@ def _build_start_order(tmpl, vm_name_to_id, container_name_to_id):
     return start_order
 
 
-def _generate_ocp_dns_records(ocp_cfg, top_dns):
-    if not (ocp_cfg.get("cluster_name") and ocp_cfg.get("base_domain")):
+def _generate_ocp_cluster_dns_records(ocp_cfg, top_dns):
+    cn = ocp_cfg.get("name")
+    bd = ocp_cfg.get("base_domain")
+    if not (cn and bd):
         return
-    cn = ocp_cfg["cluster_name"]
-    bd = ocp_cfg["base_domain"]
     api_vip = ocp_cfg.get("api_vip", "")
     ingress_vip = ocp_cfg.get("ingress_vip", api_vip)
     if not api_vip:
@@ -924,6 +947,12 @@ def _generate_ocp_dns_records(ocp_cfg, top_dns):
     apps_name = f".apps.{cn}.{bd}"
     if not any(r.get("name") == apps_name for r in top_dns):
         top_dns.append({"name": apps_name, "ip": ingress_vip})
+
+
+def _generate_ocp_dns_records(ocp_section, top_dns):
+    """Generate api/api-int/apps DNS records for each normalized OCP cluster."""
+    for ocp_cfg in normalize_ocp_section(ocp_section):
+        _generate_ocp_cluster_dns_records(ocp_cfg, top_dns)
 
 
 def _collect_workload_ips(nodes: list) -> dict[str, str]:

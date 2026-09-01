@@ -213,8 +213,8 @@ def test_resolve_declarative_sections():
     from app.services.template_loader import resolve_template
 
     resolved = resolve_template("example", overrides={}, templates_dir=TEMPLATES_DIR)
-    assert resolved["ocp"]["cluster_name"] == "test"
-    assert resolved["ocp"]["base_domain"] == "example.local"
+    assert resolved["ocp"][0]["name"] == "test"
+    assert resolved["ocp"][0]["base_domain"] == "example.local"
     assert len(resolved["dns_records"]) >= 1
     assert resolved["dns_records"][0]["target"] == "bastion"
 

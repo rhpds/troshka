@@ -636,10 +636,13 @@ def create_project_from_template(
 
     resolved, template_id = _resolve_template_source(body)
 
-    # Apply defaults from template's ocp section
-    ocp_cfg = resolved.get("ocp", {})
-    if ocp_cfg.get("cluster_name"):
-        body.setdefault("cluster_name", ocp_cfg["cluster_name"])
+    # Apply defaults from template's ocp section (first cluster, back-compat)
+    from app.services.template_loader import normalize_ocp_section
+
+    ocp_clusters = normalize_ocp_section(resolved.get("ocp"))
+    ocp_cfg = ocp_clusters[0] if ocp_clusters else {}
+    if ocp_cfg.get("name"):
+        body.setdefault("cluster_name", ocp_cfg["name"])
     if ocp_cfg.get("base_domain"):
         body.setdefault("base_domain", ocp_cfg["base_domain"])
 
