@@ -193,11 +193,27 @@ start_worker() {
         return
     fi
     _cleanup_stale_rq_workers
-    local started=0
+    # supervise-worker.py re-spawns itself detached and writes its pidfile only
+    # AFTER re-exec, so a fixed sleep races the pidfile write and a restart can
+    # report success while 0 workers are actually up. Launch, then poll for the
+    # supervisors to register, and retry the ones that didn't come up once.
+    _launch_missing_workers
+    local running
+    running="$(_await_workers)"
+    if [ "$running" -lt "$WORKER_COUNT" ]; then
+        _launch_missing_workers
+        running="$(_await_workers)"
+    fi
+    echo "  Worker:     RUNNING ($running of $WORKER_COUNT)"
+}
+
+# Launch a supervisor for every slot whose supervisor isn't currently alive.
+_launch_missing_workers() {
+    local i pidfile supervisor_pidfile
     for i in $(seq 1 "$WORKER_COUNT"); do
-        local pidfile="$PID_DIR/worker-${i}.pid"
-        local supervisor_pidfile="$PID_DIR/worker-${i}-supervisor.pid"
-        if [ -f "$supervisor_pidfile" ] && kill -0 "$(cat "$supervisor_pidfile")" 2>/dev/null; then
+        pidfile="$PID_DIR/worker-${i}.pid"
+        supervisor_pidfile="$PID_DIR/worker-${i}-supervisor.pid"
+        if [ -f "$supervisor_pidfile" ] && kill -0 "$(cat "$supervisor_pidfile" 2>/dev/null)" 2>/dev/null; then
             continue
         fi
         rm -f "$pidfile" "$supervisor_pidfile"
@@ -206,19 +222,22 @@ start_worker() {
             --worker-pidfile "$pidfile" \
             --supervisor-pidfile "$supervisor_pidfile" \
             --log "$WORKER_LOG"
-        started=$((started + 1))
     done
-    local running=0
-    sleep 0.5
-    for i in $(seq 1 "$WORKER_COUNT"); do
-        local supervisor_pidfile="$PID_DIR/worker-${i}-supervisor.pid"
-        [ -f "$supervisor_pidfile" ] && kill -0 "$(cat "$supervisor_pidfile")" 2>/dev/null && running=$((running + 1))
+}
+
+# Poll up to ~6s for supervisors to register; echo how many are alive.
+_await_workers() {
+    local attempt i sp running=0
+    for attempt in $(seq 1 12); do
+        running=0
+        for i in $(seq 1 "$WORKER_COUNT"); do
+            sp="$PID_DIR/worker-${i}-supervisor.pid"
+            [ -f "$sp" ] && kill -0 "$(cat "$sp" 2>/dev/null)" 2>/dev/null && running=$((running + 1))
+        done
+        [ "$running" -ge "$WORKER_COUNT" ] && break
+        sleep 0.5
     done
-    if [ "$started" -gt 0 ]; then
-        echo "  Worker:     started $started ($running total)"
-    else
-        echo "  Worker:     $running already running"
-    fi
+    echo "$running"
 }
 
 worker_supervisor_pids() {
@@ -479,8 +498,10 @@ status() {
     else
         echo "  PostgreSQL: STOPPED"
     fi
+    local redis_up=0
     if podman ps --format '{{.Names}}' 2>/dev/null | grep -q "^${REDIS_CONTAINER}$"; then
         echo "  Redis:      RUNNING (port $REDIS_PORT)"
+        redis_up=1
     else
         echo "  Redis:      STOPPED (backend uses in-memory fallback)"
     fi
@@ -497,6 +518,9 @@ status() {
     done
     if [ "$running_workers" -gt 0 ]; then
         echo "  Worker:     RUNNING ($running_workers of $WORKER_COUNT)"
+    elif [ "$redis_up" -eq 1 ]; then
+        # Redis is up, so jobs enqueue to it — with no worker they'd hang.
+        echo "  Worker:     STOPPED (Redis up — jobs will QUEUE; run: ./dev-services.sh restart worker)"
     else
         echo "  Worker:     STOPPED (backend runs jobs in-process)"
     fi
