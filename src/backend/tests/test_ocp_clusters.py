@@ -399,3 +399,24 @@ def test_migrate_adds_cluster_node():
     assert cluster["workerMemory"] == 8192
     assert cluster["workerDisk"] == 100
     assert cluster["pullThroughRegistry"] is None
+
+
+def test_shipped_templates_use_ocp_list_and_generate_clusters():
+    import os
+
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        load_template,
+        resolve_inline_template,
+    )
+
+    tdir = os.path.join(os.path.dirname(__file__), "..", "templates")
+    for name, expect_type in [
+        ("ocp-sno", "sno"),
+        ("ocp-compact", "compact"),
+        ("ocp-standard", "standard"),
+    ]:
+        raw = load_template(name, templates_dir=tdir)
+        assert isinstance(raw["ocp"], list), f"{name} ocp not a list"
+        topo = generate_topology_from_template(resolve_inline_template(raw))
+        assert topo["clusters"][0]["type"] == expect_type
