@@ -946,7 +946,7 @@ export default function ProjectCanvasPage() {
             display: "flex", alignItems: "center", justifyContent: "center",
             pointerEvents: "none",
           }}>
-            <div style={{ textAlign: "center", pointerEvents: "auto" }}>
+            <div style={{ textAlign: "center", pointerEvents: "none" }}>
               <div style={{ fontSize: 14, opacity: 0.5, marginBottom: 16 }}>
                 Drag components from the palette or import a template
               </div>
@@ -957,6 +957,7 @@ export default function ProjectCanvasPage() {
                   border: "1px solid var(--pf-t--global--border--color--default)",
                   background: "var(--pf-t--global--background--color--primary--default)",
                   color: "#fff", cursor: "pointer", fontSize: 14, fontWeight: 500,
+                  pointerEvents: "auto",
                 }}
               >
                 Import Template YAML

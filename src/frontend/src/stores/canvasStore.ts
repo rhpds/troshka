@@ -631,11 +631,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             get().vniMap,
           );
           set({
-            ...applyShowroomGatewaySync(synced, {
-              nodes,
-              edges,
-              externalIps: get().externalIps,
-            }),
+            ...applyShowroomGatewaySync(synced, get()),
             selectedNodeId: removedIds.has(get().selectedNodeId || "")
               ? null
               : get().selectedNodeId,
@@ -669,11 +665,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         get().vniMap,
       );
       set({
-        ...applyShowroomGatewaySync(synced, {
-          nodes,
-          edges,
-          externalIps: get().externalIps,
-        }),
+        ...applyShowroomGatewaySync(synced, get()),
         selectedNodeId: removedIds.has(get().selectedNodeId || "")
           ? null
           : get().selectedNodeId,
@@ -1027,8 +1019,11 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       get().externalIps,
       get().vniMap,
     );
+    // Baseline is the CURRENT store state (get()), not the freshly-built `nodes`:
+    // when there is no showroom the sync is a no-op and returns its input array,
+    // so diffing against `nodes` would drop the new node entirely.
     set({
-      ...applyShowroomGatewaySync(synced, { nodes, edges: get().edges, externalIps: get().externalIps }),
+      ...applyShowroomGatewaySync(synced, get()),
     });
     set({ topologyDirty: computeTopologyDirty(get()) });
     const projectId = get().currentProjectId;
@@ -1114,11 +1109,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       get().vniMap,
     );
     set({
-      ...applyShowroomGatewaySync(synced, {
-        nodes,
-        edges,
-        externalIps: get().externalIps,
-      }),
+      ...applyShowroomGatewaySync(synced, get()),
       selectedNodeId:
         get().selectedNodeId === nodeId ? null : get().selectedNodeId,
       ...(clearShowroom ? { showroom: null } : {}),
@@ -1349,7 +1340,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       get().vniMap,
     );
     set({
-      ...applyShowroomGatewaySync(synced, { nodes: get().nodes, edges: get().edges, externalIps: ips }),
+      ...applyShowroomGatewaySync(synced, get()),
     });
     set({ topologyDirty: computeTopologyDirty(get()) });
   },
