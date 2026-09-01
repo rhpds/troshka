@@ -11,6 +11,11 @@ import uuid
 
 logger = logging.getLogger(__name__)
 
+# Providers with OpenShift ingress: 443/80 forwards are served by an OpenShift
+# Route, never bound to the EIP LoadBalancer. Cloud providers (ec2/gcp/azure)
+# have no ingress, so their 443/80 forwards must stay on the EIP.
+_ROUTE_PROVIDERS = frozenset({"ocpvirt", "kubevirt"})
+
 
 def validate_topology_names(topology: dict) -> list[str]:
     """Check for duplicate node names within a topology. Returns list of errors."""
@@ -330,8 +335,15 @@ def _strip_showroom_outbound_ports(outbound_ports: str, managed: list[str]) -> s
     return ",".join(stripped)
 
 
-def inject_showroom_gateway_port_forwards(topology: dict, vni_map: dict) -> bool:
-    """Sync gateway external IP + 443→showroom forward with showroom presence."""
+def inject_showroom_gateway_port_forwards(
+    topology: dict, vni_map: dict, provider_type: str | None = None
+) -> bool:
+    """Sync gateway external IP + 443→showroom forward with showroom presence.
+
+    On OpenShift-ingress providers (ocpvirt/kubevirt) 443/80 forwards are served
+    by a Route and must NOT be bound to the EIP; on cloud providers they stay on
+    the EIP.
+    """
     from app.services.vxlan import (
         _inject_showroom_port_forward,
         _topology_has_showroom,
@@ -362,24 +374,29 @@ def inject_showroom_gateway_port_forwards(topology: dict, vni_map: dict) -> bool
     ext_ips = topology.get("externalIps") or []
     eip_id = str(ext_ips[0].get("id", "")) if ext_ips else ""
     if eip_id:
-        merged = [
-            {
-                **pf,
-                "extIpId": pf.get("extIpId") or eip_id,
-                **(
-                    {"managedByShowroom": True}
-                    if pf.get("managedByShowroom")
-                    or (
-                        str(pf.get("extPort")) == "443"
-                        and str(pf.get("intPort")) == "80"
-                        and (pf.get("intIp") or "").strip().startswith("172.30.")
-                        and (pf.get("intIp") or "").strip().endswith(".3")
-                    )
-                    else {}
-                ),
-            }
-            for pf in merged
-        ]
+        route_web = provider_type in _ROUTE_PROVIDERS
+        new_merged = []
+        for pf in merged:
+            is_showroom = pf.get("managedByShowroom") or (
+                str(pf.get("extPort")) == "443"
+                and str(pf.get("intPort")) == "80"
+                and (pf.get("intIp") or "").strip().startswith("172.30.")
+                and (pf.get("intIp") or "").strip().endswith(".3")
+            )
+            entry = {**pf}
+            if is_showroom:
+                entry["managedByShowroom"] = True
+            # On OpenShift-ingress providers, 443/80 are served by a Route — strip
+            # any extIpId so they stay Route-only (also self-heals topologies where
+            # an EIP was wrongly assigned to the showroom 443). On cloud providers
+            # there is no ingress, so 443/80 stay bound to the EIP like everything
+            # else.
+            if route_web and str(pf.get("extPort")) in ("443", "80"):
+                entry.pop("extIpId", None)
+            else:
+                entry["extIpId"] = pf.get("extIpId") or eip_id
+            new_merged.append(entry)
+        merged = new_merged
 
     if merged != existing:
         data["portForwards"] = merged

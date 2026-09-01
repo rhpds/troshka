@@ -5888,6 +5888,8 @@ class TestResolveLibraryDisk:
         mock_item = MagicMock()
         mock_item.s3_key = "library/lib-1.qcow2"
         mock_item.source = "local"
+        mock_item.size_bytes = 0  # concrete: avoids MagicMock leaking into sizing math
+        mock_item.vm_config = {}
         mock_db.get.return_value = mock_item
         _resolve_library_disk(data, mock_db, MagicMock(), "bkt", {}, None, "", {})
         assert data["resolvedS3Path"] == "library/lib-1.qcow2"

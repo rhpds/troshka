@@ -978,12 +978,80 @@ def test_inject_showroom_gateway_port_forwards_on_topology():
         ],
     }
     vni_map = {"net-1": 1000}
-    assert inject_showroom_gateway_port_forwards(topo, vni_map)
+    assert inject_showroom_gateway_port_forwards(topo, vni_map, "kubevirt")
     gw = topo["nodes"][0]["data"]
     ext_ports = {pf["extPort"] for pf in gw["portForwards"]}
     assert ext_ports == {"443"}
     assert all(pf["intIp"] == "172.30.232.3" for pf in gw["portForwards"])
-    assert all(pf["extIpId"] == "eip-1" for pf in gw["portForwards"])
+    # On kubevirt/ocpvirt, 443 is served by an OpenShift Route, never bound to the
+    # EIP LoadBalancer — so the showroom forward must NOT carry an extIpId.
+    showroom_pf = next(pf for pf in gw["portForwards"] if pf["extPort"] == "443")
+    assert not showroom_pf.get("extIpId")
+
+
+def test_inject_showroom_443_binds_eip_on_cloud_providers():
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    topo = {
+        "externalIps": [{"id": "eip-1", "name": "IP-1"}],
+        "nodes": [
+            {
+                "id": "gw-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "gateway",
+                    "gatewayMode": "nat-portforward",
+                    "portForwards": [],
+                },
+            },
+            {
+                "id": "showroom-1",
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True, "nics": []},
+            },
+        ],
+    }
+    # Cloud providers (ec2/gcp/azure) have no ingress — 443 stays on the EIP.
+    inject_showroom_gateway_port_forwards(topo, {"net-1": 1000}, "ec2")
+    gw = topo["nodes"][0]["data"]
+    showroom_pf = next(pf for pf in gw["portForwards"] if pf["extPort"] == "443")
+    assert showroom_pf["extIpId"] == "eip-1"
+
+
+def test_inject_showroom_keeps_443_off_eip_but_binds_other_ports():
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    topo = {
+        "externalIps": [{"id": "eip-1", "name": "IP-1"}],
+        "nodes": [
+            {
+                "id": "gw-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "gateway",
+                    "gatewayMode": "nat-portforward",
+                    "portForwards": [
+                        # a user-added non-web forward (should bind to the EIP)
+                        {
+                            "extPort": "9090",
+                            "intPort": "9090",
+                            "intIp": "10.0.0.50",
+                            "proto": "tcp",
+                        },
+                    ],
+                },
+            },
+            {
+                "id": "showroom-1",
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True, "nics": []},
+            },
+        ],
+    }
+    inject_showroom_gateway_port_forwards(topo, {"net-1": 1000}, "kubevirt")
+    pfs = {pf["extPort"]: pf for pf in topo["nodes"][0]["data"]["portForwards"]}
+    assert not pfs["443"].get("extIpId")  # showroom 443 -> Route, not EIP
+    assert pfs["9090"]["extIpId"] == "eip-1"  # other ports -> EIP LB
 
 
 def test_troshkad_network_entries_includes_infra_transit():

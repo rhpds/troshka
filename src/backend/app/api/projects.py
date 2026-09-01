@@ -251,7 +251,9 @@ def _sync_showroom_topology_on_save(db, project, topology: dict) -> None:
         _allocate_vnis_for_new_networks(db, {"added_networks": needing_vni}, vni_map)
         project.vni_map = vni_map
 
-    inject_showroom_gateway_port_forwards(topology, vni_map)
+    inject_showroom_gateway_port_forwards(
+        topology, vni_map, _resolve_provider_type(project)
+    )
 
 
 def _project_response_dict(project, db=None):
@@ -1372,7 +1374,9 @@ def deploy_project(
     )
 
     topology = copy.deepcopy(project.topology)
-    inject_showroom_gateway_port_forwards(topology, project.vni_map or {})
+    inject_showroom_gateway_port_forwards(
+        topology, project.vni_map or {}, _resolve_provider_type(project)
+    )
 
     topo_errors = (
         validate_topology_names(topology)
@@ -3472,7 +3476,7 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             return
         from app.services.deploy_topology import inject_showroom_gateway_port_forwards
 
-        inject_showroom_gateway_port_forwards(current, proj.vni_map or {})
+        inject_showroom_gateway_port_forwards(current, proj.vni_map or {}, "kubevirt")
         provider = (
             s.query(ProviderModel).filter_by(id=h.provider_id).first()
             if h.provider_id
@@ -3653,17 +3657,25 @@ def _find_gateway_node(topology):
 def _sync_transit_ports(s, provider, h, p_id, gw_node):
     """Allocate transit ports and update EIP LB ports for non-EC2 providers."""
     from app.models.elastic_ip import ElasticIp
+    from app.services.deploy_topology import _ROUTE_PROVIDERS
     from app.services.eip_service import allocate_transit_ports
     from app.services.providers import get_provider_driver
 
     driver = get_provider_driver(provider)
+    route_web = getattr(provider, "type", None) in _ROUTE_PROVIDERS
     pf_list = gw_node.get("data", {}).get("portForwards", [])
     eip_map = {}
     for eip_obj in s.query(ElasticIp).filter_by(project_id=p_id):
         eip_map[eip_obj.canvas_eip_id] = eip_obj
 
     for canvas_id, eip_obj in eip_map.items():
-        pf_for_eip = [pf for pf in pf_list if pf.get("extIpId") == canvas_id]
+        pf_for_eip = [
+            pf
+            for pf in pf_list
+            if pf.get("extIpId") == canvas_id
+            # OpenShift-ingress providers serve 443/80 via Routes, never the EIP LB.
+            and not (route_web and str(pf.get("extPort")) in ("443", "80"))
+        ]
         if not pf_for_eip:
             continue
 
@@ -4853,7 +4865,7 @@ def _execute_kubevirt_vm_redeploy(
 
     dom = _vm_domain_name(p_id, target_vm_id)
     topology = proj.topology or {}
-    inject_showroom_gateway_port_forwards(topology, proj.vni_map or {})
+    inject_showroom_gateway_port_forwards(topology, proj.vni_map or {}, "kubevirt")
     _resolve_kubevirt_topology_for_redeploy(proj, h, s, topology)
 
     vm_node = _find_vm_node_in_topology(topology, target_vm_id)

@@ -1735,7 +1735,16 @@ class TestSyncTransitPorts:
 
         gw_node = {
             "data": {
-                "portForwards": [{"extIpId": "eip1", "extPort": "443", "proto": "tcp"}]
+                "portForwards": [
+                    # 443 is served by an OpenShift Route — must NOT reach the EIP LB
+                    {
+                        "extIpId": "eip1",
+                        "extPort": "443",
+                        "intPort": "80",
+                        "proto": "tcp",
+                    },
+                    {"extIpId": "eip1", "extPort": "9090", "proto": "tcp"},
+                ]
             }
         }
         with patch("app.services.providers.kubevirt._project_ns", return_value="ns1"):
@@ -1744,6 +1753,9 @@ class TestSyncTransitPorts:
         driver.update_eip_ports.assert_called_once()
         call_kwargs = driver.update_eip_ports.call_args
         assert call_kwargs[1]["namespace"] == "ns1"
+        # only the non-web port (9090) is bound to the EIP; 443 goes via a Route
+        eip_ports = {p["port"] for p in call_kwargs[0][3]}
+        assert eip_ports == {9090}
 
     @patch(
         "app.services.eip_service.allocate_transit_ports", return_value={"8443": 443}
@@ -1764,6 +1776,7 @@ class TestSyncTransitPorts:
         eip.allocation_id = "alloc1"
         s.query.return_value.filter_by.return_value = [eip]
 
+        # Cloud providers have no ingress: 443 stays bound to the EIP LB.
         gw_node = {"data": {"portForwards": [{"extIpId": "eip1", "extPort": "443"}]}}
         _sync_transit_ports(s, provider, h, "p1234567", gw_node)
 

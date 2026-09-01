@@ -2485,7 +2485,7 @@ def _finalize_kubevirt_deploy(project_id, project, topology, db, host=None):
     from app.services.ws_pubsub import notify_project
 
     db.refresh(project)
-    inject_showroom_gateway_port_forwards(topology, project.vni_map or {})
+    inject_showroom_gateway_port_forwards(topology, project.vni_map or {}, "kubevirt")
 
     project.state = "active"
     clean_topo = copy.deepcopy(topology)
@@ -2542,7 +2542,10 @@ def _finalize_kubevirt_deploy(project_id, project, topology, db, host=None):
     logger.info("Deploy %s: kubevirt deploy complete", project_id[:8])
 
 
-def _find_gateway_port_forwards(topology, canvas_id):
+def _find_gateway_port_forwards(topology, canvas_id, provider_type=None):
+    from app.services.deploy_topology import _ROUTE_PROVIDERS
+
+    route_web = provider_type in _ROUTE_PROVIDERS
     for node in topology.get("nodes", []):
         node_data = node.get("data", {})
         if node_data.get("subtype") == "gateway":
@@ -2550,6 +2553,9 @@ def _find_gateway_port_forwards(topology, canvas_id):
                 pf
                 for pf in node_data.get("portForwards", [])
                 if pf.get("extIpId") == canvas_id
+                # On OpenShift-ingress providers 443/80 are served by Routes, never
+                # the EIP LB. Cloud providers keep them on the EIP.
+                and not (route_web and str(pf.get("extPort")) in ("443", "80"))
             ]
     return []
 
@@ -2602,7 +2608,7 @@ def _allocate_single_kubevirt_eip(
         associate_eip(db, eip, host)
     ext_ip["ip"] = eip.public_ip
 
-    pf_for_eip = _find_gateway_port_forwards(topology, canvas_id)
+    pf_for_eip = _find_gateway_port_forwards(topology, canvas_id, provider.type)
     if pf_for_eip:
         from app.services.providers.kubevirt import _project_ns
 
@@ -3121,7 +3127,9 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
     if not _resume_poll:
         from app.services.deploy_topology import inject_showroom_gateway_port_forwards
 
-        if inject_showroom_gateway_port_forwards(topology, project.vni_map or {}):
+        if inject_showroom_gateway_port_forwards(
+            topology, project.vni_map or {}, "kubevirt"
+        ):
             project.topology = topology
             db.commit()
         logger.info(
@@ -3513,7 +3521,7 @@ def _allocate_single_eip(s, provider, project_id, host, ext_ip, topology):
     ext_ip["_private_ip"] = eip.private_ip
 
     if provider.type != "ec2" and not eip.port_map:
-        pf_for_eip = _find_gateway_port_forwards(topology, canvas_id)
+        pf_for_eip = _find_gateway_port_forwards(topology, canvas_id, provider.type)
         if pf_for_eip:
             port_map = allocate_transit_ports(s, eip, host, pf_for_eip)
             driver = get_provider_driver(provider)
@@ -4644,7 +4652,16 @@ def _deploy_init_context(s, project, project_id):
         logger.info("Deploy %s: allocated VNIs %s", project_id[:8], vni_map)
     from app.services.deploy_topology import inject_showroom_gateway_port_forwards
 
-    if inject_showroom_gateway_port_forwards(topology, vni_map):
+    provider_type = None
+    if project.host_id:
+        from app.models.host import Host
+        from app.models.provider import Provider
+
+        host = s.query(Host).filter_by(id=project.host_id).first()
+        if host and host.provider_id:
+            prov = s.query(Provider).filter_by(id=host.provider_id).first()
+            provider_type = prov.type if prov else None
+    if inject_showroom_gateway_port_forwards(topology, vni_map, provider_type):
         project.topology = topology
         s.commit()
         logger.info(
