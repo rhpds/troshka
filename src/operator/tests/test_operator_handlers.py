@@ -1634,6 +1634,37 @@ class TestCreateCloneDatavolume:
 
         assert custom_api.create_namespaced_custom_object.call_count == 2
 
+    def test_409_with_terminal_failed_dv_recreates(self):
+        from handlers.vm import _create_clone_datavolume
+        from kubernetes.client import ApiException
+
+        custom_api = MagicMock()
+        custom_api.create_namespaced_custom_object.side_effect = [
+            ApiException(status=409),  # first create: DV already exists
+            None,  # recreate after deleting the failed DV
+        ]
+        # existing DV is stuck in CloneValidationFailed (never reaches a phase)
+        custom_api.get_namespaced_custom_object.return_value = {
+            "status": {
+                "phase": "",
+                "conditions": [
+                    {
+                        "type": "Bound",
+                        "status": "False",
+                        "reason": "CloneValidationFailed",
+                    }
+                ],
+            }
+        }
+
+        _create_clone_datavolume(
+            custom_api, "test-ns", "disk-1", {"metadata": {"name": "disk-1"}}
+        )
+
+        # deleted the terminal DV and recreated it
+        custom_api.delete_namespaced_custom_object.assert_called_once()
+        assert custom_api.create_namespaced_custom_object.call_count == 2
+
     def test_non_409_raises(self):
         from handlers.vm import _create_clone_datavolume
         from kubernetes.client import ApiException
@@ -1650,6 +1681,124 @@ class TestCreateCloneDatavolume:
                 "disk-1",
                 {"metadata": {"name": "disk-1"}},
             )
+
+
+class TestDiskNeedsReprovision:
+    def test_bound_pvc_is_healthy(self):
+        from handlers.vm import _disk_needs_reprovision
+
+        core_api = MagicMock()
+        pvc = MagicMock()
+        pvc.status.phase = "Bound"
+        core_api.read_namespaced_persistent_volume_claim.return_value = pvc
+        custom_api = MagicMock()
+
+        assert _disk_needs_reprovision(custom_api, core_api, "ns", "disk-1") is False
+        custom_api.get_namespaced_custom_object.assert_not_called()
+
+    def test_missing_pvc_and_failed_dv_needs_reprovision(self):
+        from handlers.vm import _disk_needs_reprovision
+        from kubernetes.client import ApiException
+
+        core_api = MagicMock()
+        core_api.read_namespaced_persistent_volume_claim.side_effect = ApiException(
+            status=404
+        )
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "status": {
+                "conditions": [
+                    {
+                        "type": "Bound",
+                        "status": "False",
+                        "reason": "CloneValidationFailed",
+                    }
+                ]
+            }
+        }
+        assert _disk_needs_reprovision(custom_api, core_api, "ns", "disk-1") is True
+
+    def test_missing_pvc_and_missing_dv_needs_reprovision(self):
+        from handlers.vm import _disk_needs_reprovision
+        from kubernetes.client import ApiException
+
+        core_api = MagicMock()
+        core_api.read_namespaced_persistent_volume_claim.side_effect = ApiException(
+            status=404
+        )
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
+        assert _disk_needs_reprovision(custom_api, core_api, "ns", "disk-1") is True
+
+    def test_in_progress_clone_is_left_alone(self):
+        from handlers.vm import _disk_needs_reprovision
+        from kubernetes.client import ApiException
+
+        core_api = MagicMock()
+        core_api.read_namespaced_persistent_volume_claim.side_effect = ApiException(
+            status=404
+        )
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "status": {"phase": "ImportInProgress", "conditions": []}
+        }
+        assert _disk_needs_reprovision(custom_api, core_api, "ns", "disk-1") is False
+
+
+class TestProvisionNewDisksSelfHeal:
+    @patch("handlers.vm._clone_s3_disk", return_value=True)
+    @patch("handlers.vm._try_delete_pvc")
+    @patch("handlers.vm._try_delete_datavolume")
+    @patch("handlers.vm._disk_needs_reprovision", return_value=True)
+    def test_existing_disk_with_dead_volume_is_reprovisioned(
+        self, _needs, mock_del_dv, mock_del_pvc, mock_clone
+    ):
+        from handlers.vm import _provision_new_disks
+
+        old_disks = {"d1": {"id": "d1"}}
+        new_disks = {"d1": {"id": "d1"}}
+        asyncio.run(
+            _provision_new_disks(
+                new_disks,
+                old_disks,
+                "vm-1",
+                "ns",
+                {},
+                MagicMock(),
+                MagicMock(),
+                {},
+                {},
+                MagicMock(),
+            )
+        )
+        # stale objects cleared and the disk re-cloned instead of skipped
+        mock_del_dv.assert_called_once()
+        mock_del_pvc.assert_called_once()
+        mock_clone.assert_called_once()
+
+    @patch("handlers.vm._clone_s3_disk", return_value=True)
+    @patch("handlers.vm._disk_needs_reprovision", return_value=False)
+    def test_existing_healthy_disk_is_skipped(self, _needs, mock_clone):
+        from handlers.vm import _provision_new_disks
+
+        old_disks = {"d1": {"id": "d1"}}
+        new_disks = {"d1": {"id": "d1"}}
+        result = asyncio.run(
+            _provision_new_disks(
+                new_disks,
+                old_disks,
+                "vm-1",
+                "ns",
+                {},
+                MagicMock(),
+                MagicMock(),
+                {},
+                {},
+                MagicMock(),
+            )
+        )
+        mock_clone.assert_not_called()
+        assert result == {"d1": "vm-1-disk-d1"}
 
 
 # ---------------------------------------------------------------------------

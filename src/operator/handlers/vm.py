@@ -337,11 +337,34 @@ def _create_clone_datavolume(custom_api, namespace, pvc_name, clone_dv):
                 plural="datavolumes",
                 name=pvc_name,
             )
-            phase = existing_dv.get("status", {}).get("phase", "")
+            existing_status = existing_dv.get("status", {})
+            phase = existing_status.get("phase", "")
             if phase == "Succeeded":
                 logger.info(
                     f"DataVolume {pvc_name} already exists and succeeded, skipping"
                 )
+            elif phase in ("Failed", "Error") or _is_terminal_dv_condition(
+                existing_status.get("conditions", [])
+            ):
+                # A terminally failed clone (e.g. CloneValidationFailed from an
+                # undersized target) never recovers on its own — delete and
+                # recreate it with the current, corrected spec.
+                logger.warning(
+                    f"DataVolume {pvc_name} in terminal failure (phase={phase}), "
+                    "recreating"
+                )
+                _try_delete_datavolume(custom_api, namespace, pvc_name)
+                try:
+                    custom_api.create_namespaced_custom_object(
+                        group=_CDI_API,
+                        version="v1beta1",
+                        namespace=namespace,
+                        plural="datavolumes",
+                        body=clone_dv,
+                    )
+                except client.ApiException as re:
+                    if re.status != 409:
+                        raise
             else:
                 logger.info(f"DataVolume {pvc_name} exists (phase={phase}), waiting")
         except client.ApiException as ge:
@@ -1094,6 +1117,30 @@ async def _clone_s3_disk(
     return True
 
 
+def _disk_needs_reprovision(custom_api, core_api, namespace, pvc_name):
+    """True when a disk's backing volume is missing or terminally failed.
+
+    Without this, an unchanged disk whose DataVolume clone died (e.g. an
+    undersized clone stuck in CloneValidationFailed, or a DV deleted out of
+    band) is never re-provisioned on reconcile, so the VM is left referencing a
+    PVC that never appears and KubeVirt reports ErrorPvcNotFound — the VM can't
+    power on. A bound PVC (import/clone done, or a blank disk) or a Succeeded
+    DataVolume is healthy; an in-progress clone (pending) is left alone.
+    """
+    try:
+        pvc = core_api.read_namespaced_persistent_volume_claim(
+            name=pvc_name, namespace=namespace
+        )
+        if getattr(pvc.status, "phase", "") == "Bound":
+            return False
+    except client.ApiException as e:
+        if e.status != 404:
+            raise
+
+    status = _check_datavolume_status(custom_api, pvc_name, namespace)
+    return status in ("failed", "deleted")
+
+
 async def _provision_new_disks(
     new_disks,
     old_disks,
@@ -1106,13 +1153,20 @@ async def _provision_new_disks(
     central_s3_config,
     patch,
 ):
-    """Provision PVCs for newly added disks (skipping disks that already existed)."""
+    """Provision PVCs for newly added disks, and re-provision existing disks whose
+    backing volume is missing or terminally failed (self-heal ErrorPvcNotFound)."""
     disk_pvcs = {}
     for disk_id, disk in new_disks.items():
         pvc_name = f"{name}-disk-{disk_id[:8]}"
         if disk_id in old_disks:
-            disk_pvcs[disk_id] = pvc_name
-            continue
+            if not _disk_needs_reprovision(custom_api, core_api, namespace, pvc_name):
+                disk_pvcs[disk_id] = pvc_name
+                continue
+            # Stale/failed volume would strand the VM at ErrorPvcNotFound. Clear
+            # the dead objects and fall through to re-provision from scratch.
+            logger.warning(f"Disk {pvc_name} has no healthy volume — re-provisioning")
+            _try_delete_datavolume(custom_api, namespace, pvc_name)
+            _try_delete_pvc(core_api, namespace, pvc_name)
 
         cloned = await _clone_s3_disk(
             disk_id,
