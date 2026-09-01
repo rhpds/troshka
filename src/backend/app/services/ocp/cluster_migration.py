@@ -8,15 +8,11 @@ old and new topology uniformly. It is a no-op for non-OCP topology and
 idempotent once migrated.
 """
 
+from app.services.template_loader import _CP_SIZE_DEFAULTS, _WORKER_SIZE_DEFAULTS
+
 _CLUSTER_ID = "ocp"
 _CLUSTER_NODE_ID = "cluster-ocp"
 _BASE_DOMAIN = "ocp.local"
-
-# Mirror the generator's size defaults (build_topology_clusters in
-# template_loader.py). Defined here rather than imported to avoid a circular
-# import; values MUST stay in sync with _CP_SIZE_DEFAULTS / _WORKER_SIZE_DEFAULTS.
-_CP_SIZE_DEFAULTS = {"cpu": 8, "memory": 16384, "disk": 120}
-_WORKER_SIZE_DEFAULTS = {"cpu": 4, "memory": 8192, "disk": 100}
 
 
 def _is_ocp_node(node: dict) -> bool:

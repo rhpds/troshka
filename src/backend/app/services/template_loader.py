@@ -28,7 +28,7 @@ _TEMPLATE_CONTENT_SECTIONS = (
 )
 
 
-def normalize_ocp_section(ocp) -> list[dict]:
+def normalize_ocp_section(ocp: dict | list | None) -> list[dict]:
     """Normalize the template ``ocp:`` section to a list of cluster dicts.
 
     Accepts the legacy singular mapping (wrapped into a one-element list) or
@@ -55,15 +55,26 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (name or "ocp").lower()).strip("-") or "ocp"
 
 
+def _ansible_group(cfg):
+    return cfg.get("tags", {}).get("AnsibleGroup", "")
+
+
+def _is_control_plane(cfg):
+    return cfg.get("role") == "control-plane" or "controllers" in _ansible_group(cfg)
+
+
+def _is_worker(cfg):
+    return cfg.get("role") == "worker" or "workers" in _ansible_group(cfg)
+
+
 def _count_cluster_roles(cluster_name, vms_def, single_cluster):
     cp = wk = 0
     for cfg in (vms_def or {}).values():
         if not single_cluster and cfg.get("cluster") != cluster_name:
             continue
-        role = cfg.get("role")
-        if role == "control-plane":
+        if _is_control_plane(cfg):
             cp += 1
-        elif role == "worker":
+        elif _is_worker(cfg):
             wk += 1
     return cp, wk
 
@@ -76,6 +87,16 @@ def _infer_type(cp, wk):
     return "standard"
 
 
+def _coerce_workers(workers, fallback: int) -> int:
+    """Coerce an explicit ``workers:`` value to int, falling back on bad input."""
+    if workers is None:
+        return fallback
+    try:
+        return int(workers)
+    except (TypeError, ValueError):
+        return fallback
+
+
 def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[dict]:
     """Build camelCase cluster objects for ``topology['clusters']``."""
     single = len(ocp_list) == 1
@@ -85,16 +106,14 @@ def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[
         cp_count, wk_count = _count_cluster_roles(name, vms_def, single)
         ctype = entry.get("type") or _infer_type(cp_count, wk_count)
         control_plane = 1 if ctype == "sno" else 3
-        workers = entry.get("workers")
-        if workers is None:
-            workers = wk_count
+        workers = _coerce_workers(entry.get("workers"), wk_count)
         out.append(
             {
                 "id": _slug(name),
                 "name": name,
                 "type": ctype,
                 "controlPlane": control_plane,
-                "workers": int(workers),
+                "workers": workers,
                 "controlPlaneCpu": entry.get(
                     "control_plane_cpu", _CP_SIZE_DEFAULTS["cpu"]
                 ),
@@ -119,11 +138,15 @@ def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[
     return out
 
 
+def _has_role(cfg, role):
+    return _is_control_plane(cfg) if role == "control-plane" else _is_worker(cfg)
+
+
 def _existing_role_names(vms_def, cluster_name, role, single):
     return [
         n
         for n, c in vms_def.items()
-        if c.get("role") == role and (single or c.get("cluster") == cluster_name)
+        if _has_role(c, role) and (single or c.get("cluster") == cluster_name)
     ]
 
 

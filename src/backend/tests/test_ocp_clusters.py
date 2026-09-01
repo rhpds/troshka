@@ -115,6 +115,53 @@ def test_build_clusters_infer_type_from_vm_roles():
     assert clusters[0]["controlPlane"] == 3 and clusters[0]["workers"] == 2
 
 
+def test_build_clusters_non_numeric_workers_falls_back():
+    from app.services.template_loader import (
+        build_topology_clusters,
+        normalize_ocp_section,
+    )
+
+    # A non-numeric workers value must not raise; it falls back to counted VMs.
+    ocp = normalize_ocp_section(
+        [{"name": "prod", "type": "standard", "workers": "abc"}]
+    )
+    clusters = build_topology_clusters(ocp, vms_def={})
+    assert len(clusters) == 1
+    assert clusters[0]["workers"] == 0
+
+
+def test_role_count_recognizes_ansiblegroup_tag():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    # VMs express role via tags.AnsibleGroup (no `role:`); an explicit type is
+    # given. Generation must NOT double-create a full control-plane set.
+    tmpl = {
+        "name": "t",
+        "install_method": "agent",
+        "category": "openshift",
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "ocp": [{"name": "prod", "type": "standard", "workers": 0}],
+        "vms": {
+            "cp-0": {"os": "rhcos", "tags": {"AnsibleGroup": "controllers"}},
+            "cp-1": {"os": "rhcos", "tags": {"AnsibleGroup": "controllers"}},
+            "cp-2": {"os": "rhcos", "tags": {"AnsibleGroup": "controllers"}},
+        },
+    }
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+
+    controllers = [
+        n
+        for n in topo["nodes"]
+        if "controllers" in n.get("data", {}).get("tags", {}).get("AnsibleGroup", "")
+    ]
+    # exactly 3 control-plane VMs, not a doubled set of 6
+    assert len(controllers) == 3
+
+
 def test_build_clusters_infer_sno():
     from app.services.template_loader import (
         build_topology_clusters,
