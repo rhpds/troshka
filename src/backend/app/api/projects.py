@@ -1006,6 +1006,30 @@ def export_template(
     return Response(content=header + yaml_str, media_type="text/yaml")
 
 
+def _migrate_response_clusters(resp: dict) -> None:
+    """Lazily add ``clusters[]`` to legacy OCP topology in the response.
+
+    Applies to openshift-category projects only — detected via the presence of
+    RHCOS VM nodes — and only when ``clusters`` is absent. Works on a deep copy
+    so the synthesized structure is returned to the client without persisting;
+    persistence happens on the next save.
+    """
+    topo = resp.get("topology")
+    if not isinstance(topo, dict) or topo.get("clusters"):
+        return
+    has_rhcos = any(
+        n.get("data", {}).get("os") == "rhcos" for n in topo.get("nodes", [])
+    )
+    if not has_rhcos:
+        return
+
+    import copy
+
+    from app.services.ocp.cluster_migration import migrate_topology_clusters
+
+    resp["topology"] = migrate_topology_clusters(copy.deepcopy(topo))
+
+
 @router.get("/{project_id}", responses={403: {}, 404: {}})
 def get_project(
     project_id: str,
@@ -1018,7 +1042,9 @@ def get_project(
     if project.owner_id != user.id and user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
-    return _project_response_dict(project, db=db)
+    resp = _project_response_dict(project, db=db)
+    _migrate_response_clusters(resp)
+    return resp
 
 
 @router.get("/{project_id}/deploy-progress", responses={403: {}, 404: {}})

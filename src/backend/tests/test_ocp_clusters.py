@@ -272,3 +272,81 @@ def test_non_rhcos_vm_excluded_from_cluster():
     )
     assert "clusterId" not in bastion["data"]
     assert "parentNode" not in bastion
+
+
+def test_migrate_legacy_topology_synthesizes_cluster():
+    from app.services.ocp.cluster_migration import migrate_topology_clusters
+
+    legacy = {
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "vmNode",
+                "data": {
+                    "os": "rhcos",
+                    "name": "cp-0",
+                    "tags": {"AnsibleGroup": "controllers"},
+                },
+            },
+            {
+                "id": "n2",
+                "type": "vmNode",
+                "data": {
+                    "os": "rhcos",
+                    "name": "worker-0",
+                    "tags": {"AnsibleGroup": "workers"},
+                },
+            },
+        ],
+        "edges": [],
+    }
+    out = migrate_topology_clusters(legacy)
+    assert len(out["clusters"]) == 1
+    assert out["clusters"][0]["id"] == "ocp"
+    assert out["clusters"][0]["type"] == "standard"  # 1 cp + 1 worker => standard
+    assert all(
+        n["data"]["clusterId"] == "ocp" and n["parentNode"] == "cluster-ocp"
+        for n in out["nodes"]
+        if n["data"].get("os") == "rhcos"
+    )
+
+
+def test_migrate_is_idempotent_when_clusters_present():
+    from app.services.ocp.cluster_migration import migrate_topology_clusters
+
+    topo = {"nodes": [], "edges": [], "clusters": [{"id": "prod"}]}
+    assert migrate_topology_clusters(topo) is topo
+
+
+def test_migrate_noop_without_ocp_nodes():
+    from app.services.ocp.cluster_migration import migrate_topology_clusters
+
+    topo = {"nodes": [{"id": "n1", "data": {"os": "rhel"}}], "edges": []}
+    out = migrate_topology_clusters(topo)
+    assert "clusters" not in out or out["clusters"] == []
+
+
+def test_migrate_adds_cluster_node():
+    from app.services.ocp.cluster_migration import migrate_topology_clusters
+
+    legacy = {
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "vmNode",
+                "data": {
+                    "os": "rhcos",
+                    "name": "cp-0",
+                    "tags": {"AnsibleGroup": "controllers"},
+                },
+            },
+        ],
+        "edges": [],
+    }
+    out = migrate_topology_clusters(legacy)
+    cluster_nodes = [
+        n
+        for n in out["nodes"]
+        if n.get("id") == "cluster-ocp" and n.get("type") == "clusterNode"
+    ]
+    assert len(cluster_nodes) == 1
