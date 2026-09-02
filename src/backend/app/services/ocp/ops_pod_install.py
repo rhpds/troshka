@@ -246,6 +246,12 @@ def _cluster_install_block(
         "  set -o pipefail\n"
         f'  echo "[{cluster_key}] starting agent-based install"\n'
         f"  cd {cluster_dir}\n"
+        # Idempotency guard: a restarted pod (restart_policy=always) must not
+        # re-run the installer for a cluster that already produced a kubeconfig.
+        # `exit 0` here exits ONLY this cluster's subshell as success (the block
+        # is `( ... ) &`), so the top-level per-PID join sees it as a success.
+        f"  if [ -f {cluster_dir}/auth/kubeconfig ]; then "
+        f'echo "[{cluster_key}] already installed, skipping"; exit 0; fi\n'
         f"  BMC_PASS={shlex.quote(bmc_password)}\n"
         "  trap 'kill $HTTP_PID 2>/dev/null || true' EXIT\n"
         + _agent_create_image_cmd("  ", "openshift-install", "create-image.log")

@@ -292,6 +292,28 @@ def test_install_script_bmc_password_injection_safe():
     assert "rm -rf /\n" not in script
 
 
+def test_install_script_per_cluster_skip_guard():
+    script = _install_script()
+    # Each cluster gets its OWN kubeconfig-exists skip guard, keyed on its workdir.
+    assert "[ -f /workdir/prod/auth/kubeconfig ]" in script
+    assert "[ -f /workdir/dev/auth/kubeconfig ]" in script
+    # The guard exits the cluster's subshell as success when already installed.
+    assert "[prod] already installed, skipping" in script
+    assert "[dev] already installed, skipping" in script
+
+
+def test_install_script_skip_guard_before_create_image():
+    script = _install_script()
+    # Per cluster, the skip guard must precede `agent create image` so a
+    # restarted pod skips completed clusters before re-running the installer.
+    for cid in ("prod", "dev"):
+        block = script.split(f"# ===== cluster {cid} =====", 1)[1]
+        block = block.split("# ===== cluster", 1)[0]
+        guard_idx = block.index(f"[ -f /workdir/{cid}/auth/kubeconfig ]")
+        create_idx = block.index("agent create image")
+        assert guard_idx < create_idx
+
+
 def test_install_script_distinct_http_ports():
     script = _install_script()
     assert "http.server 8080" in script
