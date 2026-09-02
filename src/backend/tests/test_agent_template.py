@@ -219,33 +219,3 @@ def test_build_install_script_uses_selenium_autologin_not_nss():
     assert "geckodriver" in script
     assert "ocp-autologin.py" in script
     assert "console-openshift-console.apps.ocp.ocp.local" in script
-
-
-def test_resolve_ocp_vips_explicit_backcompat():
-    """The single-cluster wrapper returns explicit ocp_cfg VIPs verbatim."""
-    from app.services.ocp.agent_template import _resolve_ocp_vips
-
-    ocp_cfg = {"api_vip": "10.0.0.2", "ingress_vip": "10.0.0.3"}
-    assert _resolve_ocp_vips(_minimal_topology(), ocp_cfg) == ("10.0.0.2", "10.0.0.3")
-
-
-def test_resolve_ocp_vips_cidr_derived_backcompat():
-    """With no explicit VIPs and no control-plane nodes, the wrapper derives
-    VIPs from the cluster network CIDR (network+2 / network+3) — unchanged."""
-    from app.services.ocp.agent_template import _resolve_ocp_vips
-
-    topo = {
-        "nodes": [
-            {
-                "id": "net1",
-                "type": "networkNode",
-                "data": {
-                    "subtype": "network",
-                    "cidr": "10.0.0.0/24",
-                    "networkType": "cluster",
-                },
-            }
-        ],
-        "edges": [],
-    }
-    assert _resolve_ocp_vips(topo, {}) == ("10.0.0.2", "10.0.0.3")

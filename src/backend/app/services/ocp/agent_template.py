@@ -404,24 +404,6 @@ def resolve_cluster_vips(cluster, members, topology):
     return api_vip or d_api, ingress_vip or d_ingress
 
 
-def _resolve_ocp_vips(topology, ocp_cfg):
-    """Single-cluster back-compat wrapper delegating to :func:`resolve_cluster_vips`.
-
-    Maps the legacy snake_case ``ocp_cfg`` (``api_vip``/``ingress_vip``) onto a
-    cluster-shaped dict and treats the whole topology's VM nodes as the cluster
-    members, so single-cluster resolution stays consistent with the per-cluster
-    path.
-    """
-    cluster = {
-        "apiVip": ocp_cfg.get("api_vip", ""),
-        "ingressVip": ocp_cfg.get("ingress_vip", ""),
-        "controlPlane": _count_ocp_nodes_by_group(topology, "controllers"),
-        "workers": _count_ocp_nodes_by_group(topology, "workers"),
-    }
-    members = [n for n in topology.get("nodes", []) if n.get("type") == "vmNode"]
-    return resolve_cluster_vips(cluster, members, topology)
-
-
 def _legacy_cluster_from_config(topology, template_id, config):
     """Build a single cluster-shaped dict for the legacy (no ``clusters``) path.
 
@@ -657,7 +639,7 @@ def _setup_dns_records(
         return
     node["data"]["dns"] = True
     node["data"]["dnsDomain"] = base_domain
-    node["data"]["dnsRecords"] = _build_ocp_dns_records(
+    new_records = _build_ocp_dns_records(
         cluster_name,
         base_domain,
         api_vip,
@@ -665,6 +647,28 @@ def _setup_dns_records(
         topology,
         resolved,
     )
+    node["data"]["dnsRecords"] = _merge_dns_records(
+        node["data"].get("dnsRecords"), new_records
+    )
+
+
+def _merge_dns_records(existing, new_records):
+    """Merge ``new_records`` into ``existing``, deduped by record ``name``.
+
+    Records for different cluster names all survive when several clusters share
+    one network node; same-name records are last-writer-wins. Order is stable:
+    existing records keep their position, new names append in order.
+    """
+    merged = list(existing or [])
+    by_name = {r.get("name"): i for i, r in enumerate(merged) if r.get("name")}
+    for rec in new_records:
+        name = rec.get("name")
+        if name in by_name:
+            merged[by_name[name]] = rec
+        else:
+            by_name[name] = len(merged)
+            merged.append(rec)
+    return merged
 
 
 def _attach_bastion_image(topology, bastion_image):

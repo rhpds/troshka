@@ -426,3 +426,71 @@ def test_customize_topology_single_cluster_bakes_bastion():
     dns_names = [r["name"] for r in net["data"].get("dnsRecords", [])]
     assert "api.ocp.ocp.local" in dns_names
     assert ".apps.ocp.ocp.local" in dns_names
+
+
+def test_customize_topology_shared_network_merges_dns():
+    """Two clusters whose members share ONE network node must both keep their
+    api/api-int/apps records — the second write MERGES, never clobbers."""
+    prod_members = [
+        _member("p-cp-0", "prod", "controllers", "10.0.0.20", "52:54:00:aa:bb:01"),
+        _member("p-cp-1", "prod", "controllers", "10.0.0.21", "52:54:00:aa:bb:02"),
+        _member("p-cp-2", "prod", "controllers", "10.0.0.22", "52:54:00:aa:bb:03"),
+    ]
+    dev_members = [
+        _member("d-cp-0", "dev", "controllers", "10.0.0.40", "52:54:00:aa:cc:11"),
+    ]
+    net = {
+        "id": "net-shared",
+        "type": "networkNode",
+        "data": {
+            "subtype": "network",
+            "cidr": "10.0.0.0/24",
+            "networkType": "cluster",
+        },
+    }
+    topo = {"nodes": [net] + prod_members + dev_members, "edges": []}
+    topo["clusters"] = [
+        {
+            "id": "prod",
+            "name": "prod",
+            "type": "standard",
+            "controlPlane": 3,
+            "workers": 0,
+            "baseDomain": "ocp.local",
+            "apiVip": "10.0.0.10",
+            "ingressVip": "10.0.0.11",
+        },
+        {
+            "id": "dev",
+            "name": "dev",
+            "type": "sno",
+            "controlPlane": 1,
+            "workers": 0,
+            "baseDomain": "ocp.local",
+            "apiVip": "10.0.0.40",
+            "ingressVip": "10.0.0.40",
+        },
+    ]
+    from app.services.ocp.agent_template import customize_topology
+
+    config = {
+        "cluster_name": "prod",
+        "base_domain": "ocp.local",
+        "ocp_version": "4.20",
+        "common_password": "pw",
+        "pull_secret_json": '{"auths":{}}',
+        "ssh_pub_key": "ssh-rsa x",
+        "auto_install_ocp": True,
+        "resolved": {},
+    }
+    customize_topology(topo, "ocp-multi", config)
+
+    shared = next(n for n in topo["nodes"] if n["id"] == "net-shared")
+    names = [r["name"] for r in shared["data"]["dnsRecords"]]
+    # Both clusters' records survive on the shared network node.
+    assert "api.prod.ocp.local" in names
+    assert "api-int.prod.ocp.local" in names
+    assert ".apps.prod.ocp.local" in names
+    assert "api.dev.ocp.local" in names
+    assert "api-int.dev.ocp.local" in names
+    assert ".apps.dev.ocp.local" in names
