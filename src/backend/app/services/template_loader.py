@@ -151,12 +151,15 @@ def _existing_role_names(vms_def, cluster_name, role, single):
 
 
 def _make_node(cluster, role, cpu, memory, disk):
+    # Emit the template-format keys that _build_vm_data actually reads (vcpus /
+    # ram_gb), so count-materialized sizing survives into the final node.data
+    # instead of falling back to defaults. `memory` is in MB; ram_gb is GB.
     return {
         "role": role,
         "os": "rhcos",
         "cluster": cluster["name"],
-        "cpu": cpu,
-        "memory": memory,
+        "vcpus": cpu,
+        "ram_gb": round(memory / 1024),
         "disk": disk,
         # Mark auto-generated so count-driven add/remove (canvas + backend) only
         # ever reaps VMs it created, never a hand-enumerated/customized member.
@@ -960,6 +963,11 @@ def _build_vm_data(vm_name, vm_cfg, _vms_def, nets_def, net_ids, vm_x, vm_row_y)
     }
 
     _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip)
+
+    # Propagate the auto-generated marker (Ruling B) so a template-materialized
+    # cluster loaded on the canvas exposes data.generated for count-driven reaping.
+    if vm_cfg.get("generated"):
+        vm_data["generated"] = True
 
     vm_node = {
         "id": _id(),

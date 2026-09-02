@@ -190,7 +190,46 @@ def test_materialize_generates_missing_cp_and_workers():
     assert len(cps) == 3 and len(wks) == 2
     sample = vms[cps[0]]
     assert sample["os"] == "rhcos" and sample["cluster"] == "prod"
-    assert sample["cpu"] == 8 and sample["memory"] == 16384 and sample["disk"] == 120
+    # _make_node emits the template-format keys _build_vm_data reads (vcpus /
+    # ram_gb in GB), not raw cpu/memory-MB.
+    assert sample["vcpus"] == 8 and sample["ram_gb"] == 16 and sample["disk"] == 120
+
+
+def test_materialized_node_data_carries_sizing():
+    """Count-materialized VMs must reach the FINAL node.data with real sizing.
+
+    Regression: _make_node previously wrote cpu/memory(MB) which _build_vm_data
+    ignored, so materialized nodes fell back to vcpus=2 / ram=4 defaults.
+    """
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "name": "t",
+        "install_method": "agent",
+        "category": "openshift",
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "ocp": [{"name": "prod", "type": "standard", "workers": 1}],
+    }
+    topo = generate_topology_from_template(resolve_inline_template(tmpl))
+
+    members = [n for n in topo["nodes"] if n["data"].get("clusterId") == "prod"]
+    cp = next(
+        n
+        for n in members
+        if "controllers" in n["data"].get("tags", {}).get("AnsibleGroup", "")
+    )
+    wk = next(
+        n
+        for n in members
+        if "workers" in n["data"].get("tags", {}).get("AnsibleGroup", "")
+    )
+    assert cp["data"]["vcpus"] == 8 and cp["data"]["ram"] == 16
+    assert wk["data"]["vcpus"] == 4 and wk["data"]["ram"] == 8
+    # Ruling B: generated marker propagates into the final node.data.
+    assert cp["data"]["generated"] is True and wk["data"]["generated"] is True
 
 
 def test_materialize_marks_generated_vms():

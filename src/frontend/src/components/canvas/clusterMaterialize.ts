@@ -101,6 +101,7 @@ function makeMemberNode(
       vcpus: spec.cpu,
       ram: Math.max(1, Math.round(spec.memoryMb / MB_PER_GB)),
       disk: spec.disk,
+      firmware: "uefi",
       status: "stopped",
       icon: "\u{1F5A5}",
       nics: [],

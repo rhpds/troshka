@@ -26,6 +26,7 @@ describe("reconcileClusterVms", () => {
     expect(cps[0].data.os).toBe("rhcos");
     expect(cps[0].data.clusterId).toBe("prod");
     expect(cps[0].data.vcpus ?? cps[0].data.cpu).toBe(8);
+    expect(cps[0].data.firmware).toBe("uefi");
   });
   it("does not remove a user-customized member when count shrinks", () => {
     const custom = {
