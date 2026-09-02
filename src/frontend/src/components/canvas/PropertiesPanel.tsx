@@ -4323,9 +4323,16 @@ export default function PropertiesPanel() {
         // setState's nodes; topologyDirty is recomputed by the preceding
         // editCluster -> updateCluster call, so no explicit dirty call here.
         const reconcile = (updated: ClusterConfig) => {
-          const next = reconcileClusterVms(updated, useCanvasStore.getState().nodes);
+          const { nodes: nextNodes, edges: nextEdges } = reconcileClusterVms(
+            updated,
+            useCanvasStore.getState().nodes,
+          );
           useCanvasStore.getState().pushHistory();
-          useCanvasStore.setState({ nodes: next });
+          const currentEdges = useCanvasStore.getState().edges;
+          // Merge new edges: add/replace by id, dedupe
+          const edgeMap = new Map(currentEdges.map((e) => [e.id, e]));
+          nextEdges.forEach((e) => edgeMap.set(e.id, e));
+          useCanvasStore.setState({ nodes: nextNodes, edges: Array.from(edgeMap.values()) });
         };
         // Per-role sizing edits must reach EXISTING generated member VMs, not
         // just clusters[] — otherwise the sizing controls are no-ops for

@@ -492,9 +492,16 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
         const { node, cluster } = makeCluster("ocp", position);
         addNode(node);
         addCluster(cluster);
-        const withMembers = materializeClusterInto(cluster, useCanvasStore.getState().nodes);
+        const { nodes: withMembers, edges: diskEdges } = materializeClusterInto(
+          cluster,
+          useCanvasStore.getState().nodes,
+        );
+        const currentEdges = useCanvasStore.getState().edges;
+        // Merge new edges: add/replace by id, dedupe
+        const edgeMap = new Map(currentEdges.map((e) => [e.id, e]));
+        diskEdges.forEach((e) => edgeMap.set(e.id, e));
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (useCanvasStore as any).setState({ nodes: withMembers });
+        (useCanvasStore as any).setState({ nodes: withMembers, edges: Array.from(edgeMap.values()) });
         return; // node + cluster added together; skip the trailing addNode
       } else {
         return;

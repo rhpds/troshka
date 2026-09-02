@@ -1,5 +1,6 @@
-import type { Node } from "@xyflow/react";
-import type { ClusterConfig } from "@/stores/canvasStore";
+import type { Node, Edge } from "@xyflow/react";
+import type { ClusterConfig, VMDiskController, DiskSpec } from "@/stores/canvasStore";
+import { generateDiskControllerId } from "@/stores/canvasStore";
 
 /**
  * Count-driven, existence-aware materialization of a cluster's member VMs on
@@ -128,17 +129,77 @@ function nextFreeName(
   return `${clusterId}-${prefix}-${i}`;
 }
 
+/**
+ * Build disk storageNodes + disk controllers + edges for a cluster member.
+ * Returns nodes, controllers, edges, and bootDevice IDs to be merged into the member.
+ */
+function buildMemberDisks(
+  role: "control-plane" | "worker",
+  cluster: ClusterConfig,
+  memberId: string,
+  baseX: number,
+  baseY: number,
+): {
+  diskNodes: Node[];
+  diskControllers: VMDiskController[];
+  diskEdges: Edge[];
+  bootDevices: string[];
+} {
+  const specs = (role === "control-plane" ? cluster.controlPlaneDisks : cluster.workerDisks) ?? [
+    { sizeGb: role === "control-plane" ? 120 : 100, bootable: true },
+  ];
+  const diskNodes: Node[] = [];
+  const diskControllers: VMDiskController[] = [];
+  const diskEdges: Edge[] = [];
+  const bootDevices: string[] = [];
+
+  specs.forEach((spec: DiskSpec, i: number) => {
+    const diskId = `${memberId}-disk-${i}`;
+    const dcId = generateDiskControllerId();
+    diskControllers.push({ id: dcId, name: `disk${i}`, bus: spec.bus ?? "virtio" });
+    diskNodes.push({
+      id: diskId,
+      type: "storageNode",
+      position: { x: baseX, y: baseY + 60 + i * 40 },
+      parentId: cluster.nodeId,
+      data: { label: `${memberId}-d${i}`, name: `${memberId}-d${i}`, size: spec.sizeGb, format: "qcow2", icon: "🛢" },
+    } as Node);
+    diskEdges.push({
+      id: `edge-${diskId}-to-${memberId}`,
+      source: diskId,
+      target: memberId,
+      sourceHandle: "right",
+      targetHandle: `dp-${dcId}-left`,
+      type: "smoothstep",
+      animated: false,
+      className: "edge-storage-pulse",
+      style: { stroke: "rgba(251,191,36,0.6)", strokeWidth: 2, strokeDasharray: "4 4" },
+    } as Edge);
+    if (spec.bootable) bootDevices.push(diskId);
+  });
+
+  if (bootDevices.length === 0 && diskNodes.length > 0) {
+    bootDevices.push(diskNodes[0].id);
+  }
+
+  return { diskNodes, diskControllers, diskEdges, bootDevices };
+}
+
 function makeMemberNode(
   cluster: ClusterConfig,
   spec: RoleSpec,
   name: string,
   col: number,
-): Node {
-  return {
+): { node: Node; extraNodes: Node[]; extraEdges: Edge[] } {
+  const x = CHILD_X0 + col * CHILD_GAP_X;
+  const y = spec.rowY;
+  const { diskNodes, diskControllers, diskEdges, bootDevices } = buildMemberDisks(spec.role, cluster, name, x, y);
+
+  const node: Node = {
     id: name,
     type: "vmNode",
     parentId: cluster.nodeId,
-    position: { x: CHILD_X0 + col * CHILD_GAP_X, y: spec.rowY },
+    position: { x, y },
     data: {
       label: name,
       name,
@@ -150,13 +211,16 @@ function makeMemberNode(
       status: "stopped",
       icon: "\u{1F5A5}",
       nics: [],
-      diskControllers: [],
+      diskControllers,
+      bootDevices,
       clusterId: cluster.id,
       clusterRole: spec.role,
       generated: true,
       tags: { AnsibleGroup: spec.ansibleGroup },
     },
   } as Node;
+
+  return { node, extraNodes: diskNodes, extraEdges: diskEdges };
 }
 
 function addMembers(
@@ -164,16 +228,20 @@ function addMembers(
   spec: RoleSpec,
   nodes: Node[],
   count: number,
-): Node[] {
+): { nodes: Node[]; edges: Edge[] } {
   const usedNames = new Set(nodes.map((n) => n.id));
   const existing = nodes.filter((n) => isMember(n, cluster, spec.role)).length;
-  const added: Node[] = [];
+  const addedNodes: Node[] = [];
+  const addedEdges: Edge[] = [];
   for (let k = 0; k < count; k += 1) {
     const name = nextFreeName(cluster.id, spec.prefix, usedNames);
     usedNames.add(name);
-    added.push(makeMemberNode(cluster, spec, name, existing + k));
+    const { node, extraNodes, extraEdges } = makeMemberNode(cluster, spec, name, existing + k);
+    addedNodes.push(node);
+    addedNodes.push(...extraNodes);
+    addedEdges.push(...extraEdges);
   }
-  return [...nodes, ...added];
+  return { nodes: [...nodes, ...addedNodes], edges: addedEdges };
 }
 
 function removeSurplus(
@@ -181,51 +249,82 @@ function removeSurplus(
   spec: RoleSpec,
   nodes: Node[],
   members: Node[],
+  edges: Edge[],
   surplus: number,
-): Node[] {
+): { nodes: Node[]; edges: Edge[] } {
   const generated = members.filter(
     (n) => (n.data as Record<string, unknown>)?.generated === true,
   );
   // Remove the highest-index generated members first; never a user VM.
-  const toRemove = new Set(generated.slice(-surplus).map((n) => n.id));
-  return nodes.filter((n) => !toRemove.has(n.id));
+  const toRemoveMemberIds = new Set(generated.slice(-surplus).map((n) => n.id));
+
+  // Also remove all disk nodes that belong to removed members
+  const remainingNodes = nodes.filter((n) => !toRemoveMemberIds.has(n.id));
+  const toRemoveDiskNodeIds = new Set<string>();
+  toRemoveMemberIds.forEach((memberId) => {
+    nodes.forEach((n) => {
+      if (n.type === "storageNode" && n.parentId === cluster.nodeId && n.id.startsWith(`${memberId}-disk-`)) {
+        toRemoveDiskNodeIds.add(n.id);
+      }
+    });
+  });
+  const finalNodes = remainingNodes.filter((n) => !toRemoveDiskNodeIds.has(n.id));
+
+  // Remove edges that reference removed nodes
+  const finalEdges = edges.filter(
+    (e) =>
+      !toRemoveMemberIds.has(e.source) &&
+      !toRemoveMemberIds.has(e.target) &&
+      !toRemoveDiskNodeIds.has(e.source) &&
+      !toRemoveDiskNodeIds.has(e.target),
+  );
+
+  return { nodes: finalNodes, edges: finalEdges };
 }
 
 function reconcileRole(
   cluster: ClusterConfig,
   spec: RoleSpec,
   nodes: Node[],
-): Node[] {
+  edges: Edge[],
+): { nodes: Node[]; edges: Edge[] } {
   const members = nodes.filter((n) => isMember(n, cluster, spec.role));
   if (members.length < spec.want) {
-    return addMembers(cluster, spec, nodes, spec.want - members.length);
+    const { nodes: newNodes, edges: newEdges } = addMembers(cluster, spec, nodes, spec.want - members.length);
+    return { nodes: newNodes, edges: [...edges, ...newEdges] };
   }
   if (members.length > spec.want) {
-    return removeSurplus(
+    const { nodes: newNodes, edges: newEdges } = removeSurplus(
       cluster,
       spec,
       nodes,
       members,
+      edges,
       members.length - spec.want,
     );
+    return { nodes: newNodes, edges: newEdges };
   }
-  return nodes;
+  return { nodes, edges };
 }
 
 /**
- * Return a new nodes array where `cluster` has exactly `controlPlane` control-
- * plane and `workers` worker member VMs. Pure and idempotent: missing members
- * are added, generated surplus is removed, user-customized members are kept.
+ * Return new nodes and edges where `cluster` has exactly `controlPlane` control-
+ * plane and `workers` worker member VMs, each with their disk storageNodes + edges.
+ * Pure and idempotent: missing members are added, generated surplus is removed,
+ * user-customized members are kept. Also returns disk edges needed to wire disks.
  */
 export function reconcileClusterVms(
   cluster: ClusterConfig,
   nodes: Node[],
-): Node[] {
-  let result = nodes;
+): { nodes: Node[]; edges: Edge[] } {
+  let resultNodes = nodes;
+  let resultEdges: Edge[] = [];
   for (const spec of roleSpecs(cluster)) {
-    result = reconcileRole(cluster, spec, result);
+    const { nodes: nextNodes, edges: nextEdges } = reconcileRole(cluster, spec, resultNodes, resultEdges);
+    resultNodes = nextNodes;
+    resultEdges = nextEdges;
   }
-  return result;
+  return { nodes: resultNodes, edges: resultEdges };
 }
 
 /**
@@ -236,7 +335,7 @@ export function reconcileClusterVms(
 export function materializeClusterInto(
   cluster: ClusterConfig,
   nodes: Node[],
-): Node[] {
+): { nodes: Node[]; edges: Edge[] } {
   return reconcileClusterVms(cluster, nodes);
 }
 

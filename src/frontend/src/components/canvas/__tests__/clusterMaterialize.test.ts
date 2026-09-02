@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { reconcileClusterVms, applyClusterSizing, memberRole, assignmentDataPatch, materializeClusterInto } from "@/components/canvas/clusterMaterialize";
+import {
+  reconcileClusterVms,
+  applyClusterSizing,
+  memberRole,
+  assignmentDataPatch,
+  materializeClusterInto,
+} from "@/components/canvas/clusterMaterialize";
 import { makeCluster } from "@/components/canvas/clusterFactory";
 
 const cluster = {
@@ -18,7 +24,7 @@ const cluster = {
 
 describe("reconcileClusterVms", () => {
   it("adds missing cp/workers with rhcos + parentId + sizing", () => {
-    const out = reconcileClusterVms(cluster, []);
+    const { nodes: out } = reconcileClusterVms(cluster, []);
     const cps = out.filter((n) => n.data.clusterRole === "control-plane");
     const wks = out.filter((n) => n.data.clusterRole === "worker");
     expect(cps).toHaveLength(3);
@@ -43,24 +49,24 @@ describe("reconcileClusterVms", () => {
         vcpus: 32,
       },
     };
-    const out = reconcileClusterVms({ ...cluster, controlPlane: 1 } as any, [
+    const { nodes: out } = reconcileClusterVms({ ...cluster, controlPlane: 1 } as any, [
       custom as any,
     ]);
     expect(out.find((n) => n.id === "prod-cp-2")).toBeTruthy(); // preserved
   });
   it("is idempotent", () => {
-    const once = reconcileClusterVms(cluster, []);
-    const twice = reconcileClusterVms(cluster, once);
+    const { nodes: once } = reconcileClusterVms(cluster, []);
+    const { nodes: twice } = reconcileClusterVms(cluster, once);
     expect(
       twice.filter((n) => n.data.clusterRole === "control-plane"),
     ).toHaveLength(3);
   });
 
   it("marks generated members and auto-removes only generated surplus", () => {
-    const once = reconcileClusterVms(cluster, []);
-    expect(once.every((n) => n.data.generated === true)).toBe(true);
+    const { nodes: once } = reconcileClusterVms(cluster, []);
+    expect(once.filter((n) => n.type === "vmNode").every((n) => n.data.generated === true)).toBe(true);
     // shrink workers 2 -> 0: both generated workers removed
-    const shrunk = reconcileClusterVms(
+    const { nodes: shrunk } = reconcileClusterVms(
       { ...cluster, workers: 0 } as any,
       once,
     );
@@ -73,7 +79,7 @@ describe("reconcileClusterVms", () => {
   });
 
   it("applyClusterSizing pushes new sizing onto existing generated members", () => {
-    const once = reconcileClusterVms(cluster, []);
+    const { nodes: once } = reconcileClusterVms(cluster, []);
     const sized = applyClusterSizing({ ...cluster, controlPlaneCpu: 16 } as any, once);
     const cps = sized.filter((n) => n.data.clusterRole === "control-plane");
     expect(cps).toHaveLength(3);
@@ -97,7 +103,7 @@ describe("reconcileClusterVms", () => {
   });
 
   it("maps rhcos membership + tags on generated members", () => {
-    const out = reconcileClusterVms(cluster, []);
+    const { nodes: out } = reconcileClusterVms(cluster, []);
     const cp = out.find((n) => n.data.clusterRole === "control-plane")!;
     const wk = out.find((n) => n.data.clusterRole === "worker")!;
     expect(cp.id).toBe("prod-cp-0");
@@ -158,8 +164,9 @@ describe("memberRole", () => {
 describe("backend-created cluster members (no clusterRole)", () => {
   it("reconcileClusterVms with matching counts is a no-op (no duplicates)", () => {
     const before = backendMembers();
-    const out = reconcileClusterVms(cluster, before);
-    expect(out).toHaveLength(5);
+    const { nodes: out } = reconcileClusterVms(cluster, before);
+    // VM nodes only (not disk nodes): should be 5
+    expect(out.filter((n) => n.type === "vmNode")).toHaveLength(5);
     expect(out.filter((n) => memberRole(n) === "control-plane")).toHaveLength(3);
     expect(out.filter((n) => memberRole(n) === "worker")).toHaveLength(2);
   });
@@ -177,7 +184,7 @@ describe("backend-created cluster members (no clusterRole)", () => {
 describe("materializeClusterInto", () => {
   it("materializeClusterInto creates 3 CP members for a fresh standard cluster", () => {
     const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
-    const nodes = materializeClusterInto(cluster, [node]);
+    const { nodes } = materializeClusterInto(cluster, [node]);
     const cps = nodes.filter(
       (n) => n.type === "vmNode" && n.data.clusterId === cluster.id && n.data.clusterRole === "control-plane",
     );
@@ -213,5 +220,25 @@ describe("assignmentDataPatch (drag-in default role)", () => {
     const patch = assignmentDataPatch(vm({ clusterRole: "worker" }), null, "prod");
     expect(patch.clusterId).toBeNull();
     expect(patch.clusterRole).toBeUndefined();
+  });
+});
+
+describe("cluster member disks (storageNodes + edges + bootDevices)", () => {
+  it("materializes two disks per CP member with correct edge + bootDevices", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    const { nodes, edges } = reconcileClusterVms(cluster, [node]);
+    const cp = nodes.find((n) => n.data.clusterRole === "control-plane")!;
+    const disks = nodes.filter(
+      (n) =>
+        n.type === "storageNode" &&
+        edges.some((e) => e.source === n.id && e.target === cp.id && e.sourceHandle === "right"),
+    );
+    expect(disks).toHaveLength(2);
+    const diskControllers = cp.data as Record<string, unknown>;
+    const dcId = (diskControllers.diskControllers as any[])[0].id;
+    const e0 = edges.find((e) => e.target === cp.id && e.targetHandle === `dp-${dcId}-left`);
+    expect(e0).toBeTruthy();
+    const bootDevices = diskControllers.bootDevices as string[];
+    expect(bootDevices).toContain(disks.find((d) => (d.data as Record<string, unknown>).bootable)?.id ?? disks[0].id);
   });
 });
