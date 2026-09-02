@@ -276,6 +276,7 @@ def _member_current_role(data):
     else ``tags.AnsibleGroup`` ("controllers" -> control-plane, "workers" ->
     worker). Returns ``None`` when neither applies.
     """
+    # keep in sync with agent_template._node_role
     role = data.get("clusterRole")
     if role in ("control-plane", "worker"):
         return role
@@ -712,7 +713,9 @@ def _cluster_ext_ports(index):
       ingress-http -> 80  if 0 else 8080 + index (80,  8081, 8082, ...)
     The api (6443+), ingress-https (8444+) and ingress-http (8081+) ranges are
     disjoint from one another and from the bastion SSH forward (2222) for any
-    realistic cluster count, so no two forwards ever share an external port.
+    realistic cluster count (the tightest pair, ingress-http vs ingress-https,
+    only begins to overlap at ~363 clusters), so no two forwards ever share an
+    external port.
     """
     api = 6443 + index
     if index == 0:
@@ -2263,7 +2266,8 @@ def _export_ocp_clusters(topology: dict) -> list[dict]:
 
     Maps each camelCase cluster object to snake_case template keys. Returns an
     empty list for non-OCP topologies (no ``clusters``) so exports stay unchanged.
-    ``pull_through_registry`` is omitted when unset.
+    Any field whose value is ``None`` is omitted so round-trip treats
+    absent == ``None`` (rather than exporting a literal ``null``).
     """
     out = []
     for cluster in topology.get("clusters", []) or []:
@@ -2272,7 +2276,7 @@ def _export_ocp_clusters(topology: dict) -> list[dict]:
             if src not in cluster:
                 continue
             val = cluster[src]
-            if dst == "pull_through_registry" and val is None:
+            if val is None:
                 continue
             entry[dst] = val
         out.append(entry)

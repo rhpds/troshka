@@ -1,6 +1,6 @@
 import yaml
 
-from app.services.ocp.agent_template import _build_install_config
+from app.services.ocp.agent_template import _build_install_config_legacy
 
 
 def _minimal_topology():
@@ -45,7 +45,7 @@ def test_build_install_config_with_pull_through():
             "quay.io": "quay_io",
         },
     }
-    ic = _build_install_config(
+    ic = _build_install_config_legacy(
         _minimal_topology(),
         "ocp-sno",
         "sno",
@@ -68,7 +68,7 @@ def test_build_install_config_with_pull_through():
 
 
 def test_build_install_config_without_pull_through():
-    ic = _build_install_config(
+    ic = _build_install_config_legacy(
         _minimal_topology(),
         "ocp-sno",
         "sno",
