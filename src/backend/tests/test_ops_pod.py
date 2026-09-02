@@ -268,3 +268,124 @@ def test_install_script_downloads_from_same_mirror():
         "mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION"
         in script
     )
+
+
+# --- Task 7: install-progress state machine (pure) -------------------------
+
+from app.services.ocp.ops_pod_install import (  # noqa: E402
+    ops_pod_install_progress,
+    ops_pod_progress_items,
+)
+
+
+def test_progress_all_creating_image_in_progress():
+    p = ops_pod_install_progress({"c1": "creating-image", "c2": "creating-image"})
+    assert p["clusters"] == {"c1": "creating-image", "c2": "creating-image"}
+    assert p["overall"] == "creating-image"
+    assert p["done"] is False
+    assert p["failed"] == []
+
+
+def test_progress_one_complete_one_waiting_overall_in_progress():
+    # Least-advanced cluster (waiting) drives the aggregate; not done yet.
+    p = ops_pod_install_progress({"c1": "complete", "c2": "waiting"})
+    assert p["clusters"]["c1"] == "complete"
+    assert p["clusters"]["c2"] == "waiting"
+    assert p["overall"] == "waiting"
+    assert p["done"] is False
+    assert p["failed"] == []
+
+
+def test_progress_all_complete_is_done():
+    p = ops_pod_install_progress({"c1": "complete", "c2": "complete"})
+    assert p["overall"] == "complete"
+    assert p["done"] is True
+    assert p["failed"] == []
+
+
+def test_progress_any_failed_overall_failed_and_done():
+    p = ops_pod_install_progress({"c1": "complete", "c2": "failed", "c3": "waiting"})
+    assert p["overall"] == "failed"
+    assert p["done"] is True
+    assert p["failed"] == ["c2"]
+
+
+def test_progress_multiple_failed_sorted():
+    p = ops_pod_install_progress({"z": "failed", "a": "failed", "m": "waiting"})
+    assert p["failed"] == ["a", "z"]
+    assert p["overall"] == "failed"
+    assert p["done"] is True
+
+
+def test_progress_parses_log_markers():
+    logs = {
+        "c1": "[c1] starting agent-based install\n"
+        "Agent ISO created. Serving via HTTP and booting nodes...",
+        "c2": "Waiting for cluster installation to complete...",
+        "c3": "[c3] install complete",
+    }
+    p = ops_pod_install_progress(logs)
+    assert p["clusters"]["c1"] == "booting"
+    assert p["clusters"]["c2"] == "waiting"
+    assert p["clusters"]["c3"] == "complete"
+    # Least-advanced (booting) drives the aggregate.
+    assert p["overall"] == "booting"
+    assert p["done"] is False
+
+
+def test_progress_creating_image_when_only_start_marker():
+    p = ops_pod_install_progress({"c1": "[c1] starting agent-based install"})
+    assert p["clusters"]["c1"] == "creating-image"
+    assert p["overall"] == "creating-image"
+    assert p["done"] is False
+
+
+def test_progress_parses_failure_marker():
+    logs = {"c1": 'level=fatal msg="install-complete command failed"'}
+    p = ops_pod_install_progress(logs)
+    assert p["clusters"]["c1"] == "failed"
+    assert p["overall"] == "failed"
+    assert p["done"] is True
+    assert p["failed"] == ["c1"]
+
+
+def test_progress_complete_marker_wins_over_stale_error_text():
+    # A completed install may still contain earlier non-fatal 'error' noise.
+    logs = {"c1": "some error retrying...\n[c1] install complete"}
+    p = ops_pod_install_progress(logs)
+    assert p["clusters"]["c1"] == "complete"
+    assert p["done"] is True
+
+
+def test_progress_empty_is_not_done():
+    p = ops_pod_install_progress({})
+    assert p["clusters"] == {}
+    assert p["overall"] == "creating-image"
+    assert p["done"] is False
+    assert p["failed"] == []
+
+
+def test_progress_cancelled_resolves_to_cancelled_and_done():
+    # Cancellation decision logic: a cancel signal short-circuits to cancelled,
+    # regardless of per-cluster phase — this is what the live monitor acts on.
+    p = ops_pod_install_progress({"c1": "waiting", "c2": "booting"}, cancelled=True)
+    assert p["overall"] == "cancelled"
+    assert p["done"] is True
+    # Per-cluster phases are still surfaced for the UI.
+    assert p["clusters"]["c1"] == "waiting"
+    assert p["clusters"]["c2"] == "booting"
+
+
+def test_progress_cancelled_beats_failed():
+    p = ops_pod_install_progress({"c1": "failed"}, cancelled=True)
+    assert p["overall"] == "cancelled"
+    assert p["done"] is True
+
+
+def test_progress_items_pure_helper():
+    p = ops_pod_install_progress({"c1": "waiting", "c2": "complete"})
+    items = ops_pod_progress_items(p)
+    assert "c1: waiting" in items
+    assert "c2: complete" in items
+    # Deterministic ordering (sorted by cluster id).
+    assert items == ["c1: waiting", "c2: complete"]

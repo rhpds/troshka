@@ -35,6 +35,126 @@ from app.services.ocp.agent_template import (
 # parallel installs never collide on the same listen port.
 _BASE_ISO_PORT = 8080
 
+# ── Task 7: per-cluster install-progress state machine ─────────────────────
+#
+# The install-runner script (:func:`build_ops_pod_install_script`) writes a
+# per-cluster ``<workdir>/<clusterId>/install.log``. The live monitor
+# (``deploy_service._monitor_ops_pod_install``) tails those logs — that timing /
+# exec loop is a live-environment concern — but the parsing of a cluster's log
+# text into an install *phase*, and the aggregation of per-cluster phases into an
+# overall status + done/failed decision, is PURE and unit-tested here.
+
+# Ordered install phases (ranked). ``failed``/``cancelled`` are terminal and sit
+# outside the linear rank.
+PHASE_CREATING_IMAGE = "creating-image"
+PHASE_BOOTING = "booting"
+PHASE_WAITING = "waiting"
+PHASE_COMPLETE = "complete"
+PHASE_FAILED = "failed"
+PHASE_CANCELLED = "cancelled"
+
+_PHASE_RANK = {
+    PHASE_CREATING_IMAGE: 0,
+    PHASE_BOOTING: 1,
+    PHASE_WAITING: 2,
+    PHASE_COMPLETE: 3,
+}
+_RANK_TO_PHASE = {rank: phase for phase, rank in _PHASE_RANK.items()}
+
+# Any exact phase string is passed through as-is (the caller may supply an
+# authoritative status — e.g. the troshkad job failed → "failed").
+_KNOWN_PHASES = set(_PHASE_RANK) | {PHASE_FAILED}
+
+# Log markers → phase, scanned furthest-progressed first (see the install
+# script's per-cluster ``echo`` breadcrumbs). "install complete" wins outright.
+_LOG_MARKERS = (
+    ("install complete", PHASE_COMPLETE),
+    ("Waiting for cluster installation to complete", PHASE_WAITING),
+    ("Agent ISO created", PHASE_BOOTING),
+    ("booting nodes", PHASE_BOOTING),
+    ("starting agent-based install", PHASE_CREATING_IMAGE),
+)
+
+# Fatal-failure markers (only consulted when the log has NOT reached "complete").
+_FAILURE_MARKERS = (
+    "level=fatal",
+    "install-complete command failed",
+    "installation failed",
+    "failed to wait for install",
+)
+
+
+def _phase_from_input(value: str) -> str:
+    """Map one cluster's raw log text (or an exact phase string) to a phase.
+
+    Priority: an exact known-phase string passes through; otherwise a
+    ``complete`` marker wins outright, then a fatal-failure marker, then the
+    furthest-progressed log marker; default ``creating-image`` (started but no
+    breadcrumb yet).
+    """
+    text = value or ""
+    if text in _KNOWN_PHASES:
+        return text
+    lowered = text.lower()
+    if "install complete" in lowered:
+        return PHASE_COMPLETE
+    if any(marker in lowered for marker in _FAILURE_MARKERS):
+        return PHASE_FAILED
+    for marker, phase in _LOG_MARKERS:
+        if marker.lower() in lowered:
+            return phase
+    return PHASE_CREATING_IMAGE
+
+
+def _aggregate_in_progress(clusters: dict[str, str]) -> str:
+    """Overall phase while still in progress: the least-advanced cluster.
+
+    One cluster ``complete`` + another ``waiting`` → overall ``waiting`` (the
+    aggregate can't be ahead of its slowest cluster).
+    """
+    if not clusters:
+        return PHASE_CREATING_IMAGE
+    min_rank = min(_PHASE_RANK.get(phase, 0) for phase in clusters.values())
+    return _RANK_TO_PHASE[min_rank]
+
+
+def ops_pod_install_progress(
+    per_cluster_log_or_status: dict[str, str], cancelled: bool = False
+) -> dict:
+    """Pure state machine: per-cluster log/status → aggregate install progress.
+
+    Args:
+        per_cluster_log_or_status: ``{clusterId: install.log text OR exact phase}``.
+        cancelled: whether a cancel signal has fired for this project.
+
+    Returns ``{clusters: {id: phase}, overall: phase, done: bool, failed: [...]}``.
+    Decision precedence: cancelled → failed (any) → complete (all) → in-progress.
+    ``done`` is True for the three terminal overalls (cancelled/failed/complete).
+    """
+    clusters = {
+        cid: _phase_from_input(value)
+        for cid, value in per_cluster_log_or_status.items()
+    }
+    failed = sorted(cid for cid, phase in clusters.items() if phase == PHASE_FAILED)
+
+    if cancelled:
+        overall, done = PHASE_CANCELLED, True
+    elif failed:
+        overall, done = PHASE_FAILED, True
+    elif clusters and all(phase == PHASE_COMPLETE for phase in clusters.values()):
+        overall, done = PHASE_COMPLETE, True
+    else:
+        overall, done = _aggregate_in_progress(clusters), False
+
+    return {"clusters": clusters, "overall": overall, "done": done, "failed": failed}
+
+
+def ops_pod_progress_items(progress: dict) -> list[str]:
+    """Render a progress dict's per-cluster phases as sorted ``"id: phase"`` lines
+    (the item list the deploy-progress UI shows)."""
+    clusters = progress.get("clusters", {})
+    return [f"{cid}: {clusters[cid]}" for cid in sorted(clusters)]
+
 
 def _cluster_key(cluster: dict) -> str:
     """Workdir-relative key for a cluster (id, else name), matching the scaffold."""

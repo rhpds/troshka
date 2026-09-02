@@ -1980,6 +1980,151 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map):
     _start_pod(host, f"troshka-{project_id[:8]}-ops", timeout=300)
 
 
+# ── Ops-pod install progress monitor (Plan 4, Task 7) ──────────────────────
+#
+# The in-cluster ops pod runs the agent-based install for every cluster in
+# parallel, writing each cluster's progress to
+# ``<workdir>/<clusterId>/install.log`` (see
+# :func:`app.services.ocp.ops_pod_install.build_ops_pod_install_script`). This
+# monitor tails those logs via troshkad ``containers/exec``, parses each into an
+# install phase, and streams the aggregate + per-cluster status to the deploy
+# UI — honoring cancellation. The PURE phase/aggregation logic is
+# :func:`ops_pod_install_progress`; everything here (the poll loop, wall-clock
+# timing, real ``containers/exec`` log reads, and job cancellation) is
+# **[LIVE-ENV]** and not unit-tested.
+
+
+def _ops_pod_container_name(project_id: str) -> str:
+    """troshkad names a pod's main container ``<full_pod_name>-<ctr_name>``; the
+    ops pod's main container is ``ops`` (see ``_ops_pod_create_params``)."""
+    return f"troshka-{project_id[:8]}-ops-ops"
+
+
+def _publish_ops_pod_progress(project_id: str, progress: dict) -> None:
+    """Stream aggregate + per-cluster ops-pod install progress to the deploy UI."""
+    from app.services.ocp.ops_pod_install import ops_pod_progress_items
+
+    overall = progress["overall"]
+    failed = progress.get("failed") or []
+    detail = (
+        f"{len(failed)} cluster(s) failed: {', '.join(failed)}"
+        if failed
+        else f"install: {overall}"
+    )
+    _update_deploy_progress(
+        project_id,
+        f"ocp-install:{overall}",
+        detail,
+        items=ops_pod_progress_items(progress),
+    )
+
+
+def _exec_ops_pod_cat(host, container_name: str, path: str) -> str | None:
+    """[LIVE-ENV] ``cat`` a file inside the ops-pod container via troshkad
+    ``containers/exec``; returns None if the file is absent or the exec fails."""
+    try:
+        job_id = start_job(
+            host,
+            "/containers/exec",
+            {"container_name": container_name, "command": ["cat", path]},
+        )
+        job = wait_for_job(host, job_id, timeout=30)
+        if job.get("status") == "completed":
+            return (job.get("result") or {}).get("stdout", "")
+    except TroshkadError:
+        pass
+    return None
+
+
+def _read_ops_pod_cluster_logs(
+    host, container_name: str, cluster_keys: list[str], workdir: str
+) -> dict[str, str]:
+    """[LIVE-ENV] Read every cluster's ``install.log`` from the ops pod.
+
+    A missing/unreadable log maps to ``""`` (→ ``creating-image``), so a cluster
+    that hasn't produced output yet still appears as in-progress.
+    """
+    return {
+        key: (
+            _exec_ops_pod_cat(host, container_name, f"{workdir}/{key}/install.log")
+            or ""
+        )
+        for key in cluster_keys
+    }
+
+
+def _cancel_ops_pod_install(host, project_id: str, cluster_keys, job_id) -> None:
+    """Signal the ops pod to stop: cancel the troshkad install job (best-effort)
+    and publish a terminal ``cancelled`` status."""
+    from app.services.ocp.ops_pod_install import ops_pod_install_progress
+    from app.services.troshkad_client import cancel_job
+
+    if job_id:
+        try:
+            cancel_job(host, job_id)
+        except TroshkadError:
+            logger.warning(
+                "Ops pod %s: failed to cancel install job %s",
+                project_id[:8],
+                job_id,
+            )
+    progress = ops_pod_install_progress(
+        {key: "" for key in cluster_keys}, cancelled=True
+    )
+    _publish_ops_pod_progress(project_id, progress)
+
+
+def _monitor_ops_pod_install(
+    project_id: str,
+    host,
+    clusters: list[dict],
+    job_id=None,
+    container_name: str | None = None,
+    workdir: str | None = None,
+    poll_interval: int = 15,
+    timeout: int = 7200,
+) -> str:
+    """[LIVE-ENV loop] Poll per-cluster install.log and stream install progress.
+
+    Loops until every cluster reaches a terminal phase (``complete``/``failed``),
+    the project is cancelled, or ``timeout`` elapses. Each iteration reads the
+    live logs, maps them to phases via :func:`ops_pod_install_progress`, and
+    publishes the aggregate + per-cluster status. On cancellation it cancels the
+    troshkad job and marks the status cancelled. Returns the terminal overall
+    phase (``complete``/``failed``/``cancelled``/``timeout``).
+    """
+    import time as _t
+
+    from app.services.ocp.ops_pod_install import (
+        _cluster_key as _ops_cluster_key,
+    )
+    from app.services.ocp.ops_pod_install import (
+        ops_pod_install_progress,
+    )
+    from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
+
+    workdir = workdir or OPS_POD_WORKDIR
+    container_name = container_name or _ops_pod_container_name(project_id)
+    cluster_keys = [_ops_cluster_key(c) for c in clusters]
+    deadline = _t.time() + timeout
+
+    while _t.time() < deadline:
+        if _is_deploy_cancelled(project_id):
+            _cancel_ops_pod_install(host, project_id, cluster_keys, job_id)
+            return "cancelled"
+        per_cluster = _read_ops_pod_cluster_logs(
+            host, container_name, cluster_keys, workdir
+        )
+        progress = ops_pod_install_progress(per_cluster)
+        _publish_ops_pod_progress(project_id, progress)
+        if progress["done"]:
+            return progress["overall"]
+        _t.sleep(poll_interval)
+
+    logger.warning("Ops pod %s: install monitor timed out", project_id[:8])
+    return "timeout"
+
+
 def _sync_deployed_container_node(project, container_id: str, topo: dict) -> None:
     """Update the deployed_topology's container node (+ showroom meta) to match
     the current topology after a container redeploy, so the canvas snapshot
