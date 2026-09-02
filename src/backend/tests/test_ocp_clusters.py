@@ -191,8 +191,9 @@ def test_materialize_generates_missing_cp_and_workers():
     sample = vms[cps[0]]
     assert sample["os"] == "rhcos" and sample["cluster"] == "prod"
     # _make_node emits the template-format keys _build_vm_data reads (vcpus /
-    # ram_gb in GB), not raw cpu/memory-MB.
-    assert sample["vcpus"] == 8 and sample["ram_gb"] == 16 and sample["disk"] == 120
+    # ram_gb in GB), not raw cpu/memory-MB. Task 6: disks is now a list.
+    assert sample["vcpus"] == 8 and sample["ram_gb"] == 16
+    assert sample["disks"] == [{"size_gb": 120, "bus": "virtio", "bootable": True}]
 
 
 def test_materialized_node_data_carries_sizing():
@@ -1083,3 +1084,165 @@ def test_normalize_cluster_disks_keeps_explicit_list():
         }
     )
     assert len(c["controlPlaneDisks"]) == 2 and c["networkIds"] == ["net1"]
+
+
+# ---------------------------------------------------------------------------
+# Task 6: Backend — materialize members with per-role disks + uniform NICs (parity)
+# ---------------------------------------------------------------------------
+
+
+def test_materialize_cluster_with_per_role_disks_and_networks():
+    """Materialize a cluster with controlPlaneDisks (2 disks, first bootable) and
+    networkIds (1 network). Assert per CP member: 2 storageNodes + 2 disk edges
+    with proper handles, bootDevices set to first bootable disk, 1 NIC + 1 nic edge.
+    """
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    # Template with a cluster specifying per-role disks and networkIds.
+    tmpl = {
+        "name": "t",
+        "install_method": "agent",
+        "category": "openshift",
+        "networks": {
+            "cluster": {"cidr": "10.0.0.0/24"},
+            "net1": {"cidr": "10.1.0.0/24"},
+        },
+        "ocp": [
+            {
+                "name": "prod",
+                "type": "compact",  # 3 CP, 0 workers
+                "controlPlaneDisks": [
+                    {"sizeGb": 120, "bootable": True},
+                    {"sizeGb": 100, "bootable": False},
+                ],
+                "networkIds": ["net1"],
+            }
+        ],
+    }
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+
+    # Extract cluster and its members.
+    prod = topo["clusters"][0]
+    assert prod["name"] == "prod"
+    members = [
+        n
+        for n in topo["nodes"]
+        if n.get("data", {}).get("clusterId") == "prod" and n.get("type") == "vmNode"
+    ]
+    assert len(members) == 3  # 3 CP
+    cp_member = members[0]
+
+    # Check per-CP member: 2 storageNodes + 2 disk edges.
+    disk_nodes = [
+        n
+        for n in topo["nodes"]
+        if n.get("type") == "storageNode"
+        and n.get("data", {}).get("name", "").startswith(cp_member["data"]["name"])
+    ]
+    disk_edges = [
+        e
+        for e in topo["edges"]
+        if e.get("source") in [d["id"] for d in disk_nodes]
+        and e.get("target") == cp_member["id"]
+    ]
+    assert (
+        len(disk_nodes) >= 2
+    ), f"Expected at least 2 storageNodes for {cp_member['data']['name']}, got {len(disk_nodes)}"
+    assert (
+        len(disk_edges) >= 2
+    ), f"Expected at least 2 disk edges, got {len(disk_edges)}"
+
+    # Verify disk edge handles.
+    for de in disk_edges[:2]:
+        assert (
+            de.get("sourceHandle") == "right"
+        ), "Disk edge should have sourceHandle=right"
+        assert de.get("targetHandle", "").startswith("dp-") and de.get(
+            "targetHandle", ""
+        ).endswith(
+            "-left"
+        ), f"Disk edge targetHandle should be dp-*-left, got {de.get('targetHandle')}"
+
+    # Check bootDevices: should point to the first bootable disk.
+    boot_devices = cp_member["data"].get("bootDevices", [])
+    assert len(boot_devices) > 0, "bootDevices should be non-empty"
+    # The first bootable disk should be in bootDevices.
+    assert boot_devices[0] in [
+        d["id"] for d in disk_nodes
+    ], f"bootDevice {boot_devices[0]} not in disk nodes"
+
+    # Check 1 NIC + 1 nic edge for the member.
+    nics = cp_member["data"].get("nics", [])
+    assert len(nics) == 1, f"Expected 1 NIC (one per networkIds), got {len(nics)}"
+    nic_edges = [
+        e
+        for e in topo["edges"]
+        if e.get("target") == cp_member["id"] and "nic" in e.get("targetHandle", "")
+    ]
+    assert len(nic_edges) == 1, f"Expected 1 NIC edge, got {len(nic_edges)}"
+    nic_edge = nic_edges[0]
+    assert (
+        nic_edge.get("targetHandle") == f"nic-{nics[0]['id']}-top"
+    ), "First NIC edge should target top handle"
+
+
+def test_backend_member_parity_with_frontend():
+    """Verify that backend-materialized member has the same key set as frontend
+    makeMemberNode emits: os, firmware, nics, diskControllers, bootDevices,
+    clusterRole/tags.AnsibleGroup, generated.
+    """
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "name": "t",
+        "install_method": "agent",
+        "category": "openshift",
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "ocp": [{"name": "prod", "type": "sno"}],
+    }
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+
+    member = next(
+        n
+        for n in topo["nodes"]
+        if n.get("data", {}).get("clusterId") == "prod" and n.get("type") == "vmNode"
+    )
+    data = member["data"]
+
+    # Canonical backend key set (matching frontend makeMemberNode output):
+    canonical_keys = {
+        "os",
+        "firmware",
+        "nics",
+        "diskControllers",
+        "bootDevices",
+        "clusterRole",
+        "tags",
+        "generated",
+    }
+    actual_keys = set(data.keys())
+    missing = canonical_keys - actual_keys
+    assert (
+        not missing
+    ), f"Member missing canonical keys: {missing}. Actual keys: {sorted(actual_keys)}"
+
+    # Verify the values are sensible.
+    assert data.get("os") == "rhcos"
+    assert data.get("firmware") == "uefi"
+    assert isinstance(data.get("nics"), list)
+    assert (
+        isinstance(data.get("diskControllers"), list)
+        and len(data["diskControllers"]) > 0
+    )
+    assert isinstance(data.get("bootDevices"), list)
+    assert data.get("clusterRole") in ("control-plane", "worker")
+    assert "AnsibleGroup" in data.get("tags", {})
+    assert data.get("generated") is True

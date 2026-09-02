@@ -183,7 +183,11 @@ def _coerce_workers(workers, fallback: int) -> int:
 
 
 def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[dict]:
-    """Build camelCase cluster objects for ``topology['clusters']``."""
+    """Build camelCase cluster objects for ``topology['clusters']``.
+
+    Preserves controlPlaneDisks, workerDisks, and networkIds from the input
+    (Task 6: cluster member fidelity).
+    """
     single = len(ocp_list) == 1
     out = []
     for entry in ocp_list:
@@ -192,34 +196,36 @@ def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[
         ctype = entry.get("type") or _infer_type(cp_count, wk_count)
         control_plane = 1 if ctype == "sno" else 3
         workers = _coerce_workers(entry.get("workers"), wk_count)
-        out.append(
-            {
-                "id": _slug(name),
-                "name": name,
-                "type": ctype,
-                "controlPlane": control_plane,
-                "workers": workers,
-                "controlPlaneCpu": entry.get(
-                    "control_plane_cpu", _CP_SIZE_DEFAULTS["cpu"]
-                ),
-                "controlPlaneMemory": entry.get(
-                    "control_plane_memory", _CP_SIZE_DEFAULTS["memory"]
-                ),
-                "controlPlaneDisk": entry.get(
-                    "control_plane_disk", _CP_SIZE_DEFAULTS["disk"]
-                ),
-                "workerCpu": entry.get("worker_cpu", _WORKER_SIZE_DEFAULTS["cpu"]),
-                "workerMemory": entry.get(
-                    "worker_memory", _WORKER_SIZE_DEFAULTS["memory"]
-                ),
-                "workerDisk": entry.get("worker_disk", _WORKER_SIZE_DEFAULTS["disk"]),
-                "baseDomain": entry.get("base_domain", "ocp.local"),
-                "apiVip": entry.get("api_vip"),
-                "ingressVip": entry.get("ingress_vip"),
-                "ocpVersion": entry.get("ocp_version", "4.20"),
-                "pullThroughRegistry": entry.get("pull_through_registry"),
-            }
-        )
+        cluster_obj = {
+            "id": _slug(name),
+            "name": name,
+            "type": ctype,
+            "controlPlane": control_plane,
+            "workers": workers,
+            "controlPlaneCpu": entry.get("control_plane_cpu", _CP_SIZE_DEFAULTS["cpu"]),
+            "controlPlaneMemory": entry.get(
+                "control_plane_memory", _CP_SIZE_DEFAULTS["memory"]
+            ),
+            "controlPlaneDisk": entry.get(
+                "control_plane_disk", _CP_SIZE_DEFAULTS["disk"]
+            ),
+            "workerCpu": entry.get("worker_cpu", _WORKER_SIZE_DEFAULTS["cpu"]),
+            "workerMemory": entry.get("worker_memory", _WORKER_SIZE_DEFAULTS["memory"]),
+            "workerDisk": entry.get("worker_disk", _WORKER_SIZE_DEFAULTS["disk"]),
+            "baseDomain": entry.get("base_domain", "ocp.local"),
+            "apiVip": entry.get("api_vip"),
+            "ingressVip": entry.get("ingress_vip"),
+            "ocpVersion": entry.get("ocp_version", "4.20"),
+            "pullThroughRegistry": entry.get("pull_through_registry"),
+        }
+        # Preserve per-role disk lists and network IDs for member materialization.
+        if entry.get("controlPlaneDisks"):
+            cluster_obj["controlPlaneDisks"] = entry["controlPlaneDisks"]
+        if entry.get("workerDisks"):
+            cluster_obj["workerDisks"] = entry["workerDisks"]
+        if entry.get("networkIds"):
+            cluster_obj["networkIds"] = entry["networkIds"]
+        out.append(cluster_obj)
     return out
 
 
@@ -235,24 +241,33 @@ def _existing_role_names(vms_def, cluster_name, role, single):
     ]
 
 
-def _make_node(cluster, role, cpu, memory, disk):
+def _make_node(cluster, role, cpu, memory, disks, network_ids):
     # Emit the template-format keys that _build_vm_data actually reads (vcpus /
     # ram_gb), so count-materialized sizing survives into the final node.data
     # instead of falling back to defaults. `memory` is in MB; ram_gb is GB.
+    # disks is a list of {sizeGb, bus?, bootable?}; network_ids is a list of network node IDs.
     return {
         "role": role,
         "os": "rhcos",
         "cluster": cluster["name"],
         "vcpus": cpu,
         "ram_gb": round(memory / 1024),
-        "disk": disk,
+        "disks": [
+            {
+                "size_gb": d["sizeGb"],
+                "bus": d.get("bus", "virtio"),
+                "bootable": d.get("bootable", False),
+            }
+            for d in disks
+        ],
+        "nics": [{"network": nid} for nid in (network_ids or [])],
         # Mark auto-generated so count-driven add/remove (canvas + backend) only
         # ever reaps VMs it created, never a hand-enumerated/customized member.
         "generated": True,
     }
 
 
-def _topup(vms, cluster, role, want, cpu, memory, disk, single):
+def _topup(vms, cluster, role, want, cpu, memory, disks, network_ids, single):
     have = _existing_role_names(vms, cluster["name"], role, single)
     shortfall = want - len(have)
     if shortfall <= 0:
@@ -264,7 +279,7 @@ def _topup(vms, cluster, role, want, cpu, memory, disk, single):
         i += 1
         if name in vms:
             continue
-        vms[name] = _make_node(cluster, role, cpu, memory, disk)
+        vms[name] = _make_node(cluster, role, cpu, memory, disks, network_ids)
         shortfall -= 1
 
 
@@ -273,6 +288,8 @@ def materialize_cluster_vms(clusters: list[dict], vms_def: dict) -> dict:
     vms = dict(vms_def or {})
     single = len(clusters) == 1
     for cluster in clusters:
+        # Normalize cluster to have controlPlaneDisks/workerDisks lists and networkIds.
+        normalized = normalize_cluster_disks(cluster)
         _topup(
             vms,
             cluster,
@@ -280,7 +297,8 @@ def materialize_cluster_vms(clusters: list[dict], vms_def: dict) -> dict:
             cluster["controlPlane"],
             cluster["controlPlaneCpu"],
             cluster["controlPlaneMemory"],
-            cluster["controlPlaneDisk"],
+            normalized["controlPlaneDisks"],
+            normalized.get("networkIds", []),
             single,
         )
         _topup(
@@ -290,7 +308,8 @@ def materialize_cluster_vms(clusters: list[dict], vms_def: dict) -> dict:
             cluster["workers"],
             cluster["workerCpu"],
             cluster["workerMemory"],
-            cluster["workerDisk"],
+            normalized["workerDisks"],
+            normalized.get("networkIds", []),
             single,
         )
     return vms
@@ -1180,15 +1199,22 @@ def _build_vm_data(vm_name, vm_cfg, _vms_def, nets_def, net_ids, vm_x, vm_row_y)
     disk_nodes = []
     disk_edges_list = []
     boot_device_ids = []
+    first_bootable_disk_id = None
     for di, disk_cfg in enumerate(disks_cfg):
         dc, disk_id, disk_node, disk_edge = _build_disk_node_and_edge(
             vm_name, disk_cfg, di, vm_x, vm_row_y
         )
         disk_controllers.append(dc)
-        if di == 0:
-            boot_device_ids.append(disk_id)
+        # Set boot device to the first bootable disk, or the first disk (di==0) as fallback.
+        if first_bootable_disk_id is None and disk_cfg.get("bootable", False):
+            first_bootable_disk_id = disk_id
+        if di == 0 and first_bootable_disk_id is None:
+            first_bootable_disk_id = disk_id
         disk_nodes.append(disk_node)
         disk_edges_list.append(disk_edge)
+
+    if first_bootable_disk_id is not None:
+        boot_device_ids.append(first_bootable_disk_id)
 
     isos_cfg = vm_cfg.get("isos", [])
     if os_type != "blank" or isos_cfg:
@@ -1214,6 +1240,10 @@ def _build_vm_data(vm_name, vm_cfg, _vms_def, nets_def, net_ids, vm_x, vm_row_y)
         "powerOnAtDeploy": power_on,
     }
 
+    # Add clusterRole for cluster members (Task 6: parity with frontend).
+    if role in ("control-plane", "worker"):
+        vm_data["clusterRole"] = role
+
     _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip)
 
     # Propagate the auto-generated marker (Ruling B) so a template-materialized
@@ -1237,10 +1267,13 @@ def _build_vm_data(vm_name, vm_cfg, _vms_def, nets_def, net_ids, vm_x, vm_row_y)
 
     nic_edges = []
     for ni, nic_cfg in enumerate(nics_cfg):
-        net_name = nic_cfg.get("network", "")
-        if net_name in net_ids:
+        net_identifier = nic_cfg.get("network", "")
+        # net_identifier can be either a network name (template) or a network node ID (cluster materialized).
+        # First try as a network name; if not found, use it as a node ID directly.
+        net_node_id = net_ids.get(net_identifier, net_identifier)
+        if net_node_id:
             handle = "top" if ni == 0 else "bottom"
-            nic_edges.append(_net_edge(net_ids[net_name], vm_node, ni, handle))
+            nic_edges.append(_net_edge(net_node_id, vm_node, ni, handle))
 
     return vm_node, disk_nodes, disk_edges_list, iso_nodes_edges, nic_edges
 
