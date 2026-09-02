@@ -100,6 +100,8 @@ export interface VMNodeData {
   nics: VMNic[];
   diskControllers: VMDiskController[];
   tags?: Record<string, string>;
+  clusterId?: string;
+  clusterRole?: "control-plane" | "worker";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   [key: string]: any;
 }
@@ -177,7 +179,46 @@ export interface ContainerNodeData {
   [key: string]: any;
 }
 
-export type CanvasNodeData = VMNodeData | NetworkNodeData | StorageNodeData | ContainerNodeData;
+/**
+ * A multi-cluster OCP definition, mirroring the `topology.clusters[]` element
+ * shape persisted by the backend (Plan 1). One entry per OCP cluster; VM nodes
+ * reference it via `data.clusterId` + `parentId` (the cluster container node id).
+ */
+export interface ClusterConfig {
+  id: string;
+  name: string;
+  nodeId: string;
+  type: string;
+  controlPlane: number;
+  workers: number;
+  controlPlaneCpu?: number;
+  controlPlaneMemory?: number;
+  controlPlaneDisk?: number;
+  workerCpu?: number;
+  workerMemory?: number;
+  workerDisk?: number;
+  baseDomain?: string;
+  apiVip?: string;
+  ingressVip?: string;
+  ocpVersion?: string;
+  pullThroughRegistry?: string;
+}
+
+/** The `node.data` summary rendered on a cluster container node. */
+export interface ClusterNodeData {
+  label: string;
+  name: string;
+  type: string;
+  controlPlane: number;
+  workers: number;
+  baseDomain?: string;
+  apiVip?: string;
+  ingressVip?: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any;
+}
+
+export type CanvasNodeData = VMNodeData | NetworkNodeData | StorageNodeData | ContainerNodeData | ClusterNodeData;
 
 export interface ExternalIp {
   id: string;
@@ -241,6 +282,11 @@ interface CanvasState {
   externalIps: ExternalIp[];
   vniMap: Record<string, number>;
   setExternalIps: (ips: ExternalIp[]) => void;
+  clusters: ClusterConfig[];
+  setClusters: (clusters: ClusterConfig[]) => void;
+  addCluster: (cluster: ClusterConfig) => void;
+  updateCluster: (id: string, patch: Partial<ClusterConfig>) => void;
+  removeCluster: (id: string) => void;
   showroom: ShowroomConfig | null;
   setShowroom: (config: ShowroomConfig | null) => void;
   addShowroomScaffold: (position: { x: number; y: number }) => boolean;
@@ -664,6 +710,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   externalIps: [] as ExternalIp[],
   vniMap: {} as Record<string, number>,
   showroom: null as ShowroomConfig | null,
+  clusters: [] as ClusterConfig[],
 
   onNodesChange: (changes) => {
     const removals = changes.filter((c) => c.type === "remove");
@@ -1293,7 +1340,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       if (get().nodes.length > 0) {
         _saveTopologyToApi(current, get());
       }
-      set({ currentProjectId: projectId, nodes: [], edges: [], hiddenNodeIds: [], startOrder: [], externalIps: [], vniMap: {}, selectedNodeId: null });
+      set({ currentProjectId: projectId, nodes: [], edges: [], hiddenNodeIds: [], startOrder: [], externalIps: [], vniMap: {}, clusters: [], selectedNodeId: null });
     } else {
       set({ currentProjectId: projectId });
     }
@@ -1393,6 +1440,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             externalIps: synced.externalIps,
             vniMap,
             showroom: parseShowroomFromTopology(t.showroom, nodes, lbEdges),
+            clusters: Array.isArray(t.clusters) ? t.clusters : [],
             providerType: project.provider_type || null,
             clusterCapabilities: project.cluster_capabilities || null,
           });
@@ -1400,6 +1448,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         } else {
           set({
             vniMap: vniMapFromProject,
+            clusters: [],
             providerType: project.provider_type || null,
             clusterCapabilities: project.cluster_capabilities || null,
           });
@@ -1417,6 +1466,32 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
   setStartOrder: (order) => {
     set({ startOrder: order });
+  },
+
+  setClusters: (clusters) => {
+    set({ clusters });
+    set({ topologyDirty: computeTopologyDirty(get()) });
+  },
+
+  addCluster: (cluster) => {
+    get().pushHistory();
+    set({ clusters: [...get().clusters, cluster] });
+    set({ topologyDirty: computeTopologyDirty(get()) });
+  },
+
+  updateCluster: (id, patch) => {
+    set({
+      clusters: get().clusters.map((c) =>
+        c.id === id ? { ...c, ...patch } : c,
+      ),
+    });
+    set({ topologyDirty: computeTopologyDirty(get()) });
+  },
+
+  removeCluster: (id) => {
+    get().pushHistory();
+    set({ clusters: get().clusters.filter((c) => c.id !== id) });
+    set({ topologyDirty: computeTopologyDirty(get()) });
   },
 
   setExternalIps: (ips) => {
@@ -1822,7 +1897,7 @@ export function allocateBmcIp(): string {
 }
 
 // Save topology to API
-function _saveTopologyToApi(
+export function _saveTopologyToApi(
   projectId: string,
   state: {
     nodes: Node[];
@@ -1831,6 +1906,7 @@ function _saveTopologyToApi(
     startOrder: StartOrderEntry[];
     externalIps: ExternalIp[];
     showroom: ShowroomConfig | null;
+    clusters?: ClusterConfig[];
   },
 ): Promise<Record<string, unknown> | null> {
   const cleanNodes = state.nodes.map((n) => {
@@ -1844,6 +1920,7 @@ function _saveTopologyToApi(
     hiddenNodeIds: state.hiddenNodeIds,
     startOrder: state.startOrder,
     externalIps: state.externalIps,
+    clusters: state.clusters ?? [],
   };
   const showroomMeta = showroomConfigForSave(state.showroom, state.nodes, state.edges);
   if (showroomMeta) topology.showroom = showroomMeta;
@@ -1950,7 +2027,7 @@ useCanvasStore.subscribe((state) => {
     if (s.nodes.length === 0) return;
     const topoKey = s.nodes.map((n) =>
       `${n.id}:${JSON.stringify(stableNodeData((n.data || {}) as Record<string, unknown>))}`,
-    ).join("|") + "||" + s.edges.map((e) => `${e.source}-${e.target}`).join("|") + "||so:" + JSON.stringify(s.startOrder) + "||eip:" + stableExternalIpsKey(s.externalIps) + "||sr:" + JSON.stringify(s.showroom);
+    ).join("|") + "||" + s.edges.map((e) => `${e.source}-${e.target}`).join("|") + "||so:" + JSON.stringify(s.startOrder) + "||eip:" + stableExternalIpsKey(s.externalIps) + "||sr:" + JSON.stringify(s.showroom) + "||cl:" + JSON.stringify(s.clusters);
     if (topoKey === _lastSavedTopologyKey) return;
     _lastSavedTopologyKey = topoKey;
     _lastSavedNodeCount = s.nodes.length;
