@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 
@@ -17,11 +18,11 @@ class LiveConfig:
     timeout_s: int
 
     @classmethod
-    def from_env(cls, env: dict | None = None) -> LiveConfig:
-        env = os.environ if env is None else env
+    def from_env(cls, env: Mapping[str, str] | None = None) -> LiveConfig:
+        src: Mapping[str, str] = os.environ if env is None else env
 
         def val(key: str) -> str | None:
-            return env.get(key) or None
+            return src.get(key) or None
 
         return cls(
             url=val("TROSHKA_LIVE_URL"),
@@ -29,8 +30,8 @@ class LiveConfig:
             troshkad_host=val("TROSHKA_LIVE_TROSHKAD_HOST"),
             kubeconfig=val("TROSHKA_LIVE_KUBECONFIG"),
             kubevirt_host=val("TROSHKA_LIVE_KUBEVIRT_HOST"),
-            tier2_enabled=env.get("TROSHKA_LIVE_TIER2") == "1",
-            timeout_s=int(env.get("TROSHKA_LIVE_TIMEOUT_S") or "4200"),
+            tier2_enabled=src.get("TROSHKA_LIVE_TIER2") == "1",
+            timeout_s=int(src.get("TROSHKA_LIVE_TIMEOUT_S") or "4200"),
         )
 
     @property
