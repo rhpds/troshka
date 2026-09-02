@@ -79,4 +79,4 @@ ocpvirt:
 #   ops_pod_image: overrides the ops-pod execution-environment image ref.
 ocp:
   install_via_pod: false
-  ops_pod_image: ""
+  ops_pod_image: "quay.io/redhat-gpte/troshka-ops-pod:latest"

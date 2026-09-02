@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 # Placeholder ops-pod execution-environment image. The real image is built and
 # published by Task 8 / Plan 4b CI; this constant is overridable from config
 # (`ocp.ops_pod_image`) so a deployment can point at its own registry ref.
-_OPS_POD_IMAGE_DEFAULT = "quay.io/rhpds/troshka-ops-pod:latest"
+_OPS_POD_IMAGE_DEFAULT = "quay.io/redhat-gpte/troshka-ops-pod:latest"
 
 
 def _resolve_ops_pod_image() -> str:

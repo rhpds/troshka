@@ -103,6 +103,60 @@ def test_build_ops_pod_config_main_container_image_and_env():
     assert env["OCP_VERSION"] == "4.20.0"
 
 
+def test_ops_pod_image_default_points_at_configured_registry():
+    # The baked fallback matches the CI-published image (build-images.yml
+    # build-operator job) and the config.yaml `ocp.ops_pod_image` default.
+    from app.services.ocp import ops_pod_scaffold
+
+    assert (
+        ops_pod_scaffold._OPS_POD_IMAGE_DEFAULT
+        == "quay.io/redhat-gpte/troshka-ops-pod:latest"
+    )
+
+
+def test_ops_pod_image_resolves_from_ocp_config(monkeypatch):
+    # When `ocp.ops_pod_image` is set in config, resolution returns it verbatim.
+    import app.core.config as core_config
+    from app.services.ocp import ops_pod_scaffold
+
+    custom = "quay.io/example/troshka-ops-pod:v9"
+    monkeypatch.setattr(
+        core_config,
+        "config",
+        SimpleNamespace(ocp=SimpleNamespace(ops_pod_image=custom)),
+        raising=False,
+    )
+    assert ops_pod_scaffold._resolve_ops_pod_image() == custom
+
+
+def test_ops_pod_image_falls_back_when_config_empty(monkeypatch):
+    import app.core.config as core_config
+    from app.services.ocp import ops_pod_scaffold
+
+    monkeypatch.setattr(
+        core_config,
+        "config",
+        SimpleNamespace(ocp=SimpleNamespace(ops_pod_image="")),
+        raising=False,
+    )
+    assert (
+        ops_pod_scaffold._resolve_ops_pod_image()
+        == ops_pod_scaffold._OPS_POD_IMAGE_DEFAULT
+    )
+
+
+def test_build_ops_pod_config_uses_resolved_image(monkeypatch):
+    # build_ops_pod_config reads the module-level OPS_POD_IMAGE at call time,
+    # so a deployment-configured ref flows straight into the pod spec.
+    from app.services.ocp import ops_pod_scaffold
+
+    monkeypatch.setattr(
+        ops_pod_scaffold, "OPS_POD_IMAGE", "quay.io/example/troshka-ops-pod:pinned"
+    )
+    cfg = _build()
+    assert cfg["containers"][0]["image"] == "quay.io/example/troshka-ops-pod:pinned"
+
+
 def test_build_ops_pod_config_carries_all_cluster_configs():
     cfg = _build()
     files = cfg["files"]

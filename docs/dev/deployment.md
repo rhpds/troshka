@@ -55,8 +55,9 @@ ansible-playbook deploy/ansible/pkg-repo.yaml \
 Extracts RHEL `BaseOS`/`AppStream` from the central-S4 DVD ISO onto a PVC and serves them via nginx + basic auth. Backend host provisioning reads `ocpvirt.pkg_repo` from config (provider overrides optional). Full design: [`ocpvirt-package-repo.md`](ocpvirt-package-repo.md).
 ### Container Images
 - Built by GitHub Actions on push to `main` or version tags
-- Images at `quay.io/redhat-gpte/troshka-{backend,frontend,operator,dnsmasq,gateway,tools,bmc,vnc-proxy}`
+- Images at `quay.io/redhat-gpte/troshka-{backend,frontend,operator,dnsmasq,gateway,tools,bmc,vnc-proxy,ops-pod}`
 - Containerfiles in `deploy/containerfiles/` (backend, frontend) and `src/operator/images/` (operator components)
+- `ops-pod` is the multi-cluster OCP bastionless install execution-environment (EE): `oc`/`openshift-install` + `ansible-core`/`ansible-navigator` + the `troshka.cloud` collection + Redfish/`curl` tooling. Built in the `build-operator` job (`--build-arg OCP_VERSION=<x.y.z>` to pin). Backend resolves the ref from config `ocp.ops_pod_image`. See `src/operator/images/ops-pod/README.md`.
 
 ## App Update Notification
 
