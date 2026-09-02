@@ -521,9 +521,20 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
 
     Iterates ``topology["clusters"]`` (falling back to a one-element legacy
     cluster when absent), resolving per-cluster VIPs, install-config,
-    agent-config, and DNS records. Single-cluster topologies still bake the
-    bastion cloud-init exactly as before; multi-cluster topologies leave the
-    per-cluster generated configs on each cluster object for Plan 4's ops pod.
+    agent-config, and DNS records, storing the generated
+    ``_generatedInstallConfig``/``_generatedAgentConfig`` on EVERY cluster.
+
+    The bastion cloud-init bake is decided by the project's install method
+    (``install_via``), NOT the cluster count:
+
+    * ``install_via == "bastion"`` bakes the bastion cloud-init (single-cluster
+      only — a single bastion cannot install multiple clusters, so a
+      multi-cluster ``bastion`` project raises ``ValueError``). The bake is
+      byte-identical to the pre-Plan-4b single-cluster path.
+    * ``install_via == "pod"`` NEVER bakes the bastion; the in-cluster ops pod
+      consumes each cluster's ``_generated*`` configs (this closes the Plan 4
+      "multi-cluster + flag-off = no installer" gap, and also leaves single
+      pod-install clusters with usable ``_generated*`` instead of a bastion).
     """
     if not config.get("common_password"):
         raise ValueError(
@@ -533,13 +544,27 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
 
     # Make every cluster member (backend- OR canvas-created) deploy-ready before
     # counts, BMC host entries, and rendezvous selection read their fields.
-    from app.services.template_loader import normalize_cluster_member_fields
+    from app.services.template_loader import (
+        normalize_cluster_member_fields,
+        ocp_install_via,
+        resolve_install_via,
+    )
 
     normalize_cluster_member_fields(topology)
 
     clusters = topology.get("clusters") or [
         _legacy_cluster_from_config(topology, template_id, config)
     ]
+
+    # Prefer the config value (Task 1), fall back to what's persisted on the
+    # topology, then the config default (all handled by resolve_install_via).
+    install_via = resolve_install_via(config, default=ocp_install_via(topology))
+    if install_via == "bastion" and len(clusters) > 1:
+        raise ValueError(
+            "install_via='bastion' supports a single cluster only "
+            f"(this project has {len(clusters)} clusters); a single bastion "
+            "cannot install multiple clusters. Use install_via='pod'."
+        )
 
     last_vips = ("", "")
     for i, cluster in enumerate(clusters):
@@ -550,14 +575,14 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     _attach_bastion_image(topology, config.get("bastion_image"))
     _attach_bastion_iso(topology, config.get("bastion_iso"))
 
-    if len(clusters) == 1:
+    if install_via == "bastion":
         api_vip, ingress_vip = last_vips
         _bake_single_cluster_bastion(
             topology, config, template_id, api_vip, ingress_vip
         )
-    # else: Plan 4: ops pod consumes per-cluster _generated* configs
-    # (no single-bastion bake for multi-cluster; DNS + port-forwards still apply
-    # to every cluster above).
+    # else: install_via == "pod" — ops pod consumes per-cluster _generated*
+    # configs (no bastion bake; DNS + port-forwards still apply to every
+    # cluster above).
 
     return topology
 

@@ -132,6 +132,7 @@ def test_bastion_cloud_init_pull_through_registry():
         "pull_secret_json": '{"auths":{}}',
         "ssh_pub_key": "ssh-rsa AAAA",
         "auto_install_ocp": True,
+        "install_via": "bastion",
         "resolved": resolved,
     }
     customize_topology(topo, "test-ptr", config)
@@ -192,6 +193,7 @@ def test_bastion_network_check_uses_tcp_not_icmp():
             "ocp_version": "4.20",
             "common_password": "testpass",
             "auto_install_ocp": True,
+            "install_via": "bastion",
             "resolved": resolved,
         },
     )

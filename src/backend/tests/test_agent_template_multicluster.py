@@ -413,6 +413,7 @@ def test_customize_topology_single_cluster_bakes_bastion():
         "pull_secret_json": '{"auths":{}}',
         "ssh_pub_key": "ssh-rsa x",
         "auto_install_ocp": True,
+        "install_via": "bastion",
         "resolved": {},
     }
     customize_topology(topo, "ocp-sno", config)
@@ -494,3 +495,168 @@ def test_customize_topology_shared_network_merges_dns():
     assert "api.dev.ocp.local" in names
     assert "api-int.dev.ocp.local" in names
     assert ".apps.dev.ocp.local" in names
+
+
+# ---------------------------------------------------------------------------
+# Plan 4b Task 3: bastion bake decided by install_via (not cluster count)
+# ---------------------------------------------------------------------------
+
+
+def _single_cluster_topo_with_bastion():
+    """One-cluster (clusters key present) topology with a bastion + one CP.
+
+    Lets tests inspect both the bastion bake (ciUserData) AND the per-cluster
+    ``_generated*`` configs stored on ``topology["clusters"][0]``.
+    """
+    return {
+        "nodes": [
+            {
+                "id": "net",
+                "type": "networkNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "subtype": "network",
+                    "cidr": "10.0.0.0/24",
+                    "networkType": "cluster",
+                },
+            },
+            {
+                "id": "bastion",
+                "type": "vmNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "name": "bastion",
+                    "os": "rhel",
+                    "diskControllers": [],
+                    "nics": [
+                        {"id": "n1", "mac": "52:54:00:00:00:01", "ip": "10.0.0.50"},
+                        {"id": "n2", "mac": "52:54:00:00:00:02"},
+                    ],
+                },
+            },
+            {
+                "id": "cp0",
+                "type": "vmNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "name": "cp0",
+                    "os": "rhcos",
+                    "clusterId": "ocp",
+                    "tags": {"AnsibleGroup": "controllers"},
+                    "bmcEnabled": True,
+                    "bmcIp": "192.168.100.10",
+                    "nics": [
+                        {"id": "n3", "mac": "52:54:00:00:00:03", "ip": "10.0.0.10"}
+                    ],
+                    "diskControllers": [],
+                },
+            },
+        ],
+        "edges": [],
+        "clusters": [
+            {
+                "id": "ocp",
+                "name": "ocp",
+                "type": "sno",
+                "controlPlane": 1,
+                "workers": 0,
+                "baseDomain": "ocp.local",
+                "apiVip": "",
+                "ingressVip": "",
+            }
+        ],
+    }
+
+
+def _two_clusters_def():
+    return [
+        {
+            "id": "prod",
+            "name": "prod",
+            "type": "standard",
+            "controlPlane": 3,
+            "workers": 2,
+            "baseDomain": "ocp.local",
+            "apiVip": "10.0.0.10",
+            "ingressVip": "10.0.0.11",
+        },
+        {
+            "id": "dev",
+            "name": "dev",
+            "type": "sno",
+            "controlPlane": 1,
+            "workers": 0,
+            "baseDomain": "dev.local",
+            "apiVip": "",
+            "ingressVip": "",
+        },
+    ]
+
+
+def _install_via_config(install_via):
+    return {
+        "cluster_name": "ocp",
+        "base_domain": "ocp.local",
+        "ocp_version": "4.20",
+        "common_password": "pw",
+        "pull_secret_json": '{"auths":{}}',
+        "ssh_pub_key": "ssh-rsa x",
+        "auto_install_ocp": True,
+        "install_via": install_via,
+        "resolved": {},
+    }
+
+
+def test_customize_bastion_single_cluster_bakes():
+    """install_via=bastion + single cluster -> bastion cloud-init baked."""
+    from app.services.ocp.agent_template import customize_topology
+
+    topo = _single_cluster_topo_with_bastion()
+    customize_topology(topo, "ocp-sno", _install_via_config("bastion"))
+
+    bastion = next(n for n in topo["nodes"] if n["data"].get("name") == "bastion")
+    assert bastion["data"].get("ciUserData")
+    assert bastion["data"].get("cloudInit") is True
+
+
+def test_customize_pod_single_cluster_no_bake_but_generated():
+    """install_via=pod + single cluster -> NO bastion bake, but _generated*
+    still stored on the cluster for the ops pod."""
+    from app.services.ocp.agent_template import customize_topology
+
+    topo = _single_cluster_topo_with_bastion()
+    customize_topology(topo, "ocp-sno", _install_via_config("pod"))
+
+    bastion = next(n for n in topo["nodes"] if n["data"].get("name") == "bastion")
+    assert not bastion["data"].get("ciUserData")
+    assert bastion["data"].get("cloudInit") is not True
+
+    cluster = topo["clusters"][0]
+    assert cluster["_generatedInstallConfig"]
+    assert cluster["_generatedAgentConfig"]
+
+
+def test_customize_pod_multi_cluster_no_bake_generated_on_all():
+    """install_via=pod + multi cluster -> no bake, _generated* on EVERY cluster."""
+    from app.services.ocp.agent_template import customize_topology
+
+    topo = _two_cluster_topo()
+    topo["clusters"] = _two_clusters_def()
+    customize_topology(topo, "ocp-multi", _install_via_config("pod"))
+
+    for cluster in topo["clusters"]:
+        assert cluster["_generatedInstallConfig"]
+        assert cluster["_generatedAgentConfig"]
+
+
+def test_customize_bastion_multi_cluster_raises():
+    """install_via=bastion + multi cluster -> validation error (a single bastion
+    can't install multiple clusters)."""
+    import pytest
+
+    from app.services.ocp.agent_template import customize_topology
+
+    topo = _two_cluster_topo()
+    topo["clusters"] = _two_clusters_def()
+    with pytest.raises(ValueError):
+        customize_topology(topo, "ocp-multi", _install_via_config("bastion"))
