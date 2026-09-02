@@ -10,6 +10,7 @@ import {
   applyClusterDisks,
   suggestClusterVips,
   vipCollision,
+  clusterBoxSize,
 } from "@/components/canvas/clusterMaterialize";
 import { makeCluster } from "@/components/canvas/clusterFactory";
 
@@ -695,5 +696,140 @@ describe("vipCollision", () => {
     const { nodes: materialized } = reconcileClusterVms(cluster, [node, net]);
 
     expect(vipCollision("10.0.0.250", cluster, materialized)).toBe(false);
+  });
+});
+
+describe("clusterBoxSize", () => {
+  it("returns dimensions that grow with member count", () => {
+    const size1 = clusterBoxSize(1);
+    const size6 = clusterBoxSize(6);
+    expect(size6.width).toBeGreaterThan(size1.width);
+    expect(size6.height).toBeGreaterThan(size1.height);
+  });
+
+  it("returns height > 320 (old fixed height) for 6 members", () => {
+    const size = clusterBoxSize(6);
+    expect(size.height).toBeGreaterThan(320);
+  });
+
+  it("caps columns at 4 per row", () => {
+    const size4 = clusterBoxSize(4);
+    const size5 = clusterBoxSize(5);
+    const size8 = clusterBoxSize(8);
+
+    // 4 members: 1 row of 4
+    // 5 members: 2 rows (4 + 1)
+    // 8 members: 2 rows of 4
+    expect(size4.height).toBeLessThan(size5.height); // 5 adds a row
+    expect(size8.height).toBe(size5.height); // 8 is still 2 rows
+  });
+
+  it("calculates width based on column count", () => {
+    const size1 = clusterBoxSize(1);
+    const size4 = clusterBoxSize(4);
+    const size5 = clusterBoxSize(5);
+
+    // 1 col: 60 + 130 = 190
+    // 4 cols: 60 + 130*4 = 580
+    // 5 cols capped at 4: 60 + 130*4 = 580
+    expect(size1.width).toBeLessThan(size4.width);
+    expect(size4.width).toBe(size5.width); // Both cap at 4 cols
+  });
+});
+
+describe("cluster boundary auto-sizing + member grid reflow", () => {
+  it("sets cluster boundary node style.width/height after reconcileClusterVms", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlane = 2;
+    cluster.workers = 4;
+    const { nodes: materialized } = reconcileClusterVms(cluster, [node]);
+
+    const boundaryNode = materialized.find((n) => n.id === cluster.nodeId)!;
+    const expectedSize = clusterBoxSize(6); // 2 CPs + 4 workers
+    expect(boundaryNode.style?.width).toBe(expectedSize.width);
+    expect(boundaryNode.style?.height).toBe(expectedSize.height);
+  });
+
+  it("member VM cards positioned on grid within boundary (no overflow)", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlane = 6; // Will wrap to 2 rows
+    cluster.workers = 0;
+    const { nodes: materialized } = reconcileClusterVms(cluster, [node]);
+
+    const boundaryNode = materialized.find((n) => n.id === cluster.nodeId)!;
+    const boundaryHeight = (boundaryNode.style?.height as number) || 0;
+    const members = materialized.filter((n) => n.type === "vmNode");
+
+    for (const member of members) {
+      const memberMaxY = member.position.y + 130; // CELL_H = 130
+      expect(memberMaxY).toBeLessThanOrEqual(boundaryHeight);
+    }
+  });
+});
+
+describe("member disk storageNodes hidden flag", () => {
+  it("disk storageNodes have hidden: true but remain in nodes array", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlane = 1;
+    cluster.workers = 0;
+    const { nodes: materialized } = reconcileClusterVms(cluster, [node]);
+
+    const diskNodes = materialized.filter((n) => n.type === "storageNode");
+    expect(diskNodes.length).toBeGreaterThan(0);
+    expect(diskNodes.every((d) => (d as any).hidden === true)).toBe(true);
+  });
+
+  it("disk node count unchanged after applyClusterDisks (hidden flag only)", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlaneDisks = [{ sizeGb: 120, bootable: true }];
+    const { nodes: initial, edges: initialEdges } = reconcileClusterVms(cluster, [node]);
+
+    const diskCountBefore = initial.filter((n) => n.type === "storageNode").length;
+
+    // Apply again (idempotent)
+    const { nodes: result } = applyClusterDisks(cluster, initial, initialEdges);
+    const diskCountAfter = result.filter((n) => n.type === "storageNode").length;
+
+    expect(diskCountAfter).toBe(diskCountBefore);
+    // All disk nodes should still be hidden
+    const diskNodesAfter = result.filter((n) => n.type === "storageNode");
+    expect(diskNodesAfter.every((d) => (d as any).hidden === true)).toBe(true);
+  });
+
+  it("VM card disk summary still renders with hidden disk nodes", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlane = 1;
+    cluster.workers = 0;
+    const { nodes: materialized, edges } = reconcileClusterVms(cluster, [node]);
+
+    // Simulate the VM card's lookup logic from VMNode.tsx lines 140-143
+    const cp = materialized.find((n) => n.data.clusterRole === "control-plane")!;
+    const connectedStorageIds = edges
+      .filter((e) => e.source === cp.id || e.target === cp.id)
+      .map((e) => e.source === cp.id ? e.target : e.source)
+      .filter((nid) => materialized.some((n) => n.id === nid && n.type === "storageNode"));
+
+    // Should find disks even though they are hidden
+    expect(connectedStorageIds.length).toBeGreaterThan(0);
+  });
+
+  it("deploy-facing topology still contains disk nodes + edges", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlane = 2;
+    cluster.workers = 0;
+    const { nodes: materialized, edges } = reconcileClusterVms(cluster, [node]);
+
+    const diskNodes = materialized.filter((n) => n.type === "storageNode");
+    const diskEdges = edges.filter((e) => e.sourceHandle === "right" && e.targetHandle?.startsWith("dp-"));
+
+    expect(diskNodes.length).toBeGreaterThan(0);
+    expect(diskEdges.length).toBeGreaterThan(0);
+
+    // All members should have disk edges
+    const memberIds = materialized.filter((n) => n.type === "vmNode").map((n) => n.id);
+    for (const memberId of memberIds) {
+      const memberDiskEdges = diskEdges.filter((e) => e.target === memberId);
+      expect(memberDiskEdges.length).toBeGreaterThan(0);
+    }
   });
 });

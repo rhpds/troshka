@@ -21,11 +21,28 @@ import { collectUsedIps, listCidrHosts } from "@/lib/dhcpIpAssignment";
  * never touched.
  */
 
-const CHILD_X0 = 30;
-const CHILD_GAP_X = 130;
+// Grid layout constants for member positioning and cluster boundary sizing
+const CELL_W = 130;
+const CELL_H = 130;
+const PAD = 30;
+const HEADER_H = 48;
+const COLS_MAX = 4;
+
+// Legacy constants (used in roleSpecs for backward compat)
 const CP_ROW_Y = 70;
 const WORKER_ROW_Y = 200;
 const MB_PER_GB = 1024;
+
+/**
+ * Calculate the bounding box size for a cluster with N members, positioned on a grid.
+ * Returns width and height (in pixels) to fit members in a capped grid layout.
+ * CPs placed first, then workers, wrapping at COLS_MAX per row.
+ */
+export function clusterBoxSize(count: number): { width: number; height: number } {
+  const cols = Math.max(1, Math.min(COLS_MAX, count));
+  const rows = Math.max(1, Math.ceil(count / cols));
+  return { width: 2 * PAD + cols * CELL_W, height: HEADER_H + PAD + rows * CELL_H };
+}
 
 interface RoleSpec {
   role: "control-plane" | "worker";
@@ -211,6 +228,7 @@ function buildMemberDisks(
       type: "storageNode",
       position: { x: baseX, y: baseY + 60 + i * 40 },
       parentId: cluster.nodeId,
+      hidden: true, // Collapse member disk sub-nodes — keep in data for deploy but hide rendering
       data: { label: `${memberId}-d${i}`, name: `${memberId}-d${i}`, size: spec.sizeGb, format: "qcow2", icon: "🛢" },
     } as Node);
     diskEdges.push({
@@ -238,10 +256,12 @@ function makeMemberNode(
   cluster: ClusterConfig,
   spec: RoleSpec,
   name: string,
-  col: number,
+  gridCol: number,
+  gridRow: number,
 ): { node: Node; extraNodes: Node[]; extraEdges: Edge[] } {
-  const x = CHILD_X0 + col * CHILD_GAP_X;
-  const y = spec.rowY;
+  // Position member on grid within cluster boundary
+  const x = PAD + gridCol * CELL_W;
+  const y = HEADER_H + gridRow * CELL_H;
   const { diskNodes, diskControllers, diskEdges, bootDevices } = buildMemberDisks(spec.role, cluster, name, x, y);
   const { nics, nicEdges } = buildMemberNics(cluster, name);
 
@@ -280,13 +300,21 @@ function addMembers(
   count: number,
 ): { nodes: Node[]; edges: Edge[] } {
   const usedNames = new Set(nodes.map((n) => n.id));
-  const existing = nodes.filter((n) => isMember(n, cluster, spec.role)).length;
+  const allMembers = nodes.filter((n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === cluster.id);
+  const cpMembers = allMembers.filter((n) => memberRole(n) === "control-plane").length;
   const addedNodes: Node[] = [];
   const addedEdges: Edge[] = [];
+
   for (let k = 0; k < count; k += 1) {
     const name = nextFreeName(cluster.id, spec.prefix, usedNames);
     usedNames.add(name);
-    const { node, extraNodes, extraEdges } = makeMemberNode(cluster, spec, name, existing + k);
+
+    // Compute grid position: CPs fill first, then workers wrap on next rows
+    const memberIndex = (spec.role === "control-plane" ? k : cpMembers + k);
+    const gridCol = memberIndex % COLS_MAX;
+    const gridRow = Math.floor(memberIndex / COLS_MAX);
+
+    const { node, extraNodes, extraEdges } = makeMemberNode(cluster, spec, name, gridCol, gridRow);
     addedNodes.push(node);
     addedNodes.push(...extraNodes);
     addedEdges.push(...extraEdges);
@@ -510,6 +538,7 @@ export function applyClusterNetworks(
  * plane and `workers` worker member VMs, each with their disk storageNodes + edges.
  * Pure and idempotent: missing members are added, generated surplus is removed,
  * user-customized members are kept. Also returns disk edges needed to wire disks.
+ * Updates the cluster boundary node's style.width/height to auto-fit members on grid.
  */
 export function reconcileClusterVms(
   cluster: ClusterConfig,
@@ -522,6 +551,19 @@ export function reconcileClusterVms(
     resultNodes = nextNodes;
     resultEdges = nextEdges;
   }
+
+  // Update cluster boundary node size to fit all members on the grid
+  const memberCount = (cluster.controlPlane ?? 0) + (cluster.workers ?? 0);
+  const { width, height } = clusterBoxSize(memberCount);
+  resultNodes = resultNodes.map((n) =>
+    n.id === cluster.nodeId
+      ? {
+          ...n,
+          style: { ...n.style, width, height },
+        }
+      : n,
+  );
+
   return { nodes: resultNodes, edges: resultEdges };
 }
 
@@ -638,6 +680,7 @@ export function applyClusterDisks(
         type: "storageNode",
         position: { x: baseX, y: baseY + 60 + i * 40 },
         parentId: cluster.nodeId,
+        hidden: true, // Collapse member disk sub-nodes
         data: { label: `${member.id}-d${i}`, name: `${member.id}-d${i}`, size: spec.sizeGb, format: "qcow2", icon: "🛢" },
       } as Node);
 
