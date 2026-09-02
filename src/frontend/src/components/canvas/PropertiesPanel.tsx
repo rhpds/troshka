@@ -4626,11 +4626,12 @@ export default function PropertiesPanel() {
           useCanvasStore.getState().pushHistory();
           useCanvasStore.setState({ nodes: nextNodes, edges: nextEdges });
         };
-        // Get available networks from canvas (networkNodes with subtype !== "bmc")
+        // Get available networks from canvas (networkNodes with subtype === "network", excluding bmc)
         const availableNetworks = nodes
           .filter((n) => {
             const d = n.data as Record<string, unknown>;
-            return n.type === "networkNode" && d?.subtype !== "bmc";
+            const isBmc = d?.networkType === "bmc";
+            return n.type === "networkNode" && d?.subtype === "network" && !isBmc;
           })
           .map((n) => {
             const d = n.data as Record<string, unknown>;

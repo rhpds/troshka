@@ -1,7 +1,7 @@
 "use client";
 
 import React, { memo } from "react";
-import { NodeResizer, type NodeProps } from "@xyflow/react";
+import { Handle, NodeResizer, Position, type NodeProps } from "@xyflow/react";
 import type { ClusterNodeData } from "@/stores/canvasStore";
 
 function ClusterNodeComponent({ data, selected }: NodeProps) {
@@ -72,6 +72,36 @@ function ClusterNodeComponent({ data, selected }: NodeProps) {
           {d.type} · {d.controlPlane}cp/{d.workers}wrk
         </span>
       </div>
+
+      {/* Network anchor handles (top + bottom, like VMs) — target handles for network connections */}
+      <Handle
+        type="target"
+        position={Position.Top}
+        id="cluster-net-top"
+        className="canvas-handle canvas-handle-network"
+        style={{
+          pointerEvents: "all",
+          background: "rgba(34, 211, 238, 0.7)",
+          border: "1px solid rgba(34, 211, 238, 0.9)",
+          width: 10,
+          height: 10,
+          borderRadius: "50%",
+        }}
+      />
+      <Handle
+        type="target"
+        position={Position.Bottom}
+        id="cluster-net-bottom"
+        className="canvas-handle canvas-handle-network"
+        style={{
+          pointerEvents: "all",
+          background: "rgba(34, 211, 238, 0.7)",
+          border: "1px solid rgba(34, 211, 238, 0.9)",
+          width: 10,
+          height: 10,
+          borderRadius: "50%",
+        }}
+      />
     </div>
   );
 }

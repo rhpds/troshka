@@ -27,7 +27,7 @@ import DuplicateVMModal from "./DuplicateVMModal";
 import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM } from "@/stores/canvasStore";
 import { makeCluster } from "@/components/canvas/clusterFactory";
 import { resolveMembership, absolutePosition, relativePosition, orderChildAfterParent } from "@/components/canvas/clusterMembership";
-import { assignmentDataPatch, materializeClusterInto } from "@/components/canvas/clusterMaterialize";
+import { assignmentDataPatch, materializeClusterInto, applyClusterNetworks } from "@/components/canvas/clusterMaterialize";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
 import {
   GATEWAY_NETWORK_SOURCE_HANDLE,
@@ -122,8 +122,10 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
     [allEdges, hiddenNodeIds],
   );
   const onNodesChange = useCanvasStore((s) => s.onNodesChange);
-  const onEdgesChange = useCanvasStore((s) => s.onEdgesChange);
-  const onConnect = useCanvasStore((s) => s.onConnect);
+  const storeOnEdgesChange = useCanvasStore((s) => s.onEdgesChange);
+  const storeOnConnect = useCanvasStore((s) => s.onConnect);
+  const clusters = useCanvasStore((s) => s.clusters);
+  const updateCluster = useCanvasStore((s) => s.updateCluster);
   const setSelectedNode = useCanvasStore((s) => s.setSelectedNode);
   const addNode = useCanvasStore((s) => s.addNode);
   const addCluster = useCanvasStore((s) => s.addCluster);
@@ -136,6 +138,95 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
   const unhideAll = useCanvasStore((s) => s.unhideAll);
   const showMinimap = useCanvasStore((s) => s.showMinimap);
   const panMode = useCanvasStore((s) => s.panMode);
+
+  // Wrapper for onConnect to handle cluster network anchors
+  const onConnect = useCallback(
+    (connection: Parameters<typeof storeOnConnect>[0]) => {
+      const sourceNode = allNodes.find((n) => n.id === connection.source);
+      const targetNode = allNodes.find((n) => n.id === connection.target);
+      if (!sourceNode || !targetNode) return;
+
+      // Cluster network anchor: network → cluster-net-top/bottom
+      if (
+        targetNode.type === "clusterNode" &&
+        (connection.targetHandle?.startsWith("cluster-net-") ?? false)
+      ) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const sSub = (sourceNode.data as Record<string, any>).subtype as string | undefined;
+        const sIsNetwork = sourceNode.type === "networkNode" && sSub === "network";
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const isBmc = sourceNode.type === "networkNode" && (sourceNode.data as Record<string, any>).networkType === "bmc";
+        if (!sIsNetwork || isBmc) {
+          return; // Reject non-network, non-network subtypes, and BMC networks
+        }
+        // Add network to cluster's networkIds
+        const clusterId = targetNode.id;
+        const networkId = sourceNode.id;
+        const cluster = clusters.find((c) => c.nodeId === clusterId);
+        if (!cluster) return;
+        const newNetworkIds = [...(cluster.networkIds ?? [])];
+        if (!newNetworkIds.includes(networkId)) {
+          newNetworkIds.push(networkId);
+        }
+        // Update cluster and apply networks to members
+        const updated = { ...cluster, networkIds: newNetworkIds };
+        useCanvasStore.getState().pushHistory();
+        updateCluster(cluster.id, { networkIds: newNetworkIds });
+        const { nodes: nextNodes, edges: nextEdges } = applyClusterNetworks(
+          updated,
+          useCanvasStore.getState().nodes,
+          useCanvasStore.getState().edges,
+        );
+        useCanvasStore.setState({ nodes: nextNodes, edges: nextEdges });
+        return;
+      }
+
+      // Fall back to store onConnect for all other connection types
+      storeOnConnect(connection);
+    },
+    [allNodes, clusters, updateCluster, storeOnConnect],
+  );
+
+  // Wrapper for onEdgesChange to handle cluster network anchor deletion
+  const onEdgesChange = useCallback(
+    (changes: Parameters<typeof storeOnEdgesChange>[0]) => {
+      // Check if any removed edges are cluster network anchors
+      const removedClusterNetEdges = changes
+        .filter((c) => c.type === "remove")
+        .map((c) => {
+          const edge = allEdges.find((e) => e.id === c.id);
+          return edge && edge.targetHandle?.startsWith("cluster-net-") ? edge : null;
+        })
+        .filter((e) => e !== null) as typeof allEdges;
+
+      if (removedClusterNetEdges.length > 0) {
+        // For each removed anchor edge, remove the network from the cluster
+        for (const edge of removedClusterNetEdges) {
+          const targetNode = allNodes.find((n) => n.id === edge.target);
+          if (targetNode?.type === "clusterNode") {
+            const clusterId = targetNode.id;
+            const networkId = edge.source;
+            const cluster = clusters.find((c) => c.nodeId === clusterId);
+            if (cluster) {
+              const newNetworkIds = (cluster.networkIds ?? []).filter((id) => id !== networkId);
+              const updated = { ...cluster, networkIds: newNetworkIds };
+              updateCluster(cluster.id, { networkIds: newNetworkIds });
+              const { nodes: nextNodes, edges: nextEdges } = applyClusterNetworks(
+                updated,
+                useCanvasStore.getState().nodes,
+                useCanvasStore.getState().edges,
+              );
+              useCanvasStore.setState({ nodes: nextNodes, edges: nextEdges });
+            }
+          }
+        }
+      }
+
+      // Fall back to store onEdgesChange for all other changes
+      storeOnEdgesChange(changes);
+    },
+    [allNodes, allEdges, clusters, updateCluster, storeOnEdgesChange],
+  );
 
   const onNodeClick = useCallback(
     (_event: React.MouseEvent, node: Node) => {
@@ -636,6 +727,14 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
       // Network top/bottom handles only for VMs
       if (sIsNetwork && targetNode.type === "vmNode" && !isVmNetHandle(sHandle)) return false;
       if (tIsNetwork && sourceNode.type === "vmNode" && !isVmNetHandle(tHandle)) return false;
+
+      // Cluster network anchor handles: source must be network, target must be clusterNode with cluster-net handle
+      if (sourceNode.type === "clusterNode" && tHandle?.startsWith("cluster-net-")) {
+        return sIsNetwork;
+      }
+      if (targetNode.type === "clusterNode" && sHandle?.startsWith("cluster-net-")) {
+        return tIsNetwork;
+      }
 
       return true;
     },

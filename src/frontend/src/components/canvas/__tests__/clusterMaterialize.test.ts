@@ -953,3 +953,82 @@ describe("member disk storageNodes hidden flag", () => {
     }
   });
 });
+
+describe("Cluster Network Anchors", () => {
+  it("applyClusterNetworks produces hidden per-member NIC edges", () => {
+    const { nodes: members, edges: allEdges } = reconcileClusterVms(cluster, []);
+    const clusterWithNets = { ...cluster, networkIds: ["net-1", "net-2"] } as any;
+    const { nodes, edges } = applyClusterNetworks(clusterWithNets, members, []);
+
+    // Find per-member NIC edges (not anchor edges)
+    const memberNicEdges = edges.filter(
+      (e) => e.id.includes("-nic") && !e.id.includes("-to-cluster")
+    );
+    // All per-member NIC edges should be hidden
+    expect(memberNicEdges.every((e) => e.hidden === true)).toBe(true);
+    // Confirm there are some NIC edges
+    expect(memberNicEdges.length).toBeGreaterThan(0);
+  });
+
+  it("applyClusterNetworks preserves member nics in data even when edges are hidden", () => {
+    const { nodes: members } = reconcileClusterVms(cluster, []);
+    const clusterWithNets = { ...cluster, networkIds: ["net-1", "net-2"] } as any;
+    const { nodes } = applyClusterNetworks(clusterWithNets, members, []);
+
+    // All members should have nics array with 2 NICs (one per network)
+    const memberNodes = nodes.filter((n) => n.type === "vmNode" && (n.data as any).clusterId === "prod");
+    for (const member of memberNodes) {
+      const nics = (member.data as any).nics || [];
+      expect(nics.length).toBe(2);
+      expect(nics[0].name).toBe("eth0");
+      expect(nics[1].name).toBe("eth1");
+    }
+  });
+
+  it("applyClusterNetworks with different network counts updates member NICs", () => {
+    const { nodes: members } = reconcileClusterVms(cluster, []);
+    const clusterWith3Nets = { ...cluster, networkIds: ["net-1", "net-2", "net-3"] } as any;
+    const { nodes } = applyClusterNetworks(clusterWith3Nets, members, []);
+
+    const memberNodes = nodes.filter((n) => n.type === "vmNode" && (n.data as any).clusterId === "prod");
+    for (const member of memberNodes) {
+      const nics = (member.data as any).nics || [];
+      expect(nics.length).toBe(3);
+    }
+  });
+
+  it("applyClusterNetworks preserves existing NIC MACs when networks remain", () => {
+    const { nodes: members } = reconcileClusterVms(cluster, []);
+    const clusterWith2Nets = { ...cluster, networkIds: ["net-1", "net-2"] } as any;
+    const { nodes: nodes1, edges: edges1 } = applyClusterNetworks(clusterWith2Nets, members, []);
+
+    // Extract the first member's NIC MACs
+    const member1 = nodes1.find((n) => n.type === "vmNode" && n.id.startsWith("prod-cp-"));
+    const originalMacs = ((member1?.data as any).nics || []).map((nic: any) => nic.mac);
+
+    // Apply same networks again (should be idempotent)
+    const { nodes: nodes2 } = applyClusterNetworks(clusterWith2Nets, nodes1, edges1);
+    const member2 = nodes2.find((n) => n.id === member1?.id);
+    const newMacs = ((member2?.data as any).nics || []).map((nic: any) => nic.mac);
+
+    // MACs should be identical (idempotent)
+    expect(newMacs).toEqual(originalMacs);
+  });
+
+  it("clusterNetworkIdsFromEdges extracts distinct network ids from NIC edges", () => {
+    const { nodes: members, edges: memberEdges } = reconcileClusterVms(cluster, []);
+    const clusterWithNets = { ...cluster, networkIds: ["net-1", "net-2"] } as any;
+    const { edges } = applyClusterNetworks(clusterWithNets, members, memberEdges);
+
+    // Get member IDs
+    const memberIds = members
+      .filter((n) => n.type === "vmNode" && (n.data as any).clusterId === "prod")
+      .map((n) => n.id);
+
+    // Extract network IDs from edges
+    const extractedIds = clusterNetworkIdsFromEdges("cluster-prod", memberIds, edges);
+
+    // Should return the networks in order (distinct)
+    expect(extractedIds).toEqual(["net-1", "net-2"]);
+  });
+});

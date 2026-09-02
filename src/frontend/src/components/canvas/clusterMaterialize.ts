@@ -159,6 +159,7 @@ function nextFreeName(
  * Build NICs + NIC edges for a cluster member (one NIC per cluster network).
  * Returns nics array and edges wiring each NIC to its network node.
  * First NIC uses VM handle "top" with sourceHandle "bottom"; rest use "bottom" → "top".
+ * NIC edges are hidden: the cluster→network anchor edge is the visible representation.
  */
 function buildMemberNics(
   cluster: ClusterConfig,
@@ -192,6 +193,7 @@ function buildMemberNics(
       targetHandle: `nic-${nic.id}-${vmHandle}`,
       type: "smoothstep",
       animated: true,
+      hidden: true,
       style: {
         stroke: "rgba(34,211,238,0.5)",
         strokeWidth: 2,
@@ -537,6 +539,8 @@ export function applyClusterNetworks(
     );
 
     // Add fresh NIC edges with stable ids (not positional)
+    // Hidden: the cluster→network anchor edge is the visible representation;
+    // per-member NIC edges kept in topology data for deploy but not rendered
     const nicEdges: Edge[] = [];
     for (let i = 0; i < newNics.length; i += 1) {
       const nic = newNics[i];
@@ -553,6 +557,7 @@ export function applyClusterNetworks(
         targetHandle: `nic-${nic.id}-${vmHandle}`,
         type: "smoothstep",
         animated: true,
+        hidden: true,
         style: {
           stroke: "rgba(34,211,238,0.5)",
           strokeWidth: 2,
