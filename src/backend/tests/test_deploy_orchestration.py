@@ -2891,6 +2891,111 @@ class TestDestroyProjectInner:
         mock_delete_record.assert_called_once_with(PROJECT_ID)
 
     @patch(f"{SVC}._delete_project_record")
+    @patch(f"{SVC}._destroy_cleanup_route_access")
+    @patch(f"{SVC}._destroy_cleanup_sg_rules")
+    @patch(f"{SVC}._destroy_troshkad_resources")
+    def test_revokes_ops_pod_key(
+        self, _mock_resources, _mock_sg, _mock_routes, _mock_delete
+    ):
+        """Destroy revokes the project-scoped ops-pod key before teardown."""
+        from app.models.host import Host
+        from app.models.project import Project
+        from app.services.deploy_service import _destroy_project_inner
+
+        host = _make_host()
+        project = _make_project(vni_map={"net1": 100}, topology=_minimal_topology())
+
+        def mock_query(model):
+            mock_q = MagicMock()
+            if model == Project:
+                mock_q.filter_by.return_value.first.return_value = project
+            elif model == Host:
+                mock_q.filter_by.return_value.first.return_value = host
+            mock_q.filter_by.return_value.all.return_value = []
+            return mock_q
+
+        mock_session = MagicMock()
+        mock_session.query.side_effect = mock_query
+
+        ctx = {
+            "project_id": PROJECT_ID,
+            "host_id": HOST_ID,
+            "vni_map": {"net1": 100},
+            "topology": _minimal_topology(),
+        }
+
+        with patch(f"{DB_MOD}.SessionLocal", return_value=mock_session), patch(
+            f"{SVC}._destroy_revoke_ops_pod_key"
+        ) as mock_revoke:
+            _destroy_project_inner(ctx)
+
+        mock_revoke.assert_called_once_with(mock_session, PROJECT_ID)
+
+    def test_destroy_revoke_helper_deactivates_key(self):
+        """_destroy_revoke_ops_pod_key deactivates a live ops-pod key (real DB)."""
+        import uuid
+
+        from app.models.api_key import ApiKey
+        from app.models.project import Project as ProjectModel
+        from app.models.user import User
+        from app.services.deploy_service import _destroy_revoke_ops_pod_key
+        from app.services.ocp.ops_pod_auth import (
+            _ops_pod_key_name,
+            mint_ops_pod_key,
+        )
+        from tests.conftest import TestSession
+
+        db = TestSession()
+        try:
+            owner = User(
+                id=str(uuid.uuid4()),
+                email=f"owner-{uuid.uuid4().hex[:8]}@troshka",
+                display_name="owner",
+                role="user",
+                auth_source="sso",
+            )
+            db.add(owner)
+            db.commit()
+            project = ProjectModel(
+                id=str(uuid.uuid4()),
+                name=f"proj-{uuid.uuid4().hex[:8]}",
+                state="active",
+                owner_id=owner.id,
+            )
+            db.add(project)
+            db.commit()
+
+            mint_ops_pod_key(db, project)
+            active = (
+                db.query(ApiKey)
+                .filter_by(name=_ops_pod_key_name(project.id), is_active=True)
+                .all()
+            )
+            assert len(active) == 1
+
+            _destroy_revoke_ops_pod_key(db, project.id)
+
+            active_after = (
+                db.query(ApiKey)
+                .filter_by(name=_ops_pod_key_name(project.id), is_active=True)
+                .all()
+            )
+            assert active_after == []
+        finally:
+            db.close()
+
+    def test_destroy_revoke_helper_is_best_effort(self):
+        """A revoke failure never propagates out of teardown."""
+        from app.services.deploy_service import _destroy_revoke_ops_pod_key
+
+        with patch(
+            "app.services.ocp.ops_pod_auth.revoke_ops_pod_key",
+            side_effect=RuntimeError("db down"),
+        ):
+            # Must not raise.
+            _destroy_revoke_ops_pod_key(MagicMock(), PROJECT_ID)
+
+    @patch(f"{SVC}._delete_project_record")
     def test_host_not_found_deletes_record(self, mock_delete):
         """Host not found still deletes project record."""
         from app.services.deploy_service import _destroy_project_inner

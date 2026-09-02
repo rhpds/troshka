@@ -8591,6 +8591,30 @@ def _destroy_cleanup_eips(s, project_id):
             logger.warning("Failed to release EIP %s on destroy", eip.public_ip)
 
 
+def _destroy_revoke_ops_pod_key(s, project_id: str) -> None:
+    """Deactivate the project-scoped ops-pod API key on teardown (best-effort).
+
+    Mirrors :func:`_deploy_ops_pod`'s ``mint_ops_pod_key``: once the ops pod is
+    gone its ``trk_`` credential must not outlive it. Idempotent — revoke returns
+    0 when there is no ops-pod key (non-OCP or bastion projects) — and wrapped so
+    a revoke failure never breaks teardown.
+    """
+    from app.services.ocp.ops_pod_auth import revoke_ops_pod_key
+
+    try:
+        revoked = revoke_ops_pod_key(s, project_id)
+        if revoked:
+            logger.debug(
+                "Destroy %s: revoked %d ops-pod key(s)", project_id[:8], revoked
+            )
+    except Exception:
+        logger.debug(
+            "Destroy %s: ops-pod key revoke failed (non-fatal)",
+            project_id[:8],
+            exc_info=True,
+        )
+
+
 def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
     """Orchestrate project destruction by delegating to focused helper functions."""
     from app.core.database import SessionLocal
@@ -8605,6 +8629,10 @@ def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
             if delete_record:
                 _delete_project_record(project_id)
             return
+
+        # Revoke the scoped ops-pod key before any teardown branch (covers the
+        # KubeVirt-native early return below); no-op for non-ops-pod projects.
+        _destroy_revoke_ops_pod_key(s, project_id)
 
         # Multi-host project: delegate to multi-host destroy path
         if project.mesh_subnet_id:
