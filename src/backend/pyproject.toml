@@ -66,6 +66,12 @@ ignore = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "live_env: requires a running Troshka instance (TROSHKA_LIVE_URL)",
+    "live_troshkad: requires a troshkad/libvirt host",
+    "live_kubevirt: requires a kubevirt-cluster host",
+    "tier2: slow real OCP install (~30-60 min)",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
