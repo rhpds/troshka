@@ -6,6 +6,9 @@ is the gate before trusting the pod path in production. Run it on a real troshka
 KubeVirt (`kubevirt-cluster`) host, with the published EE image
 (`quay.io/redhat-gpte/troshka-ops-pod:latest`, CI-built) available.
 
+> **Automated harness:** `src/backend/tests/live/` implements this checklist as pytest live_env tests
+> (`pytest tests/live -m "live_env [and tier2]"`). See `src/backend/tests/live/README.md`.
+
 **Scope reminder:** the bastion path is RETAINED, not removed. `install_via: bastion` must remain
 byte-identical to pre-Plan-4b behavior; `install_via: pod` is the new default and applies to ALL host
 types (no KubeVirt→bastion fallback — parity landed in Tasks 8b/8c).
