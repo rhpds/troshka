@@ -19,6 +19,7 @@ import VMNode from "./nodes/VMNode";
 import NetworkNode from "./nodes/NetworkNode";
 import StorageNode from "./nodes/StorageNode";
 import { ContainerNode } from "./nodes/ContainerNode";
+import ClusterNode from "./nodes/ClusterNode";
 import CanvasToolbar from "./CanvasToolbar";
 import NodeContextMenu from "./NodeContextMenu";
 import EdgeContextMenu from "./EdgeContextMenu";
@@ -54,6 +55,7 @@ const nodeTypes = {
   networkNode: NetworkNode,
   storageNode: StorageNode,
   containerNode: ContainerNode,
+  clusterNode: ClusterNode,
 };
 
 interface ContextMenuState {
