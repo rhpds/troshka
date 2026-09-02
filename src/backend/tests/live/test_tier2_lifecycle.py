@@ -4,7 +4,7 @@ import time
 
 import pytest
 from live_api import poll_ocp
-from live_hostcmd import host_ssh
+from live_hostcmd import host_podman
 from test_tier1_ops_pod import _wait_ops_pod_troshkad
 
 
@@ -22,7 +22,7 @@ def test_idempotent_restart_skips_completed_cluster(
     # Let the install get underway, then kill the ops pod; restart_policy=always
     # brings it back and the per-cluster kubeconfig skip-guard must avoid a rerun.
     time.sleep(300)
-    host_ssh(live_config.troshkad_host, "podman", "restart", name)
+    host_podman(live_config.troshkad_host, "restart", name)
     final = poll_ocp(
         client,
         pid,

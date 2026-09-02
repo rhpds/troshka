@@ -17,6 +17,15 @@ def test_host_ssh_builds_command():
     assert argv[1:] == ["a1b2", "podman", "ps"]
 
 
+def test_host_podman_prepends_sudo():
+    with patch("live_hostcmd.subprocess.run", return_value=_ok("ok")) as run:
+        out = hc.host_podman("a1b2", "ps", "--format", "{{.Names}}")
+    assert out == "ok"
+    argv = run.call_args[0][0]
+    assert argv[0].endswith("scripts/host-ssh.sh")
+    assert argv[1:] == ["a1b2", "sudo", "podman", "ps", "--format", "{{.Names}}"]
+
+
 def test_oc_injects_kubeconfig():
     with patch("live_hostcmd.subprocess.run", return_value=_ok("pods")) as run:
         hc.oc("get", "pod", kubeconfig="/tmp/kc")

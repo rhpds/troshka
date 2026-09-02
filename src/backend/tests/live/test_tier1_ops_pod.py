@@ -7,7 +7,7 @@ TROSHKA_LIVE_* they are skipped by the conftest collection guard.
 import time
 
 import pytest
-from live_hostcmd import host_ssh, oc
+from live_hostcmd import HostCmdError, host_podman, oc
 
 SECRET_MARKERS = ("BEGIN CERTIFICATE", "pullSecret", '"auth"', "-----BEGIN")
 
@@ -20,7 +20,11 @@ def _wait_ops_pod_troshkad(cfg, pid, timeout=900):
     name = _ops_container(pid)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        out = host_ssh(cfg.troshkad_host, "podman", "ps", "--format", "{{.Names}}")
+        try:
+            out = host_podman(cfg.troshkad_host, "ps", "--format", "{{.Names}}")
+        except HostCmdError:
+            time.sleep(15)
+            continue
         if any(name in line for line in out.splitlines()):
             return name
         time.sleep(15)
@@ -32,16 +36,20 @@ def _wait_ops_pod_kubevirt(cfg, pid, timeout=900):
     ns = f"troshka-{pid[:8]}"
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        out = oc(
-            "get",
-            "pod",
-            name,
-            "-n",
-            ns,
-            "--no-headers",
-            "--ignore-not-found",
-            kubeconfig=cfg.kubeconfig,
-        )
+        try:
+            out = oc(
+                "get",
+                "pod",
+                name,
+                "-n",
+                ns,
+                "--no-headers",
+                "--ignore-not-found",
+                kubeconfig=cfg.kubeconfig,
+            )
+        except HostCmdError:
+            time.sleep(15)
+            continue
         if name in out:
             return name, ns
         time.sleep(15)
@@ -58,7 +66,7 @@ def test_troshkad_ops_pod_created_and_running(
         template_id=ocp_template, name="live-t1-troshkad", host_id=host_id
     )
     name = _wait_ops_pod_troshkad(live_config, pid)
-    inspect = host_ssh(live_config.troshkad_host, "podman", "inspect", name)
+    inspect = host_podman(live_config.troshkad_host, "inspect", name)
     assert '"Running": true' in inspect or '"Status": "running"' in inspect
 
 
@@ -72,9 +80,8 @@ def test_troshkad_no_secret_in_argv(
         template_id=ocp_template, name="live-t1-nosecret", host_id=host_id
     )
     name = _wait_ops_pod_troshkad(live_config, pid)
-    inspect = host_ssh(
+    inspect = host_podman(
         live_config.troshkad_host,
-        "podman",
         "inspect",
         "--format",
         "{{.Config.CreateCommand}} {{.Args}} {{.Config.Cmd}}",

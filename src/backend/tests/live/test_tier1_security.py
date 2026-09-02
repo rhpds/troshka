@@ -1,7 +1,7 @@
 """Tier-1 security: scoped ops-pod key least-privilege, active-then-revoked."""
 
 import pytest
-from live_hostcmd import host_ssh, ops_pod_apikey_row
+from live_hostcmd import host_podman, ops_pod_apikey_row
 from live_scopedkey import client_for_key, scoped_key_from_pod
 from test_tier1_ops_pod import _wait_ops_pod_kubevirt, _wait_ops_pod_troshkad
 
@@ -83,7 +83,5 @@ def test_cancel_deletes_ops_pod(
         200,
         204,
     )
-    out = host_ssh(
-        live_config.troshkad_host, "podman", "ps", "-a", "--format", "{{.Names}}"
-    )
+    out = host_podman(live_config.troshkad_host, "ps", "-a", "--format", "{{.Names}}")
     assert name not in out.split(), f"ops pod {name} still present after undeploy"

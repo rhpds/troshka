@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from live_api import LiveClient
-from live_hostcmd import host_ssh, oc
+from live_hostcmd import host_podman, oc
 
 _ENV_VAR = "TROSHKA_API_KEY"
 
@@ -28,9 +28,7 @@ def scoped_key_from_pod(cfg, pid: str, provider: str) -> str:
             kubeconfig=cfg.kubeconfig,
         )
     else:
-        out = host_ssh(
-            cfg.troshkad_host, "podman", "exec", container, "printenv", _ENV_VAR
-        )
+        out = host_podman(cfg.troshkad_host, "exec", container, "printenv", _ENV_VAR)
     return out.strip().splitlines()[-1].strip()
 
 

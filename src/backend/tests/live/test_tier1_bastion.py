@@ -3,7 +3,7 @@
 import time
 
 import pytest
-from live_hostcmd import host_ssh
+from live_hostcmd import host_podman
 
 
 @pytest.mark.live_env
@@ -22,8 +22,8 @@ def test_bastion_project_creates_no_ops_pod(
     # Give the deploy time to reach VM-start; the bastion path must never create
     # an ops pod. Sample a few times to be sure it doesn't appear.
     for _ in range(8):
-        out = host_ssh(
-            live_config.troshkad_host, "podman", "ps", "-a", "--format", "{{.Names}}"
+        out = host_podman(
+            live_config.troshkad_host, "ps", "-a", "--format", "{{.Names}}"
         )
         assert ops_name not in out.split(), "bastion project must not create an ops pod"
         time.sleep(15)

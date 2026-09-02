@@ -27,6 +27,15 @@ def host_ssh(prefix: str, *cmd: str) -> str:
     return _run([_HOST_SSH, prefix, *cmd])
 
 
+def host_podman(prefix: str, *args: str) -> str:
+    """Run ``sudo podman <args>`` on a troshkad host.
+
+    troshkad runs containers with rootful podman (as root), so an SSH session
+    as the unprivileged login user only sees them via sudo.
+    """
+    return host_ssh(prefix, "sudo", "podman", *args)
+
+
 def oc(*args: str, kubeconfig: str) -> str:
     return _run(["oc", f"--kubeconfig={kubeconfig}", *args])
 
