@@ -326,28 +326,45 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
     raise HTTPException(status_code=401, detail="Not authenticated")
 
 
-def enforce_project_scope(perm: str):
-    """Dependency factory enforcing scoped-API-key limits on a project route.
+# Route name -> permission a project-scoped API key must hold to reach it.
+# This is an explicit ALLOWLIST: any projects route NOT listed here is denied
+# for scoped keys (default-deny / least-privilege). Extend as the ops/console
+# pod needs more routes (e.g. Plan 6 file/exec-adjacent endpoints).
+_SCOPED_KEY_ROUTE_ALLOWLIST: dict[str, str] = {
+    "get_project": "topology:read",
+    "vm_exec": "vm:exec",
+}
 
-    If the request authenticated via a project-scoped API key, the key's
-    ``project_id`` must match the route's ``{project_id}`` path param AND the
-    key must grant ``perm`` — otherwise 403. For unscoped keys, JWT, OAuth, or
-    dev auth (no scoped key on ``request.state``), this is a no-op so the
-    existing owner/role/dev checks continue to govern access unchanged.
+
+def scoped_key_router_guard(request: Request, _user=Depends(get_current_user)):
+    """Default-deny gate for project-scoped API keys on the projects router.
+
+    Unscoped keys, JWT, OAuth, and dev auth (no scoped key on ``request.state``)
+    are unaffected — this is a no-op so existing owner/role/dev checks continue
+    to govern access unchanged.
+
+    A project-scoped key may only reach routes in
+    ``_SCOPED_KEY_ROUTE_ALLOWLIST``, only for its own ``project_id``, and only
+    with the required permission; every other projects route returns 403. The
+    ``_user`` param exists solely to order this after ``get_current_user`` (which
+    stashes the matched key on ``request.state``).
     """
-
-    def dependency(request: Request, user=Depends(get_current_user)):
-        api_key = getattr(request.state, "api_key", None)
-        if api_key is None or not api_key.is_scoped:
-            return
-        route_project_id = request.path_params.get("project_id")
-        if api_key.project_id != route_project_id or not api_key.has_scope(perm):
-            raise HTTPException(
-                status_code=403,
-                detail="API key is not authorized for this project or action",
-            )
-
-    return dependency
+    api_key = getattr(request.state, "api_key", None)
+    if api_key is None or not api_key.is_scoped:
+        return
+    route = request.scope.get("route")
+    route_name: str = getattr(route, "name", "") or ""
+    perm = _SCOPED_KEY_ROUTE_ALLOWLIST.get(route_name)
+    if perm is None:
+        raise HTTPException(
+            status_code=403, detail="API key is not authorized for this action"
+        )
+    route_project_id = request.path_params.get("project_id")
+    if api_key.project_id != route_project_id or not api_key.has_scope(perm):
+        raise HTTPException(
+            status_code=403,
+            detail="API key is not authorized for this project or action",
+        )
 
 
 def require_role(min_role: str):

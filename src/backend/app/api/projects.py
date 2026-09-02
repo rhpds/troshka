@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
-from app.core.auth import enforce_project_scope, get_current_user, require_role
+from app.core.auth import get_current_user, require_role, scoped_key_router_guard
 from app.core.database import get_db
 from app.core.logging_utils import sanitize_log
 from app.models.host import Host
@@ -69,7 +69,11 @@ from app.services.troshkad_client import (
 )
 from app.services.ws_pubsub import notify_project
 
-router = APIRouter(prefix="/projects", tags=["projects"])
+router = APIRouter(
+    prefix="/projects",
+    tags=["projects"],
+    dependencies=[Depends(scoped_key_router_guard)],
+)
 
 _VMS_START_PATH = "/vms/start"
 _FILES_REMOVE_PATH = "/files/remove"
@@ -1034,11 +1038,7 @@ def _migrate_response_clusters(resp: dict) -> None:
     resp["topology"] = migrate_topology_clusters(copy.deepcopy(topo))
 
 
-@router.get(
-    "/{project_id}",
-    responses={403: {}, 404: {}},
-    dependencies=[Depends(enforce_project_scope("topology:read"))],
-)
+@router.get("/{project_id}", responses={403: {}, 404: {}})
 def get_project(
     project_id: str,
     user: CurrentUser,
@@ -2857,7 +2857,6 @@ def _resolve_exec_params(body: dict, vm_node: dict | None) -> dict:
 @router.post(
     "/{project_id}/vms/{vm_id}/exec",
     responses={400: {}, 403: {}, 404: {}, 409: {}, 503: {}, 507: {}},
-    dependencies=[Depends(enforce_project_scope("vm:exec"))],
 )
 def vm_exec(
     project_id: str,

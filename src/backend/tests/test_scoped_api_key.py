@@ -10,7 +10,7 @@ import uuid
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from app.core.auth import enforce_project_scope
+from app.core.auth import scoped_key_router_guard
 from app.core.database import get_db
 from app.main import app
 from app.models.api_key import ApiKey, generate_api_key, hash_key
@@ -68,56 +68,71 @@ def test_scoped_key_with_none_scopes_grants_nothing():
 
 
 # ---------------------------------------------------------------------------
-# enforce_project_scope — unit tests against a fake Request
+# scoped_key_router_guard — unit tests against a fake Request
 # ---------------------------------------------------------------------------
 class _FakeState:
     def __init__(self, api_key):
         self.api_key = api_key
 
 
+class _FakeRoute:
+    def __init__(self, name):
+        self.name = name
+
+
 class _FakeRequest:
-    def __init__(self, api_key, project_id):
+    def __init__(self, api_key, project_id, route_name):
         self.state = _FakeState(api_key)
         self.path_params = {"project_id": project_id}
+        self.scope = {"route": _FakeRoute(route_name)}
 
 
-def _run_scope(perm, api_key, route_project_id):
-    dep = enforce_project_scope(perm)
-    req = _FakeRequest(api_key, route_project_id)
-    # user arg is unused by the dependency body; pass a sentinel.
-    return dep(req, user=object())
+def _run_guard(api_key, route_project_id, route_name):
+    req = _FakeRequest(api_key, route_project_id, route_name)
+    # _user arg is unused by the guard body; pass a sentinel.
+    return scoped_key_router_guard(req, _user=object())
 
 
-def test_enforce_scope_noop_when_no_api_key():
+def test_guard_noop_when_no_api_key():
     """JWT/dev auth (no api_key on request.state) is a pure no-op."""
-    assert _run_scope("topology:read", None, "pA") is None
+    assert _run_guard(None, "pA", "get_project") is None
 
 
-def test_enforce_scope_noop_for_unscoped_key():
+def test_guard_noop_for_unscoped_key():
     """Unscoped (full-access) keys bypass scope enforcement entirely."""
     key = _make_key(project_id=None, scopes=None)
-    assert _run_scope("vm:exec", key, "pA") is None
+    assert _run_guard(key, "pA", "delete_project") is None
 
 
-def test_enforce_scope_allows_matching_project_and_perm():
+def test_guard_allows_allowlisted_route_with_matching_project_and_perm():
     key = _make_key(project_id="pA", scopes=["topology:read", "vm:exec"])
-    assert _run_scope("topology:read", key, "pA") is None
-    assert _run_scope("vm:exec", key, "pA") is None
+    assert _run_guard(key, "pA", "get_project") is None
+    assert _run_guard(key, "pA", "vm_exec") is None
 
 
-def test_enforce_scope_blocks_wrong_project():
+def test_guard_default_denies_unlisted_route():
+    """A route not in the allowlist is 403 even with matching project."""
+    key = _make_key(project_id="pA", scopes=["topology:read", "vm:exec"])
+    try:
+        _run_guard(key, "pA", "delete_project")
+        raise AssertionError("expected HTTPException for un-allowlisted route")
+    except HTTPException as exc:
+        assert exc.status_code == 403
+
+
+def test_guard_blocks_wrong_project():
     key = _make_key(project_id="pA", scopes=["topology:read"])
     try:
-        _run_scope("topology:read", key, "pB")
+        _run_guard(key, "pB", "get_project")
         raise AssertionError("expected HTTPException for cross-project access")
     except HTTPException as exc:
         assert exc.status_code == 403
 
 
-def test_enforce_scope_blocks_missing_perm():
+def test_guard_blocks_missing_perm():
     key = _make_key(project_id="pA", scopes=["topology:read"])
     try:
-        _run_scope("vm:exec", key, "pA")
+        _run_guard(key, "pA", "vm_exec")
         raise AssertionError("expected HTTPException for missing permission")
     except HTTPException as exc:
         assert exc.status_code == 403
@@ -235,6 +250,27 @@ def test_scoped_key_with_exec_perm_passes_scope_check():
     assert resp.status_code != 403
 
 
+def test_scoped_key_default_denied_on_unlisted_routes():
+    """Default-deny: a scoped key is 403 on any route not in the allowlist,
+    even routes its owner would normally pass (kubeconfig exfil, delete, deploy).
+    """
+    owner = _make_owner()
+    pid = _make_project(owner, state="active")
+    # Grant BOTH allowlisted perms to prove the block is route-based, not perm-based.
+    raw = _make_db_key(owner, project_id=pid, scopes=["topology:read", "vm:exec"])
+    h = _auth(raw)
+    assert (
+        client.get(f"/api/v1/projects/{pid}/kubeconfig", headers=h).status_code == 403
+    )
+    assert client.delete(f"/api/v1/projects/{pid}", headers=h).status_code == 403
+    assert (
+        client.post(f"/api/v1/projects/{pid}/deploy", headers=h, json={}).status_code
+        == 403
+    )
+    # Sanity: the allowlisted read still works for the same key.
+    assert client.get(f"/api/v1/projects/{pid}", headers=h).status_code == 200
+
+
 def test_unscoped_key_has_full_access():
     """An unscoped key behaves exactly as today: full access to the owner's projects."""
     owner = _make_owner()
@@ -246,4 +282,11 @@ def test_unscoped_key_has_full_access():
     )
     assert (
         client.get(f"/api/v1/projects/{pid_b}", headers=_auth(raw)).status_code == 200
+    )
+    # Unscoped key reaches an un-allowlisted route unchanged (kubeconfig → not 403).
+    assert (
+        client.get(
+            f"/api/v1/projects/{pid_a}/kubeconfig", headers=_auth(raw)
+        ).status_code
+        != 403
     )
