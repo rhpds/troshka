@@ -4016,39 +4016,56 @@ def _ocp_topology(n_clusters):
 
 
 class TestShouldUseOpsPod:
-    """Gating logic for the ops-pod install path."""
+    """Gating logic for the ops-pod install path.
+
+    Plan 4b: the selector is now per-PROJECT — it returns True for an OCP
+    project iff its persisted ``ocpInstallVia`` resolves to "pod" (the default),
+    on ALL host types. "bastion" and non-OCP projects use the bastion path.
+    """
 
     def test_non_ocp_project_never_uses_ops_pod(self):
         from app.services.deploy_service import _should_use_ops_pod
 
-        assert _should_use_ops_pod(_minimal_topology()) is False
+        # No ``clusters`` -> not an OCP project, even if a value leaks in.
+        topo = _minimal_topology()
+        topo["ocpInstallVia"] = "pod"
+        assert _should_use_ops_pod(topo) is False
 
-    @patch(f"{SVC}._ocp_install_via_pod", return_value=False)
-    def test_multicluster_flag_off_uses_bastion(self, _flag):
+    def test_single_cluster_pod_uses_ops_pod(self):
         from app.services.deploy_service import _should_use_ops_pod
 
-        # Two clusters + flag off -> bastion path (no ops pod). The flag alone
-        # gates the ops-pod install; multi-cluster no longer auto-triggers it.
-        assert _should_use_ops_pod(_ocp_topology(2)) is False
+        topo = _ocp_topology(1)
+        topo["ocpInstallVia"] = "pod"
+        assert _should_use_ops_pod(topo) is True
 
-    @patch(f"{SVC}._ocp_install_via_pod", return_value=False)
-    def test_single_cluster_flag_off_uses_bastion(self, _flag):
+    def test_multicluster_pod_uses_ops_pod(self):
         from app.services.deploy_service import _should_use_ops_pod
 
-        # One cluster + flag off -> bastion path (no ops pod).
-        assert _should_use_ops_pod(_ocp_topology(1)) is False
+        topo = _ocp_topology(2)
+        topo["ocpInstallVia"] = "pod"
+        assert _should_use_ops_pod(topo) is True
 
-    @patch(f"{SVC}._ocp_install_via_pod", return_value=True)
-    def test_single_cluster_flag_on_uses_ops_pod(self, _flag):
+    def test_single_cluster_bastion_uses_bastion(self):
         from app.services.deploy_service import _should_use_ops_pod
 
-        assert _should_use_ops_pod(_ocp_topology(1)) is True
+        topo = _ocp_topology(1)
+        topo["ocpInstallVia"] = "bastion"
+        assert _should_use_ops_pod(topo) is False
 
-    @patch(f"{SVC}._ocp_install_via_pod", return_value=True)
-    def test_multicluster_flag_on_uses_ops_pod(self, _flag):
+    def test_multicluster_bastion_uses_bastion(self):
         from app.services.deploy_service import _should_use_ops_pod
 
-        assert _should_use_ops_pod(_ocp_topology(2)) is True
+        topo = _ocp_topology(2)
+        topo["ocpInstallVia"] = "bastion"
+        assert _should_use_ops_pod(topo) is False
+
+    def test_unset_defaults_to_pod(self):
+        from app.services.deploy_service import _should_use_ops_pod
+
+        # No ``ocpInstallVia`` on the topology -> config default "pod" -> ops pod.
+        topo = _ocp_topology(1)
+        topo.pop("ocpInstallVia", None)
+        assert _should_use_ops_pod(topo) is True
 
 
 class TestOpsPodCreateParams:

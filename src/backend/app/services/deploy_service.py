@@ -1800,17 +1800,6 @@ def _ocp_clusters(topology) -> list:
     return (topology or {}).get("clusters") or []
 
 
-def _ocp_install_via_pod() -> bool:
-    """Config flag `ocp.install_via_pod` gating the ops-pod install (default False)."""
-    try:
-        from app.core.config import config as app_config
-
-        ocp_cfg = getattr(app_config, "ocp", None)
-        return bool(getattr(ocp_cfg, "install_via_pod", False)) if ocp_cfg else False
-    except Exception:
-        return False
-
-
 def _ops_pod_api_url() -> str:
     """Public Troshka API URL the ops pod calls back to (from `app.external_url`)."""
     try:
@@ -1825,16 +1814,18 @@ def _ops_pod_api_url() -> str:
 def _should_use_ops_pod(topology) -> bool:
     """True when the deploy should create the ops pod instead of the bastion.
 
-    OCP projects use the ops pod only when the ``ocp.install_via_pod`` flag is
-    on — for single- AND multi-cluster projects alike. With the flag off the
-    bastion path stays the default (the ops-pod install is unmonitored and
-    non-idempotent, so it is not enabled automatically until Plan 4b).
-    Non-OCP projects (no ``clusters``) never do.
+    Plan 4b: this is now a per-PROJECT choice. An OCP project (one with
+    ``clusters``) uses the ops pod iff its persisted ``ocpInstallVia`` resolves
+    to "pod" (the config-backed default) — for single- AND multi-cluster
+    projects alike, on ALL host types (troshkad + kubevirt). "bastion" projects
+    and non-OCP projects (no ``clusters``) use the bastion path.
     """
+    from app.services.template_loader import ocp_install_via
+
     clusters = _ocp_clusters(topology)
     if not clusters:
         return False
-    return _ocp_install_via_pod()
+    return ocp_install_via(topology) == "pod"
 
 
 def _ops_pod_workdir_lines(clusters, workdir, pull_secret_json) -> list[str]:
