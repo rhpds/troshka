@@ -594,7 +594,6 @@ export function applyClusterDisks(
 
   // For each member, rebuild disks to match cluster disk specs
   for (const member of allMembers) {
-    const memberData = member.data as Record<string, unknown>;
     const role = memberRole(member);
     if (!role) continue;
 
@@ -677,7 +676,8 @@ export function applyClusterDisks(
     resultEdges = resultEdges.filter(
       (e) =>
         !(e.target === member.id && (e.targetHandle?.startsWith("dp-") ?? false)) &&
-        !(staleDiskNodeIds.has(e.source) || staleDiskNodeIds.has(e.target)),
+        !staleDiskNodeIds.has(e.source) &&
+        !staleDiskNodeIds.has(e.target),
     );
 
     // Merge new disk nodes into result (replace existing ones if updating)
@@ -695,7 +695,7 @@ export function applyClusterDisks(
     // Update the member node's diskControllers and bootDevices
     resultNodes = resultNodes.map((n) =>
       n.id === member.id
-        ? { ...n, data: { ...memberData, diskControllers: newDiskControllers, bootDevices: newBootDevices } }
+        ? { ...n, data: { ...n.data, diskControllers: newDiskControllers, bootDevices: newBootDevices } }
         : n,
     );
 
@@ -732,7 +732,8 @@ export function suggestClusterVips(
     return { apiVip: null, ingressVip: null };
   }
 
-  const cidr = (netNode.data as Record<string, unknown>).cidr as string | undefined;
+  const netNodeData = netNode.data as Record<string, string | undefined>;
+  const cidr = netNodeData.cidr;
   if (!cidr) {
     return { apiVip: null, ingressVip: null };
   }
@@ -748,8 +749,8 @@ export function suggestClusterVips(
 
   // Add VIPs from other clusters
   const otherClusters = nodes
-    .filter((n) => n.type === "clusterNode" && (n.data as Record<string, unknown>).clusterId !== cluster.id)
-    .map((n) => n.data as Record<string, unknown>);
+    .filter((n) => n.type === "clusterNode" && (n.data as Record<string, string | undefined>).clusterId !== cluster.id)
+    .map((n) => n.data as Record<string, string | undefined>);
 
   for (const other of otherClusters) {
     const apiVip = other.apiVip as string | undefined;
@@ -789,18 +790,18 @@ export function vipCollision(
   cluster: ClusterConfig,
   nodes: Node[],
 ): boolean {
-  if (!ip) return false;
+  if (!ip || !ip.trim()) return false;
 
   const usedIps = collectUsedIps(nodes);
 
   // Also check other clusters' VIPs
   const otherClusters = nodes
-    .filter((n) => n.type === "clusterNode" && (n.data as Record<string, unknown>).clusterId !== cluster.id)
-    .map((n) => n.data as Record<string, unknown>);
+    .filter((n) => n.type === "clusterNode" && (n.data as Record<string, string | undefined>).clusterId !== cluster.id)
+    .map((n) => n.data as Record<string, string | undefined>);
 
   for (const other of otherClusters) {
-    if (ip === (other.apiVip as string | undefined)) return true;
-    if (ip === (other.ingressVip as string | undefined)) return true;
+    if (ip === other.apiVip) return true;
+    if (ip === other.ingressVip) return true;
   }
 
   // Check gateway
@@ -808,7 +809,8 @@ export function vipCollision(
   if (netId) {
     const netNode = nodes.find((n) => n.id === netId && n.type === "networkNode");
     if (netNode) {
-      const cidr = (netNode.data as Record<string, unknown>).cidr as string | undefined;
+      const netNodeData = netNode.data as Record<string, string | undefined>;
+      const cidr = netNodeData.cidr;
       if (cidr) {
         const hosts = listCidrHosts(cidr);
         if (hosts.length > 0 && ip === hosts[0]) return true; // gateway
