@@ -389,10 +389,13 @@ export function clusterNetworkIdsFromEdges(
 
 /**
  * Rebuild NICs for every existing member of the cluster to match cluster.networkIds.
- * For each member vmNode (isMember check), recomputes {nics, nicEdges} via buildMemberNics.
- * Removes old NIC edges (targetHandle starts with "nic-"), adds fresh nicEdges.
+ * Diff-based and MAC-stable: reuses existing NIC ids and MACs for networks that
+ * remain in the list, drops NICs for networks no longer needed, adds new NICs only
+ * for new networks. Rebuild nic edges with stable ids: `edge-${networkId}-to-${memberId}-nic`.
  * Disk edges and all other edges remain intact. Returns updated {nodes, edges}.
- * Idempotent: re-running yields the same set (buildMemberNics produces deterministic ids).
+ * Idempotent: re-running with unchanged networkIds yields byte-identical nodes/edges
+ * and preserves MACs (critical for OCP BMH boot). Adding/removing a network only
+ * affects that network's NIC + edge; existing NICs keep their ids and MACs.
  */
 export function applyClusterNetworks(
   cluster: ClusterConfig,
@@ -408,14 +411,59 @@ export function applyClusterNetworks(
     return n.type === "vmNode" && d?.clusterId === cluster.id;
   });
 
-  // For each member, rebuild its NICs and edges
+  // For each member, diff-apply networks to preserve existing NIC ids/MACs
   for (const member of allMembers) {
-    const { nics, nicEdges } = buildMemberNics(cluster, member.id);
+    const memberData = member.data as Record<string, unknown>;
+    const currentNics = (memberData.nics as VMNic[]) || [];
+
+    // Extract existing network→NIC mapping from current nic edges.
+    // For each nic edge where target===memberId, match the targetHandle's nicId to a NIC in currentNics.
+    const existingNetworkToNic = new Map<string, VMNic>();
+    for (const edge of edges) {
+      if (
+        edge.target === member.id &&
+        (edge.targetHandle?.startsWith("nic-") ?? false)
+      ) {
+        // targetHandle is "nic-<nicId>-top" or "nic-<nicId>-bottom"
+        // Extract nicId by removing "nic-" prefix and last suffix (-top/-bottom)
+        const match = edge.targetHandle!.match(/^nic-(.+)-(top|bottom)$/);
+        if (match) {
+          const nicId = match[1];
+          const nic = currentNics.find((n) => n.id === nicId);
+          if (nic) {
+            existingNetworkToNic.set(edge.source, nic);
+          }
+        }
+      }
+    }
+
+    const targetNetworkIds = cluster.networkIds ?? [];
+    const newNics: VMNic[] = [];
+
+    // For each network in the target list, reuse existing NIC or create new
+    for (let i = 0; i < targetNetworkIds.length; i += 1) {
+      const netId = targetNetworkIds[i];
+      const existingNic = existingNetworkToNic.get(netId);
+
+      if (existingNic) {
+        // Reuse: update name to reflect new position (eth0, eth1, ...)
+        newNics.push({ ...existingNic, name: `eth${i}` });
+      } else {
+        // Create new NIC for this network
+        const nic: VMNic = {
+          id: generateNicId(),
+          name: `eth${i}`,
+          mac: generateMac(),
+          model: "virtio",
+        };
+        newNics.push(nic);
+      }
+    }
 
     // Update the member node's nics
     resultNodes = resultNodes.map((n) =>
       n.id === member.id
-        ? { ...n, data: { ...n.data, nics } }
+        ? { ...n, data: { ...n.data, nics: newNics } }
         : n,
     );
 
@@ -425,7 +473,31 @@ export function applyClusterNetworks(
         !(e.target === member.id && (e.targetHandle?.startsWith("nic-") ?? false)),
     );
 
-    // Add fresh NIC edges
+    // Add fresh NIC edges with stable ids (not positional)
+    const nicEdges: Edge[] = [];
+    for (let i = 0; i < newNics.length; i += 1) {
+      const nic = newNics[i];
+      const netId = targetNetworkIds[i];
+      const isFirstNic = i === 0;
+      const vmHandle = isFirstNic ? "top" : "bottom";
+      const sourceHandle = isFirstNic ? "bottom" : "top";
+
+      nicEdges.push({
+        id: `edge-${netId}-to-${member.id}-nic`,
+        source: netId,
+        target: member.id,
+        sourceHandle,
+        targetHandle: `nic-${nic.id}-${vmHandle}`,
+        type: "smoothstep",
+        animated: true,
+        style: {
+          stroke: "rgba(34,211,238,0.5)",
+          strokeWidth: 2,
+          strokeDasharray: "6 4",
+        },
+      } as Edge);
+    }
+
     resultEdges = [...resultEdges, ...nicEdges];
   }
 

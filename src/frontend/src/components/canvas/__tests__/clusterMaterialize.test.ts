@@ -332,30 +332,78 @@ describe("applyClusterNetworks", () => {
     expect(cpNicEdges).toHaveLength(2);
   });
 
-  it("is idempotent: re-applying same networkIds yields same nodes/edges", () => {
+  it("is idempotent: re-applying same networkIds yields identical nic ids/macs/edge ids", () => {
     const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
     cluster.networkIds = ["net1", "net2"];
     const net1 = { id: "net1", type: "networkNode", data: { subtype: "network" } } as any;
     const net2 = { id: "net2", type: "networkNode", data: { subtype: "network" } } as any;
-    const { nodes: n1, edges: e1 } = applyClusterNetworks(
+
+    // First materialize with members, then apply networks
+    const { nodes: materialized, edges: materializedEdges } = reconcileClusterVms(
       cluster,
       [node, net1, net2],
-      [],
+    );
+    const { nodes: n1, edges: e1 } = applyClusterNetworks(
+      cluster,
+      materialized,
+      materializedEdges,
     );
     const { nodes: n2, edges: e2 } = applyClusterNetworks(cluster, n1, e1);
 
-    // Node count should be the same
-    expect(n2.filter((n) => n.type === "vmNode")).toHaveLength(
-      n1.filter((n) => n.type === "vmNode").length,
-    );
+    // NIC ids and MACs must be identical across re-apply (MAC stability critical for BMH boot)
+    const cp1 = n1.find((n) => n.data.clusterRole === "control-plane")!;
+    const cp2 = n2.find((n) => n.data.clusterRole === "control-plane")!;
+    const nics1 = (cp1.data as Record<string, unknown>).nics as any[];
+    const nics2 = (cp2.data as Record<string, unknown>).nics as any[];
+    expect(nics2).toHaveLength(nics1.length);
+    for (let i = 0; i < nics1.length; i += 1) {
+      expect(nics2[i].id).toBe(nics1[i].id); // Same NIC id
+      expect(nics2[i].mac).toBe(nics1[i].mac); // Same MAC (OCP BMH boot depends on this)
+    }
 
-    // Edge count for NIC edges should be the same
+    // Edge ids must be identical
     const nicEdges1 = e1.filter((e) => e.targetHandle?.startsWith("nic-") ?? false);
     const nicEdges2 = e2.filter((e) => e.targetHandle?.startsWith("nic-") ?? false);
-    expect(nicEdges2).toHaveLength(nicEdges1.length);
+    expect(nicEdges2.map((e) => e.id).sort()).toEqual(nicEdges1.map((e) => e.id).sort());
   });
 
-  it("removes stale NIC edges when networkIds shrinks", () => {
+  it("preserves NICs when transitioning: ['net1'] → ['net1','net2'] keeps net1's id+mac", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.networkIds = ["net1"];
+    const net1 = { id: "net1", type: "networkNode", data: { subtype: "network" } } as any;
+    const net2 = { id: "net2", type: "networkNode", data: { subtype: "network" } } as any;
+
+    // Initial: materialize with net1, then apply
+    const { nodes: materialized, edges: materializedEdges } = reconcileClusterVms(
+      cluster,
+      [node, net1, net2],
+    );
+    const { nodes: n1, edges: e1 } = applyClusterNetworks(
+      cluster,
+      materialized,
+      materializedEdges,
+    );
+
+    const cp1 = n1.find((n) => n.data.clusterRole === "control-plane")!;
+    const nics1 = (cp1.data as Record<string, unknown>).nics as any[];
+    const originalNic1 = nics1[0];
+
+    // Add net2
+    cluster.networkIds = ["net1", "net2"];
+    const { nodes: n2 } = applyClusterNetworks(cluster, n1, e1);
+
+    const cp2 = n2.find((n) => n.data.clusterRole === "control-plane")!;
+    const nics2 = (cp2.data as Record<string, unknown>).nics as any[];
+
+    // net1's NIC should be preserved (same id, mac)
+    expect(nics2[0].id).toBe(originalNic1.id);
+    expect(nics2[0].mac).toBe(originalNic1.mac);
+    // net2's NIC should be new
+    expect(nics2[1].id).not.toBe(originalNic1.id);
+    expect(nics2[1].mac).not.toBe(originalNic1.mac);
+  });
+
+  it("removes stale NICs when transitioning: ['net1','net2'] → ['net1'] keeps net1", () => {
     const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
     cluster.networkIds = ["net1", "net2"];
     const net1 = { id: "net1", type: "networkNode", data: { subtype: "network" } } as any;
@@ -372,7 +420,11 @@ describe("applyClusterNetworks", () => {
       materializedEdges,
     );
 
-    // Shrink to 1 network
+    const cp1 = initial.find((n) => n.data.clusterRole === "control-plane")!;
+    const nics1 = (cp1.data as Record<string, unknown>).nics as any[];
+    const originalNic1 = nics1[0];
+
+    // Remove net2
     const shrunk = { ...cluster, networkIds: ["net1"] };
     const { nodes: result, edges: resultEdges } = applyClusterNetworks(
       shrunk,
@@ -383,11 +435,16 @@ describe("applyClusterNetworks", () => {
     // All members should now have 1 NIC
     const cp = result.find((n) => n.data.clusterRole === "control-plane")!;
     const nics = (cp.data as Record<string, unknown>).nics as any[];
-    expect(nics).toHaveLength(1);
 
-    // NIC edges should be halved
-    const initialNicEdges = initialEdges.filter((e) => e.targetHandle?.startsWith("nic-") ?? false);
-    const resultNicEdges = resultEdges.filter((e) => e.targetHandle?.startsWith("nic-") ?? false);
-    expect(resultNicEdges).toHaveLength(initialNicEdges.length / 2);
+    // Should have only 1 NIC (net1, preserved)
+    expect(nics).toHaveLength(1);
+    expect(nics[0].id).toBe(originalNic1.id);
+    expect(nics[0].mac).toBe(originalNic1.mac);
+
+    // Check edge count: should have only 1 NIC edge for this member
+    const memberNicEdges = resultEdges.filter(
+      (e) => e.target === cp.id && (e.targetHandle?.startsWith("nic-") ?? false),
+    );
+    expect(memberNicEdges).toHaveLength(1);
   });
 });
