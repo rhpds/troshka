@@ -189,16 +189,45 @@ def _apply_ops_pod_secret(core_api, namespace: str, secret: dict) -> None:
         core_api.replace_namespaced_secret(name=name, namespace=namespace, body=secret)
 
 
+_OPS_POD_RECREATE_RETRIES = 12
+_OPS_POD_RECREATE_SLEEP = 2.0
+
+
 def _apply_ops_pod(core_api, namespace: str, pod: dict) -> None:
-    """Create the ops Pod, replacing any pre-existing one (pods are immutable)."""
+    """Create the ops Pod, replacing any pre-existing one (pods are immutable).
+
+    Pod deletion is asynchronous (a grace period elapses before the old pod is
+    gone), so a naive delete+recreate can hit ``409 AlreadyExists`` while the old
+    pod is still ``Terminating``. Delete with ``grace_period_seconds=0`` and
+    retry the recreate through the terminating window rather than failing the
+    redeploy.
+    """
     name = pod["metadata"]["name"]
     try:
         core_api.create_namespaced_pod(namespace=namespace, body=pod)
+        return
     except Exception as e:
         if "AlreadyExists" not in str(e):
             raise
-        core_api.delete_namespaced_pod(name=name, namespace=namespace)
-        core_api.create_namespaced_pod(namespace=namespace, body=pod)
+    core_api.delete_namespaced_pod(
+        name=name, namespace=namespace, grace_period_seconds=0
+    )
+    _recreate_ops_pod(core_api, namespace, pod, name)
+
+
+def _recreate_ops_pod(core_api, namespace: str, pod: dict, name: str) -> None:
+    """Retry the Pod create until the terminating old pod is fully gone."""
+    last_error: Exception | None = None
+    for _ in range(_OPS_POD_RECREATE_RETRIES):
+        try:
+            core_api.create_namespaced_pod(namespace=namespace, body=pod)
+            return
+        except Exception as e:
+            if "AlreadyExists" not in str(e):
+                raise
+            last_error = e
+            time.sleep(_OPS_POD_RECREATE_SLEEP)
+    raise RuntimeError(f"Ops pod {name} still terminating after retries: {last_error}")
 
 
 def create_ops_pod(provider, project_id: str, pod: dict, secret: dict) -> str:

@@ -2030,7 +2030,7 @@ def _deploy_ops_pod_kubevirt(
         env={
             "TROSHKA_API_URL": _ops_pod_api_url(),
             "TROSHKA_API_KEY": api_key,
-            "TROSHKA_PROJECT_ID": str(getattr(project, "id", "")),
+            "TROSHKA_PROJECT_ID": project_id,
             "OCP_VERSION": ocp_version,
         },
         config_files=config_files,

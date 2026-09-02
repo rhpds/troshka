@@ -334,7 +334,44 @@ def test_create_ops_pod_replaces_existing_pod():
         create_ops_pod(provider, "abcdef12-0000", pod, secret)
 
     core.replace_namespaced_secret.assert_called_once()
+    # Delete with grace_period_seconds=0 so the terminating window is short.
     core.delete_namespaced_pod.assert_called_once_with(
-        name="troshka-abcdef12-ops", namespace="troshka-abcdef12"
+        name="troshka-abcdef12-ops",
+        namespace="troshka-abcdef12",
+        grace_period_seconds=0,
     )
     assert core.create_namespaced_pod.call_count == 2
+
+
+def test_create_ops_pod_retries_recreate_through_terminating_window():
+    # After delete, the old pod is still Terminating so the recreate hits
+    # AlreadyExists once more; _apply_ops_pod must retry (not raise) and succeed.
+    from app.services.providers.kubevirt import create_ops_pod
+
+    provider = _make_provider()
+    pod, secret = _ops_pod_manifests()
+    with (
+        patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients,
+        patch(
+            "app.services.providers.kubevirt._project_ns",
+            return_value="troshka-abcdef12",
+        ),
+        patch("app.services.providers.kubevirt.time.sleep"),
+    ):
+        core = MagicMock()
+        # initial create → AlreadyExists; recreate → AlreadyExists once, then OK.
+        core.create_namespaced_pod.side_effect = [
+            Exception("AlreadyExists"),
+            Exception("AlreadyExists"),
+            None,
+        ]
+        mock_clients.return_value = (MagicMock(), core, MagicMock())
+        # Must not raise.
+        create_ops_pod(provider, "abcdef12-0000", pod, secret)
+
+    core.delete_namespaced_pod.assert_called_once_with(
+        name="troshka-abcdef12-ops",
+        namespace="troshka-abcdef12",
+        grace_period_seconds=0,
+    )
+    assert core.create_namespaced_pod.call_count == 3

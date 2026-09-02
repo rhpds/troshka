@@ -120,8 +120,14 @@ _OPS_POD_SERVICE_ACCOUNT = "troshka-network"
 
 
 def _nad_name(net_node: dict) -> str:
-    """Operator NAD naming convention for a network node: ``net-<id[:8]>-nad``."""
-    return f"net-{str(net_node.get('id', ''))[:8]}-nad"
+    """Operator NAD naming convention for a network node: ``net-<id[:8]>-nad``.
+
+    Resolves the network id the same way the operator's canonical
+    ``extract_networks`` does (``operator/helpers/topology.py``): ``data.id``
+    takes precedence over the node id, so the two never diverge.
+    """
+    node_id = net_node.get("data", {}).get("id", net_node.get("id", ""))
+    return f"net-{str(node_id)[:8]}-nad"
 
 
 def ops_pod_network_nads(topology: dict) -> tuple[list[str], str | None]:
