@@ -573,19 +573,45 @@ def _create_network_nodes(nets_def, bmc_password, net_row_y, vm_spacing):
     return nodes, net_ids
 
 
-def _generate_ocp_port_forwards(eip_id, vms_def, ocp_cfg):
-    """Generate OCP port forwards when no custom forwards exist."""
-    port_forwards = []
-    bastion_ip = ""
-    for vm_name, vm_cfg in vms_def.items():
+def _find_bastion_ip(vms_def):
+    """Return the first bastion VM's NIC IP, or '' if none."""
+    for _vm_name, vm_cfg in vms_def.items():
         if vm_cfg.get("role") == "bastion":
             for nic_cfg in vm_cfg.get("nics", []):
                 if nic_cfg.get("ip"):
-                    bastion_ip = nic_cfg["ip"]
-                    break
+                    return nic_cfg["ip"]
             break
-    api_vip = ocp_cfg.get("api_vip", "")
-    ingress_vip = ocp_cfg.get("ingress_vip", api_vip)
+    return ""
+
+
+def _cluster_ext_ports(index):
+    """External-port trio for a cluster sharing one EIP with others.
+
+    Cluster 0 keeps the canonical ports (6443/443/80) for back-compat. Each
+    later cluster gets a distinct, non-overlapping trio:
+      api          -> 6443 + index   (6443, 6444, 6445, ...)
+      ingress-https-> 443 if 0 else 8443 + index (443, 8444, 8445, ...)
+      ingress-http -> 80  if 0 else 8080 + index (80,  8081, 8082, ...)
+    The api (6443+), ingress-https (8444+) and ingress-http (8081+) ranges are
+    disjoint from one another and from the bastion SSH forward (2222) for any
+    realistic cluster count, so no two forwards ever share an external port.
+    """
+    api = 6443 + index
+    if index == 0:
+        return api, 443, 80
+    return api, 8443 + index, 8080 + index
+
+
+def _generate_ocp_port_forwards(eip_id, vms_def, clusters):
+    """Generate OCP port forwards when no custom forwards exist.
+
+    Emits one bastion SSH forward (2222->22) plus, per cluster, api/ingress
+    forwards on distinct external ports (see ``_cluster_ext_ports``) so multiple
+    clusters coexist on the single EIP without colliding. Clusters without a
+    resolvable api VIP (e.g. SNO) are skipped, matching prior behavior.
+    """
+    port_forwards = []
+    bastion_ip = _find_bastion_ip(vms_def)
     if bastion_ip:
         port_forwards.append(
             {
@@ -596,35 +622,40 @@ def _generate_ocp_port_forwards(eip_id, vms_def, ocp_cfg):
                 "proto": "tcp",
             }
         )
-    if api_vip:
+    for index, ocp_cfg in enumerate(clusters):
+        api_vip = ocp_cfg.get("api_vip", "")
+        ingress_vip = ocp_cfg.get("ingress_vip", api_vip)
+        if not api_vip:
+            continue
+        api_port, https_port, http_port = _cluster_ext_ports(index)
         port_forwards.append(
             {
                 "extIpId": eip_id,
-                "extPort": "6443",
+                "extPort": str(api_port),
                 "intIp": api_vip,
                 "intPort": "6443",
                 "proto": "tcp",
             }
         )
-    if ingress_vip:
-        port_forwards.append(
-            {
-                "extIpId": eip_id,
-                "extPort": "443",
-                "intIp": ingress_vip,
-                "intPort": "443",
-                "proto": "tcp",
-            }
-        )
-        port_forwards.append(
-            {
-                "extIpId": eip_id,
-                "extPort": "80",
-                "intIp": ingress_vip,
-                "intPort": "80",
-                "proto": "tcp",
-            }
-        )
+        if ingress_vip:
+            port_forwards.append(
+                {
+                    "extIpId": eip_id,
+                    "extPort": str(https_port),
+                    "intIp": ingress_vip,
+                    "intPort": "443",
+                    "proto": "tcp",
+                }
+            )
+            port_forwards.append(
+                {
+                    "extIpId": eip_id,
+                    "extPort": str(http_port),
+                    "intIp": ingress_vip,
+                    "intPort": "80",
+                    "proto": "tcp",
+                }
+            )
     return port_forwards
 
 
@@ -654,8 +685,7 @@ def _create_gateway_node(gw_def, vms_def, tmpl, external_access, gw_y, nets_def)
         # Auto-generate OCP port forwards if no custom ones and OCP config exists
         if not port_forwards:
             ocp_clusters = normalize_ocp_section(tmpl.get("ocp"))
-            ocp_cfg = ocp_clusters[0] if ocp_clusters else {}
-            port_forwards = _generate_ocp_port_forwards(eip_id, vms_def, ocp_cfg)
+            port_forwards = _generate_ocp_port_forwards(eip_id, vms_def, ocp_clusters)
 
     gw_node = {
         "id": _id(),

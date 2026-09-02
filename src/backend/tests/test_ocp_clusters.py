@@ -530,3 +530,69 @@ def test_shipped_templates_use_ocp_list_and_generate_clusters():
         assert isinstance(raw["ocp"], list), f"{name} ocp not a list"
         topo = generate_topology_from_template(resolve_inline_template(raw))
         assert topo["clusters"][0]["type"] == expect_type
+
+
+def test_ocp_port_forwards_single_cluster_canonical():
+    """One cluster keeps the canonical 6443/443/80 external ports (back-compat)."""
+    from app.services.template_loader import _generate_ocp_port_forwards
+
+    vms = {"bastion": {"role": "bastion", "nics": [{"ip": "10.0.0.5"}]}}
+    clusters = [{"api_vip": "10.0.0.10", "ingress_vip": "10.0.0.11"}]
+    pfs = _generate_ocp_port_forwards("eip-1", vms, clusters)
+    by_port = {pf["extPort"]: pf for pf in pfs}
+
+    # Exactly the canonical set: bastion SSH + api + ingress https/http.
+    assert set(by_port) == {"2222", "6443", "443", "80"}
+    assert by_port["2222"]["intIp"] == "10.0.0.5"
+    assert by_port["2222"]["intPort"] == "22"
+    assert by_port["6443"]["intIp"] == "10.0.0.10"
+    assert by_port["6443"]["intPort"] == "6443"
+    assert by_port["443"]["intIp"] == "10.0.0.11"
+    assert by_port["443"]["intPort"] == "443"
+    assert by_port["80"]["intIp"] == "10.0.0.11"
+    assert by_port["80"]["intPort"] == "80"
+    # Every forward references the single EIP.
+    assert all(pf["extIpId"] == "eip-1" for pf in pfs)
+
+
+def test_ocp_port_forwards_two_clusters_no_collision():
+    """Two clusters coexist on one EIP with distinct external ports."""
+    from app.services.template_loader import _generate_ocp_port_forwards
+
+    vms = {"bastion": {"role": "bastion", "nics": [{"ip": "10.0.0.5"}]}}
+    clusters = [
+        {"api_vip": "10.0.0.10", "ingress_vip": "10.0.0.11"},
+        {"api_vip": "10.1.0.10", "ingress_vip": "10.1.0.11"},
+    ]
+    pfs = _generate_ocp_port_forwards("eip-1", vms, clusters)
+
+    # No external-port collision across the whole set.
+    ext_ports = [pf["extPort"] for pf in pfs]
+    assert len(ext_ports) == len(set(ext_ports))
+
+    by_port = {pf["extPort"]: pf for pf in pfs}
+    # Cluster 0 stays canonical, mapped to cluster 0's VIPs.
+    assert by_port["6443"]["intIp"] == "10.0.0.10"
+    assert by_port["443"]["intIp"] == "10.0.0.11"
+    assert by_port["80"]["intIp"] == "10.0.0.11"
+    # Cluster 1 on distinct external ports, mapped to cluster 1's VIPs.
+    assert by_port["6444"]["intIp"] == "10.1.0.10"
+    assert by_port["6444"]["intPort"] == "6443"
+    assert by_port["8444"]["intIp"] == "10.1.0.11"
+    assert by_port["8444"]["intPort"] == "443"
+    assert by_port["8081"]["intIp"] == "10.1.0.11"
+    assert by_port["8081"]["intPort"] == "80"
+
+
+def test_ocp_port_forwards_skips_novip_cluster():
+    """A cluster without VIPs (SNO) is skipped gracefully, matching old behavior."""
+    from app.services.template_loader import _generate_ocp_port_forwards
+
+    vms = {"bastion": {"role": "bastion", "nics": [{"ip": "10.0.0.5"}]}}
+    clusters = [
+        {"api_vip": "10.0.0.10", "ingress_vip": "10.0.0.11"},
+        {"api_vip": "", "ingress_vip": ""},
+    ]
+    pfs = _generate_ocp_port_forwards("eip-1", vms, clusters)
+    by_port = {pf["extPort"]: pf for pf in pfs}
+    assert set(by_port) == {"2222", "6443", "443", "80"}
