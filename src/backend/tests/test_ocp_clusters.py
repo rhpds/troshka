@@ -855,3 +855,75 @@ def test_customize_topology_normalizes_member_into_agent_hosts():
     ac = yaml.safe_load(topo["clusters"][0]["_generatedAgentConfig"])
     assert [h["hostname"] for h in ac["hosts"]] == ["cp-0"]
     assert ac["rendezvousIP"] == "10.0.0.20"
+
+
+# ---------------------------------------------------------------------------
+# Export round-trip (Task 8): ocp: list + per-VM cluster: + worker role
+# ---------------------------------------------------------------------------
+
+
+def test_export_roundtrip_multi_cluster():
+    """A 2-cluster template survives generate -> export -> resolve -> generate.
+
+    Export emits ``ocp:`` as a list (names/types/VIPs) and stamps each member VM
+    with ``cluster:``. A worker VM exports ``role: worker``. Re-resolving and
+    regenerating yields the same two clusters with identical membership counts.
+    """
+    from app.services.template_loader import (
+        export_topology_to_template,
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "name": "t",
+        "install_method": "agent",
+        "category": "openshift",
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "ocp": [
+            {
+                "name": "prod",
+                "type": "standard",
+                "workers": 2,
+                "api_vip": "10.0.0.10",
+                "ingress_vip": "10.0.0.11",
+            },
+            {
+                "name": "dev",
+                "type": "sno",
+                "api_vip": "10.1.0.10",
+                "ingress_vip": "10.1.0.11",
+            },
+        ],
+    }
+    topo = generate_topology_from_template(resolve_inline_template(tmpl))
+    exported = export_topology_to_template(topo)
+
+    # ocp: emitted as a LIST of two clusters with correct names/types/VIPs.
+    assert isinstance(exported["ocp"], list) and len(exported["ocp"]) == 2
+    by_name = {c["name"]: c for c in exported["ocp"]}
+    assert set(by_name) == {"prod", "dev"}
+    assert by_name["prod"]["type"] == "standard"
+    assert by_name["dev"]["type"] == "sno"
+    assert by_name["prod"]["api_vip"] == "10.0.0.10"
+    assert by_name["prod"]["ingress_vip"] == "10.0.0.11"
+    assert by_name["dev"]["api_vip"] == "10.1.0.10"
+    assert by_name["prod"]["base_domain"] == "ocp.local"
+
+    # Member VMs carry the cluster: field (resolved to the cluster NAME).
+    prod_members = [v for v in exported["vms"].values() if v.get("cluster") == "prod"]
+    dev_members = [v for v in exported["vms"].values() if v.get("cluster") == "dev"]
+    assert len(prod_members) == 5  # 3 cp + 2 workers
+    assert len(dev_members) == 1
+
+    # A worker VM exports role: worker.
+    workers = [v for v in exported["vms"].values() if v.get("role") == "worker"]
+    assert len(workers) == 2
+
+    # Re-resolve + regenerate -> two clusters with the same membership counts.
+    topo2 = generate_topology_from_template(resolve_inline_template(exported))
+    assert {c["id"] for c in topo2["clusters"]} == {"prod", "dev"}
+    prod2 = [n for n in topo2["nodes"] if n.get("data", {}).get("clusterId") == "prod"]
+    dev2 = [n for n in topo2["nodes"] if n.get("data", {}).get("clusterId") == "dev"]
+    assert len(prod2) == 5
+    assert len(dev2) == 1

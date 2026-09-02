@@ -1882,6 +1882,8 @@ def _export_vm_role(d):
         return "bastion"
     if "controllers" in ag:
         return "control-plane"
+    if "workers" in ag:
+        return "worker"
     if d.get("os") == "blank":
         return "blank"
     return ""
@@ -1960,6 +1962,7 @@ def _export_vm(
     _net_names: dict[str, str],
     nic_to_net: dict[str, str],
     _iso_item_ids: set[str],
+    cluster_names: dict[str, str] | None = None,
 ) -> dict:
     """Export a single VM to template dict format."""
     d = vm.get("data", {})
@@ -1968,6 +1971,10 @@ def _export_vm(
     role = _export_vm_role(d)
     if role:
         vm_out["role"] = role
+
+    cluster_id = d.get("clusterId")
+    if cluster_id:
+        vm_out["cluster"] = (cluster_names or {}).get(cluster_id, cluster_id)
 
     vm_out["vcpus"] = d.get("vcpus", 2)
     vm_out["ram_gb"] = d.get("ram", 4)
@@ -2232,6 +2239,46 @@ def _export_start_order(
     return so_out
 
 
+# camelCase topology cluster key -> snake_case template ``ocp:`` key.
+_OCP_EXPORT_FIELDS = [
+    ("name", "name"),
+    ("type", "type"),
+    ("baseDomain", "base_domain"),
+    ("apiVip", "api_vip"),
+    ("ingressVip", "ingress_vip"),
+    ("workers", "workers"),
+    ("controlPlaneCpu", "control_plane_cpu"),
+    ("controlPlaneMemory", "control_plane_memory"),
+    ("controlPlaneDisk", "control_plane_disk"),
+    ("workerCpu", "worker_cpu"),
+    ("workerMemory", "worker_memory"),
+    ("workerDisk", "worker_disk"),
+    ("ocpVersion", "ocp_version"),
+    ("pullThroughRegistry", "pull_through_registry"),
+]
+
+
+def _export_ocp_clusters(topology: dict) -> list[dict]:
+    """Emit the template ``ocp:`` list from ``topology['clusters']``.
+
+    Maps each camelCase cluster object to snake_case template keys. Returns an
+    empty list for non-OCP topologies (no ``clusters``) so exports stay unchanged.
+    ``pull_through_registry`` is omitted when unset.
+    """
+    out = []
+    for cluster in topology.get("clusters", []) or []:
+        entry: dict[str, object] = {}
+        for src, dst in _OCP_EXPORT_FIELDS:
+            if src not in cluster:
+                continue
+            val = cluster[src]
+            if dst == "pull_through_registry" and val is None:
+                continue
+            entry[dst] = val
+        out.append(entry)
+    return out
+
+
 def export_topology_to_template(topology: dict, db=None) -> dict:
     """Reverse-map a canvas topology JSONB to a simple infra_template YAML dict."""
     nodes = topology.get("nodes", [])
@@ -2267,15 +2314,31 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
     gateway = _export_gateway(net_nodes, edges, net_names)
 
     # ── VMs ──
+    # Cluster id -> name, so member VMs export a human-friendly ``cluster:``.
+    cluster_names = {
+        c["id"]: c.get("name", c["id"])
+        for c in (topology.get("clusters") or [])
+        if c.get("id")
+    }
+
     vms = {}
     for vm in vm_nodes:
         d = vm.get("data", {})
         name = d.get("name", d.get("label", vm["id"][:8]))
         vms[name] = _export_vm(
-            vm, edge_by_target, nodes, net_names, nic_to_net, _iso_item_ids
+            vm,
+            edge_by_target,
+            nodes,
+            net_names,
+            nic_to_net,
+            _iso_item_ids,
+            cluster_names,
         )
 
     result: dict = {"networks": networks}
+    ocp_clusters = _export_ocp_clusters(topology)
+    if ocp_clusters:
+        result["ocp"] = ocp_clusters
     if gateway:
         result["gateway"] = gateway
     result["vms"] = vms

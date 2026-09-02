@@ -978,12 +978,16 @@ def export_template(
     if project.clock_target:
         result["clock_target"] = project.clock_target.isoformat()
 
-    ocp_meta = topo.get("ocpMeta", {})
-    if ocp_meta.get("clusterName"):
-        result["ocp"] = {
-            "cluster_name": ocp_meta["clusterName"],
-            "base_domain": ocp_meta.get("baseDomain", _OCP_LOCAL),
-        }
+    # export_topology_to_template emits ``ocp:`` as a list from topology
+    # ``clusters``. Only fall back to the legacy single-mapping ocpMeta synth
+    # for legacy topologies that predate the clusters[] model.
+    if "ocp" not in result:
+        ocp_meta = topo.get("ocpMeta", {})
+        if ocp_meta.get("clusterName"):
+            result["ocp"] = {
+                "cluster_name": ocp_meta["clusterName"],
+                "base_domain": ocp_meta.get("baseDomain", _OCP_LOCAL),
+            }
 
     for key in ("disconnected", "bastion_services", "dns_records"):
         if topo.get(key):
