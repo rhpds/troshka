@@ -1062,3 +1062,24 @@ def test_resolve_template_carries_install_via(tmp_path):
     )
     resolved = resolve_template("t", templates_dir=str(tmp_path))
     assert resolved["install_via"] == "bastion"
+
+
+def test_normalize_cluster_disks_upgrades_legacy_single():
+    from app.services.template_loader import normalize_cluster_disks
+
+    c = normalize_cluster_disks({"controlPlaneDisk": 120, "workerDisk": 100})
+    assert c["controlPlaneDisks"] == [{"sizeGb": 120, "bootable": True}]
+    assert c["workerDisks"] == [{"sizeGb": 100, "bootable": True}]
+    assert c["networkIds"] == []
+
+
+def test_normalize_cluster_disks_keeps_explicit_list():
+    from app.services.template_loader import normalize_cluster_disks
+
+    c = normalize_cluster_disks(
+        {
+            "controlPlaneDisks": [{"sizeGb": 120, "bootable": True}, {"sizeGb": 100}],
+            "networkIds": ["net1"],
+        }
+    )
+    assert len(c["controlPlaneDisks"]) == 2 and c["networkIds"] == ["net1"]

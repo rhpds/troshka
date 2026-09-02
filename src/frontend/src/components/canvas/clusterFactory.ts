@@ -26,6 +26,8 @@ const CLUSTER_DEFAULTS = {
   ingressVip: "",
   ocpVersion: "4.20",
   pullThroughRegistry: null as string | null,
+  controlPlaneDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }],
+  workerDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }],
 } as const;
 
 /** The default rendered footprint of a cluster boundary node (px). */
@@ -73,6 +75,9 @@ export function makeCluster(
       baseDomain: CLUSTER_DEFAULTS.baseDomain,
       apiVip: CLUSTER_DEFAULTS.apiVip,
       ingressVip: CLUSTER_DEFAULTS.ingressVip,
+      networkIds: [],
+      controlPlaneDisks: [...CLUSTER_DEFAULTS.controlPlaneDisks],
+      workerDisks: [...CLUSTER_DEFAULTS.workerDisks],
     },
   };
 
@@ -94,6 +99,9 @@ export function makeCluster(
     ingressVip: CLUSTER_DEFAULTS.ingressVip,
     ocpVersion: CLUSTER_DEFAULTS.ocpVersion,
     pullThroughRegistry: CLUSTER_DEFAULTS.pullThroughRegistry ?? undefined,
+    networkIds: [],
+    controlPlaneDisks: [...CLUSTER_DEFAULTS.controlPlaneDisks],
+    workerDisks: [...CLUSTER_DEFAULTS.workerDisks],
   };
 
   return { node, cluster };

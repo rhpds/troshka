@@ -50,6 +50,24 @@ def normalize_ocp_section(ocp: dict | list | None) -> list[dict]:
     return clusters
 
 
+def normalize_cluster_disks(cluster: dict) -> dict:
+    """Upgrade legacy single-disk clusters to per-role disk lists; default networkIds.
+
+    Legacy ``controlPlaneDisk``/``workerDisk`` (GB int) become a one-element
+    bootable list. Explicit ``controlPlaneDisks``/``workerDisks`` pass through.
+    """
+    out = dict(cluster)
+    for role_list, legacy, default_gb in (
+        ("controlPlaneDisks", "controlPlaneDisk", 120),
+        ("workerDisks", "workerDisk", 100),
+    ):
+        if not out.get(role_list):
+            gb = out.get(legacy) or default_gb
+            out[role_list] = [{"sizeGb": gb, "bootable": True}]
+    out.setdefault("networkIds", out.get("networkIds") or [])
+    return out
+
+
 # --- OCP install-method selector (bastion vs in-cluster ops pod) -----------
 # ``install_via`` is a per-PROJECT choice of HOW OCP is installed and is
 # distinct from ``install_method`` (the agent installer TYPE). Valid values are

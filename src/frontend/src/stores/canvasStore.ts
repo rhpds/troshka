@@ -179,6 +179,12 @@ export interface ContainerNodeData {
   [key: string]: any;
 }
 
+export interface DiskSpec {
+  sizeGb: number;
+  bus?: "virtio" | "sata" | "scsi";
+  bootable?: boolean;
+}
+
 /**
  * A multi-cluster OCP definition, mirroring the `topology.clusters[]` element
  * shape persisted by the backend (Plan 1). One entry per OCP cluster; VM nodes
@@ -202,6 +208,9 @@ export interface ClusterConfig {
   ingressVip?: string;
   ocpVersion?: string;
   pullThroughRegistry?: string;
+  networkIds?: string[];
+  controlPlaneDisks?: DiskSpec[];
+  workerDisks?: DiskSpec[];
 }
 
 /** The `node.data` summary rendered on a cluster container node. */
