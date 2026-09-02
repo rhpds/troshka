@@ -1207,6 +1207,8 @@ def _build_vm_data(vm_name, vm_cfg, _vms_def, nets_def, net_ids, vm_x, vm_row_y)
     bmc_ip = vm_cfg.get("bmc_ip", "")
     disks_cfg = vm_cfg.get("disks", [{"size_gb": 50}])
     nics_cfg = vm_cfg.get("nics", [])
+    # FIX 3: Check if this VM is a cluster member (has control-plane or worker role)
+    is_cluster_member = role in ("control-plane", "worker")
 
     icon = "\U0001f5a5"
     if os_type == "blank":
@@ -1230,6 +1232,10 @@ def _build_vm_data(vm_name, vm_cfg, _vms_def, nets_def, net_ids, vm_x, vm_row_y)
         if di == 0 and first_bootable_disk_id is None:
             first_bootable_disk_id = disk_id
         disk_nodes.append(disk_node)
+        # FIX 3: Hide disk storageNode and its edge for cluster members (visual parity with frontend)
+        if is_cluster_member:
+            disk_node["hidden"] = True
+            disk_edge["hidden"] = True
         disk_edges_list.append(disk_edge)
 
     if first_bootable_disk_id is not None:
@@ -1292,7 +1298,11 @@ def _build_vm_data(vm_name, vm_cfg, _vms_def, nets_def, net_ids, vm_x, vm_row_y)
         net_node_id = net_ids.get(net_identifier, net_identifier)
         if net_node_id:
             handle = "top" if ni == 0 else "bottom"
-            nic_edges.append(_net_edge(net_node_id, vm_node, ni, handle))
+            nic_edge = _net_edge(net_node_id, vm_node, ni, handle)
+            # FIX 3: Hide NIC edges for cluster members (visual parity with frontend)
+            if is_cluster_member:
+                nic_edge["hidden"] = True
+            nic_edges.append(nic_edge)
 
     return vm_node, disk_nodes, disk_edges_list, iso_nodes_edges, nic_edges
 

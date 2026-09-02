@@ -168,6 +168,16 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
         if (!newNetworkIds.includes(networkId)) {
           newNetworkIds.push(networkId);
         }
+        // FIX 2: Create and persist the anchor edge so it renders and can be deleted
+        const anchorEdge = {
+          id: `edge-clusternet-${networkId}-to-${clusterId}`,
+          source: networkId,
+          target: clusterId,
+          sourceHandle: connection.sourceHandle,
+          targetHandle: connection.targetHandle,
+          type: "smoothstep" as const,
+          style: { stroke: "rgba(34,211,238,0.7)", strokeWidth: 2 },
+        };
         // Update cluster and apply networks to members
         const updated = { ...cluster, networkIds: newNetworkIds };
         useCanvasStore.getState().pushHistory();
@@ -177,7 +187,10 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
           useCanvasStore.getState().nodes,
           useCanvasStore.getState().edges,
         );
-        useCanvasStore.setState({ nodes: nextNodes, edges: nextEdges });
+        // Dedupe anchor edge by id and add it
+        const edgeMap = new Map(nextEdges.map((e) => [e.id, e]));
+        edgeMap.set(anchorEdge.id, anchorEdge);
+        useCanvasStore.setState({ nodes: nextNodes, edges: Array.from(edgeMap.values()) });
         return;
       }
 

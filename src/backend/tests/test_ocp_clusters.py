@@ -1253,6 +1253,130 @@ def test_backend_member_parity_with_frontend():
 # ---------------------------------------------------------------------------
 
 
+def test_backend_member_disk_and_nic_edges_hidden():
+    """FIX 3: Backend-materialized cluster members have hidden disk storageNodes,
+    disk edges, and NIC edges (collapsed view for visual parity with frontend).
+    Nodes/edges are still present (deploy still reads them), just hidden=true.
+    """
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    # Template with a network so members get NIC edges
+    tmpl = {
+        "name": "t",
+        "install_method": "agent",
+        "category": "openshift",
+        "networks": {
+            "cluster": {"cidr": "10.0.0.0/24"},
+            "data": {"cidr": "10.1.0.0/24"},
+        },
+        "ocp": [
+            {
+                "name": "prod",
+                "type": "compact",
+                "workers": 0,  # 3 CP, 0 workers
+                "networks": ["cluster", "data"],  # Members get 2 NICs per network
+            }
+        ],
+    }
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+
+    # Find a control-plane member
+    cp_member = next(
+        n
+        for n in topo["nodes"]
+        if n.get("type") == "vmNode"
+        and n.get("data", {}).get("clusterId") == "prod"
+        and "controllers" in n.get("data", {}).get("tags", {}).get("AnsibleGroup", "")
+    )
+
+    # Find disk storageNodes belonging to this member
+    cp_name = cp_member["data"]["name"]
+    disk_nodes = [
+        n
+        for n in topo["nodes"]
+        if n.get("type") == "storageNode"
+        and n.get("data", {}).get("name", "").startswith(cp_name)
+    ]
+    assert len(disk_nodes) > 0, f"Expected disk storageNodes for {cp_name}"
+
+    # All disk storageNodes should have hidden=true
+    for disk_node in disk_nodes:
+        assert (
+            disk_node.get("hidden") is True
+        ), f"Disk node {disk_node['id']} should be hidden"
+
+    # Find disk edges (source=storageNode, target=member)
+    disk_node_ids = {d["id"] for d in disk_nodes}
+    disk_edges = [
+        e
+        for e in topo["edges"]
+        if e.get("source") in disk_node_ids and e.get("target") == cp_member["id"]
+    ]
+    assert len(disk_edges) > 0, "Expected disk edges for the member"
+
+    # All disk edges should have hidden=true
+    for disk_edge in disk_edges:
+        assert (
+            disk_edge.get("hidden") is True
+        ), f"Disk edge {disk_edge['id']} should be hidden"
+
+    # Find NIC edges (target=member, targetHandle starts with "nic-")
+    nic_edges = [
+        e
+        for e in topo["edges"]
+        if e.get("target") == cp_member["id"]
+        and (e.get("targetHandle", "").startswith("nic-"))
+    ]
+    assert len(nic_edges) > 0, "Expected NIC edges for the member"
+
+    # All NIC edges should have hidden=true
+    for nic_edge in nic_edges:
+        assert (
+            nic_edge.get("hidden") is True
+        ), f"NIC edge {nic_edge['id']} should be hidden"
+
+
+def test_backend_member_names_deduped_on_count_bump():
+    """FIX 1: When bumping worker count on a template-created cluster with backend UUID
+    member nodes, the frontend name deduplication must check both node IDs and data.name.
+    This test verifies that the backend doesn't emit duplicate member names on reimport.
+    """
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    # Create a 2-worker cluster (materialized backend VMs have random UUID node ids)
+    tmpl = {
+        "name": "t",
+        "install_method": "agent",
+        "category": "openshift",
+        "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+        "ocp": [{"name": "prod", "type": "standard", "workers": 2}],
+    }
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+
+    # Collect backend-materialized worker names
+    workers = [
+        n
+        for n in topo["nodes"]
+        if n.get("type") == "vmNode"
+        and n.get("data", {}).get("clusterId") == "prod"
+        and "workers" in n.get("data", {}).get("tags", {}).get("AnsibleGroup", "")
+    ]
+    assert len(workers) == 2
+    worker_names = [w["data"]["name"] for w in workers]
+    # Names should be prod-worker-0, prod-worker-1, etc.
+    assert all(name.startswith("prod-worker-") for name in worker_names)
+    # All names should be unique
+    assert len(worker_names) == len(set(worker_names))
+
+
 def test_export_roundtrip_cluster_with_per_role_disks_and_networks():
     """Export a cluster with controlPlaneDisks (2 disks), workerDisks (1 disk),
     and networkIds (1 network). Re-import and verify disks + networks survive.

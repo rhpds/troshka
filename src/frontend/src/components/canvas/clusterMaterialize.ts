@@ -306,7 +306,16 @@ function addMembers(
   nodes: Node[],
   count: number,
 ): { nodes: Node[]; edges: Edge[] } {
-  const usedNames = new Set(nodes.map((n) => n.id));
+  // FIX 1: Build used names from BOTH node IDs and existing cluster members' data.name.
+  // Backend members have random UUID node IDs but their names stored in data.name.
+  const nodeIds = new Set(nodes.map((n) => n.id));
+  const memberNames = new Set(
+    nodes
+      .filter((n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === cluster.id)
+      .map((n) => String((n.data as Record<string, unknown>).name))
+      .filter(Boolean)
+  );
+  const usedNames = new Set([...nodeIds, ...memberNames]);
   const allMembers = nodes.filter((n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === cluster.id);
   const cpMembers = allMembers.filter((n) => memberRole(n) === "control-plane").length;
   const addedNodes: Node[] = [];
