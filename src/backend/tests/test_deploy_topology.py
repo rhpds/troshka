@@ -1252,3 +1252,40 @@ def test_inject_showroom_gateway_port_forwards_net_automation_template():
     gw = next(n for n in topo["nodes"] if n.get("data", {}).get("subtype") == "gateway")
     ext_ports = {pf["extPort"] for pf in gw["data"]["portForwards"]}
     assert ext_ports == {"443"}
+
+
+# ---------------------------------------------------------------------------
+# Ops-pod transit IP recognizer (Plan 4, Task 6)
+# ---------------------------------------------------------------------------
+
+
+def test_is_ops_infra_ip():
+    from app.services.deploy_topology import is_ops_infra_ip, is_showroom_infra_ip
+
+    # Ops pod lives on the transit .4 address.
+    assert is_ops_infra_ip("172.30.10.4") is True
+    assert is_ops_infra_ip("172.30.200.4") is True
+    # Showroom .3 (or any other last octet) is NOT the ops pod.
+    assert is_ops_infra_ip("172.30.10.3") is False
+    assert is_ops_infra_ip("172.30.10.5") is False
+    # Non-transit / malformed addresses are never the ops pod.
+    assert is_ops_infra_ip("10.0.0.4") is False
+    assert is_ops_infra_ip("") is False
+    # Ops (.4) and showroom (.3) recognizers never overlap.
+    assert is_showroom_infra_ip("172.30.10.4") is False
+    assert is_ops_infra_ip("172.30.10.3") is False
+
+
+def test_ops_infra_ip_helper():
+    from app.services.deploy_topology import ops_infra_ip
+
+    # min VNI 4106 -> 0x0A == 10
+    assert ops_infra_ip({"a": 4106, "b": 4200}) == "172.30.10.4"
+    assert ops_infra_ip({}) == ""
+
+
+def test_find_vm_name_by_ip_recognizes_ops_pod():
+    from app.services.deploy_topology import _find_vm_name_by_ip
+
+    topo = {"nodes": []}
+    assert _find_vm_name_by_ip(topo, "172.30.10.4") == "ops"

@@ -1792,6 +1792,194 @@ def _create_and_start_pod(host, project_id, ctr, topology, vni_map, pool=None):
     _start_pod(host, full_pod_name)
 
 
+# --- Ops pod (bastionless / multi-cluster OCP install) ---------------------
+
+
+def _ocp_clusters(topology) -> list:
+    """OCP cluster list from a topology (empty when not an OCP project)."""
+    return (topology or {}).get("clusters") or []
+
+
+def _ocp_install_via_pod() -> bool:
+    """Config flag `ocp.install_via_pod` gating the ops-pod install (default False)."""
+    try:
+        from app.core.config import config as app_config
+
+        ocp_cfg = getattr(app_config, "ocp", None)
+        return bool(getattr(ocp_cfg, "install_via_pod", False)) if ocp_cfg else False
+    except Exception:
+        return False
+
+
+def _ops_pod_api_url() -> str:
+    """Public Troshka API URL the ops pod calls back to (from `app.external_url`)."""
+    try:
+        from app.core.config import config as app_config
+
+        app_cfg = getattr(app_config, "app", None)
+        return str(getattr(app_cfg, "external_url", "") or "") if app_cfg else ""
+    except Exception:
+        return ""
+
+
+def _should_use_ops_pod(topology) -> bool:
+    """True when the deploy should create the ops pod instead of the bastion.
+
+    Multi-cluster OCP projects always use the ops pod; single-cluster projects
+    only when the ``ocp.install_via_pod`` flag is on (the bastion path stays the
+    default until Plan 4b). Non-OCP projects (no ``clusters``) never do.
+    """
+    clusters = _ocp_clusters(topology)
+    if not clusters:
+        return False
+    return len(clusters) > 1 or _ocp_install_via_pod()
+
+
+def _ops_pod_workdir_lines(clusters, workdir, pull_secret_json) -> list[str]:
+    """Bash lines materialising per-cluster configs + pull secret into workdir.
+
+    Each file is written base64-decoded so arbitrary YAML/JSON content (quotes,
+    newlines) survives being embedded in the pod's ``bash -c`` command safely.
+    """
+    import base64
+
+    def _write(path: str, content: str) -> str:
+        b64 = base64.b64encode(content.encode()).decode()
+        return f"echo {b64} | base64 -d > {path}"
+
+    lines = [f"mkdir -p {workdir}"]
+    for cluster in clusters:
+        key = str(cluster.get("id") or cluster.get("name") or "cluster")
+        cluster_dir = f"{workdir}/{key}"
+        lines.append(f"mkdir -p {cluster_dir}")
+        install_cfg = cluster.get("_generatedInstallConfig")
+        agent_cfg = cluster.get("_generatedAgentConfig")
+        if install_cfg is not None:
+            lines.append(_write(f"{cluster_dir}/install-config.yaml", str(install_cfg)))
+        if agent_cfg is not None:
+            lines.append(_write(f"{cluster_dir}/agent-config.yaml", str(agent_cfg)))
+    if pull_secret_json:
+        lines.append(_write(f"{workdir}/pull-secret.json", pull_secret_json))
+    return lines
+
+
+def _ops_pod_command(clusters, topology, ocp_version, workdir, pull_secret_json):
+    """Full ``bash -c`` argv: materialise workdir files, then run the installer.
+
+    The install-runner script (Task 5) reads each cluster's config from
+    ``<workdir>/<clusterId>/`` — which the preamble writes first — and installs
+    every cluster in parallel, exiting non-zero if any cluster fails.
+    """
+    from app.services.ocp.ops_pod_install import (
+        bmc_for_cluster,
+        build_ops_pod_install_script,
+    )
+
+    bmc_by_cluster = {}
+    for cluster in clusters:
+        key = str(cluster.get("id") or cluster.get("name") or "cluster")
+        bmc_by_cluster[key] = bmc_for_cluster(topology, cluster)
+    script = build_ops_pod_install_script(
+        clusters, bmc_by_cluster, ocp_version, workdir
+    )
+    preamble = "\n".join(_ops_pod_workdir_lines(clusters, workdir, pull_secret_json))
+    return ["bash", "-c", preamble + "\n" + script]
+
+
+def _ops_pod_create_params(
+    project,
+    clusters,
+    topology,
+    vni_map,
+    api_url,
+    api_key,
+    ocp_version,
+    pull_secret_json,
+):
+    """Build the real troshkad ``/pods/create`` params for the ops pod.
+
+    Unlike Task 4's ``build_ops_pod_config`` (which returns a ``files`` map +
+    dict ``mounts``), this produces the ACTUAL contract troshkad's
+    ``_handle_pod_create`` consumes: a ``privileged`` pod named ``ops`` on the
+    infra-transit network (ops ``.4``), with one main container on
+    :data:`OPS_POD_IMAGE` whose ``env`` is a DICT (not ``envVars[]``) and whose
+    ``command`` is a ``bash -c`` argv that materialises the per-cluster configs
+    into the workdir and then runs the install-runner script.
+    """
+    from app.services.deploy_topology import _gateway_connected_dns_nameserver
+    from app.services.ocp.ops_pod_scaffold import (
+        OPS_POD_IMAGE,
+        OPS_POD_WORKDIR,
+        ops_pod_infra_network,
+    )
+
+    project_id = str(getattr(project, "id", ""))
+    dns = _gateway_connected_dns_nameserver(topology)
+    networks = ops_pod_infra_network(vni_map, dns_nameserver=dns)
+    command = _ops_pod_command(
+        clusters, topology, ocp_version, OPS_POD_WORKDIR, pull_secret_json
+    )
+    container = {
+        "name": "ops",
+        "image": OPS_POD_IMAGE,
+        "cpus": 2,
+        "memory": 2048,
+        "env": {
+            "TROSHKA_API_URL": api_url,
+            "TROSHKA_API_KEY": api_key,
+            "TROSHKA_PROJECT_ID": project_id,
+            "OCP_VERSION": ocp_version,
+        },
+        "mounts": [],
+        "command": command,
+        "privileged": True,
+    }
+    return {
+        "project_id": project_id,
+        "pod_name": "ops",
+        "networks": _troshkad_network_entries(networks),
+        "init_containers": [],
+        "containers": [container],
+        "volumes": [],
+        "restart_policy": "always",
+        "privileged": True,
+    }
+
+
+def _deploy_ops_pod(s, host, project_id, project, topology, vni_map):
+    """Mint a scoped key and create+start the in-cluster OCP install ops pod.
+
+    Bastionless / multi-cluster path: instead of a bastion VM, an in-cluster ops
+    pod runs the agent-based install for every cluster. Only invoked when
+    :func:`_should_use_ops_pod` is true. The actual install run inside the pod is
+    a live-environment concern; here we mint the project-scoped API key, shape
+    the real ``/pods/create`` params and issue create + start.
+    """
+    from app.services.ocp.ops_pod_auth import mint_ops_pod_key
+
+    clusters = _ocp_clusters(topology)
+    api_key = mint_ops_pod_key(s, project)
+    ocp_version = str(clusters[0].get("ocpVersion", "4.20")) if clusters else "4.20"
+    params = _ops_pod_create_params(
+        project,
+        clusters,
+        topology,
+        vni_map,
+        api_url=_ops_pod_api_url(),
+        api_key=api_key,
+        ocp_version=ocp_version,
+        pull_secret_json="",
+    )
+    logger.info(
+        "Deploy %s: creating ops pod for %d cluster(s)",
+        project_id[:8],
+        len(clusters),
+    )
+    job_id = start_job(host, "/pods/create", params)
+    _wait_troshkad_job(host, job_id, 300, "Ops pod create")
+    _start_pod(host, f"troshka-{project_id[:8]}-ops", timeout=300)
+
+
 def _sync_deployed_container_node(project, container_id: str, topo: dict) -> None:
     """Update the deployed_topology's container node (+ showroom meta) to match
     the current topology after a container redeploy, so the canvas snapshot
@@ -3824,7 +4012,7 @@ def _create_routes_for_gateway(
     s, driver, provider, host, project_id, node_data, topology
 ):
     """Create OCP Routes for routable port forwards and return endpoint list."""
-    from app.services.deploy_topology import is_showroom_infra_ip
+    from app.services.deploy_topology import is_ops_infra_ip, is_showroom_infra_ip
     from app.services.eip_service import allocate_standalone_transit_port
 
     external_endpoints = []
@@ -3839,8 +4027,13 @@ def _create_routes_for_gateway(
         try:
             if provider.type == "ocpvirt":
                 transit_port = _lookup_transit_port(topology, pf)
-                # Showroom infra (172.30.*.3) always needs its own DNAT target.
-                setup_dnat = transit_port is None or is_showroom_infra_ip(int_ip)
+                # Infra transit pods (showroom .3, ops .4) always need their own
+                # DNAT target.
+                setup_dnat = (
+                    transit_port is None
+                    or is_showroom_infra_ip(int_ip)
+                    or is_ops_infra_ip(int_ip)
+                )
                 if transit_port is None:
                     transit_port = allocate_standalone_transit_port(s, host)
                 result = driver.create_route_access(
@@ -4963,6 +5156,9 @@ def _deploy_single_host_execute(
         _deploy_start_containers(host, project_id, topology, auto_start)
         project.topology = topology
         s.commit()
+
+        if _should_use_ops_pod(topology):
+            _deploy_ops_pod(s, host, project_id, project, topology, vni_map)
 
     _deploy_complete_and_notify(
         s,

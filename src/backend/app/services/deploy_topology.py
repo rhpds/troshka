@@ -476,6 +476,27 @@ def showroom_infra_ip(vni_map: dict) -> str:
     return f"172.30.{octet3}.3"
 
 
+def is_ops_infra_ip(ip: str) -> bool:
+    """Transit-side ops-pod address (172.30.{vni}.4), not a lab NIC.
+
+    Parallels :func:`is_showroom_infra_ip` (which recognizes the showroom pod's
+    ``.3``) so the bastionless OCP ops pod's ``.4`` transit IP is treated the
+    same way wherever transit reachability is gated.
+    """
+    parts = (ip or "").split(".")
+    return (
+        len(parts) == 4 and parts[0] == "172" and parts[1] == "30" and parts[3] == "4"
+    )
+
+
+def ops_infra_ip(vni_map: dict) -> str:
+    """The ops pod's transit IP (172.30.{vni}.4), or '' when no VNI is known."""
+    octet3 = showroom_transit_octet3(vni_map)
+    if octet3 is None:
+        return ""
+    return f"172.30.{octet3}.4"
+
+
 def _network_dns_enabled(data: dict) -> bool:
     return bool(data.get("dns") or data.get("subtype") == "dns")
 
@@ -884,7 +905,9 @@ def _find_container_networks(
 
 
 def _find_vm_name_by_ip(topology, ip):
-    """Find the VM/showroom name for a port-forward internal IP."""
+    """Find the VM/showroom/ops name for a port-forward internal IP."""
+    if is_ops_infra_ip(ip):
+        return "ops"
     if is_showroom_infra_ip(ip):
         for node in topology.get("nodes", []):
             if _is_showroom_node(node):

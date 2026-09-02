@@ -71,3 +71,12 @@ ocpvirt:
     password: ""
     route_host: "repo-troshka-images.apps.ocpv-infra01.dal12.infra.demo.redhat.com"
     iso_library_item_name: "RHEL 10.2 Binary DVD"
+
+# OpenShift agent-based install options.
+#   install_via_pod: when true, single-cluster OCP projects install via the
+#     in-cluster ops pod instead of a bastion VM (multi-cluster always uses the
+#     ops pod). Default false so the bastion path stays default until Plan 4b.
+#   ops_pod_image: overrides the ops-pod execution-environment image ref.
+ocp:
+  install_via_pod: false
+  ops_pod_image: ""

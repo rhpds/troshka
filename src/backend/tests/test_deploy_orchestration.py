@@ -3884,3 +3884,145 @@ class TestCreateAndStartPod:
             create_params["volumes"][0]["mount_dir"]
             == "/var/lib/troshka/vms/proj/mnt-disk"
         )
+
+
+# ---------------------------------------------------------------------------
+# Ops-pod deploy wiring (Plan 4, Task 6)
+# ---------------------------------------------------------------------------
+
+
+def _ocp_topology(n_clusters):
+    """OCP topology with `n_clusters` clusters carrying generated configs."""
+    clusters = []
+    for i in range(n_clusters):
+        clusters.append(
+            {
+                "id": f"cl-{i}",
+                "name": f"c{i}",
+                "ocpVersion": "4.20",
+                "baseDomain": "ocp.local",
+                "_generatedInstallConfig": f"install: c{i}\n",
+                "_generatedAgentConfig": f"agent: c{i}\n",
+            }
+        )
+    topo = _minimal_topology()
+    topo["clusters"] = clusters
+    return topo
+
+
+class TestShouldUseOpsPod:
+    """Gating logic for the ops-pod install path."""
+
+    def test_non_ocp_project_never_uses_ops_pod(self):
+        from app.services.deploy_service import _should_use_ops_pod
+
+        assert _should_use_ops_pod(_minimal_topology()) is False
+
+    @patch(f"{SVC}._ocp_install_via_pod", return_value=False)
+    def test_multicluster_always_uses_ops_pod(self, _flag):
+        from app.services.deploy_service import _should_use_ops_pod
+
+        # Two clusters -> ops pod even with the flag off.
+        assert _should_use_ops_pod(_ocp_topology(2)) is True
+
+    @patch(f"{SVC}._ocp_install_via_pod", return_value=False)
+    def test_single_cluster_flag_off_uses_bastion(self, _flag):
+        from app.services.deploy_service import _should_use_ops_pod
+
+        # One cluster + flag off -> bastion path (no ops pod).
+        assert _should_use_ops_pod(_ocp_topology(1)) is False
+
+    @patch(f"{SVC}._ocp_install_via_pod", return_value=True)
+    def test_single_cluster_flag_on_uses_ops_pod(self, _flag):
+        from app.services.deploy_service import _should_use_ops_pod
+
+        assert _should_use_ops_pod(_ocp_topology(1)) is True
+
+
+class TestOpsPodCreateParams:
+    """Shape of the real troshkad /pods/create params for the ops pod."""
+
+    def test_params_match_troshkad_contract(self):
+        from app.services.deploy_service import _ops_pod_create_params
+        from app.services.ocp.ops_pod_scaffold import OPS_POD_IMAGE
+
+        project = _make_project()
+        topo = _ocp_topology(2)
+        params = _ops_pod_create_params(
+            project,
+            topo["clusters"],
+            topo,
+            {"net-1": 4106},
+            api_url="https://troshka.example.com",
+            api_key="trk_secret",
+            ocp_version="4.20",
+            pull_secret_json="",
+        )
+        assert params["pod_name"] == "ops"
+        assert params["restart_policy"] == "always"
+        assert params["privileged"] is True
+        assert params["project_id"] == PROJECT_ID
+        # Single main container on the OPS EE image.
+        assert len(params["containers"]) == 1
+        ctr = params["containers"][0]
+        assert ctr["name"] == "ops"
+        assert ctr["image"] == OPS_POD_IMAGE
+        # Real troshkad contract: env is a DICT, not an envVars[] list.
+        env = ctr["env"]
+        assert env["TROSHKA_API_KEY"] == "trk_secret"
+        assert env["TROSHKA_PROJECT_ID"] == PROJECT_ID
+        assert env["TROSHKA_API_URL"] == "https://troshka.example.com"
+        assert env["OCP_VERSION"] == "4.20"
+        # Command runs the install script under bash -c.
+        assert ctr["command"][0] == "bash"
+        assert ctr["command"][1] == "-c"
+        script = ctr["command"][2]
+        assert "wait-for install-complete" in script
+        # Workdir materialization writes each cluster's install-config.
+        assert "cl-0/install-config.yaml" in script
+        assert "cl-1/install-config.yaml" in script
+        # Transit network with the ops .4 infra IP.
+        assert params["networks"][0]["ip"] == "172.30.10.4"
+        assert params["networks"][0]["infra_transit"] is True
+
+
+class TestDeployOpsPod:
+    """End-to-end (mocked troshkad) ops-pod create+start sequence."""
+
+    @patch("app.services.ocp.ops_pod_auth.mint_ops_pod_key", return_value="trk_test")
+    @patch(f"{SVC}.wait_for_job", return_value={"status": "completed"})
+    @patch(f"{SVC}.start_job")
+    def test_deploy_ops_pod_mints_key_then_creates_and_starts(
+        self, mock_start, _mock_wait, mock_mint
+    ):
+        from app.services.deploy_service import _deploy_ops_pod
+        from app.services.ocp.ops_pod_scaffold import OPS_POD_IMAGE
+
+        s = MagicMock()
+        host = _make_host()
+        project = _make_project()
+        topo = _ocp_topology(2)
+        vni_map = {"net-1": 4106}
+        mock_start.side_effect = ["job-create", "job-start"]
+
+        _deploy_ops_pod(s, host, PROJECT_ID, project, topo, vni_map)
+
+        # Scoped key minted exactly once for this project.
+        mock_mint.assert_called_once_with(s, project)
+        assert mock_start.call_count == 2
+
+        # First call: /pods/create with the ops-pod params.
+        create_call = mock_start.call_args_list[0]
+        assert create_call[0][1] == "/pods/create"
+        params = create_call[0][2]
+        assert params["pod_name"] == "ops"
+        ctr = params["containers"][0]
+        assert ctr["image"] == OPS_POD_IMAGE
+        assert ctr["env"]["TROSHKA_API_KEY"] == "trk_test"
+        assert ctr["env"]["TROSHKA_PROJECT_ID"] == PROJECT_ID
+        assert "wait-for install-complete" in ctr["command"][2]
+
+        # Second call: /pods/start with the full pod name.
+        start_call = mock_start.call_args_list[1]
+        assert start_call[0][1] == "/pods/start"
+        assert start_call[0][2]["pod_name"] == f"troshka-{PROJECT_ID[:8]}-ops"
