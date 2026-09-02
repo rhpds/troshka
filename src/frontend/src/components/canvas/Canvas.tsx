@@ -27,7 +27,7 @@ import DuplicateVMModal from "./DuplicateVMModal";
 import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM } from "@/stores/canvasStore";
 import { makeCluster } from "@/components/canvas/clusterFactory";
 import { resolveMembership, absolutePosition, relativePosition, orderChildAfterParent } from "@/components/canvas/clusterMembership";
-import { assignmentDataPatch } from "@/components/canvas/clusterMaterialize";
+import { assignmentDataPatch, materializeClusterInto } from "@/components/canvas/clusterMaterialize";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
 import {
   GATEWAY_NETWORK_SOURCE_HANDLE,
@@ -492,6 +492,9 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
         const { node, cluster } = makeCluster("ocp", position);
         addNode(node);
         addCluster(cluster);
+        const withMembers = materializeClusterInto(cluster, useCanvasStore.getState().nodes);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (useCanvasStore as any).setState({ nodes: withMembers });
         return; // node + cluster added together; skip the trailing addNode
       } else {
         return;

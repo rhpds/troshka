@@ -229,6 +229,18 @@ export function reconcileClusterVms(
 }
 
 /**
+ * Appends the cluster's default members (via `reconcileClusterVms`) to `nodes`.
+ * Used by both the drop handler (to materialize on first creation) and
+ * PropertiesPanel (when count/type edits change).
+ */
+export function materializeClusterInto(
+  cluster: ClusterConfig,
+  nodes: Node[],
+): Node[] {
+  return reconcileClusterVms(cluster, nodes);
+}
+
+/**
  * Push the cluster's per-role sizing (cpu/memory/disk) onto its EXISTING
  * generated member VMs so a sizing edit in the properties panel actually reaches
  * already-materialized nodes. Uses the same field mapping as `makeMemberNode`

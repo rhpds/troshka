@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { reconcileClusterVms, applyClusterSizing, memberRole, assignmentDataPatch } from "@/components/canvas/clusterMaterialize";
+import { reconcileClusterVms, applyClusterSizing, memberRole, assignmentDataPatch, materializeClusterInto } from "@/components/canvas/clusterMaterialize";
+import { makeCluster } from "@/components/canvas/clusterFactory";
 
 const cluster = {
   id: "prod",
@@ -170,6 +171,18 @@ describe("backend-created cluster members (no clusterRole)", () => {
     const wks = sized.filter((n) => memberRole(n) === "worker");
     expect(cps.every((n) => n.data.vcpus === 16)).toBe(true);
     expect(wks.every((n) => n.data.vcpus === 12)).toBe(true);
+  });
+});
+
+describe("materializeClusterInto", () => {
+  it("materializeClusterInto creates 3 CP members for a fresh standard cluster", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    const nodes = materializeClusterInto(cluster, [node]);
+    const cps = nodes.filter(
+      (n) => n.type === "vmNode" && n.data.clusterId === cluster.id && n.data.clusterRole === "control-plane",
+    );
+    expect(cps).toHaveLength(3);
+    expect(cps.every((n) => n.parentId === cluster.nodeId)).toBe(true);
   });
 });
 
