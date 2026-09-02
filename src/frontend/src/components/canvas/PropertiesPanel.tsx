@@ -4,7 +4,8 @@ import React, { useState, useEffect, useRef } from "react";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
-import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
+import { useCanvasStore, computeTopologyDirty, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
+import { reconcileClusterVms } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
 import {
   getShowroomReadiness,
@@ -34,6 +35,7 @@ import type {
   NetworkNodeData,
   StorageNodeData,
   ContainerNodeData,
+  ClusterConfig,
 } from "@/stores/canvasStore";
 
 function HintIcon({ text }: { text: string }) {
@@ -370,12 +372,198 @@ function RegistryCredentialDropdown({
   );
 }
 
+// Cluster summary fields the boundary node renders as a badge — kept in sync on
+// the clusterNode's own `data` whenever the cluster config changes.
+const CLUSTER_SUMMARY_FIELDS = [
+  "name",
+  "type",
+  "controlPlane",
+  "workers",
+  "baseDomain",
+  "apiVip",
+  "ingressVip",
+] as const;
+
+function clusterSummaryMirror(patch: Partial<ClusterConfig>): Record<string, unknown> {
+  const mirror: Record<string, unknown> = {};
+  for (const k of CLUSTER_SUMMARY_FIELDS) {
+    if (k in patch) mirror[k] = (patch as Record<string, unknown>)[k];
+  }
+  if (patch.name !== undefined) mirror.label = patch.name;
+  return mirror;
+}
+
+/**
+ * Cross-cluster VIP uniqueness check. Returns an inline error message when the
+ * given VIP value collides with the other VIP on the same cluster or with any
+ * VIP on another cluster; null when unique or empty. Never blocks input.
+ */
+function vipCollisionError(
+  clusters: ClusterConfig[],
+  clusterId: string,
+  field: "apiVip" | "ingressVip",
+  value: string,
+): string | null {
+  const v = (value || "").trim();
+  if (!v) return null;
+  const self = clusters.find((c) => c.id === clusterId);
+  const otherField = field === "apiVip" ? "ingressVip" : "apiVip";
+  if (self && (self[otherField] || "").trim() === v) {
+    return `Duplicates this cluster's ${otherField === "apiVip" ? "API VIP" : "Ingress VIP"}`;
+  }
+  for (const c of clusters) {
+    if (c.id === clusterId) continue;
+    if ((c.apiVip || "").trim() === v || (c.ingressVip || "").trim() === v) {
+      return `Already used by cluster "${c.name}"`;
+    }
+  }
+  return null;
+}
+
+function ClusterNumberField({
+  label,
+  value,
+  min = 0,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min?: number;
+  onCommit: (n: number) => void;
+}) {
+  return (
+    <div className="props-field">
+      <label className="props-label">{label}</label>
+      <input
+        type="number"
+        aria-label={label}
+        className="props-input"
+        min={min}
+        value={value}
+        onChange={(e) => {
+          const n = parseInt(e.target.value, 10);
+          onCommit(Number.isNaN(n) ? min : Math.max(min, n));
+        }}
+      />
+    </div>
+  );
+}
+
+function ClusterTextField({
+  label,
+  value,
+  placeholder,
+  error,
+  onCommit,
+}: {
+  label: string;
+  value: string;
+  placeholder?: string;
+  error?: string | null;
+  onCommit: (v: string) => void;
+}) {
+  return (
+    <div className="props-field">
+      <label className="props-label">{label}</label>
+      <input
+        aria-label={label}
+        className="props-input"
+        value={value}
+        placeholder={placeholder}
+        onChange={(e) => onCommit(e.target.value)}
+        style={error ? { borderColor: "var(--pf-t--global--color--status--warning--default)" } : undefined}
+      />
+      {error && (
+        <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>
+          {error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ClusterEditor({
+  cluster,
+  clusters,
+  onPatch,
+  onTypeChange,
+  onWorkersChange,
+}: {
+  cluster: ClusterConfig;
+  clusters: ClusterConfig[];
+  onPatch: (patch: Partial<ClusterConfig>) => void;
+  onTypeChange: (type: string) => void;
+  onWorkersChange: (workers: number) => void;
+}) {
+  const apiVipError = vipCollisionError(clusters, cluster.id, "apiVip", cluster.apiVip || "");
+  const ingressVipError = vipCollisionError(clusters, cluster.id, "ingressVip", cluster.ingressVip || "");
+  return (
+    <>
+      <div className="props-section">
+        <div className="props-section-title">General</div>
+        <ClusterTextField label="Name" value={cluster.name || ""} onCommit={(v) => onPatch({ name: v })} />
+        <div className="props-field">
+          <label className="props-label">Cluster Type</label>
+          <select
+            aria-label="Cluster Type"
+            className="props-select"
+            value={cluster.type}
+            onChange={(e) => onTypeChange(e.target.value)}
+          >
+            <option value="sno">SNO (single node)</option>
+            <option value="compact">Compact (3 control-plane)</option>
+            <option value="standard">Standard</option>
+          </select>
+        </div>
+        <div className="props-field">
+          <label className="props-label">Control Plane Nodes</label>
+          <span style={{ fontSize: 13, color: "var(--troshka-text-dim)" }}>
+            {cluster.controlPlane} (derived from type)
+          </span>
+        </div>
+        <ClusterNumberField
+          label="Workers"
+          value={cluster.workers}
+          onCommit={onWorkersChange}
+        />
+      </div>
+      <div className="props-divider" />
+
+      <div className="props-section">
+        <div className="props-section-title">Control Plane Sizing</div>
+        <ClusterNumberField label="Control Plane vCPUs" min={1} value={cluster.controlPlaneCpu ?? 8} onCommit={(v) => onPatch({ controlPlaneCpu: v })} />
+        <ClusterNumberField label="Control Plane Memory (MB)" min={1} value={cluster.controlPlaneMemory ?? 16384} onCommit={(v) => onPatch({ controlPlaneMemory: v })} />
+        <ClusterNumberField label="Control Plane Disk (GB)" min={1} value={cluster.controlPlaneDisk ?? 120} onCommit={(v) => onPatch({ controlPlaneDisk: v })} />
+      </div>
+      <div className="props-divider" />
+
+      <div className="props-section">
+        <div className="props-section-title">Worker Sizing</div>
+        <ClusterNumberField label="Worker vCPUs" min={1} value={cluster.workerCpu ?? 4} onCommit={(v) => onPatch({ workerCpu: v })} />
+        <ClusterNumberField label="Worker Memory (MB)" min={1} value={cluster.workerMemory ?? 8192} onCommit={(v) => onPatch({ workerMemory: v })} />
+        <ClusterNumberField label="Worker Disk (GB)" min={1} value={cluster.workerDisk ?? 100} onCommit={(v) => onPatch({ workerDisk: v })} />
+      </div>
+      <div className="props-divider" />
+
+      <div className="props-section">
+        <div className="props-section-title">Networking</div>
+        <ClusterTextField label="Base Domain" value={cluster.baseDomain || ""} placeholder="ocp.local" onCommit={(v) => onPatch({ baseDomain: v })} />
+        <ClusterTextField label="API VIP" value={cluster.apiVip || ""} error={apiVipError} onCommit={(v) => onPatch({ apiVip: v })} />
+        <ClusterTextField label="Ingress VIP" value={cluster.ingressVip || ""} error={ingressVipError} onCommit={(v) => onPatch({ ingressVip: v })} />
+        <ClusterTextField label="OCP Version" value={cluster.ocpVersion || ""} placeholder="4.20" onCommit={(v) => onPatch({ ocpVersion: v })} />
+      </div>
+    </>
+  );
+}
+
 export default function PropertiesPanel() {
   const nodeId = useCanvasStore((s) => s.selectedNodeId);
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
   const vniMap = useCanvasStore((s) => s.vniMap);
   const updateNodeData = useCanvasStore((s) => s.updateNodeData);
+  const clusters = useCanvasStore((s) => s.clusters);
+  const updateCluster = useCanvasStore((s) => s.updateCluster);
   const deleteNode = useCanvasStore((s) => s.deleteNode);
   const projectState = useCanvasStore((s) => s.projectState);
   const panelLocked = ["deploying", "reconfiguring", "starting", "stopping"].includes(projectState);
@@ -436,7 +624,9 @@ export default function PropertiesPanel() {
                 ? "props-icon-vm"
                 : nodeType === "networkNode"
                   ? "props-icon-network"
-                  : "props-icon-storage"
+                  : nodeType === "clusterNode"
+                    ? "props-icon-network"
+                    : "props-icon-storage"
           }`}
         >
           {nodeType === "vmNode"
@@ -455,7 +645,9 @@ export default function PropertiesPanel() {
                       </svg>
                     );
                   })()
-                : ((data as unknown as StorageNodeData).format === "iso" ? "💿" : "🛢")}
+                : nodeType === "clusterNode"
+                  ? "☸"
+                  : ((data as unknown as StorageNodeData).format === "iso" ? "💿" : "🛢")}
         </div>
         <div>
           <div className="props-title">{data.name as string}</div>
@@ -466,7 +658,9 @@ export default function PropertiesPanel() {
                 ? `Container · ${(data as unknown as ContainerNodeData).status === "running" ? "Running" : "Stopped"}`
                 : nodeType === "networkNode"
                   ? "Network"
-                  : "Storage"}
+                  : nodeType === "clusterNode"
+                    ? `OCP Cluster -- ${(data.type as string) || "standard"}`
+                    : "Storage"}
           </div>
         </div>
       </div>
@@ -4082,6 +4276,43 @@ export default function PropertiesPanel() {
         );
       })()}
 
+      {nodeType === "clusterNode" && (() => {
+        const clusterId = (data.clusterId as string) || node.id.replace(/^cluster-/, "");
+        const cluster = clusters.find((c) => c.id === clusterId);
+        if (!cluster) return null;
+        const editCluster = (patch: Partial<ClusterConfig>) => {
+          updateCluster(clusterId, patch);
+          const mirror = clusterSummaryMirror(patch);
+          if (Object.keys(mirror).length) updateNodeData(node.id, mirror);
+        };
+        // Count/type edits materialize member VMs. reconcile appends any new
+        // members after the (already-present) boundary node, so React Flow's
+        // parent-before-child ordering is preserved.
+        const reconcile = (updated: ClusterConfig) => {
+          const next = reconcileClusterVms(updated, useCanvasStore.getState().nodes);
+          useCanvasStore.setState({ nodes: next });
+          useCanvasStore.setState({ topologyDirty: computeTopologyDirty(useCanvasStore.getState()) });
+        };
+        const handleTypeChange = (type: string) => {
+          const controlPlane = type === "sno" ? 1 : 3;
+          editCluster({ type, controlPlane });
+          reconcile({ ...cluster, type, controlPlane });
+        };
+        const handleWorkersChange = (workers: number) => {
+          editCluster({ workers });
+          reconcile({ ...cluster, workers });
+        };
+        return (
+          <ClusterEditor
+            cluster={cluster}
+            clusters={clusters}
+            onPatch={editCluster}
+            onTypeChange={handleTypeChange}
+            onWorkersChange={handleWorkersChange}
+          />
+        );
+      })()}
+
       {/* Redeploy VM button */}
       {nodeType === "vmNode" && useCanvasStore.getState().deployedVmIds.has(node.id) && (
         <>
@@ -4154,7 +4385,7 @@ export default function PropertiesPanel() {
           className="props-delete-btn"
           onClick={() => deleteNode(node.id)}
         >
-          Delete {nodeType === "vmNode" ? "VM" : nodeType === "networkNode" ? (
+          Delete {nodeType === "vmNode" ? "VM" : nodeType === "clusterNode" ? "Cluster" : nodeType === "networkNode" ? (
             (data as unknown as NetworkNodeData).subtype === "router" ? "Router" :
             (data as unknown as NetworkNodeData).subtype === "gateway" ? "Gateway" : "Network"
           ) : "Storage"}

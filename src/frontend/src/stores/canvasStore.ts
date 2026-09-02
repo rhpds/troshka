@@ -253,6 +253,7 @@ interface CanvasState {
   deployedNodeData: Record<string, string>;
   deployedEdgeKey: string;
   deployedExternalIps: string;
+  deployedClusters: string;
   showMinimap: boolean;
   hiddenNodeIds: string[];
   suppressDeleteWarning: boolean;
@@ -558,6 +559,7 @@ type DeployedTopologySnapshot = {
   nodes?: Array<{ id: string; type?: string; data?: Record<string, unknown> }>;
   edges?: Array<{ source: string; sourceHandle?: string; target: string; targetHandle?: string }>;
   externalIps?: ExternalIp[];
+  clusters?: ClusterConfig[];
   bmc?: unknown;
 };
 
@@ -597,6 +599,7 @@ function buildDeployedBaseline(deployed: DeployedTopologySnapshot | null | undef
     deployedNodeData: depNodeData,
     deployedEdgeKey: depEdgeKey,
     deployedExternalIps: stableExternalIpsKey(deployed?.externalIps),
+    deployedClusters: stableStringify(deployed?.clusters || []),
   };
 }
 
@@ -629,7 +632,7 @@ export function stableExternalIpsKey(ips: ExternalIp[] | undefined): string {
   );
 }
 
-export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; deployedNodeData: Record<string, string>; deployedEdgeKey: string; externalIps?: ExternalIp[]; deployedExternalIps?: string }): boolean {
+export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; deployedNodeData: Record<string, string>; deployedEdgeKey: string; externalIps?: ExternalIp[]; deployedExternalIps?: string; clusters?: ClusterConfig[]; deployedClusters?: string }): boolean {
   const { nodes, edges, deployedNodeData, deployedEdgeKey } = state;
   if (!deployedEdgeKey && !Object.keys(deployedNodeData).length) return false;
   const currentNodeIds = nodes.map((n) => n.id).sort().join(",");
@@ -649,6 +652,12 @@ export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; depl
   // External IPs (add/remove/rename) — compared by desired fields only. Set
   // together with deployedNodeData on load, so it is populated by this point.
   if (state.deployedExternalIps !== undefined && stableExternalIpsKey(state.externalIps) !== state.deployedExternalIps) return true;
+  // Cluster sizing/config lives only in clusters[] (not on any node.data): a
+  // change to controlPlaneCpu/Memory/Disk, workerCpu/Memory/Disk, ocpVersion,
+  // pullThroughRegistry, apiVip/ingressVip, baseDomain, type or workers must
+  // still mark the topology dirty. Compared with the same order-insensitive
+  // serialization used for the deployed baseline.
+  if (state.deployedClusters !== undefined && stableStringify(state.clusters || []) !== state.deployedClusters) return true;
   return false;
 }
 
@@ -705,6 +714,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   deployedNodeData: {} as Record<string, string>,
   deployedEdgeKey: "",
   deployedExternalIps: "[]",
+  deployedClusters: "[]",
   topologyDirty: false,
   startOrder: [] as StartOrderEntry[],
   externalIps: [] as ExternalIp[],

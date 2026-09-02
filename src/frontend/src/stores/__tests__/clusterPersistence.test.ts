@@ -1,10 +1,26 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { Node } from "@xyflow/react";
-import { useCanvasStore, _saveTopologyToApi, type ClusterConfig } from "@/stores/canvasStore";
+import {
+  useCanvasStore,
+  _saveTopologyToApi,
+  stableStringify,
+  stableNodeData,
+  type ClusterConfig,
+} from "@/stores/canvasStore";
 
 // helper: reset store between tests
 beforeEach(() => {
-  useCanvasStore.setState({ nodes: [], edges: [], clusters: [] });
+  useCanvasStore.setState({
+    nodes: [],
+    edges: [],
+    clusters: [],
+    deployedNodeData: {},
+    deployedEdgeKey: "",
+    deployedExternalIps: "[]",
+    deployedClusters: "[]",
+    externalIps: [],
+    topologyDirty: false,
+  });
 });
 
 const prodCluster: ClusterConfig = {
@@ -32,6 +48,36 @@ describe("cluster persistence in store", () => {
     expect(useCanvasStore.getState().clusters[0].workers).toBe(3);
     useCanvasStore.getState().removeCluster("prod");
     expect(useCanvasStore.getState().clusters).toHaveLength(0);
+  });
+
+  it("updateCluster sizing edit sets topologyDirty vs deployed baseline", () => {
+    const clusterNode: Node = {
+      id: "cluster-prod",
+      type: "clusterNode",
+      position: { x: 0, y: 0 },
+      data: { name: "prod", type: "standard", controlPlane: 3, workers: 2 },
+    };
+    useCanvasStore.setState({
+      nodes: [clusterNode],
+      edges: [],
+      clusters: [{ ...prodCluster, workerCpu: 4 }],
+      // Deployed baseline matches current node data + clusters, so only a
+      // clusters[]-only edit can flip the dirty flag.
+      deployedNodeData: {
+        "cluster-prod": stableStringify(
+          stableNodeData(clusterNode.data as Record<string, unknown>),
+        ),
+      },
+      deployedEdgeKey: "",
+      deployedExternalIps: "[]",
+      deployedClusters: stableStringify([{ ...prodCluster, workerCpu: 4 }]),
+      externalIps: [],
+      topologyDirty: false,
+    });
+    expect(useCanvasStore.getState().topologyDirty).toBe(false);
+    // A clusters-only sizing change (not mirrored on any node.data) must dirty.
+    useCanvasStore.getState().updateCluster("prod", { workerCpu: 16 });
+    expect(useCanvasStore.getState().topologyDirty).toBe(true);
   });
 
   it("_saveTopologyToApi includes clusters and node clusterId/parentId", async () => {
