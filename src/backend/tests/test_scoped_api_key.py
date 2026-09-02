@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from app.core.auth import scoped_key_router_guard
+from app.core.auth import _enforce_scoped_key_access
 from app.core.database import get_db
 from app.main import app
 from app.models.api_key import ApiKey, generate_api_key, hash_key
@@ -70,7 +70,7 @@ def test_scoped_key_with_none_scopes_grants_nothing():
 
 
 # ---------------------------------------------------------------------------
-# scoped_key_router_guard — unit tests against a fake Request
+# _enforce_scoped_key_access — unit tests against a fake Request
 # ---------------------------------------------------------------------------
 class _FakeState:
     def __init__(self, api_key):
@@ -91,8 +91,7 @@ class _FakeRequest:
 
 def _run_guard(api_key, route_project_id, route_name):
     req = _FakeRequest(api_key, route_project_id, route_name)
-    # _user arg is unused by the guard body; pass a sentinel.
-    return scoped_key_router_guard(req, _user=object())
+    return _enforce_scoped_key_access(req)
 
 
 def test_guard_noop_when_no_api_key():
@@ -136,6 +135,16 @@ def test_guard_blocks_missing_perm():
     try:
         _run_guard(key, "pA", "vm_exec")
         raise AssertionError("expected HTTPException for missing permission")
+    except HTTPException as exc:
+        assert exc.status_code == 403
+
+
+def test_guard_fails_closed_without_resolved_route():
+    """No resolved route (empty name) → denied for scoped keys (fail closed)."""
+    key = _make_key(project_id="pA", scopes=["topology:read", "vm:exec"])
+    try:
+        _run_guard(key, "pA", "")
+        raise AssertionError("expected HTTPException when no route resolved")
     except HTTPException as exc:
         assert exc.status_code == 403
 
@@ -293,6 +302,36 @@ def test_scoped_key_default_denied_on_sibling_routers():
         ).status_code
         == 403
     )
+
+
+def test_scoped_key_cannot_mint_new_key():
+    """CRITICAL: a scoped key must NOT reach /api-keys (the scope-escape route).
+
+    Minting a new unscoped key would be total privilege escalation.
+    """
+    owner = _make_owner()
+    pid = _make_project(owner, state="active")
+    raw = _make_db_key(owner, project_id=pid, scopes=["topology:read", "vm:exec"])
+    h = _auth(raw)
+    assert (
+        client.post("/api/v1/api-keys/", headers=h, json={"name": "escape"}).status_code
+        == 403
+    )
+    assert client.get("/api/v1/api-keys/", headers=h).status_code == 403
+    assert client.delete("/api/v1/api-keys/some-id", headers=h).status_code == 403
+
+
+def test_scoped_key_denied_on_other_owner_routers():
+    """Global default-deny: scoped keys can't reach non-project owner routers
+    (patterns, library, registry-credentials, templates)."""
+    owner = _make_owner()
+    pid = _make_project(owner, state="active")
+    raw = _make_db_key(owner, project_id=pid, scopes=["topology:read", "vm:exec"])
+    h = _auth(raw)
+    assert client.get("/api/v1/patterns/", headers=h).status_code == 403
+    assert client.get("/api/v1/library/", headers=h).status_code == 403
+    assert client.get("/api/v1/auth/registry-credentials", headers=h).status_code == 403
+    assert client.post("/api/v1/deploy-template", headers=h, json={}).status_code == 403
 
 
 def test_scoped_key_cannot_reach_other_projects_siblings():

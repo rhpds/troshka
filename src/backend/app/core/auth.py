@@ -281,11 +281,54 @@ def _enforce_access(email: str, ocp_username: str | None = None):
         )
 
 
+# Route name -> permission a project-scoped API key must hold to reach it.
+# This is an explicit ALLOWLIST: EVERY route not listed here is denied for
+# project-scoped keys (global default-deny / least-privilege). Enforcement lives
+# in get_current_user, so it applies to every route that authenticates a user —
+# no per-router opt-in to forget. Extend as the ops/console pod needs more routes
+# (e.g. Plan 6 file/exec-adjacent endpoints).
+_SCOPED_KEY_ROUTE_ALLOWLIST: dict[str, str] = {
+    "get_project": "topology:read",
+    "vm_exec": "vm:exec",
+}
+
+
+def _enforce_scoped_key_access(request: Request):
+    """Global default-deny gate for project-scoped API keys.
+
+    Called by ``get_current_user`` right after a ``trk_`` key authenticates. For
+    unscoped keys / JWT / OAuth / dev auth this is never reached (only scoped
+    keys stash ``is_scoped`` state), so their behavior is unchanged.
+
+    A project-scoped key may only reach routes in
+    ``_SCOPED_KEY_ROUTE_ALLOWLIST``, only for its own ``project_id``, and only
+    with the required permission — everything else is 403. If no route is
+    resolved on the request (``route_name`` empty), it is absent from the
+    allowlist and therefore denied (fail closed).
+    """
+    api_key = getattr(request.state, "api_key", None)
+    if api_key is None or not api_key.is_scoped:
+        return
+    route = request.scope.get("route")
+    route_name: str = getattr(route, "name", "") or ""
+    perm = _SCOPED_KEY_ROUTE_ALLOWLIST.get(route_name)
+    if perm is None:
+        raise HTTPException(
+            status_code=403, detail="API key is not authorized for this action"
+        )
+    route_project_id = request.path_params.get("project_id")
+    if api_key.project_id != route_project_id or not api_key.has_scope(perm):
+        raise HTTPException(
+            status_code=403,
+            detail="API key is not authorized for this project or action",
+        )
+
+
 def get_current_user(request: Request, db: Session = Depends(get_db)):
     from app.models.user import User
 
     # Default: no API key. _get_user_from_api_key sets this when a trk_ key
-    # authenticates, so scope-enforcing dependencies can distinguish auth paths.
+    # authenticates, so _enforce_scoped_key_access can distinguish auth paths.
     request.state.api_key = None
 
     # SSO mode: use OAuth proxy headers
@@ -307,6 +350,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
     api_key_user = _get_user_from_api_key(request, db)
     if api_key_user:
         _enforce_access(api_key_user.email)
+        _enforce_scoped_key_access(request)
         return api_key_user
 
     # Try JWT token (works in both dev and SSO mode)
@@ -324,47 +368,6 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
         return _get_or_create_dev_user(db)
 
     raise HTTPException(status_code=401, detail="Not authenticated")
-
-
-# Route name -> permission a project-scoped API key must hold to reach it.
-# This is an explicit ALLOWLIST: any projects route NOT listed here is denied
-# for scoped keys (default-deny / least-privilege). Extend as the ops/console
-# pod needs more routes (e.g. Plan 6 file/exec-adjacent endpoints).
-_SCOPED_KEY_ROUTE_ALLOWLIST: dict[str, str] = {
-    "get_project": "topology:read",
-    "vm_exec": "vm:exec",
-}
-
-
-def scoped_key_router_guard(request: Request, _user=Depends(get_current_user)):
-    """Default-deny gate for project-scoped API keys on the projects router.
-
-    Unscoped keys, JWT, OAuth, and dev auth (no scoped key on ``request.state``)
-    are unaffected — this is a no-op so existing owner/role/dev checks continue
-    to govern access unchanged.
-
-    A project-scoped key may only reach routes in
-    ``_SCOPED_KEY_ROUTE_ALLOWLIST``, only for its own ``project_id``, and only
-    with the required permission; every other projects route returns 403. The
-    ``_user`` param exists solely to order this after ``get_current_user`` (which
-    stashes the matched key on ``request.state``).
-    """
-    api_key = getattr(request.state, "api_key", None)
-    if api_key is None or not api_key.is_scoped:
-        return
-    route = request.scope.get("route")
-    route_name: str = getattr(route, "name", "") or ""
-    perm = _SCOPED_KEY_ROUTE_ALLOWLIST.get(route_name)
-    if perm is None:
-        raise HTTPException(
-            status_code=403, detail="API key is not authorized for this action"
-        )
-    route_project_id = request.path_params.get("project_id")
-    if api_key.project_id != route_project_id or not api_key.has_scope(perm):
-        raise HTTPException(
-            status_code=403,
-            detail="API key is not authorized for this project or action",
-        )
 
 
 def require_role(min_role: str):

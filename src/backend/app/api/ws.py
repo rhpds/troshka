@@ -22,9 +22,10 @@ HEARTBEAT_INTERVAL = 30
 def _is_scoped_api_key(token: str | None, db) -> bool:
     """True when the token is a project-scoped API key.
 
-    Websockets bypass HTTP dependencies (including scoped_key_router_guard), so
-    the /ws route must reject scoped ops-pod keys explicitly. Scoped keys are
-    limited to REST topology-read + vm-exec; they must never open a project WS.
+    Websockets bypass HTTP dependencies (including the global scoped-key
+    default-deny in get_current_user), so the /ws route must reject scoped
+    ops-pod keys explicitly. Scoped keys are limited to REST topology-read +
+    vm-exec; they must never open a project WS.
     """
     if not token or not token.startswith("trk_"):
         return False

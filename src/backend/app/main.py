@@ -32,7 +32,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.auth import require_role, scoped_key_router_guard
+from app.core.auth import require_role
 from app.core.config import config
 from app.core.database import init_db
 
@@ -678,30 +678,25 @@ from app.api import ws as ws_routes  # noqa: E402
 
 _API_PREFIX = "/api/v1"
 
-# Default-deny guard for project-scoped API keys. Applied to every router that
-# exposes project sub-resources (vms/networks/disks/eips/portal) so a scoped
-# ops-pod key cannot reach them — only the allowlisted routes on the projects
-# router (get_project, vm_exec) remain reachable. The projects router carries
-# the guard in its own definition; the /ws websocket enforces it inline.
-_scoped_guard = [Depends(scoped_key_router_guard)]
-
+# NOTE: project-scoped API key default-deny is enforced globally inside
+# get_current_user (see app/core/auth._enforce_scoped_key_access), so every
+# authenticated route is covered without per-router opt-in. The /ws websocket,
+# which bypasses HTTP dependencies, enforces the denial inline.
 app.include_router(auth_routes.router, prefix=_API_PREFIX)
 app.include_router(project_routes.router, prefix=_API_PREFIX)
-app.include_router(vm_routes.router, prefix=_API_PREFIX, dependencies=_scoped_guard)
-app.include_router(
-    network_routes.router, prefix=_API_PREFIX, dependencies=_scoped_guard
-)
-app.include_router(disk_routes.router, prefix=_API_PREFIX, dependencies=_scoped_guard)
+app.include_router(vm_routes.router, prefix=_API_PREFIX)
+app.include_router(network_routes.router, prefix=_API_PREFIX)
+app.include_router(disk_routes.router, prefix=_API_PREFIX)
 app.include_router(api_key_routes.router, prefix=_API_PREFIX)
 app.include_router(host_routes.router, prefix=_API_PREFIX)
 app.include_router(provider_routes.router, prefix=_API_PREFIX)
 app.include_router(library_routes.router, prefix=_API_PREFIX)
 app.include_router(pattern_routes.router, prefix=_API_PREFIX)
-app.include_router(eip_routes.router, prefix=_API_PREFIX, dependencies=_scoped_guard)
+app.include_router(eip_routes.router, prefix=_API_PREFIX)
 app.include_router(ws_routes.router)
 app.include_router(storage_pool_routes.router, prefix=_API_PREFIX)
 app.include_router(dns_provider_routes.router, prefix=_API_PREFIX)
-app.include_router(portal_routes.router, prefix=_API_PREFIX, dependencies=_scoped_guard)
+app.include_router(portal_routes.router, prefix=_API_PREFIX)
 app.include_router(template_routes.router, prefix=_API_PREFIX)
 app.include_router(registry_cred_routes.router, prefix=_API_PREFIX)
 app.include_router(user_routes.router, prefix=_API_PREFIX)
