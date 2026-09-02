@@ -93,3 +93,46 @@ def test_apply_sno_ocp_vm_flags_skips_multi_node():
     apply_sno_ocp_vm_flags(topo, recert=True)
     for node in topo["nodes"]:
         assert node["data"].get("ocpMonitor") is None
+
+
+# --- Pod (bastionless) projects: no bastion / RHCOS ocpMonitor VM node --------
+
+
+def test_pod_project_has_no_bastion_vm():
+    """A pod-install project defines its clusters in ``topology['clusters']`` and
+    has no bastion VM node."""
+    pod_topo = {
+        "clusters": [{"id": "cl-0", "name": "c0"}],
+        "nodes": [{"id": "net", "type": "networkNode", "data": {"name": "ocp-net"}}],
+    }
+    assert has_bastion_vm(pod_topo) is False
+
+
+def test_apply_sno_ocp_vm_flags_pod_project_is_safe_noop():
+    """Pod (bastionless) projects have no RHCOS VM node, so the SNO flag helper
+    must be a safe no-op: it does not error and adds no monitor flags to any node
+    (the ops-pod install monitor covers OCP status instead of a per-VM monitor)."""
+    topo = {
+        "clusters": [{"id": "cl-0"}],
+        "nodes": [{"id": "net", "type": "networkNode", "data": {}}],
+    }
+    apply_sno_ocp_vm_flags(topo, recert=True)
+    for node in topo["nodes"]:
+        data = node.get("data", {})
+        assert "ocpMonitor" not in data
+        assert "configureBastionBrowser" not in data
+        assert "recertEnabled" not in data
+
+
+def test_apply_sno_ocp_vm_flags_no_bastion_skips_browser_flag():
+    """A lone RHCOS VM without a bastion still gets ``ocpMonitor`` but NOT
+    ``configureBastionBrowser`` (that flag assumes a bastion VM exists)."""
+    topo = {
+        "nodes": [
+            {"id": "cp", "type": "vmNode", "data": {"name": "cp-0", "os": "rhcos"}},
+        ]
+    }
+    apply_sno_ocp_vm_flags(topo, recert=False)
+    data = topo["nodes"][0]["data"]
+    assert data["ocpMonitor"] is True
+    assert "configureBastionBrowser" not in data

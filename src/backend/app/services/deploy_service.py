@@ -1971,7 +1971,25 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map):
     job_id = start_job(host, "/pods/create", params)
     _wait_troshkad_job(host, job_id, 300, "Ops pod create")
     _start_pod(host, f"troshka-{project_id[:8]}-ops", timeout=300)
+    # Pod (bastionless) projects have no ocpMonitor VM node, so the bastion-path
+    # `_has_ocp_monitor` gate never sets ocp_status. Mark the install in-progress
+    # here so the existing OCP-status UI shows install-in-progress; the ops-pod
+    # install monitor drives it to ready/error on completion/failure.
+    _mark_ocp_install_started(s, project)
     _start_ops_pod_install_monitor(host, project_id, clusters)
+
+
+def _mark_ocp_install_started(s, project) -> None:
+    """Set the initial in-progress OCP status for a pod (bastionless) install.
+
+    Mirrors the bastion path's initial state (see ``_deploy_complete_and_notify``
+    / kubevirt deploy) so the SAME OCP-status UI works for pod installs.
+    """
+    project.ocp_status = "monitoring"
+    project.ocp_status_detail = None
+    project.ocp_install_elapsed = None
+    project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
+    s.commit()
 
 
 def _start_ops_pod_install_monitor(host, project_id: str, clusters: list) -> None:
@@ -2147,6 +2165,37 @@ def _cancel_ops_pod_install(host, project_id: str, cluster_keys) -> None:
     _publish_ops_pod_progress(project_id, progress)
 
 
+def _ops_pod_overall_to_ocp_status(overall: str) -> str | None:
+    """Map a terminal ops-pod install phase to the project ``ocp_status`` vocab.
+
+    Pod (bastionless) projects have no ocpMonitor VM node, so the bastion-path
+    ``maybe_start_ocp_health_monitor`` gate never fires; the ops-pod install
+    monitor must drive the SAME ``ocp_status`` fields the UI reads. This mirrors
+    the bastion VM monitor's terminal vocabulary: ``complete`` -> ``ready``
+    (success), ``failed``/``timeout`` -> ``error`` (failure). ``cancelled`` is a
+    user action, not an install outcome, so it returns None (ocp_status left
+    untouched — the destroy path handles project teardown).
+    """
+    if overall == "complete":
+        return "ready"
+    if overall in ("failed", "timeout"):
+        return "error"
+    return None
+
+
+def _finalize_ops_pod_ocp_status(
+    project_id: str, overall: str, elapsed_secs: int
+) -> None:
+    """Persist ``ocp_status``/``ocp_install_elapsed`` for a terminal pod install.
+
+    So the existing OCP-status UI reflects a bastionless install's outcome; a
+    non-outcome phase (e.g. ``cancelled``) is a no-op.
+    """
+    status = _ops_pod_overall_to_ocp_status(overall)
+    if status:
+        _ocp_update_status(project_id, status, elapsed_secs)
+
+
 def _monitor_ops_pod_install(
     project_id: str,
     host,
@@ -2180,7 +2229,8 @@ def _monitor_ops_pod_install(
     workdir = workdir or OPS_POD_WORKDIR
     container_name = container_name or _ops_pod_container_name(project_id)
     cluster_keys = [_ops_cluster_key(c) for c in clusters]
-    deadline = _t.time() + timeout
+    start = _t.time()
+    deadline = start + timeout
     dead_count = 0
 
     while _t.time() < deadline:
@@ -2204,10 +2254,14 @@ def _monitor_ops_pod_install(
         progress = ops_pod_install_progress(per_cluster)
         _publish_ops_pod_progress(project_id, progress)
         if progress["done"]:
+            _finalize_ops_pod_ocp_status(
+                project_id, progress["overall"], int(_t.time() - start)
+            )
             return progress["overall"]
         _t.sleep(poll_interval)
 
     logger.warning("Ops pod %s: install monitor timed out", project_id[:8])
+    _finalize_ops_pod_ocp_status(project_id, "timeout", int(_t.time() - start))
     return "timeout"
 
 

@@ -4332,3 +4332,123 @@ class TestOpsPodCancellation:
         assert args[0] is host
         assert args[1] == PROJECT_ID
         assert args[2] == ["c1"]
+
+
+class TestOpsPodOcpStatus:
+    """Pod (bastionless) installs have no ocpMonitor VM node, so the bastion
+    ``maybe_start_ocp_health_monitor`` gate never fires. The ops-pod install
+    monitor must instead drive the SAME ``ocp_status`` / ``ocp_install_elapsed``
+    fields the OCP-status UI reads, mirroring the bastion path's vocabulary
+    (monitoring -> ready / error)."""
+
+    def test_overall_to_ocp_status_mapping(self):
+        from app.services.deploy_service import _ops_pod_overall_to_ocp_status
+
+        # Success -> "ready", failure/timeout -> "error" (bastion vocabulary).
+        assert _ops_pod_overall_to_ocp_status("complete") == "ready"
+        assert _ops_pod_overall_to_ocp_status("failed") == "error"
+        assert _ops_pod_overall_to_ocp_status("timeout") == "error"
+        # Cancellation is a user action, not an install outcome -> untouched.
+        assert _ops_pod_overall_to_ocp_status("cancelled") is None
+        # In-progress phases never persist a terminal status.
+        assert _ops_pod_overall_to_ocp_status("creating-image") is None
+
+    @patch(f"{SVC}._start_ops_pod_install_monitor")
+    @patch("app.services.ocp.ops_pod_auth.mint_ops_pod_key", return_value="trk_test")
+    @patch(f"{SVC}.wait_for_job", return_value={"status": "completed"})
+    @patch(f"{SVC}.start_job")
+    def test_deploy_ops_pod_marks_ocp_status_monitoring(
+        self, mock_start, _mock_wait, _mock_mint, _mock_monitor
+    ):
+        """Deploying a pod OCP project sets the initial in-progress OCP status so
+        the UI shows install-in-progress (bastion gate would never set it)."""
+        from app.services.deploy_service import _deploy_ops_pod
+
+        s = MagicMock()
+        project = _make_project()
+        topo = _ocp_topology(1)
+        mock_start.side_effect = ["job-create", "job-start"]
+
+        _deploy_ops_pod(s, _make_host(), PROJECT_ID, project, topo, {})
+
+        assert project.ocp_status == "monitoring"
+        assert project.ocp_status_detail is None
+        assert project.ocp_install_elapsed is None
+        assert project.ocp_monitor_started_at is not None
+        s.commit.assert_called()
+
+    @patch(f"{SVC}._ocp_update_status")
+    @patch(f"{SVC}._publish_ops_pod_progress")
+    @patch(f"{SVC}._ops_pod_running", return_value=True)
+    @patch(f"{SVC}._read_ops_pod_cluster_logs")
+    @patch(f"{SVC}._is_deploy_cancelled", return_value=False)
+    def test_monitor_complete_persists_ready(
+        self, _cancel, mock_logs, _running, _pub, mock_status
+    ):
+        from app.services.deploy_service import _monitor_ops_pod_install
+
+        mock_logs.return_value = {"c1": "complete"}
+
+        result = _monitor_ops_pod_install(
+            PROJECT_ID, _make_host(), [{"id": "c1"}], poll_interval=0
+        )
+
+        assert result == "complete"
+        mock_status.assert_called_once()
+        call = mock_status.call_args[0]
+        assert call[0] == PROJECT_ID
+        assert call[1] == "ready"
+        assert isinstance(call[2], int)  # elapsed seconds persisted
+
+    @patch(f"{SVC}._ocp_update_status")
+    @patch(f"{SVC}._publish_ops_pod_progress")
+    @patch(f"{SVC}._ops_pod_running", return_value=True)
+    @patch(f"{SVC}._read_ops_pod_cluster_logs")
+    @patch(f"{SVC}._is_deploy_cancelled", return_value=False)
+    def test_monitor_failed_persists_error(
+        self, _cancel, mock_logs, _running, _pub, mock_status
+    ):
+        from app.services.deploy_service import _monitor_ops_pod_install
+
+        mock_logs.return_value = {"c1": "failed"}
+
+        result = _monitor_ops_pod_install(
+            PROJECT_ID, _make_host(), [{"id": "c1"}], poll_interval=0
+        )
+
+        assert result == "failed"
+        mock_status.assert_called_once()
+        assert mock_status.call_args[0][1] == "error"
+
+    @patch(f"{SVC}._ocp_update_status")
+    @patch(f"{SVC}._publish_ops_pod_progress")
+    @patch(f"{SVC}._is_deploy_cancelled", return_value=False)
+    def test_monitor_timeout_persists_error(self, _cancel, _pub, mock_status):
+        from app.services.deploy_service import _monitor_ops_pod_install
+
+        # timeout=0 -> the poll loop never runs; monitor falls through to timeout.
+        result = _monitor_ops_pod_install(
+            PROJECT_ID, _make_host(), [{"id": "c1"}], poll_interval=0, timeout=0
+        )
+
+        assert result == "timeout"
+        mock_status.assert_called_once()
+        assert mock_status.call_args[0][1] == "error"
+
+    @patch(f"{SVC}._ocp_update_status")
+    @patch(f"{SVC}._cancel_ops_pod_install")
+    @patch(f"{SVC}._read_ops_pod_cluster_logs")
+    @patch(f"{SVC}._is_deploy_cancelled", return_value=True)
+    def test_monitor_cancel_leaves_ocp_status_untouched(
+        self, _cancel_flag, _logs, _cancel, mock_status
+    ):
+        """Cancellation halts the pod (via ``_cancel_ops_pod_install``) but is not
+        an install outcome, so ``ocp_status`` is left untouched."""
+        from app.services.deploy_service import _monitor_ops_pod_install
+
+        result = _monitor_ops_pod_install(
+            PROJECT_ID, _make_host(), [{"id": "c1"}], poll_interval=0
+        )
+
+        assert result == "cancelled"
+        mock_status.assert_not_called()
