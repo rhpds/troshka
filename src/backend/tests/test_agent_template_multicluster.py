@@ -276,3 +276,153 @@ def test_resolve_vips_standard_uses_cidr_offset():
         + members
     }
     assert resolve_cluster_vips(cluster, members, topo) == ("10.5.0.2", "10.5.0.3")
+
+
+def test_customize_topology_two_clusters_dns_and_configs():
+    """A two-cluster topology yields per-cluster DNS on each cluster's own
+    network node, plus generated install-config/agent-config stored on each
+    cluster object for Plan 4's ops pod. No single-bastion bake in multi."""
+    import yaml
+
+    from app.services.ocp.agent_template import customize_topology
+
+    topo = _two_cluster_topo()
+    topo["clusters"] = [
+        {
+            "id": "prod",
+            "name": "prod",
+            "type": "standard",
+            "controlPlane": 3,
+            "workers": 2,
+            "baseDomain": "ocp.local",
+            "apiVip": "10.0.0.10",
+            "ingressVip": "10.0.0.11",
+        },
+        {
+            "id": "dev",
+            "name": "dev",
+            "type": "sno",
+            "controlPlane": 1,
+            "workers": 0,
+            "baseDomain": "dev.local",
+            "apiVip": "",
+            "ingressVip": "",
+        },
+    ]
+    config = {
+        "cluster_name": "prod",
+        "base_domain": "ocp.local",
+        "ocp_version": "4.20",
+        "common_password": "pw",
+        "pull_secret_json": '{"auths":{}}',
+        "ssh_pub_key": "ssh-rsa x",
+        "auto_install_ocp": True,
+        "resolved": {},
+    }
+    customize_topology(topo, "ocp-multi", config)
+
+    net_prod = next(n for n in topo["nodes"] if n["id"] == "net-prod")
+    net_dev = next(n for n in topo["nodes"] if n["id"] == "net-dev")
+    prod_names = [r["name"] for r in net_prod["data"]["dnsRecords"]]
+    dev_names = [r["name"] for r in net_dev["data"]["dnsRecords"]]
+
+    # Each cluster's api/api-int/apps land on its OWN network, no bleed.
+    assert "api.prod.ocp.local" in prod_names
+    assert "api-int.prod.ocp.local" in prod_names
+    assert ".apps.prod.ocp.local" in prod_names
+    assert not any(n.endswith("dev.local") for n in prod_names)
+
+    assert "api.dev.dev.local" in dev_names
+    assert "api-int.dev.dev.local" in dev_names
+    assert ".apps.dev.dev.local" in dev_names
+    assert not any("prod" in n for n in dev_names)
+
+    # Per-cluster generated configs stored on each cluster object.
+    for cluster in topo["clusters"]:
+        assert cluster["_generatedInstallConfig"]
+        assert cluster["_generatedAgentConfig"]
+
+    prod_ic = yaml.safe_load(topo["clusters"][0]["_generatedInstallConfig"])
+    assert prod_ic["metadata"]["name"] == "prod"
+    assert prod_ic["platform"]["baremetal"]["apiVIPs"] == ["10.0.0.10"]
+    assert len(prod_ic["platform"]["baremetal"]["hosts"]) == 5
+
+    dev_ic = yaml.safe_load(topo["clusters"][1]["_generatedInstallConfig"])
+    assert dev_ic["metadata"]["name"] == "dev"
+    assert dev_ic["platform"] == {"none": {}}
+
+    ac_dev = yaml.safe_load(topo["clusters"][1]["_generatedAgentConfig"])
+    assert ac_dev["rendezvousIP"] == "10.1.0.20"
+
+
+def test_customize_topology_single_cluster_bakes_bastion():
+    """One-cluster (legacy, no ``clusters`` key) still bakes bastion cloud-init
+    exactly as before — ``ciUserData`` present, ``cloudInit`` set."""
+    from app.services.ocp.agent_template import customize_topology
+
+    topo = {
+        "nodes": [
+            {
+                "id": "net",
+                "type": "networkNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "subtype": "network",
+                    "cidr": "10.0.0.0/24",
+                    "networkType": "cluster",
+                },
+            },
+            {
+                "id": "bastion",
+                "type": "vmNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "name": "bastion",
+                    "os": "rhel",
+                    "diskControllers": [],
+                    "nics": [
+                        {"id": "n1", "mac": "52:54:00:00:00:01", "ip": "10.0.0.50"},
+                        {"id": "n2", "mac": "52:54:00:00:00:02"},
+                    ],
+                },
+            },
+            {
+                "id": "cp0",
+                "type": "vmNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "name": "cp0",
+                    "os": "rhcos",
+                    "tags": {"AnsibleGroup": "controllers"},
+                    "bmcEnabled": True,
+                    "bmcIp": "192.168.100.10",
+                    "nics": [
+                        {"id": "n3", "mac": "52:54:00:00:00:03", "ip": "10.0.0.10"}
+                    ],
+                    "diskControllers": [],
+                },
+            },
+        ],
+        "edges": [],
+    }
+    config = {
+        "cluster_name": "ocp",
+        "base_domain": "ocp.local",
+        "ocp_version": "4.20",
+        "common_password": "pw",
+        "pull_secret_json": '{"auths":{}}',
+        "ssh_pub_key": "ssh-rsa x",
+        "auto_install_ocp": True,
+        "resolved": {},
+    }
+    customize_topology(topo, "ocp-sno", config)
+
+    bastion = next(n for n in topo["nodes"] if n["data"].get("name") == "bastion")
+    assert bastion["data"].get("ciUserData")
+    assert bastion["data"].get("cloudInit") is True
+
+    # Single-cluster DNS still written to the cluster network.
+    net = next(n for n in topo["nodes"] if n["id"] == "net")
+    dns_names = [r["name"] for r in net["data"].get("dnsRecords", [])]
+    assert "api.ocp.ocp.local" in dns_names
+    assert ".apps.ocp.ocp.local" in dns_names

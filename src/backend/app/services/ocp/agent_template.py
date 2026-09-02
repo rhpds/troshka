@@ -422,62 +422,154 @@ def _resolve_ocp_vips(topology, ocp_cfg):
     return resolve_cluster_vips(cluster, members, topology)
 
 
+def _legacy_cluster_from_config(topology, template_id, config):
+    """Build a single cluster-shaped dict for the legacy (no ``clusters``) path.
+
+    Mirrors the pre-multicluster behavior: cluster name/domain come from the
+    API/template ``config``, VIPs from the normalized ``ocp`` section, and
+    replica counts from the whole topology (with the ``ocp-sno`` fallback of one
+    control-plane when no controllers are tagged). Omits ``id`` so callers scope
+    to the whole topology's VM nodes.
+    """
+    from app.services.template_loader import normalize_ocp_section
+
+    resolved = config.get("resolved", {})
+    ocp_clusters = normalize_ocp_section(resolved.get("ocp"))
+    ocp_cfg = ocp_clusters[0] if ocp_clusters else {}
+    cp_count = _count_ocp_nodes_by_group(topology, "controllers")
+    if cp_count > 0:
+        num_masters = cp_count
+    elif template_id == "ocp-sno":
+        num_masters = 1
+    else:
+        num_masters = 3
+    num_workers = _count_ocp_nodes_by_group(topology, "workers")
+    return {
+        "name": config.get("cluster_name", "ocp"),
+        "baseDomain": config.get("base_domain", "ocp.local"),
+        "apiVip": ocp_cfg.get("api_vip", ""),
+        "ingressVip": ocp_cfg.get("ingress_vip", ""),
+        "controlPlane": num_masters,
+        "workers": num_workers,
+        "type": "sno" if (num_masters == 1 and num_workers == 0) else None,
+        "pullThroughRegistry": resolved.get("pull_through_registry"),
+    }
+
+
+def _cluster_members_for(topology, cluster):
+    """Return a cluster's member VM nodes.
+
+    Uses ``data.clusterId`` scoping when the cluster carries an ``id``
+    (multi-cluster); otherwise falls back to every VM node in the topology
+    (legacy single-cluster).
+    """
+    cluster_id = cluster.get("id")
+    if cluster_id:
+        return cluster_member_nodes(topology, cluster_id)
+    return [n for n in topology.get("nodes", []) if n.get("type") == "vmNode"]
+
+
+def _customize_one_cluster(topology, cluster, config, include_extras):
+    """Resolve VIPs, build+store configs, and write DNS for a single cluster.
+
+    Stores the generated ``install-config``/``agent-config`` on the cluster
+    object (``_generatedInstallConfig``/``_generatedAgentConfig``) for Plan 4's
+    ops pod, and writes ``api``/``api-int``/``*.apps`` records to the cluster's
+    own network node. ``include_extras`` gates the resolved lab ``dns_records``
+    so they are added once (not duplicated across every cluster's network).
+    Returns the resolved ``(api_vip, ingress_vip)``.
+    """
+    resolved = config.get("resolved", {})
+    members = _cluster_members_for(topology, cluster)
+    api_vip, ingress_vip = resolve_cluster_vips(cluster, members, topology)
+    ptr = cluster.get("pullThroughRegistry") or resolved.get("pull_through_registry")
+    cluster["_generatedInstallConfig"] = _build_install_config(
+        cluster,
+        members,
+        topology,
+        config.get("pull_secret_json", ""),
+        config.get("ssh_pub_key", ""),
+        pull_through_registry=ptr,
+    )
+    cluster["_generatedAgentConfig"] = _build_agent_config(cluster, members, topology)
+    _setup_dns_records(
+        topology,
+        cluster.get("name", "ocp"),
+        cluster.get("baseDomain", "ocp.local"),
+        api_vip,
+        ingress_vip,
+        resolved if include_extras else {},
+        members=members,
+    )
+    return api_vip, ingress_vip
+
+
+def _bake_single_cluster_bastion(topology, config, template_id, api_vip, ingress_vip):
+    """Bake the bastion cloud-init for the single-cluster case (unchanged bake).
+
+    Delegates to :func:`_setup_bastion_cloud_init` with the exact same inputs as
+    the pre-multicluster path, so single-cluster deploys stay byte-for-byte
+    identical.
+    """
+    resolved = config.get("resolved", {})
+    _setup_bastion_cloud_init(
+        topology,
+        config.get("common_password", ""),
+        config.get("ssh_pub_key", ""),
+        config.get("ssh_key_ids", []),
+        config.get("ssh_keys", []),
+        config.get("bastion_iso"),
+        config.get("pull_secret_json", ""),
+        BastionOCPConfig(
+            cluster_name=config.get("cluster_name", "ocp"),
+            base_domain=config.get("base_domain", "ocp.local"),
+            ocp_version=config.get("ocp_version", "4.20"),
+            template_id=template_id,
+            auto_install_ocp=config.get("auto_install_ocp", True),
+            api_vip=api_vip,
+            ingress_vip=ingress_vip,
+            bastion_bmc_ip=config.get("bastion_bmc_ip", "192.168.100.50"),
+            pull_through_registry=resolved.get("pull_through_registry"),
+        ),
+    )
+
+
 def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
-    """Apply OCP Agent-Based configuration to a base topology."""
-    cluster_name = config.get("cluster_name", "ocp")
-    base_domain = config.get("base_domain", "ocp.local")
-    ocp_version = config.get("ocp_version", "4.20")
-    common_password = config.get("common_password", "")
-    if not common_password:
+    """Apply OCP Agent-Based configuration to a base topology.
+
+    Iterates ``topology["clusters"]`` (falling back to a one-element legacy
+    cluster when absent), resolving per-cluster VIPs, install-config,
+    agent-config, and DNS records. Single-cluster topologies still bake the
+    bastion cloud-init exactly as before; multi-cluster topologies leave the
+    per-cluster generated configs on each cluster object for Plan 4's ops pod.
+    """
+    if not config.get("common_password"):
         raise ValueError(
             "No password provided. Set common_password in the API request "
             "or in the template YAML."
         )
-    pull_secret_json = config.get("pull_secret_json", "")
-    ssh_pub_key = config.get("ssh_pub_key", "")
-    bastion_image = config.get("bastion_image")
-    bastion_iso = config.get("bastion_iso")
-    bastion_bmc_ip = config.get("bastion_bmc_ip", "192.168.100.50")
-    auto_install_ocp = config.get("auto_install_ocp", True)
-    ssh_key_ids = config.get("ssh_key_ids", [])
-    ssh_keys = config.get("ssh_keys", [])
-    resolved = config.get("resolved", {})
-    pull_through_registry = resolved.get("pull_through_registry")
 
-    from app.services.template_loader import normalize_ocp_section
+    clusters = topology.get("clusters") or [
+        _legacy_cluster_from_config(topology, template_id, config)
+    ]
 
-    ocp_clusters = normalize_ocp_section(resolved.get("ocp"))
-    ocp_cfg = ocp_clusters[0] if ocp_clusters else {}
-    api_vip, ingress_vip = _resolve_ocp_vips(topology, ocp_cfg)
+    last_vips = ("", "")
+    for i, cluster in enumerate(clusters):
+        last_vips = _customize_one_cluster(
+            topology, cluster, config, include_extras=(i == 0)
+        )
 
-    dns_api = api_vip
-    dns_ingress = ingress_vip
+    _attach_bastion_image(topology, config.get("bastion_image"))
+    _attach_bastion_iso(topology, config.get("bastion_iso"))
 
-    _setup_dns_records(
-        topology, cluster_name, base_domain, dns_api, dns_ingress, resolved
-    )
-    _attach_bastion_image(topology, bastion_image)
-    _attach_bastion_iso(topology, bastion_iso)
-    _setup_bastion_cloud_init(
-        topology,
-        common_password,
-        ssh_pub_key,
-        ssh_key_ids,
-        ssh_keys,
-        bastion_iso,
-        pull_secret_json,
-        BastionOCPConfig(
-            cluster_name=cluster_name,
-            base_domain=base_domain,
-            ocp_version=ocp_version,
-            template_id=template_id,
-            auto_install_ocp=auto_install_ocp,
-            api_vip=api_vip,
-            ingress_vip=ingress_vip,
-            bastion_bmc_ip=bastion_bmc_ip,
-            pull_through_registry=pull_through_registry,
-        ),
-    )
+    if len(clusters) == 1:
+        api_vip, ingress_vip = last_vips
+        _bake_single_cluster_bastion(
+            topology, config, template_id, api_vip, ingress_vip
+        )
+    # else: Plan 4: ops pod consumes per-cluster _generated* configs
+    # (no single-bastion bake for multi-cluster; DNS + port-forwards still apply
+    # to every cluster above).
 
     return topology
 
@@ -507,27 +599,72 @@ def _build_ocp_dns_records(
     return records
 
 
-def _setup_dns_records(
-    topology, cluster_name, base_domain, api_vip, ingress_vip, resolved=None
-):
-    resolved = resolved or {}
+def _cluster_network_node(topology, members):
+    """Return the lab network node a cluster's DNS records belong on.
+
+    Prefers the cluster networkNode whose CIDR contains one of ``members``' NIC
+    IPs (so multi-cluster topologies write each cluster's records to its own
+    network); falls back to the first eligible network node — matching the
+    pre-multicluster single-cluster behavior when ``members`` is empty.
+    """
+    member_ips = [
+        nic.get("ip")
+        for m in members
+        if m.get("type") == "vmNode"
+        for nic in m.get("data", {}).get("nics", [])
+        if nic.get("ip")
+    ]
+    first = None
     for node in topology.get("nodes", []):
-        if (
-            node.get("type") == "networkNode"
-            and node.get("data", {}).get("subtype") == "network"
-            and node.get("data", {}).get("networkType") != "bmc"
-        ):
-            node["data"]["dns"] = True
-            node["data"]["dnsDomain"] = base_domain
-            node["data"]["dnsRecords"] = _build_ocp_dns_records(
-                cluster_name,
-                base_domain,
-                api_vip,
-                ingress_vip,
-                topology,
-                resolved,
-            )
-            break
+        if node.get("type") != "networkNode":
+            continue
+        data = node.get("data", {})
+        if data.get("subtype") != "network" or data.get("networkType") == "bmc":
+            continue
+        if first is None:
+            first = node
+        cidr = data.get("cidr")
+        if not cidr:
+            continue
+        try:
+            net = ipaddress.ip_network(cidr, strict=False)
+        except ValueError:
+            continue
+        if any(ipaddress.ip_address(ip) in net for ip in member_ips):
+            return node
+    return first
+
+
+def _setup_dns_records(
+    topology,
+    cluster_name,
+    base_domain,
+    api_vip,
+    ingress_vip,
+    resolved=None,
+    members=None,
+):
+    """Write a cluster's api/api-int/apps DNS records to its network node.
+
+    ``members`` scopes which network node receives the records (see
+    :func:`_cluster_network_node`); when ``None``/empty the first eligible
+    network node is used (single-cluster back-compat). All clusters' records
+    coexist because each writes to its own network node.
+    """
+    resolved = resolved or {}
+    node = _cluster_network_node(topology, members or [])
+    if not node:
+        return
+    node["data"]["dns"] = True
+    node["data"]["dnsDomain"] = base_domain
+    node["data"]["dnsRecords"] = _build_ocp_dns_records(
+        cluster_name,
+        base_domain,
+        api_vip,
+        ingress_vip,
+        topology,
+        resolved,
+    )
 
 
 def _attach_bastion_image(topology, bastion_image):
