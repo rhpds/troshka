@@ -26,6 +26,7 @@ import EdgeContextMenu from "./EdgeContextMenu";
 import DuplicateVMModal from "./DuplicateVMModal";
 import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM } from "@/stores/canvasStore";
 import { makeCluster } from "@/components/canvas/clusterFactory";
+import { resolveMembership, absolutePosition, relativePosition } from "@/components/canvas/clusterMembership";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
 import {
   GATEWAY_NETWORK_SOURCE_HANDLE,
@@ -166,6 +167,37 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
       setSelectedNode(node.id);
     },
     [setSelectedNode],
+  );
+
+  // Dragging an RHCOS VM into/out of a cluster boundary sets/clears its
+  // membership (data.clusterId + React Flow parentId). The point-in-rect and
+  // absolute/relative position math live in the pure clusterMembership helpers;
+  // the v12 gotcha is that setting parentId makes `position` relative, so we
+  // convert absolute↔relative to keep the node visually put on reparent.
+  const onNodeDragStop = useCallback(
+    (_event: MouseEvent | TouchEvent, node: Node) => {
+      if (node.type !== "vmNode" || (node.data as Record<string, unknown>)?.os !== "rhcos") return;
+      const clusters = allNodes.filter((n) => n.type === "clusterNode");
+      if (clusters.length === 0 && !node.parentId) return;
+
+      const absPos = absolutePosition(node, clusters);
+      const membership = resolveMembership({ ...node, position: absPos }, clusters);
+      const currentClusterId = ((node.data as Record<string, unknown>)?.clusterId as string) ?? null;
+      const unchanged =
+        membership.clusterId === currentClusterId &&
+        (membership.parentId ?? null) === (node.parentId ?? null);
+      if (unchanged) return;
+
+      const newParent = membership.parentId ? clusters.find((c) => c.id === membership.parentId) ?? null : null;
+      const newPosition = relativePosition(absPos, newParent);
+      updateNodeData(node.id, { clusterId: membership.clusterId });
+      const fresh = useCanvasStore.getState().nodes.find((n) => n.id === node.id);
+      if (!fresh) return;
+      onNodesChange([
+        { type: "replace", id: node.id, item: { ...fresh, parentId: membership.parentId ?? undefined, position: newPosition } },
+      ]);
+    },
+    [allNodes, updateNodeData, onNodesChange],
   );
 
   const onEdgeContextMenu = useCallback(
@@ -599,6 +631,7 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
         onNodeClick={onNodeClick}
         onNodeDoubleClick={canvasLocked ? undefined : onNodeDoubleClick}
         onNodeContextMenu={canvasLocked ? undefined : onNodeContextMenu}
+        onNodeDragStop={canvasLocked ? undefined : onNodeDragStop}
         onEdgeContextMenu={canvasLocked ? undefined : onEdgeContextMenu}
         onPaneClick={onPaneClick}
         onDragOver={canvasLocked ? undefined : onDragOver}
