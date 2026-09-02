@@ -111,6 +111,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
   const [ocpVersion, setOcpVersion] = useState("");
   const [ocpVersions, setOcpVersions] = useState<{minor: string; latest: string}[]>([]);
   const [autoInstallOcp, setAutoInstallOcp] = useState(true);
+  const [installVia, setInstallVia] = useState<"pod" | "bastion">("pod");
   const [externalAccess, setExternalAccess] = useState(false);
   const [blockOutbound, setBlockOutbound] = useState(true);
   const [deployHostId, setDeployHostId] = useState("");
@@ -219,6 +220,9 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
         templateBody.auto_install_ocp = autoInstallOcp;
         templateBody.external_access = externalAccess;
         templateBody.block_outbound = blockOutbound;
+        if (templates.find((t) => t.id === selectedTemplate)?.category === "openshift") {
+          templateBody.install_via = installVia;
+        }
         const resp = await fetch(`${API_BASE}/api/v1/projects/from-template`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -492,10 +496,20 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                     Set the cluster name, base domain, and VIPs on the canvas after creation.
                   </div>
                 </div>}
+                {_isOcp && <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Install method</label>
+                  <select aria-label="Install method" style={inputStyle} value={installVia} onChange={(e) => setInstallVia(e.target.value as "pod" | "bastion")}>
+                    <option value="pod">Pod (default)</option>
+                    <option value="bastion">Bastion</option>
+                  </select>
+                  <div style={{ fontSize: 10, color: "var(--pf-t--global--text--color--subtle)", marginTop: 6 }}>
+                    {installVia === "bastion" ? "Installs from a dedicated bastion VM." : "Installs from an ephemeral ops pod (no bastion VM)."}
+                  </div>
+                </div>}
                 <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
-                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>{_isOcp ? "Bastion Configuration" : "Configuration"}</div>
+                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>{_isOcp && installVia === "bastion" ? "Bastion Configuration" : "Configuration"}</div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    <div>
+                    {_isOcp && installVia === "bastion" && <div>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Red Hat Enterprise Linux KVM Guest Image <span style={{ color: "#f87171" }}>*</span></label>
                       {libraryImages.length > 0 ? (
                         <select style={inputStyle} value={bastionImageId} onChange={(e) => {
@@ -520,8 +534,8 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                           No qcow2 images in library. Upload the RHEL KVM Guest Image from the Red Hat Download site.
                         </div>
                       )}
-                    </div>
-                    <div>
+                    </div>}
+                    {_isOcp && installVia === "bastion" && <div>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Red Hat Enterprise Linux Binary DVD ISO (For local package repos) <span style={{ color: "#f87171" }}>*</span></label>
                       <select style={inputStyle} value={bastionIsoId} onChange={(e) => setBastionIsoId(e.target.value)}>
                         <option value="">Select an ISO...</option>
@@ -529,7 +543,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                           <option key={img.id} value={img.id}>{img.name}</option>
                         ))}
                       </select>
-                    </div>
+                    </div>}
                     {_isOcp && <div style={{ fontSize: 12, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
                       <span>Pull Secret <span style={{ color: "#f87171" }}>*</span>:</span>
                       {hasPullSecret ? (
@@ -559,7 +573,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                         >Copy</button>
                       </div>
                     </div>
-                    {_isOcp && <div>
+                    {_isOcp && installVia === "bastion" && <div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                         <label style={{ fontSize: 12 }}>Bastion BMC IP</label>
                         <div style={{ position: "relative", display: "inline-block" }}>
@@ -643,7 +657,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                     {_isOcp && <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
                       <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                         <input type="checkbox" checked={autoInstallOcp} onChange={(e) => setAutoInstallOcp(e.target.checked)} />
-                        Auto-run OCP installer on bastion
+                        Auto-run OCP installer
                       </label>
                       <div style={{ position: "relative", display: "inline-block" }}>
                         <span
@@ -795,12 +809,12 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
               )}
               <button
                 onClick={handleCreate}
-                disabled={creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (templates.find((t) => t.id === selectedTemplate)?.category === "openshift" && (!commonPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions))))}
+                disabled={creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (templates.find((t) => t.id === selectedTemplate)?.category === "openshift" && (!commonPassword || !hasPullSecret || loadingVersions || (installVia === "bastion" && (!bastionImageId || !bastionIsoId || !!bmcIpError))))))}
                 style={{
                   ...inputStyle, width: "auto", padding: "6px 16px",
                   cursor: creating ? "wait" : "pointer",
                   background: "rgba(74,222,128,0.15)", borderColor: "#4ade80", color: "#4ade80",
-                  opacity: creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (templates.find((t) => t.id === selectedTemplate)?.category === "openshift" && (!commonPassword || !bastionImageId || !bastionIsoId || !!bmcIpError || !hasPullSecret || loadingVersions)))) ? 0.4 : 1,
+                  opacity: creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (templates.find((t) => t.id === selectedTemplate)?.category === "openshift" && (!commonPassword || !hasPullSecret || loadingVersions || (installVia === "bastion" && (!bastionImageId || !bastionIsoId || !!bmcIpError)))))) ? 0.4 : 1,
                 }}
               >
                 {creating ? "Creating..." : mode === "yaml" ? "Import & Create" : mode === "pattern" ? "Create from Pattern" : mode === "template" ? "Create" : "Create Project"}

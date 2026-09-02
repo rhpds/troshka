@@ -163,4 +163,56 @@ describe("create-project OCP form", () => {
       base_domain: "ocp.local",
     });
   });
+
+  it("defaults to the pod install method and posts install_via: pod", async () => {
+    await navigateToOcpTemplateForm();
+
+    // Pod is the default: bastion-only image/iso fields are hidden and NOT
+    // required, so Create becomes enabled without selecting them.
+    expect(
+      screen.queryByText(/Red Hat Enterprise Linux KVM Guest Image/),
+    ).not.toBeInTheDocument();
+
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: /create/i }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
+
+    await waitFor(() => expect(lastFromTemplateBody).not.toBeNull());
+    expect(lastFromTemplateBody).toMatchObject({ install_via: "pod" });
+  });
+
+  it("selecting Bastion posts install_via: bastion and reveals bastion fields", async () => {
+    await navigateToOcpTemplateForm();
+
+    // Bastion-only fields are hidden until the method is switched.
+    expect(
+      screen.queryByText(/Red Hat Enterprise Linux KVM Guest Image/),
+    ).not.toBeInTheDocument();
+
+    const methodSelect = await screen.findByLabelText("Install method");
+    fireEvent.change(methodSelect, { target: { value: "bastion" } });
+
+    // Bastion config fields now appear.
+    expect(
+      await screen.findByText(/Red Hat Enterprise Linux KVM Guest Image/),
+    ).toBeInTheDocument();
+
+    // Wait for the auto-selected image/iso so Create is enabled.
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: /create/i }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /create/i }));
+
+    await waitFor(() => expect(lastFromTemplateBody).not.toBeNull());
+    expect(lastFromTemplateBody).toMatchObject({ install_via: "bastion" });
+  });
 });
