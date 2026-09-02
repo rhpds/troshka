@@ -124,3 +124,115 @@ def test_build_ops_pod_config_workdir_mounted():
     assert workdir
     mounts = cfg["containers"][0]["mounts"]
     assert any(m.get("mountPath") == workdir for m in mounts)
+
+
+# ---------------------------------------------------------------------------
+# Task 5: per-cluster ops-pod install-runner script
+# ---------------------------------------------------------------------------
+
+
+def _bmc_member(name, cid, group, bmc_ip):
+    return {
+        "type": "vmNode",
+        "data": {
+            "name": name,
+            "clusterId": cid,
+            "tags": {"AnsibleGroup": group},
+            "os": "rhcos",
+            "bmcEnabled": True,
+            "bmcIp": bmc_ip,
+            "nics": [{"ip": "10.0.0.20", "mac": "52:54:00:aa:bb:01"}],
+        },
+    }
+
+
+def test_bmc_for_cluster_scopes_to_members():
+    from app.services.ocp.ops_pod_install import bmc_for_cluster
+
+    topo = {
+        "nodes": [
+            {
+                "type": "networkNode",
+                "data": {"networkType": "bmc", "bmcPassword": "s3cret"},
+            },
+            _bmc_member("p-cp-0", "prod", "controllers", "192.168.100.10"),
+            _bmc_member("p-cp-1", "prod", "controllers", "192.168.100.11"),
+            _bmc_member("p-w-0", "prod", "workers", "192.168.100.12"),
+            _bmc_member("d-cp-0", "dev", "controllers", "192.168.100.20"),
+        ]
+    }
+
+    prod_ips, prod_pw = bmc_for_cluster(topo, {"id": "prod"})
+    assert prod_ips == ["192.168.100.10", "192.168.100.11", "192.168.100.12"]
+    assert prod_pw == "s3cret"
+
+    dev_ips, dev_pw = bmc_for_cluster(topo, {"id": "dev"})
+    assert dev_ips == ["192.168.100.20"]
+    assert dev_pw == "s3cret"
+
+
+def _install_script():
+    from app.services.ocp.ops_pod_install import build_ops_pod_install_script
+
+    clusters = [
+        {"id": "prod", "name": "prod", "_generatedInstallConfig": "x"},
+        {"id": "dev", "name": "dev", "_generatedInstallConfig": "y"},
+    ]
+    bmc_by_cluster = {
+        "prod": (["192.168.100.10", "192.168.100.11"], "pw-prod"),
+        "dev": (["192.168.100.20"], "pw-dev"),
+    }
+    return build_ops_pod_install_script(clusters, bmc_by_cluster, "4.20", "/workdir")
+
+
+def test_install_script_per_cluster_workdirs():
+    script = _install_script()
+    assert "cd /workdir/prod" in script
+    assert "cd /workdir/dev" in script
+
+
+def test_install_script_agent_create_image_per_cluster():
+    script = _install_script()
+    assert script.count("agent create image --dir .") == 2
+
+
+def test_install_script_wait_for_complete_per_cluster():
+    script = _install_script()
+    assert script.count("wait-for install-complete") == 2
+
+
+def test_install_script_redfish_insert_media_per_cluster_bmcs():
+    script = _install_script()
+    # Each cluster's Redfish loop targets its OWN BMC IPs.
+    assert "for BMC_IP in 192.168.100.10 192.168.100.11; do" in script
+    assert "for BMC_IP in 192.168.100.20; do" in script
+    # One InsertMedia loop per cluster (eject uses EjectMedia, counted separately).
+    assert script.count("VirtualMedia.InsertMedia") == 2
+    assert script.count("VirtualMedia.EjectMedia") == 2
+
+
+def test_install_script_per_cluster_bmc_password():
+    script = _install_script()
+    assert "BMC_PASS='pw-prod'" in script
+    assert "BMC_PASS='pw-dev'" in script
+
+
+def test_install_script_distinct_http_ports():
+    script = _install_script()
+    assert "http.server 8080" in script
+    assert "http.server 8081" in script
+
+
+def test_install_script_runs_clusters_in_parallel():
+    script = _install_script()
+    # Both cluster blocks are backgrounded subshells, joined by a final wait.
+    assert script.count(") &\n") == 2
+    assert script.rstrip().endswith("wait")
+
+
+def test_install_script_downloads_from_same_mirror():
+    script = _install_script()
+    assert (
+        "mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION"
+        in script
+    )

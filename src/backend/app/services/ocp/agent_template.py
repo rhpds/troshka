@@ -1539,6 +1539,94 @@ def _build_bastion_autologin_steps(cluster_name: str, base_domain: str) -> str:
     )
 
 
+# Shared source of truth for the OCP client mirror + agent-install command
+# strings. Both the bastion cloud-init installer (:func:`_build_install_script`)
+# and the ops-pod install runner (`ops_pod_install`) build their steps from these
+# helpers, so the Redfish/serve/wait-for/create-image behavior stays identical.
+_MIRROR_CLIENTS_BASE = (
+    "https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp"
+)
+
+
+def _installer_tarball_url(tarball: str) -> str:
+    """Mirror URL for an OCP client tarball at ``stable-$OCP_VERSION`` (shell var)."""
+    return f"{_MIRROR_CLIENTS_BASE}/stable-$OCP_VERSION/{tarball}"
+
+
+def _agent_create_image_cmd(indent: str, oi_bin: str, log_path: str) -> str:
+    """`openshift-install agent create image` with timestamped, tee'd output."""
+    return (
+        f"{indent}{oi_bin} agent create image --dir . --log-level debug 2>&1 | "
+        'awk \'{print strftime("[%H:%M:%S]") " " $0; fflush()}\' | '
+        f"tee {log_path}\n"
+    )
+
+
+def _serve_iso_cmd(indent: str, workdir: str, port: int) -> str:
+    """Serve the agent ISO over HTTP and compute ``ISO_URL`` for Redfish."""
+    i = indent
+    return (
+        f"{i}# Open firewall for ISO serving (script runs as cloud-user)\n"
+        f"{i}sudo firewall-cmd --add-port={port}/tcp --permanent 2>/dev/null && "
+        "sudo firewall-cmd --reload 2>/dev/null || true\n"
+        f"{i}cd {workdir}\n"
+        f"{i}nohup python3 -m http.server {port} > /tmp/http-server.log 2>&1 &\n"
+        f"{i}HTTP_PID=$!\n"
+        f'{i}echo "HTTP server PID: $HTTP_PID"\n'
+        f"{i}\n"
+        f"{i}# Boot each CP node via Redfish virtual media\n"
+        f"{i}BASTION_IP=$(hostname -I | awk '{{print $1}}')\n"
+        f'{i}ISO_URL="http://${{BASTION_IP}}:{port}/agent.x86_64.iso"\n'
+        f'{i}echo "ISO URL: $ISO_URL"\n'
+    )
+
+
+def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
+    """Redfish loop: InsertMedia + ComputerSystem.Reset (ForceRestart) per BMC."""
+    b = indent
+    b2 = indent + "  "
+    b4 = indent + "    "
+    return (
+        f"{b}for BMC_IP in {bmc_ips_str}; do\n"
+        f'{b2}echo "Mounting ISO on BMC $BMC_IP..."\n'
+        f"{b2}# Get system UUID from sushy\n"
+        f"{b2}SYS_ID=$(curl -s -u admin:$BMC_PASS http://${{BMC_IP}}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\")\n"
+        f'{b2}echo "  System: $SYS_ID"\n'
+        f"{b2}# Insert virtual media (Systems path, HTTP, with auth)\n"
+        f'{b2}curl -s -u admin:$BMC_PASS -X POST "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \\\n'
+        f"{b4}-H 'Content-Type: application/json' \\\n"
+        f'{b4}-d "{{\\"Image\\": \\"${{ISO_URL}}\\", \\"Inserted\\": true, \\"WriteProtected\\": true}}" || true\n'
+        f"{b2}# Reboot — UEFI boot order is hd,cdrom so empty disk falls through to ISO\n"
+        f"{b2}# After agent writes CoreOS to disk, next reboot boots from disk first\n"
+        f'{b2}curl -s -u admin:$BMC_PASS -X POST "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/Actions/ComputerSystem.Reset" \\\n'
+        f"{b4}-H 'Content-Type: application/json' \\\n"
+        f'{b4}-d \'{{"ResetType": "ForceRestart"}}\' || true\n'
+        f'{b2}echo "Booted $BMC_IP from ISO"\n'
+        f"{b}done\n"
+    )
+
+
+def _redfish_eject_media_cmd(indent: str, bmc_ips_str: str) -> str:
+    """Redfish loop: EjectMedia per BMC (called after install completes)."""
+    b = indent
+    b2 = indent + "  "
+    return (
+        f"{b}for BMC_IP in {bmc_ips_str}; do\n"
+        f"{b2}SYS_ID=$(curl -s -u admin:$BMC_PASS http://${{BMC_IP}}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\" 2>/dev/null)\n"
+        f"{b2}curl -s -u admin:$BMC_PASS -X POST \"http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia\" -H 'Content-Type: application/json' -d '{{}}' >/dev/null 2>&1\n"
+        f"{b}done\n"
+    )
+
+
+def _wait_for_complete_cmd(indent: str, oi_bin: str, install_dir: str) -> str:
+    """`openshift-install agent wait-for install-complete` with timestamped output."""
+    return (
+        f"{indent}{oi_bin} agent wait-for install-complete --dir {install_dir} "
+        "--log-level debug 2>&1 | "
+        'awk \'{print strftime("[%H:%M:%S]") " " $0; fflush()}\'\n'
+    )
+
+
 def _build_install_script(
     ocp_version,
     auto_install,
@@ -1581,10 +1669,10 @@ def _build_install_script(
         "    # Download openshift-install and oc if not present\n"
         "    if [ ! -f openshift-install ]; then\n"
         '      echo "Downloading openshift-install $OCP_VERSION..."\n'
-        "      curl -L -o /tmp/openshift-install.tar.gz https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION/openshift-install-linux.tar.gz\n"
+        f"      curl -L -o /tmp/openshift-install.tar.gz {_installer_tarball_url('openshift-install-linux.tar.gz')}\n"
         "      tar xzf /tmp/openshift-install.tar.gz && rm -f /tmp/openshift-install.tar.gz\n"
         '      echo "Downloading oc client..."\n'
-        "      curl -L -o /tmp/openshift-client.tar.gz https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION/openshift-client-linux.tar.gz\n"
+        f"      curl -L -o /tmp/openshift-client.tar.gz {_installer_tarball_url('openshift-client-linux.tar.gz')}\n"
         "      tar xzf /tmp/openshift-client.tar.gz && rm -f /tmp/openshift-client.tar.gz\n"
         "      sudo mv oc kubectl /usr/bin/\n"
         '      echo "Downloaded openshift-install and oc"\n'
@@ -1619,42 +1707,25 @@ def _build_install_script(
             "    [ -d openshift ] && cp -a openshift openshift.bak\n"
             + _generate_ocp_mount_script(topology or {})
             + _generate_dns_manifests(topology or {}, base_domain)
-            + '    /home/cloud-user/openshift-install agent create image --dir . --log-level debug 2>&1 | awk \'{print strftime("[%H:%M:%S]") " " $0; fflush()}\' | tee /home/cloud-user/create-image.log\n'
-            "    \n"
+            + _agent_create_image_cmd(
+                "    ",
+                "/home/cloud-user/openshift-install",
+                "/home/cloud-user/create-image.log",
+            )
+            + "    \n"
             "    echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"
-            "    # Open firewall for ISO serving (script runs as cloud-user)\n"
-            "    sudo firewall-cmd --add-port=8080/tcp --permanent 2>/dev/null && sudo firewall-cmd --reload 2>/dev/null || true\n"
-            "    cd /home/cloud-user/ocp-install\n"
-            "    nohup python3 -m http.server 8080 > /tmp/http-server.log 2>&1 &\n"
-            "    HTTP_PID=$!\n"
-            '    echo "HTTP server PID: $HTTP_PID"\n'
-            "    \n"
-            "    # Boot each CP node via Redfish virtual media\n"
-            "    BASTION_IP=$(hostname -I | awk '{print $1}')\n"
-            '    ISO_URL="http://${BASTION_IP}:8080/agent.x86_64.iso"\n'
-            '    echo "ISO URL: $ISO_URL"\n'
-            "    \n"
-            f"    for BMC_IP in {bmc_ips_str}; do\n"
-            '      echo "Mounting ISO on BMC $BMC_IP..."\n'
-            "      # Get system UUID from sushy\n"
-            "      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\")\n"
-            '      echo "  System: $SYS_ID"\n'
-            "      # Insert virtual media (Systems path, HTTP, with auth)\n"
-            '      curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \\\n'
-            "        -H 'Content-Type: application/json' \\\n"
-            '        -d "{\\"Image\\": \\"${ISO_URL}\\", \\"Inserted\\": true, \\"WriteProtected\\": true}" || true\n'
-            "      # Reboot — UEFI boot order is hd,cdrom so empty disk falls through to ISO\n"
-            "      # After agent writes CoreOS to disk, next reboot boots from disk first\n"
-            '      curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/Actions/ComputerSystem.Reset" \\\n'
-            "        -H 'Content-Type: application/json' \\\n"
-            '        -d \'{"ResetType": "ForceRestart"}\' || true\n'
-            '      echo "Booted $BMC_IP from ISO"\n'
-            "    done\n"
-            "    \n"
+            + _serve_iso_cmd("    ", "/home/cloud-user/ocp-install", 8080)
+            + "    \n"
+            + _redfish_insert_media_cmd("    ", bmc_ips_str)
+            + "    \n"
             "    \n"
             "    echo 'Waiting for cluster installation to complete...'\n"
-            '    /home/cloud-user/openshift-install agent wait-for install-complete --dir /home/cloud-user/ocp-install --log-level debug 2>&1 | awk \'{print strftime("[%H:%M:%S]") " " $0; fflush()}\'\n'
-            "    OCP_EXIT=${PIPESTATUS[0]}\n"
+            + _wait_for_complete_cmd(
+                "    ",
+                "/home/cloud-user/openshift-install",
+                "/home/cloud-user/ocp-install",
+            )
+            + "    OCP_EXIT=${PIPESTATUS[0]}\n"
             "    INSTALL_END=$(date +%s)\n"
             "    ELAPSED=$(( INSTALL_END - INSTALL_START ))\n"
             "    echo ''\n"
@@ -1671,11 +1742,8 @@ def _build_install_script(
             "    echo '================================================'\n"
             "    # Eject agent ISO via Redfish virtual media\n"
             "    echo 'Ejecting agent ISO from nodes...'\n"
-            f"    for BMC_IP in {bmc_ips_str}; do\n"
-            "      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\" 2>/dev/null)\n"
-            "      curl -s -u admin:$BMC_PASS -X POST \"http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia\" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1\n"
-            "    done\n"
-            "    # Write static MOTD with cluster credentials\n"
+            + _redfish_eject_media_cmd("    ", bmc_ips_str)
+            + "    # Write static MOTD with cluster credentials\n"
             "    KUBEADMIN_PW=$(cat /home/cloud-user/ocp-install/auth/kubeadmin-password)\n"
             f"    printf '\\nOpenShift Console: https://console-openshift-console.apps.{cluster_name}.{base_domain}\\nUsername:          kubeadmin\\nPassword:          %s\\n\\n' \"$KUBEADMIN_PW\" | sudo tee /etc/motd >/dev/null\n"
             "    # Trust the OCP CA so Firefox doesn't show cert warnings\n"
