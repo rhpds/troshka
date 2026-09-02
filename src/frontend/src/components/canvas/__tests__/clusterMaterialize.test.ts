@@ -242,3 +242,19 @@ describe("cluster member disks (storageNodes + edges + bootDevices)", () => {
     expect(bootDevices).toContain(disks.find((d) => (d.data as Record<string, unknown>).bootable)?.id ?? disks[0].id);
   });
 });
+
+describe("cluster member NICs (wired to cluster networks)", () => {
+  it("gives each member one NIC per cluster network, wired to the network node", () => {
+    const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24" } } as any;
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.networkIds = ["net1"];
+    const { nodes, edges } = reconcileClusterVms(cluster, [node, net]);
+    const cp = nodes.find((n) => n.data.clusterRole === "control-plane")!;
+    const nics = (cp.data as Record<string, unknown>).nics as any[];
+    expect(nics).toHaveLength(1);
+    const nicId = nics[0].id;
+    const e = edges.find((x) => x.source === "net1" && x.target === cp.id && x.targetHandle === `nic-${nicId}-top`);
+    expect(e).toBeTruthy();
+    expect(e!.sourceHandle).toBe("bottom");
+  });
+});

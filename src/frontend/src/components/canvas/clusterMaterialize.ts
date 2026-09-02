@@ -1,6 +1,6 @@
 import type { Node, Edge } from "@xyflow/react";
-import type { ClusterConfig, VMDiskController, DiskSpec } from "@/stores/canvasStore";
-import { generateDiskControllerId } from "@/stores/canvasStore";
+import type { ClusterConfig, VMDiskController, DiskSpec, VMNic } from "@/stores/canvasStore";
+import { generateDiskControllerId, generateNicId, generateMac } from "@/stores/canvasStore";
 
 /**
  * Count-driven, existence-aware materialization of a cluster's member VMs on
@@ -133,6 +133,54 @@ function nextFreeName(
  * Build disk storageNodes + disk controllers + edges for a cluster member.
  * Returns nodes, controllers, edges, and bootDevice IDs to be merged into the member.
  */
+/**
+ * Build NICs + NIC edges for a cluster member (one NIC per cluster network).
+ * Returns nics array and edges wiring each NIC to its network node.
+ * First NIC uses VM handle "top" with sourceHandle "bottom"; rest use "bottom" → "top".
+ */
+function buildMemberNics(
+  cluster: ClusterConfig,
+  memberId: string,
+): {
+  nics: VMNic[];
+  nicEdges: Edge[];
+} {
+  const nets = cluster.networkIds ?? [];
+  const nics: VMNic[] = [];
+  const nicEdges: Edge[] = [];
+
+  nets.forEach((netId, i) => {
+    const nic: VMNic = {
+      id: generateNicId(),
+      name: `eth${i}`,
+      mac: generateMac(),
+      model: "virtio",
+    };
+    nics.push(nic);
+
+    const isFirstNic = i === 0;
+    const vmHandle = isFirstNic ? "top" : "bottom";
+    const sourceHandle = isFirstNic ? "bottom" : "top";
+
+    nicEdges.push({
+      id: `edge-${netId}-to-${memberId}-nic${i}`,
+      source: netId,
+      target: memberId,
+      sourceHandle,
+      targetHandle: `nic-${nic.id}-${vmHandle}`,
+      type: "smoothstep",
+      animated: true,
+      style: {
+        stroke: "rgba(34,211,238,0.5)",
+        strokeWidth: 2,
+        strokeDasharray: "6 4",
+      },
+    } as Edge);
+  });
+
+  return { nics, nicEdges };
+}
+
 function buildMemberDisks(
   role: "control-plane" | "worker",
   cluster: ClusterConfig,
@@ -194,6 +242,7 @@ function makeMemberNode(
   const x = CHILD_X0 + col * CHILD_GAP_X;
   const y = spec.rowY;
   const { diskNodes, diskControllers, diskEdges, bootDevices } = buildMemberDisks(spec.role, cluster, name, x, y);
+  const { nics, nicEdges } = buildMemberNics(cluster, name);
 
   const node: Node = {
     id: name,
@@ -210,7 +259,7 @@ function makeMemberNode(
       firmware: "uefi",
       status: "stopped",
       icon: "\u{1F5A5}",
-      nics: [],
+      nics,
       diskControllers,
       bootDevices,
       clusterId: cluster.id,
@@ -220,7 +269,7 @@ function makeMemberNode(
     },
   } as Node;
 
-  return { node, extraNodes: diskNodes, extraEdges: diskEdges };
+  return { node, extraNodes: diskNodes, extraEdges: [...diskEdges, ...nicEdges] };
 }
 
 function addMembers(
