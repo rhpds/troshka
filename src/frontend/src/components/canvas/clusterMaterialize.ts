@@ -182,3 +182,34 @@ export function reconcileClusterVms(
   }
   return result;
 }
+
+/**
+ * Push the cluster's per-role sizing (cpu/memory/disk) onto its EXISTING
+ * generated member VMs so a sizing edit in the properties panel actually reaches
+ * already-materialized nodes. Uses the same field mapping as `makeMemberNode`
+ * (cpu→vcpus, memoryMb→ram in GB, disk→disk). Only `generated:true` members of
+ * this cluster are touched — hand-customized members are left alone. Pure and
+ * idempotent: returns the same array reference when nothing changes.
+ */
+export function applyClusterSizing(
+  cluster: ClusterConfig,
+  nodes: Node[],
+): Node[] {
+  const specByRole = new Map(roleSpecs(cluster).map((s) => [s.role, s]));
+  let changed = false;
+  const out = nodes.map((n) => {
+    const d = n.data as Record<string, unknown>;
+    if (n.type !== "vmNode" || d?.clusterId !== cluster.id || d?.generated !== true) {
+      return n;
+    }
+    const spec = specByRole.get(d.clusterRole as RoleSpec["role"]);
+    if (!spec) return n;
+    const vcpus = spec.cpu;
+    const ram = Math.max(1, Math.round(spec.memoryMb / MB_PER_GB));
+    const disk = spec.disk;
+    if (d.vcpus === vcpus && d.ram === ram && d.disk === disk) return n;
+    changed = true;
+    return { ...n, data: { ...d, vcpus, ram, disk } };
+  });
+  return changed ? out : nodes;
+}

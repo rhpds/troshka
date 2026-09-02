@@ -80,6 +80,38 @@ describe("cluster persistence in store", () => {
     expect(useCanvasStore.getState().topologyDirty).toBe(true);
   });
 
+  it("deleting a clusterNode removes its clusters[] entry and member children", () => {
+    const clusterNode: Node = {
+      id: "cluster-prod",
+      type: "clusterNode",
+      position: { x: 0, y: 0 },
+      data: { name: "prod", clusterId: "prod" },
+    };
+    const member = (n: number): Node => ({
+      id: `prod-cp-${n}`,
+      type: "vmNode",
+      position: { x: 0, y: 0 },
+      parentId: "cluster-prod",
+      data: { os: "rhcos", clusterId: "prod", clusterRole: "control-plane", generated: true },
+    });
+    useCanvasStore.setState({
+      nodes: [clusterNode, member(0), member(1), member(2)],
+      edges: [],
+      clusters: [{ ...prodCluster }],
+      deployedNodeData: {},
+      deployedEdgeKey: "",
+      deployedExternalIps: "[]",
+      deployedClusters: "[]",
+      externalIps: [],
+    });
+    useCanvasStore.getState().deleteNode("cluster-prod");
+    const st = useCanvasStore.getState();
+    expect(st.clusters).toHaveLength(0);
+    expect(st.nodes.filter((n) => n.type === "vmNode")).toHaveLength(0);
+    expect(st.nodes.some((n) => n.parentId === "cluster-prod")).toBe(false);
+    expect(st.nodes.some((n) => n.id === "cluster-prod")).toBe(false);
+  });
+
   it("_saveTopologyToApi includes clusters and node clusterId/parentId", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
     vi.stubGlobal("fetch", fetchMock);

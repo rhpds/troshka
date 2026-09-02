@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { reconcileClusterVms } from "@/components/canvas/clusterMaterialize";
+import { reconcileClusterVms, applyClusterSizing } from "@/components/canvas/clusterMaterialize";
 
 const cluster = {
   id: "prod",
@@ -69,6 +69,30 @@ describe("reconcileClusterVms", () => {
     expect(
       shrunk.filter((n) => n.data.clusterRole === "control-plane"),
     ).toHaveLength(3);
+  });
+
+  it("applyClusterSizing pushes new sizing onto existing generated members", () => {
+    const once = reconcileClusterVms(cluster, []);
+    const sized = applyClusterSizing({ ...cluster, controlPlaneCpu: 16 } as any, once);
+    const cps = sized.filter((n) => n.data.clusterRole === "control-plane");
+    expect(cps).toHaveLength(3);
+    expect(cps.every((n) => n.data.vcpus === 16)).toBe(true);
+    // workers untouched (still worker default 4)
+    expect(
+      sized.filter((n) => n.data.clusterRole === "worker").every((n) => n.data.vcpus === 4),
+    ).toBe(true);
+  });
+
+  it("applyClusterSizing leaves user-customized (generated:false) members alone", () => {
+    const custom = {
+      id: "prod-cp-0",
+      type: "vmNode",
+      position: { x: 0, y: 0 },
+      parentId: "cluster-prod",
+      data: { os: "rhcos", clusterId: "prod", clusterRole: "control-plane", generated: false, vcpus: 32 },
+    };
+    const sized = applyClusterSizing({ ...cluster, controlPlaneCpu: 16 } as any, [custom as any]);
+    expect(sized[0].data.vcpus).toBe(32);
   });
 
   it("maps rhcos membership + tags on generated members", () => {

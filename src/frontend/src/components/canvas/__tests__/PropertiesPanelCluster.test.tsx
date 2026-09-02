@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { Node } from "@xyflow/react";
 import { useCanvasStore } from "@/stores/canvasStore";
 import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 
@@ -87,6 +88,47 @@ describe("PropertiesPanel cluster editor", () => {
           (n.data as Record<string, unknown>).clusterRole === "worker",
       );
     expect(members).toHaveLength(3);
+  });
+
+  it("propagates control-plane sizing to existing generated members", () => {
+    const cpMember = (n: number): Node => ({
+      id: `prod-cp-${n}`,
+      type: "vmNode",
+      position: { x: 0, y: 0 },
+      parentId: "cluster-prod",
+      data: {
+        os: "rhcos",
+        clusterId: "prod",
+        clusterRole: "control-plane",
+        generated: true,
+        vcpus: 8,
+        ram: 16,
+        disk: 120,
+      },
+    });
+    useCanvasStore.setState({
+      nodes: [
+        useCanvasStore.getState().nodes[0],
+        cpMember(0),
+        cpMember(1),
+        cpMember(2),
+      ],
+    } as never);
+    render(<PropertiesPanel />);
+    const cpu = screen.getByLabelText(/control plane vcpus/i);
+    // fireEvent.change sets the whole value in one shot (deterministic).
+    fireEvent.change(cpu, { target: { value: "16" } });
+    const members = useCanvasStore
+      .getState()
+      .nodes.filter(
+        (n) =>
+          (n.data as Record<string, unknown>).clusterRole === "control-plane" &&
+          (n.data as Record<string, unknown>).generated === true,
+      );
+    expect(members).toHaveLength(3);
+    expect(members.every((m) => (m.data as Record<string, unknown>).vcpus === 16)).toBe(true);
+    // clusters[] also updated
+    expect(useCanvasStore.getState().clusters[0].controlPlaneCpu).toBe(16);
   });
 
   it("flags a VIP that collides with another cluster", async () => {

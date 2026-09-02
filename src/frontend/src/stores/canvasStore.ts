@@ -1238,6 +1238,20 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       get().nodes,
     );
     for (const diskId of extraDiskIds) removedIds.add(diskId);
+    // Deleting a cluster boundary cascades to its member children (nodes
+    // parented to it) and drops the matching clusters[] entry — otherwise the
+    // config lingers (permanent dirty) and children keep a dangling parentId.
+    const target = get().nodes.find((n) => n.id === nodeId);
+    let nextClusters = get().clusters;
+    if (target?.type === "clusterNode") {
+      const clusterId = (target.data as Record<string, unknown>)?.clusterId as string | undefined;
+      for (const child of get().nodes) {
+        if (child.parentId === nodeId) removedIds.add(child.id);
+      }
+      nextClusters = get().clusters.filter(
+        (c) => c.nodeId !== nodeId && c.id !== clusterId,
+      );
+    }
     const nextStartOrder = removedShowroomId
       ? get().startOrder.filter((e) => e.vmId !== removedShowroomId)
       : get().startOrder;
@@ -1254,8 +1268,9 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     set({
       ...applyShowroomGatewaySync(synced, get()),
       selectedNodeId:
-        get().selectedNodeId === nodeId ? null : get().selectedNodeId,
+        removedIds.has(get().selectedNodeId || "") ? null : get().selectedNodeId,
       ...(clearShowroom ? { showroom: null } : {}),
+      clusters: nextClusters,
       startOrder: nextStartOrder,
     });
     set({ topologyDirty: computeTopologyDirty(get()) });

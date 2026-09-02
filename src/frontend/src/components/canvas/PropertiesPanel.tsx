@@ -4,8 +4,8 @@ import React, { useState, useEffect, useRef } from "react";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
-import { useCanvasStore, computeTopologyDirty, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
-import { reconcileClusterVms } from "./clusterMaterialize";
+import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
+import { reconcileClusterVms, applyClusterSizing } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
 import {
   getShowroomReadiness,
@@ -486,12 +486,14 @@ function ClusterEditor({
   cluster,
   clusters,
   onPatch,
+  onSizing,
   onTypeChange,
   onWorkersChange,
 }: {
   cluster: ClusterConfig;
   clusters: ClusterConfig[];
   onPatch: (patch: Partial<ClusterConfig>) => void;
+  onSizing: (patch: Partial<ClusterConfig>) => void;
   onTypeChange: (type: string) => void;
   onWorkersChange: (workers: number) => void;
 }) {
@@ -531,17 +533,17 @@ function ClusterEditor({
 
       <div className="props-section">
         <div className="props-section-title">Control Plane Sizing</div>
-        <ClusterNumberField label="Control Plane vCPUs" min={1} value={cluster.controlPlaneCpu ?? 8} onCommit={(v) => onPatch({ controlPlaneCpu: v })} />
-        <ClusterNumberField label="Control Plane Memory (MB)" min={1} value={cluster.controlPlaneMemory ?? 16384} onCommit={(v) => onPatch({ controlPlaneMemory: v })} />
-        <ClusterNumberField label="Control Plane Disk (GB)" min={1} value={cluster.controlPlaneDisk ?? 120} onCommit={(v) => onPatch({ controlPlaneDisk: v })} />
+        <ClusterNumberField label="Control Plane vCPUs" min={1} value={cluster.controlPlaneCpu ?? 8} onCommit={(v) => onSizing({ controlPlaneCpu: v })} />
+        <ClusterNumberField label="Control Plane Memory (MB)" min={1} value={cluster.controlPlaneMemory ?? 16384} onCommit={(v) => onSizing({ controlPlaneMemory: v })} />
+        <ClusterNumberField label="Control Plane Disk (GB)" min={1} value={cluster.controlPlaneDisk ?? 120} onCommit={(v) => onSizing({ controlPlaneDisk: v })} />
       </div>
       <div className="props-divider" />
 
       <div className="props-section">
         <div className="props-section-title">Worker Sizing</div>
-        <ClusterNumberField label="Worker vCPUs" min={1} value={cluster.workerCpu ?? 4} onCommit={(v) => onPatch({ workerCpu: v })} />
-        <ClusterNumberField label="Worker Memory (MB)" min={1} value={cluster.workerMemory ?? 8192} onCommit={(v) => onPatch({ workerMemory: v })} />
-        <ClusterNumberField label="Worker Disk (GB)" min={1} value={cluster.workerDisk ?? 100} onCommit={(v) => onPatch({ workerDisk: v })} />
+        <ClusterNumberField label="Worker vCPUs" min={1} value={cluster.workerCpu ?? 4} onCommit={(v) => onSizing({ workerCpu: v })} />
+        <ClusterNumberField label="Worker Memory (MB)" min={1} value={cluster.workerMemory ?? 8192} onCommit={(v) => onSizing({ workerMemory: v })} />
+        <ClusterNumberField label="Worker Disk (GB)" min={1} value={cluster.workerDisk ?? 100} onCommit={(v) => onSizing({ workerDisk: v })} />
       </div>
       <div className="props-divider" />
 
@@ -4287,11 +4289,23 @@ export default function PropertiesPanel() {
         };
         // Count/type edits materialize member VMs. reconcile appends any new
         // members after the (already-present) boundary node, so React Flow's
-        // parent-before-child ordering is preserved.
+        // parent-before-child ordering is preserved. The store subscription
+        // recomputes topologyDirty on the nodes change, so no explicit call.
         const reconcile = (updated: ClusterConfig) => {
           const next = reconcileClusterVms(updated, useCanvasStore.getState().nodes);
+          useCanvasStore.getState().pushHistory();
           useCanvasStore.setState({ nodes: next });
-          useCanvasStore.setState({ topologyDirty: computeTopologyDirty(useCanvasStore.getState()) });
+        };
+        // Per-role sizing edits must reach EXISTING generated member VMs, not
+        // just clusters[] — otherwise the sizing controls are no-ops for
+        // already-materialized members.
+        const handleSizing = (patch: Partial<ClusterConfig>) => {
+          editCluster(patch);
+          const sized = applyClusterSizing({ ...cluster, ...patch }, useCanvasStore.getState().nodes);
+          if (sized !== useCanvasStore.getState().nodes) {
+            useCanvasStore.getState().pushHistory();
+            useCanvasStore.setState({ nodes: sized });
+          }
         };
         const handleTypeChange = (type: string) => {
           const controlPlane = type === "sno" ? 1 : 3;
@@ -4307,6 +4321,7 @@ export default function PropertiesPanel() {
             cluster={cluster}
             clusters={clusters}
             onPatch={editCluster}
+            onSizing={handleSizing}
             onTypeChange={handleTypeChange}
             onWorkersChange={handleWorkersChange}
           />
