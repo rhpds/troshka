@@ -25,6 +25,7 @@ import NodeContextMenu from "./NodeContextMenu";
 import EdgeContextMenu from "./EdgeContextMenu";
 import DuplicateVMModal from "./DuplicateVMModal";
 import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM } from "@/stores/canvasStore";
+import { makeCluster } from "@/components/canvas/clusterFactory";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
 import {
   GATEWAY_NETWORK_SOURCE_HANDLE,
@@ -123,6 +124,7 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
   const onConnect = useCanvasStore((s) => s.onConnect);
   const setSelectedNode = useCanvasStore((s) => s.setSelectedNode);
   const addNode = useCanvasStore((s) => s.addNode);
+  const addCluster = useCanvasStore((s) => s.addCluster);
   const addShowroomScaffold = useCanvasStore((s) => s.addShowroomScaffold);
   const deleteNode = useCanvasStore((s) => s.deleteNode);
   const duplicateNode = useCanvasStore((s) => s.duplicateNode);
@@ -441,13 +443,18 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
           })
           .catch(() => {});
         return; // Don't call addNode — the server handles topology updates
+      } else if (item.type === "cluster") {
+        const { node, cluster } = makeCluster("ocp", position);
+        addNode(node);
+        addCluster(cluster);
+        return; // node + cluster added together; skip the trailing addNode
       } else {
         return;
       }
 
       addNode(newNode);
     },
-    [addNode, addShowroomScaffold],
+    [addNode, addCluster, addShowroomScaffold],
   );
 
   const stableNodeTypes = useMemo(() => nodeTypes, []);

@@ -83,6 +83,18 @@ const sections: PaletteSection[] = [
     ],
   },
   {
+    title: "OpenShift",
+    items: [
+      {
+        type: "cluster",
+        label: "OCP Cluster",
+        desc: "OpenShift cluster boundary",
+        icon: "☸",
+        iconClass: "palette-icon-cluster",
+      },
+    ],
+  },
+  {
     title: "Networking",
     items: [
       {

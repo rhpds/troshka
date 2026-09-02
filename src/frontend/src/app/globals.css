@@ -194,6 +194,10 @@ body {
   background: rgba(180, 83, 9, 0.15);
 }
 
+.palette-icon-cluster {
+  background: rgba(59, 130, 246, 0.15);
+}
+
 .palette-icon-service {
   background: rgba(168, 85, 247, 0.15);
 }
