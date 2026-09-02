@@ -83,7 +83,14 @@ def project_factory(client):
     created: list[str] = []
 
     def create(*, deploy: bool = True, host_id: str | None = None, **body):
-        payload = {"auto_install_ocp": True, "install_via": "pod", **body}
+        # OCP from-template requires common_password (cloud-user + BMC auth);
+        # customize_topology raises if it is absent. Callers may override.
+        payload = {
+            "auto_install_ocp": True,
+            "install_via": "pod",
+            "common_password": "TroshkaLive123!",
+            **body,
+        }
         r = client.post_json("/api/v1/projects/from-template", payload)
         assert r.status_code == 201, f"from-template failed: {r.status_code} {r.text}"
         pid = r.json()["id"]
