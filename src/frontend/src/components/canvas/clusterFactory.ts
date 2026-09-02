@@ -66,6 +66,7 @@ export function makeCluster(
     data: {
       label: name,
       name,
+      clusterId,
       type: CLUSTER_DEFAULTS.type,
       controlPlane: CLUSTER_DEFAULTS.controlPlane,
       workers: CLUSTER_DEFAULTS.workers,

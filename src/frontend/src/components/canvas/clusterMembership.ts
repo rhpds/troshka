@@ -104,3 +104,25 @@ export function relativePosition(absPos: XY, parent: Node | null): XY {
   if (!parent) return absPos;
   return { x: absPos.x - parent.position.x, y: absPos.y - parent.position.y };
 }
+
+/**
+ * Return `nodes` with `childId` moved to immediately after `parentId`.
+ *
+ * React Flow v12 requires a child node to appear AFTER its parent in the nodes
+ * array or it will not render inside the boundary (and may error). A VM that
+ * existed before its cluster was dropped has a lower array index than the
+ * cluster, so on reparent it must be reordered. No-op when the child is already
+ * after the parent, when either node is missing, or when they are the same node.
+ */
+export function orderChildAfterParent(nodes: Node[], childId: string, parentId: string): Node[] {
+  if (childId === parentId) return nodes;
+  const childIndex = nodes.findIndex((n) => n.id === childId);
+  const parentIndex = nodes.findIndex((n) => n.id === parentId);
+  if (childIndex === -1 || parentIndex === -1) return nodes;
+  if (childIndex > parentIndex) return nodes;
+  const child = nodes[childIndex];
+  const without = nodes.filter((_, i) => i !== childIndex);
+  // Parent index shifts down by one once the earlier child is removed.
+  const insertAt = without.findIndex((n) => n.id === parentId) + 1;
+  return [...without.slice(0, insertAt), child, ...without.slice(insertAt)];
+}

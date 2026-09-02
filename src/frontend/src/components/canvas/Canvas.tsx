@@ -26,7 +26,7 @@ import EdgeContextMenu from "./EdgeContextMenu";
 import DuplicateVMModal from "./DuplicateVMModal";
 import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM } from "@/stores/canvasStore";
 import { makeCluster } from "@/components/canvas/clusterFactory";
-import { resolveMembership, absolutePosition, relativePosition } from "@/components/canvas/clusterMembership";
+import { resolveMembership, absolutePosition, relativePosition, orderChildAfterParent } from "@/components/canvas/clusterMembership";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
 import {
   GATEWAY_NETWORK_SOURCE_HANDLE,
@@ -190,14 +190,21 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
 
       const newParent = membership.parentId ? clusters.find((c) => c.id === membership.parentId) ?? null : null;
       const newPosition = relativePosition(absPos, newParent);
+
+      // Structural change first: set parentId + reparented position. React Flow
+      // v12 requires a child to appear AFTER its parent in the array, so on
+      // assignment reorder the node to immediately follow its cluster boundary.
+      const withParent = useCanvasStore.getState().nodes.map((n) =>
+        n.id === node.id ? { ...n, parentId: membership.parentId ?? undefined, position: newPosition } : n,
+      );
+      const ordered = membership.parentId
+        ? orderChildAfterParent(withParent, node.id, membership.parentId)
+        : withParent;
+      useCanvasStore.setState({ nodes: ordered });
+      // Then the data + dirty recompute (runs over the final, reordered nodes).
       updateNodeData(node.id, { clusterId: membership.clusterId });
-      const fresh = useCanvasStore.getState().nodes.find((n) => n.id === node.id);
-      if (!fresh) return;
-      onNodesChange([
-        { type: "replace", id: node.id, item: { ...fresh, parentId: membership.parentId ?? undefined, position: newPosition } },
-      ]);
     },
-    [allNodes, updateNodeData, onNodesChange],
+    [allNodes, updateNodeData],
   );
 
   const onEdgeContextMenu = useCallback(

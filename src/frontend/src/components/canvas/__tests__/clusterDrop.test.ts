@@ -12,6 +12,7 @@ describe("makeCluster", () => {
     expect(cluster.controlPlaneCpu).toBe(8);
     expect(cluster.workerCpu).toBe(4);
     expect(cluster.baseDomain).toBe("ocp.local");
+    expect((node.data as Record<string, unknown>).clusterId).toBe(cluster.id);
   });
 
   it("produces unique ids across calls", () => {
