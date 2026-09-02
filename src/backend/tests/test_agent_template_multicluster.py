@@ -129,6 +129,59 @@ def test_install_config_standard_and_sno():
     assert "baremetal" not in icd.get("platform", {})
 
 
+def test_agent_config_per_cluster():
+    import yaml
+
+    from app.services.ocp.agent_template import (
+        _build_agent_config,
+        cluster_member_nodes,
+    )
+
+    topo = _two_cluster_topo()
+
+    prod = {
+        "id": "prod",
+        "name": "prod",
+        "type": "standard",
+        "baseDomain": "ocp.local",
+    }
+    dev = {
+        "id": "dev",
+        "name": "dev",
+        "type": "sno",
+        "baseDomain": "dev.local",
+    }
+
+    ac_prod = yaml.safe_load(
+        _build_agent_config(prod, cluster_member_nodes(topo, "prod"), topo)
+    )
+    ac_dev = yaml.safe_load(
+        _build_agent_config(dev, cluster_member_nodes(topo, "dev"), topo)
+    )
+
+    # distinct metadata.name
+    assert ac_prod["metadata"]["name"] == "prod"
+    assert ac_dev["metadata"]["name"] == "dev"
+
+    # rendezvousIP = each cluster's own first control-plane member IP
+    assert ac_prod["rendezvousIP"] == "10.0.0.20"
+    assert ac_dev["rendezvousIP"] == "10.1.0.20"
+    assert ac_prod["rendezvousIP"] != ac_dev["rendezvousIP"]
+
+    # host lists do not bleed across clusters
+    prod_hosts = [h["hostname"] for h in ac_prod["hosts"]]
+    dev_hosts = [h["hostname"] for h in ac_dev["hosts"]]
+    assert len(prod_hosts) == 5
+    assert all(h.startswith("p-") for h in prod_hosts)
+    assert dev_hosts == ["d-cp-0"]
+
+    # per-host static IP comes from the member's own NIC
+    prod_ip = ac_prod["hosts"][0]["networkConfig"]["interfaces"][0]["ipv4"]["address"][
+        0
+    ]["ip"]
+    assert prod_ip == "10.0.0.20"
+
+
 def test_count_scoped_by_cluster():
     from app.services.ocp.agent_template import _count_ocp_nodes_by_group
 

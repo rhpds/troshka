@@ -819,7 +819,7 @@ def _setup_bastion_auto_install(
         ssh_pub_key,
         pull_through_registry=ocp_config.pull_through_registry,
     )
-    agent_config = _build_agent_config(
+    agent_config = _build_agent_config_legacy(
         topology,
         ocp_config.cluster_name,
         ocp_config.base_domain,
@@ -1298,34 +1298,29 @@ def _extract_agent_host(node, gateway_ip, prefix_len):
     return host_yaml, cluster_ip
 
 
-def _build_agent_config(
-    topology,
-    cluster_name,
-    _base_domain,
-    api_vip_override="",
-    ingress_vip_override="",
-):
-    """Build agent-config.yaml with BMC host details for Redfish virtual media boot."""
-    cluster_cidr = _find_cluster_cidr(topology)
-    net = ipaddress.ip_network(cluster_cidr, strict=False)
+def _build_agent_config(cluster, members, topology):
+    """Build a single cluster's ``agent-config.yaml`` (scoped to ``members``).
+
+    ``cluster`` is a cluster-shaped dict (``name`` used for ``metadata.name``),
+    ``members`` are its VM nodes (see :func:`cluster_member_nodes`), and
+    ``topology`` is the full topology used only to resolve the cluster's
+    network. Per-host NMState entries (static IP/MAC/gateway/DNS) come from
+    ``members`` alone, so hosts never leak across clusters. ``rendezvousIP`` is
+    the cluster's first control-plane member IP (falling back to ``network+10``
+    when no control-plane IP is present).
+    """
+    cluster_name = cluster.get("name", "ocp")
+    net = ipaddress.ip_network(_cidr_for_members(members, topology), strict=False)
     gateway_ip = str(net.network_address + 1)
-    _api_vip = api_vip_override or str(net.network_address + _API_VIP_OFFSET)
-    _ingress_vip = ingress_vip_override or str(
-        net.network_address + _INGRESS_VIP_OFFSET
-    )
     prefix_len = net.prefixlen
 
-    rendezvous_ip = ""
     hosts_yaml = ""
-    for node in topology.get("nodes", []):
+    for node in members:
         result = _extract_agent_host(node, gateway_ip, prefix_len)
         if result:
             hosts_yaml += result[0]
-            if not rendezvous_ip and result[1]:
-                rendezvous_ip = result[1]
 
-    if not rendezvous_ip:
-        rendezvous_ip = str(net.network_address + 10)
+    rendezvous_ip = _cluster_control_plane_ip(members) or str(net.network_address + 10)
 
     ac_lines = [
         "apiVersion: v1beta1",
@@ -1341,6 +1336,26 @@ def _build_agent_config(
     ac_lines.append(hosts_yaml.rstrip())
 
     return "\n".join(ac_lines)
+
+
+def _build_agent_config_legacy(
+    topology,
+    cluster_name,
+    base_domain,
+    _api_vip_override="",
+    _ingress_vip_override="",
+):
+    """Single-cluster back-compat wrapper for :func:`_build_agent_config`.
+
+    Reconstructs a cluster-shaped dict and treats the whole topology's VM nodes
+    as the cluster members, so single-cluster callers get output equivalent to
+    the pre-multicluster implementation. The VIP override args are accepted for
+    call-site compatibility but unused (they never affected agent-config
+    output).
+    """
+    cluster = {"name": cluster_name, "baseDomain": base_domain}
+    members = [n for n in topology.get("nodes", []) if n.get("type") == "vmNode"]
+    return _build_agent_config(cluster, members, topology)
 
 
 def _build_bastion_autologin_steps(cluster_name: str, base_domain: str) -> str:
