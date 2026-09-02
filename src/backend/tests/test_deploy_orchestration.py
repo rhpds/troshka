@@ -1960,6 +1960,143 @@ class TestDeployProjectInner:
 
         mock_kv_deploy.assert_called_once()
 
+    # --- ops-pod trigger on the kubevirt / multi-host completion paths ---
+    # Regression for the whole-branch review C1/I1: _deploy_ops_pod's only call
+    # site historically lived inside the single-host execute path, so a
+    # pod-default OCP project on a kubevirt host (or multi-host) finished with
+    # the VMs up but OpenShift never installed. These drive _deploy_project_inner
+    # through those branches and assert the ops-pod install is (or is not) reached.
+
+    @staticmethod
+    def _ocp_pod_project(state="deploying"):
+        topo = _minimal_topology(vm_nodes=[_vm_node()])
+        topo["clusters"] = [{"id": "c0", "name": "ocp"}]
+        topo["ocpInstallVia"] = "pod"
+        project = _make_project(state=state, topology=topo, vni_map={"net1": 100})
+        project.clock_target = None
+        project.guest_exec_enabled = True
+        return project
+
+    @patch(f"{SVC}._clear_deploy_cancelled")
+    @patch(f"{SVC}._get_host_pool", return_value=None)
+    @patch(f"{SVC}._deploy_kubevirt_native")
+    @patch(f"{SVC}._deploy_ops_pod")
+    def test_kubevirt_pod_project_triggers_ops_pod(
+        self, mock_ops, mock_kv, mock_pool, mock_clear
+    ):
+        """A pod OCP project on a kubevirt host launches the ops-pod install."""
+        from app.services.deploy_service import _deploy_project_inner
+
+        project = self._ocp_pod_project()
+        host = _make_host(host_type="kubevirt-cluster")
+        mock_session = _mock_deploy_session(project, host)
+
+        with patch(f"{DB_MOD}.SessionLocal", return_value=mock_session), patch(
+            "app.services.placement.record_deploy_start"
+        ), patch("app.services.placement.record_deploy_end"):
+            _deploy_project_inner(PROJECT_ID)
+
+        mock_kv.assert_called_once()
+        mock_ops.assert_called_once()
+
+    @patch(f"{SVC}._clear_deploy_cancelled")
+    @patch(f"{SVC}._get_host_pool", return_value=None)
+    @patch(f"{SVC}._deploy_kubevirt_native")
+    @patch(f"{SVC}._deploy_ops_pod")
+    def test_kubevirt_deploy_error_skips_ops_pod(
+        self, mock_ops, mock_kv, mock_pool, mock_clear
+    ):
+        """A failed kubevirt VM bring-up must NOT launch the ops-pod install."""
+        from app.services.deploy_service import _deploy_project_inner
+
+        project = self._ocp_pod_project()
+
+        def _fail(*_a, **_k):
+            project.state = "error"
+
+        mock_kv.side_effect = _fail
+        host = _make_host(host_type="kubevirt-cluster")
+        mock_session = _mock_deploy_session(project, host)
+
+        with patch(f"{DB_MOD}.SessionLocal", return_value=mock_session), patch(
+            "app.services.placement.record_deploy_start"
+        ), patch("app.services.placement.record_deploy_end"):
+            _deploy_project_inner(PROJECT_ID)
+
+        mock_ops.assert_not_called()
+
+    @patch(f"{SVC}._clear_deploy_cancelled")
+    @patch(f"{SVC}._get_host_pool", return_value=None)
+    @patch(f"{SVC}._deploy_kubevirt_native")
+    @patch(f"{SVC}._deploy_ops_pod")
+    def test_kubevirt_bastion_project_skips_ops_pod(
+        self, mock_ops, mock_kv, mock_pool, mock_clear
+    ):
+        """A bastion OCP project on a kubevirt host never uses the ops pod."""
+        from app.services.deploy_service import _deploy_project_inner
+
+        project = self._ocp_pod_project()
+        project.topology["ocpInstallVia"] = "bastion"
+        host = _make_host(host_type="kubevirt-cluster")
+        mock_session = _mock_deploy_session(project, host)
+
+        with patch(f"{DB_MOD}.SessionLocal", return_value=mock_session), patch(
+            "app.services.placement.record_deploy_start"
+        ), patch("app.services.placement.record_deploy_end"):
+            _deploy_project_inner(PROJECT_ID)
+
+        mock_ops.assert_not_called()
+
+    @patch(f"{SVC}._clear_deploy_cancelled")
+    @patch(f"{SVC}._get_host_pool", return_value=None)
+    @patch(f"{SVC}._deploy_multihost")
+    @patch(f"{SVC}._deploy_ops_pod")
+    def test_multihost_pod_project_triggers_ops_pod(
+        self, mock_ops, mock_multi, mock_pool, mock_clear
+    ):
+        """A pod OCP project deployed multi-host launches the ops-pod install."""
+        from app.services.deploy_service import _deploy_project_inner
+
+        project = self._ocp_pod_project()
+        project.mesh_network_host_id = HOST_ID
+        host = _make_host()
+        mock_session = _mock_deploy_session(project, host)
+
+        with patch(f"{DB_MOD}.SessionLocal", return_value=mock_session), patch(
+            "app.services.placement.record_deploy_start"
+        ), patch("app.services.placement.record_deploy_end"):
+            _deploy_project_inner(PROJECT_ID)
+
+        mock_multi.assert_called_once()
+        mock_ops.assert_called_once()
+
+    @patch(f"{SVC}._clear_deploy_cancelled")
+    @patch(f"{SVC}._get_host_pool", return_value=None)
+    @patch(f"{SVC}._deploy_multihost")
+    @patch(f"{SVC}._deploy_ops_pod")
+    def test_multihost_deploy_error_skips_ops_pod(
+        self, mock_ops, mock_multi, mock_pool, mock_clear
+    ):
+        """A failed multi-host bring-up must NOT launch the ops-pod install."""
+        from app.services.deploy_service import _deploy_project_inner
+
+        project = self._ocp_pod_project()
+        project.mesh_network_host_id = HOST_ID
+
+        def _fail(*_a, **_k):
+            project.state = "error"
+
+        mock_multi.side_effect = _fail
+        host = _make_host()
+        mock_session = _mock_deploy_session(project, host)
+
+        with patch(f"{DB_MOD}.SessionLocal", return_value=mock_session), patch(
+            "app.services.placement.record_deploy_start"
+        ), patch("app.services.placement.record_deploy_end"):
+            _deploy_project_inner(PROJECT_ID)
+
+        mock_ops.assert_not_called()
+
     @patch(f"{SVC}.notify_project")
     @patch(f"{SVC}._delete_deploy_progress")
     @patch(f"{SVC}._clear_deploy_cancelled")

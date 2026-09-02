@@ -1975,6 +1975,21 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map):
         )
 
 
+def _maybe_deploy_ops_pod(s, host, project_id, project, topology, vni_map) -> None:
+    """Trigger the OCP ops-pod install when the project resolves to ``install_via: pod``.
+
+    Called at the successful VM-up completion of EVERY deploy branch — single-host
+    (troshkad), kubevirt-native, and multi-host — so a pod-default OCP project
+    installs regardless of host type. Without this the ops pod is only reached on
+    the single-host path (its sole historical call site), and a pod OCP project on
+    a ``kubevirt-cluster`` host or a multi-host deploy would silently finish
+    without ever installing OpenShift. No-op for bastion / non-OCP projects
+    (``_should_use_ops_pod`` returns False).
+    """
+    if _should_use_ops_pod(topology):
+        _deploy_ops_pod(s, host, project_id, project, topology, vni_map)
+
+
 def _deploy_ops_pod_troshkad(
     s, host, project_id, project, topology, vni_map, clusters, api_key, ocp_version
 ):
@@ -5656,8 +5671,7 @@ def _deploy_single_host_execute(
         project.topology = topology
         s.commit()
 
-        if _should_use_ops_pod(topology):
-            _deploy_ops_pod(s, host, project_id, project, topology, vni_map)
+        _maybe_deploy_ops_pod(s, host, project_id, project, topology, vni_map)
 
     _deploy_complete_and_notify(
         s,
@@ -5806,11 +5820,22 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                 project.mesh_network_host_id[:8],
             )
             _deploy_multihost(project_id, project, s)
+            # A pod-default OCP project deployed multi-host still needs the ops
+            # pod to run the install (the primary host reaches cross-host cluster
+            # VMs over the VXLAN mesh). Only after a non-error VM bring-up.
+            if getattr(project, "state", None) != "error":
+                _maybe_deploy_ops_pod(s, host, project_id, project, topology, vni_map)
             return
 
         # KubeVirt native: delegate entire deploy to operator via CRDs
         if host.host_type == "kubevirt-cluster":
             _deploy_kubevirt_native(project_id, project, host, topology, s)
+            # _deploy_kubevirt_native blocks until the VMs reach Running (or sets
+            # project.state="error"), so this is the correct point to launch the
+            # pod-default OCP install. Without it a pod OCP project on a kubevirt
+            # host finishes with the VMs up but OpenShift never installed.
+            if getattr(project, "state", None) != "error":
+                _maybe_deploy_ops_pod(s, host, project_id, project, topology, vni_map)
             return
 
         pool = _get_host_pool(host, s)
