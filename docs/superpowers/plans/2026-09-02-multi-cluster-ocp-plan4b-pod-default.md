@@ -4,7 +4,7 @@
 
 **Goal:** Make OCP install method a **per-project choice — `install_via: bastion | pod`, defaulting to `pod`** — WITHOUT removing the bastion (bastion stays as the opt-in alternative), and make the pod install path production-ready (spawn the install monitor with dead-job detection, idempotent re-runs, cancellation that actually stops the pod, secrets via mounted files instead of argv, and monitoring/status for pod projects that have no bastion VM).
 
-**Architecture:** Backend + a new small troshkad file-mount capability + one frontend toggle. The bastion and pod paths already coexist at a single deploy branch (`_should_use_ops_pod`); Plan 4b converts the global `install_via_pod` flag into a per-project `install_via` selector (default `pod`), keyed off the project/topology rather than a global config. The bastion path stays byte-identical for `install_via: bastion`. **KubeVirt-provider hosts keep using the bastion** until Plan 4c adds the KubeVirt ops-pod (operator CR + NAD) — so "pod default" applies to troshkad/libvirt hosts now, KubeVirt later.
+**Architecture:** Backend + a new troshkad file-mount capability + a KubeVirt ops-pod path + one frontend toggle. The bastion and pod paths already coexist at a single deploy branch (`_should_use_ops_pod`); Plan 4b converts the global `install_via_pod` flag into a per-project `install_via` selector (default `pod`), keyed off the project/topology rather than a global config. The bastion path stays byte-identical for `install_via: bastion`. **The pod path works on BOTH troshkad/libvirt (podman netns-transit) AND KubeVirt (a namespace pod attached to the cluster + BMC NADs, mirroring the operator's sushy Deployment)** — so pod-default applies to all host types (no KubeVirt→bastion fallback).
 
 **Tech Stack:** Python 3.11 (CI 3.13), FastAPI, pytest; troshkad (podman); Next.js frontend. No new backend deps.
 
@@ -14,7 +14,8 @@
 - **Keep the bastion** — do NOT remove it or migrate its DNS/VNC/console/monitor. It remains a selectable install method.
 - **Install method is per-project:** `install_via: bastion | pod`. **Default = `pod`.**
 - **Sequencing:** harden the pod path FIRST; flip the default to `pod` LAST (so a default deploy never runs an incomplete path).
-- **KubeVirt hosts:** effective default stays `bastion` until Plan 4c (KubeVirt ops-pod parity). Document this; don't let pod-default break KubeVirt OCP deploys.
+- **KubeVirt hosts:** pod path works on KubeVirt too (in-scope for 4b) — a namespace pod attached to the cluster + BMC NADs. No bastion fallback.
+- **Secrets:** delivered to the pod via a new troshkad file-mount capability (host dir 0600 + read-only bind-mount) / a k8s Secret on KubeVirt — NOT base64-in-argv.
 - **Caveat (explicit):** the real pod/Redfish/install run is not exercisable in the authoring session — pod-default is verified at unit/wiring level here; the bastion opt-in + Task N live-env checklist are the safety nets before production trust.
 
 ## Global Constraints
@@ -42,10 +43,10 @@
 - Add a per-PROJECT `install_via: "bastion"|"pod"` (default `"pod"`) resolved from template/body; distinct from the existing `install_method` (agent type). Config `ocp.install_via_default: "pod"` replaces the old boolean `ocp.install_via_pod` (keep reading the old flag as a fallback for one release). `create_project_from_template` puts `install_via` in the config dict + persists it where `customize_topology` and deploy can read it (topology-level, e.g. `topology["ocpInstallVia"]`, or project column — pick the one both customize-time and deploy-time can see; topology is simplest since deploy reads topology).
 - [ ] Tests: default (no field) → `pod`; explicit `bastion`/`pod` honored; legacy `install_via_pod: true` config still yields pod. TDD. Commit.
 
-### Task 2: `_should_use_ops_pod` = per-project + KubeVirt-bastion fallback
+### Task 2: `_should_use_ops_pod` = per-project (all host types)
 **Files:** `deploy_service.py:1803/1825`; Test `test_deploy_orchestration.py`.
-- `_should_use_ops_pod(topology, host)` returns True when the project's `install_via == "pod"` AND the host is NOT kubevirt (`host.host_type != "kubevirt-cluster"`); else False (bastion). Default (unset) → pod on troshkad, bastion on kubevirt. Drop the global-flag-only read; keep config as the default source when the project doesn't specify.
-- [ ] Tests (rewrite the selector tests): pod-project+troshkad→True; pod-project+kubevirt→False; bastion-project→False; unset+troshkad→True; unset+kubevirt→False. TDD. Commit.
+- `_should_use_ops_pod(topology)` returns True when the project's `install_via == "pod"` (default), False for `bastion` — on ALL host types (troshkad + kubevirt; the kubevirt pod path is Tasks 8b-8d). Drop the global-flag-only read; keep config as the default source when the project doesn't specify.
+- [ ] Tests (rewrite the selector tests): pod-project→True; bastion-project→False; unset→True (pod default). TDD. Commit.
 
 ### Task 3: `customize_topology` bakes bastion only for `install_via: bastion`
 **Files:** `agent_template.py:519/553/489`; Test `test_agent_template*.py`.
@@ -78,6 +79,16 @@
 - Add a troshkad `/pods/create` `files: {path: content}` capability: troshkad writes each file to a per-pod host dir (0600) and bind-mounts it read-only into the container — so install-config/agent-config/pull-secret/API-key are NOT in the argv/`podman inspect`. Switch `_ops_pod_create_params` to use `files`+mounts instead of base64-in-command; keep `TROSHKA_API_KEY` out of argv (env is acceptable per §7, or also a mounted file). **[LIVE-ENV mount; UNIT handler logic + param shaping]**
 - [ ] Tests: troshkad `files` handler writes+mounts (unit, mocked fs); `_ops_pod_create_params` emits `files`+mounts, no secret in `command`. TDD. Commit. (If the troshkad file handler proves too large, split into its own task.)
 
+### Task 8b: KubeVirt ops-pod — spec/creation + provider branch
+**Files:** `deploy_service.py` (`_deploy_ops_pod:1951` add kubevirt branch), `providers/kubevirt.py` (a `create_ops_pod`), possibly `operator/` (if the operator must materialize it); Test `test_ops_pod.py`/`test_kubevirt_provider.py`.
+- On a `kubevirt-cluster` host, `_deploy_ops_pod` creates a Pod in `project-{pid8}` (via k8s API or operator CR) using `OPS_POD_IMAGE`, attached via `k8s.v1.cni.cncf.io/networks` to BOTH the cluster NAD (reach nested VMs / serve ISO) and the BMC NAD (reach sushy `:8000`), privileged + NET_ADMIN/NET_RAW — mirror `operator/helpers/bmc.py build_bmc_deployment`. Env carries the scoped key/API url/project; per-cluster configs + pull-secret delivered via a **k8s Secret** mounted into the pod (the KubeVirt analog of Task 8's file-mount). Reuse the same install script (`build_ops_pod_install_script`) as command.
+- [ ] Tests: kubevirt branch builds a Pod/CR spec with both NAD annotations, the EE image, secret-mount (not argv), and the install-script command; the troshkad branch is unchanged. **[LIVE-ENV]** actual pod run + NAD reachability. TDD. Commit.
+
+### Task 8c: KubeVirt ops-pod — exec/log-read, monitor, cancel
+**Files:** `deploy_service.py` (`_read_ops_pod_cluster_logs:2041`, `_monitor_ops_pod_install:2079`, `_cancel_ops_pod_install:2058`); Test.
+- Make the log-read/monitor/cancel provider-aware: on kubevirt, read per-cluster `install.log` via `connect_get_namespaced_pod_exec` (like `_pod_exec_raw`/`_exec_on_bastion_kubevirt`) instead of troshkad `/containers/exec`; cancel = delete the k8s pod (not troshkad `/pods/destroy`). The pure state machine + progress publishing are shared. **[LIVE-ENV]** exec/timing.
+- [ ] Tests: kubevirt log-read + cancel take the k8s path (mocked k8s client); troshkad path unchanged. TDD. Commit.
+
 ### Task 9: Frontend `install_via` toggle
 **Files:** `frontend/src/app/projects/page.tsx:209-221` (+ maybe `PropertiesPanel.tsx`); Test (Vitest).
 - Add an "Install method" select (Pod (default) / Bastion) to the OCP create flow, posting `install_via`. Default pod. (Bastion-specific fields — image/iso/bmc — shown only when bastion.)
@@ -95,8 +106,7 @@
 
 ## Self-Review (to complete after drafting tasks)
 - Covers: per-project `install_via` (T1) + selector w/ kubevirt fallback (T2) + bake decision (T3) + idempotency (T4) + monitor spawn/dead-job (T5) + cancel-pod (T6) + pod-project monitoring/status (T7) + secret-mount (T8) + frontend (T9) + deploy-param tests (T10) + default flip/regression/checklist (T11). Bastion retained + byte-identical throughout.
-- **Deferred to Plan 4c:** KubeVirt ops-pod parity (operator CR/pod + NAD to reach VMs + sushy) so pod-default extends to KubeVirt hosts. **Plan 5:** console pod + showroom terminal. **Plan 6:** inventory per-cluster + day-2. Carry-forwards from Plan 3 (replicas-vs-hosts guard, rendezvous-is-a-host, single-cluster _generated* double-build) — fold into T3/T5 where they touch the same code.
+- KubeVirt ops-pod parity is now IN Plan 4b (Tasks 8b-8c). **Plan 5:** console pod + showroom terminal. **Plan 6:** inventory per-cluster + day-2. Carry-forwards from Plan 3 (replicas-vs-hosts guard, rendezvous-is-a-host, single-cluster _generated* double-build) — fold into T3/T5 where they touch the same code.
 
 ## Roadmap
-- **Plan 4c** — KubeVirt-provider ops-pod parity (removes the kubevirt→bastion fallback).
-- **Plan 5** — console pod + showroom terminal. **Plan 6** — inventory plugin per-cluster groups + day-2.
+- **Plan 5** — console pod + showroom terminal (lab-user oc shell). **Plan 6** — inventory plugin per-cluster groups + day-2/monitoring.
