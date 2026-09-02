@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { reconcileClusterVms, applyClusterSizing } from "@/components/canvas/clusterMaterialize";
+import { reconcileClusterVms, applyClusterSizing, memberRole, assignmentDataPatch } from "@/components/canvas/clusterMaterialize";
 
 const cluster = {
   id: "prod",
@@ -107,5 +107,98 @@ describe("reconcileClusterVms", () => {
       "workers",
     );
     expect(wk.id).toBe("prod-worker-0");
+  });
+});
+
+// Backend (from-template / migration) members carry clusterId +
+// tags.AnsibleGroup + generated:true but NO clusterRole. Membership/role must
+// resolve via AnsibleGroup fallback so counts match and no duplicates are added.
+function backendMembers() {
+  const mk = (id: string, group: string) => ({
+    id,
+    type: "vmNode",
+    position: { x: 0, y: 0 },
+    parentId: "cluster-prod",
+    data: {
+      os: "rhcos",
+      clusterId: "prod",
+      generated: true,
+      vcpus: group === "controllers" ? 8 : 4,
+      ram: group === "controllers" ? 16 : 8,
+      disk: group === "controllers" ? 120 : 100,
+      tags: { AnsibleGroup: group },
+    },
+  });
+  return [
+    mk("prod-cp-0", "controllers"),
+    mk("prod-cp-1", "controllers"),
+    mk("prod-cp-2", "controllers"),
+    mk("prod-worker-0", "workers"),
+    mk("prod-worker-1", "workers"),
+  ] as any[];
+}
+
+describe("memberRole", () => {
+  const wrap = (data: Record<string, unknown>) => ({ id: "x", type: "vmNode", data } as any);
+  it("prefers explicit clusterRole", () => {
+    expect(memberRole(wrap({ clusterRole: "control-plane", tags: { AnsibleGroup: "workers" } }))).toBe("control-plane");
+    expect(memberRole(wrap({ clusterRole: "worker" }))).toBe("worker");
+  });
+  it("falls back to AnsibleGroup tag", () => {
+    expect(memberRole(wrap({ tags: { AnsibleGroup: "controllers" } }))).toBe("control-plane");
+    expect(memberRole(wrap({ tags: { AnsibleGroup: "workers" } }))).toBe("worker");
+  });
+  it("returns null when neither present", () => {
+    expect(memberRole(wrap({}))).toBeNull();
+    expect(memberRole(wrap({ tags: { AnsibleGroup: "other" } }))).toBeNull();
+  });
+});
+
+describe("backend-created cluster members (no clusterRole)", () => {
+  it("reconcileClusterVms with matching counts is a no-op (no duplicates)", () => {
+    const before = backendMembers();
+    const out = reconcileClusterVms(cluster, before);
+    expect(out).toHaveLength(5);
+    expect(out.filter((n) => memberRole(n) === "control-plane")).toHaveLength(3);
+    expect(out.filter((n) => memberRole(n) === "worker")).toHaveLength(2);
+  });
+
+  it("applyClusterSizing updates backend-created members via AnsibleGroup", () => {
+    const before = backendMembers();
+    const sized = applyClusterSizing({ ...cluster, controlPlaneCpu: 16, workerCpu: 12 } as any, before);
+    const cps = sized.filter((n) => memberRole(n) === "control-plane");
+    const wks = sized.filter((n) => memberRole(n) === "worker");
+    expect(cps.every((n) => n.data.vcpus === 16)).toBe(true);
+    expect(wks.every((n) => n.data.vcpus === 12)).toBe(true);
+  });
+});
+
+describe("assignmentDataPatch (drag-in default role)", () => {
+  const vm = (data: Record<string, unknown> = {}) => ({ id: "vm1", type: "vmNode", data } as any);
+
+  it("defaults a newly-assigned roleless VM to worker + AnsibleGroup workers", () => {
+    const patch = assignmentDataPatch(vm({ tags: { Foo: "bar" } }), "prod", null);
+    expect(patch.clusterId).toBe("prod");
+    expect(patch.clusterRole).toBe("worker");
+    expect(patch.tags).toEqual({ Foo: "bar", AnsibleGroup: "workers" });
+  });
+
+  it("does not override an existing role on assignment", () => {
+    const patch = assignmentDataPatch(vm({ clusterRole: "control-plane" }), "prod", null);
+    expect(patch.clusterId).toBe("prod");
+    expect(patch.clusterRole).toBeUndefined();
+    expect(patch.tags).toBeUndefined();
+  });
+
+  it("does not add a role on re-assignment between clusters", () => {
+    const patch = assignmentDataPatch(vm({ tags: { AnsibleGroup: "workers" } }), "prod2", "prod1");
+    expect(patch.clusterId).toBe("prod2");
+    expect(patch.clusterRole).toBeUndefined();
+  });
+
+  it("does not add a role when leaving a cluster (unassignment)", () => {
+    const patch = assignmentDataPatch(vm({ clusterRole: "worker" }), null, "prod");
+    expect(patch.clusterId).toBeNull();
+    expect(patch.clusterRole).toBeUndefined();
   });
 });

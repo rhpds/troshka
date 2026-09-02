@@ -5,7 +5,7 @@ import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
-import { reconcileClusterVms, applyClusterSizing } from "./clusterMaterialize";
+import { reconcileClusterVms, applyClusterSizing, memberRole } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
 import {
   getShowroomReadiness,
@@ -1676,7 +1676,7 @@ export default function PropertiesPanel() {
                     aria-label="Cluster role"
                     className="props-select"
                     disabled={projectState === "deploying"}
-                    value={(data.clusterRole as string) || "control-plane"}
+                    value={memberRole(node) ?? "control-plane"}
                     onChange={(e) => {
                       const role = e.target.value;
                       updateNodeData(node.id, {

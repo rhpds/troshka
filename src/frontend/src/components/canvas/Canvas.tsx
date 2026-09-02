@@ -27,6 +27,7 @@ import DuplicateVMModal from "./DuplicateVMModal";
 import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM } from "@/stores/canvasStore";
 import { makeCluster } from "@/components/canvas/clusterFactory";
 import { resolveMembership, absolutePosition, relativePosition, orderChildAfterParent } from "@/components/canvas/clusterMembership";
+import { assignmentDataPatch } from "@/components/canvas/clusterMaterialize";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
 import {
   GATEWAY_NETWORK_SOURCE_HANDLE,
@@ -202,7 +203,12 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
         : withParent;
       useCanvasStore.setState({ nodes: ordered });
       // Then the data + dirty recompute (runs over the final, reordered nodes).
-      updateNodeData(node.id, { clusterId: membership.clusterId });
+      // A VM newly assigned to a cluster with no role yet defaults to worker
+      // (see assignmentDataPatch); an existing role is never overridden.
+      updateNodeData(
+        node.id,
+        assignmentDataPatch(node, membership.clusterId ?? null, currentClusterId),
+      );
     },
     [allNodes, updateNodeData],
   );

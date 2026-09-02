@@ -61,12 +61,57 @@ function roleSpecs(cluster: ClusterConfig): RoleSpec[] {
   ];
 }
 
+/**
+ * Resolve a node's cluster role, tolerating backend-created members that carry
+ * `tags.AnsibleGroup` (controllers/workers) but NO `data.clusterRole`. The
+ * explicit `clusterRole` always wins; the AnsibleGroup tag is the fallback
+ * source of truth so template/migration-created members are recognized. Returns
+ * `null` when neither is present (not a cluster member by role).
+ */
+export function memberRole(
+  n: Node,
+): "control-plane" | "worker" | null {
+  const d = n.data as Record<string, unknown>;
+  const role = d?.clusterRole;
+  if (role === "control-plane" || role === "worker") return role;
+  const group = (d?.tags as Record<string, unknown> | undefined)?.AnsibleGroup;
+  if (typeof group === "string") {
+    if (group.includes("controllers")) return "control-plane";
+    if (group.includes("workers")) return "worker";
+  }
+  return null;
+}
+
+/**
+ * Data patch for a VM whose cluster membership changed on drag. Always sets the
+ * new `clusterId`. When a VM is newly ASSIGNED (none -> a cluster) and has no
+ * role yet, it defaults to worker (control-plane count is fixed by cluster type,
+ * so a hand-dragged member is naturally a worker) — preserving any existing tags
+ * and never overriding a role on re-assignment.
+ */
+export function assignmentDataPatch(
+  node: Node,
+  newClusterId: string | null,
+  prevClusterId: string | null,
+): Record<string, unknown> {
+  const patch: Record<string, unknown> = { clusterId: newClusterId };
+  const isNewAssignment = newClusterId !== null && prevClusterId === null;
+  if (isNewAssignment && memberRole(node) === null) {
+    const existingTags = (node.data as Record<string, unknown>)?.tags as
+      | Record<string, unknown>
+      | undefined;
+    patch.clusterRole = "worker";
+    patch.tags = { ...(existingTags || {}), AnsibleGroup: "workers" };
+  }
+  return patch;
+}
+
 function isMember(n: Node, cluster: ClusterConfig, role: string): boolean {
   const d = n.data as Record<string, unknown>;
   return (
     n.type === "vmNode" &&
     d?.clusterId === cluster.id &&
-    d?.clusterRole === role
+    memberRole(n) === role
   );
 }
 
@@ -202,7 +247,8 @@ export function applyClusterSizing(
     if (n.type !== "vmNode" || d?.clusterId !== cluster.id || d?.generated !== true) {
       return n;
     }
-    const spec = specByRole.get(d.clusterRole as RoleSpec["role"]);
+    const role = memberRole(n);
+    const spec = role ? specByRole.get(role) : undefined;
     if (!spec) return n;
     const vcpus = spec.cpu;
     const ram = Math.max(1, Math.round(spec.memoryMb / MB_PER_GB));
