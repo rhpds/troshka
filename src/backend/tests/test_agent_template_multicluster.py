@@ -10,6 +10,125 @@ def _vm(name, cid, group):
     }
 
 
+def _member(name, cid, group, ip, mac):
+    return {
+        "type": "vmNode",
+        "data": {
+            "name": name,
+            "clusterId": cid,
+            "tags": {"AnsibleGroup": group},
+            "os": "rhcos",
+            "bmcEnabled": True,
+            "bmcIp": "192.168.50.10",
+            "nics": [{"ip": ip, "mac": mac}],
+        },
+    }
+
+
+def _two_cluster_topo():
+    prod_members = [
+        _member("p-cp-0", "prod", "controllers", "10.0.0.20", "52:54:00:aa:bb:01"),
+        _member("p-cp-1", "prod", "controllers", "10.0.0.21", "52:54:00:aa:bb:02"),
+        _member("p-cp-2", "prod", "controllers", "10.0.0.22", "52:54:00:aa:bb:03"),
+        _member("p-w-0", "prod", "workers", "10.0.0.30", "52:54:00:aa:bb:04"),
+        _member("p-w-1", "prod", "workers", "10.0.0.31", "52:54:00:aa:bb:05"),
+    ]
+    dev_members = [
+        _member("d-cp-0", "dev", "controllers", "10.1.0.20", "52:54:00:aa:cc:11"),
+    ]
+    nets = [
+        {
+            "id": "net-prod",
+            "type": "networkNode",
+            "data": {
+                "subtype": "network",
+                "cidr": "10.0.0.0/24",
+                "networkType": "cluster",
+            },
+        },
+        {
+            "id": "net-dev",
+            "type": "networkNode",
+            "data": {
+                "subtype": "network",
+                "cidr": "10.1.0.0/24",
+                "networkType": "cluster",
+            },
+        },
+    ]
+    return {"nodes": nets + prod_members + dev_members, "edges": []}
+
+
+def test_install_config_standard_and_sno():
+    import yaml
+
+    from app.services.ocp.agent_template import (
+        _build_install_config,
+        cluster_member_nodes,
+    )
+
+    topo = _two_cluster_topo()
+
+    prod = {
+        "id": "prod",
+        "name": "prod",
+        "type": "standard",
+        "controlPlane": 3,
+        "workers": 2,
+        "baseDomain": "ocp.local",
+        "apiVip": "10.0.0.10",
+        "ingressVip": "10.0.0.11",
+    }
+    ic = yaml.safe_load(
+        _build_install_config(
+            prod,
+            cluster_member_nodes(topo, "prod"),
+            topo,
+            pull_secret="{}",
+            ssh_key="ssh-rsa x",
+            pull_through_registry=None,
+        )
+    )
+    assert ic["metadata"]["name"] == "prod"
+    assert ic["baseDomain"] == "ocp.local"
+    assert ic["controlPlane"]["replicas"] == 3
+    assert ic["compute"][0]["replicas"] == 2
+    assert ic["platform"]["baremetal"]["apiVIPs"] == ["10.0.0.10"]
+    assert ic["platform"]["baremetal"]["ingressVIPs"] == ["10.0.0.11"]
+    assert ic["networking"]["machineNetwork"][0]["cidr"] == "10.0.0.0/24"
+    # BMC hosts scoped to prod members only (5 hosts, no dev leakage)
+    hosts = ic["platform"]["baremetal"]["hosts"]
+    assert len(hosts) == 5
+    assert all(not h["name"].startswith("d-") for h in hosts)
+
+    dev = {
+        "id": "dev",
+        "name": "dev",
+        "type": "sno",
+        "controlPlane": 1,
+        "workers": 0,
+        "baseDomain": "dev.local",
+        "apiVip": "",
+        "ingressVip": "",
+    }
+    icd = yaml.safe_load(
+        _build_install_config(
+            dev,
+            cluster_member_nodes(topo, "dev"),
+            topo,
+            pull_secret="{}",
+            ssh_key="ssh-rsa x",
+            pull_through_registry=None,
+        )
+    )
+    assert icd["metadata"]["name"] == "dev"
+    assert icd["baseDomain"] == "dev.local"
+    assert icd["platform"] == {"none": {}}
+    assert icd["controlPlane"]["replicas"] == 1
+    assert icd["compute"][0]["replicas"] == 0
+    assert "baremetal" not in icd.get("platform", {})
+
+
 def test_count_scoped_by_cluster():
     from app.services.ocp.agent_template import _count_ocp_nodes_by_group
 

@@ -807,7 +807,7 @@ def _setup_bastion_auto_install(
             _guard,
         )
 
-    install_config = _build_install_config(
+    install_config = _build_install_config_legacy(
         topology,
         ocp_config.template_id,
         ocp_config.cluster_name,
@@ -1064,10 +1064,14 @@ def _count_ocp_nodes_by_group(topology, group_name, cluster_id=None):
     return sum(1 for n in nodes if _node_role(n) == target_role)
 
 
-def _collect_bmc_host_entries(topology):
-    """Collect baremetal host entries for install-config.yaml."""
+def _collect_bmc_host_entries(members):
+    """Collect baremetal host entries for install-config.yaml.
+
+    ``members`` is the list of VM nodes belonging to a single cluster (see
+    :func:`cluster_member_nodes`), so hosts never leak across clusters.
+    """
     entries = []
-    for node in topology.get("nodes", []):
+    for node in members:
         if node.get("type") != "vmNode":
             continue
         td = node.get("data", {})
@@ -1091,27 +1095,60 @@ def _collect_bmc_host_entries(topology):
     return entries
 
 
+def _cluster_replicas(cluster, topology):
+    """Resolve (control_plane, worker) replica counts for a cluster.
+
+    Explicit ``cluster["controlPlane"]``/``["workers"]`` win; otherwise the
+    counts are derived from the cluster's member nodes (``data.clusterId``)
+    via :func:`_count_ocp_nodes_by_group`.
+    """
+    cluster_id = cluster.get("id")
+    cp = cluster.get("controlPlane")
+    if cp is None:
+        cp = _count_ocp_nodes_by_group(topology, "controllers", cluster_id=cluster_id)
+    workers = cluster.get("workers")
+    if workers is None:
+        workers = _count_ocp_nodes_by_group(topology, "workers", cluster_id=cluster_id)
+    return cp, workers
+
+
+def _append_pull_through_digest_sources(ic_lines, pull_through_registry):
+    """Append imageDigestSources entries for a pull-through registry (if enabled)."""
+    if not pull_through_registry or not pull_through_registry.get("enabled"):
+        return
+    ptr_url = pull_through_registry["url"]
+    ic_lines.append("imageDigestSources:")
+    for source, org in pull_through_registry.get("orgs", {}).items():
+        ic_lines.extend(
+            [
+                "- mirrors:",
+                f"  - {ptr_url}/{org}",
+                f"  source: {source}",
+            ]
+        )
+
+
 def _build_install_config(
+    cluster,
+    members,
     topology,
-    template_id,
-    cluster_name,
-    base_domain,
-    api_vip,
-    ingress_vip,
-    _password,
-    pull_secret_json,
-    ssh_pub_key,
+    pull_secret,
+    ssh_key,
     pull_through_registry=None,
 ):
-    cp_nodes_count = _count_ocp_nodes_by_group(topology, "controllers")
-    worker_nodes_count = _count_ocp_nodes_by_group(topology, "workers")
-    if cp_nodes_count > 0:
-        num_masters = cp_nodes_count
-    elif template_id == "ocp-sno":
-        num_masters = 1
-    else:
-        num_masters = 3
-    num_workers = worker_nodes_count
+    """Build a single cluster's ``install-config.yaml``.
+
+    ``cluster`` is a cluster-shaped dict (``id``/``name``/``baseDomain`` and
+    optional explicit ``controlPlane``/``workers``/``apiVip``/``ingressVip``),
+    ``members`` are its VM nodes (see :func:`cluster_member_nodes`), and
+    ``topology`` is the full topology used to resolve the cluster's network.
+    SNO clusters emit ``platform: none``; everything else emits baremetal with
+    the cluster's VIPs and BMC hosts scoped to ``members``.
+    """
+    cluster_name = cluster.get("name", "ocp")
+    base_domain = cluster.get("baseDomain", "ocp.local")
+    num_masters, num_workers = _cluster_replicas(cluster, topology)
+    api_vip, ingress_vip = resolve_cluster_vips(cluster, members, topology)
 
     ic_lines = [
         "apiVersion: v1",
@@ -1134,10 +1171,9 @@ def _build_install_config(
         "  serviceNetwork:",
         "    - 172.30.0.0/16",
         "  machineNetwork:",
-        f"    - cidr: {_find_cluster_cidr(topology)}",
+        f"    - cidr: {_cidr_for_members(members, topology)}",
     ]
-    is_sno = num_masters == 1 and num_workers == 0
-    if is_sno:
+    if _cluster_is_sno(cluster, members):
         ic_lines.extend(["platform:", "  none: {}"])
     else:
         ic_lines.extend(
@@ -1151,26 +1187,61 @@ def _build_install_config(
                 "    hosts:",
             ]
         )
-        ic_lines.extend(_collect_bmc_host_entries(topology))
+        ic_lines.extend(_collect_bmc_host_entries(members))
 
-    if pull_secret_json:
-        ic_lines.append(f"pullSecret: '{pull_secret_json}'")
-    if ssh_pub_key:
-        ic_lines.append(f"sshKey: '{ssh_pub_key}'")
+    if pull_secret:
+        ic_lines.append(f"pullSecret: '{pull_secret}'")
+    if ssh_key:
+        ic_lines.append(f"sshKey: '{ssh_key}'")
 
-    if pull_through_registry and pull_through_registry.get("enabled"):
-        ptr_url = pull_through_registry["url"]
-        ic_lines.append("imageDigestSources:")
-        for source, org in pull_through_registry.get("orgs", {}).items():
-            ic_lines.extend(
-                [
-                    "- mirrors:",
-                    f"  - {ptr_url}/{org}",
-                    f"  source: {source}",
-                ]
-            )
+    _append_pull_through_digest_sources(ic_lines, pull_through_registry)
 
     return "\n".join(ic_lines)
+
+
+def _build_install_config_legacy(
+    topology,
+    template_id,
+    cluster_name,
+    base_domain,
+    api_vip,
+    ingress_vip,
+    _password,
+    pull_secret_json,
+    ssh_pub_key,
+    pull_through_registry=None,
+):
+    """Single-cluster back-compat wrapper for :func:`_build_install_config`.
+
+    Reconstructs a cluster-shaped dict — replica counts from the whole topology
+    plus the legacy ``ocp-sno`` fallback (num_masters=1 when no controllers are
+    present) — and whole-topology members, so single-cluster callers get
+    byte-identical output to the pre-multicluster implementation.
+    """
+    cp_count = _count_ocp_nodes_by_group(topology, "controllers")
+    if cp_count > 0:
+        num_masters = cp_count
+    elif template_id == "ocp-sno":
+        num_masters = 1
+    else:
+        num_masters = 3
+    cluster = {
+        "name": cluster_name,
+        "baseDomain": base_domain,
+        "apiVip": api_vip,
+        "ingressVip": ingress_vip,
+        "controlPlane": num_masters,
+        "workers": _count_ocp_nodes_by_group(topology, "workers"),
+    }
+    members = [n for n in topology.get("nodes", []) if n.get("type") == "vmNode"]
+    return _build_install_config(
+        cluster,
+        members,
+        topology,
+        pull_secret_json,
+        ssh_pub_key,
+        pull_through_registry=pull_through_registry,
+    )
 
 
 def _build_agent_host_yaml(vm_name, role, boot_mac, cluster_ip, prefix_len, gateway_ip):
