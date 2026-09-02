@@ -29,6 +29,8 @@ const CELL_H = 300;
 const PAD = 30;
 const HEADER_H = 48;
 const COLS_MAX = 4;
+const CARD_W = 180; // VM card width (from .vm-node-card)
+const CARD_H = 260; // VM card height (approximate with all content)
 
 // Legacy constants (used in roleSpecs for backward compat)
 const CP_ROW_Y = 70;
@@ -272,6 +274,7 @@ function makeMemberNode(
     type: "vmNode",
     parentId: cluster.nodeId,
     position: { x, y },
+    extent: "parent", // Constrain drag to cluster boundary; can't be dragged outside
     data: {
       label: name,
       name,
@@ -419,6 +422,35 @@ export function clusterNetworkIdsFromEdges(
 }
 
 /**
+ * Compute the content bounding box from visible member VM cards (excluding hidden disk nodes).
+ * Returns { contentW, contentH } in pixels, or defaults to { 280, 180 } if no members.
+ * Visible members are those with type "vmNode" and parentId matching the cluster.
+ */
+function computeContentBbox(
+  cluster: ClusterConfig,
+  visibleMembers: Node[],
+): { contentW: number; contentH: number } {
+  if (visibleMembers.length === 0) {
+    return { contentW: 280, contentH: 180 };
+  }
+
+  let maxX = 0;
+  let maxY = 0;
+
+  for (const member of visibleMembers) {
+    const x = member.position.x;
+    const y = member.position.y;
+    maxX = Math.max(maxX, x + CARD_W);
+    maxY = Math.max(maxY, y + CARD_H);
+  }
+
+  return {
+    contentW: maxX + PAD,
+    contentH: maxY + PAD,
+  };
+}
+
+/**
  * Rebuild NICs for every existing member of the cluster to match cluster.networkIds.
  * Diff-based and MAC-stable: reuses existing NIC ids and MACs for networks that
  * remain in the list, drops NICs for networks no longer needed, adds new NICs only
@@ -540,7 +572,8 @@ export function applyClusterNetworks(
  * plane and `workers` worker member VMs, each with their disk storageNodes + edges.
  * Pure and idempotent: missing members are added, generated surplus is removed,
  * user-customized members are kept. Also returns disk edges needed to wire disks.
- * Updates the cluster boundary node's style.width/height to auto-fit members on grid.
+ * Updates the cluster boundary node's style.width/height to auto-fit members on grid,
+ * and sets data.minWidth/data.minHeight for NodeResizer constraints.
  */
 export function reconcileClusterVms(
   cluster: ClusterConfig,
@@ -554,14 +587,34 @@ export function reconcileClusterVms(
     resultEdges = nextEdges;
   }
 
-  // Update cluster boundary node size to fit all members on the grid
-  const memberCount = (cluster.controlPlane ?? 0) + (cluster.workers ?? 0);
-  const { width, height } = clusterBoxSize(memberCount);
+  // Collect visible member VMs (not hidden, not disks) for content bbox calculation
+  const visibleMembers = resultNodes.filter(
+    (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === cluster.id,
+  );
+
+  // Compute content bounding box from actual member positions and card dimensions
+  const { contentW, contentH } = computeContentBbox(cluster, visibleMembers);
+
+  // Find the current boundary node
+  const boundaryNode = resultNodes.find((n) => n.id === cluster.nodeId);
+  const currentWidth = (boundaryNode?.style?.width as number) || 0;
+  const currentHeight = (boundaryNode?.style?.height as number) || 0;
+
+  // Preserve manual enlargements: never shrink below content, but keep user-set sizes larger than content
+  const newWidth = Math.max(contentW, currentWidth);
+  const newHeight = Math.max(contentH, currentHeight);
+
+  // Update cluster boundary node size and set min constraints for NodeResizer
   resultNodes = resultNodes.map((n) =>
     n.id === cluster.nodeId
       ? {
           ...n,
-          style: { ...n.style, width, height },
+          style: { ...n.style, width: newWidth, height: newHeight },
+          data: {
+            ...n.data,
+            minWidth: contentW,
+            minHeight: contentH,
+          },
         }
       : n,
   );

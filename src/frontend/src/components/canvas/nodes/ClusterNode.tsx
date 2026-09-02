@@ -30,7 +30,11 @@ function ClusterNodeComponent({ data, selected }: NodeProps) {
       }}
     >
       {/* Resizer — draggable handles only visible when selected */}
-      <NodeResizer isVisible={selected} minWidth={280} minHeight={180} />
+      <NodeResizer
+        isVisible={selected}
+        minWidth={d.minWidth ?? 280}
+        minHeight={d.minHeight ?? 180}
+      />
 
       {/* Header label — the drag handle for the boundary itself. No `nodrag`:
           the body is pointerEvents:none (members stay interactive), so the

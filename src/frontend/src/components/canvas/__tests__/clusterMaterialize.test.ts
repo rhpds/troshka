@@ -738,16 +738,24 @@ describe("clusterBoxSize", () => {
 });
 
 describe("cluster boundary auto-sizing + member grid reflow", () => {
-  it("sets cluster boundary node style.width/height after reconcileClusterVms", () => {
+  it("sets cluster boundary node style.width/height based on content bbox after reconcileClusterVms", () => {
     const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
     cluster.controlPlane = 2;
     cluster.workers = 4;
     const { nodes: materialized } = reconcileClusterVms(cluster, [node]);
 
     const boundaryNode = materialized.find((n) => n.id === cluster.nodeId)!;
-    const expectedSize = clusterBoxSize(6); // 2 CPs + 4 workers
-    expect(boundaryNode.style?.width).toBe(expectedSize.width);
-    expect(boundaryNode.style?.height).toBe(expectedSize.height);
+    const members = materialized.filter((n) => n.type === "vmNode");
+
+    // Boundary size is content-based, not count-based
+    expect(boundaryNode.style?.width).toBeGreaterThan(0);
+    expect(boundaryNode.style?.height).toBeGreaterThan(0);
+
+    // All members must fit within the boundary
+    for (const member of members) {
+      expect(member.position.x + 180).toBeLessThanOrEqual(boundaryNode.style?.width as number);
+      expect(member.position.y + 260).toBeLessThanOrEqual(boundaryNode.style?.height as number);
+    }
   });
 
   it("member VM cards positioned on grid within boundary (no overflow)", () => {
@@ -763,6 +771,118 @@ describe("cluster boundary auto-sizing + member grid reflow", () => {
     for (const member of members) {
       const memberMaxY = member.position.y + 130; // CELL_H = 130
       expect(memberMaxY).toBeLessThanOrEqual(boundaryHeight);
+    }
+  });
+
+  it("member vmNodes have extent: 'parent' to constrain drag within cluster boundary", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlane = 3;
+    cluster.workers = 0;
+    const { nodes: materialized } = reconcileClusterVms(cluster, [node]);
+
+    const members = materialized.filter((n) => n.type === "vmNode");
+    expect(members.length).toBeGreaterThan(0);
+    for (const member of members) {
+      expect((member as any).extent).toBe("parent");
+    }
+  });
+
+  it("auto-encompasses content bbox: boundary width ≥ max(member.x + CARD_W) + PAD", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlane = 3;
+    cluster.workers = 2;
+    const { nodes: materialized } = reconcileClusterVms(cluster, [node]);
+
+    const boundaryNode = materialized.find((n) => n.id === cluster.nodeId)!;
+    const boundaryWidth = (boundaryNode.style?.width as number) || 0;
+    const boundaryHeight = (boundaryNode.style?.height as number) || 0;
+
+    const members = materialized.filter((n) => n.type === "vmNode");
+    for (const member of members) {
+      const maxX = member.position.x + 180; // CARD_W = 180
+      const maxY = member.position.y + 260; // CARD_H = 260
+      expect(maxX).toBeLessThanOrEqual(boundaryWidth);
+      expect(maxY).toBeLessThanOrEqual(boundaryHeight);
+    }
+  });
+
+  it("preserves manual enlargement: larger current size is not shrunk below content bbox", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlane = 1;
+    cluster.workers = 0;
+
+    // First reconcile to establish baseline size
+    const { nodes: initial } = reconcileClusterVms(cluster, [node]);
+    const initialBoundary = initial.find((n) => n.id === cluster.nodeId)!;
+    const initialWidth = (initialBoundary.style?.width as number) || 0;
+
+    // Manually enlarge the cluster (simulate user resize via NodeResizer)
+    const enlarged = initial.map((n) =>
+      n.id === cluster.nodeId
+        ? { ...n, style: { ...n.style, width: initialWidth + 200, height: 600 } }
+        : n,
+    );
+
+    // Re-reconcile with same cluster config
+    const { nodes: result } = reconcileClusterVms(cluster, enlarged);
+    const resultBoundary = result.find((n) => n.id === cluster.nodeId)!;
+    const resultWidth = (resultBoundary.style?.width as number) || 0;
+    const resultHeight = (resultBoundary.style?.height as number) || 0;
+
+    // Width and height should NOT shrink from the manual enlargement
+    expect(resultWidth).toBe(initialWidth + 200);
+    expect(resultHeight).toBe(600);
+  });
+
+  it("sets data.minWidth/minHeight to the content bbox for NodeResizer constraints", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlane = 2;
+    cluster.workers = 1;
+    const { nodes: materialized } = reconcileClusterVms(cluster, [node]);
+
+    const boundaryNode = materialized.find((n) => n.id === cluster.nodeId)!;
+    const minWidth = (boundaryNode.data as Record<string, unknown>).minWidth as number;
+    const minHeight = (boundaryNode.data as Record<string, unknown>).minHeight as number;
+
+    expect(minWidth).toBeGreaterThan(0);
+    expect(minHeight).toBeGreaterThan(0);
+
+    // Min should be ≤ actual size (can't set min larger than current)
+    const actualWidth = (boundaryNode.style?.width as number) || 0;
+    const actualHeight = (boundaryNode.style?.height as number) || 0;
+    expect(minWidth).toBeLessThanOrEqual(actualWidth);
+    expect(minHeight).toBeLessThanOrEqual(actualHeight);
+  });
+
+  it("members do not overlap on grid layout (180×260 card rects)", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlane = 4;
+    cluster.workers = 4;
+    const { nodes: materialized } = reconcileClusterVms(cluster, [node]);
+
+    const members = materialized.filter((n) => n.type === "vmNode");
+    expect(members.length).toBe(8);
+
+    // Check pairwise: no two 180×260 rects overlap
+    for (let i = 0; i < members.length; i++) {
+      for (let j = i + 1; j < members.length; j++) {
+        const m1 = members[i];
+        const m2 = members[j];
+
+        const m1Right = m1.position.x + 180;
+        const m1Bottom = m1.position.y + 260;
+        const m2Right = m2.position.x + 180;
+        const m2Bottom = m2.position.y + 260;
+
+        // Rects don't overlap if one is completely to the right, left, above, or below the other
+        const noOverlap =
+          m1Right <= m2.position.x ||
+          m2Right <= m1.position.x ||
+          m1Bottom <= m2.position.y ||
+          m2Bottom <= m1.position.y;
+
+        expect(noOverlap).toBe(true);
+      }
     }
   });
 });
