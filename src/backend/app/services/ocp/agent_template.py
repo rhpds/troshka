@@ -319,13 +319,21 @@ def _generate_dns_manifests(topology, base_domain):
     return lines
 
 
-def _find_sno_node_ip(topology):
-    """Find the SNO node's cluster IP — the single controller VM."""
-    for node in topology.get("nodes", []):
-        if node.get("type") != "vmNode":
-            continue
-        tags = node.get("data", {}).get("tags", {})
-        if tags.get("AnsibleGroup") != "controllers":
+def _cluster_is_sno(cluster, members):
+    """True when the cluster is single-node (explicit type or 1 CP / 0 workers)."""
+    if cluster.get("type") == "sno":
+        return True
+    cp = cluster.get("controlPlane")
+    workers = cluster.get("workers")
+    if cp is not None and workers is not None:
+        return cp == 1 and workers == 0
+    return False
+
+
+def _cluster_control_plane_ip(members):
+    """Return the first control-plane member's primary NIC IP (or None)."""
+    for node in members:
+        if node.get("type") != "vmNode" or _node_role(node) != "control-plane":
             continue
         nics = node.get("data", {}).get("nics", [])
         ip = nics[0].get("ip") if nics else None
@@ -334,42 +342,84 @@ def _find_sno_node_ip(topology):
     return None
 
 
-def _apply_controller_vips(ocp_cfg, cp_ip, api_vip, ingress_vip):
-    if not cp_ip:
+def _cidr_for_members(members, topology):
+    """Cluster network CIDR scoped to the members' network, else topology default.
+
+    Prefers a cluster networkNode whose CIDR contains one of the members' NIC
+    IPs (so multi-cluster topologies resolve the right subnet); falls back to
+    :func:`_find_cluster_cidr` when no member IP maps to a defined network.
+    """
+    member_ips = [
+        nic.get("ip")
+        for m in members
+        if m.get("type") == "vmNode"
+        for nic in m.get("data", {}).get("nics", [])
+        if nic.get("ip")
+    ]
+    for node in topology.get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        data = node.get("data", {})
+        if data.get("subtype") != "network" or data.get("networkType") == "bmc":
+            continue
+        cidr = data.get("cidr")
+        if not cidr:
+            continue
+        try:
+            net = ipaddress.ip_network(cidr, strict=False)
+        except ValueError:
+            continue
+        if any(ipaddress.ip_address(ip) in net for ip in member_ips):
+            return cidr
+    return _find_cluster_cidr(topology)
+
+
+def _derive_cluster_vips(cluster, members, topology):
+    """Derive VIPs when not explicitly set: SNO -> node IP, else CIDR offsets."""
+    if _cluster_is_sno(cluster, members):
+        cp_ip = _cluster_control_plane_ip(members)
+        if cp_ip:
+            return cp_ip, cp_ip
+    net = ipaddress.ip_network(_cidr_for_members(members, topology), strict=False)
+    return (
+        str(net.network_address + _API_VIP_OFFSET),
+        str(net.network_address + _INGRESS_VIP_OFFSET),
+    )
+
+
+def resolve_cluster_vips(cluster, members, topology):
+    """Resolve (api_vip, ingress_vip) for a single OCP cluster.
+
+    Priority: explicit ``cluster["apiVip"]``/``["ingressVip"]`` when both are
+    truthy; otherwise SNO clusters use the control-plane member's IP for both
+    VIPs, and multi-node clusters fall back to the cluster network's
+    ``network+2`` / ``network+3`` offsets. Partial explicit values are kept and
+    only the missing side is derived.
+    """
+    api_vip = cluster.get("apiVip") or ""
+    ingress_vip = cluster.get("ingressVip") or ""
+    if api_vip and ingress_vip:
         return api_vip, ingress_vip
-    if not ocp_cfg.get("api_vip"):
-        api_vip = cp_ip
-    if not ocp_cfg.get("ingress_vip"):
-        ingress_vip = str(ipaddress.IPv4Address(int(ipaddress.IPv4Address(cp_ip)) + 1))
-    return api_vip, ingress_vip
+    d_api, d_ingress = _derive_cluster_vips(cluster, members, topology)
+    return api_vip or d_api, ingress_vip or d_ingress
 
 
 def _resolve_ocp_vips(topology, ocp_cfg):
-    """Resolve API and Ingress VIPs from ocp config or topology control-plane nodes."""
-    api_vip = ocp_cfg.get("api_vip", "")
-    ingress_vip = ocp_cfg.get("ingress_vip", "")
+    """Single-cluster back-compat wrapper delegating to :func:`resolve_cluster_vips`.
 
-    if api_vip and ingress_vip:
-        return api_vip, ingress_vip
-
-    cluster_cidr = _find_cluster_cidr(topology)
-    net = ipaddress.ip_network(cluster_cidr, strict=False)
-    if not api_vip:
-        api_vip = str(net.network_address + 2)
-    if not ingress_vip:
-        ingress_vip = str(net.network_address + 3)
-
-    for n in topology.get("nodes", []):
-        if (
-            n.get("type") == "vmNode"
-            and n.get("data", {}).get("tags", {}).get("AnsibleGroup") == "controllers"
-        ):
-            cp_ip = n.get("data", {}).get("nics", [{}])[0].get("ip")
-            api_vip, ingress_vip = _apply_controller_vips(
-                ocp_cfg, cp_ip, api_vip, ingress_vip
-            )
-            break
-    return api_vip, ingress_vip
+    Maps the legacy snake_case ``ocp_cfg`` (``api_vip``/``ingress_vip``) onto a
+    cluster-shaped dict and treats the whole topology's VM nodes as the cluster
+    members, so single-cluster resolution stays consistent with the per-cluster
+    path.
+    """
+    cluster = {
+        "apiVip": ocp_cfg.get("api_vip", ""),
+        "ingressVip": ocp_cfg.get("ingress_vip", ""),
+        "controlPlane": _count_ocp_nodes_by_group(topology, "controllers"),
+        "workers": _count_ocp_nodes_by_group(topology, "workers"),
+    }
+    members = [n for n in topology.get("nodes", []) if n.get("type") == "vmNode"]
+    return resolve_cluster_vips(cluster, members, topology)
 
 
 def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
