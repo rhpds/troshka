@@ -964,14 +964,54 @@ def _setup_bastion_cloud_init(
         break
 
 
-def _count_ocp_nodes_by_group(topology, group_name):
-    """Count VM nodes with a given AnsibleGroup tag."""
-    return sum(
-        1
+def _node_role(node):
+    """Resolve a VM node's OCP cluster role ("control-plane"/"worker"/None).
+
+    Mirrors the frontend ``memberRole``: an explicit ``data.clusterRole`` wins;
+    otherwise fall back to ``data.tags.AnsibleGroup`` ("controllers" ->
+    control-plane, "workers" -> worker). Returns ``None`` when neither applies
+    (e.g. an AnsibleGroup of "bastions,showroom" is not a cluster member).
+    """
+    data = node.get("data", {})
+    role = data.get("clusterRole")
+    if role in ("control-plane", "worker"):
+        return role
+    group = data.get("tags", {}).get("AnsibleGroup")
+    if isinstance(group, str):
+        if "controllers" in group:
+            return "control-plane"
+        if "workers" in group:
+            return "worker"
+    return None
+
+
+def cluster_member_nodes(topology, cluster_id):
+    """Return the VM nodes belonging to ``cluster_id`` (``data.clusterId`` match)."""
+    return [
+        n
         for n in topology.get("nodes", [])
         if n.get("type") == "vmNode"
-        and n.get("data", {}).get("tags", {}).get("AnsibleGroup") == group_name
-    )
+        and n.get("data", {}).get("clusterId") == cluster_id
+    ]
+
+
+_GROUP_TO_ROLE = {"controllers": "control-plane", "workers": "worker"}
+
+
+def _count_ocp_nodes_by_group(topology, group_name, cluster_id=None):
+    """Count VM nodes matching a role group ("controllers"/"workers").
+
+    Role is resolved via :func:`_node_role` (clusterRole or AnsibleGroup). When
+    ``cluster_id`` is given, only that cluster's members (``data.clusterId``)
+    are counted; when ``None``, the whole topology is counted (back-compat with
+    single-cluster callers).
+    """
+    target_role = _GROUP_TO_ROLE.get(group_name)
+    if cluster_id is not None:
+        nodes = cluster_member_nodes(topology, cluster_id)
+    else:
+        nodes = [n for n in topology.get("nodes", []) if n.get("type") == "vmNode"]
+    return sum(1 for n in nodes if _node_role(n) == target_role)
 
 
 def _collect_bmc_host_entries(topology):
