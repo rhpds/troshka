@@ -249,6 +249,9 @@ def _get_user_from_api_key(request: Request, db: Session):
     api_key.last_used_at = datetime.datetime.now(datetime.UTC)
     db.commit()
 
+    # Surface the matched key so downstream dependencies (e.g.
+    # enforce_project_scope) can enforce project scope + permissions.
+    request.state.api_key = api_key
     return api_key.user
 
 
@@ -280,6 +283,10 @@ def _enforce_access(email: str, ocp_username: str | None = None):
 
 def get_current_user(request: Request, db: Session = Depends(get_db)):
     from app.models.user import User
+
+    # Default: no API key. _get_user_from_api_key sets this when a trk_ key
+    # authenticates, so scope-enforcing dependencies can distinguish auth paths.
+    request.state.api_key = None
 
     # SSO mode: use OAuth proxy headers
     if config.auth.oauth_enabled:
@@ -317,6 +324,30 @@ def get_current_user(request: Request, db: Session = Depends(get_db)):
         return _get_or_create_dev_user(db)
 
     raise HTTPException(status_code=401, detail="Not authenticated")
+
+
+def enforce_project_scope(perm: str):
+    """Dependency factory enforcing scoped-API-key limits on a project route.
+
+    If the request authenticated via a project-scoped API key, the key's
+    ``project_id`` must match the route's ``{project_id}`` path param AND the
+    key must grant ``perm`` — otherwise 403. For unscoped keys, JWT, OAuth, or
+    dev auth (no scoped key on ``request.state``), this is a no-op so the
+    existing owner/role/dev checks continue to govern access unchanged.
+    """
+
+    def dependency(request: Request, user=Depends(get_current_user)):
+        api_key = getattr(request.state, "api_key", None)
+        if api_key is None or not api_key.is_scoped:
+            return
+        route_project_id = request.path_params.get("project_id")
+        if api_key.project_id != route_project_id or not api_key.has_scope(perm):
+            raise HTTPException(
+                status_code=403,
+                detail="API key is not authorized for this project or action",
+            )
+
+    return dependency
 
 
 def require_role(min_role: str):
