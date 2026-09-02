@@ -1828,40 +1828,31 @@ def _should_use_ops_pod(topology) -> bool:
     return ocp_install_via(topology) == "pod"
 
 
-def _ops_pod_workdir_lines(clusters, workdir, pull_secret_json) -> list[str]:
-    """Bash lines materialising per-cluster configs + pull secret into workdir.
+def _ops_pod_workdir_lines(clusters, workdir) -> list[str]:
+    """Bash ``mkdir -p`` lines ensuring the per-cluster workdirs exist.
 
-    Each file is written base64-decoded so arbitrary YAML/JSON content (quotes,
-    newlines) survives being embedded in the pod's ``bash -c`` command safely.
+    Plan 4b, Task 8: the per-cluster install-config/agent-config and the pull
+    secret are now delivered as troshkad-mounted read-only files (see
+    :func:`app.services.ocp.ops_pod_scaffold.ops_pod_config_files`) — NOT
+    base64-echoed into the command — so no secret appears in the pod's ``bash
+    -c`` argv / ``podman inspect``. podman auto-creates a bind-mount's parent
+    dirs, but we still ``mkdir -p`` each cluster dir so install logs / auth
+    output have a writable home even when a cluster has no generated config.
     """
-    import base64
-
-    def _write(path: str, content: str) -> str:
-        b64 = base64.b64encode(content.encode()).decode()
-        return f"echo {b64} | base64 -d > {path}"
-
     lines = [f"mkdir -p {workdir}"]
     for cluster in clusters:
         key = str(cluster.get("id") or cluster.get("name") or "cluster")
-        cluster_dir = f"{workdir}/{key}"
-        lines.append(f"mkdir -p {cluster_dir}")
-        install_cfg = cluster.get("_generatedInstallConfig")
-        agent_cfg = cluster.get("_generatedAgentConfig")
-        if install_cfg is not None:
-            lines.append(_write(f"{cluster_dir}/install-config.yaml", str(install_cfg)))
-        if agent_cfg is not None:
-            lines.append(_write(f"{cluster_dir}/agent-config.yaml", str(agent_cfg)))
-    if pull_secret_json:
-        lines.append(_write(f"{workdir}/pull-secret.json", pull_secret_json))
+        lines.append(f"mkdir -p {workdir}/{key}")
     return lines
 
 
-def _ops_pod_command(clusters, topology, ocp_version, workdir, pull_secret_json):
-    """Full ``bash -c`` argv: materialise workdir files, then run the installer.
+def _ops_pod_command(clusters, topology, ocp_version, workdir):
+    """Full ``bash -c`` argv: ensure workdirs exist, then run the installer.
 
     The install-runner script (Task 5) reads each cluster's config from
-    ``<workdir>/<clusterId>/`` — which the preamble writes first — and installs
-    every cluster in parallel, exiting non-zero if any cluster fails.
+    ``<workdir>/<clusterId>/`` (delivered via mounted files) and installs every
+    cluster in parallel, exiting non-zero if any cluster fails. NO secret is
+    embedded in this argv.
     """
     from app.services.ocp.ops_pod_install import (
         bmc_for_cluster,
@@ -1875,7 +1866,7 @@ def _ops_pod_command(clusters, topology, ocp_version, workdir, pull_secret_json)
     script = build_ops_pod_install_script(
         clusters, bmc_by_cluster, ocp_version, workdir
     )
-    preamble = "\n".join(_ops_pod_workdir_lines(clusters, workdir, pull_secret_json))
+    preamble = "\n".join(_ops_pod_workdir_lines(clusters, workdir))
     return ["bash", "-c", preamble + "\n" + script]
 
 
@@ -1891,27 +1882,33 @@ def _ops_pod_create_params(
 ):
     """Build the real troshkad ``/pods/create`` params for the ops pod.
 
-    Unlike Task 4's ``build_ops_pod_config`` (which returns a ``files`` map +
-    dict ``mounts``), this produces the ACTUAL contract troshkad's
-    ``_handle_pod_create`` consumes: a ``privileged`` pod named ``ops`` on the
-    infra-transit network (ops ``.4``), with one main container on
-    :data:`OPS_POD_IMAGE` whose ``env`` is a DICT (not ``envVars[]``) and whose
-    ``command`` is a ``bash -c`` argv that materialises the per-cluster configs
-    into the workdir and then runs the install-runner script.
+    This produces the ACTUAL contract troshkad's ``_handle_pod_create``
+    consumes: a ``privileged`` pod named ``ops`` on the infra-transit network
+    (ops ``.4``), with one main container on :data:`OPS_POD_IMAGE` whose ``env``
+    is a DICT (not ``envVars[]``) and whose ``command`` is a ``bash -c`` argv
+    that ensures the per-cluster workdirs exist and then runs the install-runner
+    script.
+
+    Plan 4b, Task 8: the per-cluster install-config/agent-config and the pull
+    secret are delivered via the troshkad ``files`` capability (written 0600 to
+    a per-pod host dir and bind-mounted read-only at their workdir paths) — NOT
+    base64-embedded in ``command`` — so no secret appears in the pod argv /
+    ``podman inspect``. ``TROSHKA_API_KEY`` remains in ``env`` (acceptable per
+    spec §7: env is not exposed in the argv and troshkad's env is not logged).
     """
     from app.services.deploy_topology import _gateway_connected_dns_nameserver
     from app.services.ocp.ops_pod_scaffold import (
         OPS_POD_IMAGE,
         OPS_POD_WORKDIR,
+        ops_pod_config_files,
         ops_pod_infra_network,
     )
 
     project_id = str(getattr(project, "id", ""))
     dns = _gateway_connected_dns_nameserver(topology)
     networks = ops_pod_infra_network(vni_map, dns_nameserver=dns)
-    command = _ops_pod_command(
-        clusters, topology, ocp_version, OPS_POD_WORKDIR, pull_secret_json
-    )
+    command = _ops_pod_command(clusters, topology, ocp_version, OPS_POD_WORKDIR)
+    files = ops_pod_config_files(clusters, OPS_POD_WORKDIR, pull_secret_json)
     container = {
         "name": "ops",
         "image": OPS_POD_IMAGE,
@@ -1934,6 +1931,7 @@ def _ops_pod_create_params(
         "init_containers": [],
         "containers": [container],
         "volumes": [],
+        "files": files,
         "restart_policy": "always",
         "privileged": True,
     }

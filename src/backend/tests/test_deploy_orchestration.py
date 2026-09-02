@@ -4073,7 +4073,7 @@ class TestOpsPodCreateParams:
 
     def test_params_match_troshkad_contract(self):
         from app.services.deploy_service import _ops_pod_create_params
-        from app.services.ocp.ops_pod_scaffold import OPS_POD_IMAGE
+        from app.services.ocp.ops_pod_scaffold import OPS_POD_IMAGE, OPS_POD_WORKDIR
 
         project = _make_project()
         topo = _ocp_topology(2)
@@ -4085,7 +4085,7 @@ class TestOpsPodCreateParams:
             api_url="https://troshka.example.com",
             api_key="trk_secret",
             ocp_version="4.20",
-            pull_secret_json="",
+            pull_secret_json='{"auths":{"x":1}}',
         )
         assert params["pod_name"] == "ops"
         assert params["restart_policy"] == "always"
@@ -4107,9 +4107,20 @@ class TestOpsPodCreateParams:
         assert ctr["command"][1] == "-c"
         script = ctr["command"][2]
         assert "wait-for install-complete" in script
-        # Workdir materialization writes each cluster's install-config.
-        assert "cl-0/install-config.yaml" in script
-        assert "cl-1/install-config.yaml" in script
+        # Task 8: per-cluster configs + pull secret delivered via the troshkad
+        # `files` capability at their absolute workdir paths — NOT the command.
+        files = params["files"]
+        assert files[f"{OPS_POD_WORKDIR}/cl-0/install-config.yaml"] == "install: c0\n"
+        assert files[f"{OPS_POD_WORKDIR}/cl-0/agent-config.yaml"] == "agent: c0\n"
+        assert files[f"{OPS_POD_WORKDIR}/cl-1/install-config.yaml"] == "install: c1\n"
+        assert files[f"{OPS_POD_WORKDIR}/pull-secret.json"] == '{"auths":{"x":1}}'
+        # The command still ensures each cluster workdir exists (mkdir, no secret).
+        assert f"mkdir -p {OPS_POD_WORKDIR}/cl-0" in script
+        # CRITICAL: no secret content leaks into the argv (no base64 preamble).
+        assert "base64 -d" not in script
+        assert "install: c0" not in script
+        assert "agent: c0" not in script
+        assert "auths" not in script
         # Transit network with the ops .4 infra IP.
         assert params["networks"][0]["ip"] == "172.30.10.4"
         assert params["networks"][0]["infra_transit"] is True

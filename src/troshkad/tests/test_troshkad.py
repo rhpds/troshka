@@ -2093,6 +2093,105 @@ class TestPodCreate(unittest.TestCase):
         self.assertIn("nginx", proxy_cmds[0])
         self.assertIn("-c", proxy_cmds[0])
 
+    @patch("troshkad._mount_container_volumes")
+    @patch("troshkad._run_cmd")
+    def test_pod_create_writes_files_and_mounts_readonly(
+        self, mock_run_cmd, mock_mount
+    ):
+        """`files` are written 0600 to a per-pod host dir and bind-mounted ro."""
+
+        def run_cmd_side_effect(job, cmd, **kwargs):
+            if "inspect" in cmd:
+                return "12345"
+            return ""
+
+        mock_run_cmd.side_effect = run_cmd_side_effect
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("troshkad._PODS_DIR", tmp):
+                job = troshkad._create_job(
+                    "pods/create",
+                    {
+                        "pod_name": "ops",
+                        "project_id": "aabbccdd-1122-3344-5566-778899001122",
+                        "files": {
+                            "/workdir/cl-1/install-config.yaml": "install: secret\n",
+                            "/workdir/pull-secret.json": '{"auths":{}}',
+                        },
+                        "containers": [
+                            {"name": "ops", "image": "quay.io/rhpds/ops:latest"},
+                        ],
+                    },
+                )
+                troshkad._handle_pod_create(job, job["params"])
+
+                pod_name = "troshka-aabbccdd-ops"
+                files_dir = os.path.join(tmp, pod_name, "files")
+                install_host = os.path.join(
+                    files_dir, "workdir_cl-1_install-config.yaml"
+                )
+                pull_host = os.path.join(files_dir, "workdir_pull-secret.json")
+
+                # Content written verbatim.
+                with open(install_host) as f:
+                    self.assertEqual(f.read(), "install: secret\n")
+                with open(pull_host) as f:
+                    self.assertEqual(f.read(), '{"auths":{}}')
+
+                # Files are mode 0600.
+                self.assertEqual(oct(os.stat(install_host).st_mode & 0o777), oct(0o600))
+                self.assertEqual(oct(os.stat(pull_host).st_mode & 0o777), oct(0o600))
+
+            # The ops container gets a read-only bind-mount for each file.
+            create_cmds = [
+                c[0][1] for c in mock_run_cmd.call_args_list if c[0][1][1] == "create"
+            ]
+            ops_cmds = [c for c in create_cmds if "troshka-aabbccdd-ops-ops" in c]
+            self.assertEqual(len(ops_cmds), 1)
+            argv = ops_cmds[0]
+            self.assertIn(
+                f"{install_host}:/workdir/cl-1/install-config.yaml:ro,z", argv
+            )
+            self.assertIn(f"{pull_host}:/workdir/pull-secret.json:ro,z", argv)
+
+    @patch("troshkad._mount_container_volumes")
+    @patch("troshkad._run_cmd")
+    def test_pod_create_no_files_adds_no_file_mounts(self, mock_run_cmd, mock_mount):
+        """Backward-compatible: no `files` key -> no extra mounts written."""
+
+        def run_cmd_side_effect(job, cmd, **kwargs):
+            if "inspect" in cmd:
+                return "12345"
+            return ""
+
+        mock_run_cmd.side_effect = run_cmd_side_effect
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("troshkad._PODS_DIR", tmp):
+                job = troshkad._create_job(
+                    "pods/create",
+                    {
+                        "pod_name": "ops",
+                        "project_id": "aabbccdd-1122-3344-5566-778899001122",
+                        "containers": [
+                            {"name": "ops", "image": "quay.io/rhpds/ops:latest"},
+                        ],
+                    },
+                )
+                troshkad._handle_pod_create(job, job["params"])
+                # No per-pod files dir created when there are no files.
+                self.assertFalse(
+                    os.path.exists(os.path.join(tmp, "troshka-aabbccdd-ops"))
+                )
+
+            create_cmds = [
+                c[0][1] for c in mock_run_cmd.call_args_list if c[0][1][1] == "create"
+            ]
+            ops_cmds = [c for c in create_cmds if "troshka-aabbccdd-ops-ops" in c]
+            self.assertEqual(len(ops_cmds), 1)
+            # No networks configured -> no resolv mount either -> no ro mounts.
+            self.assertNotIn(":ro,z", " ".join(ops_cmds[0]))
+
 
 class TestPodResolvConf(unittest.TestCase):
     def test_gateway_from_ip(self):
@@ -2394,6 +2493,25 @@ class TestPodDestroy(unittest.TestCase):
         )
         result = troshkad._handle_pod_destroy(job, job["params"])
         self.assertEqual(result["status"], "destroyed")
+
+    @patch("troshkad.os.path.exists", return_value=False)
+    @patch("troshkad.subprocess.Popen")
+    def test_pod_destroy_removes_files_dir(self, mock_popen, mock_exists):
+        """Destroy removes the per-pod host files dir holding mounted secrets."""
+        mock_popen.return_value = _mock_popen()
+        with tempfile.TemporaryDirectory() as tmp:
+            pod_name = "troshka-aabbccdd-ops"
+            files_dir = os.path.join(tmp, pod_name, "files")
+            os.makedirs(files_dir)
+            secret = os.path.join(files_dir, "workdir_pull-secret.json")
+            with open(secret, "w") as f:
+                f.write('{"auths":{}}')
+
+            with patch("troshkad._PODS_DIR", tmp):
+                job = troshkad._create_job("pods/destroy", {"pod_name": pod_name})
+                result = troshkad._handle_pod_destroy(job, job["params"])
+                self.assertEqual(result["status"], "destroyed")
+                self.assertFalse(os.path.exists(os.path.join(tmp, pod_name)))
 
 
 class TestNfsHealthRecovery(unittest.TestCase):

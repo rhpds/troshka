@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 from app.services.deploy_topology import showroom_infra_network
 from app.services.ocp.ops_pod_scaffold import (
-    OPS_POD_IMAGE,
-    build_ops_pod_config,
+    OPS_POD_WORKDIR,
+    ops_pod_config_files,
     ops_pod_infra_network,
 )
 
@@ -72,35 +72,35 @@ def _clusters() -> list[dict]:
     ]
 
 
-def _build():
-    project = SimpleNamespace(id="proj-123", name="demo")
-    return build_ops_pod_config(
-        project=project,
-        clusters=_clusters(),
-        api_url="https://troshka.example.com",
-        api_key="trk_secret",
-        ocp_version="4.20.0",
-        pull_secret_json='{"auths":{}}',
-    )
+def _files():
+    return ops_pod_config_files(_clusters(), OPS_POD_WORKDIR, '{"auths":{}}')
 
 
-def test_build_ops_pod_config_pod_shape():
-    cfg = _build()
-    assert cfg["pod_name"] == "ops"
-    assert cfg["restart_policy"] == "always"
-    assert cfg["privileged"] is True
-    assert len(cfg["containers"]) == 1
+def test_ops_pod_config_files_absolute_paths_scoped_by_cluster():
+    # Task 8: files are mounted at their ABSOLUTE workdir paths (troshkad
+    # bind-mounts each read-only at container_path), scoped by cluster id.
+    files = _files()
+    wd = OPS_POD_WORKDIR
+    assert files[f"{wd}/cl-1/install-config.yaml"] == "install: prod\n"
+    assert files[f"{wd}/cl-1/agent-config.yaml"] == "agent: prod\n"
+    assert files[f"{wd}/cl-2/install-config.yaml"] == "install: edge\n"
+    assert files[f"{wd}/cl-2/agent-config.yaml"] == "agent: edge\n"
 
 
-def test_build_ops_pod_config_main_container_image_and_env():
-    cfg = _build()
-    main = cfg["containers"][0]
-    assert main["image"] == OPS_POD_IMAGE
-    env = main["env"]
-    assert env["TROSHKA_API_URL"] == "https://troshka.example.com"
-    assert env["TROSHKA_API_KEY"] == "trk_secret"
-    assert env["TROSHKA_PROJECT_ID"] == "proj-123"
-    assert env["OCP_VERSION"] == "4.20.0"
+def test_ops_pod_config_files_includes_pull_secret():
+    files = _files()
+    assert files[f"{OPS_POD_WORKDIR}/pull-secret.json"] == '{"auths":{}}'
+
+
+def test_ops_pod_config_files_omits_empty_pull_secret():
+    files = ops_pod_config_files(_clusters(), OPS_POD_WORKDIR, "")
+    assert not any(k.endswith("pull-secret.json") for k in files)
+
+
+def test_ops_pod_config_files_skips_missing_configs():
+    clusters = [{"id": "cl-x", "name": "x"}]  # no generated configs
+    files = ops_pod_config_files(clusters, OPS_POD_WORKDIR, "")
+    assert files == {}
 
 
 def test_ops_pod_image_default_points_at_configured_registry():
@@ -143,41 +143,6 @@ def test_ops_pod_image_falls_back_when_config_empty(monkeypatch):
         ops_pod_scaffold._resolve_ops_pod_image()
         == ops_pod_scaffold._OPS_POD_IMAGE_DEFAULT
     )
-
-
-def test_build_ops_pod_config_uses_resolved_image(monkeypatch):
-    # build_ops_pod_config reads the module-level OPS_POD_IMAGE at call time,
-    # so a deployment-configured ref flows straight into the pod spec.
-    from app.services.ocp import ops_pod_scaffold
-
-    monkeypatch.setattr(
-        ops_pod_scaffold, "OPS_POD_IMAGE", "quay.io/example/troshka-ops-pod:pinned"
-    )
-    cfg = _build()
-    assert cfg["containers"][0]["image"] == "quay.io/example/troshka-ops-pod:pinned"
-
-
-def test_build_ops_pod_config_carries_all_cluster_configs():
-    cfg = _build()
-    files = cfg["files"]
-    # Both clusters' install AND agent configs are present, scoped by id.
-    assert files["cl-1/install-config.yaml"] == "install: prod\n"
-    assert files["cl-1/agent-config.yaml"] == "agent: prod\n"
-    assert files["cl-2/install-config.yaml"] == "install: edge\n"
-    assert files["cl-2/agent-config.yaml"] == "agent: edge\n"
-
-
-def test_build_ops_pod_config_includes_pull_secret():
-    cfg = _build()
-    assert cfg["files"]["pull-secret.json"] == '{"auths":{}}'
-
-
-def test_build_ops_pod_config_workdir_mounted():
-    cfg = _build()
-    workdir = cfg["workdir"]
-    assert workdir
-    mounts = cfg["containers"][0]["mounts"]
-    assert any(m.get("mountPath") == workdir for m in mounts)
 
 
 # ---------------------------------------------------------------------------

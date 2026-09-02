@@ -213,6 +213,7 @@ _PXE_DIR = "/var/lib/troshka/pxe"
 _CHRONY_DIR = "/var/lib/troshka/chrony"
 _SHARED_DIR = "/var/lib/troshka/shared"
 _LOCAL_DIR = "/var/lib/troshka/local"
+_PODS_DIR = "/var/lib/troshka/pods"
 _DNSMASQ_PREFIX = "/var/lib/troshka/dnsmasq"
 _INET_PREFIX = "inet "
 
@@ -11879,6 +11880,30 @@ def _write_pod_resolv_conf(pod_name, nameserver):
     return path
 
 
+def _write_pod_files(full_pod_name, files):
+    """Write per-pod secret files to a host dir (0600) and return ro bind-mounts.
+
+    Each ``container_path -> content`` entry is written to a per-pod files dir
+    (mode 0600) and returned as a ``host:container_path:ro,z`` mount spec, so
+    secrets (install-config/agent-config/pull-secret) are delivered via mounted
+    files instead of appearing in the pod's argv / ``podman inspect``.
+    """
+    if not files:
+        return []
+    files_dir = os.path.join(_PODS_DIR, full_pod_name, "files")
+    os.makedirs(files_dir, exist_ok=True)
+    mounts = []
+    for container_path, content in files.items():
+        flat = container_path.lstrip("/").replace("/", "_")
+        host_path = os.path.join(files_dir, flat)
+        with open(host_path, "w") as f:
+            f.write(content if isinstance(content, str) else str(content))
+        os.chmod(host_path, 0o600)
+        # :ro read-only, :z relabels for container read under SELinux Enforcing.
+        mounts.append(f"{host_path}:{container_path}:ro,z")
+    return mounts
+
+
 def _append_pod_resolv_mount(cmd, resolv_path):
     if resolv_path:
         # :z relabels for container read access under SELinux Enforcing
@@ -11899,7 +11924,9 @@ def _create_init_container(job, full_pod_name, ic):
     _job_log(job, f"Init container created: {ic['name']}")
 
 
-def _create_main_container(job, full_pod_name, ctr, restart_policy, privileged):
+def _create_main_container(
+    job, full_pod_name, ctr, restart_policy, privileged, file_mounts=None
+):
     """Create a single main container in a pod."""
     ctr_name = f"{full_pod_name}-{ctr['name']}"
     cmd = [
@@ -11920,6 +11947,8 @@ def _create_main_container(job, full_pod_name, ctr, restart_policy, privileged):
         cmd.extend(["-e", f"{k}={v}"])
     for vol in ctr.get("mounts") or []:
         cmd.extend(["-v", vol])
+    for vol in file_mounts or []:
+        cmd.extend(["-v", vol])
     if privileged:
         cmd.append("--privileged")
     _append_pod_resolv_mount(cmd, job.get("_pod_resolv_path"))
@@ -11929,14 +11958,22 @@ def _create_main_container(job, full_pod_name, ctr, restart_policy, privileged):
 
 
 def _create_pod_containers(
-    job, full_pod_name, init_containers, containers, restart_policy, privileged
+    job,
+    full_pod_name,
+    init_containers,
+    containers,
+    restart_policy,
+    privileged,
+    file_mounts=None,
 ):
     """Create init containers and main containers inside a pod."""
     for ic in init_containers:
         _create_init_container(job, full_pod_name, ic)
 
     for ctr in containers:
-        _create_main_container(job, full_pod_name, ctr, restart_policy, privileged)
+        _create_main_container(
+            job, full_pod_name, ctr, restart_policy, privileged, file_mounts
+        )
 
 
 def _handle_pod_create(job, params):
@@ -11952,6 +11989,7 @@ def _handle_pod_create(job, params):
     full_pod_name = f"troshka-{project_id[:8]}-{pod_name}"
 
     _mount_container_volumes(job, volumes)
+    file_mounts = _write_pod_files(full_pod_name, params.get("files") or {})
 
     cmd = [
         "podman",
@@ -11993,7 +12031,13 @@ def _handle_pod_create(job, params):
                 job["_pod_resolv_path"] = _write_pod_resolv_conf(full_pod_name, gw)
 
     _create_pod_containers(
-        job, full_pod_name, init_containers, containers, restart_policy, privileged
+        job,
+        full_pod_name,
+        init_containers,
+        containers,
+        restart_policy,
+        privileged,
+        file_mounts,
     )
 
     return {"pod_name": full_pod_name, "status": "created"}
@@ -12106,6 +12150,11 @@ def _handle_pod_destroy(job, params):
 
     _run_cmd(job, ["podman", "pod", "rm", "-f", pod_name], check=False)
     _job_log(job, f"Pod destroyed: {pod_name}")
+
+    # Remove any per-pod host files dir holding mounted secret files.
+    pod_files_dir = os.path.join(_PODS_DIR, pod_name)
+    if os.path.isdir(pod_files_dir):
+        shutil.rmtree(pod_files_dir, ignore_errors=True)
 
     for vol in volumes:
         mount_dir = vol.get("mount_dir", "")
