@@ -4187,3 +4187,72 @@ class TestDeployOpsPod:
         )
         # Thread actually started.
         mock_thread.return_value.start.assert_called_once()
+
+
+class TestOpsPodDeadDetection:
+    """Consecutive-not-running counter that tolerates a recoverable pod restart
+    (restart_policy=always + idempotent install) before failing the deploy."""
+
+    def test_dead_count_increments_when_not_running(self):
+        from app.services.deploy_service import _next_ops_pod_dead_count
+
+        assert _next_ops_pod_dead_count(0, pod_running=False) == 1
+        assert _next_ops_pod_dead_count(2, pod_running=False) == 3
+
+    def test_dead_count_resets_when_running(self):
+        from app.services.deploy_service import _next_ops_pod_dead_count
+
+        # A running poll (or a transient status error → conservatively running)
+        # resets the counter, so an isolated blip never accumulates to failure.
+        assert _next_ops_pod_dead_count(2, pod_running=True) == 0
+
+    @patch(f"{SVC}._publish_ops_pod_progress")
+    @patch(f"{SVC}._ops_pod_running")
+    @patch(f"{SVC}._read_ops_pod_cluster_logs")
+    @patch(f"{SVC}._is_deploy_cancelled", return_value=False)
+    def test_monitor_fails_after_consecutive_not_running(
+        self, _mock_cancel, mock_logs, mock_running, _mock_pub
+    ):
+        """A persistent crash-loop (not-running for the full threshold) fails."""
+        from app.services.deploy_service import (
+            _OPS_POD_DEAD_POLLS,
+            _monitor_ops_pod_install,
+        )
+
+        host = _make_host()
+        mock_logs.return_value = {"c1": "Waiting for cluster installation to complete"}
+        mock_running.return_value = False  # pod never comes back
+
+        result = _monitor_ops_pod_install(
+            PROJECT_ID, host, [{"id": "c1"}], poll_interval=0
+        )
+
+        assert result == "failed"
+        # Failed exactly at the threshold, not on the first not-running poll.
+        assert mock_running.call_count == _OPS_POD_DEAD_POLLS
+
+    @patch(f"{SVC}._publish_ops_pod_progress")
+    @patch(f"{SVC}._ops_pod_running")
+    @patch(f"{SVC}._read_ops_pod_cluster_logs")
+    @patch(f"{SVC}._is_deploy_cancelled", return_value=False)
+    def test_monitor_single_not_running_then_recovers(
+        self, _mock_cancel, mock_logs, mock_running, _mock_pub
+    ):
+        """A single not-running poll (restart window) does NOT fail; a running
+        poll resets the counter and the install completes normally."""
+        from app.services.deploy_service import _monitor_ops_pod_install
+
+        host = _make_host()
+        waiting = "Waiting for cluster installation to complete"
+        mock_logs.side_effect = [
+            {"c1": waiting},  # poll 1: not running, count=1 (< threshold)
+            {"c1": waiting},  # poll 2: running again, counter reset
+            {"c1": "install complete"},  # poll 3: finished
+        ]
+        mock_running.side_effect = [False, True, True]
+
+        result = _monitor_ops_pod_install(
+            PROJECT_ID, host, [{"id": "c1"}], poll_interval=0
+        )
+
+        assert result == "complete"

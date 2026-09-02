@@ -2091,6 +2091,29 @@ def _read_ops_pod_cluster_logs(
     }
 
 
+# Consecutive confirmed "not running" polls before the monitor declares the ops
+# pod dead and fails its non-terminal clusters. The ops pod is
+# ``restart_policy=always`` and the install script is idempotent (Task 4 skips a
+# cluster that already has a kubeconfig), so a pod that OOMs/reboots is EXPECTED
+# to resume on restart. During that restart window a successful
+# ``/containers/states`` call briefly reports the container absent or
+# ``created``/``restarting`` — a single such observation must NOT fail the
+# deploy. Requiring 3 CONSECUTIVE confirmed-not-running polls at the default
+# 15s ``poll_interval`` tolerates a ~30s restart window while still failing a
+# genuine crash-loop promptly (well before the 2h timeout). A transient troshkad
+# error (``_ops_pod_running`` returns True conservatively) resets the counter.
+_OPS_POD_DEAD_POLLS = 3
+
+
+def _next_ops_pod_dead_count(count: int, pod_running: bool) -> int:
+    """Pure: advance the consecutive not-running poll counter.
+
+    Reset to 0 while the pod is running (``_ops_pod_running`` also returns True on
+    a transient status-call error, so those never increment); otherwise +1.
+    """
+    return 0 if pod_running else count + 1
+
+
 def _cancel_ops_pod_install(host, project_id: str, cluster_keys, job_id) -> None:
     """Signal the ops pod to stop: cancel the troshkad install job (best-effort)
     and publish a terminal ``cancelled`` status."""
@@ -2146,6 +2169,7 @@ def _monitor_ops_pod_install(
     container_name = container_name or _ops_pod_container_name(project_id)
     cluster_keys = [_ops_cluster_key(c) for c in clusters]
     deadline = _t.time() + timeout
+    dead_count = 0
 
     while _t.time() < deadline:
         if _is_deploy_cancelled(project_id):
@@ -2154,11 +2178,16 @@ def _monitor_ops_pod_install(
         per_cluster = _read_ops_pod_cluster_logs(
             host, container_name, cluster_keys, workdir
         )
-        # Dead-job detection: if the ops pod/container has crashed, a
-        # non-terminal cluster can never finish — force it to failed so the
-        # deploy reports failed now instead of spinning to the timeout.
+        # Dead-job detection: a crashed pod can never finish a non-terminal
+        # cluster. But the pod is restart_policy=always + idempotent, so a brief
+        # restart window is recoverable — only fail after _OPS_POD_DEAD_POLLS
+        # CONSECUTIVE confirmed-not-running polls (transient status errors reset
+        # the counter, see _ops_pod_running / _next_ops_pod_dead_count).
+        dead_count = _next_ops_pod_dead_count(
+            dead_count, _ops_pod_running(host, container_name)
+        )
         per_cluster = inject_dead_pod_failures(
-            per_cluster, _ops_pod_running(host, container_name)
+            per_cluster, pod_running=dead_count < _OPS_POD_DEAD_POLLS
         )
         progress = ops_pod_install_progress(per_cluster)
         _publish_ops_pod_progress(project_id, progress)
