@@ -78,7 +78,7 @@ interface TemplateSummary {
   bastion_image_name?: string;
 }
 
-function NewProjectModal({ onClose, onCreated, userRole, availableHosts, setAlertMsg }: { onClose: () => void; onCreated: (id: string) => void; userRole: string; availableHosts: {id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[]; setAlertMsg: (msg: string | null) => void }) {
+export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, setAlertMsg }: { onClose: () => void; onCreated: (id: string) => void; userRole: string; availableHosts: {id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[]; setAlertMsg: (msg: string | null) => void }) {
   const [mode, setMode] = useState<"choose" | "blank" | "yaml" | "pattern" | "template" | "template-picker">("choose");
   const [yamlContent, setYamlContent] = useState("");
   const [yamlFileName, setYamlFileName] = useState("");
@@ -103,8 +103,11 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts, setAler
   const [bmcIpError, setBmcIpError] = useState("");
   const [autoDeploy, setAutoDeploy] = useState(true);
   const [autoStart, setAutoStart] = useState(true);
-  const [clusterName, setClusterName] = useState("ocp");
-  const [baseDomain, setBaseDomain] = useState("ocp.local");
+  // Cluster name / base domain are now set on the canvas cluster boundary after
+  // creation. We still send sensible defaults so the backend's legacy/quickstart
+  // from-template path can seed the single cluster (matches its own defaults).
+  const clusterName = "ocp";
+  const baseDomain = "ocp.local";
   const [ocpVersion, setOcpVersion] = useState("");
   const [ocpVersions, setOcpVersions] = useState<{minor: string; latest: string}[]>([]);
   const [autoInstallOcp, setAutoInstallOcp] = useState(true);
@@ -458,45 +461,35 @@ function NewProjectModal({ onClose, onCreated, userRole, availableHosts, setAler
                   <div style={{ opacity: 0.6, marginTop: 2 }}>{_selTmpl?.description}</div>
                 </div>
                 {_isOcp && <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
-                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>Cluster DNS</div>
-                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                    <div style={{ flex: 1 }}>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Cluster Name</label>
-                      <input style={inputStyle} value={clusterName} onChange={(e) => setClusterName(e.target.value)} placeholder="ocp" />
-                    </div>
-                    <div style={{ flex: 2 }}>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Base Domain</label>
-                      <input style={inputStyle} value={baseDomain} onChange={(e) => setBaseDomain(e.target.value)} placeholder="ocp.local" />
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>OCP Version</label>
-                      {loadingVersions ? (
-                        <div style={{ ...inputStyle, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          <span className="project-btn-spinner" style={{ width: 14, height: 14, aspectRatio: "1 / 1" }} />
-                        </div>
-                      ) : customVersion ? (
-                        <input style={inputStyle} autoFocus value={customVersionText} placeholder="e.g. 4.18" onChange={(e) => {
-                          const v = e.target.value.replace(/[^\d.]/g, ""); setCustomVersionText(v);
-                          if (/^\d+\.\d+$/.test(v)) { setOcpVersion(v); if (nameAutoSet && selectedTemplate) { const t = templates.find((t) => t.id === selectedTemplate); if (t) setName(versionedName(t.name, v)); } }
-                        }} onBlur={() => { if (!/^\d+\.\d+$/.test(customVersionText)) { setCustomVersion(false); setOcpVersion(ocpVersions.length ? ocpVersions[ocpVersions.length - 1].minor : "4.20"); } }} />
-                      ) : (
-                        <select style={inputStyle} value={ocpVersion} onChange={(e) => {
-                          if (e.target.value === "__other__") { setCustomVersion(true); setCustomVersionText(""); }
-                          else {
-                            setOcpVersion(e.target.value);
-                            if (nameAutoSet && selectedTemplate) { const t = templates.find((t) => t.id === selectedTemplate); if (t) setName(versionedName(t.name, e.target.value)); }
-                          }
-                        }}>
-                          {ocpVersions.map((v) => (
-                            <option key={v.minor} value={v.minor}>{v.minor} (latest: {v.latest})</option>
-                          ))}
-                          <option value="__other__">Other...</option>
-                        </select>
-                      )}
-                    </div>
+                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>OpenShift Version</div>
+                  <div>
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>OCP Version</label>
+                    {loadingVersions ? (
+                      <div style={{ ...inputStyle, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <span className="project-btn-spinner" style={{ width: 14, height: 14, aspectRatio: "1 / 1" }} />
+                      </div>
+                    ) : customVersion ? (
+                      <input style={inputStyle} autoFocus value={customVersionText} placeholder="e.g. 4.18" onChange={(e) => {
+                        const v = e.target.value.replace(/[^\d.]/g, ""); setCustomVersionText(v);
+                        if (/^\d+\.\d+$/.test(v)) { setOcpVersion(v); if (nameAutoSet && selectedTemplate) { const t = templates.find((t) => t.id === selectedTemplate); if (t) setName(versionedName(t.name, v)); } }
+                      }} onBlur={() => { if (!/^\d+\.\d+$/.test(customVersionText)) { setCustomVersion(false); setOcpVersion(ocpVersions.length ? ocpVersions[ocpVersions.length - 1].minor : "4.20"); } }} />
+                    ) : (
+                      <select style={inputStyle} value={ocpVersion} onChange={(e) => {
+                        if (e.target.value === "__other__") { setCustomVersion(true); setCustomVersionText(""); }
+                        else {
+                          setOcpVersion(e.target.value);
+                          if (nameAutoSet && selectedTemplate) { const t = templates.find((t) => t.id === selectedTemplate); if (t) setName(versionedName(t.name, e.target.value)); }
+                        }
+                      }}>
+                        {ocpVersions.map((v) => (
+                          <option key={v.minor} value={v.minor}>{v.minor} (latest: {v.latest})</option>
+                        ))}
+                        <option value="__other__">Other...</option>
+                      </select>
+                    )}
                   </div>
-                  <div style={{ fontSize: 10, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 4, fontFamily: "monospace" }}>
-                    api.{clusterName}.{baseDomain} → 10.0.0.2 (LB)
+                  <div style={{ fontSize: 10, color: "var(--pf-t--global--text--color--subtle)", marginTop: 6 }}>
+                    Set the cluster name, base domain, and VIPs on the canvas after creation.
                   </div>
                 </div>}
                 <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
