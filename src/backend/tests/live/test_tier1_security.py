@@ -23,10 +23,15 @@ def _wait_ops(provider, cfg, pid):
 @pytest.mark.live_env
 @pytest.mark.parametrize("provider", _params())
 def test_scoped_key_least_privilege(
-    provider, live_config, client, project_factory, ocp_template
+    provider, live_config, client, project_factory, ocp_template, resolve_host_id
 ):
+    host_id = resolve_host_id(
+        live_config.kubevirt_host
+        if provider == "kubevirt"
+        else live_config.troshkad_host
+    )
     pid = project_factory(
-        template_id=ocp_template, name=f"live-sec-{provider}", auto_deploy=True
+        template_id=ocp_template, name=f"live-sec-{provider}", host_id=host_id
     )
     _wait_ops(provider, live_config, pid)
 
@@ -46,10 +51,11 @@ def test_scoped_key_least_privilege(
 @pytest.mark.live_env
 @pytest.mark.live_troshkad
 def test_scoped_key_active_then_revoked_on_destroy(
-    live_config, client, project_factory, ocp_template
+    live_config, client, project_factory, ocp_template, resolve_host_id
 ):
+    host_id = resolve_host_id(live_config.troshkad_host)
     pid = project_factory(
-        template_id=ocp_template, name="live-sec-revoke", auto_deploy=True
+        template_id=ocp_template, name="live-sec-revoke", host_id=host_id
     )
     _wait_ops_pod_troshkad(live_config, pid)
 
@@ -65,9 +71,12 @@ def test_scoped_key_active_then_revoked_on_destroy(
 
 @pytest.mark.live_env
 @pytest.mark.live_troshkad
-def test_cancel_deletes_ops_pod(live_config, client, project_factory, ocp_template):
+def test_cancel_deletes_ops_pod(
+    live_config, client, project_factory, ocp_template, resolve_host_id
+):
+    host_id = resolve_host_id(live_config.troshkad_host)
     pid = project_factory(
-        template_id=ocp_template, name="live-sec-cancel", auto_deploy=True
+        template_id=ocp_template, name="live-sec-cancel", host_id=host_id
     )
     name = _wait_ops_pod_troshkad(live_config, pid)
     assert client.post_json(f"/api/v1/projects/{pid}/undeploy", {}).status_code in (

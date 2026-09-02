@@ -68,15 +68,35 @@ def ocp_template(client):
 
 
 @pytest.fixture
+def resolve_host_id(client):
+    def _resolve(prefix: str) -> str:
+        hosts = client.get_json("/api/v1/hosts/")
+        matches = [h["id"] for h in hosts if str(h.get("id", "")).startswith(prefix)]
+        assert len(matches) == 1, f"host prefix {prefix!r} matched {len(matches)} hosts"
+        return matches[0]
+
+    return _resolve
+
+
+@pytest.fixture
 def project_factory(client):
     created: list[str] = []
 
-    def create(**body):
+    def create(*, deploy: bool = True, host_id: str | None = None, **body):
         payload = {"auto_install_ocp": True, "install_via": "pod", **body}
         r = client.post_json("/api/v1/projects/from-template", payload)
         assert r.status_code == 201, f"from-template failed: {r.status_code} {r.text}"
         pid = r.json()["id"]
         created.append(pid)
+        if deploy:
+            path = f"/api/v1/projects/{pid}/deploy"
+            if host_id:
+                path += f"?host_id={host_id}"
+            dr = client.post_json(path, {})
+            assert dr.status_code in (
+                200,
+                202,
+            ), f"deploy failed: {dr.status_code} {dr.text}"
         return pid
 
     yield create

@@ -18,10 +18,15 @@ def _params():
 @pytest.mark.tier2
 @pytest.mark.parametrize("provider", _params())
 def test_pod_sno_install_reaches_ready(
-    provider, live_config, client, project_factory, ocp_template
+    provider, live_config, client, project_factory, ocp_template, resolve_host_id
 ):
+    host_id = resolve_host_id(
+        live_config.kubevirt_host
+        if provider == "kubevirt"
+        else live_config.troshkad_host
+    )
     pid = project_factory(
-        template_id=ocp_template, name=f"live-t2-{provider}", auto_deploy=True
+        template_id=ocp_template, name=f"live-t2-{provider}", host_id=host_id
     )
     final = poll_ocp(
         client,
@@ -37,9 +42,12 @@ def test_pod_sno_install_reaches_ready(
 @pytest.mark.live_env
 @pytest.mark.tier2
 @pytest.mark.live_troshkad
-def test_monitor_reports_progress(live_config, client, project_factory, ocp_template):
+def test_monitor_reports_progress(
+    live_config, client, project_factory, ocp_template, resolve_host_id
+):
+    host_id = resolve_host_id(live_config.troshkad_host)
     pid = project_factory(
-        template_id=ocp_template, name="live-t2-progress", auto_deploy=True
+        template_id=ocp_template, name="live-t2-progress", host_id=host_id
     )
     # Sample once early: status should be monitoring with a detail string before ready.
     import time

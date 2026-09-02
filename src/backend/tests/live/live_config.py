@@ -24,6 +24,12 @@ class LiveConfig:
         def val(key: str) -> str | None:
             return src.get(key) or None
 
+        raw_timeout = src.get("TROSHKA_LIVE_TIMEOUT_S") or "4200"
+        try:
+            timeout_s = int(raw_timeout)
+        except ValueError:
+            timeout_s = 4200
+
         return cls(
             url=val("TROSHKA_LIVE_URL"),
             token=val("TROSHKA_LIVE_TOKEN"),
@@ -31,7 +37,7 @@ class LiveConfig:
             kubeconfig=val("TROSHKA_LIVE_KUBECONFIG"),
             kubevirt_host=val("TROSHKA_LIVE_KUBEVIRT_HOST"),
             tier2_enabled=src.get("TROSHKA_LIVE_TIER2") == "1",
-            timeout_s=int(src.get("TROSHKA_LIVE_TIMEOUT_S") or "4200"),
+            timeout_s=timeout_s,
         )
 
     @property

@@ -51,10 +51,11 @@ def _wait_ops_pod_kubevirt(cfg, pid, timeout=900):
 @pytest.mark.live_env
 @pytest.mark.live_troshkad
 def test_troshkad_ops_pod_created_and_running(
-    live_config, client, project_factory, ocp_template
+    live_config, client, project_factory, ocp_template, resolve_host_id
 ):
+    host_id = resolve_host_id(live_config.troshkad_host)
     pid = project_factory(
-        template_id=ocp_template, name="live-t1-troshkad", auto_deploy=True
+        template_id=ocp_template, name="live-t1-troshkad", host_id=host_id
     )
     name = _wait_ops_pod_troshkad(live_config, pid)
     inspect = host_ssh(live_config.troshkad_host, "podman", "inspect", name)
@@ -63,9 +64,12 @@ def test_troshkad_ops_pod_created_and_running(
 
 @pytest.mark.live_env
 @pytest.mark.live_troshkad
-def test_troshkad_no_secret_in_argv(live_config, client, project_factory, ocp_template):
+def test_troshkad_no_secret_in_argv(
+    live_config, client, project_factory, ocp_template, resolve_host_id
+):
+    host_id = resolve_host_id(live_config.troshkad_host)
     pid = project_factory(
-        template_id=ocp_template, name="live-t1-nosecret", auto_deploy=True
+        template_id=ocp_template, name="live-t1-nosecret", host_id=host_id
     )
     name = _wait_ops_pod_troshkad(live_config, pid)
     inspect = host_ssh(
@@ -83,9 +87,10 @@ def test_troshkad_no_secret_in_argv(live_config, client, project_factory, ocp_te
 @pytest.mark.live_env
 @pytest.mark.live_kubevirt
 def test_kubevirt_ops_pod_created_and_running(
-    live_config, client, project_factory, ocp_template
+    live_config, client, project_factory, ocp_template, resolve_host_id
 ):
-    pid = project_factory(template_id=ocp_template, name="live-t1-kv", auto_deploy=True)
+    host_id = resolve_host_id(live_config.kubevirt_host)
+    pid = project_factory(template_id=ocp_template, name="live-t1-kv", host_id=host_id)
     name, ns = _wait_ops_pod_kubevirt(live_config, pid)
     phase = oc(
         "get",
@@ -103,10 +108,11 @@ def test_kubevirt_ops_pod_created_and_running(
 @pytest.mark.live_env
 @pytest.mark.live_kubevirt
 def test_kubevirt_configs_are_secret_mount_not_argv(
-    live_config, client, project_factory, ocp_template
+    live_config, client, project_factory, ocp_template, resolve_host_id
 ):
+    host_id = resolve_host_id(live_config.kubevirt_host)
     pid = project_factory(
-        template_id=ocp_template, name="live-t1-kvsecret", auto_deploy=True
+        template_id=ocp_template, name="live-t1-kvsecret", host_id=host_id
     )
     name, ns = _wait_ops_pod_kubevirt(live_config, pid)
     # The install-config / pull-secret ride in a mounted Secret volume, not argv.

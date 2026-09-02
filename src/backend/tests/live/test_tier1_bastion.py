@@ -9,13 +9,14 @@ from live_hostcmd import host_ssh
 @pytest.mark.live_env
 @pytest.mark.live_troshkad
 def test_bastion_project_creates_no_ops_pod(
-    live_config, client, project_factory, ocp_template
+    live_config, client, project_factory, ocp_template, resolve_host_id
 ):
+    host_id = resolve_host_id(live_config.troshkad_host)
     pid = project_factory(
         template_id=ocp_template,
         name="live-bastion",
         install_via="bastion",
-        auto_deploy=True,
+        host_id=host_id,
     )
     ops_name = f"troshka-{pid[:8]}-ops"
     # Give the deploy time to reach VM-start; the bastion path must never create
