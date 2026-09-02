@@ -275,3 +275,66 @@ def test_start_stop_host_are_noops():
     driver = get_provider_driver(provider)
     driver.start_host(provider, "any")
     driver.stop_host(provider, "any")
+
+
+# ---------------------------------------------------------------------------
+# Task 8b (Plan 4b): create_ops_pod live k8s create (mocked client)
+# ---------------------------------------------------------------------------
+
+
+def _ops_pod_manifests():
+    return (
+        {"kind": "Pod", "metadata": {"name": "troshka-abcdef12-ops"}},
+        {"kind": "Secret", "metadata": {"name": "troshka-abcdef12-ops-config"}},
+    )
+
+
+def test_create_ops_pod_creates_secret_then_pod():
+    from app.services.providers.kubevirt import create_ops_pod
+
+    provider = _make_provider()
+    pod, secret = _ops_pod_manifests()
+    with (
+        patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients,
+        patch(
+            "app.services.providers.kubevirt._project_ns",
+            return_value="troshka-abcdef12",
+        ),
+    ):
+        core = MagicMock()
+        mock_clients.return_value = (MagicMock(), core, MagicMock())
+        ns = create_ops_pod(provider, "abcdef12-0000", pod, secret)
+
+    assert ns == "troshka-abcdef12"
+    core.create_namespaced_secret.assert_called_once_with(
+        namespace="troshka-abcdef12", body=secret
+    )
+    core.create_namespaced_pod.assert_called_once_with(
+        namespace="troshka-abcdef12", body=pod
+    )
+
+
+def test_create_ops_pod_replaces_existing_pod():
+    from app.services.providers.kubevirt import create_ops_pod
+
+    provider = _make_provider()
+    pod, secret = _ops_pod_manifests()
+    with (
+        patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients,
+        patch(
+            "app.services.providers.kubevirt._project_ns",
+            return_value="troshka-abcdef12",
+        ),
+    ):
+        core = MagicMock()
+        # Secret + Pod already exist on the first create attempt.
+        core.create_namespaced_secret.side_effect = Exception("AlreadyExists")
+        core.create_namespaced_pod.side_effect = [Exception("AlreadyExists"), None]
+        mock_clients.return_value = (MagicMock(), core, MagicMock())
+        create_ops_pod(provider, "abcdef12-0000", pod, secret)
+
+    core.replace_namespaced_secret.assert_called_once()
+    core.delete_namespaced_pod.assert_called_once_with(
+        name="troshka-abcdef12-ops", namespace="troshka-abcdef12"
+    )
+    assert core.create_namespaced_pod.call_count == 2

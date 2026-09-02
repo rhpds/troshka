@@ -4463,3 +4463,95 @@ class TestOpsPodOcpStatus:
 
         assert result == "cancelled"
         mock_status.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Task 8b (Plan 4b): _deploy_ops_pod host-type branch dispatch
+# ---------------------------------------------------------------------------
+
+
+def _ops_pod_topology():
+    return {
+        "clusters": [{"id": "c1", "name": "c1", "ocpVersion": "4.20"}],
+        "nodes": [
+            {
+                "id": "netclust",
+                "type": "networkNode",
+                "data": {"networkType": "data", "cidr": "10.0.0.0/24"},
+            },
+            {
+                "id": "netbmc00",
+                "type": "networkNode",
+                "data": {"networkType": "bmc", "bmcPassword": "pw"},
+            },
+        ],
+    }
+
+
+class TestDeployOpsPodBranch:
+    """`_deploy_ops_pod` dispatches on host_type: troshkad vs kubevirt."""
+
+    @patch(f"{SVC}._start_ops_pod_install_monitor")
+    @patch(f"{SVC}._mark_ocp_install_started")
+    @patch("app.services.providers.kubevirt.create_ops_pod")
+    @patch(f"{SVC}._start_pod")
+    @patch(f"{SVC}._wait_troshkad_job")
+    @patch(f"{SVC}.start_job", return_value="ops-job")
+    @patch("app.services.ocp.ops_pod_auth.mint_ops_pod_key", return_value="trk_key")
+    def test_troshkad_branch_uses_pods_create(
+        self,
+        _mint,
+        mock_start_job,
+        _wait,
+        _start_pod,
+        mock_create_ops_pod,
+        _mark,
+        _monitor,
+    ):
+        from app.services.deploy_service import _deploy_ops_pod
+
+        host = _make_host(host_type="ec2")
+        project = _make_project()
+        _deploy_ops_pod(MagicMock(), host, PROJECT_ID, project, _ops_pod_topology(), {})
+
+        # troshkad path: /pods/create issued, k8s create NOT used.
+        assert mock_start_job.call_args[0][1] == "/pods/create"
+        mock_create_ops_pod.assert_not_called()
+
+    @patch(f"{SVC}._start_ops_pod_install_monitor")
+    @patch(f"{SVC}._mark_ocp_install_started")
+    @patch(
+        "app.services.providers.kubevirt._project_ns", return_value="troshka-aaaaaaaa"
+    )
+    @patch("app.services.providers.kubevirt.create_ops_pod")
+    @patch(f"{SVC}.start_job")
+    @patch("app.services.ocp.ops_pod_auth.mint_ops_pod_key", return_value="trk_key")
+    def test_kubevirt_branch_creates_pod_via_k8s(
+        self,
+        _mint,
+        mock_start_job,
+        mock_create_ops_pod,
+        _project_ns,
+        _mark,
+        _monitor,
+    ):
+        from app.services.deploy_service import _deploy_ops_pod
+
+        host = _make_host(host_type="kubevirt-cluster")
+        project = _make_project()
+        s = MagicMock()
+        s.get.return_value = MagicMock()  # provider row
+
+        _deploy_ops_pod(s, host, PROJECT_ID, project, _ops_pod_topology(), {})
+
+        # kubevirt path: native k8s create used, troshkad /pods/create NOT.
+        mock_create_ops_pod.assert_called_once()
+        mock_start_job.assert_not_called()
+        # The Pod passed to create_ops_pod attaches BOTH cluster + BMC NADs and
+        # carries the scoped key.
+        pod = mock_create_ops_pod.call_args[0][2]
+        nets = pod["metadata"]["annotations"]["k8s.v1.cni.cncf.io/networks"]
+        assert "net-netclust-nad" in nets
+        assert "net-netbmc00-nad" in nets
+        env = {e["name"]: e["value"] for e in pod["spec"]["containers"][0]["env"]}
+        assert env["TROSHKA_API_KEY"] == "trk_key"  # pragma: allowlist secret

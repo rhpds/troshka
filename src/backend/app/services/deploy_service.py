@@ -1943,14 +1943,42 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map):
     Bastionless / multi-cluster path: instead of a bastion VM, an in-cluster ops
     pod runs the agent-based install for every cluster. Only invoked when
     :func:`_should_use_ops_pod` is true. The actual install run inside the pod is
-    a live-environment concern; here we mint the project-scoped API key, shape
-    the real ``/pods/create`` params and issue create + start.
+    a live-environment concern; here we mint the project-scoped API key and, per
+    host type, create the pod: troshkad ``/pods/create`` (podman) or a native k8s
+    Pod on a ``kubevirt-cluster`` host.
     """
     from app.services.ocp.ops_pod_auth import mint_ops_pod_key
 
     clusters = _ocp_clusters(topology)
     api_key = mint_ops_pod_key(s, project)
     ocp_version = str(clusters[0].get("ocpVersion", "4.20")) if clusters else "4.20"
+    logger.info(
+        "Deploy %s: creating ops pod for %d cluster(s)",
+        project_id[:8],
+        len(clusters),
+    )
+    if host.host_type == "kubevirt-cluster":
+        _deploy_ops_pod_kubevirt(
+            s, host, project_id, project, topology, clusters, api_key, ocp_version
+        )
+    else:
+        _deploy_ops_pod_troshkad(
+            s,
+            host,
+            project_id,
+            project,
+            topology,
+            vni_map,
+            clusters,
+            api_key,
+            ocp_version,
+        )
+
+
+def _deploy_ops_pod_troshkad(
+    s, host, project_id, project, topology, vni_map, clusters, api_key, ocp_version
+):
+    """troshkad (podman) ops-pod path: shape ``/pods/create`` params, create+start."""
     params = _ops_pod_create_params(
         project,
         clusters,
@@ -1961,11 +1989,6 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map):
         ocp_version=ocp_version,
         pull_secret_json="",
     )
-    logger.info(
-        "Deploy %s: creating ops pod for %d cluster(s)",
-        project_id[:8],
-        len(clusters),
-    )
     job_id = start_job(host, "/pods/create", params)
     _wait_troshkad_job(host, job_id, 300, "Ops pod create")
     _start_pod(host, f"troshka-{project_id[:8]}-ops", timeout=300)
@@ -1975,6 +1998,64 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map):
     # install monitor drives it to ready/error on completion/failure.
     _mark_ocp_install_started(s, project)
     _start_ops_pod_install_monitor(host, project_id, clusters)
+
+
+def _deploy_ops_pod_kubevirt(
+    s, host, project_id, project, topology, clusters, api_key, ocp_version
+):
+    """KubeVirt ops-pod path: build Pod+Secret manifests and create them via k8s.
+
+    The pod is attached to BOTH the cluster NAD(s) and the BMC NAD so it can
+    serve the agent ISO to the nested VMs and drive their sushy BMCs, mirroring
+    the operator's sushy Deployment (``build_bmc_deployment``). The per-cluster
+    configs + pull secret ride in a k8s Secret mounted at the install script's
+    workdir paths. The live pod run + NAD reachability are **[LIVE-ENV]**.
+    """
+    from app.services.ocp.ops_pod_scaffold import (
+        OPS_POD_WORKDIR,
+        build_ops_pod_kubevirt_manifests,
+        ops_pod_config_files,
+        ops_pod_network_nads,
+    )
+    from app.services.providers.kubevirt import create_ops_pod
+
+    provider = _ops_pod_provider(s, host)
+    command = _ops_pod_command(clusters, topology, ocp_version, OPS_POD_WORKDIR)
+    config_files = ops_pod_config_files(clusters, OPS_POD_WORKDIR, "")
+    cluster_nads, bmc_nad = ops_pod_network_nads(topology)
+    pod, secret = build_ops_pod_kubevirt_manifests(
+        namespace=_kubevirt_project_ns(provider, project_id),
+        project_id=project_id,
+        command=command,
+        env={
+            "TROSHKA_API_URL": _ops_pod_api_url(),
+            "TROSHKA_API_KEY": api_key,
+            "TROSHKA_PROJECT_ID": str(getattr(project, "id", "")),
+            "OCP_VERSION": ocp_version,
+        },
+        config_files=config_files,
+        cluster_nads=cluster_nads,
+        bmc_nad=bmc_nad,
+    )
+    create_ops_pod(provider, project_id, pod, secret)
+    _mark_ocp_install_started(s, project)
+    _start_ops_pod_install_monitor(host, project_id, clusters)
+
+
+def _ops_pod_provider(s, host):
+    """Resolve the provider row for a host (used by the KubeVirt ops-pod path)."""
+    from app.models.provider import Provider
+
+    provider = s.get(Provider, host.provider_id)
+    if not provider:
+        raise RuntimeError(f"Provider {host.provider_id} not found for ops pod")
+    return provider
+
+
+def _kubevirt_project_ns(provider, project_id: str) -> str:
+    from app.services.providers.kubevirt import _project_ns
+
+    return _project_ns(provider, project_id)
 
 
 def _mark_ocp_install_started(s, project) -> None:

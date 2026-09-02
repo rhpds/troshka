@@ -178,6 +178,51 @@ def _ensure_s3_secret(
             raise
 
 
+def _apply_ops_pod_secret(core_api, namespace: str, secret: dict) -> None:
+    """Create-or-replace the ops-pod config Secret (idempotent)."""
+    name = secret["metadata"]["name"]
+    try:
+        core_api.create_namespaced_secret(namespace=namespace, body=secret)
+    except Exception as e:
+        if "AlreadyExists" not in str(e):
+            raise
+        core_api.replace_namespaced_secret(name=name, namespace=namespace, body=secret)
+
+
+def _apply_ops_pod(core_api, namespace: str, pod: dict) -> None:
+    """Create the ops Pod, replacing any pre-existing one (pods are immutable)."""
+    name = pod["metadata"]["name"]
+    try:
+        core_api.create_namespaced_pod(namespace=namespace, body=pod)
+    except Exception as e:
+        if "AlreadyExists" not in str(e):
+            raise
+        core_api.delete_namespaced_pod(name=name, namespace=namespace)
+        core_api.create_namespaced_pod(namespace=namespace, body=pod)
+
+
+def create_ops_pod(provider, project_id: str, pod: dict, secret: dict) -> str:
+    """[LIVE-ENV] Create the ops-pod Secret + Pod in the project namespace.
+
+    The manifests are built by the pure
+    :func:`app.services.ocp.ops_pod_scaffold.build_ops_pod_kubevirt_manifests`;
+    this only issues the live k8s calls. The Secret (per-cluster install/agent
+    configs + pull secret) is created first so its volume mount resolves when the
+    Pod starts. Returns the project namespace.
+    """
+    _, core_api, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+    _apply_ops_pod_secret(core_api, namespace, secret)
+    _apply_ops_pod(core_api, namespace, pod)
+    logger.info(
+        "Ops pod %s: created Pod %s + Secret in %s",
+        project_id[:8],
+        pod["metadata"]["name"],
+        namespace,
+    )
+    return namespace
+
+
 def _apply_crds(ext_api, operator_dir):
     """Load CRD YAML files and create-or-update them on the cluster."""
     from kubernetes.client.exceptions import ApiException

@@ -98,3 +98,152 @@ def ops_pod_config_files(
     if pull_secret_json:
         files[f"{workdir}/pull-secret.json"] = pull_secret_json
     return files
+
+
+# ---------------------------------------------------------------------------
+# Task 8b (Plan 4b): KubeVirt ops-pod Pod + Secret spec builder (pure)
+# ---------------------------------------------------------------------------
+#
+# On a ``kubevirt-cluster`` host there is no troshkad ``/pods/create`` — the ops
+# pod is a native k8s Pod created in the project namespace. This section shapes
+# the Pod + Secret manifests it needs; everything here is pure dict-building and
+# unit-testable. The live k8s create lives in
+# :func:`app.services.providers.kubevirt.create_ops_pod`.
+
+# The Multus network-attachment annotation key (mirrors
+# ``operator/helpers/k8s._NET_ANNOTATION_KEY`` and ``build_bmc_deployment``).
+_NET_ANNOTATION_KEY = "k8s.v1.cni.cncf.io/networks"
+
+# ServiceAccount that already carries the privileged SCC in a project namespace
+# (used by the operator's privileged dnsmasq/gateway/exec deployments).
+_OPS_POD_SERVICE_ACCOUNT = "troshka-network"
+
+
+def _nad_name(net_node: dict) -> str:
+    """Operator NAD naming convention for a network node: ``net-<id[:8]>-nad``."""
+    return f"net-{str(net_node.get('id', ''))[:8]}-nad"
+
+
+def ops_pod_network_nads(topology: dict) -> tuple[list[str], str | None]:
+    """Split a topology's network NADs into ``(cluster_nads, bmc_nad)``.
+
+    The KubeVirt ops pod attaches to BOTH the cluster network(s) — to reach the
+    nested VMs / serve the agent ISO — and the BMC network — to reach the sushy
+    Redfish emulator on ``:8000`` (mirrors ``build_bmc_deployment``). NAD names
+    follow the operator convention ``net-<network-id[:8]>-nad``.
+    """
+    cluster_nads: list[str] = []
+    bmc_nad: str | None = None
+    for node in (topology or {}).get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        if node.get("data", {}).get("networkType") == "bmc":
+            bmc_nad = _nad_name(node)
+        else:
+            cluster_nads.append(_nad_name(node))
+    return cluster_nads, bmc_nad
+
+
+def _ops_pod_secret_key(path: str) -> str:
+    """k8s Secret keys can't contain ``/``; flatten an absolute file path.
+
+    e.g. ``/workdir/cl-1/install-config.yaml`` -> ``workdir_cl-1_install-config.yaml``.
+    Each config path is unique so the flattened keys stay unique too; the file is
+    remounted at its ORIGINAL absolute path via a ``subPath`` volume mount.
+    """
+    return path.lstrip("/").replace("/", "_")
+
+
+def build_ops_pod_kubevirt_manifests(
+    *,
+    namespace: str,
+    project_id: str,
+    command: list[str],
+    env: dict[str, str],
+    config_files: dict[str, str],
+    cluster_nads: list[str],
+    bmc_nad: str | None,
+    image: str = OPS_POD_IMAGE,
+) -> tuple[dict, dict]:
+    """Build the ``(Pod, Secret)`` manifests for the KubeVirt ops pod.
+
+    The KubeVirt analog of the troshkad ops pod (:func:`_ops_pod_create_params`):
+    a privileged Pod on :data:`OPS_POD_IMAGE` attached via
+    ``k8s.v1.cni.cncf.io/networks`` to BOTH the cluster NAD(s) and the BMC NAD —
+    mirroring ``operator/helpers/bmc.build_bmc_deployment``'s NAD attachment plus
+    its ``privileged`` + ``NET_ADMIN``/``NET_RAW`` securityContext. The
+    per-cluster install/agent configs and the pull secret ride in a k8s Secret
+    (the analog of Task 8's troshkad file-mount) mounted read-only at the SAME
+    absolute ``<workdir>/<clusterId>/...`` paths the install script reads — so no
+    secret appears in the pod argv. ``command`` is the shared install-runner
+    script; ``TROSHKA_API_KEY`` rides in ``env`` (not exposed in the argv).
+    ``restartPolicy`` is ``Always`` (the install script is idempotent and skips
+    already-installed clusters on restart).
+    """
+    pid = project_id[:8]
+    pod_name = f"troshka-{pid}-ops"
+    secret_name = f"{pod_name}-config"
+    labels = {"app": "troshka-ops-pod", "troshka-project": pid}
+
+    nads = [n for n in [*cluster_nads, bmc_nad] if n]
+    annotations = {_NET_ANNOTATION_KEY: ",".join(nads)}
+
+    secret_data: dict[str, str] = {}
+    volume_mounts: list[dict] = []
+    for path, content in config_files.items():
+        key = _ops_pod_secret_key(path)
+        secret_data[key] = content
+        volume_mounts.append(
+            {
+                "name": "ops-config",
+                "mountPath": path,
+                "subPath": key,
+                "readOnly": True,
+            }
+        )
+
+    secret = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": secret_name,
+            "namespace": namespace,
+            "labels": labels,
+        },
+        "stringData": secret_data,
+    }
+
+    container = {
+        "name": "ops",
+        "image": image,
+        "imagePullPolicy": "Always",
+        "command": command,
+        "env": [{"name": k, "value": v} for k, v in env.items()],
+        "volumeMounts": volume_mounts,
+        "securityContext": {
+            "privileged": True,
+            "capabilities": {"add": ["NET_ADMIN", "NET_RAW"]},
+        },
+        "resources": {
+            "requests": {"cpu": "500m", "memory": "2Gi"},
+            "limits": {"cpu": "2", "memory": "4Gi"},
+        },
+    }
+
+    pod = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": pod_name,
+            "namespace": namespace,
+            "labels": labels,
+            "annotations": annotations,
+        },
+        "spec": {
+            "serviceAccountName": _OPS_POD_SERVICE_ACCOUNT,
+            "restartPolicy": "Always",
+            "containers": [container],
+            "volumes": [{"name": "ops-config", "secret": {"secretName": secret_name}}],
+        },
+    }
+    return pod, secret

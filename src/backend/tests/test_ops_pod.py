@@ -479,3 +479,156 @@ def test_inject_dead_pod_preserves_terminal_clusters():
 def test_inject_dead_pod_preserves_already_failed():
     out = inject_dead_pod_failures({"c1": "failed"}, pod_running=False)
     assert ops_pod_install_progress(out)["clusters"]["c1"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# Task 8b (Plan 4b): KubeVirt ops-pod Pod + Secret spec builder (pure)
+# ---------------------------------------------------------------------------
+
+from app.services.ocp.ops_pod_scaffold import (  # noqa: E402
+    OPS_POD_IMAGE,
+    build_ops_pod_kubevirt_manifests,
+    ops_pod_network_nads,
+)
+
+
+def _kv_topology() -> dict:
+    return {
+        "nodes": [
+            {
+                "id": "netclust",
+                "type": "networkNode",
+                "data": {"networkType": "data"},
+            },
+            {
+                "id": "netbmc00",
+                "type": "networkNode",
+                "data": {"networkType": "bmc", "bmcPassword": "s3cret"},
+            },
+            {"id": "vm-1", "type": "vmNode", "data": {}},
+        ]
+    }
+
+
+def test_ops_pod_network_nads_splits_cluster_and_bmc():
+    cluster_nads, bmc_nad = ops_pod_network_nads(_kv_topology())
+    # Mirrors the operator NAD naming convention: net-<id[:8]>-nad.
+    assert cluster_nads == ["net-netclust-nad"]
+    assert bmc_nad == "net-netbmc00-nad"
+
+
+def test_ops_pod_network_nads_no_bmc_network():
+    topo = {
+        "nodes": [
+            {
+                "id": "netonly0",
+                "type": "networkNode",
+                "data": {"networkType": "data"},
+            }
+        ]
+    }
+    cluster_nads, bmc_nad = ops_pod_network_nads(topo)
+    assert cluster_nads == ["net-netonly0-nad"]
+    assert bmc_nad is None
+
+
+def _kv_manifests():
+    files = ops_pod_config_files(_clusters(), OPS_POD_WORKDIR, '{"auths":{}}')
+    return build_ops_pod_kubevirt_manifests(
+        namespace="troshka-abcdef12",
+        project_id="abcdef12-3456-7890-1234-567890abcdef",
+        command=["bash", "-c", "echo install"],
+        env={
+            "TROSHKA_API_URL": "https://troshka.example.com",
+            "TROSHKA_API_KEY": "trk_secret",  # pragma: allowlist secret
+            "TROSHKA_PROJECT_ID": "abcdef12",
+            "OCP_VERSION": "4.20",
+        },
+        config_files=files,
+        cluster_nads=["net-clu-nad"],
+        bmc_nad="net-bmc-nad",
+    )
+
+
+def test_kv_ops_pod_manifest_is_a_pod_with_ee_image():
+    pod, _secret = _kv_manifests()
+    assert pod["kind"] == "Pod"
+    assert pod["metadata"]["name"] == "troshka-abcdef12-ops"
+    assert pod["metadata"]["namespace"] == "troshka-abcdef12"
+    ctr = pod["spec"]["containers"][0]
+    assert ctr["image"] == OPS_POD_IMAGE
+    assert ctr["name"] == "ops"
+
+
+def test_kv_ops_pod_attaches_both_cluster_and_bmc_nads():
+    pod, _secret = _kv_manifests()
+    networks = pod["metadata"]["annotations"]["k8s.v1.cni.cncf.io/networks"]
+    # BOTH the cluster NAD (reach nested VMs / serve ISO) and the BMC NAD
+    # (reach sushy :8000) are attached — mirrors build_bmc_deployment.
+    assert "net-clu-nad" in networks
+    assert "net-bmc-nad" in networks
+    assert networks == "net-clu-nad,net-bmc-nad"
+
+
+def test_kv_ops_pod_command_is_install_script_not_secret_argv():
+    pod, _secret = _kv_manifests()
+    ctr = pod["spec"]["containers"][0]
+    assert ctr["command"] == ["bash", "-c", "echo install"]
+
+
+def test_kv_ops_pod_env_carries_scoped_key():
+    pod, _secret = _kv_manifests()
+    env = {e["name"]: e["value"] for e in pod["spec"]["containers"][0]["env"]}
+    assert env["TROSHKA_API_KEY"] == "trk_secret"  # pragma: allowlist secret
+    assert env["TROSHKA_API_URL"] == "https://troshka.example.com"
+    assert env["TROSHKA_PROJECT_ID"] == "abcdef12"
+    assert env["OCP_VERSION"] == "4.20"
+
+
+def test_kv_ops_pod_privileged_net_admin_net_raw():
+    pod, _secret = _kv_manifests()
+    sc = pod["spec"]["containers"][0]["securityContext"]
+    assert sc["privileged"] is True
+    assert set(sc["capabilities"]["add"]) == {"NET_ADMIN", "NET_RAW"}
+
+
+def test_kv_ops_pod_restart_policy_always():
+    pod, _secret = _kv_manifests()
+    assert pod["spec"]["restartPolicy"] == "Always"
+
+
+def test_kv_ops_pod_secret_carries_configs_and_pull_secret():
+    _pod, secret = _kv_manifests()
+    assert secret["kind"] == "Secret"
+    assert secret["metadata"]["name"] == "troshka-abcdef12-ops-config"
+    # Secret keys can't contain '/', so absolute paths are flattened.
+    data = secret["stringData"]
+    values = set(data.values())
+    assert "install: prod\n" in values
+    assert "agent: prod\n" in values
+    assert '{"auths":{}}' in values
+
+
+def test_kv_ops_pod_secret_mounted_at_absolute_workdir_paths():
+    pod, _secret = _kv_manifests()
+    ctr = pod["spec"]["containers"][0]
+    mount_paths = {m["mountPath"] for m in ctr["volumeMounts"]}
+    wd = OPS_POD_WORKDIR
+    # Files land at the SAME absolute paths the install script reads (Task 8 parity).
+    assert f"{wd}/cl-1/install-config.yaml" in mount_paths
+    assert f"{wd}/cl-1/agent-config.yaml" in mount_paths
+    assert f"{wd}/cl-2/install-config.yaml" in mount_paths
+    assert f"{wd}/pull-secret.json" in mount_paths
+    # Each mount is read-only and references the ops-config secret volume via subPath.
+    for m in ctr["volumeMounts"]:
+        assert m["readOnly"] is True
+        assert m["name"] == "ops-config"
+        assert m["subPath"] in secret_stringdata_keys(pod)
+    vol = pod["spec"]["volumes"][0]
+    assert vol["name"] == "ops-config"
+    assert vol["secret"]["secretName"] == "troshka-abcdef12-ops-config"
+
+
+def secret_stringdata_keys(pod):
+    # helper: recompute the secret keys from the pod's volumeMount subPaths.
+    return {m["subPath"] for m in pod["spec"]["containers"][0]["volumeMounts"]}
