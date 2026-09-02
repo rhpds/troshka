@@ -4256,3 +4256,79 @@ class TestOpsPodDeadDetection:
         )
 
         assert result == "complete"
+
+
+class TestOpsPodCancellation:
+    """Cancelling a bastionless OCP install must STOP the persistent ops pod.
+
+    The ops pod is ``restart_policy=always`` and the real install runs INSIDE it;
+    the ``/pods/create`` job completes immediately, so cancelling that job is a
+    no-op. Cancellation must issue ``/pods/destroy`` for the ops pod so the
+    in-pod install actually halts (and the pod won't restart).
+    """
+
+    @patch(f"{SVC}._publish_ops_pod_progress")
+    @patch(f"{SVC}.wait_for_job")
+    @patch(f"{SVC}.start_job", return_value="job-destroy")
+    def test_cancel_issues_pods_destroy_for_ops_pod(
+        self, mock_start, mock_wait, _mock_pub
+    ):
+        from app.services.deploy_service import _cancel_ops_pod_install
+
+        host = _make_host()
+
+        _cancel_ops_pod_install(host, PROJECT_ID, ["c1", "c2"])
+
+        # A /pods/destroy is issued for the ops pod name, NOT cancel_job on the
+        # completed create job.
+        mock_start.assert_called_once()
+        endpoint = mock_start.call_args[0][1]
+        payload = mock_start.call_args[0][2]
+        assert endpoint == "/pods/destroy"
+        assert payload["pod_name"] == f"troshka-{PROJECT_ID[:8]}-ops"
+        assert payload["project_id"] == PROJECT_ID
+        mock_wait.assert_called_once()
+
+    @patch(f"{SVC}._publish_ops_pod_progress")
+    @patch(f"{SVC}.wait_for_job")
+    @patch(f"{SVC}.start_job")
+    def test_cancel_is_best_effort_on_troshkad_error(
+        self, mock_start, _mock_wait, mock_pub
+    ):
+        """A troshkad failure while destroying the pod must not raise; the
+        terminal ``cancelled`` status is still published."""
+        from app.services.deploy_service import _cancel_ops_pod_install
+        from app.services.troshkad_client import TroshkadError
+
+        mock_start.side_effect = TroshkadError("boom")
+        host = _make_host()
+
+        # Does not raise.
+        _cancel_ops_pod_install(host, PROJECT_ID, ["c1"])
+
+        mock_pub.assert_called_once()
+        published = mock_pub.call_args[0][1]
+        assert published["overall"] == "cancelled"
+
+    @patch(f"{SVC}._cancel_ops_pod_install")
+    @patch(f"{SVC}._read_ops_pod_cluster_logs")
+    @patch(f"{SVC}._is_deploy_cancelled", return_value=True)
+    def test_monitor_calls_cancel_on_cancellation(
+        self, _mock_cancel_flag, _mock_logs, mock_cancel
+    ):
+        """The monitor delegates to ``_cancel_ops_pod_install`` (which stops the
+        pod) and returns ``cancelled`` when the deploy is cancelled."""
+        from app.services.deploy_service import _monitor_ops_pod_install
+
+        host = _make_host()
+
+        result = _monitor_ops_pod_install(
+            PROJECT_ID, host, [{"id": "c1"}], poll_interval=0
+        )
+
+        assert result == "cancelled"
+        mock_cancel.assert_called_once()
+        args = mock_cancel.call_args[0]
+        assert args[0] is host
+        assert args[1] == PROJECT_ID
+        assert args[2] == ["c1"]

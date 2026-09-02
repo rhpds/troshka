@@ -2008,8 +2008,8 @@ def _start_ops_pod_install_monitor(host, project_id: str, clusters: list) -> Non
 # install phase, and streams the aggregate + per-cluster status to the deploy
 # UI — honoring cancellation. The PURE phase/aggregation logic is
 # :func:`ops_pod_install_progress`; everything here (the poll loop, wall-clock
-# timing, real ``containers/exec`` log reads, and job cancellation) is
-# **[LIVE-ENV]** and not unit-tested.
+# timing, real ``containers/exec`` log reads, and the cancel-time ops-pod
+# destroy) is **[LIVE-ENV]** and not unit-tested.
 
 
 def _ops_pod_container_name(project_id: str) -> str:
@@ -2114,21 +2114,33 @@ def _next_ops_pod_dead_count(count: int, pod_running: bool) -> int:
     return 0 if pod_running else count + 1
 
 
-def _cancel_ops_pod_install(host, project_id: str, cluster_keys, job_id) -> None:
-    """Signal the ops pod to stop: cancel the troshkad install job (best-effort)
-    and publish a terminal ``cancelled`` status."""
-    from app.services.ocp.ops_pod_install import ops_pod_install_progress
-    from app.services.troshkad_client import cancel_job
+def _cancel_ops_pod_install(host, project_id: str, cluster_keys) -> None:
+    """Stop a cancelled bastionless OCP install by destroying the ops pod.
 
-    if job_id:
-        try:
-            cancel_job(host, job_id)
-        except TroshkadError:
-            logger.warning(
-                "Ops pod %s: failed to cancel install job %s",
-                project_id[:8],
-                job_id,
-            )
+    The real per-cluster install runs INSIDE the persistent ``restart_policy=
+    always`` ops pod; the ``/pods/create`` job that launched it completes
+    immediately, so cancelling that job is a no-op. Destroying the pod is what
+    actually halts the in-pod install (and prevents it from restarting). The
+    destroy path (Task 6 of Plan 4) revokes the scoped ops-pod key, so we do not
+    double-handle key revocation here. Best-effort: a troshkad failure is logged,
+    never raised, and the terminal ``cancelled`` status is still published.
+    """
+    from app.services.ocp.ops_pod_install import ops_pod_install_progress
+
+    pod_name = f"troshka-{project_id[:8]}-ops"
+    try:
+        job_id = start_job(
+            host,
+            "/pods/destroy",
+            {"pod_name": pod_name, "project_id": project_id, "volumes": []},
+        )
+        wait_for_job(host, job_id, timeout=60)
+    except TroshkadError as e:
+        logger.warning(
+            "Ops pod %s: failed to destroy ops pod on cancel: %s",
+            project_id[:8],
+            e,
+        )
     progress = ops_pod_install_progress(
         {key: "" for key in cluster_keys}, cancelled=True
     )
@@ -2139,7 +2151,6 @@ def _monitor_ops_pod_install(
     project_id: str,
     host,
     clusters: list[dict],
-    job_id=None,
     container_name: str | None = None,
     workdir: str | None = None,
     poll_interval: int = 15,
@@ -2150,9 +2161,10 @@ def _monitor_ops_pod_install(
     Loops until every cluster reaches a terminal phase (``complete``/``failed``),
     the project is cancelled, or ``timeout`` elapses. Each iteration reads the
     live logs, maps them to phases via :func:`ops_pod_install_progress`, and
-    publishes the aggregate + per-cluster status. On cancellation it cancels the
-    troshkad job and marks the status cancelled. Returns the terminal overall
-    phase (``complete``/``failed``/``cancelled``/``timeout``).
+    publishes the aggregate + per-cluster status. On cancellation it destroys the
+    ops pod (via :func:`_cancel_ops_pod_install`, which actually halts the in-pod
+    install) and marks the status cancelled. Returns the terminal overall phase
+    (``complete``/``failed``/``cancelled``/``timeout``).
     """
     import time as _t
 
@@ -2173,7 +2185,7 @@ def _monitor_ops_pod_install(
 
     while _t.time() < deadline:
         if _is_deploy_cancelled(project_id):
-            _cancel_ops_pod_install(host, project_id, cluster_keys, job_id)
+            _cancel_ops_pod_install(host, project_id, cluster_keys)
             return "cancelled"
         per_cluster = _read_ops_pod_cluster_logs(
             host, container_name, cluster_keys, workdir
