@@ -7,7 +7,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -44,5 +44,29 @@ class ApiKey(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # When set, the key is scoped to a single project and limited to `scopes`.
+    # NULL project_id = a full-access user key (pre-existing behavior).
+    project_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    scopes: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
 
     user: Mapped[User] = relationship()
+
+    @property
+    def is_scoped(self) -> bool:
+        """True when the key is limited to a single project."""
+        return self.project_id is not None
+
+    def has_scope(self, perm: str) -> bool:
+        """Whether this key grants the given permission.
+
+        Unscoped (full-access) keys grant everything. Scoped keys grant only
+        the permissions listed in `scopes`.
+        """
+        if not self.is_scoped:
+            return True
+        return perm in (self.scopes or [])
