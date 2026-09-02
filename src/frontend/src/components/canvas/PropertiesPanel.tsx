@@ -4319,8 +4319,9 @@ export default function PropertiesPanel() {
         };
         // Count/type edits materialize member VMs. reconcile appends any new
         // members after the (already-present) boundary node, so React Flow's
-        // parent-before-child ordering is preserved. The store subscription
-        // recomputes topologyDirty on the nodes change, so no explicit call.
+        // parent-before-child ordering is preserved. reconcile itself only
+        // setState's nodes; topologyDirty is recomputed by the preceding
+        // editCluster -> updateCluster call, so no explicit dirty call here.
         const reconcile = (updated: ClusterConfig) => {
           const next = reconcileClusterVms(updated, useCanvasStore.getState().nodes);
           useCanvasStore.getState().pushHistory();

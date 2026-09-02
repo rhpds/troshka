@@ -157,6 +157,10 @@ describe("create-project OCP form", () => {
       template_id: "ocp-sno",
       auto_install_ocp: true,
       ocp_version: "4.20",
+      // Back-compat: from-template still seeds the legacy single cluster with
+      // its default name/domain so existing single-cluster deploys keep working.
+      cluster_name: "ocp",
+      base_domain: "ocp.local",
     });
   });
 });
