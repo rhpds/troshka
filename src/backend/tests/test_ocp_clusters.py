@@ -1028,3 +1028,37 @@ def test_install_via_default_no_ocp_config(monkeypatch):
     from app.services.template_loader import _ocp_install_via_default
 
     assert _ocp_install_via_default() == "pod"
+
+
+def test_resolve_inline_template_carries_install_via():
+    # A template declaring top-level install_via must propagate (agnosticd
+    # ships template YAML), not be silently dropped like an unknown key.
+    from app.services.template_loader import resolve_inline_template
+
+    resolved = resolve_inline_template(
+        {
+            "name": "t",
+            "install_via": "bastion",
+            "vms": {"bastion": {"role": "bastion", "nics": []}},
+        }
+    )
+    assert resolved["install_via"] == "bastion"
+
+
+def test_resolve_inline_template_install_via_absent_is_none():
+    from app.services.template_loader import resolve_inline_template
+
+    resolved = resolve_inline_template(
+        {"name": "t", "vms": {"bastion": {"role": "bastion", "nics": []}}}
+    )
+    assert resolved.get("install_via") is None
+
+
+def test_resolve_template_carries_install_via(tmp_path):
+    from app.services.template_loader import resolve_template
+
+    (tmp_path / "t.yaml").write_text(
+        "name: t\ninstall_via: bastion\nvms:\n  bastion:\n    role: bastion\n"
+    )
+    resolved = resolve_template("t", templates_dir=str(tmp_path))
+    assert resolved["install_via"] == "bastion"

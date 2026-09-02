@@ -1,3 +1,4 @@
+import logging
 import os
 import random
 import re
@@ -5,6 +6,8 @@ import uuid
 from pathlib import Path
 
 import yaml  # type: ignore[import-untyped]
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_TEMPLATES_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "templates"
@@ -78,8 +81,8 @@ def _ocp_install_via_default() -> str:
                 return _normalize_install_via(explicit)
             if getattr(ocp_cfg, "install_via_pod", False):
                 return "pod"
-    except Exception:
-        pass
+    except (ImportError, AttributeError) as exc:
+        logger.debug("install_via default config lookup failed: %s", exc, exc_info=True)
     return "pod"
 
 
@@ -559,6 +562,10 @@ def resolve_template(
     resolved["description"] = tmpl.get("description", "")
     resolved["category"] = tmpl.get("category", "")
     resolved["install_method"] = tmpl.get("install_method", "agent")
+    # install_via (bastion|pod) is a distinct per-project selector from the
+    # install_method agent TYPE — carry it through so a template's top-level
+    # install_via propagates (agnosticd ships template YAML). None => use default.
+    resolved["install_via"] = tmpl.get("install_via")
     resolved["deploy_time"] = tmpl.get("deploy_time", "")
     resolved["bastion"] = base_for_versions.get("bastion", {})
     resolved["networks"] = tmpl.get("networks") or base_for_versions.get("networks", {})
@@ -589,6 +596,9 @@ def resolve_inline_template(template_yaml: str | dict) -> dict:
     resolved["description"] = tmpl.get("description", "")
     resolved["category"] = tmpl.get("category", "")
     resolved["install_method"] = tmpl.get("install_method", "agent")
+    # install_via (bastion|pod) — carry through so template-level selection
+    # propagates (see resolve_template). None => fall back to config default.
+    resolved["install_via"] = tmpl.get("install_via")
     resolved["deploy_time"] = tmpl.get("deploy_time", "")
     resolved["bastion"] = tmpl.get("bastion", {})
     resolved["networks"] = tmpl.get("networks", {})

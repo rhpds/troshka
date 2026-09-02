@@ -119,3 +119,72 @@ def test_from_template_persists_install_via_bastion():
     pid = resp.json()["id"]
     proj = client.get(f"/api/v1/projects/{pid}", headers=HEADERS).json()
     assert proj["topology"]["ocpInstallVia"] == "bastion"
+
+
+from pathlib import Path as _Path
+
+import yaml as _yaml
+
+_OCP_TMPL = _Path(__file__).resolve().parents[1] / "templates" / "ocp-compact.yaml"
+
+
+def _ocp_template_yaml(**extra):
+    d = _yaml.safe_load(_OCP_TMPL.read_text())
+    d.update(extra)
+    return d
+
+
+def _create_from_template_yaml(name, tmpl):
+    resp = client.post(
+        "/api/v1/projects/from-template",
+        json={"template_yaml": tmpl, "name": name, "common_password": "redhat123"},
+        headers=HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+    pid = resp.json()["id"]
+    return client.get(f"/api/v1/projects/{pid}", headers=HEADERS).json()
+
+
+def test_from_template_yaml_persists_template_install_via_bastion():
+    # Template-level install_via must propagate end-to-end (agnosticd path).
+    tmpl = _ocp_template_yaml(install_via="bastion")
+    proj = _create_from_template_yaml("tmpl-iv-bastion", tmpl)
+    assert proj["topology"]["ocpInstallVia"] == "bastion"
+
+
+def test_from_template_yaml_body_overrides_template_install_via():
+    # template says bastion, body says pod -> body wins.
+    tmpl = _ocp_template_yaml(install_via="bastion")
+    resp = client.post(
+        "/api/v1/projects/from-template",
+        json={
+            "template_yaml": tmpl,
+            "name": "tmpl-iv-body-pod",
+            "common_password": "redhat123",
+            "install_via": "pod",
+        },
+        headers=HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+    pid = resp.json()["id"]
+    proj = client.get(f"/api/v1/projects/{pid}", headers=HEADERS).json()
+    assert proj["topology"]["ocpInstallVia"] == "pod"
+
+
+def test_from_template_yaml_body_overrides_template_install_via_reverse():
+    # template says pod, body says bastion -> body wins.
+    tmpl = _ocp_template_yaml(install_via="pod")
+    resp = client.post(
+        "/api/v1/projects/from-template",
+        json={
+            "template_yaml": tmpl,
+            "name": "tmpl-iv-body-bastion",
+            "common_password": "redhat123",
+            "install_via": "bastion",
+        },
+        headers=HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+    pid = resp.json()["id"]
+    proj = client.get(f"/api/v1/projects/{pid}", headers=HEADERS).json()
+    assert proj["topology"]["ocpInstallVia"] == "bastion"
