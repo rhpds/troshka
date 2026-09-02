@@ -193,6 +193,30 @@ def test_materialize_generates_missing_cp_and_workers():
     assert sample["cpu"] == 8 and sample["memory"] == 16384 and sample["disk"] == 120
 
 
+def test_materialize_marks_generated_vms():
+    from app.services.template_loader import (
+        build_topology_clusters,
+        materialize_cluster_vms,
+        normalize_ocp_section,
+    )
+
+    ocp = normalize_ocp_section([{"name": "prod", "type": "standard", "workers": 2}])
+    # One hand-enumerated CP that must NOT be marked generated.
+    vms_in = {"cp-0": {"role": "control-plane", "cluster": "prod", "cpu": 16}}
+    clusters = build_topology_clusters(ocp, vms_def=vms_in)
+    vms = materialize_cluster_vms(clusters, vms_def=vms_in)
+
+    # Every auto-generated CP/worker carries generated=True so count-driven
+    # add/remove (backend + canvas) only ever reaps VMs it created.
+    generated = [n for n, c in vms.items() if c.get("generated") is True]
+    assert len(generated) == 4  # 2 topped-up CP + 2 workers
+    assert all(
+        vms[n]["os"] == "rhcos" and vms[n]["cluster"] == "prod" for n in generated
+    )
+    # The enumerated VM stays untouched (no generated flag).
+    assert "generated" not in vms["cp-0"]
+
+
 def test_materialize_preserves_enumerated_vms():
     from app.services.template_loader import (
         build_topology_clusters,

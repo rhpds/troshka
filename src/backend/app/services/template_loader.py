@@ -158,6 +158,9 @@ def _make_node(cluster, role, cpu, memory, disk):
         "cpu": cpu,
         "memory": memory,
         "disk": disk,
+        # Mark auto-generated so count-driven add/remove (canvas + backend) only
+        # ever reaps VMs it created, never a hand-enumerated/customized member.
+        "generated": True,
     }
 
 
