@@ -253,11 +253,11 @@ def _prepare_ocp_clusters(tmpl, vms_def):
 
 
 def _stamp_cluster_membership(vm_node, vm_cluster_map, vm_name):
-    """Stamp cluster membership (clusterId + parentNode) on a member VM node."""
+    """Stamp cluster membership (clusterId + parentId) on a member VM node."""
     cluster_id = vm_cluster_map.get(vm_name)
     if cluster_id:
         vm_node["data"]["clusterId"] = cluster_id
-        vm_node["parentNode"] = f"cluster-{cluster_id}"
+        vm_node["parentId"] = f"cluster-{cluster_id}"
 
 
 def _build_cluster_boundary_nodes(clusters):

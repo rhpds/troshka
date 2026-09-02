@@ -8,7 +8,7 @@ def test_remap_topology_remaps_cluster_refs():
             {
                 "id": "n1",
                 "type": "vmNode",
-                "parentNode": "cluster-prod",
+                "parentId": "cluster-prod",
                 "data": {
                     "os": "rhcos",
                     "clusterId": "prod",
@@ -23,7 +23,7 @@ def test_remap_topology_remaps_cluster_refs():
     assert new_cluster["id"] != "prod"
     member = next(n for n in out["nodes"] if n["type"] == "vmNode")
     assert member["data"]["clusterId"] == new_cluster["id"]
-    assert member["parentNode"] == new_cluster["nodeId"]
+    assert member["parentId"] == new_cluster["nodeId"]
     # the cluster node itself got a new id matching nodeId
     cluster_node = next(n for n in out["nodes"] if n["type"] == "clusterNode")
     assert cluster_node["id"] == new_cluster["nodeId"]
@@ -278,7 +278,7 @@ def test_generated_topology_has_clusters_and_member_refs():
 
     members = [n for n in topo["nodes"] if n.get("data", {}).get("clusterId") == "prod"]
     assert len(members) == 5  # 3 cp + 2 workers
-    assert all(n.get("parentNode") == "cluster-prod" for n in members)
+    assert all(n.get("parentId") == "cluster-prod" for n in members)
 
 
 def test_generate_topology_multi_cluster_membership():
@@ -316,8 +316,8 @@ def test_generate_topology_multi_cluster_membership():
     # prod = 3 cp + 2 workers, dev (sno) = 1 cp.
     assert len(prod_members) == 5
     assert len(dev_members) == 1
-    assert all(n.get("parentNode") == "cluster-prod" for n in prod_members)
-    assert all(n.get("parentNode") == "cluster-dev" for n in dev_members)
+    assert all(n.get("parentId") == "cluster-prod" for n in prod_members)
+    assert all(n.get("parentId") == "cluster-dev" for n in dev_members)
 
 
 def test_non_rhcos_vm_excluded_from_cluster():
@@ -349,7 +349,7 @@ def test_non_rhcos_vm_excluded_from_cluster():
         if n.get("type") == "vmNode" and n["data"]["name"] == "bastion"
     )
     assert "clusterId" not in bastion["data"]
-    assert "parentNode" not in bastion
+    assert "parentId" not in bastion
 
 
 def test_migrate_legacy_topology_synthesizes_cluster():
@@ -383,7 +383,7 @@ def test_migrate_legacy_topology_synthesizes_cluster():
     assert out["clusters"][0]["id"] == "ocp"
     assert out["clusters"][0]["type"] == "standard"  # 1 cp + 1 worker => standard
     assert all(
-        n["data"]["clusterId"] == "ocp" and n["parentNode"] == "cluster-ocp"
+        n["data"]["clusterId"] == "ocp" and n["parentId"] == "cluster-ocp"
         for n in out["nodes"]
         if n["data"].get("os") == "rhcos"
     )

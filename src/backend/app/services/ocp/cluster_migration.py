@@ -54,7 +54,7 @@ def migrate_topology_clusters(topology: dict) -> dict:
 
     Idempotent: returns ``topology`` unchanged if ``clusters`` is already present
     or no RHCOS nodes exist. Otherwise mutates ``topology`` in place, stamping
-    ``clusterId``/``parentNode`` on each RHCOS node, appending a real
+    ``clusterId``/``parentId`` on each RHCOS node, appending a real
     ``clusterNode`` to ``nodes``, and adding the ``clusters`` entry.
     """
     if not isinstance(topology, dict):
@@ -72,7 +72,7 @@ def migrate_topology_clusters(topology: dict) -> dict:
 
     for n in ocp_nodes:
         n.setdefault("data", {})["clusterId"] = _CLUSTER_ID
-        n["parentNode"] = _CLUSTER_NODE_ID
+        n["parentId"] = _CLUSTER_NODE_ID
 
     topology.setdefault("nodes", []).append(
         _build_cluster_node(ctype, control_plane, wk)

@@ -160,7 +160,7 @@ def _clear_external_endpoints(nodes: list) -> None:
 
 
 def _remap_clusters(topo: dict, id_map: dict) -> None:
-    """Remap clusters[] ids/nodeIds and member clusterId/parentNode refs.
+    """Remap clusters[] ids/nodeIds and member clusterId/parentId refs.
 
     ``_remap_node_ids`` has already assigned a fresh bare UUID to every node
     (including the ``clusterNode``), recorded in ``id_map``. Reuse that map so
@@ -185,8 +185,8 @@ def _remap_clusters(topo: dict, id_map: dict) -> None:
         data = node.get("data", {})
         if data.get("clusterId") in old_to_new:
             data["clusterId"] = old_to_new[data["clusterId"]]
-        if node.get("parentNode") in id_map:
-            node["parentNode"] = id_map[node["parentNode"]]
+        if node.get("parentId") in id_map:
+            node["parentId"] = id_map[node["parentId"]]
 
 
 def _remap_topology(topology: dict) -> dict:
