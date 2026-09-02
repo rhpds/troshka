@@ -5,7 +5,7 @@ import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
-import { reconcileClusterVms, applyClusterSizing, memberRole } from "./clusterMaterialize";
+import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
 import {
   getShowroomReadiness,
@@ -489,6 +489,8 @@ function ClusterEditor({
   onSizing,
   onTypeChange,
   onWorkersChange,
+  onNetworksChange,
+  availableNetworks,
 }: {
   cluster: ClusterConfig;
   clusters: ClusterConfig[];
@@ -496,6 +498,8 @@ function ClusterEditor({
   onSizing: (patch: Partial<ClusterConfig>) => void;
   onTypeChange: (type: string) => void;
   onWorkersChange: (workers: number) => void;
+  onNetworksChange: (networkIds: string[]) => void;
+  availableNetworks: Array<{ id: string; label: string; cidr?: string }>;
 }) {
   const apiVipError = vipCollisionError(clusters, cluster.id, "apiVip", cluster.apiVip || "");
   const ingressVipError = vipCollisionError(clusters, cluster.id, "ingressVip", cluster.ingressVip || "");
@@ -549,6 +553,56 @@ function ClusterEditor({
 
       <div className="props-section">
         <div className="props-section-title">Networking</div>
+        <div className="props-field">
+          <label className="props-label">Member Networks</label>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              padding: "8px 0",
+            }}
+          >
+            {availableNetworks.length === 0 ? (
+              <span style={{ fontSize: 13, color: "var(--troshka-text-dim)" }}>
+                No networks on canvas
+              </span>
+            ) : (
+              availableNetworks.map((net) => (
+                <label
+                  key={net.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    fontSize: 13,
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={(cluster.networkIds ?? []).includes(net.id)}
+                    onChange={(e) => {
+                      const newIds = e.target.checked
+                        ? [...(cluster.networkIds ?? []), net.id]
+                        : (cluster.networkIds ?? []).filter((id) => id !== net.id);
+                      onNetworksChange(newIds);
+                    }}
+                    style={{ cursor: "pointer" }}
+                  />
+                  <span>
+                    {net.label}
+                    {net.cidr && (
+                      <span style={{ color: "var(--troshka-text-dim)", marginLeft: 4 }}>
+                        ({net.cidr})
+                      </span>
+                    )}
+                  </span>
+                </label>
+              ))
+            )}
+          </div>
+        </div>
         <ClusterTextField label="Base Domain" value={cluster.baseDomain || ""} placeholder="ocp.local" onCommit={(v) => onPatch({ baseDomain: v })} />
         <ClusterTextField label="API VIP" value={cluster.apiVip || ""} error={apiVipError} onCommit={(v) => onPatch({ apiVip: v })} />
         <ClusterTextField label="Ingress VIP" value={cluster.ingressVip || ""} error={ingressVipError} onCommit={(v) => onPatch({ ingressVip: v })} />
@@ -4354,6 +4408,31 @@ export default function PropertiesPanel() {
           editCluster({ workers });
           reconcile({ ...cluster, workers });
         };
+        const handleNetworksChange = (networkIds: string[]) => {
+          editCluster({ networkIds });
+          const updated = { ...cluster, networkIds };
+          const { nodes: nextNodes, edges: nextEdges } = applyClusterNetworks(
+            updated,
+            useCanvasStore.getState().nodes,
+            useCanvasStore.getState().edges,
+          );
+          useCanvasStore.getState().pushHistory();
+          useCanvasStore.setState({ nodes: nextNodes, edges: nextEdges });
+        };
+        // Get available networks from canvas (networkNodes with subtype !== "bmc")
+        const availableNetworks = nodes
+          .filter((n) => {
+            const d = n.data as Record<string, unknown>;
+            return n.type === "networkNode" && d?.subtype !== "bmc";
+          })
+          .map((n) => {
+            const d = n.data as Record<string, unknown>;
+            return {
+              id: n.id,
+              label: (d?.label || d?.name || n.id) as string,
+              cidr: (d?.cidr || d?.subnet) as string | undefined,
+            };
+          });
         return (
           <ClusterEditor
             cluster={cluster}
@@ -4362,6 +4441,8 @@ export default function PropertiesPanel() {
             onSizing={handleSizing}
             onTypeChange={handleTypeChange}
             onWorkersChange={handleWorkersChange}
+            onNetworksChange={handleNetworksChange}
+            availableNetworks={availableNetworks}
           />
         );
       })()}

@@ -357,6 +357,82 @@ function reconcileRole(
 }
 
 /**
+ * Extract the cluster's network IDs from existing NIC edges wired to members.
+ * For each member (in order), finds NIC edges whose target is that member and
+ * targetHandle starts with "nic-", collects the source (network node id).
+ * Returns distinct network ids, preserving member order (primary first).
+ * Pure function, useful as a fallback when cluster.networkIds is unset.
+ */
+export function clusterNetworkIdsFromEdges(
+  clusterNodeId: string,
+  memberIds: string[],
+  edges: Edge[],
+): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const memberId of memberIds) {
+    const memberNicEdges = edges.filter(
+      (e) => e.target === memberId && (e.targetHandle?.startsWith("nic-") ?? false),
+    );
+    for (const edge of memberNicEdges) {
+      const netId = edge.source;
+      if (!seen.has(netId)) {
+        seen.add(netId);
+        result.push(netId);
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Rebuild NICs for every existing member of the cluster to match cluster.networkIds.
+ * For each member vmNode (isMember check), recomputes {nics, nicEdges} via buildMemberNics.
+ * Removes old NIC edges (targetHandle starts with "nic-"), adds fresh nicEdges.
+ * Disk edges and all other edges remain intact. Returns updated {nodes, edges}.
+ * Idempotent: re-running yields the same set (buildMemberNics produces deterministic ids).
+ */
+export function applyClusterNetworks(
+  cluster: ClusterConfig,
+  nodes: Node[],
+  edges: Edge[],
+): { nodes: Node[]; edges: Edge[] } {
+  let resultNodes = nodes;
+  let resultEdges = edges;
+
+  // Get all members of this cluster
+  const allMembers = resultNodes.filter((n) => {
+    const d = n.data as Record<string, unknown>;
+    return n.type === "vmNode" && d?.clusterId === cluster.id;
+  });
+
+  // For each member, rebuild its NICs and edges
+  for (const member of allMembers) {
+    const { nics, nicEdges } = buildMemberNics(cluster, member.id);
+
+    // Update the member node's nics
+    resultNodes = resultNodes.map((n) =>
+      n.id === member.id
+        ? { ...n, data: { ...n.data, nics } }
+        : n,
+    );
+
+    // Remove old NIC edges for this member
+    resultEdges = resultEdges.filter(
+      (e) =>
+        !(e.target === member.id && (e.targetHandle?.startsWith("nic-") ?? false)),
+    );
+
+    // Add fresh NIC edges
+    resultEdges = [...resultEdges, ...nicEdges];
+  }
+
+  return { nodes: resultNodes, edges: resultEdges };
+}
+
+/**
  * Return new nodes and edges where `cluster` has exactly `controlPlane` control-
  * plane and `workers` worker member VMs, each with their disk storageNodes + edges.
  * Pure and idempotent: missing members are added, generated surplus is removed,
