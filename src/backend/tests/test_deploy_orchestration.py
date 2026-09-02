@@ -4068,6 +4068,70 @@ class TestShouldUseOpsPod:
         assert _should_use_ops_pod(topo) is True
 
 
+class TestOpsPodCommand:
+    """`_ops_pod_command` builds the pod's `bash -c` argv: workdir preamble +
+    install-runner script, with NO secret content embedded in the argv.
+
+    The higher-level `_ops_pod_create_params` / `_deploy_ops_pod_*` tests exercise
+    this indirectly; this pins the command builder's contract directly (Task 10
+    gap: the helper had no direct unit test — configs/pull-secret are delivered as
+    mounted files, never in the argv).
+    """
+
+    def test_command_is_bash_c_argv(self):
+        from app.services.deploy_service import _ops_pod_command
+
+        topo = _ocp_topology(2)
+        cmd = _ops_pod_command(topo["clusters"], topo, "4.20", "/workdir")
+        # A 3-element `["bash", "-c", <script>]` argv.
+        assert isinstance(cmd, list)
+        assert cmd[0] == "bash"
+        assert cmd[1] == "-c"
+        assert isinstance(cmd[2], str)
+
+    def test_command_ensures_per_cluster_workdirs(self):
+        from app.services.deploy_service import _ops_pod_command
+
+        topo = _ocp_topology(2)
+        script = _ops_pod_command(topo["clusters"], topo, "4.20", "/workdir")[2]
+        # Preamble mkdir -p for the root workdir and each cluster subdir so
+        # install logs/auth output always have a writable home.
+        assert "mkdir -p /workdir" in script
+        assert "mkdir -p /workdir/cl-0" in script
+        assert "mkdir -p /workdir/cl-1" in script
+
+    def test_command_runs_install_runner_per_cluster(self):
+        from app.services.deploy_service import _ops_pod_command
+
+        topo = _ocp_topology(2)
+        script = _ops_pod_command(topo["clusters"], topo, "4.20", "/workdir")[2]
+        # References each cluster's workdir and runs the install runner.
+        assert "cd /workdir/cl-0" in script
+        assert "cd /workdir/cl-1" in script
+        assert "agent create image" in script
+        assert "wait-for install-complete" in script
+
+    def test_command_has_per_cluster_kubeconfig_skip_guard(self):
+        from app.services.deploy_service import _ops_pod_command
+
+        topo = _ocp_topology(2)
+        script = _ops_pod_command(topo["clusters"], topo, "4.20", "/workdir")[2]
+        # Task 4 idempotency: a restarted pod skips a cluster already installed.
+        assert "[ -f /workdir/cl-0/auth/kubeconfig ]" in script
+        assert "[ -f /workdir/cl-1/auth/kubeconfig ]" in script
+
+    def test_command_embeds_no_secret_content(self):
+        from app.services.deploy_service import _ops_pod_command
+
+        topo = _ocp_topology(2)
+        script = _ops_pod_command(topo["clusters"], topo, "4.20", "/workdir")[2]
+        # Configs ride in mounted files (Task 8), NOT the argv: neither the
+        # install-config content nor a base64 decode preamble appears here.
+        assert "install: c0" not in script
+        assert "install: c1" not in script
+        assert "base64 -d" not in script
+
+
 class TestOpsPodCreateParams:
     """Shape of the real troshkad /pods/create params for the ops pod."""
 
