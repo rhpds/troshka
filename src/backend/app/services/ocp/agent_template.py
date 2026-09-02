@@ -531,6 +531,12 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
             "or in the template YAML."
         )
 
+    # Make every cluster member (backend- OR canvas-created) deploy-ready before
+    # counts, BMC host entries, and rendezvous selection read their fields.
+    from app.services.template_loader import normalize_cluster_member_fields
+
+    normalize_cluster_member_fields(topology)
+
     clusters = topology.get("clusters") or [
         _legacy_cluster_from_config(topology, template_id, config)
     ]

@@ -596,3 +596,262 @@ def test_ocp_port_forwards_skips_novip_cluster():
     pfs = _generate_ocp_port_forwards("eip-1", vms, clusters)
     by_port = {pf["extPort"]: pf for pf in pfs}
     assert set(by_port) == {"2222", "6443", "443", "80"}
+
+
+# ---------------------------------------------------------------------------
+# normalize_cluster_member_fields (Task 7)
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_canvas_member_gains_install_fields():
+    """A canvas-created member (only os/clusterId/clusterRole) becomes
+    deploy-ready: firmware/bmc/boot/diskControllers stamped, AnsibleGroup synced."""
+    from app.services.template_loader import normalize_cluster_member_fields
+
+    topo = {
+        "nodes": [
+            {
+                "id": "m1",
+                "type": "vmNode",
+                "data": {
+                    "os": "rhcos",
+                    "clusterId": "prod",
+                    "clusterRole": "control-plane",
+                    "name": "cp-0",
+                },
+            }
+        ],
+        "edges": [],
+    }
+    d = normalize_cluster_member_fields(topo)["nodes"][0]["data"]
+    assert d["firmware"] == "uefi"
+    assert d["bmcEnabled"] is True
+    assert d["secureBoot"] is False
+    assert d["powerOnAtDeploy"] is True
+    assert d["bootMethod"] == "disk"
+    assert "bootDevices" in d
+    assert isinstance(d["diskControllers"], list) and d["diskControllers"]
+    # A cdrom controller is present for agent ISO boot.
+    assert any(dc.get("name", "").startswith("cdrom") for dc in d["diskControllers"])
+    # clusterRole present -> AnsibleGroup synced to controllers.
+    assert d["tags"]["AnsibleGroup"] == "controllers"
+
+
+def test_normalize_unroled_member_defaults_to_worker():
+    """A member with clusterId but NEITHER clusterRole NOR AnsibleGroup -> worker."""
+    from app.services.template_loader import normalize_cluster_member_fields
+
+    topo = {
+        "nodes": [
+            {
+                "id": "m1",
+                "type": "vmNode",
+                "data": {"os": "rhcos", "clusterId": "prod", "name": "x"},
+            }
+        ],
+        "edges": [],
+    }
+    d = normalize_cluster_member_fields(topo)["nodes"][0]["data"]
+    assert d["clusterRole"] == "worker"
+    assert "workers" in d["tags"]["AnsibleGroup"]
+
+
+def test_normalize_syncs_ansiblegroup_from_clusterrole():
+    """clusterRole present but no AnsibleGroup -> AnsibleGroup synced."""
+    from app.services.template_loader import normalize_cluster_member_fields
+
+    topo = {
+        "nodes": [
+            {
+                "id": "m1",
+                "type": "vmNode",
+                "data": {"os": "rhcos", "clusterId": "prod", "clusterRole": "worker"},
+            }
+        ],
+        "edges": [],
+    }
+    d = normalize_cluster_member_fields(topo)["nodes"][0]["data"]
+    assert d["tags"]["AnsibleGroup"] == "workers"
+
+
+def test_normalize_syncs_clusterrole_from_ansiblegroup():
+    """AnsibleGroup present but no clusterRole -> clusterRole synced."""
+    from app.services.template_loader import normalize_cluster_member_fields
+
+    topo = {
+        "nodes": [
+            {
+                "id": "m1",
+                "type": "vmNode",
+                "data": {
+                    "os": "rhcos",
+                    "clusterId": "prod",
+                    "tags": {"AnsibleGroup": "controllers"},
+                },
+            }
+        ],
+        "edges": [],
+    }
+    d = normalize_cluster_member_fields(topo)["nodes"][0]["data"]
+    assert d["clusterRole"] == "control-plane"
+    assert d["tags"]["AnsibleGroup"] == "controllers"
+
+
+def test_normalize_is_idempotent():
+    """A second normalize pass is a no-op."""
+    import copy
+
+    from app.services.template_loader import normalize_cluster_member_fields
+
+    topo = {
+        "nodes": [
+            {
+                "id": "m1",
+                "type": "vmNode",
+                "data": {"os": "rhcos", "clusterId": "prod", "clusterRole": "worker"},
+            }
+        ],
+        "edges": [],
+    }
+    once = normalize_cluster_member_fields(topo)
+    snapshot = copy.deepcopy(once["nodes"][0]["data"])
+    twice = normalize_cluster_member_fields(once)
+    assert twice["nodes"][0]["data"] == snapshot
+
+
+def test_normalize_leaves_configured_member_untouched():
+    """An already-configured member keeps every explicit value (no overwrite)."""
+    import copy
+
+    from app.services.template_loader import normalize_cluster_member_fields
+
+    data = {
+        "os": "rhcos",
+        "clusterId": "prod",
+        "clusterRole": "control-plane",
+        "tags": {"AnsibleGroup": "controllers"},
+        "firmware": "bios",
+        "bmcEnabled": False,
+        "secureBoot": True,
+        "powerOnAtDeploy": False,
+        "bootMethod": "network",
+        "bootDevices": ["disk-xyz"],
+        "diskControllers": [{"id": "dp-1", "name": "disk0", "bus": "virtio"}],
+    }
+    topo = {
+        "nodes": [{"id": "m1", "type": "vmNode", "data": copy.deepcopy(data)}],
+        "edges": [],
+    }
+    out = normalize_cluster_member_fields(topo)
+    assert out["nodes"][0]["data"] == data
+
+
+def test_normalize_skips_non_member_vm():
+    """A VM without clusterId is left entirely untouched."""
+    import copy
+
+    from app.services.template_loader import normalize_cluster_member_fields
+
+    data = {"os": "rhel", "name": "bastion"}
+    topo = {
+        "nodes": [{"id": "b1", "type": "vmNode", "data": copy.deepcopy(data)}],
+        "edges": [],
+    }
+    out = normalize_cluster_member_fields(topo)
+    assert out["nodes"][0]["data"] == data
+
+
+def test_normalize_bootdevices_from_connected_disk():
+    """When a member has a data-disk controller, bootDevices points at its disk."""
+    from app.services.template_loader import normalize_cluster_member_fields
+
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "os": "rhcos",
+                    "clusterId": "prod",
+                    "clusterRole": "worker",
+                    "diskControllers": [
+                        {"id": "dp-abc", "name": "disk0", "bus": "virtio"}
+                    ],
+                },
+            },
+            {"id": "disk1", "type": "storageNode", "data": {"name": "d"}},
+        ],
+        "edges": [
+            {
+                "source": "disk1",
+                "target": "vm1",
+                "sourceHandle": "right",
+                "targetHandle": "dp-abc-left",
+            }
+        ],
+    }
+    d = normalize_cluster_member_fields(topo)["nodes"][0]["data"]
+    assert d["bootDevices"] == ["disk1"]
+    # Non-empty controllers are left intact (no forced cdrom).
+    assert d["diskControllers"] == [{"id": "dp-abc", "name": "disk0", "bus": "virtio"}]
+
+
+def test_customize_topology_normalizes_member_into_agent_hosts():
+    """customize_topology normalizes a canvas member (clusterRole, no AnsibleGroup)
+    so it lands in the agent-config hosts list (rendezvous gap closed)."""
+    import yaml
+
+    from app.services.ocp.agent_template import customize_topology
+
+    topo = {
+        "nodes": [
+            {
+                "id": "net",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "network",
+                    "cidr": "10.0.0.0/24",
+                    "networkType": "cluster",
+                },
+            },
+            {
+                "id": "cp0",
+                "type": "vmNode",
+                "data": {
+                    "os": "rhcos",
+                    "name": "cp-0",
+                    "clusterId": "dev",
+                    "clusterRole": "control-plane",  # canvas-created: no AnsibleGroup
+                    "bmcEnabled": True,
+                    "bmcIp": "192.168.50.10",
+                    "nics": [
+                        {"id": "n1", "ip": "10.0.0.20", "mac": "52:54:00:aa:bb:01"}
+                    ],
+                },
+            },
+        ],
+        "edges": [],
+        "clusters": [
+            {
+                "id": "dev",
+                "name": "dev",
+                "type": "sno",
+                "controlPlane": 1,
+                "workers": 0,
+                "baseDomain": "dev.local",
+                "apiVip": "",
+                "ingressVip": "",
+            }
+        ],
+    }
+    config = {
+        "common_password": "pw",
+        "pull_secret_json": "{}",
+        "ssh_pub_key": "x",
+        "auto_install_ocp": True,
+        "resolved": {},
+    }
+    customize_topology(topo, "ocp-multi", config)
+    ac = yaml.safe_load(topo["clusters"][0]["_generatedAgentConfig"])
+    assert [h["hostname"] for h in ac["hosts"]] == ["cp-0"]
+    assert ac["rendezvousIP"] == "10.0.0.20"

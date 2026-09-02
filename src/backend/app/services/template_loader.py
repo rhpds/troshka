@@ -266,6 +266,124 @@ def _stamp_cluster_membership(vm_node, vm_cluster_map, vm_name):
         vm_node["parentId"] = f"cluster-{cluster_id}"
 
 
+_ROLE_TO_GROUP = {"control-plane": "controllers", "worker": "workers"}
+
+
+def _member_current_role(data):
+    """Resolve a member's role from clusterRole or tags.AnsibleGroup (or None).
+
+    Mirrors ``agent_template._node_role``: an explicit ``clusterRole`` wins,
+    else ``tags.AnsibleGroup`` ("controllers" -> control-plane, "workers" ->
+    worker). Returns ``None`` when neither applies.
+    """
+    role = data.get("clusterRole")
+    if role in ("control-plane", "worker"):
+        return role
+    group = data.get("tags", {}).get("AnsibleGroup")
+    if isinstance(group, str):
+        if "controllers" in group:
+            return "control-plane"
+        if "workers" in group:
+            return "worker"
+    return None
+
+
+def _normalize_member_install_fields(data):
+    """Stamp missing OCP install fields with role-neutral defaults (never overwrite)."""
+    data.setdefault("os", "rhcos")
+    data.setdefault("firmware", "uefi")
+    data.setdefault("secureBoot", False)
+    data.setdefault("powerOnAtDeploy", True)
+    data.setdefault("bootMethod", "disk")
+    # Baremetal agent install needs a BMC per node (control-plane AND worker).
+    data.setdefault("bmcEnabled", True)
+
+
+def _normalize_member_role(data):
+    """Ensure clusterRole and tags.AnsibleGroup exist and agree (default worker)."""
+    role = _member_current_role(data) or "worker"
+    data["clusterRole"] = role
+    group = _ROLE_TO_GROUP[role]
+    tags = data.get("tags")
+    if not isinstance(tags, dict):
+        tags = {}
+    if group not in (tags.get("AnsibleGroup") or ""):
+        tags["AnsibleGroup"] = group
+    data["tags"] = tags
+
+
+def _storage_node_for_controller(vm_id, dc_id, topology):
+    """Return the storageNode id wired to a VM's disk controller (or '')."""
+    if not dc_id:
+        return ""
+    storage_ids = {
+        n["id"] for n in topology.get("nodes", []) if n.get("type") == "storageNode"
+    }
+    for e in topology.get("edges", []):
+        if e.get("target") == vm_id and dc_id in e.get("targetHandle", ""):
+            if e.get("source") in storage_ids:
+                return e["source"]
+        if e.get("source") == vm_id and dc_id in e.get("sourceHandle", ""):
+            if e.get("target") in storage_ids:
+                return e["target"]
+    return ""
+
+
+def _member_boot_devices(vm_node, topology):
+    """Boot device ids for a member: the first non-cdrom disk's storageNode.
+
+    Mirrors :func:`_build_vm_data` (bootDevices = [first disk node id]). Returns
+    ``[]`` when the node has no data disk / no resolvable storage node — never
+    invents a disk that does not exist.
+    """
+    data = vm_node.get("data", {})
+    disk_dcs = [
+        dc
+        for dc in (data.get("diskControllers") or [])
+        if not str(dc.get("name", "")).startswith("cdrom")
+    ]
+    if not disk_dcs:
+        return []
+    storage_id = _storage_node_for_controller(
+        vm_node.get("id", ""), disk_dcs[0].get("id", ""), topology
+    )
+    return [storage_id] if storage_id else []
+
+
+def _normalize_member_disks(vm_node, topology):
+    """Ensure diskControllers (incl. a cdrom) and bootDevices exist (never overwrite)."""
+    data = vm_node["data"]
+    if not data.get("diskControllers"):
+        data["diskControllers"] = [_cdrom_controller()]
+    if "bootDevices" not in data:
+        data["bootDevices"] = _member_boot_devices(vm_node, topology)
+
+
+def normalize_cluster_member_fields(topology: dict) -> dict:
+    """Stamp OCP install fields on every cluster-member VM node (idempotent).
+
+    A cluster member is any ``vmNode`` with ``data.clusterId`` set — whether the
+    node was backend-generated or hand-created on the canvas. For each member,
+    ensures the OCP install fields exist with role-correct defaults ONLY IF
+    MISSING (never overwrites an existing value): ``os``/``firmware``/
+    ``secureBoot``/``powerOnAtDeploy``/``bootMethod``/``bmcEnabled``,
+    ``diskControllers`` (adding a cdrom for agent ISO boot when empty),
+    ``bootDevices`` (first data disk's storage node, else empty), and the role
+    pair ``clusterRole``/``tags.AnsibleGroup`` — synced to each other, defaulting
+    to worker when neither is set. Non-member VMs are left untouched.
+    """
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data")
+        if not isinstance(data, dict) or not data.get("clusterId"):
+            continue
+        _normalize_member_install_fields(data)
+        _normalize_member_role(data)
+        _normalize_member_disks(node, topology)
+    return topology
+
+
 def _build_cluster_boundary_nodes(clusters):
     """Build React Flow group (``clusterNode``) nodes for each cluster."""
     cnodes = []
@@ -772,6 +890,16 @@ def _build_vm_nics(nics_cfg, nets_def):
     return nics
 
 
+def _cdrom_controller():
+    """Build the default cdrom (sata) disk controller for agent ISO boot.
+
+    Shared by :func:`_build_vm_data` and :func:`normalize_cluster_member_fields`
+    so both stamp an identical cdrom controller — keep the shape in one place to
+    avoid drift.
+    """
+    return {"id": f"dp-{_id()}", "name": "cdrom0", "bus": "sata"}
+
+
 def _apply_vm_cloud_init_fields(vm_cfg, vm_data):
     if vm_cfg.get("cloud_init"):
         vm_data["cloudInit"] = True
@@ -969,8 +1097,7 @@ def _build_vm_data(vm_name, vm_cfg, _vms_def, nets_def, net_ids, vm_x, vm_row_y)
 
     isos_cfg = vm_cfg.get("isos", [])
     if os_type != "blank" or isos_cfg:
-        dc_cdrom = {"id": f"dp-{_id()}", "name": "cdrom0", "bus": "sata"}
-        disk_controllers.append(dc_cdrom)
+        disk_controllers.append(_cdrom_controller())
 
     vm_data = {
         "label": vm_name,
