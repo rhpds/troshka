@@ -13,4 +13,13 @@ describe("makeCluster", () => {
     expect(cluster.workerCpu).toBe(4);
     expect(cluster.baseDomain).toBe("ocp.local");
   });
+
+  it("produces unique ids across calls", () => {
+    const a = makeCluster("ocp", { x: 0, y: 0 });
+    const b = makeCluster("ocp", { x: 0, y: 0 });
+    expect(a.node.id).not.toBe(b.node.id);
+    expect(a.cluster.id).not.toBe(b.cluster.id);
+    expect(a.node.id).toBe(a.cluster.nodeId);
+    expect(b.node.id).toBe(b.cluster.nodeId);
+  });
 });

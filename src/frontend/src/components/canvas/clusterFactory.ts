@@ -45,15 +45,18 @@ function slugify(name: string): string {
  * Build a cluster boundary node plus its matching ClusterConfig.
  *
  * The returned `node.id` and `cluster.nodeId` share the value
- * `cluster-<slug>`. The `cluster.id` is the bare slug. Uniqueness across
- * multiple drops is handled by the caller / store.
+ * `cluster-<slug>-<short>`; `cluster.id` is `<slug>-<short>`. A short random
+ * suffix guarantees uniqueness across multiple drops (multi-cluster is the
+ * core use case — two "ocp" drops must not collide).
  */
 export function makeCluster(
   name: string,
   position: { x: number; y: number },
 ): { node: Node; cluster: ClusterConfig } {
   const slug = slugify(name);
-  const nodeId = `cluster-${slug}`;
+  const short = Math.random().toString(36).slice(2, 8);
+  const clusterId = `${slug}-${short}`;
+  const nodeId = `cluster-${clusterId}`;
 
   const node: Node = {
     id: nodeId,
@@ -73,7 +76,7 @@ export function makeCluster(
   };
 
   const cluster: ClusterConfig = {
-    id: slug,
+    id: clusterId,
     name,
     nodeId,
     type: CLUSTER_DEFAULTS.type,
