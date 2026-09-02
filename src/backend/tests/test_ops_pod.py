@@ -465,3 +465,52 @@ def test_progress_items_pure_helper():
     assert "c2: complete" in items
     # Deterministic ordering (sorted by cluster id).
     assert items == ["c1: waiting", "c2: complete"]
+
+
+# --- Task 5 (Plan 4b): dead-job → failed injection (pure) ------------------
+
+from app.services.ocp.ops_pod_install import (  # noqa: E402
+    inject_dead_pod_failures,
+)
+
+
+def test_inject_dead_pod_marks_non_terminal_cluster_failed():
+    # Ops pod not running + a non-terminal cluster → that cluster becomes failed
+    # so the state machine reports failed instead of spinning to the 2h timeout.
+    out = inject_dead_pod_failures(
+        {"c1": "Waiting for cluster installation to complete"}, pod_running=False
+    )
+    assert ops_pod_install_progress(out)["clusters"]["c1"] == "failed"
+    assert ops_pod_install_progress(out)["overall"] == "failed"
+
+
+def test_inject_dead_pod_creating_image_marked_failed():
+    # Empty log (→ creating-image, non-terminal) + dead pod → failed.
+    out = inject_dead_pod_failures({"c1": ""}, pod_running=False)
+    assert ops_pod_install_progress(out)["clusters"]["c1"] == "failed"
+
+
+def test_inject_running_pod_leaves_non_terminal_in_progress():
+    # Pod still running → non-terminal cluster is left untouched (in-progress).
+    logs = {"c1": "Waiting for cluster installation to complete"}
+    out = inject_dead_pod_failures(logs, pod_running=True)
+    assert out == logs
+    p = ops_pod_install_progress(out)
+    assert p["overall"] == "waiting"
+    assert p["done"] is False
+
+
+def test_inject_dead_pod_preserves_terminal_clusters():
+    # A cluster that already completed is not clobbered to failed even if the pod
+    # has since stopped (install already finished for that cluster).
+    out = inject_dead_pod_failures(
+        {"c1": "install complete", "c2": "booting nodes"}, pod_running=False
+    )
+    p = ops_pod_install_progress(out)
+    assert p["clusters"]["c1"] == "complete"
+    assert p["clusters"]["c2"] == "failed"
+
+
+def test_inject_dead_pod_preserves_already_failed():
+    out = inject_dead_pod_failures({"c1": "failed"}, pod_running=False)
+    assert ops_pod_install_progress(out)["clusters"]["c1"] == "failed"

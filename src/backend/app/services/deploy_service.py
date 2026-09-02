@@ -1971,6 +1971,31 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map):
     job_id = start_job(host, "/pods/create", params)
     _wait_troshkad_job(host, job_id, 300, "Ops pod create")
     _start_pod(host, f"troshka-{project_id[:8]}-ops", timeout=300)
+    _start_ops_pod_install_monitor(host, project_id, clusters)
+
+
+def _start_ops_pod_install_monitor(host, project_id: str, clusters: list) -> None:
+    """Spawn the ops-pod install-progress monitor as a daemon thread.
+
+    Mirrors :func:`_start_vm_monitor`. The in-cluster ops pod runs the
+    agent-based install for every cluster in parallel (restart_policy=always);
+    this background monitor tails each cluster's ``install.log``, streams
+    per-cluster + aggregate progress to the deploy UI, and — via
+    :func:`_ops_pod_running` + ``inject_dead_pod_failures`` — reports ``failed``
+    if the pod dies. The poll loop itself is **[LIVE-ENV]**.
+    """
+    from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
+
+    threading.Thread(
+        target=_monitor_ops_pod_install,
+        args=(project_id, host, clusters),
+        kwargs={
+            "container_name": _ops_pod_container_name(project_id),
+            "workdir": OPS_POD_WORKDIR,
+        },
+        daemon=True,
+        name=f"ops-pod-install-{project_id[:8]}",
+    ).start()
 
 
 # ── Ops-pod install progress monitor (Plan 4, Task 7) ──────────────────────
@@ -2027,6 +2052,26 @@ def _exec_ops_pod_cat(host, container_name: str, path: str) -> str | None:
     except TroshkadError:
         pass
     return None
+
+
+def _ops_pod_running(host, container_name: str) -> bool:
+    """[LIVE-ENV] Whether the ops-pod container reports a running state.
+
+    Uses troshkad's batch ``/containers/states``. Conservative on uncertainty:
+    if the batch call errors (returns None — e.g. a transient host blip) we
+    assume the pod is still running, so a network hiccup never forces a false
+    ``failed``. Only a container that is present-but-not-``running`` or genuinely
+    absent from a successful listing counts as dead (→ dead-job injection).
+    """
+    from app.services.troshkad_client import get_all_container_states
+
+    states = get_all_container_states(host)
+    if states is None:
+        return True
+    info = states.get(container_name)
+    if info is None:
+        return False
+    return str(info.get("state", "")).lower() == "running"
 
 
 def _read_ops_pod_cluster_logs(
@@ -2092,6 +2137,7 @@ def _monitor_ops_pod_install(
         _cluster_key as _ops_cluster_key,
     )
     from app.services.ocp.ops_pod_install import (
+        inject_dead_pod_failures,
         ops_pod_install_progress,
     )
     from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
@@ -2107,6 +2153,12 @@ def _monitor_ops_pod_install(
             return "cancelled"
         per_cluster = _read_ops_pod_cluster_logs(
             host, container_name, cluster_keys, workdir
+        )
+        # Dead-job detection: if the ops pod/container has crashed, a
+        # non-terminal cluster can never finish — force it to failed so the
+        # deploy reports failed now instead of spinning to the timeout.
+        per_cluster = inject_dead_pod_failures(
+            per_cluster, _ops_pod_running(host, container_name)
         )
         progress = ops_pod_install_progress(per_cluster)
         _publish_ops_pod_progress(project_id, progress)

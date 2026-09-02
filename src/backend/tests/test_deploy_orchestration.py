@@ -4118,11 +4118,12 @@ class TestOpsPodCreateParams:
 class TestDeployOpsPod:
     """End-to-end (mocked troshkad) ops-pod create+start sequence."""
 
+    @patch(f"{SVC}._start_ops_pod_install_monitor")
     @patch("app.services.ocp.ops_pod_auth.mint_ops_pod_key", return_value="trk_test")
     @patch(f"{SVC}.wait_for_job", return_value={"status": "completed"})
     @patch(f"{SVC}.start_job")
     def test_deploy_ops_pod_mints_key_then_creates_and_starts(
-        self, mock_start, _mock_wait, mock_mint
+        self, mock_start, _mock_wait, mock_mint, mock_monitor
     ):
         from app.services.deploy_service import _deploy_ops_pod
         from app.services.ocp.ops_pod_scaffold import OPS_POD_IMAGE
@@ -4139,6 +4140,12 @@ class TestDeployOpsPod:
         # Scoped key minted exactly once for this project.
         mock_mint.assert_called_once_with(s, project)
         assert mock_start.call_count == 2
+        # Install-progress monitor spawned after create+start, for both clusters.
+        mock_monitor.assert_called_once()
+        m_args = mock_monitor.call_args[0]
+        assert m_args[0] is host
+        assert m_args[1] == PROJECT_ID
+        assert [c["id"] for c in m_args[2]] == ["cl-0", "cl-1"]
 
         # First call: /pods/create with the ops-pod params.
         create_call = mock_start.call_args_list[0]
@@ -4155,3 +4162,28 @@ class TestDeployOpsPod:
         start_call = mock_start.call_args_list[1]
         assert start_call[0][1] == "/pods/start"
         assert start_call[0][2]["pod_name"] == f"troshka-{PROJECT_ID[:8]}-ops"
+
+    @patch(f"{SVC}.threading.Thread")
+    def test_start_ops_pod_install_monitor_spawns_daemon_thread(self, mock_thread):
+        """The monitor is spawned as a daemon thread targeting
+        ``_monitor_ops_pod_install`` with the project's clusters."""
+        from app.services import deploy_service
+        from app.services.deploy_service import _start_ops_pod_install_monitor
+        from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
+
+        host = _make_host()
+        clusters = [{"id": "cl-0"}, {"id": "cl-1"}]
+
+        _start_ops_pod_install_monitor(host, PROJECT_ID, clusters)
+
+        mock_thread.assert_called_once()
+        kwargs = mock_thread.call_args.kwargs
+        assert kwargs["target"] is deploy_service._monitor_ops_pod_install
+        assert kwargs["args"] == (PROJECT_ID, host, clusters)
+        assert kwargs["daemon"] is True
+        assert kwargs["kwargs"]["workdir"] == OPS_POD_WORKDIR
+        assert kwargs["kwargs"]["container_name"] == (
+            f"troshka-{PROJECT_ID[:8]}-ops-ops"
+        )
+        # Thread actually started.
+        mock_thread.return_value.start.assert_called_once()

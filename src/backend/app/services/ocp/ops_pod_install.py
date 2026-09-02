@@ -149,6 +149,30 @@ def ops_pod_install_progress(
     return {"clusters": clusters, "overall": overall, "done": done, "failed": failed}
 
 
+def inject_dead_pod_failures(
+    per_cluster_log_or_status: dict[str, str], pod_running: bool
+) -> dict[str, str]:
+    """Pure: force non-terminal clusters to ``failed`` when the ops pod is dead.
+
+    If the ops pod/container is no longer running (``pod_running`` False), any
+    cluster whose log/status is NOT already terminal (``complete``/``failed``)
+    can never finish, so it is replaced with the exact ``"failed"`` phase. This
+    feeds the state machine a terminal signal — a crashed install reports
+    ``failed`` immediately instead of spinning to the install timeout. When the
+    pod is still running the mapping is returned unchanged; terminal clusters are
+    always preserved (a cluster that already completed is never clobbered).
+    """
+    if pod_running:
+        return per_cluster_log_or_status
+    result: dict[str, str] = {}
+    for cid, value in per_cluster_log_or_status.items():
+        if _phase_from_input(value) in (PHASE_COMPLETE, PHASE_FAILED):
+            result[cid] = value
+        else:
+            result[cid] = PHASE_FAILED
+    return result
+
+
 def ops_pod_progress_items(progress: dict) -> list[str]:
     """Render a progress dict's per-cluster phases as sorted ``"id: phase"`` lines
     (the item list the deploy-progress UI shows)."""
