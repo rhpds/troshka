@@ -4024,11 +4024,12 @@ class TestShouldUseOpsPod:
         assert _should_use_ops_pod(_minimal_topology()) is False
 
     @patch(f"{SVC}._ocp_install_via_pod", return_value=False)
-    def test_multicluster_always_uses_ops_pod(self, _flag):
+    def test_multicluster_flag_off_uses_bastion(self, _flag):
         from app.services.deploy_service import _should_use_ops_pod
 
-        # Two clusters -> ops pod even with the flag off.
-        assert _should_use_ops_pod(_ocp_topology(2)) is True
+        # Two clusters + flag off -> bastion path (no ops pod). The flag alone
+        # gates the ops-pod install; multi-cluster no longer auto-triggers it.
+        assert _should_use_ops_pod(_ocp_topology(2)) is False
 
     @patch(f"{SVC}._ocp_install_via_pod", return_value=False)
     def test_single_cluster_flag_off_uses_bastion(self, _flag):
@@ -4042,6 +4043,12 @@ class TestShouldUseOpsPod:
         from app.services.deploy_service import _should_use_ops_pod
 
         assert _should_use_ops_pod(_ocp_topology(1)) is True
+
+    @patch(f"{SVC}._ocp_install_via_pod", return_value=True)
+    def test_multicluster_flag_on_uses_ops_pod(self, _flag):
+        from app.services.deploy_service import _should_use_ops_pod
+
+        assert _should_use_ops_pod(_ocp_topology(2)) is True
 
 
 class TestOpsPodCreateParams:

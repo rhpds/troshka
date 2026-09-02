@@ -14,9 +14,11 @@
 FROM registry.access.redhat.com/ubi9/python-311:9.5
 
 # OpenShift client + installer version to bake in. "stable" tracks the latest
-# stable release; CI overrides with an exact version (e.g. 4.20.0) for a pinned,
-# reproducible image. The install runner may still re-download a per-project
-# version at runtime, but this default keeps the image self-sufficient.
+# stable release; CI passes `OCP_VERSION=stable` and the `:latest` image tracks
+# stable accordingly. An exact version (e.g. 4.20.0) is an OPTIONAL pin via
+# `--build-arg OCP_VERSION=<x.y.z>` for a reproducible image. The install runner
+# may still re-download a per-project version at runtime, but this default keeps
+# the image self-sufficient.
 ARG OCP_VERSION=stable
 ARG OCP_MIRROR=https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp
 

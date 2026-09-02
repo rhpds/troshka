@@ -1825,14 +1825,16 @@ def _ops_pod_api_url() -> str:
 def _should_use_ops_pod(topology) -> bool:
     """True when the deploy should create the ops pod instead of the bastion.
 
-    Multi-cluster OCP projects always use the ops pod; single-cluster projects
-    only when the ``ocp.install_via_pod`` flag is on (the bastion path stays the
-    default until Plan 4b). Non-OCP projects (no ``clusters``) never do.
+    OCP projects use the ops pod only when the ``ocp.install_via_pod`` flag is
+    on — for single- AND multi-cluster projects alike. With the flag off the
+    bastion path stays the default (the ops-pod install is unmonitored and
+    non-idempotent, so it is not enabled automatically until Plan 4b).
+    Non-OCP projects (no ``clusters``) never do.
     """
     clusters = _ocp_clusters(topology)
     if not clusters:
         return False
-    return len(clusters) > 1 or _ocp_install_via_pod()
+    return _ocp_install_via_pod()
 
 
 def _ops_pod_workdir_lines(clusters, workdir, pull_secret_json) -> list[str]:
