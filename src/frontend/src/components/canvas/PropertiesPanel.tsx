@@ -1665,6 +1665,36 @@ export default function PropertiesPanel() {
               </div>
             )}
           </div>
+          {(node.data as Record<string, any>).clusterId && (
+            <>
+              <div className="props-divider" />
+              <div className="props-section">
+                <div className="props-section-title">Cluster</div>
+                <div className="props-field">
+                  <label className="props-label">Cluster role</label>
+                  <select
+                    aria-label="Cluster role"
+                    className="props-select"
+                    disabled={projectState === "deploying"}
+                    value={(data.clusterRole as string) || "control-plane"}
+                    onChange={(e) => {
+                      const role = e.target.value;
+                      updateNodeData(node.id, {
+                        clusterRole: role,
+                        tags: {
+                          ...((data as Record<string, any>).tags || {}),
+                          AnsibleGroup: role === "control-plane" ? "controllers" : "workers",
+                        },
+                      });
+                    }}
+                  >
+                    <option value="control-plane">Control plane</option>
+                    <option value="worker">Worker</option>
+                  </select>
+                </div>
+              </div>
+            </>
+          )}
           {(node.data as Record<string, any>).os === "rhcos" && (
             <>
               <div className="props-divider" />
