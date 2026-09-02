@@ -55,15 +55,22 @@ def normalize_cluster_disks(cluster: dict) -> dict:
 
     Legacy ``controlPlaneDisk``/``workerDisk`` (GB int) become a one-element
     bootable list. Explicit ``controlPlaneDisks``/``workerDisks`` pass through.
+    Accepts both camelCase (controlPlaneDisks) and snake_case (control_plane_disks)
+    from exported templates.
     """
     out = dict(cluster)
-    for role_list, legacy, default_gb in (
-        ("controlPlaneDisks", "controlPlaneDisk", 120),
-        ("workerDisks", "workerDisk", 100),
+    for camel, snake, legacy, default_gb in (
+        ("controlPlaneDisks", "control_plane_disks", "controlPlaneDisk", 120),
+        ("workerDisks", "worker_disks", "workerDisk", 100),
     ):
-        if not out.get(role_list):
-            gb = out.get(legacy) or default_gb
-            out[role_list] = [{"sizeGb": gb, "bootable": True}]
+        # Try camelCase first, then snake_case
+        if not out.get(camel):
+            disks = out.get(snake)
+            if disks:
+                out[camel] = disks
+            else:
+                gb = out.get(legacy) or default_gb
+                out[camel] = [{"sizeGb": gb, "bootable": True}]
     out.setdefault("networkIds", out.get("networkIds") or [])
     return out
 
@@ -186,7 +193,8 @@ def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[
     """Build camelCase cluster objects for ``topology['clusters']``.
 
     Preserves controlPlaneDisks, workerDisks, and networkIds from the input
-    (Task 6: cluster member fidelity).
+    (Task 6: cluster member fidelity). Normalizes disk lists and keeps
+    network names/IDs for later resolution.
     """
     single = len(ocp_list) == 1
     out = []
@@ -196,6 +204,10 @@ def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[
         ctype = entry.get("type") or _infer_type(cp_count, wk_count)
         control_plane = 1 if ctype == "sno" else 3
         workers = _coerce_workers(entry.get("workers"), wk_count)
+
+        # Normalize cluster to handle legacy single-disk format
+        normalized = normalize_cluster_disks(entry)
+
         cluster_obj = {
             "id": _slug(name),
             "name": name,
@@ -219,12 +231,15 @@ def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[
             "pullThroughRegistry": entry.get("pull_through_registry"),
         }
         # Preserve per-role disk lists and network IDs for member materialization.
-        if entry.get("controlPlaneDisks"):
-            cluster_obj["controlPlaneDisks"] = entry["controlPlaneDisks"]
-        if entry.get("workerDisks"):
-            cluster_obj["workerDisks"] = entry["workerDisks"]
-        if entry.get("networkIds"):
-            cluster_obj["networkIds"] = entry["networkIds"]
+        if normalized.get("controlPlaneDisks"):
+            cluster_obj["controlPlaneDisks"] = normalized["controlPlaneDisks"]
+        if normalized.get("workerDisks"):
+            cluster_obj["workerDisks"] = normalized["workerDisks"]
+        if normalized.get("networkIds"):
+            cluster_obj["networkIds"] = normalized["networkIds"]
+        # Keep network names for later resolution (exported format)
+        if entry.get("networks"):
+            cluster_obj["_networkNames"] = entry["networks"]
         out.append(cluster_obj)
     return out
 
@@ -290,6 +305,10 @@ def materialize_cluster_vms(clusters: list[dict], vms_def: dict) -> dict:
     for cluster in clusters:
         # Normalize cluster to have controlPlaneDisks/workerDisks lists and networkIds.
         normalized = normalize_cluster_disks(cluster)
+
+        # Use network names if available (from exported format), otherwise use resolved IDs
+        network_ids = cluster.get("_networkNames", normalized.get("networkIds", []))
+
         _topup(
             vms,
             cluster,
@@ -298,7 +317,7 @@ def materialize_cluster_vms(clusters: list[dict], vms_def: dict) -> dict:
             cluster["controlPlaneCpu"],
             cluster["controlPlaneMemory"],
             normalized["controlPlaneDisks"],
-            normalized.get("networkIds", []),
+            network_ids,
             single,
         )
         _topup(
@@ -309,7 +328,7 @@ def materialize_cluster_vms(clusters: list[dict], vms_def: dict) -> dict:
             cluster["workerCpu"],
             cluster["workerMemory"],
             normalized["workerDisks"],
-            normalized.get("networkIds", []),
+            network_ids,
             single,
         )
     return vms
@@ -1588,6 +1607,27 @@ def _validate_uuid_uniqueness(nodes):
             seen_uuids[u] = d.get("name", "")
 
 
+def _resolve_cluster_network_names(
+    clusters: list[dict], net_ids: dict[str, str]
+) -> None:
+    """Resolve exported network names in clusters to actual network node IDs.
+
+    After network nodes are created, their actual IDs are available. For clusters
+    that have network names (from exported templates), resolve them to the
+    corresponding node IDs.
+    """
+    for cluster in clusters:
+        if "_networkNames" in cluster:
+            network_ids = []
+            for net_name in cluster["_networkNames"]:
+                # Try to resolve by name; if not found, assume it's already an ID
+                nid = net_ids.get(net_name, net_name)
+                network_ids.append(nid)
+            if network_ids:
+                cluster["networkIds"] = network_ids
+            del cluster["_networkNames"]
+
+
 def _default_dns_network_name(
     nets_def: dict, gateway_network: str | None = None
 ) -> str:
@@ -1632,6 +1672,9 @@ def _generate_topology_from_vms(
         nets_def, bmc_password, NET_ROW_Y, VM_SPACING
     )
     nodes.extend(net_nodes)
+
+    # Resolve exported network names in clusters to actual network node IDs
+    _resolve_cluster_network_names(clusters, net_ids)
 
     gw_node, external_ips, gw_edges, gw_net_name = _create_gateway_node(
         gw_def, vms_def, tmpl, external_access, GW_Y, nets_def
@@ -2386,14 +2429,32 @@ _OCP_EXPORT_FIELDS = [
 ]
 
 
-def _export_ocp_clusters(topology: dict) -> list[dict]:
+def _resolve_network_ids_to_names(
+    network_ids: list[str], net_id_to_name: dict[str, str]
+) -> list[str]:
+    """Resolve network node IDs to their names for export."""
+    names = []
+    for nid in network_ids:
+        name = net_id_to_name.get(nid, nid)
+        names.append(name)
+    return names
+
+
+def _export_ocp_clusters(
+    topology: dict, net_id_to_name: dict[str, str] | None = None
+) -> list[dict]:
     """Emit the template ``ocp:`` list from ``topology['clusters']``.
 
-    Maps each camelCase cluster object to snake_case template keys. Returns an
-    empty list for non-OCP topologies (no ``clusters``) so exports stay unchanged.
-    Any field whose value is ``None`` is omitted so round-trip treats
-    absent == ``None`` (rather than exporting a literal ``null``).
+    Maps each camelCase cluster object to snake_case template keys. Includes
+    per-role disk lists (controlPlaneDisks/workerDisks) and network names
+    (resolved from networkIds). Returns an empty list for non-OCP topologies
+    (no ``clusters``) so exports stay unchanged. Any field whose value is ``None``
+    is omitted so round-trip treats absent == ``None`` (rather than exporting
+    a literal ``null``).
     """
+    if net_id_to_name is None:
+        net_id_to_name = {}
+
     out = []
     for cluster in topology.get("clusters", []) or []:
         entry: dict[str, object] = {}
@@ -2404,6 +2465,21 @@ def _export_ocp_clusters(topology: dict) -> list[dict]:
             if val is None:
                 continue
             entry[dst] = val
+
+        # Export per-role disk lists as-is (list of {sizeGb, bus?, bootable?})
+        if cluster.get("controlPlaneDisks"):
+            entry["control_plane_disks"] = cluster["controlPlaneDisks"]
+        if cluster.get("workerDisks"):
+            entry["worker_disks"] = cluster["workerDisks"]
+
+        # Export networkIds as network names (for portability)
+        if cluster.get("networkIds"):
+            network_names = _resolve_network_ids_to_names(
+                cluster["networkIds"], net_id_to_name
+            )
+            if network_names:
+                entry["networks"] = network_names
+
         out.append(entry)
     return out
 
@@ -2465,7 +2541,9 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
         )
 
     result: dict = {"networks": networks}
-    ocp_clusters = _export_ocp_clusters(topology)
+    # Build reverse mapping from network node IDs to names for cluster export
+    net_id_to_name = {nid: name for nid, name in net_names.items()}
+    ocp_clusters = _export_ocp_clusters(topology, net_id_to_name)
     if ocp_clusters:
         result["ocp"] = ocp_clusters
     if gateway:

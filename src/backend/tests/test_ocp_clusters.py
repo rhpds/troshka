@@ -1246,3 +1246,92 @@ def test_backend_member_parity_with_frontend():
     assert data.get("clusterRole") in ("control-plane", "worker")
     assert "AnsibleGroup" in data.get("tags", {})
     assert data.get("generated") is True
+
+
+# ---------------------------------------------------------------------------
+# Task 10: Export round-trip with networkIds + per-role disks
+# ---------------------------------------------------------------------------
+
+
+def test_export_roundtrip_cluster_with_per_role_disks_and_networks():
+    """Export a cluster with controlPlaneDisks (2 disks), workerDisks (1 disk),
+    and networkIds (1 network). Re-import and verify disks + networks survive.
+    """
+    from app.services.template_loader import (
+        export_topology_to_template,
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    # Create a template with per-role disks and networks
+    tmpl = {
+        "name": "t",
+        "install_method": "agent",
+        "category": "openshift",
+        "networks": {
+            "cluster": {"cidr": "10.0.0.0/24"},
+            "data": {"cidr": "10.1.0.0/24"},
+        },
+        "ocp": [
+            {
+                "name": "prod",
+                "type": "compact",  # 3 CP, 0 workers
+                "controlPlaneDisks": [
+                    {"sizeGb": 120, "bootable": True},
+                    {"sizeGb": 100, "bootable": False},
+                ],
+                "networks": ["cluster", "data"],
+            }
+        ],
+    }
+
+    # Generate topology from template
+    resolved = resolve_inline_template(tmpl)
+    topo = generate_topology_from_template(resolved)
+
+    # Check that cluster has the disks and networks
+    prod = topo["clusters"][0]
+    assert prod["controlPlaneDisks"] == [
+        {"sizeGb": 120, "bootable": True},
+        {"sizeGb": 100, "bootable": False},
+    ]
+    assert len(prod.get("networkIds", [])) == 2
+
+    # Export the topology
+    exported = export_topology_to_template(topo)
+    assert isinstance(exported["ocp"], list)
+    ocp_entry = exported["ocp"][0]
+
+    # Verify the export contains control_plane_disks and networks
+    assert "control_plane_disks" in ocp_entry
+    assert ocp_entry["control_plane_disks"] == [
+        {"sizeGb": 120, "bootable": True},
+        {"sizeGb": 100, "bootable": False},
+    ]
+    assert "networks" in ocp_entry
+    assert set(ocp_entry["networks"]) == {"cluster", "data"}
+
+    # Re-import and regenerate
+    topo2 = generate_topology_from_template(resolve_inline_template(exported))
+
+    # Verify the round-trip preserved disks and networks
+    prod2 = topo2["clusters"][0]
+    assert prod2.get("controlPlaneDisks") == [
+        {"sizeGb": 120, "bootable": True},
+        {"sizeGb": 100, "bootable": False},
+    ]
+    # Network IDs will be different (new UUIDs), but count should match
+    assert len(prod2.get("networkIds", [])) == 2
+
+    # Verify members have the right NICs (one per network)
+    members = [
+        n
+        for n in topo2["nodes"]
+        if n.get("data", {}).get("clusterId") == "prod" and n.get("type") == "vmNode"
+    ]
+    assert len(members) == 3  # 3 CP
+    for member in members:
+        nics = member["data"].get("nics", [])
+        assert (
+            len(nics) == 2
+        ), f"Each member should have 2 NICs (one per network), got {len(nics)}"
