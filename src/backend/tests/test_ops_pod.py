@@ -8,6 +8,7 @@ the in-cluster ops pod.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from app.services.deploy_topology import showroom_infra_network
 from app.services.ocp.ops_pod_scaffold import (
@@ -632,3 +633,203 @@ def test_kv_ops_pod_secret_mounted_at_absolute_workdir_paths():
 def secret_stringdata_keys(pod):
     # helper: recompute the secret keys from the pod's volumeMount subPaths.
     return {m["subPath"] for m in pod["spec"]["containers"][0]["volumeMounts"]}
+
+
+# ── Task 8c: provider-aware ops-pod monitor (log-read / running / cancel) ─────
+#
+# On a kubevirt host the ops pod is a plain k8s Pod (`troshka-<pid8>-ops`,
+# container `ops`) in the project namespace — NOT a troshkad podman container. So
+# the monitor's log-read, running-check, and cancel must branch to the k8s path
+# (connect_get_namespaced_pod_exec / read_namespaced_pod / delete_namespaced_pod)
+# instead of troshkad `/containers/exec` + `/pods/destroy`. Without this a
+# SUCCESSFUL kubevirt install would sit until the 2h timeout and report FAILED.
+
+_OPS_PID = "abcdef12-1111-2222-3333-444444444444"
+
+
+def _kv_host():
+    return SimpleNamespace(
+        id="host-1", provider_id="prov-1", host_type="kubevirt-cluster"
+    )
+
+
+def _troshkad_host():
+    return SimpleNamespace(id="host-2", provider_id="prov-2", host_type="ec2")
+
+
+def _kv_clients_patches(core_v1):
+    """Patch the DB + kubevirt client resolution used by the monitor helpers."""
+    session = MagicMock()
+    session.query.return_value.filter_by.return_value.first.return_value = MagicMock()
+    return (
+        patch("app.core.database.SessionLocal", return_value=session),
+        patch(
+            "app.services.providers.kubevirt._get_k8s_clients",
+            return_value=(None, core_v1, None),
+        ),
+        patch(
+            "app.services.providers.kubevirt._project_ns",
+            return_value="troshka-ns",
+        ),
+    )
+
+
+def test_read_ops_pod_logs_kubevirt_execs_cat_install_log():
+    """kubevirt log-read execs `cat <workdir>/<clusterId>/install.log` into the
+    ops Pod via connect_get_namespaced_pod_exec (not troshkad containers/exec)."""
+    from app.services import deploy_service as ds
+
+    core_v1 = MagicMock()
+    p_db, p_clients, p_ns = _kv_clients_patches(core_v1)
+    with p_db, p_clients, p_ns, patch(
+        "kubernetes.stream.stream", return_value="=== install complete ===\n"
+    ) as mock_stream:
+        logs = ds._read_ops_pod_cluster_logs(
+            _kv_host(), "ignored-ctr", ["cl-1"], "/opt/troshka", _OPS_PID
+        )
+
+    assert logs["cl-1"] == "=== install complete ===\n"
+    args, kwargs = mock_stream.call_args
+    assert args[0] is core_v1.connect_get_namespaced_pod_exec
+    assert args[1] == f"troshka-{_OPS_PID[:8]}-ops"  # ops Pod name
+    assert args[2] == "troshka-ns"  # project namespace
+    assert kwargs["container"] == "ops"
+    assert kwargs["command"] == ["cat", "/opt/troshka/cl-1/install.log"]
+
+
+def test_read_ops_pod_logs_troshkad_path_unchanged():
+    """A troshkad host still reads via troshkad `/containers/exec` (cat)."""
+    from app.services import deploy_service as ds
+
+    host = _troshkad_host()
+    with patch.object(ds, "_exec_ops_pod_cat", return_value="log-text") as mock_cat:
+        logs = ds._read_ops_pod_cluster_logs(
+            host, "troshka-ctr", ["cl-1"], "/wd", _OPS_PID
+        )
+
+    assert logs == {"cl-1": "log-text"}
+    mock_cat.assert_called_once_with(host, "troshka-ctr", "/wd/cl-1/install.log")
+
+
+def test_ops_pod_running_kubevirt_running_phase_true():
+    from app.services import deploy_service as ds
+
+    core_v1 = MagicMock()
+    core_v1.read_namespaced_pod.return_value = SimpleNamespace(
+        status=SimpleNamespace(phase="Running")
+    )
+    p_db, p_clients, p_ns = _kv_clients_patches(core_v1)
+    with p_db, p_clients, p_ns:
+        assert ds._ops_pod_running(_kv_host(), "ignored", _OPS_PID) is True
+
+    core_v1.read_namespaced_pod.assert_called_once()
+    call = core_v1.read_namespaced_pod.call_args
+    assert call.kwargs.get("name") == f"troshka-{_OPS_PID[:8]}-ops"
+    assert call.kwargs.get("namespace") == "troshka-ns"
+
+
+def test_ops_pod_running_kubevirt_failed_phase_false():
+    from app.services import deploy_service as ds
+
+    core_v1 = MagicMock()
+    core_v1.read_namespaced_pod.return_value = SimpleNamespace(
+        status=SimpleNamespace(phase="Failed")
+    )
+    p_db, p_clients, p_ns = _kv_clients_patches(core_v1)
+    with p_db, p_clients, p_ns:
+        assert ds._ops_pod_running(_kv_host(), "ignored", _OPS_PID) is False
+
+
+def test_ops_pod_running_kubevirt_absent_false():
+    """A 404 (pod gone) counts as not-running → dead-pod injection eligible."""
+    from kubernetes.client.exceptions import ApiException
+
+    from app.services import deploy_service as ds
+
+    core_v1 = MagicMock()
+    core_v1.read_namespaced_pod.side_effect = ApiException(status=404)
+    p_db, p_clients, p_ns = _kv_clients_patches(core_v1)
+    with p_db, p_clients, p_ns:
+        assert ds._ops_pod_running(_kv_host(), "ignored", _OPS_PID) is False
+
+
+def test_ops_pod_running_kubevirt_api_error_conservative_true():
+    """A transient (non-404) API error assumes running (conservative), so a
+    network blip never forces a false FAILED — mirrors the troshkad path."""
+    from kubernetes.client.exceptions import ApiException
+
+    from app.services import deploy_service as ds
+
+    core_v1 = MagicMock()
+    core_v1.read_namespaced_pod.side_effect = ApiException(status=500)
+    p_db, p_clients, p_ns = _kv_clients_patches(core_v1)
+    with p_db, p_clients, p_ns:
+        assert ds._ops_pod_running(_kv_host(), "ignored", _OPS_PID) is True
+
+
+def test_ops_pod_running_troshkad_path_unchanged():
+    """A troshkad host still checks via troshkad `/containers/states`."""
+    from app.services import deploy_service as ds
+
+    with patch(
+        "app.services.troshkad_client.get_all_container_states",
+        return_value={"troshka-ctr": {"state": "running"}},
+    ) as mock_states:
+        assert ds._ops_pod_running(_troshkad_host(), "troshka-ctr", _OPS_PID) is True
+    mock_states.assert_called_once()
+
+
+def test_cancel_ops_pod_install_kubevirt_deletes_pod():
+    """kubevirt cancel deletes the ops Pod (grace 0), not troshkad /pods/destroy."""
+    from app.services import deploy_service as ds
+
+    core_v1 = MagicMock()
+    p_db, p_clients, p_ns = _kv_clients_patches(core_v1)
+    with p_db, p_clients, p_ns, patch.object(
+        ds, "_publish_ops_pod_progress"
+    ) as mock_pub, patch.object(ds, "start_job") as mock_start:
+        ds._cancel_ops_pod_install(_kv_host(), _OPS_PID, ["cl-1", "cl-2"])
+
+    # No troshkad job issued on the kubevirt path.
+    mock_start.assert_not_called()
+    core_v1.delete_namespaced_pod.assert_called_once()
+    call = core_v1.delete_namespaced_pod.call_args
+    assert call.kwargs.get("name") == f"troshka-{_OPS_PID[:8]}-ops"
+    assert call.kwargs.get("namespace") == "troshka-ns"
+    assert call.kwargs.get("grace_period_seconds") == 0
+    # Terminal cancelled status is still published.
+    mock_pub.assert_called_once()
+    assert mock_pub.call_args[0][1]["overall"] == "cancelled"
+
+
+def test_cancel_ops_pod_install_kubevirt_best_effort_on_error():
+    """A k8s delete failure must not raise; cancelled status still published."""
+    from app.services import deploy_service as ds
+
+    core_v1 = MagicMock()
+    core_v1.delete_namespaced_pod.side_effect = Exception("boom")
+    p_db, p_clients, p_ns = _kv_clients_patches(core_v1)
+    with p_db, p_clients, p_ns, patch.object(
+        ds, "_publish_ops_pod_progress"
+    ) as mock_pub:
+        ds._cancel_ops_pod_install(_kv_host(), _OPS_PID, ["cl-1"])
+
+    mock_pub.assert_called_once()
+    assert mock_pub.call_args[0][1]["overall"] == "cancelled"
+
+
+def test_cancel_ops_pod_install_troshkad_path_unchanged():
+    """A troshkad host still issues `/pods/destroy` for the ops pod."""
+    from app.services import deploy_service as ds
+
+    with patch.object(
+        ds, "start_job", return_value="job-destroy"
+    ) as mock_start, patch.object(ds, "wait_for_job") as mock_wait, patch.object(
+        ds, "_publish_ops_pod_progress"
+    ):
+        ds._cancel_ops_pod_install(_troshkad_host(), _OPS_PID, ["cl-1"])
+
+    mock_start.assert_called_once()
+    assert mock_start.call_args[0][1] == "/pods/destroy"
+    assert mock_start.call_args[0][2]["pod_name"] == f"troshka-{_OPS_PID[:8]}-ops"
+    mock_wait.assert_called_once()

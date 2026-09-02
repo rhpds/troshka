@@ -2151,15 +2151,116 @@ def _exec_ops_pod_cat(host, container_name: str, path: str) -> str | None:
     return None
 
 
-def _ops_pod_running(host, container_name: str) -> bool:
-    """[LIVE-ENV] Whether the ops-pod container reports a running state.
+# ── KubeVirt ops-pod resolution (Plan 4b, Task 8c) ─────────────────────────
+#
+# On a kubevirt host the ops pod is a plain k8s Pod (built by Task 8b's
+# ``build_ops_pod_kubevirt_manifests``): name ``troshka-<pid8>-ops``, main
+# container ``ops``, in the project namespace (``_project_ns``). So the monitor's
+# log-read / running-check / cancel must talk to the k8s API (mirroring
+# ``_exec_on_bastion_kubevirt`` / ``_pod_exec_raw``) instead of troshkad
+# ``/containers/exec`` + ``/pods/destroy``.
 
-    Uses troshkad's batch ``/containers/states``. Conservative on uncertainty:
-    if the batch call errors (returns None — e.g. a transient host blip) we
-    assume the pod is still running, so a network hiccup never forces a false
-    ``failed``. Only a container that is present-but-not-``running`` or genuinely
-    absent from a successful listing counts as dead (→ dead-job injection).
+
+def _kubevirt_ops_pod_ctx(host, project_id: str):
+    """Resolve ``(core_v1, namespace, pod_name)`` for a kubevirt ops pod.
+
+    Returns None if the provider is missing (caller then behaves conservatively:
+    log-read yields empty logs, running-check assumes running, cancel is a no-op).
     """
+    from app.core.database import SessionLocal
+    from app.models.provider import Provider
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+    db = SessionLocal()
+    try:
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        if not provider:
+            return None
+        _, core_v1, _ = _get_k8s_clients(provider)
+        namespace = _project_ns(provider, project_id)
+    finally:
+        db.close()
+    return core_v1, namespace, f"troshka-{project_id[:8]}-ops"
+
+
+def _exec_ops_pod_cat_kubevirt(core_v1, namespace, pod_name, path) -> str | None:
+    """[LIVE-ENV] ``cat`` a file in the kubevirt ops Pod via
+    ``connect_get_namespaced_pod_exec``; None on any failure/absent file."""
+    from kubernetes.stream import stream as k8s_stream
+
+    try:
+        result = k8s_stream(
+            core_v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            container="ops",
+            command=["cat", path],
+            stderr=True,
+            stdout=True,
+            stdin=False,
+            tty=False,
+            _preload_content=True,
+            _request_timeout=35,
+        )
+        return result if isinstance(result, str) else ""
+    except Exception:  # noqa: BLE001 - missing log / transient exec error -> None
+        return None
+
+
+def _read_ops_pod_cluster_logs_kubevirt(
+    host, project_id: str, cluster_keys: list[str], workdir: str
+) -> dict[str, str]:
+    ctx = _kubevirt_ops_pod_ctx(host, project_id)
+    if not ctx:
+        return {key: "" for key in cluster_keys}
+    core_v1, namespace, pod_name = ctx
+    return {
+        key: (
+            _exec_ops_pod_cat_kubevirt(
+                core_v1, namespace, pod_name, f"{workdir}/{key}/install.log"
+            )
+            or ""
+        )
+        for key in cluster_keys
+    }
+
+
+def _ops_pod_running_kubevirt(host, project_id: str) -> bool:
+    """[LIVE-ENV] Whether the kubevirt ops Pod is in ``Running`` phase.
+
+    Conservative on uncertainty (mirrors the troshkad path): a transient API
+    error assumes running, so a blip never forces a false ``failed``. A 404
+    (pod genuinely gone) or a terminal phase (``Succeeded``/``Failed``) counts as
+    not running (→ dead-job injection).
+    """
+    from kubernetes.client.exceptions import ApiException
+
+    ctx = _kubevirt_ops_pod_ctx(host, project_id)
+    if not ctx:
+        return True
+    core_v1, namespace, pod_name = ctx
+    try:
+        pod = core_v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+    except ApiException as e:
+        return e.status != 404
+    except Exception:  # noqa: BLE001 - transient client error -> assume running
+        return True
+    phase = str(getattr(getattr(pod, "status", None), "phase", "") or "").lower()
+    return phase == "running"
+
+
+def _ops_pod_running(host, container_name: str, project_id: str) -> bool:
+    """[LIVE-ENV] Whether the ops pod reports a running state.
+
+    Provider-aware: kubevirt reads the Pod phase via the k8s API; troshkad uses
+    the batch ``/containers/states``. Conservative on uncertainty: if the status
+    call errors we assume the pod is still running, so a network hiccup never
+    forces a false ``failed``. Only a container/Pod that is present-but-not-
+    running or genuinely absent counts as dead (→ dead-job injection).
+    """
+    if host.host_type == "kubevirt-cluster":
+        return _ops_pod_running_kubevirt(host, project_id)
+
     from app.services.troshkad_client import get_all_container_states
 
     states = get_all_container_states(host)
@@ -2172,13 +2273,19 @@ def _ops_pod_running(host, container_name: str) -> bool:
 
 
 def _read_ops_pod_cluster_logs(
-    host, container_name: str, cluster_keys: list[str], workdir: str
+    host, container_name: str, cluster_keys: list[str], workdir: str, project_id: str
 ) -> dict[str, str]:
     """[LIVE-ENV] Read every cluster's ``install.log`` from the ops pod.
 
-    A missing/unreadable log maps to ``""`` (→ ``creating-image``), so a cluster
-    that hasn't produced output yet still appears as in-progress.
+    Provider-aware: kubevirt execs ``cat`` into the ops Pod via the k8s API;
+    troshkad execs via ``containers/exec``. A missing/unreadable log maps to
+    ``""`` (→ ``creating-image``), so a cluster that hasn't produced output yet
+    still appears as in-progress.
     """
+    if host.host_type == "kubevirt-cluster":
+        return _read_ops_pod_cluster_logs_kubevirt(
+            host, project_id, cluster_keys, workdir
+        )
     return {
         key: (
             _exec_ops_pod_cat(host, container_name, f"{workdir}/{key}/install.log")
@@ -2211,19 +2318,8 @@ def _next_ops_pod_dead_count(count: int, pod_running: bool) -> int:
     return 0 if pod_running else count + 1
 
 
-def _cancel_ops_pod_install(host, project_id: str, cluster_keys) -> None:
-    """Stop a cancelled bastionless OCP install by destroying the ops pod.
-
-    The real per-cluster install runs INSIDE the persistent ``restart_policy=
-    always`` ops pod; the ``/pods/create`` job that launched it completes
-    immediately, so cancelling that job is a no-op. Destroying the pod is what
-    actually halts the in-pod install (and prevents it from restarting). The
-    destroy path (Task 6 of Plan 4) revokes the scoped ops-pod key, so we do not
-    double-handle key revocation here. Best-effort: a troshkad failure is logged,
-    never raised, and the terminal ``cancelled`` status is still published.
-    """
-    from app.services.ocp.ops_pod_install import ops_pod_install_progress
-
+def _cancel_ops_pod_install_troshkad(host, project_id: str) -> None:
+    """[LIVE-ENV] Halt a troshkad ops pod via ``/pods/destroy`` (best-effort)."""
     pod_name = f"troshka-{project_id[:8]}-ops"
     try:
         job_id = start_job(
@@ -2238,6 +2334,45 @@ def _cancel_ops_pod_install(host, project_id: str, cluster_keys) -> None:
             project_id[:8],
             e,
         )
+
+
+def _cancel_ops_pod_install_kubevirt(host, project_id: str) -> None:
+    """[LIVE-ENV] Halt a kubevirt ops pod by deleting the Pod (best-effort)."""
+    ctx = _kubevirt_ops_pod_ctx(host, project_id)
+    if not ctx:
+        return
+    core_v1, namespace, pod_name = ctx
+    try:
+        core_v1.delete_namespaced_pod(
+            name=pod_name, namespace=namespace, grace_period_seconds=0
+        )
+    except Exception as e:  # noqa: BLE001 - best-effort; already-gone/API error
+        logger.warning(
+            "Ops pod %s: failed to delete ops pod on cancel: %s",
+            project_id[:8],
+            e,
+        )
+
+
+def _cancel_ops_pod_install(host, project_id: str, cluster_keys) -> None:
+    """Stop a cancelled bastionless OCP install by destroying the ops pod.
+
+    The real per-cluster install runs INSIDE the persistent ``restart_policy=
+    always`` ops pod; the ``/pods/create`` job that launched it completes
+    immediately, so cancelling that job is a no-op. Destroying the pod is what
+    actually halts the in-pod install (and prevents it from restarting).
+    Provider-aware: kubevirt deletes the k8s Pod; troshkad issues
+    ``/pods/destroy``. The destroy path (Task 6 of Plan 4) revokes the scoped
+    ops-pod key, so we do not double-handle key revocation here. Best-effort: a
+    provider failure is logged, never raised, and the terminal ``cancelled``
+    status is still published.
+    """
+    from app.services.ocp.ops_pod_install import ops_pod_install_progress
+
+    if host.host_type == "kubevirt-cluster":
+        _cancel_ops_pod_install_kubevirt(host, project_id)
+    else:
+        _cancel_ops_pod_install_troshkad(host, project_id)
     progress = ops_pod_install_progress(
         {key: "" for key in cluster_keys}, cancelled=True
     )
@@ -2317,7 +2452,7 @@ def _monitor_ops_pod_install(
             _cancel_ops_pod_install(host, project_id, cluster_keys)
             return "cancelled"
         per_cluster = _read_ops_pod_cluster_logs(
-            host, container_name, cluster_keys, workdir
+            host, container_name, cluster_keys, workdir, project_id
         )
         # Dead-job detection: a crashed pod can never finish a non-terminal
         # cluster. But the pod is restart_policy=always + idempotent, so a brief
@@ -2325,7 +2460,7 @@ def _monitor_ops_pod_install(
         # CONSECUTIVE confirmed-not-running polls (transient status errors reset
         # the counter, see _ops_pod_running / _next_ops_pod_dead_count).
         dead_count = _next_ops_pod_dead_count(
-            dead_count, _ops_pod_running(host, container_name)
+            dead_count, _ops_pod_running(host, container_name, project_id)
         )
         per_cluster = inject_dead_pod_failures(
             per_cluster, pod_running=dead_count < _OPS_POD_DEAD_POLLS
