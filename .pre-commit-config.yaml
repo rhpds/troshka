@@ -27,9 +27,9 @@ repos:
     rev: v4.5.0
     hooks:
       - id: trailing-whitespace
-        exclude: \.md$
+        exclude: \.md$|^src/backend/tests/golden/
       - id: end-of-file-fixer
-        exclude: \.md$
+        exclude: \.md$|^src/backend/tests/golden/
       - id: check-yaml
         args: ["--unsafe"]
         exclude: ^deploy/helm/templates/

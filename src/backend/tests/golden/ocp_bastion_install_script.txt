@@ -1,0 +1,158 @@
+  - |
+    cat > /home/cloud-user/install-ocp.sh << 'SCRIPTEOF'
+    #!/bin/bash
+    set -e
+    cd /home/cloud-user
+    
+    # Skip if cluster is already installed (pattern deploy)
+    if [ -f /home/cloud-user/ocp-install/auth/kubeconfig ]; then
+      echo 'Cluster already installed, skipping.'
+      exit 0
+    fi
+    
+    # Wait for network. Test DNS reachability to 8.8.8.8 (a TCP/UDP:53
+    # resolve) rather than ICMP ping, since gateway egress policy may
+    # block icmp while still allowing DNS/HTTPS the install needs.
+    echo 'Waiting for network...'
+    net_ok() { timeout 2 bash -c '</dev/tcp/8.8.8.8/53' &>/dev/null; }
+    for i in $(seq 1 15); do
+      net_ok && break
+      sleep 2
+    done
+    if ! net_ok; then
+      echo 'ERROR: No network connectivity after 30 seconds'
+      exit 1
+    fi
+    echo 'Network OK'
+    
+    OCP_VERSION=4.20
+    
+    # Download openshift-install and oc if not present
+    if [ ! -f openshift-install ]; then
+      echo "Downloading openshift-install $OCP_VERSION..."
+      curl -L -o /tmp/openshift-install.tar.gz https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION/openshift-install-linux.tar.gz
+      tar xzf /tmp/openshift-install.tar.gz && rm -f /tmp/openshift-install.tar.gz
+      echo "Downloading oc client..."
+      curl -L -o /tmp/openshift-client.tar.gz https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION/openshift-client-linux.tar.gz
+      tar xzf /tmp/openshift-client.tar.gz && rm -f /tmp/openshift-client.tar.gz
+      sudo mv oc kubectl /usr/bin/
+      echo "Downloaded openshift-install and oc"
+    fi
+    
+    echo ''
+    echo '================================================'
+    echo 'OCP Agent-Based Installer Ready'
+    echo '================================================'
+    echo ''
+    echo 'install-config.yaml:  ~/ocp-install/install-config.yaml'
+    echo 'agent-config.yaml:    ~/ocp-install/agent-config.yaml'
+    echo 'Pull secret:          ~/pull-secret.json'
+    echo 'openshift-install:    ~/openshift-install'
+    echo ''
+    echo 'To create agent ISO and install:'
+    echo '  cd ~/ocp-install'
+    echo '  ~/openshift-install agent create image --dir .'
+    echo '  # Serve ISO and boot nodes via BMC'
+    echo '  ~/openshift-install agent wait-for install-complete --dir . --log-level debug'
+    echo ''
+    echo ''
+    # Auto-run agent-based installer
+    INSTALL_START=$(date +%s)
+    echo "Install started at $(date)"
+    BMC_PASS='pw'
+    echo 'Creating agent ISO...'
+    cd /home/cloud-user/ocp-install
+    cp install-config.yaml install-config.yaml.bak
+    cp agent-config.yaml agent-config.yaml.bak
+    [ -d openshift ] && cp -a openshift openshift.bak
+    /home/cloud-user/openshift-install agent create image --dir . --log-level debug 2>&1 | awk '{print strftime("[%H:%M:%S]") " " $0; fflush()}' | tee /home/cloud-user/create-image.log
+    
+    echo 'Agent ISO created. Serving via HTTP and booting nodes...'
+    # Open firewall for ISO serving (script runs as cloud-user)
+    sudo firewall-cmd --add-port=8080/tcp --permanent 2>/dev/null && sudo firewall-cmd --reload 2>/dev/null || true
+    cd /home/cloud-user/ocp-install
+    nohup python3 -m http.server 8080 > /tmp/http-server.log 2>&1 &
+    HTTP_PID=$!
+    echo "HTTP server PID: $HTTP_PID"
+    
+    # Boot each CP node via Redfish virtual media
+    BASTION_IP=$(hostname -I | awk '{print $1}')
+    ISO_URL="http://${BASTION_IP}:8080/agent.x86_64.iso"
+    echo "ISO URL: $ISO_URL"
+    
+    for BMC_IP in 192.168.100.10 192.168.100.11; do
+      echo "Mounting ISO on BMC $BMC_IP..."
+      # Get system UUID from sushy
+      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c "import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])")
+      echo "  System: $SYS_ID"
+      # Insert virtual media (Systems path, HTTP, with auth)
+      curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \
+        -H 'Content-Type: application/json' \
+        -d "{\"Image\": \"${ISO_URL}\", \"Inserted\": true, \"WriteProtected\": true}" || true
+      # Reboot — UEFI boot order is hd,cdrom so empty disk falls through to ISO
+      # After agent writes CoreOS to disk, next reboot boots from disk first
+      curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/Actions/ComputerSystem.Reset" \
+        -H 'Content-Type: application/json' \
+        -d '{"ResetType": "ForceRestart"}' || true
+      echo "Booted $BMC_IP from ISO"
+    done
+    
+    
+    echo 'Waiting for cluster installation to complete...'
+    /home/cloud-user/openshift-install agent wait-for install-complete --dir /home/cloud-user/ocp-install --log-level debug 2>&1 | awk '{print strftime("[%H:%M:%S]") " " $0; fflush()}'
+    OCP_EXIT=${PIPESTATUS[0]}
+    INSTALL_END=$(date +%s)
+    ELAPSED=$(( INSTALL_END - INSTALL_START ))
+    echo ''
+    echo '================================================'
+    if [ $OCP_EXIT -ne 0 ]; then
+    echo "Install FAILED at $(date) (exit code $OCP_EXIT)"
+    echo "Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec"
+    echo '================================================'
+    kill $HTTP_PID 2>/dev/null
+    exit 1
+    fi
+    echo "Install completed at $(date)"
+    echo "Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec"
+    echo '================================================'
+    # Eject agent ISO via Redfish virtual media
+    echo 'Ejecting agent ISO from nodes...'
+    for BMC_IP in 192.168.100.10 192.168.100.11; do
+      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c "import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])" 2>/dev/null)
+      curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1
+    done
+    # Write static MOTD with cluster credentials
+    KUBEADMIN_PW=$(cat /home/cloud-user/ocp-install/auth/kubeadmin-password)
+    printf '\nOpenShift Console: https://console-openshift-console.apps.ocp.ocp.local\nUsername:          kubeadmin\nPassword:          %s\n\n' "$KUBEADMIN_PW" | sudo tee /etc/motd >/dev/null
+    # Trust the OCP CA so Firefox doesn't show cert warnings
+    export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig
+    oc get secret -n openshift-ingress router-certs-default -o jsonpath='{.data.tls\.crt}' 2>/dev/null | base64 -d | sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null && sudo update-ca-trust
+    # Save kubeadmin password into Firefox via headless Selenium
+    if ! find /home/cloud-user/.mozilla/firefox -maxdepth 2 -name cert9.db 2>/dev/null | grep -q .; then
+      firefox --headless --no-remote >/dev/null 2>&1 &
+      FXPID=$!
+      sleep 5
+      kill $FXPID 2>/dev/null; wait $FXPID 2>/dev/null || true
+      sleep 2
+    fi
+    if [ ! -x /usr/local/bin/geckodriver ]; then
+      curl -sfL https://github.com/mozilla/geckodriver/releases/download/v0.37.0/geckodriver-v0.37.0-linux64.tar.gz | sudo tar xz -C /usr/local/bin/ || true
+      sudo chmod +x /usr/local/bin/geckodriver 2>/dev/null || true
+    fi
+    python3 -c 'import selenium' 2>/dev/null || pip3 install --user selenium 2>/dev/null || true
+    echo 'aW1wb3J0IGdsb2IKaW1wb3J0IG9zCmltcG9ydCBzeXMKaW1wb3J0IHRpbWUKCmNvbnNvbGVfdXJsID0gc3lzLmFyZ3ZbMV0KCmZvciBwd19wYXRoIGluIFsKICAgICJ+L29jcC1pbnN0YWxsL2F1dGgva3ViZWFkbWluLXBhc3N3b3JkIiwKICAgICJ+Y2xvdWQtdXNlci9vY3AtaW5zdGFsbC9hdXRoL2t1YmVhZG1pbi1wYXNzd29yZCIsCl06CiAgICBwID0gb3MucGF0aC5leHBhbmR1c2VyKHB3X3BhdGgpCiAgICBpZiBvcy5wYXRoLmV4aXN0cyhwKToKICAgICAgICBwdyA9IG9wZW4ocCkucmVhZCgpLnN0cmlwKCkKICAgICAgICBicmVhawplbHNlOgogICAgcHJpbnQoIkVSUk9SOiBrdWJlYWRtaW4tcGFzc3dvcmQgbm90IGZvdW5kIikKICAgIHN5cy5leGl0KDEpCgoKZGVmIF9oYXNfbnNzX2RiKHBhdGgpOgogICAgcmV0dXJuICgKICAgICAgICBvcy5wYXRoLmlzZmlsZShvcy5wYXRoLmpvaW4ocGF0aCwgImNlcnQ5LmRiIikpCiAgICAgICAgYW5kIG9zLnBhdGguaXNmaWxlKG9zLnBhdGguam9pbihwYXRoLCAia2V5NC5kYiIpKQogICAgKQoKCmRlZiBfZmluZF9wcm9maWxlKCk6CiAgICBjYW5kaWRhdGVzID0gW10KICAgIGZvciBwYXRoIGluIGdsb2IuZ2xvYigiL2hvbWUvY2xvdWQtdXNlci8ubW96aWxsYS9maXJlZm94LyovIik6CiAgICAgICAgbmFtZSA9IG9zLnBhdGguYmFzZW5hbWUocGF0aC5yc3RyaXAoIi8iKSkKICAgICAgICBpZiBuYW1lIGluICgiUHJvZmlsZSBHcm91cHMiLCAiQ3Jhc2ggUmVwb3J0cyIsICJQZW5kaW5nIFBpbmdzIik6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgcHJvZmlsZSA9IHBhdGgucnN0cmlwKCIvIikKICAgICAgICBpZiBfaGFzX25zc19kYihwcm9maWxlKToKICAgICAgICAgICAgY2FuZGlkYXRlcy5hcHBlbmQocHJvZmlsZSkKICAgIGlmIG5vdCBjYW5kaWRhdGVzOgogICAgICAgIHJldHVybiBOb25lCiAgICBmb3IgcHJvZmlsZSBpbiBjYW5kaWRhdGVzOgogICAgICAgIGlmIHByb2ZpbGUuZW5kc3dpdGgoIi5kZWZhdWx0LWRlZmF1bHQiKToKICAgICAgICAgICAgcmV0dXJuIHByb2ZpbGUKICAgIHJldHVybiBzb3J0ZWQoY2FuZGlkYXRlcylbLTFdCgoKcHJvZmlsZSA9IF9maW5kX3Byb2ZpbGUoKQppZiBub3QgcHJvZmlsZToKICAgIHByaW50KCJFUlJPUjogTm8gRmlyZWZveCBwcm9maWxlIHdpdGggTlNTIGRhdGFiYXNlIGZvdW5kIikKICAgIHN5cy5leGl0KDEpCgpnZWNrb2RyaXZlciA9IG9zLmVudmlyb24uZ2V0KCJHRUNLT0RSSVZFUl9QQVRIIiwgIi91c3IvbG9jYWwvYmluL2dlY2tvZHJpdmVyIikKaWYgbm90IG9zLnBhdGguaXNmaWxlKGdlY2tvZHJpdmVyKToKICAgIHByaW50KCJFUlJPUjogZ2Vja29kcml2ZXIgbm90IGZvdW5kIGF0ICIgKyBnZWNrb2RyaXZlcikKICAgIHN5cy5leGl0KDEpCgp0cnk6CiAgICBmcm9tIHNlbGVuaXVtIGltcG9ydCB3ZWJkcml2ZXIKICAgIGZyb20gc2VsZW5pdW0ud2ViZHJpdmVyLmNvbW1vbi5ieSBpbXBvcnQgQnkKICAgIGZyb20gc2VsZW5pdW0ud2ViZHJpdmVyLmZpcmVmb3gub3B0aW9ucyBpbXBvcnQgT3B0aW9ucwogICAgZnJvbSBzZWxlbml1bS53ZWJkcml2ZXIuZmlyZWZveC5zZXJ2aWNlIGltcG9ydCBTZXJ2aWNlCiAgICBmcm9tIHNlbGVuaXVtLndlYmRyaXZlci5zdXBwb3J0IGltcG9ydCBleHBlY3RlZF9jb25kaXRpb25zIGFzIEVDCiAgICBmcm9tIHNlbGVuaXVtLndlYmRyaXZlci5zdXBwb3J0LnVpIGltcG9ydCBXZWJEcml2ZXJXYWl0CmV4Y2VwdCBJbXBvcnRFcnJvcjoKICAgIHByaW50KCJFUlJPUjogc2VsZW5pdW0gUHl0aG9uIHBhY2thZ2Ugbm90IGluc3RhbGxlZCIpCiAgICBzeXMuZXhpdCgxKQoKb3B0cyA9IE9wdGlvbnMoKQpvcHRzLmFkZF9hcmd1bWVudCgiLWhlYWRsZXNzIikKb3B0cy5hZGRfYXJndW1lbnQoIi1yZW1vdGUtYWxsb3ctc3lzdGVtLWFjY2VzcyIpCm9wdHMuYWRkX2FyZ3VtZW50KCItcHJvZmlsZSIpCm9wdHMuYWRkX2FyZ3VtZW50KHByb2ZpbGUpCm9wdHMuYWNjZXB0X2luc2VjdXJlX2NlcnRzID0gVHJ1ZQpvcHRzLnNldF9wcmVmZXJlbmNlKCJzaWdub24ucmVtZW1iZXJTaWdub25zIiwgVHJ1ZSkKb3B0cy5zZXRfcHJlZmVyZW5jZSgic2lnbm9uLmF1dG9maWxsRm9ybXMiLCBUcnVlKQpvcHRzLnNldF9wcmVmZXJlbmNlKCJzaWdub24uc3RvcmVXaGVuQXV0b2NvbXBsZXRlT2ZmIiwgVHJ1ZSkKb3B0cy5zZXRfcHJlZmVyZW5jZSgiYnJvd3Nlci5zdGFydHVwLnBhZ2UiLCAxKQoKc2VydmljZSA9IFNlcnZpY2UoZ2Vja29kcml2ZXIsIGxvZ19vdXRwdXQ9b3MuZGV2bnVsbCwgc2VydmljZV9hcmdzPVsiLS1hbGxvdy1zeXN0ZW0tYWNjZXNzIl0pCmRyaXZlciA9IHdlYmRyaXZlci5GaXJlZm94KHNlcnZpY2U9c2VydmljZSwgb3B0aW9ucz1vcHRzKQp0cnk6CiAgICBiYXNlID0gY29uc29sZV91cmwucnN0cmlwKCIvIikKICAgIGRyaXZlci5nZXQoYmFzZSkKICAgIHRpbWUuc2xlZXAoMikKICAgIGRyaXZlci5kZWxldGVfYWxsX2Nvb2tpZXMoKQogICAgZHJpdmVyLmdldChiYXNlICsgIi9sb2dvdXQiKQogICAgdGltZS5zbGVlcCgyKQogICAgZHJpdmVyLmRlbGV0ZV9hbGxfY29va2llcygpCiAgICBkcml2ZXIuZ2V0KGNvbnNvbGVfdXJsKQogICAgd2FpdCA9IFdlYkRyaXZlcldhaXQoZHJpdmVyLCA0NSkKICAgIHRyeToKICAgICAgICB1c2VybmFtZSA9IHdhaXQudW50aWwoRUMucHJlc2VuY2Vfb2ZfZWxlbWVudF9sb2NhdGVkKChCeS5JRCwgImlucHV0VXNlcm5hbWUiKSkpCiAgICBleGNlcHQgRXhjZXB0aW9uOgogICAgICAgIHByaW50KAogICAgICAgICAgICAiRVJST1I6IGxvZ2luIGZvcm0gbm90IGZvdW5kICh1cmw9IgogICAgICAgICAgICArIGRyaXZlci5jdXJyZW50X3VybAogICAgICAgICAgICArICIsIHRpdGxlPSIKICAgICAgICAgICAgKyBkcml2ZXIudGl0bGUKICAgICAgICAgICAgKyAiKSIKICAgICAgICApCiAgICAgICAgc3lzLmV4aXQoMSkKICAgIHBhc3N3b3JkID0gZHJpdmVyLmZpbmRfZWxlbWVudChCeS5JRCwgImlucHV0UGFzc3dvcmQiKQogICAgdXNlcm5hbWUuY2xlYXIoKQogICAgdXNlcm5hbWUuc2VuZF9rZXlzKCJrdWJlYWRtaW4iKQogICAgcGFzc3dvcmQuY2xlYXIoKQogICAgcGFzc3dvcmQuc2VuZF9rZXlzKHB3KQogICAgZHJpdmVyLmZpbmRfZWxlbWVudChCeS5DU1NfU0VMRUNUT1IsICJidXR0b25bdHlwZT1zdWJtaXRdIikuY2xpY2soKQogICAgdGltZS5zbGVlcCgzKQogICAgZHJpdmVyLnNldF9jb250ZXh0KCJjaHJvbWUiKQogICAgZm9yIF8gaW4gcmFuZ2UoMjApOgogICAgICAgIHRyeToKICAgICAgICAgICAgZHJpdmVyLmZpbmRfZWxlbWVudCgKICAgICAgICAgICAgICAgIEJ5LkNTU19TRUxFQ1RPUiwKICAgICAgICAgICAgICAgICJwb3B1cG5vdGlmaWNhdGlvbltpZCo9cGFzc3dvcmRdICIKICAgICAgICAgICAgICAgICJidXR0b24ucG9wdXAtbm90aWZpY2F0aW9uLXByaW1hcnktYnV0dG9uIiwKICAgICAgICAgICAgKS5jbGljaygpCiAgICAgICAgICAgIHByaW50KCJQYXNzd29yZCBzYXZlZCB0byBGaXJlZm94IikKICAgICAgICAgICAgYnJlYWsKICAgICAgICBleGNlcHQgRXhjZXB0aW9uOgogICAgICAgICAgICB0aW1lLnNsZWVwKDAuNSkKICAgIGVsc2U6CiAgICAgICAgcHJpbnQoIkVSUk9SOiBGaXJlZm94IGRpZCBub3Qgb2ZmZXIgdG8gc2F2ZSBwYXNzd29yZCAodXJsPSIgKyBkcml2ZXIuY3VycmVudF91cmwgKyAiKSIpCiAgICAgICAgc3lzLmV4aXQoMSkKZmluYWxseToKICAgIGRyaXZlci5xdWl0KCkK' | base64 -d > /home/cloud-user/ocp-autologin.py
+    chown cloud-user:cloud-user /home/cloud-user/ocp-autologin.py
+    chmod 755 /home/cloud-user/ocp-autologin.py
+    pkill -x firefox 2>/dev/null || true
+    sleep 2
+    export GECKODRIVER_PATH=/usr/local/bin/geckodriver
+    python3 /home/cloud-user/ocp-autologin.py https://console-openshift-console.apps.ocp.ocp.local 2>&1 || true
+    # Cleanup: remove cached ISO, temp files, and pull secret from disk
+    rm -f /home/cloud-user/pull-secret.json
+    rm -rf /home/cloud-user/.cache/agent/ /tmp/http-server.log /tmp/cookies /tmp/*.zip /var/tmp/dnf-*
+    dnf clean all 2>/dev/null
+    # Kill the HTTP server used to serve the agent ISO
+    kill $HTTP_PID 2>/dev/null
+    SCRIPTEOF
+    chown cloud-user:cloud-user /home/cloud-user/install-ocp.sh
+    chmod 755 /home/cloud-user/install-ocp.sh

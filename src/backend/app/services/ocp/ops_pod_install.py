@@ -18,6 +18,7 @@ the produced script text; actual execution is a live-environment concern.
 from __future__ import annotations
 
 import ipaddress
+import shlex
 
 from app.services.ocp.agent_template import (
     _agent_create_image_cmd,
@@ -107,6 +108,13 @@ def _cluster_install_block(
     ``HTTP_PID``, ``ISO_URL``, ``SYS_ID``) so parallel clusters never clobber
     each other, redirects its output to a per-cluster log, and reuses the exact
     bastion command strings (create-image / serve / Redfish / wait-for / eject).
+
+    ``set -e`` + ``set -o pipefail`` make a failed ``wait-for install-complete``
+    fatal for THIS cluster (mirroring the bastion's ``PIPESTATUS``/``exit 1``):
+    the awk pipeline no longer masks openshift-install's non-zero exit, so the
+    subshell exits non-zero and its ``$!`` wait propagates the failure. A
+    ``trap`` reaps the ISO HTTP server on any exit (success or failure). The
+    trailing ``pids+=($!)`` records this cluster's PID for the top-level join.
     """
     cluster_dir = f"{workdir}/{cluster_key}"
     bmc_ips_str = " ".join(bmc_ips)
@@ -115,9 +123,11 @@ def _cluster_install_block(
         "(\n"
         f"  exec > {cluster_dir}/install.log 2>&1\n"
         "  set -e\n"
+        "  set -o pipefail\n"
         f'  echo "[{cluster_key}] starting agent-based install"\n'
         f"  cd {cluster_dir}\n"
-        f"  BMC_PASS='{bmc_password}'\n"
+        f"  BMC_PASS={shlex.quote(bmc_password)}\n"
+        "  trap 'kill $HTTP_PID 2>/dev/null || true' EXIT\n"
         + _agent_create_image_cmd("  ", "openshift-install", "create-image.log")
         + "  echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"
         + _serve_iso_cmd("  ", cluster_dir, port)
@@ -126,9 +136,9 @@ def _cluster_install_block(
         + _wait_for_complete_cmd("  ", "openshift-install", ".")
         + "  echo 'Ejecting agent ISO from nodes...'\n"
         + _redfish_eject_media_cmd("  ", bmc_ips_str)
-        + "  kill $HTTP_PID 2>/dev/null || true\n"
         + f'  echo "[{cluster_key}] install complete"\n'
         + ") &\n"
+        + "pids+=($!)\n"
     )
 
 
@@ -146,17 +156,22 @@ def build_ops_pod_install_script(
     each cluster key to its ``(bmc_ips, bmc_password)`` (see
     :func:`bmc_for_cluster`). Each cluster gets its own HTTP port
     (``8080 + index``) so the ISO servers don't collide, and each install block
-    is a backgrounded subshell; a final ``wait`` blocks until all finish.
+    is a backgrounded subshell whose PID is captured; a final loop waits on each
+    PID individually and propagates failure, so the script exits non-zero if ANY
+    cluster install failed (Task 7's monitor relies on this — a bare ``wait``
+    would always return 0 and mask a failed install).
     """
     parts: list[str] = [
         "#!/bin/bash\n",
         "# Per-cluster OCP agent-based install runner (ops pod).\n",
         "# Each cluster installs in parallel; see <workdir>/<clusterId>/install.log.\n",
         "set -u\n",
+        "set -o pipefail\n",
         f"OCP_VERSION={ocp_version}\n",
         "\n",
         _ensure_installers_cmd(),
         "\n",
+        "pids=()\n",
     ]
     for index, cluster in enumerate(clusters):
         key = _cluster_key(cluster)
@@ -167,5 +182,10 @@ def build_ops_pod_install_script(
             )
         )
     parts.append("\n")
-    parts.append("wait\n")
+    parts.append(
+        "# Wait on each cluster individually so a failed install exits non-zero.\n"
+    )
+    parts.append("fail=0\n")
+    parts.append('for p in "${pids[@]}"; do wait "$p" || fail=1; done\n')
+    parts.append("exit $fail\n")
     return "".join(parts)

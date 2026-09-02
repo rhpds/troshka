@@ -219,3 +219,28 @@ def test_build_install_script_uses_selenium_autologin_not_nss():
     assert "geckodriver" in script
     assert "ocp-autologin.py" in script
     assert "console-openshift-console.apps.ocp.ocp.local" in script
+
+
+def test_build_install_script_golden():
+    """Full-output snapshot of the bastion agent-based installer.
+
+    The Redfish/serve/wait-for/create-image command strings are now shared with
+    the ops-pod runner (`ops_pod_install`) via helpers in `agent_template`. This
+    golden guards the BASTION side: a future edit to any shared helper that would
+    change the bastion's generated script must update the golden deliberately
+    (regenerate `tests/golden/ocp_bastion_install_script.txt`), not slip through.
+    """
+    from pathlib import Path
+
+    from app.services.ocp.agent_template import _build_install_script
+
+    script = _build_install_script(
+        "4.20",
+        auto_install=True,
+        bmc_password="pw",
+        bmc_ips_str="192.168.100.10 192.168.100.11",
+        cluster_name="ocp",
+        base_domain="ocp.local",
+    )
+    golden = Path(__file__).parent / "golden" / "ocp_bastion_install_script.txt"
+    assert script == golden.read_text()

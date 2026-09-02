@@ -179,8 +179,9 @@ def _install_script():
         {"id": "dev", "name": "dev", "_generatedInstallConfig": "y"},
     ]
     bmc_by_cluster = {
+        # "s3 cret" has a space so shlex.quote must wrap it (injection-safety).
         "prod": (["192.168.100.10", "192.168.100.11"], "pw-prod"),
-        "dev": (["192.168.100.20"], "pw-dev"),
+        "dev": (["192.168.100.20"], "s3 cret"),
     }
     return build_ops_pod_install_script(clusters, bmc_by_cluster, "4.20", "/workdir")
 
@@ -212,9 +213,29 @@ def test_install_script_redfish_insert_media_per_cluster_bmcs():
 
 
 def test_install_script_per_cluster_bmc_password():
+    import shlex
+
     script = _install_script()
-    assert "BMC_PASS='pw-prod'" in script
-    assert "BMC_PASS='pw-dev'" in script
+    # No special chars -> shlex.quote leaves it bare; a space forces quoting.
+    assert f"BMC_PASS={shlex.quote('pw-prod')}" in script
+    assert f"BMC_PASS={shlex.quote('s3 cret')}" in script
+    # Never emit the raw, unquoted password with an embedded space.
+    assert "BMC_PASS=s3 cret\n" not in script
+
+
+def test_install_script_bmc_password_injection_safe():
+    from app.services.ocp.ops_pod_install import build_ops_pod_install_script
+
+    clusters = [{"id": "prod", "name": "prod"}]
+    # A single quote would break naive 'BMC_PASS={pw}' quoting / allow injection.
+    evil = "p'w; rm -rf /"
+    script = build_ops_pod_install_script(
+        clusters, {"prod": (["1.2.3.4"], evil)}, "4.20", "/workdir"
+    )
+    import shlex
+
+    assert f"BMC_PASS={shlex.quote(evil)}" in script
+    assert "rm -rf /\n" not in script
 
 
 def test_install_script_distinct_http_ports():
@@ -225,9 +246,20 @@ def test_install_script_distinct_http_ports():
 
 def test_install_script_runs_clusters_in_parallel():
     script = _install_script()
-    # Both cluster blocks are backgrounded subshells, joined by a final wait.
+    # Both cluster blocks are backgrounded subshells with captured PIDs.
     assert script.count(") &\n") == 2
-    assert script.rstrip().endswith("wait")
+    assert script.count("pids+=($!)") == 2
+
+
+def test_install_script_propagates_cluster_failure():
+    script = _install_script()
+    # pipefail everywhere so awk can't mask openshift-install's non-zero exit.
+    assert "set -o pipefail" in script
+    # Top-level: wait per-PID, record failure, exit non-zero if any failed.
+    assert 'for p in "${pids[@]}"; do wait "$p" || fail=1; done' in script
+    assert "exit $fail" in script
+    # A bare unconditional `wait` must NOT be the terminal join (it returns 0).
+    assert not script.rstrip().endswith("wait")
 
 
 def test_install_script_downloads_from_same_mirror():
