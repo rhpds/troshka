@@ -13,10 +13,13 @@ Flow:
 """
 
 import ipaddress
+import logging
 import re
 import shlex
 import uuid
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 _MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,62}$")
@@ -374,17 +377,202 @@ def _cidr_for_members(members, topology):
     return _find_cluster_cidr(topology)
 
 
+def pick_unused_ips(cidr: str, used: set[str], count: int) -> list[str]:
+    """Pick the first `count` unused IPs from the top-down scan of the CIDR's host range.
+
+    Scans in reverse order (highest IP first), skips IPs in the `used` set, and
+    returns the first `count` free IPs. Raises ValueError if fewer than `count`
+    free IPs are available.
+
+    Args:
+        cidr: Network CIDR to scan (e.g., "10.0.0.0/24").
+        used: Set of IP addresses (as strings) to skip.
+        count: Number of unused IPs to return.
+
+    Returns:
+        List of `count` unused IP addresses as strings, ordered top-down.
+
+    Raises:
+        ValueError: If fewer than `count` free IPs are found.
+    """
+    net = ipaddress.ip_network(cidr, strict=False)
+    picked: list[str] = []
+    for host in reversed(list(net.hosts())):
+        ip = str(host)
+        if ip in used:
+            continue
+        picked.append(ip)
+        if len(picked) == count:
+            return picked
+    raise ValueError(f"no {count} free IPs in {cidr} (used={len(used)})")
+
+
+def _compute_dhcp_bounds(
+    cidr: str, dhcp_range_start: str, dhcp_range_end: str
+) -> tuple[str, str]:
+    """Compute DHCP bounds if not explicitly set.
+
+    Mirrors the logic in deploy_topology._compute_dhcp_bounds: when the CIDR has
+    more than 10 hosts, default range starts at hosts[9] and ends at hosts[-1].
+
+    Args:
+        cidr: Network CIDR.
+        dhcp_range_start: Explicit start IP or empty string.
+        dhcp_range_end: Explicit end IP or empty string.
+
+    Returns:
+        Tuple of (start_ip, end_ip) as strings.
+    """
+    if not cidr:
+        return dhcp_range_start, dhcp_range_end
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+        hosts = list(net.hosts())
+        if len(hosts) > 10:
+            if not dhcp_range_start:
+                dhcp_range_start = str(hosts[min(9, len(hosts) - 2)])
+            if not dhcp_range_end:
+                dhcp_range_end = str(hosts[-1])
+    except ValueError:
+        pass
+    return dhcp_range_start, dhcp_range_end
+
+
+def _network_used_ips(topology: dict, cluster: dict, members: list) -> set[str]:
+    """Collect all used IPs on a cluster's machine network.
+
+    Includes:
+    - Network address and broadcast address
+    - Gateway (from node data or network_address + 1)
+    - DHCP range (if dhcp is enabled; mirrors deploy_topology logic)
+    - Every VM NIC static IP on that network
+    - API/ingress VIPs from other clusters on the same network
+
+    Args:
+        topology: Full topology dict with nodes and edges.
+        cluster: Single cluster dict (must have networkIds or we infer via members).
+        members: VM nodes belonging to this cluster.
+
+    Returns:
+        Set of IP addresses (as strings) that are in use.
+    """
+    # Prefer the cluster's explicit networkIds[0], else find the network node via members
+    network_node = None
+    network_ids = cluster.get("networkIds")
+    if network_ids:
+        network_id = network_ids[0]
+        for node in topology.get("nodes", []):
+            if node.get("id") == network_id and node.get("type") == "networkNode":
+                network_node = node
+                break
+    if not network_node:
+        network_node = _cluster_network_node(topology, members)
+    if not network_node:
+        return set()
+
+    data = network_node.get("data", {})
+    cidr = data.get("cidr", "")
+    if not cidr:
+        return set()
+
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return set()
+
+    used = {str(net.network_address), str(net.broadcast_address)}
+
+    # Add gateway (explicit or default to network_address + 1)
+    gateway = data.get("gateway") or str(net.network_address + 1)
+    used.add(gateway)
+
+    # Add DHCP range if enabled
+    if data.get("dhcp"):
+        range_start = data.get("dhcpRangeStart", "")
+        range_end = data.get("dhcpRangeEnd", "")
+        range_start, range_end = _compute_dhcp_bounds(cidr, range_start, range_end)
+        if range_start and range_end:
+            try:
+                start_ip = ipaddress.ip_address(range_start)
+                end_ip = ipaddress.ip_address(range_end)
+                for ip_int in range(int(start_ip), int(end_ip) + 1):
+                    used.add(str(ipaddress.ip_address(ip_int)))
+            except ValueError:
+                pass
+
+    # Add all VM NIC static IPs on this network
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        for nic in node.get("data", {}).get("nics", []):
+            ip = nic.get("ip")
+            if ip:
+                try:
+                    if ipaddress.ip_address(ip) in net:
+                        used.add(ip)
+                except ValueError:
+                    pass
+
+    # Add VIPs from other clusters on the same network
+    for other in topology.get("clusters", []):
+        if other.get("id") != cluster.get("id"):
+            for vip_key in ("apiVip", "ingressVip"):
+                vip = other.get(vip_key)
+                if vip:
+                    try:
+                        if ipaddress.ip_address(vip) in net:
+                            used.add(vip)
+                    except ValueError:
+                        pass
+
+    return used
+
+
+def _warn_vip_collision(cluster: dict, used: set[str]) -> None:
+    """Log a warning if any explicit VIP collides with the used set.
+
+    Args:
+        cluster: Cluster dict with potential apiVip/ingressVip.
+        used: Set of used IP addresses.
+    """
+    for vip_key in ("apiVip", "ingressVip"):
+        vip = cluster.get(vip_key)
+        if vip and vip in used:
+            logger.warning(
+                f"cluster {cluster.get('name', 'unknown')} "
+                f"{vip_key}={vip} collides with existing network usage"
+            )
+
+
 def _derive_cluster_vips(cluster, members, topology):
-    """Derive VIPs when not explicitly set: SNO -> node IP, else CIDR offsets."""
+    """Derive VIPs when not explicitly set: SNO -> node IP, else pick unused.
+
+    For SNO (single-node), both VIPs are the control-plane node's IP.
+    For multi-node, picks the top-down pair of unused IPs from the cluster's
+    machine network, excluding gateway, DHCP range, member IPs, and other
+    clusters' VIPs.
+    """
     if _cluster_is_sno(cluster, members):
         cp_ip = _cluster_control_plane_ip(members)
         if cp_ip:
             return cp_ip, cp_ip
-    net = ipaddress.ip_network(_cidr_for_members(members, topology), strict=False)
-    return (
-        str(net.network_address + _API_VIP_OFFSET),
-        str(net.network_address + _INGRESS_VIP_OFFSET),
-    )
+
+    cidr = _cidr_for_members(members, topology)
+    used = _network_used_ips(topology, cluster, members)
+    try:
+        api, ingress = pick_unused_ips(cidr, used, 2)
+        return api, ingress
+    except ValueError:
+        # Fallback to old logic if not enough free IPs
+        logger.warning(
+            f"cluster {cluster.get('name', 'unknown')}: "
+            f"could not find 2 free IPs in {cidr}; falling back to offsets"
+        )
+        net = ipaddress.ip_network(cidr, strict=False)
+        return (
+            str(net.network_address + _API_VIP_OFFSET),
+            str(net.network_address + _INGRESS_VIP_OFFSET),
+        )
 
 
 def resolve_cluster_vips(cluster, members, topology):
@@ -392,10 +580,15 @@ def resolve_cluster_vips(cluster, members, topology):
 
     Priority: explicit ``cluster["apiVip"]``/``["ingressVip"]`` when both are
     truthy; otherwise SNO clusters use the control-plane member's IP for both
-    VIPs, and multi-node clusters fall back to the cluster network's
-    ``network+2`` / ``network+3`` offsets. Partial explicit values are kept and
-    only the missing side is derived.
+    VIPs, and multi-node clusters pick unused IPs from the machine network
+    (avoiding gateway, DHCP range, member IPs, and other clusters' VIPs).
+    Partial explicit values are kept and only the missing side is derived.
+    Logs a warning if any explicit VIP collides with network usage.
     """
+    # Check for explicit VIP collisions
+    used = _network_used_ips(topology, cluster, members)
+    _warn_vip_collision(cluster, used)
+
     api_vip = cluster.get("apiVip") or ""
     ingress_vip = cluster.get("ingressVip") or ""
     if api_vip and ingress_vip:
@@ -459,11 +652,19 @@ def _customize_one_cluster(topology, cluster, config, include_extras):
     ops pod, and writes ``api``/``api-int``/``*.apps`` records to the cluster's
     own network node. ``include_extras`` gates the resolved lab ``dns_records``
     so they are added once (not duplicated across every cluster's network).
+    Updates the cluster object's apiVip/ingressVip (when derived, not explicit).
     Returns the resolved ``(api_vip, ingress_vip)``.
     """
     resolved = config.get("resolved", {})
     members = _cluster_members_for(topology, cluster)
     api_vip, ingress_vip = resolve_cluster_vips(cluster, members, topology)
+
+    # Store derived VIPs back on cluster so subsequent clusters can exclude them
+    if not cluster.get("apiVip"):
+        cluster["apiVip"] = api_vip
+    if not cluster.get("ingressVip"):
+        cluster["ingressVip"] = ingress_vip
+
     ptr = cluster.get("pullThroughRegistry") or resolved.get("pull_through_registry")
     cluster["_generatedInstallConfig"] = _build_install_config(
         cluster,

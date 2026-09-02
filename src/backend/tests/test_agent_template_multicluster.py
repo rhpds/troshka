@@ -255,8 +255,11 @@ def test_resolve_vips_sno_uses_node_ip():
     )
 
 
-def test_resolve_vips_standard_uses_cidr_offset():
-    """A multi-CP cluster with no explicit VIPs falls back to CIDR network+2/+3."""
+def test_resolve_vips_standard_uses_unused_high_ips():
+    """A multi-CP cluster with no explicit VIPs picks unused IPs from the top-down.
+
+    When no member IPs collide and the network is empty, picks .254/.253 (top-down).
+    """
     from app.services.ocp.agent_template import resolve_cluster_vips
 
     cluster = {"id": "prod", "type": "standard", "controlPlane": 3, "workers": 0}
@@ -275,7 +278,8 @@ def test_resolve_vips_standard_uses_cidr_offset():
         ]
         + members
     }
-    assert resolve_cluster_vips(cluster, members, topo) == ("10.5.0.2", "10.5.0.3")
+    # Now picks unused IPs top-down, so .254 and .253 (highest free IPs)
+    assert resolve_cluster_vips(cluster, members, topo) == ("10.5.0.254", "10.5.0.253")
 
 
 def test_customize_topology_two_clusters_dns_and_configs():
@@ -660,3 +664,218 @@ def test_customize_bastion_multi_cluster_raises():
     topo["clusters"] = _two_clusters_def()
     with pytest.raises(ValueError):
         customize_topology(topo, "ocp-multi", _install_via_config("bastion"))
+
+
+def test_pick_unused_ips_top_down_excludes_used():
+    """pick_unused_ips picks top-down and excludes used IPs."""
+    from app.services.ocp.agent_template import pick_unused_ips
+
+    used = {"10.0.0.0", "10.0.0.255", "10.0.0.1", "10.0.0.254"}
+    result = pick_unused_ips("10.0.0.0/24", used, 2)
+    assert result == ["10.0.0.253", "10.0.0.252"]
+
+
+def test_pick_unused_ips_exhausted_raises():
+    """pick_unused_ips raises ValueError when fewer free IPs than requested."""
+    import pytest
+
+    from app.services.ocp.agent_template import pick_unused_ips
+
+    # Exhausted CIDR with only 3 hosts
+    used = {"10.0.0.0", "10.0.0.1", "10.0.0.2"}
+    with pytest.raises(ValueError, match="no 2 free IPs"):
+        pick_unused_ips("10.0.0.0/30", used, 2)
+
+
+def test_derive_vips_avoid_member_ip_collision():
+    """Multi-node cluster whose members occupy .2/.3/.4 gets VIPs from high range."""
+    from app.services.ocp.agent_template import (
+        resolve_cluster_vips,
+    )
+
+    members = [
+        _member("cp-0", "test", "controllers", "10.0.0.2", "52:54:00:aa:bb:01"),
+        _member("cp-1", "test", "controllers", "10.0.0.3", "52:54:00:aa:bb:02"),
+        _member("w-0", "test", "workers", "10.0.0.4", "52:54:00:aa:bb:03"),
+    ]
+    topo = {
+        "nodes": [
+            {
+                "id": "net-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "network",
+                    "cidr": "10.0.0.0/24",
+                    "networkType": "cluster",
+                },
+            }
+        ]
+        + members,
+        "edges": [],
+    }
+    cluster = {
+        "id": "test",
+        "name": "test",
+        "type": "standard",
+        "controlPlane": 3,
+        "workers": 1,
+        "baseDomain": "ocp.local",
+    }
+    api_vip, ingress_vip = resolve_cluster_vips(cluster, members, topo)
+    # Should pick from high end, not collide with .2, .3, .4
+    assert api_vip not in ("10.0.0.2", "10.0.0.3", "10.0.0.4")
+    assert ingress_vip not in ("10.0.0.2", "10.0.0.3", "10.0.0.4")
+    assert api_vip != ingress_vip
+    # Both should be in the /24
+    import ipaddress
+
+    net = ipaddress.ip_network("10.0.0.0/24")
+    assert ipaddress.ip_address(api_vip) in net
+    assert ipaddress.ip_address(ingress_vip) in net
+
+
+def test_derive_vips_two_clusters_distinct():
+    """Two multi-node clusters on same network get distinct VIPs.
+
+    Simulates the real deployment flow where each cluster's VIPs are stored
+    back on the cluster object so subsequent calls can exclude them.
+    """
+    from app.services.ocp.agent_template import resolve_cluster_vips
+
+    prod_members = [
+        _member("p-cp-0", "prod", "controllers", "10.0.0.20", "52:54:00:aa:bb:01"),
+        _member("p-cp-1", "prod", "controllers", "10.0.0.21", "52:54:00:aa:bb:02"),
+    ]
+    dev_members = [
+        _member("d-cp-0", "dev", "controllers", "10.0.0.30", "52:54:00:aa:cc:01"),
+        _member("d-cp-1", "dev", "controllers", "10.0.0.31", "52:54:00:aa:cc:02"),
+    ]
+    topo = {
+        "nodes": [
+            {
+                "id": "net-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "network",
+                    "cidr": "10.0.0.0/24",
+                    "networkType": "cluster",
+                },
+            }
+        ]
+        + prod_members
+        + dev_members,
+        "edges": [],
+        "clusters": [
+            {
+                "id": "prod",
+                "name": "prod",
+                "type": "standard",
+                "controlPlane": 2,
+                "workers": 0,
+                "baseDomain": "ocp.local",
+            },
+            {
+                "id": "dev",
+                "name": "dev",
+                "type": "standard",
+                "controlPlane": 2,
+                "workers": 0,
+                "baseDomain": "dev.local",
+            },
+        ],
+    }
+
+    prod_cluster = topo["clusters"][0]
+    dev_cluster = topo["clusters"][1]
+
+    # Simulate _customize_one_cluster which stores VIPs back on the cluster
+    prod_api, prod_ing = resolve_cluster_vips(prod_cluster, prod_members, topo)
+    prod_cluster["apiVip"] = prod_api
+    prod_cluster["ingressVip"] = prod_ing
+
+    # Now when dev cluster resolves, it should exclude prod's VIPs
+    dev_api, dev_ing = resolve_cluster_vips(dev_cluster, dev_members, topo)
+
+    # All VIPs distinct from each other
+    vips = {prod_api, prod_ing, dev_api, dev_ing}
+    assert len(vips) == 4, f"Expected 4 distinct VIPs, got {vips}"
+
+    # None collide with member IPs
+    member_ips = {"10.0.0.20", "10.0.0.21", "10.0.0.30", "10.0.0.31"}
+    assert prod_api not in member_ips
+    assert prod_ing not in member_ips
+    assert dev_api not in member_ips
+    assert dev_ing not in member_ips
+
+
+def test_explicit_vips_still_win():
+    """Explicit VIPs in cluster dict are used, not derived."""
+    from app.services.ocp.agent_template import resolve_cluster_vips
+
+    members = [
+        _member("cp-0", "test", "controllers", "10.0.0.10", "52:54:00:aa:bb:01"),
+        _member("cp-1", "test", "controllers", "10.0.0.11", "52:54:00:aa:bb:02"),
+    ]
+    topo = {
+        "nodes": [
+            {
+                "id": "net-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "network",
+                    "cidr": "10.0.0.0/24",
+                    "networkType": "cluster",
+                },
+            }
+        ]
+        + members,
+        "edges": [],
+    }
+    cluster = {
+        "id": "test",
+        "name": "test",
+        "type": "standard",
+        "controlPlane": 2,
+        "workers": 0,
+        "baseDomain": "ocp.local",
+        "apiVip": "10.0.0.100",
+        "ingressVip": "10.0.0.101",
+    }
+    api_vip, ingress_vip = resolve_cluster_vips(cluster, members, topo)
+    assert api_vip == "10.0.0.100"
+    assert ingress_vip == "10.0.0.101"
+
+
+def test_sno_vips_are_node_ip():
+    """SNO cluster gets both VIPs from control-plane node IP."""
+    from app.services.ocp.agent_template import resolve_cluster_vips
+
+    members = [
+        _member("cp-0", "test", "controllers", "10.0.0.50", "52:54:00:aa:bb:01"),
+    ]
+    topo = {
+        "nodes": [
+            {
+                "id": "net-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "network",
+                    "cidr": "10.0.0.0/24",
+                    "networkType": "cluster",
+                },
+            }
+        ]
+        + members,
+        "edges": [],
+    }
+    cluster = {
+        "id": "test",
+        "name": "test",
+        "type": "sno",
+        "controlPlane": 1,
+        "workers": 0,
+        "baseDomain": "ocp.local",
+    }
+    api_vip, ingress_vip = resolve_cluster_vips(cluster, members, topo)
+    assert api_vip == "10.0.0.50"
+    assert ingress_vip == "10.0.0.50"
