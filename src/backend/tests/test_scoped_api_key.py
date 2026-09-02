@@ -7,8 +7,10 @@ enforcement of that scope in the auth layer (Plan 4, Task 2).
 
 import uuid
 
+import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from app.core.auth import scoped_key_router_guard
 from app.core.database import get_db
@@ -269,6 +271,59 @@ def test_scoped_key_default_denied_on_unlisted_routes():
     )
     # Sanity: the allowlisted read still works for the same key.
     assert client.get(f"/api/v1/projects/{pid}", headers=h).status_code == 200
+
+
+def test_scoped_key_default_denied_on_sibling_routers():
+    """The guard covers sibling routers mounted under /projects/{id}, not just
+    the projects router: vms, networks, disks, eips, portal-token all 403.
+    """
+    owner = _make_owner()
+    pid = _make_project(owner, state="active")
+    raw = _make_db_key(owner, project_id=pid, scopes=["topology:read", "vm:exec"])
+    h = _auth(raw)
+    assert client.get(f"/api/v1/projects/{pid}/vms/", headers=h).status_code == 403
+    assert client.get(f"/api/v1/projects/{pid}/networks/", headers=h).status_code == 403
+    assert client.get(f"/api/v1/projects/{pid}/disks/", headers=h).status_code == 403
+    assert (
+        client.delete(f"/api/v1/projects/{pid}/vms/vm-1", headers=h).status_code == 403
+    )
+    assert (
+        client.post(
+            f"/api/v1/projects/{pid}/portal-token", headers=h, json={}
+        ).status_code
+        == 403
+    )
+
+
+def test_scoped_key_cannot_reach_other_projects_siblings():
+    """Cross-project: scoped key for A is 403 on B's sub-resources too."""
+    owner = _make_owner()
+    pid_a = _make_project(owner, state="active")
+    pid_b = _make_project(owner, state="active")
+    raw = _make_db_key(owner, project_id=pid_a, scopes=["topology:read", "vm:exec"])
+    resp = client.get(f"/api/v1/projects/{pid_b}/vms/", headers=_auth(raw))
+    assert resp.status_code == 403
+
+
+def test_unscoped_key_reaches_sibling_routers():
+    """Unscoped keys are unaffected by the guard on sibling routers."""
+    owner = _make_owner()
+    pid = _make_project(owner)
+    raw = _make_db_key(owner, project_id=None, scopes=None)
+    h = _auth(raw)
+    assert client.get(f"/api/v1/projects/{pid}/vms/", headers=h).status_code == 200
+    assert client.get(f"/api/v1/projects/{pid}/networks/", headers=h).status_code == 200
+
+
+def test_scoped_key_cannot_open_websocket():
+    """Websockets bypass HTTP deps, so /ws rejects scoped keys inline (4003)."""
+    owner = _make_owner()
+    pid = _make_project(owner, state="active")
+    raw = _make_db_key(owner, project_id=pid, scopes=["topology:read", "vm:exec"])
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(f"/api/v1/projects/{pid}/ws?token={raw}") as ws:
+            ws.receive_json()
+    assert exc.value.code == 4003
 
 
 def test_unscoped_key_has_full_access():

@@ -19,6 +19,23 @@ router = APIRouter()
 HEARTBEAT_INTERVAL = 30
 
 
+def _is_scoped_api_key(token: str | None, db) -> bool:
+    """True when the token is a project-scoped API key.
+
+    Websockets bypass HTTP dependencies (including scoped_key_router_guard), so
+    the /ws route must reject scoped ops-pod keys explicitly. Scoped keys are
+    limited to REST topology-read + vm-exec; they must never open a project WS.
+    """
+    if not token or not token.startswith("trk_"):
+        return False
+    from app.models.api_key import ApiKey, hash_key
+
+    api_key = (
+        db.query(ApiKey).filter_by(key_hash=hash_key(token), is_active=True).first()
+    )
+    return bool(api_key and api_key.is_scoped)
+
+
 def _authenticate_ws(token: str | None, db, headers=None) -> User | None:
     if not config.auth.oauth_enabled and not token:
         from app.core.auth import _get_or_create_dev_user
@@ -90,6 +107,12 @@ async def project_websocket(websocket: WebSocket, project_id: str):
 
     db = SessionLocal()
     try:
+        if _is_scoped_api_key(token, db):
+            await websocket.close(
+                code=4003, reason="Scoped API keys cannot open websockets"
+            )
+            return
+
         user = _authenticate_ws(token, db, headers=dict(websocket.headers))
         if not user:
             await websocket.close(code=4001, reason="Unauthorized")
@@ -135,6 +158,12 @@ async def pattern_websocket(websocket: WebSocket, pattern_id: str):
     token = websocket.query_params.get("token")
     db = SessionLocal()
     try:
+        if _is_scoped_api_key(token, db):
+            await websocket.close(
+                code=4003, reason="Scoped API keys cannot open websockets"
+            )
+            return
+
         user = _authenticate_ws(token, db, headers=dict(websocket.headers))
         if not user:
             await websocket.close(code=4001, reason="Unauthorized")
