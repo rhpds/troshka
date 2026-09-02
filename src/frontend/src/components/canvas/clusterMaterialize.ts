@@ -1,6 +1,7 @@
 import type { Node, Edge } from "@xyflow/react";
 import type { ClusterConfig, VMDiskController, DiskSpec, VMNic } from "@/stores/canvasStore";
 import { generateDiskControllerId, generateNicId, generateMac } from "@/stores/canvasStore";
+import { collectUsedIps, listCidrHosts } from "@/lib/dhcpIpAssignment";
 
 /**
  * Count-driven, existence-aware materialization of a cluster's member VMs on
@@ -566,4 +567,254 @@ export function applyClusterSizing(
     return { ...n, data: { ...d, vcpus, ram, disk } };
   });
   return changed ? out : nodes;
+}
+
+/**
+ * Rebuild disk storageNodes + edges for all EXISTING members of the cluster,
+ * matching the role-specific disk lists (controlPlaneDisks / workerDisks).
+ * Diff-based and ID-stable: reuses existing disk node IDs for disk indices that
+ * still exist, removes stale disk nodes, adds new ones for new disks.
+ * Rebuilds diskControllers + bootDevices to match the new disk specs.
+ * Idempotent: re-running with unchanged disk specs yields byte-identical nodes/edges.
+ * Pure: returns same array reference when nothing changes.
+ */
+export function applyClusterDisks(
+  cluster: ClusterConfig,
+  nodes: Node[],
+  edges: Edge[],
+): { nodes: Node[]; edges: Edge[] } {
+  let resultNodes = nodes;
+  let resultEdges = edges;
+
+  // Get all members of this cluster
+  const allMembers = resultNodes.filter((n) => {
+    const d = n.data as Record<string, unknown>;
+    return n.type === "vmNode" && d?.clusterId === cluster.id;
+  });
+
+  // For each member, rebuild disks to match cluster disk specs
+  for (const member of allMembers) {
+    const memberData = member.data as Record<string, unknown>;
+    const role = memberRole(member);
+    if (!role) continue;
+
+    // Get the disk specs for this role
+    const diskSpecs = role === "control-plane" ? cluster.controlPlaneDisks : cluster.workerDisks;
+    const targetSpecs = diskSpecs ?? [{ sizeGb: role === "control-plane" ? 120 : 100, bootable: true }];
+
+    // Collect existing disk nodes for this member
+    const existingDiskNodeIds = new Set<string>();
+    const existingDiskNodes = new Map<number, Node>();
+    for (const n of resultNodes) {
+      if (
+        n.type === "storageNode" &&
+        n.id.startsWith(`${member.id}-disk-`)
+      ) {
+        const match = n.id.match(/disk-(\d+)$/);
+        if (match) {
+          const idx = parseInt(match[1], 10);
+          existingDiskNodeIds.add(n.id);
+          existingDiskNodes.set(idx, n);
+        }
+      }
+    }
+
+    // Build new disk nodes, controllers, and edges
+    const newDiskNodes: Node[] = [];
+    const newDiskControllers: VMDiskController[] = [];
+    const newDiskEdges: Edge[] = [];
+    const newBootDevices: string[] = [];
+
+    const baseX = member.position.x;
+    const baseY = member.position.y;
+
+    targetSpecs.forEach((spec, i) => {
+      const existingNode = existingDiskNodes.get(i);
+      const diskId = existingNode?.id ?? `${member.id}-disk-${i}`;
+      const dcId = generateDiskControllerId();
+
+      newDiskControllers.push({ id: dcId, name: `disk${i}`, bus: spec.bus ?? "virtio" });
+      newDiskNodes.push({
+        id: diskId,
+        type: "storageNode",
+        position: { x: baseX, y: baseY + 60 + i * 40 },
+        parentId: cluster.nodeId,
+        data: { label: `${member.id}-d${i}`, name: `${member.id}-d${i}`, size: spec.sizeGb, format: "qcow2", icon: "🛢" },
+      } as Node);
+
+      newDiskEdges.push({
+        id: `edge-${diskId}-to-${member.id}`,
+        source: diskId,
+        target: member.id,
+        sourceHandle: "right",
+        targetHandle: `dp-${dcId}-left`,
+        type: "smoothstep",
+        animated: false,
+        className: "edge-storage-pulse",
+        style: { stroke: "rgba(251,191,36,0.6)", strokeWidth: 2, strokeDasharray: "4 4" },
+      } as Edge);
+
+      if (spec.bootable) newBootDevices.push(diskId);
+    });
+
+    // If no bootable disk specified, default to first
+    if (newBootDevices.length === 0 && newDiskNodes.length > 0) {
+      newBootDevices.push(newDiskNodes[0].id);
+    }
+
+    // Identify stale disk nodes to remove
+    const staleDiskNodeIds = new Set<string>();
+    for (const [idx, node] of existingDiskNodes) {
+      if (idx >= targetSpecs.length) {
+        staleDiskNodeIds.add(node.id);
+      }
+    }
+
+    // Remove stale disk nodes
+    resultNodes = resultNodes.filter((n) => !staleDiskNodeIds.has(n.id));
+
+    // Remove stale disk edges + old member disk edges for this member
+    resultEdges = resultEdges.filter(
+      (e) =>
+        !(e.target === member.id && (e.targetHandle?.startsWith("dp-") ?? false)) &&
+        !(staleDiskNodeIds.has(e.source) || staleDiskNodeIds.has(e.target)),
+    );
+
+    // Merge new disk nodes into result (replace existing ones if updating)
+    const nodeIdSet = new Set(resultNodes.map((n) => n.id));
+    for (const diskNode of newDiskNodes) {
+      if (nodeIdSet.has(diskNode.id)) {
+        // Replace existing
+        resultNodes = resultNodes.map((n) => (n.id === diskNode.id ? diskNode : n));
+      } else {
+        // Add new
+        resultNodes = [...resultNodes, diskNode];
+      }
+    }
+
+    // Update the member node's diskControllers and bootDevices
+    resultNodes = resultNodes.map((n) =>
+      n.id === member.id
+        ? { ...n, data: { ...memberData, diskControllers: newDiskControllers, bootDevices: newBootDevices } }
+        : n,
+    );
+
+    // Add new disk edges
+    resultEdges = [...resultEdges, ...newDiskEdges];
+  }
+
+  return { nodes: resultNodes, edges: resultEdges };
+}
+
+/**
+ * Suggest unused VIPs for the cluster's machine network (first network in cluster.networkIds).
+ * Scans from the top of the CIDR (reverse/high IPs) excluding the gateway, used IPs,
+ * and VIPs from other clusters. Returns { apiVip, ingressVip } or both empty if no CIDR
+ * or single-node cluster (SNO uses member IP).
+ */
+export function suggestClusterVips(
+  cluster: ClusterConfig,
+  nodes: Node[],
+): { apiVip: string | null; ingressVip: string | null } {
+  // SNO and single-node clusters use the member IP; no VIP needed
+  if ((cluster.controlPlane ?? 0) + (cluster.workers ?? 0) <= 1) {
+    return { apiVip: null, ingressVip: null };
+  }
+
+  // Get the machine network CIDR (first network)
+  const netId = (cluster.networkIds ?? [])[0];
+  if (!netId) {
+    return { apiVip: null, ingressVip: null };
+  }
+
+  const netNode = nodes.find((n) => n.id === netId && n.type === "networkNode");
+  if (!netNode) {
+    return { apiVip: null, ingressVip: null };
+  }
+
+  const cidr = (netNode.data as Record<string, unknown>).cidr as string | undefined;
+  if (!cidr) {
+    return { apiVip: null, ingressVip: null };
+  }
+
+  // Get all used IPs in the topology
+  const usedIps = collectUsedIps(nodes);
+
+  // Add gateway IP (first host in subnet)
+  const hosts = listCidrHosts(cidr);
+  if (hosts.length > 0) {
+    usedIps.add(hosts[0]);
+  }
+
+  // Add VIPs from other clusters
+  const otherClusters = nodes
+    .filter((n) => n.type === "clusterNode" && (n.data as Record<string, unknown>).clusterId !== cluster.id)
+    .map((n) => n.data as Record<string, unknown>);
+
+  for (const other of otherClusters) {
+    const apiVip = other.apiVip as string | undefined;
+    const ingressVip = other.ingressVip as string | undefined;
+    if (apiVip) usedIps.add(apiVip);
+    if (ingressVip) usedIps.add(ingressVip);
+  }
+
+  // Scan from top of CIDR downward to find unused IPs
+  let apiVipCandidate: string | null = null;
+  let ingressVipCandidate: string | null = null;
+
+  if (hosts.length >= 2) {
+    // Reverse scan: start from high IPs
+    for (let i = hosts.length - 1; i >= 0 && (!apiVipCandidate || !ingressVipCandidate); i -= 1) {
+      const ip = hosts[i];
+      if (!usedIps.has(ip)) {
+        if (!apiVipCandidate) {
+          apiVipCandidate = ip;
+        } else if (!ingressVipCandidate) {
+          ingressVipCandidate = ip;
+          break;
+        }
+      }
+    }
+  }
+
+  return { apiVip: apiVipCandidate, ingressVip: ingressVipCandidate };
+}
+
+/**
+ * Check if an IP address is in use (by a member NIC, gateway, or another cluster's VIP).
+ * Returns true if collision detected.
+ */
+export function vipCollision(
+  ip: string,
+  cluster: ClusterConfig,
+  nodes: Node[],
+): boolean {
+  if (!ip) return false;
+
+  const usedIps = collectUsedIps(nodes);
+
+  // Also check other clusters' VIPs
+  const otherClusters = nodes
+    .filter((n) => n.type === "clusterNode" && (n.data as Record<string, unknown>).clusterId !== cluster.id)
+    .map((n) => n.data as Record<string, unknown>);
+
+  for (const other of otherClusters) {
+    if (ip === (other.apiVip as string | undefined)) return true;
+    if (ip === (other.ingressVip as string | undefined)) return true;
+  }
+
+  // Check gateway
+  const netId = (cluster.networkIds ?? [])[0];
+  if (netId) {
+    const netNode = nodes.find((n) => n.id === netId && n.type === "networkNode");
+    if (netNode) {
+      const cidr = (netNode.data as Record<string, unknown>).cidr as string | undefined;
+      if (cidr) {
+        const hosts = listCidrHosts(cidr);
+        if (hosts.length > 0 && ip === hosts[0]) return true; // gateway
+      }
+    }
+  }
+
+  return usedIps.has(ip);
 }

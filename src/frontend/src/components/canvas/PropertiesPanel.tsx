@@ -1,11 +1,12 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import type { Node } from "@xyflow/react";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
-import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks } from "./clusterMaterialize";
+import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, suggestClusterVips, vipCollision } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
 import {
   getShowroomReadiness,
@@ -36,6 +37,7 @@ import type {
   StorageNodeData,
   ContainerNodeData,
   ClusterConfig,
+  DiskSpec,
 } from "@/stores/canvasStore";
 
 function HintIcon({ text }: { text: string }) {
@@ -482,6 +484,114 @@ function ClusterTextField({
   );
 }
 
+function DiskListEditor({
+  disks,
+  onChange,
+}: {
+  disks: DiskSpec[];
+  onChange: (disks: DiskSpec[]) => void;
+}) {
+  const handleAddDisk = () => {
+    const newDisk: DiskSpec = { sizeGb: 50, bus: "virtio", bootable: false };
+    onChange([...disks, newDisk]);
+  };
+
+  const handleRemoveDisk = (index: number) => {
+    onChange(disks.filter((_, i) => i !== index));
+  };
+
+  const handleUpdateDisk = (index: number, patch: Partial<DiskSpec>) => {
+    const updated = [...disks];
+    updated[index] = { ...updated[index], ...patch };
+    onChange(updated);
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {disks.length === 0 ? (
+        <span style={{ fontSize: 13, color: "var(--troshka-text-dim)" }}>
+          No disks configured
+        </span>
+      ) : (
+        disks.map((disk, idx) => (
+          <div
+            key={idx}
+            style={{
+              display: "flex",
+              gap: 8,
+              alignItems: "center",
+              padding: "8px",
+              background: "var(--troshka-surface)",
+              border: "1px solid var(--troshka-border)",
+              borderRadius: 4,
+              fontSize: 13,
+            }}
+          >
+            <label style={{ display: "flex", alignItems: "center", gap: 4, flex: 1 }}>
+              <input
+                type="checkbox"
+                checked={disk.bootable ?? false}
+                onChange={(e) => handleUpdateDisk(idx, { bootable: e.target.checked })}
+                style={{ cursor: "pointer" }}
+              />
+              <span>Boot</span>
+            </label>
+            <input
+              type="number"
+              min={1}
+              value={disk.sizeGb}
+              onChange={(e) => handleUpdateDisk(idx, { sizeGb: parseInt(e.target.value, 10) || 1 })}
+              style={{
+                width: 60,
+                padding: "4px 6px",
+                border: "1px solid var(--troshka-border)",
+                borderRadius: 4,
+                fontSize: 12,
+              }}
+            />
+            <span style={{ color: "var(--troshka-text-dim)" }}>GB</span>
+            <select
+              value={disk.bus ?? "virtio"}
+              onChange={(e) => handleUpdateDisk(idx, { bus: e.target.value as "virtio" | "sata" | "scsi" })}
+              style={{
+                padding: "4px 6px",
+                border: "1px solid var(--troshka-border)",
+                borderRadius: 4,
+                fontSize: 12,
+              }}
+            >
+              <option value="virtio">virtio</option>
+              <option value="sata">sata</option>
+              <option value="scsi">scsi</option>
+            </select>
+            <button
+              onClick={() => handleRemoveDisk(idx)}
+              style={{
+                padding: "4px 8px",
+                background: "var(--pf-t--global--color--status--danger--background)",
+                color: "white",
+                border: "none",
+                borderRadius: 4,
+                cursor: "pointer",
+                fontSize: 12,
+              }}
+            >
+              Remove
+            </button>
+          </div>
+        ))
+      )}
+      <button
+        onClick={handleAddDisk}
+        className="props-library-btn"
+        style={{ fontSize: 12, padding: "6px 8px", alignSelf: "flex-start" }}
+      >
+        + Add Disk
+      </button>
+    </div>
+  );
+}
+
 function ClusterEditor({
   cluster,
   clusters,
@@ -490,7 +600,9 @@ function ClusterEditor({
   onTypeChange,
   onWorkersChange,
   onNetworksChange,
+  onDisksChange,
   availableNetworks,
+  nodes,
 }: {
   cluster: ClusterConfig;
   clusters: ClusterConfig[];
@@ -499,10 +611,17 @@ function ClusterEditor({
   onTypeChange: (type: string) => void;
   onWorkersChange: (workers: number) => void;
   onNetworksChange: (networkIds: string[]) => void;
+  onDisksChange: (role: "control-plane" | "worker", disks: DiskSpec[]) => void;
   availableNetworks: Array<{ id: string; label: string; cidr?: string }>;
+  nodes: Node[];
 }) {
   const apiVipError = vipCollisionError(clusters, cluster.id, "apiVip", cluster.apiVip || "");
   const ingressVipError = vipCollisionError(clusters, cluster.id, "ingressVip", cluster.ingressVip || "");
+
+  // Auto-suggest VIPs on load
+  const suggestions = suggestClusterVips(cluster, nodes);
+  const apiVipSuggestion = cluster.apiVip ? null : suggestions.apiVip;
+  const ingressVipSuggestion = cluster.ingressVip ? null : suggestions.ingressVip;
   return (
     <>
       <div className="props-section">
@@ -544,10 +663,28 @@ function ClusterEditor({
       <div className="props-divider" />
 
       <div className="props-section">
+        <div className="props-section-title">Control Plane Disks</div>
+        <DiskListEditor
+          disks={cluster.controlPlaneDisks ?? []}
+          onChange={(disks) => onDisksChange("control-plane", disks)}
+        />
+      </div>
+      <div className="props-divider" />
+
+      <div className="props-section">
         <div className="props-section-title">Worker Sizing</div>
         <ClusterNumberField label="Worker vCPUs" min={1} value={cluster.workerCpu ?? 4} onCommit={(v) => onSizing({ workerCpu: v })} />
         <ClusterNumberField label="Worker Memory (MB)" min={1} value={cluster.workerMemory ?? 8192} onCommit={(v) => onSizing({ workerMemory: v })} />
         <ClusterNumberField label="Worker Disk (GB)" min={1} value={cluster.workerDisk ?? 100} onCommit={(v) => onSizing({ workerDisk: v })} />
+      </div>
+      <div className="props-divider" />
+
+      <div className="props-section">
+        <div className="props-section-title">Worker Disks</div>
+        <DiskListEditor
+          disks={cluster.workerDisks ?? []}
+          onChange={(disks) => onDisksChange("worker", disks)}
+        />
       </div>
       <div className="props-divider" />
 
@@ -604,8 +741,66 @@ function ClusterEditor({
           </div>
         </div>
         <ClusterTextField label="Base Domain" value={cluster.baseDomain || ""} placeholder="ocp.local" onCommit={(v) => onPatch({ baseDomain: v })} />
-        <ClusterTextField label="API VIP" value={cluster.apiVip || ""} error={apiVipError} onCommit={(v) => onPatch({ apiVip: v })} />
-        <ClusterTextField label="Ingress VIP" value={cluster.ingressVip || ""} error={ingressVipError} onCommit={(v) => onPatch({ ingressVip: v })} />
+        <div className="props-field">
+          <label className="props-label" htmlFor="api-vip">API VIP</label>
+          <div style={{ display: "flex", gap: 6, alignItems: "flex-start", flexWrap: "wrap" }}>
+            <input
+              id="api-vip"
+              className="props-input"
+              value={cluster.apiVip || ""}
+              placeholder={apiVipSuggestion || ""}
+              onChange={(e) => onPatch({ apiVip: e.target.value })}
+              style={{
+                flex: 1,
+                minWidth: 150,
+                borderColor: vipCollision(cluster.apiVip || "", cluster, nodes) ? "var(--pf-t--global--color--status--warning--default)" : undefined,
+              }}
+            />
+            {apiVipSuggestion && !cluster.apiVip && (
+              <button
+                className="props-library-btn"
+                style={{ fontSize: 12, padding: "4px 8px" }}
+                onClick={() => onPatch({ apiVip: apiVipSuggestion })}
+              >
+                Use {apiVipSuggestion}
+              </button>
+            )}
+          </div>
+          {apiVipError && <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>{apiVipError}</div>}
+          {vipCollision(cluster.apiVip || "", cluster, nodes) && !apiVipError && (
+            <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>IP in use</div>
+          )}
+        </div>
+        <div className="props-field">
+          <label className="props-label" htmlFor="ingress-vip">Ingress VIP</label>
+          <div style={{ display: "flex", gap: 6, alignItems: "flex-start", flexWrap: "wrap" }}>
+            <input
+              id="ingress-vip"
+              className="props-input"
+              value={cluster.ingressVip || ""}
+              placeholder={ingressVipSuggestion || ""}
+              onChange={(e) => onPatch({ ingressVip: e.target.value })}
+              style={{
+                flex: 1,
+                minWidth: 150,
+                borderColor: vipCollision(cluster.ingressVip || "", cluster, nodes) ? "var(--pf-t--global--color--status--warning--default)" : undefined,
+              }}
+            />
+            {ingressVipSuggestion && !cluster.ingressVip && (
+              <button
+                className="props-library-btn"
+                style={{ fontSize: 12, padding: "4px 8px" }}
+                onClick={() => onPatch({ ingressVip: ingressVipSuggestion })}
+              >
+                Use {ingressVipSuggestion}
+              </button>
+            )}
+          </div>
+          {ingressVipError && <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>{ingressVipError}</div>}
+          {vipCollision(cluster.ingressVip || "", cluster, nodes) && !ingressVipError && (
+            <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>IP in use</div>
+          )}
+        </div>
         <ClusterTextField label="OCP Version" value={cluster.ocpVersion || ""} placeholder="4.20" onCommit={(v) => onPatch({ ocpVersion: v })} />
       </div>
     </>
@@ -4419,6 +4614,18 @@ export default function PropertiesPanel() {
           useCanvasStore.getState().pushHistory();
           useCanvasStore.setState({ nodes: nextNodes, edges: nextEdges });
         };
+        const handleDisksChange = (role: "control-plane" | "worker", disks: DiskSpec[]) => {
+          const patch = role === "control-plane" ? { controlPlaneDisks: disks } : { workerDisks: disks };
+          editCluster(patch);
+          const updated = { ...cluster, ...patch };
+          const { nodes: nextNodes, edges: nextEdges } = applyClusterDisks(
+            updated,
+            useCanvasStore.getState().nodes,
+            useCanvasStore.getState().edges,
+          );
+          useCanvasStore.getState().pushHistory();
+          useCanvasStore.setState({ nodes: nextNodes, edges: nextEdges });
+        };
         // Get available networks from canvas (networkNodes with subtype !== "bmc")
         const availableNetworks = nodes
           .filter((n) => {
@@ -4442,7 +4649,9 @@ export default function PropertiesPanel() {
             onTypeChange={handleTypeChange}
             onWorkersChange={handleWorkersChange}
             onNetworksChange={handleNetworksChange}
+            onDisksChange={handleDisksChange}
             availableNetworks={availableNetworks}
+            nodes={nodes}
           />
         );
       })()}

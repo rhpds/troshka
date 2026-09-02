@@ -7,6 +7,9 @@ import {
   materializeClusterInto,
   clusterNetworkIdsFromEdges,
   applyClusterNetworks,
+  applyClusterDisks,
+  suggestClusterVips,
+  vipCollision,
 } from "@/components/canvas/clusterMaterialize";
 import { makeCluster } from "@/components/canvas/clusterFactory";
 
@@ -446,5 +449,251 @@ describe("applyClusterNetworks", () => {
       (e) => e.target === cp.id && (e.targetHandle?.startsWith("nic-") ?? false),
     );
     expect(memberNicEdges).toHaveLength(1);
+  });
+});
+
+describe("applyClusterDisks", () => {
+  it("adds an extra storageNode + edge + diskController when disk is added to controlPlaneDisks", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlaneDisks = [{ sizeGb: 120, bootable: true }];
+    const { nodes: initial, edges: initialEdges } = reconcileClusterVms(cluster, [node]);
+
+    const cp = initial.find((n) => n.data.clusterRole === "control-plane")!;
+    const disksBefore = initial.filter(
+      (n) =>
+        n.type === "storageNode" &&
+        initialEdges.some((e) => e.source === n.id && e.target === cp.id),
+    );
+    expect(disksBefore).toHaveLength(1);
+
+    // Add a second disk
+    const updated = { ...cluster, controlPlaneDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }] };
+    const { nodes: result, edges: resultEdges } = applyClusterDisks(updated, initial, initialEdges);
+
+    const cpAfter = result.find((n) => n.id === cp.id)!;
+    const disksAfter = result.filter(
+      (n) =>
+        n.type === "storageNode" &&
+        resultEdges.some((e) => e.source === n.id && e.target === cpAfter.id),
+    );
+    expect(disksAfter).toHaveLength(2);
+
+    // Check diskControllers count
+    const dcAfter = (cpAfter.data as Record<string, unknown>).diskControllers as any[];
+    expect(dcAfter).toHaveLength(2);
+  });
+
+  it("removes stale disk nodes when disk count decreases", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlaneDisks = [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }];
+    const { nodes: initial, edges: initialEdges } = reconcileClusterVms(cluster, [node]);
+
+    const cp = initial.find((n) => n.data.clusterRole === "control-plane")!;
+    const disksBefore = initial.filter(
+      (n) =>
+        n.type === "storageNode" &&
+        initialEdges.some((e) => e.source === n.id && e.target === cp.id),
+    );
+    expect(disksBefore).toHaveLength(2);
+
+    // Remove the second disk
+    const updated = { ...cluster, controlPlaneDisks: [{ sizeGb: 120, bootable: true }] };
+    const { nodes: result, edges: resultEdges } = applyClusterDisks(updated, initial, initialEdges);
+
+    const cpAfter = result.find((n) => n.id === cp.id)!;
+    const disksAfter = result.filter(
+      (n) =>
+        n.type === "storageNode" &&
+        resultEdges.some((e) => e.source === n.id && e.target === cpAfter.id),
+    );
+    expect(disksAfter).toHaveLength(1);
+  });
+
+  it("is idempotent: re-applying same disk specs yields identical nodes/edges", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlaneDisks = [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }];
+    const { nodes: initial, edges: initialEdges } = reconcileClusterVms(cluster, [node]);
+
+    const { nodes: n1, edges: e1 } = applyClusterDisks(cluster, initial, initialEdges);
+    const { nodes: n2, edges: e2 } = applyClusterDisks(cluster, n1, e1);
+
+    // Node count and structure should be identical
+    expect(n2.length).toBe(n1.length);
+    expect(e2.length).toBe(e1.length);
+
+    // Storage node IDs should be identical
+    const storageIds1 = n1.filter((n) => n.type === "storageNode").map((n) => n.id).sort();
+    const storageIds2 = n2.filter((n) => n.type === "storageNode").map((n) => n.id).sort();
+    expect(storageIds2).toEqual(storageIds1);
+  });
+
+  it("preserves disk node IDs when disk index still exists", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.workers = 1; // Ensure we have a worker
+    cluster.workerDisks = [{ sizeGb: 100, bootable: true }, { sizeGb: 50 }];
+    const { nodes: initial, edges: initialEdges } = reconcileClusterVms(cluster, [node]);
+
+    const worker = initial.find((n) => n.data.clusterRole === "worker")!;
+    const disk0Id = initial.find(
+      (n) => n.type === "storageNode" && n.id.startsWith(`${worker.id}-disk-0`),
+    )?.id;
+    expect(disk0Id).toBeTruthy();
+
+    // Now add a third disk
+    const updated = { ...cluster, workerDisks: [{ sizeGb: 100, bootable: true }, { sizeGb: 50 }, { sizeGb: 30 }] };
+    const { nodes: result } = applyClusterDisks(updated, initial, initialEdges);
+
+    // The first disk should still have the same ID
+    const disk0After = result.find((n) => n.type === "storageNode" && n.id === disk0Id);
+    expect(disk0After).toBeTruthy();
+  });
+});
+
+describe("suggestClusterVips", () => {
+  it("returns high unused IPs for multi-node cluster with CIDR", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24" } } as any;
+    cluster.networkIds = ["net1"];
+
+    // Materialize the cluster
+    const { nodes: materialized } = reconcileClusterVms(cluster, [node, net]);
+
+    const suggestion = suggestClusterVips(cluster, materialized);
+
+    // Should suggest two high unused IPs in the range 10.0.0.2-254
+    expect(suggestion.apiVip).toBeTruthy();
+    expect(suggestion.ingressVip).toBeTruthy();
+    expect(suggestion.apiVip).not.toBe(suggestion.ingressVip);
+
+    // Should be in the CIDR
+    const apiNum = suggestion.apiVip ? parseInt(suggestion.apiVip.split(".")[3], 10) : 0;
+    const ingressNum = suggestion.ingressVip ? parseInt(suggestion.ingressVip.split(".")[3], 10) : 0;
+    expect(apiNum).toBeGreaterThan(1);
+    expect(apiNum).toBeLessThan(255);
+    expect(ingressNum).toBeGreaterThan(1);
+    expect(ingressNum).toBeLessThan(255);
+  });
+
+  it("returns null for SNO (single-node cluster)", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.type = "sno";
+    cluster.controlPlane = 1;
+    cluster.workers = 0;
+    const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24" } } as any;
+    cluster.networkIds = ["net1"];
+
+    const suggestion = suggestClusterVips(cluster, [node, net]);
+
+    expect(suggestion.apiVip).toBeNull();
+    expect(suggestion.ingressVip).toBeNull();
+  });
+
+  it("returns null when no machine network defined", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.networkIds = [];
+
+    const suggestion = suggestClusterVips(cluster, [node]);
+
+    expect(suggestion.apiVip).toBeNull();
+    expect(suggestion.ingressVip).toBeNull();
+  });
+
+  it("avoids IPs used by cluster members", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/28" } } as any;
+    cluster.networkIds = ["net1"];
+
+    const { nodes: materialized, edges } = reconcileClusterVms(cluster, [node, net]);
+
+    // Assign IPs to member NICs
+    const updated = materialized.map((n) => {
+      if (n.type === "vmNode") {
+        const nics = ((n.data as Record<string, unknown>).nics || []) as any[];
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            nics: nics.map((nic, i) => ({ ...nic, ip: `10.0.0.${i + 2}` })),
+          },
+        };
+      }
+      return n;
+    });
+
+    const suggestion = suggestClusterVips(cluster, updated);
+
+    // Should not suggest IPs that are already used
+    expect(suggestion.apiVip).not.toBe("10.0.0.2");
+    expect(suggestion.apiVip).not.toBe("10.0.0.3");
+    expect(suggestion.ingressVip).not.toBe("10.0.0.2");
+    expect(suggestion.ingressVip).not.toBe("10.0.0.3");
+  });
+});
+
+describe("vipCollision", () => {
+  it("detects collision with member IP", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24" } } as any;
+    cluster.networkIds = ["net1"];
+
+    const { nodes: materialized } = reconcileClusterVms(cluster, [node, net]);
+
+    // Assign an IP to a member NIC
+    const updated = materialized.map((n) => {
+      if (n.type === "vmNode") {
+        const nics = ((n.data as Record<string, unknown>).nics || []) as any[];
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            nics: nics.map((nic) => ({ ...nic, ip: "10.0.0.5" })),
+          },
+        };
+      }
+      return n;
+    });
+
+    expect(vipCollision("10.0.0.5", cluster, updated)).toBe(true);
+  });
+
+  it("detects collision with gateway IP", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24" } } as any;
+    cluster.networkIds = ["net1"];
+
+    const { nodes: materialized } = reconcileClusterVms(cluster, [node, net]);
+
+    // Gateway is first host (10.0.0.1)
+    expect(vipCollision("10.0.0.1", cluster, materialized)).toBe(true);
+  });
+
+  it("detects collision with another cluster's VIP", () => {
+    const { node: node1, cluster: cluster1 } = makeCluster("ocp", { x: 0, y: 0 });
+    const { node: node2, cluster: cluster2 } = makeCluster("ocp", { x: 200, y: 0 });
+    const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24" } } as any;
+
+    cluster1.networkIds = ["net1"];
+    cluster2.networkIds = ["net1"];
+    cluster2.apiVip = "10.0.0.250";
+
+    // Update node2's data to reflect the cluster2 VIP
+    const node2Updated = {
+      ...node2,
+      data: { ...node2.data, clusterId: cluster2.id, apiVip: "10.0.0.250" },
+    };
+
+    const nodes = [node1, node2Updated, net];
+
+    expect(vipCollision("10.0.0.250", cluster1, nodes)).toBe(true);
+  });
+
+  it("returns false for available IP", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24" } } as any;
+    cluster.networkIds = ["net1"];
+
+    const { nodes: materialized } = reconcileClusterVms(cluster, [node, net]);
+
+    expect(vipCollision("10.0.0.250", cluster, materialized)).toBe(false);
   });
 });
