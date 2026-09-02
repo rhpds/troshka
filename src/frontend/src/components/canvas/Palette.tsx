@@ -87,7 +87,7 @@ const sections: PaletteSection[] = [
     items: [
       {
         type: "cluster",
-        label: "OCP Cluster",
+        label: "OpenShift Cluster",
         desc: "OpenShift cluster boundary",
         icon: "☸",
         iconClass: "palette-icon-cluster",

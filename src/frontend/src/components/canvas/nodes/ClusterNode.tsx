@@ -32,9 +32,10 @@ function ClusterNodeComponent({ data, selected }: NodeProps) {
       {/* Resizer — draggable handles only visible when selected */}
       <NodeResizer isVisible={selected} minWidth={280} minHeight={180} />
 
-      {/* Header label — the drag handle for the boundary itself */}
+      {/* Header label — the drag handle for the boundary itself. No `nodrag`:
+          the body is pointerEvents:none (members stay interactive), so the
+          header is the ONLY grabbable area and must initiate the node drag. */}
       <div
-        className="nodrag"
         style={{
           display: "flex",
           alignItems: "center",

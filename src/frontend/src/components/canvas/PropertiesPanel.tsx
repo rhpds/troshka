@@ -910,7 +910,7 @@ export default function PropertiesPanel() {
                 : nodeType === "networkNode"
                   ? "Network"
                   : nodeType === "clusterNode"
-                    ? `OCP Cluster -- ${(data.type as string) || "standard"}`
+                    ? `OpenShift Cluster -- ${(data.type as string) || "standard"}`
                     : "Storage"}
           </div>
         </div>

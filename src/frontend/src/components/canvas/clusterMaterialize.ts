@@ -21,9 +21,11 @@ import { collectUsedIps, listCidrHosts } from "@/lib/dhcpIpAssignment";
  * never touched.
  */
 
-// Grid layout constants for member positioning and cluster boundary sizing
-const CELL_W = 130;
-const CELL_H = 130;
+// Grid layout constants for member positioning and cluster boundary sizing.
+// A VM node card is 180px wide (.vm-node-card) and ~260px tall with all rows,
+// so cells must exceed those (card + gap) or member cards overlap.
+const CELL_W = 210;
+const CELL_H = 300;
 const PAD = 30;
 const HEADER_H = 48;
 const COLS_MAX = 4;
