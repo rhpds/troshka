@@ -4,6 +4,7 @@ Fixtures are added in Task 4; this task establishes import bootstrap + skips.
 """
 
 import os
+import secrets
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))  # make live_* modules importable
@@ -81,14 +82,21 @@ def resolve_host_id(client):
 @pytest.fixture
 def project_factory(client):
     created: list[str] = []
+    # OCP from-template requires common_password (cloud-user + BMC auth);
+    # customize_topology raises if it is absent. These credentials only ever
+    # apply to throwaway nested test clusters that this fixture tears down, so
+    # there is no hardcoded secret: use TROSHKA_LIVE_COMMON_PASSWORD when set
+    # (handy for debugging a failed cluster), else generate a random per-run
+    # password that satisfies typical complexity rules. Callers may override.
+    default_password = os.environ.get("TROSHKA_LIVE_COMMON_PASSWORD") or (
+        secrets.token_urlsafe(12) + "Aa1!"
+    )
 
     def create(*, deploy: bool = True, host_id: str | None = None, **body):
-        # OCP from-template requires common_password (cloud-user + BMC auth);
-        # customize_topology raises if it is absent. Callers may override.
         payload = {
             "auto_install_ocp": True,
             "install_via": "pod",
-            "common_password": "TroshkaLive123!",
+            "common_password": default_password,
             **body,
         }
         r = client.post_json("/api/v1/projects/from-template", payload)
