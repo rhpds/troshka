@@ -32,12 +32,13 @@ quay.io/redhat-gpte/troshka-ops-pod:<sha>
 quay.io/redhat-gpte/troshka-ops-pod:latest
 ```
 
-CI pins the OpenShift client/installer version with a build arg:
+CI builds the image tracking the latest `stable` OpenShift client/installer
+(tagged `:latest`); the version can be overridden with a build arg:
 
 ```bash
 podman build \
   -f src/operator/images/ops-pod/Dockerfile \
-  --build-arg OCP_VERSION=4.20.0 \
+  --build-arg OCP_VERSION=stable \
   -t quay.io/redhat-gpte/troshka-ops-pod:latest \
   src/operator/images/ops-pod/
 ```
@@ -45,8 +46,10 @@ podman build \
 Build args:
 
 - `OCP_VERSION` — OCP client/installer version baked in (default `stable`; CI
-  pins an exact `x.y.z`). The install runner may still re-download a per-project
-  version at runtime, so this is a self-sufficiency default, not a hard pin.
+  builds the `:latest` image tracking `stable`, but you can pass an exact
+  `x.y.z` for a pinned, reproducible image). The install runner may still
+  re-download a per-project version at runtime, so this is a self-sufficiency
+  default, not a hard pin.
 - `OCP_MIRROR` — mirror base URL (default `mirror.openshift.com`).
 - `TROSHKA_COLLECTION_GIT` — source for the `troshka.cloud` collection (default
   the git repo). Replace with a Galaxy/Automation-Hub ref once published there.

@@ -8,8 +8,9 @@
 #   - curl (Redfish virtual-media / power control) + jq
 #   - python3 (serves the agent ISO over http.server) + bind-utils (dig/nslookup)
 #
-# BUILT BY CI ONLY — never `podman build` locally (project convention). CI pins
-# the OpenShift client/installer via `--build-arg OCP_VERSION=<x.y.z>`.
+# BUILT BY CI ONLY — never `podman build` locally (project convention). CI builds
+# the `:latest` image tracking the `stable` OpenShift client/installer; an exact
+# version can be pinned via `--build-arg OCP_VERSION=<x.y.z>`.
 FROM registry.access.redhat.com/ubi9/python-311:9.5
 
 # OpenShift client + installer version to bake in. "stable" tracks the latest
@@ -23,12 +24,11 @@ USER 0
 WORKDIR /workdir
 
 # Redfish/curl tooling, DNS lookups, and the git client for the collection pull.
-# ubi9 ships curl; add jq, bind-utils, tar, gzip, openssh-clients, git.
+# ubi9/python-311 base already ships curl, tar, and gzip; add jq, bind-utils,
+# openssh-clients, git.
 RUN dnf install -y --setopt=install_weak_deps=False \
         jq \
         bind-utils \
-        tar \
-        gzip \
         openssh-clients \
         git \
     && dnf clean all \
