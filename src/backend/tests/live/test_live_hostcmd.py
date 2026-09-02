@@ -50,3 +50,8 @@ def test_ops_pod_apikey_row_none_when_absent():
 def test_repo_root_points_at_scripts():
     assert (hc.REPO_ROOT / "scripts" / "host-ssh.sh").exists()
     assert (hc.REPO_ROOT / "scripts" / "host-db.sh").exists()
+
+
+def test_ops_pod_apikey_row_rejects_injection():
+    with pytest.raises(ValueError):
+        hc.ops_pod_apikey_row("x'; import os; os.system('rm -rf /')  #")

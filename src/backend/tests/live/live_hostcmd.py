@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -36,6 +37,8 @@ def host_db(python_src: str) -> str:
 
 def ops_pod_apikey_row(project_id: str) -> dict | None:
     """Return {'is_active', 'scopes'} for the ops-pod:<pid> key, or None."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", project_id):
+        raise ValueError(f"Invalid project_id: {project_id!r}")
     src = (
         "import json;"
         "from app.models.api_key import ApiKey;"
