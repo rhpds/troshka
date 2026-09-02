@@ -47,6 +47,70 @@ def normalize_ocp_section(ocp: dict | list | None) -> list[dict]:
     return clusters
 
 
+# --- OCP install-method selector (bastion vs in-cluster ops pod) -----------
+# ``install_via`` is a per-PROJECT choice of HOW OCP is installed and is
+# distinct from ``install_method`` (the agent installer TYPE). Valid values are
+# "bastion" (install from a bastion VM) and "pod" (in-cluster ops pod). It is
+# persisted on the generated topology as ``topology["ocpInstallVia"]`` so both
+# project-creation (customize_topology) and deploy-time code can read it.
+_OCP_INSTALL_VIA_VALUES = ("bastion", "pod")
+
+
+def _normalize_install_via(value) -> str:
+    """Coerce ``value`` to a valid install_via; anything invalid -> ``"pod"``."""
+    v = str(value or "").strip().lower()
+    return v if v in _OCP_INSTALL_VIA_VALUES else "pod"
+
+
+def _ocp_install_via_default() -> str:
+    """Config default for ``install_via`` (``ocp.install_via_default``).
+
+    Falls back to the legacy boolean ``ocp.install_via_pod`` for one release
+    (``true`` -> ``"pod"``) when no explicit default is set, else ``"pod"``.
+    """
+    try:
+        from app.core.config import config as app_config
+
+        ocp_cfg = getattr(app_config, "ocp", None)
+        if ocp_cfg is not None:
+            explicit = getattr(ocp_cfg, "install_via_default", None)
+            if explicit:
+                return _normalize_install_via(explicit)
+            if getattr(ocp_cfg, "install_via_pod", False):
+                return "pod"
+    except Exception:
+        pass
+    return "pod"
+
+
+def resolve_install_via(source: dict, default: str | None = None) -> str:
+    """Resolve a per-project ``install_via`` from a template/request dict.
+
+    Reads the ``install_via`` key (NOT ``install_method``) and validates it to
+    "bastion"|"pod". Falls back to ``default`` (or the config default) when the
+    key is absent, and to ``"pod"`` when the value is invalid.
+    """
+    if default is None:
+        default = _ocp_install_via_default()
+    raw = source.get("install_via")
+    if raw is None:
+        return _normalize_install_via(default)
+    return _normalize_install_via(raw)
+
+
+def ocp_install_via(topology: dict) -> str:
+    """Read the OCP install method persisted on a topology.
+
+    Returns ``topology["ocpInstallVia"]`` (validated) when set, else the config
+    default. Deploy-time code (``_should_use_ops_pod``) and ``customize_topology``
+    call this to decide the bastion-vs-ops-pod install path.
+    """
+    raw = (topology or {}).get("ocpInstallVia")
+    if raw is None:
+        return _ocp_install_via_default()
+    return _normalize_install_via(raw)
+
+
 _CP_SIZE_DEFAULTS = {"cpu": 8, "memory": 16384, "disk": 120}
 _WORKER_SIZE_DEFAULTS = {"cpu": 4, "memory": 8192, "disk": 100}
 

@@ -661,6 +661,16 @@ def create_project_from_template(
         external_access=external_access,
     )
 
+    # Per-project OCP install method (bastion vs in-cluster ops pod). Body wins
+    # over the template; both fall back to the config default ("pod"). Persist it
+    # on the topology so deploy-time code (and customize_topology below) see it.
+    from app.services.template_loader import resolve_install_via
+
+    install_via = resolve_install_via(
+        body if body.get("install_via") is not None else resolved
+    )
+    topology["ocpInstallVia"] = install_via
+
     # OCP template customization — resolve DB objects, then delegate to plugin
     bastion_image = _resolve_bastion_image(db, user, body.get("bastion_image_id"))
     bastion_iso = _resolve_bastion_iso(db, user, body.get("bastion_iso_id"))
@@ -709,6 +719,7 @@ def create_project_from_template(
                 "bastion_iso": bastion_iso,
                 "bastion_bmc_ip": bmc_ip_raw,
                 "auto_install_ocp": body.get("auto_install_ocp", True),
+                "install_via": install_via,
                 "resolved": resolved,
             },
         )

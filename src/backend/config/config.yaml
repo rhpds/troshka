@@ -73,10 +73,14 @@ ocpvirt:
     iso_library_item_name: "RHEL 10.2 Binary DVD"
 
 # OpenShift agent-based install options.
-#   install_via_pod: when true, single-cluster OCP projects install via the
-#     in-cluster ops pod instead of a bastion VM (multi-cluster always uses the
-#     ops pod). Default false so the bastion path stays default until Plan 4b.
+#   install_via_default: fallback OCP install method ("pod"|"bastion") for
+#     projects that don't specify install_via. Default "pod" (in-cluster ops
+#     pod). A project's own install_via (template/request) overrides this.
+#   install_via_pod: LEGACY boolean, kept for one release. When true (and no
+#     install_via_default is set) the default stays "pod". Prefer
+#     install_via_default going forward.
 #   ops_pod_image: overrides the ops-pod execution-environment image ref.
 ocp:
+  install_via_default: "pod"
   install_via_pod: false
   ops_pod_image: "quay.io/redhat-gpte/troshka-ops-pod:latest"

@@ -927,3 +927,104 @@ def test_export_roundtrip_multi_cluster():
     dev2 = [n for n in topo2["nodes"] if n.get("data", {}).get("clusterId") == "dev"]
     assert len(prod2) == 5
     assert len(dev2) == 1
+
+
+# ---------------------------------------------------------------------------
+# Plan 4b Task 1: install_via selector (bastion|pod, default pod)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_install_via_default_pod():
+    from app.services.template_loader import resolve_install_via
+
+    assert resolve_install_via({}) == "pod"
+
+
+def test_resolve_install_via_explicit_bastion():
+    from app.services.template_loader import resolve_install_via
+
+    assert resolve_install_via({"install_via": "bastion"}) == "bastion"
+
+
+def test_resolve_install_via_explicit_pod():
+    from app.services.template_loader import resolve_install_via
+
+    assert resolve_install_via({"install_via": "pod"}) == "pod"
+
+
+def test_resolve_install_via_invalid_falls_back_to_pod():
+    from app.services.template_loader import resolve_install_via
+
+    assert resolve_install_via({"install_via": "garbage"}) == "pod"
+
+
+def test_resolve_install_via_ignores_install_method():
+    # install_method is the agent installer TYPE, not the install path selector.
+    from app.services.template_loader import resolve_install_via
+
+    assert resolve_install_via({"install_method": "agent"}) == "pod"
+
+
+def test_resolve_install_via_body_default_override():
+    from app.services.template_loader import resolve_install_via
+
+    assert resolve_install_via({}, default="bastion") == "bastion"
+
+
+def test_ocp_install_via_reads_topology():
+    from app.services.template_loader import ocp_install_via
+
+    assert ocp_install_via({"ocpInstallVia": "bastion"}) == "bastion"
+    assert ocp_install_via({"ocpInstallVia": "pod"}) == "pod"
+
+
+def test_ocp_install_via_default_when_absent():
+    from app.services.template_loader import ocp_install_via
+
+    assert ocp_install_via({}) == "pod"
+
+
+def test_ocp_install_via_invalid_topology_value_falls_back():
+    from app.services.template_loader import ocp_install_via
+
+    assert ocp_install_via({"ocpInstallVia": "nope"}) == "pod"
+
+
+def test_install_via_default_explicit_config(monkeypatch):
+    import types
+
+    from app.core import config as config_module
+
+    fake = types.SimpleNamespace(
+        ocp=types.SimpleNamespace(install_via_default="bastion")
+    )
+    monkeypatch.setattr(config_module, "config", fake)
+    from app.services.template_loader import _ocp_install_via_default
+
+    assert _ocp_install_via_default() == "bastion"
+
+
+def test_install_via_default_legacy_install_via_pod_flag(monkeypatch):
+    # Legacy boolean ocp.install_via_pod: true still yields the "pod" default
+    # (no explicit ocp.install_via_default set).
+    import types
+
+    from app.core import config as config_module
+
+    fake = types.SimpleNamespace(ocp=types.SimpleNamespace(install_via_pod=True))
+    monkeypatch.setattr(config_module, "config", fake)
+    from app.services.template_loader import _ocp_install_via_default
+
+    assert _ocp_install_via_default() == "pod"
+
+
+def test_install_via_default_no_ocp_config(monkeypatch):
+    import types
+
+    from app.core import config as config_module
+
+    fake = types.SimpleNamespace(ocp=None)
+    monkeypatch.setattr(config_module, "config", fake)
+    from app.services.template_loader import _ocp_install_via_default
+
+    assert _ocp_install_via_default() == "pod"

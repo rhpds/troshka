@@ -86,3 +86,36 @@ def test_deploy_template_rejects_invalid_version():
         headers=HEADERS,
     )
     assert resp.status_code == 400
+
+
+def test_from_template_persists_install_via_default_pod():
+    resp = client.post(
+        "/api/v1/projects/from-template",
+        json={
+            "template_id": "ocp-compact",
+            "name": "install-via-default",
+            "common_password": "redhat123",
+        },
+        headers=HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+    pid = resp.json()["id"]
+    proj = client.get(f"/api/v1/projects/{pid}", headers=HEADERS).json()
+    assert proj["topology"]["ocpInstallVia"] == "pod"
+
+
+def test_from_template_persists_install_via_bastion():
+    resp = client.post(
+        "/api/v1/projects/from-template",
+        json={
+            "template_id": "ocp-compact",
+            "name": "install-via-bastion",
+            "install_via": "bastion",
+            "common_password": "redhat123",
+        },
+        headers=HEADERS,
+    )
+    assert resp.status_code == 201, resp.text
+    pid = resp.json()["id"]
+    proj = client.get(f"/api/v1/projects/{pid}", headers=HEADERS).json()
+    assert proj["topology"]["ocpInstallVia"] == "bastion"
