@@ -1334,7 +1334,18 @@ def extend_timer(
 
 
 def _validate_bmc_network(topology: dict):
-    """Raise if a BMC network exists but has no connected VMs."""
+    """Raise if a BMC network exists but has no connected VMs.
+
+    Skipped for bastionless (pod) OCP installs: the in-cluster ops pod is the
+    BMC provisioner (it attaches to the BMC network and drives redfish via the
+    host's virtual BMC), so no data-plane VM needs to be on the BMC network.
+    Only genuine pod-install OCP projects (clusters present + install_via==pod)
+    are skipped; a non-OCP BMC network still requires a connected provisioner.
+    """
+    from app.services.deploy_service import _should_use_ops_pod
+
+    if _should_use_ops_pod(topology):
+        return
     bmc_network = None
     for node in topology.get("nodes", []):
         if (

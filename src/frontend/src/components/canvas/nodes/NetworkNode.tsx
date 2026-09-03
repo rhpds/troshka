@@ -27,7 +27,11 @@ function RJ45Icon() {
 
 function BmcWarning({ nodeId }: { nodeId: string }) {
   const hasConnection = useCanvasStore((s) => s.edges.some((e) => e.source === nodeId || e.target === nodeId));
-  if (hasConnection) return null;
+  // An OCP cluster provisions the BMC network via the in-cluster ops pod
+  // (bastionless) — no data-plane VM needs to be on the BMC network — so only
+  // flag a genuinely orphaned BMC network (no cluster, no connection).
+  const hasOcpCluster = useCanvasStore((s) => s.nodes.some((n) => n.type === "clusterNode"));
+  if (hasConnection || hasOcpCluster) return null;
   return (
     <div style={{ background: "rgba(251,191,36,0.15)", color: "#fbbf24", fontSize: 9, padding: "3px 6px", borderRadius: 4, marginTop: 4, textAlign: "center" }}>
       Add NIC on provisioner VM and connect
