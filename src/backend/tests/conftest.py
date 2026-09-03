@@ -31,3 +31,19 @@ def get_test_db():
         yield db
     finally:
         db.close()
+
+
+import pytest  # noqa: E402
+
+# Live/real-install tests legitimately run long (a tier2 OCP install is ~30-60
+# min), so exempt them from the default per-test timeout. Everything else keeps
+# the timeout as a guardrail: an accidental real network call (e.g. a troshkad
+# HTTP request against a fake test host) then fails loudly at the timeout with a
+# stack trace instead of silently hanging the whole suite for minutes.
+_TIMEOUT_EXEMPT_MARKERS = {"tier2", "live_env", "live_troshkad", "live_kubevirt"}
+
+
+def pytest_collection_modifyitems(config, items):
+    for item in items:
+        if _TIMEOUT_EXEMPT_MARKERS & {m.name for m in item.iter_markers()}:
+            item.add_marker(pytest.mark.timeout(0))

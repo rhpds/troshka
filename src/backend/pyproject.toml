@@ -40,6 +40,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    "pytest-timeout>=2.1",
     "ruff>=0.4",
     "mypy>=1.10",
 ]
@@ -66,6 +67,12 @@ ignore = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Guardrail: no unit test should take anywhere near this long (slowest legit is
+# ~3s). A test that blows the timeout is almost always doing accidental real I/O
+# (e.g. a troshkad HTTP call against a fake host) — fail it loudly with a stack
+# trace instead of letting it silently hang the suite for minutes. Long real-
+# install tests are exempted by marker in conftest.pytest_collection_modifyitems.
+timeout = 30
 markers = [
     "live_env: requires a running Troshka instance (TROSHKA_LIVE_URL)",
     "live_troshkad: requires a troshkad/libvirt host",
