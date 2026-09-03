@@ -28,11 +28,18 @@ WORKDIR /workdir
 # Redfish/curl tooling, DNS lookups, and the git client for the collection pull.
 # ubi9/python-311 base already ships curl, tar, and gzip; add jq, bind-utils,
 # openssh-clients, git.
+#
+# nmstate provides `nmstatectl`, which `openshift-install agent create image`
+# shells out to when it validates the per-host static network config from
+# agent-config.yaml (MAC -> NIC). Without it the installer aborts with
+# "failed to validate network yaml ... nmstatectl: executable file not found"
+# and ISO generation never happens, so this package is REQUIRED, not optional.
 RUN dnf install -y --setopt=install_weak_deps=False \
         jq \
         bind-utils \
         openssh-clients \
         git \
+        nmstate \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
