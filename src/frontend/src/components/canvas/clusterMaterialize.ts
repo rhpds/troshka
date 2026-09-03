@@ -357,19 +357,23 @@ function reflowMembers(cluster: ClusterConfig, nodes: Node[]): Node[] {
     const m = String((n.data as Record<string, unknown>).name || "").match(/-(\d+)$/);
     return m ? parseInt(m[1], 10) : 0;
   };
-  const ordered = [...members].sort((a, b) => {
-    const ra = memberRole(a) === "control-plane" ? 0 : 1;
-    const rb = memberRole(b) === "control-plane" ? 0 : 1;
-    if (ra !== rb) return ra - rb;
-    return idxOf(a) - idxOf(b);
-  });
+  // CPs and workers occupy SEPARATE rows: control-plane fills its own row(s)
+  // first, then workers START on a fresh row below (never sharing a CP row).
+  const byIdx = (a: Node, b: Node) => idxOf(a) - idxOf(b);
+  const cps = members.filter((n) => memberRole(n) === "control-plane").sort(byIdx);
+  const workers = members.filter((n) => memberRole(n) === "worker").sort(byIdx);
+  const cpRows = Math.ceil(cps.length / COLS_MAX); // 0 when there are no CPs
   const posById = new Map<string, { x: number; y: number }>();
-  ordered.forEach((n, i) => {
-    const gridCol = i % COLS_MAX;
-    const gridRow = Math.floor(i / COLS_MAX);
+  cps.forEach((n, i) => {
     posById.set(n.id, {
-      x: PAD + gridCol * CELL_W,
-      y: HEADER_H + gridRow * CELL_H,
+      x: PAD + (i % COLS_MAX) * CELL_W,
+      y: HEADER_H + Math.floor(i / COLS_MAX) * CELL_H,
+    });
+  });
+  workers.forEach((n, j) => {
+    posById.set(n.id, {
+      x: PAD + (j % COLS_MAX) * CELL_W,
+      y: HEADER_H + (cpRows + Math.floor(j / COLS_MAX)) * CELL_H,
     });
   });
   return nodes.map((n) => {
