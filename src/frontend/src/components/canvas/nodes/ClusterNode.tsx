@@ -3,9 +3,24 @@
 import React, { memo } from "react";
 import { Handle, NodeResizer, Position, type NodeProps } from "@xyflow/react";
 import type { ClusterNodeData } from "@/stores/canvasStore";
+import { useCanvasStore } from "@/stores/canvasStore";
+import { clusterPrereqIssues } from "../clusterMaterialize";
 
-function ClusterNodeComponent({ data, selected }: NodeProps) {
+function ClusterNodeComponent({ id, data, selected }: NodeProps) {
   const d = data as unknown as ClusterNodeData;
+
+  // Surface cluster prerequisite issues (DNS network, gateway outbound) on the
+  // box itself so problems are visible without opening the properties panel.
+  const clusters = useCanvasStore((s) => s.clusters);
+  const nodes = useCanvasStore((s) => s.nodes);
+  const clusterId = ((data as Record<string, unknown>).clusterId as string) || id.replace(/^cluster-/, "");
+  const cluster = clusters.find((c) => c.id === clusterId);
+  const issues = cluster ? clusterPrereqIssues(cluster, nodes) : [];
+  const hasError = issues.some((i) => i.level === "error");
+  const hasWarning = issues.some((i) => i.level === "warning");
+  const issueColor = hasError
+    ? "var(--troshka-red, #ef4444)"
+    : "var(--troshka-yellow, #f59e0b)";
 
   return (
     <div
@@ -17,7 +32,11 @@ function ClusterNodeComponent({ data, selected }: NodeProps) {
         boxSizing: "border-box",
         borderRadius: 10,
         border: `2px ${selected ? "solid" : "dashed"} ${
-          selected ? "var(--troshka-accent)" : "var(--troshka-border, #4b5563)"
+          selected
+            ? "var(--troshka-accent)"
+            : hasError || hasWarning
+              ? issueColor
+              : "var(--troshka-border, #4b5563)"
         }`,
         boxShadow: selected
           ? "0 0 0 3px var(--troshka-accent-glow)"
@@ -72,9 +91,17 @@ function ClusterNodeComponent({ data, selected }: NodeProps) {
             {d.baseDomain}
           </span>
         )}
+        {issues.length > 0 && (
+          <span
+            title={issues.map((i) => `${i.level === "error" ? "⛔" : "⚠"} ${i.message}`).join("\n")}
+            style={{ marginLeft: "auto", fontSize: 13, color: issueColor, lineHeight: 1 }}
+          >
+            {hasError ? "⛔" : "⚠"}
+          </span>
+        )}
         <span
           style={{
-            marginLeft: "auto",
+            marginLeft: issues.length > 0 ? 6 : "auto",
             fontSize: 10,
             fontWeight: 500,
             padding: "1px 6px",
