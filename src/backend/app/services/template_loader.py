@@ -395,6 +395,9 @@ def _stamp_cluster_membership(vm_node, vm_cluster_map, vm_name):
     if cluster_id:
         vm_node["data"]["clusterId"] = cluster_id
         vm_node["parentId"] = f"cluster-{cluster_id}"
+        # Constrain the member to its boundary so it can't be dragged out of the
+        # box (mirrors the frontend clusterMaterialize extent).
+        vm_node["extent"] = "parent"
 
 
 _ROLE_TO_GROUP = {"control-plane": "controllers", "worker": "workers"}
@@ -537,6 +540,44 @@ def _build_cluster_boundary_nodes(clusters):
             }
         )
     return cnodes
+
+
+def _add_cluster_boundary_network_edges(clusters, nodes, edges):
+    """Add a visual network→boundary edge (``cluster-net-top``) per cluster net.
+
+    A cluster member VM's NIC handles are intentionally NOT rendered (wiring is
+    managed via the OCP box, not per-VM), so the ``network→member-NIC`` edges —
+    which stay because deploy's nic→network map is built from them — don't draw.
+    Add a display edge to the boundary's ``cluster-net-top`` target handle so the
+    box visibly connects to its network(s). Deploy ignores it (its handle is not
+    a ``nic-`` handle). Only cluster networks are in ``networkIds`` (BMC excluded).
+    """
+    node_ids = {n["id"] for n in nodes}
+    linked = {(e.get("source"), e.get("target")) for e in edges}
+    for c in clusters:
+        boundary_id = f"cluster-{c['id']}"
+        if boundary_id not in node_ids:
+            continue
+        for net_id in c.get("networkIds") or []:
+            if net_id not in node_ids or (net_id, boundary_id) in linked:
+                continue
+            edges.append(
+                {
+                    "id": _id(),
+                    "source": net_id,
+                    "target": boundary_id,
+                    "sourceHandle": "bottom",
+                    "targetHandle": "cluster-net-top",
+                    "type": "smoothstep",
+                    "style": {
+                        "stroke": "rgba(34,211,238,0.5)",
+                        "strokeWidth": 2,
+                        "strokeDasharray": "6 4",
+                    },
+                    "animated": True,
+                }
+            )
+            linked.add((net_id, boundary_id))
 
 
 def _copy_template_content_sections(tmpl: dict, resolved: dict) -> None:
@@ -1739,6 +1780,7 @@ def _generate_topology_from_vms(
 
     # Cluster boundary group nodes must precede their child VM nodes.
     nodes.extend(_build_cluster_boundary_nodes(clusters))
+    _add_cluster_boundary_network_edges(clusters, nodes, edges)
 
     vm_name_to_id = {}
     vm_x = 150
