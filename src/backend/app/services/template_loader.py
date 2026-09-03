@@ -395,9 +395,10 @@ def _stamp_cluster_membership(vm_node, vm_cluster_map, vm_name):
     if cluster_id:
         vm_node["data"]["clusterId"] = cluster_id
         vm_node["parentId"] = f"cluster-{cluster_id}"
-        # Constrain the member to its boundary so it can't be dragged out of the
-        # box (mirrors the frontend clusterMaterialize extent).
+        # Members are laid out by the cluster (grid inside the box) and must not
+        # be moved: disable dragging entirely, and keep extent as a backstop.
         vm_node["extent"] = "parent"
+        vm_node["draggable"] = False
 
 
 _ROLE_TO_GROUP = {"control-plane": "controllers", "worker": "workers"}

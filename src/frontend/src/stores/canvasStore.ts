@@ -1423,11 +1423,11 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
         if (project.topology) {
           const t = project.topology;
-          // Constrain child nodes (cluster members) to their parent boundary so
-          // they cannot be dragged out of the OCP box — enforced on load so it
-          // holds for projects saved before the backend stamped `extent`.
+          // Cluster members are laid out by the cluster and must not move:
+          // disable dragging entirely (extent is a backstop). Enforced on load so
+          // it holds for projects saved before the backend stamped these.
           const nodes = (t.nodes || []).map((n: Record<string, unknown>) =>
-            n.parentId ? { extent: "parent", ...n } : n,
+            n.parentId ? { extent: "parent", draggable: false, ...n } : n,
           ) as Node[];
           // Surface the allocated EIP address: it is written to deployed_topology
           // at deploy time but the editable topology keeps ip="". Merge it back by

@@ -548,11 +548,20 @@ def _poll_active_projects():
 
         deploying_host_ids = set()
         for pid, p in projects.items():
-            if _get_deploy_progress_data(pid):
-                if p.host_id:
-                    deploying_host_ids.add(p.host_id)
-                if p.host_assignments:
-                    deploying_host_ids.update(set(p.host_assignments.values()))
+            prog = _get_deploy_progress_data(pid)
+            if not prog:
+                continue
+            # Skip VM-state polling only while VMs are being created/modified (to
+            # avoid racing the deploy). During the OCP install phase the member
+            # VMs are already created and running (booting the agent ISO), so keep
+            # polling so their state + console stay available throughout the
+            # long install instead of the card sitting blank for ~30+ minutes.
+            if str(prog.get("step", "")).startswith("ocp-install"):
+                continue
+            if p.host_id:
+                deploying_host_ids.add(p.host_id)
+            if p.host_assignments:
+                deploying_host_ids.update(set(p.host_assignments.values()))
 
         host_batch_states, project_batch_states = _batch_fetch_vm_states(
             projects, deploying_host_ids, db
