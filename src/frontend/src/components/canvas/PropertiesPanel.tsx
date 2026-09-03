@@ -800,8 +800,14 @@ function ClusterEditor({
           label="Workers"
           value={cluster.workers}
           onCommit={onWorkersChange}
-          disabled={clusterDeployed}
-          hint={clusterDeployed ? _CLUSTER_SHAPE_LOCK_HINT : undefined}
+          disabled={clusterDeployed || cluster.type !== "standard"}
+          hint={
+            clusterDeployed
+              ? _CLUSTER_SHAPE_LOCK_HINT
+              : cluster.type !== "standard"
+                ? "Only standard clusters have separate workers — SNO is a single node and compact nodes are combined control-plane + worker."
+                : undefined
+          }
         />
       </div>
       <div className="props-divider" />
@@ -4946,8 +4952,10 @@ export default function PropertiesPanel() {
         };
         const handleTypeChange = (type: string) => {
           const controlPlane = type === "sno" ? 1 : 3;
-          editCluster({ type, controlPlane });
-          reconcile({ ...cluster, type, controlPlane });
+          // Only standard clusters have separate workers; SNO/compact force 0.
+          const workers = type === "standard" ? cluster.workers : 0;
+          editCluster({ type, controlPlane, workers });
+          reconcile({ ...cluster, type, controlPlane, workers });
         };
         const handleWorkersChange = (workers: number) => {
           editCluster({ workers });
