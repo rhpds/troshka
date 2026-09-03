@@ -301,6 +301,8 @@ interface CanvasState {
   vniMap: Record<string, number>;
   setExternalIps: (ips: ExternalIp[]) => void;
   clusters: ClusterConfig[];
+  /** Project-level OCP install method ("pod" | "bastion"); null when non-OCP. */
+  ocpInstallVia: string | null;
   setClusters: (clusters: ClusterConfig[]) => void;
   addCluster: (cluster: ClusterConfig) => void;
   updateCluster: (id: string, patch: Partial<ClusterConfig>) => void;
@@ -738,6 +740,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   vniMap: {} as Record<string, number>,
   showroom: null as ShowroomConfig | null,
   clusters: [] as ClusterConfig[],
+  ocpInstallVia: null as string | null,
 
   onNodesChange: (changes) => {
     const removals = changes.filter((c) => c.type === "remove");
@@ -1514,6 +1517,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             vniMap,
             showroom: parseShowroomFromTopology(t.showroom, nodes, lbEdges),
             clusters: Array.isArray(t.clusters) ? t.clusters : [],
+            ocpInstallVia: (t.ocpInstallVia as string) || null,
             providerType: project.provider_type || null,
             clusterCapabilities: project.cluster_capabilities || null,
           });

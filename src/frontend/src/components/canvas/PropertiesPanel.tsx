@@ -652,6 +652,9 @@ function ClusterEditor({
   nodes: Node[];
   ocpVersions: Array<{ name: string; support: string }>;
 }) {
+  // Bastionless (pod-install) OCP has no bastion, so the bastion-browser option
+  // is hidden for pod projects.
+  const ocpInstallVia = useCanvasStore((s) => s.ocpInstallVia);
   const apiVipError = vipCollisionError(clusters, cluster.id, "apiVip", cluster.apiVip || "");
   const ingressVipError = vipCollisionError(clusters, cluster.id, "ingressVip", cluster.ingressVip || "");
 
@@ -1029,30 +1032,32 @@ function ClusterEditor({
           />
           Monitor cluster health
         </label>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginTop: 4 }}>
-          <input
-            type="checkbox"
-            checked={!!cluster.configureBastionBrowser}
-            onChange={async (e) => {
-              if (!e.target.checked) {
-                onPatch({ configureBastionBrowser: false });
-                return;
-              }
-              // At most one cluster configures the bastion browser.
-              const other = clusters.find(
-                (c) => c.id !== cluster.id && c.configureBastionBrowser,
-              );
-              if (other) {
-                if (!(await appConfirm({
-                  message: `Move "Configure bastion browser" from ${other.name} to ${cluster.name}?`,
-                }))) return;
-                useCanvasStore.getState().updateCluster(other.id, { configureBastionBrowser: false });
-              }
-              onPatch({ configureBastionBrowser: true, monitorHealth: true });
-            }}
-          />
-          Configure bastion browser for this cluster
-        </label>
+        {ocpInstallVia !== "pod" && (
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginTop: 4 }}>
+            <input
+              type="checkbox"
+              checked={!!cluster.configureBastionBrowser}
+              onChange={async (e) => {
+                if (!e.target.checked) {
+                  onPatch({ configureBastionBrowser: false });
+                  return;
+                }
+                // At most one cluster configures the bastion browser.
+                const other = clusters.find(
+                  (c) => c.id !== cluster.id && c.configureBastionBrowser,
+                );
+                if (other) {
+                  if (!(await appConfirm({
+                    message: `Move "Configure bastion browser" from ${other.name} to ${cluster.name}?`,
+                  }))) return;
+                  useCanvasStore.getState().updateCluster(other.id, { configureBastionBrowser: false });
+                }
+                onPatch({ configureBastionBrowser: true, monitorHealth: true });
+              }}
+            />
+            Configure bastion browser for this cluster
+          </label>
+        )}
       </div>
     </>
   );
