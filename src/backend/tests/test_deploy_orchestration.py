@@ -3306,6 +3306,7 @@ class TestDestroyProjectInner:
 class TestDestroyTroshkadResources:
     """Tests for _destroy_troshkad_resources."""
 
+    @patch(f"{SVC}.get_all_vm_states", return_value={})
     @patch("app.services.placement.sync_host_capacity")
     @patch(f"{SVC}._teardown_networks_via_troshkad")
     @patch(f"{SVC}._get_network_lock")
@@ -3326,6 +3327,7 @@ class TestDestroyTroshkadResources:
         mock_lock,
         mock_teardown,
         mock_sync,
+        _mock_states,
     ):
         """Destroys VMs, removes files, tears down BMC and networks."""
         from app.services.deploy_service import _destroy_troshkad_resources
@@ -3352,6 +3354,7 @@ class TestDestroyTroshkadResources:
         assert len(pool_calls) == 1
         assert pool_calls[0].args[2]["target_dir"].endswith(PROJECT_ID)
 
+    @patch(f"{SVC}.get_all_vm_states", return_value={})
     @patch("app.services.placement.sync_host_capacity")
     @patch(f"{SVC}._teardown_networks_via_troshkad")
     @patch(f"{SVC}._get_network_lock")
@@ -3370,6 +3373,7 @@ class TestDestroyTroshkadResources:
         mock_lock,
         mock_teardown,
         mock_sync,
+        _mock_states,
     ):
         """VM destroy failure is non-fatal; continues with cleanup."""
         from app.services.deploy_service import (
