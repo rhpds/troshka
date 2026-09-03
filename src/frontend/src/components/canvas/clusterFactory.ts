@@ -8,7 +8,7 @@ import type { ClusterConfig } from "@/stores/canvasStore";
  * (see docs/superpowers/plans/2026-09-01-multi-cluster-ocp-plan1-data-model.md):
  *   CP     cpu 8  / memory 16384 / disk 120
  *   worker cpu 4  / memory 8192  / disk 100
- *   type "standard", controlPlane 3, workers 0.
+ *   type "sno", controlPlane 1, workers 0, recert on.
  *
  * ocpVersion defaults to "" and is auto-set to the latest Full Support release
  * once the version list loads (see the cluster editor).
@@ -19,8 +19,11 @@ import type { ClusterConfig } from "@/stores/canvasStore";
  * api.ocp3.local). Baking the name into the base domain double-labels it.
  */
 const CLUSTER_DEFAULTS = {
-  type: "standard",
-  controlPlane: 3,
+  // A cluster dragged from the palette defaults to SNO (single control-plane
+  // node, recert on) — the smallest, most common lab shape; change the type in
+  // the panel for compact/standard.
+  type: "sno",
+  controlPlane: 1,
   workers: 0,
   controlPlaneCpu: 8,
   controlPlaneMemory: 16384,
@@ -36,7 +39,7 @@ const CLUSTER_DEFAULTS = {
   controlPlaneDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }],
   workerDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }],
   // OCP control-plane options (projected onto member VMs at deploy).
-  recert: false,
+  recert: true, // SNO default regenerates certs for a unique identity
   monitorHealth: true,
   configureBastionBrowser: false,
 } as const;

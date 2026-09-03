@@ -6,13 +6,13 @@ describe("makeCluster", () => {
     const { node, cluster } = makeCluster("prod", { x: 10, y: 20 });
     expect(node.type).toBe("clusterNode");
     expect(node.id).toBe(cluster.nodeId);
-    expect(cluster.type).toBe("standard");
-    expect(cluster.controlPlane).toBe(3);
+    expect(cluster.type).toBe("sno");
+    expect(cluster.controlPlane).toBe(1);
     expect(cluster.workers).toBe(0);
     expect(cluster.controlPlaneCpu).toBe(8);
     expect(cluster.workerCpu).toBe(4);
     expect(cluster.baseDomain).toBe("local");
-    expect(cluster.recert).toBe(false);
+    expect(cluster.recert).toBe(true);
     expect(cluster.monitorHealth).toBe(true);
     expect(cluster.configureBastionBrowser).toBe(false);
     expect((node.data as Record<string, unknown>).clusterId).toBe(cluster.id);
