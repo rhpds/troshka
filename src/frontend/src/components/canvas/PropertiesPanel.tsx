@@ -410,7 +410,9 @@ function vipCollisionError(
   if (!v) return null;
   const self = clusters.find((c) => c.id === clusterId);
   const otherField = field === "apiVip" ? "ingressVip" : "apiVip";
-  if (self && (self[otherField] || "").trim() === v) {
+  // SNO clusters legitimately share ONE VIP (single node), so api == ingress is
+  // valid — only flag same-cluster duplication for multi-node clusters.
+  if (self && self.type !== "sno" && (self[otherField] || "").trim() === v) {
     return `Duplicates this cluster's ${otherField === "apiVip" ? "API VIP" : "Ingress VIP"}`;
   }
   for (const c of clusters) {
