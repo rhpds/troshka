@@ -3968,7 +3968,7 @@ export default function PropertiesPanel() {
                             const managed = Boolean((rec as Record<string, unknown>).managed);
                             return (
                             <div key={i} title={managed ? "Managed by the OpenShift cluster — edit via the cluster (base domain / VIPs)" : undefined} style={{ display: "flex", gap: 4, marginBottom: 3, alignItems: "center", minWidth: 320, ...(managed ? { background: "rgba(59,130,246,0.12)", borderLeft: "3px solid var(--troshka-accent, #3b82f6)", borderRadius: 4, padding: "3px 4px" } : {}) }}>
-                              <input className="props-input" disabled={managed} style={{ flex: 3, fontSize: 10, fontFamily: "monospace" }} value={rec.name} placeholder="hostname" onChange={(e) => {
+                              <input className="props-input" disabled={managed} style={{ width: `${Math.max((rec.name || "").length, "hostname".length) + 2}ch`, flex: "0 0 auto", fontSize: 10, fontFamily: "monospace" }} value={rec.name} placeholder="hostname" onChange={(e) => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
                                 records[i] = { ...records[i], name: e.target.value };
                                 update("dnsRecords", records);
@@ -3983,7 +3983,7 @@ export default function PropertiesPanel() {
                                 <option value="TXT">TXT</option>
                                 <option value="SRV">SRV</option>
                               </select>
-                              <input className="props-input" disabled={managed} style={{ flex: 2, fontSize: 10, fontFamily: "monospace" }} value={rec.ip || displayIp} placeholder={rec.type === "CNAME" ? "target" : displayIp ? displayIp : "IP"} onChange={(e) => {
+                              <input className="props-input" disabled={managed} style={{ width: `${Math.max((rec.ip || displayIp || "").length, "255.255.255.255".length) + 2}ch`, flex: "0 0 auto", fontSize: 10, fontFamily: "monospace" }} value={rec.ip || displayIp} placeholder={rec.type === "CNAME" ? "target" : displayIp ? displayIp : "IP"} onChange={(e) => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
                                 records[i] = { ...records[i], ip: e.target.value };
                                 update("dnsRecords", records);
