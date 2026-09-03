@@ -8,8 +8,10 @@ import type { ClusterConfig } from "@/stores/canvasStore";
  * (see docs/superpowers/plans/2026-09-01-multi-cluster-ocp-plan1-data-model.md):
  *   CP     cpu 8  / memory 16384 / disk 120
  *   worker cpu 4  / memory 8192  / disk 100
- *   type "standard", controlPlane 3, workers 0,
- *   ocpVersion "4.20".
+ *   type "standard", controlPlane 3, workers 0.
+ *
+ * ocpVersion defaults to "" and is auto-set to the latest Full Support release
+ * once the version list loads (see the cluster editor).
  *
  * baseDomain defaults to the shared parent "local" (NOT name-derived): OCP DNS
  * is api/api-int/*.apps.<name>.<baseDomain>, so the cluster NAME is the unique
@@ -29,7 +31,7 @@ const CLUSTER_DEFAULTS = {
   baseDomain: "local",
   apiVip: "",
   ingressVip: "",
-  ocpVersion: "4.20",
+  ocpVersion: "", // auto-set to latest Full Support once the version list loads
   pullThroughRegistry: null as string | null,
   controlPlaneDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }],
   workerDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }],

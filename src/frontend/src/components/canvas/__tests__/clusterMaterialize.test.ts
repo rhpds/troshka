@@ -13,6 +13,7 @@ import {
   clusterBoxSize,
   buildClusterDnsRecords,
   applyClusterDns,
+  effectiveDnsNetworkId,
   clusterPrereqIssues,
 } from "@/components/canvas/clusterMaterialize";
 import { makeCluster } from "@/components/canvas/clusterFactory";
@@ -1200,5 +1201,53 @@ describe("clusterPrereqIssues", () => {
   it("warns when there is no gateway at all", () => {
     const issues = clusterPrereqIssues({ id: "c", networkIds: ["net1"] } as any, [dnsNet]);
     expect(issues.some((i) => i.level === "warning")).toBe(true);
+  });
+});
+
+describe("effectiveDnsNetworkId", () => {
+  it("prefers an explicit dnsNetworkId when it is still a member", () => {
+    expect(effectiveDnsNetworkId({ networkIds: ["a", "b"], dnsNetworkId: "b" } as any)).toBe("b");
+  });
+  it("falls back to the first member network when dnsNetworkId is unset/stale", () => {
+    expect(effectiveDnsNetworkId({ networkIds: ["a", "b"] } as any)).toBe("a");
+    expect(effectiveDnsNetworkId({ networkIds: ["a", "b"], dnsNetworkId: "z" } as any)).toBe("a");
+  });
+  it("returns undefined with no member networks", () => {
+    expect(effectiveDnsNetworkId({ networkIds: [] } as any)).toBeUndefined();
+  });
+});
+
+describe("applyClusterDns single DNS network", () => {
+  it("writes records to only the chosen DNS network, not every member", () => {
+    const net1 = { id: "net1", type: "networkNode", data: { subtype: "network" } } as any;
+    const net2 = { id: "net2", type: "networkNode", data: { subtype: "network" } } as any;
+    const cluster = {
+      id: "ocp",
+      name: "ocp",
+      baseDomain: "local",
+      apiVip: "10.0.0.5",
+      ingressVip: "10.0.0.6",
+      networkIds: ["net1", "net2"],
+      dnsNetworkId: "net2",
+    } as any;
+    const out = applyClusterDns(cluster, [net1, net2]);
+    expect((out[0].data as any).dnsRecords).toBeUndefined(); // net1 untouched
+    expect(((out[1].data as any).dnsRecords as any[]).map((r) => r.name)).toEqual([
+      "api.ocp.local",
+      "api-int.ocp.local",
+      ".apps.ocp.local",
+    ]);
+    expect((out[1].data as any).dns).toBe(true);
+  });
+
+  it("moves records when the DNS network changes (strips the old one)", () => {
+    const net1 = { id: "net1", type: "networkNode", data: { subtype: "network" } } as any;
+    const net2 = { id: "net2", type: "networkNode", data: { subtype: "network" } } as any;
+    const base = { id: "ocp", name: "ocp", baseDomain: "local", apiVip: "10.0.0.5", ingressVip: "10.0.0.6", networkIds: ["net1", "net2"] } as any;
+    const first = applyClusterDns({ ...base, dnsNetworkId: "net1" }, [net1, net2]);
+    expect(((first[0].data as any).dnsRecords as any[]).length).toBe(3);
+    const second = applyClusterDns({ ...base, dnsNetworkId: "net2" }, first);
+    expect((second[0].data as any).dnsRecords).toEqual([]); // net1 stripped
+    expect(((second[1].data as any).dnsRecords as any[]).length).toBe(3); // net2 now hosts
   });
 });

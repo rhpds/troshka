@@ -6,7 +6,7 @@ import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
-import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, clusterPrereqIssues, suggestClusterVips, vipCollision } from "./clusterMaterialize";
+import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, effectiveDnsNetworkId, clusterPrereqIssues, suggestClusterVips, vipCollision } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
 import {
   getShowroomReadiness,
@@ -705,8 +705,18 @@ function ClusterEditor({
     cluster.baseDomain,
     cluster.apiVip,
     cluster.ingressVip,
+    cluster.dnsNetworkId,
     networkIdsKey,
   ]);
+
+  // Default the OCP version to the latest Full Support release once the list
+  // loads (falls back to the newest available if none are "Full Support").
+  useEffect(() => {
+    if (cluster.ocpVersion || ocpVersions.length === 0) return;
+    const latest = ocpVersions.find((v) => v.support === "Full Support") || ocpVersions[0];
+    if (latest) onPatch({ ocpVersion: latest.name });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cluster.ocpVersion, ocpVersions]);
 
   const prereqIssues = clusterPrereqIssues(cluster, nodes);
 
@@ -878,6 +888,28 @@ function ClusterEditor({
             )}
           </div>
         </div>
+        {(cluster.networkIds ?? []).length > 0 && (
+          <div className="props-field">
+            <label className="props-label">DNS Network</label>
+            <select
+              aria-label="DNS Network"
+              className="props-select"
+              value={effectiveDnsNetworkId(cluster) || ""}
+              onChange={(e) => onPatch({ dnsNetworkId: e.target.value })}
+            >
+              {availableNetworks
+                .filter((n) => (cluster.networkIds ?? []).includes(n.id))
+                .map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.label}
+                  </option>
+                ))}
+            </select>
+            <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 2 }}>
+              Cluster DNS records (api / api-int / *.apps) live on this network only.
+            </span>
+          </div>
+        )}
         <ClusterTextField
           label="Base Domain"
           value={cluster.baseDomain || ""}
@@ -4893,14 +4925,17 @@ export default function PropertiesPanel() {
                 e.targetHandle.startsWith("cluster-net")
               ),
           );
-          // An OCP member network must resolve api/api-int/apps — enable DNS on
-          // each selected network so the DNS requirement is satisfied on select
-          // (backend forces this at deploy anyway).
-          const nodesWithDns = nextNodes.map((n) =>
-            networkIds.includes(n.id) && n.type === "networkNode"
-              ? { ...n, data: { ...(n.data as Record<string, unknown>), dns: true } }
-              : n,
-          );
+          // An OCP cluster needs DNS on exactly ONE member network (its DNS
+          // network) to resolve api/api-int/apps — enable DNS there so the
+          // requirement is satisfied on select (backend writes to one node too).
+          const dnsNetId = effectiveDnsNetworkId({ ...cluster, networkIds });
+          const nodesWithDns = dnsNetId
+            ? nextNodes.map((n) =>
+                n.id === dnsNetId && n.type === "networkNode"
+                  ? { ...n, data: { ...(n.data as Record<string, unknown>), dns: true } }
+                  : n,
+              )
+            : nextNodes;
           useCanvasStore.getState().pushHistory();
           useCanvasStore.setState({
             nodes: nodesWithDns,

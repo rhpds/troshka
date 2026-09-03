@@ -1037,9 +1037,22 @@ function sameDnsRecords(a: ClusterDnsRecord[], b: ClusterDnsRecord[]): boolean {
  *    `_merge_dns_records` last-writer-wins and absorbs backend-written records
  *    on reload), append the fresh cluster records, and enable DNS on the node.
  */
+/**
+ * The single member network that hosts a cluster's DNS records. Prefers an
+ * explicit `dnsNetworkId` (when it is still a member), else the first member
+ * network. Keeps managed DNS on one network (mirrors the backend, which writes
+ * each cluster's records to a single network node).
+ */
+export function effectiveDnsNetworkId(cluster: ClusterConfig): string | undefined {
+  const ids = cluster.networkIds ?? [];
+  if (cluster.dnsNetworkId && ids.includes(cluster.dnsNetworkId)) return cluster.dnsNetworkId;
+  return ids[0];
+}
+
 export function applyClusterDns(cluster: ClusterConfig, nodes: Node[]): Node[] {
   const records = buildClusterDnsRecords(cluster);
-  const targetIds = new Set(cluster.networkIds ?? []);
+  const target = effectiveDnsNetworkId(cluster);
+  const targetIds = new Set(target ? [target] : []);
   const freshNames = new Set(records.map((r) => r.name));
   let changed = false;
 

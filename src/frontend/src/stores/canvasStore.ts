@@ -209,6 +209,10 @@ export interface ClusterConfig {
   ocpVersion?: string;
   pullThroughRegistry?: string;
   networkIds?: string[];
+  /** Which member network hosts the cluster's DNS records (api/api-int/apps).
+   *  Must be one of networkIds; defaults to the first member network. Keeps
+   *  managed DNS on a single network instead of every member network. */
+  dnsNetworkId?: string;
   controlPlaneDisks?: DiskSpec[];
   workerDisks?: DiskSpec[];
 }
