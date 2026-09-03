@@ -9,13 +9,36 @@ import { useCanvasStore } from "@/stores/canvasStore";
  * `GET /projects/{id}/ocp/install-log?cluster=<key>` while open so the log and
  * derived status update live during the (long) agent-based install.
  */
-/** Split "name: status" health item into its parts and classify good/bad. */
-function classifyItem(item: string): { name: string; status: string; good: boolean; bad: boolean } {
-  const name = item.split(":")[0].trim();
-  const status = item.split(":").slice(1).join(":").trim();
-  const good = /✓|available|Ready|reachable|ready/.test(status);
-  const bad = /✗|degraded|failed|not available/.test(status);
-  return { name, status, good, bad };
+// Ordered agent-based install stages, each recognised by a marker in the ops-pod
+// install log. Derived from the log (not the bastion health monitor, which does
+// not run for pod/bastionless installs), so the checklist progresses live from
+// "building ISO" all the way to "install complete".
+const INSTALL_STAGES: { label: string; re: RegExp }[] = [
+  { label: "Fetching release image", re: /Fetching image from OCP release|Extracting base ISO|internal constant for release image/i },
+  { label: "Building agent ISO", re: /Fetching Agent Installer ISO|Generating.*ISO/i },
+  { label: "Agent ISO ready", re: /Generated ISO|Agent ISO created/i },
+  { label: "Booting node (Redfish)", re: /Serving via HTTP|Booting nodes|InsertMedia|ForceRestart|Waiting for cluster install/i },
+  { label: "Node installing", re: /reached installation stage|to installing|preparing-for-installation|preparing-successful/i },
+  { label: "Writing image to disk", re: /Writing image to disk/i },
+  { label: "Bootstrap Kube API", re: /Waiting for bootkube|Bootstrap Kube API Initialized/i },
+  { label: "Cluster operators", re: /Working towards|waiting for the cluster to initialize|Could not update|Cluster operators/i },
+  { label: "Install complete", re: /install complete|Cluster is installed|Install is complete|installation completed/i },
+];
+
+type StageState = "done" | "active" | "pending";
+
+function deriveStages(log: string): { label: string; state: StageState }[] {
+  let last = -1;
+  INSTALL_STAGES.forEach((s, i) => {
+    if (s.re.test(log)) last = i;
+  });
+  const completeIdx = INSTALL_STAGES.length - 1;
+  return INSTALL_STAGES.map((s, i) => {
+    let state: StageState = "pending";
+    if (i < last || (i === last && last === completeIdx)) state = "done";
+    else if (i === last) state = "active";
+    return { label: s.label, state };
+  });
 }
 
 export default function ClusterInstallLogModal() {
@@ -62,8 +85,7 @@ export default function ClusterInstallLogModal() {
   if (!target) return null;
 
   // Derive a one-line status from the newest meaningful log line.
-  const lines = log.split("\n").filter((l) => l.trim());
-  const logStatus = lines.length ? lines[lines.length - 1] : "waiting for install to start…";
+  const stages = deriveStages(log);
 
   return (
     <div
@@ -148,44 +170,44 @@ export default function ClusterInstallLogModal() {
             }}
           >
             <div style={{ fontWeight: 600, marginBottom: 8, color: "var(--troshka-text-dim, #94a3b8)" }}>
-              Cluster status
+              Install progress
             </div>
-            {/* Phase/detail from the health monitor, else the newest log line. */}
-            <div
-              style={{
-                marginBottom: 10,
-                color:
-                  ocpHealth?.phase === "ready"
-                    ? "#4ade80"
-                    : ocpHealth?.phase === "error" || ocpHealth?.phase === "timeout"
-                      ? "#f87171"
-                      : ocpHealth?.phase === "warning"
-                        ? "#fbbf24"
-                        : "var(--pf-t--global--text--color--regular)",
-              }}
-            >
-              {ocpHealth?.phase === "ready" && "✓ "}
-              {(ocpHealth?.phase === "error" || ocpHealth?.phase === "timeout") && "✗ "}
-              {ocpHealth?.phase === "warning" && "⚠ "}
-              {ocpHealth?.detail || logStatus}
+            {/* Install stages derived from the log — no bastion/cluster access
+                needed. Each stage: ✓ done, ⟳ active, ○ pending. */}
+            <div style={{ fontSize: 11, lineHeight: 1.9 }}>
+              {stages.map((s) => (
+                <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 14, flexShrink: 0, textAlign: "center" }}>
+                    {s.state === "done" ? (
+                      <span style={{ color: "#4ade80" }}>✓</span>
+                    ) : s.state === "active" ? (
+                      <span
+                        className="project-btn-spinner"
+                        style={{ width: 10, height: 10, display: "inline-block", verticalAlign: "middle" }}
+                      />
+                    ) : (
+                      <span style={{ color: "var(--troshka-text-dim, #64748b)" }}>○</span>
+                    )}
+                  </span>
+                  <span
+                    style={{
+                      color:
+                        s.state === "done"
+                          ? "var(--pf-t--global--text--color--regular)"
+                          : s.state === "active"
+                            ? "#22d3ee"
+                            : "var(--pf-t--global--text--color--subtle)",
+                    }}
+                  >
+                    {s.label}
+                  </span>
+                </div>
+              ))}
             </div>
-            {/* Component checklist (cluster operators / API reachability). */}
-            {ocpHealth?.items && ocpHealth.items.length > 0 ? (
-              <div style={{ fontSize: 10, lineHeight: 1.7, color: "var(--pf-t--global--text--color--subtle)" }}>
-                {ocpHealth.items.map((item, i) => {
-                  const { name, status, good, bad } = classifyItem(item);
-                  return (
-                    <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
-                      <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</span>
-                      <span style={{ color: good ? "#4ade80" : bad ? "#f87171" : "#fbbf24", flexShrink: 0 }}>
-                        {good ? "✓" : bad ? "✗" : status}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div style={{ fontSize: 10, opacity: 0.5 }}>Health checks appear once the cluster is reachable.</div>
+            {/* When the bastion-based health monitor has data (bastion installs),
+                surface its summary line too. */}
+            {ocpHealth?.detail && (
+              <div style={{ fontSize: 10, marginTop: 10, opacity: 0.7 }}>{ocpHealth.detail}</div>
             )}
           </div>
           <pre
