@@ -6,7 +6,7 @@ import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
-import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, effectiveDnsNetworkId, clusterPrereqIssues, suggestClusterVips, vipCollision } from "./clusterMaterialize";
+import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, effectiveDnsNetworkId, clusterPrereqIssues, suggestClusterVips, vipCollision, vipInMemberSubnet } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
 import {
   getShowroomReadiness,
@@ -942,6 +942,11 @@ function ClusterEditor({
           {vipCollision(cluster.apiVip || "", cluster, nodes) && !apiVipError && (
             <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>IP in use</div>
           )}
+          {!!cluster.apiVip && !vipInMemberSubnet(cluster.apiVip, cluster, nodes) && (
+            <div style={{ color: "var(--troshka-red, #ef4444)", fontSize: 11, marginTop: 2 }}>
+              ⚠ Not in any connected network subnet — pick an IP within a member network.
+            </div>
+          )}
         </div>
         <div className="props-field">
           <label className="props-label" htmlFor="ingress-vip">Ingress VIP</label>
@@ -962,6 +967,11 @@ function ClusterEditor({
           {ingressVipError && <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>{ingressVipError}</div>}
           {vipCollision(cluster.ingressVip || "", cluster, nodes) && !ingressVipError && (
             <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>IP in use</div>
+          )}
+          {!!cluster.ingressVip && !vipInMemberSubnet(cluster.ingressVip, cluster, nodes) && (
+            <div style={{ color: "var(--troshka-red, #ef4444)", fontSize: 11, marginTop: 2 }}>
+              ⚠ Not in any connected network subnet — pick an IP within a member network.
+            </div>
           )}
         </div>
         <div className="props-field">

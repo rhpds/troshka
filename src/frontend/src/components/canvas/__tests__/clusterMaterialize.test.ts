@@ -14,6 +14,7 @@ import {
   buildClusterDnsRecords,
   applyClusterDns,
   effectiveDnsNetworkId,
+  vipInMemberSubnet,
   clusterPrereqIssues,
 } from "@/components/canvas/clusterMaterialize";
 import { makeCluster } from "@/components/canvas/clusterFactory";
@@ -1249,5 +1250,49 @@ describe("applyClusterDns single DNS network", () => {
     const second = applyClusterDns({ ...base, dnsNetworkId: "net2" }, first);
     expect((second[0].data as any).dnsRecords).toEqual([]); // net1 stripped
     expect(((second[1].data as any).dnsRecords as any[]).length).toBe(3); // net2 now hosts
+  });
+});
+
+describe("applyClusterDns disables DNS on the switched-off network", () => {
+  it("turns dns off on the old network when no records remain", () => {
+    const net1 = { id: "net1", type: "networkNode", data: { subtype: "network" } } as any;
+    const net2 = { id: "net2", type: "networkNode", data: { subtype: "network" } } as any;
+    const base = { id: "ocp", name: "ocp", baseDomain: "local", apiVip: "10.0.0.5", ingressVip: "10.0.0.6", networkIds: ["net1", "net2"] } as any;
+    const first = applyClusterDns({ ...base, dnsNetworkId: "net1" }, [net1, net2]);
+    expect((first[0].data as any).dns).toBe(true);
+    const second = applyClusterDns({ ...base, dnsNetworkId: "net2" }, first);
+    expect((second[0].data as any).dns).toBe(false); // net1 disabled
+    expect((second[0].data as any).dnsRecords).toEqual([]);
+    expect((second[1].data as any).dns).toBe(true); // net2 enabled
+  });
+
+  it("leaves dns on when the network still has other records", () => {
+    const net1 = { id: "net1", type: "networkNode", data: { subtype: "network", dns: true, dnsRecords: [{ name: "keep.local", ip: "10.0.0.9" }] } } as any;
+    const net2 = { id: "net2", type: "networkNode", data: { subtype: "network" } } as any;
+    const base = { id: "ocp", name: "ocp", baseDomain: "local", apiVip: "10.0.0.5", ingressVip: "10.0.0.6", networkIds: ["net1", "net2"] } as any;
+    const first = applyClusterDns({ ...base, dnsNetworkId: "net1" }, [net1, net2]);
+    const second = applyClusterDns({ ...base, dnsNetworkId: "net2" }, first);
+    expect((second[0].data as any).dns).toBe(true); // kept — user record remains
+    expect(((second[0].data as any).dnsRecords as any[]).map((r) => r.name)).toEqual(["keep.local"]);
+  });
+});
+
+describe("vipInMemberSubnet", () => {
+  const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24" } } as any;
+  it("passes for an IP inside a member subnet", () => {
+    expect(vipInMemberSubnet("10.0.0.254", { networkIds: ["net1"] } as any, [net])).toBe(true);
+  });
+  it("fails for an IP outside every member subnet", () => {
+    expect(vipInMemberSubnet("10.0.5.254", { networkIds: ["net1"] } as any, [net])).toBe(false);
+  });
+  it("passes when empty or no member CIDR to validate against", () => {
+    expect(vipInMemberSubnet("", { networkIds: ["net1"] } as any, [net])).toBe(true);
+    expect(vipInMemberSubnet("10.0.5.1", { networkIds: [] } as any, [net])).toBe(true);
+  });
+  it("clusterPrereqIssues errors on an out-of-subnet VIP", () => {
+    const dnsNet = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24", dns: true } } as any;
+    const gw = { id: "gw", type: "networkNode", data: { subtype: "gateway", outboundPolicy: "allow-all" } } as any;
+    const issues = clusterPrereqIssues({ id: "c", networkIds: ["net1"], apiVip: "10.0.5.9" } as any, [dnsNet, gw]);
+    expect(issues.some((i) => i.level === "error" && /API VIP/.test(i.message))).toBe(true);
   });
 });

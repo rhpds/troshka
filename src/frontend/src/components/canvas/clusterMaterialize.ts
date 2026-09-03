@@ -1060,6 +1060,7 @@ export function applyClusterDns(cluster: ClusterConfig, nodes: Node[]): Node[] {
     if (n.type !== "networkNode") return n;
     const data = n.data as Record<string, unknown>;
     const existing = (data.dnsRecords as ClusterDnsRecord[] | undefined) ?? [];
+    const hadOurs = existing.some((r) => r.clusterId === cluster.id);
     const isTarget = targetIds.has(n.id);
     const kept = existing.filter((r) => {
       if (r.clusterId === cluster.id) return false;
@@ -1067,14 +1068,24 @@ export function applyClusterDns(cluster: ClusterConfig, nodes: Node[]): Node[] {
       return true;
     });
     const merged = isTarget ? [...kept, ...records] : kept;
-    if (sameDnsRecords(existing, merged)) return n;
+
+    // Desired DNS flag: enable on the target when it has records; disable on a
+    // network we just moved OFF of (hadOurs) when nothing is left there.
+    let desiredDns = data.dns as boolean | undefined;
+    if (isTarget && records.length > 0) desiredDns = true;
+    else if (!isTarget && hadOurs && merged.length === 0) desiredDns = false;
+    const desiredDomain =
+      isTarget && records.length > 0 ? cluster.baseDomain : (data.dnsDomain as string | undefined);
+
+    const recordsChanged = !sameDnsRecords(existing, merged);
+    const dnsChanged = desiredDns !== data.dns;
+    const domainChanged = desiredDomain !== data.dnsDomain;
+    if (!recordsChanged && !dnsChanged && !domainChanged) return n;
     changed = true;
-    const nextData: Record<string, unknown> = { ...data, dnsRecords: merged };
-    if (isTarget && records.length > 0) {
-      nextData.dns = true;
-      nextData.dnsDomain = cluster.baseDomain;
-    }
-    return { ...n, data: nextData };
+    return {
+      ...n,
+      data: { ...data, dnsRecords: merged, dns: desiredDns, dnsDomain: desiredDomain },
+    };
   });
 
   return changed ? next : nodes;
@@ -1147,5 +1158,34 @@ export function clusterPrereqIssues(cluster: ClusterConfig, nodes: Node[]): Clus
         "No gateway allows outbound HTTP (80) / HTTPS (443) / NTP (123). A full OCP install needs these for image pulls and time sync — not required if a local/mirror registry supplies content.",
     });
   }
+  for (const [label, ip] of [
+    ["API VIP", cluster.apiVip],
+    ["Ingress VIP", cluster.ingressVip],
+  ] as const) {
+    if (ip && !vipInMemberSubnet(ip, cluster, nodes)) {
+      issues.push({
+        level: "error",
+        message: `${label} ${ip} is not within any connected network subnet.`,
+      });
+    }
+  }
   return issues;
+}
+
+/**
+ * Whether a VIP falls within one of the cluster's connected (member) network
+ * subnets. Empty VIPs pass (handled elsewhere); if no member network has a CIDR
+ * to validate against, we can't judge, so pass. Otherwise the VIP must be a host
+ * in at least one member network's CIDR.
+ */
+export function vipInMemberSubnet(ip: string, cluster: ClusterConfig, nodes: Node[]): boolean {
+  const val = (ip || "").trim();
+  if (!val) return true;
+  const netIds = new Set(cluster.networkIds ?? []);
+  const cidrs = nodes
+    .filter((n) => n.type === "networkNode" && netIds.has(n.id))
+    .map((n) => (n.data as Record<string, unknown>).cidr as string | undefined)
+    .filter((c): c is string => Boolean(c));
+  if (cidrs.length === 0) return true;
+  return cidrs.some((cidr) => listCidrHosts(cidr).includes(val));
 }
