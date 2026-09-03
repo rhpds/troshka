@@ -1,8 +1,11 @@
-name: ocp-sno
-display_name: "OpenShift SNO (Agent Installer)"
-description: "Single Node OpenShift — 8 vCPU, 32 GB RAM, 120 GB + 250 GB container storage"
+name: ocp-sno-bastionless
+display_name: "OpenShift SNO — Bastionless (Ops Pod)"
+description: "Single Node OpenShift installed in-cluster via the ops pod — no bastion VM. 8 vCPU, 32 GB RAM, 120 GB + 250 GB container storage"
 category: openshift
 install_method: agent
+# Bastionless: the in-cluster ops pod runs the agent install and drives status
+# (no bastion VM). See docs/dev/deploy-pipeline.md + Plan 4b.
+install_via: pod
 deploy_time: "~20 min"
 versions: ["4.19", "4.20", "4.21", "4.22"]
 
@@ -38,18 +41,6 @@ networks:
     cidr: 192.168.100.0/24
 
 vms:
-  bastion:
-    role: bastion
-    vcpus: 2
-    ram_gb: 4
-    os: rhel
-    disks:
-      - size_gb: 80
-    nics:
-      - network: cluster
-        ip: 10.0.0.50
-      - network: bmc
-
   cp-0:
     role: control-plane
     vcpus: 8
@@ -59,8 +50,6 @@ vms:
     bmc: true
     bmc_ip: 192.168.100.10
     recert: true
-    ocp_monitor: true
-    configure_bastion_browser: true
     disks:
       - size_gb: 120
       - size_gb: 250
@@ -77,10 +66,6 @@ showroom:
   build_content: true
   disk_gb: 5
   tabs:
-    - name: Bastion Terminal
-      type: terminal
-      vm: bastion
-      network: cluster
     # Cluster-managed OCP console tab (app-proxy): linking to cluster "ocp" lets
     # the loader derive the tab name and proxy hosts (console + oauth) from the
     # cluster, exactly like the canvas "+ OpenShift Console Proxy Tab" quick-add.
