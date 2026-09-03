@@ -201,3 +201,44 @@ def test_workload_order_control_vscode_routers():
     names = [n["data"]["name"] for n in sorted(vms, key=lambda n: n["position"]["x"])]
     assert names[:2] == ["control", "vscode"]
     assert names[2:] == ["rtr1", "rtr2", "rtr3", "rtr4"]
+
+
+def _rect(node, w, h):
+    p = node["position"]
+    return (p["x"], p["y"], p["x"] + w, p["y"] + h)
+
+
+def _overlap(a, b):
+    return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
+
+
+def test_auto_layout_keeps_cluster_members_inside_boundary():
+    """Auto-layout must not eject OCP cluster members from their boundary: it
+    lays them out as free workloads, then the cluster-aware pass pulls them back
+    inside (relative positions) and sizes the box."""
+    _TEMPLATES = Path(__file__).resolve().parents[1] / "templates"
+    tmpl = yaml.safe_load((_TEMPLATES / "ocp-compact.yaml").read_text())
+    topo = generate_topology_from_template(tmpl)
+
+    # Simulate the UI "Auto Layout" button ejecting a member to a stray spot,
+    # then re-running the (cluster-aware) layout endpoint.
+    member = next(n for n in topo["nodes"] if n["data"].get("name") == "cp-0")
+    member["position"] = {"x": 5000, "y": 5000}
+    nodes, _edges = auto_layout(topo["nodes"], topo["edges"])
+
+    boundary = next(n for n in nodes if n["type"] == "clusterNode")
+    w = boundary["style"]["width"]
+    h = boundary["style"]["height"]
+    members = [n for n in nodes if n.get("parentId") == boundary["id"]]
+    assert members, "cluster should have members"
+    for m in members:
+        # RELATIVE position (React Flow renders child relative to parent) inside
+        # the boundary's content area.
+        assert 0 <= m["position"]["x"] < w
+        assert 0 <= m["position"]["y"] < h
+
+    # The boundary must not overlap any network node (box sits below the row).
+    brect = _rect(boundary, w, h)
+    for net in nodes:
+        if net["type"] == "networkNode":
+            assert not _overlap(brect, _rect(net, 240, 70)), net["data"].get("name")

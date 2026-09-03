@@ -227,7 +227,7 @@ def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[
             "baseDomain": entry.get("base_domain", "ocp.local"),
             "apiVip": entry.get("api_vip"),
             "ingressVip": entry.get("ingress_vip"),
-            "ocpVersion": entry.get("ocp_version", "4.20"),
+            "ocpVersion": entry.get("ocp_version", "4.22"),
             "pullThroughRegistry": entry.get("pull_through_registry"),
             # Cluster-level OCP flags (projected onto member VMs at deploy).
             "recert": bool(entry.get("recert", False)),
@@ -535,89 +535,6 @@ def _build_cluster_boundary_nodes(clusters):
             }
         )
     return cnodes
-
-
-# Cluster member grid — mirrors the frontend clusterMaterialize constants so a
-# template-loaded cluster lays out identically to a canvas-edited one.
-_CL_CELL_W = 210
-_CL_CELL_H = 240
-_CL_PAD = 30
-_CL_HEADER_H = 48
-_CL_COLS = 4
-
-
-def _member_grid_role(node: dict) -> str | None:
-    d = node.get("data", {})
-    role = d.get("clusterRole")
-    if role in ("control-plane", "worker"):
-        return role
-    group = (d.get("tags") or {}).get("AnsibleGroup", "")
-    if "controllers" in group:
-        return "control-plane"
-    if "workers" in group:
-        return "worker"
-    return None
-
-
-def _member_index(node: dict) -> int:
-    name = str(node.get("data", {}).get("name", ""))
-    digits = ""
-    for ch in reversed(name):
-        if ch.isdigit():
-            digits = ch + digits
-        elif digits:
-            break
-    return int(digits) if digits else 0
-
-
-def _reflow_cluster_members(clusters: list[dict], nodes: list[dict]) -> None:
-    """Position member VMs relative to their boundary and size the boundary to
-    contain them.
-
-    React Flow renders a child node's position RELATIVE to its parent, but the
-    template layout assigns absolute positions — so a stamped member (parentId =
-    boundary) floats outside the box. Re-lay members on a grid inside the box
-    (control-plane rows first, then workers) and set the boundary size, mirroring
-    the frontend ``reflowMembers``/``clusterBoxSize``.
-    """
-    by_id = {n["id"]: n for n in nodes}
-    for c in clusters:
-        boundary = by_id.get(f"cluster-{c['id']}")
-        if not boundary:
-            continue
-        members = [
-            n
-            for n in nodes
-            if n.get("type") == "vmNode" and n.get("parentId") == boundary["id"]
-        ]
-        if not members:
-            continue
-        cps = sorted(
-            [m for m in members if _member_grid_role(m) == "control-plane"],
-            key=_member_index,
-        )
-        workers = sorted(
-            [m for m in members if _member_grid_role(m) == "worker"],
-            key=_member_index,
-        )
-        cp_rows = (len(cps) + _CL_COLS - 1) // _CL_COLS if cps else 0
-        for i, m in enumerate(cps):
-            m["position"] = {
-                "x": _CL_PAD + (i % _CL_COLS) * _CL_CELL_W,
-                "y": _CL_HEADER_H + (i // _CL_COLS) * _CL_CELL_H,
-            }
-        for j, m in enumerate(workers):
-            m["position"] = {
-                "x": _CL_PAD + (j % _CL_COLS) * _CL_CELL_W,
-                "y": _CL_HEADER_H + (cp_rows + j // _CL_COLS) * _CL_CELL_H,
-            }
-        cols = max(1, min(_CL_COLS, len(members)))
-        worker_rows = (len(workers) + _CL_COLS - 1) // _CL_COLS if workers else 0
-        rows = max(1, cp_rows + worker_rows)
-        boundary["style"] = {
-            "width": 2 * _CL_PAD + cols * _CL_CELL_W,
-            "height": _CL_HEADER_H + _CL_PAD + rows * _CL_CELL_H,
-        }
 
 
 def _copy_template_content_sections(tmpl: dict, resolved: dict) -> None:
@@ -2758,9 +2675,8 @@ def generate_topology_from_template(
     topo = _generate_topology_from_vms(resolved, bmc_password, external_access)
     from app.services.auto_layout import auto_layout
 
+    # auto_layout is cluster-aware: it re-lays cluster members inside their
+    # boundary and sizes the box (members render relative to the parent boundary
+    # in React Flow), so no separate reflow pass is needed here.
     topo["nodes"], topo["edges"] = auto_layout(topo["nodes"], topo["edges"])
-    # auto_layout is not cluster-aware (flattens all nodes), so re-lay cluster
-    # members inside their boundary + size the box AFTER it — members render
-    # relative to the parent boundary in React Flow.
-    _reflow_cluster_members(topo.get("clusters") or [], topo["nodes"])
     return topo

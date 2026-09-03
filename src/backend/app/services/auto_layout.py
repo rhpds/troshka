@@ -26,6 +26,14 @@ _VM_ROW_Y = 340
 _TOP_ROW_CLEARANCE = 24
 _LAB_ROW_GAP = 210  # below VM row bottom → lab y ≈ 780
 
+# Cluster member grid — mirrors the frontend clusterMaterialize constants so a
+# cluster laid out here matches a canvas-edited one.
+_CL_CELL_W = 210
+_CL_CELL_H = 240
+_CL_PAD = 30
+_CL_HEADER_H = 48
+_CL_COLS = 4
+
 
 def _is_showroom_node(node: dict) -> bool:
     if node.get("type") != "containerNode":
@@ -231,14 +239,26 @@ def _classify_network_placements(
     networks: list[dict],
     votes: dict[str, dict[str, int]],
     network_to_vms: dict[str, list[str]],
+    cluster_member_ids: set[str] | None = None,
 ) -> dict[str, dict[str, str]]:
     """Classify each network's vertical side and tier (link/backbone/wide)."""
+    cluster_member_ids = cluster_member_ids or set()
     placements: dict[str, dict[str, str]] = {}
     for net in networks:
         conn_count = len(network_to_vms.get(net["id"], []))
         side = _preferred_network_side(net, votes, conn_count)
+        # A network wired to OCP cluster members belongs ABOVE the cluster box
+        # (top backbone), never in the wide-bottom row where it would land inside
+        # the boundary. The BMC network is exempt — it correctly sits below.
+        is_bmc = net.get("data", {}).get("networkType") == "bmc"
+        connects_cluster = not is_bmc and any(
+            vm in cluster_member_ids for vm in network_to_vms.get(net["id"], [])
+        )
         if _is_link_network(net):
             tier = "link"
+        elif connects_cluster:
+            side = "top"
+            tier = "backbone"
         elif _is_wide_bottom_network(net, conn_count):
             tier = "wide"
         else:
@@ -845,6 +865,93 @@ def _apply_edge_path_options(
     return new_edges
 
 
+def _cluster_member_role(node: dict) -> str | None:
+    d = node.get("data", {})
+    role = d.get("clusterRole")
+    if role in ("control-plane", "worker"):
+        return role
+    group = (d.get("tags") or {}).get("AnsibleGroup", "")
+    if "controllers" in group:
+        return "control-plane"
+    if "workers" in group:
+        return "worker"
+    return None
+
+
+def _cluster_member_index(node: dict) -> int:
+    name = str(node.get("data", {}).get("name", ""))
+    digits = ""
+    for ch in reversed(name):
+        if ch.isdigit():
+            digits = ch + digits
+        elif digits:
+            break
+    return int(digits) if digits else 0
+
+
+def reflow_cluster_members(nodes: list[dict]) -> None:
+    """Re-lay OCP cluster members inside their boundary and size the box.
+
+    The core layout above is cluster-agnostic: it gives member VMs ABSOLUTE
+    positions as if they were free workloads, but React Flow renders a child's
+    position RELATIVE to its parent boundary — so a laid-out member floats
+    outside the box. For each cluster boundary, anchor the boundary at the
+    top-left of where its members landed, then grid the members inside it
+    (control-plane rows first, then workers) with RELATIVE positions and size
+    the boundary to contain them. Mirrors the frontend reflowMembers /
+    clusterBoxSize and the template loader's original reflow.
+    """
+    boundaries = [n for n in nodes if n.get("type") == "clusterNode"]
+    for boundary in boundaries:
+        members = [
+            n
+            for n in nodes
+            if n.get("type") == "vmNode" and n.get("parentId") == boundary["id"]
+        ]
+        if not members:
+            continue
+        # Anchor the boundary at the member row (keeps it near the network the
+        # members connect to). The box TOP sits at the member row so its header
+        # band occupies the top of the box and members render below it — this
+        # preserves the network-row → VM-row gap instead of the box eating into
+        # the network row above. X is inset by the left padding so member column
+        # 0 lands where auto_layout placed it.
+        min_x = min(m["position"]["x"] for m in members)
+        min_y = min(m["position"]["y"] for m in members)
+        boundary["position"] = {"x": min_x - _CL_PAD, "y": min_y}
+
+        cps = sorted(
+            [m for m in members if _cluster_member_role(m) == "control-plane"],
+            key=_cluster_member_index,
+        )
+        workers = sorted(
+            [m for m in members if _cluster_member_role(m) == "worker"],
+            key=_cluster_member_index,
+        )
+        # Any member without a recognizable role still needs a slot.
+        placed = set(id(m) for m in cps) | set(id(m) for m in workers)
+        cps += [m for m in members if id(m) not in placed]
+
+        cp_rows = (len(cps) + _CL_COLS - 1) // _CL_COLS if cps else 0
+        for i, m in enumerate(cps):
+            m["position"] = {
+                "x": _CL_PAD + (i % _CL_COLS) * _CL_CELL_W,
+                "y": _CL_HEADER_H + (i // _CL_COLS) * _CL_CELL_H,
+            }
+        for j, m in enumerate(workers):
+            m["position"] = {
+                "x": _CL_PAD + (j % _CL_COLS) * _CL_CELL_W,
+                "y": _CL_HEADER_H + (cp_rows + j // _CL_COLS) * _CL_CELL_H,
+            }
+        cols = max(1, min(_CL_COLS, len(members)))
+        worker_rows = (len(workers) + _CL_COLS - 1) // _CL_COLS if workers else 0
+        rows = max(1, cp_rows + worker_rows)
+        boundary["style"] = {
+            "width": 2 * _CL_PAD + cols * _CL_CELL_W,
+            "height": _CL_HEADER_H + _CL_PAD + rows * _CL_CELL_H,
+        }
+
+
 def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
     """Apply auto-layout to nodes/edges, return updated copies."""
     if not nodes:
@@ -853,8 +960,15 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
     classified = _classify_nodes(nodes)
     vm_to_storage, storage_to_vm, network_to_vms = _build_connection_maps(nodes, edges)
     side_votes = _collect_network_side_votes(nodes, edges)
+    boundary_ids = {n["id"] for n in nodes if n.get("type") == "clusterNode"}
+    cluster_member_ids = {
+        n["id"]
+        for n in nodes
+        if n.get("type") == "vmNode"
+        and (n.get("parentId") in boundary_ids or n.get("data", {}).get("clusterId"))
+    }
     placements = _classify_network_placements(
-        classified["networks"], side_votes, network_to_vms
+        classified["networks"], side_votes, network_to_vms, cluster_member_ids
     )
 
     # Sizing constants (match frontend)
@@ -986,6 +1100,9 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
     new_edges = _apply_edge_path_options(
         new_edges, nodes, updated, net_w, vm_w, net_h, vm_h
     )
+    # Cluster-aware pass: pull OCP cluster members back inside their boundary
+    # (they were laid out above as free workloads) and size the box.
+    reflow_cluster_members(new_nodes)
     return new_nodes, new_edges
 
 
