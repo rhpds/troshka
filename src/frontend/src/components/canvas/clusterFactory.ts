@@ -9,7 +9,12 @@ import type { ClusterConfig } from "@/stores/canvasStore";
  *   CP     cpu 8  / memory 16384 / disk 120
  *   worker cpu 4  / memory 8192  / disk 100
  *   type "standard", controlPlane 3, workers 0,
- *   baseDomain "ocp.local", ocpVersion "4.20".
+ *   ocpVersion "4.20".
+ *
+ * baseDomain defaults to the shared parent "local" (NOT name-derived): OCP DNS
+ * is api/api-int/*.apps.<name>.<baseDomain>, so the cluster NAME is the unique
+ * subdomain and the base domain is a shared parent (e.g. "ocp3" + "local" ->
+ * api.ocp3.local). Baking the name into the base domain double-labels it.
  */
 const CLUSTER_DEFAULTS = {
   type: "standard",
@@ -21,7 +26,7 @@ const CLUSTER_DEFAULTS = {
   workerCpu: 4,
   workerMemory: 8192,
   workerDisk: 100,
-  baseDomain: "ocp.local",
+  baseDomain: "local",
   apiVip: "",
   ingressVip: "",
   ocpVersion: "4.20",

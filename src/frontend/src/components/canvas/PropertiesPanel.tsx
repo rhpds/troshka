@@ -657,21 +657,14 @@ function ClusterEditor({
   const suggestions = suggestClusterVips(cluster, nodes);
   const apiVipSuggestion = cluster.apiVip ? null : suggestions.apiVip;
   const ingressVipSuggestion = cluster.ingressVip ? null : suggestions.ingressVip;
-  // Renaming a cluster copies the name into the base domain's first DNS label
-  // (keeping the existing TLD, e.g. "ocp.local" -> "ocp2.local"), so each
-  // cluster's base domain tracks its name.
-  const deriveBaseDomain = (name: string, current: string): string => {
-    const label =
-      name.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") ||
-      "ocp";
-    const tld = current && current.includes(".") ? current.slice(current.indexOf(".")) : ".local";
-    return label + tld;
-  };
-  const trimmedBaseDomain = (cluster.baseDomain || "").trim().toLowerCase();
-  const baseDomainDuplicate =
-    trimmedBaseDomain !== "" &&
+  // OCP DNS is api/api-int/*.apps.<name>.<baseDomain>. The base domain is a
+  // SHARED parent (e.g. "local", "example.com"); uniqueness comes from the
+  // cluster NAME (the subdomain), so names must be unique across clusters.
+  const trimmedName = (cluster.name || "").trim().toLowerCase();
+  const nameDuplicate =
+    trimmedName !== "" &&
     clusters.some(
-      (c) => c.id !== cluster.id && (c.baseDomain || "").trim().toLowerCase() === trimmedBaseDomain,
+      (c) => c.id !== cluster.id && (c.name || "").trim().toLowerCase() === trimmedName,
     );
 
   // A cluster is "deployed" once any of its member VMs has been provisioned.
@@ -743,14 +736,15 @@ function ClusterEditor({
         <ClusterTextField
           label="Name"
           value={cluster.name || ""}
-          onCommit={(v) =>
-            onPatch(
-              clusterDeployed
-                ? { name: v }
-                : { name: v, baseDomain: deriveBaseDomain(v, cluster.baseDomain || "") },
-            )
-          }
+          disabled={clusterDeployed}
+          hint={clusterDeployed ? "🔒 Locked while deployed — the name is part of the cluster FQDN." : undefined}
+          onCommit={(v) => onPatch({ name: v })}
         />
+        {nameDuplicate && (
+          <div style={{ fontSize: 11, color: "var(--troshka-red, #ef4444)", marginTop: -4 }}>
+            ⚠ Another cluster already uses this name — each cluster needs a unique name (it is the DNS subdomain).
+          </div>
+        )}
         <div className="props-field">
           <label className="props-label">Cluster Type</label>
           <select
@@ -887,16 +881,15 @@ function ClusterEditor({
         <ClusterTextField
           label="Base Domain"
           value={cluster.baseDomain || ""}
-          placeholder="ocp.local"
+          placeholder="local"
           disabled={clusterDeployed}
-          hint={clusterDeployed ? "🔒 Locked while deployed — wipe all cluster VMs to change." : undefined}
+          hint={
+            clusterDeployed
+              ? "🔒 Locked while deployed — wipe all cluster VMs to change."
+              : `Shared parent domain. FQDN: api.${(cluster.name || "<name>").trim() || "<name>"}.${(cluster.baseDomain || "local").trim() || "local"}`
+          }
           onCommit={(v) => onPatch({ baseDomain: v })}
         />
-        {baseDomainDuplicate && (
-          <div style={{ fontSize: 11, color: "var(--troshka-red, #ef4444)", marginTop: -4 }}>
-            ⚠ Another cluster already uses this base domain — each cluster needs a unique base domain.
-          </div>
-        )}
         <div className="props-field">
           <label className="props-label" htmlFor="api-vip">API VIP</label>
           <div style={{ display: "flex", gap: 6, alignItems: "flex-start", flexWrap: "wrap" }}>
