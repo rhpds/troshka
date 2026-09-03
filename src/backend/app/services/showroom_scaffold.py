@@ -105,6 +105,7 @@ def parse_template_tabs(
     vm_name_to_id: dict[str, str],
     vms_def: dict[str, Any],
     net_ids: dict[str, str],
+    clusters: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Convert template tab entries (vm names) to canvas showroomTabs (vmIds)."""
     tabs: list[dict[str, Any]] = []
@@ -120,10 +121,12 @@ def parse_template_tabs(
             if vm_name not in vm_name_to_id:
                 raise ValueError(f"Showroom tab references unknown VM '{vm_name}'")
             tab["vmId"] = vm_name_to_id[vm_name]
+        # A cluster-linked proxy tab derives its name + hosts from the cluster.
+        cluster_linked = _apply_cluster_link(tab, raw, clusters or [])
         # Name-based proxy tabs resolve their upstream via the showroom's DNS,
         # so they need neither a VM nor a per-tab network.
-        name_based_proxy = tab_type == "proxy" and bool(
-            raw.get("proxy_host") or raw.get("proxy_hosts")
+        name_based_proxy = tab_type == "proxy" and (
+            bool(raw.get("proxy_host") or raw.get("proxy_hosts")) or cluster_linked
         )
         network = raw.get("network", "")
         if tab_type != "external" and not name_based_proxy and not network:
@@ -162,6 +165,52 @@ def _resolve_proxy_hosts(raw: dict[str, Any]) -> list[str]:
     ``proxy_hosts`` list; a lone ``proxy_host`` remains a generic location proxy.
     """
     return list(raw.get("proxy_hosts") or [])
+
+
+def cluster_console_hosts(name: str, base_domain: str) -> list[str]:
+    """Console + oauth internal hosts for a cluster (mirrors the frontend
+    ``clusterConsoleHosts``); [0] is the iframe target, [1] the login companion.
+    """
+    return [
+        f"console-openshift-console.apps.{name}.{base_domain}",
+        f"oauth-openshift.apps.{name}.{base_domain}",
+    ]
+
+
+def cluster_console_tab_name(name: str) -> str:
+    """Managed console-proxy tab name (mirrors the frontend ``clusterConsoleTabName``)."""
+    return f"{name} Console"
+
+
+def _resolve_tab_cluster(ref: str, clusters: list[dict[str, Any]]) -> dict[str, Any]:
+    """Find the cluster a tab's ``cluster:`` key names, by cluster name."""
+    for cluster in clusters:
+        if cluster.get("name") == ref:
+            return cluster
+    raise ValueError(f"Showroom tab references unknown cluster '{ref}'")
+
+
+def _apply_cluster_link(
+    tab: dict[str, Any], raw: dict[str, Any], clusters: list[dict[str, Any]]
+) -> bool:
+    """Link a proxy tab to an OCP cluster when ``raw`` has a ``cluster:`` key.
+
+    Stamps ``clusterId`` and DERIVES the tab name + proxy hosts (console +
+    oauth) from the cluster's name/baseDomain, matching the frontend quick-add
+    (``+ OpenShift Console Proxy Tab``) so the tab is cluster-managed and
+    ``syncClusterProxyTabs`` keeps it current on rename / TLD change. Returns
+    ``True`` when the tab was linked.
+    """
+    ref = raw.get("cluster")
+    if tab.get("type") != "proxy" or not ref:
+        return False
+    cluster = _resolve_tab_cluster(str(ref), clusters)
+    name = cluster["name"]
+    base_domain = cluster.get("baseDomain") or "ocp.local"
+    tab["clusterId"] = cluster["id"]
+    tab["name"] = cluster_console_tab_name(name)
+    tab["proxyHosts"] = cluster_console_hosts(name, base_domain)
+    return True
 
 
 def app_proxy_internal_hosts(tabs: list[dict[str, Any]]) -> list[str]:
@@ -677,6 +726,7 @@ def build_showroom_from_config(
     net_ids: dict[str, str],
     vm_x: int,
     vm_row_y: int,
+    clusters: list[dict[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], list[dict], list[dict], list[dict], dict[str, Any]]:
     """Return showroom container node, disks, edges, and topology.showroom metadata."""
     disk_gb = int(showroom_cfg.get("disk_gb", 5))
@@ -686,7 +736,7 @@ def build_showroom_from_config(
     dns_network = str(showroom_cfg.get("dns_network") or "").strip()
 
     tabs = parse_template_tabs(
-        showroom_cfg.get("tabs") or [], vm_name_to_id, vms_def, net_ids
+        showroom_cfg.get("tabs") or [], vm_name_to_id, vms_def, net_ids, clusters
     )
     resolved = resolve_showroom_tabs(tabs, vms_def, vm_name_to_id)
     nginx_b64 = base64.b64encode(build_nginx_config(resolved).encode()).decode()
@@ -811,12 +861,20 @@ def export_showroom_section(
     if mounts:
         exported.setdefault("disk_gb", 5)
 
+    cluster_names = {
+        c.get("id"): c.get("name") for c in (topology.get("clusters") or [])
+    }
     tabs_out: list[dict[str, Any]] = []
     for tab in cd.get("showroomTabs", []):
         entry: dict[str, Any] = {
             "name": tab.get("name", ""),
             "type": tab.get("type", "terminal"),
         }
+        # Cluster-managed console tab: export as ``cluster: <name>`` so it
+        # re-imports as managed (name + hosts re-derived), not as static hosts.
+        cluster_id = tab.get("clusterId")
+        if cluster_id and cluster_names.get(cluster_id):
+            entry["cluster"] = cluster_names[cluster_id]
         vm_id = tab.get("vmId")
         if vm_id:
             entry["vm"] = id_to_name.get(vm_id, "")

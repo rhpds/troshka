@@ -65,15 +65,14 @@ showroom:
   build_content: true
   disk_gb: 5
   tabs:
-    # App-proxy: embed the OCP console in the showroom iframe. Deploy mints a
+    # Cluster-managed OCP console tab (app-proxy): linking to cluster "ocp" lets
+    # the loader derive the tab name and proxy hosts (console + oauth) from the
+    # cluster, exactly like the canvas "+ OpenShift Console Proxy Tab" quick-add.
+    # It then auto-syncs on cluster rename / base-domain change. Deploy mints a
     # public route per host (browser can't resolve .local), and nginx rewrites
     # console<->oauth redirects public<->.local while leaving the OAuth
     # redirect_uri .local so the cluster's OAuthClient still validates.
-    # proxy_hosts[0] is the iframe target; the rest are login companions.
-    - name: OCP Console
-      type: proxy
-      proxy_hosts:
-        - console-openshift-console.apps.ocp.local   # iframe target
-        - oauth-openshift.apps.ocp.local             # login companion
+    - type: proxy
+      cluster: ocp
       proxy_port: 443
       proxy_tls: true

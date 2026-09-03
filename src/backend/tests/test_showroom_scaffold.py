@@ -1,7 +1,10 @@
+import pytest
+
 from app.services.showroom_scaffold import (
     apply_showroom_deploy_overrides,
     build_nginx_config,
     build_showroom_from_config,
+    export_showroom_section,
     parse_template_tabs,
     resolve_showroom_tabs,
 )
@@ -580,4 +583,75 @@ def test_app_proxy_internal_hosts_skips_empty():
     tabs = [{"proxyHosts": ["", "console-openshift-console.apps.ocp.ocp.local", "  "]}]
     assert app_proxy_internal_hosts(tabs) == [
         "console-openshift-console.apps.ocp.ocp.local"
+    ]
+
+
+_OCP_CLUSTERS = [{"id": "ocp", "name": "ocp", "baseDomain": "local"}]
+
+
+def test_parse_template_tabs_cluster_linked():
+    """A proxy tab with `cluster: <name>` is cluster-managed: the loader stamps
+    clusterId and DERIVES the tab name + console/oauth hosts from the cluster."""
+    tabs = parse_template_tabs(
+        [{"type": "proxy", "cluster": "ocp", "proxy_port": 443, "proxy_tls": True}],
+        {},
+        {},
+        {},
+        _OCP_CLUSTERS,
+    )
+    assert tabs[0]["clusterId"] == "ocp"
+    assert tabs[0]["name"] == "ocp Console"
+    assert tabs[0]["proxyHosts"] == [
+        "console-openshift-console.apps.ocp.local",
+        "oauth-openshift.apps.ocp.local",
+    ]
+    # No VM / network required for a cluster-linked proxy tab.
+    assert "vmId" not in tabs[0]
+    assert "network" not in tabs[0]
+
+
+def test_parse_template_tabs_cluster_link_unknown_raises():
+    """A `cluster:` reference that matches no cluster is a template error."""
+    with pytest.raises(ValueError, match="unknown cluster 'nope'"):
+        parse_template_tabs(
+            [{"type": "proxy", "cluster": "nope"}], {}, {}, {}, _OCP_CLUSTERS
+        )
+
+
+def test_export_showroom_section_cluster_tab_round_trips():
+    """A managed console tab exports as `cluster: <name>` (not static hosts) and
+    re-imports to the same clusterId + derived hosts."""
+    topology = {"clusters": _OCP_CLUSTERS}
+    showroom_node = {
+        "id": "sr1",
+        "data": {
+            "isShowroom": True,
+            "contentRepo": "https://example.com/repo.git",
+            "showroomTabs": [
+                {
+                    "id": "t1",
+                    "name": "ocp Console",
+                    "type": "proxy",
+                    "clusterId": "ocp",
+                    "proxyHosts": [
+                        "console-openshift-console.apps.ocp.local",
+                        "oauth-openshift.apps.ocp.local",
+                    ],
+                    "proxyPort": 443,
+                    "proxyTls": True,
+                }
+            ],
+        },
+    }
+    exported = export_showroom_section(topology, [showroom_node], {}, [], {})
+    assert exported is not None
+    tab = exported["tabs"][0]
+    assert tab["cluster"] == "ocp"
+
+    # Re-import the exported tab and confirm it is managed again.
+    reparsed = parse_template_tabs(exported["tabs"], {}, {}, {}, _OCP_CLUSTERS)
+    assert reparsed[0]["clusterId"] == "ocp"
+    assert reparsed[0]["proxyHosts"] == [
+        "console-openshift-console.apps.ocp.local",
+        "oauth-openshift.apps.ocp.local",
     ]

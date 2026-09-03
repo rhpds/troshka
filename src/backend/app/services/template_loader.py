@@ -1861,6 +1861,7 @@ def _generate_topology_from_vms(
             net_ids,
             gw_node["position"]["x"] - VM_SPACING,
             gw_node["position"]["y"],
+            clusters,
         )
         nodes.append(ctr_node)
         nodes.extend(disk_nodes)
