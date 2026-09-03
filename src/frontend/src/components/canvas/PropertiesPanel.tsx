@@ -2179,25 +2179,12 @@ export default function PropertiesPanel() {
                 <div className="props-section-title">Cluster</div>
                 <div className="props-field">
                   <label className="props-label">Cluster role</label>
-                  <select
-                    aria-label="Cluster role"
-                    className="props-select"
-                    disabled={projectState === "deploying"}
-                    value={memberRole(node) ?? "control-plane"}
-                    onChange={(e) => {
-                      const role = e.target.value;
-                      updateNodeData(node.id, {
-                        clusterRole: role,
-                        tags: {
-                          ...((data as Record<string, any>).tags || {}),
-                          AnsibleGroup: role === "control-plane" ? "controllers" : "workers",
-                        },
-                      });
-                    }}
-                  >
-                    <option value="control-plane">Control plane</option>
-                    <option value="worker">Worker</option>
-                  </select>
+                  {/* Read-only: role is managed by the cluster (its type + worker
+                      count), not per-VM. */}
+                  <span style={{ fontSize: 13, color: "var(--troshka-text-dim)" }}>
+                    {memberRole(node) === "worker" ? "Worker" : "Control plane"}{" "}
+                    <span style={{ fontSize: 11 }}>(managed by cluster)</span>
+                  </span>
                 </div>
               </div>
             </>
