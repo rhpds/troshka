@@ -3035,12 +3035,8 @@ class TestHeadlessHelpers(unittest.TestCase):
         self.assertTrue(troshkad._domain_is_headless(root))
 
     def test_resolve_headless_from_serial_exec_type(self):
-        self.assertTrue(
-            troshkad._resolve_headless({"serial_exec_type": "eos"})
-        )
-        self.assertFalse(
-            troshkad._resolve_headless({"serial_exec_type": "linux"})
-        )
+        self.assertTrue(troshkad._resolve_headless({"serial_exec_type": "eos"}))
+        self.assertFalse(troshkad._resolve_headless({"serial_exec_type": "linux"}))
 
 
 # ── _configure_vnc_graphics ──
@@ -10111,3 +10107,42 @@ class TestHandlerHandle(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRedactedCmdStr(unittest.TestCase):
+    def test_masks_secret_env_values(self):
+        cmd = [
+            "podman",
+            "create",
+            "--pod",
+            "p",
+            "--name",
+            "c",
+            "-e",
+            "TROSHKA_API_KEY=trk_supersecret",
+            "-e",
+            "TROSHKA_API_URL=https://x.example.com",
+            "-e",
+            "OCP_VERSION=4.20",
+            "img",
+        ]
+        out = troshkad._redacted_cmd_str(cmd)
+        self.assertNotIn("trk_supersecret", out)
+        self.assertIn("TROSHKA_API_KEY=***", out)
+        # non-secret env values are preserved
+        self.assertIn("TROSHKA_API_URL=https://x.example.com", out)
+        self.assertIn("OCP_VERSION=4.20", out)
+
+    def test_masks_password_and_token(self):
+        cmd = ["run", "-e", "BMC_PASSWORD=hunter2", "-e", "GH_TOKEN=abc123"]
+        out = troshkad._redacted_cmd_str(cmd)
+        self.assertNotIn("hunter2", out)
+        self.assertNotIn("abc123", out)
+        self.assertIn("BMC_PASSWORD=***", out)
+        self.assertIn("GH_TOKEN=***", out)
+
+    def test_non_env_args_unchanged(self):
+        cmd = ["podman", "inspect", "troshka-x-ops"]
+        self.assertEqual(
+            troshkad._redacted_cmd_str(cmd), "podman inspect troshka-x-ops"
+        )

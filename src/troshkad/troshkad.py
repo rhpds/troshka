@@ -1086,9 +1086,37 @@ class _CmdResult:
         return self.stdout
 
 
+_SECRET_ENV_SUFFIXES = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASS")
+
+
+def _is_secret_env_name(name):
+    up = name.upper()
+    return any(up.endswith(s) for s in _SECRET_ENV_SUFFIXES)
+
+
+def _redacted_cmd_str(cmd):
+    """Join a command for logging/errors, masking secret ``-e NAME=VALUE`` env
+    values (API keys, tokens, passwords) so they never reach job logs, the
+    project ``deploy_error``, or ``podman`` error text."""
+    parts = []
+    i = 0
+    while i < len(cmd):
+        arg = cmd[i]
+        parts.append(arg)
+        if arg == "-e" and i + 1 < len(cmd):
+            name, sep, _val = cmd[i + 1].partition("=")
+            parts.append(
+                f"{name}=***" if sep and _is_secret_env_name(name) else cmd[i + 1]
+            )
+            i += 2
+            continue
+        i += 1
+    return " ".join(parts)
+
+
 def _run_cmd(job, cmd, timeout=600, check=True):
     """Run a subprocess command, appending output to job. Stores process handle in job for drain."""
-    _job_log(job, f"$ {' '.join(cmd)}")
+    _job_log(job, f"$ {_redacted_cmd_str(cmd)}")
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
     )
@@ -1108,7 +1136,9 @@ def _run_cmd(job, cmd, timeout=600, check=True):
         for line in stderr.strip().split("\n"):
             _job_log(job, line)
     if check and proc.returncode != 0:
-        raise RuntimeError(f"Command failed (exit {proc.returncode}): {' '.join(cmd)}")
+        raise RuntimeError(
+            f"Command failed (exit {proc.returncode}): {_redacted_cmd_str(cmd)}"
+        )
     return _CmdResult(stdout, stderr, proc.returncode)
 
 

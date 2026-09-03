@@ -1811,6 +1811,26 @@ def _ops_pod_api_url() -> str:
         return ""
 
 
+def _ops_pod_image_hint(msg: str) -> str:
+    """Append an actionable hint when an ops-pod failure looks like the EE image
+    could not be pulled (unauthorized / missing manifest). The default image is a
+    placeholder; deployers must point ``ocp.ops_pod_image`` at a reachable EE."""
+    low = msg.lower()
+    if "unauthorized" in low or "manifest unknown" in low or "troshka-ops-pod" in low:
+        try:
+            from app.services.ocp.ops_pod_scaffold import OPS_POD_IMAGE
+
+            image = OPS_POD_IMAGE
+        except Exception:
+            image = "the configured ops-pod image"
+        return (
+            f"{msg}\n\nThe ops-pod image ({image}) could not be pulled. Set "
+            "`ocp.ops_pod_image` to a reachable execution-environment image "
+            "(and configure registry credentials if it is private)."
+        )
+    return msg
+
+
 def _should_use_ops_pod(topology) -> bool:
     """True when the deploy should create the ops pod instead of the bastion.
 
@@ -2005,7 +2025,10 @@ def _deploy_ops_pod_troshkad(
         pull_secret_json="",
     )
     job_id = start_job(host, "/pods/create", params)
-    _wait_troshkad_job(host, job_id, 300, "Ops pod create")
+    try:
+        _wait_troshkad_job(host, job_id, 300, "Ops pod create")
+    except Exception as exc:
+        raise RuntimeError(_ops_pod_image_hint(str(exc))) from exc
     _start_pod(host, f"troshka-{project_id[:8]}-ops", timeout=300)
     # Pod (bastionless) projects have no ocpMonitor VM node, so the bastion-path
     # `_has_ocp_monitor` gate never sets ocp_status. Mark the install in-progress
