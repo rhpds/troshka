@@ -9,7 +9,7 @@ versions: ["4.14", "4.15", "4.16", "4.17", "4.18"]
 ocp:
   - name: ocp
     type: sno
-    base_domain: ocp.local
+    base_domain: local
     api_vip: 10.0.0.10
     ingress_vip: 10.0.0.10
 
@@ -24,13 +24,13 @@ networks:
   cluster:
     cidr: 10.0.0.0/24
     gateway: true
-    domain: ocp.local
+    domain: local
     dns_records:
-      - name: api.ocp.ocp.local
+      - name: api.ocp.local
         ip: 10.0.0.10
-      - name: api-int.ocp.ocp.local
+      - name: api-int.ocp.local
         ip: 10.0.0.10
-      - name: .apps.ocp.ocp.local
+      - name: .apps.ocp.local
         ip: 10.0.0.10
   bmc:
     type: bmc
@@ -70,7 +70,7 @@ vms:
 
 showroom:
   enabled: true
-  dns_network: cluster        # resolves *.apps.ocp.ocp.local -> ingress VIP
+  dns_network: cluster        # resolves *.apps.ocp.local -> ingress VIP
   content_repo: https://github.com/rhpds/showroom-troshka-ocp-base.git
   content_ref: main
   build_content: true
@@ -88,7 +88,7 @@ showroom:
     - name: OCP Console
       type: proxy
       proxy_hosts:
-        - console-openshift-console.apps.ocp.ocp.local   # iframe target
-        - oauth-openshift.apps.ocp.ocp.local             # login companion
+        - console-openshift-console.apps.ocp.local   # iframe target
+        - oauth-openshift.apps.ocp.local             # login companion
       proxy_port: 443
       proxy_tls: true
