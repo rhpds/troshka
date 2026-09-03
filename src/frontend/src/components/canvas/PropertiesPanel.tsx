@@ -429,25 +429,33 @@ function ClusterNumberField({
   value,
   min = 0,
   onCommit,
+  disabled = false,
+  hint,
 }: {
   label: string;
   value: number;
   min?: number;
   onCommit: (n: number) => void;
+  disabled?: boolean;
+  hint?: string;
 }) {
   return (
     <div className="props-field">
-      <label className="props-label">{label}</label>
+      <label className="props-label" title={hint}>{label}</label>
       <input
         type="number"
         aria-label={label}
         className="props-input"
         min={min}
         value={value}
+        disabled={disabled}
+        title={hint}
         onChange={(e) => {
+          if (disabled) return;
           const n = parseInt(e.target.value, 10);
           onCommit(Number.isNaN(n) ? min : Math.max(min, n));
         }}
+        style={disabled ? { opacity: 0.6, cursor: "not-allowed" } : undefined}
       />
     </div>
   );
@@ -627,6 +635,12 @@ function DiskListEditor({
   );
 }
 
+// Cluster type + worker count define the cluster's node shape; changing them
+// after deploy would require a full OCP redeploy, so they are locked once the
+// cluster's member VMs exist.
+const _CLUSTER_SHAPE_LOCK_HINT =
+  "🔒 Locked while deployed — changing the cluster type or worker count requires redeploying OpenShift.";
+
 function ClusterEditor({
   cluster,
   clusters,
@@ -761,12 +775,15 @@ function ClusterEditor({
           </div>
         )}
         <div className="props-field">
-          <label className="props-label">Cluster Type</label>
+          <label className="props-label" title={clusterDeployed ? _CLUSTER_SHAPE_LOCK_HINT : undefined}>Cluster Type</label>
           <select
             aria-label="Cluster Type"
             className="props-select"
             value={cluster.type}
-            onChange={(e) => onTypeChange(e.target.value)}
+            disabled={clusterDeployed}
+            title={clusterDeployed ? _CLUSTER_SHAPE_LOCK_HINT : undefined}
+            style={clusterDeployed ? { opacity: 0.6, cursor: "not-allowed" } : undefined}
+            onChange={(e) => { if (!clusterDeployed) onTypeChange(e.target.value); }}
           >
             <option value="sno">SNO (single node)</option>
             <option value="compact">Compact (3 control-plane)</option>
@@ -783,6 +800,8 @@ function ClusterEditor({
           label="Workers"
           value={cluster.workers}
           onCommit={onWorkersChange}
+          disabled={clusterDeployed}
+          hint={clusterDeployed ? _CLUSTER_SHAPE_LOCK_HINT : undefined}
         />
       </div>
       <div className="props-divider" />
