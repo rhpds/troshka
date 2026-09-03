@@ -31,6 +31,17 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
         ? { bg: "rgba(239,68,68,0.18)", border: "rgba(239,68,68,0.55)" }
         : { bg: "rgba(34,211,238,0.18)", border: "rgba(34,211,238,0.4)" };
   const issues = cluster ? clusterPrereqIssues(cluster, nodes) : [];
+  // A duplicate cluster name is an error (the name is the DNS subdomain and must
+  // be unique) — surface it on the box, not just in the properties panel.
+  if (
+    cluster?.name &&
+    clusters.filter((c) => c.name === cluster.name).length > 1
+  ) {
+    issues.push({
+      level: "error",
+      message: `Duplicate cluster name "${cluster.name}" — each cluster needs a unique name (it is the DNS subdomain).`,
+    });
+  }
   const hasError = issues.some((i) => i.level === "error");
   const issueColor = hasError
     ? "var(--troshka-red, #ef4444)"
