@@ -27,15 +27,19 @@ const INSTALL_STAGES: { label: string; re: RegExp }[] = [
 
 type StageState = "done" | "active" | "pending";
 
-/** Elapsed install time from the log's first→last "[HH:MM:SS]" timestamps
+/** Elapsed install seconds from the log's first→last "[HH:MM:SS]" timestamps
  *  (handles a single midnight wrap). Null until there are two timestamps. */
-function logElapsed(log: string): string | null {
+function logElapsedSecs(log: string): number | null {
   const ts = [...log.matchAll(/\[(\d{2}):(\d{2}):(\d{2})\]/g)];
   if (ts.length < 2) return null;
   const secs = (m: RegExpMatchArray) => +m[1] * 3600 + +m[2] * 60 + +m[3];
   let d = secs(ts[ts.length - 1]) - secs(ts[0]);
   if (d < 0) d += 86400;
-  return `${Math.floor(d / 60)}m ${(d % 60).toString().padStart(2, "0")}s`;
+  return d;
+}
+
+function fmtElapsed(total: number): string {
+  return `${Math.floor(total / 60)}m ${(total % 60).toString().padStart(2, "0")}s`;
 }
 
 /** Parse cluster-operator progress from the log: overall "N of M (P%)" and the
@@ -81,6 +85,8 @@ export default function ClusterInstallLogModal() {
   const [log, setLog] = useState("");
   const [loading, setLoading] = useState(false);
   const [revealPw, setRevealPw] = useState(false);
+  const [fetchedAt, setFetchedAt] = useState(0);
+  const [, setTick] = useState(0);
   const preRef = useRef<HTMLPreElement>(null);
 
   useEffect(() => {
@@ -95,7 +101,10 @@ export default function ClusterInstallLogModal() {
         );
         if (!r.ok || cancelled) return;
         const data = await r.json();
-        if (!cancelled) setLog(data.output || "");
+        if (!cancelled) {
+          setLog(data.output || "");
+          setFetchedAt(Date.now());
+        }
       } catch {
         /* transient — keep the last log */
       } finally {
@@ -110,6 +119,13 @@ export default function ClusterInstallLogModal() {
     };
   }, [target, projectId]);
 
+  // Tick every second so the elapsed timer advances live between log polls.
+  useEffect(() => {
+    if (!target) return;
+    const t = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, [target]);
+
   // Auto-scroll to the newest line as the log grows.
   useEffect(() => {
     if (preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight;
@@ -118,10 +134,17 @@ export default function ClusterInstallLogModal() {
   if (!target) return null;
 
   const stages = deriveStages(log);
-  const elapsed = logElapsed(log);
   const ops = parseOperators(log);
   const operatorsActive = stages.some((s) => s.label === "Cluster operators" && s.state === "active");
   const installed = stages[stages.length - 1]?.state === "done";
+
+  // Elapsed = log-derived base + seconds since the last poll (ticks live while
+  // installing; frozen at the log's value once complete).
+  const baseSecs = logElapsedSecs(log);
+  const elapsed =
+    baseSecs == null
+      ? null
+      : fmtElapsed(baseSecs + (installed || !fetchedAt ? 0 : Math.floor((Date.now() - fetchedAt) / 1000)));
 
   // kubeadmin password + kubeconfig live on the cluster's member VM nodes; show
   // them here (the palette OCP panel is gone for pod installs) once present.
