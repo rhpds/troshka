@@ -17,7 +17,7 @@ const INSTALL_STAGES: { label: string; re: RegExp }[] = [
   { label: "Fetching release image", re: /Fetching image from OCP release|Extracting base ISO|internal constant for release image/i },
   { label: "Building agent ISO", re: /Fetching Agent Installer ISO|Generating.*ISO/i },
   { label: "Agent ISO ready", re: /Generated ISO|Agent ISO created/i },
-  { label: "Booting node (Redfish)", re: /Serving via HTTP|Booting nodes|InsertMedia|ForceRestart|Waiting for cluster install/i },
+  { label: "Net booting node", re: /Serving via HTTP|Booting nodes|InsertMedia|ForceRestart|Waiting for cluster install/i },
   { label: "Node installing", re: /reached installation stage|to installing|preparing-for-installation|preparing-successful/i },
   { label: "Writing image to disk", re: /Writing image to disk/i },
   { label: "Bootstrap Kube API", re: /Waiting for bootkube|Bootstrap Kube API Initialized/i },
@@ -26,6 +26,26 @@ const INSTALL_STAGES: { label: string; re: RegExp }[] = [
 ];
 
 type StageState = "done" | "active" | "pending";
+
+/** Parse cluster-operator progress from the log: overall "N of M (P%)" and the
+ *  operators still not available (both come from openshift-install wait-for). */
+function parseOperators(log: string): { progress: string | null; pending: string[] } {
+  let progress: string | null = null;
+  let pending: string[] = [];
+  const lines = log.split("\n");
+  for (const line of lines) {
+    const p = line.match(/(\d+) of (\d+) done \((\d+)% complete\)/);
+    if (p) progress = `${p[1]} of ${p[2]} (${p[3]}%)`;
+    const op = line.match(/Cluster operators? (.+?) (?:is|are) not available/i);
+    if (op) {
+      pending = op[1]
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }
+  }
+  return { progress, pending };
+}
 
 function deriveStages(log: string): { label: string; state: StageState }[] {
   let last = -1;
@@ -46,8 +66,10 @@ export default function ClusterInstallLogModal() {
   const close = useCanvasStore((s) => s.closeClusterLog);
   const projectId = useCanvasStore((s) => s.currentProjectId);
   const ocpHealth = useCanvasStore((s) => s.ocpHealth);
+  const nodes = useCanvasStore((s) => s.nodes);
   const [log, setLog] = useState("");
   const [loading, setLoading] = useState(false);
+  const [revealPw, setRevealPw] = useState(false);
   const preRef = useRef<HTMLPreElement>(null);
 
   useEffect(() => {
@@ -84,8 +106,20 @@ export default function ClusterInstallLogModal() {
 
   if (!target) return null;
 
-  // Derive a one-line status from the newest meaningful log line.
   const stages = deriveStages(log);
+  const ops = parseOperators(log);
+  const operatorsActive = stages.some((s) => s.label === "Cluster operators" && s.state === "active");
+  const installed = stages[stages.length - 1]?.state === "done";
+
+  // kubeadmin password + kubeconfig live on the cluster's member VM nodes; show
+  // them here (the palette OCP panel is gone for pod installs) once present.
+  const members = nodes.filter(
+    (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === target.clusterKey,
+  );
+  const kubeadminPw = members
+    .map((n) => (n.data as Record<string, unknown>).ocpKubeadminPassword as string | undefined)
+    .find(Boolean);
+  const kubeconfigVm = members.find((n) => (n.data as Record<string, unknown>).ocpKubeconfig);
 
   return (
     <div
@@ -200,13 +234,68 @@ export default function ClusterInstallLogModal() {
                     }}
                   >
                     {s.label}
+                    {s.label === "Cluster operators" && s.state === "active" && ops.progress && (
+                      <span style={{ opacity: 0.7 }}> · {ops.progress}</span>
+                    )}
                   </span>
                 </div>
               ))}
             </div>
-            {/* When the bastion-based health monitor has data (bastion installs),
-                surface its summary line too. */}
-            {ocpHealth?.detail && (
+            {/* Operators still initializing (from the log) — one line each. */}
+            {operatorsActive && ops.pending.length > 0 && (
+              <div style={{ fontSize: 10, marginTop: 8, lineHeight: 1.8, paddingLeft: 22 }}>
+                <div style={{ color: "var(--troshka-text-dim, #94a3b8)", marginBottom: 2 }}>Operators pending:</div>
+                {ops.pending.map((op) => (
+                  <div key={op} style={{ display: "flex", alignItems: "center", gap: 6, color: "#22d3ee" }}>
+                    <span
+                      className="project-btn-spinner"
+                      style={{ width: 8, height: 8, display: "inline-block", verticalAlign: "middle" }}
+                    />
+                    {op}
+                  </div>
+                ))}
+              </div>
+            )}
+            {/* Access — kubeadmin password + kubeconfig once the cluster is up. */}
+            {(kubeadminPw || kubeconfigVm) && (
+              <div style={{ marginTop: 12, borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 10 }}>
+                <div style={{ fontWeight: 600, marginBottom: 6, color: "var(--troshka-text-dim, #94a3b8)" }}>Access</div>
+                {kubeadminPw && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                    <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>kubeadmin</span>
+                    <code style={{ fontSize: 11, cursor: "pointer", userSelect: "all" }} onClick={() => setRevealPw((v) => !v)}>
+                      {revealPw ? kubeadminPw : "••••••"}
+                    </code>
+                    <span
+                      style={{ cursor: "pointer", fontSize: 10, opacity: 0.6 }}
+                      onClick={() => navigator.clipboard.writeText(kubeadminPw)}
+                      title="Copy"
+                    >
+                      Copy
+                    </span>
+                  </div>
+                )}
+                {kubeconfigVm && (
+                  <span
+                    style={{ cursor: "pointer", fontSize: 10, opacity: 0.7, textDecoration: "underline" }}
+                    onClick={() => {
+                      const kc = ((kubeconfigVm.data as Record<string, unknown>).ocpKubeconfig as string) || "";
+                      const blob = new Blob([kc], { type: "application/x-yaml" });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = `kubeconfig-${target.name}.yaml`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                  >
+                    Download kubeconfig
+                  </span>
+                )}
+              </div>
+            )}
+            {/* Bastion health monitor summary (bastion installs), when present. */}
+            {ocpHealth?.detail && !installed && (
               <div style={{ fontSize: 10, marginTop: 10, opacity: 0.7 }}>{ocpHealth.detail}</div>
             )}
           </div>
