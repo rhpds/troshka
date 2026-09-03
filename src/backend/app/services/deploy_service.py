@@ -2588,12 +2588,19 @@ def _monitor_ops_pod_install(
         if _is_deploy_cancelled(project_id):
             _cancel_ops_pod_install(host, project_id, cluster_keys)
             return "cancelled"
-        per_cluster = _read_ops_pod_cluster_logs(
-            host, container_name, cluster_keys, workdir, project_id
+        # Persist the raw per-cluster logs (keep-longest) AND use the merged
+        # result for phase detection. The ops pod truncates install.log on every
+        # restart (restart_policy=always), so a poll that lands just after the
+        # post-completion restart would otherwise read a truncated log missing
+        # "Install complete!" — the state machine would regress and dead-pod
+        # detection would then FALSE-fail a cluster that actually succeeded.
+        # Keeping the longest log makes "complete" sticky.
+        per_cluster = cache_ops_pod_logs(
+            project_id,
+            _read_ops_pod_cluster_logs(
+                host, container_name, cluster_keys, workdir, project_id
+            ),
         )
-        # Persist the raw per-cluster logs (keep-longest) so the status box keeps
-        # the full log + derived progress after the pod truncates/stops.
-        cache_ops_pod_logs(project_id, per_cluster)
         # Dead-job detection: a crashed pod can never finish a non-terminal
         # cluster. But the pod is restart_policy=always + idempotent, so a brief
         # restart window is recoverable — only fail after _OPS_POD_DEAD_POLLS
