@@ -8,6 +8,8 @@ cache_library_images, start_project_async, stop_project_async.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Fixtures & helpers
 # ---------------------------------------------------------------------------
@@ -4416,6 +4418,16 @@ class TestOpsPodDeadDetection:
     """Consecutive-not-running counter that tolerates a recoverable pod restart
     (restart_policy=always + idempotent install) before failing the deploy."""
 
+    @pytest.fixture(autouse=True)
+    def _passthrough_log_cache(self):
+        """These tests validate phase→outcome mapping, not the keep-longest log
+        cache. Passthrough so a prior test's cached log can't leak via the shared
+        PROJECT_ID (keep-longest would otherwise resurrect a "complete" log into a
+        "failed"/dead test, flipping its outcome and triggering real troshkad
+        I/O). Also removes any Redis dependency from these unit tests."""
+        with patch(f"{SVC}.cache_ops_pod_logs", side_effect=lambda _pid, logs: logs):
+            yield
+
     def test_dead_count_increments_when_not_running(self):
         from app.services.deploy_service import _next_ops_pod_dead_count
 
@@ -4454,12 +4466,14 @@ class TestOpsPodDeadDetection:
         # Failed exactly at the threshold, not on the first not-running poll.
         assert mock_running.call_count == _OPS_POD_DEAD_POLLS
 
+    @patch(f"{SVC}._cancel_ops_pod_install")
+    @patch(f"{SVC}._store_ops_pod_creds")
     @patch(f"{SVC}._publish_ops_pod_progress")
     @patch(f"{SVC}._ops_pod_running")
     @patch(f"{SVC}._read_ops_pod_cluster_logs")
     @patch(f"{SVC}._is_deploy_cancelled", return_value=False)
     def test_monitor_single_not_running_then_recovers(
-        self, _mock_cancel, mock_logs, mock_running, _mock_pub
+        self, _mock_cancel, mock_logs, mock_running, _mock_pub, _mock_store, _mock_reap
     ):
         """A single not-running poll (restart window) does NOT fail; a running
         poll resets the counter and the install completes normally."""
@@ -4564,6 +4578,13 @@ class TestOpsPodOcpStatus:
     fields the OCP-status UI reads, mirroring the bastion path's vocabulary
     (monitoring -> ready / error)."""
 
+    @pytest.fixture(autouse=True)
+    def _passthrough_log_cache(self):
+        """Passthrough the keep-longest log cache so a prior test's cached log
+        can't leak via the shared PROJECT_ID (see TestOpsPodDeadDetection)."""
+        with patch(f"{SVC}.cache_ops_pod_logs", side_effect=lambda _pid, logs: logs):
+            yield
+
     def test_overall_to_ocp_status_mapping(self):
         from app.services.deploy_service import _ops_pod_overall_to_ocp_status
 
@@ -4600,13 +4621,15 @@ class TestOpsPodOcpStatus:
         assert project.ocp_monitor_started_at is not None
         s.commit.assert_called()
 
+    @patch(f"{SVC}._cancel_ops_pod_install")
+    @patch(f"{SVC}._store_ops_pod_creds")
     @patch(f"{SVC}._ocp_update_status")
     @patch(f"{SVC}._publish_ops_pod_progress")
     @patch(f"{SVC}._ops_pod_running", return_value=True)
     @patch(f"{SVC}._read_ops_pod_cluster_logs")
     @patch(f"{SVC}._is_deploy_cancelled", return_value=False)
     def test_monitor_complete_persists_ready(
-        self, _cancel, mock_logs, _running, _pub, mock_status
+        self, _cancel, mock_logs, _running, _pub, mock_status, _mock_store, _mock_reap
     ):
         from app.services.deploy_service import _monitor_ops_pod_install
 
