@@ -911,14 +911,14 @@ function ClusterEditor({
           </div>
         )}
         <ClusterTextField
-          label="Base Domain"
+          label="Base Domain (TLD)"
           value={cluster.baseDomain || ""}
           placeholder="local"
           disabled={clusterDeployed}
           hint={
             clusterDeployed
               ? "🔒 Locked while deployed — wipe all cluster VMs to change."
-              : `Shared parent domain. FQDN: api.${(cluster.name || "<name>").trim() || "<name>"}.${(cluster.baseDomain || "local").trim() || "local"}`
+              : `Shared parent domain / TLD — the cluster name is the subdomain. FQDN: api.${(cluster.name || "<name>").trim() || "<name>"}.${(cluster.baseDomain || "local").trim() || "local"}`
           }
           onCommit={(v) => onPatch({ baseDomain: v })}
         />

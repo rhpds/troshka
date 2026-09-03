@@ -22,15 +22,15 @@ import { collectUsedIps, listCidrHosts } from "@/lib/dhcpIpAssignment";
  */
 
 // Grid layout constants for member positioning and cluster boundary sizing.
-// A VM node card is 180px wide (.vm-node-card) and ~260px tall with all rows,
+// A VM node card is 180px wide (.vm-node-card) and ~205px tall with all rows,
 // so cells must exceed those (card + gap) or member cards overlap.
 const CELL_W = 210;
-const CELL_H = 300;
+const CELL_H = 240;
 const PAD = 30;
 const HEADER_H = 48;
 const COLS_MAX = 4;
 const CARD_W = 180; // VM card width (from .vm-node-card)
-const CARD_H = 260; // VM card height (approximate with all content)
+const CARD_H = 205; // VM card height (approximate with all content)
 
 // Legacy constants (used in roleSpecs for backward compat)
 const CP_ROW_Y = 70;

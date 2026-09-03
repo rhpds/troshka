@@ -759,7 +759,7 @@ describe("cluster boundary auto-sizing + member grid reflow", () => {
     // All members must fit within the boundary
     for (const member of members) {
       expect(member.position.x + 180).toBeLessThanOrEqual(boundaryNode.style?.width as number);
-      expect(member.position.y + 260).toBeLessThanOrEqual(boundaryNode.style?.height as number);
+      expect(member.position.y + 205).toBeLessThanOrEqual(boundaryNode.style?.height as number);
     }
   });
 
@@ -805,7 +805,7 @@ describe("cluster boundary auto-sizing + member grid reflow", () => {
     const members = materialized.filter((n) => n.type === "vmNode");
     for (const member of members) {
       const maxX = member.position.x + 180; // CARD_W = 180
-      const maxY = member.position.y + 260; // CARD_H = 260
+      const maxY = member.position.y + 205; // CARD_H = 205
       expect(maxX).toBeLessThanOrEqual(boundaryWidth);
       expect(maxY).toBeLessThanOrEqual(boundaryHeight);
     }
@@ -870,7 +870,7 @@ describe("cluster boundary auto-sizing + member grid reflow", () => {
     expect(minHeight).toBeLessThanOrEqual(actualHeight);
   });
 
-  it("members do not overlap on grid layout (180×260 card rects)", () => {
+  it("members do not overlap on grid layout (180×205 card rects)", () => {
     const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
     cluster.controlPlane = 4;
     cluster.workers = 4;
@@ -879,16 +879,16 @@ describe("cluster boundary auto-sizing + member grid reflow", () => {
     const members = materialized.filter((n) => n.type === "vmNode");
     expect(members.length).toBe(8);
 
-    // Check pairwise: no two 180×260 rects overlap
+    // Check pairwise: no two 180×205 rects overlap
     for (let i = 0; i < members.length; i++) {
       for (let j = i + 1; j < members.length; j++) {
         const m1 = members[i];
         const m2 = members[j];
 
         const m1Right = m1.position.x + 180;
-        const m1Bottom = m1.position.y + 260;
+        const m1Bottom = m1.position.y + 205;
         const m2Right = m2.position.x + 180;
-        const m2Bottom = m2.position.y + 260;
+        const m2Bottom = m2.position.y + 205;
 
         // Rects don't overlap if one is completely to the right, left, above, or below the other
         const noOverlap =
