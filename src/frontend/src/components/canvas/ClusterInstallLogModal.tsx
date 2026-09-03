@@ -137,14 +137,20 @@ export default function ClusterInstallLogModal() {
   const ops = parseOperators(log);
   const operatorsActive = stages.some((s) => s.label === "Cluster operators" && s.state === "active");
   const installed = stages[stages.length - 1]?.state === "done";
+  const failed =
+    ocpHealth?.phase === "error" ||
+    ocpHealth?.phase === "timeout" ||
+    /level=fatal|cluster\(s\) failed/i.test(log);
+  // Terminal = complete OR failed: stop advancing the timer either way.
+  const terminal = installed || failed;
 
   // Elapsed = log-derived base + seconds since the last poll (ticks live while
-  // installing; frozen at the log's value once complete).
+  // installing; frozen at the log's value once the install is complete or failed).
   const baseSecs = logElapsedSecs(log);
   const elapsed =
     baseSecs == null
       ? null
-      : fmtElapsed(baseSecs + (installed || !fetchedAt ? 0 : Math.floor((Date.now() - fetchedAt) / 1000)));
+      : fmtElapsed(baseSecs + (terminal || !fetchedAt ? 0 : Math.floor((Date.now() - fetchedAt) / 1000)));
 
   // kubeadmin password + kubeconfig live on the cluster's member VM nodes; show
   // them here (the palette OCP panel is gone for pod installs) once present.
