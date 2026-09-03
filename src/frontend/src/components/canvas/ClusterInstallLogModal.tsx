@@ -42,15 +42,12 @@ function fmtElapsed(total: number): string {
   return `${Math.floor(total / 60)}m ${(total % 60).toString().padStart(2, "0")}s`;
 }
 
-/** Parse cluster-operator progress from the log: overall "N of M (P%)" and the
- *  operators still not available (both come from openshift-install wait-for). */
-function parseOperators(log: string): { progress: string | null; pending: string[] } {
-  let progress: string | null = null;
+/** Operators still initializing, from the newest "Cluster operators X, Y are not
+ *  available" line. (The "N of M done (P%)" figure openshift-install prints is
+ *  intentionally ignored — it oscillates wildly as manifests retry.) */
+function parseOperators(log: string): { pending: string[] } {
   let pending: string[] = [];
-  const lines = log.split("\n");
-  for (const line of lines) {
-    const p = line.match(/(\d+) of (\d+) done \((\d+)% complete\)/);
-    if (p) progress = `${p[1]} of ${p[2]} (${p[3]}%)`;
+  for (const line of log.split("\n")) {
     const op = line.match(/Cluster operators? (.+?) (?:is|are) not available/i);
     if (op) {
       pending = op[1]
@@ -59,7 +56,7 @@ function parseOperators(log: string): { progress: string | null; pending: string
         .filter(Boolean);
     }
   }
-  return { progress, pending };
+  return { pending };
 }
 
 function deriveStages(log: string): { label: string; state: StageState }[] {
@@ -135,7 +132,6 @@ export default function ClusterInstallLogModal() {
 
   const stages = deriveStages(log);
   const ops = parseOperators(log);
-  const operatorsActive = stages.some((s) => s.label === "Cluster operators" && s.state === "active");
   const installed = stages[stages.length - 1]?.state === "done";
   const failed =
     ocpHealth?.phase === "error" ||
@@ -258,7 +254,8 @@ export default function ClusterInstallLogModal() {
                 needed. Each stage: ✓ done, ⟳ active, ○ pending. */}
             <div style={{ fontSize: 11, lineHeight: 1.9 }}>
               {stages.map((s) => (
-                <div key={s.label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <React.Fragment key={s.label}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ width: 14, flexShrink: 0, textAlign: "center" }}>
                     {s.state === "done" ? (
                       <span style={{ color: "#4ade80" }}>✓</span>
@@ -282,28 +279,28 @@ export default function ClusterInstallLogModal() {
                     }}
                   >
                     {s.label}
-                    {s.label === "Cluster operators" && s.state === "active" && ops.progress && (
-                      <span style={{ opacity: 0.7 }}> · {ops.progress}</span>
-                    )}
                   </span>
                 </div>
+                {/* Operators still initializing (from the log) render UNDER the
+                    active "Cluster operators" stage, so "Install complete" stays
+                    last. One ⟳ line each. */}
+                {s.label === "Cluster operators" && s.state === "active" && ops.pending.length > 0 && (
+                  <div style={{ fontSize: 10, marginTop: 2, marginBottom: 2, lineHeight: 1.8, paddingLeft: 22 }}>
+                    <div style={{ color: "var(--troshka-text-dim, #94a3b8)", marginBottom: 2 }}>Operators pending:</div>
+                    {ops.pending.map((op) => (
+                      <div key={op} style={{ display: "flex", alignItems: "center", gap: 6, color: "#22d3ee" }}>
+                        <span
+                          className="project-btn-spinner"
+                          style={{ width: 8, height: 8, display: "inline-block", verticalAlign: "middle" }}
+                        />
+                        {op}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                </React.Fragment>
               ))}
             </div>
-            {/* Operators still initializing (from the log) — one line each. */}
-            {operatorsActive && ops.pending.length > 0 && (
-              <div style={{ fontSize: 10, marginTop: 8, lineHeight: 1.8, paddingLeft: 22 }}>
-                <div style={{ color: "var(--troshka-text-dim, #94a3b8)", marginBottom: 2 }}>Operators pending:</div>
-                {ops.pending.map((op) => (
-                  <div key={op} style={{ display: "flex", alignItems: "center", gap: 6, color: "#22d3ee" }}>
-                    <span
-                      className="project-btn-spinner"
-                      style={{ width: 8, height: 8, display: "inline-block", verticalAlign: "middle" }}
-                    />
-                    {op}
-                  </div>
-                ))}
-              </div>
-            )}
             {/* Access — kubeadmin password + kubeconfig once the cluster is up. */}
             {(kubeadminPw || kubeconfigVm) && (
               <div style={{ marginTop: 12, borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 10 }}>
@@ -341,10 +338,6 @@ export default function ClusterInstallLogModal() {
                   </span>
                 )}
               </div>
-            )}
-            {/* Bastion health monitor summary (bastion installs), when present. */}
-            {ocpHealth?.detail && !installed && (
-              <div style={{ fontSize: 10, marginTop: 10, opacity: 0.7 }}>{ocpHealth.detail}</div>
             )}
           </div>
           <pre
