@@ -953,6 +953,20 @@ export function vipCollision(
 
   const usedIps = collectUsedIps(nodes);
 
+  // SNO has a single node that serves API + ingress on its OWN address, so the
+  // VIP legitimately equals that node's IP — not a collision for its own
+  // cluster. Drop this cluster's member IPs from the used set (multi-node
+  // clusters still flag VIP==member, which would be a real misconfiguration).
+  if (cluster.type === "sno") {
+    for (const n of nodes) {
+      const d = n.data as Record<string, unknown>;
+      if (n.type !== "vmNode" || d.clusterId !== cluster.id) continue;
+      for (const nic of (d.nics as Array<{ ip?: string }> | undefined) ?? []) {
+        if (nic.ip) usedIps.delete(nic.ip);
+      }
+    }
+  }
+
   // Also check other clusters' VIPs
   const otherClusters = nodes
     .filter((n) => n.type === "clusterNode" && (n.data as Record<string, string | undefined>).clusterId !== cluster.id)
