@@ -11,6 +11,8 @@ import {
   suggestClusterVips,
   vipCollision,
   clusterBoxSize,
+  buildClusterDnsRecords,
+  applyClusterDns,
 } from "@/components/canvas/clusterMaterialize";
 import { makeCluster } from "@/components/canvas/clusterFactory";
 
@@ -1041,5 +1043,115 @@ describe("Cluster Network Anchors", () => {
 
     // Should return the networks in order (distinct)
     expect(extractedIds).toEqual(["net-1", "net-2"]);
+  });
+});
+
+describe("buildClusterDnsRecords", () => {
+  it("returns api/api-int/apps records tagged with the cluster id", () => {
+    const c = {
+      id: "ocp",
+      name: "ocp",
+      baseDomain: "ocp.local",
+      apiVip: "10.0.0.5",
+      ingressVip: "10.0.0.6",
+    } as any;
+    const recs = buildClusterDnsRecords(c);
+    expect(recs).toEqual([
+      { name: "api.ocp.ocp.local", ip: "10.0.0.5", type: "A", clusterId: "ocp", managed: true },
+      { name: "api-int.ocp.ocp.local", ip: "10.0.0.5", type: "A", clusterId: "ocp", managed: true },
+      { name: ".apps.ocp.ocp.local", ip: "10.0.0.6", type: "A", clusterId: "ocp", managed: true },
+    ]);
+  });
+
+  it("returns [] until name and base domain are set", () => {
+    expect(buildClusterDnsRecords({ id: "x", name: "", baseDomain: "ocp.local" } as any)).toEqual([]);
+    expect(buildClusterDnsRecords({ id: "x", name: "ocp", baseDomain: "" } as any)).toEqual([]);
+  });
+
+  it("skips records whose VIP is blank", () => {
+    const recs = buildClusterDnsRecords({ id: "x", name: "ocp", baseDomain: "ocp.local", apiVip: "10.0.0.5" } as any);
+    expect(recs.map((r) => r.name)).toEqual(["api.ocp.ocp.local", "api-int.ocp.ocp.local"]);
+  });
+});
+
+describe("applyClusterDns", () => {
+  const baseCluster = {
+    id: "ocp",
+    name: "ocp",
+    baseDomain: "ocp.local",
+    apiVip: "10.0.0.5",
+    ingressVip: "10.0.0.6",
+    networkIds: ["net1"],
+  } as any;
+
+  it("writes records + enables DNS on the target network, leaving others untouched", () => {
+    const net1 = { id: "net1", type: "networkNode", data: { subtype: "network" } } as any;
+    const net2 = { id: "net2", type: "networkNode", data: { subtype: "network" } } as any;
+    const out = applyClusterDns(baseCluster, [net1, net2]);
+    const d1 = out[0].data as any;
+    const d2 = out[1].data as any;
+    expect(d1.dns).toBe(true);
+    expect(d1.dnsDomain).toBe("ocp.local");
+    expect((d1.dnsRecords as any[]).map((r) => r.name)).toEqual([
+      "api.ocp.ocp.local",
+      "api-int.ocp.ocp.local",
+      ".apps.ocp.ocp.local",
+    ]);
+    expect(d2.dnsRecords).toBeUndefined();
+  });
+
+  it("preserves user-authored records and dedups by name on the target", () => {
+    const net1 = {
+      id: "net1",
+      type: "networkNode",
+      data: {
+        subtype: "network",
+        dnsRecords: [
+          { name: "myapp.lab.local", ip: "10.0.0.9" },
+          { name: "api.ocp.ocp.local", ip: "1.1.1.1" }, // stale/backend-written, no clusterId
+        ],
+      },
+    } as any;
+    const out = applyClusterDns(baseCluster, [net1]);
+    const recs = (out[0].data as any).dnsRecords as any[];
+    expect(recs.find((r) => r.name === "myapp.lab.local")).toBeTruthy();
+    // the un-tagged api record is replaced by the managed one
+    const api = recs.filter((r) => r.name === "api.ocp.ocp.local");
+    expect(api).toHaveLength(1);
+    expect(api[0]).toMatchObject({ ip: "10.0.0.5", managed: true });
+  });
+
+  it("removes this cluster's records from a detached network", () => {
+    const net1 = {
+      id: "net1",
+      type: "networkNode",
+      data: {
+        subtype: "network",
+        dnsRecords: [
+          { name: "api.ocp.ocp.local", ip: "10.0.0.5", clusterId: "ocp", managed: true },
+          { name: "keep.lab.local", ip: "10.0.0.9" },
+        ],
+      },
+    } as any;
+    // cluster no longer targets net1
+    const out = applyClusterDns({ ...baseCluster, networkIds: [] }, [net1]);
+    const recs = (out[0].data as any).dnsRecords as any[];
+    expect(recs.map((r) => r.name)).toEqual(["keep.lab.local"]);
+  });
+
+  it("is idempotent — returns the same nodes ref when nothing changes", () => {
+    const net1 = { id: "net1", type: "networkNode", data: { subtype: "network" } } as any;
+    const first = applyClusterDns(baseCluster, [net1]);
+    const second = applyClusterDns(baseCluster, first);
+    expect(second).toBe(first);
+  });
+
+  it("updates records in place when a VIP changes", () => {
+    const net1 = { id: "net1", type: "networkNode", data: { subtype: "network" } } as any;
+    const first = applyClusterDns(baseCluster, [net1]);
+    const second = applyClusterDns({ ...baseCluster, ingressVip: "10.0.0.99" }, first);
+    const apps = ((second[0].data as any).dnsRecords as any[]).find((r) => r.name === ".apps.ocp.ocp.local");
+    expect(apps.ip).toBe("10.0.0.99");
+    expect(((second[0].data as any).dnsRecords as any[]).filter((r) => r.name === ".apps.ocp.ocp.local")).toHaveLength(1);
   });
 });

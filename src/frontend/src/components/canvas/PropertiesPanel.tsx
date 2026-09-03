@@ -6,7 +6,7 @@ import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
-import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, suggestClusterVips, vipCollision } from "./clusterMaterialize";
+import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, suggestClusterVips, vipCollision } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
 import {
   getShowroomReadiness,
@@ -695,6 +695,25 @@ function ClusterEditor({
     if (Object.keys(patch).length > 0) onPatch(patch);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cluster.id, cluster.apiVip, cluster.ingressVip, suggestions.apiVip, suggestions.ingressVip]);
+
+  // Mirror the cluster's api/api-int/*.apps records onto its member networks so
+  // they appear in the network node's DNS list immediately (pre-deploy), and
+  // update live as name/base domain/VIPs/networks change. Idempotent — the
+  // helper returns the same nodes ref when nothing changes, so no loop.
+  const networkIdsKey = (cluster.networkIds ?? []).join(",");
+  useEffect(() => {
+    const current = useCanvasStore.getState().nodes;
+    const synced = applyClusterDns(cluster, current);
+    if (synced !== current) useCanvasStore.setState({ nodes: synced });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    cluster.id,
+    cluster.name,
+    cluster.baseDomain,
+    cluster.apiVip,
+    cluster.ingressVip,
+    networkIdsKey,
+  ]);
 
   return (
     <>
@@ -3909,14 +3928,16 @@ export default function PropertiesPanel() {
                               node!.id,
                               vniMap,
                             );
+                            const managed = Boolean((rec as Record<string, unknown>).managed);
                             return (
-                            <div key={i} style={{ display: "flex", gap: 4, marginBottom: 3, alignItems: "center", minWidth: 320 }}>
-                              <input className="props-input" style={{ flex: 3, fontSize: 10, fontFamily: "monospace" }} value={rec.name} placeholder="hostname" onChange={(e) => {
+                            <div key={i} title={managed ? "Managed by the OpenShift cluster — edit via the cluster (base domain / VIPs)" : undefined} style={{ display: "flex", gap: 4, marginBottom: 3, alignItems: "center", minWidth: 320, opacity: managed ? 0.85 : 1 }}>
+                              {managed && <span title="Managed by OpenShift cluster" style={{ fontSize: 11 }}>☸</span>}
+                              <input className="props-input" disabled={managed} style={{ flex: 3, fontSize: 10, fontFamily: "monospace" }} value={rec.name} placeholder="hostname" onChange={(e) => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
                                 records[i] = { ...records[i], name: e.target.value };
                                 update("dnsRecords", records);
                               }} />
-                              <select className="props-input" style={{ width: 50, fontSize: 10, fontFamily: "monospace" }} value={rec.type || "A"} onChange={(e) => {
+                              <select className="props-input" disabled={managed} style={{ width: 50, fontSize: 10, fontFamily: "monospace" }} value={rec.type || "A"} onChange={(e) => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
                                 records[i] = { ...records[i], type: e.target.value };
                                 update("dnsRecords", records);
@@ -3926,16 +3947,16 @@ export default function PropertiesPanel() {
                                 <option value="TXT">TXT</option>
                                 <option value="SRV">SRV</option>
                               </select>
-                              <input className="props-input" style={{ flex: 2, fontSize: 10, fontFamily: "monospace" }} value={rec.ip || displayIp} placeholder={rec.type === "CNAME" ? "target" : displayIp ? displayIp : "IP"} onChange={(e) => {
+                              <input className="props-input" disabled={managed} style={{ flex: 2, fontSize: 10, fontFamily: "monospace" }} value={rec.ip || displayIp} placeholder={rec.type === "CNAME" ? "target" : displayIp ? displayIp : "IP"} onChange={(e) => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
                                 records[i] = { ...records[i], ip: e.target.value };
                                 update("dnsRecords", records);
                               }} />
-                              <button className="troshka-btn-icon-danger" title="Remove" onClick={() => {
+                              {!managed && <button className="troshka-btn-icon-danger" title="Remove" onClick={() => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
                                 records.splice(i, 1);
                                 update("dnsRecords", records);
-                              }}>×</button>
+                              }}>×</button>}
                             </div>
                             );
                           })}

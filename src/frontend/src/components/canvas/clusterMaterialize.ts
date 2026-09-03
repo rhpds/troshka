@@ -979,3 +979,90 @@ export function vipCollision(
 
   return usedIps.has(ip);
 }
+
+// ---------------------------------------------------------------------------
+// Live DNS mirroring
+// ---------------------------------------------------------------------------
+
+export interface ClusterDnsRecord {
+  name: string;
+  ip: string;
+  type?: string;
+  /** Set on records this canvas generated for a cluster, so they can be kept
+   *  in sync (and rendered read-only) without touching user-authored records. */
+  clusterId?: string;
+  managed?: boolean;
+}
+
+/**
+ * The api / api-int / *.apps DNS records a cluster contributes to its member
+ * network(s). Mirrors the backend `_build_ocp_dns_records`
+ * (src/backend/app/services/ocp/agent_template.py): names are
+ * `api.<name>.<baseDomain>` and `api-int.<name>.<baseDomain>` -> apiVip, and
+ * `.apps.<name>.<baseDomain>` -> ingressVip (the leading dot is the dnsmasq
+ * wildcard, matching deploy). Returns [] until name + base domain exist; a VIP
+ * with no value is skipped rather than written empty.
+ */
+export function buildClusterDnsRecords(cluster: ClusterConfig): ClusterDnsRecord[] {
+  const name = (cluster.name || "").trim();
+  const baseDomain = (cluster.baseDomain || "").trim();
+  if (!name || !baseDomain) return [];
+  const apiVip = (cluster.apiVip || "").trim();
+  const ingressVip = (cluster.ingressVip || "").trim();
+  const records: ClusterDnsRecord[] = [];
+  if (apiVip) {
+    records.push({ name: `api.${name}.${baseDomain}`, ip: apiVip, type: "A", clusterId: cluster.id, managed: true });
+    records.push({ name: `api-int.${name}.${baseDomain}`, ip: apiVip, type: "A", clusterId: cluster.id, managed: true });
+  }
+  if (ingressVip) {
+    records.push({ name: `.apps.${name}.${baseDomain}`, ip: ingressVip, type: "A", clusterId: cluster.id, managed: true });
+  }
+  return records;
+}
+
+function sameDnsRecords(a: ClusterDnsRecord[], b: ClusterDnsRecord[]): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/**
+ * Sync a cluster's DNS records onto its member network nodes (cluster.networkIds).
+ * Idempotent: returns the SAME `nodes` reference when nothing changes, so it is
+ * safe to call from a React effect without looping.
+ *
+ * For every network node:
+ *  - drop records previously managed by THIS cluster (clusterId match) so a
+ *    rename / VIP change / network detach cleans up its stale names;
+ *  - on target networks (in networkIds) additionally drop any record whose name
+ *    collides with a fresh cluster record (dedup by name — mirrors the backend
+ *    `_merge_dns_records` last-writer-wins and absorbs backend-written records
+ *    on reload), append the fresh cluster records, and enable DNS on the node.
+ */
+export function applyClusterDns(cluster: ClusterConfig, nodes: Node[]): Node[] {
+  const records = buildClusterDnsRecords(cluster);
+  const targetIds = new Set(cluster.networkIds ?? []);
+  const freshNames = new Set(records.map((r) => r.name));
+  let changed = false;
+
+  const next = nodes.map((n) => {
+    if (n.type !== "networkNode") return n;
+    const data = n.data as Record<string, unknown>;
+    const existing = (data.dnsRecords as ClusterDnsRecord[] | undefined) ?? [];
+    const isTarget = targetIds.has(n.id);
+    const kept = existing.filter((r) => {
+      if (r.clusterId === cluster.id) return false;
+      if (isTarget && freshNames.has(r.name)) return false;
+      return true;
+    });
+    const merged = isTarget ? [...kept, ...records] : kept;
+    if (sameDnsRecords(existing, merged)) return n;
+    changed = true;
+    const nextData: Record<string, unknown> = { ...data, dnsRecords: merged };
+    if (isTarget && records.length > 0) {
+      nextData.dns = true;
+      nextData.dnsDomain = cluster.baseDomain;
+    }
+    return { ...n, data: nextData };
+  });
+
+  return changed ? next : nodes;
+}
