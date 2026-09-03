@@ -24,6 +24,7 @@ import CanvasToolbar from "./CanvasToolbar";
 import NodeContextMenu from "./NodeContextMenu";
 import EdgeContextMenu from "./EdgeContextMenu";
 import DuplicateVMModal from "./DuplicateVMModal";
+import ClusterInstallLogModal from "./ClusterInstallLogModal";
 import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM } from "@/stores/canvasStore";
 import { makeCluster } from "@/components/canvas/clusterFactory";
 import { resolveMembership, absolutePosition, relativePosition, orderChildAfterParent } from "@/components/canvas/clusterMembership";
@@ -814,6 +815,7 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
           />
         )}
       </ReactFlow>
+      <ClusterInstallLogModal />
       {selectedNodes.length > 1 && (
         <div className="selection-toolbar">
           <span className="selection-count">{selectedNodes.length} selected</span>

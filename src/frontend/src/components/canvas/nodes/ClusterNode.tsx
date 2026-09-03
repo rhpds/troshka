@@ -13,8 +13,14 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
   // box itself so problems are visible without opening the properties panel.
   const clusters = useCanvasStore((s) => s.clusters);
   const nodes = useCanvasStore((s) => s.nodes);
+  const projectState = useCanvasStore((s) => s.projectState);
+  const openClusterLog = useCanvasStore((s) => s.openClusterLog);
   const clusterId = ((data as Record<string, unknown>).clusterId as string) || id.replace(/^cluster-/, "");
   const cluster = clusters.find((c) => c.id === clusterId);
+  // The install log/status is available once the cluster is being (or has been)
+  // built. clusterKey mirrors the backend _cluster_key (id, falling back to name).
+  const clusterKey = clusterId || d.name;
+  const showInstallLog = projectState === "active" || projectState === "stopped";
   const issues = cluster ? clusterPrereqIssues(cluster, nodes) : [];
   const hasError = issues.some((i) => i.level === "error");
   const issueColor = hasError
@@ -101,6 +107,31 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
         >
           {d.type} · {d.controlPlane}cp/{d.workers}wrk
         </span>
+        {showInstallLog && (
+          <button
+            type="button"
+            title="View install log & status for this cluster"
+            className="nodrag"
+            onClick={(e) => {
+              e.stopPropagation();
+              openClusterLog(clusterKey, d.name);
+            }}
+            style={{
+              marginLeft: 6,
+              fontSize: 10,
+              fontWeight: 500,
+              padding: "1px 6px",
+              borderRadius: 6,
+              cursor: "pointer",
+              background: "rgba(34,211,238,0.18)",
+              border: "1px solid rgba(34,211,238,0.4)",
+              color: "var(--troshka-text, #e5e7eb)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            📋 Log
+          </button>
+        )}
       </div>
 
       {/* Network anchor handles (top + bottom, like VMs) — target handles for network connections */}

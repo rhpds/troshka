@@ -1084,11 +1084,16 @@ def get_ocp_install_log(
     project_id: str,
     user: CurrentUser,
     db: DbSession,
+    cluster: str | None = None,
 ):
     """OCP install log for a pod/bastionless install (read from the ops pod).
 
-    For the bastion install path this returns ``install_via='bastion'`` with no
-    output — the client reads the bastion VM's ``install.log`` directly.
+    Returns ``{install_via, output, clusters}`` where ``clusters`` lists the
+    per-cluster keys available. Pass ``?cluster=<key>`` to get just that
+    cluster's log (used by the per-cluster log button on each cluster box);
+    without it, a single cluster returns its log directly and multiple clusters
+    are concatenated with ``=== <key> ===`` headers. For the bastion install
+    path this returns ``install_via='bastion'`` with no output.
     """
     project = db.query(Project).filter_by(id=project_id).first()
     if not project:
@@ -1101,22 +1106,31 @@ def get_ocp_install_log(
     topology = project.topology or {}
     install_via = ocp_install_via(topology)
     if install_via != "pod" or not project.host_id:
-        return {"install_via": install_via, "output": ""}
+        return {"install_via": install_via, "output": "", "clusters": []}
 
     host = db.query(Host).filter_by(id=project.host_id).first()
     if not host:
-        return {"install_via": "pod", "output": ""}
+        return {"install_via": "pod", "output": "", "clusters": []}
 
     from app.services.deploy_service import read_ops_pod_install_log
 
     logs = read_ops_pod_install_log(host, project_id, topology)
+    keys = list(logs.keys())
+    if cluster is not None:
+        # Per-cluster request: just that cluster's log (empty if unknown key).
+        return {
+            "install_via": "pod",
+            "output": logs.get(cluster, ""),
+            "cluster": cluster,
+            "clusters": keys,
+        }
     if not logs:
         output = ""
     elif len(logs) == 1:
         output = next(iter(logs.values()))
     else:
         output = "\n\n".join(f"=== {key} ===\n{text}" for key, text in logs.items())
-    return {"install_via": "pod", "output": output}
+    return {"install_via": "pod", "output": output, "clusters": keys}
 
 
 @router.get("/{project_id}/kubeconfigs", responses={403: {}, 404: {}})

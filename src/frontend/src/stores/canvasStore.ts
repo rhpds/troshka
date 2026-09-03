@@ -303,6 +303,10 @@ interface CanvasState {
   clusters: ClusterConfig[];
   /** Project-level OCP install method ("pod" | "bastion"); null when non-OCP. */
   ocpInstallVia: string | null;
+  /** Cluster whose install log/status modal is open (set from its box); null = closed. */
+  clusterLogTarget: { clusterKey: string; name: string } | null;
+  openClusterLog: (clusterKey: string, name: string) => void;
+  closeClusterLog: () => void;
   setClusters: (clusters: ClusterConfig[]) => void;
   addCluster: (cluster: ClusterConfig) => void;
   updateCluster: (id: string, patch: Partial<ClusterConfig>) => void;
@@ -741,6 +745,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   showroom: null as ShowroomConfig | null,
   clusters: [] as ClusterConfig[],
   ocpInstallVia: null as string | null,
+  clusterLogTarget: null as { clusterKey: string; name: string } | null,
 
   onNodesChange: (changes) => {
     const removals = changes.filter((c) => c.type === "remove");
@@ -1549,6 +1554,9 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     set({ clusters });
     set({ topologyDirty: computeTopologyDirty(get()) });
   },
+
+  openClusterLog: (clusterKey, name) => set({ clusterLogTarget: { clusterKey, name } }),
+  closeClusterLog: () => set({ clusterLogTarget: null }),
 
   addCluster: (cluster) => {
     get().pushHistory();
