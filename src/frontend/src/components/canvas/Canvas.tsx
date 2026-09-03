@@ -269,6 +269,13 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
   const onNodeContextMenu = useCallback(
     (event: React.MouseEvent, node: Node) => {
       event.preventDefault();
+      // Cluster-member VMs are managed by the OCP box — suppress the per-VM
+      // context menu BEFORE deploy (also avoids a stray connection-line artifact
+      // on right-click). Once deployed, keep it: the menu provides start/stop/
+      // restart/console for the running member.
+      if (node.type === "vmNode" && (node.data as Record<string, unknown>)?.clusterId) {
+        if (!useCanvasStore.getState().deployedVmIds.has(node.id)) return;
+      }
       setContextMenu({ nodeId: node.id, x: event.clientX, y: event.clientY });
       setSelectedNode(node.id);
     },
