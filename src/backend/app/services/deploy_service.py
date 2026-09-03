@@ -2377,7 +2377,11 @@ def _next_ops_pod_dead_count(count: int, pod_running: bool) -> int:
 
 
 def _cancel_ops_pod_install_troshkad(host, project_id: str) -> None:
-    """[LIVE-ENV] Halt a troshkad ops pod via ``/pods/destroy`` (best-effort)."""
+    """Destroy a troshkad ops pod via ``/pods/destroy`` (best-effort).
+
+    Used on both install-cancel and project-destroy to reap the ops pod (which
+    is not a topology node). A no-op when the pod is already absent.
+    """
     pod_name = f"troshka-{project_id[:8]}-ops"
     try:
         job_id = start_job(
@@ -2388,7 +2392,7 @@ def _cancel_ops_pod_install_troshkad(host, project_id: str) -> None:
         wait_for_job(host, job_id, timeout=60)
     except TroshkadError as e:
         logger.warning(
-            "Ops pod %s: failed to destroy ops pod on cancel: %s",
+            "Ops pod %s: failed to destroy ops pod: %s",
             project_id[:8],
             e,
         )
@@ -9232,6 +9236,13 @@ def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
 
             # Tear down all troshkad-managed resources (containers, VMs, files, BMC, networks)
             _destroy_troshkad_resources(host, project_id, topo, vni_map, s)
+
+            # The ops pod is created at deploy time (not a topology node), so it
+            # is not reaped by the node-driven teardown above — destroy it
+            # explicitly for pod-install OCP projects (best-effort; no-op when
+            # the pod is absent).
+            if _should_use_ops_pod(topo):
+                _cancel_ops_pod_install_troshkad(host, project_id)
 
             # Clean up security group rules for this project
             _destroy_cleanup_sg_rules(host, project_id, s)
