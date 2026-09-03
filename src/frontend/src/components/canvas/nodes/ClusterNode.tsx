@@ -57,6 +57,17 @@ function ClusterNodeComponent({ data, selected }: NodeProps) {
       >
         <span style={{ fontSize: 13 }}>☸</span>
         <span>{d.name}</span>
+        {d.baseDomain && (
+          <span
+            style={{
+              fontSize: 11,
+              fontWeight: 400,
+              color: "var(--troshka-text-dim, #94a3b8)",
+            }}
+          >
+            {d.baseDomain}
+          </span>
+        )}
         <span
           style={{
             marginLeft: "auto",

@@ -642,11 +642,27 @@ function ClusterEditor({
   const suggestions = suggestClusterVips(cluster, nodes);
   const apiVipSuggestion = cluster.apiVip ? null : suggestions.apiVip;
   const ingressVipSuggestion = cluster.ingressVip ? null : suggestions.ingressVip;
+  // Renaming a cluster copies the name into the base domain's first DNS label
+  // (keeping the existing TLD, e.g. "ocp.local" -> "ocp2.local"), so each
+  // cluster's base domain tracks its name.
+  const deriveBaseDomain = (name: string, current: string): string => {
+    const label =
+      name.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") ||
+      "ocp";
+    const tld = current && current.includes(".") ? current.slice(current.indexOf(".")) : ".local";
+    return label + tld;
+  };
+  const trimmedBaseDomain = (cluster.baseDomain || "").trim().toLowerCase();
+  const baseDomainDuplicate =
+    trimmedBaseDomain !== "" &&
+    clusters.some(
+      (c) => c.id !== cluster.id && (c.baseDomain || "").trim().toLowerCase() === trimmedBaseDomain,
+    );
   return (
     <>
       <div className="props-section">
         <div className="props-section-title">General</div>
-        <ClusterTextField label="Name" value={cluster.name || ""} onCommit={(v) => onPatch({ name: v })} />
+        <ClusterTextField label="Name" value={cluster.name || ""} onCommit={(v) => onPatch({ name: v, baseDomain: deriveBaseDomain(v, cluster.baseDomain || "") })} />
         <div className="props-field">
           <label className="props-label">Cluster Type</label>
           <select
@@ -765,6 +781,11 @@ function ClusterEditor({
           </div>
         </div>
         <ClusterTextField label="Base Domain" value={cluster.baseDomain || ""} placeholder="ocp.local" onCommit={(v) => onPatch({ baseDomain: v })} />
+        {baseDomainDuplicate && (
+          <div style={{ fontSize: 11, color: "var(--troshka-red, #ef4444)", marginTop: -4 }}>
+            ⚠ Another cluster already uses this base domain — each cluster needs a unique base domain.
+          </div>
+        )}
         <div className="props-field">
           <label className="props-label" htmlFor="api-vip">API VIP</label>
           <div style={{ display: "flex", gap: 6, alignItems: "flex-start", flexWrap: "wrap" }}>
