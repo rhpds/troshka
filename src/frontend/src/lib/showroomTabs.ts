@@ -478,6 +478,34 @@ export function applyShowroomTabsToNode(
   };
 }
 
+/**
+ * Rewrite app-proxy hosts that live under an OCP cluster's apps domain when the
+ * cluster is renamed (or its base domain changes). Any `proxyHosts[]` entry
+ * ending in `oldSuffix` (e.g. ".apps.ocp.local") has that suffix replaced with
+ * `newSuffix` (e.g. ".apps.ocp2.local"), covering console/oauth and any custom
+ * app hosts. Returns the updated tabs, or `null` when nothing referenced the
+ * old suffix (so callers can skip a needless update).
+ */
+export function remapClusterProxyTabs(
+  tabs: ShowroomTab[],
+  oldSuffix: string,
+  newSuffix: string,
+): ShowroomTab[] | null {
+  if (oldSuffix === newSuffix) return null;
+  let changed = false;
+  const next = tabs.map((tab) => {
+    if (!tab.proxyHosts || !tab.proxyHosts.some((h) => h.endsWith(oldSuffix))) return tab;
+    changed = true;
+    return {
+      ...tab,
+      proxyHosts: tab.proxyHosts.map((h) =>
+        h.endsWith(oldSuffix) ? h.slice(0, -oldSuffix.length) + newSuffix : h,
+      ),
+    };
+  });
+  return changed ? next : null;
+}
+
 export function newShowroomTab(
   type: ShowroomTab["type"],
   name: string,

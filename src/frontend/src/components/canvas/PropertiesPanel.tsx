@@ -23,7 +23,7 @@ import {
   MACHINE_TYPE_LABELS,
   VIDEO_MODEL_LABELS,
 } from "@/lib/kubevirtCapabilities";
-import { newShowroomTab, resolveShowroomTabs, type ShowroomTab } from "@/lib/showroomTabs";
+import { newShowroomTab, resolveShowroomTabs, remapClusterProxyTabs, type ShowroomTab } from "@/lib/showroomTabs";
 import {
   buildWettyCommand,
   formatCommandForInput,
@@ -4864,6 +4864,27 @@ export default function PropertiesPanel() {
           updateCluster(clusterId, patch);
           const mirror = clusterSummaryMirror(patch);
           if (Object.keys(mirror).length) updateNodeData(node.id, mirror);
+          // Renaming (or changing base domain) shifts the cluster's apps domain,
+          // so rewrite any showroom console/app-proxy tabs that point at the old
+          // *.apps.<name>.<baseDomain> hosts to the new ones.
+          if (patch.name !== undefined || patch.baseDomain !== undefined) {
+            const oldBase = (cluster.baseDomain || "local").trim() || "local";
+            const newBase = ((patch.baseDomain ?? cluster.baseDomain ?? "local").trim()) || "local";
+            const oldName = cluster.name || "";
+            const newName = patch.name ?? cluster.name ?? "";
+            const oldSuffix = `.apps.${oldName}.${oldBase}`;
+            const newSuffix = `.apps.${newName}.${newBase}`;
+            if (oldSuffix !== newSuffix && oldName) {
+              const store = useCanvasStore.getState();
+              for (const n of store.nodes) {
+                if (n.type !== "containerNode") continue;
+                const tabs = (n.data as Record<string, unknown>).showroomTabs as ShowroomTab[] | undefined;
+                if (!tabs) continue;
+                const remapped = remapClusterProxyTabs(tabs, oldSuffix, newSuffix);
+                if (remapped) store.updateShowroomTabs(n.id, remapped);
+              }
+            }
+          }
         };
         // Count/type edits materialize member VMs. reconcile appends any new
         // members after the (already-present) boundary node, so React Flow's
