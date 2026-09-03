@@ -33,6 +33,7 @@ _CL_CELL_H = 240
 _CL_PAD = 30
 _CL_HEADER_H = 48
 _CL_COLS = 4
+_CL_GAP = 60  # horizontal gap between packed cluster boxes
 
 
 def _is_showroom_node(node: dict) -> bool:
@@ -901,25 +902,25 @@ def reflow_cluster_members(nodes: list[dict]) -> None:
     the boundary to contain them. Mirrors the frontend reflowMembers /
     clusterBoxSize and the template loader's original reflow.
     """
-    boundaries = [n for n in nodes if n.get("type") == "clusterNode"]
-    for boundary in boundaries:
+    entries = []
+    for boundary in nodes:
+        if boundary.get("type") != "clusterNode":
+            continue
         members = [
             n
             for n in nodes
             if n.get("type") == "vmNode" and n.get("parentId") == boundary["id"]
         ]
-        if not members:
-            continue
-        # Anchor the boundary at the member row (keeps it near the network the
-        # members connect to). The box TOP sits at the member row so its header
-        # band occupies the top of the box and members render below it — this
-        # preserves the network-row → VM-row gap instead of the box eating into
-        # the network row above. X is inset by the left padding so member column
-        # 0 lands where auto_layout placed it.
-        min_x = min(m["position"]["x"] for m in members)
-        min_y = min(m["position"]["y"] for m in members)
-        boundary["position"] = {"x": min_x - _CL_PAD, "y": min_y}
+        if members:
+            # Capture where the members landed BEFORE gridding resets them, to
+            # preserve left-to-right order when packing.
+            orig_x = min(m["position"]["x"] for m in members)
+            entries.append((boundary, members, orig_x))
+    if not entries:
+        return
 
+    # Grid the members inside each boundary (relative) and size the box.
+    for boundary, members, _orig_x in entries:
         cps = sorted(
             [m for m in members if _cluster_member_role(m) == "control-plane"],
             key=_cluster_member_index,
@@ -950,6 +951,17 @@ def reflow_cluster_members(nodes: list[dict]) -> None:
             "width": 2 * _CL_PAD + cols * _CL_CELL_W,
             "height": _CL_HEADER_H + _CL_PAD + rows * _CL_CELL_H,
         }
+
+    # Pack the boxes left-to-right on a single row with a small gap, so multiple
+    # clusters sit adjacent instead of being spread out by where their members
+    # happened to land in the flat workload layout. Preserve rough left-to-right
+    # order and keep the top at the member row (below the network row).
+    entries.sort(key=lambda e: e[2])
+    common_y = _VM_ROW_Y
+    x = min(orig_x for _, _, orig_x in entries)
+    for boundary, _members, _orig_x in entries:
+        boundary["position"] = {"x": x, "y": common_y}
+        x += boundary["style"]["width"] + _CL_GAP
 
 
 def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
