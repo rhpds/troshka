@@ -6,7 +6,7 @@ import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
-import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, effectiveDnsNetworkId, clusterPrereqIssues, suggestClusterVips, vipCollision, vipInMemberSubnet } from "./clusterMaterialize";
+import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, ensureSnoNodeIp, effectiveDnsNetworkId, clusterPrereqIssues, suggestClusterVips, vipCollision, vipInMemberSubnet } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
 import {
   getShowroomReadiness,
@@ -669,6 +669,9 @@ function ClusterEditor({
   // Bastionless (pod-install) OCP has no bastion, so the bastion-browser option
   // is hidden for pod projects.
   const ocpInstallVia = useCanvasStore((s) => s.ocpInstallVia);
+  // SNO has no VIPs (OpenShift forbids them for a single node) — api/*.apps use
+  // the node's own IP. Show the VIP fields as read-only N/A for SNO.
+  const isSno = cluster.type === "sno";
   const apiVipError = vipCollisionError(clusters, cluster.id, "apiVip", cluster.apiVip || "");
   const ingressVipError = vipCollisionError(clusters, cluster.id, "ingressVip", cluster.ingressVip || "");
 
@@ -715,7 +718,10 @@ function ClusterEditor({
   const networkIdsKey = (cluster.networkIds ?? []).join(",");
   useEffect(() => {
     const current = useCanvasStore.getState().nodes;
-    const synced = applyClusterDns(cluster, current);
+    // SNO: give the single node a static IP first (no DHCP), then mirror DNS off
+    // it (api/*.apps → the node IP). No-op for multi-node.
+    const withIp = ensureSnoNodeIp(cluster, current);
+    const synced = applyClusterDns(cluster, withIp);
     if (synced !== current) useCanvasStore.setState({ nodes: synced });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -966,21 +972,29 @@ function ClusterEditor({
             <input
               id="api-vip"
               className="props-input"
-              value={cluster.apiVip || ""}
+              value={isSno ? "N/A" : (cluster.apiVip || "")}
               placeholder={apiVipSuggestion || ""}
-              onChange={(e) => onPatch({ apiVip: e.target.value })}
+              disabled={isSno}
+              title={isSno ? "SNO has no API VIP — api resolves to the single node's IP." : undefined}
+              onChange={(e) => { if (!isSno) onPatch({ apiVip: e.target.value }); }}
               style={{
                 flex: 1,
                 minWidth: 150,
-                borderColor: vipCollision(cluster.apiVip || "", cluster, nodes) ? "var(--pf-t--global--color--status--warning--default)" : undefined,
+                ...(isSno ? { opacity: 0.6, cursor: "not-allowed" } : {}),
+                borderColor: !isSno && vipCollision(cluster.apiVip || "", cluster, nodes) ? "var(--pf-t--global--color--status--warning--default)" : undefined,
               }}
             />
           </div>
-          {apiVipError && <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>{apiVipError}</div>}
-          {vipCollision(cluster.apiVip || "", cluster, nodes) && !apiVipError && (
+          {!isSno && !(cluster.apiVip || "").trim() && (
+            <div style={{ color: "var(--troshka-red, #ef4444)", fontSize: 11, marginTop: 2 }}>
+              ⛔ API VIP is required.
+            </div>
+          )}
+          {!isSno && apiVipError && <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>{apiVipError}</div>}
+          {!isSno && vipCollision(cluster.apiVip || "", cluster, nodes) && !apiVipError && (
             <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>IP in use</div>
           )}
-          {!!cluster.apiVip && !vipInMemberSubnet(cluster.apiVip, cluster, nodes) && (
+          {!isSno && !!cluster.apiVip && !vipInMemberSubnet(cluster.apiVip, cluster, nodes) && (
             <div style={{ color: "var(--troshka-red, #ef4444)", fontSize: 11, marginTop: 2 }}>
               ⚠ Not in any connected network subnet — pick an IP within a member network.
             </div>
@@ -992,21 +1006,29 @@ function ClusterEditor({
             <input
               id="ingress-vip"
               className="props-input"
-              value={cluster.ingressVip || ""}
+              value={isSno ? "N/A" : (cluster.ingressVip || "")}
               placeholder={ingressVipSuggestion || ""}
-              onChange={(e) => onPatch({ ingressVip: e.target.value })}
+              disabled={isSno}
+              title={isSno ? "SNO has no Ingress VIP — *.apps resolves to the single node's IP." : undefined}
+              onChange={(e) => { if (!isSno) onPatch({ ingressVip: e.target.value }); }}
               style={{
                 flex: 1,
                 minWidth: 150,
-                borderColor: vipCollision(cluster.ingressVip || "", cluster, nodes) ? "var(--pf-t--global--color--status--warning--default)" : undefined,
+                ...(isSno ? { opacity: 0.6, cursor: "not-allowed" } : {}),
+                borderColor: !isSno && vipCollision(cluster.ingressVip || "", cluster, nodes) ? "var(--pf-t--global--color--status--warning--default)" : undefined,
               }}
             />
           </div>
-          {ingressVipError && <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>{ingressVipError}</div>}
-          {vipCollision(cluster.ingressVip || "", cluster, nodes) && !ingressVipError && (
+          {!isSno && !(cluster.ingressVip || "").trim() && (
+            <div style={{ color: "var(--troshka-red, #ef4444)", fontSize: 11, marginTop: 2 }}>
+              ⛔ Ingress VIP is required.
+            </div>
+          )}
+          {!isSno && ingressVipError && <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>{ingressVipError}</div>}
+          {!isSno && vipCollision(cluster.ingressVip || "", cluster, nodes) && !ingressVipError && (
             <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>IP in use</div>
           )}
-          {!!cluster.ingressVip && !vipInMemberSubnet(cluster.ingressVip, cluster, nodes) && (
+          {!isSno && !!cluster.ingressVip && !vipInMemberSubnet(cluster.ingressVip, cluster, nodes) && (
             <div style={{ color: "var(--troshka-red, #ef4444)", fontSize: 11, marginTop: 2 }}>
               ⚠ Not in any connected network subnet — pick an IP within a member network.
             </div>

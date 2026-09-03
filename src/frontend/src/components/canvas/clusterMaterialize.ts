@@ -875,11 +875,12 @@ export function suggestClusterVips(
   cluster: ClusterConfig,
   nodes: Node[],
 ): { apiVip: string | null; ingressVip: string | null } {
-  // SNO and single-node clusters use the member IP; no VIP needed
+  // SNO / single-node clusters do NOT use VIPs — OpenShift forbids apiVIPs/
+  // ingressVIPs for a single node; api and *.apps are served on the node's own
+  // IP. No VIP to suggest (the node's static IP is what DNS uses).
   if ((cluster.controlPlane ?? 0) + (cluster.workers ?? 0) <= 1) {
     return { apiVip: null, ingressVip: null };
   }
-
   // Get the machine network CIDR (first network)
   const netId = (cluster.networkIds ?? [])[0];
   if (!netId) {
@@ -918,22 +919,17 @@ export function suggestClusterVips(
     if (ingressVip) usedIps.add(ingressVip);
   }
 
-  // Scan from top of CIDR downward to find unused IPs
+  // Multi-node: suggest two distinct high unused IPs (api + ingress).
   let apiVipCandidate: string | null = null;
   let ingressVipCandidate: string | null = null;
 
-  if (hosts.length >= 2) {
-    // Reverse scan: start from high IPs
-    for (let i = hosts.length - 1; i >= 0 && (!apiVipCandidate || !ingressVipCandidate); i -= 1) {
-      const ip = hosts[i];
-      if (!usedIps.has(ip)) {
-        if (!apiVipCandidate) {
-          apiVipCandidate = ip;
-        } else if (!ingressVipCandidate) {
-          ingressVipCandidate = ip;
-          break;
-        }
-      }
+  for (let i = hosts.length - 1; i >= 0 && (!apiVipCandidate || !ingressVipCandidate); i -= 1) {
+    const ip = hosts[i];
+    if (usedIps.has(ip)) continue;
+    if (!apiVipCandidate) apiVipCandidate = ip;
+    else if (!ingressVipCandidate) {
+      ingressVipCandidate = ip;
+      break;
     }
   }
 
@@ -1029,6 +1025,45 @@ function singleNodeClusterIp(cluster: ClusterConfig, nodes: Node[]): string {
   if (!member) return "";
   const nics = ((member.data as Record<string, unknown>).nics as Array<{ ip?: string }>) || [];
   return nics.find((nic) => nic.ip)?.ip || "";
+}
+
+/**
+ * SNO has no VIP; its single node needs a STATIC IP (not DHCP) which serves as
+ * the node IP and the api/*.apps target. Assign the member's primary NIC a high
+ * unused IP in the cluster network when it has none. Idempotent: returns the
+ * same `nodes` ref when the member already has an IP (or it can't be resolved).
+ */
+export function ensureSnoNodeIp(cluster: ClusterConfig, nodes: Node[]): Node[] {
+  const singleNode = (cluster.controlPlane ?? 0) + (cluster.workers ?? 0) <= 1;
+  if (!singleNode) return nodes;
+  const netId = (cluster.networkIds ?? [])[0];
+  if (!netId) return nodes;
+  const member = nodes.find(
+    (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === cluster.id,
+  );
+  if (!member) return nodes;
+  const nics = ((member.data as Record<string, unknown>).nics as VMNic[]) || [];
+  if (!nics.length || (nics[0].ip || "").trim()) return nodes; // already static
+
+  const netNode = nodes.find((n) => n.id === netId && n.type === "networkNode");
+  const cidr = (netNode?.data as Record<string, string | undefined> | undefined)?.cidr;
+  if (!cidr) return nodes;
+  const usedIps = collectUsedIps(nodes);
+  const hosts = listCidrHosts(cidr);
+  if (hosts.length > 0) usedIps.add(hosts[0]); // gateway
+  let ip = "";
+  for (let i = hosts.length - 1; i >= 0; i -= 1) {
+    if (!usedIps.has(hosts[i])) {
+      ip = hosts[i];
+      break;
+    }
+  }
+  if (!ip) return nodes;
+  return nodes.map((n) => {
+    if (n.id !== member.id) return n;
+    const newNics = nics.map((nic, i) => (i === 0 ? { ...nic, ip } : nic));
+    return { ...n, data: { ...n.data, nics: newNics } };
+  });
 }
 
 export function buildClusterDnsRecords(cluster: ClusterConfig, nodes?: Node[]): ClusterDnsRecord[] {
