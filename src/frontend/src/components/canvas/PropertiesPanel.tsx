@@ -457,12 +457,16 @@ function ClusterTextField({
   placeholder,
   error,
   onCommit,
+  disabled = false,
+  hint,
 }: {
   label: string;
   value: string;
   placeholder?: string;
   error?: string | null;
   onCommit: (v: string) => void;
+  disabled?: boolean;
+  hint?: string;
 }) {
   return (
     <div className="props-field">
@@ -472,12 +476,21 @@ function ClusterTextField({
         className="props-input"
         value={value}
         placeholder={placeholder}
-        onChange={(e) => onCommit(e.target.value)}
-        style={error ? { borderColor: "var(--pf-t--global--color--status--warning--default)" } : undefined}
+        disabled={disabled}
+        onChange={(e) => { if (!disabled) onCommit(e.target.value); }}
+        style={{
+          ...(error ? { borderColor: "var(--pf-t--global--color--status--warning--default)" } : {}),
+          ...(disabled ? { opacity: 0.6, cursor: "not-allowed" } : {}),
+        }}
       />
       {error && (
         <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>
           {error}
+        </div>
+      )}
+      {hint && !error && (
+        <div style={{ color: "var(--troshka-text-dim, #94a3b8)", fontSize: 10, marginTop: 2 }}>
+          {hint}
         </div>
       )}
     </div>
@@ -623,6 +636,7 @@ function ClusterEditor({
   onDisksChange,
   availableNetworks,
   nodes,
+  ocpVersions,
 }: {
   cluster: ClusterConfig;
   clusters: ClusterConfig[];
@@ -634,6 +648,7 @@ function ClusterEditor({
   onDisksChange: (role: "control-plane" | "worker", disks: DiskSpec[]) => void;
   availableNetworks: Array<{ id: string; label: string; cidr?: string }>;
   nodes: Node[];
+  ocpVersions: Array<{ name: string; support: string }>;
 }) {
   const apiVipError = vipCollisionError(clusters, cluster.id, "apiVip", cluster.apiVip || "");
   const ingressVipError = vipCollisionError(clusters, cluster.id, "ingressVip", cluster.ingressVip || "");
@@ -658,11 +673,44 @@ function ClusterEditor({
     clusters.some(
       (c) => c.id !== cluster.id && (c.baseDomain || "").trim().toLowerCase() === trimmedBaseDomain,
     );
+
+  // A cluster is "deployed" once any of its member VMs has been provisioned.
+  // The base domain feeds DNS (api/api-int/*.apps) baked into every node at
+  // install time, so it must not change under a live cluster — only a full
+  // rebuild (all member VMs wiped) may alter it.
+  const deployedVmIds = useCanvasStore.getState().deployedVmIds;
+  const clusterDeployed = nodes.some(
+    (n) =>
+      n.type === "vmNode" &&
+      (n.data as Record<string, unknown>).clusterId === cluster.id &&
+      deployedVmIds.has(n.id),
+  );
+
+  // Auto-fill blank VIPs with the first available unused IP so the user does
+  // not have to pick one manually (still fully editable — clearing re-fills).
+  useEffect(() => {
+    const patch: Partial<ClusterConfig> = {};
+    if (!cluster.apiVip && suggestions.apiVip) patch.apiVip = suggestions.apiVip;
+    if (!cluster.ingressVip && suggestions.ingressVip) patch.ingressVip = suggestions.ingressVip;
+    if (Object.keys(patch).length > 0) onPatch(patch);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cluster.id, cluster.apiVip, cluster.ingressVip, suggestions.apiVip, suggestions.ingressVip]);
+
   return (
     <>
       <div className="props-section">
         <div className="props-section-title">General</div>
-        <ClusterTextField label="Name" value={cluster.name || ""} onCommit={(v) => onPatch({ name: v, baseDomain: deriveBaseDomain(v, cluster.baseDomain || "") })} />
+        <ClusterTextField
+          label="Name"
+          value={cluster.name || ""}
+          onCommit={(v) =>
+            onPatch(
+              clusterDeployed
+                ? { name: v }
+                : { name: v, baseDomain: deriveBaseDomain(v, cluster.baseDomain || "") },
+            )
+          }
+        />
         <div className="props-field">
           <label className="props-label">Cluster Type</label>
           <select
@@ -780,7 +828,14 @@ function ClusterEditor({
             )}
           </div>
         </div>
-        <ClusterTextField label="Base Domain" value={cluster.baseDomain || ""} placeholder="ocp.local" onCommit={(v) => onPatch({ baseDomain: v })} />
+        <ClusterTextField
+          label="Base Domain"
+          value={cluster.baseDomain || ""}
+          placeholder="ocp.local"
+          disabled={clusterDeployed}
+          hint={clusterDeployed ? "🔒 Locked while deployed — wipe all cluster VMs to change." : undefined}
+          onCommit={(v) => onPatch({ baseDomain: v })}
+        />
         {baseDomainDuplicate && (
           <div style={{ fontSize: 11, color: "var(--troshka-red, #ef4444)", marginTop: -4 }}>
             ⚠ Another cluster already uses this base domain — each cluster needs a unique base domain.
@@ -801,15 +856,6 @@ function ClusterEditor({
                 borderColor: vipCollision(cluster.apiVip || "", cluster, nodes) ? "var(--pf-t--global--color--status--warning--default)" : undefined,
               }}
             />
-            {apiVipSuggestion && !cluster.apiVip && (
-              <button
-                className="props-library-btn"
-                style={{ fontSize: 12, padding: "4px 8px" }}
-                onClick={() => onPatch({ apiVip: apiVipSuggestion })}
-              >
-                Use {apiVipSuggestion}
-              </button>
-            )}
           </div>
           {apiVipError && <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>{apiVipError}</div>}
           {vipCollision(cluster.apiVip || "", cluster, nodes) && !apiVipError && (
@@ -831,22 +877,34 @@ function ClusterEditor({
                 borderColor: vipCollision(cluster.ingressVip || "", cluster, nodes) ? "var(--pf-t--global--color--status--warning--default)" : undefined,
               }}
             />
-            {ingressVipSuggestion && !cluster.ingressVip && (
-              <button
-                className="props-library-btn"
-                style={{ fontSize: 12, padding: "4px 8px" }}
-                onClick={() => onPatch({ ingressVip: ingressVipSuggestion })}
-              >
-                Use {ingressVipSuggestion}
-              </button>
-            )}
           </div>
           {ingressVipError && <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>{ingressVipError}</div>}
           {vipCollision(cluster.ingressVip || "", cluster, nodes) && !ingressVipError && (
             <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>IP in use</div>
           )}
         </div>
-        <ClusterTextField label="OCP Version" value={cluster.ocpVersion || ""} placeholder="4.20" onCommit={(v) => onPatch({ ocpVersion: v })} />
+        <div className="props-field">
+          <label className="props-label">OCP Version</label>
+          <select
+            aria-label="OCP Version"
+            className="props-select"
+            value={cluster.ocpVersion || ""}
+            onChange={(e) => onPatch({ ocpVersion: e.target.value })}
+          >
+            <option value="">Select version…</option>
+            {/* Preserve a previously-set value even if it is no longer in the
+                supported list (e.g. an already-deployed cluster). */}
+            {cluster.ocpVersion &&
+              !ocpVersions.some((v) => v.name === cluster.ocpVersion) && (
+                <option value={cluster.ocpVersion}>{cluster.ocpVersion}</option>
+              )}
+            {ocpVersions.map((v) => (
+              <option key={v.name} value={v.name}>
+                {v.name} — {v.support}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
     </>
   );
@@ -867,6 +925,7 @@ export default function PropertiesPanel() {
   const [showPxeIsoPicker, setShowPxeIsoPicker] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [sshKeys, setSshKeys] = useState<SshKeyOption[]>([]);
+  const [ocpVersions, setOcpVersions] = useState<Array<{ name: string; support: string }>>([]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ boot: true, cloudinit: true, nics: true, disks: true, bmc: true, tags: true });
   const [containerLogs, setContainerLogs] = useState<{ containerId: string; logs: string; containerName: string } | null>(null);
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
@@ -878,6 +937,13 @@ export default function PropertiesPanel() {
     fetch("/api/v1/auth/ssh-keys")
       .then((r) => r.ok ? r.json() : [])
       .then((data) => setSshKeys(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, []);
+
+  React.useEffect(() => {
+    fetch("/api/v1/ocp-versions")
+      .then((r) => r.ok ? r.json() : { versions: [] })
+      .then((data) => setOcpVersions(Array.isArray(data?.versions) ? data.versions : []))
       .catch(() => {});
   }, []);
 
@@ -4725,6 +4791,7 @@ export default function PropertiesPanel() {
             onDisksChange={handleDisksChange}
             availableNetworks={availableNetworks}
             nodes={nodes}
+            ocpVersions={ocpVersions}
           />
         );
       })()}
