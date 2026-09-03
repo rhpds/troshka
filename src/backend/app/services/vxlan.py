@@ -196,6 +196,50 @@ def _find_connected_workloads(
     return connected_vms, dhcp_hosts, pxe_boot_iso_ids, pxe_vm_boot_config
 
 
+def _bogus_mac_for_ip(ip: str) -> str:
+    """Deterministic locally-administered (02:) MAC for a VIP reservation — never
+    collides with a real VM NIC (52:54:) and is stable across redeploys."""
+    parts = [int(p) & 0xFF for p in ip.split(".")]
+    return "02:00:%02x:%02x:%02x:%02x" % (parts[0], parts[1], parts[2], parts[3])
+
+
+def _cluster_vip_reservations(
+    net_node_id: str, nodes: list[dict], edges: list[dict]
+) -> list[dict]:
+    """dhcp-host reservations (bogus MAC) for each cluster VIP whose members are
+    on this network, so dnsmasq excludes the VIPs from the dynamic pool."""
+    reservations: list[dict] = []
+    for boundary in nodes:
+        if boundary.get("type") != "clusterNode":
+            continue
+        d = boundary.get("data", {})
+        vips = [
+            (label, str(d.get(key) or "").strip())
+            for label, key in (("api", "apiVip"), ("ingress", "ingressVip"))
+        ]
+        vips = [(label, vip) for label, vip in vips if vip]
+        if not vips:
+            continue
+        members = {
+            n["id"]
+            for n in nodes
+            if n.get("type") == "vmNode" and n.get("parentId") == boundary["id"]
+        }
+        on_net = any(
+            (e.get("source") == net_node_id and e.get("target") in members)
+            or (e.get("target") == net_node_id and e.get("source") in members)
+            for e in edges
+        )
+        if not on_net:
+            continue
+        name = d.get("name", "cluster")
+        for label, vip in vips:
+            reservations.append(
+                {"mac": _bogus_mac_for_ip(vip), "ip": vip, "name": f"{name}-{label}"}
+            )
+    return reservations
+
+
 def _build_dhcp_config(data: dict) -> dict:
     """Build DHCP config from network data, auto-generating from CIDR if needed."""
     range_start = data.get("dhcpRangeStart", "")
@@ -316,6 +360,13 @@ def _build_network_configs(
 
         if net_config["dhcp_enabled"]:
             net_config["dhcp_config"] = _build_dhcp_config(data)
+            # Reserve each cluster VIP on this network with a deterministic bogus
+            # (locally-administered) MAC, so dnsmasq holds the address and never
+            # hands it out from the dynamic pool. (Node static IPs are already
+            # reserved via their real NIC MAC in dhcp_hosts.)
+            net_config["dhcp_hosts"].extend(
+                _cluster_vip_reservations(node_id, nodes, edges)
+            )
 
         pxe_config = _build_pxe_config(data, pxe_vm_boot_config, pxe_boot_iso_ids, vni)
         if pxe_config:
