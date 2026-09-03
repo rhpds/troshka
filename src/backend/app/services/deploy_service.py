@@ -2372,12 +2372,45 @@ def _read_ops_pod_cluster_logs(
     }
 
 
+# Keep bastionless install logs ~a week so they can be reviewed long after the
+# ops pod (restart_policy=always) has finished and stopped.
+_OCP_LOG_CACHE_TTL = 7 * 24 * 3600
+
+
+def _ops_pod_log_cache_key(project_id: str) -> str:
+    return f"ocp-install-log:{project_id}"
+
+
+def cache_ops_pod_logs(project_id: str, logs: dict[str, str]) -> dict[str, str]:
+    """Merge freshly-read per-cluster logs into the cache, keeping the LONGEST
+    seen per cluster, and return the merged result.
+
+    The ops pod truncates ``install.log`` on every restart (``exec > install.log``)
+    and is eventually stopped, so the live log is transient. Persisting the peak
+    (completed) log lets the status box show the full log + derived progress long
+    after the pod is gone. A shorter/empty live read never clobbers a longer
+    cached one.
+    """
+    from app.core.redis import get_progress, set_progress
+
+    key = _ops_pod_log_cache_key(project_id)
+    cached = get_progress(key) or {}
+    merged = dict(cached)
+    for ckey, text in (logs or {}).items():
+        if len(text or "") >= len(merged.get(ckey, "")):
+            merged[ckey] = text
+    if merged != cached:
+        set_progress(key, merged, ttl=_OCP_LOG_CACHE_TTL)
+    return merged
+
+
 def read_ops_pod_install_log(host, project_id: str, topology: dict) -> dict[str, str]:
     """Read each OCP cluster's ops-pod ``install.log`` (pod / bastionless install).
 
-    Returns ``{cluster_key: log_text}`` (empty when there are no clusters). The
-    install-log viewer uses this for the pod path; the bastion path reads the
-    bastion VM's ``install.log`` instead.
+    Returns ``{cluster_key: log_text}`` (empty when there are no clusters),
+    merged with the persisted cache (keep-longest) so a truncated/stopped pod
+    still yields the full completed log. The install-log viewer uses this for the
+    pod path; the bastion path reads the bastion VM's ``install.log`` instead.
     """
     from app.services.ocp.ops_pod_install import _cluster_key as _ops_cluster_key
     from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
@@ -2387,9 +2420,12 @@ def read_ops_pod_install_log(host, project_id: str, topology: dict) -> dict[str,
         return {}
     cluster_keys = [_ops_cluster_key(c) for c in clusters]
     container_name = _ops_pod_container_name(project_id)
-    return _read_ops_pod_cluster_logs(
+    live = _read_ops_pod_cluster_logs(
         host, container_name, cluster_keys, OPS_POD_WORKDIR, project_id
     )
+    # Merge with (and refresh) the persisted cache so a stopped/truncated pod
+    # still returns the full log.
+    return cache_ops_pod_logs(project_id, live)
 
 
 # Consecutive confirmed "not running" polls before the monitor declares the ops
@@ -2555,6 +2591,9 @@ def _monitor_ops_pod_install(
         per_cluster = _read_ops_pod_cluster_logs(
             host, container_name, cluster_keys, workdir, project_id
         )
+        # Persist the raw per-cluster logs (keep-longest) so the status box keeps
+        # the full log + derived progress after the pod truncates/stops.
+        cache_ops_pod_logs(project_id, per_cluster)
         # Dead-job detection: a crashed pod can never finish a non-terminal
         # cluster. But the pod is restart_policy=always + idempotent, so a brief
         # restart window is recoverable — only fail after _OPS_POD_DEAD_POLLS
