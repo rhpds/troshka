@@ -31,7 +31,7 @@ def test_deploy_template_creates_project():
         "/api/v1/deploy-template",
         json={
             "template": "ocp-compact",
-            "version": "4.16",
+            "version": "4.22",
             "name": "My OCP Cluster",
         },
         headers=HEADERS,
@@ -52,7 +52,7 @@ def test_deploy_template_rejects_unknown_overrides():
         "/api/v1/deploy-template",
         json={
             "template": "ocp-compact",
-            "version": "4.16",
+            "version": "4.22",
             "name": "Custom OCP",
             "overrides": {"control_ram_gb": 32, "worker_count": 2},
         },
@@ -67,7 +67,7 @@ def test_deploy_template_rejects_invalid_template():
         "/api/v1/deploy-template",
         json={
             "template": "nonexistent",
-            "version": "4.16",
+            "version": "4.22",
             "name": "Bad Template",
         },
         headers=HEADERS,

@@ -4,11 +4,12 @@ description: "3 CP (4 vCPU, 16 GB, 120 GB) + 2 workers (4 vCPU, 16 GB, 120 GB)"
 category: openshift
 install_method: agent
 deploy_time: "~30 min"
-versions: ["4.14", "4.15", "4.16", "4.17", "4.18"]
+versions: ["4.19", "4.20", "4.21", "4.22"]
 
 ocp:
   - name: ocp
     type: standard
+    ocp_version: "4.22"
     base_domain: local
     api_vip: 10.0.0.2
     ingress_vip: 10.0.0.3

@@ -709,7 +709,7 @@ def create_project_from_template(
             {
                 "cluster_name": body.get("cluster_name", "ocp"),
                 "base_domain": body.get("base_domain", _OCP_LOCAL),
-                "ocp_version": body.get("ocp_version", "4.20"),
+                "ocp_version": body.get("ocp_version", "4.22"),
                 "common_password": common_password,
                 "pull_secret_json": pull_secret_json,
                 "ssh_pub_key": ssh_pub_key,

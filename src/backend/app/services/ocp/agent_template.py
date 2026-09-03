@@ -706,7 +706,7 @@ def _bake_single_cluster_bastion(topology, config, template_id, api_vip, ingress
         BastionOCPConfig(
             cluster_name=config.get("cluster_name", "ocp"),
             base_domain=config.get("base_domain", "ocp.local"),
-            ocp_version=config.get("ocp_version", "4.20"),
+            ocp_version=config.get("ocp_version", "4.22"),
             template_id=template_id,
             auto_install_ocp=config.get("auto_install_ocp", True),
             api_vip=api_vip,
