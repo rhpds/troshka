@@ -136,3 +136,85 @@ def test_apply_sno_ocp_vm_flags_no_bastion_skips_browser_flag():
     data = topo["nodes"][0]["data"]
     assert data["ocpMonitor"] is True
     assert "configureBastionBrowser" not in data
+
+
+def test_apply_cluster_ocp_flags_projects_onto_members():
+    """Cluster-level flags project onto member VMs: recert -> control-plane
+    members, monitor/bastion -> the monitor VM (first control plane)."""
+    from app.services.ocp_topology_flags import apply_cluster_ocp_flags
+
+    topo = {
+        "clusters": [
+            {
+                "id": "ocp",
+                "recert": True,
+                "monitorHealth": True,
+                "configureBastionBrowser": True,
+            }
+        ],
+        "nodes": [
+            {
+                "id": "cp0",
+                "type": "vmNode",
+                "data": {"clusterId": "ocp", "clusterRole": "control-plane"},
+            },
+            {
+                "id": "cp1",
+                "type": "vmNode",
+                "data": {"clusterId": "ocp", "clusterRole": "control-plane"},
+            },
+            {
+                "id": "w0",
+                "type": "vmNode",
+                "data": {"clusterId": "ocp", "clusterRole": "worker"},
+            },
+        ],
+    }
+    changed = apply_cluster_ocp_flags(topo)
+    assert changed is True
+    cp0, cp1, w0 = (n["data"] for n in topo["nodes"])
+    # recert on all control-plane members
+    assert cp0["recertEnabled"] is True
+    assert cp1["recertEnabled"] is True
+    assert "recertEnabled" not in w0
+    # monitor + bastion only on the first control-plane (monitor VM)
+    assert cp0["ocpMonitor"] is True
+    assert cp0["configureBastionBrowser"] is True
+    assert "ocpMonitor" not in cp1
+    assert "ocpMonitor" not in w0
+    # idempotent
+    assert apply_cluster_ocp_flags(topo) is False
+
+
+def test_apply_cluster_ocp_flags_additive_and_scoped():
+    """Only sets flags True (never clears); leaves non-member VMs and other
+    clusters untouched."""
+    from app.services.ocp_topology_flags import apply_cluster_ocp_flags
+
+    topo = {
+        "clusters": [{"id": "a", "monitorHealth": True}, {"id": "b"}],
+        "nodes": [
+            {
+                "id": "a0",
+                "type": "vmNode",
+                "data": {"clusterId": "a", "clusterRole": "control-plane"},
+            },
+            {
+                "id": "b0",
+                "type": "vmNode",
+                "data": {"clusterId": "b", "clusterRole": "control-plane"},
+            },
+            {"id": "loose", "type": "vmNode", "data": {"os": "rhcos"}},
+        ],
+    }
+    assert apply_cluster_ocp_flags(topo) is True
+    a0, b0, loose = (n["data"] for n in topo["nodes"])
+    assert a0["ocpMonitor"] is True
+    assert "ocpMonitor" not in b0  # cluster b has no flags
+    assert "ocpMonitor" not in loose  # not a member
+
+
+def test_apply_cluster_ocp_flags_no_clusters_noop():
+    from app.services.ocp_topology_flags import apply_cluster_ocp_flags
+
+    assert apply_cluster_ocp_flags({"nodes": []}) is False

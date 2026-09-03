@@ -229,6 +229,12 @@ def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[
             "ingressVip": entry.get("ingress_vip"),
             "ocpVersion": entry.get("ocp_version", "4.20"),
             "pullThroughRegistry": entry.get("pull_through_registry"),
+            # Cluster-level OCP flags (projected onto member VMs at deploy).
+            "recert": bool(entry.get("recert", False)),
+            "monitorHealth": bool(entry.get("ocp_monitor", False)),
+            "configureBastionBrowser": bool(
+                entry.get("configure_bastion_browser", False)
+            ),
         }
         # Preserve per-role disk lists and network IDs for member materialization.
         if normalized.get("controlPlaneDisks"):
@@ -2078,12 +2084,16 @@ def _export_vm_flags(d, vm_out):
         vm_out["uuid"] = smbios_uuid
     if not d.get("powerOnAtDeploy", True):
         vm_out["power_on"] = False
-    if d.get("recertEnabled"):
-        vm_out["recert"] = True
-    if d.get("ocpMonitor"):
-        vm_out["ocp_monitor"] = True
-    if d.get("configureBastionBrowser"):
-        vm_out["configure_bastion_browser"] = True
+    # OCP flags (recert/ocp_monitor/configure_bastion_browser) are cluster-level
+    # now — exported on the ``ocp:`` cluster, not per-VM — for cluster members.
+    # Non-member VMs (legacy standalone RHCOS) still export them per-VM.
+    if not d.get("clusterId"):
+        if d.get("recertEnabled"):
+            vm_out["recert"] = True
+        if d.get("ocpMonitor"):
+            vm_out["ocp_monitor"] = True
+        if d.get("configureBastionBrowser"):
+            vm_out["configure_bastion_browser"] = True
     if d.get("serialExecType") and d.get("serialExecType") != "linux":
         vm_out["serial_exec"] = d["serialExecType"]
     if d.get("machineType"):
@@ -2475,6 +2485,14 @@ def _export_ocp_clusters(
             if val is None:
                 continue
             entry[dst] = val
+
+        # Cluster-level OCP flags (only when enabled, to keep templates clean).
+        if cluster.get("recert"):
+            entry["recert"] = True
+        if cluster.get("monitorHealth"):
+            entry["ocp_monitor"] = True
+        if cluster.get("configureBastionBrowser"):
+            entry["configure_bastion_browser"] = True
 
         # Export per-role disk lists as-is (list of {sizeGb, bus?, bootable?})
         if cluster.get("controlPlaneDisks"):

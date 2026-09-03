@@ -5440,6 +5440,13 @@ def _deploy_init_context(s, project, project_id):
     Returns ``(topology, clock_offset, vni_map)``.
     """
     topology = project.topology or {}
+    # Project cluster-level OCP flags (recert / monitor / bastion-browser) onto
+    # member VMs so the per-VM deploy machinery works unchanged for all paths.
+    from app.services.ocp_topology_flags import apply_cluster_ocp_flags
+
+    if apply_cluster_ocp_flags(topology):
+        project.topology = topology
+        s.commit()
     clock_offset = None
     if project.clock_target:
         from app.services.clock_service import compute_clock_offset

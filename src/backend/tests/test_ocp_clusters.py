@@ -1459,3 +1459,52 @@ def test_export_roundtrip_cluster_with_per_role_disks_and_networks():
         assert (
             len(nics) == 2
         ), f"Each member should have 2 NICs (one per network), got {len(nics)}"
+
+
+def test_cluster_ocp_flags_import_export_roundtrip():
+    """Cluster-level recert/monitor/bastion flags survive YAML->topology->YAML."""
+    from app.services.template_loader import (
+        _export_ocp_clusters,
+        build_topology_clusters,
+    )
+
+    ocp_list = [
+        {
+            "name": "ocp",
+            "type": "sno",
+            "recert": True,
+            "ocp_monitor": True,
+            "configure_bastion_browser": True,
+        }
+    ]
+    clusters = build_topology_clusters(ocp_list, {})
+    c = clusters[0]
+    assert c["recert"] is True
+    assert c["monitorHealth"] is True
+    assert c["configureBastionBrowser"] is True
+
+    topo = {"clusters": clusters}
+    exported = _export_ocp_clusters(topo)
+    e = exported[0]
+    assert e["recert"] is True
+    assert e["ocp_monitor"] is True
+    assert e["configure_bastion_browser"] is True
+
+
+def test_cluster_ocp_flags_default_false_not_exported():
+    """Unset flags default False on import and are omitted from export."""
+    from app.services.template_loader import (
+        _export_ocp_clusters,
+        build_topology_clusters,
+    )
+
+    clusters = build_topology_clusters([{"name": "ocp", "type": "sno"}], {})
+    c = clusters[0]
+    assert c["recert"] is False
+    assert c["monitorHealth"] is False
+    assert c["configureBastionBrowser"] is False
+
+    e = _export_ocp_clusters({"clusters": clusters})[0]
+    assert "recert" not in e
+    assert "ocp_monitor" not in e
+    assert "configure_bastion_browser" not in e
