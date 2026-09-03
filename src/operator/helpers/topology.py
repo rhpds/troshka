@@ -677,14 +677,15 @@ def _add_cluster_vip_leases(nodes, edges, network_leases):
         name = data.get("name", "cluster")
         for net_id in cluster_nets:
             leases = network_leases.setdefault(net_id, [])
-            seen = set()
+            # Seed with IPs already claimed by real VM NIC leases: a VIP equal to
+            # a node's own IP (SNO: api==ingress==the single node's IP) is already
+            # reserved, and api==ingress collapse to one — a duplicate dhcp-host
+            # for the same address makes dnsmasq exit 1 and fails network setup.
+            existing = {lease.get("ip") for lease in leases}
             for label, vip in vips:
-                # api_vip == ingress_vip is legal (e.g. SNO-style configs); emit
-                # ONE lease per IP — a duplicate dhcp-host for the same address
-                # makes dnsmasq exit 1 and fails the whole network setup.
-                if vip in seen:
+                if vip in existing:
                     continue
-                seen.add(vip)
+                existing.add(vip)
                 leases.append(
                     {
                         "mac": _bogus_mac_for_ip(vip),

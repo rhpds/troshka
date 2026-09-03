@@ -204,10 +204,19 @@ def _bogus_mac_for_ip(ip: str) -> str:
 
 
 def _cluster_vip_reservations(
-    net_node_id: str, nodes: list[dict], edges: list[dict]
+    net_node_id: str,
+    nodes: list[dict],
+    edges: list[dict],
+    reserved_ips: set[str] | None = None,
 ) -> list[dict]:
     """dhcp-host reservations (bogus MAC) for each cluster VIP whose members are
-    on this network, so dnsmasq excludes the VIPs from the dynamic pool."""
+    on this network, so dnsmasq excludes the VIPs from the dynamic pool.
+
+    ``reserved_ips`` are IPs already claimed by real VM NIC leases: a VIP that
+    equals a node's own IP (e.g. SNO, where api==ingress==the single node's IP)
+    is ALREADY reserved by that NIC, so a second dhcp-host for the same address
+    would make dnsmasq exit 1 ("duplicate dhcp-host IP")."""
+    reserved_ips = set(reserved_ips or ())
     reservations: list[dict] = []
     for boundary in nodes:
         if boundary.get("type") != "clusterNode":
@@ -235,10 +244,10 @@ def _cluster_vip_reservations(
         name = d.get("name", "cluster")
         seen: set[str] = set()
         for label, vip in vips:
-            # api_vip == ingress_vip is legal (e.g. SNO-style configs); emit ONE
-            # reservation per IP — a duplicate dhcp-host for the same address
-            # makes dnsmasq exit 1 and fails the whole network setup.
-            if vip in seen:
+            # Skip a VIP already reserved by a real NIC (SNO: api==ingress==node
+            # IP) or by the other VIP (api==ingress): a duplicate dhcp-host for
+            # the same address makes dnsmasq exit 1 and fails the network setup.
+            if vip in seen or vip in reserved_ips:
                 continue
             seen.add(vip)
             reservations.append(
@@ -371,8 +380,9 @@ def _build_network_configs(
             # (locally-administered) MAC, so dnsmasq holds the address and never
             # hands it out from the dynamic pool. (Node static IPs are already
             # reserved via their real NIC MAC in dhcp_hosts.)
+            existing_ips = {h.get("ip") for h in net_config["dhcp_hosts"]}
             net_config["dhcp_hosts"].extend(
-                _cluster_vip_reservations(node_id, nodes, edges)
+                _cluster_vip_reservations(node_id, nodes, edges, existing_ips)
             )
 
         pxe_config = _build_pxe_config(data, pxe_vm_boot_config, pxe_boot_iso_ids, vni)

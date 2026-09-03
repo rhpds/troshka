@@ -696,3 +696,25 @@ def test_cluster_vip_reservations_distinct_api_ingress():
 
     res = _cluster_vip_reservations("net1", nodes, edges)
     assert sorted(r["ip"] for r in res) == ["10.0.0.10", "10.0.0.11"]
+
+
+def test_cluster_vip_reservations_skips_ip_reserved_by_node_nic():
+    """SNO: api==ingress==the node's own IP, already reserved by the node's real
+    NIC lease. No VIP dhcp-host must be emitted for it (a duplicate dhcp-host for
+    the same IP makes dnsmasq exit 1)."""
+    from app.services.vxlan import _cluster_vip_reservations
+
+    nodes = [
+        {"id": "net1", "type": "networkNode", "data": {}},
+        {
+            "id": "cluster-ocp",
+            "type": "clusterNode",
+            "data": {"name": "ocp", "apiVip": "10.0.0.10", "ingressVip": "10.0.0.10"},
+        },
+        {"id": "cp-0", "type": "vmNode", "parentId": "cluster-ocp", "data": {}},
+    ]
+    edges = [{"source": "net1", "target": "cp-0"}]
+
+    # cp-0's real NIC already reserves 10.0.0.10 (passed in reserved_ips).
+    res = _cluster_vip_reservations("net1", nodes, edges, {"10.0.0.10"})
+    assert res == []

@@ -10601,3 +10601,61 @@ class TestClusterVipLeases:
         ]
         assert len(vip_leases) == 1
         assert vip_leases[0]["mac"] == "02:00:0a:00:00:0a"
+
+    def test_vip_equal_to_node_nic_ip_not_duplicated(self):
+        """SNO: api==ingress==the node's own NIC IP. The real NIC lease already
+        reserves it, so NO bogus-MAC VIP lease is added for that IP (a duplicate
+        dhcp-host for the same address makes dnsmasq exit 1)."""
+        from helpers.topology import build_static_leases
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "net1",
+                    "type": "networkNode",
+                    "data": {"id": "net1", "cidr": "10.0.0.0/24"},
+                },
+                {
+                    "id": "cluster-ocp",
+                    "type": "clusterNode",
+                    "data": {
+                        "name": "ocp",
+                        "apiVip": "10.0.0.10",
+                        "ingressVip": "10.0.0.10",
+                    },
+                },
+                {
+                    "id": "cp-0",
+                    "type": "vmNode",
+                    "parentId": "cluster-ocp",
+                    "data": {
+                        "id": "cp-0",
+                        "label": "cp-0",
+                        "nics": [
+                            {
+                                "id": "nic-n0",
+                                "mac": "52:54:00:aa:bb:01",
+                                "ip": "10.0.0.10",
+                            }
+                        ],
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "source": "net1",
+                    "target": "cp-0",
+                    "sourceHandle": "bottom",
+                    "targetHandle": "nic-nic-n0-top",
+                }
+            ],
+        }
+        leases = [
+            lease
+            for lease in build_static_leases(topo)["net1"]
+            if lease["ip"] == "10.0.0.10"
+        ]
+        assert len(leases) == 1
+        assert (
+            leases[0]["mac"] == "52:54:00:aa:bb:01"
+        )  # the real NIC, not a bogus VIP MAC
