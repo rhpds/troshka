@@ -815,7 +815,7 @@ function ClusterEditor({
       <div className="props-section">
         <div className="props-section-title">Control Plane Sizing</div>
         <ClusterNumberField label="Control Plane vCPUs" min={1} value={cluster.controlPlaneCpu ?? 8} onCommit={(v) => onSizing({ controlPlaneCpu: v })} />
-        <ClusterNumberField label="Control Plane Memory (MB)" min={1} value={cluster.controlPlaneMemory ?? 16384} onCommit={(v) => onSizing({ controlPlaneMemory: v })} />
+        <ClusterNumberField label="Control Plane Memory (GB)" min={1} value={Math.round((cluster.controlPlaneMemory ?? 16384) / 1024)} onCommit={(v) => onSizing({ controlPlaneMemory: v * 1024 })} />
         <ClusterNumberField label="Control Plane Disk (GB)" min={1} value={cluster.controlPlaneDisk ?? 120} onCommit={(v) => onSizing({ controlPlaneDisk: v })} />
       </div>
       <div className="props-divider" />
@@ -834,7 +834,7 @@ function ClusterEditor({
           <div className="props-section">
             <div className="props-section-title">Worker Sizing</div>
             <ClusterNumberField label="Worker vCPUs" min={1} value={cluster.workerCpu ?? 4} onCommit={(v) => onSizing({ workerCpu: v })} />
-            <ClusterNumberField label="Worker Memory (MB)" min={1} value={cluster.workerMemory ?? 8192} onCommit={(v) => onSizing({ workerMemory: v })} />
+            <ClusterNumberField label="Worker Memory (GB)" min={1} value={Math.round((cluster.workerMemory ?? 8192) / 1024)} onCommit={(v) => onSizing({ workerMemory: v * 1024 })} />
             <ClusterNumberField label="Worker Disk (GB)" min={1} value={cluster.workerDisk ?? 100} onCommit={(v) => onSizing({ workerDisk: v })} />
           </div>
           <div className="props-divider" />
