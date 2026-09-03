@@ -3966,14 +3966,45 @@ export default function PropertiesPanel() {
                               vniMap,
                             );
                             const managed = Boolean((rec as Record<string, unknown>).managed);
+                            // Cluster-managed records are read-only — render a
+                            // compact card (full name wraps, no input boxes) so
+                            // long OCP names aren't truncated or overflowing.
+                            if (managed) {
+                              return (
+                                <div
+                                  key={i}
+                                  title="Managed by the OpenShift cluster — edit via the cluster (base domain / VIPs)"
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: 8,
+                                    marginBottom: 3,
+                                    padding: "3px 6px",
+                                    borderRadius: 4,
+                                    background: "rgba(59,130,246,0.10)",
+                                    borderLeft: "3px solid var(--troshka-accent, #3b82f6)",
+                                  }}
+                                >
+                                  <span style={{ flex: 1, minWidth: 0, fontFamily: "monospace", fontSize: 10, wordBreak: "break-all", lineHeight: 1.3 }}>
+                                    {rec.name}
+                                    <span style={{ color: "var(--troshka-text-dim)" }}>
+                                      {" → "}{rec.ip || displayIp}
+                                    </span>
+                                  </span>
+                                  <span title="Managed by the OpenShift cluster" style={{ flex: "0 0 auto", fontSize: 8, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", color: "var(--troshka-accent, #3b82f6)", whiteSpace: "nowrap" }}>
+                                    ☸ cluster
+                                  </span>
+                                </div>
+                              );
+                            }
                             return (
-                            <div key={i} title={managed ? "Managed by the OpenShift cluster — edit via the cluster (base domain / VIPs)" : undefined} style={{ display: "flex", gap: 4, marginBottom: 3, alignItems: "center", minWidth: 320, ...(managed ? { background: "rgba(59,130,246,0.12)", borderLeft: "3px solid var(--troshka-accent, #3b82f6)", borderRadius: 4, padding: "3px 4px" } : {}) }}>
-                              <input className="props-input" disabled={managed} style={{ width: `${Math.max((rec.name || "").length, "hostname".length) + 2}ch`, flex: "0 0 auto", fontSize: 10, fontFamily: "monospace" }} value={rec.name} placeholder="hostname" onChange={(e) => {
+                            <div key={i} style={{ display: "flex", gap: 4, marginBottom: 3, alignItems: "center" }}>
+                              <input className="props-input" style={{ flex: 3, minWidth: 0, fontSize: 10, fontFamily: "monospace" }} value={rec.name} placeholder="hostname" onChange={(e) => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
                                 records[i] = { ...records[i], name: e.target.value };
                                 update("dnsRecords", records);
                               }} />
-                              <select className="props-input" disabled={managed} style={{ width: 50, fontSize: 10, fontFamily: "monospace" }} value={rec.type || "A"} onChange={(e) => {
+                              <select className="props-input" style={{ width: 50, fontSize: 10, fontFamily: "monospace" }} value={rec.type || "A"} onChange={(e) => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
                                 records[i] = { ...records[i], type: e.target.value };
                                 update("dnsRecords", records);
@@ -3983,20 +4014,16 @@ export default function PropertiesPanel() {
                                 <option value="TXT">TXT</option>
                                 <option value="SRV">SRV</option>
                               </select>
-                              <input className="props-input" disabled={managed} style={{ width: `${Math.max((rec.ip || displayIp || "").length, "255.255.255.255".length) + 2}ch`, flex: "0 0 auto", fontSize: 10, fontFamily: "monospace" }} value={rec.ip || displayIp} placeholder={rec.type === "CNAME" ? "target" : displayIp ? displayIp : "IP"} onChange={(e) => {
+                              <input className="props-input" style={{ flex: 2, minWidth: 0, fontSize: 10, fontFamily: "monospace" }} value={rec.ip || displayIp} placeholder={rec.type === "CNAME" ? "target" : displayIp ? displayIp : "IP"} onChange={(e) => {
                                 const records = [...((data as Record<string, any>).dnsRecords || [])];
                                 records[i] = { ...records[i], ip: e.target.value };
                                 update("dnsRecords", records);
                               }} />
-                              {managed ? (
-                                <span title="Managed by the OpenShift cluster" style={{ fontSize: 9, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", color: "var(--troshka-accent, #3b82f6)", background: "rgba(59,130,246,0.18)", border: "1px solid var(--troshka-accent, #3b82f6)", borderRadius: 4, padding: "1px 5px", whiteSpace: "nowrap" }}>☸ cluster</span>
-                              ) : (
-                                <button className="troshka-btn-icon-danger" title="Remove" onClick={() => {
-                                  const records = [...((data as Record<string, any>).dnsRecords || [])];
-                                  records.splice(i, 1);
-                                  update("dnsRecords", records);
-                                }}>×</button>
-                              )}
+                              <button className="troshka-btn-icon-danger" title="Remove" onClick={() => {
+                                const records = [...((data as Record<string, any>).dnsRecords || [])];
+                                records.splice(i, 1);
+                                update("dnsRecords", records);
+                              }}>×</button>
                             </div>
                             );
                           })}
