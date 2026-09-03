@@ -339,6 +339,12 @@ let _duplicateVmCallback: ((nodeId: string) => void) | null = null;
 export function onRequestDuplicateVM(cb: ((nodeId: string) => void) | null) { _duplicateVmCallback = cb; }
 export function requestDuplicateVM(nodeId: string) { if (_duplicateVmCallback) _duplicateVmCallback(nodeId); }
 
+// Cluster duplicate callback — cluster cloning (new ClusterConfig + materialized
+// members) uses makeCluster/materializeClusterInto which live in the canvas
+// layer, so Canvas registers a handler and duplicateNode delegates to it.
+let _duplicateClusterCallback: ((nodeId: string) => void) | null = null;
+export function onRequestDuplicateCluster(cb: ((nodeId: string) => void) | null) { _duplicateClusterCallback = cb; }
+
 // Undo/redo history (not persisted)
 interface HistoryEntry { nodes: Node[]; edges: Edge[]; hiddenNodeIds: string[] }
 const _undoStack: HistoryEntry[] = [];
@@ -1693,6 +1699,14 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   duplicateNode: (nodeId, opts) => {
     const source = get().nodes.find((n) => n.id === nodeId);
     if (!source) return;
+
+    // Cluster boxes need a full clone (new ClusterConfig + materialized member
+    // VMs); delegate to the canvas-layer handler which has makeCluster /
+    // materializeClusterInto.
+    if (source.type === "clusterNode") {
+      if (_duplicateClusterCallback) _duplicateClusterCallback(nodeId);
+      return;
+    }
 
     const allNames = get().nodes.map((n) => (n.data as Record<string, any>).name as string).filter(Boolean);
     const baseName = (source.data as Record<string, any>).name as string || "node";

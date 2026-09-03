@@ -25,7 +25,7 @@ import NodeContextMenu from "./NodeContextMenu";
 import EdgeContextMenu from "./EdgeContextMenu";
 import DuplicateVMModal from "./DuplicateVMModal";
 import ClusterInstallLogModal from "./ClusterInstallLogModal";
-import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM } from "@/stores/canvasStore";
+import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM, onRequestDuplicateCluster, type ClusterConfig } from "@/stores/canvasStore";
 import { makeCluster } from "@/components/canvas/clusterFactory";
 import { resolveMembership, absolutePosition, relativePosition, orderChildAfterParent } from "@/components/canvas/clusterMembership";
 import { assignmentDataPatch, materializeClusterInto, applyClusterNetworks } from "@/components/canvas/clusterMaterialize";
@@ -89,6 +89,82 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
   useEffect(() => {
     onRequestDuplicateVM((id) => setDuplicateVmId(id));
     return () => onRequestDuplicateVM(null);
+  }, []);
+
+  // Full cluster clone: a fresh ClusterConfig + boundary + materialized members,
+  // copying the source cluster's type/sizing/options (the generic node duplicate
+  // can't do this — it lives in the store, these helpers live here).
+  useEffect(() => {
+    onRequestDuplicateCluster((nodeId) => {
+      const st = useCanvasStore.getState();
+      const src = st.nodes.find((n) => n.id === nodeId);
+      const srcCluster = st.clusters.find(
+        (c) => c.nodeId === nodeId || `cluster-${c.id}` === nodeId,
+      );
+      if (!src || !srcCluster) return;
+      // Unique name based on the source (ocp -> ocp-2, ocp-3, …).
+      const existing = new Set(st.clusters.map((c) => c.name));
+      const m = srcCluster.name.match(/^(.*?)-(\d+)$/);
+      const base = m ? m[1] : srcCluster.name;
+      let n = m ? parseInt(m[2], 10) + 1 : 2;
+      while (existing.has(`${base}-${n}`)) n++;
+      const newName = `${base}-${n}`;
+
+      const { node, cluster } = makeCluster(newName, {
+        x: src.position.x + (src.width ?? 520) + 60,
+        y: src.position.y,
+      });
+      // Copy the source cluster's shape/sizing/options onto the clone.
+      const merged: ClusterConfig = {
+        ...cluster,
+        type: srcCluster.type,
+        controlPlane: srcCluster.controlPlane,
+        workers: srcCluster.workers,
+        controlPlaneCpu: srcCluster.controlPlaneCpu,
+        controlPlaneMemory: srcCluster.controlPlaneMemory,
+        controlPlaneDisk: srcCluster.controlPlaneDisk,
+        workerCpu: srcCluster.workerCpu,
+        workerMemory: srcCluster.workerMemory,
+        workerDisk: srcCluster.workerDisk,
+        baseDomain: srcCluster.baseDomain,
+        ocpVersion: srcCluster.ocpVersion,
+        pullThroughRegistry: srcCluster.pullThroughRegistry,
+        controlPlaneDisks: srcCluster.controlPlaneDisks
+          ? [...srcCluster.controlPlaneDisks]
+          : cluster.controlPlaneDisks,
+        workerDisks: srcCluster.workerDisks ? [...srcCluster.workerDisks] : cluster.workerDisks,
+        recert: srcCluster.recert,
+        monitorHealth: srcCluster.monitorHealth,
+        // A clone is never the (single) bastion-browser owner by default.
+        configureBastionBrowser: false,
+        networkIds: [],
+      };
+      // Mirror the shape onto the boundary node so the header + materialize match.
+      const boundaryNode = {
+        ...node,
+        data: {
+          ...(node.data as Record<string, unknown>),
+          type: merged.type,
+          controlPlane: merged.controlPlane,
+          workers: merged.workers,
+          baseDomain: merged.baseDomain,
+        },
+      };
+      addNode(boundaryNode);
+      addCluster(merged);
+      const { nodes: withMembers, edges: memberEdges } = materializeClusterInto(
+        merged,
+        useCanvasStore.getState().nodes,
+      );
+      const edgeMap = new Map(useCanvasStore.getState().edges.map((e) => [e.id, e]));
+      memberEdges.forEach((e) => edgeMap.set(e.id, e));
+      useCanvasStore.setState({
+        nodes: withMembers,
+        edges: Array.from(edgeMap.values()),
+        selectedNodeId: boundaryNode.id,
+      });
+    });
+    return () => onRequestDuplicateCluster(null);
   }, []);
 
   const allNodes = useCanvasStore((s) => s.nodes);
