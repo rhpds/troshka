@@ -88,6 +88,14 @@ export function collectUsedIps(nodes: Node[]): Set<string> {
         if (hosts.length > 0) used.add(hosts[0]);
       }
     }
+    // Cluster VIPs are reserved addresses — count them so a member NIC or another
+    // cluster's VIP/SNO-node IP is never allocated on top of them.
+    if (node.type === "clusterNode") {
+      const apiVip = String(data.apiVip || "").trim();
+      const ingressVip = String(data.ingressVip || "").trim();
+      if (apiVip) used.add(apiVip);
+      if (ingressVip) used.add(ingressVip);
+    }
   }
   return used;
 }
