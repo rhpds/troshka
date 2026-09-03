@@ -10513,3 +10513,79 @@ class TestConfigureStartup:
             namespace="test-ns",
             propagation_policy="Background",
         )
+
+
+class TestClusterVipLeases:
+    """build_static_leases reserves OCP cluster VIPs with bogus MACs so dnsmasq
+    keeps them out of the dynamic DHCP pool (KubeVirt-native parity with the
+    troshkad vxlan.py path)."""
+
+    def _topo(self, api_vip="10.0.0.10", ingress_vip="10.0.0.11"):
+        return {
+            "nodes": [
+                {
+                    "id": "net1",
+                    "type": "networkNode",
+                    "data": {"id": "net1", "cidr": "10.0.0.0/24"},
+                },
+                {
+                    "id": "cluster-prod",
+                    "type": "clusterNode",
+                    "data": {
+                        "name": "prod",
+                        "apiVip": api_vip,
+                        "ingressVip": ingress_vip,
+                    },
+                },
+                {
+                    "id": "prod-cp-0",
+                    "type": "vmNode",
+                    "parentId": "cluster-prod",
+                    "data": {
+                        "id": "prod-cp-0",
+                        "label": "prod-cp-0",
+                        "nics": [
+                            {
+                                "id": "nic-n0",
+                                "mac": "52:54:00:aa:bb:01",
+                                "ip": "10.0.0.20",
+                            }
+                        ],
+                    },
+                },
+            ],
+            "edges": [
+                {
+                    "source": "net1",
+                    "target": "prod-cp-0",
+                    "sourceHandle": "bottom",
+                    "targetHandle": "nic-nic-n0-top",
+                }
+            ],
+        }
+
+    def test_vips_reserved_with_bogus_macs(self):
+        from helpers.topology import build_static_leases
+
+        leases = build_static_leases(self._topo())["net1"]
+        by_ip = {l["ip"]: l for l in leases}
+        # Real NIC lease still present.
+        assert by_ip["10.0.0.20"]["mac"] == "52:54:00:aa:bb:01"
+        # VIPs reserved with deterministic 02: (locally-administered) MACs.
+        assert by_ip["10.0.0.10"]["mac"] == "02:00:0a:00:00:0a"
+        assert by_ip["10.0.0.10"]["hostname"] == "prod-api"
+        assert by_ip["10.0.0.11"]["mac"] == "02:00:0a:00:00:0b"
+        assert by_ip["10.0.0.11"]["hostname"] == "prod-ingress"
+
+    def test_sno_has_no_vip_reservations(self):
+        from helpers.topology import build_static_leases
+
+        # SNO: no VIPs (api==ingress==node IP) -> only the real NIC lease.
+        leases = build_static_leases(self._topo(api_vip="", ingress_vip=""))["net1"]
+        assert [l["ip"] for l in leases] == ["10.0.0.20"]
+
+    def test_bogus_mac_is_deterministic(self):
+        from helpers.topology import _bogus_mac_for_ip
+
+        assert _bogus_mac_for_ip("192.168.1.254") == "02:00:c0:a8:01:fe"
+        assert _bogus_mac_for_ip("10.0.0.10") == _bogus_mac_for_ip("10.0.0.10")

@@ -631,6 +631,62 @@ def _add_lease_for_nic(vm_data, nic_id, net_id, network_leases):
         )
 
 
+def _bogus_mac_for_ip(ip):
+    """Deterministic locally-administered (02:) MAC for a cluster VIP reservation.
+
+    Never collides with a real VM NIC (52:54:) and is stable across redeploys.
+    Mirrors vxlan.py._bogus_mac_for_ip on the troshkad path.
+    """
+    parts = [int(p) & 0xFF for p in ip.split(".")]
+    return "02:00:%02x:%02x:%02x:%02x" % (parts[0], parts[1], parts[2], parts[3])
+
+
+def _add_cluster_vip_leases(nodes, edges, network_leases):
+    """Reserve each OCP cluster's apiVip/ingressVip with a bogus MAC on the
+    network its members attach to, so dnsmasq keeps the VIPs out of the dynamic
+    DHCP pool. Mirrors vxlan.py._cluster_vip_reservations (troshkad path) so
+    bastionless installs behave the same on KubeVirt-native. SNO clusters have
+    no VIPs (api==ingress==node IP), so nothing is reserved for them.
+    """
+    net_node_ids = {n.get("id") for n in nodes if n.get("type") == "networkNode"}
+    for boundary in nodes:
+        if boundary.get("type") != "clusterNode":
+            continue
+        data = boundary.get("data", {})
+        vips = [
+            (label, str(data.get(key) or "").strip())
+            for label, key in (("api", "apiVip"), ("ingress", "ingressVip"))
+        ]
+        vips = [(label, vip) for label, vip in vips if vip]
+        if not vips:
+            continue
+        members = {
+            n.get("id")
+            for n in nodes
+            if n.get("type") == "vmNode" and n.get("parentId") == boundary.get("id")
+        }
+        if not members:
+            continue
+        cluster_nets = set()
+        for edge in edges:
+            src, tgt = edge.get("source", ""), edge.get("target", "")
+            if src in members and tgt in net_node_ids:
+                cluster_nets.add(tgt)
+            elif tgt in members and src in net_node_ids:
+                cluster_nets.add(src)
+        name = data.get("name", "cluster")
+        for net_id in cluster_nets:
+            leases = network_leases.setdefault(net_id, [])
+            for label, vip in vips:
+                leases.append(
+                    {
+                        "mac": _bogus_mac_for_ip(vip),
+                        "ip": vip,
+                        "hostname": f"{name}-{label}",
+                    }
+                )
+
+
 def build_static_leases(topology):
     edges = topology.get("edges", [])
     nodes = topology.get("nodes", [])
@@ -642,5 +698,8 @@ def build_static_leases(topology):
         vm_data, net_id, nic_id = _find_vm_and_network_from_edge(edge, node_map)
         if vm_data and net_id and nic_id:
             _add_lease_for_nic(vm_data, nic_id, net_id, network_leases)
+
+    # Cluster VIPs carry no real NIC, so reserve them explicitly (bogus MAC).
+    _add_cluster_vip_leases(nodes, edges, network_leases)
 
     return network_leases
