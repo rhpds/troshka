@@ -496,10 +496,11 @@ export function clusterConsoleTabName(name: string): string {
 
 /**
  * Keep cluster-managed console-proxy tabs (``tab.clusterId === cluster.id``) in
- * sync with the cluster: their name and proxyHosts (console + oauth) are DERIVED
- * from the cluster's current name/baseDomain, so renaming the cluster updates
- * them automatically and they are never hand-edited. Returns the updated tabs,
- * or ``null`` when nothing changed.
+ * sync with the cluster: their proxyHosts (console + oauth) are DERIVED from the
+ * cluster's current name/baseDomain, so changing the cluster name or base domain
+ * updates the upstream hosts automatically. The tab NAME is user-owned (it only
+ * defaults to ``<cluster> Console`` at creation) and is never overwritten here.
+ * Returns the updated tabs, or ``null`` when nothing changed.
  */
 export function syncClusterProxyTabs(
   tabs: ShowroomTab[],
@@ -509,7 +510,6 @@ export function syncClusterProxyTabs(
   const baseDomain = (cluster.baseDomain || "").trim();
   if (!name || !baseDomain) return null;
   const hosts = clusterConsoleHosts(name, baseDomain);
-  const wantName = clusterConsoleTabName(name);
   let changed = false;
   const next = tabs.map((tab) => {
     if (tab.clusterId !== cluster.id) return tab;
@@ -517,9 +517,9 @@ export function syncClusterProxyTabs(
       !!tab.proxyHosts &&
       tab.proxyHosts.length === hosts.length &&
       tab.proxyHosts.every((h, i) => h === hosts[i]);
-    if (sameHosts && tab.name === wantName) return tab;
+    if (sameHosts) return tab;
     changed = true;
-    return { ...tab, name: wantName, proxyHosts: hosts };
+    return { ...tab, proxyHosts: hosts };
   });
   return changed ? next : null;
 }

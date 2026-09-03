@@ -967,9 +967,13 @@ export function vipCollision(
     }
   }
 
-  // Also check other clusters' VIPs
+  // Also check OTHER clusters' VIPs. The boundary (clusterNode) data has no
+  // clusterId field, so we exclude THIS cluster's own boundary by node id
+  // (``cluster-<id>``, mirrored by cluster.nodeId) — otherwise a SNO whose VIP
+  // equals its own boundary's apiVip/ingressVip would false-positive.
+  const ownBoundaryId = cluster.nodeId || `cluster-${cluster.id}`;
   const otherClusters = nodes
-    .filter((n) => n.type === "clusterNode" && (n.data as Record<string, string | undefined>).clusterId !== cluster.id)
+    .filter((n) => n.type === "clusterNode" && n.id !== ownBoundaryId)
     .map((n) => n.data as Record<string, string | undefined>);
 
   for (const other of otherClusters) {

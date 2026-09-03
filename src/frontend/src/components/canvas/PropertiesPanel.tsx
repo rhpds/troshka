@@ -2382,8 +2382,9 @@ export default function PropertiesPanel() {
                               : tab.proxyHost
                                 ? "named"
                                 : "vm";
-                          // Cluster-managed console tab: name + hosts derive from
-                          // the OCP cluster and are read-only here.
+                          // Cluster-managed console tab: the console/oauth HOSTS
+                          // derive from the OCP cluster (read-only). The NAME is
+                          // user-editable — it just defaults to "<cluster> Console".
                           const clusterManaged = !!tab.clusterId;
                           const typeLabel =
                             tab.type === "terminal"
@@ -2463,8 +2464,6 @@ export default function PropertiesPanel() {
                                   className="props-input"
                                   placeholder="e.g. control"
                                   value={tab.name}
-                                  disabled={clusterManaged}
-                                  title={clusterManaged ? "Managed by the OpenShift cluster — rename the cluster to change." : undefined}
                                   onChange={(e) => {
                                     const next = showroomTabs.map((t) =>
                                       t.id === tab.id ? { ...t, name: e.target.value } : t,
