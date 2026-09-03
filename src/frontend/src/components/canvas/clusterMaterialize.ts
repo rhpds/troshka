@@ -338,6 +338,46 @@ function addMembers(
   return { nodes: [...nodes, ...addedNodes], edges: addedEdges };
 }
 
+/**
+ * Reposition ALL of a cluster's member VM cards onto a clean grid by GLOBAL
+ * index (control-plane first, then workers; each ordered by the trailing index
+ * in its name), wrapping at COLS_MAX per row. This is authoritative over the
+ * incremental placement in `addMembers` — it guarantees non-overlapping layout
+ * and correct row-wrapping regardless of how/when members were added (the
+ * incremental path could pile members in one column). Cells are CELL_W×CELL_H,
+ * which exceed the 180×260 card, so cards never overlap.
+ */
+function reflowMembers(cluster: ClusterConfig, nodes: Node[]): Node[] {
+  const members = nodes.filter(
+    (n) =>
+      n.type === "vmNode" &&
+      (n.data as Record<string, unknown>).clusterId === cluster.id,
+  );
+  const idxOf = (n: Node): number => {
+    const m = String((n.data as Record<string, unknown>).name || "").match(/-(\d+)$/);
+    return m ? parseInt(m[1], 10) : 0;
+  };
+  const ordered = [...members].sort((a, b) => {
+    const ra = memberRole(a) === "control-plane" ? 0 : 1;
+    const rb = memberRole(b) === "control-plane" ? 0 : 1;
+    if (ra !== rb) return ra - rb;
+    return idxOf(a) - idxOf(b);
+  });
+  const posById = new Map<string, { x: number; y: number }>();
+  ordered.forEach((n, i) => {
+    const gridCol = i % COLS_MAX;
+    const gridRow = Math.floor(i / COLS_MAX);
+    posById.set(n.id, {
+      x: PAD + gridCol * CELL_W,
+      y: HEADER_H + gridRow * CELL_H,
+    });
+  });
+  return nodes.map((n) => {
+    const pos = posById.get(n.id);
+    return pos ? { ...n, position: pos } : n;
+  });
+}
+
 function removeSurplus(
   cluster: ClusterConfig,
   spec: RoleSpec,
@@ -600,6 +640,10 @@ export function reconcileClusterVms(
     resultNodes = nextNodes;
     resultEdges = nextEdges;
   }
+
+  // Authoritative grid layout: reposition every member by global index so rows
+  // wrap and cards never overlap (fixes incrementally-added members piling up).
+  resultNodes = reflowMembers(cluster, resultNodes);
 
   // Collect visible member VMs (not hidden, not disks) for content bbox calculation
   const visibleMembers = resultNodes.filter(

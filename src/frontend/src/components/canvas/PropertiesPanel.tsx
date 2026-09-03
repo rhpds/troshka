@@ -497,13 +497,25 @@ function DiskListEditor({
   };
 
   const handleRemoveDisk = (index: number) => {
-    onChange(disks.filter((_, i) => i !== index));
+    const remaining = disks.filter((_, i) => i !== index);
+    // Keep exactly one boot disk: if we removed the boot disk (or none is
+    // marked), make the first remaining disk bootable.
+    if (remaining.length > 0 && !remaining.some((d) => d.bootable)) {
+      remaining[0] = { ...remaining[0], bootable: true };
+    }
+    onChange(remaining);
   };
 
   const handleUpdateDisk = (index: number, patch: Partial<DiskSpec>) => {
     const updated = [...disks];
     updated[index] = { ...updated[index], ...patch };
     onChange(updated);
+  };
+
+  // Boot is exclusive (radio-style): exactly one disk per role is the boot
+  // disk. Selecting a disk clears bootable on all others.
+  const handleSetBoot = (index: number) => {
+    onChange(disks.map((d, i) => ({ ...d, bootable: i === index })));
   };
 
   return (
@@ -531,7 +543,7 @@ function DiskListEditor({
               <input
                 type="checkbox"
                 checked={disk.bootable ?? false}
-                onChange={(e) => handleUpdateDisk(idx, { bootable: e.target.checked })}
+                onChange={() => handleSetBoot(idx)}
                 style={{ cursor: "pointer" }}
               />
               <span>Boot</span>
