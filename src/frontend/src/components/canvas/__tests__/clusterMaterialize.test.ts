@@ -195,6 +195,8 @@ describe("backend-created cluster members (no clusterRole)", () => {
 describe("materializeClusterInto", () => {
   it("materializeClusterInto creates 3 CP members for a fresh standard cluster", () => {
     const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.type = "standard";
+    cluster.controlPlane = 3;
     const { nodes } = materializeClusterInto(cluster, [node]);
     const cps = nodes.filter(
       (n) => n.type === "vmNode" && n.data.clusterId === cluster.id && n.data.clusterRole === "control-plane",
@@ -558,6 +560,8 @@ describe("applyClusterDisks", () => {
 describe("suggestClusterVips", () => {
   it("returns high unused IPs for multi-node cluster with CIDR", () => {
     const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.type = "standard";
+    cluster.controlPlane = 3;
     const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24" } } as any;
     cluster.networkIds = ["net1"];
 
@@ -639,6 +643,9 @@ describe("suggestClusterVips", () => {
 describe("vipCollision", () => {
   it("detects collision with member IP", () => {
     const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    // Multi-node: VIP==member IP is a real collision (SNO exempts its own node).
+    cluster.type = "standard";
+    cluster.controlPlane = 3;
     const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24" } } as any;
     cluster.networkIds = ["net1"];
 
@@ -1074,6 +1081,22 @@ describe("buildClusterDnsRecords", () => {
   it("skips records whose VIP is blank", () => {
     const recs = buildClusterDnsRecords({ id: "x", name: "ocp", baseDomain: "ocp.local", apiVip: "10.0.0.5" } as any);
     expect(recs.map((r) => r.name)).toEqual(["api.ocp.ocp.local", "api-int.ocp.ocp.local"]);
+  });
+
+  it("uses the single node IP for a SNO cluster (no VIP)", () => {
+    // SNO has no VIP; api/api-int/apps resolve to the single member's own IP.
+    const cluster = { id: "ocp", name: "ocp", baseDomain: "ocp.local", controlPlane: 1, workers: 0 } as any;
+    const member = {
+      id: "cp-0",
+      type: "vmNode",
+      data: { clusterId: "ocp", nics: [{ id: "n1", ip: "10.0.0.10" }] },
+    } as any;
+    const recs = buildClusterDnsRecords(cluster, [member]);
+    expect(recs).toEqual([
+      { name: "api.ocp.ocp.local", ip: "10.0.0.10", type: "A", clusterId: "ocp", managed: true },
+      { name: "api-int.ocp.ocp.local", ip: "10.0.0.10", type: "A", clusterId: "ocp", managed: true },
+      { name: ".apps.ocp.ocp.local", ip: "10.0.0.10", type: "A", clusterId: "ocp", managed: true },
+    ]);
   });
 });
 

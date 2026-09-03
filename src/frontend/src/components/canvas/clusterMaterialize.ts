@@ -1021,12 +1021,33 @@ export interface ClusterDnsRecord {
  * wildcard, matching deploy). Returns [] until name + base domain exist; a VIP
  * with no value is skipped rather than written empty.
  */
-export function buildClusterDnsRecords(cluster: ClusterConfig): ClusterDnsRecord[] {
+/** The single member VM's IP for a SNO/single-node cluster (else ""). */
+function singleNodeClusterIp(cluster: ClusterConfig, nodes: Node[]): string {
+  const member = nodes.find(
+    (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === cluster.id,
+  );
+  if (!member) return "";
+  const nics = ((member.data as Record<string, unknown>).nics as Array<{ ip?: string }>) || [];
+  return nics.find((nic) => nic.ip)?.ip || "";
+}
+
+export function buildClusterDnsRecords(cluster: ClusterConfig, nodes?: Node[]): ClusterDnsRecord[] {
   const name = (cluster.name || "").trim();
   const baseDomain = (cluster.baseDomain || "").trim();
   if (!name || !baseDomain) return [];
-  const apiVip = (cluster.apiVip || "").trim();
-  const ingressVip = (cluster.ingressVip || "").trim();
+  let apiVip = (cluster.apiVip || "").trim();
+  let ingressVip = (cluster.ingressVip || "").trim();
+  // SNO / single-node clusters have no VIP: api, api-int and *.apps all resolve
+  // to the single node's own IP. Fall back to that member IP so SNO still gets
+  // DNS records (suggestClusterVips returns null VIPs for single-node clusters).
+  const singleNode = (cluster.controlPlane ?? 0) + (cluster.workers ?? 0) <= 1;
+  if (singleNode && nodes && (!apiVip || !ingressVip)) {
+    const ip = singleNodeClusterIp(cluster, nodes);
+    if (ip) {
+      apiVip = apiVip || ip;
+      ingressVip = ingressVip || ip;
+    }
+  }
   const records: ClusterDnsRecord[] = [];
   if (apiVip) {
     records.push({ name: `api.${name}.${baseDomain}`, ip: apiVip, type: "A", clusterId: cluster.id, managed: true });
@@ -1068,7 +1089,7 @@ export function effectiveDnsNetworkId(cluster: ClusterConfig): string | undefine
 }
 
 export function applyClusterDns(cluster: ClusterConfig, nodes: Node[]): Node[] {
-  const records = buildClusterDnsRecords(cluster);
+  const records = buildClusterDnsRecords(cluster, nodes);
   const target = effectiveDnsNetworkId(cluster);
   const targetIds = new Set(target ? [target] : []);
   const freshNames = new Set(records.map((r) => r.name));
