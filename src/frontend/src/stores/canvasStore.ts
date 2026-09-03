@@ -1252,19 +1252,45 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     // config lingers (permanent dirty) and children keep a dangling parentId.
     const target = get().nodes.find((n) => n.id === nodeId);
     let nextClusters = get().clusters;
+    let baseNodes = get().nodes;
     if (target?.type === "clusterNode") {
       const clusterId = (target.data as Record<string, unknown>)?.clusterId as string | undefined;
       for (const child of get().nodes) {
         if (child.parentId === nodeId) removedIds.add(child.id);
       }
+      const gone = get().clusters.find((c) => c.id === clusterId || c.nodeId === nodeId);
       nextClusters = get().clusters.filter(
         (c) => c.nodeId !== nodeId && c.id !== clusterId,
       );
+      // Clean up the cluster's mirrored DNS records from member networks. The
+      // live-sync effect (applyClusterDns) only runs while the cluster editor is
+      // open, so deletion needs explicit cleanup. Strip records tagged with this
+      // cluster id, plus any untagged records matching its
+      // api/api-int/.apps.<name>.<baseDomain> names (e.g. backend-written).
+      const goneNames = new Set(
+        gone?.name && gone?.baseDomain
+          ? [
+              `api.${gone.name}.${gone.baseDomain}`,
+              `api-int.${gone.name}.${gone.baseDomain}`,
+              `.apps.${gone.name}.${gone.baseDomain}`,
+            ]
+          : [],
+      );
+      baseNodes = get().nodes.map((n) => {
+        if (n.type !== "networkNode") return n;
+        const d = n.data as Record<string, unknown>;
+        const recs = (d.dnsRecords as Array<Record<string, unknown>> | undefined) ?? [];
+        const kept = recs.filter(
+          (r) => r.clusterId !== clusterId && !goneNames.has(r.name as string),
+        );
+        if (kept.length === recs.length) return n;
+        return { ...n, data: { ...d, dnsRecords: kept } };
+      });
     }
     const nextStartOrder = removedShowroomId
       ? get().startOrder.filter((e) => e.vmId !== removedShowroomId)
       : get().startOrder;
-    const nodes = get().nodes.filter((n) => !removedIds.has(n.id));
+    const nodes = baseNodes.filter((n) => !removedIds.has(n.id));
     const edges = get().edges.filter(
       (e) => !removedIds.has(e.source) && !removedIds.has(e.target),
     );
