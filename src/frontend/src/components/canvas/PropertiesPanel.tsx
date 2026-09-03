@@ -23,7 +23,7 @@ import {
   MACHINE_TYPE_LABELS,
   VIDEO_MODEL_LABELS,
 } from "@/lib/kubevirtCapabilities";
-import { newShowroomTab, resolveShowroomTabs, remapClusterProxyTabs, type ShowroomTab } from "@/lib/showroomTabs";
+import { newShowroomTab, resolveShowroomTabs, syncClusterProxyTabs, clusterConsoleHosts, clusterConsoleTabName, type ShowroomTab } from "@/lib/showroomTabs";
 import {
   buildWettyCommand,
   formatCommandForInput,
@@ -2393,6 +2393,9 @@ export default function PropertiesPanel() {
                               : tab.proxyHost
                                 ? "named"
                                 : "vm";
+                          // Cluster-managed console tab: name + hosts derive from
+                          // the OCP cluster and are read-only here.
+                          const clusterManaged = !!tab.clusterId;
                           const typeLabel =
                             tab.type === "terminal"
                               ? "Terminal"
@@ -2471,6 +2474,8 @@ export default function PropertiesPanel() {
                                   className="props-input"
                                   placeholder="e.g. control"
                                   value={tab.name}
+                                  disabled={clusterManaged}
+                                  title={clusterManaged ? "Managed by the OpenShift cluster — rename the cluster to change." : undefined}
                                   onChange={(e) => {
                                     const next = showroomTabs.map((t) =>
                                       t.id === tab.id ? { ...t, name: e.target.value } : t,
@@ -2706,7 +2711,23 @@ export default function PropertiesPanel() {
                                     hint="Nginx path on the showroom and backend port on the target VM."
                                   />
                                   {/* App-proxy: embed an OAuth-protected app (e.g. OCP console) at public routes */}
-                                  {proxyMode === "oauth" && (
+                                  {proxyMode === "oauth" && clusterManaged && (
+                                    <div style={{ marginBottom: 8 }}>
+                                      {(tab.proxyHosts || []).map((h, hi) => (
+                                        <div
+                                          key={hi}
+                                          title={h}
+                                          style={{ fontFamily: "monospace", fontSize: 11, lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                                        >
+                                          {h}
+                                        </div>
+                                      ))}
+                                      <div style={{ fontSize: 10, color: "var(--troshka-accent, #3b82f6)", marginTop: 4 }}>
+                                        ☸ Managed by the OpenShift cluster — rename the cluster to change these routes.
+                                      </div>
+                                    </div>
+                                  )}
+                                  {proxyMode === "oauth" && !clusterManaged && (
                                   <div style={{ marginBottom: 8 }}>
                                     {(tab.proxyHosts || []).map((h, hi) => (
                                       <div key={hi} style={{ display: "flex", gap: 4, marginBottom: 4, alignItems: "center" }}>
@@ -2939,13 +2960,12 @@ export default function PropertiesPanel() {
                             Only clusters not already proxied are offered; the
                             control is hidden when there are none. */}
                         {(() => {
-                          const proxied = new Set(
-                            showroomTabs.flatMap((t) => t.proxyHosts || []),
+                          // A cluster is already proxied if a tab is linked to it.
+                          const managedIds = new Set(
+                            showroomTabs.map((t) => t.clusterId).filter(Boolean),
                           );
-                          const consoleHostFor = (c: ClusterConfig) =>
-                            `console-openshift-console.apps.${c.name}.${c.baseDomain}`;
                           const available = clusters.filter(
-                            (c) => c.name && c.baseDomain && !proxied.has(consoleHostFor(c)),
+                            (c) => c.name && c.baseDomain && !managedIds.has(c.id),
                           );
                           if (available.length === 0) return null;
                           return (
@@ -2972,14 +2992,12 @@ export default function PropertiesPanel() {
                                       key={c.id}
                                       className="props-library-btn"
                                       style={{ fontSize: 11, textAlign: "left" }}
-                                      title={consoleHostFor(c)}
+                                      title={clusterConsoleHosts(c.name || "", c.baseDomain || "")[0]}
                                       onClick={() => {
                                         const tab: ShowroomTab = {
-                                          ...newShowroomTab("proxy", `${c.name} Console`),
-                                          proxyHosts: [
-                                            consoleHostFor(c),
-                                            `oauth-openshift.apps.${c.name}.${c.baseDomain}`,
-                                          ],
+                                          ...newShowroomTab("proxy", clusterConsoleTabName(c.name || "")),
+                                          clusterId: c.id,
+                                          proxyHosts: clusterConsoleHosts(c.name || "", c.baseDomain || ""),
                                           proxyTls: true,
                                           proxyPort: 443,
                                         };
@@ -4872,25 +4890,17 @@ export default function PropertiesPanel() {
           updateCluster(clusterId, patch);
           const mirror = clusterSummaryMirror(patch);
           if (Object.keys(mirror).length) updateNodeData(node.id, mirror);
-          // Renaming (or changing base domain) shifts the cluster's apps domain,
-          // so rewrite any showroom console/app-proxy tabs that point at the old
-          // *.apps.<name>.<baseDomain> hosts to the new ones.
+          // Cluster-managed console proxy tabs derive their name + hosts from the
+          // cluster, so a rename (or base-domain change) re-syncs them.
           if (patch.name !== undefined || patch.baseDomain !== undefined) {
-            const oldBase = (cluster.baseDomain || "local").trim() || "local";
-            const newBase = ((patch.baseDomain ?? cluster.baseDomain ?? "local").trim()) || "local";
-            const oldName = cluster.name || "";
-            const newName = patch.name ?? cluster.name ?? "";
-            const oldSuffix = `.apps.${oldName}.${oldBase}`;
-            const newSuffix = `.apps.${newName}.${newBase}`;
-            if (oldSuffix !== newSuffix && oldName) {
-              const store = useCanvasStore.getState();
-              for (const n of store.nodes) {
-                if (n.type !== "containerNode") continue;
-                const tabs = (n.data as Record<string, unknown>).showroomTabs as ShowroomTab[] | undefined;
-                if (!tabs) continue;
-                const remapped = remapClusterProxyTabs(tabs, oldSuffix, newSuffix);
-                if (remapped) store.updateShowroomTabs(n.id, remapped);
-              }
+            const updated = { ...cluster, ...patch };
+            const store = useCanvasStore.getState();
+            for (const n of store.nodes) {
+              if (n.type !== "containerNode") continue;
+              const tabs = (n.data as Record<string, unknown>).showroomTabs as ShowroomTab[] | undefined;
+              if (!tabs) continue;
+              const synced = syncClusterProxyTabs(tabs, updated);
+              if (synced) store.updateShowroomTabs(n.id, synced);
             }
           }
         };

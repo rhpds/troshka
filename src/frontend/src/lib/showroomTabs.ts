@@ -29,6 +29,9 @@ export interface ShowroomTab {
    * internal .local upstream.
    */
   proxyHosts?: string[];
+  /** When set, this is a cluster-managed OCP console proxy tab: its proxyHosts
+   *  (console + oauth) are derived from the cluster and are read-only in the UI. */
+  clusterId?: string;
   url?: string;
 }
 
@@ -478,30 +481,45 @@ export function applyShowroomTabsToNode(
   };
 }
 
+/** The console + oauth app-proxy hosts for an OCP cluster's apps domain. */
+export function clusterConsoleHosts(name: string, baseDomain: string): string[] {
+  return [
+    `console-openshift-console.apps.${name}.${baseDomain}`,
+    `oauth-openshift.apps.${name}.${baseDomain}`,
+  ];
+}
+
+/** Managed console-proxy tab name for a cluster. */
+export function clusterConsoleTabName(name: string): string {
+  return `${name} Console`;
+}
+
 /**
- * Rewrite app-proxy hosts that live under an OCP cluster's apps domain when the
- * cluster is renamed (or its base domain changes). Any `proxyHosts[]` entry
- * ending in `oldSuffix` (e.g. ".apps.ocp.local") has that suffix replaced with
- * `newSuffix` (e.g. ".apps.ocp2.local"), covering console/oauth and any custom
- * app hosts. Returns the updated tabs, or `null` when nothing referenced the
- * old suffix (so callers can skip a needless update).
+ * Keep cluster-managed console-proxy tabs (``tab.clusterId === cluster.id``) in
+ * sync with the cluster: their name and proxyHosts (console + oauth) are DERIVED
+ * from the cluster's current name/baseDomain, so renaming the cluster updates
+ * them automatically and they are never hand-edited. Returns the updated tabs,
+ * or ``null`` when nothing changed.
  */
-export function remapClusterProxyTabs(
+export function syncClusterProxyTabs(
   tabs: ShowroomTab[],
-  oldSuffix: string,
-  newSuffix: string,
+  cluster: { id: string; name?: string; baseDomain?: string },
 ): ShowroomTab[] | null {
-  if (oldSuffix === newSuffix) return null;
+  const name = (cluster.name || "").trim();
+  const baseDomain = (cluster.baseDomain || "").trim();
+  if (!name || !baseDomain) return null;
+  const hosts = clusterConsoleHosts(name, baseDomain);
+  const wantName = clusterConsoleTabName(name);
   let changed = false;
   const next = tabs.map((tab) => {
-    if (!tab.proxyHosts || !tab.proxyHosts.some((h) => h.endsWith(oldSuffix))) return tab;
+    if (tab.clusterId !== cluster.id) return tab;
+    const sameHosts =
+      !!tab.proxyHosts &&
+      tab.proxyHosts.length === hosts.length &&
+      tab.proxyHosts.every((h, i) => h === hosts[i]);
+    if (sameHosts && tab.name === wantName) return tab;
     changed = true;
-    return {
-      ...tab,
-      proxyHosts: tab.proxyHosts.map((h) =>
-        h.endsWith(oldSuffix) ? h.slice(0, -oldSuffix.length) + newSuffix : h,
-      ),
-    };
+    return { ...tab, name: wantName, proxyHosts: hosts };
   });
   return changed ? next : null;
 }
