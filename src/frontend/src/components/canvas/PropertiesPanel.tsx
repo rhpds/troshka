@@ -6,7 +6,7 @@ import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
-import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, suggestClusterVips, vipCollision } from "./clusterMaterialize";
+import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, clusterPrereqIssues, suggestClusterVips, vipCollision } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
 import {
   getShowroomReadiness,
@@ -646,7 +646,7 @@ function ClusterEditor({
   onWorkersChange: (workers: number) => void;
   onNetworksChange: (networkIds: string[]) => void;
   onDisksChange: (role: "control-plane" | "worker", disks: DiskSpec[]) => void;
-  availableNetworks: Array<{ id: string; label: string; cidr?: string }>;
+  availableNetworks: Array<{ id: string; label: string; cidr?: string; dns?: boolean }>;
   nodes: Node[];
   ocpVersions: Array<{ name: string; support: string }>;
 }) {
@@ -715,8 +715,29 @@ function ClusterEditor({
     networkIdsKey,
   ]);
 
+  const prereqIssues = clusterPrereqIssues(cluster, nodes);
+
   return (
     <>
+      {prereqIssues.length > 0 && (
+        <div className="props-section" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          {prereqIssues.map((issue) => (
+            <div
+              key={issue.message}
+              style={{
+                fontSize: 11,
+                lineHeight: 1.35,
+                color:
+                  issue.level === "error"
+                    ? "var(--troshka-red, #ef4444)"
+                    : "var(--troshka-yellow, #f59e0b)",
+              }}
+            >
+              {issue.level === "error" ? "⛔" : "⚠"} {issue.message}
+            </div>
+          ))}
+        </div>
+      )}
       <div className="props-section">
         <div className="props-section-title">General</div>
         <ClusterTextField
@@ -839,6 +860,22 @@ function ClusterEditor({
                     {net.cidr && (
                       <span style={{ color: "var(--troshka-text-dim)", marginLeft: 4 }}>
                         ({net.cidr})
+                      </span>
+                    )}
+                    {net.dns && (
+                      <span
+                        title="DNS enabled on this network"
+                        style={{
+                          marginLeft: 6,
+                          fontSize: 9,
+                          fontWeight: 700,
+                          color: "var(--troshka-green, #22c55e)",
+                          border: "1px solid var(--troshka-green, #22c55e)",
+                          borderRadius: 3,
+                          padding: "0 4px",
+                        }}
+                      >
+                        DNS
                       </span>
                     )}
                   </span>
@@ -4835,9 +4872,17 @@ export default function PropertiesPanel() {
                 e.targetHandle.startsWith("cluster-net")
               ),
           );
+          // An OCP member network must resolve api/api-int/apps — enable DNS on
+          // each selected network so the DNS requirement is satisfied on select
+          // (backend forces this at deploy anyway).
+          const nodesWithDns = nextNodes.map((n) =>
+            networkIds.includes(n.id) && n.type === "networkNode"
+              ? { ...n, data: { ...(n.data as Record<string, unknown>), dns: true } }
+              : n,
+          );
           useCanvasStore.getState().pushHistory();
           useCanvasStore.setState({
-            nodes: nextNodes,
+            nodes: nodesWithDns,
             edges: [...withoutOldAnchors, ...anchorEdges],
           });
         };
@@ -4866,6 +4911,7 @@ export default function PropertiesPanel() {
               id: n.id,
               label: (d?.label || d?.name || n.id) as string,
               cidr: (d?.cidr || d?.subnet) as string | undefined,
+              dns: Boolean(d?.dns),
             };
           });
         return (

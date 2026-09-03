@@ -13,6 +13,7 @@ import {
   clusterBoxSize,
   buildClusterDnsRecords,
   applyClusterDns,
+  clusterPrereqIssues,
 } from "@/components/canvas/clusterMaterialize";
 import { makeCluster } from "@/components/canvas/clusterFactory";
 
@@ -1153,5 +1154,51 @@ describe("applyClusterDns", () => {
     const apps = ((second[0].data as any).dnsRecords as any[]).find((r) => r.name === ".apps.ocp.ocp.local");
     expect(apps.ip).toBe("10.0.0.99");
     expect(((second[0].data as any).dnsRecords as any[]).filter((r) => r.name === ".apps.ocp.ocp.local")).toHaveLength(1);
+  });
+});
+
+describe("clusterPrereqIssues", () => {
+  const dnsNet = { id: "net1", type: "networkNode", data: { subtype: "network", dns: true } } as any;
+  const plainNet = { id: "net2", type: "networkNode", data: { subtype: "network" } } as any;
+  const openGw = { id: "gw", type: "networkNode", data: { subtype: "gateway", outboundPolicy: "allow-all" } } as any;
+  const restrictedGwOk = {
+    id: "gw",
+    type: "networkNode",
+    data: { subtype: "gateway", outboundPolicy: "restrict", outboundPorts: "80/tcp,443/tcp,123/udp" },
+  } as any;
+  const restrictedGwBad = {
+    id: "gw",
+    type: "networkNode",
+    data: { subtype: "gateway", outboundPolicy: "restrict", outboundPorts: "80/tcp,443/tcp" },
+  } as any;
+
+  it("errors when no member network has DNS enabled", () => {
+    const issues = clusterPrereqIssues({ id: "c", networkIds: ["net2"] } as any, [plainNet, openGw]);
+    const err = issues.find((i) => i.level === "error");
+    expect(err).toBeTruthy();
+    expect(err!.message).toMatch(/DNS/);
+  });
+
+  it("no error when a member network has DNS", () => {
+    const issues = clusterPrereqIssues({ id: "c", networkIds: ["net1"] } as any, [dnsNet, openGw]);
+    expect(issues.some((i) => i.level === "error")).toBe(false);
+  });
+
+  it("warns (not errors) when the gateway blocks outbound http/https/ntp", () => {
+    const issues = clusterPrereqIssues({ id: "c", networkIds: ["net1"] } as any, [dnsNet, restrictedGwBad]);
+    expect(issues.some((i) => i.level === "error")).toBe(false);
+    const warn = issues.find((i) => i.level === "warning");
+    expect(warn).toBeTruthy();
+    expect(warn!.message).toMatch(/outbound/i);
+  });
+
+  it("no outbound warning when gateway is allow-all or restrict-lists all three", () => {
+    expect(clusterPrereqIssues({ id: "c", networkIds: ["net1"] } as any, [dnsNet, openGw]).some((i) => i.level === "warning")).toBe(false);
+    expect(clusterPrereqIssues({ id: "c", networkIds: ["net1"] } as any, [dnsNet, restrictedGwOk]).some((i) => i.level === "warning")).toBe(false);
+  });
+
+  it("warns when there is no gateway at all", () => {
+    const issues = clusterPrereqIssues({ id: "c", networkIds: ["net1"] } as any, [dnsNet]);
+    expect(issues.some((i) => i.level === "warning")).toBe(true);
   });
 });

@@ -1066,3 +1066,73 @@ export function applyClusterDns(cluster: ClusterConfig, nodes: Node[]): Node[] {
 
   return changed ? next : nodes;
 }
+
+// ---------------------------------------------------------------------------
+// Cluster prerequisites (canvas readiness checks)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a gateway node permits the outbound traffic an OCP cluster needs
+ * (image pulls + time sync): HTTP 80/tcp, HTTPS 443/tcp, NTP 123/udp. An
+ * "allow-all" (or unset) outbound policy passes; a "restrict" policy must list
+ * all three. Port rules are `<port>` (any proto) or `<port>/<tcp|udp>`.
+ */
+function gatewayAllowsOutbound(gwData: Record<string, unknown>): boolean {
+  const policy = (gwData.outboundPolicy as string) || "allow-all";
+  if (policy !== "restrict") return true;
+  const rules = String(gwData.outboundPorts || "")
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const allows = (port: number, proto: string) =>
+    rules.includes(String(port)) || rules.includes(`${port}/${proto}`);
+  return allows(80, "tcp") && allows(443, "tcp") && allows(123, "udp");
+}
+
+/** True when the canvas has a gateway that allows the cluster's outbound needs. */
+export function gatewayAllowsClusterOutbound(nodes: Node[]): boolean {
+  const gateways = nodes.filter(
+    (n) => n.type === "networkNode" && (n.data as Record<string, unknown>).subtype === "gateway",
+  );
+  if (gateways.length === 0) return false;
+  return gateways.some((g) => gatewayAllowsOutbound(g.data as Record<string, unknown>));
+}
+
+export interface ClusterPrereqIssue {
+  level: "error" | "warning";
+  message: string;
+}
+
+/**
+ * Unmet prerequisites for deploying an OCP cluster (empty = ready). Severities:
+ *  - error: a member network with DNS enabled (api/api-int/apps resolution) is
+ *    required — a cluster cannot function without it.
+ *  - warning: a gateway permitting outbound HTTP/HTTPS/NTP (or all) is needed
+ *    for a full OCP install (image pulls + time sync), but not when a local /
+ *    mirror registry supplies content, so it is advisory only.
+ */
+export function clusterPrereqIssues(cluster: ClusterConfig, nodes: Node[]): ClusterPrereqIssue[] {
+  const issues: ClusterPrereqIssue[] = [];
+  const netIds = cluster.networkIds ?? [];
+  const hasDnsNetwork = netIds.some((id) => {
+    const n = nodes.find((x) => x.id === id);
+    return Boolean(n && (n.data as Record<string, unknown>).dns);
+  });
+  if (!hasDnsNetwork) {
+    issues.push({
+      level: "error",
+      message:
+        netIds.length === 0
+          ? "Select a member network — an OpenShift cluster needs a DNS-enabled network for api/api-int/apps resolution."
+          : "The selected member network needs DNS enabled (api/api-int/apps resolution).",
+    });
+  }
+  if (!gatewayAllowsClusterOutbound(nodes)) {
+    issues.push({
+      level: "warning",
+      message:
+        "No gateway allows outbound HTTP (80) / HTTPS (443) / NTP (123). A full OCP install needs these for image pulls and time sync — not required if a local/mirror registry supplies content.",
+    });
+  }
+  return issues;
+}
