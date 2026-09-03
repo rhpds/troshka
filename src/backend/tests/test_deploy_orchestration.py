@@ -4375,23 +4375,30 @@ class TestDeployOpsPod:
         assert start_call[0][1] == "/pods/start"
         assert start_call[0][2]["pod_name"] == f"troshka-{PROJECT_ID[:8]}-ops"
 
+    @patch(f"{SVC}._detached_host_copy")
     @patch(f"{SVC}.threading.Thread")
-    def test_start_ops_pod_install_monitor_spawns_daemon_thread(self, mock_thread):
+    def test_start_ops_pod_install_monitor_spawns_daemon_thread(
+        self, mock_thread, mock_detach
+    ):
         """The monitor is spawned as a daemon thread targeting
-        ``_monitor_ops_pod_install`` with the project's clusters."""
+        ``_monitor_ops_pod_install`` with a session-detached host copy."""
         from app.services import deploy_service
         from app.services.deploy_service import _start_ops_pod_install_monitor
         from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
 
         host = _make_host()
+        detached = _make_host()
+        mock_detach.return_value = detached
         clusters = [{"id": "cl-0"}, {"id": "cl-1"}]
 
         _start_ops_pod_install_monitor(host, PROJECT_ID, clusters)
 
+        mock_detach.assert_called_once_with(host.id)
         mock_thread.assert_called_once()
         kwargs = mock_thread.call_args.kwargs
         assert kwargs["target"] is deploy_service._monitor_ops_pod_install
-        assert kwargs["args"] == (PROJECT_ID, host, clusters)
+        # The monitor receives the DETACHED copy, not the deploy's ORM host.
+        assert kwargs["args"] == (PROJECT_ID, detached, clusters)
         assert kwargs["daemon"] is True
         assert kwargs["kwargs"]["workdir"] == OPS_POD_WORKDIR
         assert kwargs["kwargs"]["container_name"] == (

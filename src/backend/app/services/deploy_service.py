@@ -2109,6 +2109,33 @@ def _mark_ocp_install_started(s, project) -> None:
     s.commit()
 
 
+def _detached_host_copy(host_id: str):
+    """Return a session-detached Host with all columns eager-loaded.
+
+    Background monitor threads must never touch the deploy's Session — sharing
+    the ORM object raises SQLAlchemy "This session is provisioning a new
+    connection; concurrent operations are not permitted" when the monitor reads
+    the host while the deploy still holds the session. Loading every mapped
+    column and expunging yields a plain object safe to use off-thread (the
+    troshkad/kubevirt helpers only read columns, no relationships).
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    from app.core.database import SessionLocal
+    from app.models.host import Host
+
+    s = SessionLocal()
+    try:
+        host = s.query(Host).filter_by(id=host_id).first()
+        if host is not None:
+            for col in sa_inspect(host).mapper.column_attrs:
+                getattr(host, col.key)  # force-load before detaching
+            s.expunge(host)
+        return host
+    finally:
+        s.close()
+
+
 def _start_ops_pod_install_monitor(host, project_id: str, clusters: list) -> None:
     """Spawn the ops-pod install-progress monitor as a daemon thread.
 
@@ -2121,9 +2148,20 @@ def _start_ops_pod_install_monitor(host, project_id: str, clusters: list) -> Non
     """
     from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
 
+    # Hand the monitor a session-detached host copy so it never shares the
+    # deploy's Session across threads (see _detached_host_copy).
+    mon_host = _detached_host_copy(host.id)
+    if mon_host is None:
+        logger.warning(
+            "Ops pod monitor %s: host %s not found; monitor not started",
+            project_id[:8],
+            str(host.id)[:8],
+        )
+        return
+
     threading.Thread(
         target=_monitor_ops_pod_install,
-        args=(project_id, host, clusters),
+        args=(project_id, mon_host, clusters),
         kwargs={
             "container_name": _ops_pod_container_name(project_id),
             "workdir": OPS_POD_WORKDIR,
