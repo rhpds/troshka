@@ -1998,6 +1998,7 @@ export function _saveTopologyToApi(
     externalIps: ExternalIp[];
     showroom: ShowroomConfig | null;
     clusters?: ClusterConfig[];
+    ocpInstallVia?: string | null;
   },
 ): Promise<Record<string, unknown> | null> {
   const cleanNodes = state.nodes.map((n) => {
@@ -2013,6 +2014,10 @@ export function _saveTopologyToApi(
     externalIps: state.externalIps,
     clusters: state.clusters ?? [],
   };
+  // Preserve the project-level OCP install method — auto-save was dropping it,
+  // which reverted pod projects (the palette gate / bastion-browser read it) and
+  // could mislead the backend default.
+  if (state.ocpInstallVia) topology.ocpInstallVia = state.ocpInstallVia;
   const showroomMeta = showroomConfigForSave(state.showroom, state.nodes, state.edges);
   if (showroomMeta) topology.showroom = showroomMeta;
   return fetch(`/api/v1/projects/${projectId}`, {
