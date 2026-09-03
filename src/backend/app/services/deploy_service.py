@@ -2611,6 +2611,20 @@ def _monitor_ops_pod_install(
             _finalize_ops_pod_ocp_status(
                 project_id, progress["overall"], int(_t.time() - start)
             )
+            # Reap the ops pod on success so it doesn't idle-restart-loop
+            # (restart_policy=always) after its work is done. The install log is
+            # already cached (cache_ops_pod_logs), so destroying it loses nothing.
+            # A FAILED pod is left in place for debugging.
+            if progress["overall"] == "complete":
+                try:
+                    _cancel_ops_pod_install(host, project_id, cluster_keys)
+                    logger.info(
+                        "Ops pod %s: reaped after successful install", project_id[:8]
+                    )
+                except Exception:
+                    logger.exception(
+                        "Ops pod %s: reap after install failed", project_id[:8]
+                    )
             return progress["overall"]
         _t.sleep(poll_interval)
 

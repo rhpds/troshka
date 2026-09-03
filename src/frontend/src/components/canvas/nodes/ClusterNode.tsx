@@ -15,12 +15,21 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
   const nodes = useCanvasStore((s) => s.nodes);
   const projectState = useCanvasStore((s) => s.projectState);
   const openClusterLog = useCanvasStore((s) => s.openClusterLog);
+  const ocpHealth = useCanvasStore((s) => s.ocpHealth);
   const clusterId = ((data as Record<string, unknown>).clusterId as string) || id.replace(/^cluster-/, "");
   const cluster = clusters.find((c) => c.id === clusterId);
   // The install log/status is available once the cluster is being (or has been)
   // built. clusterKey mirrors the backend _cluster_key (id, falling back to name).
   const clusterKey = clusterId || d.name;
   const showInstallLog = projectState === "active" || projectState === "stopped";
+  // Status button color reflects the cluster outcome: green complete, red
+  // failed, else the "installing" cyan.
+  const statusColor =
+    ocpHealth?.phase === "ready"
+      ? { bg: "rgba(34,197,94,0.18)", border: "rgba(34,197,94,0.55)" }
+      : ocpHealth?.phase === "error" || ocpHealth?.phase === "timeout"
+        ? { bg: "rgba(239,68,68,0.18)", border: "rgba(239,68,68,0.55)" }
+        : { bg: "rgba(34,211,238,0.18)", border: "rgba(34,211,238,0.4)" };
   const issues = cluster ? clusterPrereqIssues(cluster, nodes) : [];
   const hasError = issues.some((i) => i.level === "error");
   const issueColor = hasError
@@ -123,8 +132,8 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
               padding: "1px 6px",
               borderRadius: 6,
               cursor: "pointer",
-              background: "rgba(34,211,238,0.18)",
-              border: "1px solid rgba(34,211,238,0.4)",
+              background: statusColor.bg,
+              border: `1px solid ${statusColor.border}`,
               color: "var(--troshka-text, #e5e7eb)",
               whiteSpace: "nowrap",
             }}
