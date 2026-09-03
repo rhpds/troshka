@@ -230,8 +230,10 @@ def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[
             "ocpVersion": entry.get("ocp_version", "4.22"),
             "pullThroughRegistry": entry.get("pull_through_registry"),
             # Cluster-level OCP flags (projected onto member VMs at deploy).
-            "recert": bool(entry.get("recert", False)),
-            "monitorHealth": bool(entry.get("ocp_monitor", False)),
+            # Defaults: recert ON for SNO (single node must regenerate certs to
+            # get a unique identity), health monitoring ON for every OCP type.
+            "recert": bool(entry.get("recert", ctype == "sno")),
+            "monitorHealth": bool(entry.get("ocp_monitor", True)),
             "configureBastionBrowser": bool(
                 entry.get("configure_bastion_browser", False)
             ),

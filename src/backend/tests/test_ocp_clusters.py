@@ -1491,20 +1491,29 @@ def test_cluster_ocp_flags_import_export_roundtrip():
     assert e["configure_bastion_browser"] is True
 
 
-def test_cluster_ocp_flags_default_false_not_exported():
-    """Unset flags default False on import and are omitted from export."""
+def test_cluster_ocp_flags_defaults_and_export():
+    """OCP flag defaults: recert ON for SNO (OFF otherwise), health monitoring ON
+    for every type, bastion-browser OFF. Only True flags are exported."""
     from app.services.template_loader import (
         _export_ocp_clusters,
         build_topology_clusters,
     )
 
-    clusters = build_topology_clusters([{"name": "ocp", "type": "sno"}], {})
-    c = clusters[0]
-    assert c["recert"] is False
-    assert c["monitorHealth"] is False
-    assert c["configureBastionBrowser"] is False
+    # SNO: recert + monitor default ON; bastion-browser OFF.
+    sno = build_topology_clusters([{"name": "ocp", "type": "sno"}], {})[0]
+    assert sno["recert"] is True
+    assert sno["monitorHealth"] is True
+    assert sno["configureBastionBrowser"] is False
 
-    e = _export_ocp_clusters({"clusters": clusters})[0]
-    assert "recert" not in e
-    assert "ocp_monitor" not in e
-    assert "configure_bastion_browser" not in e
+    e = _export_ocp_clusters({"clusters": [sno]})[0]
+    assert e["recert"] is True
+    assert e["ocp_monitor"] is True
+    assert "configure_bastion_browser" not in e  # False flag omitted
+
+    # Non-SNO: recert defaults OFF (and is omitted from export); monitor still ON.
+    std = build_topology_clusters([{"name": "big", "type": "standard"}], {})[0]
+    assert std["recert"] is False
+    assert std["monitorHealth"] is True
+    e2 = _export_ocp_clusters({"clusters": [std]})[0]
+    assert "recert" not in e2
+    assert e2["ocp_monitor"] is True
