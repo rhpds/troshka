@@ -278,6 +278,7 @@ function makeMemberNode(
     position: { x, y },
     extent: "parent", // Constrain to cluster boundary
     draggable: false, // Members are cluster-managed (count/editor) — not hand-movable
+    deletable: false, // Members are cluster-managed — remove via the cluster's node counts
     data: {
       label: name,
       name,

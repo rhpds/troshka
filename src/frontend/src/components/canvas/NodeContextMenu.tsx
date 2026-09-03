@@ -134,9 +134,11 @@ export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM, o
           🔄 Redeploy VM
         </button>
       )}
-      <button onClick={() => { deleteNode(nodeId); onClose(); }} className="danger">
-        ✕ Delete
-      </button>
+      {!isClusterMember && (
+        <button onClick={() => { deleteNode(nodeId); onClose(); }} className="danger">
+          ✕ Delete
+        </button>
+      )}
       <AlertModal message={alertMsg} onClose={() => setAlertMsg(null)} />
     </div>
   );

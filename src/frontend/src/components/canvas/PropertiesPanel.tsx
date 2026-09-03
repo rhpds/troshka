@@ -926,6 +926,7 @@ export default function PropertiesPanel() {
   const [showPassword, setShowPassword] = useState(false);
   const [sshKeys, setSshKeys] = useState<SshKeyOption[]>([]);
   const [ocpVersions, setOcpVersions] = useState<Array<{ name: string; support: string }>>([]);
+  const [consoleMenuOpen, setConsoleMenuOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ boot: true, cloudinit: true, nics: true, disks: true, bmc: true, tags: true });
   const [containerLogs, setContainerLogs] = useState<{ containerId: string; logs: string; containerName: string } | null>(null);
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
@@ -2834,6 +2835,70 @@ export default function PropertiesPanel() {
                             + External Tab
                           </button>
                         </div>
+                        {/* Quick-add: proxy the OpenShift console for a canvas
+                            OCP cluster (console + oauth app-proxy hosts, TLS).
+                            Only clusters not already proxied are offered; the
+                            control is hidden when there are none. */}
+                        {(() => {
+                          const proxied = new Set(
+                            showroomTabs.flatMap((t) => t.proxyHosts || []),
+                          );
+                          const consoleHostFor = (c: ClusterConfig) =>
+                            `console-openshift-console.apps.${c.name}.${c.baseDomain}`;
+                          const available = clusters.filter(
+                            (c) => c.name && c.baseDomain && !proxied.has(consoleHostFor(c)),
+                          );
+                          if (available.length === 0) return null;
+                          return (
+                            <div style={{ marginTop: 6 }}>
+                              <button
+                                className="props-library-btn"
+                                style={{ fontSize: 11 }}
+                                onClick={() => setConsoleMenuOpen((o) => !o)}
+                              >
+                                + OpenShift Console Proxy Tab {consoleMenuOpen ? "▴" : "▾"}
+                              </button>
+                              {consoleMenuOpen && (
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    gap: 4,
+                                    marginTop: 4,
+                                    paddingLeft: 8,
+                                  }}
+                                >
+                                  {available.map((c) => (
+                                    <button
+                                      key={c.id}
+                                      className="props-library-btn"
+                                      style={{ fontSize: 11, textAlign: "left" }}
+                                      title={consoleHostFor(c)}
+                                      onClick={() => {
+                                        const tab: ShowroomTab = {
+                                          ...newShowroomTab("proxy", `${c.name} Console`),
+                                          proxyHosts: [
+                                            consoleHostFor(c),
+                                            `oauth-openshift.apps.${c.name}.${c.baseDomain}`,
+                                          ],
+                                          proxyTls: true,
+                                          proxyPort: 443,
+                                        };
+                                        updateShowroomTabs(node!.id, [...showroomTabs, tab]);
+                                        setConsoleMenuOpen(false);
+                                      }}
+                                    >
+                                      ☸ {c.name}{" "}
+                                      <span style={{ color: "var(--troshka-text-dim)" }}>
+                                        ({c.baseDomain})
+                                      </span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                       {showroomReadiness && showroomReadiness.issues.length > 0 && (
                         <div style={{ marginTop: 8, fontSize: 11, color: "var(--troshka-yellow)" }}>
@@ -4861,18 +4926,33 @@ export default function PropertiesPanel() {
         </>
       )}
 
-      {/* Delete button */}
+      {/* Delete button — disabled for cluster-member VMs (managed by the OCP box) */}
       <div className="props-divider" />
       <div className="props-section">
-        <button
-          className="props-delete-btn"
-          onClick={() => deleteNode(node.id)}
-        >
-          Delete {nodeType === "vmNode" ? "VM" : nodeType === "clusterNode" ? "Cluster" : nodeType === "networkNode" ? (
-            (data as unknown as NetworkNodeData).subtype === "router" ? "Router" :
-            (data as unknown as NetworkNodeData).subtype === "gateway" ? "Gateway" : "Network"
-          ) : "Storage"}
-        </button>
+        {(() => {
+          const isMemberVm =
+            nodeType === "vmNode" && !!(data as Record<string, unknown>).clusterId;
+          return (
+            <button
+              className="props-delete-btn"
+              disabled={isMemberVm}
+              title={
+                isMemberVm
+                  ? "Managed by the OpenShift cluster — change the cluster's node counts to add or remove members."
+                  : undefined
+              }
+              style={isMemberVm ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+              onClick={() => {
+                if (!isMemberVm) deleteNode(node.id);
+              }}
+            >
+              Delete {nodeType === "vmNode" ? "VM" : nodeType === "clusterNode" ? "Cluster" : nodeType === "networkNode" ? (
+                (data as unknown as NetworkNodeData).subtype === "router" ? "Router" :
+                (data as unknown as NetworkNodeData).subtype === "gateway" ? "Gateway" : "Network"
+              ) : "Storage"}
+            </button>
+          );
+        })()}
       </div>
       {containerLogs && (
         <div
