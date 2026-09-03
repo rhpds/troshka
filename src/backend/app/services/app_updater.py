@@ -478,23 +478,33 @@ def _apply_dev(
     )
 
     now = time.time()
+    current_hash = _compute_source_hash()
     try:
         if _RESTART_LOCK.exists():
             age = now - _RESTART_LOCK.stat().st_mtime
-            if age < _RESTART_COOLDOWN_SEC:
+            # The cooldown guards against accidental DOUBLE restarts of the same
+            # source. A genuine new code change (hash differs from the last
+            # restart) must still restart — otherwise the fresh process never
+            # loads it and the UI spins until timeout ("still out of date"). So
+            # only skip when both within cooldown AND the source is unchanged.
+            lock_lines = _RESTART_LOCK.read_text().splitlines()
+            lock_hash = lock_lines[3] if len(lock_lines) > 3 else ""
+            if age < _RESTART_COOLDOWN_SEC and lock_hash == current_hash:
                 logger.warning(
-                    "apply_dev: restart skipped — lock age %.0fs (cooldown %ds)",
+                    "apply_dev: restart skipped — duplicate within cooldown "
+                    "(age %.0fs, source unchanged)",
                     age,
-                    _RESTART_COOLDOWN_SEC,
                 )
-                audit(f"apply_dev skipped lock_age={age:.0f}s")
+                audit(f"apply_dev skipped duplicate lock_age={age:.0f}s")
                 return {"status": "restarting"}
     except OSError:
         pass
 
     try:
         _RESTART_LOCK.parent.mkdir(parents=True, exist_ok=True)
-        _RESTART_LOCK.write_text(f"{now}\n{initiated_by or ''}\n{client_ip or ''}\n")
+        _RESTART_LOCK.write_text(
+            f"{now}\n{initiated_by or ''}\n{client_ip or ''}\n{current_hash}\n"
+        )
     except OSError:
         logger.warning("apply_dev: could not write restart lock file")
 

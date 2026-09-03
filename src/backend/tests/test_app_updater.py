@@ -490,3 +490,46 @@ def test_apply_endpoint_forbidden_for_non_admin():
         assert resp.status_code == 403
     finally:
         app.dependency_overrides.pop(get_current_user, None)
+
+
+def _setup_dev_restart(monkeypatch, tmp_path, source_hash):
+    """Wire _apply_dev to a temp lock + fake spawn; returns the spawn-calls list."""
+    calls = []
+    monkeypatch.setattr(app_updater, "_RESTART_LOCK", tmp_path / "restart.lock")
+    monkeypatch.setattr(app_updater, "_compute_source_hash", lambda: source_hash)
+    monkeypatch.setattr(
+        app_updater,
+        "_spawn_dev_services_restart",
+        lambda *a, **k: calls.append((a, k)),
+    )
+    return calls
+
+
+def test_apply_dev_first_restart_spawns(monkeypatch, tmp_path):
+    calls = _setup_dev_restart(monkeypatch, tmp_path, "hash-A")
+    app_updater._apply_dev(initiated_by="t", restart_workers=True)
+    assert len(calls) == 1
+    # lock records the source hash on line 4
+    assert app_updater._RESTART_LOCK.read_text().splitlines()[3] == "hash-A"
+
+
+def test_apply_dev_duplicate_within_cooldown_skips(monkeypatch, tmp_path):
+    """Same source within the cooldown window -> no second restart."""
+    calls = _setup_dev_restart(monkeypatch, tmp_path, "hash-A")
+    app_updater._apply_dev(initiated_by="t")  # first: spawns + writes lock
+    assert len(calls) == 1
+    app_updater._apply_dev(initiated_by="t")  # duplicate: skipped
+    assert len(calls) == 1
+
+
+def test_apply_dev_new_code_bypasses_cooldown(monkeypatch, tmp_path):
+    """A genuine new code change within the cooldown still restarts (the bug:
+    otherwise the fresh process never loads it and the UI spins to timeout)."""
+    calls = _setup_dev_restart(monkeypatch, tmp_path, "hash-A")
+    app_updater._apply_dev(initiated_by="t")
+    assert len(calls) == 1
+    # source changed -> hash differs -> restart despite the fresh cooldown lock
+    monkeypatch.setattr(app_updater, "_compute_source_hash", lambda: "hash-B")
+    app_updater._apply_dev(initiated_by="t")
+    assert len(calls) == 2
+    assert app_updater._RESTART_LOCK.read_text().splitlines()[3] == "hash-B"
