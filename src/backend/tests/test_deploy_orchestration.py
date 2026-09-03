@@ -4311,9 +4311,13 @@ class TestOpsPodCreateParams:
         # Task 8: per-cluster configs + pull secret delivered via the troshkad
         # `files` capability at their absolute workdir paths — NOT the command.
         files = params["files"]
-        assert files[f"{OPS_POD_WORKDIR}/cl-0/install-config.yaml"] == "install: c0\n"
-        assert files[f"{OPS_POD_WORKDIR}/cl-0/agent-config.yaml"] == "agent: c0\n"
-        assert files[f"{OPS_POD_WORKDIR}/cl-1/install-config.yaml"] == "install: c1\n"
+        assert (
+            files[f"{OPS_POD_WORKDIR}/cl-0/.src/install-config.yaml"] == "install: c0\n"
+        )
+        assert files[f"{OPS_POD_WORKDIR}/cl-0/.src/agent-config.yaml"] == "agent: c0\n"
+        assert (
+            files[f"{OPS_POD_WORKDIR}/cl-1/.src/install-config.yaml"] == "install: c1\n"
+        )
         assert files[f"{OPS_POD_WORKDIR}/pull-secret.json"] == '{"auths":{"x":1}}'
         # The command still ensures each cluster workdir exists (mkdir, no secret).
         assert f"mkdir -p {OPS_POD_WORKDIR}/cl-0" in script

@@ -276,7 +276,15 @@ def _cluster_install_block(
         # is `( ... ) &`), so the top-level per-PID join sees it as a success.
         f"  if [ -f {cluster_dir}/auth/kubeconfig ]; then "
         f'echo "[{cluster_key}] already installed, skipping"; exit 0; fi\n'
+        # `agent create image` (--dir .) CONSUMES install-config/agent-config, so
+        # they must be regular, deletable files. They are delivered read-only into
+        # `.src` (a bind mount cannot be removed -> EBUSY); copy them into the
+        # working dir each run so a restart restores them after a prior consume.
+        "  cp -f .src/install-config.yaml .src/agent-config.yaml ./\n"
         f"  BMC_PASS={shlex.quote(bmc_password)}\n"
+        # Initialise HTTP_PID before the trap: under `set -u` a failure before the
+        # ISO server starts would otherwise abort the trap with "unbound variable".
+        '  HTTP_PID=""\n'
         "  trap 'kill $HTTP_PID 2>/dev/null || true' EXIT\n"
         + _agent_create_image_cmd("  ", "openshift-install", "create-image.log")
         + "  echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"

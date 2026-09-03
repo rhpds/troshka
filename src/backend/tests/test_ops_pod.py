@@ -82,10 +82,10 @@ def test_ops_pod_config_files_absolute_paths_scoped_by_cluster():
     # bind-mounts each read-only at container_path), scoped by cluster id.
     files = _files()
     wd = OPS_POD_WORKDIR
-    assert files[f"{wd}/cl-1/install-config.yaml"] == "install: prod\n"
-    assert files[f"{wd}/cl-1/agent-config.yaml"] == "agent: prod\n"
-    assert files[f"{wd}/cl-2/install-config.yaml"] == "install: edge\n"
-    assert files[f"{wd}/cl-2/agent-config.yaml"] == "agent: edge\n"
+    assert files[f"{wd}/cl-1/.src/install-config.yaml"] == "install: prod\n"
+    assert files[f"{wd}/cl-1/.src/agent-config.yaml"] == "agent: prod\n"
+    assert files[f"{wd}/cl-2/.src/install-config.yaml"] == "install: edge\n"
+    assert files[f"{wd}/cl-2/.src/agent-config.yaml"] == "agent: edge\n"
 
 
 def test_ops_pod_config_files_includes_pull_secret():
@@ -215,6 +215,21 @@ def test_install_script_per_cluster_workdirs():
 def test_install_script_agent_create_image_per_cluster():
     script = _install_script()
     assert script.count("agent create image --dir .") == 2
+
+
+def test_install_script_copies_configs_before_create_image():
+    """create image consumes (deletes) the configs, which are delivered read-only
+    into .src; the script must copy them into the working dir first (a RO bind
+    mount cannot be removed -> EBUSY) and copy them per cluster."""
+    script = _install_script()
+    assert script.count("cp -f .src/install-config.yaml .src/agent-config.yaml ./") == 2
+
+
+def test_install_script_inits_http_pid_for_set_u():
+    """HTTP_PID must be initialised before the EXIT trap so a failure before the
+    ISO server starts does not abort under `set -u` with 'unbound variable'."""
+    script = _install_script()
+    assert script.count('HTTP_PID=""') == 2
 
 
 def test_install_script_wait_for_complete_per_cluster():
@@ -616,9 +631,9 @@ def test_kv_ops_pod_secret_mounted_at_absolute_workdir_paths():
     mount_paths = {m["mountPath"] for m in ctr["volumeMounts"]}
     wd = OPS_POD_WORKDIR
     # Files land at the SAME absolute paths the install script reads (Task 8 parity).
-    assert f"{wd}/cl-1/install-config.yaml" in mount_paths
-    assert f"{wd}/cl-1/agent-config.yaml" in mount_paths
-    assert f"{wd}/cl-2/install-config.yaml" in mount_paths
+    assert f"{wd}/cl-1/.src/install-config.yaml" in mount_paths
+    assert f"{wd}/cl-1/.src/agent-config.yaml" in mount_paths
+    assert f"{wd}/cl-2/.src/install-config.yaml" in mount_paths
     assert f"{wd}/pull-secret.json" in mount_paths
     # Each mount is read-only and references the ops-config secret volume via subPath.
     for m in ctr["volumeMounts"]:

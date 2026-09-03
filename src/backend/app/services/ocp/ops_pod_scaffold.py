@@ -80,21 +80,26 @@ def ops_pod_config_files(
     -c`` argv / ``podman inspect``.
 
     Files are scoped by cluster id (falling back to name) so a multi-cluster
-    project's configs never collide: ``<workdir>/<clusterId>/install-config.yaml``
-    and ``<workdir>/<clusterId>/agent-config.yaml``. The shared pull secret lands
-    at ``<workdir>/pull-secret.json``. The install-runner script (Task 5) reads
-    these exact paths after ``cd``-ing into each cluster dir.
+    project's configs never collide. They are delivered into a per-cluster
+    ``.src`` subdir (``<workdir>/<clusterId>/.src/{install,agent}-config.yaml``),
+    NOT directly into the cluster dir: ``openshift-install agent create image``
+    CONSUMES (deletes) install-config.yaml/agent-config.yaml from its ``--dir``,
+    and a read-only bind mount is a mountpoint that cannot be removed (``rm``
+    fails with EBUSY -> "cannot generate ISO image due to configuration errors").
+    The install-runner copies ``.src/*.yaml`` into the cluster dir as regular,
+    deletable files before running create-image. The shared pull secret lands at
+    ``<workdir>/pull-secret.json``.
     """
     files: dict[str, str] = {}
     for cluster in clusters:
         cluster_key = str(cluster.get("id") or cluster.get("name") or "cluster")
-        cluster_dir = f"{workdir}/{cluster_key}"
+        src_dir = f"{workdir}/{cluster_key}/.src"
         install_cfg = cluster.get("_generatedInstallConfig")
         agent_cfg = cluster.get("_generatedAgentConfig")
         if install_cfg is not None:
-            files[f"{cluster_dir}/install-config.yaml"] = str(install_cfg)
+            files[f"{src_dir}/install-config.yaml"] = str(install_cfg)
         if agent_cfg is not None:
-            files[f"{cluster_dir}/agent-config.yaml"] = str(agent_cfg)
+            files[f"{src_dir}/agent-config.yaml"] = str(agent_cfg)
     if pull_secret_json:
         files[f"{workdir}/pull-secret.json"] = pull_secret_json
     return files
