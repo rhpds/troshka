@@ -448,15 +448,16 @@ def build_app_proxy_config(internal_hosts: list[str]) -> str:
     """nginx server blocks that embed OAuth-protected cluster apps (console, oauth)
     in the showroom iframe, baked at scaffold time.
 
-    Each internal host (``<label>.apps.ocp.ocp.local``) gets one server block
+    Each internal host (``<label>.apps.<cluster>``) gets one server block
     matched by its deterministic public hostname
     ``troshka-pf-<pid>-<label>.apps.<cluster>``. ``pid`` and the cluster suffix are
     captured from the request ``Host`` (server_name regex), so the config is
     project- and cluster-agnostic. The upstream is a literal internal host, so no
     ``resolver`` is needed. A single generic ``proxy_redirect`` rewrites any
-    redirect ``Location`` host ``.local`` -> the public equivalent, while leaving
+    redirect ``Location`` host -> the public equivalent, while leaving
     the OAuth ``redirect_uri`` query param ``.local`` so the untouched cluster
-    OAuthClient still validates.
+    OAuthClient still validates. The apps domain is derived per host via
+    ``derive_apps_domain()``.
     """
     # Skip blank hosts: an empty entry would emit `proxy_pass https://;`, which
     # nginx rejects and the showroom proxy would fail to start.
@@ -483,6 +484,9 @@ def build_app_proxy_config(internal_hosts: list[str]) -> str:
     blocks: list[str] = []
     for host in internal_hosts:
         label = host.split(".")[0]
+        # Derive the apps domain for this host (e.g., apps.<cluster>)
+        host_apps = derive_apps_domain(host)
+        host_apps_re = re.escape(host_apps)  # Escape dots for nginx regex
         blocks.extend(
             [
                 "server {",
@@ -503,13 +507,13 @@ def build_app_proxy_config(internal_hosts: list[str]) -> str:
                 "    proxy_read_timeout 86400;",
                 # Allow the app to render inside the showroom iframe.
                 "    proxy_hide_header X-Frame-Options;",
-                # Rewrite redirect Location host .local -> public (redirect_uri
+                # Rewrite redirect Location host -> public (redirect_uri
                 # query params are left .local so the OAuthClient still validates).
-                "    proxy_redirect ~^https://(?<troshka_h>[^.]+)"
-                "\\.apps\\.ocp\\.ocp\\.local(?<troshka_rest>.*)$ "
+                f"    proxy_redirect ~^https://(?<troshka_h>[^.]+)"
+                f"\\.{host_apps_re}(?<troshka_rest>.*)$ "
                 "https://troshka-pf-$troshka_pid-$troshka_h.$troshka_suffix$troshka_rest;",
                 *sub_filters,
-                "    proxy_cookie_domain .apps.ocp.ocp.local $host;",
+                f"    proxy_cookie_domain .{host_apps} $host;",
                 "  }",
                 "}",
             ]

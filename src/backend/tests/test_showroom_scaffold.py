@@ -303,8 +303,9 @@ def test_apply_showroom_deploy_overrides():
 def test_build_app_proxy_config_per_host_literal_blocks():
     """One server block per internal host, matched by the deterministic public
     hostname (pid + suffix captured from Host). Literal upstream (no resolver),
-    generic redirect rewrites .local->public while leaving redirect_uri .local,
-    and X-Frame-Options is stripped so the console embeds in the iframe."""
+    generic redirect rewrites host->public while leaving redirect_uri .local,
+    and X-Frame-Options is stripped so the console embeds in the iframe.
+    The apps domain is derived from the input hosts."""
     from app.services.showroom_scaffold import build_app_proxy_config
 
     conf = build_app_proxy_config(
@@ -331,7 +332,7 @@ def test_build_app_proxy_config_per_host_literal_blocks():
     assert "map " not in conf
     # embedding
     assert "proxy_hide_header X-Frame-Options;" in conf
-    # generic redirect: any .local host -> troshka-pf-$troshka_pid-<label>.$suffix
+    # generic redirect: derived apps domain (ocp.ocp.local in this case) -> troshka-pf-$troshka_pid-<label>.$suffix
     assert (
         "proxy_redirect ~^https://(?<troshka_h>[^.]+)\\.apps\\.ocp\\.ocp\\.local"
         "(?<troshka_rest>.*)$ https://troshka-pf-$troshka_pid-$troshka_h.$troshka_suffix"
@@ -534,6 +535,29 @@ def test_derive_apps_domain():
     )
     assert derive_apps_domain("") == ""
     assert derive_apps_domain("nohost") == ""
+
+
+def test_build_app_proxy_config_derives_apps_domain_from_host():
+    """The apps domain is derived per host (not hardcoded). Hosts with different
+    base domains get their own derived proxy_redirect and proxy_cookie_domain."""
+    from app.services.showroom_scaffold import build_app_proxy_config
+
+    conf = build_app_proxy_config(
+        [
+            "console-openshift-console.apps.mycluster.example.com",
+            "oauth-openshift.apps.mycluster.example.com",
+        ]
+    )
+
+    # derived apps domain: apps.mycluster.example.com
+    assert (
+        "proxy_redirect ~^https://(?<troshka_h>[^.]+)\\.apps\\.mycluster\\.example\\.com"
+        "(?<troshka_rest>.*)$ https://troshka-pf-$troshka_pid-$troshka_h.$troshka_suffix"
+        "$troshka_rest;" in conf
+    )
+    assert "proxy_cookie_domain .apps.mycluster.example.com $host;" in conf
+    # ensure no hardcoded ocp.ocp.local
+    assert "ocp.ocp.local" not in conf
 
 
 def test_build_app_proxy_config_skips_empty_hosts():
