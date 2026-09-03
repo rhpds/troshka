@@ -2333,6 +2333,26 @@ def _read_ops_pod_cluster_logs(
     }
 
 
+def read_ops_pod_install_log(host, project_id: str, topology: dict) -> dict[str, str]:
+    """Read each OCP cluster's ops-pod ``install.log`` (pod / bastionless install).
+
+    Returns ``{cluster_key: log_text}`` (empty when there are no clusters). The
+    install-log viewer uses this for the pod path; the bastion path reads the
+    bastion VM's ``install.log`` instead.
+    """
+    from app.services.ocp.ops_pod_install import _cluster_key as _ops_cluster_key
+    from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
+
+    clusters = _ocp_clusters(topology)
+    if not clusters:
+        return {}
+    cluster_keys = [_ops_cluster_key(c) for c in clusters]
+    container_name = _ops_pod_container_name(project_id)
+    return _read_ops_pod_cluster_logs(
+        host, container_name, cluster_keys, OPS_POD_WORKDIR, project_id
+    )
+
+
 # Consecutive confirmed "not running" polls before the monitor declares the ops
 # pod dead and fails its non-terminal clusters. The ops pod is
 # ``restart_policy=always`` and the install script is idempotent (Task 4 skips a

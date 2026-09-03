@@ -1079,6 +1079,46 @@ def get_deploy_progress(
     return {"state": project.state, "progress": progress}
 
 
+@router.get("/{project_id}/ocp/install-log", responses={403: {}, 404: {}})
+def get_ocp_install_log(
+    project_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """OCP install log for a pod/bastionless install (read from the ops pod).
+
+    For the bastion install path this returns ``install_via='bastion'`` with no
+    output — the client reads the bastion VM's ``install.log`` directly.
+    """
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+
+    from app.services.template_loader import ocp_install_via
+
+    topology = project.topology or {}
+    install_via = ocp_install_via(topology)
+    if install_via != "pod" or not project.host_id:
+        return {"install_via": install_via, "output": ""}
+
+    host = db.query(Host).filter_by(id=project.host_id).first()
+    if not host:
+        return {"install_via": "pod", "output": ""}
+
+    from app.services.deploy_service import read_ops_pod_install_log
+
+    logs = read_ops_pod_install_log(host, project_id, topology)
+    if not logs:
+        output = ""
+    elif len(logs) == 1:
+        output = next(iter(logs.values()))
+    else:
+        output = "\n\n".join(f"=== {key} ===\n{text}" for key, text in logs.items())
+    return {"install_via": "pod", "output": output}
+
+
 @router.get("/{project_id}/kubeconfigs", responses={403: {}, 404: {}})
 def list_kubeconfigs(
     project_id: str,

@@ -293,21 +293,34 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   React.useEffect(() => {
     if (!ocpLogModal || !projectId) return;
     const bastionNode = nodes.find((n: any) => n.type === "vmNode" && n.data?.label === "bastion");
-    if (!bastionNode) return;
     let active = true;
+    const scrollToEnd = () => setTimeout(() => { if (ocpLogRef.current) ocpLogRef.current.scrollTop = ocpLogRef.current.scrollHeight; }, 50);
     const poll = async () => {
       while (active) {
         try {
-          const r = await fetch(`/api/v1/projects/${projectId}/vms/${bastionNode.id}/exec`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ command: "cat /home/cloud-user/install.log 2>/dev/null", timeout: 10 }),
-          });
-          if (r.ok) {
-            const d = await r.json();
+          // Ask the backend where the install runs: pod (ops pod) vs bastion.
+          const r = await fetch(`/api/v1/projects/${projectId}/ocp/install-log`);
+          const d = r.ok ? await r.json() : {};
+          if (d.install_via === "pod") {
             if (active) {
-              setOcpLog(d.output || "Install log not available yet — waiting for bastion to start the OCP installer...");
-              setTimeout(() => { if (ocpLogRef.current) ocpLogRef.current.scrollTop = ocpLogRef.current.scrollHeight; }, 50);
+              setOcpLog(d.output || "Install log not available yet — waiting for the ops pod to start the OCP installer...");
+              scrollToEnd();
             }
+          } else if (bastionNode) {
+            // Bastion install: read the bastion VM's install.log directly.
+            const br = await fetch(`/api/v1/projects/${projectId}/vms/${bastionNode.id}/exec`, {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ command: "cat /home/cloud-user/install.log 2>/dev/null", timeout: 10 }),
+            });
+            if (br.ok) {
+              const bd = await br.json();
+              if (active) {
+                setOcpLog(bd.output || "Install log not available yet — waiting for bastion to start the OCP installer...");
+                scrollToEnd();
+              }
+            }
+          } else if (active) {
+            setOcpLog("Install log not available (no bastion, and this is not a pod install).");
           }
         } catch {}
         await new Promise(r => setTimeout(r, 5000));
