@@ -59,6 +59,7 @@ from app.services.mesh_service import (
 )
 from app.services.troshkad_client import (
     TroshkadError,
+    get_all_vm_states,
     start_job,
     troshkad_request,
     wait_for_job,
@@ -8956,8 +8957,10 @@ def _destroy_troshkad_resources(host, project_id, topo, vni_map, session):
 
     # Destroy VMs via troshkad
     vms = _extract_vms(topo)
+    destroyed_domains = set()
     for vm in vms:
         vm_name = _vm_domain_name(project_id, vm["node_id"])
+        destroyed_domains.add(vm_name)
         try:
             job_id = start_job(host, _VMS_DESTROY_PATH, {"domain_name": vm_name})
             wait_for_job(host, job_id, timeout=60)
@@ -8965,6 +8968,30 @@ def _destroy_troshkad_resources(host, project_id, topo, vni_map, session):
             logger.warning(
                 "Destroy %s: failed to destroy %s: %s", project_id[:8], vm_name, e
             )
+
+    # Belt-and-suspenders: the destroy topology can drift from what is actually
+    # on the host (e.g. a stale deployed_topology), so reap any remaining domain
+    # for THIS project by prefix — otherwise a VM missing from the topology is
+    # orphaned on delete.
+    prefix = f"troshka-{project_id[:8]}-"
+    try:
+        for domain in get_all_vm_states(host) or {}:
+            if not domain.startswith(prefix) or domain in destroyed_domains:
+                continue
+            try:
+                job_id = start_job(host, _VMS_DESTROY_PATH, {"domain_name": domain})
+                wait_for_job(host, job_id, timeout=60)
+                logger.info(
+                    "Destroy %s: reaped orphan domain %s", project_id[:8], domain
+                )
+            except TroshkadError as e:
+                logger.warning(
+                    "Destroy %s: failed to reap %s: %s", project_id[:8], domain, e
+                )
+    except Exception as e:  # noqa: BLE001 - reap scan is best-effort
+        logger.warning(
+            "Destroy %s: orphan-domain reap scan failed: %s", project_id[:8], e
+        )
 
     # Remove project VM directory
     pool = _get_host_pool(host, session)
