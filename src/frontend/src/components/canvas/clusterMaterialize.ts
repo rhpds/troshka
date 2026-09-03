@@ -276,7 +276,8 @@ function makeMemberNode(
     type: "vmNode",
     parentId: cluster.nodeId,
     position: { x, y },
-    extent: "parent", // Constrain drag to cluster boundary; can't be dragged outside
+    extent: "parent", // Constrain to cluster boundary
+    draggable: false, // Members are cluster-managed (count/editor) — not hand-movable
     data: {
       label: name,
       name,
@@ -657,14 +658,11 @@ export function reconcileClusterVms(
   // Compute content bounding box from actual member positions and card dimensions
   const { contentW, contentH } = computeContentBbox(cluster, visibleMembers);
 
-  // Find the current boundary node
-  const boundaryNode = resultNodes.find((n) => n.id === cluster.nodeId);
-  const currentWidth = (boundaryNode?.style?.width as number) || 0;
-  const currentHeight = (boundaryNode?.style?.height as number) || 0;
-
-  // Preserve manual enlargements: never shrink below content, but keep user-set sizes larger than content
-  const newWidth = Math.max(contentW, currentWidth);
-  const newHeight = Math.max(contentH, currentHeight);
+  // Auto-fit EXACTLY to content — grow AND shrink. Removing members (e.g.
+  // workers → 0) shrinks the box back to just its remaining cards. NodeResizer
+  // min is set to the content bbox below so the user still can't clip members.
+  const newWidth = contentW;
+  const newHeight = contentH;
 
   // Update cluster boundary node size and set min constraints for NodeResizer
   resultNodes = resultNodes.map((n) =>

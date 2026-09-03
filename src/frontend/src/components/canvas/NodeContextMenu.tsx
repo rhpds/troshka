@@ -26,6 +26,10 @@ export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM, o
 
   const node = nodes.find((n) => n.id === nodeId);
   const isVm = node?.type === "vmNode";
+  // Cluster-member VMs are managed by the OCP box (count/editor) — no per-VM
+  // Duplicate/Hide.
+  const isClusterMember =
+    isVm && !!(node?.data as Record<string, unknown>)?.clusterId;
   const isDeployed = isVm && deployedVmIds.has(nodeId);
   const vmName = isVm ? (node?.data as Record<string, any>).name as string : "";
   const vmStatus = isVm ? (node?.data as Record<string, any>).status as string : "";
@@ -78,19 +82,23 @@ export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM, o
           📸 Save VM Snapshot
         </button>
       )}
-      <button onClick={() => {
-        if (isVm && onDuplicateVM) {
-          onDuplicateVM(nodeId);
-        } else {
-          duplicateNode(nodeId);
-        }
-        onClose();
-      }}>
-        ⧉ Duplicate
-      </button>
-      <button onClick={() => { hideNode(nodeId); onClose(); }}>
-        👁 Hide
-      </button>
+      {!isClusterMember && (
+        <>
+          <button onClick={() => {
+            if (isVm && onDuplicateVM) {
+              onDuplicateVM(nodeId);
+            } else {
+              duplicateNode(nodeId);
+            }
+            onClose();
+          }}>
+            ⧉ Duplicate
+          </button>
+          <button onClick={() => { hideNode(nodeId); onClose(); }}>
+            👁 Hide
+          </button>
+        </>
+      )}
       {isDeployed && isRedeploying && (
         <button className="danger" onClick={async () => {
           await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/cancel-redeploy`, { method: "POST" });

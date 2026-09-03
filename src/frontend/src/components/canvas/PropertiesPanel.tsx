@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import type { Node } from "@xyflow/react";
+import type { Node, Edge } from "@xyflow/react";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
@@ -578,17 +578,25 @@ function DiskListEditor({
             </select>
             <button
               onClick={() => handleRemoveDisk(idx)}
+              title="Remove disk"
+              aria-label="Remove disk"
               style={{
-                padding: "4px 8px",
-                background: "var(--pf-t--global--color--status--danger--background)",
-                color: "white",
+                flex: "0 0 auto",
+                width: 22,
+                height: 22,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "transparent",
+                color: "var(--troshka-red, #ef4444)",
                 border: "none",
                 borderRadius: 4,
                 cursor: "pointer",
-                fontSize: 12,
+                fontSize: 14,
+                lineHeight: 1,
               }}
             >
-              Remove
+              ✕
             </button>
           </div>
         ))
@@ -683,22 +691,26 @@ function ClusterEditor({
       </div>
       <div className="props-divider" />
 
-      <div className="props-section">
-        <div className="props-section-title">Worker Sizing</div>
-        <ClusterNumberField label="Worker vCPUs" min={1} value={cluster.workerCpu ?? 4} onCommit={(v) => onSizing({ workerCpu: v })} />
-        <ClusterNumberField label="Worker Memory (MB)" min={1} value={cluster.workerMemory ?? 8192} onCommit={(v) => onSizing({ workerMemory: v })} />
-        <ClusterNumberField label="Worker Disk (GB)" min={1} value={cluster.workerDisk ?? 100} onCommit={(v) => onSizing({ workerDisk: v })} />
-      </div>
-      <div className="props-divider" />
+      {(cluster.workers ?? 0) > 0 && (
+        <>
+          <div className="props-section">
+            <div className="props-section-title">Worker Sizing</div>
+            <ClusterNumberField label="Worker vCPUs" min={1} value={cluster.workerCpu ?? 4} onCommit={(v) => onSizing({ workerCpu: v })} />
+            <ClusterNumberField label="Worker Memory (MB)" min={1} value={cluster.workerMemory ?? 8192} onCommit={(v) => onSizing({ workerMemory: v })} />
+            <ClusterNumberField label="Worker Disk (GB)" min={1} value={cluster.workerDisk ?? 100} onCommit={(v) => onSizing({ workerDisk: v })} />
+          </div>
+          <div className="props-divider" />
 
-      <div className="props-section">
-        <div className="props-section-title">Worker Disks</div>
-        <DiskListEditor
-          disks={cluster.workerDisks ?? []}
-          onChange={(disks) => onDisksChange("worker", disks)}
-        />
-      </div>
-      <div className="props-divider" />
+          <div className="props-section">
+            <div className="props-section-title">Worker Disks</div>
+            <DiskListEditor
+              disks={cluster.workerDisks ?? []}
+              onChange={(disks) => onDisksChange("worker", disks)}
+            />
+          </div>
+          <div className="props-divider" />
+        </>
+      )}
 
       <div className="props-section">
         <div className="props-section-title">Networking</div>
@@ -4623,8 +4635,35 @@ export default function PropertiesPanel() {
             useCanvasStore.getState().nodes,
             useCanvasStore.getState().edges,
           );
+          // Sync the visible box↔network anchor edges to networkIds: drop this
+          // cluster's existing anchor edges, then add one per selected network
+          // (checking a network draws the line; unchecking removes it). Matches
+          // the box-handle onConnect anchor edge (Task 11).
+          const anchorEdges = networkIds.map(
+            (netId) =>
+              ({
+                id: `edge-clusternet-${netId}-to-${cluster.nodeId}`,
+                source: netId,
+                target: cluster.nodeId,
+                sourceHandle: "bottom",
+                targetHandle: "cluster-net-top",
+                type: "smoothstep",
+                style: { stroke: "rgba(34,211,238,0.7)", strokeWidth: 2 },
+              }) as Edge,
+          );
+          const withoutOldAnchors = nextEdges.filter(
+            (e) =>
+              !(
+                e.target === cluster.nodeId &&
+                typeof e.targetHandle === "string" &&
+                e.targetHandle.startsWith("cluster-net")
+              ),
+          );
           useCanvasStore.getState().pushHistory();
-          useCanvasStore.setState({ nodes: nextNodes, edges: nextEdges });
+          useCanvasStore.setState({
+            nodes: nextNodes,
+            edges: [...withoutOldAnchors, ...anchorEdges],
+          });
         };
         const handleDisksChange = (role: "control-plane" | "worker", disks: DiskSpec[]) => {
           const patch = role === "control-plane" ? { controlPlaneDisks: disks } : { workerDisks: disks };

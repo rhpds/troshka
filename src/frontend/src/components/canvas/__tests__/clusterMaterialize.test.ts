@@ -806,32 +806,43 @@ describe("cluster boundary auto-sizing + member grid reflow", () => {
     }
   });
 
-  it("preserves manual enlargement: larger current size is not shrunk below content bbox", () => {
+  it("auto-fits to content both ways: re-reconcile shrinks an over-large box back to the content bbox", () => {
     const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
     cluster.controlPlane = 1;
     cluster.workers = 0;
 
-    // First reconcile to establish baseline size
+    // First reconcile establishes the content-fitted baseline size.
     const { nodes: initial } = reconcileClusterVms(cluster, [node]);
     const initialBoundary = initial.find((n) => n.id === cluster.nodeId)!;
-    const initialWidth = (initialBoundary.style?.width as number) || 0;
+    const fitW = (initialBoundary.style?.width as number) || 0;
+    const fitH = (initialBoundary.style?.height as number) || 0;
 
-    // Manually enlarge the cluster (simulate user resize via NodeResizer)
+    // Force an over-large size, then re-reconcile: the box auto-fits back to content.
     const enlarged = initial.map((n) =>
       n.id === cluster.nodeId
-        ? { ...n, style: { ...n.style, width: initialWidth + 200, height: 600 } }
+        ? { ...n, style: { ...n.style, width: fitW + 400, height: fitH + 400 } }
         : n,
     );
-
-    // Re-reconcile with same cluster config
     const { nodes: result } = reconcileClusterVms(cluster, enlarged);
     const resultBoundary = result.find((n) => n.id === cluster.nodeId)!;
-    const resultWidth = (resultBoundary.style?.width as number) || 0;
-    const resultHeight = (resultBoundary.style?.height as number) || 0;
+    expect(resultBoundary.style?.width).toBe(fitW);
+    expect(resultBoundary.style?.height).toBe(fitH);
+  });
 
-    // Width and height should NOT shrink from the manual enlargement
-    expect(resultWidth).toBe(initialWidth + 200);
-    expect(resultHeight).toBe(600);
+  it("shrinks the box when members are removed (workers 3 -> 0)", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlane = 3;
+    cluster.workers = 3;
+    const { nodes: withWorkers } = reconcileClusterVms(cluster, [node]);
+    const tallH = ((withWorkers.find((n) => n.id === cluster.nodeId)!).style
+      ?.height as number) || 0;
+
+    cluster.workers = 0;
+    const { nodes: noWorkers } = reconcileClusterVms(cluster, withWorkers);
+    const shortH = ((noWorkers.find((n) => n.id === cluster.nodeId)!).style
+      ?.height as number) || 0;
+
+    expect(shortH).toBeLessThan(tallH); // removing the worker row shrinks the box
   });
 
   it("sets data.minWidth/minHeight to the content bbox for NodeResizer constraints", () => {
