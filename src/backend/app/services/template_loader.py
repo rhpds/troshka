@@ -537,6 +537,89 @@ def _build_cluster_boundary_nodes(clusters):
     return cnodes
 
 
+# Cluster member grid — mirrors the frontend clusterMaterialize constants so a
+# template-loaded cluster lays out identically to a canvas-edited one.
+_CL_CELL_W = 210
+_CL_CELL_H = 240
+_CL_PAD = 30
+_CL_HEADER_H = 48
+_CL_COLS = 4
+
+
+def _member_grid_role(node: dict) -> str | None:
+    d = node.get("data", {})
+    role = d.get("clusterRole")
+    if role in ("control-plane", "worker"):
+        return role
+    group = (d.get("tags") or {}).get("AnsibleGroup", "")
+    if "controllers" in group:
+        return "control-plane"
+    if "workers" in group:
+        return "worker"
+    return None
+
+
+def _member_index(node: dict) -> int:
+    name = str(node.get("data", {}).get("name", ""))
+    digits = ""
+    for ch in reversed(name):
+        if ch.isdigit():
+            digits = ch + digits
+        elif digits:
+            break
+    return int(digits) if digits else 0
+
+
+def _reflow_cluster_members(clusters: list[dict], nodes: list[dict]) -> None:
+    """Position member VMs relative to their boundary and size the boundary to
+    contain them.
+
+    React Flow renders a child node's position RELATIVE to its parent, but the
+    template layout assigns absolute positions — so a stamped member (parentId =
+    boundary) floats outside the box. Re-lay members on a grid inside the box
+    (control-plane rows first, then workers) and set the boundary size, mirroring
+    the frontend ``reflowMembers``/``clusterBoxSize``.
+    """
+    by_id = {n["id"]: n for n in nodes}
+    for c in clusters:
+        boundary = by_id.get(f"cluster-{c['id']}")
+        if not boundary:
+            continue
+        members = [
+            n
+            for n in nodes
+            if n.get("type") == "vmNode" and n.get("parentId") == boundary["id"]
+        ]
+        if not members:
+            continue
+        cps = sorted(
+            [m for m in members if _member_grid_role(m) == "control-plane"],
+            key=_member_index,
+        )
+        workers = sorted(
+            [m for m in members if _member_grid_role(m) == "worker"],
+            key=_member_index,
+        )
+        cp_rows = (len(cps) + _CL_COLS - 1) // _CL_COLS if cps else 0
+        for i, m in enumerate(cps):
+            m["position"] = {
+                "x": _CL_PAD + (i % _CL_COLS) * _CL_CELL_W,
+                "y": _CL_HEADER_H + (i // _CL_COLS) * _CL_CELL_H,
+            }
+        for j, m in enumerate(workers):
+            m["position"] = {
+                "x": _CL_PAD + (j % _CL_COLS) * _CL_CELL_W,
+                "y": _CL_HEADER_H + (cp_rows + j // _CL_COLS) * _CL_CELL_H,
+            }
+        cols = max(1, min(_CL_COLS, len(members)))
+        worker_rows = (len(workers) + _CL_COLS - 1) // _CL_COLS if workers else 0
+        rows = max(1, cp_rows + worker_rows)
+        boundary["style"] = {
+            "width": 2 * _CL_PAD + cols * _CL_CELL_W,
+            "height": _CL_HEADER_H + _CL_PAD + rows * _CL_CELL_H,
+        }
+
+
 def _copy_template_content_sections(tmpl: dict, resolved: dict) -> None:
     """Copy vms/containers and all topology content sections from tmpl."""
     if tmpl.get("vms"):
@@ -1623,6 +1706,40 @@ def _validate_uuid_uniqueness(nodes):
             seen_uuids[u] = d.get("name", "")
 
 
+def _infer_cluster_network_ids(
+    clusters: list[dict],
+    vms_def: dict,
+    vm_cluster_map: dict,
+    net_ids: dict[str, str],
+    nets_def: dict,
+) -> None:
+    """Populate a cluster's ``networkIds`` from its member VMs' NIC networks when
+    not explicitly set.
+
+    Template cluster membership is expressed via member VM NICs (the ``ocp:``
+    block has no ``networks`` list), so without this the cluster editor shows no
+    member network and the DNS-network prerequisite errors. BMC networks are
+    excluded (they are not a cluster member network).
+    """
+    for cluster in clusters:
+        if cluster.get("networkIds"):
+            continue
+        cid = cluster.get("id")
+        ids: list[str] = []
+        for vm_name, vm_cfg in (vms_def or {}).items():
+            if vm_cluster_map.get(vm_name) != cid:
+                continue
+            for nic in vm_cfg.get("nics", []) or []:
+                net = nic.get("network", "")
+                if (nets_def.get(net) or {}).get("type") == "bmc":
+                    continue
+                nid = net_ids.get(net, net)
+                if nid and nid not in ids:
+                    ids.append(nid)
+        if ids:
+            cluster["networkIds"] = ids
+
+
 def _resolve_cluster_network_names(
     clusters: list[dict], net_ids: dict[str, str]
 ) -> None:
@@ -1691,6 +1808,7 @@ def _generate_topology_from_vms(
 
     # Resolve exported network names in clusters to actual network node IDs
     _resolve_cluster_network_names(clusters, net_ids)
+    _infer_cluster_network_ids(clusters, vms_def, vm_cluster_map, net_ids, nets_def)
 
     gw_node, external_ips, gw_edges, gw_net_name = _create_gateway_node(
         gw_def, vms_def, tmpl, external_access, GW_Y, nets_def
@@ -2640,4 +2758,8 @@ def generate_topology_from_template(
     from app.services.auto_layout import auto_layout
 
     topo["nodes"], topo["edges"] = auto_layout(topo["nodes"], topo["edges"])
+    # auto_layout is not cluster-aware (flattens all nodes), so re-lay cluster
+    # members inside their boundary + size the box AFTER it — members render
+    # relative to the parent boundary in React Flow.
+    _reflow_cluster_members(topo.get("clusters") or [], topo["nodes"])
     return topo
