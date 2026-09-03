@@ -307,6 +307,10 @@ interface CanvasState {
   clusterLogTarget: { clusterKey: string; name: string } | null;
   openClusterLog: (clusterKey: string, name: string) => void;
   closeClusterLog: () => void;
+  /** Latest OCP health (phase/detail + component checklist) from the WS monitor,
+   *  mirrored here so the cluster log modal can show status beside the log. */
+  ocpHealth: { phase: string; detail: string; items?: string[] } | null;
+  setOcpHealth: (h: { phase: string; detail: string; items?: string[] } | null) => void;
   setClusters: (clusters: ClusterConfig[]) => void;
   addCluster: (cluster: ClusterConfig) => void;
   updateCluster: (id: string, patch: Partial<ClusterConfig>) => void;
@@ -746,6 +750,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   clusters: [] as ClusterConfig[],
   ocpInstallVia: null as string | null,
   clusterLogTarget: null as { clusterKey: string; name: string } | null,
+  ocpHealth: null as { phase: string; detail: string; items?: string[] } | null,
 
   onNodesChange: (changes) => {
     const removals = changes.filter((c) => c.type === "remove");
@@ -1557,6 +1562,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
   openClusterLog: (clusterKey, name) => set({ clusterLogTarget: { clusterKey, name } }),
   closeClusterLog: () => set({ clusterLogTarget: null }),
+  setOcpHealth: (h) => set({ ocpHealth: h }),
 
   addCluster: (cluster) => {
     get().pushHistory();

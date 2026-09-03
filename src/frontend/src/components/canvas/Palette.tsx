@@ -260,6 +260,9 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   const [customDeleteM, setCustomDeleteM] = useState(0);
   const nodes = useCanvasStore((s) => s.nodes);
   const showroomExists = hasShowroomNode(nodes);
+  // Pod (bastionless) installs surface OCP status + log per-cluster on each
+  // cluster box, so the palette OCP STATUS panel is redundant and hidden.
+  const ocpInstallVia = useCanvasStore((s) => s.ocpInstallVia);
 
   useEffect(() => {
     if (!hostId) return;
@@ -460,7 +463,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
           )}
         </div>
       )}
-      {ocpHealth && (
+      {ocpHealth && ocpInstallVia !== "pod" && (
         <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
           <div
             className="palette-section-title"

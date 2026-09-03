@@ -298,6 +298,12 @@ export default function ProjectCanvasPage() {
     return ws.ocpHealth;
   }, [ws.ocpHealth, ocpStatus, ocpInstallElapsed]);
 
+  // Mirror OCP health into the canvas store so the per-cluster log modal can
+  // show the status checklist beside the log.
+  useEffect(() => {
+    useCanvasStore.setState({ ocpHealth: resolvedOcpHealth });
+  }, [resolvedOcpHealth]);
+
   // Timer countdown ticker
   useEffect(() => {
     const candidates = [

@@ -110,7 +110,7 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
         {showInstallLog && (
           <button
             type="button"
-            title="View install log & status for this cluster"
+            title="View this cluster's install status & log"
             className="nodrag"
             onClick={(e) => {
               e.stopPropagation();
@@ -129,7 +129,7 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
               whiteSpace: "nowrap",
             }}
           >
-            📋 Log
+            📋 Status
           </button>
         )}
       </div>

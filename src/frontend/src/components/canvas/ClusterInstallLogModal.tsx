@@ -9,10 +9,20 @@ import { useCanvasStore } from "@/stores/canvasStore";
  * `GET /projects/{id}/ocp/install-log?cluster=<key>` while open so the log and
  * derived status update live during the (long) agent-based install.
  */
+/** Split "name: status" health item into its parts and classify good/bad. */
+function classifyItem(item: string): { name: string; status: string; good: boolean; bad: boolean } {
+  const name = item.split(":")[0].trim();
+  const status = item.split(":").slice(1).join(":").trim();
+  const good = /✓|available|Ready|reachable|ready/.test(status);
+  const bad = /✗|degraded|failed|not available/.test(status);
+  return { name, status, good, bad };
+}
+
 export default function ClusterInstallLogModal() {
   const target = useCanvasStore((s) => s.clusterLogTarget);
   const close = useCanvasStore((s) => s.closeClusterLog);
   const projectId = useCanvasStore((s) => s.currentProjectId);
+  const ocpHealth = useCanvasStore((s) => s.ocpHealth);
   const [log, setLog] = useState("");
   const [loading, setLoading] = useState(false);
   const preRef = useRef<HTMLPreElement>(null);
@@ -53,7 +63,7 @@ export default function ClusterInstallLogModal() {
 
   // Derive a one-line status from the newest meaningful log line.
   const lines = log.split("\n").filter((l) => l.trim());
-  const status = lines.length ? lines[lines.length - 1] : "waiting for install to start…";
+  const logStatus = lines.length ? lines[lines.length - 1] : "waiting for install to start…";
 
   return (
     <div
@@ -84,7 +94,7 @@ export default function ClusterInstallLogModal() {
         onClick={(e) => e.stopPropagation()}
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <h3 style={{ margin: 0 }}>☸ {target.name} — Install Log</h3>
+          <h3 style={{ margin: 0 }}>☸ {target.name} — Status &amp; Log</h3>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             {log && (
               <button
@@ -123,49 +133,87 @@ export default function ClusterInstallLogModal() {
             </button>
           </div>
         </div>
-        {/* Status line — the newest install-log line, so it reflects live phase. */}
-        <div
-          style={{
-            fontSize: 11,
-            marginBottom: 12,
-            padding: "6px 10px",
-            borderRadius: 6,
-            background: "rgba(34,211,238,0.1)",
-            border: "1px solid rgba(34,211,238,0.25)",
-            color: "var(--pf-t--global--text--color--regular)",
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-          }}
-        >
-          <span style={{ color: "var(--troshka-text-dim, #94a3b8)" }}>Status:</span>
-          <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{status}</span>
+        {/* Status (left) beside the log (right). */}
+        <div style={{ display: "flex", gap: 12, flex: 1, minHeight: 0 }}>
+          <div
+            style={{
+              width: 240,
+              flexShrink: 0,
+              overflowY: "auto",
+              fontSize: 11,
+              padding: 10,
+              borderRadius: 6,
+              background: "rgba(34,211,238,0.06)",
+              border: "1px solid rgba(34,211,238,0.2)",
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 8, color: "var(--troshka-text-dim, #94a3b8)" }}>
+              Cluster status
+            </div>
+            {/* Phase/detail from the health monitor, else the newest log line. */}
+            <div
+              style={{
+                marginBottom: 10,
+                color:
+                  ocpHealth?.phase === "ready"
+                    ? "#4ade80"
+                    : ocpHealth?.phase === "error" || ocpHealth?.phase === "timeout"
+                      ? "#f87171"
+                      : ocpHealth?.phase === "warning"
+                        ? "#fbbf24"
+                        : "var(--pf-t--global--text--color--regular)",
+              }}
+            >
+              {ocpHealth?.phase === "ready" && "✓ "}
+              {(ocpHealth?.phase === "error" || ocpHealth?.phase === "timeout") && "✗ "}
+              {ocpHealth?.phase === "warning" && "⚠ "}
+              {ocpHealth?.detail || logStatus}
+            </div>
+            {/* Component checklist (cluster operators / API reachability). */}
+            {ocpHealth?.items && ocpHealth.items.length > 0 ? (
+              <div style={{ fontSize: 10, lineHeight: 1.7, color: "var(--pf-t--global--text--color--subtle)" }}>
+                {ocpHealth.items.map((item, i) => {
+                  const { name, status, good, bad } = classifyItem(item);
+                  return (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 6 }}>
+                      <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{name}</span>
+                      <span style={{ color: good ? "#4ade80" : bad ? "#f87171" : "#fbbf24", flexShrink: 0 }}>
+                        {good ? "✓" : bad ? "✗" : status}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ fontSize: 10, opacity: 0.5 }}>Health checks appear once the cluster is reachable.</div>
+            )}
+          </div>
+          <pre
+            ref={preRef}
+            style={{
+              fontSize: 11,
+              fontFamily: "monospace",
+              whiteSpace: "pre-wrap",
+              overflowY: "auto",
+              flex: 1,
+              margin: 0,
+              padding: 8,
+              background: "rgba(0,0,0,0.2)",
+              borderRadius: 6,
+              lineHeight: 1.5,
+            }}
+          >
+            {log || (
+              <span style={{ opacity: 0.5 }}>
+                <span
+                  className="project-btn-spinner"
+                  style={{ width: 12, height: 12, display: "inline-block", verticalAlign: "middle", marginRight: 6 }}
+                />
+                {loading ? "Loading install log…" : "No install log yet."}
+              </span>
+            )}
+          </pre>
         </div>
-        <pre
-          ref={preRef}
-          style={{
-            fontSize: 11,
-            fontFamily: "monospace",
-            whiteSpace: "pre-wrap",
-            overflowY: "auto",
-            flex: 1,
-            margin: 0,
-            padding: 8,
-            background: "rgba(0,0,0,0.2)",
-            borderRadius: 6,
-            lineHeight: 1.5,
-          }}
-        >
-          {log || (
-            <span style={{ opacity: 0.5 }}>
-              <span
-                className="project-btn-spinner"
-                style={{ width: 12, height: 12, display: "inline-block", verticalAlign: "middle", marginRight: 6 }}
-              />
-              {loading ? "Loading install log…" : "No install log yet."}
-            </span>
-          )}
-        </pre>
       </div>
     </div>
   );
