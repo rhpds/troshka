@@ -678,7 +678,14 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
           .catch(() => {});
         return; // Don't call addNode — the server handles topology updates
       } else if (item.type === "cluster") {
-        const { node, cluster } = makeCluster("ocp", position);
+        // Unique cluster name: ocp, then ocp-2, ocp-3, … (the name is the DNS
+        // subdomain, so it must be unique across clusters).
+        const existingClusterNames = new Set(
+          useCanvasStore.getState().clusters.map((c) => c.name),
+        );
+        let clusterName = "ocp";
+        for (let i = 2; existingClusterNames.has(clusterName); i++) clusterName = `ocp-${i}`;
+        const { node, cluster } = makeCluster(clusterName, position);
         addNode(node);
         addCluster(cluster);
         const { nodes: withMembers, edges: diskEdges } = materializeClusterInto(
