@@ -83,6 +83,14 @@ export default function ClusterInstallLogModal() {
   const [loading, setLoading] = useState(false);
   const [revealPw, setRevealPw] = useState(false);
   const [fetchedAt, setFetchedAt] = useState(0);
+  // kubeadmin password + kubeconfig availability, polled live from the backend
+  // (harvested from the ops pod after install) so credentials appear without a
+  // project reload. Null until the first poll returns.
+  const [access, setAccess] = useState<{
+    kubeadmin_password: string;
+    kubeconfig_available: boolean;
+    vm_name: string;
+  } | null>(null);
   const [, setTick] = useState(0);
   const preRef = useRef<HTMLPreElement>(null);
 
@@ -90,6 +98,7 @@ export default function ClusterInstallLogModal() {
     if (!target || !projectId) return;
     let cancelled = false;
     setLog("");
+    setAccess(null);
     setLoading(true);
     const fetchLog = async () => {
       try {
@@ -101,6 +110,13 @@ export default function ClusterInstallLogModal() {
         if (!cancelled) {
           setLog(data.output || "");
           setFetchedAt(Date.now());
+          if (data.kubeadmin_password || data.kubeconfig_available) {
+            setAccess({
+              kubeadmin_password: data.kubeadmin_password || "",
+              kubeconfig_available: !!data.kubeconfig_available,
+              vm_name: data.vm_name || "",
+            });
+          }
         }
       } catch {
         /* transient — keep the last log */
@@ -153,10 +169,14 @@ export default function ClusterInstallLogModal() {
   const members = nodes.filter(
     (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === target.clusterKey,
   );
-  const kubeadminPw = members
+  const storePw = members
     .map((n) => (n.data as Record<string, unknown>).ocpKubeadminPassword as string | undefined)
     .find(Boolean);
-  const kubeconfigVm = members.find((n) => (n.data as Record<string, unknown>).ocpKubeconfig);
+  const storeKubeconfigVm = members.find((n) => (n.data as Record<string, unknown>).ocpKubeconfig);
+  // Prefer the live-polled creds (no reload needed); fall back to store state
+  // (populated on project load) so an already-deployed cluster still shows them.
+  const kubeadminPw = access?.kubeadmin_password || storePw;
+  const hasKubeconfig = access?.kubeconfig_available || !!storeKubeconfigVm;
 
   return (
     <div
@@ -302,7 +322,7 @@ export default function ClusterInstallLogModal() {
               ))}
             </div>
             {/* Access — kubeadmin password + kubeconfig once the cluster is up. */}
-            {(kubeadminPw || kubeconfigVm) && (
+            {(kubeadminPw || hasKubeconfig) && (
               <div style={{ marginTop: 12, borderTop: "1px solid rgba(255,255,255,0.1)", paddingTop: 10 }}>
                 <div style={{ fontWeight: 600, marginBottom: 6, color: "var(--troshka-text-dim, #94a3b8)" }}>Access</div>
                 {kubeadminPw && (
@@ -320,11 +340,21 @@ export default function ClusterInstallLogModal() {
                     </span>
                   </div>
                 )}
-                {kubeconfigVm && (
+                {hasKubeconfig && (
                   <span
                     style={{ cursor: "pointer", fontSize: 10, opacity: 0.7, textDecoration: "underline" }}
-                    onClick={() => {
-                      const kc = ((kubeconfigVm.data as Record<string, unknown>).ocpKubeconfig as string) || "";
+                    onClick={async () => {
+                      // Download live from the backend (deployed_topology) so it
+                      // works without the project being reloaded into the store.
+                      const vm = access?.vm_name;
+                      const kc = vm
+                        ? await fetch(
+                            `/api/v1/projects/${projectId}/kubeconfig?vm=${encodeURIComponent(vm)}`,
+                          )
+                            .then((r) => (r.ok ? r.text() : ""))
+                            .catch(() => "")
+                        : ((storeKubeconfigVm?.data as Record<string, unknown>)?.ocpKubeconfig as string) || "";
+                      if (!kc) return;
                       const blob = new Blob([kc], { type: "application/x-yaml" });
                       const url = URL.createObjectURL(blob);
                       const a = document.createElement("a");

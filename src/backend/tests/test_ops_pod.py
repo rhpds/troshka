@@ -881,3 +881,59 @@ def test_apply_ops_pod_creds_control_plane_only():
     assert "ocpKubeadminPassword" not in topo["nodes"][2]["data"]  # other cluster
     # Idempotent: re-applying the same creds reports no change.
     assert _apply_ops_pod_creds(topo, {"ocp": ("pw123", "KC")}) is False
+
+
+def test_cluster_access_returns_control_plane_creds():
+    """_cluster_access surfaces the cp member's harvested kubeadmin pw +
+    kubeconfig availability + vm_name (for the live status-modal poll)."""
+    from app.api.projects import _cluster_access
+
+    topo = {
+        "nodes": [
+            {
+                "id": "cp",
+                "type": "vmNode",
+                "data": {
+                    "clusterId": "ocp",
+                    "clusterRole": "control-plane",
+                    "name": "cp-0",
+                    "ocpKubeadminPassword": "pw123",
+                    "ocpKubeconfig": "KC",
+                },
+            },
+            {
+                "id": "wk",
+                "type": "vmNode",
+                "data": {
+                    "clusterId": "ocp",
+                    "clusterRole": "worker",
+                    "ocpKubeadminPassword": "wk-should-be-ignored",
+                },
+            },
+        ]
+    }
+    acc = _cluster_access(topo, "ocp")
+    assert acc == {
+        "kubeadmin_password": "pw123",
+        "kubeconfig_available": True,
+        "vm_name": "cp-0",
+    }
+
+
+def test_cluster_access_empty_before_harvest():
+    from app.api.projects import _cluster_access
+
+    topo = {
+        "nodes": [
+            {
+                "id": "cp",
+                "type": "vmNode",
+                "data": {"clusterId": "ocp", "clusterRole": "control-plane"},
+            }
+        ]
+    }
+    assert _cluster_access(topo, "ocp") == {
+        "kubeadmin_password": "",
+        "kubeconfig_available": False,
+        "vm_name": "",
+    }

@@ -1079,6 +1079,30 @@ def get_deploy_progress(
     return {"state": project.state, "progress": progress}
 
 
+def _cluster_access(topo: dict, cluster_key: str) -> dict:
+    """kubeadmin password + kubeconfig availability for a cluster's control-plane
+    member (creds harvested from the ops pod after a bastionless install). Returns
+    empty strings/False until the creds have been stored, and the cp member's
+    vm_name so the modal can download the kubeconfig via ?vm=."""
+    for node in topo.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        d = node.get("data", {})
+        if d.get("clusterId") != cluster_key:
+            continue
+        role = d.get("clusterRole") or ""
+        group = (d.get("tags") or {}).get("AnsibleGroup", "")
+        if role == "worker" or (not role and "workers" in group):
+            continue  # control-plane members only
+        if d.get("ocpKubeadminPassword") or d.get("ocpKubeconfig"):
+            return {
+                "kubeadmin_password": d.get("ocpKubeadminPassword") or "",
+                "kubeconfig_available": bool(d.get("ocpKubeconfig")),
+                "vm_name": d.get("label") or d.get("name", ""),
+            }
+    return {"kubeadmin_password": "", "kubeconfig_available": False, "vm_name": ""}
+
+
 @router.get("/{project_id}/ocp/install-log", responses={403: {}, 404: {}})
 def get_ocp_install_log(
     project_id: str,
@@ -1117,12 +1141,16 @@ def get_ocp_install_log(
     logs = read_ops_pod_install_log(host, project_id, topology)
     keys = list(logs.keys())
     if cluster is not None:
-        # Per-cluster request: just that cluster's log (empty if unknown key).
+        # Per-cluster request: just that cluster's log (empty if unknown key),
+        # plus the harvested kubeadmin password + kubeconfig availability so the
+        # status modal can surface credentials LIVE (polled) without a reload.
+        access = _cluster_access(project.deployed_topology or topology, cluster)
         return {
             "install_via": "pod",
             "output": logs.get(cluster, ""),
             "cluster": cluster,
             "clusters": keys,
+            **access,
         }
     if not logs:
         output = ""
