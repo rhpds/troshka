@@ -27,13 +27,14 @@ describe("clusterConsoleHosts / clusterConsoleTabName", () => {
 });
 
 describe("syncClusterProxyTabs", () => {
-  it("re-derives name + hosts for the managed tab on rename", () => {
+  it("re-derives hosts on rename but preserves the user-owned name", () => {
     const tabs = [
       consoleTab("t1", "c1", "ocp Console", clusterConsoleHosts("ocp", "local")),
     ];
     const out = syncClusterProxyTabs(tabs, { id: "c1", name: "ocp2", baseDomain: "local" });
     expect(out).not.toBeNull();
-    expect(out![0].name).toBe("ocp2 Console");
+    // Name is user-editable now — sync must NOT overwrite it.
+    expect(out![0].name).toBe("ocp Console");
     expect(out![0].proxyHosts).toEqual([
       "console-openshift-console.apps.ocp2.local",
       "oauth-openshift.apps.ocp2.local",

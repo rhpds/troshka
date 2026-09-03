@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { useCanvasStore } from "@/stores/canvasStore";
 import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 
@@ -46,44 +45,26 @@ beforeEach(() => {
   });
 });
 
-describe("PropertiesPanel cluster role dropdown", () => {
-  it("shows the role dropdown for a VM inside a cluster", () => {
+describe("PropertiesPanel cluster role (read-only)", () => {
+  // The role is managed by the cluster (its type + worker count), not editable
+  // per-VM, so it renders as a read-only "(managed by cluster)" label.
+  it("shows the read-only role for a VM inside a cluster", () => {
     render(<PropertiesPanel />);
-    expect(screen.getByLabelText(/cluster role/i)).toBeInTheDocument();
+    expect(screen.getByText(/cluster role/i)).toBeInTheDocument();
+    expect(screen.getByText(/managed by cluster/i)).toBeInTheDocument();
+    expect(screen.getByText(/control plane/i)).toBeInTheDocument();
   });
 
-  it("selecting worker sets clusterRole and AnsibleGroup=workers", async () => {
+  it("shows Worker for a worker member", () => {
+    seedStore({ name: "vm-1", os: "rhcos", clusterId: "prod", clusterRole: "worker" });
     render(<PropertiesPanel />);
-    const roleSelect = screen.getByLabelText(/cluster role/i);
-    await userEvent.selectOptions(roleSelect, "worker");
-    const node = useCanvasStore.getState().nodes.find((n) => n.id === "vm-1")!;
-    const vmData = node.data as Record<string, unknown>;
-    expect(vmData.clusterRole).toBe("worker");
-    expect((vmData.tags as Record<string, unknown>).AnsibleGroup).toBe("workers");
+    expect(screen.getByText(/worker/i)).toBeInTheDocument();
+    expect(screen.getByText(/managed by cluster/i)).toBeInTheDocument();
   });
 
-  it("preserves other existing tags when changing role", async () => {
-    seedStore({
-      name: "vm-1",
-      os: "rhcos",
-      clusterId: "prod",
-      clusterRole: "worker",
-      tags: { AnsibleGroup: "workers", environment: "prod" },
-    });
-    render(<PropertiesPanel />);
-    const roleSelect = screen.getByLabelText(/cluster role/i);
-    await userEvent.selectOptions(roleSelect, "control-plane");
-    const node = useCanvasStore.getState().nodes.find((n) => n.id === "vm-1")!;
-    const vmData = node.data as Record<string, unknown>;
-    expect(vmData.clusterRole).toBe("control-plane");
-    const tags = vmData.tags as Record<string, unknown>;
-    expect(tags.AnsibleGroup).toBe("controllers");
-    expect(tags.environment).toBe("prod");
-  });
-
-  it("hides the role dropdown for a VM not in a cluster", () => {
+  it("does not show the cluster role for a VM not in a cluster", () => {
     seedStore({ name: "vm-1", os: "rhcos" });
     render(<PropertiesPanel />);
-    expect(screen.queryByLabelText(/cluster role/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/managed by cluster/i)).not.toBeInTheDocument();
   });
 });
