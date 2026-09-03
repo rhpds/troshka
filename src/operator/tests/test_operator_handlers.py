@@ -10589,3 +10589,15 @@ class TestClusterVipLeases:
 
         assert _bogus_mac_for_ip("192.168.1.254") == "02:00:c0:a8:01:fe"
         assert _bogus_mac_for_ip("10.0.0.10") == _bogus_mac_for_ip("10.0.0.10")
+
+    def test_identical_api_ingress_vip_dedups(self):
+        """api_vip == ingress_vip (SNO-style) yields ONE lease, not two — a
+        duplicate dhcp-host for the same address makes dnsmasq exit 1."""
+        from helpers.topology import build_static_leases
+
+        topo = self._topo(api_vip="10.0.0.10", ingress_vip="10.0.0.10")
+        vip_leases = [
+            l for l in build_static_leases(topo)["net1"] if l["ip"] == "10.0.0.10"
+        ]
+        assert len(vip_leases) == 1
+        assert vip_leases[0]["mac"] == "02:00:0a:00:00:0a"

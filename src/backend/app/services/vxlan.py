@@ -233,7 +233,14 @@ def _cluster_vip_reservations(
         if not on_net:
             continue
         name = d.get("name", "cluster")
+        seen: set[str] = set()
         for label, vip in vips:
+            # api_vip == ingress_vip is legal (e.g. SNO-style configs); emit ONE
+            # reservation per IP — a duplicate dhcp-host for the same address
+            # makes dnsmasq exit 1 and fails the whole network setup.
+            if vip in seen:
+                continue
+            seen.add(vip)
             reservations.append(
                 {"mac": _bogus_mac_for_ip(vip), "ip": vip, "name": f"{name}-{label}"}
             )

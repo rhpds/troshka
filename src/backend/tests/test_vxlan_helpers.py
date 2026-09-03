@@ -655,3 +655,44 @@ def test_build_host_network_config_loadbalancer_pod_backend():
     assert len(lb["backends"]) == 1
     assert lb["backends"][0]["name"] == "router"
     assert lb["backends"][0]["ip"] == "10.0.0.50"
+
+
+def test_cluster_vip_reservations_dedups_identical_api_ingress():
+    """api_vip == ingress_vip (SNO-style) must yield ONE dhcp-host, not two —
+    a duplicate reservation for the same address makes dnsmasq exit 1."""
+    from app.services.vxlan import _cluster_vip_reservations
+
+    nodes = [
+        {"id": "net1", "type": "networkNode", "data": {}},
+        {
+            "id": "cluster-ocp",
+            "type": "clusterNode",
+            "data": {"name": "ocp", "apiVip": "10.0.0.10", "ingressVip": "10.0.0.10"},
+        },
+        {"id": "cp-0", "type": "vmNode", "parentId": "cluster-ocp", "data": {}},
+    ]
+    edges = [{"source": "net1", "target": "cp-0"}]
+
+    res = _cluster_vip_reservations("net1", nodes, edges)
+    assert len(res) == 1
+    assert res[0]["ip"] == "10.0.0.10"
+    assert res[0]["mac"] == "02:00:0a:00:00:0a"
+
+
+def test_cluster_vip_reservations_distinct_api_ingress():
+    """Distinct api/ingress VIPs (compact/standard) reserve BOTH addresses."""
+    from app.services.vxlan import _cluster_vip_reservations
+
+    nodes = [
+        {"id": "net1", "type": "networkNode", "data": {}},
+        {
+            "id": "cluster-ocp",
+            "type": "clusterNode",
+            "data": {"name": "ocp", "apiVip": "10.0.0.10", "ingressVip": "10.0.0.11"},
+        },
+        {"id": "cp-0", "type": "vmNode", "parentId": "cluster-ocp", "data": {}},
+    ]
+    edges = [{"source": "net1", "target": "cp-0"}]
+
+    res = _cluster_vip_reservations("net1", nodes, edges)
+    assert sorted(r["ip"] for r in res) == ["10.0.0.10", "10.0.0.11"]

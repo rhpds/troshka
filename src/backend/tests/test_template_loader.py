@@ -12,7 +12,9 @@ def test_load_sno_template():
     assert tmpl["name"] == "ocp-sno"
     assert "vms" in tmpl
     assert "cp-0" in tmpl["vms"]
-    assert "bastion" in tmpl["vms"]
+    # SNO installs in-cluster via the ops pod (install_via: pod) — no bastion VM.
+    assert tmpl.get("install_via") == "pod"
+    assert "bastion" not in tmpl["vms"]
 
 
 def test_load_compact_template():
