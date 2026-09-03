@@ -45,6 +45,16 @@ export TROSHKA_LIVE_TOKEN=trk_abc123...
 - **Dev instances:** Omit `TROSHKA_LIVE_TOKEN` — the harness auto-authenticates as admin (same as the backend's dev mode).
 - **Production/external:** Set `TROSHKA_LIVE_TOKEN` to a valid API token (obtain from Settings → API Tokens or via the backend).
 
+### Remote callback URL (ops-pod tests from a laptop)
+
+The ops-pod install flow runs on the remote host and calls back to the Troshka
+API via `app.external_url`. Testing this from a laptop (backend on `localhost`)
+requires exposing the backend to the host — otherwise the ops pod's
+`TROSHKA_API_URL` is unreachable. Run `./scripts/dev-tunnel.sh start` before the
+ops-pod / tier-2 tests to open a public tunnel and wire `external_url`
+(see the top-level `CLAUDE.md` → "Remote callbacks in dev"). Not needed for a
+Troshka deployed in-cluster, where `external_url` is the ingress.
+
 ## Invocation
 
 ### Tier-1 Tests (Both Providers)

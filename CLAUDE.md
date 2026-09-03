@@ -22,11 +22,23 @@ Nested VM environment builder: FastAPI backend + Next.js frontend + libvirt host
 ./scripts/host-db.sh "<code>"    # Run inline DB query
 ./scripts/update-agent.sh       # Push troshkad update via API (fast, stamps version)
 ./scripts/reinstall-agent.sh    # Full SSH reinstall (for broken agents)
+./scripts/dev-tunnel.sh start   # Expose local backend to remote hosts (ops pods / agnosticd callbacks)
+./scripts/dev-tunnel.sh stop    # Tear down the tunnel + restore local external_url
 ```
 
 - Backend: http://localhost:8200 (no auto-reload — restart required for Python changes)
 - Frontend: http://localhost:3100 (hot-reloads)
 - Dev mode auto-authenticates as admin
+
+### Remote callbacks in dev (ops pods, agnosticd)
+
+Ops pods and agnosticd run on a REMOTE host and call back to the Troshka API via
+`app.external_url` (`TROSHKA_API_URL`). On a laptop behind NAT, `localhost` is
+unreachable from the host. `./scripts/dev-tunnel.sh start` opens a public tunnel
+to `:8200` (cloudflared quick-tunnel, zero-config — `brew install cloudflared`;
+ngrok also supported), writes the tunnel URL to `app.external_url` in
+`config.local.yaml`, and restarts backend + worker so it takes effect. Run `stop`
+to restore `external_url` to the local value.
 ## Running Tests
 
 ```bash
