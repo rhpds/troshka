@@ -248,7 +248,11 @@ worker_deploy_pids() {
     # venv python is a macOS framework shim — argv shows "Python -m app.workers.deploy_worker"
     local pid cwd
     for pid in $(pgrep -f "[Pp]ython.*-m app.workers.deploy_worker" 2>/dev/null || true); do
-        cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')"
+        # The pid may be torn down mid-scan, so lsof races and can exit non-zero.
+        # Under `set -euo pipefail` that (via pipefail) would ABORT the whole
+        # restart mid-stop — leaving workers dead and the backend never restarted
+        # (the in-UI "Restart backend" hang). Guard so a dead-pid race is benign.
+        cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" || cwd=""
         if [ "$cwd" = "$BACKEND_DIR" ]; then
             echo "$pid"
         fi
@@ -273,7 +277,11 @@ stop_worker() {
     pkill -f "$SCRIPT_DIR/scripts/supervise-worker.py.*--backend-dir $BACKEND_DIR" 2>/dev/null || true
     local pid cwd
     for pid in $(pgrep -f "[Pp]ython.*-m app.workers.deploy_worker" 2>/dev/null || true); do
-        cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')"
+        # The pid may be torn down mid-scan, so lsof races and can exit non-zero.
+        # Under `set -euo pipefail` that (via pipefail) would ABORT the whole
+        # restart mid-stop — leaving workers dead and the backend never restarted
+        # (the in-UI "Restart backend" hang). Guard so a dead-pid race is benign.
+        cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" || cwd=""
         if [ "$cwd" = "$BACKEND_DIR" ]; then
             kill "$pid" 2>/dev/null || true
         fi
