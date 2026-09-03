@@ -384,8 +384,10 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
         </button>}
       </div>
 
-      {/* Network handles — one pair (top+bottom) per NIC */}
-      {(d.nics || [{ id: "default" }]).map((nic, i, arr) => {
+      {/* Network handles — one pair (top+bottom) per NIC. Cluster-member VMs
+          have hidden, cluster-managed disks/NICs, so their connection anchors
+          are omitted (wiring is managed via the OCP box, not per-VM). */}
+      {!d.clusterId && (d.nics || [{ id: "default" }]).map((nic, i, arr) => {
         const pct = arr.length === 1 ? 50 : 20 + (i * 60) / Math.max(arr.length - 1, 1);
         return (
           <React.Fragment key={nic.id}>
@@ -406,8 +408,9 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
           </React.Fragment>
         );
       })}
-      {/* Storage handles — left side only (disk sits to the left of the VM) */}
-      {(d.diskControllers || [{ id: "default" }]).map((port, i, arr) => {
+      {/* Storage handles — left side only (disk sits to the left of the VM).
+          Omitted for cluster-member VMs (disks are hidden + cluster-managed). */}
+      {!d.clusterId && (d.diskControllers || [{ id: "default" }]).map((port, i, arr) => {
         const pct = arr.length === 1 ? 50 : 20 + (i * 60) / Math.max(arr.length - 1, 1);
         return (
           <Handle

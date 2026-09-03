@@ -34,6 +34,10 @@ function ClusterNodeComponent({ data, selected }: NodeProps) {
         isVisible={selected}
         minWidth={d.minWidth ?? 280}
         minHeight={d.minHeight ?? 180}
+        // Hide the white corner squares (the box auto-fits its contents); the
+        // invisible handles remain draggable for manual resize.
+        handleStyle={{ opacity: 0, width: 10, height: 10 }}
+        lineStyle={{ opacity: 0 }}
       />
 
       {/* Header label — the drag handle for the boundary itself. No `nodrag`:
