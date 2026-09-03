@@ -27,6 +27,17 @@ const INSTALL_STAGES: { label: string; re: RegExp }[] = [
 
 type StageState = "done" | "active" | "pending";
 
+/** Elapsed install time from the log's first→last "[HH:MM:SS]" timestamps
+ *  (handles a single midnight wrap). Null until there are two timestamps. */
+function logElapsed(log: string): string | null {
+  const ts = [...log.matchAll(/\[(\d{2}):(\d{2}):(\d{2})\]/g)];
+  if (ts.length < 2) return null;
+  const secs = (m: RegExpMatchArray) => +m[1] * 3600 + +m[2] * 60 + +m[3];
+  let d = secs(ts[ts.length - 1]) - secs(ts[0]);
+  if (d < 0) d += 86400;
+  return `${Math.floor(d / 60)}m ${(d % 60).toString().padStart(2, "0")}s`;
+}
+
 /** Parse cluster-operator progress from the log: overall "N of M (P%)" and the
  *  operators still not available (both come from openshift-install wait-for). */
 function parseOperators(log: string): { progress: string | null; pending: string[] } {
@@ -107,6 +118,7 @@ export default function ClusterInstallLogModal() {
   if (!target) return null;
 
   const stages = deriveStages(log);
+  const elapsed = logElapsed(log);
   const ops = parseOperators(log);
   const operatorsActive = stages.some((s) => s.label === "Cluster operators" && s.state === "active");
   const installed = stages[stages.length - 1]?.state === "done";
@@ -150,7 +162,14 @@ export default function ClusterInstallLogModal() {
         onClick={(e) => e.stopPropagation()}
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <h3 style={{ margin: 0 }}>☸ {target.name} — Status &amp; Log</h3>
+          <h3 style={{ margin: 0 }}>
+            ☸ {target.name} — Status &amp; Log
+            {elapsed && (
+              <span style={{ fontSize: 12, fontWeight: 400, color: "var(--troshka-text-dim, #94a3b8)", marginLeft: 8 }}>
+                · {elapsed}
+              </span>
+            )}
+          </h3>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             {log && (
               <button
