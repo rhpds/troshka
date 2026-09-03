@@ -1155,7 +1155,7 @@ export function clusterPrereqIssues(cluster: ClusterConfig, nodes: Node[]): Clus
     issues.push({
       level: "warning",
       message:
-        "No gateway allows outbound HTTP (80) / HTTPS (443) / NTP (123). A full OCP install needs these for image pulls and time sync — not required if a local/mirror registry supplies content.",
+        "The gateway doesn't allow outbound HTTP (80) / HTTPS (443) / NTP (123). A full OCP install may need this to reach an external registry (image pulls) and for time sync — not required if a local/mirror registry supplies content.",
     });
   }
   for (const [label, ip] of [

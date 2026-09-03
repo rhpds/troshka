@@ -17,7 +17,6 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
   const cluster = clusters.find((c) => c.id === clusterId);
   const issues = cluster ? clusterPrereqIssues(cluster, nodes) : [];
   const hasError = issues.some((i) => i.level === "error");
-  const hasWarning = issues.some((i) => i.level === "warning");
   const issueColor = hasError
     ? "var(--troshka-red, #ef4444)"
     : "var(--troshka-yellow, #f59e0b)";
@@ -34,8 +33,8 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
         border: `2px ${selected ? "solid" : "dashed"} ${
           selected
             ? "var(--troshka-accent)"
-            : hasError || hasWarning
-              ? issueColor
+            : hasError
+              ? "var(--troshka-red, #ef4444)"
               : "var(--troshka-border, #4b5563)"
         }`,
         boxShadow: selected
