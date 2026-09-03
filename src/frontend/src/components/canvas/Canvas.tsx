@@ -176,6 +176,7 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
           sourceHandle: connection.sourceHandle,
           targetHandle: connection.targetHandle,
           type: "smoothstep" as const,
+          animated: true,
           style: { stroke: "rgba(34,211,238,0.7)", strokeWidth: 2 },
         };
         // Update cluster and apply networks to members

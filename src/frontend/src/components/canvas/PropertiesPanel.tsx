@@ -3957,46 +3957,11 @@ export default function PropertiesPanel() {
                             }}>+</button>
                           </div>
                           <div style={{ overflowX: "auto" }}>
-                          {((data as Record<string, any>).dnsRecords as Array<{name: string; type?: string; ip: string; target?: string}>).map((rec, i) => {
-                            const displayIp = resolveDnsRecordDisplayIp(
-                              rec,
-                              nodes,
-                              edges,
-                              node!.id,
-                              vniMap,
-                            );
-                            const managed = Boolean((rec as Record<string, unknown>).managed);
-                            // Cluster-managed records are read-only — render a
-                            // compact card (full name wraps, no input boxes) so
-                            // long OCP names aren't truncated or overflowing.
-                            if (managed) {
-                              return (
-                                <div
-                                  key={i}
-                                  title="Managed by the OpenShift cluster — edit via the cluster (base domain / VIPs)"
-                                  style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 8,
-                                    marginBottom: 3,
-                                    padding: "3px 6px",
-                                    borderRadius: 4,
-                                    background: "rgba(59,130,246,0.10)",
-                                    borderLeft: "3px solid var(--troshka-accent, #3b82f6)",
-                                  }}
-                                >
-                                  <span style={{ flex: 1, minWidth: 0, fontFamily: "monospace", fontSize: 10, wordBreak: "break-all", lineHeight: 1.3 }}>
-                                    {rec.name}
-                                    <span style={{ color: "var(--troshka-text-dim)" }}>
-                                      {" → "}{rec.ip || displayIp}
-                                    </span>
-                                  </span>
-                                  <span title="Managed by the OpenShift cluster" style={{ flex: "0 0 auto", fontSize: 8, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", color: "var(--troshka-accent, #3b82f6)", whiteSpace: "nowrap" }}>
-                                    ☸ cluster
-                                  </span>
-                                </div>
-                              );
-                            }
+                          {/* Editable (user-authored) records — cluster-managed
+                              ones are skipped here and shown grouped below. */}
+                          {((data as Record<string, any>).dnsRecords as Array<{name: string; type?: string; ip: string; target?: string; managed?: boolean; clusterId?: string}>).map((rec, i) => {
+                            if (rec.managed || rec.clusterId) return null;
+                            const displayIp = resolveDnsRecordDisplayIp(rec, nodes, edges, node!.id, vniMap);
                             return (
                             <div key={i} style={{ display: "flex", gap: 4, marginBottom: 3, alignItems: "center" }}>
                               <input className="props-input" style={{ flex: 3, minWidth: 0, fontSize: 10, fontFamily: "monospace" }} value={rec.name} placeholder="hostname" onChange={(e) => {
@@ -4027,6 +3992,41 @@ export default function PropertiesPanel() {
                             </div>
                             );
                           })}
+                          {/* Cluster-managed records — read-only, grouped by cluster. */}
+                          {(() => {
+                            const all = ((data as Record<string, unknown>).dnsRecords || []) as Array<{name: string; type?: string; ip: string; managed?: boolean; clusterId?: string}>;
+                            const managed = all.filter((r) => r.managed || r.clusterId);
+                            if (managed.length === 0) return null;
+                            const groups = new Map<string, typeof managed>();
+                            for (const r of managed) {
+                              const key = r.clusterId || "_unknown";
+                              if (!groups.has(key)) groups.set(key, []);
+                              groups.get(key)!.push(r);
+                            }
+                            return Array.from(groups.entries()).map(([cid, recs]) => {
+                              const cname = clusters.find((c) => c.id === cid)?.name;
+                              return (
+                                <div key={cid} style={{ marginTop: 8, borderLeft: "3px solid var(--troshka-accent, #3b82f6)", paddingLeft: 8 }}>
+                                  <div style={{ fontSize: 10, fontWeight: 600, color: "var(--troshka-accent, #3b82f6)", marginBottom: 3 }}>
+                                    ☸ OpenShift Cluster{cname ? ` ${cname}` : ""} DNS records
+                                  </div>
+                                  {recs.map((rec, j) => {
+                                    const dip = resolveDnsRecordDisplayIp(rec, nodes, edges, node!.id, vniMap);
+                                    return (
+                                      <div
+                                        key={j}
+                                        title={`${rec.name} → ${rec.ip || dip}`}
+                                        style={{ fontFamily: "monospace", fontSize: 10, lineHeight: 1.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                                      >
+                                        {rec.name}
+                                        <span style={{ color: "var(--troshka-text-dim)" }}>{" → "}{rec.ip || dip}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            });
+                          })()}
                           </div>
                         </div>
                       )}
@@ -4888,6 +4888,7 @@ export default function PropertiesPanel() {
                 sourceHandle: "bottom",
                 targetHandle: "cluster-net-top",
                 type: "smoothstep",
+                animated: true,
                 style: { stroke: "rgba(34,211,238,0.7)", strokeWidth: 2 },
               }) as Edge,
           );
