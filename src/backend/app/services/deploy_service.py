@@ -2428,6 +2428,85 @@ def read_ops_pod_install_log(host, project_id: str, topology: dict) -> dict[str,
     return cache_ops_pod_logs(project_id, live)
 
 
+def _ops_pod_cat(host, project_id: str, container_name: str, path: str) -> str:
+    """Provider-aware ``cat`` of a file in the ops pod (troshkad or kubevirt)."""
+    if host.host_type == "kubevirt-cluster":
+        ctx = _kubevirt_ops_pod_ctx(host, project_id)
+        if not ctx:
+            return ""
+        core_v1, namespace, pod_name = ctx
+        return _exec_ops_pod_cat_kubevirt(core_v1, namespace, pod_name, path) or ""
+    return _exec_ops_pod_cat(host, container_name, path) or ""
+
+
+def _apply_ops_pod_creds(topology: dict, creds: dict) -> bool:
+    """Write kubeadmin password + kubeconfig onto each cluster's control-plane
+    member node (``creds`` maps clusterId -> (pw, kubeconfig)). Skips workers.
+    Returns True if anything changed."""
+    changed = False
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        d = node.setdefault("data", {})
+        cid = d.get("clusterId")
+        if not cid or cid not in creds:
+            continue
+        role = d.get("clusterRole") or ""
+        group = (d.get("tags") or {}).get("AnsibleGroup", "")
+        if role == "worker" or (not role and "workers" in group):
+            continue  # control-plane members only
+        pw, kc = creds[cid]
+        if pw and d.get("ocpKubeadminPassword") != pw:
+            d["ocpKubeadminPassword"] = pw
+            changed = True
+        if kc and d.get("ocpKubeconfig") != kc:
+            d["ocpKubeconfig"] = kc
+            changed = True
+    return changed
+
+
+def _store_ops_pod_creds(host, project_id: str, clusters: list, workdir: str) -> None:
+    """After a successful pod install, read each cluster's kubeadmin-password +
+    kubeconfig from the ops pod and persist them on the cluster's control-plane
+    member node, so the UI can surface them (bastionless has no bastion monitor
+    to do it). Best-effort — never raises into the install monitor."""
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+    from app.services.ocp.ops_pod_install import _cluster_key as _ck
+
+    container = _ops_pod_container_name(project_id)
+    creds: dict = {}
+    for c in clusters:
+        key = _ck(c)
+        pw = _ops_pod_cat(
+            host, project_id, container, f"{workdir}/{key}/auth/kubeadmin-password"
+        ).strip()
+        kc = _ops_pod_cat(
+            host, project_id, container, f"{workdir}/{key}/auth/kubeconfig"
+        )
+        if pw or kc:
+            creds[key] = (pw, kc)
+    if not creds:
+        return
+    db = SessionLocal()
+    try:
+        p = db.query(Project).filter_by(id=project_id).first()
+        if not p:
+            return
+        topo = copy.deepcopy(p.topology or {})
+        if _apply_ops_pod_creds(topo, creds):
+            p.topology = topo
+            if p.deployed_topology:
+                dt = copy.deepcopy(p.deployed_topology)
+                _apply_ops_pod_creds(dt, creds)
+                p.deployed_topology = dt
+            db.commit()
+    except Exception:
+        logger.exception("Failed to store ops-pod creds for %s", project_id[:8])
+    finally:
+        db.close()
+
+
 # Consecutive confirmed "not running" polls before the monitor declares the ops
 # pod dead and fails its non-terminal clusters. The ops pod is
 # ``restart_policy=always`` and the install script is idempotent (Task 4 skips a
@@ -2618,11 +2697,19 @@ def _monitor_ops_pod_install(
             _finalize_ops_pod_ocp_status(
                 project_id, progress["overall"], int(_t.time() - start)
             )
-            # Reap the ops pod on success so it doesn't idle-restart-loop
-            # (restart_policy=always) after its work is done. The install log is
-            # already cached (cache_ops_pod_logs), so destroying it loses nothing.
-            # A FAILED pod is left in place for debugging.
+            # On success: harvest kubeadmin password + kubeconfig from the ops
+            # pod onto the control-plane node (bastionless has no bastion monitor
+            # to do it), THEN reap the pod so it doesn't idle-restart-loop
+            # (restart_policy=always). The install log is already cached, so
+            # destroying it loses nothing. A FAILED pod is left for debugging.
             if progress["overall"] == "complete":
+                try:
+                    _store_ops_pod_creds(host, project_id, clusters, workdir)
+                except Exception:
+                    logger.exception(
+                        "Ops pod %s: cred harvest after install failed",
+                        project_id[:8],
+                    )
                 try:
                     _cancel_ops_pod_install(host, project_id, cluster_keys)
                     logger.info(

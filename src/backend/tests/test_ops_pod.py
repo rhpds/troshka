@@ -848,3 +848,36 @@ def test_cancel_ops_pod_install_troshkad_path_unchanged():
     assert mock_start.call_args[0][1] == "/pods/destroy"
     assert mock_start.call_args[0][2]["pod_name"] == f"troshka-{_OPS_PID[:8]}-ops"
     mock_wait.assert_called_once()
+
+
+def test_apply_ops_pod_creds_control_plane_only():
+    """kubeadmin pw + kubeconfig land on control-plane members only, not workers."""
+    from app.services.deploy_service import _apply_ops_pod_creds
+
+    topo = {
+        "nodes": [
+            {
+                "id": "cp",
+                "type": "vmNode",
+                "data": {"clusterId": "ocp", "clusterRole": "control-plane"},
+            },
+            {
+                "id": "wk",
+                "type": "vmNode",
+                "data": {"clusterId": "ocp", "clusterRole": "worker"},
+            },
+            {
+                "id": "other",
+                "type": "vmNode",
+                "data": {"clusterId": "dev", "clusterRole": "control-plane"},
+            },
+        ]
+    }
+    changed = _apply_ops_pod_creds(topo, {"ocp": ("pw123", "KC")})
+    assert changed is True
+    cp = topo["nodes"][0]["data"]
+    assert cp["ocpKubeadminPassword"] == "pw123" and cp["ocpKubeconfig"] == "KC"
+    assert "ocpKubeadminPassword" not in topo["nodes"][1]["data"]  # worker skipped
+    assert "ocpKubeadminPassword" not in topo["nodes"][2]["data"]  # other cluster
+    # Idempotent: re-applying the same creds reports no change.
+    assert _apply_ops_pod_creds(topo, {"ocp": ("pw123", "KC")}) is False
