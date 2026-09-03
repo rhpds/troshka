@@ -35,6 +35,10 @@ const CLUSTER_DEFAULTS = {
   pullThroughRegistry: null as string | null,
   controlPlaneDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }],
   workerDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }],
+  // OCP control-plane options (projected onto member VMs at deploy).
+  recert: false,
+  monitorHealth: true,
+  configureBastionBrowser: false,
 } as const;
 
 /** The default rendered footprint of a cluster boundary node (px). */
@@ -109,6 +113,9 @@ export function makeCluster(
     networkIds: [],
     controlPlaneDisks: [...CLUSTER_DEFAULTS.controlPlaneDisks],
     workerDisks: [...CLUSTER_DEFAULTS.workerDisks],
+    recert: CLUSTER_DEFAULTS.recert,
+    monitorHealth: CLUSTER_DEFAULTS.monitorHealth,
+    configureBastionBrowser: CLUSTER_DEFAULTS.configureBastionBrowser,
   };
 
   return { node, cluster };

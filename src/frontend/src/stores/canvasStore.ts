@@ -215,6 +215,10 @@ export interface ClusterConfig {
   dnsNetworkId?: string;
   controlPlaneDisks?: DiskSpec[];
   workerDisks?: DiskSpec[];
+  /** OCP control-plane options (projected onto member VMs at deploy). */
+  recert?: boolean;
+  monitorHealth?: boolean;
+  configureBastionBrowser?: boolean;
 }
 
 /** The `node.data` summary rendered on a cluster container node. */

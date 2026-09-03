@@ -78,18 +78,7 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
         }}
       >
         <span style={{ fontSize: 13 }}>☸</span>
-        <span>{d.name}</span>
-        {d.baseDomain && (
-          <span
-            style={{
-              fontSize: 11,
-              fontWeight: 400,
-              color: "var(--troshka-text-dim, #94a3b8)",
-            }}
-          >
-            {d.baseDomain}
-          </span>
-        )}
+        <span>{d.baseDomain ? `${d.name}.${d.baseDomain}` : d.name}</span>
         {issues.length > 0 && (
           <span
             title={issues.map((i) => `${i.level === "error" ? "⛔" : "⚠"} ${i.message}`).join("\n")}

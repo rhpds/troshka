@@ -466,7 +466,7 @@ function ClusterTextField({
   error?: string | null;
   onCommit: (v: string) => void;
   disabled?: boolean;
-  hint?: string;
+  hint?: React.ReactNode;
 }) {
   return (
     <div className="props-field">
@@ -916,9 +916,17 @@ function ClusterEditor({
           placeholder="local"
           disabled={clusterDeployed}
           hint={
-            clusterDeployed
-              ? "🔒 Locked while deployed — wipe all cluster VMs to change."
-              : `Shared parent domain / TLD — the cluster name is the subdomain. FQDN: api.${(cluster.name || "<name>").trim() || "<name>"}.${(cluster.baseDomain || "local").trim() || "local"}`
+            clusterDeployed ? (
+              "🔒 Locked while deployed — wipe all cluster VMs to change."
+            ) : (
+              <>
+                Shared parent domain / TLD — the cluster name is the subdomain. FQDN:{" "}
+                <span style={{ fontWeight: 700, color: "var(--troshka-text, #e5e7eb)" }}>
+                  api.{(cluster.name || "<name>").trim() || "<name>"}.
+                  {(cluster.baseDomain || "local").trim() || "local"}
+                </span>
+              </>
+            )
           }
           onCommit={(v) => onPatch({ baseDomain: v })}
         />
@@ -996,6 +1004,53 @@ function ClusterEditor({
             ))}
           </select>
         </div>
+      </div>
+      <div className="props-divider" />
+      <div className="props-section">
+        <div className="props-section-title">OCP Options</div>
+        {cluster.type === "sno" && (
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={!!cluster.recert}
+              onChange={(e) => onPatch({ recert: e.target.checked })}
+            />
+            Recert (regenerate certificates, SNO only)
+          </label>
+        )}
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginTop: 4 }}>
+          <input
+            type="checkbox"
+            checked={!!cluster.monitorHealth}
+            disabled={!!cluster.configureBastionBrowser}
+            onChange={(e) => onPatch({ monitorHealth: e.target.checked })}
+          />
+          Monitor cluster health
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginTop: 4 }}>
+          <input
+            type="checkbox"
+            checked={!!cluster.configureBastionBrowser}
+            onChange={async (e) => {
+              if (!e.target.checked) {
+                onPatch({ configureBastionBrowser: false });
+                return;
+              }
+              // At most one cluster configures the bastion browser.
+              const other = clusters.find(
+                (c) => c.id !== cluster.id && c.configureBastionBrowser,
+              );
+              if (other) {
+                if (!(await appConfirm({
+                  message: `Move "Configure bastion browser" from ${other.name} to ${cluster.name}?`,
+                }))) return;
+                useCanvasStore.getState().updateCluster(other.id, { configureBastionBrowser: false });
+              }
+              onPatch({ configureBastionBrowser: true, monitorHealth: true });
+            }}
+          />
+          Configure bastion browser for this cluster
+        </label>
       </div>
     </>
   );
@@ -2147,55 +2202,8 @@ export default function PropertiesPanel() {
               </div>
             </>
           )}
-          {(node.data as Record<string, any>).os === "rhcos" && (
-            <>
-              <div className="props-divider" />
-              <div className="props-section">
-                <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("ocp")}>
-                  <span style={{ fontSize: 8, transition: "transform 0.15s", transform: isCollapsed("ocp") ? "rotate(-90deg)" : "rotate(0)" }}>&#9660;</span>
-                  OCP (control plane only)
-                </div>
-                {!isCollapsed("ocp") && (
-                  <div className="props-section-body">
-                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
-                      <input type="checkbox" checked={!!(node.data as Record<string, any>).recertEnabled}
-                        disabled={projectState === "deploying"}
-                        onChange={(e) => updateNodeData(node.id, { recertEnabled: e.target.checked })}
-                      />
-                      Recert (regenerate certificates, SNO only)
-                    </label>
-                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginTop: 4 }}>
-                      <input type="checkbox" checked={!!(node.data as Record<string, any>).ocpMonitor}
-                        disabled={projectState === "deploying" || !!(node.data as Record<string, any>).configureBastionBrowser}
-                        onChange={(e) => updateNodeData(node.id, { ocpMonitor: e.target.checked })}
-                      />
-                      Monitor cluster health
-                    </label>
-                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginTop: 4 }}>
-                      <input type="checkbox" checked={!!(node.data as Record<string, any>).configureBastionBrowser}
-                        disabled={projectState === "deploying"}
-                        onChange={async (e) => {
-                          if (e.target.checked) {
-                            const prev = nodes.find((n) => n.id !== node.id && n.type === "vmNode" && (n.data as Record<string, any>).configureBastionBrowser);
-                            if (prev) {
-                              const prevName = (prev.data as Record<string, any>).label || (prev.data as Record<string, any>).name || prev.id.slice(0, 8);
-                              const curName = (node.data as Record<string, any>).label || (node.data as Record<string, any>).name || node.id.slice(0, 8);
-                              if (!(await appConfirm({ message: `Move "Configure bastion browser" from ${prevName} to ${curName}?` }))) return;
-                              updateNodeData(prev.id, { configureBastionBrowser: false });
-                            }
-                          }
-                          const updates: Record<string, any> = { configureBastionBrowser: e.target.checked };
-                          if (e.target.checked) updates.ocpMonitor = true;
-                          updateNodeData(node.id, updates);
-                        }}
-                      />
-                      Configure bastion browser for this cluster
-                    </label>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
+          {/* OCP control-plane options moved to the cluster editor (they are
+              cluster-level now, projected onto member VMs at deploy). */}
           <div className="props-divider" />
 
           {/* Tags Section */}

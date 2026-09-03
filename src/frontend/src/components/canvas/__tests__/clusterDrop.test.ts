@@ -12,6 +12,9 @@ describe("makeCluster", () => {
     expect(cluster.controlPlaneCpu).toBe(8);
     expect(cluster.workerCpu).toBe(4);
     expect(cluster.baseDomain).toBe("local");
+    expect(cluster.recert).toBe(false);
+    expect(cluster.monitorHealth).toBe(true);
+    expect(cluster.configureBastionBrowser).toBe(false);
     expect((node.data as Record<string, unknown>).clusterId).toBe(cluster.id);
   });
 
