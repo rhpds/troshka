@@ -4,6 +4,7 @@ import {
   useCanvasStore,
   _saveTopologyToApi,
   stableStringify,
+  stableClusterKey,
   stableNodeData,
   type ClusterConfig,
 } from "@/stores/canvasStore";
@@ -139,3 +140,44 @@ describe("cluster persistence in store", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("stableClusterKey — dirty compares user-editable fields only", () => {
+  const canvas: ClusterConfig = {
+    id: "prod",
+    name: "prod",
+    nodeId: "cluster-prod",
+    type: "standard",
+    controlPlane: 3,
+    workers: 2,
+    controlPlaneCpu: 8,
+    ocpVersion: "4.22",
+    networkIds: ["net-1"],
+  };
+
+  it("ignores deploy-enrichment fields (no false dirty for a deployed cluster)", () => {
+    // deployed_topology.clusters is the canvas cluster + deploy-only enrichments
+    const deployedEnriched = {
+      ...canvas,
+      _generatedInstallConfig: "install: ...",
+      _generatedAgentConfig: "agent: ...",
+      apiVip: "10.0.0.10",
+      ingressVip: "10.0.0.10",
+      baseDomain: "local",
+      controlPlaneDisks: [{ sizeGb: 120, bootable: true }],
+      workerDisks: [{ sizeGb: 100, bootable: true }],
+      monitorHealth: true,
+      recert: true,
+      configureBastionBrowser: false,
+    } as unknown as ClusterConfig;
+    expect(stableClusterKey([canvas])).toBe(stableClusterKey([deployedEnriched]));
+  });
+
+  it("still detects a real user-editable change", () => {
+    expect(stableClusterKey([canvas])).not.toBe(
+      stableClusterKey([{ ...canvas, controlPlaneCpu: 16 }]),
+    );
+    expect(stableClusterKey([canvas])).not.toBe(
+      stableClusterKey([{ ...canvas, ocpVersion: "4.21" }]),
+    );
+  });
+})

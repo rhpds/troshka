@@ -616,6 +616,45 @@ function edgeCompareKey(e: {
   return `${e.source}-${h(e.sourceHandle)}-${e.target}-${h(e.targetHandle)}`;
 }
 
+// Only the USER-EDITABLE cluster fields participate in the dirty check. The
+// deployed baseline (deployed_topology.clusters) is deploy-ENRICHED with many
+// fields the canvas ClusterConfig never has (_generatedInstallConfig/_generated
+// AgentConfig, normalized controlPlaneDisks/workerDisks, resolved apiVip/
+// ingressVip, normalized baseDomain, monitorHealth/recert/configureBastionBrowser
+// defaults). Comparing whole objects made every deployed OCP project perpetually
+// dirty. Compare just the fields the user can change (all immutable-after-deploy
+// ones like VIPs/baseDomain are excluded — they're locked once deployed).
+const _CLUSTER_DIRTY_FIELDS = [
+  "id",
+  "nodeId",
+  "type",
+  "name",
+  "workers",
+  "controlPlane",
+  "controlPlaneCpu",
+  "controlPlaneMemory",
+  "controlPlaneDisk",
+  "workerCpu",
+  "workerMemory",
+  "workerDisk",
+  "ocpVersion",
+  "pullThroughRegistry",
+  "networkIds",
+] as const;
+
+export function stableClusterKey(clusters: ClusterConfig[] | undefined): string {
+  return stableStringify(
+    (clusters || []).map((c) =>
+      Object.fromEntries(
+        _CLUSTER_DIRTY_FIELDS.map((k) => [
+          k,
+          (c as unknown as Record<string, unknown>)[k] ?? null,
+        ]),
+      ),
+    ),
+  );
+}
+
 function buildDeployedBaseline(deployed: DeployedTopologySnapshot | null | undefined) {
   const depNodeData: Record<string, string> = {};
   const depSizes: Record<string, number> = {};
@@ -635,7 +674,9 @@ function buildDeployedBaseline(deployed: DeployedTopologySnapshot | null | undef
     deployedNodeData: depNodeData,
     deployedEdgeKey: depEdgeKey,
     deployedExternalIps: stableExternalIpsKey(deployed?.externalIps),
-    deployedClusters: stableStringify(deployed?.clusters || []),
+    deployedClusters: stableClusterKey(
+      deployed?.clusters as ClusterConfig[] | undefined,
+    ),
   };
 }
 
@@ -693,7 +734,7 @@ export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; depl
   // pullThroughRegistry, apiVip/ingressVip, baseDomain, type or workers must
   // still mark the topology dirty. Compared with the same order-insensitive
   // serialization used for the deployed baseline.
-  if (state.deployedClusters !== undefined && stableStringify(state.clusters || []) !== state.deployedClusters) return true;
+  if (state.deployedClusters !== undefined && stableClusterKey(state.clusters) !== state.deployedClusters) return true;
   return false;
 }
 
