@@ -1127,7 +1127,11 @@ def get_ocp_install_log(
 
     from app.services.template_loader import ocp_install_via
 
-    topology = project.topology or {}
+    # Read the DEPLOYED topology: the canvas topology drops the deploy-derived
+    # top-level `clusters` list on auto-save, which would make this endpoint (and
+    # the install log it serves) go blank for a running cluster. deployed_topology
+    # is the source of truth for what's actually installing/installed.
+    topology = project.deployed_topology or project.topology or {}
     install_via = ocp_install_via(topology)
     if install_via != "pod" or not project.host_id:
         return {"install_via": install_via, "output": "", "clusters": []}
