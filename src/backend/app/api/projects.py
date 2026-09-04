@@ -4625,12 +4625,17 @@ def _reconfigure_showroom(
         # unfilled console proxy URL, stale oc-fetch command). This also fills the
         # app-proxy console tab URL into the ui-config the redeployed pod serves.
         _prepare_showroom_topology(h, p_id, current, cur, vni_map, s)
-        redeploy_container_bg(p_id, cur["id"])
-        # The pod was destroyed+recreated: its gateway port-forward (ext -> showroom
-        # infra IP) and infra attachment were torn down. Re-run network setup so
-        # external access (e.g. :443 -> showroom) is restored against the fresh pod.
+        # Set up project networking BEFORE the redeploy. The pod (re)attach adds the
+        # showroom infra-veth forward rules (vishowroomh -> lab bridges — how oc and
+        # the console proxy reach the cluster net) into the project netns forward
+        # chain, and _setup_networks_via_troshkad RE-INITS that chain (policy drop).
+        # Running network setup first means the pod attach's reachability rules are
+        # added LAST and survive — matching first-deploy order (network setup then
+        # pod create). The showroom infra IP is deterministic (.3), so the gateway
+        # 443->showroom forward set here stays valid across the redeploy.
         _setup_networks_via_troshkad(h, current, vni_map, s, p_id)
-        # _setup_networks_via_troshkad flushes the host `troshka-pre-<pid>` chain,
+        redeploy_container_bg(p_id, cur["id"])
+        # _setup_networks_via_troshkad flushed the host `troshka-pre-<pid>` chain,
         # wiping the transit DNAT that route creation added. Re-create the provider
         # routes AFTER network setup so the host transit forward (ext port -> gateway)
         # survives — otherwise the OCP Route goes dead again. The standalone transit
