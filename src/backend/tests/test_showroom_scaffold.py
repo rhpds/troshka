@@ -720,7 +720,11 @@ def test_cluster_terminal_adds_oc_fetch_init_and_proxied_path():
     assert "wetty-clusters" in pod_names
     # oc-fetch fetches oc + writes the wrapper onto the shared disk
     oc_fetch = next(c for c in data["initContainers"] if c["name"] == "oc-fetch")
-    assert "wget" in oc_fetch["command"] and "/showroom/bin/oc" in oc_fetch["command"]
+    # curl (ubi9/ubi) validates TLS on the download (busybox wget cannot)
+    assert (
+        "curl -fsSL" in oc_fetch["command"]
+        and "/showroom/bin/oc" in oc_fetch["command"]
+    )
     # supply-chain guard: verify the download's sha256 is in the published sums
     assert "sha256sum" in oc_fetch["command"]
     assert "sha256sum.txt" in oc_fetch["command"]

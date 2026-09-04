@@ -15,13 +15,14 @@ WETTY_BASE_PORT = 8001
 # Cluster-terminal (bastionless oc shell): an init container fetches `oc` and
 # writes a privilege-dropping shell wrapper onto the shared showroom disk; the
 # terminal container runs that wrapper via wetty. See resolve_showroom_tabs.
-# busybox (same image as the nginx-config init) has wget + tar + gzip applets;
-# ubi-minimal ships neither tar nor gzip (the fetch would exit 127).
-OC_FETCH_IMAGE = "docker.io/library/busybox:1.36"
+# ubi9/ubi (not -minimal) ships curl + tar + gzip + the CA bundle, so curl
+# VALIDATES TLS on the download (busybox's wget applet cannot; ubi-minimal lacks
+# tar/gzip). A larger one-time pull, cached per host.
+OC_FETCH_IMAGE = "registry.access.redhat.com/ubi9/ubi:latest"
 OC_CLIENT_URL = "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz"
-# Published checksums for the stable client dir. oc-fetch verifies the download's
-# sha256 appears here before extracting (supply-chain guard; busybox wget can't
-# validate TLS, so at least confirm the bytes are an officially-published file).
+# Published checksums for the stable client dir. oc-fetch also verifies the
+# download's sha256 appears here before extracting — defense in depth on top of
+# TLS validation (catches CDN corruption; both fetches are TLS-validated).
 OC_SHA256SUM_URL = (
     "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/sha256sum.txt"
 )
@@ -652,8 +653,8 @@ def _build_oc_fetch_init(disk_id: str) -> dict[str, Any]:
     script_b64 = base64.b64encode(_CLUSTER_SHELL_SCRIPT.encode()).decode()
     cmd = (
         "set -e; mkdir -p /showroom/bin /showroom/kube; cd /tmp; "
-        f"wget -qO oc.tgz {OC_CLIENT_URL}; "
-        f"wget -qO sums.txt {OC_SHA256SUM_URL}; "
+        f"curl -fsSL {OC_CLIENT_URL} -o oc.tgz; "
+        f"curl -fsSL {OC_SHA256SUM_URL} -o sums.txt; "
         "got=$(sha256sum oc.tgz | cut -d' ' -f1); "
         'if ! grep -qi "^$got " sums.txt; then '
         'echo "oc checksum $got not in published sha256sum.txt"; exit 1; fi; '
