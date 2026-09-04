@@ -345,5 +345,16 @@ def build_ops_pod_install_script(
     )
     parts.append("fail=0\n")
     parts.append('for p in "${pids[@]}"; do wait "$p" || fail=1; done\n')
-    parts.append("exit $fail\n")
+    # On success, HOLD the container running instead of exiting. The pod is
+    # restart_policy=always; if we exited 0 it would restart, hit the per-cluster
+    # skip-guard, exit again — a restart loop that makes `podman exec` (the
+    # monitor's credential harvest of auth/kubeconfig + auth/kubeadmin-password)
+    # race and intermittently fail. Holding keeps the container exec-able until
+    # the monitor harvests creds and reaps the pod. On failure we still exit 1 so
+    # dead-pod detection works and the pod is left for debugging.
+    parts.append('if [ "$fail" = 0 ]; then\n')
+    parts.append('  echo "All clusters installed. Holding for credential harvest..."\n')
+    parts.append("  sleep infinity\n")
+    parts.append("fi\n")
+    parts.append("exit 1\n")
     return "".join(parts)

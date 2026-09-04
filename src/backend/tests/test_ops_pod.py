@@ -314,9 +314,19 @@ def test_install_script_propagates_cluster_failure():
     assert "set -o pipefail" in script
     # Top-level: wait per-PID, record failure, exit non-zero if any failed.
     assert 'for p in "${pids[@]}"; do wait "$p" || fail=1; done' in script
-    assert "exit $fail" in script
+    # Failure still exits non-zero (dead-pod detection + leave pod for debugging).
+    assert script.rstrip().endswith("exit 1")
     # A bare unconditional `wait` must NOT be the terminal join (it returns 0).
     assert not script.rstrip().endswith("wait")
+
+
+def test_install_script_holds_container_on_success():
+    """On success the ops pod must HOLD (sleep) instead of exiting: exiting would
+    restart-loop (restart_policy=always + skip-guard) and make the monitor's
+    credential-harvest `podman exec` race. Holding keeps it exec-able until reap."""
+    script = _install_script()
+    assert 'if [ "$fail" = 0 ]; then' in script
+    assert "sleep infinity" in script
 
 
 def test_install_script_downloads_from_same_mirror():
