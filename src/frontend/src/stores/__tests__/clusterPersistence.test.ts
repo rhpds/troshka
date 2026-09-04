@@ -205,3 +205,27 @@ describe("stableNodeData — dnsRecords normalization", () => {
     expect(stableStringify(a)).not.toBe(stableStringify(b));
   });
 })
+
+describe("seedClustersFromDeployed — rebuild empty canvas clusters", () => {
+  it("seeds from deployed (stripping deploy-only fields) when canvas is empty", async () => {
+    const { seedClustersFromDeployed } = await import("@/components/canvas/clusterNetworkBackfill");
+    const deployed = [{
+      id: "ocp", name: "ocp", nodeId: "cluster-ocp", type: "sno",
+      ocpVersion: "4.22", networkIds: ["net-1"], baseDomain: "local",
+      _generatedInstallConfig: "x", _generatedAgentConfig: "y",
+      controlPlaneDisks: [{ sizeGb: 120 }], workerDisks: [{ sizeGb: 100 }],
+    }];
+    const out = seedClustersFromDeployed([], deployed as never);
+    expect(out).toHaveLength(1);
+    expect(out[0].id).toBe("ocp");
+    expect(out[0].ocpVersion).toBe("4.22");
+    expect((out[0] as unknown as Record<string, unknown>)._generatedInstallConfig).toBeUndefined();
+    expect((out[0] as unknown as Record<string, unknown>).controlPlaneDisks).toBeUndefined();
+  });
+
+  it("leaves a non-empty canvas list untouched", async () => {
+    const { seedClustersFromDeployed } = await import("@/components/canvas/clusterNetworkBackfill");
+    const canvas = [{ id: "ocp", name: "ocp", nodeId: "cluster-ocp", type: "sno" }];
+    expect(seedClustersFromDeployed(canvas as never, [{ id: "other" }] as never)).toBe(canvas);
+  });
+})

@@ -4354,6 +4354,14 @@ def _finalize_reconfigure(s, proj, h, p_id, current, deployed, errors):
     proj.state = "active"
     if not errors:
         deployed_topo = copy.deepcopy(final_topo)
+        # Never let an empty canvas `clusters` list wipe a non-empty DEPLOYED one:
+        # the canvas topology can transiently drift empty, and propagating that
+        # into deployed_topology corrupts the cluster metadata (the project then
+        # misclassifies as bastion -> reconfigure 400s -> Apply Changes dead).
+        # Preserve the prior deployed clusters when the incoming topology lost them.
+        prior_clusters = (deployed or {}).get("clusters") or []
+        if prior_clusters and not (deployed_topo.get("clusters") or []):
+            deployed_topo["clusters"] = copy.deepcopy(prior_clusters)
         if bmc_config:
             deployed_topo["bmc"] = {
                 "username": bmc_config["bmc_network"].get("bmcUsername", "admin"),

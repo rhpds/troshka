@@ -48,6 +48,38 @@ export function backfillClusterNetworkIds(
   });
 }
 
+// Deploy-time-only fields that must NOT be carried into the canvas ClusterConfig
+// when seeding from deployed_topology (they bloat the canvas topology and would
+// re-appear as install artifacts).
+const _DEPLOY_ONLY_CLUSTER_FIELDS = [
+  "_generatedInstallConfig",
+  "_generatedAgentConfig",
+  "controlPlaneDisks",
+  "workerDisks",
+];
+
+/**
+ * Rebuild the canvas `clusters` list from deployed_topology when it is empty but
+ * the project is deployed (deployed has clusters). The canvas `clusters` list can
+ * drift empty (a save/load race); nothing else recreates it, so it sticks empty
+ * and then corrupts metadata (misclassified as bastion -> reconfigure 400s). The
+ * deployed clusters are the source of truth for a running project; strip the
+ * deploy-only fields so the seeded ClusterConfig is clean.
+ */
+export function seedClustersFromDeployed(
+  canvasClusters: ClusterConfig[],
+  deployedClusters: Array<Record<string, unknown>> | undefined,
+): ClusterConfig[] {
+  if (canvasClusters.length > 0 || !deployedClusters || deployedClusters.length === 0) {
+    return canvasClusters;
+  }
+  return deployedClusters.map((dc) => {
+    const c = { ...dc };
+    for (const f of _DEPLOY_ONLY_CLUSTER_FIELDS) delete c[f];
+    return c as unknown as ClusterConfig;
+  });
+}
+
 /**
  * Restore fields that are FIXED at install for clusters present in
  * deployed_topology. The canvas ClusterConfig can drift from what was actually

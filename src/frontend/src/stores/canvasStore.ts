@@ -14,7 +14,7 @@ import {
 import { appConfirm } from "@/lib/confirm";
 // Cycle-free module (type-only imports) — safe to import into the store, unlike
 // clusterMaterialize which imports store values.
-import { backfillClusterNetworkIds, reconcileDeployedClusters } from "@/components/canvas/clusterNetworkBackfill";
+import { backfillClusterNetworkIds, reconcileDeployedClusters, seedClustersFromDeployed } from "@/components/canvas/clusterNetworkBackfill";
 import {
   type ShowroomConfig,
   DEFAULT_SHOWROOM_CONFIG,
@@ -1601,7 +1601,14 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             // "select a member network" validation though the line is connected).
             clusters: reconcileDeployedClusters(
               backfillClusterNetworkIds(
-                Array.isArray(t.clusters) ? t.clusters : [],
+                // Seed from deployed_topology when the canvas clusters list drifted
+                // empty (a deployed project must never load config-less — that path
+                // corrupted metadata and killed Apply Changes).
+                seedClustersFromDeployed(
+                  Array.isArray(t.clusters) ? t.clusters : [],
+                  (project.deployed_topology as { clusters?: Array<Record<string, unknown>> } | null)
+                    ?.clusters,
+                ),
                 synced.nodes,
                 synced.edges,
               ),
