@@ -937,3 +937,97 @@ def test_cluster_access_empty_before_harvest():
         "kubeconfig_available": False,
         "vm_name": "",
     }
+
+
+def test_showroom_with_cluster_terminal_detects_tab():
+    from app.services.deploy_service import _showroom_with_cluster_terminal
+
+    topo = {
+        "nodes": [
+            {
+                "data": {
+                    "isShowroom": True,
+                    "name": "showroom",
+                    "showroomTabs": [
+                        {
+                            "type": "terminal",
+                            "target": "clusters",
+                            "name": "Cluster Terminal",
+                        }
+                    ],
+                }
+            },
+        ]
+    }
+    assert _showroom_with_cluster_terminal(topo) == "showroom"
+    # no cluster-terminal tab -> None
+    topo2 = {
+        "nodes": [
+            {
+                "data": {
+                    "isShowroom": True,
+                    "showroomTabs": [{"type": "terminal", "vmId": "vm-1"}],
+                }
+            }
+        ]
+    }
+    assert _showroom_with_cluster_terminal(topo2) is None
+
+
+@patch("app.services.deploy_service.wait_for_job")
+@patch("app.services.deploy_service.start_job", return_value="job-1")
+def test_inject_cluster_kubeconfigs_execs_into_showroom_proxy(mock_start, _mock_wait):
+    import yaml as _yaml
+
+    from app.services.deploy_service import _inject_cluster_kubeconfigs
+
+    kc = _yaml.safe_dump(
+        {
+            "apiVersion": "v1",
+            "kind": "Config",
+            "clusters": [{"name": "c", "cluster": {"server": "https://api:6443"}}],
+            "users": [{"name": "u", "user": {"token": "t"}}],
+            "contexts": [{"name": "x", "context": {"cluster": "c", "user": "u"}}],
+            "current-context": "x",
+        }
+    )
+    topo = {
+        "nodes": [
+            {
+                "data": {
+                    "isShowroom": True,
+                    "name": "showroom",
+                    "showroomTabs": [{"type": "terminal", "target": "clusters"}],
+                }
+            }
+        ]
+    }
+    host = SimpleNamespace(host_type="ec2", ip_address="10.0.0.1", agent_token="t")
+
+    _inject_cluster_kubeconfigs(
+        host, "abcd1234-0000", topo, {"ocp": ("pw", kc)}, [{"id": "ocp", "name": "ocp"}]
+    )
+
+    mock_start.assert_called_once()
+    endpoint = mock_start.call_args[0][1]
+    payload = mock_start.call_args[0][2]
+    assert endpoint == "/containers/exec"
+    assert payload["container_name"] == "troshka-abcd1234-showroom-proxy"
+    assert payload["command"][0] == "sh"
+    assert "/showroom/kube/config" in payload["command"][2]
+
+
+@patch("app.services.deploy_service.start_job")
+def test_inject_cluster_kubeconfigs_noop_without_tab(mock_start):
+    from app.services.deploy_service import _inject_cluster_kubeconfigs
+
+    topo = {"nodes": [{"data": {"isShowroom": True, "showroomTabs": []}}]}
+    host = SimpleNamespace(host_type="ec2", ip_address="10.0.0.1", agent_token="t")
+    _inject_cluster_kubeconfigs(
+        host,
+        "abcd1234-0000",
+        topo,
+        {"ocp": ("pw", "kc")},
+        [{"id": "ocp", "name": "ocp"}],
+    )
+    mock_start.assert_not_called()

@@ -2501,10 +2501,74 @@ def _store_ops_pod_creds(host, project_id: str, clusters: list, workdir: str) ->
                 _apply_ops_pod_creds(dt, creds)
                 p.deployed_topology = dt
             db.commit()
+        # Feed the bastionless "cluster terminal" (a showroom container with oc):
+        # write the merged kubeconfig onto the shared showroom disk so the shell
+        # has cluster access. No-op unless a cluster-terminal tab is present.
+        _inject_cluster_kubeconfigs(host, project_id, topo, creds, clusters)
     except Exception:
         logger.exception("Failed to store ops-pod creds for %s", project_id[:8])
     finally:
         db.close()
+
+
+def _showroom_with_cluster_terminal(topology: dict) -> str | None:
+    """Name of the showroom container node that has a cluster-terminal tab, else
+    None. Used to target the post-install kubeconfig injection."""
+    for node in topology.get("nodes", []):
+        data = node.get("data", {})
+        if not data.get("isShowroom"):
+            continue
+        tabs = data.get("showroomTabs", []) or []
+        if any(
+            t.get("type") == "terminal" and t.get("target") == "clusters" for t in tabs
+        ):
+            return data.get("name") or "showroom"
+    return None
+
+
+def _inject_cluster_kubeconfigs(
+    host, project_id: str, topology: dict, creds: dict, clusters: list
+) -> None:
+    """[LIVE-ENV] Write the merged kubeconfig onto the showroom disk so the
+    cluster-terminal shell (oc + all clusters) has access. Best-effort; only when
+    a cluster-terminal tab exists. Troshkad path (exec into the showroom proxy
+    container, which mounts the shared /showroom disk). KubeVirt is a follow-up."""
+    import base64
+
+    if getattr(host, "host_type", None) == "kubevirt-cluster":
+        return
+    show_name = _showroom_with_cluster_terminal(topology)
+    if not show_name:
+        return
+    from app.services.ocp.kubeconfig_merge import merge_kubeconfigs
+    from app.services.ocp.ops_pod_install import _cluster_key as _ck
+
+    name_by_key = {_ck(c): (c.get("name") or "cluster") for c in clusters}
+    named = [(name_by_key.get(key, key), kc) for key, (_pw, kc) in creds.items() if kc]
+    merged = merge_kubeconfigs(named)
+    if not merged.strip():
+        return
+    b64 = base64.b64encode(merged.encode()).decode()
+    container = f"troshka-{project_id[:8]}-{show_name}-proxy"
+    script = (
+        "mkdir -p /showroom/kube && "
+        f"echo {b64} | base64 -d > /showroom/kube/config && "
+        "chmod 0644 /showroom/kube/config"
+    )
+    try:
+        job_id = start_job(
+            host,
+            "/containers/exec",
+            {"container_name": container, "command": ["sh", "-c", script]},
+        )
+        wait_for_job(host, job_id, timeout=30)
+        logger.info("Injected merged kubeconfig into %s", container)
+    except TroshkadError as e:
+        logger.warning(
+            "Cluster-terminal kubeconfig injection failed for %s: %s",
+            project_id[:8],
+            e,
+        )
 
 
 # Consecutive confirmed "not running" polls before the monitor declares the ops
