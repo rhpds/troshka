@@ -181,3 +181,27 @@ describe("stableClusterKey — dirty compares user-editable fields only", () => 
     );
   });
 })
+
+describe("stableNodeData — dnsRecords normalization", () => {
+  it("strips frontend-only record metadata (type/managed/clusterId) to {name,ip}", () => {
+    const canvas = stableNodeData({
+      dnsRecords: [
+        { ip: "10.0.0.10", name: "api.ocp.local", type: "A", managed: true, clusterId: "ocp" },
+        { ip: "10.0.0.10", name: "api-int.ocp.local", type: "A", managed: true, clusterId: "ocp" },
+      ],
+    });
+    const deployed = stableNodeData({
+      dnsRecords: [
+        { ip: "10.0.0.10", name: "api.ocp.local" },
+        { ip: "10.0.0.10", name: "api-int.ocp.local" },
+      ],
+    });
+    expect(stableStringify(canvas)).toBe(stableStringify(deployed));
+  });
+
+  it("still differs when a record's name/ip actually changes", () => {
+    const a = stableNodeData({ dnsRecords: [{ ip: "10.0.0.10", name: "api.ocp.local" }] });
+    const b = stableNodeData({ dnsRecords: [{ ip: "10.0.0.99", name: "api.ocp.local" }] });
+    expect(stableStringify(a)).not.toBe(stableStringify(b));
+  });
+})

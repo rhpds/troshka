@@ -580,6 +580,15 @@ export function stableNodeData(
 ): Record<string, unknown> {
   const stable = { ...data };
   for (const k of DEPLOY_TRANSIENT_NODE_KEYS) delete stable[k];
+  // dnsRecords carry frontend-only metadata (type/managed/clusterId) that deploy
+  // strips to {name, ip} in deployed_topology — comparing the rich objects made a
+  // cluster-managed network perpetually dirty. Normalize to what deploy stores,
+  // sorted so record order never matters.
+  if (Array.isArray(stable.dnsRecords)) {
+    stable.dnsRecords = (stable.dnsRecords as Array<Record<string, unknown>>)
+      .map((r) => ({ name: r?.name ?? "", ip: r?.ip ?? "" }))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
   if (stable.isShowroom) {
     if (Array.isArray(stable.initContainers)) {
       stable.initContainers = stable.initContainers.map(normalizeShowroomContainer);
