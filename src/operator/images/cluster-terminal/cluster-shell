@@ -1,0 +1,7 @@
+#!/bin/bash
+# Interactive shell for the showroom OpenShift Cluster Terminal. The container
+# already runs as the unprivileged uid-1000 lab user, so no privilege drop is
+# needed here. oc is baked into the image (/usr/local/bin); the merged kubeconfig
+# for every deployed cluster is injected onto the shared disk at deploy time.
+export KUBECONFIG=/showroom/kube/config
+exec /bin/bash

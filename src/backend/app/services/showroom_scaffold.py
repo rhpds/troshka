@@ -12,37 +12,16 @@ NOOKBAG_BUNDLE = "https://github.com/rhpds/nookbag/releases/download/nookbag-v0.
 WETTY_IMAGE = "quay.io/rhpds/wetty:v2.5"
 WETTY_BASE_PORT = 8001
 
-# Cluster-terminal (bastionless oc shell): an init container fetches `oc` and
-# writes a privilege-dropping shell wrapper onto the shared showroom disk; the
-# terminal container runs that wrapper via wetty. See resolve_showroom_tabs.
-# ubi9/ubi (not -minimal) ships curl + tar + gzip + the CA bundle, so curl
-# VALIDATES TLS on the download (busybox's wget applet cannot; ubi-minimal lacks
-# tar/gzip). A larger one-time pull, cached per host.
-OC_FETCH_IMAGE = "registry.access.redhat.com/ubi9/ubi:latest"
-OC_CLIENT_URL = "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz"
-# Published checksums for the stable client dir. oc-fetch also verifies the
-# download's sha256 appears here before extracting — defense in depth on top of
-# TLS validation (catches CDN corruption; both fetches are TLS-validated).
-OC_SHA256SUM_URL = (
-    "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/sha256sum.txt"
-)
-# The user's interactive shell drops to the non-root `node` user (uid 1000, no
-# sudo). The wetty image is node-alpine (BusyBox), whose `setpriv` applet lacks
-# util-linux's --reuid/--regid — so we drop privileges with BusyBox `su -m`
-# instead (node-alpine ships a `node` user at uid 1000; `-m` preserves the env we
-# export below, so KUBECONFIG/PATH/HOME survive the switch). oc + the merged
-# kubeconfig live on the shared showroom disk, populated by the oc-fetch init
-# container and (post install) the deploy monitor. The wetty process itself still
-# runs as the image default (root) so it can allocate the PTY; only the user's
-# shell is unprivileged.
-_CLUSTER_SHELL_PATH = "/showroom/bin/cluster-shell"
-_CLUSTER_SHELL_SCRIPT = (
-    "#!/bin/sh\n"
-    "export KUBECONFIG=/showroom/kube/config\n"
-    "export PATH=/showroom/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
-    "export HOME=/tmp\n"
-    "exec su -m -s /bin/sh node\n"
-)
+# Cluster-terminal (bastionless oc shell) image: a purpose-built UBI9 (glibc)
+# wetty image with `oc` + the cluster-shell wrapper baked in, running as an
+# unprivileged uid-1000 user. Built from src/operator/images/cluster-terminal.
+# (The old approach fetched a glibc `oc` at deploy time into an Alpine/musl wetty
+# image, where oc could not exec — no glibc loader.) The merged kubeconfig for
+# every deployed cluster is injected onto the shared /showroom disk at deploy time
+# (0644, readable by uid 1000); cluster-shell points KUBECONFIG there.
+CLUSTER_TERMINAL_IMAGE = "quay.io/redhat-gpte/troshka-cluster-terminal:latest"
+# Baked into CLUSTER_TERMINAL_IMAGE (see its cluster-shell file).
+_CLUSTER_SHELL_PATH = "/usr/local/bin/cluster-shell"
 _STORAGE_EDGE_STYLE = {
     "stroke": "rgba(251,191,36,0.6)",
     "strokeWidth": 2,
@@ -628,13 +607,13 @@ def build_app_proxy_config(internal_hosts: list[str]) -> str:
 
 
 def _oc_terminal_container(item: dict[str, Any], disk_id: str) -> dict[str, Any]:
-    """A LOCAL-shell wetty container: runs the privilege-dropping cluster-shell
-    wrapper (unprivileged, no sudo) with oc + the merged kubeconfig on the shared
-    showroom disk. No SSH — the shell is in-container."""
+    """A LOCAL-shell wetty container (CLUSTER_TERMINAL_IMAGE) running as an
+    unprivileged uid-1000 user with oc baked in and the merged kubeconfig on the
+    shared showroom disk. No SSH — the shell is in-container."""
     base_path = (item.get("wettyPath") or "/wetty_clusters").lstrip("/")
     return {
         "name": "wetty-clusters",
-        "image": WETTY_IMAGE,
+        "image": CLUSTER_TERMINAL_IMAGE,
         "cpus": 1,
         "memory": 256,
         "envVars": [],
@@ -647,34 +626,6 @@ def _oc_terminal_container(item: dict[str, Any], disk_id: str) -> dict[str, Any]
             "--command",
             _CLUSTER_SHELL_PATH,
         ],
-        "mounts": [{"diskNodeId": disk_id, "mountPath": "/showroom"}],
-    }
-
-
-def _build_oc_fetch_init(disk_id: str) -> dict[str, Any]:
-    """Init container: fetch `oc` onto the shared showroom disk and write the
-    cluster-shell wrapper. Runs before the terminal container starts."""
-    script_b64 = base64.b64encode(_CLUSTER_SHELL_SCRIPT.encode()).decode()
-    cmd = (
-        "set -e; mkdir -p /showroom/bin /showroom/kube; cd /tmp; "
-        f"curl -fsSL {OC_CLIENT_URL} -o oc.tgz; "
-        f"curl -fsSL {OC_SHA256SUM_URL} -o sums.txt; "
-        "got=$(sha256sum oc.tgz | cut -d' ' -f1); "
-        'if ! grep -qi "^$got " sums.txt; then '
-        'echo "oc checksum $got not in published sha256sum.txt"; exit 1; fi; '
-        "tar xzf oc.tgz -C /showroom/bin oc; "
-        "chmod 0755 /showroom/bin/oc; "
-        f"echo {script_b64} | base64 -d > {_CLUSTER_SHELL_PATH}; "
-        f"chmod 0755 {_CLUSTER_SHELL_PATH}"
-    )
-    return {
-        "name": "oc-fetch",
-        "image": OC_FETCH_IMAGE,
-        "cpus": 1,
-        "memory": 256,
-        "envVars": [],
-        "ports": [],
-        "command": cmd,
         "mounts": [{"diskNodeId": disk_id, "mountPath": "/showroom"}],
     }
 
@@ -850,9 +801,9 @@ def regenerate_showroom_containers(
 
     The backend is authoritative for the deployed showroom container spec: the
     frontend materialization is incomplete (e.g. it does not emit the cluster
-    terminal's wetty container or the fresh oc-fetch command), so replaying the
-    persisted spec on reconfigure leaves the terminal/console broken. Preserves the
-    node + disk ids; the app-proxy tab URLs are filled later by the route step.
+    terminal's wetty container), so replaying the persisted spec on reconfigure
+    leaves the terminal/console broken. Preserves the node + disk ids; the
+    app-proxy tab URLs are filled later by the route step.
     """
     data = showroom_node.get("data", {})
     disk_id = _showroom_disk_id(showroom_node)
@@ -868,8 +819,6 @@ def regenerate_showroom_containers(
     init_containers = _build_init_containers(
         content_repo, content_ref, nginx_b64, ui_config_b64, disk_id
     )
-    if any(item.get("ocTerminal") for item in resolved):
-        init_containers.append(_build_oc_fetch_init(disk_id))
     pod_containers = _build_pod_containers(disk_id) + _build_wetty_containers(
         resolved, tabs, vms_def, vm_name_to_id, disk_id
     )
@@ -932,9 +881,6 @@ def build_showroom_from_config(
     init_containers = _build_init_containers(
         content_repo, content_ref, nginx_b64, ui_config_b64, disk_id
     )
-    # Cluster terminal present -> fetch oc + write the shell wrapper before start.
-    if any(item.get("ocTerminal") for item in resolved):
-        init_containers.append(_build_oc_fetch_init(disk_id))
     pod_containers = _build_pod_containers(disk_id) + _build_wetty_containers(
         resolved, tabs, vms_def, vm_name_to_id, disk_id
     )

@@ -690,19 +690,27 @@ def test_resolve_cluster_terminal_is_local_shell():
 
 
 def test_build_wetty_cluster_terminal_container():
-    from app.services.showroom_scaffold import _build_wetty_containers
+    from app.services.showroom_scaffold import (
+        CLUSTER_TERMINAL_IMAGE,
+        _build_wetty_containers,
+    )
 
     resolved = resolve_showroom_tabs(_cluster_terminal_tabs(), {}, {})
     ctrs = _build_wetty_containers(resolved, [], {}, {}, "disk-0")
     c = next(c for c in ctrs if c["name"] == "wetty-clusters")
-    # runs the privilege-dropping wrapper via wetty --command, NOT --ssh-host
+    # purpose-built glibc image with oc + cluster-shell baked in (no oc-fetch)
+    assert c["image"] == CLUSTER_TERMINAL_IMAGE
+    # runs the baked wrapper via wetty --command, NOT --ssh-host
     assert "--command" in c["command"]
-    assert "/showroom/bin/cluster-shell" in c["command"]
+    assert "/usr/local/bin/cluster-shell" in c["command"]
     assert not any(a.startswith("--ssh-host") for a in c["command"])
+    # still mounts the shared disk for the injected kubeconfig
     assert c["mounts"] == [{"diskNodeId": "disk-0", "mountPath": "/showroom"}]
 
 
-def test_cluster_terminal_adds_oc_fetch_init_and_proxied_path():
+def test_cluster_terminal_uses_baked_image_no_oc_fetch():
+    from app.services.showroom_scaffold import CLUSTER_TERMINAL_IMAGE
+
     cfg = {
         "enabled": True,
         "content_repo": "https://example.com/repo.git",
@@ -716,22 +724,11 @@ def test_cluster_terminal_adds_oc_fetch_init_and_proxied_path():
     data = ctr_node["data"]
     init_names = [c["name"] for c in data["initContainers"]]
     pod_names = [c["name"] for c in data["podContainers"]]
-    assert "oc-fetch" in init_names
+    # oc is baked into the terminal image now — no oc-fetch init container
+    assert "oc-fetch" not in init_names
     assert "wetty-clusters" in pod_names
-    # oc-fetch fetches oc + writes the wrapper onto the shared disk
-    oc_fetch = next(c for c in data["initContainers"] if c["name"] == "oc-fetch")
-    # curl (ubi9/ubi) validates TLS on the download (busybox wget cannot)
-    assert (
-        "curl -fsSL" in oc_fetch["command"]
-        and "/showroom/bin/oc" in oc_fetch["command"]
-    )
-    # supply-chain guard: verify the download's sha256 is in the published sums
-    assert "sha256sum" in oc_fetch["command"]
-    assert "sha256sum.txt" in oc_fetch["command"]
-    assert "exit 1" in oc_fetch["command"]  # abort on checksum mismatch
-    # mounts the shared showroom disk (same disk the container mounts)
-    assert oc_fetch["mounts"][0]["mountPath"] == "/showroom"
-    assert oc_fetch["mounts"][0]["diskNodeId"] == data["mounts"][0]["diskNodeId"]
+    wetty = next(c for c in data["podContainers"] if c["name"] == "wetty-clusters")
+    assert wetty["image"] == CLUSTER_TERMINAL_IMAGE
     # nginx proxies the terminal path
     resolved = resolve_showroom_tabs(_cluster_terminal_tabs(), {}, {})
     nginx = build_nginx_config(resolved)
@@ -780,10 +777,11 @@ def _showroom_node_with_cluster_terminal():
     }
 
 
-def test_regenerate_showroom_containers_adds_wetty_and_oc_fetch():
-    import base64
-
-    from app.services.showroom_scaffold import regenerate_showroom_containers
+def test_regenerate_showroom_containers_adds_wetty():
+    from app.services.showroom_scaffold import (
+        CLUSTER_TERMINAL_IMAGE,
+        regenerate_showroom_containers,
+    )
 
     node = _showroom_node_with_cluster_terminal()
     regenerate_showroom_containers(node, {}, {})
@@ -793,20 +791,13 @@ def test_regenerate_showroom_containers_adds_wetty_and_oc_fetch():
     assert "wetty-clusters" in pod_names  # was missing before
     assert "proxy" in pod_names and "content" in pod_names
 
+    # oc is baked into the terminal image — no oc-fetch init container
     init_names = [c["name"] for c in data["initContainers"]]
-    assert "oc-fetch" in init_names
+    assert "oc-fetch" not in init_names
 
-    oc_fetch = next(c for c in data["initContainers"] if c["name"] == "oc-fetch")
-    import re
-
-    b64 = re.search(
-        r"echo ([A-Za-z0-9+/=]+) \| base64 -d > /showroom/bin/cluster-shell",
-        oc_fetch["command"],
-    ).group(1)
-    shell = base64.b64decode(b64).decode()
-    # current generator drops privileges via su (not util-linux setpriv)
-    assert "su -m" in shell
-    assert "setpriv" not in shell
+    wetty = next(c for c in data["podContainers"] if c["name"] == "wetty-clusters")
+    assert wetty["image"] == CLUSTER_TERMINAL_IMAGE
+    assert "/usr/local/bin/cluster-shell" in wetty["command"]
 
 
 def test_regenerate_showroom_containers_preserves_disk_id():
