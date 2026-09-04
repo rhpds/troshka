@@ -611,11 +611,20 @@ export function stableNodeData(
     else delete stable.portForwards;
   }
   if (stable.isShowroom) {
+    // The cluster-terminal containers (wetty-clusters pod + oc-fetch init) are
+    // regenerated at deploy from showroomTabs — the frontend never materializes
+    // them, so a deployed project's canvas (tabs present, container absent) would
+    // read perpetually dirty. showroomTabs IS compared, so a real tab change still
+    // dirties; drop only the derived containers here.
     if (Array.isArray(stable.initContainers)) {
-      stable.initContainers = stable.initContainers.map(normalizeShowroomContainer);
+      stable.initContainers = (stable.initContainers as Array<Record<string, unknown>>)
+        .filter((c) => c?.name !== "oc-fetch")
+        .map(normalizeShowroomContainer);
     }
     if (Array.isArray(stable.podContainers)) {
-      stable.podContainers = stable.podContainers.map(normalizeShowroomContainer);
+      stable.podContainers = (stable.podContainers as Array<Record<string, unknown>>)
+        .filter((c) => c?.name !== "wetty-clusters")
+        .map(normalizeShowroomContainer);
     }
   }
   return stable;

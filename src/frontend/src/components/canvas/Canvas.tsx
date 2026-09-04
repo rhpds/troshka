@@ -194,9 +194,36 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
     () => allNodes.filter((n) => !hiddenNodeIds.includes(n.id)),
     [allNodes, hiddenNodeIds],
   );
+  // Cluster-member VMs don't render nic handles (their network wiring is shown via
+  // the cluster box's edge, not per-member); an edge to a member nic can't attach,
+  // which spams React Flow "couldn't create edge for target handle". Keep such
+  // edges in the store (deploy resolves VM networks from them) but don't render
+  // them.
+  const clusterMemberIds = useMemo(
+    () =>
+      new Set(
+        allNodes
+          .filter(
+            (n) =>
+              n.type === "vmNode" &&
+              !!(n.data as Record<string, unknown>)?.clusterId,
+          )
+          .map((n) => n.id),
+      ),
+    [allNodes],
+  );
   const visibleEdges = useMemo(
-    () => allEdges.filter((e) => !hiddenNodeIds.includes(e.source) && !hiddenNodeIds.includes(e.target)),
-    [allEdges, hiddenNodeIds],
+    () =>
+      allEdges.filter(
+        (e) =>
+          !hiddenNodeIds.includes(e.source) &&
+          !hiddenNodeIds.includes(e.target) &&
+          !(
+            clusterMemberIds.has(e.target) &&
+            (e.targetHandle || "").startsWith("nic-")
+          ),
+      ),
+    [allEdges, hiddenNodeIds, clusterMemberIds],
   );
   const onNodesChange = useCanvasStore((s) => s.onNodesChange);
   const storeOnEdgesChange = useCanvasStore((s) => s.onEdgesChange);
