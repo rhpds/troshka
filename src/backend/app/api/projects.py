@@ -4542,14 +4542,20 @@ def _showroom_config_changed(cur: dict | None, dep: dict | None) -> bool:
     return any(cd.get(k) != dd.get(k) for k in keys)
 
 
-def _reconfigure_showroom(h, p_id: str, current: dict, deployed: dict, errors: list):
+def _reconfigure_showroom(
+    h, p_id: str, current: dict, deployed: dict, vni_map: dict, s, errors: list
+):
     """Redeploy the showroom container when its config changed (invisible to the
-    VM/network diff) and (re)inject the cluster terminal's kubeconfig from stored
-    creds. Best-effort: a failure is recorded but doesn't fail the reconfigure."""
+    VM/network diff), then RE-ESTABLISH its infra networking + gateway port-forward
+    (the redeploy destroys the pod, dropping its infra IP + the gateway DNAT), and
+    (re)inject the cluster terminal's kubeconfig. Best-effort: a failure is
+    recorded but doesn't fail the reconfigure."""
     from app.services.deploy_service import (
         _inject_stored_cluster_kubeconfigs,
+        _setup_networks_via_troshkad,
         redeploy_container_bg,
     )
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
     from app.services.showroom_scaffold import _find_showroom_container
 
     cur = _find_showroom_container(current)
@@ -4557,6 +4563,13 @@ def _reconfigure_showroom(h, p_id: str, current: dict, deployed: dict, errors: l
         return
     try:
         redeploy_container_bg(p_id, cur["id"])
+        # The pod was destroyed+recreated: its gateway port-forward (ext -> showroom
+        # infra IP) and infra attachment were torn down. Re-inject the forward and
+        # re-run network setup so external access (e.g. :443 -> showroom) is restored
+        # against the fresh pod — otherwise the showroom loses port forwarding.
+        provider = getattr(h, "provider_type", None) or ""
+        inject_showroom_gateway_port_forwards(current, vni_map, provider)
+        _setup_networks_via_troshkad(h, current, vni_map, s, p_id)
         _inject_stored_cluster_kubeconfigs(h, p_id, current)
     except Exception as e:  # noqa: BLE001 - best-effort, surfaced via errors
         logger.exception("Reconfigure %s: showroom redeploy failed", p_id[:8])
@@ -4638,7 +4651,7 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
         # Showroom is a container node, invisible to the VM/network diff. If its
         # config changed (e.g. an added OpenShift Cluster Terminal tab), redeploy
         # it and (re)inject the cluster terminal's kubeconfig from stored creds.
-        _reconfigure_showroom(h, p_id, current, deployed, errors)
+        _reconfigure_showroom(h, p_id, current, deployed, vni_map, s, errors)
 
         _finalize_reconfigure(s, proj, h, p_id, current, deployed, errors)
     except Exception:
