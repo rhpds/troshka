@@ -2981,7 +2981,7 @@ def redeploy_container_bg(project_id: str, container_id: str) -> None:
         # Rebuild the showroom spec from its tabs before extracting — persisted
         # podContainers may be the incomplete frontend-materialized set (missing
         # the cluster-terminal wetty container).
-        _refresh_showroom_spec(topo)
+        _refresh_showroom_spec(topo, project_id)
         ctr = next(
             (c for c in _extract_containers(topo) if c["node_id"] == container_id), None
         )
@@ -5544,7 +5544,20 @@ def _create_ordered_containers(
     return ordered_ids
 
 
-def _refresh_showroom_spec(topology):
+def _showroom_route_hostname(topology):
+    """The showroom app-proxy route hostname from the gateway's externalEndpoints
+    (persisted by _deploy_create_provider_routes), or None."""
+    for node in topology.get("nodes", []):
+        data = node.get("data", {})
+        if data.get("subtype") != "gateway":
+            continue
+        for ep in data.get("externalEndpoints") or []:
+            if ep.get("vmName") == "showroom" and ep.get("hostname"):
+                return ep["hostname"]
+    return None
+
+
+def _refresh_showroom_spec(topology, project_id):
     """Regenerate the showroom node's init/pod containers from its showroomTabs
     (the authoritative backend generator) before deploying. The frontend
     materialization is incomplete (it never emits the cluster-terminal wetty
@@ -5554,6 +5567,7 @@ def _refresh_showroom_spec(topology):
     from app.services.deploy_topology import build_vms_def_from_topology
     from app.services.showroom_scaffold import (
         _find_showroom_container,
+        derive_apps_domain,
         regenerate_showroom_containers,
     )
 
@@ -5562,10 +5576,19 @@ def _refresh_showroom_spec(topology):
         return
     vms_def, vm_name_to_id = build_vms_def_from_topology(topology)
     regenerate_showroom_containers(node, vms_def, vm_name_to_id)
+    # regen resets the app-proxy console tab URL to the __TROSHKA_APP_PROXY__
+    # placeholder; re-fill it from the persisted showroom route hostname so the
+    # console tab keeps working across redeploys (the Route itself is created
+    # separately by _deploy_create_provider_routes).
+    hostname = _showroom_route_hostname(topology)
+    if hostname and project_id:
+        apps_domain = derive_apps_domain(hostname)
+        if apps_domain:
+            _fill_showroom_app_proxy_urls(node, project_id, apps_domain)
 
 
 def _deploy_create_containers(host, project_id, topology, vni_map, pool):
-    _refresh_showroom_spec(topology)
+    _refresh_showroom_spec(topology, project_id)
     containers = _extract_containers(topology)
     logger.info(
         "Deploy %s: found %d containers to create", project_id[:8], len(containers)
