@@ -1,7 +1,18 @@
 #!/bin/bash
-# Interactive shell for the showroom OpenShift Cluster Terminal. The container
-# already runs as the unprivileged uid-1000 lab user, so no privilege drop is
-# needed here. oc is baked into the image (/usr/local/bin); the merged kubeconfig
-# for every deployed cluster is injected onto the shared disk at deploy time.
-export KUBECONFIG=/showroom/kube/config
-exec /bin/bash
+# Interactive shell for the showroom OpenShift Cluster Terminal. wetty runs this
+# as root (it only spawns a local shell when root; as non-root it would fall back
+# to SSH). We copy the injected kubeconfig into the lab user's writable home (the
+# shared copy at /showroom/kube/config is root-owned 0644, so oc could read but
+# not update it), then drop to the unprivileged uid-1000 lab user via setpriv
+# (util-linux/glibc) — no sudo, no login/PAM. oc is baked into the image; the
+# merged kubeconfig for every deployed cluster is injected onto the shared disk.
+export HOME=/home/labuser
+export PATH=/usr/local/bin:/usr/bin:/bin
+export KUBECONFIG="$HOME/.kube/config"
+
+if [ -f /showroom/kube/config ]; then
+    install -d -o 1000 -g 1000 -m 0700 "$HOME/.kube"
+    install -o 1000 -g 1000 -m 0600 /showroom/kube/config "$KUBECONFIG"
+fi
+
+exec setpriv --reuid=1000 --regid=1000 --init-groups /bin/bash

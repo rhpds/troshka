@@ -14,7 +14,7 @@ ARG WETTY_VERSION=2.5.0
 # tools are removed after the global install to keep the image lean.
 RUN dnf module -y reset nodejs \
     && dnf module -y enable nodejs:20 \
-    && dnf install -y nodejs npm gcc-c++ make python3 tar gzip \
+    && dnf install -y nodejs npm gcc-c++ make python3 tar gzip util-linux \
     && curl --proto =https -fsSL \
         "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/${OCP_VERSION}/openshift-client-linux.tar.gz" \
         | tar xzf - -C /usr/local/bin oc kubectl \
@@ -24,14 +24,12 @@ RUN dnf module -y reset nodejs \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
-# Unprivileged lab user (uid 1000, no sudo). The interactive shell runs as this
-# user; oc + the 0644 kubeconfig on the shared disk are readable by it.
+# Unprivileged lab user (uid 1000, no sudo). wetty must run as root to spawn a
+# LOCAL shell (as non-root it falls back to SSH and prompts for a username), so
+# the container runs as root and cluster-shell drops to this user via setpriv.
 RUN useradd -u 1000 -m -d /home/labuser -s /bin/bash labuser
 
 COPY cluster-shell /usr/local/bin/cluster-shell
 RUN chmod 0755 /usr/local/bin/cluster-shell
 
-USER 1000
-ENV HOME=/home/labuser
-WORKDIR /home/labuser
 ENTRYPOINT ["wetty"]
