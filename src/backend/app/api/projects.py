@@ -4510,6 +4510,47 @@ def _reconfigure_process_vms(
         _deploy_added_vms(h, p_id, s, current, vni_map, diff["added_vms"], errors)
 
 
+def _showroom_config_changed(cur: dict | None, dep: dict | None) -> bool:
+    """Whether the showroom container node's deployable config differs from what
+    is currently deployed (tabs / init+pod containers / content). Position and
+    other cosmetic fields are ignored."""
+    if not cur:
+        return False
+    if not dep:
+        return True
+    keys = (
+        "showroomTabs",
+        "initContainers",
+        "podContainers",
+        "contentRepo",
+        "contentRef",
+        "buildContent",
+    )
+    cd, dd = cur.get("data", {}), dep.get("data", {})
+    return any(cd.get(k) != dd.get(k) for k in keys)
+
+
+def _reconfigure_showroom(h, p_id: str, current: dict, deployed: dict, errors: list):
+    """Redeploy the showroom container when its config changed (invisible to the
+    VM/network diff) and (re)inject the cluster terminal's kubeconfig from stored
+    creds. Best-effort: a failure is recorded but doesn't fail the reconfigure."""
+    from app.services.deploy_service import (
+        _inject_stored_cluster_kubeconfigs,
+        redeploy_container_bg,
+    )
+    from app.services.showroom_scaffold import _find_showroom_container
+
+    cur = _find_showroom_container(current)
+    if not cur or not _showroom_config_changed(cur, _find_showroom_container(deployed)):
+        return
+    try:
+        redeploy_container_bg(p_id, cur["id"])
+        _inject_stored_cluster_kubeconfigs(h, p_id, current)
+    except Exception as e:  # noqa: BLE001 - best-effort, surfaced via errors
+        logger.exception("Reconfigure %s: showroom redeploy failed", p_id[:8])
+        errors.append(f"Showroom redeploy failed: {e}")
+
+
 def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
     from app.core.database import SessionLocal
     from app.services.deploy_service import (
@@ -4581,6 +4622,11 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
             diff,
             errors,
         )
+
+        # Showroom is a container node, invisible to the VM/network diff. If its
+        # config changed (e.g. an added OpenShift Cluster Terminal tab), redeploy
+        # it and (re)inject the cluster terminal's kubeconfig from stored creds.
+        _reconfigure_showroom(h, p_id, current, deployed, errors)
 
         _finalize_reconfigure(s, proj, h, p_id, current, deployed, errors)
     except Exception:

@@ -1041,3 +1041,90 @@ def test_inject_cluster_kubeconfigs_noop_without_tab(mock_start):
         [{"id": "ocp", "name": "ocp"}],
     )
     mock_start.assert_not_called()
+
+
+def test_stored_cluster_creds_from_control_plane_nodes():
+    from app.services.deploy_service import _stored_cluster_creds
+
+    topo = {
+        "nodes": [
+            {
+                "type": "vmNode",
+                "data": {
+                    "clusterId": "ocp",
+                    "clusterRole": "control-plane",
+                    "ocpKubeadminPassword": "pw",
+                    "ocpKubeconfig": "KC",
+                },
+            },
+            {
+                "type": "vmNode",
+                "data": {
+                    "clusterId": "ocp",
+                    "clusterRole": "worker",
+                    "ocpKubeadminPassword": "nope",
+                },
+            },
+        ]
+    }
+    assert _stored_cluster_creds(topo) == {"ocp": ("pw", "KC")}
+    # nothing harvested yet -> empty
+    assert (
+        _stored_cluster_creds(
+            {
+                "nodes": [
+                    {
+                        "type": "vmNode",
+                        "data": {"clusterId": "ocp", "clusterRole": "control-plane"},
+                    }
+                ]
+            }
+        )
+        == {}
+    )
+
+
+@patch("app.services.deploy_service.wait_for_job")
+@patch("app.services.deploy_service.start_job", return_value="job-1")
+def test_inject_stored_cluster_kubeconfigs_uses_topology_creds(mock_start, _w):
+    import yaml as _yaml
+
+    from app.services.deploy_service import _inject_stored_cluster_kubeconfigs
+
+    kc = _yaml.safe_dump(
+        {
+            "apiVersion": "v1",
+            "kind": "Config",
+            "clusters": [{"name": "c", "cluster": {"server": "https://api:6443"}}],
+            "users": [{"name": "u", "user": {"token": "t"}}],
+            "contexts": [{"name": "x", "context": {"cluster": "c", "user": "u"}}],
+            "current-context": "x",
+        }
+    )
+    topo = {
+        "clusters": [{"id": "ocp", "name": "ocp"}],
+        "nodes": [
+            {
+                "type": "vmNode",
+                "data": {
+                    "clusterId": "ocp",
+                    "clusterRole": "control-plane",
+                    "ocpKubeadminPassword": "pw",
+                    "ocpKubeconfig": kc,
+                },
+            },
+            {
+                "type": "containerNode",
+                "data": {
+                    "isShowroom": True,
+                    "name": "showroom",
+                    "showroomTabs": [{"type": "terminal", "target": "clusters"}],
+                },
+            },
+        ],
+    }
+    host = SimpleNamespace(host_type="ec2", ip_address="10.0.0.1", agent_token="t")
+    _inject_stored_cluster_kubeconfigs(host, "abcd1234-x", topo)
+    mock_start.assert_called_once()
+    assert mock_start.call_args[0][1] == "/containers/exec"
+    assert "/showroom/kube/config" in mock_start.call_args[0][2]["command"][2]

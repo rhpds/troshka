@@ -2511,6 +2511,42 @@ def _store_ops_pod_creds(host, project_id: str, clusters: list, workdir: str) ->
         db.close()
 
 
+def _stored_cluster_creds(topology: dict) -> dict:
+    """``{clusterId: (kubeadmin_pw, kubeconfig)}`` from each cluster's control-plane
+    member node — creds already harvested at install. Used to (re)inject the
+    cluster terminal's kubeconfig when the terminal is added to an ALREADY-deployed
+    project (the ops pod is long gone, so re-harvest isn't possible)."""
+    creds: dict = {}
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        d = node.get("data", {})
+        cid = d.get("clusterId")
+        if not cid or cid in creds:
+            continue
+        role = d.get("clusterRole") or ""
+        group = (d.get("tags") or {}).get("AnsibleGroup", "")
+        if role == "worker" or (not role and "workers" in group):
+            continue  # control-plane members only
+        pw = d.get("ocpKubeadminPassword") or ""
+        kc = d.get("ocpKubeconfig") or ""
+        if pw or kc:
+            creds[cid] = (pw, kc)
+    return creds
+
+
+def _inject_stored_cluster_kubeconfigs(host, project_id: str, topology: dict) -> None:
+    """Inject the cluster terminal's merged kubeconfig from creds already stored in
+    the topology (install-time harvest) — for adding the terminal to a deployed
+    project. No-op without a cluster-terminal tab or stored creds."""
+    creds = _stored_cluster_creds(topology)
+    if not creds:
+        return
+    _inject_cluster_kubeconfigs(
+        host, project_id, topology, creds, _ocp_clusters(topology)
+    )
+
+
 def _showroom_with_cluster_terminal(topology: dict) -> str | None:
     """Name of the showroom container node that has a cluster-terminal tab, else
     None. Used to target the post-install kubeconfig injection."""
