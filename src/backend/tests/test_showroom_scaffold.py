@@ -721,6 +721,10 @@ def test_cluster_terminal_adds_oc_fetch_init_and_proxied_path():
     # oc-fetch fetches oc + writes the wrapper onto the shared disk
     oc_fetch = next(c for c in data["initContainers"] if c["name"] == "oc-fetch")
     assert "wget" in oc_fetch["command"] and "/showroom/bin/oc" in oc_fetch["command"]
+    # supply-chain guard: verify the download's sha256 is in the published sums
+    assert "sha256sum" in oc_fetch["command"]
+    assert "sha256sum.txt" in oc_fetch["command"]
+    assert "exit 1" in oc_fetch["command"]  # abort on checksum mismatch
     # mounts the shared showroom disk (same disk the container mounts)
     assert oc_fetch["mounts"][0]["mountPath"] == "/showroom"
     assert oc_fetch["mounts"][0]["diskNodeId"] == data["mounts"][0]["diskNodeId"]

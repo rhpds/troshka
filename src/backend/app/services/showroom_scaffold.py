@@ -19,6 +19,12 @@ WETTY_BASE_PORT = 8001
 # ubi-minimal ships neither tar nor gzip (the fetch would exit 127).
 OC_FETCH_IMAGE = "docker.io/library/busybox:1.36"
 OC_CLIENT_URL = "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz"
+# Published checksums for the stable client dir. oc-fetch verifies the download's
+# sha256 appears here before extracting (supply-chain guard; busybox wget can't
+# validate TLS, so at least confirm the bytes are an officially-published file).
+OC_SHA256SUM_URL = (
+    "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/sha256sum.txt"
+)
 # The user's interactive shell drops to a non-root uid with no sudo (the wetty
 # image ships setpriv; the image has no sudo). oc + the merged kubeconfig live on
 # the shared showroom disk, populated by the oc-fetch init container and (post
@@ -645,8 +651,13 @@ def _build_oc_fetch_init(disk_id: str) -> dict[str, Any]:
     cluster-shell wrapper. Runs before the terminal container starts."""
     script_b64 = base64.b64encode(_CLUSTER_SHELL_SCRIPT.encode()).decode()
     cmd = (
-        "set -e; mkdir -p /showroom/bin /showroom/kube; "
-        f"wget -qO- {OC_CLIENT_URL} | tar xz -C /showroom/bin oc; "
+        "set -e; mkdir -p /showroom/bin /showroom/kube; cd /tmp; "
+        f"wget -qO oc.tgz {OC_CLIENT_URL}; "
+        f"wget -qO sums.txt {OC_SHA256SUM_URL}; "
+        "got=$(sha256sum oc.tgz | cut -d' ' -f1); "
+        'if ! grep -qi "^$got " sums.txt; then '
+        'echo "oc checksum $got not in published sha256sum.txt"; exit 1; fi; '
+        "tar xzf oc.tgz -C /showroom/bin oc; "
         "chmod 0755 /showroom/bin/oc; "
         f"echo {script_b64} | base64 -d > {_CLUSTER_SHELL_PATH}; "
         f"chmod 0755 {_CLUSTER_SHELL_PATH}"
