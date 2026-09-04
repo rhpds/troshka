@@ -589,6 +589,19 @@ export function stableNodeData(
       .map((r) => ({ name: r?.name ?? "", ip: r?.ip ?? "" }))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
   }
+  // The gateway's showroom port-forward (443->showroom infra IP) is injected and
+  // managed by deploy, not the user. It lives in deployed_topology but the canvas
+  // gateway doesn't carry it, which made a deployed project perpetually dirty.
+  // Drop managed forwards from the dirty comparison (mirrors dnsRecords above).
+  if (Array.isArray(stable.portForwards)) {
+    const userForwards = (stable.portForwards as Array<Record<string, unknown>>)
+      .filter((pf) => !pf?.managedByShowroom)
+      .sort((a, b) =>
+        String(a.extPort ?? "").localeCompare(String(b.extPort ?? "")),
+      );
+    if (userForwards.length) stable.portForwards = userForwards;
+    else delete stable.portForwards;
+  }
   if (stable.isShowroom) {
     if (Array.isArray(stable.initContainers)) {
       stable.initContainers = stable.initContainers.map(normalizeShowroomContainer);
