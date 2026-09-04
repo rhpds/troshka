@@ -15,4 +15,7 @@ if [ -f /showroom/kube/config ]; then
     install -o 1000 -g 1000 -m 0600 /showroom/kube/config "$KUBECONFIG"
 fi
 
+# Start in the lab user's home (wetty spawns us as root in / and setpriv keeps the
+# cwd; login(1) — which we bypass — is what normally drops you into $HOME).
+cd "$HOME" 2>/dev/null || cd /tmp
 exec setpriv --reuid=1000 --regid=1000 --init-groups /bin/bash
