@@ -77,3 +77,10 @@ showroom:
       cluster: ocp
       proxy_port: 443
       proxy_tls: true
+    # Bastionless cluster terminal: an in-showroom oc shell (unprivileged, no
+    # sudo) with every deployed cluster's kubeconfig pre-installed — replaces a
+    # bastion VM. `target: clusters` makes it a local shell (no VM/SSH); an
+    # init container fetches oc and the deploy injects the merged kubeconfig.
+    - type: terminal
+      target: clusters
+      name: Terminal
