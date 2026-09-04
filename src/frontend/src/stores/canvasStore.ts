@@ -1501,7 +1501,18 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
               n.id === showroomNode.id ? { ...n, data: updatedData } : n,
             );
           })();
-          const sanitized = sanitizeShowroomTopology(loadedNodes, (t.edges || []) as Edge[]);
+          // Guard against duplicate node ids: React Flow requires unique ids, and
+          // a clusterNode-duplication bug accumulated copies of the same node
+          // across saves, which broke rendering (member VMs detached from the box,
+          // overlapping cluster boxes). Keep the first occurrence of each id;
+          // saving the deduped set also heals the persisted topology.
+          const _seenNodeIds = new Set<string>();
+          const dedupedNodes = loadedNodes.filter((n: Node) => {
+            if (_seenNodeIds.has(n.id)) return false;
+            _seenNodeIds.add(n.id);
+            return true;
+          });
+          const sanitized = sanitizeShowroomTopology(dedupedNodes, (t.edges || []) as Edge[]);
           const infraEdges = normalizeInfraNetworkEdges(
             sanitized.nodes,
             sanitized.edges,
