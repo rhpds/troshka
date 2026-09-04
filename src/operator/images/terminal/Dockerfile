@@ -9,10 +9,12 @@ FROM registry.access.redhat.com/ubi9/ubi:latest
 ARG OCP_VERSION=stable
 ARG WETTY_VERSION=2.5.0
 
-# nodejs (for wetty) + build toolchain (wetty's node-pty compiles native), then
-# oc from the OpenShift mirror. Build tools are removed after the global install
-# to keep the image lean.
-RUN dnf install -y nodejs npm gcc-c++ make python3 tar gzip \
+# nodejs 20 (ubi9's default stream is 16, too old for wetty) + build toolchain
+# (wetty's node-pty compiles native), then oc from the OpenShift mirror. Build
+# tools are removed after the global install to keep the image lean.
+RUN dnf module -y reset nodejs \
+    && dnf module -y enable nodejs:20 \
+    && dnf install -y nodejs npm gcc-c++ make python3 tar gzip \
     && curl --proto =https -fsSL \
         "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/${OCP_VERSION}/openshift-client-linux.tar.gz" \
         | tar xzf - -C /usr/local/bin oc kubectl \
