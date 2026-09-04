@@ -4593,6 +4593,7 @@ def _reconfigure_showroom(
     gateway DNAT) and (re)inject the cluster terminal's kubeconfig. Best-effort: a
     failure is recorded but doesn't fail the reconfigure."""
     from app.services.deploy_service import (
+        _deploy_create_provider_routes,
         _inject_stored_cluster_kubeconfigs,
         _setup_networks_via_troshkad,
         redeploy_container_bg,
@@ -4607,13 +4608,21 @@ def _reconfigure_showroom(
         # authoritative backend generator and persist it BEFORE the redeploy, which
         # reloads topology from the DB — otherwise the pod is recreated from the
         # incomplete frontend-materialized spec (missing cluster-terminal container,
-        # unfilled console proxy URL, stale oc-fetch command).
+        # unfilled console proxy URL, stale oc-fetch command). This also fills the
+        # app-proxy console tab URL into the ui-config the redeployed pod serves.
         _prepare_showroom_topology(h, p_id, current, cur, vni_map, s)
         redeploy_container_bg(p_id, cur["id"])
         # The pod was destroyed+recreated: its gateway port-forward (ext -> showroom
         # infra IP) and infra attachment were torn down. Re-run network setup so
         # external access (e.g. :443 -> showroom) is restored against the fresh pod.
         _setup_networks_via_troshkad(h, current, vni_map, s, p_id)
+        # _setup_networks_via_troshkad flushes the host `troshka-pre-<pid>` chain,
+        # wiping the transit DNAT that route creation added. Re-create the provider
+        # routes AFTER network setup so the host transit forward (ext port -> gateway)
+        # survives — otherwise the OCP Route goes dead again. The standalone transit
+        # port is deterministic (first free, no EIP), so this reuses the same port and
+        # the Route/Service/URL fill are idempotent.
+        _deploy_create_provider_routes(s, p_id, current, host=h)
         _inject_stored_cluster_kubeconfigs(h, p_id, current)
     except Exception as e:  # noqa: BLE001 - best-effort, surfaced via errors
         logger.exception("Reconfigure %s: showroom redeploy failed", p_id[:8])
