@@ -1128,3 +1128,56 @@ def test_inject_stored_cluster_kubeconfigs_uses_topology_creds(mock_start, _w):
     mock_start.assert_called_once()
     assert mock_start.call_args[0][1] == "/containers/exec"
     assert "/showroom/kube/config" in mock_start.call_args[0][2]["command"][2]
+
+
+@patch("app.services.deploy_service._start_ops_pod_install_monitor")
+@patch("app.services.template_loader.ocp_install_via", return_value="pod")
+@patch("app.core.database.SessionLocal")
+def test_resume_ops_pod_monitors_restarts_stuck_pod_installs(mock_sl, _via, mock_start):
+    """Worker startup re-attaches the monitor for a project stuck at
+    ocp_status='monitoring' (prior worker died mid-install)."""
+    import app.services.deploy_service as ds
+    from app.models.host import Host
+    from app.models.project import Project
+
+    proj = SimpleNamespace(
+        id="abcd1234-0000-0000-0000-000000000000",
+        state="active",
+        host_id="h1",
+        deployed_topology={"clusters": [{"id": "ocp", "name": "ocp"}]},
+        topology={},
+    )
+    host = SimpleNamespace(id="h1")
+    db = MagicMock()
+
+    def _query(model):
+        q = MagicMock()
+        if model is Project:
+            q.filter.return_value.filter.return_value.all.return_value = [proj]
+        elif model is Host:
+            q.filter_by.return_value.first.return_value = host
+        return q
+
+    db.query.side_effect = _query
+    mock_sl.return_value = db
+
+    ds.resume_ops_pod_monitors()
+
+    mock_start.assert_called_once()
+    assert mock_start.call_args[0][1] == proj.id  # project_id
+    assert mock_start.call_args[0][2] == [{"id": "ocp", "name": "ocp"}]  # clusters
+
+
+@patch("app.core.redis.is_redis_available", return_value=False)
+def test_ops_monitor_lock_allows_when_redis_unavailable(_no_redis):
+    """No shared Redis -> single-process fallback: acquiring the monitor lock
+    always succeeds (dedup can't apply) and release/refresh are no-ops."""
+    from app.services.deploy_service import (
+        _acquire_ops_monitor_lock,
+        _refresh_ops_monitor_lock,
+        _release_ops_monitor_lock,
+    )
+
+    assert _acquire_ops_monitor_lock("p1") is True
+    _refresh_ops_monitor_lock("p1")  # no-op, no raise
+    _release_ops_monitor_lock("p1")  # no-op, no raise

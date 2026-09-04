@@ -2137,6 +2137,58 @@ def _detached_host_copy(host_id: str):
         s.close()
 
 
+# Heartbeat lock so only ONE install monitor runs per project across all worker
+# processes (5 in dev). The monitor is a daemon thread; a worker restart kills it
+# mid-install and strands ocp_status at "monitoring". resume_ops_pod_monitors()
+# re-attaches on worker startup — the lock (refreshed each poll, deleted on exit,
+# TTL-expiring if the worker dies) makes that safe: only the first worker to
+# acquire runs the monitor; a live monitor's refreshes keep others out.
+_OPS_MONITOR_TTL = 120
+
+
+def _ops_monitor_lock_key(project_id: str) -> str:
+    return f"ops-monitor:{project_id}"
+
+
+def _acquire_ops_monitor_lock(project_id: str) -> bool:
+    """True if this caller may run the monitor. Redis SET NX; if Redis is
+    unavailable (in-memory, not shared), allow (single-process fallback)."""
+    from app.core.redis import get_redis, is_redis_available
+
+    if not is_redis_available():
+        return True
+    try:
+        return bool(
+            get_redis().set(
+                _ops_monitor_lock_key(project_id), "1", nx=True, ex=_OPS_MONITOR_TTL
+            )
+        )
+    except Exception:
+        return True
+
+
+def _refresh_ops_monitor_lock(project_id: str) -> None:
+    from app.core.redis import get_redis, is_redis_available
+
+    if not is_redis_available():
+        return
+    try:
+        get_redis().set(_ops_monitor_lock_key(project_id), "1", ex=_OPS_MONITOR_TTL)
+    except Exception:
+        pass
+
+
+def _release_ops_monitor_lock(project_id: str) -> None:
+    from app.core.redis import get_redis, is_redis_available
+
+    if not is_redis_available():
+        return
+    try:
+        get_redis().delete(_ops_monitor_lock_key(project_id))
+    except Exception:
+        pass
+
+
 def _start_ops_pod_install_monitor(host, project_id: str, clusters: list) -> None:
     """Spawn the ops-pod install-progress monitor as a daemon thread.
 
@@ -2149,6 +2201,15 @@ def _start_ops_pod_install_monitor(host, project_id: str, clusters: list) -> Non
     """
     from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
 
+    # One monitor per project across workers (see _OPS_MONITOR_TTL). If another
+    # worker already runs it, skip — avoids duplicate monitors after a resume.
+    if not _acquire_ops_monitor_lock(project_id):
+        logger.info(
+            "Ops pod monitor %s: already running elsewhere, not starting",
+            project_id[:8],
+        )
+        return
+
     # Hand the monitor a session-detached host copy so it never shares the
     # deploy's Session across threads (see _detached_host_copy).
     mon_host = _detached_host_copy(host.id)
@@ -2158,6 +2219,7 @@ def _start_ops_pod_install_monitor(host, project_id: str, clusters: list) -> Non
             project_id[:8],
             str(host.id)[:8],
         )
+        _release_ops_monitor_lock(project_id)
         return
 
     threading.Thread(
@@ -2764,8 +2826,12 @@ def _monitor_ops_pod_install(
     dead_count = 0
 
     while _t.time() < deadline:
+        _refresh_ops_monitor_lock(
+            project_id
+        )  # heartbeat: keep the per-project lock alive
         if _is_deploy_cancelled(project_id):
             _cancel_ops_pod_install(host, project_id, cluster_keys)
+            _release_ops_monitor_lock(project_id)
             return "cancelled"
         # Persist the raw per-cluster logs (keep-longest) AND use the merged
         # result for phase detection. The ops pod truncates install.log on every
@@ -2819,12 +2885,54 @@ def _monitor_ops_pod_install(
                     logger.exception(
                         "Ops pod %s: reap after install failed", project_id[:8]
                     )
+            _release_ops_monitor_lock(project_id)
             return progress["overall"]
         _t.sleep(poll_interval)
 
     logger.warning("Ops pod %s: install monitor timed out", project_id[:8])
     _finalize_ops_pod_ocp_status(project_id, "timeout", int(_t.time() - start))
+    _release_ops_monitor_lock(project_id)
     return "timeout"
+
+
+def resume_ops_pod_monitors() -> None:
+    """[worker startup] Re-attach install monitors for projects stuck at
+    ocp_status='monitoring' — a prior worker died mid-install (the monitor is a
+    daemon thread), stranding the status with no finalize/harvest/reap. The
+    per-project lock (:func:`_acquire_ops_monitor_lock`) means only one worker
+    actually starts each monitor even with several worker processes. The monitor
+    is idempotent: it re-reads the log and, if the install already completed (the
+    ops pod holds after success), finalizes to ready, harvests creds, and reaps.
+    """
+    from app.core.database import SessionLocal
+    from app.models.host import Host
+    from app.models.project import Project
+    from app.services.template_loader import ocp_install_via
+
+    db = SessionLocal()
+    try:
+        stuck = (
+            db.query(Project)
+            .filter(Project.ocp_status == "monitoring")
+            .filter(Project.state.in_(["active", "stopped"]))
+            .all()
+        )
+        for p in stuck:
+            topo = p.deployed_topology or p.topology or {}
+            if ocp_install_via(topo) != "pod" or not p.host_id:
+                continue
+            clusters = _ocp_clusters(topo)
+            if not clusters:
+                continue
+            host = db.query(Host).filter_by(id=p.host_id).first()
+            if not host:
+                continue
+            logger.info("Resuming ops-pod install monitor for %s", p.id[:8])
+            _start_ops_pod_install_monitor(host, p.id, clusters)
+    except Exception:
+        logger.exception("resume_ops_pod_monitors failed")
+    finally:
+        db.close()
 
 
 def _sync_deployed_container_node(project, container_id: str, topo: dict) -> None:

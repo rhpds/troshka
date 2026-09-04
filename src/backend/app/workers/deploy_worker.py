@@ -99,6 +99,17 @@ def run_worker():
         _POD_NAME,
         ", ".join(queues),
     )
+    # Re-attach any ops-pod install monitor stranded by a prior worker exit
+    # (the monitor is a daemon thread; a restart mid-install leaves ocp_status
+    # at "monitoring" forever). A per-project Redis lock makes this safe across
+    # all worker processes — only the first to acquire actually monitors.
+    try:
+        from app.services.deploy_service import resume_ops_pod_monitors
+
+        resume_ops_pod_monitors()
+    except Exception:
+        _logger.exception("resume_ops_pod_monitors on startup failed")
+
     w = worker_class(queues, connection=conn, name=worker_name)
     w.work()
 
