@@ -3397,7 +3397,15 @@ def reconfigure_project(
         raise HTTPException(status_code=503, detail=_HOST_NOT_AVAILABLE)
 
     current = project.topology or {}
-    _validate_bmc_network(current)
+    # Bastionless (pod) installs provision BMC from the ops pod, so the BMC-has-a-
+    # connected-VM check is skipped. Detect pod-install from the DEPLOYED topology
+    # (authoritative for a deployed project): the canvas topology's `clusters` list
+    # can momentarily drift empty, which would misclassify the project as a bastion
+    # install and reject Apply Changes with a 400 ("BMC network requires ... VM").
+    from app.services.deploy_service import _should_use_ops_pod
+
+    if not _should_use_ops_pod(project.deployed_topology or current):
+        _validate_bmc_network(current)
 
     # Allocate VNIs for new networks before going async
     deployed = project.deployed_topology or {}
