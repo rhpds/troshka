@@ -178,6 +178,11 @@ const sections: PaletteSection[] = [
   },*/
 ];
 
+// The palette OCP STATUS panel is superseded by the per-cluster "Status" button
+// on each cluster box; keep the markup but never render it. Typed boolean (not a
+// literal) so the guarded block's `ocpHealth` narrowing still type-checks.
+const SHOW_PALETTE_OCP_STATUS: boolean = false;
+
 function RJ45Icon({ size = 20 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -463,7 +468,11 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
           )}
         </div>
       )}
-      {ocpHealth && ocpInstallVia !== "pod" && (
+      {/* OCP STATUS panel removed from the palette — superseded by the per-cluster
+          "Status" button on each cluster box (status + install log + kubeadmin
+          password + kubeconfig download, live). Disabled via SHOW_PALETTE_OCP_STATUS
+          rather than deleted to preserve the (bastion-era) markup for reference. */}
+      {ocpHealth && SHOW_PALETTE_OCP_STATUS && ocpInstallVia !== "pod" && (
         <div style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
           <div
             className="palette-section-title"
