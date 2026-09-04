@@ -119,30 +119,6 @@ export function reconcileDeployedClusters(
  * OpenShift cluster" group instead. Mirrors buildClusterDnsRecords' names without
  * importing clusterMaterialize (which would create a store import cycle).
  */
-/**
- * A gateway carrying a deploy-managed showroom port-forward is effectively in
- * port-forward mode, so surface it: set gatewayMode = "nat-portforward" so the
- * Port Forwarding section (which shows the managed route read-only) renders even
- * when the user left the gateway on "NAT (outbound only)". stableNodeData
- * normalizes the same way, so this does not make the canvas read dirty.
- */
-export function reconcileManagedGatewayMode(nodes: Node[]): Node[] {
-  let changed = false;
-  const out = nodes.map((n) => {
-    if (n.type !== "networkNode") return n;
-    const data = n.data as Record<string, unknown>;
-    if (data.subtype !== "gateway") return n;
-    const forwards = data.portForwards as Array<Record<string, unknown>> | undefined;
-    if (!Array.isArray(forwards) || !forwards.some((pf) => pf?.managedByShowroom)) {
-      return n;
-    }
-    if (data.gatewayMode === "nat-portforward") return n;
-    changed = true;
-    return { ...n, data: { ...data, gatewayMode: "nat-portforward" } };
-  });
-  return changed ? out : nodes;
-}
-
 export function reconcileManagedClusterDns(
   nodes: Node[],
   clusters: ClusterConfig[],

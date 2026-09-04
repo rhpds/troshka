@@ -194,10 +194,13 @@ function ensureShowroomGatewayPortForwardsOnNodes(
     return entry;
   });
 
-  // nat-portforward only when a forward is actually EIP-bound; route-served
-  // (no extIpId) forwards need only plain NAT. Mirrors the backend so the
-  // topology doesn't read dirty.
-  const desiredMode = withEip.some((pf) => pf.extIpId) ? "nat-portforward" : "nat";
+  // nat-portforward when a forward is EIP-bound OR a showroom-managed forward is
+  // present (e.g. the route-served 443->showroom on OpenShift-ingress providers,
+  // which has no extIpId) — the backend deploys such a gateway as nat-portforward,
+  // so match it (avoids dirty) and keep the managed route visible in the UI.
+  const desiredMode = withEip.some((pf) => pf.extIpId || pf.managedByShowroom)
+    ? "nat-portforward"
+    : "nat";
   const needsMode = gwData.gatewayMode !== desiredMode;
   const needsPf = !portForwardsEqual(withEip, existing);
   const outboundInject =
