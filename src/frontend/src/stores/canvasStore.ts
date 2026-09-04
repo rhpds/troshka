@@ -1596,7 +1596,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
                 synced.nodes,
                 synced.edges,
               ),
-              ((project.deployed_topology as { clusters?: Array<{ id?: string; ocpVersion?: string }> } | null)
+              ((project.deployed_topology as { clusters?: Array<{ id?: string; ocpVersion?: string; baseDomain?: string }> } | null)
                 ?.clusters) || [],
             ),
             ocpInstallVia: (t.ocpInstallVia as string) || null,

@@ -56,16 +56,25 @@ export function backfillClusterNetworkIds(
  */
 export function reconcileDeployedClusters(
   clusters: ClusterConfig[],
-  deployedClusters: Array<{ id?: string; ocpVersion?: string }>,
+  deployedClusters: Array<{ id?: string; ocpVersion?: string; baseDomain?: string }>,
 ): ClusterConfig[] {
   const deployedById = new Map(
     deployedClusters.filter((c) => c.id).map((c) => [c.id as string, c]),
   );
   return clusters.map((cluster) => {
     const dep = deployedById.get(cluster.id);
-    if (dep?.ocpVersion && dep.ocpVersion !== cluster.ocpVersion) {
-      return { ...cluster, ocpVersion: dep.ocpVersion };
+    if (!dep) return cluster;
+    let out = cluster;
+    if (dep.ocpVersion && dep.ocpVersion !== out.ocpVersion) {
+      out = { ...out, ocpVersion: dep.ocpVersion };
     }
-    return cluster;
+    // baseDomain is fixed at install (baked into every node's DNS). A canvas copy
+    // that drifted (e.g. "ocp.local" vs the deployed "local") both misleads the
+    // UI and — via applyClusterDns setting the network dnsDomain = baseDomain —
+    // leaves the network node perpetually dirty. Deployed value wins.
+    if (dep.baseDomain && dep.baseDomain !== out.baseDomain) {
+      out = { ...out, baseDomain: dep.baseDomain };
+    }
+    return out;
   });
 }
