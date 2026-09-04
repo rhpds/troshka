@@ -125,6 +125,24 @@ cd src/backend
 
 Head revision chain is in `src/backend/alembic/versions/`. FK columns must use `postgresql.UUID(as_uuid=False)` to match the existing schema (not `String(36)`).
 
+## Building Container Images
+
+CI (`.github/workflows/build-images.yml`) builds/pushes all images on push to `main` — normally you just push code. For **manual/local** builds, do NOT build on the local (arm64) podman machine: cross-arch emulation is slow and OOM-prone (native modules like wetty/node-pty). Build natively on an amd64 Troshka host instead:
+
+```bash
+# one image (streams context over SSH, builds with sudo podman, optional push)
+./scripts/build-image-on-host.sh --host <id> \
+  --context src/operator/images/terminal \
+  --tag quay.io/redhat-gpte/troshka-terminal:latest \
+  --build-arg OCP_VERSION=stable --push
+
+# all images (or a subset by short name)
+./scripts/build-all-images-on-host.sh --host <id>            # all, push
+./scripts/build-all-images-on-host.sh --host <id> terminal   # just one
+```
+
+Push reuses your local `podman login` auth (`~/.config/containers/auth.json`), streamed to the host and removed after. Get `<id>` from `./scripts/host-ssh.sh --list`.
+
 ## Detailed References
 
 Deep per-subsystem reference lives in `docs/dev/` (read on demand — not loaded every session):

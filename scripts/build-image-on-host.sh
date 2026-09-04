@@ -33,14 +33,27 @@ AUTHFILE="${REGISTRY_AUTH_FILE:-$HOME/.config/containers/auth.json}"
 HOST=""
 CONTEXT=""
 TAG=""
+FILE=""
 PUSH=false
 BUILD_ARGS=()
+
+# Heavy dirs to keep out of the streamed context (mirrors .dockerignore). Podman
+# also honours .dockerignore on the host, but excluding here avoids shipping
+# hundreds of MB (node_modules/venv/.git) over SSH in the first place.
+TAR_EXCLUDES=(
+    --exclude='./.git' --exclude='*/.git'
+    --exclude='./node_modules' --exclude='*/node_modules'
+    --exclude='*/.next' --exclude='*/venv' --exclude='*/.venv'
+    --exclude='*/__pycache__' --exclude='*.pyc'
+    --exclude='./.claude' --exclude='./.superpowers' --exclude='./.playwright-mcp'
+)
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --host) HOST="$2"; shift 2 ;;
         --context) CONTEXT="$2"; shift 2 ;;
         --tag) TAG="$2"; shift 2 ;;
+        --file|-f) FILE="$2"; shift 2 ;;
         --push) PUSH=true; shift ;;
         --build-arg) BUILD_ARGS+=(--build-arg "$2"); shift 2 ;;
         -h|--help)
@@ -50,28 +63,35 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$HOST" || -z "$CONTEXT" || -z "$TAG" ]]; then
-    echo "Usage: build-image-on-host.sh --host <id> --context <dir> --tag <image:tag> [--push] [--build-arg K=V]..." >&2
+    echo "Usage: build-image-on-host.sh --host <id> --context <dir> --tag <image:tag> [--file <containerfile>] [--push] [--build-arg K=V]..." >&2
     exit 1
 fi
 if [[ ! -d "$CONTEXT" ]]; then
     echo "Error: context dir not found: $CONTEXT" >&2
     exit 1
 fi
-if [[ ! -f "$CONTEXT/Dockerfile" && ! -f "$CONTEXT/Containerfile" ]]; then
-    echo "Error: no Dockerfile/Containerfile in $CONTEXT" >&2
+if [[ -n "$FILE" ]]; then
+    if [[ ! -f "$CONTEXT/$FILE" ]]; then
+        echo "Error: containerfile not found: $CONTEXT/$FILE" >&2
+        exit 1
+    fi
+elif [[ ! -f "$CONTEXT/Dockerfile" && ! -f "$CONTEXT/Containerfile" ]]; then
+    echo "Error: no Dockerfile/Containerfile in $CONTEXT (or pass --file)" >&2
     exit 1
 fi
 
 RDIR="/tmp/troshka-build-$(date +%s)-$$"
 echo ">> Streaming build context ($CONTEXT) to host $HOST:$RDIR"
-tar czf - -C "$CONTEXT" . | "$HOST_SSH" "$HOST" "mkdir -p '$RDIR' && tar xzf - -C '$RDIR'"
+tar czf - "${TAR_EXCLUDES[@]}" -C "$CONTEXT" . | "$HOST_SSH" "$HOST" "mkdir -p '$RDIR' && tar xzf - -C '$RDIR'"
 
 # shellcheck disable=SC2016 - $RDIR/$TAG are expanded locally into the remote cmd on purpose
 BUILD_ARG_STR=""
 for a in "${BUILD_ARGS[@]}"; do BUILD_ARG_STR+=" $a"; done
+FILE_STR=""
+[[ -n "$FILE" ]] && FILE_STR=" -f '$FILE'"
 
 echo ">> Building $TAG natively on $HOST"
-"$HOST_SSH" "$HOST" "cd '$RDIR' && sudo podman build${BUILD_ARG_STR} -t '$TAG' . && sudo podman image inspect '$TAG' --format 'built {{.Id}} ({{.Architecture}})'"
+"$HOST_SSH" "$HOST" "cd '$RDIR' && sudo podman build${BUILD_ARG_STR}${FILE_STR} -t '$TAG' . && sudo podman image inspect '$TAG' --format 'built {{.Id}} ({{.Architecture}})'"
 
 if [[ "$PUSH" == "true" ]]; then
     if [[ ! -f "$AUTHFILE" ]]; then
