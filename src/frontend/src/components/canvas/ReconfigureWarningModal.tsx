@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import type { TopologyDiffEntry } from "@/stores/canvasStore";
 
 interface Change {
   type: "iso" | "disk";
@@ -11,11 +12,69 @@ interface Change {
 
 interface Props {
   changes: Change[];
+  diff: TopologyDiffEntry[];
   onConfirm: (restartVmIds: string[]) => void;
   onCancel: () => void;
 }
 
-export default function ReconfigureWarningModal({ changes, onConfirm, onCancel }: Props) {
+const RESOURCE_ICONS: Record<string, string> = {
+  VM: "🖥",
+  Network: "🌐",
+  Gateway: "☁",
+  Storage: "💽",
+  Container: "📦",
+  Showroom: "📖",
+  Cluster: "☸",
+  "External IP": "🌍",
+  Connection: "🔗",
+};
+
+const KIND_COLORS: Record<string, string> = {
+  added: "#4ade80",
+  removed: "#f87171",
+  modified: "#fbbf24",
+};
+
+function DiffEntryRow({ entry }: { entry: TopologyDiffEntry }) {
+  return (
+    <div style={{ padding: "8px 0", fontSize: 13, borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span aria-hidden style={{ width: 16, textAlign: "center" }}>{RESOURCE_ICONS[entry.resourceType] || "▪"}</span>
+        <span style={{ color: "var(--troshka-text-dim)" }}>{entry.resourceType}</span>
+        <strong>{entry.name}</strong>
+        <span
+          style={{
+            marginLeft: "auto",
+            fontSize: 11,
+            fontWeight: 600,
+            textTransform: "uppercase",
+            letterSpacing: 0.4,
+            color: KIND_COLORS[entry.kind] || "var(--troshka-text-dim)",
+          }}
+        >
+          {entry.kind}
+        </span>
+      </div>
+      {entry.fields.length > 0 && (
+        <div style={{ marginTop: 4, marginLeft: 24 }}>
+          {entry.fields.map((f) => (
+            <div
+              key={f.key}
+              style={{ display: "flex", gap: 8, alignItems: "baseline", fontSize: 12, padding: "1px 0" }}
+            >
+              <span style={{ minWidth: 130, color: "var(--troshka-text-dim)" }}>{f.label}</span>
+              <span style={{ textDecoration: "line-through", opacity: 0.6 }}>{f.from}</span>
+              <span style={{ opacity: 0.6 }}>→</span>
+              <span style={{ color: "var(--troshka-text)", fontWeight: 500 }}>{f.to}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function ReconfigureWarningModal({ changes, diff, onConfirm, onCancel }: Props) {
   const isoChanges = changes.filter((c) => c.type === "iso");
   const diskChanges = changes.filter((c) => c.type === "disk");
   const [restartVmIds, setRestartVmIds] = useState<Set<string>>(new Set());
@@ -29,14 +88,29 @@ export default function ReconfigureWarningModal({ changes, onConfirm, onCancel }
     });
   };
 
+  const hasWarnings = isoChanges.length > 0 || diskChanges.length > 0;
+
   return (
     <div className="start-order-overlay" onClick={onCancel}>
-      <div className="start-order-modal" style={{ maxWidth: 520 }} onClick={(e) => e.stopPropagation()}>
+      <div className="start-order-modal" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
         <div className="start-order-header">
           <span>Apply Changes</span>
           <button onClick={onCancel}>&#x2715;</button>
         </div>
-        <div className="start-order-body" style={{ padding: 16 }}>
+        <div className="start-order-body" style={{ padding: 16, maxHeight: "60vh", overflowY: "auto" }}>
+          {diff.length > 0 && (
+            <div style={{ marginBottom: hasWarnings ? 16 : 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>
+                {diff.length} change{diff.length !== 1 ? "s" : ""} will be applied to the deployed environment
+              </div>
+              {diff.map((entry) => (
+                <DiffEntryRow key={`${entry.resourceType}:${entry.id}:${entry.kind}`} entry={entry} />
+              ))}
+            </div>
+          )}
+          {diff.length === 0 && !hasWarnings && (
+            <p style={{ fontSize: 13, color: "var(--troshka-text-dim)" }}>No topology changes detected.</p>
+          )}
           {isoChanges.length > 0 && (
             <div style={{ marginBottom: diskChanges.length > 0 ? 16 : 0 }}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>ISO Changes</div>

@@ -8,7 +8,7 @@ import Palette from "@/components/canvas/Palette";
 import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
-import { useCanvasStore, computeTopologyDirty, setLatestVmStates, setLatestContainerStates, type ExternalIp } from "@/stores/canvasStore";
+import { useCanvasStore, computeTopologyDirty, computeTopologyDiff, setLatestVmStates, setLatestContainerStates, type ExternalIp, type TopologyDiffEntry } from "@/stores/canvasStore";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
@@ -408,6 +408,7 @@ export default function ProjectCanvasPage() {
   }, [projectId, projectState]);
 
   const [reconfigWarnings, setReconfigWarnings] = useState<{ type: "iso" | "disk"; storageName: string; vmName: string; vmId: string }[] | null>(null);
+  const [reconfigDiff, setReconfigDiff] = useState<TopologyDiffEntry[]>([]);
 
   const saveTopology = async () => {
     const s = useCanvasStore.getState();
@@ -420,6 +421,7 @@ export default function ProjectCanvasPage() {
 
   const doReconfigure = async (restartVmIds?: string[]) => {
     setReconfigWarnings(null);
+    setReconfigDiff([]);
     setDeployError(null);
     setApplyingChanges(true);
     try {
@@ -477,9 +479,15 @@ export default function ProjectCanvasPage() {
         if (vmId) changes.push({ type: "disk", storageName: curData.name as string, vmName, vmId: vmId });
       }
     }
-    if (changes.length > 0) {
+    // Semantic diff of everything that will be applied (same source of truth as
+    // the Apply Changes dirty state), shown in the review modal alongside any
+    // ISO/disk data-loss warnings.
+    const diff = computeTopologyDiff(cur);
+    if (diff.length > 0 || changes.length > 0) {
+      setReconfigDiff(diff);
       setReconfigWarnings(changes);
     } else {
+      // Nothing to preview (shouldn't happen while the button is enabled) — apply.
       doReconfigure();
     }
   };
@@ -1057,8 +1065,9 @@ export default function ProjectCanvasPage() {
       {reconfigWarnings && (
         <ReconfigureWarningModal
           changes={reconfigWarnings}
+          diff={reconfigDiff}
           onConfirm={(restartVmIds) => doReconfigure(restartVmIds)}
-          onCancel={() => setReconfigWarnings(null)}
+          onCancel={() => { setReconfigWarnings(null); setReconfigDiff([]); }}
         />
       )}
       {showPatternModal && (

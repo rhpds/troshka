@@ -271,7 +271,9 @@ interface CanvasState {
   deployedVmIds: Set<string>;
   deployedDiskSizes: Record<string, number>;
   deployedNodeData: Record<string, string>;
+  deployedNodeMeta: Record<string, { type: string; name: string }>;
   deployedEdgeKey: string;
+  deployedEdges: Array<{ source: string; sourceHandle?: string; target: string; targetHandle?: string }>;
   deployedExternalIps: string;
   deployedClusters: string;
   showMinimap: boolean;
@@ -696,22 +698,28 @@ export function stableClusterKey(clusters: ClusterConfig[] | undefined): string 
 
 function buildDeployedBaseline(deployed: DeployedTopologySnapshot | null | undefined) {
   const depNodeData: Record<string, string> = {};
+  const depMeta: Record<string, { type: string; name: string }> = {};
   const depSizes: Record<string, number> = {};
   for (const n of deployed?.nodes || []) {
     if (n.type === "storageNode" && n.data?.size) {
       depSizes[n.id] = n.data.size as number;
     }
     depNodeData[n.id] = stableStringify(stableNodeData(n.data || {}));
+    depMeta[n.id] = {
+      type: n.type || "",
+      name: _nodeDisplayName({ id: n.id, data: n.data }),
+    };
   }
-  const depEdgeKey = (deployed?.edges || [])
-    .filter((e) => !isShowroomGatewayEdge(e as unknown as Edge))
-    .map(edgeCompareKey)
-    .sort()
-    .join("|");
+  const depEdges = (deployed?.edges || []).filter(
+    (e) => !isShowroomGatewayEdge(e as unknown as Edge),
+  );
+  const depEdgeKey = depEdges.map(edgeCompareKey).sort().join("|");
   return {
     deployedDiskSizes: depSizes,
     deployedNodeData: depNodeData,
+    deployedNodeMeta: depMeta,
     deployedEdgeKey: depEdgeKey,
+    deployedEdges: depEdges,
     deployedExternalIps: stableExternalIpsKey(deployed?.externalIps),
     deployedClusters: stableClusterKey(
       deployed?.clusters as ClusterConfig[] | undefined,
@@ -754,33 +762,248 @@ export function stableExternalIpsKey(ips: ExternalIp[] | undefined): string {
   );
 }
 
-export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; deployedNodeData: Record<string, string>; deployedEdgeKey: string; externalIps?: ExternalIp[]; deployedExternalIps?: string; clusters?: ClusterConfig[]; deployedClusters?: string }): boolean {
-  const { nodes, edges, deployedNodeData, deployedEdgeKey } = state;
-  if (!deployedEdgeKey && !Object.keys(deployedNodeData).length) return false;
-  const currentNodeIds = nodes.map((n) => n.id).sort().join(",");
-  const deployedNodeIds = Object.keys(deployedNodeData).sort().join(",");
-  if (currentNodeIds !== deployedNodeIds) return true;
-  const edgeKey = edges
-    .filter((e) => !isShowroomGatewayEdge(e))
-    .map(edgeCompareKey)
-    .sort()
-    .join("|");
-  if (edgeKey !== deployedEdgeKey) return true;
-  for (const n of nodes) {
-    const deployed = deployedNodeData[n.id];
-    if (!deployed) return true;
-    if (stableStringify(stableNodeData((n.data || {}) as Record<string, unknown>)) !== deployed) return true;
+// A single changed field within a modified resource (canvas vs deployed).
+export type TopologyDiffField = { key: string; label: string; from: string; to: string };
+
+// One pending change surfaced in the Apply-Changes review modal. `kind` is
+// added/removed/modified; `fields` is populated only for `modified`.
+export type TopologyDiffEntry = {
+  kind: "added" | "removed" | "modified";
+  resourceType: string;
+  name: string;
+  id: string;
+  fields: TopologyDiffField[];
+};
+
+export type TopologyDiffState = {
+  nodes: Node[];
+  edges: Edge[];
+  deployedNodeData: Record<string, string>;
+  deployedNodeMeta?: Record<string, { type: string; name: string }>;
+  deployedEdgeKey: string;
+  deployedEdges?: Array<{ source: string; sourceHandle?: string; target: string; targetHandle?: string }>;
+  externalIps?: ExternalIp[];
+  deployedExternalIps?: string;
+  clusters?: ClusterConfig[];
+  deployedClusters?: string;
+};
+
+// Human-friendly node display name (name > label > id) — shared by the diff and
+// the deployed baseline so both label a node identically.
+function _nodeDisplayName(n: { id: string; data?: Record<string, unknown> }): string {
+  const d = n.data || {};
+  return String(d.name || d.label || n.id);
+}
+
+// Friendly resource-type label from a node's type + subtype.
+function _nodeResourceLabel(type: string | undefined, data?: Record<string, unknown>): string {
+  const d = data || {};
+  if (type === "vmNode") return "VM";
+  if (type === "storageNode") return "Storage";
+  if (type === "containerNode") return d.isShowroom ? "Showroom" : "Container";
+  if (type === "networkNode") return d.subtype === "gateway" ? "Gateway" : "Network";
+  return "Node";
+}
+
+const _MEMORY_KEY_RE = /memory|ram/i;
+
+// Compact, human-readable rendering of one field value for the diff UI.
+function _formatDiffValue(key: string, v: unknown): string {
+  if (v === null || v === undefined || v === "") return "(none)";
+  if (typeof v === "boolean") return v ? "Yes" : "No";
+  if (Array.isArray(v)) {
+    if (v.length === 0) return "(none)";
+    const first = v[0] as Record<string, unknown> | undefined;
+    if (first && typeof first === "object" && "extPort" in first) {
+      return (v as Array<Record<string, unknown>>)
+        .map((pf) => `${pf.extPort}→${pf.intIp}:${pf.intPort}`)
+        .join(", ");
+    }
+    return `${v.length} item${v.length !== 1 ? "s" : ""}`;
   }
-  // External IPs (add/remove/rename) — compared by desired fields only. Set
-  // together with deployedNodeData on load, so it is populated by this point.
-  if (state.deployedExternalIps !== undefined && stableExternalIpsKey(state.externalIps) !== state.deployedExternalIps) return true;
-  // Cluster sizing/config lives only in clusters[] (not on any node.data): a
-  // change to controlPlaneCpu/Memory/Disk, workerCpu/Memory/Disk, ocpVersion,
-  // pullThroughRegistry, apiVip/ingressVip, baseDomain, type or workers must
-  // still mark the topology dirty. Compared with the same order-insensitive
-  // serialization used for the deployed baseline.
-  if (state.deployedClusters !== undefined && stableClusterKey(state.clusters) !== state.deployedClusters) return true;
-  return false;
+  if (typeof v === "object") return "(set)";
+  if (typeof v === "number" && _MEMORY_KEY_RE.test(key)) return `${v} MB`;
+  return String(v);
+}
+
+// camelCase / snake / kebab -> "Title case" label.
+function _humanizeKey(key: string): string {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function _safeParseObj(s: string): Record<string, unknown> {
+  try {
+    return JSON.parse(s) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+// Field-level diff between two already-normalized (stableNodeData) objects.
+// Values are compared with stableStringify so key order never shows as a change.
+function _diffObjectFields(
+  from: Record<string, unknown>,
+  to: Record<string, unknown>,
+): TopologyDiffField[] {
+  const out: TopologyDiffField[] = [];
+  for (const key of new Set([...Object.keys(from), ...Object.keys(to)])) {
+    const a = from[key];
+    const b = to[key];
+    if (stableStringify(a ?? null) === stableStringify(b ?? null)) continue;
+    out.push({
+      key,
+      label: _humanizeKey(key),
+      from: _formatDiffValue(key, a),
+      to: _formatDiffValue(key, b),
+    });
+  }
+  return out;
+}
+
+function _diffNodes(state: TopologyDiffState): TopologyDiffEntry[] {
+  const { nodes, deployedNodeData } = state;
+  const meta = state.deployedNodeMeta || {};
+  const out: TopologyDiffEntry[] = [];
+  const canvasIds = new Set(nodes.map((n) => n.id));
+  for (const n of nodes) {
+    const data = (n.data || {}) as Record<string, unknown>;
+    const resourceType = _nodeResourceLabel(n.type, data);
+    const name = _nodeDisplayName({ id: n.id, data });
+    const deployed = deployedNodeData[n.id];
+    if (!deployed) {
+      out.push({ kind: "added", resourceType, name, id: n.id, fields: [] });
+      continue;
+    }
+    const fields = _diffObjectFields(_safeParseObj(deployed), stableNodeData(data));
+    if (fields.length) out.push({ kind: "modified", resourceType, name, id: n.id, fields });
+  }
+  for (const id of Object.keys(deployedNodeData)) {
+    if (canvasIds.has(id)) continue;
+    const m = meta[id];
+    out.push({
+      kind: "removed",
+      resourceType: m ? _nodeResourceLabel(m.type) : "Node",
+      name: m?.name || id,
+      id,
+      fields: [],
+    });
+  }
+  return out;
+}
+
+function _edgeEndpoints(
+  e: { source: string; target: string },
+  nameById: Record<string, string>,
+): string {
+  return `${nameById[e.source] || e.source} → ${nameById[e.target] || e.target}`;
+}
+
+function _diffEdgeConnections(state: TopologyDiffState): TopologyDiffEntry[] {
+  const canvasEdges = state.edges.filter((e) => !isShowroomGatewayEdge(e));
+  const deployedEdges = (state.deployedEdges || []).filter(
+    (e) => !isShowroomGatewayEdge(e as unknown as Edge),
+  );
+  const canvasKeys = new Set(canvasEdges.map(edgeCompareKey));
+  const deployedKeys = new Set(deployedEdges.map(edgeCompareKey));
+  const nameById: Record<string, string> = {};
+  for (const n of state.nodes) {
+    nameById[n.id] = _nodeDisplayName({ id: n.id, data: n.data as Record<string, unknown> });
+  }
+  for (const [id, m] of Object.entries(state.deployedNodeMeta || {})) {
+    if (!nameById[id]) nameById[id] = m.name;
+  }
+  const out: TopologyDiffEntry[] = [];
+  for (const e of canvasEdges) {
+    if (!deployedKeys.has(edgeCompareKey(e))) {
+      out.push({ kind: "added", resourceType: "Connection", name: _edgeEndpoints(e, nameById), id: e.id, fields: [] });
+    }
+  }
+  for (const e of deployedEdges) {
+    const key = edgeCompareKey(e);
+    if (!canvasKeys.has(key)) {
+      out.push({ kind: "removed", resourceType: "Connection", name: _edgeEndpoints(e, nameById), id: key, fields: [] });
+    }
+  }
+  return out;
+}
+
+function _diffExternalIps(state: TopologyDiffState): TopologyDiffEntry[] {
+  if (state.deployedExternalIps === undefined) return [];
+  const curKey = stableExternalIpsKey(state.externalIps);
+  if (curKey === state.deployedExternalIps) return [];
+  const cur = JSON.parse(curKey) as Array<{ name: string; ip: string }>;
+  const dep = JSON.parse(state.deployedExternalIps) as Array<{ name: string; ip: string }>;
+  const depByName = new Map(dep.map((e) => [e.name, e]));
+  const curByName = new Map(cur.map((e) => [e.name, e]));
+  const out: TopologyDiffEntry[] = [];
+  for (const e of cur) {
+    const d = depByName.get(e.name);
+    if (!d) {
+      out.push({ kind: "added", resourceType: "External IP", name: e.name, id: e.name, fields: [] });
+    } else if (d.ip !== e.ip) {
+      out.push({
+        kind: "modified", resourceType: "External IP", name: e.name, id: e.name,
+        fields: [{ key: "ip", label: "IP", from: _formatDiffValue("ip", d.ip), to: _formatDiffValue("ip", e.ip) }],
+      });
+    }
+  }
+  for (const e of dep) {
+    if (!curByName.has(e.name)) {
+      out.push({ kind: "removed", resourceType: "External IP", name: e.name, id: e.name, fields: [] });
+    }
+  }
+  return out;
+}
+
+function _diffClusters(state: TopologyDiffState): TopologyDiffEntry[] {
+  if (state.deployedClusters === undefined) return [];
+  const curKey = stableClusterKey(state.clusters);
+  if (curKey === state.deployedClusters) return [];
+  const cur = JSON.parse(curKey) as Array<Record<string, unknown>>;
+  const dep = JSON.parse(state.deployedClusters) as Array<Record<string, unknown>>;
+  const depById = new Map(dep.map((c) => [String(c.id), c]));
+  const curById = new Map(cur.map((c) => [String(c.id), c]));
+  const out: TopologyDiffEntry[] = [];
+  for (const c of cur) {
+    const id = String(c.id);
+    const name = String(c.name || id);
+    const d = depById.get(id);
+    if (!d) {
+      out.push({ kind: "added", resourceType: "Cluster", name, id, fields: [] });
+      continue;
+    }
+    const fields = _diffObjectFields(d, c);
+    if (fields.length) out.push({ kind: "modified", resourceType: "Cluster", name, id, fields });
+  }
+  for (const c of dep) {
+    const id = String(c.id);
+    if (!curById.has(id)) {
+      out.push({ kind: "removed", resourceType: "Cluster", name: String(c.name || id), id, fields: [] });
+    }
+  }
+  return out;
+}
+
+// The full set of pending changes (canvas vs deployed baseline), across all five
+// dimensions the dirty check covers. This is the single source of truth for both
+// the Apply-Changes review modal and `computeTopologyDirty` (a non-empty diff ==
+// dirty), so the button state and the modal contents can never disagree.
+export function computeTopologyDiff(state: TopologyDiffState): TopologyDiffEntry[] {
+  if (!state.deployedEdgeKey && !Object.keys(state.deployedNodeData).length) return [];
+  return [
+    ..._diffNodes(state),
+    ..._diffEdgeConnections(state),
+    ..._diffExternalIps(state),
+    ..._diffClusters(state),
+  ];
+}
+
+export function computeTopologyDirty(state: TopologyDiffState): boolean {
+  return computeTopologyDiff(state).length > 0;
 }
 
 function syncShowroomGatewayState(
@@ -834,7 +1057,9 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   deployedVmIds: new Set<string>(),
   deployedDiskSizes: {} as Record<string, number>,
   deployedNodeData: {} as Record<string, string>,
+  deployedNodeMeta: {} as Record<string, { type: string; name: string }>,
   deployedEdgeKey: "",
+  deployedEdges: [] as Array<{ source: string; sourceHandle?: string; target: string; targetHandle?: string }>,
   deployedExternalIps: "[]",
   deployedClusters: "[]",
   topologyDirty: false,
