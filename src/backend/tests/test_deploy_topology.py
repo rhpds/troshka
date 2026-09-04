@@ -1289,3 +1289,53 @@ def test_find_vm_name_by_ip_recognizes_ops_pod():
 
     topo = {"nodes": []}
     assert _find_vm_name_by_ip(topo, "172.30.10.4") == "ops"
+
+
+def test_build_vms_def_from_topology_maps_nic_to_network():
+    from app.services.deploy_topology import build_vms_def_from_topology
+
+    topo = {
+        "nodes": [
+            {"id": "net-mgmt", "type": "networkNode", "data": {"name": "mgmt"}},
+            {
+                "id": "vm-cp0",
+                "type": "vmNode",
+                "data": {
+                    "name": "cp-0",
+                    "loginUser": "core",
+                    "nics": [{"id": "nic-1", "ip": "10.0.0.10"}],
+                },
+            },
+        ],
+        "edges": [
+            {
+                "source": "net-mgmt",
+                "target": "vm-cp0",
+                "targetHandle": "nic-1-left",
+            }
+        ],
+    }
+    vms_def, vm_name_to_id = build_vms_def_from_topology(topo)
+
+    assert vm_name_to_id == {"cp-0": "vm-cp0"}
+    nics = vms_def["cp-0"]["nics"]
+    assert nics == [{"network": "mgmt", "ip": "10.0.0.10"}]
+    assert vms_def["cp-0"]["login_user"] == "core"
+
+
+def test_build_vms_def_from_topology_unconnected_nic_has_empty_network():
+    from app.services.deploy_topology import build_vms_def_from_topology
+
+    topo = {
+        "nodes": [
+            {
+                "id": "vm-x",
+                "type": "vmNode",
+                "data": {"name": "x", "nics": [{"id": "nic-9", "ip": "1.2.3.4"}]},
+            }
+        ],
+        "edges": [],
+    }
+    vms_def, _ = build_vms_def_from_topology(topo)
+    assert vms_def["x"]["nics"] == [{"network": "", "ip": "1.2.3.4"}]
+    assert vms_def["x"]["login_user"] == "cloud-user"

@@ -832,6 +832,51 @@ def _build_pod_containers(disk_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def _showroom_disk_id(showroom_node: dict[str, Any]) -> str | None:
+    """Return the diskNodeId the showroom pod mounts at /showroom, or None."""
+    for mount in showroom_node.get("data", {}).get("mounts", []):
+        if mount.get("mountPath") == "/showroom" and mount.get("diskNodeId"):
+            return str(mount["diskNodeId"])
+    return None
+
+
+def regenerate_showroom_containers(
+    showroom_node: dict[str, Any],
+    vms_def: dict[str, Any],
+    vm_name_to_id: dict[str, str],
+) -> None:
+    """Rebuild an existing showroom node's init/pod containers + nginx/ui-config in
+    place from its ``showroomTabs``.
+
+    The backend is authoritative for the deployed showroom container spec: the
+    frontend materialization is incomplete (e.g. it does not emit the cluster
+    terminal's wetty container or the fresh oc-fetch command), so replaying the
+    persisted spec on reconfigure leaves the terminal/console broken. Preserves the
+    node + disk ids; the app-proxy tab URLs are filled later by the route step.
+    """
+    data = showroom_node.get("data", {})
+    disk_id = _showroom_disk_id(showroom_node)
+    if not disk_id:
+        return
+    tabs = data.get("showroomTabs") or []
+    resolved = resolve_showroom_tabs(tabs, vms_def, vm_name_to_id)
+    nginx_b64 = base64.b64encode(build_nginx_config(resolved).encode()).decode()
+    ui_config_b64 = base64.b64encode(build_ui_config_yaml(resolved).encode()).decode()
+    content_repo = str(data.get("contentRepo", ""))
+    content_ref = str(data.get("contentRef", "main"))
+
+    init_containers = _build_init_containers(
+        content_repo, content_ref, nginx_b64, ui_config_b64, disk_id
+    )
+    if any(item.get("ocTerminal") for item in resolved):
+        init_containers.append(_build_oc_fetch_init(disk_id))
+    pod_containers = _build_pod_containers(disk_id) + _build_wetty_containers(
+        resolved, tabs, vms_def, vm_name_to_id, disk_id
+    )
+    data["initContainers"] = init_containers
+    data["podContainers"] = pod_containers
+
+
 def build_showroom_from_config(
     showroom_cfg: dict[str, Any],
     vm_name_to_id: dict[str, str],

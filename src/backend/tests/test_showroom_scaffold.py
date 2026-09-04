@@ -743,3 +743,87 @@ def test_no_oc_fetch_without_cluster_terminal():
     ctr_node, *_ = build_showroom_from_config(cfg, {}, {}, {}, 0, 0)
     init_names = [c["name"] for c in ctr_node["data"]["initContainers"]]
     assert "oc-fetch" not in init_names
+
+
+# ---------------------------------------------------------------------------
+# regenerate_showroom_containers: rebuild an existing node's spec from its tabs
+# ---------------------------------------------------------------------------
+
+
+def _showroom_node_with_cluster_terminal():
+    """A showroom node whose podContainers are MISSING the wetty-clusters
+    container (as the frontend materialization leaves it) but whose showroomTabs
+    include a cluster terminal + app-proxy console."""
+    tabs = parse_template_tabs(
+        [
+            {"type": "terminal", "target": "clusters", "name": "Cluster Terminal"},
+        ],
+        {},
+        {},
+        {},
+        [],
+    )
+    return {
+        "id": "ctr-showroom",
+        "type": "containerNode",
+        "data": {
+            "name": "showroom",
+            "isShowroom": True,
+            "contentRepo": "https://example.com/repo.git",
+            "contentRef": "main",
+            "showroomTabs": tabs,
+            "mounts": [{"diskNodeId": "disk-abc", "mountPath": "/showroom"}],
+            # deliberately incomplete: only proxy + content, no wetty-clusters
+            "podContainers": [{"name": "proxy"}, {"name": "content"}],
+            "initContainers": [{"name": "git-cloner"}],
+        },
+    }
+
+
+def test_regenerate_showroom_containers_adds_wetty_and_oc_fetch():
+    import base64
+
+    from app.services.showroom_scaffold import regenerate_showroom_containers
+
+    node = _showroom_node_with_cluster_terminal()
+    regenerate_showroom_containers(node, {}, {})
+    data = node["data"]
+
+    pod_names = [c["name"] for c in data["podContainers"]]
+    assert "wetty-clusters" in pod_names  # was missing before
+    assert "proxy" in pod_names and "content" in pod_names
+
+    init_names = [c["name"] for c in data["initContainers"]]
+    assert "oc-fetch" in init_names
+
+    oc_fetch = next(c for c in data["initContainers"] if c["name"] == "oc-fetch")
+    import re
+
+    b64 = re.search(
+        r"echo ([A-Za-z0-9+/=]+) \| base64 -d > /showroom/bin/cluster-shell",
+        oc_fetch["command"],
+    ).group(1)
+    shell = base64.b64decode(b64).decode()
+    # current generator drops privileges via su (not util-linux setpriv)
+    assert "su -m" in shell
+    assert "setpriv" not in shell
+
+
+def test_regenerate_showroom_containers_preserves_disk_id():
+    from app.services.showroom_scaffold import regenerate_showroom_containers
+
+    node = _showroom_node_with_cluster_terminal()
+    regenerate_showroom_containers(node, {}, {})
+    for c in node["data"]["initContainers"] + node["data"]["podContainers"]:
+        for m in c.get("mounts", []):
+            assert m["diskNodeId"] == "disk-abc"
+
+
+def test_regenerate_showroom_containers_noop_without_disk():
+    from app.services.showroom_scaffold import regenerate_showroom_containers
+
+    node = _showroom_node_with_cluster_terminal()
+    node["data"]["mounts"] = []  # no /showroom disk -> cannot regenerate
+    before = node["data"]["podContainers"]
+    regenerate_showroom_containers(node, {}, {})
+    assert node["data"]["podContainers"] is before  # unchanged

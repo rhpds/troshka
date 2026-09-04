@@ -4550,33 +4550,69 @@ def _showroom_config_changed(cur: dict | None, dep: dict | None) -> bool:
     return any(cd.get(k) != dd.get(k) for k in keys)
 
 
+def _prepare_showroom_topology(
+    h, p_id: str, current: dict, cur: dict, vni_map: dict, s
+):
+    """Regenerate the showroom container spec + provider routes into ``current`` and
+    persist it, so the container redeploy (which reloads topology from the DB) sees
+    the complete, current spec.
+
+    The frontend materialization is incomplete for cluster terminals / app-proxy, so
+    we rebuild the showroom node's init/pod containers + nginx/ui-config from the
+    authoritative backend generator, (re)inject the gateway showroom forward, and
+    create the provider routes (which also fills the app-proxy console tab URL into
+    the ui-config)."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.deploy_service import _deploy_create_provider_routes
+    from app.services.deploy_topology import (
+        build_vms_def_from_topology,
+        inject_showroom_gateway_port_forwards,
+    )
+    from app.services.showroom_scaffold import regenerate_showroom_containers
+
+    vms_def, vm_name_to_id = build_vms_def_from_topology(current)
+    regenerate_showroom_containers(cur, vms_def, vm_name_to_id)
+    provider = getattr(h, "provider_type", None) or ""
+    inject_showroom_gateway_port_forwards(current, vni_map, provider)
+    _deploy_create_provider_routes(s, p_id, current, host=h)
+
+    proj = s.query(Project).filter_by(id=p_id).first()
+    if proj is not None:
+        proj.topology = current
+        flag_modified(proj, "topology")
+        s.commit()
+
+
 def _reconfigure_showroom(
     h, p_id: str, current: dict, deployed: dict, vni_map: dict, s, errors: list
 ):
-    """Redeploy the showroom container when its config changed (invisible to the
-    VM/network diff), then RE-ESTABLISH its infra networking + gateway port-forward
-    (the redeploy destroys the pod, dropping its infra IP + the gateway DNAT), and
-    (re)inject the cluster terminal's kubeconfig. Best-effort: a failure is
-    recorded but doesn't fail the reconfigure."""
+    """Regenerate + redeploy the showroom container when its config changed
+    (invisible to the VM/network diff), then RE-ESTABLISH its infra networking +
+    gateway port-forward (the redeploy destroys the pod, dropping its infra IP + the
+    gateway DNAT) and (re)inject the cluster terminal's kubeconfig. Best-effort: a
+    failure is recorded but doesn't fail the reconfigure."""
     from app.services.deploy_service import (
         _inject_stored_cluster_kubeconfigs,
         _setup_networks_via_troshkad,
         redeploy_container_bg,
     )
-    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
     from app.services.showroom_scaffold import _find_showroom_container
 
     cur = _find_showroom_container(current)
     if not cur or not _showroom_config_changed(cur, _find_showroom_container(deployed)):
         return
     try:
+        # Rebuild the showroom spec (containers/nginx/ui) + provider routes from the
+        # authoritative backend generator and persist it BEFORE the redeploy, which
+        # reloads topology from the DB — otherwise the pod is recreated from the
+        # incomplete frontend-materialized spec (missing cluster-terminal container,
+        # unfilled console proxy URL, stale oc-fetch command).
+        _prepare_showroom_topology(h, p_id, current, cur, vni_map, s)
         redeploy_container_bg(p_id, cur["id"])
         # The pod was destroyed+recreated: its gateway port-forward (ext -> showroom
-        # infra IP) and infra attachment were torn down. Re-inject the forward and
-        # re-run network setup so external access (e.g. :443 -> showroom) is restored
-        # against the fresh pod — otherwise the showroom loses port forwarding.
-        provider = getattr(h, "provider_type", None) or ""
-        inject_showroom_gateway_port_forwards(current, vni_map, provider)
+        # infra IP) and infra attachment were torn down. Re-run network setup so
+        # external access (e.g. :443 -> showroom) is restored against the fresh pod.
         _setup_networks_via_troshkad(h, current, vni_map, s, p_id)
         _inject_stored_cluster_kubeconfigs(h, p_id, current)
     except Exception as e:  # noqa: BLE001 - best-effort, surfaced via errors

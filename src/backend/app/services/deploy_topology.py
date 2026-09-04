@@ -690,6 +690,77 @@ def _extract_vms(topology: dict) -> list[dict]:
     return vms
 
 
+def _network_names_by_id(topology: dict) -> dict[str, str]:
+    """Map network/gateway node id -> its display name."""
+    names: dict[str, str] = {}
+    for node in topology.get("nodes", []):
+        if node.get("type") == "networkNode":
+            name = node.get("data", {}).get("name")
+            if name:
+                names[node["id"]] = str(name)
+    return names
+
+
+def _nic_edges_by_vm(
+    topology: dict, net_names: dict[str, str]
+) -> dict[str, list[tuple[str, str]]]:
+    """Map vm node id -> list of (targetHandle, connected network name).
+
+    VM node NICs carry no network field; the association lives in the edges
+    (source=networkNode, target=vmNode, targetHandle contains the nic id, e.g.
+    ``nic-<uuid>-left``).
+    """
+    result: dict[str, list[tuple[str, str]]] = {}
+    for edge in topology.get("edges", []):
+        handle = edge.get("targetHandle") or ""
+        if not handle.startswith("nic-"):
+            continue
+        net_name = net_names.get(edge.get("source", ""))
+        if net_name:
+            result.setdefault(edge.get("target", ""), []).append((handle, net_name))
+    return result
+
+
+def _nic_network_name(nic_id: str, vm_nic_edges: list[tuple[str, str]]) -> str:
+    """Network name for a nic: the first edge whose handle references the nic id."""
+    if not nic_id:
+        return ""
+    for handle, net_name in vm_nic_edges:
+        if nic_id in handle:
+            return net_name
+    return ""
+
+
+def build_vms_def_from_topology(topology: dict) -> tuple[dict, dict]:
+    """Reconstruct (vms_def, vm_name_to_id) from a deployed topology.
+
+    vms_def mirrors the template ``vms`` shape the showroom resolver expects:
+    ``{name: {"nics": [{"network": <name>, "ip": <ip>}], "login_user", ...}}``.
+    Network names are resolved from NIC edges (see ``_nic_network_map``).
+    """
+    net_names = _network_names_by_id(topology)
+    nic_edges = _nic_edges_by_vm(topology, net_names)
+    vms_def: dict[str, dict] = {}
+    vm_name_to_id: dict[str, str] = {}
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data", {})
+        name = data.get("name", "vm")
+        vm_name_to_id[name] = node["id"]
+        vm_nic_edges = nic_edges.get(node["id"], [])
+        nics = []
+        for nic in data.get("nics", []):
+            net_name = _nic_network_name(nic.get("id", ""), vm_nic_edges)
+            nics.append({"network": net_name, "ip": nic.get("ip", "")})
+        vms_def[name] = {
+            "nics": nics,
+            "login_user": data.get("loginUser") or "cloud-user",
+            "cloud_user_password": data.get("cloudUserPassword") or "",
+        }
+    return vms_def, vm_name_to_id
+
+
 def _extract_containers(topology: dict) -> list[dict]:
     """Extract container nodes with their properties."""
     containers = []
