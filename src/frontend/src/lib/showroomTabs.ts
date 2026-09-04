@@ -32,6 +32,10 @@ export interface ShowroomTab {
   /** When set, this is a cluster-managed OCP console proxy tab: its proxyHosts
    *  (console + oauth) are derived from the cluster and are read-only in the UI. */
   clusterId?: string;
+  /** Terminal tabs only. "clusters" = a bastionless local oc shell (all deployed
+   *  clusters' kubeconfigs pre-installed) instead of SSH-into-a-VM; needs no
+   *  vm/network/ssh. Absent = the classic VM SSH terminal. */
+  target?: "clusters";
   url?: string;
 }
 
@@ -45,6 +49,8 @@ export interface ResolvedShowroomTab {
   proxyTls?: boolean;
   proxyHost?: string;
   appProxyHosts?: string[];
+  /** Bastionless cluster terminal (local oc shell, no VM/SSH). */
+  ocTerminal?: boolean;
   warning?: string;
 }
 
@@ -150,6 +156,12 @@ export function resolveShowroomTabs(
     // DNS (Host header + TLS SNI = the hostname). No VM/IP needed.
     if (tab.type === "proxy" && tab.proxyHost) {
       return resolveNameBasedProxy(tab);
+    }
+
+    // Cluster terminal: a bastionless LOCAL oc shell (all deployed clusters'
+    // kubeconfigs) served from a container — no VM, no network, no SSH.
+    if (tab.type === "terminal" && tab.target === "clusters") {
+      return { tab, wettyPath: "/wetty_clusters", wettyPort: wettyPort++, ocTerminal: true };
     }
 
     const vm = tab.vmId ? nodesById.get(tab.vmId) : undefined;

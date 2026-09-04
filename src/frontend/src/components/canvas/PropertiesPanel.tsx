@@ -2565,6 +2565,16 @@ export default function PropertiesPanel() {
                                     style={{ fontFamily: "monospace", fontSize: 11 }}
                                   />
                                 </div>
+                              ) : tab.type === "terminal" && tab.target === "clusters" ? (
+                                <div
+                                  className="props-field"
+                                  style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.5 }}
+                                >
+                                  In-showroom <code>oc</code> shell with every
+                                  deployed OpenShift cluster&apos;s kubeconfig
+                                  pre-installed — no bastion VM. Runs unprivileged
+                                  (no sudo). Nothing to configure.
+                                </div>
                               ) : (
                                 <>
                                   {tab.type === "proxy" && (
@@ -2970,6 +2980,27 @@ export default function PropertiesPanel() {
                           >
                             + Terminal Tab
                           </button>
+                          {/* Bastionless cluster terminal: an in-showroom oc
+                              shell (all deployed clusters' kubeconfigs, no
+                              bastion). One per showroom (it aggregates every
+                              cluster on a single wetty path). */}
+                          {!showroomTabs.some(
+                            (t) => t.type === "terminal" && t.target === "clusters",
+                          ) && (
+                            <button
+                              className="props-library-btn"
+                              style={{ fontSize: 11 }}
+                              title="An in-showroom oc shell with every deployed cluster's kubeconfig (no bastion VM)"
+                              onClick={() =>
+                                updateShowroomTabs(node!.id, [
+                                  ...showroomTabs,
+                                  { ...newShowroomTab("terminal", "Terminal"), target: "clusters" },
+                                ])
+                              }
+                            >
+                              + OpenShift Cluster(s) Terminal Tab
+                            </button>
+                          )}
                           <button
                             className="props-library-btn"
                             style={{ fontSize: 11 }}

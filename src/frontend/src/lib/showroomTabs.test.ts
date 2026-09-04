@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  resolveShowroomTabs,
   syncClusterProxyTabs,
   clusterConsoleHosts,
   clusterConsoleTabName,
@@ -62,5 +63,25 @@ describe("syncClusterProxyTabs", () => {
   it("returns null when the cluster lacks name/baseDomain", () => {
     const tabs = [consoleTab("t1", "c1", "x", ["a"])];
     expect(syncClusterProxyTabs(tabs, { id: "c1", name: "", baseDomain: "local" })).toBeNull();
+  });
+});
+
+describe("resolveShowroomTabs cluster terminal", () => {
+  it("resolves a cluster terminal to a local oc shell with no VM/network warning", () => {
+    const tabs: ShowroomTab[] = [
+      { id: "t1", name: "Terminal", type: "terminal", target: "clusters" },
+    ];
+    const [r] = resolveShowroomTabs(tabs, [], []);
+    expect(r.ocTerminal).toBe(true);
+    expect(r.wettyPath).toBe("/wetty_clusters");
+    expect(r.wettyPort).toBeGreaterThan(0);
+    expect(r.wettyHost).toBeUndefined(); // local shell, not SSH-to-VM
+    expect(r.warning).toBeUndefined();
+  });
+
+  it("still warns for a classic terminal tab with no VM", () => {
+    const tabs: ShowroomTab[] = [{ id: "t2", name: "Shell", type: "terminal" }];
+    const [r] = resolveShowroomTabs(tabs, [], []);
+    expect(r.warning).toBe("Select a VM for this tab");
   });
 });
