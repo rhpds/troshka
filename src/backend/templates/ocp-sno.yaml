@@ -83,4 +83,4 @@ showroom:
     # init container fetches oc and the deploy injects the merged kubeconfig.
     - type: terminal
       target: clusters
-      name: Terminal
+      name: OpenShift Cluster Terminal

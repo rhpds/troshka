@@ -2994,7 +2994,7 @@ export default function PropertiesPanel() {
                               onClick={() =>
                                 updateShowroomTabs(node!.id, [
                                   ...showroomTabs,
-                                  { ...newShowroomTab("terminal", "Terminal"), target: "clusters" },
+                                  { ...newShowroomTab("terminal", "OpenShift Cluster Terminal"), target: "clusters" },
                                 ])
                               }
                             >
