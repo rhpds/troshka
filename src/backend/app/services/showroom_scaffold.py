@@ -11,6 +11,25 @@ from typing import Any
 NOOKBAG_BUNDLE = "https://github.com/rhpds/nookbag/releases/download/nookbag-v0.3.2/nookbag-v0.3.2.zip"
 WETTY_IMAGE = "quay.io/rhpds/wetty:v2.5"
 WETTY_BASE_PORT = 8001
+
+# Cluster-terminal (bastionless oc shell): an init container fetches `oc` and
+# writes a privilege-dropping shell wrapper onto the shared showroom disk; the
+# terminal container runs that wrapper via wetty. See resolve_showroom_tabs.
+OC_FETCH_IMAGE = "registry.access.redhat.com/ubi9/ubi-minimal:latest"
+OC_CLIENT_URL = "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz"
+# The user's interactive shell drops to a non-root uid with no sudo (the wetty
+# image ships setpriv; the image has no sudo). oc + the merged kubeconfig live on
+# the shared showroom disk, populated by the oc-fetch init container and (post
+# install) the deploy monitor. The wetty process itself still runs as the image
+# default so it can allocate the PTY; only the user's shell is unprivileged.
+_CLUSTER_SHELL_PATH = "/showroom/bin/cluster-shell"
+_CLUSTER_SHELL_SCRIPT = (
+    "#!/bin/sh\n"
+    "export KUBECONFIG=/showroom/kube/config\n"
+    "export PATH=/showroom/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
+    "export HOME=/tmp\n"
+    "exec setpriv --reuid=1000 --regid=1000 --clear-groups --init-groups sh\n"
+)
 _STORAGE_EDGE_STYLE = {
     "stroke": "rgba(251,191,36,0.6)",
     "strokeWidth": 2,
@@ -128,8 +147,18 @@ def parse_template_tabs(
         name_based_proxy = tab_type == "proxy" and (
             bool(raw.get("proxy_host") or raw.get("proxy_hosts")) or cluster_linked
         )
+        # Cluster terminal: a local oc shell (all deployed clusters' kubeconfigs)
+        # served from a container — no VM, no bastion, no per-tab network.
+        cluster_terminal = tab_type == "terminal" and raw.get("target") == "clusters"
+        if cluster_terminal:
+            tab["target"] = "clusters"
         network = raw.get("network", "")
-        if tab_type != "external" and not name_based_proxy and not network:
+        if (
+            tab_type != "external"
+            and not name_based_proxy
+            and not cluster_terminal
+            and not network
+        ):
             raise ValueError(f"Showroom tab '{tab['name']}' requires network")
         if network:
             if network not in net_ids:
@@ -297,6 +326,21 @@ def resolve_showroom_tabs(
         # internal DNS (Host header + TLS SNI = the hostname). No VM/IP needed.
         if tab_type == "proxy" and tab.get("proxyHost"):
             resolved.append(_resolve_name_based_proxy(tab))
+            continue
+
+        # Cluster terminal: a LOCAL oc shell (not SSH-into-a-VM). Served by a
+        # wetty container that runs a shell in-container with oc + every deployed
+        # cluster's kubeconfig on the shared showroom disk. No vmId/host.
+        if tab_type == "terminal" and tab.get("target") == "clusters":
+            resolved.append(
+                {
+                    "tab": tab,
+                    "wettyPath": "/wetty_clusters",
+                    "wettyPort": wetty_port,
+                    "ocTerminal": True,
+                }
+            )
+            wetty_port += 1
             continue
 
         vm_id = tab.get("vmId", "")
@@ -570,16 +614,67 @@ def build_app_proxy_config(internal_hosts: list[str]) -> str:
     return "\n".join(blocks) + "\n" if blocks else ""
 
 
+def _oc_terminal_container(item: dict[str, Any], disk_id: str) -> dict[str, Any]:
+    """A LOCAL-shell wetty container: runs the privilege-dropping cluster-shell
+    wrapper (unprivileged, no sudo) with oc + the merged kubeconfig on the shared
+    showroom disk. No SSH — the shell is in-container."""
+    base_path = (item.get("wettyPath") or "/wetty_clusters").lstrip("/")
+    return {
+        "name": "wetty-clusters",
+        "image": WETTY_IMAGE,
+        "cpus": 1,
+        "memory": 256,
+        "envVars": [],
+        "ports": [
+            {"containerPort": item["wettyPort"], "hostPort": None, "protocol": "tcp"}
+        ],
+        "command": [
+            f"--base=/{base_path}/",
+            f"--port={item['wettyPort']}",
+            "--command",
+            _CLUSTER_SHELL_PATH,
+        ],
+        "mounts": [{"diskNodeId": disk_id, "mountPath": "/showroom"}],
+    }
+
+
+def _build_oc_fetch_init(disk_id: str) -> dict[str, Any]:
+    """Init container: fetch `oc` onto the shared showroom disk and write the
+    cluster-shell wrapper. Runs before the terminal container starts."""
+    script_b64 = base64.b64encode(_CLUSTER_SHELL_SCRIPT.encode()).decode()
+    cmd = (
+        "set -e; mkdir -p /showroom/bin /showroom/kube; "
+        f"curl -sL {OC_CLIENT_URL} | tar xz -C /showroom/bin oc; "
+        "chmod 0755 /showroom/bin/oc; "
+        f"echo {script_b64} | base64 -d > {_CLUSTER_SHELL_PATH}; "
+        f"chmod 0755 {_CLUSTER_SHELL_PATH}"
+    )
+    return {
+        "name": "oc-fetch",
+        "image": OC_FETCH_IMAGE,
+        "cpus": 1,
+        "memory": 256,
+        "envVars": [],
+        "ports": [],
+        "command": cmd,
+        "mounts": [{"diskNodeId": disk_id, "mountPath": "/showroom"}],
+    }
+
+
 def _build_wetty_containers(
     resolved: list[dict[str, Any]],
     tabs: list[dict[str, Any]],
     vms_def: dict[str, Any],
     vm_name_to_id: dict[str, str],
+    disk_id: str,
 ) -> list[dict[str, Any]]:
     id_to_name = {v: k for k, v in vm_name_to_id.items()}
     containers: list[dict[str, Any]] = []
     for item in resolved:
         tab = item["tab"]
+        if item.get("ocTerminal") and item.get("wettyPort"):
+            containers.append(_oc_terminal_container(item, disk_id))
+            continue
         if (
             tab.get("type") != "terminal"
             or not item.get("wettyPort")
@@ -774,8 +869,11 @@ def build_showroom_from_config(
     init_containers = _build_init_containers(
         content_repo, content_ref, nginx_b64, ui_config_b64, disk_id
     )
+    # Cluster terminal present -> fetch oc + write the shell wrapper before start.
+    if any(item.get("ocTerminal") for item in resolved):
+        init_containers.append(_build_oc_fetch_init(disk_id))
     pod_containers = _build_pod_containers(disk_id) + _build_wetty_containers(
-        resolved, tabs, vms_def, vm_name_to_id
+        resolved, tabs, vms_def, vm_name_to_id, disk_id
     )
 
     ctr_node = {

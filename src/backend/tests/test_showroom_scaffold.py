@@ -253,6 +253,7 @@ def test_build_wetty_uses_tab_ssh_port():
         tabs,
         {"control": {"nics": [{"network": "mgmt", "ip": "10.0.0.10"}]}},
         {"control": "vm-control"},
+        "disk-0",
     )
     assert wetty[0]["command"][3] == "--ssh-port=2222"
 
@@ -655,3 +656,82 @@ def test_export_showroom_section_cluster_tab_round_trips():
         "console-openshift-console.apps.ocp.local",
         "oauth-openshift.apps.ocp.local",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Cluster terminal: bastionless local oc shell (no VM, no bastion)
+# ---------------------------------------------------------------------------
+
+
+def _cluster_terminal_tabs():
+    return parse_template_tabs(
+        [{"type": "terminal", "target": "clusters", "name": "Cluster Terminal"}],
+        {},
+        {},
+        {},
+        [],
+    )
+
+
+def test_parse_cluster_terminal_needs_no_vm_or_network():
+    tabs = _cluster_terminal_tabs()
+    assert tabs[0]["type"] == "terminal"
+    assert tabs[0]["target"] == "clusters"
+    assert "vmId" not in tabs[0] and "network" not in tabs[0]
+
+
+def test_resolve_cluster_terminal_is_local_shell():
+    resolved = resolve_showroom_tabs(_cluster_terminal_tabs(), {}, {})
+    item = resolved[0]
+    assert item["ocTerminal"] is True
+    assert item["wettyPath"] == "/wetty_clusters"
+    assert item["wettyPort"]
+    assert "wettyHost" not in item  # local shell, not SSH-to-VM
+
+
+def test_build_wetty_cluster_terminal_container():
+    from app.services.showroom_scaffold import _build_wetty_containers
+
+    resolved = resolve_showroom_tabs(_cluster_terminal_tabs(), {}, {})
+    ctrs = _build_wetty_containers(resolved, [], {}, {}, "disk-0")
+    c = next(c for c in ctrs if c["name"] == "wetty-clusters")
+    # runs the privilege-dropping wrapper via wetty --command, NOT --ssh-host
+    assert "--command" in c["command"]
+    assert "/showroom/bin/cluster-shell" in c["command"]
+    assert not any(a.startswith("--ssh-host") for a in c["command"])
+    assert c["mounts"] == [{"diskNodeId": "disk-0", "mountPath": "/showroom"}]
+
+
+def test_cluster_terminal_adds_oc_fetch_init_and_proxied_path():
+    cfg = {
+        "enabled": True,
+        "content_repo": "https://example.com/repo.git",
+        "tabs": [
+            {"type": "terminal", "target": "clusters", "name": "Cluster Terminal"}
+        ],
+    }
+    ctr_node, _disks, _de, _ne, _meta = build_showroom_from_config(
+        cfg, {}, {}, {}, 0, 0, clusters=[{"id": "ocp", "name": "ocp"}]
+    )
+    data = ctr_node["data"]
+    init_names = [c["name"] for c in data["initContainers"]]
+    pod_names = [c["name"] for c in data["podContainers"]]
+    assert "oc-fetch" in init_names
+    assert "wetty-clusters" in pod_names
+    # oc-fetch fetches oc + writes the wrapper onto the shared disk
+    oc_fetch = next(c for c in data["initContainers"] if c["name"] == "oc-fetch")
+    assert "curl" in oc_fetch["command"] and "/showroom/bin/oc" in oc_fetch["command"]
+    # mounts the shared showroom disk (same disk the container mounts)
+    assert oc_fetch["mounts"][0]["mountPath"] == "/showroom"
+    assert oc_fetch["mounts"][0]["diskNodeId"] == data["mounts"][0]["diskNodeId"]
+    # nginx proxies the terminal path
+    resolved = resolve_showroom_tabs(_cluster_terminal_tabs(), {}, {})
+    nginx = build_nginx_config(resolved)
+    assert "/wetty_clusters" in nginx
+
+
+def test_no_oc_fetch_without_cluster_terminal():
+    cfg = {"enabled": True, "content_repo": "https://example.com/repo.git", "tabs": []}
+    ctr_node, *_ = build_showroom_from_config(cfg, {}, {}, {}, 0, 0)
+    init_names = [c["name"] for c in ctr_node["data"]["initContainers"]]
+    assert "oc-fetch" not in init_names
