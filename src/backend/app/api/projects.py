@@ -4598,10 +4598,24 @@ def _reconfigure_showroom(
         _setup_networks_via_troshkad,
         redeploy_container_bg,
     )
-    from app.services.showroom_scaffold import _find_showroom_container
+    from app.services.deploy_topology import build_vms_def_from_topology
+    from app.services.showroom_scaffold import (
+        _find_showroom_container,
+        regenerate_showroom_containers,
+    )
 
     cur = _find_showroom_container(current)
-    if not cur or not _showroom_config_changed(cur, _find_showroom_container(deployed)):
+    if not cur:
+        return
+    # Regenerate the showroom spec from its tabs (authoritative) BEFORE the diff:
+    # the frontend never materializes the cluster-terminal wetty container and its
+    # canvas auto-save overwrites the backend-regenerated podContainers, so an
+    # incomplete persisted spec would look "unchanged" vs a likewise-incomplete
+    # deployed spec and the terminal would never (re)deploy. Regenerating first
+    # makes the diff reflect the real spec that should be running.
+    vms_def, vm_name_to_id = build_vms_def_from_topology(current)
+    regenerate_showroom_containers(cur, vms_def, vm_name_to_id)
+    if not _showroom_config_changed(cur, _find_showroom_container(deployed)):
         return
     try:
         # Rebuild the showroom spec (containers/nginx/ui) + provider routes from the
