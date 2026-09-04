@@ -726,8 +726,14 @@ function applyDeployedTopologySnapshot(
 export function stableExternalIpsKey(ips: ExternalIp[] | undefined): string {
   return JSON.stringify(
     (ips || [])
-      .map((e) => ({ id: e.id, name: e.name }))
-      .sort((a, b) => (a.id || "").localeCompare(b.id || ""))
+      // Drop the auto-created placeholder showroom EIP ("IP-1" with no allocated
+      // IP): deploy creates it on the gateway, but a route-served showroom
+      // (OpenShift-ingress providers) keeps none on the canvas — comparing the two
+      // made a deployed project perpetually dirty. Key by name (ids churn per
+      // deploy) so a real allocated EIP still compares.
+      .filter((e) => !(e.name === "IP-1" && !e.ip))
+      .map((e) => ({ name: e.name, ip: e.ip || "" }))
+      .sort((a, b) => (a.name || "").localeCompare(b.name || ""))
   );
 }
 
