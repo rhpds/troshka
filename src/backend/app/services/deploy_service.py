@@ -2978,6 +2978,10 @@ def redeploy_container_bg(project_id: str, container_id: str) -> None:
             else None
         )
         topo = copy.deepcopy(project.topology or {})
+        # Rebuild the showroom spec from its tabs before extracting — persisted
+        # podContainers may be the incomplete frontend-materialized set (missing
+        # the cluster-terminal wetty container).
+        _refresh_showroom_spec(topo)
         ctr = next(
             (c for c in _extract_containers(topo) if c["node_id"] == container_id), None
         )
@@ -5540,7 +5544,28 @@ def _create_ordered_containers(
     return ordered_ids
 
 
+def _refresh_showroom_spec(topology):
+    """Regenerate the showroom node's init/pod containers from its showroomTabs
+    (the authoritative backend generator) before deploying. The frontend
+    materialization is incomplete (it never emits the cluster-terminal wetty
+    container) and the canvas auto-save overwrites the backend-regenerated
+    podContainers, so we must rebuild from the tabs at every pod (re)deploy rather
+    than trust persisted podContainers. No-op if there is no showroom node."""
+    from app.services.deploy_topology import build_vms_def_from_topology
+    from app.services.showroom_scaffold import (
+        _find_showroom_container,
+        regenerate_showroom_containers,
+    )
+
+    node = _find_showroom_container(topology)
+    if not node:
+        return
+    vms_def, vm_name_to_id = build_vms_def_from_topology(topology)
+    regenerate_showroom_containers(node, vms_def, vm_name_to_id)
+
+
 def _deploy_create_containers(host, project_id, topology, vni_map, pool):
+    _refresh_showroom_spec(topology)
     containers = _extract_containers(topology)
     logger.info(
         "Deploy %s: found %d containers to create", project_id[:8], len(containers)
