@@ -2578,8 +2578,7 @@ export default function PropertiesPanel() {
                                 >
                                   In-showroom <code>oc</code> shell with every
                                   deployed OpenShift cluster&apos;s kubeconfig
-                                  pre-installed — no bastion VM. Runs unprivileged
-                                  (no sudo). Nothing to configure.
+                                  pre-installed. Runs unprivileged (no sudo).
                                 </div>
                               ) : (
                                 <>
