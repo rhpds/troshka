@@ -2998,7 +2998,7 @@ export default function PropertiesPanel() {
                                 ])
                               }
                             >
-                              + OpenShift Cluster(s) Terminal Tab
+                              + OpenShift Cluster Terminal Tab
                             </button>
                           )}
                           <button
