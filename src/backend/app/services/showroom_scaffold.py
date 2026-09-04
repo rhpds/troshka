@@ -26,18 +26,22 @@ OC_CLIENT_URL = "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stabl
 OC_SHA256SUM_URL = (
     "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/sha256sum.txt"
 )
-# The user's interactive shell drops to a non-root uid with no sudo (the wetty
-# image ships setpriv; the image has no sudo). oc + the merged kubeconfig live on
-# the shared showroom disk, populated by the oc-fetch init container and (post
-# install) the deploy monitor. The wetty process itself still runs as the image
-# default so it can allocate the PTY; only the user's shell is unprivileged.
+# The user's interactive shell drops to the non-root `node` user (uid 1000, no
+# sudo). The wetty image is node-alpine (BusyBox), whose `setpriv` applet lacks
+# util-linux's --reuid/--regid — so we drop privileges with BusyBox `su -m`
+# instead (node-alpine ships a `node` user at uid 1000; `-m` preserves the env we
+# export below, so KUBECONFIG/PATH/HOME survive the switch). oc + the merged
+# kubeconfig live on the shared showroom disk, populated by the oc-fetch init
+# container and (post install) the deploy monitor. The wetty process itself still
+# runs as the image default (root) so it can allocate the PTY; only the user's
+# shell is unprivileged.
 _CLUSTER_SHELL_PATH = "/showroom/bin/cluster-shell"
 _CLUSTER_SHELL_SCRIPT = (
     "#!/bin/sh\n"
     "export KUBECONFIG=/showroom/kube/config\n"
     "export PATH=/showroom/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n"
     "export HOME=/tmp\n"
-    "exec setpriv --reuid=1000 --regid=1000 --clear-groups --init-groups sh\n"
+    "exec su -m -s /bin/sh node\n"
 )
 _STORAGE_EDGE_STYLE = {
     "stroke": "rgba(251,191,36,0.6)",
