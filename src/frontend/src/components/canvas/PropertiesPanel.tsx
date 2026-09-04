@@ -2532,6 +2532,9 @@ export default function PropertiesPanel() {
                                 <select
                                   className="props-input"
                                   value={tab.type}
+                                  // The OpenShift Cluster Terminal is a fixed
+                                  // pod-based oc shell; its type can't be changed.
+                                  disabled={tab.type === "terminal" && tab.target === "clusters"}
                                   onChange={(e) => {
                                     const next = showroomTabs.map((t) =>
                                       t.id === tab.id
@@ -2541,6 +2544,9 @@ export default function PropertiesPanel() {
                                     updateShowroomTabs(node!.id, next);
                                   }}
                                 >
+                                  {tab.type === "terminal" && tab.target === "clusters" && (
+                                    <option value="terminal">OpenShift Cluster Terminal</option>
+                                  )}
                                   <option value="terminal">Terminal</option>
                                   <option value="proxy">Web proxy</option>
                                   <option value="external">External link</option>
