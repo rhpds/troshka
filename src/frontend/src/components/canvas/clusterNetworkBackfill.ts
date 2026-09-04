@@ -47,3 +47,25 @@ export function backfillClusterNetworkIds(
     return derived.length > 0 ? { ...cluster, networkIds: derived } : cluster;
   });
 }
+
+/**
+ * Restore fields that are FIXED at install for clusters present in
+ * deployed_topology. The canvas ClusterConfig can drift from what was actually
+ * deployed (e.g. the OCP-version auto-default overwrote an empty-on-load value to
+ * 4.20 while the cluster was really installed at 4.22); the deployed value wins.
+ */
+export function reconcileDeployedClusters(
+  clusters: ClusterConfig[],
+  deployedClusters: Array<{ id?: string; ocpVersion?: string }>,
+): ClusterConfig[] {
+  const deployedById = new Map(
+    deployedClusters.filter((c) => c.id).map((c) => [c.id as string, c]),
+  );
+  return clusters.map((cluster) => {
+    const dep = deployedById.get(cluster.id);
+    if (dep?.ocpVersion && dep.ocpVersion !== cluster.ocpVersion) {
+      return { ...cluster, ocpVersion: dep.ocpVersion };
+    }
+    return cluster;
+  });
+}

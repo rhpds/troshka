@@ -14,7 +14,7 @@ import {
 import { appConfirm } from "@/lib/confirm";
 // Cycle-free module (type-only imports) — safe to import into the store, unlike
 // clusterMaterialize which imports store values.
-import { backfillClusterNetworkIds } from "@/components/canvas/clusterNetworkBackfill";
+import { backfillClusterNetworkIds, reconcileDeployedClusters } from "@/components/canvas/clusterNetworkBackfill";
 import {
   type ShowroomConfig,
   DEFAULT_SHOWROOM_CONFIG,
@@ -1538,10 +1538,14 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             // Backfill member networkIds from the members' NIC edges when unset
             // (deployed projects can load with them empty, wrongly tripping the
             // "select a member network" validation though the line is connected).
-            clusters: backfillClusterNetworkIds(
-              Array.isArray(t.clusters) ? t.clusters : [],
-              synced.nodes,
-              synced.edges,
+            clusters: reconcileDeployedClusters(
+              backfillClusterNetworkIds(
+                Array.isArray(t.clusters) ? t.clusters : [],
+                synced.nodes,
+                synced.edges,
+              ),
+              ((project.deployed_topology as { clusters?: Array<{ id?: string; ocpVersion?: string }> } | null)
+                ?.clusters) || [],
             ),
             ocpInstallVia: (t.ocpInstallVia as string) || null,
             providerType: project.provider_type || null,

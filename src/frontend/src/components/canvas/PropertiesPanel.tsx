@@ -735,13 +735,15 @@ function ClusterEditor({
   ]);
 
   // Default the OCP version to the latest Full Support release once the list
-  // loads (falls back to the newest available if none are "Full Support").
+  // loads (falls back to the newest available if none are "Full Support"). Never
+  // touch a DEPLOYED cluster — its version is fixed, and auto-defaulting an
+  // empty-on-load value would silently change it (e.g. to 4.20).
   useEffect(() => {
-    if (cluster.ocpVersion || ocpVersions.length === 0) return;
+    if (clusterDeployed || cluster.ocpVersion || ocpVersions.length === 0) return;
     const latest = ocpVersions.find((v) => v.support === "Full Support") || ocpVersions[0];
     if (latest) onPatch({ ocpVersion: latest.name });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cluster.ocpVersion, ocpVersions]);
+  }, [cluster.ocpVersion, ocpVersions, clusterDeployed]);
 
   const prereqIssues = clusterPrereqIssues(cluster, nodes);
 
@@ -1035,11 +1037,17 @@ function ClusterEditor({
           )}
         </div>
         <div className="props-field">
-          <label className="props-label">OCP Version</label>
+          <label
+            className="props-label"
+            title={clusterDeployed ? "🔒 Locked while deployed — the OCP version is fixed at install." : undefined}
+          >
+            OCP Version {clusterDeployed && "🔒"}
+          </label>
           <select
             aria-label="OCP Version"
             className="props-select"
             value={cluster.ocpVersion || ""}
+            disabled={clusterDeployed}
             onChange={(e) => onPatch({ ocpVersion: e.target.value })}
           >
             <option value="">Select version…</option>
