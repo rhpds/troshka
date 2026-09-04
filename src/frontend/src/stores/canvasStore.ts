@@ -14,7 +14,7 @@ import {
 import { appConfirm } from "@/lib/confirm";
 // Cycle-free module (type-only imports) — safe to import into the store, unlike
 // clusterMaterialize which imports store values.
-import { backfillClusterNetworkIds, reconcileDeployedClusters, reconcileManagedClusterDns, seedClustersFromDeployed } from "@/components/canvas/clusterNetworkBackfill";
+import { backfillClusterNetworkIds, reconcileDeployedClusters, reconcileManagedClusterDns, reconcileManagedGatewayMode, seedClustersFromDeployed } from "@/components/canvas/clusterNetworkBackfill";
 import {
   type ShowroomConfig,
   DEFAULT_SHOWROOM_CONFIG,
@@ -594,7 +594,14 @@ export function stableNodeData(
   // gateway doesn't carry it, which made a deployed project perpetually dirty.
   // Drop managed forwards from the dirty comparison (mirrors dnsRecords above).
   if (Array.isArray(stable.portForwards)) {
-    const userForwards = (stable.portForwards as Array<Record<string, unknown>>)
+    const forwards = stable.portForwards as Array<Record<string, unknown>>;
+    // A managed showroom forward implies port-forward mode; normalize gatewayMode
+    // so the canvas (which the user may leave on "nat") and the deployed baseline
+    // don't read dirty over the mode the managed forward forces.
+    if (forwards.some((pf) => pf?.managedByShowroom)) {
+      stable.gatewayMode = "nat-portforward";
+    }
+    const userForwards = forwards
       .filter((pf) => !pf?.managedByShowroom)
       .sort((a, b) =>
         String(a.extPort ?? "").localeCompare(String(b.extPort ?? "")),
@@ -1623,8 +1630,11 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           set({
             // Tag cluster-managed DNS records (api/api-int/*.apps) so they render
             // in the read-only ☸ group instead of the editable list (deploy stores
-            // them as plain {name,ip}).
-            nodes: reconcileManagedClusterDns(synced.nodes, finalClusters),
+            // them as plain {name,ip}); and flip a gateway with a managed showroom
+            // forward to nat-portforward so its Port Forwarding section shows.
+            nodes: reconcileManagedGatewayMode(
+              reconcileManagedClusterDns(synced.nodes, finalClusters),
+            ),
             edges: synced.edges,
             hiddenNodeIds: t.hiddenNodeIds || [],
             startOrder: t.startOrder || [],
