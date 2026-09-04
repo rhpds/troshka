@@ -14,12 +14,12 @@ WETTY_BASE_PORT = 8001
 
 # Cluster-terminal (bastionless oc shell) image: a purpose-built UBI9 (glibc)
 # wetty image with `oc` + the cluster-shell wrapper baked in, running as an
-# unprivileged uid-1000 user. Built from src/operator/images/cluster-terminal.
+# unprivileged uid-1000 user. Built from src/operator/images/terminal.
 # (The old approach fetched a glibc `oc` at deploy time into an Alpine/musl wetty
 # image, where oc could not exec — no glibc loader.) The merged kubeconfig for
 # every deployed cluster is injected onto the shared /showroom disk at deploy time
 # (0644, readable by uid 1000); cluster-shell points KUBECONFIG there.
-CLUSTER_TERMINAL_IMAGE = "quay.io/redhat-gpte/troshka-cluster-terminal:latest"
+CLUSTER_TERMINAL_IMAGE = "quay.io/redhat-gpte/troshka-terminal:latest"
 # Baked into CLUSTER_TERMINAL_IMAGE (see its cluster-shell file).
 _CLUSTER_SHELL_PATH = "/usr/local/bin/cluster-shell"
 _STORAGE_EDGE_STYLE = {

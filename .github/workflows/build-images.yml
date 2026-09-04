@@ -211,21 +211,21 @@ jobs:
           podman push quay.io/redhat-gpte/troshka-ops-pod:${{ steps.tags.outputs.sha_tag }}
           podman push quay.io/redhat-gpte/troshka-ops-pod:latest
 
-      - name: Build and push cluster-terminal image
+      - name: Build and push terminal image
         run: |
           podman build \
-            -f src/operator/images/cluster-terminal/Dockerfile \
+            -f src/operator/images/terminal/Dockerfile \
             --build-arg OCP_VERSION=stable \
-            -t quay.io/redhat-gpte/troshka-cluster-terminal:${{ steps.tags.outputs.sha_tag }} \
-            -t quay.io/redhat-gpte/troshka-cluster-terminal:latest \
-            src/operator/images/cluster-terminal/
-          podman push quay.io/redhat-gpte/troshka-cluster-terminal:${{ steps.tags.outputs.sha_tag }}
-          podman push quay.io/redhat-gpte/troshka-cluster-terminal:latest
+            -t quay.io/redhat-gpte/troshka-terminal:${{ steps.tags.outputs.sha_tag }} \
+            -t quay.io/redhat-gpte/troshka-terminal:latest \
+            src/operator/images/terminal/
+          podman push quay.io/redhat-gpte/troshka-terminal:${{ steps.tags.outputs.sha_tag }}
+          podman push quay.io/redhat-gpte/troshka-terminal:latest
 
       - name: Tag version (if tag push)
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          for img in troshka-operator troshka-dnsmasq troshka-gateway troshka-tools troshka-bmc troshka-vnc-proxy troshka-ops-pod troshka-cluster-terminal; do
+          for img in troshka-operator troshka-dnsmasq troshka-gateway troshka-tools troshka-bmc troshka-vnc-proxy troshka-ops-pod troshka-terminal; do
             podman tag \
               quay.io/redhat-gpte/${img}:${{ steps.tags.outputs.sha_tag }} \
               quay.io/redhat-gpte/${img}:${{ steps.tags.outputs.version_tag }}
