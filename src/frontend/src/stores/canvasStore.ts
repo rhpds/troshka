@@ -594,7 +594,15 @@ export function stableNodeData(
   // gateway doesn't carry it, which made a deployed project perpetually dirty.
   // Drop managed forwards from the dirty comparison (mirrors dnsRecords above).
   if (Array.isArray(stable.portForwards)) {
-    const userForwards = (stable.portForwards as Array<Record<string, unknown>>)
+    const forwards = stable.portForwards as Array<Record<string, unknown>>;
+    // A managed showroom forward implies port-forward mode. The backend deploys
+    // such a gateway as nat-portforward, but the canvas may still be persisted as
+    // "nat"; normalize both so the mode the managed forward forces never reads
+    // dirty (checked before the managed forwards are stripped below).
+    if (forwards.some((pf) => pf?.managedByShowroom)) {
+      stable.gatewayMode = "nat-portforward";
+    }
+    const userForwards = forwards
       .filter((pf) => !pf?.managedByShowroom)
       .sort((a, b) =>
         String(a.extPort ?? "").localeCompare(String(b.extPort ?? "")),
@@ -739,54 +747,30 @@ export function stableExternalIpsKey(ips: ExternalIp[] | undefined): string {
 
 export function computeTopologyDirty(state: { nodes: Node[]; edges: Edge[]; deployedNodeData: Record<string, string>; deployedEdgeKey: string; externalIps?: ExternalIp[]; deployedExternalIps?: string; clusters?: ClusterConfig[]; deployedClusters?: string }): boolean {
   const { nodes, edges, deployedNodeData, deployedEdgeKey } = state;
-  // Temporary diagnostic: log the exact reason the canvas reads dirty so invisible
-  // deployed-vs-canvas drift is debuggable (foundation for an Apply-Changes diff
-  // modal). Look for "[dirty]" in the browser console.
-  const why = (msg: string) => console.warn("[dirty]", msg);
   if (!deployedEdgeKey && !Object.keys(deployedNodeData).length) return false;
   const currentNodeIds = nodes.map((n) => n.id).sort().join(",");
   const deployedNodeIds = Object.keys(deployedNodeData).sort().join(",");
-  if (currentNodeIds !== deployedNodeIds) {
-    why(`node id set differs\n  canvas:   ${currentNodeIds}\n  deployed: ${deployedNodeIds}`);
-    return true;
-  }
+  if (currentNodeIds !== deployedNodeIds) return true;
   const edgeKey = edges
     .filter((e) => !isShowroomGatewayEdge(e))
     .map(edgeCompareKey)
     .sort()
     .join("|");
-  if (edgeKey !== deployedEdgeKey) {
-    why(`edges differ\n  canvas:   ${edgeKey}\n  deployed: ${deployedEdgeKey}`);
-    return true;
-  }
+  if (edgeKey !== deployedEdgeKey) return true;
   for (const n of nodes) {
     const deployed = deployedNodeData[n.id];
-    if (!deployed) {
-      why(`no deployed baseline for node ${n.id}`);
-      return true;
-    }
-    const live = stableStringify(stableNodeData((n.data || {}) as Record<string, unknown>));
-    if (live !== deployed) {
-      const nm = (n.data as Record<string, unknown>)?.name || n.type;
-      why(`node "${nm}" (${n.id}) data differs\n  canvas:   ${live}\n  deployed: ${deployed}`);
-      return true;
-    }
+    if (!deployed) return true;
+    if (stableStringify(stableNodeData((n.data || {}) as Record<string, unknown>)) !== deployed) return true;
   }
   // External IPs (add/remove/rename) — compared by desired fields only. Set
   // together with deployedNodeData on load, so it is populated by this point.
-  if (state.deployedExternalIps !== undefined && stableExternalIpsKey(state.externalIps) !== state.deployedExternalIps) {
-    why(`externalIps differ\n  canvas:   ${stableExternalIpsKey(state.externalIps)}\n  deployed: ${state.deployedExternalIps}`);
-    return true;
-  }
+  if (state.deployedExternalIps !== undefined && stableExternalIpsKey(state.externalIps) !== state.deployedExternalIps) return true;
   // Cluster sizing/config lives only in clusters[] (not on any node.data): a
   // change to controlPlaneCpu/Memory/Disk, workerCpu/Memory/Disk, ocpVersion,
   // pullThroughRegistry, apiVip/ingressVip, baseDomain, type or workers must
   // still mark the topology dirty. Compared with the same order-insensitive
   // serialization used for the deployed baseline.
-  if (state.deployedClusters !== undefined && stableClusterKey(state.clusters) !== state.deployedClusters) {
-    why(`clusters differ\n  canvas:   ${stableClusterKey(state.clusters)}\n  deployed: ${state.deployedClusters}`);
-    return true;
-  }
+  if (state.deployedClusters !== undefined && stableClusterKey(state.clusters) !== state.deployedClusters) return true;
   return false;
 }
 
