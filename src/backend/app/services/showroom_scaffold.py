@@ -15,7 +15,9 @@ WETTY_BASE_PORT = 8001
 # Cluster-terminal (bastionless oc shell): an init container fetches `oc` and
 # writes a privilege-dropping shell wrapper onto the shared showroom disk; the
 # terminal container runs that wrapper via wetty. See resolve_showroom_tabs.
-OC_FETCH_IMAGE = "registry.access.redhat.com/ubi9/ubi-minimal:latest"
+# busybox (same image as the nginx-config init) has wget + tar + gzip applets;
+# ubi-minimal ships neither tar nor gzip (the fetch would exit 127).
+OC_FETCH_IMAGE = "docker.io/library/busybox:1.36"
 OC_CLIENT_URL = "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz"
 # The user's interactive shell drops to a non-root uid with no sudo (the wetty
 # image ships setpriv; the image has no sudo). oc + the merged kubeconfig live on
@@ -644,7 +646,7 @@ def _build_oc_fetch_init(disk_id: str) -> dict[str, Any]:
     script_b64 = base64.b64encode(_CLUSTER_SHELL_SCRIPT.encode()).decode()
     cmd = (
         "set -e; mkdir -p /showroom/bin /showroom/kube; "
-        f"curl -sL {OC_CLIENT_URL} | tar xz -C /showroom/bin oc; "
+        f"wget -qO- {OC_CLIENT_URL} | tar xz -C /showroom/bin oc; "
         "chmod 0755 /showroom/bin/oc; "
         f"echo {script_b64} | base64 -d > {_CLUSTER_SHELL_PATH}; "
         f"chmod 0755 {_CLUSTER_SHELL_PATH}"

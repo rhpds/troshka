@@ -720,7 +720,7 @@ def test_cluster_terminal_adds_oc_fetch_init_and_proxied_path():
     assert "wetty-clusters" in pod_names
     # oc-fetch fetches oc + writes the wrapper onto the shared disk
     oc_fetch = next(c for c in data["initContainers"] if c["name"] == "oc-fetch")
-    assert "curl" in oc_fetch["command"] and "/showroom/bin/oc" in oc_fetch["command"]
+    assert "wget" in oc_fetch["command"] and "/showroom/bin/oc" in oc_fetch["command"]
     # mounts the shared showroom disk (same disk the container mounts)
     assert oc_fetch["mounts"][0]["mountPath"] == "/showroom"
     assert oc_fetch["mounts"][0]["diskNodeId"] == data["mounts"][0]["diskNodeId"]
