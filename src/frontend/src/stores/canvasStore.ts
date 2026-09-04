@@ -14,7 +14,7 @@ import {
 import { appConfirm } from "@/lib/confirm";
 // Cycle-free module (type-only imports) — safe to import into the store, unlike
 // clusterMaterialize which imports store values.
-import { backfillClusterNetworkIds, reconcileDeployedClusters, seedClustersFromDeployed } from "@/components/canvas/clusterNetworkBackfill";
+import { backfillClusterNetworkIds, reconcileDeployedClusters, reconcileManagedClusterDns, seedClustersFromDeployed } from "@/components/canvas/clusterNetworkBackfill";
 import {
   type ShowroomConfig,
   DEFAULT_SHOWROOM_CONFIG,
@@ -1601,33 +1601,37 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             vniMap,
             project.provider_type || null,
           );
+          // Backfill member networkIds from the members' NIC edges when unset
+          // (deployed projects can load with them empty, wrongly tripping the
+          // "select a member network" validation though the line is connected).
+          const finalClusters = reconcileDeployedClusters(
+            backfillClusterNetworkIds(
+              // Seed from deployed_topology when the canvas clusters list drifted
+              // empty (a deployed project must never load config-less — that path
+              // corrupted metadata and killed Apply Changes).
+              seedClustersFromDeployed(
+                Array.isArray(t.clusters) ? t.clusters : [],
+                (project.deployed_topology as { clusters?: Array<Record<string, unknown>> } | null)
+                  ?.clusters,
+              ),
+              synced.nodes,
+              synced.edges,
+            ),
+            ((project.deployed_topology as { clusters?: Array<{ id?: string; ocpVersion?: string; baseDomain?: string }> } | null)
+              ?.clusters) || [],
+          );
           set({
-            nodes: synced.nodes,
+            // Tag cluster-managed DNS records (api/api-int/*.apps) so they render
+            // in the read-only ☸ group instead of the editable list (deploy stores
+            // them as plain {name,ip}).
+            nodes: reconcileManagedClusterDns(synced.nodes, finalClusters),
             edges: synced.edges,
             hiddenNodeIds: t.hiddenNodeIds || [],
             startOrder: t.startOrder || [],
             externalIps: synced.externalIps,
             vniMap,
             showroom: parseShowroomFromTopology(t.showroom, nodes, lbEdges),
-            // Backfill member networkIds from the members' NIC edges when unset
-            // (deployed projects can load with them empty, wrongly tripping the
-            // "select a member network" validation though the line is connected).
-            clusters: reconcileDeployedClusters(
-              backfillClusterNetworkIds(
-                // Seed from deployed_topology when the canvas clusters list drifted
-                // empty (a deployed project must never load config-less — that path
-                // corrupted metadata and killed Apply Changes).
-                seedClustersFromDeployed(
-                  Array.isArray(t.clusters) ? t.clusters : [],
-                  (project.deployed_topology as { clusters?: Array<Record<string, unknown>> } | null)
-                    ?.clusters,
-                ),
-                synced.nodes,
-                synced.edges,
-              ),
-              ((project.deployed_topology as { clusters?: Array<{ id?: string; ocpVersion?: string; baseDomain?: string }> } | null)
-                ?.clusters) || [],
-            ),
+            clusters: finalClusters,
             ocpInstallVia: (t.ocpInstallVia as string) || null,
             providerType: project.provider_type || null,
             clusterCapabilities: project.cluster_capabilities || null,

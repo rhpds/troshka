@@ -2542,7 +2542,12 @@ export default function PropertiesPanel() {
                                   value={tab.type}
                                   // The OpenShift Cluster Terminal is a fixed
                                   // pod-based oc shell; its type can't be changed.
-                                  disabled={tab.type === "terminal" && tab.target === "clusters"}
+                                  // Cluster-managed console tabs are also fixed
+                                  // (their hosts derive from the OCP cluster).
+                                  disabled={
+                                    (tab.type === "terminal" && tab.target === "clusters") ||
+                                    clusterManaged
+                                  }
                                   onChange={(e) => {
                                     const next = showroomTabs.map((t) =>
                                       t.id === tab.id
@@ -2599,6 +2604,9 @@ export default function PropertiesPanel() {
                                       <select
                                         className="props-input"
                                         value={proxyMode}
+                                        // Cluster-managed console tab: mode is fixed
+                                        // (Embedded OAuth app for the OCP console).
+                                        disabled={clusterManaged}
                                         onChange={(e) => {
                                           const mode = e.target.value;
                                           const next = showroomTabs.map((t) => {

@@ -110,3 +110,46 @@ export function reconcileDeployedClusters(
     return out;
   });
 }
+
+/**
+ * Tag a network node's cluster-managed DNS records (api / api-int / *.apps for
+ * each cluster) with `managed: true` + `clusterId`. Deploy persists these records
+ * as plain `{name, ip}`, so on load they fall into the editable DNS list and look
+ * user-authored; tagging them routes them into the read-only ☸ "managed by the
+ * OpenShift cluster" group instead. Mirrors buildClusterDnsRecords' names without
+ * importing clusterMaterialize (which would create a store import cycle).
+ */
+export function reconcileManagedClusterDns(
+  nodes: Node[],
+  clusters: ClusterConfig[],
+): Node[] {
+  const nameToCluster = new Map<string, string>();
+  for (const c of clusters) {
+    if (!c.name) continue;
+    const base = c.baseDomain || "local";
+    nameToCluster.set(`api.${c.name}.${base}`, c.id);
+    nameToCluster.set(`api-int.${c.name}.${base}`, c.id);
+    nameToCluster.set(`.apps.${c.name}.${base}`, c.id);
+  }
+  if (nameToCluster.size === 0) return nodes;
+  let changed = false;
+  const out = nodes.map((n) => {
+    if (n.type !== "networkNode") return n;
+    const data = n.data as Record<string, unknown>;
+    const recs = data.dnsRecords as Array<Record<string, unknown>> | undefined;
+    if (!Array.isArray(recs)) return n;
+    let recChanged = false;
+    const tagged = recs.map((r) => {
+      const cid = nameToCluster.get(String(r?.name ?? ""));
+      if (cid && (r.managed !== true || r.clusterId !== cid)) {
+        recChanged = true;
+        return { ...r, managed: true, clusterId: cid };
+      }
+      return r;
+    });
+    if (!recChanged) return n;
+    changed = true;
+    return { ...n, data: { ...data, dnsRecords: tagged } };
+  });
+  return changed ? out : nodes;
+}
