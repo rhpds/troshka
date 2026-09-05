@@ -9,6 +9,12 @@ RUN grep -v -e '^libvirt-python' -e '^-e git+' requirements.txt > requirements-c
     pip install --no-cache-dir -r requirements-container.txt
 
 COPY src/backend/ .
+# The backend imports the shared troshka_serial package (serial/headless VM exec)
+# at deploy time from app/services/headless.py, kubevirt_serial.py, kubevirt.py.
+# Those add sys.path parents[4] / ../../.. == /opt/app-root in-image, so ship the
+# package there. Without this, any serial/headless deploy path (e.g. an OCP
+# quickstart on a KubeVirt dedicated CI) fails with "No module named 'troshka_serial'".
+COPY src/troshka_serial/ /opt/app-root/troshka_serial/
 COPY src/troshkad/troshkad.py /opt/app-root/troshkad/troshkad.py
 COPY src/troshka-vncd/troshka-vncd.py /opt/app-root/troshka-vncd/troshka-vncd.py
 COPY src/operator/crds/ /opt/app-root/operator/crds/
