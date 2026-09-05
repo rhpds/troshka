@@ -24,6 +24,9 @@ def test_load_compact_template():
     assert tmpl["name"] == "ocp-compact"
     assert "vms" in tmpl
     assert len([k for k in tmpl["vms"] if k.startswith("cp-")]) == 3
+    # Bastionless: installs in-cluster via the ops pod, no bastion VM.
+    assert tmpl.get("install_via") == "pod"
+    assert "bastion" not in tmpl["vms"]
 
 
 def test_load_standard_template():
@@ -34,6 +37,9 @@ def test_load_standard_template():
     assert "vms" in tmpl
     assert len([k for k in tmpl["vms"] if k.startswith("cp-")]) == 3
     assert len([k for k in tmpl["vms"] if k.startswith("worker-")]) == 2
+    # Bastionless: installs in-cluster via the ops pod, no bastion VM.
+    assert tmpl.get("install_via") == "pod"
+    assert "bastion" not in tmpl["vms"]
 
 
 def test_resolve_sno_has_vms():
@@ -162,10 +168,10 @@ def test_compact_topology_has_ansible_groups():
     topo = generate_topology_from_template(resolved)
 
     vm_nodes = [n for n in topo["nodes"] if n["type"] == "vmNode"]
-    bastion = next(n for n in vm_nodes if n["data"]["name"] == "bastion")
+    vm_names = [n["data"]["name"] for n in vm_nodes]
+    # Bastionless: no bastion VM (the ops pod drives the install).
+    assert "bastion" not in vm_names
     cp0 = next(n for n in vm_nodes if n["data"]["name"] == "cp-0")
-
-    assert bastion["data"]["tags"] == {"AnsibleGroup": "bastions,showroom"}
     assert cp0["data"]["tags"] == {"AnsibleGroup": "controllers"}
 
 

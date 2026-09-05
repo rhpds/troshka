@@ -3,6 +3,9 @@ display_name: "OpenShift Compact 3-Node (Agent Installer)"
 description: "3 combined CP + worker nodes — 4 vCPU, 16 GB, 120 GB each"
 category: openshift
 install_method: agent
+# The in-cluster ops pod runs the agent install and drives status (no bastion
+# VM). See docs/dev/deploy-pipeline.md + Plan 4b.
+install_via: pod
 deploy_time: "~25 min"
 versions: ["4.19", "4.20", "4.21", "4.22"]
 
@@ -39,18 +42,6 @@ networks:
     cidr: 192.168.100.0/24
 
 vms:
-  bastion:
-    role: bastion
-    vcpus: 2
-    ram_gb: 4
-    os: rhel
-    disks:
-      - size_gb: 80
-    nics:
-      - network: cluster
-        ip: 10.0.0.50
-      - network: bmc
-
   cp-0:
     role: control-plane
     vcpus: 4
@@ -101,10 +92,13 @@ showroom:
   build_content: true
   disk_gb: 5
   tabs:
-    - name: Bastion Terminal
-      type: terminal
-      vm: bastion
-      network: cluster
+    # Bastionless cluster terminal: an in-showroom oc shell (unprivileged, no
+    # sudo) with every deployed cluster's kubeconfig pre-installed — replaces a
+    # bastion VM. `target: clusters` makes it a local shell (no VM/SSH); an
+    # init container fetches oc and the deploy injects the merged kubeconfig.
+    - type: terminal
+      target: clusters
+      name: OpenShift Cluster Terminal
     # Cluster-managed OCP console tab (app-proxy): linking to cluster "ocp" lets
     # the loader derive the tab name and proxy hosts (console + oauth) from the
     # cluster, exactly like the canvas "+ OpenShift Console Proxy Tab" quick-add.
