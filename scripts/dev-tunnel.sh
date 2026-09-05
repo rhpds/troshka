@@ -10,6 +10,7 @@
 # Usage:
 #   ./scripts/dev-tunnel.sh start     # start tunnel + set external_url + restart
 #   ./scripts/dev-tunnel.sh stop      # stop tunnel + restore external_url
+#   ./scripts/dev-tunnel.sh restart   # replace a running/stale tunnel with a fresh one
 #   ./scripts/dev-tunnel.sh status    # show tunnel + current external_url
 #
 # Requires cloudflared (recommended, zero-config) or ngrok:
@@ -70,8 +71,10 @@ restart_services() {
 start() {
   if tunnel_running; then
     echo "Tunnel already running (pid $(cat "$PIDFILE")). Current external_url: $(get_external_url)"
-    echo "Run '$0 stop' first to restart it."
-    exit 0
+    echo "Refusing to start a second tunnel. If the URL went stale (e.g. after a"
+    echo "network change) the process can still be alive with a dead URL — run"
+    echo "'$0 restart' to replace it, or '$0 stop' to tear it down."
+    exit 1
   fi
 
   if command -v cloudflared >/dev/null 2>&1; then
@@ -124,17 +127,32 @@ start() {
   echo "   Stop with: $0 stop   (logs: $LOG)"
 }
 
-stop() {
+# Kill the tunnel process (if any). Does NOT touch external_url or restart
+# services — callers (stop/restart) decide what to do next.
+kill_tunnel() {
   if tunnel_running; then
-    kill "$(cat "$PIDFILE")" 2>/dev/null || true
-    echo "→ Stopped tunnel (pid $(cat "$PIDFILE"))."
+    local pid; pid="$(cat "$PIDFILE")"
+    kill "$pid" 2>/dev/null || true
+    echo "→ Stopped tunnel (pid $pid)."
   else
     echo "No tunnel running."
   fi
   rm -f "$PIDFILE"
+}
+
+stop() {
+  kill_tunnel
   set_external_url "$LOCAL_URL" >/dev/null
   echo "→ Restored app.external_url = $LOCAL_URL"
   restart_services
+}
+
+# Replace a running (or stale) tunnel with a fresh one. Tears down the old
+# process, then start() mints a new URL, rewrites external_url, and restarts
+# backend + worker ONCE (kill_tunnel does neither, so there's no double restart).
+restart() {
+  kill_tunnel
+  start
 }
 
 status() {
@@ -150,6 +168,7 @@ status() {
 case "${1:-status}" in
   start) start ;;
   stop) stop ;;
+  restart) restart ;;
   status) status ;;
-  *) echo "Usage: $0 {start|stop|status}"; exit 1 ;;
+  *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
 esac
