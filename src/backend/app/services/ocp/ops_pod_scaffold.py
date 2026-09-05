@@ -148,7 +148,15 @@ def ops_pod_network_nads(topology: dict) -> tuple[list[str], str | None]:
     for node in (topology or {}).get("nodes", []):
         if node.get("type") != "networkNode":
             continue
-        if node.get("data", {}).get("networkType") == "bmc":
+        data = node.get("data", {})
+        # Only lab networks get a Multus NAD (operator extract_networks creates
+        # NADs for subtype=="network"). The gateway/router/dns/dhcp are also
+        # networkNodes but have NO NAD — attaching the ops pod to them leaves it
+        # stuck in ContainerCreating ("cannot find network-attachment-definition
+        # net-<gateway>-nad not found"). Skip anything that isn't a lab network.
+        if data.get("subtype") != "network":
+            continue
+        if data.get("networkType") == "bmc":
             bmc_nad = _nad_name(node)
         else:
             cluster_nads.append(_nad_name(node))

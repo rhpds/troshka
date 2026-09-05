@@ -524,12 +524,24 @@ def _kv_topology() -> dict:
             {
                 "id": "netclust",
                 "type": "networkNode",
-                "data": {"networkType": "data"},
+                "data": {"subtype": "network", "networkType": "data"},
             },
             {
                 "id": "netbmc00",
                 "type": "networkNode",
-                "data": {"networkType": "bmc", "bmcPassword": "s3cret"},
+                "data": {
+                    "subtype": "network",
+                    "networkType": "bmc",
+                    "bmcPassword": "s3cret",
+                },
+            },
+            # Gateway is a networkNode too, but has NO Multus NAD — it must be
+            # excluded or the ops pod hangs in ContainerCreating waiting for a
+            # net-<gateway>-nad that never exists.
+            {
+                "id": "gw012345",
+                "type": "networkNode",
+                "data": {"subtype": "gateway"},
             },
             {"id": "vm-1", "type": "vmNode", "data": {}},
         ]
@@ -538,9 +550,23 @@ def _kv_topology() -> dict:
 
 def test_ops_pod_network_nads_splits_cluster_and_bmc():
     cluster_nads, bmc_nad = ops_pod_network_nads(_kv_topology())
-    # Mirrors the operator NAD naming convention: net-<id[:8]>-nad.
+    # Mirrors the operator NAD naming convention: net-<id[:8]>-nad. The gateway
+    # networkNode is excluded (only subtype=="network" lab nets get a NAD).
     assert cluster_nads == ["net-netclust-nad"]
     assert bmc_nad == "net-netbmc00-nad"
+
+
+def test_ops_pod_network_nads_excludes_gateway_and_router():
+    topo = {
+        "nodes": [
+            {"id": "netclust", "type": "networkNode", "data": {"subtype": "network"}},
+            {"id": "gw012345", "type": "networkNode", "data": {"subtype": "gateway"}},
+            {"id": "rtr01234", "type": "networkNode", "data": {"subtype": "router"}},
+        ]
+    }
+    cluster_nads, bmc_nad = ops_pod_network_nads(topo)
+    assert cluster_nads == ["net-netclust-nad"]
+    assert bmc_nad is None
 
 
 def test_ops_pod_network_nads_no_bmc_network():
@@ -549,7 +575,7 @@ def test_ops_pod_network_nads_no_bmc_network():
             {
                 "id": "netonly0",
                 "type": "networkNode",
-                "data": {"networkType": "data"},
+                "data": {"subtype": "network", "networkType": "data"},
             }
         ]
     }
