@@ -43,8 +43,9 @@ def test_deploy_template_creates_project():
     assert "topology" in data
     nodes = data["topology"]["nodes"]
     vm_nodes = [n for n in nodes if n["type"] == "vmNode"]
-    # 3 CP + 1 bastion = 4 VMs
-    assert len(vm_nodes) == 4
+    # Bastionless: 3 control-plane nodes, no bastion VM.
+    assert len(vm_nodes) == 3
+    assert not any(n["data"].get("name") == "bastion" for n in vm_nodes)
 
 
 def test_deploy_template_rejects_unknown_overrides():

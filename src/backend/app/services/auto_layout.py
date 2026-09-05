@@ -964,6 +964,47 @@ def reflow_cluster_members(nodes: list[dict]) -> None:
         x += boundary["style"]["width"] + _CL_GAP
 
 
+def _rects_overlap(a: tuple, b: tuple) -> bool:
+    """True if two (x1, y1, x2, y2) rectangles overlap."""
+    return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
+
+
+def _push_free_networks_below_clusters(
+    nodes: list[dict], free_net_ids: set[str], net_w: int, net_h: int, gap_y: int
+) -> None:
+    """Move an unconnected network node below the lowest cluster box when it would
+    overlap one.
+
+    A network with no incident edges (e.g. the bastionless BMC network, whose only
+    NIC was the now-removed bastion) lands at the default x=40 in the bottom
+    network row. A tall multi-node cluster box — sized last by
+    ``reflow_cluster_members`` — can grow down far enough to sit on top of it. Only
+    free networks are moved, so no edge geometry is disturbed.
+    """
+    if not free_net_ids:
+        return
+    box_rects = [
+        (
+            b["position"]["x"],
+            b["position"]["y"],
+            b["position"]["x"] + b["style"]["width"],
+            b["position"]["y"] + b["style"]["height"],
+        )
+        for b in nodes
+        if b.get("type") == "clusterNode" and b.get("style")
+    ]
+    if not box_rects:
+        return
+    max_bottom = max(r[3] for r in box_rects)
+    for n in nodes:
+        if n.get("id") not in free_net_ids:
+            continue
+        px, py = n["position"]["x"], n["position"]["y"]
+        nr = (px, py, px + net_w, py + net_h)
+        if any(_rects_overlap(nr, br) for br in box_rects):
+            n["position"] = {"x": px, "y": max_bottom + gap_y}
+
+
 def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
     """Apply auto-layout to nodes/edges, return updated copies."""
     if not nodes:
@@ -1115,6 +1156,15 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
     # Cluster-aware pass: pull OCP cluster members back inside their boundary
     # (they were laid out above as free workloads) and size the box.
     reflow_cluster_members(new_nodes)
+    # A cluster box sized just now can overlap an unconnected network (e.g. the
+    # bastionless BMC network); nudge such free networks clear of every box.
+    edged = {e.get("source") for e in edges} | {e.get("target") for e in edges}
+    free_net_ids = {
+        n["id"]
+        for n in nodes
+        if n.get("type") == "networkNode" and n["id"] not in edged
+    }
+    _push_free_networks_below_clusters(new_nodes, free_net_ids, net_w, net_h, gap_y)
     return new_nodes, new_edges
 
 
