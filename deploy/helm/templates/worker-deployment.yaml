@@ -33,6 +33,14 @@ spec:
                 secretKeyRef:
                   name: troshka-secrets
                   key: database-url
+            # Tiny per-worker pool (one job at a time); Postgres max_connections
+            # is sized to workers * dbPoolSize + backend + reserve.
+            - name: TROSHKA_DATABASE__POOL_SIZE
+              value: {{ .Values.worker.dbPoolSize | quote }}
+            - name: TROSHKA_DATABASE__MAX_OVERFLOW
+              value: {{ .Values.worker.dbMaxOverflow | quote }}
+            - name: TROSHKA_DATABASE__POOL_RECYCLE
+              value: {{ .Values.database.poolRecycle | quote }}
             - name: TROSHKA_AUTH__JWT_SECRET
               valueFrom:
                 secretKeyRef:

@@ -11,12 +11,30 @@ from app.core.config import config
 
 _log = logging.getLogger(__name__)
 
+
+def _db_pool_int(name: str, default: int) -> int:
+    """Read a per-process DB pool setting from config (env-overridable via
+    ``TROSHKA_DATABASE__<NAME>``). Kept small by default: the total connection
+    budget is (workers x worker pool) + (backend pool) + overhead, and Postgres
+    ``max_connections`` is sized to match in the Helm chart. An oversized pool
+    (the old 50/100) let a few processes exhaust the DB; workers override this to
+    a tiny pool since each RQ worker runs one job at a time."""
+    db_cfg = getattr(config, "database", None)
+    try:
+        return int(getattr(db_cfg, name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 engine = create_engine(
     config.database.url,
     pool_pre_ping=True,
-    pool_size=50,
-    max_overflow=100,
-    pool_timeout=120,
+    pool_size=_db_pool_int("pool_size", 5),
+    max_overflow=_db_pool_int("max_overflow", 10),
+    pool_timeout=_db_pool_int("pool_timeout", 30),
+    # Recycle idle connections so a burst of activity doesn't leave connections
+    # parked idle for hours (which, with a large fleet, exhausts max_connections).
+    pool_recycle=_db_pool_int("pool_recycle", 1800),
 )
 
 

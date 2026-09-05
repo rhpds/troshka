@@ -9,6 +9,10 @@ backend:
     repository: quay.io/redhat-gpte/troshka-backend
     tag: production
   replicas: 1
+  # DB pool per backend process (handles concurrent HTTP). Postgres
+  # max_connections is auto-sized from these + the worker fleet (see postgres.yaml).
+  dbPoolSize: 10
+  dbMaxOverflow: 20
   resources:
     requests:
       cpu: 250m
@@ -50,6 +54,9 @@ secrets:
 
 database:
   url: ""
+  # Recycle idle connections after this many seconds so bursts don't leave
+  # connections parked idle for hours.
+  poolRecycle: 1800
 
 postgres:
   deploy: false
@@ -84,6 +91,11 @@ redis:
 
 worker:
   replicas: 100
+  # Each RQ worker runs one job at a time, so a tiny pool is plenty. Postgres
+  # max_connections scales with replicas * dbPoolSize (see postgres.yaml), so a
+  # large fleet no longer exhausts the DB.
+  dbPoolSize: 2
+  dbMaxOverflow: 0
   resources:
     requests:
       cpu: 250m

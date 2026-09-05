@@ -35,6 +35,11 @@ spec:
                   key: postgres-password
             - name: POSTGRESQL_DATABASE
               value: troshka
+            # Sized to the fleet: (workers * worker pool) + (backend * (pool + overflow)) + reserve.
+            # Auto-scales when worker.replicas changes, so a large fleet never
+            # exhausts the DB (the root cause of "remaining connection slots reserved").
+            - name: POSTGRESQL_MAX_CONNECTIONS
+              value: {{ add (add (mul .Values.worker.replicas .Values.worker.dbPoolSize) (mul .Values.backend.replicas (add .Values.backend.dbPoolSize .Values.backend.dbMaxOverflow))) 20 | quote }}
           volumeMounts:
             - name: data
               mountPath: /var/lib/pgsql/data
@@ -46,9 +51,10 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 256Mi
+              memory: 512Mi
             limits:
-              memory: 1Gi
+              # Headroom for a large max_connections (each connection costs memory).
+              memory: 2Gi
   volumeClaimTemplates:
     - metadata:
         name: data

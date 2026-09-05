@@ -8,6 +8,13 @@ app:
 
 database:
   url: "postgresql+psycopg2://troshka:troshka@localhost:5433/troshka"
+  # Per-process SQLAlchemy pool. Kept small so many worker replicas don't exhaust
+  # Postgres max_connections; workers override to a tiny pool via env, and the
+  # Helm chart sizes max_connections = workers*pool + backend*(pool+overflow) + reserve.
+  pool_size: 5
+  max_overflow: 10
+  pool_timeout: 30
+  pool_recycle: 1800
 
 redis:
   url: "redis://localhost:6379/0"
