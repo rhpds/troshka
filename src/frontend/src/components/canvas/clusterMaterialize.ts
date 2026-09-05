@@ -947,7 +947,16 @@ export function vipCollision(
 ): boolean {
   if (!ip || !ip.trim()) return false;
 
-  const usedIps = collectUsedIps(nodes);
+  // Identify THIS cluster's own boundary node (clusterNode data carries no
+  // clusterId) by id — `cluster-<id>`, mirrored by cluster.nodeId.
+  const ownBoundaryId = cluster.nodeId || `cluster-${cluster.id}`;
+
+  // Exclude our OWN boundary from the used-IP set. collectUsedIps records every
+  // clusterNode's apiVip/ingressVip, and a deployed cluster's boundary carries the
+  // resolved VIPs — so a healthy cluster's own api/ingress VIP always read back as
+  // "IP in use" against itself. Member NICs, the gateway, and OTHER clusters' VIPs
+  // stay in the set (and the explicit checks below), so real clashes still flag.
+  const usedIps = collectUsedIps(nodes.filter((n) => n.id !== ownBoundaryId));
 
   // SNO has a single node that serves API + ingress on its OWN address, so the
   // VIP legitimately equals that node's IP — not a collision for its own
@@ -963,11 +972,16 @@ export function vipCollision(
     }
   }
 
-  // Also check OTHER clusters' VIPs. The boundary (clusterNode) data has no
-  // clusterId field, so we exclude THIS cluster's own boundary by node id
-  // (``cluster-<id>``, mirrored by cluster.nodeId) — otherwise a SNO whose VIP
-  // equals its own boundary's apiVip/ingressVip would false-positive.
-  const ownBoundaryId = cluster.nodeId || `cluster-${cluster.id}`;
+  // A multi-node cluster's two VIPs must differ from each other (they are
+  // separate keepalived VIPs); flag api==ingress even though our own boundary was
+  // excluded from usedIps above.
+  if (cluster.type !== "sno") {
+    const api = (cluster.apiVip || "").trim();
+    const ing = (cluster.ingressVip || "").trim();
+    if (api && api === ing && ip === api) return true;
+  }
+
+  // Also check OTHER clusters' VIPs (our own boundary is excluded by id above).
   const otherClusters = nodes
     .filter((n) => n.type === "clusterNode" && n.id !== ownBoundaryId)
     .map((n) => n.data as Record<string, string | undefined>);

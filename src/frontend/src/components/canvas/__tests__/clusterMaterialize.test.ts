@@ -709,6 +709,32 @@ describe("vipCollision", () => {
 
     expect(vipCollision("10.0.0.250", cluster, materialized)).toBe(false);
   });
+
+  it("does not flag a deployed cluster's OWN boundary VIP (self-collision)", () => {
+    // A deployed cluster's boundary node carries the resolved apiVip/ingressVip
+    // (which collectUsedIps records). Checking the cluster's own VIP must not read
+    // those back as "in use" — the regression that made every deployed cluster
+    // show "IP in use" on its own api/ingress VIP.
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.type = "standard";
+    cluster.apiVip = "10.0.0.2";
+    cluster.ingressVip = "10.0.0.3";
+    cluster.networkIds = ["net1"];
+    const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24" } } as any;
+    const boundary = { ...node, data: { ...node.data, apiVip: "10.0.0.2", ingressVip: "10.0.0.3" } };
+    expect(vipCollision("10.0.0.2", cluster, [boundary, net])).toBe(false);
+    expect(vipCollision("10.0.0.3", cluster, [boundary, net])).toBe(false);
+  });
+
+  it("flags api VIP == ingress VIP on a multi-node cluster", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.type = "standard";
+    cluster.apiVip = "10.0.0.2";
+    cluster.ingressVip = "10.0.0.2";
+    cluster.networkIds = ["net1"];
+    const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24" } } as any;
+    expect(vipCollision("10.0.0.2", cluster, [node, net])).toBe(true);
+  });
 });
 
 describe("clusterBoxSize", () => {
