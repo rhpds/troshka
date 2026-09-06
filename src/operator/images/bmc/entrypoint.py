@@ -165,11 +165,24 @@ def _get_managers_collection(handler):
     )
 
 
+def _split_bmc_path(path):
+    """Return (identity, sub) for a /Managers/{id}/... or /Systems/{id}/... path.
+
+    Redfish serves VirtualMedia under both the Managers and the Systems tree;
+    the ops-pod install script targets the Systems tree (matching sushy-tools),
+    so both prefixes must resolve to the same identity + sub-path here.
+    """
+    for prefix in (_MANAGERS_PREFIX, _SYSTEMS_PREFIX):
+        if path.startswith(prefix):
+            parts = path[len(prefix) :].split("/")
+            sub = "/".join(parts[1:]) if len(parts) > 1 else ""
+            return parts[0], sub
+    return "", ""
+
+
 def _get_manager_or_vmedia(handler, path):
-    """Handle GET /redfish/v1/Managers/{identity}[/VirtualMedia[/Cd]]."""
-    parts = path[len(_MANAGERS_PREFIX) :].split("/")
-    identity = parts[0]
-    sub = "/".join(parts[1:]) if len(parts) > 1 else ""
+    """Handle GET /redfish/v1/{Managers,Systems}/{identity}[/VirtualMedia[/Cd]]."""
+    identity, sub = _split_bmc_path(path)
 
     if not sub:
         _send_json(
@@ -274,8 +287,7 @@ def _post_system_reset(handler, path):
 
 def _post_vmedia_action(handler, path):
     """Handle POST for VirtualMedia Insert/Eject. Returns True if handled."""
-    parts = path[len(_MANAGERS_PREFIX) :].split("/")
-    identity = parts[0]
+    identity, _ = _split_bmc_path(path)
     length = int(handler.headers.get("Content-Length", 0))
     body = json.loads(handler.rfile.read(length)) if length else {}
 
@@ -348,6 +360,9 @@ class RedfishHandler(BaseHTTPRequestHandler):
         if path == _SYSTEMS_PREFIX.rstrip("/"):
             _get_systems_collection(self)
             return
+        if path.startswith(_SYSTEMS_PREFIX) and "/VirtualMedia" in path:
+            if _get_manager_or_vmedia(self, path):
+                return
         if path.startswith(_SYSTEMS_PREFIX):
             identity = path.split(_SYSTEMS_PREFIX)[1].split("/")[0]
             if path.endswith(identity):
@@ -396,7 +411,9 @@ class RedfishHandler(BaseHTTPRequestHandler):
             _post_system_reset(self, path)
             return
 
-        if path.startswith(_MANAGERS_PREFIX) and "VirtualMedia/Cd/Actions/" in path:
+        if (
+            path.startswith(_MANAGERS_PREFIX) or path.startswith(_SYSTEMS_PREFIX)
+        ) and "VirtualMedia/Cd/Actions/" in path:
             if _post_vmedia_action(self, path):
                 return
 

@@ -618,3 +618,89 @@ class TestVirtualMediaEndpoints:
         handler.headers["Authorization"] = ""
         entrypoint.RedfishHandler.do_GET(handler)
         handler.send_response.assert_called_with(404)
+
+
+# ── VirtualMedia under the Systems tree ──
+#
+# The ops-pod install script (agent_template._redfish_insert_media_cmd) targets
+# /redfish/v1/Systems/{id}/VirtualMedia/... (matching real sushy-tools), not the
+# Managers tree. The emulator must serve VirtualMedia under BOTH prefixes or the
+# InsertMedia POST 404s and no ISO ever attaches to the VM.
+
+
+class TestVirtualMediaUnderSystems:
+    def test_split_bmc_path_systems(self):
+        identity, sub = entrypoint._split_bmc_path(
+            "/redfish/v1/Systems/vm-9/VirtualMedia/Cd"
+        )
+        assert identity == "vm-9"
+        assert sub == "VirtualMedia/Cd"
+
+    def test_split_bmc_path_managers(self):
+        identity, sub = entrypoint._split_bmc_path(
+            "/redfish/v1/Managers/vm-9/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia"
+        )
+        assert identity == "vm-9"
+        assert sub == "VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia"
+
+    def test_split_bmc_path_unknown_prefix(self):
+        assert entrypoint._split_bmc_path("/redfish/v1/Chassis/x") == ("", "")
+
+    def test_insert_media_via_systems_prefix(self):
+        """The ops-pod path: POST InsertMedia under /Systems/ must attach, not 404."""
+        _mock_driver.reset_mock()
+        _mock_driver.insert_image.return_value = None
+        _mock_driver._vmedia_state = {}
+        body = {"Image": "http://192.168.100.50/boot.iso"}
+        handler = _make_handler(
+            "POST",
+            "/redfish/v1/Systems/vm-1/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia",
+            body,
+        )
+        entrypoint.RedfishHandler.do_POST(handler)
+        _mock_driver.insert_image.assert_called_once()
+        assert _mock_driver.insert_image.call_args[0][0] == "vm-1"
+        handler.send_response.assert_called_with(204)
+
+    def test_eject_media_via_systems_prefix(self):
+        _mock_driver.reset_mock()
+        _mock_driver.eject_image.return_value = None
+        handler = _make_handler(
+            "POST",
+            "/redfish/v1/Systems/vm-1/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia",
+        )
+        entrypoint.RedfishHandler.do_POST(handler)
+        _mock_driver.eject_image.assert_called_once_with("vm-1")
+        handler.send_response.assert_called_with(204)
+
+    def test_vmedia_collection_via_systems_prefix(self):
+        handler = _make_handler("GET", "/redfish/v1/Systems/vm-1/VirtualMedia")
+        entrypoint.RedfishHandler.do_GET(handler)
+        data = json.loads(handler.wfile.write.call_args[0][0])
+        assert data["Members@odata.count"] == 1
+        assert "Cd" in data["Members"][0]["@odata.id"]
+
+    def test_vmedia_cd_detail_via_systems_prefix(self):
+        _mock_driver.get_vmedia_state.return_value = {
+            "url": "http://example.com/boot.iso",
+            "inserted": True,
+        }
+        handler = _make_handler("GET", "/redfish/v1/Systems/vm-1/VirtualMedia/Cd")
+        entrypoint.RedfishHandler.do_GET(handler)
+        data = json.loads(handler.wfile.write.call_args[0][0])
+        assert data["Inserted"] is True
+        assert data["Image"] == "http://example.com/boot.iso"
+
+    def test_system_detail_still_works(self):
+        """Bare /Systems/{id} must still return system detail, not vmedia."""
+        _mock_driver.get_power_state.return_value = "On"
+        _mock_driver.get_boot_device.return_value = "Hdd"
+        _mock_driver.get_boot_mode.return_value = "UEFI"
+        _mock_driver.get_total_memory.return_value = 4096
+        _mock_driver.get_total_cpus.return_value = 4
+        _mock_driver.get_boot_override_enabled.return_value = "Continuous"
+        _mock_driver.get_uuid.return_value = "u"
+        handler = _make_handler("GET", "/redfish/v1/Systems/vm-1")
+        entrypoint.RedfishHandler.do_GET(handler)
+        data = json.loads(handler.wfile.write.call_args[0][0])
+        assert data["PowerState"] == "On"
