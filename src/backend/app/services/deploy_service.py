@@ -2110,6 +2110,45 @@ def _kubevirt_ops_pod_net_ips(topology):
     return assignments, serving_ip
 
 
+def _kubevirt_override_agent_dns(topology, clusters):
+    """Repoint each cluster's agent-config DNS at the KubeVirt dnsmasq pod.
+
+    The agent-config is baked at project-creation time (provider unknown) with
+    DNS = the gateway (.1), which is correct for troshkad (host dnsmasq at .1) but
+    wrong for KubeVirt, where dnsmasq runs in a separate pod at ``<cidr>.2``
+    (operator ``helpers/dnsmasq.py``). This runs at deploy time (KubeVirt known)
+    and regenerates ``_generatedAgentConfig`` with that ``.2`` override; an
+    explicit ``dnsServerIp`` on the network node still wins inside
+    ``_build_agent_config``.
+    """
+    import ipaddress
+
+    from app.services.ocp.agent_template import (
+        _build_agent_config,
+        _cidr_for_members,
+        cluster_member_nodes,
+    )
+
+    for cluster in clusters:
+        cid = cluster.get("id")
+        members = (
+            cluster_member_nodes(topology, cid)
+            if cid
+            else [n for n in topology.get("nodes", []) if n.get("type") == "vmNode"]
+        )
+        try:
+            net = ipaddress.ip_network(
+                _cidr_for_members(members, topology), strict=False
+            )
+        except ValueError:
+            continue
+        # Match the operator's dnsmasq placement: first three octets + ".2".
+        dns_ip = ".".join(str(net.network_address).split(".")[:3] + ["2"])
+        cluster["_generatedAgentConfig"] = _build_agent_config(
+            cluster, members, topology, dns_ip_override=dns_ip
+        )
+
+
 def _deploy_ops_pod_kubevirt(
     s, host, project_id, project, topology, clusters, api_key, ocp_version
 ):
@@ -2134,6 +2173,11 @@ def _deploy_ops_pod_kubevirt(
     # in the install script (and serve the ISO from the cluster IP, not the OVN
     # pod IP the node can't reach).
     net_ip_assignments, serving_ip = _kubevirt_ops_pod_net_ips(topology)
+    # On KubeVirt the dnsmasq is a separate pod at <cidr>.2 (operator convention),
+    # not the gateway (.1). Regenerate each cluster's agent-config so nodes resolve
+    # DNS via the dnsmasq pod; an explicit dnsServerIp still wins (see
+    # _resolve_agent_dns_ip). troshkad keeps .1 (host dnsmasq) and is untouched.
+    _kubevirt_override_agent_dns(topology, clusters)
     command = _ops_pod_command(
         clusters,
         topology,

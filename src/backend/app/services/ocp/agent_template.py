@@ -1617,8 +1617,15 @@ def _build_install_config_legacy(
     )
 
 
-def _build_agent_host_yaml(vm_name, role, boot_mac, cluster_ip, prefix_len, gateway_ip):
-    """Build a single host entry for agent-config.yaml."""
+def _build_agent_host_yaml(
+    vm_name, role, boot_mac, cluster_ip, prefix_len, gateway_ip, dns_ip
+):
+    """Build a single host entry for agent-config.yaml.
+
+    ``dns_ip`` is the nameserver the node uses (may differ from ``gateway_ip``:
+    on KubeVirt the dnsmasq is a separate pod at ``<cidr>.2``, not the gateway).
+    ``gateway_ip`` remains the default route next-hop.
+    """
     return (
         f"    - hostname: {vm_name}\n"
         f"      role: {role}\n"
@@ -1641,7 +1648,7 @@ def _build_agent_host_yaml(vm_name, role, boot_mac, cluster_ip, prefix_len, gate
         f"        dns-resolver:\n"
         f"          config:\n"
         f"            server:\n"
-        f"              - {gateway_ip}\n"
+        f"              - {dns_ip}\n"
         f"        routes:\n"
         f"          config:\n"
         f"            - destination: 0.0.0.0/0\n"
@@ -1650,7 +1657,7 @@ def _build_agent_host_yaml(vm_name, role, boot_mac, cluster_ip, prefix_len, gate
     )
 
 
-def _extract_agent_host(node, gateway_ip, prefix_len):
+def _extract_agent_host(node, gateway_ip, prefix_len, dns_ip):
     if node.get("type") != "vmNode":
         return None
     td = node.get("data", {})
@@ -1666,12 +1673,31 @@ def _extract_agent_host(node, gateway_ip, prefix_len):
         return None
     role = "master" if group == "controllers" else "worker"
     host_yaml = _build_agent_host_yaml(
-        vm_name, role, boot_mac, cluster_ip, prefix_len, gateway_ip
+        vm_name, role, boot_mac, cluster_ip, prefix_len, gateway_ip, dns_ip
     )
     return host_yaml, cluster_ip
 
 
-def _build_agent_config(cluster, members, topology):
+def _resolve_agent_dns_ip(topology, members, gateway_ip, dns_ip_override=None):
+    """Nameserver for a cluster's nodes (agent-config ``dns-resolver.server``).
+
+    Precedence:
+      1. explicit ``dnsServerIp`` on the cluster's network node — honored for
+         every provider (a user override always wins);
+      2. ``dns_ip_override`` — the provider default when nothing is hardcoded
+         (e.g. the KubeVirt dnsmasq pod at ``<cidr>.2``, passed at deploy time);
+      3. ``gateway_ip`` — the troshkad/host dnsmasq at ``.1`` (default).
+    """
+    net_node = _cluster_network_node(topology, members)
+    explicit = str(
+        ((net_node or {}).get("data") or {}).get("dnsServerIp") or ""
+    ).strip()
+    if explicit:
+        return explicit
+    return dns_ip_override or gateway_ip
+
+
+def _build_agent_config(cluster, members, topology, dns_ip_override=None):
     """Build a single cluster's ``agent-config.yaml`` (scoped to ``members``).
 
     ``cluster`` is a cluster-shaped dict (``name`` used for ``metadata.name``),
@@ -1686,10 +1712,11 @@ def _build_agent_config(cluster, members, topology):
     net = ipaddress.ip_network(_cidr_for_members(members, topology), strict=False)
     gateway_ip = str(net.network_address + 1)
     prefix_len = net.prefixlen
+    dns_ip = _resolve_agent_dns_ip(topology, members, gateway_ip, dns_ip_override)
 
     hosts_yaml = ""
     for node in members:
-        result = _extract_agent_host(node, gateway_ip, prefix_len)
+        result = _extract_agent_host(node, gateway_ip, prefix_len, dns_ip)
         if result:
             hosts_yaml += result[0]
 

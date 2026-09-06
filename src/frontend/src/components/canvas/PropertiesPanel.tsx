@@ -4075,11 +4075,19 @@ export default function PropertiesPanel() {
                           className="props-input"
                           value={(data as Record<string, any>).dnsServerIp as string || ""}
                           onChange={(e) => update("dnsServerIp", e.target.value)}
-                          placeholder={and?.cidr ? and.cidr.replace(/\.\d+\/\d+$/, ".1") : "DNS server IP"}
+                          placeholder={
+                            and?.cidr
+                              ? `auto — ${and.cidr.replace(/\.\d+\/\d+$/, ".1")} (dedicated) / ${and.cidr.replace(/\.\d+\/\d+$/, ".2")} (KubeVirt)`
+                              : "auto (project dnsmasq)"
+                          }
                           style={{ fontFamily: "monospace" }}
                         />
                         <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 2 }}>
-                          Typically same as gateway. Must be outside DHCP range.
+                          {(data as Record<string, any>).dnsServerIp
+                            ? "Overriding the project dnsmasq. Must be outside the DHCP range."
+                            : and?.cidr
+                              ? `Leave blank to use the project dnsmasq: ${and.cidr.replace(/\.\d+\/\d+$/, ".1")} on dedicated hosts, ${and.cidr.replace(/\.\d+\/\d+$/, ".2")} on shared/KubeVirt clusters. Set only to override (must be outside the DHCP range).`
+                              : "Leave blank to use the project dnsmasq (gateway on dedicated hosts, .2 on KubeVirt). Set only to override; must be outside the DHCP range."}
                         </span>
                       </div>
                       <div className="props-field">

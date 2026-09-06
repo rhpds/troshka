@@ -182,6 +182,96 @@ def test_agent_config_per_cluster():
     assert prod_ip == "10.0.0.20"
 
 
+def _host_dns(ac, host_idx=0):
+    return ac["hosts"][host_idx]["networkConfig"]["dns-resolver"]["config"]["server"][0]
+
+
+def _host_gateway(ac, host_idx=0):
+    return ac["hosts"][host_idx]["networkConfig"]["routes"]["config"][0][
+        "next-hop-address"
+    ]
+
+
+def test_agent_dns_defaults_to_gateway():
+    """No dnsServerIp, no override (troshkad): DNS = gateway (.1), unchanged."""
+    import yaml
+
+    from app.services.ocp.agent_template import (
+        _build_agent_config,
+        cluster_member_nodes,
+    )
+
+    topo = _two_cluster_topo()
+    prod = {"id": "prod", "name": "prod", "type": "standard", "baseDomain": "ocp.local"}
+    ac = yaml.safe_load(
+        _build_agent_config(prod, cluster_member_nodes(topo, "prod"), topo)
+    )
+    assert _host_dns(ac) == "10.0.0.1"
+    assert _host_gateway(ac) == "10.0.0.1"
+
+
+def test_agent_dns_override_used_when_not_hardcoded():
+    """KubeVirt deploy: dns_ip_override (.2) is used; route stays gateway (.1)."""
+    import yaml
+
+    from app.services.ocp.agent_template import (
+        _build_agent_config,
+        cluster_member_nodes,
+    )
+
+    topo = _two_cluster_topo()
+    prod = {"id": "prod", "name": "prod", "type": "standard", "baseDomain": "ocp.local"}
+    ac = yaml.safe_load(
+        _build_agent_config(
+            prod, cluster_member_nodes(topo, "prod"), topo, dns_ip_override="10.0.0.2"
+        )
+    )
+    assert _host_dns(ac) == "10.0.0.2"
+    assert _host_gateway(ac) == "10.0.0.1"  # default route untouched
+
+
+def test_agent_dns_explicit_wins_over_override():
+    """An explicit dnsServerIp on the network node beats the provider override."""
+    import yaml
+
+    from app.services.ocp.agent_template import (
+        _build_agent_config,
+        cluster_member_nodes,
+    )
+
+    topo = _two_cluster_topo()
+    for n in topo["nodes"]:
+        if n.get("id") == "net-prod":
+            n["data"]["dnsServerIp"] = "10.0.0.53"
+    prod = {"id": "prod", "name": "prod", "type": "standard", "baseDomain": "ocp.local"}
+    ac = yaml.safe_load(
+        _build_agent_config(
+            prod, cluster_member_nodes(topo, "prod"), topo, dns_ip_override="10.0.0.2"
+        )
+    )
+    assert _host_dns(ac) == "10.0.0.53"
+
+
+def test_kubevirt_override_agent_dns_sets_dot2():
+    """Deploy-time helper repoints each cluster's agent-config DNS at <cidr>.2."""
+    import yaml
+
+    from app.services.deploy_service import _kubevirt_override_agent_dns
+
+    topo = _two_cluster_topo()
+    clusters = [
+        {"id": "prod", "name": "prod", "type": "standard", "baseDomain": "ocp.local"},
+        {"id": "dev", "name": "dev", "type": "sno", "baseDomain": "dev.local"},
+    ]
+    _kubevirt_override_agent_dns(topo, clusters)
+    ac_prod = yaml.safe_load(clusters[0]["_generatedAgentConfig"])
+    ac_dev = yaml.safe_load(clusters[1]["_generatedAgentConfig"])
+    assert _host_dns(ac_prod) == "10.0.0.2"
+    assert _host_dns(ac_dev) == "10.1.0.2"
+    # default route still points at each cluster's gateway
+    assert _host_gateway(ac_prod) == "10.0.0.1"
+
+
 def test_count_scoped_by_cluster():
     from app.services.ocp.agent_template import _count_ocp_nodes_by_group
 
