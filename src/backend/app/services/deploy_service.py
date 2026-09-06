@@ -2149,6 +2149,28 @@ def _kubevirt_override_agent_dns(topology, clusters):
         )
 
 
+def _kubevirt_ops_pod_dns(net_ip_assignments):
+    """Lab dnsmasq IP for the KubeVirt ops pod's resolver (first cluster net .2).
+
+    The ops pod resolves via the project's lab dnsmasq (which knows
+    api.<cluster>.<domain> and forwards upstream) so `wait-for install-complete`
+    can reach the installed cluster API. ``net_ip_assignments`` lists cluster
+    NADs first (see :func:`_kubevirt_ops_pod_net_ips`), so the first entry's /24
+    yields the cluster dnsmasq at ``.2``. Multi-cluster only resolves the first
+    cluster's API here (each cluster has its own dnsmasq) — acceptable while
+    multi-cluster KubeVirt bastionless is not yet e2e.
+    """
+    import ipaddress
+
+    if not net_ip_assignments:
+        return ""
+    try:
+        net = ipaddress.ip_network(net_ip_assignments[0][1], strict=False)
+    except (ValueError, IndexError):
+        return ""
+    return ".".join(str(net.network_address).split(".")[:3] + ["2"])
+
+
 def _stamp_effective_dns_ips(topology, kubevirt):
     """Record each cluster network's effective DNS IP for the palette to display.
 
@@ -2236,6 +2258,7 @@ def _deploy_ops_pod_kubevirt(
         config_files=config_files,
         cluster_nads=cluster_nads,
         bmc_nad=bmc_nad,
+        dns_nameserver=_kubevirt_ops_pod_dns(net_ip_assignments),
     )
     create_ops_pod(provider, project_id, pod, secret)
     _mark_ocp_install_started(s, project)

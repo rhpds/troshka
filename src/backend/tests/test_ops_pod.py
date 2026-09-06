@@ -649,6 +649,41 @@ def test_kv_ops_pod_restart_policy_always():
     assert pod["spec"]["restartPolicy"] == "Always"
 
 
+def test_kv_ops_pod_no_dns_config_by_default():
+    """No dns_nameserver -> default pod DNS (cluster DNS), no override."""
+    pod, _secret = _kv_manifests()
+    assert "dnsConfig" not in pod["spec"]
+    assert "dnsPolicy" not in pod["spec"]
+
+
+def test_kv_ops_pod_uses_lab_dnsmasq_when_set():
+    """dns_nameserver -> dnsPolicy None + dnsConfig points at the lab dnsmasq so
+    wait-for-install-complete can resolve api.<cluster>.<domain>."""
+    files = ops_pod_config_files(_clusters(), OPS_POD_WORKDIR, "")
+    pod, _secret = build_ops_pod_kubevirt_manifests(
+        namespace="troshka-abcdef12",
+        project_id="abcdef12-3456-7890-1234-567890abcdef",
+        command=["bash", "-c", "echo install"],
+        env={},
+        config_files=files,
+        cluster_nads=["net-clu-nad"],
+        bmc_nad="net-bmc-nad",
+        dns_nameserver="10.0.0.2",
+    )
+    assert pod["spec"]["dnsPolicy"] == "None"
+    assert pod["spec"]["dnsConfig"]["nameservers"] == ["10.0.0.2"]
+
+
+def test_kubevirt_ops_pod_dns_is_first_cluster_net_dot2():
+    from app.services.deploy_service import _kubevirt_ops_pod_dns
+
+    assert (
+        _kubevirt_ops_pod_dns([("net1", "10.0.0.50/24"), ("net2", "192.168.100.50/24")])
+        == "10.0.0.2"
+    )
+    assert _kubevirt_ops_pod_dns([]) == ""
+
+
 def test_kv_ops_pod_secret_carries_configs_and_pull_secret():
     _pod, secret = _kv_manifests()
     assert secret["kind"] == "Secret"

@@ -183,6 +183,7 @@ def build_ops_pod_kubevirt_manifests(
     cluster_nads: list[str],
     bmc_nad: str | None,
     image: str = OPS_POD_IMAGE,
+    dns_nameserver: str = "",
 ) -> tuple[dict, dict]:
     """Build the ``(Pod, Secret)`` manifests for the KubeVirt ops pod.
 
@@ -249,6 +250,23 @@ def build_ops_pod_kubevirt_manifests(
         },
     }
 
+    spec = {
+        "serviceAccountName": _OPS_POD_SERVICE_ACCOUNT,
+        "restartPolicy": "Always",
+        "containers": [container],
+        "volumes": [{"name": "ops-config", "secret": {"secretName": secret_name}}],
+    }
+    # Resolve via the project's lab dnsmasq (which knows api.<cluster>.<domain> and
+    # forwards upstream) instead of the KubeVirt cluster DNS, so
+    # `wait-for install-complete` can reach the installed cluster's API. dnsPolicy
+    # must be None: k8s pod DNS is flat (no per-domain routing), and with
+    # ClusterFirst the cluster DNS answers NXDOMAIN for the lab domain and glibc
+    # won't fall through. The pod self-assigns its lab-net IP before any lookup, so
+    # the dnsmasq is reachable by the time the script resolves anything.
+    if dns_nameserver:
+        spec["dnsPolicy"] = "None"
+        spec["dnsConfig"] = {"nameservers": [dns_nameserver]}
+
     pod = {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -258,11 +276,6 @@ def build_ops_pod_kubevirt_manifests(
             "labels": labels,
             "annotations": annotations,
         },
-        "spec": {
-            "serviceAccountName": _OPS_POD_SERVICE_ACCOUNT,
-            "restartPolicy": "Always",
-            "containers": [container],
-            "volumes": [{"name": "ops-config", "secret": {"secretName": secret_name}}],
-        },
+        "spec": spec,
     }
     return pod, secret
