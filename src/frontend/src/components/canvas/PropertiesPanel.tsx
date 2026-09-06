@@ -8,6 +8,7 @@ import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
 import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, ensureSnoNodeIp, effectiveDnsNetworkId, clusterPrereqIssues, suggestClusterVips, vipCollision, vipInMemberSubnet } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
+import { collectUsedIps } from "@/lib/dhcpIpAssignment";
 import {
   getShowroomReadiness,
   isDnsEnabledLabNetwork,
@@ -150,18 +151,32 @@ function validateDhcpRange(cidr: string, start: string, end: string, gateway: st
   return errors;
 }
 
-function validateDhcpRangeFull(cidr: string, start: string, end: string, gateway: string, dnsIp: string): string[] {
-  const errors = validateDhcpRange(cidr, start, end, gateway);
-  const startNum = ipToNum(start);
-  const endNum = ipToNum(end);
-  const dnsNum = ipToNum(dnsIp);
-  if (dnsIp && !dnsNum) errors.push("Invalid DNS server IP");
-  if (dnsNum && startNum && endNum && dnsNum >= startNum && dnsNum <= endNum)
-    errors.push("DNS server IP conflicts with DHCP range");
+/**
+ * Warnings for an explicit DNS Server IP override. The gateway (.1) is exempt
+ * from the in-use check: troshkad co-locates dnsmasq on the gateway, so DNS==.1
+ * is a legitimate dual-use (on KubeVirt dnsmasq is a separate pod at .2).
+ */
+function dnsIpWarnings(
+  cidr: string,
+  start: string,
+  end: string,
+  gateway: string,
+  dnsIp: string,
+  usedIps: Set<string>,
+): string[] {
+  const d = ipToNum(dnsIp);
+  if (dnsIp && !d) return ["Invalid IP address"];
+  if (!d) return [];
+  const warnings: string[] = [];
   const range = cidrToRange(cidr);
-  if (dnsNum && range && (dnsNum <= range[0] || dnsNum >= range[1]))
-    errors.push("DNS server IP outside subnet");
-  return errors;
+  if (range && (d <= range[0] || d >= range[1])) warnings.push("Outside the subnet");
+  const s = ipToNum(start);
+  const e = ipToNum(end);
+  if (s && e && d >= s && d <= e) warnings.push("Inside the DHCP range");
+  const gwNum = ipToNum(gateway);
+  if (usedIps.has(dnsIp) && d !== gwNum)
+    warnings.push("Already in use by another node or VIP");
+  return warnings;
 }
 
 function formatOutboundRuleLabel(entry: string): string {
@@ -3999,12 +4014,11 @@ export default function PropertiesPanel() {
                         />
                       </div>
                       {(() => {
-                        const dhcpErrors = validateDhcpRangeFull(
+                        const dhcpErrors = validateDhcpRange(
                           and?.cidr,
                           (data as Record<string, any>).dhcpRangeStart as string || "",
                           (data as Record<string, any>).dhcpRangeEnd as string || "",
                           (data as Record<string, any>).dhcpGateway as string || "",
-                          (data as Record<string, any>).dnsServerIp as string || "",
                         );
                         return dhcpErrors.length > 0 ? (
                           <div className="props-field">
@@ -4076,19 +4090,30 @@ export default function PropertiesPanel() {
                           value={(data as Record<string, any>).dnsServerIp as string || ""}
                           onChange={(e) => update("dnsServerIp", e.target.value)}
                           placeholder={
-                            and?.cidr
-                              ? `auto — ${and.cidr.replace(/\.\d+\/\d+$/, ".1")} (dedicated) / ${and.cidr.replace(/\.\d+\/\d+$/, ".2")} (KubeVirt)`
-                              : "auto (project dnsmasq)"
+                            ((data as Record<string, any>).effectiveDnsIp as string) || "auto"
                           }
                           style={{ fontFamily: "monospace" }}
                         />
-                        <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 2 }}>
-                          {(data as Record<string, any>).dnsServerIp
-                            ? "Overriding the project dnsmasq. Must be outside the DHCP range."
-                            : and?.cidr
-                              ? `Leave blank to use the project dnsmasq: ${and.cidr.replace(/\.\d+\/\d+$/, ".1")} on dedicated hosts, ${and.cidr.replace(/\.\d+\/\d+$/, ".2")} on shared/KubeVirt clusters. Set only to override (must be outside the DHCP range).`
-                              : "Leave blank to use the project dnsmasq (gateway on dedicated hosts, .2 on KubeVirt). Set only to override; must be outside the DHCP range."}
-                        </span>
+                        {(() => {
+                          const dnsIp = ((data as Record<string, any>).dnsServerIp as string || "").trim();
+                          if (!dnsIp) return null;
+                          const gwIp =
+                            ((data as Record<string, any>).dhcpGateway as string || "").trim() ||
+                            (and?.cidr ? and.cidr.replace(/\.\d+\/\d+$/, ".1") : "");
+                          const warns = dnsIpWarnings(
+                            and?.cidr || "",
+                            (data as Record<string, any>).dhcpRangeStart as string || "",
+                            (data as Record<string, any>).dhcpRangeEnd as string || "",
+                            gwIp,
+                            dnsIp,
+                            collectUsedIps(nodes),
+                          );
+                          return warns.length ? (
+                            <span style={{ fontSize: 11, color: "var(--troshka-red)", display: "block", marginTop: 2 }}>
+                              ⚠ {warns.join("; ")}
+                            </span>
+                          ) : null;
+                        })()}
                       </div>
                       <div className="props-field">
                         <label className="props-label">DNS Domain</label>
