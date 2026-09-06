@@ -1207,3 +1207,67 @@ def test_ops_monitor_lock_allows_when_redis_unavailable(_no_redis):
     assert _acquire_ops_monitor_lock("p1") is True
     _refresh_ops_monitor_lock("p1")  # no-op, no raise
     _release_ops_monitor_lock("p1")  # no-op, no raise
+
+
+# ---------------------------------------------------------------------------
+# KubeVirt ops-pod lab-network IPs (OVN-L2 NADs have no IPAM -> self-assign)
+# ---------------------------------------------------------------------------
+
+
+def test_install_script_kubevirt_self_assigns_lab_net_ips_and_serving_ip():
+    from app.services.ocp.ops_pod_install import build_ops_pod_install_script
+
+    clusters = [{"id": "ocp", "name": "ocp", "_generatedInstallConfig": "x"}]
+    bmc = {"ocp": (["192.168.100.10"], "pw")}
+    script = build_ops_pod_install_script(
+        clusters,
+        bmc,
+        "4.22",
+        "/workdir",
+        net_ip_assignments=[("net1", "10.0.0.50/24"), ("net2", "192.168.100.50/24")],
+        serving_ip="10.0.0.50",
+    )
+    assert "ip addr add 10.0.0.50/24 dev net1" in script
+    assert "ip addr add 192.168.100.50/24 dev net2" in script
+    assert "ip link set net1 up" in script
+    # ISO served from the cluster IP the node can reach, not the OVN pod IP.
+    assert "BASTION_IP=10.0.0.50" in script
+    assert "hostname -I" not in script
+
+
+def test_install_script_troshkad_path_unchanged_without_net_ips():
+    from app.services.ocp.ops_pod_install import build_ops_pod_install_script
+
+    clusters = [{"id": "ocp", "name": "ocp", "_generatedInstallConfig": "x"}]
+    bmc = {"ocp": (["192.168.100.10"], "pw")}
+    script = build_ops_pod_install_script(clusters, bmc, "4.22", "/workdir")
+    assert "ip addr add" not in script  # no self-assign
+    assert "hostname -I" in script  # auto-detect preserved (bastion/troshkad)
+
+
+def test_kubevirt_ops_pod_net_ips_computes_cluster_then_bmc():
+    from app.services.deploy_service import _kubevirt_ops_pod_net_ips
+
+    topo = {
+        "nodes": [
+            {
+                "type": "networkNode",
+                "id": "c",
+                "data": {"subtype": "network", "cidr": "10.0.0.0/24"},
+            },
+            {
+                "type": "networkNode",
+                "id": "b",
+                "data": {
+                    "subtype": "network",
+                    "networkType": "bmc",
+                    "cidr": "192.168.100.0/24",
+                },
+            },
+            {"type": "networkNode", "id": "g", "data": {"subtype": "gateway"}},
+        ]
+    }
+    assignments, serving = _kubevirt_ops_pod_net_ips(topo)
+    # cluster net1 first, bmc net2 (gateway excluded); .50 host in each /24.
+    assert assignments == [("net1", "10.0.0.50/24"), ("net2", "192.168.100.50/24")]
+    assert serving == "10.0.0.50"

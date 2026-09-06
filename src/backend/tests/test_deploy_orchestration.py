@@ -4716,12 +4716,21 @@ def _ops_pod_topology():
             {
                 "id": "netclust",
                 "type": "networkNode",
-                "data": {"networkType": "data", "cidr": "10.0.0.0/24"},
+                "data": {
+                    "subtype": "network",
+                    "networkType": "data",
+                    "cidr": "10.0.0.0/24",
+                },
             },
             {
                 "id": "netbmc00",
                 "type": "networkNode",
-                "data": {"networkType": "bmc", "bmcPassword": "pw"},
+                "data": {
+                    "subtype": "network",
+                    "networkType": "bmc",
+                    "bmcPassword": "pw",
+                    "cidr": "192.168.100.0/24",
+                },
             },
         ],
     }

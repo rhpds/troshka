@@ -1867,13 +1867,22 @@ def _ops_pod_workdir_lines(clusters, workdir) -> list[str]:
     return lines
 
 
-def _ops_pod_command(clusters, topology, ocp_version, workdir):
+def _ops_pod_command(
+    clusters,
+    topology,
+    ocp_version,
+    workdir,
+    net_ip_assignments=None,
+    serving_ip=None,
+):
     """Full ``bash -c`` argv: ensure workdirs exist, then run the installer.
 
     The install-runner script (Task 5) reads each cluster's config from
     ``<workdir>/<clusterId>/`` (delivered via mounted files) and installs every
     cluster in parallel, exiting non-zero if any cluster fails. NO secret is
-    embedded in this argv.
+    embedded in this argv. ``net_ip_assignments``/``serving_ip`` are the KubeVirt
+    ops pod's self-assigned lab-net IPs (None on troshkad, whose ops pod already
+    has bridge IPs).
     """
     from app.services.ocp.ops_pod_install import (
         bmc_for_cluster,
@@ -1885,7 +1894,12 @@ def _ops_pod_command(clusters, topology, ocp_version, workdir):
         key = str(cluster.get("id") or cluster.get("name") or "cluster")
         bmc_by_cluster[key] = bmc_for_cluster(topology, cluster)
     script = build_ops_pod_install_script(
-        clusters, bmc_by_cluster, ocp_version, workdir
+        clusters,
+        bmc_by_cluster,
+        ocp_version,
+        workdir,
+        net_ip_assignments=net_ip_assignments,
+        serving_ip=serving_ip,
     )
     preamble = "\n".join(_ops_pod_workdir_lines(clusters, workdir))
     return ["bash", "-c", preamble + "\n" + script]
@@ -2039,6 +2053,58 @@ def _deploy_ops_pod_troshkad(
     _start_ops_pod_install_monitor(host, project_id, clusters)
 
 
+def _kubevirt_ops_pod_net_ips(topology):
+    """Static IPs for the KubeVirt ops pod's cluster+bmc interfaces.
+
+    KubeVirt secondary NADs are OVN-L2 with no IPAM, so the ops pod gets no IP on
+    them unless it self-assigns one. Interface order mirrors
+    ``build_ops_pod_kubevirt_manifests`` (and ``ops_pod_network_nads``): cluster
+    NAD(s) first (net1..), then the BMC NAD (netN). Returns
+    ``(net_ip_assignments, serving_ip)`` where each assignment is
+    ``(iface, "<ip>/<prefix>")`` and ``serving_ip`` is the first cluster net's IP
+    (the agent-ISO host the node fetches from). Uses ``.50`` in each lab subnet —
+    the address the now-removed bastion used, so it's outside the node/VIP range.
+    """
+    import ipaddress
+
+    cluster_cidrs = []
+    bmc_cidr = None
+    for n in topology.get("nodes", []):
+        if n.get("type") != "networkNode":
+            continue
+        d = n.get("data", {})
+        if d.get("subtype") != "network":
+            continue
+        cidr = d.get("cidr")
+        if not cidr:
+            continue
+        if d.get("networkType") == "bmc":
+            bmc_cidr = cidr
+        else:
+            cluster_cidrs.append(cidr)
+
+    def _ops_ip(cidr):
+        net = ipaddress.ip_network(cidr, strict=False)
+        host = net.network_address + 50
+        if host not in net or host == net.network_address:
+            host = list(net.hosts())[-2]
+        return str(host), net.prefixlen
+
+    assignments: list[tuple[str, str]] = []
+    serving_ip = None
+    idx = 1
+    for cidr in cluster_cidrs:
+        ip, prefix = _ops_ip(cidr)
+        assignments.append((f"net{idx}", f"{ip}/{prefix}"))
+        if serving_ip is None:
+            serving_ip = ip
+        idx += 1
+    if bmc_cidr:
+        ip, prefix = _ops_ip(bmc_cidr)
+        assignments.append((f"net{idx}", f"{ip}/{prefix}"))
+    return assignments, serving_ip
+
+
 def _deploy_ops_pod_kubevirt(
     s, host, project_id, project, topology, clusters, api_key, ocp_version
 ):
@@ -2059,7 +2125,18 @@ def _deploy_ops_pod_kubevirt(
     from app.services.providers.kubevirt import create_ops_pod
 
     provider = _ops_pod_provider(s, host)
-    command = _ops_pod_command(clusters, topology, ocp_version, OPS_POD_WORKDIR)
+    # OVN-L2 NADs give the ops pod no IP on cluster/bmc; self-assign lab-net IPs
+    # in the install script (and serve the ISO from the cluster IP, not the OVN
+    # pod IP the node can't reach).
+    net_ip_assignments, serving_ip = _kubevirt_ops_pod_net_ips(topology)
+    command = _ops_pod_command(
+        clusters,
+        topology,
+        ocp_version,
+        OPS_POD_WORKDIR,
+        net_ip_assignments=net_ip_assignments,
+        serving_ip=serving_ip,
+    )
     config_files = ops_pod_config_files(clusters, OPS_POD_WORKDIR, "")
     cluster_nads, bmc_nad = ops_pod_network_nads(topology)
     pod, secret = build_ops_pod_kubevirt_manifests(

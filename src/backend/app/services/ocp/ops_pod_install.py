@@ -245,6 +245,7 @@ def _cluster_install_block(
     bmc_password: str,
     port: int,
     workdir: str,
+    serving_ip: str | None = None,
 ) -> str:
     """One cluster's install steps, wrapped in a backgrounded subshell.
 
@@ -288,7 +289,7 @@ def _cluster_install_block(
         "  trap 'kill $HTTP_PID 2>/dev/null || true' EXIT\n"
         + _agent_create_image_cmd("  ", "openshift-install", "create-image.log")
         + "  echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"
-        + _serve_iso_cmd("  ", cluster_dir, port)
+        + _serve_iso_cmd("  ", cluster_dir, port, serving_ip=serving_ip)
         + _redfish_insert_media_cmd("  ", bmc_ips_str)
         + "  echo 'Waiting for cluster installation to complete...'\n"
         + _wait_for_complete_cmd("  ", "openshift-install", ".")
@@ -300,11 +301,31 @@ def _cluster_install_block(
     )
 
 
+def _self_assign_net_ips(net_ip_assignments: list[tuple[str, str]] | None) -> str:
+    """`ip addr add` lines for the ops pod's lab-net interfaces.
+
+    KubeVirt secondary networks are OVN-L2 NADs with no IPAM, so a pod attached
+    to them gets no IP unless it self-assigns one (the ops pod has NET_ADMIN,
+    mirroring how the BMC/sushy pod adds SUSHY_BMC_IPS to net1). Without this the
+    ops pod can't reach the node BMC or serve the agent ISO on the lab network.
+    Empty for the troshkad path (its ops pod already has bridge IPs).
+    """
+    if not net_ip_assignments:
+        return ""
+    lines = ["# Self-assign lab-network IPs (OVN-L2 NADs have no IPAM).\n"]
+    for iface, cidr in net_ip_assignments:
+        lines.append(f"ip addr add {cidr} dev {iface} 2>/dev/null || true\n")
+        lines.append(f"ip link set {iface} up 2>/dev/null || true\n")
+    return "".join(lines)
+
+
 def build_ops_pod_install_script(
     clusters: list[dict],
     bmc_by_cluster: dict[str, tuple[list[str], str]],
     ocp_version: str,
     workdir: str,
+    net_ip_assignments: list[tuple[str, str]] | None = None,
+    serving_ip: str | None = None,
 ) -> str:
     """Generate the ops-pod bash script that installs every cluster in parallel.
 
@@ -327,6 +348,7 @@ def build_ops_pod_install_script(
         "set -o pipefail\n",
         f"OCP_VERSION={ocp_version}\n",
         "\n",
+        _self_assign_net_ips(net_ip_assignments),
         _ensure_installers_cmd(),
         "\n",
         "pids=()\n",
@@ -336,7 +358,12 @@ def build_ops_pod_install_script(
         bmc_ips, bmc_password = bmc_by_cluster.get(key, ([], ""))
         parts.append(
             _cluster_install_block(
-                key, bmc_ips, bmc_password, _BASE_ISO_PORT + index, workdir
+                key,
+                bmc_ips,
+                bmc_password,
+                _BASE_ISO_PORT + index,
+                workdir,
+                serving_ip=serving_ip,
             )
         )
     parts.append("\n")

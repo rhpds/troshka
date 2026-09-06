@@ -1788,9 +1788,22 @@ def _agent_create_image_cmd(indent: str, oi_bin: str, log_path: str) -> str:
     )
 
 
-def _serve_iso_cmd(indent: str, workdir: str, port: int) -> str:
-    """Serve the agent ISO over HTTP and compute ``ISO_URL`` for Redfish."""
+def _serve_iso_cmd(
+    indent: str, workdir: str, port: int, serving_ip: str | None = None
+) -> str:
+    """Serve the agent ISO over HTTP and compute ``ISO_URL`` for Redfish.
+
+    ``serving_ip`` overrides the auto-detected host IP. The KubeVirt ops pod's
+    first ``hostname -I`` address is its OVN pod IP (10.128.x, unreachable by the
+    cluster node), so it passes the self-assigned cluster-network IP explicitly;
+    bastion and troshkad callers leave it None and use ``hostname -I`` (their
+    first address IS a lab-network IP the node can reach).
+    """
     i = indent
+    if serving_ip:
+        bastion_ip_line = f"{i}BASTION_IP={serving_ip}\n"
+    else:
+        bastion_ip_line = f"{i}BASTION_IP=$(hostname -I | awk '{{print $1}}')\n"
     return (
         f"{i}# Open firewall for ISO serving (script runs as cloud-user)\n"
         f"{i}sudo firewall-cmd --add-port={port}/tcp --permanent 2>/dev/null && "
@@ -1801,7 +1814,7 @@ def _serve_iso_cmd(indent: str, workdir: str, port: int) -> str:
         f'{i}echo "HTTP server PID: $HTTP_PID"\n'
         f"{i}\n"
         f"{i}# Boot each CP node via Redfish virtual media\n"
-        f"{i}BASTION_IP=$(hostname -I | awk '{{print $1}}')\n"
+        f"{bastion_ip_line}"
         f'{i}ISO_URL="http://${{BASTION_IP}}:{port}/agent.x86_64.iso"\n'
         f'{i}echo "ISO URL: $ISO_URL"\n'
     )
