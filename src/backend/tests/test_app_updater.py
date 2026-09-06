@@ -24,8 +24,21 @@ def test_is_argo_managed_true():
     )
 
 
+def test_is_argo_managed_via_annotation():
+    # Annotation-based tracking (newer ArgoCD default, e.g. infra01) must count.
+    assert (
+        app_updater._is_argo_managed(
+            {"app": "troshka-backend"},
+            {
+                "argocd.argoproj.io/tracking-id": "troshka:apps/Deployment:troshka/troshka-backend"
+            },
+        )
+        is True
+    )
+
+
 def test_is_argo_managed_false():
-    assert app_updater._is_argo_managed({"app": "troshka-backend"}) is False
+    assert app_updater._is_argo_managed({"app": "troshka-backend"}, {}) is False
 
 
 def test_resolve_mode_explicit_override(monkeypatch):
@@ -45,7 +58,7 @@ def test_resolve_mode_image_when_deployed_no_argo(monkeypatch):
     _reset()
     monkeypatch.setattr(app_updater, "_configured_mode", lambda: "auto")
     monkeypatch.setattr(app_updater, "_oauth_enabled", lambda: True)
-    monkeypatch.setattr(app_updater, "_read_own_deployment_labels", lambda: {})
+    monkeypatch.setattr(app_updater, "_read_own_deployment_meta", lambda: ({}, {}))
     assert app_updater.resolve_mode() == "image"
 
 
@@ -55,8 +68,26 @@ def test_resolve_mode_disabled_when_argo(monkeypatch):
     monkeypatch.setattr(app_updater, "_oauth_enabled", lambda: True)
     monkeypatch.setattr(
         app_updater,
-        "_read_own_deployment_labels",
-        lambda: {"argocd.argoproj.io/instance": "troshka"},
+        "_read_own_deployment_meta",
+        lambda: ({"argocd.argoproj.io/instance": "troshka"}, {}),
+    )
+    assert app_updater.resolve_mode() == "disabled"
+
+
+def test_resolve_mode_disabled_when_argo_annotation_only(monkeypatch):
+    # infra01 scenario: ArgoCD tracks via annotation, not the instance label.
+    _reset()
+    monkeypatch.setattr(app_updater, "_configured_mode", lambda: "auto")
+    monkeypatch.setattr(app_updater, "_oauth_enabled", lambda: True)
+    monkeypatch.setattr(
+        app_updater,
+        "_read_own_deployment_meta",
+        lambda: (
+            {"app.kubernetes.io/managed-by": "Helm"},
+            {
+                "argocd.argoproj.io/tracking-id": "troshka:apps/Deployment:troshka/troshka-backend"
+            },
+        ),
     )
     assert app_updater.resolve_mode() == "disabled"
 
@@ -69,7 +100,7 @@ def test_resolve_mode_disabled_and_uncached_on_label_error(monkeypatch):
     def _boom():
         raise RuntimeError("in-cluster API unavailable")
 
-    monkeypatch.setattr(app_updater, "_read_own_deployment_labels", _boom)
+    monkeypatch.setattr(app_updater, "_read_own_deployment_meta", _boom)
     assert app_updater.resolve_mode() == "disabled"
     # Must NOT cache the failure-derived mode; next call should recompute.
     assert app_updater._resolved_mode is None
@@ -342,7 +373,7 @@ def test_resolve_mode_image_when_config_block_missing(monkeypatch):
     _reset()
     monkeypatch.setattr(app_updater.config, "get", lambda k, d=None: d)
     monkeypatch.setattr(app_updater, "_oauth_enabled", lambda: True)
-    monkeypatch.setattr(app_updater, "_read_own_deployment_labels", lambda: {})
+    monkeypatch.setattr(app_updater, "_read_own_deployment_meta", lambda: ({}, {}))
     assert app_updater.resolve_mode() == "image"
 
 

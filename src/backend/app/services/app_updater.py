@@ -56,18 +56,32 @@ def _get_own_namespace() -> str:
         return "troshka"
 
 
-def _read_own_deployment_labels() -> dict:
+def _read_own_deployment_meta() -> tuple[dict, dict]:
+    """``(labels, annotations)`` of our own Deployment (in-cluster)."""
     from kubernetes import client
     from kubernetes import config as k8s_config
 
     k8s_config.load_incluster_config()
     apps = client.AppsV1Api()
     dep = apps.read_namespaced_deployment("troshka-backend", _get_own_namespace())
-    return dep.metadata.labels or {}  # type: ignore[union-attr]
+    md = dep.metadata  # type: ignore[union-attr]
+    return (md.labels or {}), (md.annotations or {})  # type: ignore[union-attr]
 
 
-def _is_argo_managed(labels: dict) -> bool:
-    return "argocd.argoproj.io/instance" in (labels or {})
+def _is_argo_managed(labels: dict, annotations: dict | None = None) -> bool:
+    """True if ArgoCD manages this Deployment.
+
+    ArgoCD marks managed resources with EITHER the instance LABEL
+    (``argocd.argoproj.io/instance``, label-based tracking) OR the tracking-id
+    ANNOTATION (``argocd.argoproj.io/tracking-id``, annotation-based tracking —
+    the default on newer ArgoCD, e.g. infra01). Detect both so an
+    annotation-tracked prod correctly disables the in-app updater — ArgoCD Image
+    Updater handles rollouts there, so the in-app "Apply update" button must not
+    show (it only applies on dedicated CI / local dev).
+    """
+    if "argocd.argoproj.io/instance" in (labels or {}):
+        return True
+    return "argocd.argoproj.io/tracking-id" in (annotations or {})
 
 
 def _compute_mode() -> str:
@@ -76,10 +90,10 @@ def _compute_mode() -> str:
         return configured
     if not _oauth_enabled():
         return "dev"
-    # Let a failed label read propagate so resolve_mode() does not cache a
+    # Let a failed metadata read propagate so resolve_mode() does not cache a
     # failure-derived "image" mode on an ArgoCD-managed cluster.
-    labels = _read_own_deployment_labels()
-    return "disabled" if _is_argo_managed(labels) else "image"
+    labels, annotations = _read_own_deployment_meta()
+    return "disabled" if _is_argo_managed(labels, annotations) else "image"
 
 
 def resolve_mode() -> str:
