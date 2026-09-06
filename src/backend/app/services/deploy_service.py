@@ -2149,6 +2149,41 @@ def _kubevirt_override_agent_dns(topology, clusters):
         )
 
 
+def _stamp_effective_dns_ips(topology, kubevirt):
+    """Record each cluster network's effective DNS IP for the palette to display.
+
+    Mirrors ``_resolve_agent_dns_ip``: an explicit ``dnsServerIp`` wins; otherwise
+    KubeVirt uses the dnsmasq pod at ``<cidr>.2`` and troshkad the host dnsmasq at
+    the gateway ``<cidr>.1``. Written to ``data.effectiveDnsIp`` on the cluster
+    network node in the deployed topology (a read-only display value — never the
+    user's override). The canvas surfaces it as the DNS field placeholder.
+    """
+    import ipaddress
+
+    for node in topology.get("nodes", []) or []:
+        if node.get("type") != "networkNode":
+            continue
+        data = node.get("data") or {}
+        if data.get("subtype") != "network" or data.get("networkType") == "bmc":
+            continue
+        cidr = data.get("cidr")
+        if not cidr:
+            continue
+        explicit = str(data.get("dnsServerIp") or "").strip()
+        if explicit:
+            data["effectiveDnsIp"] = explicit
+        else:
+            try:
+                net = ipaddress.ip_network(cidr, strict=False)
+            except ValueError:
+                continue
+            octet = "2" if kubevirt else "1"
+            data["effectiveDnsIp"] = ".".join(
+                str(net.network_address).split(".")[:3] + [octet]
+            )
+        node["data"] = data
+
+
 def _deploy_ops_pod_kubevirt(
     s, host, project_id, project, topology, clusters, api_key, ocp_version
 ):
@@ -3895,6 +3930,7 @@ def _finalize_kubevirt_deploy(project_id, project, topology, db, host=None):
                 for vm in bmc_config["vms"]
             },
         }
+    _stamp_effective_dns_ips(clean_topo, kubevirt=True)
     project.deployed_topology = clean_topo
     project.topology = clean_topo
     project.deploy_error = None
@@ -4800,6 +4836,7 @@ def _deploy_multihost(project_id: str, project, db):
 
     project.state = "active"
     project.deploy_error = None
+    _stamp_effective_dns_ips(topology, kubevirt=False)
     project.deployed_topology = topology
     db.commit()
     _delete_deploy_progress(project_id)
@@ -6324,6 +6361,7 @@ def _deploy_complete_and_notify(
     project.deploy_error = None
     project.deploy_step = None
     project.deploy_progress = None
+    _stamp_effective_dns_ips(project.topology, kubevirt=False)
     project.deployed_topology = project.topology
 
     _deploy_finalize_timers(project, auto_start)

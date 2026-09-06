@@ -1776,6 +1776,21 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
               ] as [string, Array<Record<string, unknown>>])
               .filter(([, eps]: [string, Array<Record<string, unknown>>]) => eps.length > 0),
           );
+          // Surface the effective DNS IP (gateway .1 on troshkad, dnsmasq .2 on
+          // KubeVirt) computed at deploy time onto the network node, so the DNS
+          // Server IP field shows the real value as its placeholder. Read-only:
+          // only fills when the user hasn't set an explicit dnsServerIp override.
+          const deployedEffectiveDns = new Map<string, string>(
+            (project.deployed_topology?.nodes || [])
+              .filter(
+                (n: { data?: Record<string, unknown> }) =>
+                  n.data?.subtype === "network" && n.data?.effectiveDnsIp,
+              )
+              .map(
+                (n: { id: string; data?: Record<string, unknown> }) =>
+                  [n.id, String(n.data?.effectiveDnsIp)] as [string, string],
+              ),
+          );
           const externalIps = (t.externalIps || []).map((e: ExternalIp) => {
             const dep = deployedEipById.get(e.id);
             return dep && !e.ip
@@ -1791,11 +1806,20 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
                 : ((showroomNode?.data as Record<string, unknown> | undefined)
                     ?.showroomTabs as ShowroomTab[] | undefined)) || [];
             const withGatewayEndpoints = nodes.map((n: Node) => {
-              const deployedEndpoints = deployedGatewayEndpoints.get(n.id);
-              if (!deployedEndpoints?.length) return n;
               const data = (n.data || {}) as Record<string, unknown>;
-              if (data.subtype !== "gateway") return n;
-              return { ...n, data: { ...data, externalEndpoints: deployedEndpoints } };
+              let out = n;
+              const deployedEndpoints = deployedGatewayEndpoints.get(n.id);
+              if (deployedEndpoints?.length && data.subtype === "gateway") {
+                out = { ...out, data: { ...data, externalEndpoints: deployedEndpoints } };
+              }
+              const effDns = deployedEffectiveDns.get(n.id);
+              if (effDns && n.type === "networkNode" && !data.effectiveDnsIp) {
+                out = {
+                  ...out,
+                  data: { ...(out.data as Record<string, unknown>), effectiveDnsIp: effDns },
+                };
+              }
+              return out;
             });
             const withNicIps = assignMissingContainerNicIps(
               withGatewayEndpoints,

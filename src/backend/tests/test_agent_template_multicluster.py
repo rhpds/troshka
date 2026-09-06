@@ -272,6 +272,31 @@ def test_kubevirt_override_agent_dns_sets_dot2():
     assert _host_gateway(ac_prod) == "10.0.0.1"
 
 
+def test_stamp_effective_dns_ips():
+    """effectiveDnsIp on each cluster network node: KubeVirt .2, troshkad .1,
+    explicit dnsServerIp wins."""
+    from app.services.deploy_service import _stamp_effective_dns_ips
+
+    kv = _two_cluster_topo()
+    _stamp_effective_dns_ips(kv, kubevirt=True)
+    kv_net = {n["id"]: n for n in kv["nodes"] if n["type"] == "networkNode"}
+    assert kv_net["net-prod"]["data"]["effectiveDnsIp"] == "10.0.0.2"
+    assert kv_net["net-dev"]["data"]["effectiveDnsIp"] == "10.1.0.2"
+
+    tk = _two_cluster_topo()
+    _stamp_effective_dns_ips(tk, kubevirt=False)
+    tk_net = {n["id"]: n for n in tk["nodes"] if n["type"] == "networkNode"}
+    assert tk_net["net-prod"]["data"]["effectiveDnsIp"] == "10.0.0.1"
+
+    ex = _two_cluster_topo()
+    for n in ex["nodes"]:
+        if n.get("id") == "net-prod":
+            n["data"]["dnsServerIp"] = "10.0.0.9"
+    _stamp_effective_dns_ips(ex, kubevirt=True)
+    ex_net = {n["id"]: n for n in ex["nodes"] if n["type"] == "networkNode"}
+    assert ex_net["net-prod"]["data"]["effectiveDnsIp"] == "10.0.0.9"
+
+
 def test_count_scoped_by_cluster():
     from app.services.ocp.agent_template import _count_ocp_nodes_by_group
 
