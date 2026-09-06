@@ -1225,13 +1225,14 @@ def test_install_script_kubevirt_self_assigns_lab_net_ips_and_serving_ip():
         "4.22",
         "/workdir",
         net_ip_assignments=[("net1", "10.0.0.50/24"), ("net2", "192.168.100.50/24")],
-        serving_ip="10.0.0.50",
+        serving_ip="192.168.100.50",
     )
     assert "ip addr add 10.0.0.50/24 dev net1" in script
     assert "ip addr add 192.168.100.50/24 dev net2" in script
     assert "ip link set net1 up" in script
-    # ISO served from the cluster IP the node can reach, not the OVN pod IP.
-    assert "BASTION_IP=10.0.0.50" in script
+    # ISO served from the BMC-net IP the sushy BMC pod can reach (it isn't on the
+    # cluster net), not the OVN pod IP.
+    assert "BASTION_IP=192.168.100.50" in script
     assert "hostname -I" not in script
 
 
@@ -1270,4 +1271,6 @@ def test_kubevirt_ops_pod_net_ips_computes_cluster_then_bmc():
     assignments, serving = _kubevirt_ops_pod_net_ips(topo)
     # cluster net1 first, bmc net2 (gateway excluded); .50 host in each /24.
     assert assignments == [("net1", "10.0.0.50/24"), ("net2", "192.168.100.50/24")]
-    assert serving == "10.0.0.50"
+    # serving_ip is the BMC-net IP (the sushy BMC pod fetches the ISO from it and
+    # is not on the cluster net), not the cluster-net IP.
+    assert serving == "192.168.100.50"

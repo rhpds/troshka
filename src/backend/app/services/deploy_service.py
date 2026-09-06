@@ -2061,9 +2061,13 @@ def _kubevirt_ops_pod_net_ips(topology):
     ``build_ops_pod_kubevirt_manifests`` (and ``ops_pod_network_nads``): cluster
     NAD(s) first (net1..), then the BMC NAD (netN). Returns
     ``(net_ip_assignments, serving_ip)`` where each assignment is
-    ``(iface, "<ip>/<prefix>")`` and ``serving_ip`` is the first cluster net's IP
-    (the agent-ISO host the node fetches from). Uses ``.50`` in each lab subnet —
-    the address the now-removed bastion used, so it's outside the node/VIP range.
+    ``(iface, "<ip>/<prefix>")`` and ``serving_ip`` is the ops pod's IP on the BMC
+    network — the address the sushy BMC pod fetches the agent ISO from for the CDI
+    CDROM import. It must be BMC-net-reachable: the KubeVirt BMC pod attaches only to
+    the BMC NAD (+ default pod net), NOT the cluster net, so a cluster-net serving IP
+    would be unroutable (the ISO import times out -> 502 -> empty CDROM). Uses ``.50``
+    in each lab subnet — the address the now-removed bastion used, so it's outside the
+    node/VIP range.
     """
     import ipaddress
 
@@ -2091,17 +2095,18 @@ def _kubevirt_ops_pod_net_ips(topology):
         return str(host), net.prefixlen
 
     assignments: list[tuple[str, str]] = []
-    serving_ip = None
     idx = 1
     for cidr in cluster_cidrs:
         ip, prefix = _ops_ip(cidr)
         assignments.append((f"net{idx}", f"{ip}/{prefix}"))
-        if serving_ip is None:
-            serving_ip = ip
         idx += 1
+    # serving_ip must be BMC-net-reachable: the sushy BMC pod fetches the agent ISO
+    # from it for the CDI CDROM import, and that pod is only on the BMC net.
+    serving_ip = None
     if bmc_cidr:
         ip, prefix = _ops_ip(bmc_cidr)
         assignments.append((f"net{idx}", f"{ip}/{prefix}"))
+        serving_ip = ip
     return assignments, serving_ip
 
 
