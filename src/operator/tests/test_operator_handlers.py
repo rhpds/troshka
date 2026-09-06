@@ -5869,6 +5869,31 @@ class TestEnsureBmcSaAndRbac:
         mock_rbac.create_namespaced_role.assert_called_once()
         mock_rbac.create_namespaced_role_binding.assert_called_once()
 
+    @patch("handlers.vm.client")
+    def test_grants_vmi_delete_for_force_restart(self, mock_client):
+        """BMC must be able to delete VMIs so Redfish ForceRestart can reboot a
+        node into a newly-attached CDROM (otherwise _delete_vmi silently no-ops)."""
+        from handlers.vm import _ensure_bmc_sa_and_rbac
+
+        core_api = MagicMock()
+        custom_api = MagicMock()
+        custom_api.get_cluster_custom_object.return_value = {"users": []}
+        mock_rbac = MagicMock()
+        mock_client.RbacAuthorizationV1Api.return_value = mock_rbac
+
+        _ensure_bmc_sa_and_rbac("ns1", core_api, custom_api)
+
+        role_body = mock_rbac.create_namespaced_role.call_args[1]["body"]
+        vmi_rule = next(
+            r for r in role_body["rules"] if "virtualmachineinstances" in r["resources"]
+        )
+        assert "delete" in vmi_rule["verbs"]
+        # VM (not VMI) must NOT get delete — least privilege
+        vm_rule = next(
+            r for r in role_body["rules"] if r["resources"] == ["virtualmachines"]
+        )
+        assert "delete" not in vm_rule["verbs"]
+
     @patch("handlers.vm.client.RbacAuthorizationV1Api")
     def test_sa_409_swallowed(self, mock_rbac_cls):
         from handlers.vm import _ensure_bmc_sa_and_rbac

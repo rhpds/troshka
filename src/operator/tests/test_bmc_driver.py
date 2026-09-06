@@ -76,6 +76,10 @@ class TestGetPowerState:
 class TestSetPowerState:
     def test_on(self):
         drv, mock_api, _ = _make_driver()
+        # Legacy VM (uses spec.running, no runStrategy)
+        mock_api.get_namespaced_custom_object.return_value = {
+            "spec": {"running": False}
+        }
         drv.set_power_state("vm-uuid-1", "On")
         mock_api.patch_namespaced_custom_object.assert_called_once()
         body = mock_api.patch_namespaced_custom_object.call_args[1]["body"]
@@ -83,12 +87,16 @@ class TestSetPowerState:
 
     def test_force_off_deletes_vmi(self):
         drv, mock_api, _ = _make_driver()
+        mock_api.get_namespaced_custom_object.return_value = {"spec": {"running": True}}
         drv.set_power_state("vm-uuid-1", "ForceOff")
         assert mock_api.patch_namespaced_custom_object.call_count == 1
         assert mock_api.delete_namespaced_custom_object.call_count == 1
 
     def test_force_restart(self):
         drv, mock_api, _ = _make_driver()
+        mock_api.get_namespaced_custom_object.return_value = {
+            "spec": {"running": False}
+        }
         drv.set_power_state("vm-uuid-1", "ForceRestart")
         assert mock_api.delete_namespaced_custom_object.call_count == 1
         assert mock_api.patch_namespaced_custom_object.call_count == 1
@@ -97,10 +105,47 @@ class TestSetPowerState:
 
     def test_graceful_shutdown(self):
         drv, mock_api, _ = _make_driver()
+        mock_api.get_namespaced_custom_object.return_value = {"spec": {"running": True}}
         drv.set_power_state("vm-uuid-1", "GracefulShutdown")
         assert mock_api.delete_namespaced_custom_object.call_count == 1
         body = mock_api.patch_namespaced_custom_object.call_args[1]["body"]
         assert body["spec"]["running"] is False
+
+
+class TestSetPowerStateRunStrategy:
+    """Modern VMs use spec.runStrategy; patching spec.running would 422
+    ('Running and RunStrategy are mutually exclusive')."""
+
+    def test_on_uses_runstrategy_always(self):
+        drv, mock_api, _ = _make_driver()
+        mock_api.get_namespaced_custom_object.return_value = {
+            "spec": {"runStrategy": "Always"}
+        }
+        drv.set_power_state("vm-uuid-1", "On")
+        body = mock_api.patch_namespaced_custom_object.call_args[1]["body"]
+        assert body["spec"]["runStrategy"] == "Always"
+        assert "running" not in body["spec"]
+
+    def test_off_uses_runstrategy_halted(self):
+        drv, mock_api, _ = _make_driver()
+        mock_api.get_namespaced_custom_object.return_value = {
+            "spec": {"runStrategy": "Halted"}
+        }
+        drv.set_power_state("vm-uuid-1", "ForceOff")
+        body = mock_api.patch_namespaced_custom_object.call_args[1]["body"]
+        assert body["spec"]["runStrategy"] == "Halted"
+        assert "running" not in body["spec"]
+
+    def test_force_restart_deletes_vmi_and_sets_always(self):
+        drv, mock_api, _ = _make_driver()
+        mock_api.get_namespaced_custom_object.return_value = {
+            "spec": {"runStrategy": "Always"}
+        }
+        drv.set_power_state("vm-uuid-1", "ForceRestart")
+        assert mock_api.delete_namespaced_custom_object.call_count == 1
+        body = mock_api.patch_namespaced_custom_object.call_args[1]["body"]
+        assert body["spec"]["runStrategy"] == "Always"
+        assert "running" not in body["spec"]
 
 
 class TestDeleteVmi:

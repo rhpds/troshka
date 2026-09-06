@@ -767,11 +767,15 @@ def _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api):
                 "rules": [
                     {
                         "apiGroups": [_KUBEVIRT_API],
-                        "resources": [
-                            "virtualmachines",
-                            "virtualmachineinstances",
-                        ],
+                        "resources": ["virtualmachines"],
                         "verbs": ["get", "list", "patch"],
+                    },
+                    {
+                        # delete is required so the BMC can force-restart a VMI
+                        # (Redfish ForceRestart) to pick up a newly-attached CDROM.
+                        "apiGroups": [_KUBEVIRT_API],
+                        "resources": ["virtualmachineinstances"],
+                        "verbs": ["get", "list", "patch", "delete"],
                     },
                     {
                         "apiGroups": [_CDI_API],

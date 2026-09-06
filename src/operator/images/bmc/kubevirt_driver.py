@@ -120,15 +120,27 @@ class KubeVirtDriver:
             pass
 
     def _patch_vm_running(self, identity, running):
-        """Patch the VM spec.running field."""
+        """Set the VM's run state via whichever field the VM uses.
+
+        KubeVirt rejects a VM that carries both spec.running and spec.runStrategy
+        ("Running and RunStrategy are mutually exclusive"), so patch spec.runStrategy
+        when the VM was created with it (modern VMs, e.g. runStrategy=Always) and fall
+        back to the deprecated spec.running otherwise.
+        """
         name = self._kv_name(identity)
+        vm = self._get_vm(identity)
+        spec = vm.get("spec", {}) if isinstance(vm, dict) else {}
+        if spec.get("runStrategy"):
+            body = {"spec": {"runStrategy": "Always" if running else "Halted"}}
+        else:
+            body = {"spec": {"running": running}}
         self.custom_api.patch_namespaced_custom_object(
             group=_KUBEVIRT_API_GROUP,
             version=_KUBEVIRT_API_VERSION,
             namespace=self.namespace,
             plural=_VM_PLURAL,
             name=name,
-            body={"spec": {"running": running}},
+            body=body,
         )
 
     def set_power_state(self, identity, state):
