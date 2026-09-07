@@ -4826,3 +4826,131 @@ class TestDeployOpsPodBranch:
         assert "net-netbmc00-nad" in nets
         env = {e["name"]: e["value"] for e in pod["spec"]["containers"][0]["env"]}
         assert env["TROSHKA_API_KEY"] == "trk_key"  # pragma: allowlist secret
+
+
+class TestShowroomRouteTarget:
+    """Tests for _showroom_route_target() — reconstructs the showroom Route identity
+    (vm_name, ext_port) so a container redeploy resolves the same Route deploy made."""
+
+    def _topo(self, int_ip="172.30.5.3", ext_port=443, sr_name="showroom"):
+        return {
+            "nodes": [
+                {
+                    "id": "gw",
+                    "type": "networkNode",
+                    "data": {
+                        "subtype": "gateway",
+                        "portForwards": [{"intIp": int_ip, "extPort": ext_port}],
+                    },
+                },
+                {
+                    "id": "sr",
+                    "type": "containerNode",
+                    "data": {"isShowroom": True, "name": sr_name},
+                },
+            ]
+        }
+
+    def test_finds_showroom_target(self):
+        from app.services.deploy_service import _showroom_route_target
+
+        assert _showroom_route_target(self._topo()) == ("showroom", 443)
+
+    def test_uses_showroom_node_name(self):
+        from app.services.deploy_service import _showroom_route_target
+
+        assert _showroom_route_target(self._topo(sr_name="lab-showroom")) == (
+            "lab-showroom",
+            443,
+        )
+
+    def test_ignores_non_route_ports(self):
+        from app.services.deploy_service import _showroom_route_target
+
+        # 22 is not a route-access port (only 80/443/6443)
+        assert _showroom_route_target(self._topo(ext_port=22)) is None
+
+    def test_ignores_non_showroom_infra_ip(self):
+        from app.services.deploy_service import _showroom_route_target
+
+        # 172.30.X.4 is the ops infra IP, not the showroom (.3)
+        assert _showroom_route_target(self._topo(int_ip="172.30.5.4")) is None
+
+    def test_no_gateway(self):
+        from app.services.deploy_service import _showroom_route_target
+
+        assert _showroom_route_target({"nodes": []}) is None
+
+
+class TestRecreateShowroomAppProxy:
+    """Tests for _recreate_showroom_app_proxy() — showroom redeploy re-creates the
+    app-proxy console/oauth routes by resolving the existing showroom Route."""
+
+    def _topo(self):
+        return TestShowroomRouteTarget()._topo()
+
+    def test_noop_for_non_ocp_provider(self):
+        from app.services import deploy_service
+
+        provider = MagicMock()
+        provider.type = "aws"
+        with patch.object(
+            deploy_service, "_resolve_project_provider", return_value=provider
+        ), patch.object(deploy_service, "_create_app_proxy_routes") as mock_routes:
+            deploy_service._recreate_showroom_app_proxy(
+                MagicMock(), MagicMock(), MagicMock(), PROJECT_ID, {"nodes": []}
+            )
+        mock_routes.assert_not_called()
+
+    def test_noop_when_no_provider(self):
+        from app.services import deploy_service
+
+        with patch.object(
+            deploy_service, "_resolve_project_provider", return_value=None
+        ), patch.object(deploy_service, "_create_app_proxy_routes") as mock_routes:
+            deploy_service._recreate_showroom_app_proxy(
+                MagicMock(), MagicMock(), MagicMock(), PROJECT_ID, {"nodes": []}
+            )
+        mock_routes.assert_not_called()
+
+    def test_creates_app_proxy_routes_when_route_resolved(self):
+        from app.services import deploy_service
+
+        provider = MagicMock()
+        provider.type = "ocpvirt"
+        driver = MagicMock()
+        driver.find_showroom_route.return_value = {"hostname": "h", "route_name": "r"}
+        with patch.object(
+            deploy_service, "_resolve_project_provider", return_value=provider
+        ), patch(
+            "app.services.providers.get_provider_driver", return_value=driver
+        ), patch.object(
+            deploy_service, "_create_app_proxy_routes"
+        ) as mock_routes:
+            deploy_service._recreate_showroom_app_proxy(
+                MagicMock(), MagicMock(), MagicMock(), PROJECT_ID, self._topo()
+            )
+        # vm_name + ext_port resolved from the topology gateway/showroom nodes
+        args = driver.find_showroom_route.call_args[0]
+        assert args[2] == "showroom"
+        assert args[3] == 443
+        mock_routes.assert_called_once()
+
+    def test_skips_when_route_not_found(self):
+        from app.services import deploy_service
+
+        provider = MagicMock()
+        provider.type = "kubevirt"
+        driver = MagicMock()
+        driver.find_showroom_route.return_value = None
+        with patch.object(
+            deploy_service, "_resolve_project_provider", return_value=provider
+        ), patch(
+            "app.services.providers.get_provider_driver", return_value=driver
+        ), patch.object(
+            deploy_service, "_create_app_proxy_routes"
+        ) as mock_routes:
+            deploy_service._recreate_showroom_app_proxy(
+                MagicMock(), MagicMock(), MagicMock(), PROJECT_ID, self._topo()
+            )
+        mock_routes.assert_not_called()

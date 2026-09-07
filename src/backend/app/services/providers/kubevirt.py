@@ -1210,6 +1210,30 @@ class KubeVirtDriver(ProviderDriver):
                 raise
         return public_host
 
+    def find_showroom_route(self, provider, project_id, vm_name, port):
+        """Return {"hostname", "route_name"} for the existing showroom Route, or None.
+        The Route name is deterministic (see create_route_access), so redeploy can
+        resolve it without recreating the Route."""
+        custom_api, _core_api, _ = _get_k8s_clients(provider)
+        ns = _project_ns(provider, project_id)
+        route_name = f"rt-{vm_name}-{port}"[:63]
+        try:
+            raw = custom_api.get_namespaced_custom_object(
+                group=_ROUTE_API,
+                version="v1",
+                namespace=ns,
+                plural="routes",
+                name=route_name,
+            )
+        except Exception:
+            return None
+        spec: dict = {}
+        if isinstance(raw, dict):
+            _s = raw.get("spec")
+            if isinstance(_s, dict):
+                spec = _s
+        return {"hostname": spec.get("host", ""), "route_name": route_name}
+
     def delete_route_access(self, provider, project_id, namespace=None):
         custom_api, core_api, _ = _get_k8s_clients(provider)
         ns = namespace or _project_ns(provider, project_id)

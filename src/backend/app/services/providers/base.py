@@ -106,6 +106,13 @@ class ProviderDriver:
         Only implemented by providers with native ingress (OCP Virt)."""
         raise NotImplementedError
 
+    def find_showroom_route(self, provider, project_id, vm_name, port) -> dict | None:
+        """Return {"hostname", "route_name"} for an already-created showroom Route,
+        or None. Used by container redeploy to (re)create app-proxy routes without
+        recreating the showroom Route itself. Only providers with native ingress
+        (OCP Virt / KubeVirt) implement this."""
+        return None
+
     def delete_route_access(self, provider, project_id, namespace=None):
         """Delete all Route-based access resources for a project.
         Only implemented by providers with native ingress (OCP Virt)."""

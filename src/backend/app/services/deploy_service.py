@@ -3184,6 +3184,17 @@ def redeploy_container_bg(project_id: str, container_id: str) -> None:
         # podContainers may be the incomplete frontend-materialized set (missing
         # the cluster-terminal wetty container).
         _refresh_showroom_spec(topo, project_id)
+        # For a showroom redeploy, (re)create the app-proxy console/oauth routes and
+        # fill their tab URLs into the pod's baked ui-config BEFORE we recreate the
+        # pod — otherwise the console tab has no route (e.g. the original deploy hit
+        # the custom-host RBAC gap) and the pod bakes placeholder URLs.
+        from app.services.deploy_topology import _is_showroom_node
+
+        if any(
+            _is_showroom_node(n) and n.get("id") == container_id
+            for n in topo.get("nodes", [])
+        ):
+            _recreate_showroom_app_proxy(db, host, project, project_id, topo)
         ctr = next(
             (c for c in _extract_containers(topo) if c["node_id"] == container_id), None
         )
@@ -5351,6 +5362,42 @@ def _deploy_create_provider_routes(s, project_id, topology, host=None, project=N
 def _deploy_create_ocpvirt_routes(s, host, project_id, topology):
     """Backward-compatible wrapper."""
     _deploy_create_provider_routes(s, project_id, topology, host=host)
+
+
+def _showroom_route_target(topology):
+    """Return (vm_name, ext_port) that named the showroom's OCP Route at deploy, or
+    None. Mirrors _create_routes_for_gateway so redeploy resolves the same Route."""
+    from app.services.deploy_topology import is_showroom_infra_ip
+
+    for node in topology.get("nodes", []):
+        if node.get("data", {}).get("subtype") != "gateway":
+            continue
+        for pf in node["data"].get("portForwards", []):
+            int_ip = pf.get("intIp", "")
+            ext_port = int(pf.get("extPort", 0))
+            if is_showroom_infra_ip(int_ip) and ext_port in _ROUTE_ACCESS_PORTS:
+                return _find_vm_name_by_ip(topology, int_ip), ext_port
+    return None
+
+
+def _recreate_showroom_app_proxy(s, host, project, project_id, topology):
+    """After a showroom container redeploy, (re)create the app-proxy console/oauth
+    routes and refill the showroom tab URLs. The showroom Route itself already
+    exists (only the pod was recreated), so we resolve it rather than recreate it —
+    recreating would re-allocate transit ports and leak DNAT rules."""
+    provider = _resolve_project_provider(s, host, project)
+    if not provider or provider.type not in ("ocpvirt", "kubevirt"):
+        return
+    from app.services.providers import get_provider_driver
+
+    driver = get_provider_driver(provider)
+    target = _showroom_route_target(topology)
+    if not target:
+        return
+    vm_name, port = target
+    showroom_route = driver.find_showroom_route(provider, project_id, vm_name, port)
+    if showroom_route:
+        _create_app_proxy_routes(driver, provider, project_id, topology, showroom_route)
 
 
 def _detect_pattern_id(topology):

@@ -1126,6 +1126,37 @@ class OCPVirtDriver(ProviderDriver):
         }
         return _create_or_get_route(custom_api, namespace, route, name)
 
+    def find_showroom_route(self, provider, project_id, vm_name, port):
+        """Return {"hostname", "route_name"} for the existing showroom Route, or None.
+        The Route name is deterministic (see create_route_access), so redeploy can
+        resolve it without recreating the Route (avoiding transit-port/DNAT churn)."""
+        import re
+
+        from kubernetes import client
+
+        creds = provider.get_credentials()
+        namespace = creds.get("namespace", "troshka")
+        custom_api, _ = _get_k8s_clients(creds)
+        safe_name = re.sub(r"[^a-z0-9-]", "-", vm_name.lower())[:20]
+        route_name = f"troshka-pf-{project_id[:8]}-{safe_name}-{port}"
+        try:
+            route = cast(
+                dict[str, Any],
+                custom_api.get_namespaced_custom_object(
+                    group=_ROUTE_API,
+                    version="v1",
+                    namespace=namespace,
+                    plural="routes",
+                    name=route_name,
+                ),
+            )
+        except client.ApiException:
+            return None
+        return {
+            "hostname": route.get("spec", {}).get("host", ""),
+            "route_name": route_name,
+        }
+
     def delete_route_access(self, provider, project_id, namespace=None):
         """Delete all Route and Service resources created for a project's external access."""
         from kubernetes import client
