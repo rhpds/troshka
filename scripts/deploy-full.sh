@@ -55,20 +55,47 @@ OPERATOR_KUBECONFIGS+=("$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kube
 
 if [ "$SKIP_OPERATORS" = false ]; then
   echo ""
-  echo "=== Step 3b: Apply operator CRDs ==="
+  echo "=== Step 3b: Apply operator CRDs + provider RBAC ==="
   # Operator images are promoted above, but CRD schema changes (new spec fields)
   # only reach a cluster when the CRDs are applied. Do this before the operator
   # restart so the new reconcile logic sees the updated schema (unknown fields are
   # otherwise pruned on write). Applying CRDs is additive/idempotent.
+  #
+  # Provider RBAC (infra/ocpvirt-rbac.yaml) is applied at cluster onboarding, so
+  # permissions ADDED to it later (e.g. routes/custom-host for app-proxy console
+  # routes) never reach already-onboarded clusters and the live clusterrole goes
+  # stale. Re-apply it here too — but EXCLUDE the SecurityContextConstraints: the
+  # operator manages their user lists per-project (recert/gateway SAs), so
+  # re-applying the manifest's fixed lists would clobber active projects.
+  PROVIDER_RBAC=$(mktemp)
+  python3 - infra/ocpvirt-rbac.yaml >"$PROVIDER_RBAC" <<'PY'
+import sys
+docs = open(sys.argv[1]).read().split("\n---\n")
+keep = [
+    d.strip()
+    for d in docs
+    if next(
+        (l.split(":", 1)[1].strip() for l in d.splitlines() if l.strip().startswith("kind:")),
+        "",
+    )
+    not in ("", "SecurityContextConstraints")
+]
+print("\n---\n".join(keep))
+PY
   for kc in "${OPERATOR_KUBECONFIGS[@]}"; do
     cluster=$(basename "$kc" .kubeconfig | cut -d. -f1)
     printf "  %s: " "$cluster"
-    if oc apply -f src/operator/crds/ --kubeconfig="$kc" >/dev/null 2>&1; then
-      echo "applied"
+    crd_ok=false
+    rbac_ok=false
+    oc apply -f src/operator/crds/ --kubeconfig="$kc" >/dev/null 2>&1 && crd_ok=true
+    oc apply -f "$PROVIDER_RBAC" --kubeconfig="$kc" >/dev/null 2>&1 && rbac_ok=true
+    if [ "$crd_ok" = true ] && [ "$rbac_ok" = true ]; then
+      echo "CRDs + provider RBAC applied"
     else
-      echo "FAILED"
+      echo "FAILED (crds=$crd_ok rbac=$rbac_ok)"
     fi
   done
+  rm -f "$PROVIDER_RBAC"
 fi
 
 if [ "$SKIP_OPERATORS" = false ]; then
