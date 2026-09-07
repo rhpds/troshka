@@ -4385,37 +4385,60 @@ class TestDeployOpsPod:
         assert start_call[0][1] == "/pods/start"
         assert start_call[0][2]["pod_name"] == f"troshka-{PROJECT_ID[:8]}-ops"
 
-    @patch(f"{SVC}._detached_host_copy")
-    @patch(f"{SVC}.threading.Thread")
-    def test_start_ops_pod_install_monitor_spawns_daemon_thread(
-        self, mock_thread, mock_detach
-    ):
-        """The monitor is spawned as a daemon thread targeting
-        ``_monitor_ops_pod_install`` with a session-detached host copy."""
+    @patch(f"{SVC}._acquire_ops_monitor_lock", return_value=True)
+    @patch("app.core.redis.enqueue_job")
+    def test_start_ops_pod_install_monitor_enqueues_job(self, mock_enqueue, _mock_lock):
+        """The monitor is enqueued as its own RQ job (NOT a daemon thread): on
+        forking Linux workers a thread here dies with the deploy job's fork."""
         from app.services import deploy_service
         from app.services.deploy_service import _start_ops_pod_install_monitor
-        from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
 
         host = _make_host()
-        detached = _make_host()
-        mock_detach.return_value = detached
         clusters = [{"id": "cl-0"}, {"id": "cl-1"}]
 
         _start_ops_pod_install_monitor(host, PROJECT_ID, clusters)
 
-        mock_detach.assert_called_once_with(host.id)
-        mock_thread.assert_called_once()
-        kwargs = mock_thread.call_args.kwargs
-        assert kwargs["target"] is deploy_service._monitor_ops_pod_install
-        # The monitor receives the DETACHED copy, not the deploy's ORM host.
-        assert kwargs["args"] == (PROJECT_ID, detached, clusters)
-        assert kwargs["daemon"] is True
-        assert kwargs["kwargs"]["workdir"] == OPS_POD_WORKDIR
-        assert kwargs["kwargs"]["container_name"] == (
-            f"troshka-{PROJECT_ID[:8]}-ops-ops"
-        )
-        # Thread actually started.
-        mock_thread.return_value.start.assert_called_once()
+        mock_enqueue.assert_called_once()
+        args = mock_enqueue.call_args
+        assert args[0][0] is deploy_service._ops_pod_install_monitor_job
+        assert args[0][1] == PROJECT_ID
+        assert args[0][2] == host.id
+        assert args[0][3] == clusters
+        assert args.kwargs["job_timeout"] >= 3600  # survives a long install
+
+    @patch(f"{SVC}._acquire_ops_monitor_lock", return_value=False)
+    @patch("app.core.redis.enqueue_job")
+    def test_start_ops_pod_install_monitor_skips_when_locked(
+        self, mock_enqueue, _mock_lock
+    ):
+        """The per-project lock dedups: if another worker holds it, don't enqueue."""
+        from app.services.deploy_service import _start_ops_pod_install_monitor
+
+        _start_ops_pod_install_monitor(_make_host(), PROJECT_ID, [{"id": "cl-0"}])
+        mock_enqueue.assert_not_called()
+
+    @patch(f"{SVC}._monitor_ops_pod_install")
+    @patch(f"{SVC}._detached_host_copy")
+    def test_ops_pod_install_monitor_job_runs_monitor_with_detached_host(
+        self, mock_detach, mock_monitor
+    ):
+        """The job body reconstructs a session-detached host and runs the monitor
+        synchronously (it survives because it's a job, not a fork-local thread)."""
+        from app.services.deploy_service import _ops_pod_install_monitor_job
+
+        detached = _make_host()
+        mock_detach.return_value = detached
+        clusters = [{"id": "cl-0"}]
+
+        _ops_pod_install_monitor_job(PROJECT_ID, "host-123", clusters)
+
+        mock_detach.assert_called_once_with("host-123")
+        mock_monitor.assert_called_once()
+        a = mock_monitor.call_args
+        assert a[0][0] == PROJECT_ID
+        assert a[0][1] is detached
+        assert a[0][2] == clusters
+        assert a.kwargs["container_name"] == f"troshka-{PROJECT_ID[:8]}-ops-ops"
 
 
 class TestOpsPodDeadDetection:

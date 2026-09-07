@@ -2374,48 +2374,66 @@ def _release_ops_monitor_lock(project_id: str) -> None:
 
 
 def _start_ops_pod_install_monitor(host, project_id: str, clusters: list) -> None:
-    """Spawn the ops-pod install-progress monitor as a daemon thread.
+    """Start the ops-pod install-progress monitor as its own RQ job.
 
-    Mirrors :func:`_start_vm_monitor`. The in-cluster ops pod runs the
-    agent-based install for every cluster in parallel (restart_policy=always);
-    this background monitor tails each cluster's ``install.log``, streams
-    per-cluster + aggregate progress to the deploy UI, and — via
-    :func:`_ops_pod_running` + ``inject_dead_pod_failures`` — reports ``failed``
-    if the pod dies. The poll loop itself is **[LIVE-ENV]**.
+    Must NOT be a daemon thread: on forking (Linux) RQ workers the deploy job
+    runs in a child process that exits when the job returns, so a thread spawned
+    here dies immediately — the install then completes but is never harvested and
+    the project is stranded at ocp_status='monitoring'. An enqueued job runs in
+    its own worker and survives the whole install (~tens of minutes; job_timeout
+    is generous). The in-cluster ops pod runs the agent-based install for every
+    cluster in parallel; the monitor tails each cluster's ``install.log``, streams
+    progress, harvests creds + finalizes on success, and reports ``failed`` if the
+    pod dies. One monitor per project across workers via _OPS_MONITOR_TTL (the
+    lock is acquired here to dedup enqueues and refreshed by the loop). The poll
+    loop itself is **[LIVE-ENV]**.
     """
-    from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
+    from app.core.redis import enqueue_job
 
-    # One monitor per project across workers (see _OPS_MONITOR_TTL). If another
-    # worker already runs it, skip — avoids duplicate monitors after a resume.
     if not _acquire_ops_monitor_lock(project_id):
         logger.info(
             "Ops pod monitor %s: already running elsewhere, not starting",
             project_id[:8],
         )
         return
+    enqueue_job(
+        _ops_pod_install_monitor_job,
+        project_id,
+        host.id,
+        clusters,
+        job_timeout=14400,
+    )
 
-    # Hand the monitor a session-detached host copy so it never shares the
-    # deploy's Session across threads (see _detached_host_copy).
-    mon_host = _detached_host_copy(host.id)
-    if mon_host is None:
+
+def _ops_pod_install_monitor_job(project_id: str, host_id: str, clusters: list) -> None:
+    """RQ job body for the ops-pod install monitor (see
+    :func:`_start_ops_pod_install_monitor`).
+
+    Runs :func:`_monitor_ops_pod_install` to completion; it holds this worker for
+    the whole install and survives because it is a job, not a fork-local thread.
+    The monitor lock was acquired by the enqueuer; the loop refreshes it and
+    releases it when done.
+    """
+    from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
+
+    # Session-detached host copy so the monitor never shares a Session across the
+    # worker (see _detached_host_copy).
+    host = _detached_host_copy(host_id)
+    if host is None:
         logger.warning(
             "Ops pod monitor %s: host %s not found; monitor not started",
             project_id[:8],
-            str(host.id)[:8],
+            str(host_id)[:8],
         )
         _release_ops_monitor_lock(project_id)
         return
-
-    threading.Thread(
-        target=_monitor_ops_pod_install,
-        args=(project_id, mon_host, clusters),
-        kwargs={
-            "container_name": _ops_pod_container_name(project_id),
-            "workdir": OPS_POD_WORKDIR,
-        },
-        daemon=True,
-        name=f"ops-pod-install-{project_id[:8]}",
-    ).start()
+    _monitor_ops_pod_install(
+        project_id,
+        host,
+        clusters,
+        container_name=_ops_pod_container_name(project_id),
+        workdir=OPS_POD_WORKDIR,
+    )
 
 
 # ── Ops-pod install progress monitor (Plan 4, Task 7) ──────────────────────
