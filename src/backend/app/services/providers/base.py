@@ -113,6 +113,13 @@ class ProviderDriver:
         (OCP Virt / KubeVirt) implement this."""
         return None
 
+    def get_apps_domain(self, provider) -> str:
+        """Cluster apps wildcard domain (e.g. ``apps.<cluster>``), or '' if the
+        provider has no OpenShift ingress. Used to bake the showroom app-proxy
+        console URL deterministically when the pod is created before its Route
+        exists (KubeVirt native). Only OCP-based providers implement this."""
+        return ""
+
     def delete_route_access(self, provider, project_id, namespace=None):
         """Delete all Route-based access resources for a project.
         Only implemented by providers with native ingress (OCP Virt)."""

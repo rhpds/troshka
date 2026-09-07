@@ -4584,6 +4584,12 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
     if not _resume_poll:
         from app.services.deploy_topology import inject_showroom_gateway_port_forwards
 
+        # Rebuild the showroom pod spec from its tabs before the operator bakes the
+        # CR — the frontend materialization omits the cluster-terminal wetty sidecar
+        # and the app-proxy console vhost/tab (troshkad gets this via
+        # _deploy_create_containers; the KubeVirt path never did).
+        _kubevirt_prebake_showroom(topology, project_id, provider, driver)
+
         if inject_showroom_gateway_port_forwards(
             topology, project.vni_map or {}, "kubevirt"
         ):
@@ -5884,6 +5890,36 @@ def _refresh_showroom_spec(topology, project_id):
         apps_domain = derive_apps_domain(hostname)
         if apps_domain:
             _fill_showroom_app_proxy_urls(node, project_id, apps_domain)
+
+
+def _kubevirt_prebake_showroom(topology, project_id, provider, driver):
+    """Rebuild the showroom pod spec from its tabs before the KubeVirt operator bakes
+    it into the pod. The frontend materialization is incomplete — it omits the
+    cluster-terminal wetty sidecar (terminal tab 502s: nginx proxies /wetty_clusters
+    to 127.0.0.1:8001 with no container) and the app-proxy console vhost/tab. The
+    troshkad path gets this via _deploy_create_containers; KubeVirt native creates the
+    pod via the operator CR and never did.
+
+    Unlike troshkad (routes created before the showroom pod, so the console URL fills
+    from route endpoints), the KubeVirt pod is baked before its Route exists — so fill
+    the app-proxy console URL from the cluster apps domain (deterministic) instead."""
+    from app.services.showroom_scaffold import _find_showroom_container
+
+    node = _find_showroom_container(topology)
+    if not node:
+        return
+    _refresh_showroom_spec(topology, project_id)
+    try:
+        apps_domain = driver.get_apps_domain(provider)
+    except Exception:
+        logger.warning(
+            "Deploy %s: could not resolve apps domain for showroom app-proxy fill",
+            project_id[:8],
+            exc_info=True,
+        )
+        apps_domain = ""
+    if apps_domain:
+        _fill_showroom_app_proxy_urls(node, project_id, apps_domain)
 
 
 def _deploy_create_containers(host, project_id, topology, vni_map, pool):

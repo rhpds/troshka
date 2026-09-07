@@ -1234,6 +1234,25 @@ class KubeVirtDriver(ProviderDriver):
                 spec = _s
         return {"hostname": spec.get("host", ""), "route_name": route_name}
 
+    def get_apps_domain(self, provider) -> str:
+        """Cluster apps wildcard domain from ingresses.config.openshift.io/cluster
+        (.spec.domain), e.g. apps.<cluster>. '' if unavailable."""
+        custom_api, _core_api, _ = _get_k8s_clients(provider)
+        try:
+            ing = custom_api.get_cluster_custom_object(
+                group="config.openshift.io",
+                version="v1",
+                plural="ingresses",
+                name="cluster",
+            )
+        except Exception:
+            return ""
+        if isinstance(ing, dict):
+            spec = ing.get("spec")
+            if isinstance(spec, dict):
+                return str(spec.get("domain") or "")
+        return ""
+
     def delete_route_access(self, provider, project_id, namespace=None):
         custom_api, core_api, _ = _get_k8s_clients(provider)
         ns = namespace or _project_ns(provider, project_id)

@@ -4954,3 +4954,102 @@ class TestRecreateShowroomAppProxy:
                 MagicMock(), MagicMock(), MagicMock(), PROJECT_ID, self._topo()
             )
         mock_routes.assert_not_called()
+
+
+class TestKubevirtPrebakeShowroom:
+    """Tests for _kubevirt_prebake_showroom() — backend-authoritative showroom regen
+    (adds the cluster-terminal wetty sidecar the frontend omits) + deterministic
+    console app-proxy URL fill for the KubeVirt-native deploy path."""
+
+    def _topo(self):
+        return {
+            "nodes": [
+                {
+                    "id": "sr-node",
+                    "type": "containerNode",
+                    "data": {
+                        "isShowroom": True,
+                        "name": "showroom",
+                        "contentRepo": "https://github.com/rhpds/showroom.git",
+                        "contentRef": "main",
+                        "mounts": [{"mountPath": "/showroom", "diskNodeId": "disk-1"}],
+                        "showroomTabs": [
+                            {
+                                "id": "t1",
+                                "name": "ocp Console",
+                                "type": "proxy",
+                                "proxyTls": True,
+                                "clusterId": "ocp",
+                                "proxyPort": 443,
+                                "proxyHosts": [
+                                    "console-openshift-console.apps.ocp.local",
+                                    "oauth-openshift.apps.ocp.local",
+                                ],
+                            },
+                            {
+                                "id": "t2",
+                                "name": "OpenShift Cluster Terminal",
+                                "type": "terminal",
+                                "target": "clusters",
+                            },
+                        ],
+                    },
+                }
+            ]
+        }
+
+    def _ui_config(self, node):
+        import base64
+
+        for ic in node["data"].get("initContainers", []):
+            for ev in ic.get("envVars", []):
+                if ev.get("key") == "UI_CONFIG_B64":
+                    return base64.b64decode(ev["value"]).decode()
+        return ""
+
+    def test_adds_wetty_and_fills_console(self):
+        from app.services import deploy_service
+
+        driver = MagicMock()
+        driver.get_apps_domain.return_value = "apps.test.example.com"
+        topo = self._topo()
+        deploy_service._kubevirt_prebake_showroom(topo, PROJECT_ID, MagicMock(), driver)
+        node = topo["nodes"][0]
+        names = [c.get("name") for c in node["data"].get("podContainers", [])]
+        assert "wetty-clusters" in names
+        ui = self._ui_config(node)
+        assert "__TROSHKA_APP_PROXY__" not in ui
+        assert (
+            f"troshka-pf-{PROJECT_ID[:8]}-console-openshift-console.apps.test.example.com"
+            in ui
+        )
+
+    def test_no_showroom_node_is_noop(self):
+        from app.services import deploy_service
+
+        driver = MagicMock()
+        deploy_service._kubevirt_prebake_showroom(
+            {"nodes": []}, PROJECT_ID, MagicMock(), driver
+        )
+        driver.get_apps_domain.assert_not_called()
+
+    def test_missing_apps_domain_still_adds_wetty(self):
+        from app.services import deploy_service
+
+        driver = MagicMock()
+        driver.get_apps_domain.return_value = ""
+        topo = self._topo()
+        deploy_service._kubevirt_prebake_showroom(topo, PROJECT_ID, MagicMock(), driver)
+        names = [
+            c.get("name") for c in topo["nodes"][0]["data"].get("podContainers", [])
+        ]
+        assert "wetty-clusters" in names
+
+
+class TestGetAppsDomainDefault:
+    """Base ProviderDriver.get_apps_domain() defaults to '' (non-OCP providers)."""
+
+    def test_default_empty(self):
+        from app.services.providers.base import ProviderDriver
+
+        assert ProviderDriver().get_apps_domain(MagicMock()) == ""
