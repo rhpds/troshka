@@ -691,9 +691,29 @@ class OCPVirtDriver(ProviderDriver):
         )
         core_api.create_namespaced_service(namespace=namespace, body=svc)
 
-        pod_ip = _wait_for_vmi_running(custom_api, namespace, hostname)
-
-        external_ip = _wait_for_lb_ip(core_api, f"troshka-lb-{host_id[:8]}", namespace)
+        try:
+            pod_ip = _wait_for_vmi_running(custom_api, namespace, hostname)
+            external_ip = _wait_for_lb_ip(
+                core_api, f"troshka-lb-{host_id[:8]}", namespace
+            )
+        except Exception:
+            # Atomic provision: a failed bring-up (e.g. the VMI never reaches Running,
+            # a slow/failed root-DV import) would otherwise leave the VM + its owned
+            # DataVolumes/PVCs + LB service + userdata secret orphaned — the caller
+            # only flags the host 'error'. Reap them via terminate_host (deletes the
+            # VM, which GCs the owned DVs/PVCs, plus service/secret/routes) so we don't
+            # accumulate a dead host + orphaned storage on every failed/retried
+            # provision.
+            logger.exception(
+                "provision_host %s did not come up; reaping partial resources", hostname
+            )
+            try:
+                self.terminate_host(provider, hostname)
+            except Exception:
+                logger.exception(
+                    "cleanup after failed provision_host %s failed", hostname
+                )
+            raise
         if not external_ip:
             logger.warning("No external IP assigned for host %s", host_id[:8])
 
