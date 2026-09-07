@@ -1235,8 +1235,10 @@ class KubeVirtDriver(ProviderDriver):
         return {"hostname": spec.get("host", ""), "route_name": route_name}
 
     def get_apps_domain(self, provider) -> str:
-        """Cluster apps wildcard domain from ingresses.config.openshift.io/cluster
-        (.spec.domain), e.g. apps.<cluster>. '' if unavailable."""
+        """Cluster apps wildcard domain (e.g. apps.<cluster>). Authoritative source
+        is ingresses.config.openshift.io/cluster .spec.domain, but that needs
+        cluster-scoped read the provider SA may lack — so fall back to deriving it
+        from the api_url (api.<base>[:port] -> apps.<base>), the OCP convention."""
         custom_api, _core_api, _ = _get_k8s_clients(provider)
         try:
             ing = custom_api.get_cluster_custom_object(
@@ -1245,12 +1247,23 @@ class KubeVirtDriver(ProviderDriver):
                 plural="ingresses",
                 name="cluster",
             )
+            if isinstance(ing, dict):
+                spec = ing.get("spec")
+                if isinstance(spec, dict) and spec.get("domain"):
+                    return str(spec["domain"])
         except Exception:
-            return ""
-        if isinstance(ing, dict):
-            spec = ing.get("spec")
-            if isinstance(spec, dict):
-                return str(spec.get("domain") or "")
+            pass
+        # Fallback: derive from the API URL host (no RBAC required).
+        try:
+            from urllib.parse import urlparse
+
+            host = (
+                urlparse(provider.get_credentials().get("api_url", "")).hostname or ""
+            )
+            if host.startswith("api."):
+                return "apps." + host[len("api.") :]
+        except Exception:
+            pass
         return ""
 
     def delete_route_access(self, provider, project_id, namespace=None):
