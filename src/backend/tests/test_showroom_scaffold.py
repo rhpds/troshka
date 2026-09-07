@@ -366,6 +366,35 @@ def test_build_app_proxy_config_empty_is_blank():
     assert build_app_proxy_config([]) == ""
 
 
+def test_build_app_proxy_config_deferred_resolver():
+    """With resolver_ips, the upstream is resolved at request time (variable
+    proxy_pass + resolver) so nginx starts even before the cluster exists —
+    fixes the console-upstream CrashLoopBackOff on KubeVirt."""
+    from app.services.showroom_scaffold import build_app_proxy_config
+
+    conf = build_app_proxy_config(
+        ["console-openshift-console.apps.ocp.local"],
+        resolver_ips=["10.0.0.1", "10.0.0.2"],
+    )
+    assert "resolver 10.0.0.1 10.0.0.2 valid=10s ipv6=off;" in conf
+    assert 'set $troshka_up_0 "console-openshift-console.apps.ocp.local";' in conf
+    assert "proxy_pass https://$troshka_up_0;" in conf
+    # NOT a literal upstream (which would force startup-time resolution).
+    assert "proxy_pass https://console-openshift-console.apps.ocp.local;" not in conf
+
+
+def test_dns_network_resolver_ips():
+    from app.services.showroom_scaffold import dns_network_resolver_ips
+
+    # No explicit dnsServerIp -> both .1 (troshkad) and .2 (KubeVirt).
+    assert dns_network_resolver_ips("10.0.0.0/24") == ["10.0.0.1", "10.0.0.2"]
+    assert dns_network_resolver_ips("10.9.0.0/24") == ["10.9.0.1", "10.9.0.2"]
+    # Explicit dnsServerIp wins.
+    assert dns_network_resolver_ips("10.0.0.0/24", "10.0.0.53") == ["10.0.0.53"]
+    # Unusable CIDR -> empty (build_app_proxy_config falls back to literal).
+    assert dns_network_resolver_ips("") == []
+
+
 def test_parse_template_tabs_proxy_hosts_list():
     """A proxy tab may declare proxy_hosts[]; [0] is the iframe target."""
     tabs = parse_template_tabs(

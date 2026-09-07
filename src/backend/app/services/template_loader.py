@@ -1808,8 +1808,27 @@ def _generate_topology_from_vms(
     )
 
     if scaffold_showroom:
-        from app.services.showroom_scaffold import build_showroom_from_config
+        # Resolve the DNS network up front so the showroom app-proxy nginx gets a
+        # request-time resolver (dnsmasq) for the embedded console/oauth upstreams
+        # — otherwise nginx does a startup DNS lookup of a not-yet-existent
+        # .apps.<cluster> host and crashloops (KubeVirt).
+        from app.services.showroom_scaffold import (
+            build_showroom_from_config,
+            dns_network_resolver_ips,
+        )
 
+        _dns_net = str(showroom_cfg.get("dns_network") or "").strip() or (
+            _default_dns_network_name(nets_def, gw_net_name) or ""
+        )
+        _dns_net_cfg = nets_def.get(_dns_net, {}) if _dns_net else {}
+        _resolver_ips = dns_network_resolver_ips(
+            str(_dns_net_cfg.get("cidr") or ""),
+            str(
+                _dns_net_cfg.get("dns_server_ip")
+                or _dns_net_cfg.get("dnsServerIp")
+                or ""
+            ),
+        )
         (
             ctr_node,
             disk_nodes,
@@ -1824,6 +1843,7 @@ def _generate_topology_from_vms(
             gw_node["position"]["x"] - VM_SPACING,
             gw_node["position"]["y"],
             clusters,
+            resolver_ips=_resolver_ips,
         )
         nodes.append(ctr_node)
         nodes.extend(disk_nodes)

@@ -5761,6 +5761,49 @@ def _showroom_route_hostname(topology):
     return None
 
 
+def _showroom_resolver_ips(topology, showroom_node):
+    """DNS-network dnsmasq IPs for the showroom app-proxy nginx resolver.
+
+    Prefers the network named by the showroom's ``dnsNetwork``; else the first
+    non-BMC cluster network. Returns its dnsServerIp (if set) or both ``.1``/``.2``
+    (see :func:`showroom_scaffold.dns_network_resolver_ips`)."""
+    from app.services.showroom_scaffold import dns_network_resolver_ips
+
+    dns_net_name = str(
+        (showroom_node.get("data") or {}).get("dnsNetwork") or ""
+    ).strip()
+    nets = [
+        n
+        for n in topology.get("nodes", [])
+        if n.get("type") == "networkNode"
+        and (n.get("data") or {}).get("subtype") == "network"
+        and (n.get("data") or {}).get("networkType") != "bmc"
+    ]
+    net = None
+    if dns_net_name:
+        net = next(
+            (
+                n
+                for n in nets
+                if str(
+                    (n.get("data") or {}).get("name")
+                    or (n.get("data") or {}).get("label")
+                    or ""
+                )
+                == dns_net_name
+            ),
+            None,
+        )
+    if net is None:
+        net = nets[0] if nets else None
+    if net is None:
+        return []
+    d = net.get("data") or {}
+    return dns_network_resolver_ips(
+        str(d.get("cidr") or ""), str(d.get("dnsServerIp") or "")
+    )
+
+
 def _refresh_showroom_spec(topology, project_id):
     """Regenerate the showroom node's init/pod containers from its showroomTabs
     (the authoritative backend generator) before deploying. The frontend
@@ -5779,7 +5822,12 @@ def _refresh_showroom_spec(topology, project_id):
     if not node:
         return
     vms_def, vm_name_to_id = build_vms_def_from_topology(topology)
-    regenerate_showroom_containers(node, vms_def, vm_name_to_id)
+    regenerate_showroom_containers(
+        node,
+        vms_def,
+        vm_name_to_id,
+        resolver_ips=_showroom_resolver_ips(topology, node),
+    )
     # regen resets the app-proxy console tab URL to the __TROSHKA_APP_PROXY__
     # placeholder; re-fill it from the persisted showroom route hostname so the
     # console tab keeps working across redeploys (the Route itself is created

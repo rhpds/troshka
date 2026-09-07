@@ -451,7 +451,9 @@ def build_ui_config_yaml(
     return "\n".join(lines) + "\n"
 
 
-def build_nginx_config(resolved: list[dict[str, Any]]) -> str:
+def build_nginx_config(
+    resolved: list[dict[str, Any]], resolver_ips: list[str] | None = None
+) -> str:
     blocks = [
         "user root;",
         "events {}",
@@ -524,12 +526,37 @@ def build_nginx_config(resolved: list[dict[str, Any]]) -> str:
             if host not in app_hosts:
                 app_hosts.append(host)
     if app_hosts:
-        blocks.append(build_app_proxy_config(app_hosts).rstrip("\n"))
+        blocks.append(
+            build_app_proxy_config(app_hosts, resolver_ips=resolver_ips).rstrip("\n")
+        )
     blocks.append("}")  # close http
     return "\n".join(blocks) + "\n"
 
 
-def build_app_proxy_config(internal_hosts: list[str]) -> str:
+def dns_network_resolver_ips(cidr: str, dns_server_ip: str = "") -> list[str]:
+    """Resolver IPs the showroom app-proxy nginx uses to resolve console/oauth.
+
+    Explicit ``dns_server_ip`` (the network's dnsServerIp) wins. Otherwise return
+    BOTH the DNS network's ``.1`` (troshkad host dnsmasq / gateway) and ``.2``
+    (KubeVirt dnsmasq pod) — provider is unknown at scaffold time, so list both and
+    let nginx use whichever answers. Empty if the CIDR is unusable.
+    """
+    dns_server_ip = (dns_server_ip or "").strip()
+    if dns_server_ip:
+        return [dns_server_ip]
+    import ipaddress
+
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except (ValueError, TypeError):
+        return []
+    base = ".".join(str(net.network_address).split(".")[:3])
+    return [f"{base}.1", f"{base}.2"]
+
+
+def build_app_proxy_config(
+    internal_hosts: list[str], resolver_ips: list[str] | None = None
+) -> str:
     """nginx server blocks that embed OAuth-protected cluster apps (console, oauth)
     in the showroom iframe, baked at scaffold time.
 
@@ -537,16 +564,31 @@ def build_app_proxy_config(internal_hosts: list[str]) -> str:
     matched by its deterministic public hostname
     ``troshka-pf-<pid>-<label>.apps.<cluster>``. ``pid`` and the cluster suffix are
     captured from the request ``Host`` (server_name regex), so the config is
-    project- and cluster-agnostic. The upstream is a literal internal host, so no
-    ``resolver`` is needed. A single generic ``proxy_redirect`` rewrites any
+    project- and cluster-agnostic. A single generic ``proxy_redirect`` rewrites any
     redirect ``Location`` host -> the public equivalent, while leaving
     the OAuth ``redirect_uri`` query param ``.local`` so the untouched cluster
     OAuthClient still validates. The apps domain is derived per host via
     ``derive_apps_domain()``.
+
+    ``resolver_ips`` (the DNS-network dnsmasq: ``.1`` on troshkad, ``.2`` on
+    KubeVirt — pass both; the live one answers) MUST be provided so the upstream is
+    resolved via a ``resolver`` at REQUEST time (variable ``proxy_pass``) instead
+    of at startup. Otherwise nginx does a config-parse-time DNS lookup of the
+    ``.apps.<cluster>`` host, which does not exist until the nested cluster is
+    installed — ``[emerg] host not found in upstream`` — and the whole showroom
+    proxy CrashLoopBackOffs (KubeVirt, where the pod's own resolver can't resolve
+    the lab domain). Deferred resolution lets nginx start and self-heal once the
+    console is up.
     """
     # Skip blank hosts: an empty entry would emit `proxy_pass https://;`, which
     # nginx rejects and the showroom proxy would fail to start.
     internal_hosts = [h.strip() for h in internal_hosts if (h or "").strip()]
+    resolver_ips = [ip.strip() for ip in (resolver_ips or []) if (ip or "").strip()]
+    resolver_line = (
+        f'    resolver {" ".join(resolver_ips)} valid=10s ipv6=off;'
+        if resolver_ips
+        else None
+    )
     # Body rewrites: the app (e.g. the console's window.SERVER_FLAGS) embeds
     # absolute .local host URLs that the browser can't resolve, so rewrite each
     # to its public equivalent. Applied in every block so console pages fix oauth
@@ -567,11 +609,24 @@ def build_app_proxy_config(internal_hosts: list[str]) -> str:
         )
 
     blocks: list[str] = []
-    for host in internal_hosts:
+    for i, host in enumerate(internal_hosts):
         label = host.split(".")[0]
         # Derive the apps domain for this host (e.g., apps.<cluster>)
         host_apps = derive_apps_domain(host)
         host_apps_re = re.escape(host_apps)  # Escape dots for nginx regex
+        # Resolve the upstream at request time (variable proxy_pass + resolver) so
+        # nginx starts even before the nested cluster exists; a literal proxy_pass
+        # forces a startup DNS lookup that crashloops the proxy. Unique var per
+        # block. Falls back to a literal upstream if no resolver was provided.
+        upstream = f"https://{host}"
+        proxy_lines = [f"    proxy_pass {upstream};"]
+        if resolver_line:
+            var = f"troshka_up_{i}"
+            proxy_lines = [
+                resolver_line,
+                f'    set ${var} "{host}";',
+                f"    proxy_pass https://${var};",
+            ]
         blocks.extend(
             [
                 "server {",
@@ -580,7 +635,7 @@ def build_app_proxy_config(internal_hosts: list[str]) -> str:
                 f'  server_name "~^troshka-pf-(?<troshka_pid>[0-9a-f]{{8}})-{label}'
                 '\\.(?<troshka_suffix>apps\\..+)$";',
                 "  location / {",
-                f"    proxy_pass https://{host};",
+                *proxy_lines,
                 "    proxy_ssl_server_name on;",
                 f"    proxy_ssl_name {host};",
                 "    proxy_ssl_verify off;",
@@ -795,6 +850,7 @@ def regenerate_showroom_containers(
     showroom_node: dict[str, Any],
     vms_def: dict[str, Any],
     vm_name_to_id: dict[str, str],
+    resolver_ips: list[str] | None = None,
 ) -> None:
     """Rebuild an existing showroom node's init/pod containers + nginx/ui-config in
     place from its ``showroomTabs``.
@@ -811,7 +867,9 @@ def regenerate_showroom_containers(
         return
     tabs = data.get("showroomTabs") or []
     resolved = resolve_showroom_tabs(tabs, vms_def, vm_name_to_id)
-    nginx_b64 = base64.b64encode(build_nginx_config(resolved).encode()).decode()
+    nginx_b64 = base64.b64encode(
+        build_nginx_config(resolved, resolver_ips=resolver_ips).encode()
+    ).decode()
     ui_config_b64 = base64.b64encode(build_ui_config_yaml(resolved).encode()).decode()
     content_repo = str(data.get("contentRepo", ""))
     content_ref = str(data.get("contentRef", "main"))
@@ -834,8 +892,14 @@ def build_showroom_from_config(
     vm_x: int,
     vm_row_y: int,
     clusters: list[dict[str, Any]] | None = None,
+    resolver_ips: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict], list[dict], list[dict], dict[str, Any]]:
-    """Return showroom container node, disks, edges, and topology.showroom metadata."""
+    """Return showroom container node, disks, edges, and topology.showroom metadata.
+
+    ``resolver_ips`` are the DNS-network dnsmasq addresses used by the app-proxy
+    nginx to resolve the embedded console/oauth upstreams at request time (see
+    :func:`build_app_proxy_config`).
+    """
     disk_gb = int(showroom_cfg.get("disk_gb", 5))
     content_repo = str(showroom_cfg.get("content_repo", ""))
     content_ref = str(showroom_cfg.get("content_ref", "main"))
@@ -846,7 +910,9 @@ def build_showroom_from_config(
         showroom_cfg.get("tabs") or [], vm_name_to_id, vms_def, net_ids, clusters
     )
     resolved = resolve_showroom_tabs(tabs, vms_def, vm_name_to_id)
-    nginx_b64 = base64.b64encode(build_nginx_config(resolved).encode()).decode()
+    nginx_b64 = base64.b64encode(
+        build_nginx_config(resolved, resolver_ips=resolver_ips).encode()
+    ).decode()
     ui_config_b64 = base64.b64encode(build_ui_config_yaml(resolved).encode()).decode()
 
     ctr_id = _id()
