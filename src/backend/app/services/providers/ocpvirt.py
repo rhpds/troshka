@@ -1077,11 +1077,13 @@ class OCPVirtDriver(ProviderDriver):
         }
 
     def create_app_proxy_route(
-        self, provider, project_id, public_host, source_route_name
+        self, provider, project_id, route_name, source_route_name
     ):
-        """Clone the showroom route under an explicit public host so an
-        OAuth-protected app (console/oauth) is reachable at a deterministic
-        hostname the showroom's app-proxy nginx can Host-route. Returns the host."""
+        """Clone the showroom route under a short route name, letting OpenShift
+        auto-generate the host (<route-name>-<namespace>.apps.<cluster>) so the
+        OAuth-protected app (console/oauth) is reachable at a deterministic hostname
+        the showroom's app-proxy nginx can Host-route. No explicit spec.host is set,
+        so no routes/custom-host permission is required. Returns the assigned host."""
         from kubernetes import client
 
         creds = provider.get_credentials()
@@ -1104,7 +1106,7 @@ class OCPVirtDriver(ProviderDriver):
             )
             return ""
         src_spec = src.get("spec", {})
-        name = public_host.split(".")[0][:63]
+        name = route_name[:63]
         route = {
             "apiVersion": "route.openshift.io/v1",
             "kind": "Route",
@@ -1118,7 +1120,6 @@ class OCPVirtDriver(ProviderDriver):
                 },
             },
             "spec": {
-                "host": public_host,
                 "to": src_spec.get("to"),
                 "port": src_spec.get("port"),
                 "tls": src_spec.get("tls"),

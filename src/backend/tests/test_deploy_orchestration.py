@@ -5012,15 +5012,18 @@ class TestKubevirtPrebakeShowroom:
 
         driver = MagicMock()
         driver.get_apps_domain.return_value = "apps.test.example.com"
+        provider = MagicMock()
+        provider.get_credentials.return_value = {}  # _project_ns -> troshka-<pid8>
         topo = self._topo()
-        deploy_service._kubevirt_prebake_showroom(topo, PROJECT_ID, MagicMock(), driver)
+        deploy_service._kubevirt_prebake_showroom(topo, PROJECT_ID, provider, driver)
         node = topo["nodes"][0]
         names = [c.get("name") for c in node["data"].get("podContainers", [])]
         assert "wetty-clusters" in names
         ui = self._ui_config(node)
         assert "__TROSHKA_APP_PROXY__" not in ui
+        # auto-host: tpf-<pid8>-con-<namespace>.<apps_domain>; ns = troshka-<pid8>
         assert (
-            f"troshka-pf-{PROJECT_ID[:8]}-console-openshift-console.apps.test.example.com"
+            f"tpf-{PROJECT_ID[:8]}-con-troshka-{PROJECT_ID[:8]}.apps.test.example.com"
             in ui
         )
 

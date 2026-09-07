@@ -1152,11 +1152,13 @@ class KubeVirtDriver(ProviderDriver):
         }
 
     def create_app_proxy_route(
-        self, provider, project_id, public_host, source_route_name
+        self, provider, project_id, route_name, source_route_name
     ):
-        """Clone the showroom route under an explicit public host so an
-        OAuth-protected app (console/oauth) is reachable at a deterministic
-        hostname the showroom's app-proxy nginx can Host-route. Returns the host."""
+        """Clone the showroom route under a short route name, letting OpenShift
+        auto-generate the host (<route-name>-<namespace>.apps.<cluster>) so the
+        OAuth-protected app (console/oauth) is reachable at a deterministic hostname
+        the showroom's app-proxy nginx can Host-route. No explicit spec.host is set,
+        so no routes/custom-host permission is required. Returns the route name."""
         custom_api, _core_api, _ = _get_k8s_clients(provider)
         ns = _project_ns(provider, project_id)
         try:
@@ -1177,7 +1179,7 @@ class KubeVirtDriver(ProviderDriver):
             _s = raw.get("spec")
             if isinstance(_s, dict):
                 src_spec = _s
-        name = public_host.split(".")[0][:63]
+        name = route_name[:63]
         route_body = {
             "apiVersion": "route.openshift.io/v1",
             "kind": "Route",
@@ -1191,7 +1193,6 @@ class KubeVirtDriver(ProviderDriver):
                 "annotations": {"haproxy.router.openshift.io/timeout": "3600s"},
             },
             "spec": {
-                "host": public_host,
                 "to": src_spec.get("to"),
                 "port": src_spec.get("port"),
                 "tls": src_spec.get("tls"),
@@ -1208,7 +1209,7 @@ class KubeVirtDriver(ProviderDriver):
         except Exception as e:
             if "AlreadyExists" not in str(e):
                 raise
-        return public_host
+        return name
 
     def find_showroom_route(self, provider, project_id, vm_name, port):
         """Return {"hostname", "route_name"} for the existing showroom Route, or None.

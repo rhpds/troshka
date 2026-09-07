@@ -5266,12 +5266,28 @@ def _create_routes_for_gateway(
     return external_endpoints
 
 
+def _ns_from_showroom_hostname(hostname: str) -> str:
+    """Extract the project namespace from the showroom route's auto-generated host
+    ``<route-name>-<ns>.apps.<cluster>`` (the showroom route always ends in
+    ``-443``), so app-proxy public hosts can be computed as
+    ``tpf-<pid>-<code>-<ns>.<apps-domain>``. '' if not derivable."""
+    first_label = (hostname or "").split(".", 1)[0]
+    if "-443-" in first_label:
+        return first_label.split("-443-", 1)[1]
+    return ""
+
+
 def _create_app_proxy_routes(driver, provider, project_id, topology, showroom_route):
     """Create a public route per app-proxy host (console/oauth) cloning the showroom
-    route, and fill the console tab URL. No-op unless the showroom has proxy_hosts."""
+    route, and fill the console tab URL. No-op unless the showroom has proxy_hosts.
+
+    Routes use short auto-generated hostnames (no spec.host), so no
+    routes/custom-host permission is required (the restricted RHDP sandbox denies
+    it). The public host OpenShift assigns is deterministic:
+    ``tpf-<pid>-<code>-<ns>.<apps-domain>``."""
     from app.services.showroom_scaffold import (
         app_proxy_internal_hosts,
-        app_proxy_public_host,
+        app_proxy_route_name,
         derive_apps_domain,
     )
 
@@ -5287,15 +5303,19 @@ def _create_app_proxy_routes(driver, provider, project_id, topology, showroom_ro
     if not hosts:
         return
     apps_domain = derive_apps_domain(showroom_route.get("hostname", ""))
+    namespace = _ns_from_showroom_hostname(showroom_route.get("hostname", ""))
     src_route = showroom_route.get("route_name")
-    if not apps_domain or not src_route:
+    if not apps_domain or not src_route or not namespace:
         return
     for internal in hosts:
-        public = app_proxy_public_host(project_id, internal, apps_domain)
+        route_name = app_proxy_route_name(project_id, internal)
         try:
-            driver.create_app_proxy_route(provider, project_id, public, src_route)
+            driver.create_app_proxy_route(provider, project_id, route_name, src_route)
             logger.info(
-                "Deploy %s: app-proxy route %s → %s", project_id[:8], public, internal
+                "Deploy %s: app-proxy route %s → %s",
+                project_id[:8],
+                route_name,
+                internal,
             )
         except Exception:
             logger.warning(
@@ -5304,10 +5324,10 @@ def _create_app_proxy_routes(driver, provider, project_id, topology, showroom_ro
                 internal,
                 exc_info=True,
             )
-    _fill_showroom_app_proxy_urls(showroom_node, project_id, apps_domain)
+    _fill_showroom_app_proxy_urls(showroom_node, project_id, apps_domain, namespace)
 
 
-def _fill_showroom_app_proxy_urls(showroom_node, project_id, apps_domain):
+def _fill_showroom_app_proxy_urls(showroom_node, project_id, apps_domain, namespace):
     """Substitute the __TROSHKA_APP_PROXY__ placeholder in the showroom pod's baked
     ui-config (UI_CONFIG_B64 init env) with the deterministic public host URL."""
     import base64
@@ -5322,7 +5342,7 @@ def _fill_showroom_app_proxy_urls(showroom_node, project_id, apps_domain):
                 ui = base64.b64decode(ev["value"]).decode()
             except Exception:
                 continue
-            filled = fill_app_proxy_tab_urls(ui, project_id, apps_domain)
+            filled = fill_app_proxy_tab_urls(ui, project_id, apps_domain, namespace)
             if filled != ui:
                 ev["value"] = base64.b64encode(filled.encode()).decode()
 
@@ -5888,8 +5908,9 @@ def _refresh_showroom_spec(topology, project_id):
     hostname = _showroom_route_hostname(topology)
     if hostname and project_id:
         apps_domain = derive_apps_domain(hostname)
-        if apps_domain:
-            _fill_showroom_app_proxy_urls(node, project_id, apps_domain)
+        namespace = _ns_from_showroom_hostname(hostname)
+        if apps_domain and namespace:
+            _fill_showroom_app_proxy_urls(node, project_id, apps_domain, namespace)
 
 
 def _kubevirt_prebake_showroom(topology, project_id, provider, driver):
@@ -5903,6 +5924,7 @@ def _kubevirt_prebake_showroom(topology, project_id, provider, driver):
     Unlike troshkad (routes created before the showroom pod, so the console URL fills
     from route endpoints), the KubeVirt pod is baked before its Route exists — so fill
     the app-proxy console URL from the cluster apps domain (deterministic) instead."""
+    from app.services.providers.kubevirt import _project_ns
     from app.services.showroom_scaffold import _find_showroom_container
 
     node = _find_showroom_container(topology)
@@ -5919,7 +5941,8 @@ def _kubevirt_prebake_showroom(topology, project_id, provider, driver):
         )
         apps_domain = ""
     if apps_domain:
-        _fill_showroom_app_proxy_urls(node, project_id, apps_domain)
+        namespace = _project_ns(provider, project_id)
+        _fill_showroom_app_proxy_urls(node, project_id, apps_domain, namespace)
 
 
 def _deploy_create_containers(host, project_id, topology, vni_map, pool):
