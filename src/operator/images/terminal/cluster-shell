@@ -3,17 +3,21 @@
 # the image; the merged kubeconfig for every deployed cluster is injected onto the
 # shared disk at /showroom/kube/config (root-owned 0644 — readable, not writable).
 #
-# Two runtime contexts:
-#  * troshkad (podman): wetty runs this as root, so we prep uid-1000's home and
-#    drop to the unprivileged lab user via setpriv (util-linux/glibc; no sudo/PAM).
-#  * KubeVirt native (restricted SCC): the container already runs as a random
-#    non-root uid with no CAP_SETUID, so setpriv would fail ("setresuid failed:
-#    Operation not permitted", exit 127). Detect that and exec the shell as the
-#    current uid using a writable HOME instead.
+# We prefer to drop to the unprivileged uid-1000 lab user via setpriv. That works
+# on troshkad (podman: root + CAP_SETUID). Under KubeVirt's restricted SCC the
+# container runs as root but WITHOUT CAP_SETUID, so setpriv fails ("setresuid
+# failed: Operation not permitted", exit 127). Probe setpriv up front and, if it
+# can't drop, fall back to a shell as the current uid.
 export PATH=/usr/local/bin:/usr/bin:/bin
 
-if [ "$(id -u)" = "0" ]; then
-    # Running as root (podman): prep the lab user's home + kubeconfig, then drop.
+_can_drop=""
+if command -v setpriv >/dev/null 2>&1 \
+    && setpriv --reuid=1000 --regid=1000 --init-groups true >/dev/null 2>&1; then
+    _can_drop=1
+fi
+
+if [ -n "$_can_drop" ]; then
+    # Privilege drop available: prep uid-1000's home + kubeconfig, then drop.
     export HOME=/home/labuser
     export KUBECONFIG="$HOME/.kube/config"
     if [ -f /showroom/kube/config ]; then
@@ -24,8 +28,8 @@ if [ "$(id -u)" = "0" ]; then
     exec setpriv --reuid=1000 --regid=1000 --init-groups /bin/bash
 fi
 
-# Running as a non-root (restricted-SCC) uid: no privilege drop possible or needed.
-# Use a writable HOME (the labuser home is not owned by this uid) for the kubeconfig.
+# Fallback (KubeVirt restricted SCC): can't drop privileges — run as the current
+# uid. Use a writable HOME and a kubeconfig copy the current uid can read.
 if [ -z "$HOME" ] || [ ! -w "$HOME" ]; then
     export HOME=/tmp
 fi
