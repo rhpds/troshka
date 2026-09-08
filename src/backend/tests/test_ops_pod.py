@@ -1250,6 +1250,7 @@ def test_resume_ops_pod_monitors_restarts_stuck_pod_installs(mock_sl, _via, mock
     proj = SimpleNamespace(
         id="abcd1234-0000-0000-0000-000000000000",
         state="active",
+        ocp_status="monitoring",
         host_id="h1",
         deployed_topology={"clusters": [{"id": "ocp", "name": "ocp"}]},
         topology={},
@@ -1273,6 +1274,90 @@ def test_resume_ops_pod_monitors_restarts_stuck_pod_installs(mock_sl, _via, mock
     mock_start.assert_called_once()
     assert mock_start.call_args[0][1] == proj.id  # project_id
     assert mock_start.call_args[0][2] == [{"id": "ocp", "name": "ocp"}]  # clusters
+
+
+@patch("app.services.deploy_service._ops_pod_running", return_value=True)
+@patch("app.services.deploy_service._start_ops_pod_install_monitor")
+@patch("app.services.template_loader.ocp_install_via", return_value="pod")
+@patch("app.core.database.SessionLocal")
+def test_resume_recovers_errored_project_when_ops_pod_alive(
+    mock_sl, _via, mock_start, _running
+):
+    """A project stuck at ocp_status='error' whose ops pod is STILL alive is a
+    false failure (e.g. flagged during a slow start) — resume flips it back to
+    'monitoring' and re-attaches the idempotent monitor."""
+    import app.services.deploy_service as ds
+    from app.models.host import Host
+    from app.models.project import Project
+
+    proj = SimpleNamespace(
+        id="err01234-0000-0000-0000-000000000000",
+        state="active",
+        ocp_status="error",
+        host_id="h1",
+        deployed_topology={"clusters": [{"id": "ocp", "name": "ocp"}]},
+        topology={},
+    )
+    host = SimpleNamespace(id="h1", host_type="kubevirt-cluster")
+    db = MagicMock()
+
+    def _query(model):
+        q = MagicMock()
+        if model is Project:
+            q.filter.return_value.filter.return_value.all.return_value = [proj]
+        elif model is Host:
+            q.filter_by.return_value.first.return_value = host
+        return q
+
+    db.query.side_effect = _query
+    mock_sl.return_value = db
+
+    ds.resume_ops_pod_monitors()
+
+    assert proj.ocp_status == "monitoring"  # flipped back
+    mock_start.assert_called_once()
+    assert mock_start.call_args[0][1] == proj.id
+
+
+@patch("app.services.deploy_service._ops_pod_running", return_value=False)
+@patch("app.services.deploy_service._start_ops_pod_install_monitor")
+@patch("app.services.template_loader.ocp_install_via", return_value="pod")
+@patch("app.core.database.SessionLocal")
+def test_resume_leaves_errored_project_when_ops_pod_dead(
+    mock_sl, _via, mock_start, _running
+):
+    """A genuinely-failed install (ops pod gone/terminal) stays 'error' — resume
+    must NOT re-attach a monitor for it."""
+    import app.services.deploy_service as ds
+    from app.models.host import Host
+    from app.models.project import Project
+
+    proj = SimpleNamespace(
+        id="dead01234-0000-0000-0000-00000000000",
+        state="active",
+        ocp_status="error",
+        host_id="h1",
+        deployed_topology={"clusters": [{"id": "ocp", "name": "ocp"}]},
+        topology={},
+    )
+    host = SimpleNamespace(id="h1", host_type="kubevirt-cluster")
+    db = MagicMock()
+
+    def _query(model):
+        q = MagicMock()
+        if model is Project:
+            q.filter.return_value.filter.return_value.all.return_value = [proj]
+        elif model is Host:
+            q.filter_by.return_value.first.return_value = host
+        return q
+
+    db.query.side_effect = _query
+    mock_sl.return_value = db
+
+    ds.resume_ops_pod_monitors()
+
+    assert proj.ocp_status == "error"  # unchanged
+    mock_start.assert_not_called()
 
 
 @patch("app.core.redis.is_redis_available", return_value=False)

@@ -3189,40 +3189,68 @@ def _monitor_ops_pod_install(
     return "timeout"
 
 
+def _resume_one_ops_pod_monitor(db, p) -> None:
+    """Re-attach the ops-pod monitor for one stranded project (see
+    :func:`resume_ops_pod_monitors`).
+
+    ``monitoring`` projects resume unconditionally. An ``error`` project only
+    recovers if its ops pod is STILL alive — a false failure (e.g. flagged
+    during a slow pod start) self-heals by flipping back to ``monitoring`` and
+    re-attaching the idempotent monitor; a genuinely-failed install (pod gone or
+    terminal) is left ``error``.
+    """
+    from app.models.host import Host
+    from app.services.template_loader import ocp_install_via
+
+    topo = p.deployed_topology or p.topology or {}
+    if ocp_install_via(topo) != "pod" or not p.host_id:
+        return
+    clusters = _ocp_clusters(topo)
+    if not clusters:
+        return
+    host = db.query(Host).filter_by(id=p.host_id).first()
+    if not host:
+        return
+
+    if p.ocp_status == "error":
+        if not _ops_pod_running(host, _ops_pod_container_name(p.id), p.id):
+            return  # genuinely failed — leave it error
+        logger.info(
+            "Auto-recovering ops-pod monitor for errored project %s (pod alive)",
+            p.id[:8],
+        )
+        p.ocp_status = "monitoring"
+        db.commit()
+    else:
+        logger.info("Resuming ops-pod install monitor for %s", p.id[:8])
+    _start_ops_pod_install_monitor(host, p.id, clusters)
+
+
 def resume_ops_pod_monitors() -> None:
-    """[worker startup] Re-attach install monitors for projects stuck at
-    ocp_status='monitoring' — a prior worker died mid-install (the monitor is a
-    daemon thread), stranding the status with no finalize/harvest/reap. The
+    """[worker startup] Re-attach install monitors for stranded pod installs.
+
+    Covers two cases: a project stuck at ocp_status='monitoring' (a prior worker
+    died mid-install, leaving no finalize/harvest/reap), and a project stuck at
+    'error' whose ops pod is still alive (a false failure — e.g. dead-detection
+    fired during a slow pod start; see :func:`_resume_one_ops_pod_monitor`). The
     per-project lock (:func:`_acquire_ops_monitor_lock`) means only one worker
     actually starts each monitor even with several worker processes. The monitor
     is idempotent: it re-reads the log and, if the install already completed (the
     ops pod holds after success), finalizes to ready, harvests creds, and reaps.
     """
     from app.core.database import SessionLocal
-    from app.models.host import Host
     from app.models.project import Project
-    from app.services.template_loader import ocp_install_via
 
     db = SessionLocal()
     try:
         stuck = (
             db.query(Project)
-            .filter(Project.ocp_status == "monitoring")
+            .filter(Project.ocp_status.in_(["monitoring", "error"]))
             .filter(Project.state.in_(["active", "stopped"]))
             .all()
         )
         for p in stuck:
-            topo = p.deployed_topology or p.topology or {}
-            if ocp_install_via(topo) != "pod" or not p.host_id:
-                continue
-            clusters = _ocp_clusters(topo)
-            if not clusters:
-                continue
-            host = db.query(Host).filter_by(id=p.host_id).first()
-            if not host:
-                continue
-            logger.info("Resuming ops-pod install monitor for %s", p.id[:8])
-            _start_ops_pod_install_monitor(host, p.id, clusters)
+            _resume_one_ops_pod_monitor(db, p)
     except Exception:
         logger.exception("resume_ops_pod_monitors failed")
     finally:
