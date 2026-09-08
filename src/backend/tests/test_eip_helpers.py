@@ -360,6 +360,31 @@ def test_allocate_transit_ports_avoids_existing():
         db.close()
 
 
+def test_allocate_standalone_transit_port_skips_extra_used():
+    """Cross-project collision fix: transit ports already claimed on the host
+    (e.g. the host LB service's pf-* ports, which the ElasticIp scan can't see)
+    must be excluded so each project gets a UNIQUE port."""
+    db = TestSession()
+    try:
+        provider = _make_provider(db)
+        host = _make_host(db, provider)
+
+        from app.services.eip_service import (
+            TRANSIT_PORT_START,
+            allocate_standalone_transit_port,
+        )
+
+        # 40000 already taken by another project's showroom — only visible via
+        # extra_used (it lives in a k8s Service, not an ElasticIp.port_map).
+        port = allocate_standalone_transit_port(
+            db, host, extra_used={TRANSIT_PORT_START}
+        )
+        assert port == TRANSIT_PORT_START + 1
+    finally:
+        db.rollback()
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # migrate_eip
 # ---------------------------------------------------------------------------

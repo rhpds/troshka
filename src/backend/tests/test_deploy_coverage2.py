@@ -487,3 +487,51 @@ class TestCreateRoutesForGatewayShowroom:
         driver.create_route_access.assert_called_once()
         assert driver.create_route_access.call_args.kwargs["setup_dnat"] is True
         assert driver.create_route_access.call_args.kwargs["transit_port"] == 30443
+
+
+class TestCreateRoutesForGatewayUniquePorts:
+    @patch("app.services.providers.ocpvirt.used_transit_ports_on_host")
+    @patch("app.services.deploy_service._lookup_transit_port", return_value=None)
+    @patch("app.services.eip_service.allocate_standalone_transit_port")
+    def test_route_only_ports_unique_across_lb_and_pass(
+        self, mock_alloc, mock_lookup, mock_lbused
+    ):
+        """Two route-only pfs must get DISTINCT transit ports, and neither may
+        reuse a port already claimed on the host LB (cross-project collision)."""
+        mock_lbused.return_value = {40000}  # another project's showroom
+
+        def _alloc(db, host, extra_used=None):
+            used = set(extra_used or ())
+            p = 40000
+            while p in used:
+                p += 1
+            return p
+
+        mock_alloc.side_effect = _alloc
+
+        driver = MagicMock()
+        driver.create_route_access.return_value = {"hostname": "h.example.com"}
+        provider = MagicMock(type="ocpvirt")
+        topology = {"nodes": [], "externalIps": []}
+        node_data = {
+            "portForwards": [
+                {"extPort": 443, "intIp": "10.0.0.50", "intPort": 443},
+                {"extPort": 80, "intIp": "10.0.0.50", "intPort": 80},
+            ],
+        }
+
+        _create_routes_for_gateway(
+            MagicMock(),
+            driver,
+            provider,
+            MagicMock(),
+            "proj-12345678",
+            node_data,
+            topology,
+        )
+
+        tps = [
+            c.kwargs["transit_port"] for c in driver.create_route_access.call_args_list
+        ]
+        # 40000 excluded (LB), and the two pfs don't collide with each other.
+        assert tps == [40001, 40002]

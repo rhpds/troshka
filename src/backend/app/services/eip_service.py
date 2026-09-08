@@ -206,9 +206,17 @@ def _used_transit_ports_on_host(db: Session, host) -> set[int]:
     return used
 
 
-def allocate_standalone_transit_port(db: Session, host) -> int:
-    """Allocate the next free host transit port (40000+) for route-only access."""
-    used = _used_transit_ports_on_host(db, host)
+def allocate_standalone_transit_port(db: Session, host, extra_used=None) -> int:
+    """Allocate the next free host transit port (40000+) for route-only access.
+
+    ``extra_used`` supplies ports already claimed on the host that the ElasticIp
+    scan cannot see — notably the host LB service's ``pf-*`` ports, where the
+    KubeVirt/ocpvirt route-only path (showroom, ops) parks its transit port
+    instead of an ``ElasticIp.port_map``. Without it, every project's route-only
+    allocation returned 40000 and their services collided on one backend (a
+    later project's showroom "took over" an earlier one's).
+    """
+    used = _used_transit_ports_on_host(db, host) | {int(p) for p in (extra_used or ())}
     next_port = TRANSIT_PORT_START
     while next_port in used:
         next_port += 1

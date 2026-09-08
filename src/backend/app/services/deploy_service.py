@@ -5279,9 +5279,15 @@ def _create_routes_for_gateway(
     """Create OCP Routes for routable port forwards and return endpoint list."""
     from app.services.deploy_topology import is_ops_infra_ip, is_showroom_infra_ip
     from app.services.eip_service import allocate_standalone_transit_port
+    from app.services.providers.ocpvirt import used_transit_ports_on_host
 
     external_endpoints = []
     showroom_route = None
+    # Cross-project transit-port dedup: the host LB's pf-* ports (read once,
+    # lazily) plus ports we allocate in THIS pass — so two projects (and two
+    # route-only pfs in one deploy) never share a transit port.
+    lb_used: set[int] | None = None
+    allocated_this_pass: set[int] = set()
     for pf in node_data.get("portForwards", []):
         ext_port = int(pf.get("extPort", 0))
         if ext_port not in _ROUTE_ACCESS_PORTS:
@@ -5300,7 +5306,12 @@ def _create_routes_for_gateway(
                     or is_ops_infra_ip(int_ip)
                 )
                 if transit_port is None:
-                    transit_port = allocate_standalone_transit_port(s, host)
+                    if lb_used is None:
+                        lb_used = used_transit_ports_on_host(provider, host)
+                    transit_port = allocate_standalone_transit_port(
+                        s, host, extra_used=lb_used | allocated_this_pass
+                    )
+                    allocated_this_pass.add(transit_port)
                 result = driver.create_route_access(
                     provider,
                     host,

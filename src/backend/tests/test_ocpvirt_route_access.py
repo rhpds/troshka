@@ -308,3 +308,46 @@ def test_delete_route_access_cleans_up_by_label(mock_clients):
     mock_custom.delete_namespaced_custom_object.assert_called_once()
     call_kwargs = mock_custom.delete_namespaced_custom_object.call_args
     assert call_kwargs[1]["name"] == "troshka-pf-a53cbd0d-bastion-443"
+
+
+@patch("app.services.providers.ocpvirt._get_k8s_clients")
+def test_used_transit_ports_on_host_reads_lb_service(mock_clients):
+    """Transit ports claimed on the host LB (pf-*) are the authoritative
+    cross-project view the ElasticIp scan lacks."""
+    from app.services.providers.ocpvirt import used_transit_ports_on_host
+
+    core = MagicMock()
+    ssh = MagicMock(port=22, target_port=22)
+    pf = MagicMock(port=40000, target_port=40000)
+    svc = MagicMock()
+    svc.spec.ports = [ssh, pf]
+    core.read_namespaced_service.return_value = svc
+    mock_clients.return_value = (MagicMock(), core)
+
+    provider = MagicMock()
+    provider.get_credentials.return_value = {"namespace": "troshka"}
+    host = MagicMock()
+    host.id = "11454bc3-abcd"
+
+    used = used_transit_ports_on_host(provider, host)
+    assert 40000 in used
+    assert 22 in used
+
+
+@patch("app.services.providers.ocpvirt._get_k8s_clients")
+def test_used_transit_ports_on_host_missing_lb_returns_empty(mock_clients):
+    """A missing/unreadable host LB service must not break allocation."""
+    from kubernetes import client
+
+    from app.services.providers.ocpvirt import used_transit_ports_on_host
+
+    core = MagicMock()
+    core.read_namespaced_service.side_effect = client.ApiException(status=404)
+    mock_clients.return_value = (MagicMock(), core)
+
+    provider = MagicMock()
+    provider.get_credentials.return_value = {"namespace": "troshka"}
+    host = MagicMock()
+    host.id = "deadbeef-0000"
+
+    assert used_transit_ports_on_host(provider, host) == set()

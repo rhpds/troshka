@@ -393,6 +393,35 @@ def _cleanup_host_k8s_resources(custom_api, core_api, namespace, instance_id):
         pass
 
 
+def used_transit_ports_on_host(provider, host) -> set[int]:
+    """Transit ports already claimed on the host LB service (``troshka-lb-<id>``).
+
+    The route-only path (showroom, ops) parks each project's transit port as a
+    ``pf-*`` port on this shared host LoadBalancer — NOT in an
+    ``ElasticIp.port_map`` — so this is the authoritative cross-project view the
+    DB scan lacks. Feed it to ``allocate_standalone_transit_port`` so a later
+    project can't reuse an earlier one's port (which made two showroom services
+    collide on one backend). Best-effort: returns an empty set when the LB is
+    absent/unreadable so allocation still proceeds.
+    """
+    from kubernetes import client
+
+    creds = provider.get_credentials()
+    namespace = creds.get("namespace", "troshka")
+    lb_name = f"troshka-lb-{host.id[:8]}"
+    _, core_api = _get_k8s_clients(creds)
+    try:
+        svc = cast(Any, core_api.read_namespaced_service(lb_name, namespace))
+    except client.ApiException:
+        return set()
+    ports: set[int] = set()
+    for p in svc.spec.ports or []:
+        for val in (getattr(p, "port", None), getattr(p, "target_port", None)):
+            if isinstance(val, int):
+                ports.add(val)
+    return ports
+
+
 def _ensure_host_transit_port(provider, host, transit_port: int) -> None:
     """Expose a guest transit port on the host LB so KubeVirt forwards into the VM.
 
