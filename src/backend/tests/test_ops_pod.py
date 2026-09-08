@@ -649,6 +649,24 @@ def test_kv_ops_pod_restart_policy_always():
     assert pod["spec"]["restartPolicy"] == "Always"
 
 
+def test_kv_ops_pod_workdir_is_emptydir_survives_restart():
+    """restartPolicy=Always resets the container's writable layer on restart, so the
+    workdir (auth/kubeadmin-password + kubeconfig) must live on an emptyDir to survive
+    long enough for the post-install cred harvest to read it."""
+    pod, _secret = _kv_manifests()
+    spec = pod["spec"]
+    vols = {v["name"]: v for v in spec["volumes"]}
+    assert "emptyDir" in vols["ops-workdir"]
+    container = spec["containers"][0]
+    mounts = {m["mountPath"]: m for m in container["volumeMounts"]}
+    assert mounts[OPS_POD_WORKDIR]["name"] == "ops-workdir"
+    # config-secret files still nest inside the workdir emptyDir
+    assert any(
+        m["name"] == "ops-config" and m["mountPath"].startswith(OPS_POD_WORKDIR)
+        for m in container["volumeMounts"]
+    )
+
+
 def test_kv_ops_pod_no_dns_config_by_default():
     """No dns_nameserver -> default pod DNS (cluster DNS), no override."""
     pod, _secret = _kv_manifests()
@@ -706,19 +724,24 @@ def test_kv_ops_pod_secret_mounted_at_absolute_workdir_paths():
     assert f"{wd}/cl-1/.src/agent-config.yaml" in mount_paths
     assert f"{wd}/cl-2/.src/install-config.yaml" in mount_paths
     assert f"{wd}/pull-secret.json" in mount_paths
-    # Each mount is read-only and references the ops-config secret volume via subPath.
-    for m in ctr["volumeMounts"]:
+    # Each config-secret mount is read-only and references the ops-config secret
+    # volume via subPath (the ops-workdir emptyDir mount is writable, no subPath).
+    cfg_mounts = [m for m in ctr["volumeMounts"] if m["name"] == "ops-config"]
+    assert cfg_mounts
+    for m in cfg_mounts:
         assert m["readOnly"] is True
-        assert m["name"] == "ops-config"
         assert m["subPath"] in secret_stringdata_keys(pod)
-    vol = pod["spec"]["volumes"][0]
-    assert vol["name"] == "ops-config"
+    vol = next(v for v in pod["spec"]["volumes"] if v["name"] == "ops-config")
     assert vol["secret"]["secretName"] == "troshka-abcdef12-ops-config"
 
 
 def secret_stringdata_keys(pod):
-    # helper: recompute the secret keys from the pod's volumeMount subPaths.
-    return {m["subPath"] for m in pod["spec"]["containers"][0]["volumeMounts"]}
+    # helper: recompute the secret keys from the config-secret volumeMount subPaths.
+    return {
+        m["subPath"]
+        for m in pod["spec"]["containers"][0]["volumeMounts"]
+        if m["name"] == "ops-config"
+    }
 
 
 # ── Task 8c: provider-aware ops-pod monitor (log-read / running / cancel) ─────

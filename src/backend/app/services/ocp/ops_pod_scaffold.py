@@ -209,7 +209,14 @@ def build_ops_pod_kubevirt_manifests(
     annotations = {_NET_ANNOTATION_KEY: ",".join(nads)}
 
     secret_data: dict[str, str] = {}
-    volume_mounts: list[dict] = []
+    # emptyDir at the workdir root so the install output (notably
+    # <workdir>/<cluster>/auth/kubeadmin-password + kubeconfig) SURVIVES a container
+    # restart. restartPolicy is Always and the install script exits on completion, so
+    # k8s restarts the container with a fresh writable layer — an ephemeral /workdir
+    # would lose the auth files before the post-install cred harvest reads them
+    # (troshkad/podman restarts the same container so its layer persists; k8s does
+    # not). The per-file config-secret mounts below nest inside this emptyDir.
+    volume_mounts: list[dict] = [{"name": "ops-workdir", "mountPath": OPS_POD_WORKDIR}]
     for path, content in config_files.items():
         key = _ops_pod_secret_key(path)
         secret_data[key] = content
@@ -254,7 +261,10 @@ def build_ops_pod_kubevirt_manifests(
         "serviceAccountName": _OPS_POD_SERVICE_ACCOUNT,
         "restartPolicy": "Always",
         "containers": [container],
-        "volumes": [{"name": "ops-config", "secret": {"secretName": secret_name}}],
+        "volumes": [
+            {"name": "ops-workdir", "emptyDir": {}},
+            {"name": "ops-config", "secret": {"secretName": secret_name}},
+        ],
     }
     # Resolve via the project's lab dnsmasq (which knows api.<cluster>.<domain> and
     # forwards upstream) instead of the KubeVirt cluster DNS, so
