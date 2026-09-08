@@ -10,6 +10,30 @@
 # can't drop, fall back to a shell as the current uid.
 export PATH=/usr/local/bin:/usr/bin:/bin
 
+# Wait (bounded) for the cluster API to answer before dropping to the prompt, so a
+# user who opens the terminal during the post-install VIP-settling window doesn't
+# hit "connection refused". Reads the API server straight from the injected
+# kubeconfig, so it targets the right endpoint for every topology (SNO: the node's
+# own IP; compact/standard: the api VIP). Only the OpenShift Cluster Terminal runs
+# this script (RHEL/other terminals use a plain ssh shell), so nothing else waits.
+# Never blocks forever — it drops to the shell after the window regardless.
+_wait_for_cluster_api() {
+    local kc=/showroom/kube/config server host port i
+    [ -f "$kc" ] || return 0
+    server=$(awk '/[[:space:]]server:/{print $2; exit}' "$kc" 2>/dev/null)
+    [ -n "$server" ] || return 0
+    host=${server#*://}; host=${host%%/*}; port=${host##*:}; host=${host%%:*}
+    [ "$port" = "$host" ] && port=6443
+    [ -n "$host" ] || return 0
+    for i in $(seq 1 30); do
+        timeout 3 bash -c "</dev/tcp/$host/$port" 2>/dev/null && return 0
+        [ "$i" = 1 ] && echo "Waiting for the OpenShift API ($host:$port) to become available..."
+        sleep 3
+    done
+    echo "NOTE: OpenShift API ($host:$port) not reachable yet — dropping to the shell; retry 'oc get nodes' shortly."
+}
+_wait_for_cluster_api
+
 _can_drop=""
 if command -v setpriv >/dev/null 2>&1 \
     && setpriv --reuid=1000 --regid=1000 --init-groups true >/dev/null 2>&1; then

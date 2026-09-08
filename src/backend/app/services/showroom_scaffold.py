@@ -22,6 +22,16 @@ WETTY_BASE_PORT = 8001
 CLUSTER_TERMINAL_IMAGE = "quay.io/redhat-gpte/troshka-terminal:latest"
 # Baked into CLUSTER_TERMINAL_IMAGE (see its cluster-shell file).
 _CLUSTER_SHELL_PATH = "/usr/local/bin/cluster-shell"
+# Friendly auto-refresh page shown by the app-proxy when the upstream isn't ready
+# yet (VIP still settling, or the app/operator not up). Service-agnostic wording
+# (no single quotes — it's embedded in an nginx single-quoted `return`).
+_SERVICE_STARTING_HTML = (
+    '<!doctype html><html><head><meta charset="utf-8">'
+    '<meta http-equiv="refresh" content="5"><title>Starting...</title></head>'
+    '<body style="font-family:sans-serif;color:#333;text-align:center;padding-top:14vh">'
+    "<h2>The service is still starting...</h2>"
+    "<p>This page will refresh automatically.</p></body></html>"
+)
 _STORAGE_EDGE_STYLE = {
     "stroke": "rgba(251,191,36,0.6)",
     "strokeWidth": 2,
@@ -708,9 +718,20 @@ def build_app_proxy_config(
                 "    proxy_read_timeout 86400;",
                 # Allow the app to render inside the showroom iframe.
                 "    proxy_hide_header X-Frame-Options;",
+                # Upstream not ready yet (VIP still settling, or the app/operator
+                # not up) -> a friendly auto-refresh page instead of raw 502.
+                "    error_page 502 503 504 = @service_starting;",
                 *redirects,
                 *sub_filters,
                 f"    proxy_cookie_domain .{host_apps} $host;",
+                "  }",
+                # Service-agnostic (works for the OCP console today, any proxied
+                # app later); auto-refreshes until the upstream answers.
+                "  location @service_starting {",
+                "    default_type text/html;",
+                # 200 (not 5xx) so the page always renders inside the showroom
+                # iframe rather than a browser-substituted error page.
+                "    return 200 '" + _SERVICE_STARTING_HTML + "';",
                 "  }",
                 "}",
             ]

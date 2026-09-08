@@ -390,6 +390,24 @@ def test_build_app_proxy_config_deferred_resolver():
     assert "proxy_pass https://console-openshift-console.apps.ocp.local;" not in conf
 
 
+def test_build_app_proxy_config_serves_friendly_page_on_upstream_error():
+    """An unready upstream (VIP still settling, console operator not up) must show
+    a friendly auto-refresh page, not raw nginx 502. Service-agnostic wording so
+    it fits any proxied app (console today, AAP2 etc. later)."""
+    from app.services.showroom_scaffold import build_app_proxy_config
+
+    conf = build_app_proxy_config(
+        ["console-openshift-console.apps.ocp.local"],
+        resolver_ips=["10.0.0.2"],
+    )
+    assert "error_page 502 503 504" in conf
+    assert "@service_starting" in conf
+    assert "location @service_starting" in conf
+    # Generic, service-agnostic wording (fits console today, AAP2 etc. later).
+    assert "The service is still starting" in conf
+    assert "cluster is still starting" not in conf.lower()
+
+
 def test_dns_network_resolver_ips():
     from app.services.showroom_scaffold import dns_network_resolver_ips
 
