@@ -4470,6 +4470,42 @@ class TestOpsPodDeadDetection:
         # resets the counter, so an isolated blip never accumulates to failure.
         assert _next_ops_pod_dead_count(2, pod_running=True) == 0
 
+    @patch(f"{SVC}._kubevirt_ops_pod_ctx")
+    def test_kubevirt_pod_pending_is_not_dead(self, mock_ctx):
+        """A pod still coming up (Pending/ContainerCreating) is NOT dead — only a
+        gone (404) or terminal (Succeeded/Failed) pod is. Otherwise a slow image
+        pull false-fails the install before it starts (ocp_status=error)."""
+        from app.services.deploy_service import _ops_pod_running_kubevirt
+
+        core = MagicMock()
+        pod = MagicMock()
+        pod.status.phase = "Pending"
+        core.read_namespaced_pod.return_value = pod
+        mock_ctx.return_value = (core, "ns", "pod")
+        assert _ops_pod_running_kubevirt(MagicMock(), "proj") is True
+
+    @patch(f"{SVC}._kubevirt_ops_pod_ctx")
+    def test_kubevirt_pod_failed_is_dead(self, mock_ctx):
+        from app.services.deploy_service import _ops_pod_running_kubevirt
+
+        core = MagicMock()
+        pod = MagicMock()
+        pod.status.phase = "Failed"
+        core.read_namespaced_pod.return_value = pod
+        mock_ctx.return_value = (core, "ns", "pod")
+        assert _ops_pod_running_kubevirt(MagicMock(), "proj") is False
+
+    @patch(f"{SVC}._kubevirt_ops_pod_ctx")
+    def test_kubevirt_pod_running_is_alive(self, mock_ctx):
+        from app.services.deploy_service import _ops_pod_running_kubevirt
+
+        core = MagicMock()
+        pod = MagicMock()
+        pod.status.phase = "Running"
+        core.read_namespaced_pod.return_value = pod
+        mock_ctx.return_value = (core, "ns", "pod")
+        assert _ops_pod_running_kubevirt(MagicMock(), "proj") is True
+
     @patch(f"{SVC}._publish_ops_pod_progress")
     @patch(f"{SVC}._ops_pod_running")
     @patch(f"{SVC}._read_ops_pod_cluster_logs")

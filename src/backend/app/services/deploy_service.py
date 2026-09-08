@@ -2587,7 +2587,12 @@ def _ops_pod_running_kubevirt(host, project_id: str) -> bool:
     except Exception:  # noqa: BLE001 - transient client error -> assume running
         return True
     phase = str(getattr(getattr(pod, "status", None), "phase", "") or "").lower()
-    return phase == "running"
+    # Only a TERMINAL phase counts as dead. A pod that is still coming up
+    # (Pending / ContainerCreating → phase "pending" or "") is NOT dead: at
+    # startup, before the container has ever run, "not yet running" is normal.
+    # Treating it as dead let a slow image pull cross _OPS_POD_DEAD_POLLS and
+    # false-fail the install to ocp_status=error while it was actually fine.
+    return phase not in ("succeeded", "failed")
 
 
 def _ops_pod_running(host, container_name: str, project_id: str) -> bool:
@@ -2596,8 +2601,10 @@ def _ops_pod_running(host, container_name: str, project_id: str) -> bool:
     Provider-aware: kubevirt reads the Pod phase via the k8s API; troshkad uses
     the batch ``/containers/states``. Conservative on uncertainty: if the status
     call errors we assume the pod is still running, so a network hiccup never
-    forces a false ``failed``. Only a container/Pod that is present-but-not-
-    running or genuinely absent counts as dead (→ dead-job injection).
+    forces a false ``failed``. kubevirt treats only a gone (404) or terminal
+    (Succeeded/Failed) pod as dead — a pod still coming up (Pending) is alive, so
+    a slow image pull can't false-fail the install (see
+    :func:`_ops_pod_running_kubevirt`).
     """
     if host.host_type == "kubevirt-cluster":
         return _ops_pod_running_kubevirt(host, project_id)
