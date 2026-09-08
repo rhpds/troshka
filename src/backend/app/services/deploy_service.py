@@ -2826,6 +2826,38 @@ def _showroom_with_cluster_terminal(topology: dict) -> str | None:
     return None
 
 
+def _kubeconfig_server_to_ip(kc_yaml: str, api_ip: str) -> str:
+    """Rewrite each cluster's ``server: https://<host>:<port>`` to ``<api_ip>`` while
+    preserving the original host as ``tls-server-name`` (so SNI + cert verification
+    still match the API server SAN). No-op if ``api_ip`` is empty, the server is
+    already an IP, or the YAML can't be parsed. Lets the cluster terminal's ``oc``
+    reach the API without resolving api.<cluster>.<domain> via the lab dnsmasq."""
+    import re as _re
+
+    import yaml as _yaml
+
+    if not api_ip or not kc_yaml.strip():
+        return kc_yaml
+    try:
+        doc = _yaml.safe_load(kc_yaml)
+    except Exception:
+        return kc_yaml
+    if not isinstance(doc, dict):
+        return kc_yaml
+    changed = False
+    for entry in doc.get("clusters", []) or []:
+        cl = entry.get("cluster") if isinstance(entry, dict) else None
+        if not isinstance(cl, dict):
+            continue
+        m = _re.match(r"^https://([^:/]+)(:\d+)?", str(cl.get("server", "")))
+        if not m or _re.match(r"^\d+\.\d+\.\d+\.\d+$", m.group(1)):
+            continue  # unparsable or already an IP
+        cl["server"] = f"https://{api_ip}{m.group(2) or ''}"
+        cl["tls-server-name"] = m.group(1)
+        changed = True
+    return _yaml.safe_dump(doc) if changed else kc_yaml
+
+
 def _inject_cluster_kubeconfigs(
     host, project_id: str, topology: dict, creds: dict, clusters: list
 ) -> None:
@@ -2843,7 +2875,19 @@ def _inject_cluster_kubeconfigs(
     from app.services.ocp.ops_pod_install import _cluster_key as _ck
 
     name_by_key = {_ck(c): (c.get("name") or "cluster") for c in clusters}
-    named = [(name_by_key.get(key, key), kc) for key, (_pw, kc) in creds.items() if kc]
+    # The kubeconfig server is api.<cluster>.<domain>, resolvable only via the lab
+    # dnsmasq — which the showroom pod does NOT use for /etc/resolv.conf (KubeVirt:
+    # cluster DNS; the app-proxy nginx uses an explicit resolver instead). So `oc`
+    # in the cluster terminal can't resolve it. Rewrite the server to the cluster's
+    # apiVip with tls-server-name preserved so SNI + cert validation still match the
+    # SAN — no DNS dependency, and it survives pod restarts (it's on the disk).
+    apivip_by_key = {_ck(c): str(c.get("apiVip") or "") for c in clusters}
+    named = []
+    for key, (_pw, kc) in creds.items():
+        if not kc:
+            continue
+        api_ip = apivip_by_key.get(key, "")
+        named.append((name_by_key.get(key, key), _kubeconfig_server_to_ip(kc, api_ip)))
     merged = merge_kubeconfigs(named)
     if not merged.strip():
         return

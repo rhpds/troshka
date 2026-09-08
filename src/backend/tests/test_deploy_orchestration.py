@@ -5126,3 +5126,39 @@ class TestInjectClusterKubeconfigsKubevirt:
                 host, "81d2898e-x", topo, creds, clusters
             )
         mock_kv.assert_called_once()
+
+
+class TestKubeconfigServerToIp:
+    """_kubeconfig_server_to_ip: rewrite the API server host->apiVip + tls-server-name
+    so the cluster terminal's oc doesn't depend on lab-dnsmasq resolution."""
+
+    def _kc(self, server):
+        return (
+            "apiVersion: v1\nkind: Config\nclusters:\n"
+            f"- cluster:\n    server: {server}\n"
+            "    certificate-authority-data: eA==\n  name: ocp\n"
+        )
+
+    def test_rewrites_host_to_ip_with_tls_server_name(self):
+        import yaml as _yaml
+
+        from app.services.deploy_service import _kubeconfig_server_to_ip
+
+        out = _kubeconfig_server_to_ip(
+            self._kc("https://api.ocp.local:6443"), "10.0.0.10"
+        )
+        cl = _yaml.safe_load(out)["clusters"][0]["cluster"]
+        assert cl["server"] == "https://10.0.0.10:6443"
+        assert cl["tls-server-name"] == "api.ocp.local"
+
+    def test_noop_without_api_ip(self):
+        from app.services.deploy_service import _kubeconfig_server_to_ip
+
+        kc = self._kc("https://api.ocp.local:6443")
+        assert _kubeconfig_server_to_ip(kc, "") == kc
+
+    def test_noop_when_already_ip(self):
+        from app.services.deploy_service import _kubeconfig_server_to_ip
+
+        kc = self._kc("https://10.0.0.10:6443")
+        assert "tls-server-name" not in _kubeconfig_server_to_ip(kc, "10.0.0.99")
