@@ -233,6 +233,11 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
           setAlertMsg(err.detail || "Failed to create project");
         } else {
           const data = await resp.json();
+          if (data?.warnings?.length) {
+            // Non-blocking: template IPs overlapping reserved infra IPs
+            // (gateway .1 / dnsmasq .2) will conflict at deploy time.
+            setAlertMsg("Created with warnings: " + data.warnings.join("; "));
+          }
           // Load the new project into the canvas via the same path as a normal
           // template import (loadProject), so showroom and every other template
           // entry are preserved. The backend already generated and stored a
@@ -273,6 +278,11 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
               if (!importResp.ok) {
                 const err = await importResp.json().catch(() => ({ detail: "Import failed" }));
                 setAlertMsg(err.detail || "Template import failed");
+              } else {
+                const importData = await importResp.json().catch(() => ({}));
+                if (importData?.warnings?.length) {
+                  setAlertMsg("Imported with warnings: " + importData.warnings.join("; "));
+                }
               }
             } catch {
               setAlertMsg("Invalid YAML syntax in template file");

@@ -1224,6 +1224,16 @@ export default function ProjectCanvasPage() {
                       setImporting(false);
                       return;
                     }
+                    const okData = await resp.json().catch(() => ({}));
+                    const warnings: string[] = okData?.warnings || [];
+                    if (warnings.length > 0) {
+                      // Non-blocking: the import succeeded, but some template IPs
+                      // overlap Troshka's reserved infra IPs (gateway .1 /
+                      // dnsmasq .2) and will conflict at deploy time.
+                      window.alert(
+                        "Imported with warnings:\n\n" + warnings.join("\n"),
+                      );
+                    }
                     setShowImportModal(false);
                     loadProject(projectId);
                   } catch (err: unknown) {

@@ -733,6 +733,7 @@ def create_project_from_template(
     desc_parts.append(f"API: api.{cluster_name}.{base_domain}")
 
     from app.services.deploy_topology import (
+        infra_ip_overlap_warnings,
         validate_topology_ips,
         validate_topology_names,
     )
@@ -743,6 +744,7 @@ def create_project_from_template(
             status_code=400,
             detail="Template produces duplicate names: " + "; ".join(topo_errors),
         )
+    warnings = infra_ip_overlap_warnings(topology)
 
     project = Project(
         name=body.get("name", resolved.get("display_name", template_id)),
@@ -758,7 +760,7 @@ def create_project_from_template(
     db.add(project)
     db.commit()
     db.refresh(project)
-    return {"id": project.id, "name": project.name}
+    return {"id": project.id, "name": project.name, "warnings": warnings}
 
 
 def _validate_template_yaml(template_yaml):
@@ -903,6 +905,7 @@ def import_template(
         raise HTTPException(status_code=400, detail=f"Invalid template: {e}")
 
     from app.services.deploy_topology import (
+        infra_ip_overlap_warnings,
         validate_topology_ips,
         validate_topology_names,
     )
@@ -915,6 +918,7 @@ def import_template(
         )
     _enforce_single_bastion_browser(topology)
 
+    warnings = infra_ip_overlap_warnings(topology)
     project.topology = topology
 
     ct = _parse_clock_target(resolved.get("clock_target"))
@@ -925,7 +929,7 @@ def import_template(
     db.commit()
     db.refresh(project)
 
-    return {"topology": topology}
+    return {"topology": topology, "warnings": warnings}
 
 
 _PASSWORD_FIELDS = {

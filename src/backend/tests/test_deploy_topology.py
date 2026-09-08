@@ -1339,3 +1339,53 @@ def test_build_vms_def_from_topology_unconnected_nic_has_empty_network():
     vms_def, _ = build_vms_def_from_topology(topo)
     assert vms_def["x"]["nics"] == [{"network": "", "ip": "1.2.3.4"}]
     assert vms_def["x"]["login_user"] == "cloud-user"
+
+
+def test_infra_ip_overlap_warnings_flags_vip_on_dnsmasq():
+    from app.services.deploy_topology import infra_ip_overlap_warnings
+
+    topo = {
+        "nodes": [
+            {"id": "net1", "type": "networkNode", "data": {"cidr": "10.0.0.0/24"}},
+            {
+                "id": "cl",
+                "type": "clusterNode",
+                "data": {"name": "ocp", "apiVip": "10.0.0.2", "ingressVip": "10.0.0.5"},
+            },
+        ]
+    }
+    warns = infra_ip_overlap_warnings(topo)
+    assert any("10.0.0.2" in w for w in warns)  # api vip == dnsmasq .2
+    assert not any("10.0.0.5" in w for w in warns)  # .5 is not infra
+
+
+def test_infra_ip_overlap_warnings_flags_vm_nic_on_gateway():
+    from app.services.deploy_topology import infra_ip_overlap_warnings
+
+    topo = {
+        "nodes": [
+            {"id": "net1", "type": "networkNode", "data": {"cidr": "10.0.0.0/24"}},
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {"label": "cp-0", "nics": [{"ip": "10.0.0.1"}]},
+            },
+        ]
+    }
+    assert any("10.0.0.1" in w for w in infra_ip_overlap_warnings(topo))
+
+
+def test_infra_ip_overlap_warnings_clean_topology_is_empty():
+    from app.services.deploy_topology import infra_ip_overlap_warnings
+
+    topo = {
+        "nodes": [
+            {"id": "net1", "type": "networkNode", "data": {"cidr": "10.0.0.0/24"}},
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {"label": "cp-0", "nics": [{"ip": "10.0.0.10"}]},
+            },
+        ]
+    }
+    assert infra_ip_overlap_warnings(topo) == []

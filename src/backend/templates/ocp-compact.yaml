@@ -14,8 +14,8 @@ ocp:
     type: compact
     ocp_version: "4.22"
     base_domain: local
-    api_vip: 10.0.0.2
-    ingress_vip: 10.0.0.3
+    api_vip: 10.0.0.4
+    ingress_vip: 10.0.0.5
 
 gateway:
   outbound_ports:
@@ -32,11 +32,11 @@ networks:
     domain: local
     dns_records:
       - name: api.ocp.local
-        ip: 10.0.0.2
+        ip: 10.0.0.4
       - name: api-int.ocp.local
-        ip: 10.0.0.2
+        ip: 10.0.0.4
       - name: .apps.ocp.local
-        ip: 10.0.0.3
+        ip: 10.0.0.5
   bmc:
     type: bmc
     cidr: 192.168.100.0/24

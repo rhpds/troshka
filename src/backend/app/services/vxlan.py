@@ -256,6 +256,42 @@ def _cluster_vip_reservations(
     return reservations
 
 
+def _infra_ip_reservations(
+    net_data: dict, reserved_ips: set[str] | None = None
+) -> list[dict]:
+    """dhcp-host reservations (bogus MAC) for a network's infra IPs.
+
+    Troshka's own infra occupies the low addresses of every lab network — the
+    gateway (``<cidr>.1``, both providers) and the dnsmasq pod (``<cidr>.2``,
+    KubeVirt). Reserving them with a deterministic bogus (locally-administered)
+    MAC — exactly like :func:`_cluster_vip_reservations` does for cluster VIPs —
+    keeps dnsmasq from ever leasing them and makes them explicit, canonical
+    reservations (so an overlapping template IP is detectable, and a custom DHCP
+    range that dips into the low addresses can't collide with infra). Skips any
+    IP already reserved (a real NIC lease or a VIP) so dnsmasq never gets a fatal
+    duplicate dhcp-host for the same address.
+    """
+    import ipaddress
+
+    reserved_ips = set(reserved_ips or ())
+    cidr = net_data.get("cidr", "")
+    if not cidr:
+        return []
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return []
+    reservations: list[dict] = []
+    for offset, label in ((1, "gateway"), (2, "dnsmasq")):
+        ip = str(net.network_address + offset)
+        if ip in reserved_ips:
+            continue
+        reservations.append(
+            {"mac": _bogus_mac_for_ip(ip), "ip": ip, "name": f"infra-{label}"}
+        )
+    return reservations
+
+
 def _build_dhcp_config(data: dict) -> dict:
     """Build DHCP config from network data, auto-generating from CIDR if needed."""
     range_start = data.get("dhcpRangeStart", "")
@@ -384,6 +420,11 @@ def _build_network_configs(
             net_config["dhcp_hosts"].extend(
                 _cluster_vip_reservations(node_id, nodes, edges, existing_ips)
             )
+            # Reserve Troshka's infra IPs (gateway .1, dnsmasq .2) the same way,
+            # skipping anything already reserved above (node NIC or VIP) so
+            # dnsmasq never gets a duplicate dhcp-host.
+            existing_ips = {h.get("ip") for h in net_config["dhcp_hosts"]}
+            net_config["dhcp_hosts"].extend(_infra_ip_reservations(data, existing_ips))
 
         pxe_config = _build_pxe_config(data, pxe_vm_boot_config, pxe_boot_iso_ids, vni)
         if pxe_config:

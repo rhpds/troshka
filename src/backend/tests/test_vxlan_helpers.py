@@ -718,3 +718,25 @@ def test_cluster_vip_reservations_skips_ip_reserved_by_node_nic():
     # cp-0's real NIC already reserves 10.0.0.10 (passed in reserved_ips).
     res = _cluster_vip_reservations("net1", nodes, edges, {"10.0.0.10"})
     assert res == []
+
+
+def test_infra_ip_reservations_reserves_gateway_and_dnsmasq():
+    """Infra IPs (gateway .1, dnsmasq .2) get bogus-MAC dhcp-host reservations so
+    dnsmasq never leases them and they are explicit, canonical reservations."""
+    from app.services.vxlan import _infra_ip_reservations
+
+    res = _infra_ip_reservations({"cidr": "10.0.0.0/24"}, set())
+    by_ip = {r["ip"]: r for r in res}
+    assert "10.0.0.1" in by_ip
+    assert "10.0.0.2" in by_ip
+    assert all(r["mac"] for r in res)  # bogus MACs present
+
+
+def test_infra_ip_reservations_skips_already_reserved():
+    """An infra IP already claimed (e.g. api_vip=.2 or a node NIC) is skipped, so
+    dnsmasq never gets a fatal duplicate dhcp-host for the same address."""
+    from app.services.vxlan import _infra_ip_reservations
+
+    res = _infra_ip_reservations({"cidr": "10.0.0.0/24"}, {"10.0.0.2"})
+    ips = {r["ip"] for r in res}
+    assert ips == {"10.0.0.1"}

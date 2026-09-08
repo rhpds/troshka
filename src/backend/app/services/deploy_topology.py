@@ -49,6 +49,63 @@ def validate_topology_ips(topology: dict) -> list[str]:
     return _check_duplicate_ips(topology, nodes_by_id, nic_to_network)
 
 
+def _network_infra_ips(topology: dict) -> dict[str, str]:
+    """Map every network's reserved infra IPs -> label (gateway ``.1``,
+    dnsmasq ``.2``). Mirrors :func:`vxlan._infra_ip_reservations` so the import
+    warning checks the same addresses Troshka reserves at deploy time."""
+    import ipaddress
+
+    infra: dict[str, str] = {}
+    for node in topology.get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        cidr = node.get("data", {}).get("cidr", "")
+        if not cidr:
+            continue
+        try:
+            net = ipaddress.ip_network(cidr, strict=False)
+        except ValueError:
+            continue
+        infra[str(net.network_address + 1)] = "gateway"
+        infra[str(net.network_address + 2)] = "dnsmasq"
+    return infra
+
+
+def infra_ip_overlap_warnings(topology: dict) -> list[str]:
+    """Non-blocking warnings when a template-assigned IP lands on a reserved
+    infra IP (gateway ``.1`` / dnsmasq ``.2``).
+
+    Works for both providers (the infra IPs are the same lab-network addresses).
+    Catches e.g. a compact/standard template whose ``api_vip`` is ``.2`` — which
+    collides with the KubeVirt dnsmasq pod and stalls the install.
+    """
+    infra = _network_infra_ips(topology)
+    if not infra:
+        return []
+    warnings: list[str] = []
+    for node in topology.get("nodes", []):
+        data = node.get("data", {})
+        if node.get("type") == "vmNode":
+            name = data.get("label") or data.get("name") or node.get("id", "")[:8]
+            for nic in data.get("nics", []):
+                ip = str(nic.get("ip") or "").strip()
+                if ip in infra:
+                    warnings.append(
+                        f"VM '{name}' IP {ip} overlaps the reserved "
+                        f"{infra[ip]} infra address"
+                    )
+        elif node.get("type") == "clusterNode":
+            cname = data.get("name", "cluster")
+            for key, label in (("apiVip", "API VIP"), ("ingressVip", "ingress VIP")):
+                ip = str(data.get(key) or "").strip()
+                if ip in infra:
+                    warnings.append(
+                        f"Cluster '{cname}' {label} {ip} overlaps the reserved "
+                        f"{infra[ip]} infra address"
+                    )
+    return warnings
+
+
 def _build_nic_to_network_map(
     topology: dict, nodes_by_id: dict[str, dict]
 ) -> dict[str, str]:
