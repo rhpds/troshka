@@ -1,5 +1,5 @@
 name: ocp-standard
-display_name: "OpenShift Standard 3+2 (Agent Installer)"
+display_name: "OpenShift Standard 3+2"
 description: "3 CP (4 vCPU, 16 GB, 120 GB) + 2 workers (4 vCPU, 16 GB, 120 GB)"
 category: openshift
 install_method: agent
