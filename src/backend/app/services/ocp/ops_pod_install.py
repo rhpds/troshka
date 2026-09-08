@@ -272,10 +272,15 @@ def _cluster_install_block(
         f'  echo "[{cluster_key}] starting agent-based install"\n'
         f"  cd {cluster_dir}\n"
         # Idempotency guard: a restarted pod (restart_policy=always) must not
-        # re-run the installer for a cluster that already produced a kubeconfig.
-        # `exit 0` here exits ONLY this cluster's subshell as success (the block
-        # is `( ... ) &`), so the top-level per-PID join sees it as a success.
-        f"  if [ -f {cluster_dir}/auth/kubeconfig ]; then "
+        # re-run the installer for a cluster whose install ACTUALLY completed.
+        # Key on the post-install sentinel (written only after `wait-for
+        # install-complete` succeeds), NOT auth/kubeconfig — `agent create image`
+        # writes auth/kubeconfig up front, before any node boots, so a failure
+        # after create-image (e.g. an unreachable BMC) would otherwise latch a
+        # permanent fake "already installed" skip and hang forever. `exit 0` here
+        # exits ONLY this cluster's subshell as success (the block is `( ... ) &`),
+        # so the top-level per-PID join sees it as a success.
+        f"  if [ -f {cluster_dir}/.install-complete ]; then "
         f'echo "[{cluster_key}] already installed, skipping"; exit 0; fi\n'
         # `agent create image` (--dir .) CONSUMES install-config/agent-config, so
         # they must be regular, deletable files. They are delivered read-only into
@@ -295,6 +300,9 @@ def _cluster_install_block(
         + _wait_for_complete_cmd("  ", "openshift-install", ".")
         + "  echo 'Ejecting agent ISO from nodes...'\n"
         + _redfish_eject_media_cmd("  ", bmc_ips_str)
+        # Completion sentinel: only reached when wait-for succeeded (set -e), so a
+        # restarted pod skips ONLY a genuinely-installed cluster (see the guard).
+        + f"  touch {cluster_dir}/.install-complete\n"
         + f'  echo "[{cluster_key}] install complete"\n'
         + ") &\n"
         + "pids+=($!)\n"

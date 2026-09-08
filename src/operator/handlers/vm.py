@@ -839,48 +839,29 @@ def _find_bmc_nad(namespace, custom_api):
 
 
 def _setup_bmc(spec, namespace, core_api, custom_api, domain_uuid=""):
-    """Set up BMC service account, RBAC, SCC, and deployment if bmcEnabled."""
+    """Reconcile the project's sushy BMC Deployment whenever a BMC-enabled VM is
+    (re)created, serving EVERY BMC-enabled node — not just this one.
+
+    Previously this built the Deployment from the single reconciling VM and
+    skipped once it existed, so a multi-node cluster only ever served the first
+    node's BMC (the other nodes' Redfish endpoints were never listening, which
+    crashed the ops-pod install on node #1). It now delegates to the
+    authoritative project-level reconcile over the FULL TroshkaVM set, matching
+    troshkad's all-nodes-at-once BMC setup and converging the two providers.
+    """
     if not spec.get("bmcEnabled"):
         return
-    from helpers.bmc import build_bmc_deployment
 
-    _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api)
+    from handlers.project import _ensure_bmc_deployment
 
-    bmc_nad = _find_bmc_nad(namespace, custom_api)
-    if not bmc_nad:
-        return
-
-    apps_api = client.AppsV1Api()
-    project_label = namespace.replace("troshka-", "")
-    bmc_vms = [
-        {
-            "vmId": spec["vmId"],
-            "smbiosUuid": spec.get("smbiosUuid", ""),
-            "bmcIp": spec.get("bmcIp", ""),
-            "domainUuid": domain_uuid,
-        }
-    ]
-    existing_bmc = None
-    try:
-        existing_bmc = apps_api.read_namespaced_deployment(
-            name=f"bmc-{project_label}", namespace=namespace
-        )
-    except client.ApiException:
-        pass
-    if not existing_bmc:
-        _cleanup_legacy_pod(core_api, namespace, f"bmc-{project_label}")
-        from handlers.project import _get_bmc_credentials
-
-        credentials = _get_bmc_credentials(custom_api, namespace)
-        bmc_dep = build_bmc_deployment(
-            project_label, namespace, bmc_vms, bmc_nad, credentials
-        )
-        try:
-            apps_api.create_namespaced_deployment(namespace=namespace, body=bmc_dep)
-            logger.info(f"Created BMC deployment for {namespace}")
-        except client.ApiException as e:
-            if e.status != 409:
-                raise
+    _cleanup_legacy_pod(core_api, namespace, f"bmc-{namespace.replace('troshka-', '')}")
+    vms = custom_api.list_namespaced_custom_object(
+        group=CRD_GROUP,
+        version=CRD_VERSION,
+        namespace=namespace,
+        plural="troshkavms",
+    )
+    _ensure_bmc_deployment(vms.get("items", []), namespace)
 
 
 def _resolve_nad_refs(custom_api, namespace):

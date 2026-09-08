@@ -1855,8 +1855,18 @@ def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
     return (
         f"{b}for BMC_IP in {bmc_ips_str}; do\n"
         f'{b2}echo "Mounting ISO on BMC $BMC_IP..."\n'
-        f"{b2}# Get system UUID from sushy\n"
-        f"{b2}SYS_ID=$(curl -s -u admin:$BMC_PASS http://${{BMC_IP}}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\")\n"
+        f"{b2}# Get system UUID from sushy. Retry until the BMC answers: the BMC\n"
+        f"{b2}# emulator (pod/process) may not be ready the instant this runs, and\n"
+        f"{b2}# this pipeline is otherwise unguarded — under set -e/pipefail a\n"
+        f"{b2}# single not-ready BMC would abort the whole (multi-node) install.\n"
+        f"{b2}# The `&&` list is set -e safe (only its last command can abort).\n"
+        f'{b2}SYS_ID=""\n'
+        f"{b2}for _try in $(seq 1 30); do\n"
+        f"{b4}SYS_ID=$(curl -s -u admin:$BMC_PASS http://${{BMC_IP}}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\" 2>/dev/null) && [ -n \"$SYS_ID\" ] && break\n"
+        f'{b4}echo "  BMC $BMC_IP not ready yet (attempt $_try); retrying..."\n'
+        f"{b4}sleep 5\n"
+        f"{b2}done\n"
+        f'{b2}if [ -z "$SYS_ID" ]; then echo "  WARNING: BMC $BMC_IP never became ready; skipping"; continue; fi\n'
         f'{b2}echo "  System: $SYS_ID"\n'
         f"{b2}# Insert virtual media (Systems path, HTTP, with auth)\n"
         f'{b2}curl -s -u admin:$BMC_PASS -X POST "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \\\n'

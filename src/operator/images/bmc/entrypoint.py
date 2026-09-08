@@ -94,9 +94,26 @@ def _get_service_root(handler):
     )
 
 
+def _local_ip(handler):
+    """The BMC IP this request arrived on (server-side socket address).
+
+    Lets the Systems collection be scoped to one node per BMC IP. Returns None
+    when unavailable (then the collection falls back to all systems).
+    """
+    try:
+        return handler.connection.getsockname()[0]
+    except Exception:
+        return None
+
+
 def _get_systems_collection(handler):
-    """Handle GET /redfish/v1/Systems."""
-    systems = driver.get_systems()
+    """Handle GET /redfish/v1/Systems, scoped to the destination BMC IP.
+
+    One sushy pod holds every node's BMC IP, but the install client picks
+    ``Members[0]`` per IP — so each IP must return only its own system (mirrors
+    troshkad's one-sushy-per-VM). Falls back to all systems when unscoped.
+    """
+    systems = driver.get_systems_for_ip(_local_ip(handler))
     members = [{_ODATA_ID: f"{_SYSTEMS_PREFIX}{s}"} for s in systems]
     _send_json(
         handler,

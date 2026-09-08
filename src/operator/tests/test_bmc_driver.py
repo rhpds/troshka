@@ -48,6 +48,33 @@ class TestKvName:
         assert drv._kv_name("unknown-vm") == "unknown-vm"
 
 
+class TestGetSystemsForIp:
+    @staticmethod
+    @patch("kubernetes.config.load_incluster_config")
+    @patch("kubernetes.client.CustomObjectsApi")
+    def _driver_with_ips(mock_api_cls, mock_config):
+        mod = _load_driver_module()
+        mock_api_cls.return_value = MagicMock()
+        os.environ["SUSHY_NAMESPACE"] = "test-ns"
+        os.environ["SUSHY_VM_MAP"] = json.dumps(
+            {"u1": "kv-1", "u2": "kv-2", "u3": "kv-3"}
+        )
+        os.environ["SUSHY_SYSTEM_IPS"] = json.dumps(
+            {"u1": "192.168.100.10", "u2": "192.168.100.11", "u3": "192.168.100.12"}
+        )
+        drv = mod.KubeVirtDriver()
+        os.environ.pop("SUSHY_SYSTEM_IPS", None)
+        return drv
+
+    def test_returns_only_the_system_bound_to_the_ip(self):
+        drv = self._driver_with_ips()
+        assert drv.get_systems_for_ip("192.168.100.11") == ["u2"]
+
+    def test_falls_back_to_all_systems_when_no_ip_map(self):
+        drv, _, _ = _make_driver()  # no SUSHY_SYSTEM_IPS configured
+        assert drv.get_systems_for_ip("192.168.100.11") == ["vm-uuid-1"]
+
+
 class TestGetPowerState:
     def test_on_when_running(self):
         drv, mock_api, _ = _make_driver()

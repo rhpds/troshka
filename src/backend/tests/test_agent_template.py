@@ -223,6 +223,26 @@ def test_build_install_script_uses_selenium_autologin_not_nss():
     assert "console-openshift-console.apps.ocp.ocp.local" in script
 
 
+def test_redfish_insert_media_retries_bmc_readiness():
+    """A not-yet-ready BMC must not crash the set -e subshell on the first node.
+
+    The SYS_ID fetch (curl|python3) is unguarded, so under set -e/pipefail a
+    single unreachable BMC in a multi-node loop killed the whole install. It now
+    retries until the BMC answers and skips (continue) a BMC that never does.
+    """
+    from app.services.ocp.agent_template import _redfish_insert_media_cmd
+
+    cmd = _redfish_insert_media_cmd("  ", "192.168.100.10 192.168.100.11")
+    # Bounded readiness retry around the SYS_ID fetch.
+    assert "for _try in $(seq 1" in cmd
+    # set -e safe: the failing pipeline is guarded by && (not the last command in
+    # the list), so its non-zero status does not abort the subshell.
+    assert "SYS_ID=$(curl" in cmd
+    assert '&& [ -n "$SYS_ID" ] && break' in cmd
+    # A BMC that never becomes ready is skipped, not fatal.
+    assert "continue" in cmd
+
+
 def test_build_install_script_golden():
     """Full-output snapshot of the bastion agent-based installer.
 

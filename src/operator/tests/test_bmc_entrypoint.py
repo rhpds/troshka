@@ -95,12 +95,25 @@ class TestRedfishDoGet:
         assert data["Id"] == "RootService"
 
     def test_systems_list(self):
-        _mock_driver.get_systems.return_value = ["vm-1", "vm-2"]
+        _mock_driver.get_systems_for_ip.return_value = ["vm-1", "vm-2"]
         handler = _make_handler("GET", "/redfish/v1/Systems")
         entrypoint.RedfishHandler.do_GET(handler)
         written = handler.wfile.write.call_args[0][0]
         data = json.loads(written)
         assert data["Members@odata.count"] == 2
+
+    def test_systems_list_scoped_to_destination_ip(self):
+        """Each BMC IP must present only its own system so the install client's
+        Members[0] targets the right node on multi-node clusters."""
+        _mock_driver.get_systems_for_ip.return_value = ["vm-2"]
+        handler = _make_handler("GET", "/redfish/v1/Systems")
+        handler.connection.getsockname.return_value = ("192.168.100.11", 8000)
+        entrypoint.RedfishHandler.do_GET(handler)
+        _mock_driver.get_systems_for_ip.assert_called_with("192.168.100.11")
+        written = handler.wfile.write.call_args[0][0]
+        data = json.loads(written)
+        assert data["Members@odata.count"] == 1
+        assert data["Members"][0]["@odata.id"].endswith("vm-2")
 
     def test_system_detail(self):
         _mock_driver.get_power_state.return_value = "On"
@@ -133,7 +146,7 @@ class TestRedfishDoGet:
         assert data["Id"] == "RootService"
 
     def test_systems_list_no_auth_required(self):
-        _mock_driver.get_systems.return_value = ["vm-1"]
+        _mock_driver.get_systems_for_ip.return_value = ["vm-1"]
         handler = _make_handler("GET", "/redfish/v1/Systems", auth=False)
         handler.headers["Authorization"] = ""
         entrypoint.RedfishHandler.do_GET(handler)
@@ -360,8 +373,8 @@ class TestRedfishDoGetEdgeCases:
         assert data["Id"] == "RootService"
 
     def test_driver_exception_on_get_systems(self):
-        """Driver exception from get_systems propagates."""
-        _mock_driver.get_systems.side_effect = RuntimeError("driver broke")
+        """Driver exception from the systems lookup propagates."""
+        _mock_driver.get_systems_for_ip.side_effect = RuntimeError("driver broke")
         handler = _make_handler("GET", "/redfish/v1/Systems")
         raised = False
         try:
@@ -370,7 +383,7 @@ class TestRedfishDoGetEdgeCases:
             raised = True
             assert "driver broke" in str(exc)
         finally:
-            _mock_driver.get_systems.side_effect = None
+            _mock_driver.get_systems_for_ip.side_effect = None
         assert raised
 
     def test_driver_exception_on_system_detail(self):

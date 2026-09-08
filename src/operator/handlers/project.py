@@ -28,6 +28,11 @@ from helpers.topology import (
     enrich_showroom_infra_networks,
 )
 from helpers.kubevirt import build_blank_pvc
+from helpers.bmc import (
+    BMC_SIGNATURE_ANNOTATION,
+    bmc_signature,
+    build_bmc_deployment,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2151,8 +2156,40 @@ def _enrich_bmc_ips(bmc_vms, custom_api, namespace):
             v["bmcIp"] = topo_ips[v["vmId"]]
 
 
+def _build_bmc_deployment_body(bmc_vms, namespace):
+    """Assemble the sushy Deployment body for the full BMC-enabled VM set.
+
+    Enriches missing BMC IPs from the topology and ensures SA/RBAC first.
+    Returns ``None`` when the BMC NAD is not yet present (prerequisite missing).
+    """
+    from handlers.vm import _ensure_bmc_sa_and_rbac, _find_bmc_nad
+
+    custom_api = client.CustomObjectsApi()
+    core_api = client.CoreV1Api()
+    project_label = namespace.replace("troshka-", "")
+
+    _enrich_bmc_ips(bmc_vms, custom_api, namespace)
+    _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api)
+
+    bmc_nad = _find_bmc_nad(namespace, custom_api)
+    if not bmc_nad:
+        return None
+
+    credentials = _get_bmc_credentials(custom_api, namespace)
+    return build_bmc_deployment(project_label, namespace, bmc_vms, bmc_nad, credentials)
+
+
 def _ensure_bmc_deployment(vm_items, namespace):
-    """Verify BMC deployment exists if any VM has bmcEnabled. Recreate if missing."""
+    """Reconcile the project's sushy BMC Deployment against the FULL BMC-enabled
+    VM set — create it if missing, patch it if the running one is stale.
+
+    Converges with troshkad, which stands up a BMC endpoint for every node in a
+    single pass. The per-VM create path (``handlers.vm._setup_bmc``) can only
+    ever capture the first node, so this project-level reconcile is the
+    authoritative writer: it rebuilds from all VMs and patches whenever the
+    served node set drifts (later control-plane nodes appearing after the
+    deployment was first created — the multi-node crashloop root cause).
+    """
     bmc_vms = _collect_bmc_vms(vm_items)
     if not bmc_vms:
         return
@@ -2160,36 +2197,53 @@ def _ensure_bmc_deployment(vm_items, namespace):
     apps_api = client.AppsV1Api()
     project_label = namespace.replace("troshka-", "")
     dep_name = f"bmc-{project_label}"
+
     try:
-        apps_api.read_namespaced_deployment(name=dep_name, namespace=namespace)
-        return
+        existing = apps_api.read_namespaced_deployment(
+            name=dep_name, namespace=namespace
+        )
     except ApiException as e:
         if e.status != 404:
             return
+        existing = None
 
-    from handlers.vm import _ensure_bmc_sa_and_rbac, _find_bmc_nad
-    from helpers.bmc import build_bmc_deployment
+    if existing is not None:
+        meta = getattr(cast(Any, existing), "metadata", None)
+        annotations = getattr(meta, "annotations", None) or {}
+        if annotations.get(BMC_SIGNATURE_ANNOTATION) == bmc_signature(bmc_vms):
+            return  # running emulator already serves the full node set
 
-    custom_api = client.CustomObjectsApi()
-    core_api = client.CoreV1Api()
-
-    _enrich_bmc_ips(bmc_vms, custom_api, namespace)
-    _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api)
-
-    bmc_nad = _find_bmc_nad(namespace, custom_api)
-    if not bmc_nad:
+    body = _build_bmc_deployment_body(bmc_vms, namespace)
+    if body is None:
         return
 
-    credentials = _get_bmc_credentials(custom_api, namespace)
-    bmc_dep = build_bmc_deployment(
-        project_label, namespace, bmc_vms, bmc_nad, credentials
-    )
+    if existing is None:
+        _create_bmc_deployment(apps_api, namespace, body)
+    else:
+        _patch_bmc_deployment(apps_api, dep_name, namespace, body, len(bmc_vms))
+
+
+def _create_bmc_deployment(apps_api, namespace, body):
+    """Create the sushy Deployment; a concurrent create (409) is not an error."""
     try:
-        apps_api.create_namespaced_deployment(namespace=namespace, body=bmc_dep)
-        logger.info(f"Recreated missing BMC deployment for {namespace}")
+        apps_api.create_namespaced_deployment(namespace=namespace, body=body)
+        logger.info(f"Created BMC deployment for {namespace}")
     except ApiException as e:
         if e.status != 409:
-            logger.warning(f"Failed to recreate BMC deployment for {namespace}: {e}")
+            logger.warning(f"Failed to create BMC deployment for {namespace}: {e}")
+
+
+def _patch_bmc_deployment(apps_api, dep_name, namespace, body, node_count):
+    """Patch the sushy Deployment so it serves the full BMC-enabled node set."""
+    try:
+        apps_api.patch_namespaced_deployment(
+            name=dep_name, namespace=namespace, body=body
+        )
+        logger.info(
+            f"Reconciled BMC deployment for {namespace} to serve {node_count} node(s)"
+        )
+    except ApiException as e:
+        logger.warning(f"Failed to patch BMC deployment for {namespace}: {e}")
 
 
 def _get_bmc_credentials(custom_api, namespace):

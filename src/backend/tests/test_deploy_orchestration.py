@@ -4259,9 +4259,11 @@ class TestOpsPodCommand:
 
         topo = _ocp_topology(2)
         script = _ops_pod_command(topo["clusters"], topo, "4.20", "/workdir")[2]
-        # Task 4 idempotency: a restarted pod skips a cluster already installed.
-        assert "[ -f /workdir/cl-0/auth/kubeconfig ]" in script
-        assert "[ -f /workdir/cl-1/auth/kubeconfig ]" in script
+        # Task 4 idempotency: a restarted pod skips a cluster already installed,
+        # keyed on the post-install completion sentinel (not auth/kubeconfig,
+        # which create-image writes before any node boots).
+        assert "[ -f /workdir/cl-0/.install-complete ]" in script
+        assert "[ -f /workdir/cl-1/.install-complete ]" in script
 
     def test_command_embeds_no_secret_content(self):
         from app.services.deploy_service import _ops_pod_command

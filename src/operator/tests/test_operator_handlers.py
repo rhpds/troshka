@@ -3992,30 +3992,6 @@ class TestCreateOrAdoptKubevirtVm:
 
 
 class TestSetupBmc:
-    @patch("handlers.vm._find_bmc_nad", return_value="bmc-nad-1")
-    @patch("handlers.vm._ensure_bmc_sa_and_rbac")
-    @patch("handlers.vm.client.AppsV1Api")
-    def test_creates_bmc_deployment(self, mock_apps_cls, mock_rbac, mock_nad):
-        from handlers.vm import _setup_bmc
-        from kubernetes.client import ApiException
-
-        core_api = MagicMock()
-        custom_api = MagicMock()
-        mock_apps = MagicMock()
-        mock_apps_cls.return_value = mock_apps
-        mock_apps.read_namespaced_deployment.side_effect = ApiException(status=404)
-
-        spec = {
-            "bmcEnabled": True,
-            "vmId": "vm12345678",
-            "smbiosUuid": "uuid-1",
-            "bmcIp": "10.0.1.10",
-        }
-
-        _setup_bmc(spec, "troshka-proj", core_api, custom_api)
-
-        mock_apps.create_namespaced_deployment.assert_called_once()
-
     def test_skips_when_not_enabled(self):
         from handlers.vm import _setup_bmc
 
@@ -4038,6 +4014,49 @@ class TestSetupBmc:
             core_api,
             custom_api,
         )
+
+    @patch("handlers.project._ensure_bmc_deployment")
+    def test_reconciles_all_bmc_vms_not_just_this_one(self, mock_ensure):
+        """A per-VM BMC reconcile must serve EVERY BMC-enabled node (the
+        multi-node crashloop fix), so it delegates the full VM list to the
+        authoritative project reconcile rather than building from one VM."""
+        from handlers.vm import _setup_bmc
+
+        core_api = MagicMock()
+        custom_api = MagicMock()
+        custom_api.list_namespaced_custom_object.return_value = {
+            "items": [
+                {
+                    "spec": {
+                        "bmcEnabled": True,
+                        "vmId": "vm-1",
+                        "bmcIp": "192.168.100.10",
+                    }
+                },
+                {
+                    "spec": {
+                        "bmcEnabled": True,
+                        "vmId": "vm-2",
+                        "bmcIp": "192.168.100.11",
+                    }
+                },
+                {
+                    "spec": {
+                        "bmcEnabled": True,
+                        "vmId": "vm-3",
+                        "bmcIp": "192.168.100.12",
+                    }
+                },
+            ]
+        }
+
+        _setup_bmc(
+            {"bmcEnabled": True, "vmId": "vm-1"}, "troshka-proj", core_api, custom_api
+        )
+
+        mock_ensure.assert_called_once()
+        passed_items = mock_ensure.call_args[0][0]
+        assert len(passed_items) == 3
 
 
 class TestResolveNadRefs:

@@ -29,6 +29,9 @@ class KubeVirtDriver:
         self.core_api = client.CoreV1Api()
         self.namespace = os.environ.get("SUSHY_NAMESPACE", "default")
         self.vm_map = json.loads(os.environ.get("SUSHY_VM_MAP", "{}"))
+        # {system_id -> BMC IP}: lets the emulator present a per-IP scoped Systems
+        # collection so each BMC IP behaves like a troshkad per-VM sushy instance.
+        self.system_ips = json.loads(os.environ.get("SUSHY_SYSTEM_IPS", "{}"))
         self.storage_class = os.environ.get("SUSHY_STORAGE_CLASS", "")
         self._vmedia_state = {}
 
@@ -378,6 +381,21 @@ class KubeVirtDriver:
         for vm in vms.get("items", []):  # type: ignore[union-attr]
             systems.append(vm["metadata"]["uid"])
         return systems
+
+    def get_systems_for_ip(self, local_ip):
+        """Return only the system(s) whose BMC IP is ``local_ip``.
+
+        A multi-node cluster runs ONE sushy pod holding every node's BMC IP on
+        net1, but the shared install client picks ``Members[0]`` per BMC IP — so
+        each IP must present a single-system collection (exactly like troshkad's
+        one-sushy-per-VM). Scopes by the destination IP the request arrived on.
+        Falls back to all systems when no IP map is configured (SNO / legacy).
+        """
+        if self.system_ips and local_ip:
+            scoped = [sid for sid, ip in self.system_ips.items() if ip == local_ip]
+            if scoped:
+                return scoped
+        return self.get_systems()
 
     # ── Virtual Media ──
 

@@ -82,8 +82,18 @@
     
     for BMC_IP in 192.168.100.10 192.168.100.11; do
       echo "Mounting ISO on BMC $BMC_IP..."
-      # Get system UUID from sushy
-      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c "import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])")
+      # Get system UUID from sushy. Retry until the BMC answers: the BMC
+      # emulator (pod/process) may not be ready the instant this runs, and
+      # this pipeline is otherwise unguarded — under set -e/pipefail a
+      # single not-ready BMC would abort the whole (multi-node) install.
+      # The `&&` list is set -e safe (only its last command can abort).
+      SYS_ID=""
+      for _try in $(seq 1 30); do
+        SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c "import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])" 2>/dev/null) && [ -n "$SYS_ID" ] && break
+        echo "  BMC $BMC_IP not ready yet (attempt $_try); retrying..."
+        sleep 5
+      done
+      if [ -z "$SYS_ID" ]; then echo "  WARNING: BMC $BMC_IP never became ready; skipping"; continue; fi
       echo "  System: $SYS_ID"
       # Insert virtual media (Systems path, HTTP, with auth)
       curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \

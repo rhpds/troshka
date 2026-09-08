@@ -275,9 +275,9 @@ def test_install_script_bmc_password_injection_safe():
 
 def test_install_script_per_cluster_skip_guard():
     script = _install_script()
-    # Each cluster gets its OWN kubeconfig-exists skip guard, keyed on its workdir.
-    assert "[ -f /workdir/prod/auth/kubeconfig ]" in script
-    assert "[ -f /workdir/dev/auth/kubeconfig ]" in script
+    # Each cluster gets its OWN completion-sentinel skip guard, keyed on its workdir.
+    assert "[ -f /workdir/prod/.install-complete ]" in script
+    assert "[ -f /workdir/dev/.install-complete ]" in script
     # The guard exits the cluster's subshell as success when already installed.
     assert "[prod] already installed, skipping" in script
     assert "[dev] already installed, skipping" in script
@@ -290,9 +290,32 @@ def test_install_script_skip_guard_before_create_image():
     for cid in ("prod", "dev"):
         block = script.split(f"# ===== cluster {cid} =====", 1)[1]
         block = block.split("# ===== cluster", 1)[0]
-        guard_idx = block.index(f"[ -f /workdir/{cid}/auth/kubeconfig ]")
+        guard_idx = block.index(f"[ -f /workdir/{cid}/.install-complete ]")
         create_idx = block.index("agent create image")
         assert guard_idx < create_idx
+
+
+def test_install_script_skip_guard_uses_completion_sentinel():
+    script = _install_script()
+    # The restart skip-guard must key on a REAL post-install sentinel, NOT
+    # auth/kubeconfig — `agent create image` writes auth/kubeconfig before any
+    # node boots, so a post-create-image failure (e.g. an unreachable BMC) would
+    # otherwise latch a permanent fake "already installed" skip on restart.
+    assert "[ -f /workdir/prod/.install-complete ]" in script
+    assert "[ -f /workdir/dev/.install-complete ]" in script
+    assert "auth/kubeconfig ]" not in script
+
+
+def test_install_script_writes_sentinel_only_after_wait_for():
+    script = _install_script()
+    for cid in ("prod", "dev"):
+        block = script.split(f"# ===== cluster {cid} =====", 1)[1]
+        block = block.split("# ===== cluster", 1)[0]
+        wait_idx = block.index("wait-for install-complete")
+        sentinel_idx = block.index(f"touch /workdir/{cid}/.install-complete")
+        # Sentinel is written after the install completes (set -e means a failed
+        # wait-for exits the subshell before this line runs).
+        assert wait_idx < sentinel_idx
 
 
 def test_install_script_distinct_http_ports():

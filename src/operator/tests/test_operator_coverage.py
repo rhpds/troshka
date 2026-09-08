@@ -520,12 +520,20 @@ class TestEnsureBmcDeployment:
 
     @patch("handlers.project.client")
     @patch("handlers.project._collect_bmc_vms")
-    def test_returns_early_when_deployment_exists(self, mock_collect, mock_client):
+    def test_never_recreates_when_deployment_exists(self, mock_collect, mock_client):
+        """An existing deployment is patched, never re-created (see the noop/patch
+        drift tests below for the reconcile behavior)."""
         from handlers.project import _ensure_bmc_deployment
+        from helpers.bmc import BMC_SIGNATURE_ANNOTATION, bmc_signature
 
-        mock_collect.return_value = [{"vmId": "vm-1", "bmcIp": "10.0.0.5"}]
+        bmc_vms = [{"vmId": "vm-1", "bmcIp": "10.0.0.5", "domainUuid": "u1"}]
+        mock_collect.return_value = bmc_vms
         apps_api = mock_client.AppsV1Api.return_value
-        apps_api.read_namespaced_deployment.return_value = MagicMock()
+        existing = MagicMock()
+        existing.metadata.annotations = {
+            BMC_SIGNATURE_ANNOTATION: bmc_signature(bmc_vms)
+        }
+        apps_api.read_namespaced_deployment.return_value = existing
         _ensure_bmc_deployment([], "troshka-proj123")
         apps_api.create_namespaced_deployment.assert_not_called()
 
@@ -563,6 +571,65 @@ class TestEnsureBmcDeployment:
         apps_api = mock_client.AppsV1Api.return_value
         apps_api.read_namespaced_deployment.side_effect = ApiException(status=500)
         _ensure_bmc_deployment([], "troshka-proj123")
+        apps_api.create_namespaced_deployment.assert_not_called()
+
+    @patch("handlers.project.build_bmc_deployment", return_value={"metadata": {}})
+    @patch("handlers.vm._find_bmc_nad", return_value="bmc-nad-1")
+    @patch("handlers.vm._ensure_bmc_sa_and_rbac")
+    @patch("handlers.project._enrich_bmc_ips")
+    @patch(
+        "handlers.project._get_bmc_credentials",
+        return_value={"username": "admin", "password": "pw"},  # pragma: allowlist secret
+    )
+    @patch("handlers.project.client")
+    @patch("handlers.project._collect_bmc_vms")
+    def test_patches_when_existing_deployment_missing_nodes(
+        self,
+        mock_collect,
+        mock_client,
+        mock_creds,
+        mock_enrich,
+        mock_sa,
+        mock_find_nad,
+        mock_build,
+    ):
+        """Regression: a multi-node cluster whose BMC deployment was created from
+        a single VM (per-VM path) must be reconciled to serve ALL nodes."""
+        from handlers.project import _ensure_bmc_deployment
+        from helpers.bmc import BMC_SIGNATURE_ANNOTATION
+
+        mock_collect.return_value = [
+            {"vmId": "vm-1", "bmcIp": "192.168.100.10", "domainUuid": "u1"},
+            {"vmId": "vm-2", "bmcIp": "192.168.100.11", "domainUuid": "u2"},
+            {"vmId": "vm-3", "bmcIp": "192.168.100.12", "domainUuid": "u3"},
+        ]
+        apps_api = mock_client.AppsV1Api.return_value
+        existing = MagicMock()
+        existing.metadata.annotations = {BMC_SIGNATURE_ANNOTATION: "only-one-node"}
+        apps_api.read_namespaced_deployment.return_value = existing
+        _ensure_bmc_deployment([], "troshka-proj123")
+        apps_api.patch_namespaced_deployment.assert_called_once()
+
+    @patch("handlers.project.client")
+    @patch("handlers.project._collect_bmc_vms")
+    def test_noop_when_existing_deployment_up_to_date(self, mock_collect, mock_client):
+        """No rollout when the running deployment already serves the full node set."""
+        from handlers.project import _ensure_bmc_deployment
+        from helpers.bmc import BMC_SIGNATURE_ANNOTATION, bmc_signature
+
+        bmc_vms = [
+            {"vmId": "vm-1", "bmcIp": "192.168.100.10", "domainUuid": "u1"},
+            {"vmId": "vm-2", "bmcIp": "192.168.100.11", "domainUuid": "u2"},
+        ]
+        mock_collect.return_value = bmc_vms
+        apps_api = mock_client.AppsV1Api.return_value
+        existing = MagicMock()
+        existing.metadata.annotations = {
+            BMC_SIGNATURE_ANNOTATION: bmc_signature(bmc_vms)
+        }
+        apps_api.read_namespaced_deployment.return_value = existing
+        _ensure_bmc_deployment([], "troshka-proj123")
+        apps_api.patch_namespaced_deployment.assert_not_called()
         apps_api.create_namespaced_deployment.assert_not_called()
 
 
