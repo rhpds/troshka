@@ -243,6 +243,21 @@ def test_redfish_insert_media_retries_bmc_readiness():
     assert "continue" in cmd
 
 
+def test_redfish_eject_media_retries_and_is_set_e_safe():
+    """Eject MUST happen (a stuck ISO risks a node re-booting from media), so a
+    transiently-unreachable BMC is retried, not skipped. The retry is also set -e
+    safe (guarded && list) so it never aborts the subshell before the completion
+    breadcrumb/sentinel — which previously made the pod exit 1, restart, and race
+    the monitor's cred harvest + cluster-terminal kubeconfig injection (a 3+2's 5
+    BMCs made this likely)."""
+    from app.services.ocp.agent_template import _redfish_eject_media_cmd
+
+    cmd = _redfish_eject_media_cmd("  ", "192.168.100.10 192.168.100.11")
+    assert "for _try in $(seq 1" in cmd  # bounded readiness retry
+    assert '&& [ -n "$SYS_ID" ] && break' in cmd  # set -e safe retry
+    assert "VirtualMedia.EjectMedia" in cmd
+
+
 def test_build_install_script_golden():
     """Full-output snapshot of the bastion agent-based installer.
 

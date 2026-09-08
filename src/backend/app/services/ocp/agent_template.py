@@ -1886,10 +1886,24 @@ def _redfish_eject_media_cmd(indent: str, bmc_ips_str: str) -> str:
     """Redfish loop: EjectMedia per BMC (called after install completes)."""
     b = indent
     b2 = indent + "  "
+    b4 = indent + "    "
     return (
         f"{b}for BMC_IP in {bmc_ips_str}; do\n"
-        f"{b2}SYS_ID=$(curl -s -u admin:$BMC_PASS http://${{BMC_IP}}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\" 2>/dev/null)\n"
-        f"{b2}curl -s -u admin:$BMC_PASS -X POST \"http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia\" -H 'Content-Type: application/json' -d '{{}}' >/dev/null 2>&1\n"
+        f'{b2}echo "Ejecting agent ISO from BMC $BMC_IP..."\n'
+        # Eject MUST happen: a CDROM left inserted lets the node boot from the ISO
+        # again on its next reboot. So retry a transiently-unreachable BMC (the
+        # && list is set -e safe, so it never aborts the subshell before the
+        # completion breadcrumb/sentinel — which would make the pod exit 1,
+        # restart, and race the cred harvest). Only warn if a BMC is still
+        # unreachable after the full retry window (the node boots disk-first now
+        # that CoreOS is written, so we proceed rather than hang/abort).
+        f'{b2}SYS_ID=""\n'
+        f"{b2}for _try in $(seq 1 30); do\n"
+        f"{b4}SYS_ID=$(curl -s -u admin:$BMC_PASS http://${{BMC_IP}}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\" 2>/dev/null) && [ -n \"$SYS_ID\" ] && break\n"
+        f"{b4}sleep 5\n"
+        f"{b2}done\n"
+        f'{b2}if [ -z "$SYS_ID" ]; then echo "  WARNING: BMC $BMC_IP unreachable; ISO NOT ejected (node may re-boot from CD)"; continue; fi\n'
+        f"{b2}curl -s -u admin:$BMC_PASS -X POST \"http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia\" -H 'Content-Type: application/json' -d '{{}}' >/dev/null 2>&1 || true\n"
         f"{b}done\n"
     )
 

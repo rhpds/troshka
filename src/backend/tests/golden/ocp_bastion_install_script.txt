@@ -128,8 +128,14 @@
     # Eject agent ISO via Redfish virtual media
     echo 'Ejecting agent ISO from nodes...'
     for BMC_IP in 192.168.100.10 192.168.100.11; do
-      SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c "import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])" 2>/dev/null)
-      curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1
+      echo "Ejecting agent ISO from BMC $BMC_IP..."
+      SYS_ID=""
+      for _try in $(seq 1 30); do
+        SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c "import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])" 2>/dev/null) && [ -n "$SYS_ID" ] && break
+        sleep 5
+      done
+      if [ -z "$SYS_ID" ]; then echo "  WARNING: BMC $BMC_IP unreachable; ISO NOT ejected (node may re-boot from CD)"; continue; fi
+      curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1 || true
     done
     # Write static MOTD with cluster credentials
     KUBEADMIN_PW=$(cat /home/cloud-user/ocp-install/auth/kubeadmin-password)
