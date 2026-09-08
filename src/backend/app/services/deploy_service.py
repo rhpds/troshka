@@ -2831,12 +2831,11 @@ def _inject_cluster_kubeconfigs(
 ) -> None:
     """[LIVE-ENV] Write the merged kubeconfig onto the showroom disk so the
     cluster-terminal shell (oc + all clusters) has access. Best-effort; only when
-    a cluster-terminal tab exists. Troshkad path (exec into the showroom proxy
-    container, which mounts the shared /showroom disk). KubeVirt is a follow-up."""
+    a cluster-terminal tab exists. troshkad: exec into the showroom proxy container.
+    KubeVirt: exec into the showroom Pod (a separate k8s Pod mounting the /showroom
+    PVC) — the ops pod can't reach that PVC."""
     import base64
 
-    if getattr(host, "host_type", None) == "kubevirt-cluster":
-        return
     show_name = _showroom_with_cluster_terminal(topology)
     if not show_name:
         return
@@ -2849,12 +2848,15 @@ def _inject_cluster_kubeconfigs(
     if not merged.strip():
         return
     b64 = base64.b64encode(merged.encode()).decode()
-    container = f"troshka-{project_id[:8]}-{show_name}-proxy"
     script = (
         "mkdir -p /showroom/kube && "
         f"echo {b64} | base64 -d > /showroom/kube/config && "
         "chmod 0644 /showroom/kube/config"
     )
+    if getattr(host, "host_type", None) == "kubevirt-cluster":
+        _inject_cluster_kubeconfigs_kubevirt(host, project_id, topology, script)
+        return
+    container = f"troshka-{project_id[:8]}-{show_name}-proxy"
     try:
         job_id = start_job(
             host,
@@ -2866,6 +2868,45 @@ def _inject_cluster_kubeconfigs(
     except TroshkadError as e:
         logger.warning(
             "Cluster-terminal kubeconfig injection failed for %s: %s",
+            project_id[:8],
+            e,
+        )
+
+
+def _inject_cluster_kubeconfigs_kubevirt(
+    host, project_id: str, topology: dict, script: str
+) -> None:
+    """[LIVE-ENV] Write the merged kubeconfig into the KubeVirt showroom Pod's
+    /showroom PVC (container ``proxy`` mounts it) via ``connect_get_namespaced_pod_exec``.
+    The showroom Pod is ``pod-<showroom_node_id[:8]>`` in the project namespace."""
+    from kubernetes.stream import stream as k8s_stream
+
+    from app.services.showroom_scaffold import _find_showroom_container
+
+    ctx = _kubevirt_ops_pod_ctx(host, project_id)
+    node = _find_showroom_container(topology)
+    if not ctx or not node:
+        return
+    core_v1, namespace, _ = ctx
+    pod_name = f"pod-{node['id'][:8]}"
+    try:
+        k8s_stream(
+            core_v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            container="proxy",
+            command=["sh", "-c", script],
+            stderr=True,
+            stdout=True,
+            stdin=False,
+            tty=False,
+            _preload_content=True,
+            _request_timeout=35,
+        )
+        logger.info("Injected merged kubeconfig into showroom pod %s", pod_name)
+    except Exception as e:  # noqa: BLE001 - best-effort injection
+        logger.warning(
+            "Cluster-terminal kubeconfig injection (kubevirt) failed for %s: %s",
             project_id[:8],
             e,
         )

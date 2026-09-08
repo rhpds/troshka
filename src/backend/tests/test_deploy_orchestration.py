@@ -5056,3 +5056,73 @@ class TestGetAppsDomainDefault:
         from app.services.providers.base import ProviderDriver
 
         assert ProviderDriver().get_apps_domain(MagicMock()) == ""
+
+
+class TestInjectClusterKubeconfigsKubevirt:
+    """KubeVirt cluster-terminal kubeconfig injection: exec into the showroom Pod
+    (pod-<showroom_node_id[:8]>, container proxy) and write /showroom/kube/config."""
+
+    def _topo(self):
+        return {
+            "nodes": [
+                {
+                    "id": "d00ddc6c-0510-4a61-a1b6-072a79436dd3",
+                    "type": "containerNode",
+                    "data": {"isShowroom": True, "name": "showroom"},
+                }
+            ]
+        }
+
+    def test_execs_showroom_pod_proxy_with_script(self):
+        from app.services import deploy_service
+
+        host = MagicMock()
+        host.host_type = "kubevirt-cluster"
+        core_v1 = MagicMock()
+        with patch.object(
+            deploy_service,
+            "_kubevirt_ops_pod_ctx",
+            return_value=(core_v1, "troshka-81d2898e", "troshka-81d2898e-ops"),
+        ), patch("kubernetes.stream.stream") as mock_stream:
+            deploy_service._inject_cluster_kubeconfigs_kubevirt(
+                host, "81d2898e-x", self._topo(), "mkdir -p /showroom/kube && ..."
+            )
+        assert mock_stream.called
+        kwargs = mock_stream.call_args.kwargs
+        args = mock_stream.call_args.args
+        assert "pod-d00ddc6c" in args  # pod-<showroom_node_id[:8]>
+        assert kwargs["container"] == "proxy"
+        assert kwargs["command"][:2] == ["sh", "-c"]
+
+    def test_kubevirt_host_routes_to_kubevirt_injector(self):
+        """A kubevirt-cluster host must NOT early-return; it routes to the kubevirt
+        injector (previously a no-op — the root cause of the empty terminal creds)."""
+        from app.services import deploy_service
+
+        host = MagicMock()
+        host.host_type = "kubevirt-cluster"
+        topo = {
+            "nodes": [
+                {
+                    "id": "d00ddc6c-x",
+                    "type": "containerNode",
+                    "data": {
+                        "isShowroom": True,
+                        "name": "showroom",
+                        "showroomTabs": [{"type": "terminal", "target": "clusters"}],
+                    },
+                }
+            ]
+        }
+        creds = {"ocp": ("pw", "apiVersion: v1\nkind: Config\n")}
+        clusters = [{"id": "ocp", "name": "ocp"}]
+        with patch.object(
+            deploy_service, "_inject_cluster_kubeconfigs_kubevirt"
+        ) as mock_kv, patch(
+            "app.services.ocp.kubeconfig_merge.merge_kubeconfigs",
+            return_value="apiVersion: v1\nkind: Config\n",
+        ):
+            deploy_service._inject_cluster_kubeconfigs(
+                host, "81d2898e-x", topo, creds, clusters
+            )
+        mock_kv.assert_called_once()
