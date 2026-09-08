@@ -41,6 +41,17 @@ interface FailedJob {
   ended_at: string | null;
 }
 
+interface ScalingInfo {
+  worker_replicas: number;
+  max_workers: number;
+  max_connections: number;
+  worker_conns_per_proc: number;
+  backend_conns_per_proc: number;
+  backend_replicas: number;
+  pool_size: number;
+  max_overflow: number;
+}
+
 interface QueueStatus {
   redis: boolean;
   message?: string;
@@ -48,6 +59,7 @@ interface QueueStatus {
   workers?: WorkerInfo[];
   worker_count?: number;
   inflight_deploys?: Record<string, number>;
+  scaling?: ScalingInfo | null;
 }
 
 export default function QueuePage() {
@@ -56,6 +68,46 @@ export default function QueuePage() {
   const [failedQueue, setFailedQueue] = useState("project_lifecycle");
   const [failedCount, setFailedCount] = useState(0);
   const [retrying, setRetrying] = useState<string | null>(null);
+  const [scaleBusy, setScaleBusy] = useState(false);
+  const [poolSize, setPoolSize] = useState("");
+  const [maxOverflow, setMaxOverflow] = useState("");
+  const [scaleErr, setScaleErr] = useState("");
+
+  const scaleWorkers = async (delta: number) => {
+    setScaleBusy(true);
+    setScaleErr("");
+    try {
+      const r = await fetch("/api/v1/admin/workers/scale", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ delta }),
+      });
+      if (!r.ok) setScaleErr((await r.json().catch(() => ({}))).detail || "Scale failed");
+    } finally {
+      setScaleBusy(false);
+      fetchStatus();
+    }
+  };
+
+  const applyPool = async () => {
+    setScaleBusy(true);
+    setScaleErr("");
+    try {
+      const r = await fetch("/api/v1/admin/db-pool", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pool_size: Number(poolSize),
+          max_overflow: Number(maxOverflow),
+        }),
+      });
+      if (!r.ok) setScaleErr((await r.json().catch(() => ({}))).detail || "Pool change failed");
+      else setScaleErr("Pool updated — backend & workers are rolling-restarting.");
+    } finally {
+      setScaleBusy(false);
+      setTimeout(fetchStatus, 1500);
+    }
+  };
 
   const fetchStatus = () => {
     fetch("/api/v1/admin/queue-status")
@@ -148,6 +200,43 @@ export default function QueuePage() {
           </CardBody>
         </Card>
       </div>
+
+      {/* Worker scaling + DB pool (Kubernetes deployments only) */}
+      {status.scaling && (
+        <Card isCompact style={{ marginBottom: 16 }}>
+          <CardBody>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Scaling</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 24, alignItems: "center" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12, opacity: 0.7 }}>Workers</span>
+                <Button variant="secondary" isDisabled={scaleBusy || status.scaling.worker_replicas <= 1} onClick={() => scaleWorkers(-1)}>−</Button>
+                <span style={{ fontSize: 18, fontWeight: 600, minWidth: 64, textAlign: "center" }}>
+                  {status.scaling.worker_replicas} / {status.scaling.max_workers}
+                </span>
+                <Button variant="secondary" isDisabled={scaleBusy || status.scaling.worker_replicas >= status.scaling.max_workers} onClick={() => scaleWorkers(1)}>+</Button>
+                <span style={{ fontSize: 11, opacity: 0.55 }}>
+                  max is DB-capped (Postgres max_connections={status.scaling.max_connections}, ~{status.scaling.worker_conns_per_proc} conns/worker)
+                </span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 12, opacity: 0.7 }}>DB pool</span>
+                <input type="number" min={1} placeholder={String(status.scaling.pool_size)} value={poolSize}
+                  onChange={(e) => setPoolSize(e.target.value)}
+                  style={{ width: 64, padding: "4px 6px", fontSize: 13 }} title="pool_size" />
+                <span style={{ opacity: 0.5 }}>+</span>
+                <input type="number" min={0} placeholder={String(status.scaling.max_overflow)} value={maxOverflow}
+                  onChange={(e) => setMaxOverflow(e.target.value)}
+                  style={{ width: 64, padding: "4px 6px", fontSize: 13 }} title="max_overflow" />
+                <Button variant="secondary" isDisabled={scaleBusy || !poolSize || !maxOverflow} onClick={applyPool}>Apply</Button>
+                <span style={{ fontSize: 11, opacity: 0.55 }}>rolling-restarts backend &amp; workers</span>
+              </div>
+            </div>
+            {scaleErr && (
+              <div style={{ marginTop: 8, fontSize: 12, color: "var(--pf-t--global--color--status--warning--default)" }}>{scaleErr}</div>
+            )}
+          </CardBody>
+        </Card>
+      )}
 
       {/* Queues */}
       <Card isCompact style={{ marginBottom: 16 }}>

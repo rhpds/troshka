@@ -833,13 +833,73 @@ def queue_status(user: AdminUser):
     r = get_redis_raw()
     workers = _collect_worker_info(r)
 
+    # DB-capacity-aware scaling info (Kubernetes only). Best-effort: on a
+    # non-k8s / single-process deploy this is simply absent and the UI hides the
+    # scaling controls.
+    scaling = None
+    try:
+        from app.services.worker_scaling import worker_scaling_status
+
+        scaling = worker_scaling_status()
+    except Exception:  # noqa: BLE001 - not in-cluster, or deployment not found
+        scaling = None
+
     return {
         "redis": True,
         "queues": _collect_queue_info(r),
         "workers": workers,
         "worker_count": len(workers),
         "inflight_deploys": _collect_inflight_deploys(get_redis()),
+        "scaling": scaling,
     }
+
+
+@app.post(f"{_API_PREFIX}/admin/workers/scale")
+def scale_workers_endpoint(user: AdminUser, body: dict):
+    """Scale the worker Deployment by ``delta`` (+1/-1), clamped to the DB-safe
+    max. Kubernetes only."""
+    from app.services.worker_scaling import scale_workers
+
+    delta = int(body.get("delta", 0))
+    if delta == 0:
+        raise HTTPException(status_code=400, detail="delta must be non-zero")
+    try:
+        return scale_workers(delta)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=409,
+            detail=f"Worker scaling unavailable (Kubernetes only): {e}",
+        )
+
+
+@app.post(f"{_API_PREFIX}/admin/db-pool")
+def set_db_pool_endpoint(user: AdminUser, body: dict):
+    """Set the per-process DB pool (pool_size/max_overflow) on backend+worker
+    Deployments; triggers a rolling restart. Rejected if it would exceed Postgres
+    max_connections. Kubernetes only."""
+    from app.services.worker_scaling import set_db_pool
+
+    try:
+        pool_size = int(body["pool_size"])
+        max_overflow = int(body["max_overflow"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=400, detail="pool_size and max_overflow (ints) required"
+        )
+    if pool_size < 1 or max_overflow < 0:
+        raise HTTPException(status_code=400, detail="pool_size>=1, max_overflow>=0")
+    try:
+        return set_db_pool(pool_size, max_overflow)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=409, detail=f"DB pool change unavailable (Kubernetes only): {e}"
+        )
 
 
 @app.get(f"{_API_PREFIX}/admin/failed-jobs")
