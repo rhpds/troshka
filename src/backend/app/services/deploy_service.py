@@ -5861,14 +5861,18 @@ def _auto_enable_recert_on_rhcos(topology, deploy_recert, project_id):
 
 
 def _deploy_handle_recert(s, host, project_id, topology, pool):
+    """troshkad offline recert execution for an OCP pattern deploy.
+
+    The recert DECISION + per-RHCOS flags are set in the shared deploy prep
+    (:func:`_deploy_init_context`) so both providers trigger; here we just run
+    troshkad's offline recert (SNO recert tool via ``/vms/recert`` for
+    recertEnabled VMs, else guestfish kubelet-PKI wipe). KubeVirt runs its own
+    operator recert Job off the same flags and never reaches this function.
+    """
     if not (_is_pattern_deploy(topology) and _is_ocp_topology(topology)):
         return
     _update_deploy_progress(project_id, "certs", "regenerating certificates")
-    # Recert is MANDATORY to redeploy a captured OCP cluster (certs are time-bound
-    # and cluster identity must be regenerated), so it always runs for an OCP
-    # pattern deploy — the old per-pattern recert flag is advisory only now.
     _, common_password = _resolve_recert_settings(s, topology)
-    _auto_enable_recert_on_rhcos(topology, True, project_id)
     _clean_kubelet_certs(
         host,
         project_id,
@@ -6480,11 +6484,20 @@ def _deploy_init_context(s, project, project_id):
     Returns ``(topology, clock_offset, vni_map)``.
     """
     topology = project.topology or {}
-    # Project cluster-level OCP flags (recert / monitor / bastion-browser) onto
-    # member VMs so the per-VM deploy machinery works unchanged for all paths.
+    # Project cluster-level OCP flags (monitor / bastion-browser) onto member VMs
+    # so the per-VM deploy machinery works unchanged for all paths.
     from app.services.ocp_topology_flags import apply_cluster_ocp_flags
 
-    if apply_cluster_ocp_flags(topology):
+    changed = apply_cluster_ocp_flags(topology)
+    # Recert is an OCP-cluster property, not a per-VM toggle: any OCP PATTERN
+    # deploy recerts, decided here (shared prep) so BOTH providers trigger it —
+    # troshkad runs the offline recert in _clean_kubelet_certs; the KubeVirt
+    # operator runs its recert Job off the same RHCOS flag. SNO uses the recert
+    # tool (recertEnabled); multi-node uses guestfish + online (no recertEnabled).
+    if _is_pattern_deploy(topology) and _is_ocp_topology(topology):
+        _auto_enable_recert_on_rhcos(topology, True, project_id)
+        changed = True
+    if changed:
         project.topology = topology
         s.commit()
     clock_offset = None

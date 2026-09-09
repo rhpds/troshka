@@ -2890,6 +2890,49 @@ class TestDeployAllocateEips:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+class TestDeployInitContextRecert:
+    """The recert flag is derived from the OCP-cluster + pattern context in the
+    SHARED deploy prep, so BOTH providers (troshkad + KubeVirt) trigger recert —
+    not from a per-VM toggle."""
+
+    @patch("app.services.deploy_topology.inject_showroom_gateway_port_forwards")
+    def test_sno_ocp_pattern_gets_recertenabled(self, _mock_inject):
+        from app.services.deploy_service import _deploy_init_context
+
+        topo = {
+            "nodes": [
+                {"type": "vmNode", "id": "sno", "data": {"os": "rhcos"}},
+                {
+                    "type": "storageNode",
+                    "id": "st",
+                    "data": {"patternId": "p", "patternDiskId": "pd"},
+                },
+            ]
+        }
+        project = MagicMock()
+        project.topology = topo
+        project.vni_map = {"x": 1}  # skip VNI allocation
+        project.clock_target = None
+        project.host_id = None
+        s = MagicMock()
+        _deploy_init_context(s, project, PROJECT_ID)
+        assert topo["nodes"][0]["data"]["recertEnabled"] is True
+
+    @patch("app.services.deploy_topology.inject_showroom_gateway_port_forwards")
+    def test_non_pattern_ocp_no_recert(self, _mock_inject):
+        from app.services.deploy_service import _deploy_init_context
+
+        topo = {"nodes": [{"type": "vmNode", "id": "sno", "data": {"os": "rhcos"}}]}
+        project = MagicMock()
+        project.topology = topo
+        project.vni_map = {"x": 1}
+        project.clock_target = None
+        project.host_id = None
+        _deploy_init_context(MagicMock(), project, PROJECT_ID)
+        # fresh install (no pattern storage node) -> no recert
+        assert "recertEnabled" not in topo["nodes"][0]["data"]
+
+
 class TestDeployHandleRecert:
     @patch("app.services.deploy_service._is_ocp_topology", return_value=False)
     @patch("app.services.deploy_service._is_pattern_deploy", return_value=True)
@@ -2906,7 +2949,6 @@ class TestDeployHandleRecert:
         _deploy_handle_recert(s, host, PROJECT_ID, {"nodes": []}, None)
 
     @patch("app.services.deploy_service._clean_kubelet_certs")
-    @patch("app.services.deploy_service._auto_enable_recert_on_rhcos")
     @patch(
         "app.services.deploy_service._resolve_recert_settings",
         return_value=(True, "pass123"),
@@ -2915,17 +2957,17 @@ class TestDeployHandleRecert:
     @patch("app.services.deploy_service._is_ocp_topology", return_value=True)
     @patch("app.services.deploy_service._is_pattern_deploy", return_value=True)
     def test_runs_recert(
-        self, mock_pattern, mock_ocp, mock_prog, mock_resolve, mock_auto, mock_clean
+        self, mock_pattern, mock_ocp, mock_prog, mock_resolve, mock_clean
     ):
         s = MagicMock()
         host = _make_host()
         topo = {"nodes": []}
         _deploy_handle_recert(s, host, PROJECT_ID, topo, None)
+        # Flags are set in the shared prep now; this runs only the offline recert.
         mock_clean.assert_called_once()
-        mock_auto.assert_called_once_with(topo, True, PROJECT_ID)
+        assert mock_clean.call_args.kwargs.get("pattern_recert") is True
 
     @patch("app.services.deploy_service._clean_kubelet_certs")
-    @patch("app.services.deploy_service._auto_enable_recert_on_rhcos")
     @patch(
         "app.services.deploy_service._resolve_recert_settings",
         return_value=(False, None),
@@ -2933,16 +2975,17 @@ class TestDeployHandleRecert:
     @patch("app.services.deploy_service._update_deploy_progress")
     @patch("app.services.deploy_service._is_ocp_topology", return_value=True)
     @patch("app.services.deploy_service._is_pattern_deploy", return_value=True)
-    def test_recert_forced_on_for_ocp_pattern(
-        self, mock_pattern, mock_ocp, mock_prog, mock_resolve, mock_auto, mock_clean
+    def test_offline_recert_always_runs_for_ocp_pattern(
+        self, mock_pattern, mock_ocp, mock_prog, mock_resolve, mock_clean
     ):
-        """Recert is mandatory to redeploy a captured OCP cluster, so it runs even
-        when the stored pattern flag is False (auto)."""
+        """The troshkad offline recert runs for every OCP pattern deploy, even
+        when the stored pattern flag is False — recert is mandatory to redeploy a
+        captured cluster."""
         s = MagicMock()
         host = _make_host()
         topo = {"nodes": []}
         _deploy_handle_recert(s, host, PROJECT_ID, topo, None)
-        mock_auto.assert_called_once_with(topo, True, PROJECT_ID)
+        mock_clean.assert_called_once()
         assert mock_clean.call_args.kwargs.get("pattern_recert") is True
 
 
