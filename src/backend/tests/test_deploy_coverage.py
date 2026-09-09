@@ -839,7 +839,9 @@ class TestResolveRecertSettings:
 
 
 class TestAutoEnableRecertOnRhcos:
-    def test_enables_on_rhcos(self):
+    def test_sno_uses_guestfish_not_recert_tool(self):
+        """SNO no longer uses the RH recert tool — it goes through guestfish like
+        multi-node — so recertEnabled is NEVER set; only the monitor flag is."""
         topo = {
             "nodes": [
                 {"type": "vmNode", "data": {"os": "rhcos"}},
@@ -847,7 +849,8 @@ class TestAutoEnableRecertOnRhcos:
             ]
         }
         _auto_enable_recert_on_rhcos(topo, True, PROJECT_ID)
-        assert topo["nodes"][0]["data"]["recertEnabled"] is True
+        assert "recertEnabled" not in topo["nodes"][0]["data"]
+        assert topo["nodes"][0]["data"]["ocpMonitor"] is True
         assert "recertEnabled" not in topo["nodes"][1]["data"]
 
     def test_skips_if_already_has_recert(self):
@@ -2896,7 +2899,9 @@ class TestDeployInitContextRecert:
     not from a per-VM toggle."""
 
     @patch("app.services.deploy_topology.inject_showroom_gateway_port_forwards")
-    def test_sno_ocp_pattern_gets_recertenabled(self, _mock_inject):
+    def test_sno_ocp_pattern_recert_prep_no_recert_tool(self, _mock_inject):
+        """The shared prep prepares the SNO OCP pattern for recert via guestfish —
+        it sets the monitor flag but NEVER recertEnabled (RH recert tool retired)."""
         from app.services.deploy_service import _deploy_init_context
 
         topo = {
@@ -2916,7 +2921,8 @@ class TestDeployInitContextRecert:
         project.host_id = None
         s = MagicMock()
         _deploy_init_context(s, project, PROJECT_ID)
-        assert topo["nodes"][0]["data"]["recertEnabled"] is True
+        assert "recertEnabled" not in topo["nodes"][0]["data"]
+        assert topo["nodes"][0]["data"]["ocpMonitor"] is True
 
     @patch("app.services.deploy_topology.inject_showroom_gateway_port_forwards")
     def test_non_pattern_ocp_no_recert(self, _mock_inject):
@@ -2931,6 +2937,34 @@ class TestDeployInitContextRecert:
         _deploy_init_context(MagicMock(), project, PROJECT_ID)
         # fresh install (no pattern storage node) -> no recert
         assert "recertEnabled" not in topo["nodes"][0]["data"]
+
+    @patch("app.services.deploy_topology.inject_showroom_gateway_port_forwards")
+    def test_ocp_pattern_skips_clock_backdating(self, _mock_inject):
+        """OCP recert deploys run at real time — even with clock_target set, no
+        backdating (certs are valid 5-10y so the cluster boots at real time)."""
+        import datetime
+
+        from app.services.deploy_service import _deploy_init_context
+
+        topo = {
+            "nodes": [
+                {"type": "vmNode", "id": "sno", "data": {"os": "rhcos"}},
+                {
+                    "type": "storageNode",
+                    "id": "st",
+                    "data": {"patternId": "p", "patternDiskId": "pd"},
+                },
+            ]
+        }
+        project = MagicMock()
+        project.topology = topo
+        project.vni_map = {"x": 1}
+        project.clock_target = datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)
+        project.host_id = None
+        _topo, clock_offset, _vni = _deploy_init_context(
+            MagicMock(), project, PROJECT_ID
+        )
+        assert clock_offset is None  # no backdating for OCP recert
 
 
 class TestDeployHandleRecert:

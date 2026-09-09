@@ -4884,7 +4884,11 @@ def _deploy_vms_on_host(host, project_id, project, host_vms, topology, vni_map, 
     _clean_stale_domains(host, project_id, host_vms, host_label)
 
     clock_offset = None
-    if project.clock_target:
+    # No clock backdating for OCP recert deploys — certs are valid 5–10y so the
+    # cluster boots at real time (see _deploy_init_context).
+    if project.clock_target and not (
+        _is_pattern_deploy(topology) and _is_ocp_topology(topology)
+    ):
         from app.services.clock_service import compute_clock_offset
 
         clock_offset = compute_clock_offset(project.clock_target)
@@ -5839,30 +5843,28 @@ def _resolve_recert_settings(s, topology):
 
 
 def _auto_enable_recert_on_rhcos(topology, deploy_recert, project_id):
-    """Route RHCOS VMs to the correct recert mechanism for an OCP pattern deploy.
+    """Prepare RHCOS VMs for an OCP pattern recert — the SAME path for ALL sizes.
 
-    SNO (1 RHCOS VM): the official Red Hat ``recert`` tool runs offline on the
-    disk (self-sufficient), so set ``recertEnabled`` — ``_clean_kubelet_certs``
-    routes recertEnabled VMs through ``/vms/recert``.
-
-    Multi-node: uses the CUSTOM recert — ``guestfish`` wipes kubelet PKI offline
-    (so nodes bootstrap fresh CSRs) and the ops-pod monitor does the online CSR
-    approval + kube-apiserver redeploy. Deliberately leave ``recertEnabled``
-    UNSET so those disks take the guestfish path, not the single-node recert tool.
+    Every OCP pattern recert (SNO and multi-node alike) uses the guestfish path:
+    ``_clean_kubelet_certs`` wipes only the kubelet PKI offline (preserving the
+    cluster CA + service-account signing key), and the ops-pod monitor does the
+    online CSR approval + kube-apiserver redeploy. We deliberately DO NOT use the
+    Red Hat ``recert`` tool (``recertEnabled``) even for SNO: it regenerates the
+    CA + SA-signing key + all certs, which invalidates the captured admin
+    kubeconfig AND leaves the pods restored from the captured etcd (OVN, etc.)
+    crashlooping on stale credentials → network Degraded → oauth/console cascade.
+    Pattern redeploys keep the same domain/VIPs (no cluster rename), so that full
+    regeneration is unnecessary and harmful. So we never set ``recertEnabled``;
+    for SNO we still apply the monitor flags.
     """
     from app.services.ocp_topology_flags import apply_sno_ocp_vm_flags, rhcos_vms
 
     if len(rhcos_vms(topology)) == 1:
-        apply_sno_ocp_vm_flags(topology, recert=bool(deploy_recert))
-        if deploy_recert:
-            logger.info(
-                "Deploy %s: SNO pattern — recert tool on the single RHCOS VM",
-                project_id[:8],
-            )
-        return
+        # SNO: set monitor flags only (recert=False → no RH recert tool).
+        apply_sno_ocp_vm_flags(topology, recert=False)
     if deploy_recert:
         logger.info(
-            "Deploy %s: multi-node pattern — guestfish PKI wipe + online recert",
+            "Deploy %s: OCP pattern recert — guestfish PKI wipe + online (all node types)",
             project_id[:8],
         )
 
@@ -6497,21 +6499,32 @@ def _deploy_init_context(s, project, project_id):
 
     changed = apply_cluster_ocp_flags(topology)
     # Recert is an OCP-cluster property, not a per-VM toggle: any OCP PATTERN
-    # deploy recerts, decided here (shared prep) so BOTH providers trigger it —
-    # troshkad runs the offline recert in _clean_kubelet_certs; the KubeVirt
-    # operator runs its recert Job off the same RHCOS flag. SNO uses the recert
-    # tool (recertEnabled); multi-node uses guestfish + online (no recertEnabled).
-    if _is_pattern_deploy(topology) and _is_ocp_topology(topology):
+    # deploy recerts, decided here (shared prep) so BOTH providers do the same
+    # thing — guestfish wipes the kubelet PKI (the only cert that expires on a
+    # realistic timescale; etcd/apiserver/CA certs are valid 5–10y), then the
+    # ops-pod approves the re-bootstrapping CSRs (+ apiserver redeploy for
+    # multi-node). The RH recert tool is retired (it over-rotated the CA + SA key,
+    # breaking the kubeconfig + crashlooping etcd-restored pods).
+    is_ocp_pattern = _is_pattern_deploy(topology) and _is_ocp_topology(topology)
+    if is_ocp_pattern:
         _auto_enable_recert_on_rhcos(topology, True, project_id)
         changed = True
     if changed:
         project.topology = topology
         s.commit()
     clock_offset = None
-    if project.clock_target:
+    if project.clock_target and not is_ocp_pattern:
         from app.services.clock_service import compute_clock_offset
 
         clock_offset = compute_clock_offset(project.clock_target)
+    elif is_ocp_pattern and project.clock_target:
+        # No clock backdating for OCP recert deploys — the certs are valid 5–10y,
+        # so the cluster boots at REAL time. Backdating is a fragile crutch
+        # (external TLS breaks, NTP correction later "expires" the certs).
+        logger.info(
+            "Deploy %s: OCP pattern — skipping clock backdating (real-time recert)",
+            project_id[:8],
+        )
     vni_map = project.vni_map or {}
     if not vni_map:
         from app.services.vxlan import allocate_vnis_for_project
@@ -7133,49 +7146,25 @@ def _guestfish_clean_kubelet_certs(host, project_id, vm, topology, pool):
 def _clean_kubelet_certs(
     host, project_id, topology, pool, pattern_recert=False, common_password=None
 ):
-    """Regenerate or delete stale kubelet PKI from RHCOS disks before VM startup.
+    """Delete stale kubelet PKI from RHCOS disks before VM startup (ALL node types).
 
-    For SNO (1 RHCOS VM): Uses recert to regenerate all OCP certificates offline,
-    reducing boot time from ~15 min to ~2-3 min. Falls back to guestfish on failure
-    unless pattern_recert is True (certs are deliberately expired — guestfish won't help).
-    For multi-node: Uses guestfish to delete kubelet PKI so it bootstraps fresh.
-    Non-fatal — deploy continues regardless of outcome.
+    Every OCP pattern recert now uses guestfish: wipe only the kubelet PKI so each
+    node re-bootstraps a fresh client cert, while PRESERVING the cluster CA +
+    service-account signing key. The online CSR approval + kube-apiserver redeploy
+    happen in the ops-pod recert monitor. The Red Hat ``recert`` tool is
+    retired — it regenerated the CA + SA-signing key + all certs, which invalidated
+    the captured kubeconfig and left etcd-restored pods (OVN, etc.) crashlooping on
+    stale creds. ``pattern_recert``/``common_password`` are accepted for signature
+    compatibility but no longer drive the offline recert tool. Non-fatal.
     """
+    _ = (pattern_recert, common_password)  # retained for call-site compatibility
     vms = _extract_vms(topology)
     rhcos_vms = [vm for vm in vms if vm.get("os") == "rhcos"]
     if not rhcos_vms:
         return
 
-    recert_vms = [vm for vm in rhcos_vms if vm.get("recertEnabled")]
-    bastion_disk_path = _find_bastion_disk_path(vms, topology, project_id, pool)
-
-    recert_succeeded = set()
-    for i, vm in enumerate(recert_vms):
-        logger.info(
-            "Deploy %s: running recert on disk for %s (%d/%d)",
-            project_id[:8],
-            vm.get("name", vm["node_id"][:8]),
-            i + 1,
-            len(recert_vms),
-        )
-        if _run_recert_for_vm(
-            host,
-            project_id,
-            vm,
-            topology,
-            pool,
-            bastion_disk_path,
-            pattern_recert,
-            common_password,
-        ):
-            recert_succeeded.add(vm["node_id"])
-
-    if recert_succeeded and len(recert_succeeded) == len(recert_vms):
-        return
-
     for vm in rhcos_vms:
-        if vm["node_id"] not in recert_succeeded:
-            _guestfish_clean_kubelet_certs(host, project_id, vm, topology, pool)
+        _guestfish_clean_kubelet_certs(host, project_id, vm, topology, pool)
 
 
 def _is_ocp_topology(topology: dict) -> bool:

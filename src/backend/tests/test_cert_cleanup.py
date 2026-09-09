@@ -174,11 +174,10 @@ def test_clean_kubelet_certs_nonfatal_on_failure(mock_start, mock_wait):
         ]
     )
 
-    # Should not raise — recert fails, falls back to guestfish (also fails)
+    # Should not raise — guestfish fails but cert cleanup is non-fatal.
     _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
-    assert mock_start.call_count == 2
-    assert mock_start.call_args_list[0][0][1] == "/vms/recert"
-    assert mock_start.call_args_list[1][0][1] == "/vms/modify-fs"
+    assert mock_start.call_count == 1
+    assert mock_start.call_args_list[0][0][1] == "/vms/modify-fs"
 
 
 @patch("app.services.deploy_service.wait_for_job")
@@ -201,8 +200,10 @@ def test_clean_kubelet_certs_nonfatal_on_exception(mock_start, mock_wait):
 
 @patch("app.services.deploy_service.wait_for_job")
 @patch("app.services.deploy_service.start_job")
-def test_clean_kubelet_certs_sno(mock_start, mock_wait):
-    """Verify recertEnabled VM uses recert instead of guestfish."""
+def test_clean_kubelet_certs_uses_guestfish_not_recert_tool(mock_start, mock_wait):
+    """The RH recert tool is retired — ALL RHCOS nodes use guestfish (wipe kubelet
+    PKI), even when a legacy topology still carries recertEnabled. Certs stay valid
+    (5–10y) so nothing else needs regeneration."""
     mock_start.return_value = "job-001"
     mock_wait.return_value = {"status": "completed", "result": {"status": "completed"}}
     host = MagicMock()
@@ -216,10 +217,9 @@ def test_clean_kubelet_certs_sno(mock_start, mock_wait):
 
     _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
 
-    # recertEnabled VM: recert succeeds, no guestfish fallback
+    # recertEnabled is ignored now — guestfish (/vms/modify-fs), never /vms/recert.
     assert mock_start.call_count == 1
-    assert mock_start.call_args[0][1] == "/vms/recert"
-    assert mock_start.call_args[0][2]["extend_expiration"] is True
+    assert mock_start.call_args[0][1] == "/vms/modify-fs"
 
 
 @patch("app.services.deploy_service.wait_for_job")
