@@ -6424,6 +6424,8 @@ class TestSnapshotAndExportDisk:
             "format": "qcow2",
         }
 
+    @patch("handlers.project._thaw_vmi")
+    @patch("handlers.project._freeze_vmi", return_value=True)
     @patch(
         "helpers.patterns.build_export_job",
         return_value={"metadata": {"name": "export-myvm-1234abcd"}},
@@ -6436,7 +6438,9 @@ class TestSnapshotAndExportDisk:
         "helpers.patterns.build_volume_snapshot",
         return_value={"metadata": {"name": "snap-myvm-1234abcd"}},
     )
-    def test_creates_snapshot_pvc_and_job(self, mock_snap, mock_pvc, mock_job):
+    def test_creates_snapshot_pvc_and_job(
+        self, mock_snap, mock_pvc, mock_job, mock_freeze, mock_thaw
+    ):
         from handlers.project import _snapshot_and_export_disk
 
         custom_api = MagicMock()
@@ -6472,6 +6476,97 @@ class TestSnapshotAndExportDisk:
         assert result["s3Key"] == "patterns/p1/disk.qcow2"
         assert result["format"] == "qcow2"
 
+    @patch("handlers.project._thaw_vmi")
+    @patch("handlers.project._freeze_vmi", return_value=True)
+    @patch(
+        "helpers.patterns.build_export_job",
+        return_value={"metadata": {"name": "export-myvm-1234abcd"}},
+    )
+    @patch(
+        "helpers.patterns.build_temp_pvc_from_snapshot",
+        return_value={"metadata": {"name": "export-myvm-1234abcd"}},
+    )
+    @patch(
+        "helpers.patterns.build_volume_snapshot",
+        return_value={"metadata": {"name": "snap-myvm-1234abcd"}},
+    )
+    def test_freezes_vmi_before_snapshot_then_thaws(
+        self, mock_snap, mock_pvc, mock_job, mock_freeze, mock_thaw
+    ):
+        """Online capture must freeze the guest FS via the KubeVirt freeze
+        subresource before the VolumeSnapshot (else a torn XFS root is captured,
+        matching the troshkad path) and thaw afterward."""
+        from handlers.project import _snapshot_and_export_disk
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "status": {"readyToUse": True}
+        }
+        core_api = MagicMock()
+        batch_api = MagicMock()
+
+        asyncio.run(
+            _snapshot_and_export_disk(
+                self._make_disk_info(),
+                {"bucket": "b"},
+                custom_api,
+                core_api,
+                batch_api,
+                "ns1",
+                "proj1",
+            )
+        )
+
+        mock_freeze.assert_called_once_with("myvm", "ns1")
+        mock_thaw.assert_called_once_with("myvm", "ns1")
+        custom_api.create_namespaced_custom_object.assert_called_once()
+
+    @patch("handlers.project._thaw_vmi")
+    @patch("handlers.project._freeze_vmi", return_value=True)
+    @patch(
+        "helpers.patterns.build_export_job",
+        return_value={"metadata": {"name": "export-myvm-1234abcd"}},
+    )
+    @patch(
+        "helpers.patterns.build_temp_pvc_from_snapshot",
+        return_value={"metadata": {"name": "export-myvm-1234abcd"}},
+    )
+    @patch(
+        "helpers.patterns.build_volume_snapshot",
+        return_value={"metadata": {"name": "snap-myvm-1234abcd"}},
+    )
+    def test_thaws_vmi_even_if_snapshot_create_fails(
+        self, mock_snap, mock_pvc, mock_job, mock_freeze, mock_thaw
+    ):
+        """The guest FS must be thawed even if the snapshot create fails — never
+        leave a production VM frozen."""
+        from handlers.project import _snapshot_and_export_disk
+        from kubernetes.client.exceptions import ApiException
+
+        custom_api = MagicMock()
+        custom_api.create_namespaced_custom_object.side_effect = ApiException(
+            status=500, reason="boom"
+        )
+        core_api = MagicMock()
+        batch_api = MagicMock()
+
+        with pytest.raises(ApiException):
+            asyncio.run(
+                _snapshot_and_export_disk(
+                    self._make_disk_info(),
+                    {"bucket": "b"},
+                    custom_api,
+                    core_api,
+                    batch_api,
+                    "ns1",
+                    "proj1",
+                )
+            )
+
+        mock_thaw.assert_called_once_with("myvm", "ns1")
+
+    @patch("handlers.project._thaw_vmi")
+    @patch("handlers.project._freeze_vmi", return_value=True)
     @patch(
         "helpers.patterns.build_export_job", return_value={"metadata": {"name": "j"}}
     )
@@ -6483,7 +6578,9 @@ class TestSnapshotAndExportDisk:
         "helpers.patterns.build_volume_snapshot",
         return_value={"metadata": {"name": "s"}},
     )
-    def test_handles_409_conflict_on_snapshot(self, mock_snap, mock_pvc, mock_job):
+    def test_handles_409_conflict_on_snapshot(
+        self, mock_snap, mock_pvc, mock_job, mock_freeze, mock_thaw
+    ):
         from handlers.project import _snapshot_and_export_disk
         from kubernetes.client.exceptions import ApiException
 
@@ -6512,6 +6609,8 @@ class TestSnapshotAndExportDisk:
         )
         assert "snapName" in result
 
+    @patch("handlers.project._thaw_vmi")
+    @patch("handlers.project._freeze_vmi", return_value=True)
     @patch(
         "helpers.patterns.build_export_job", return_value={"metadata": {"name": "j"}}
     )
@@ -6523,7 +6622,9 @@ class TestSnapshotAndExportDisk:
         "helpers.patterns.build_volume_snapshot",
         return_value={"metadata": {"name": "s"}},
     )
-    def test_returns_correct_metadata(self, mock_snap, mock_pvc, mock_job):
+    def test_returns_correct_metadata(
+        self, mock_snap, mock_pvc, mock_job, mock_freeze, mock_thaw
+    ):
         from handlers.project import _snapshot_and_export_disk
 
         custom_api = MagicMock()
@@ -6550,6 +6651,88 @@ class TestSnapshotAndExportDisk:
         assert result["jobName"] == "export-myvm-1234abcd"
         assert result["vmId"] == "vm-uuid-1"
         assert result["virtualSizeBytes"] == 20 * 1073741824
+
+
+class TestFreezeVmi:
+    """KubeVirt guest-FS freeze/thaw subresource — parity with troshkad's
+    _freeze_domain_fs (retry transient agent-busy failures)."""
+
+    @patch("handlers.project.time.sleep")
+    @patch("handlers.project.client.ApiClient")
+    def test_freeze_succeeds_first_try(self, mock_ac, _sleep):
+        from handlers.project import _freeze_vmi
+
+        assert _freeze_vmi("vmi", "ns") is True
+        assert mock_ac.return_value.call_api.call_count == 1
+        # PUT to the freeze subresource
+        args = mock_ac.return_value.call_api.call_args[0]
+        assert "/virtualmachineinstances/vmi/freeze" in args[0]
+        assert args[1] == "PUT"
+
+    @patch("handlers.project.time.sleep")
+    @patch("handlers.project.client.ApiClient")
+    def test_freeze_retries_then_succeeds(self, mock_ac, _sleep):
+        from handlers.project import _freeze_vmi
+
+        mock_ac.return_value.call_api.side_effect = [
+            Exception("agent busy"),
+            Exception("agent busy"),
+            None,
+        ]
+        assert _freeze_vmi("vmi", "ns", attempts=3) is True
+        assert mock_ac.return_value.call_api.call_count == 3
+
+    @patch("handlers.project.time.sleep")
+    @patch("handlers.project.client.ApiClient")
+    def test_freeze_all_attempts_fail_returns_false(self, mock_ac, _sleep):
+        from handlers.project import _freeze_vmi
+
+        mock_ac.return_value.call_api.side_effect = Exception("no agent")
+        assert _freeze_vmi("vmi", "ns", attempts=2) is False
+        assert mock_ac.return_value.call_api.call_count == 2
+
+    @patch("handlers.project.client.ApiClient")
+    def test_thaw_is_best_effort(self, mock_ac):
+        from handlers.project import _thaw_vmi
+
+        mock_ac.return_value.call_api.side_effect = Exception("gone")
+        _thaw_vmi("vmi", "ns")  # must not raise
+        args = mock_ac.return_value.call_api.call_args[0]
+        assert "/virtualmachineinstances/vmi/unfreeze" in args[0]
+
+
+class TestBuildExportJobValidation:
+    """KubeVirt fail-closed validation gate (parity with troshkad vms/fscheck):
+    the export Job must mount-check the captured rootfs after convert and before
+    upload, and fail the Job (never publish) if it won't mount."""
+
+    def _cmd(self):
+        from helpers.patterns import build_export_job
+
+        job = build_export_job(
+            "myvm-1234", "ns", "temp-pvc", "patterns/p/d.qcow2", {"bucket": "b"}, 20
+        )
+        return job["spec"]["template"]["spec"]["containers"][0]["command"][2]
+
+    def test_validates_rootfs_after_convert_before_upload(self):
+        cmd = self._cmd()
+        assert "guestfish" in cmd
+        assert "list-filesystems" in cmd
+        conv = cmd.index("qemu-img convert")
+        val = cmd.index("guestfish")
+        up = cmd.index("rclone copyto")
+        assert conv < val < up
+
+    def test_validation_is_fail_closed(self):
+        cmd = self._cmd()
+        # a rootfs that won't mount aborts the job (non-zero exit) before upload
+        assert "exit 1" in cmd
+        assert "FSCHECK_FAIL" in cmd
+
+    def test_data_disk_without_rootfs_still_uploads(self):
+        # No journaling fs found → skip (data disks have no rootfs to validate)
+        cmd = self._cmd()
+        assert "no journaling" in cmd.lower() or "data disk" in cmd.lower()
 
 
 # ---------------------------------------------------------------------------

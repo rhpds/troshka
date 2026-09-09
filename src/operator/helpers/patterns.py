@@ -86,6 +86,24 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
         "touch /scratch/.convert_done; "
         "SIZE=$(stat -c%s /scratch/disk.qcow2); "
         'echo "DISK_SIZE_BYTES=$SIZE"; '
+        # Fail-closed rootfs validation (parity with troshkad vms/fscheck): mount
+        # each journaling filesystem via guestfish (--ro overlay → log recovery,
+        # like boot, image untouched). A captured OS disk whose rootfs won't mount
+        # (torn XFS 'Structure needs cleaning' from an unfrozen snapshot) fails the
+        # Job so it is never uploaded. Data disks (no journaling fs) are skipped.
+        '_p \'{"phase":"validating","percent":0}\'; '
+        "export LIBGUESTFS_BACKEND=direct; "
+        "FS=$(guestfish --ro -a /scratch/disk.qcow2 run : list-filesystems "
+        '2>/scratch/.gf.err) || { echo "FSCHECK_FAIL: guestfish error: '
+        '$(cat /scratch/.gf.err)"; exit 1; }; '
+        "JOURN=$(echo \"$FS\" | awk -F': ' '$2 ~ /^(xfs|ext[234])$/{print $1}'); "
+        'if [ -n "$JOURN" ]; then '
+        "for dev in $JOURN; do "
+        "guestfish --ro -a /scratch/disk.qcow2 run : mount $dev / : ll / "
+        '>/dev/null 2>/scratch/.gf.err || { echo "FSCHECK_FAIL: $dev unmountable: '
+        '$(tail -1 /scratch/.gf.err)"; exit 1; }; '
+        'done; echo "FSCHECK: rootfs OK ($JOURN)"; '
+        'else echo "FSCHECK: no journaling fs (data disk), skip"; fi; '
         '_p \'{"phase":"uploading","size":\'$SIZE\',"uploaded":0}\'; '
         # rclone config
         "export RCLONE_CONFIG=/scratch/rclone.conf; "

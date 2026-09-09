@@ -7281,8 +7281,40 @@ def _cleanup_stale_snapshots(job, domain):
                 )
 
 
+def _freeze_domain_fs(job, domain, attempts=3):
+    """Freeze the guest filesystems via the qemu guest agent, retrying transient
+    failures (agent busy under OCP load). Returns True if frozen.
+
+    An unfrozen snapshot of a running VM captures a torn/crash-inconsistent
+    filesystem (XFS 'Structure needs cleaning' on restore), so the freeze must
+    be given real retries before we fall through to a crash-consistent snapshot
+    (which the downstream fscheck validation gate then catches)."""
+    for i in range(attempts):
+        try:
+            r = subprocess.run(
+                ["virsh", "domfsfreeze", domain],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if r.returncode == 0:
+                if i:
+                    _job_log(job, f"Guest FS frozen for {domain} (attempt {i + 1})")
+                return True
+        except Exception:
+            pass
+        if i < attempts - 1:
+            time.sleep(2)
+    _job_log(
+        job,
+        f"WARNING: could not freeze guest FS for {domain} after {attempts} "
+        "attempts — snapshot will be crash-consistent (validated downstream)",
+    )
+    return False
+
+
 def _snapshot_domain(job, domain):
-    """Fstrim → clean stale overlays → freeze → snapshot → thaw.
+    """Fstrim → clean stale overlays → freeze (with retries) → snapshot → thaw.
     Total freeze time < 1 second.
     Returns True if snapshot created, False if failed (use -U fallback)."""
     try:
@@ -7296,15 +7328,7 @@ def _snapshot_domain(job, domain):
 
     _cleanup_stale_snapshots(job, domain)
 
-    frozen = False
-    try:
-        r = subprocess.run(
-            ["virsh", "domfsfreeze", domain], capture_output=True, text=True, timeout=10
-        )
-        if r.returncode == 0:
-            frozen = True
-    except Exception:
-        pass
+    frozen = _freeze_domain_fs(job, domain)
 
     try:
         result = subprocess.run(
@@ -10638,6 +10662,123 @@ def _get_nbd_process_pid(port):
     except Exception:
         pass
     return None
+
+
+_FSCHECK_JOURNALING_FS = {"xfs", "ext4", "ext3", "ext2"}
+
+
+def _fscheck_partition_fstype(part):
+    """Return the filesystem type of a partition via blkid (empty if none)."""
+    r = subprocess.run(
+        ["blkid", "-o", "value", "-s", "TYPE", part],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    return (r.stdout or "").strip()
+
+
+def _fscheck_try_mount(part, mnt):
+    """Attempt a read-write mount (allows journal recovery, exactly like boot)
+    WITHOUT xfs_repair. Returns (ok, error_line). A recoverable dirty log (from
+    a live capture) recovers cleanly; genuine corruption ('Structure needs
+    cleaning' / bad superblock) fails here."""
+    subprocess.run(["mkdir", "-p", mnt], capture_output=True, timeout=10)
+    r = subprocess.run(["mount", part, mnt], capture_output=True, text=True, timeout=60)
+    if r.returncode == 0:
+        subprocess.run(["umount", mnt], capture_output=True, timeout=30)
+        return True, ""
+    lines = [
+        ln.strip()
+        for ln in (r.stderr or "").splitlines()
+        if ln.strip() and "dmesg" not in ln
+    ]
+    return False, (lines[0] if lines else "mount failed")
+
+
+def _handle_fscheck(job, params):
+    """Validate a captured disk image's rootfs is mountable (fail-closed capture
+    gate). Each journaling filesystem is mounted read-write on a throwaway
+    overlay (log recovery, exactly like boot) WITHOUT xfs_repair, so the upload
+    image is never modified. An image whose rootfs won't mount (e.g. XFS
+    'Structure needs cleaning' from an unfrozen snapshot) is reported invalid so
+    a corrupt disk never becomes a published pattern. Non-OS/data disks (no
+    journaling partition) validate as valid.
+
+    Returns {"valid": bool, "reason": str, "checked": [partition names]}.
+    """
+    disk_path = _validate_path(params.get("disk_path", ""))
+    if not os.path.exists(disk_path):
+        raise RuntimeError(f"Disk not found: {disk_path}")
+
+    overlay = f"{disk_path}.fscheck.qcow2"
+    mnt = f"{_LOCAL_DIR}/tmp/fscheck-{os.getpid()}-{int(time.time())}"
+    _ensure_nbd_module()
+    dev = _allocate_nbd_device()
+    connected = False
+    try:
+        subprocess.run(["rm", "-f", overlay], capture_output=True, timeout=10)
+        r = subprocess.run(
+            [
+                "qemu-img",
+                "create",
+                "-f",
+                "qcow2",
+                "-b",
+                disk_path,
+                "-F",
+                "qcow2",
+                overlay,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"overlay create failed: {(r.stderr or '').strip()}")
+        r = subprocess.run(
+            ["qemu-nbd", "--connect", dev, overlay],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"qemu-nbd connect failed: {(r.stderr or '').strip()}")
+        connected = True
+        time.sleep(1)
+        subprocess.run(["partprobe", dev], capture_output=True, timeout=15)
+        time.sleep(1)
+
+        checked = []
+        for part in sorted(glob.glob(f"{dev}p*")):
+            fstype = _fscheck_partition_fstype(part)
+            if fstype not in _FSCHECK_JOURNALING_FS:
+                continue
+            ok, err = _fscheck_try_mount(part, mnt)
+            checked.append(os.path.basename(part))
+            if not ok:
+                _job_log(job, f"fscheck: {part} ({fstype}) UNMOUNTABLE: {err}")
+                return {
+                    "valid": False,
+                    "reason": err or "rootfs unmountable",
+                    "partition": os.path.basename(part),
+                    "fstype": fstype,
+                    "checked": checked,
+                }
+            _job_log(job, f"fscheck: {part} ({fstype}) OK")
+        return {"valid": True, "reason": "", "checked": checked}
+    finally:
+        subprocess.run(["umount", mnt], capture_output=True, timeout=30)
+        if connected:
+            subprocess.run(
+                ["qemu-nbd", "--disconnect", dev], capture_output=True, timeout=15
+            )
+        _release_nbd_device(dev)
+        subprocess.run(["rm", "-f", overlay], capture_output=True, timeout=10)
+        subprocess.run(["rmdir", mnt], capture_output=True, timeout=5)
+
+
+COMMAND_HANDLERS["vms/fscheck"] = _handle_fscheck
 
 
 def _handle_nbd_export(job, params):

@@ -2,6 +2,7 @@ FROM quay.io/fedora/fedora:41
 
 RUN dnf install -y \
     qemu-img \
+    qemu-kvm \
     guestfs-tools \
     genisoimage \
     isomd5sum \

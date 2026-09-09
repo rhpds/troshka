@@ -271,11 +271,18 @@ class TestCaptureVmViaNbd:
         }
         log_fn = MagicMock()
 
-        # export -> returns port; flatten -> completed; upload -> completed;
-        # stop -> completed
-        mock_start.side_effect = ["export-j", "flatten-j", "upload-j", "stop-j"]
+        # export -> port; flatten -> completed; fscheck -> valid; upload ->
+        # completed; stop -> completed
+        mock_start.side_effect = [
+            "export-j",
+            "flatten-j",
+            "fscheck-j",
+            "upload-j",
+            "stop-j",
+        ]
         mock_wait.side_effect = [
             {"status": "completed", "result": {"port": 10809}},  # export
+            {"status": "completed", "result": {"valid": True}},  # fscheck
             {"status": "completed"},  # stop
         ]
         mock_poll.side_effect = [
@@ -305,12 +312,14 @@ class TestCaptureVmViaNbd:
                 "disk_path": "/var/lib/troshka/vms/proj/vm-disk.qcow2",
             },
         )
-        # flatten called on worker_host
-        assert mock_start.call_args_list[1][0][0] is worker
-        # upload called on worker_host
+        # flatten + fscheck + upload called on worker_host (pattern buffer)
+        assert mock_start.call_args_list[1][0][0] is worker  # flatten
+        assert mock_start.call_args_list[2][0][1] == "/vms/fscheck"
         assert mock_start.call_args_list[2][0][0] is worker
+        assert mock_start.call_args_list[3][0][0] is worker  # upload
         # stop called on host
-        assert mock_start.call_args_list[3][0][0] is host
+        assert mock_start.call_args_list[4][0][0] is host
+        assert mock_start.call_args_list[4][0][1] == "/nbd/stop"
 
     @patch("app.services.pattern_service._poll_job_with_progress")
     @patch("app.services.troshkad_client.wait_for_job")
@@ -385,9 +394,16 @@ class TestCaptureVmViaNbd:
         worker = MagicMock()
         log_fn = MagicMock()
 
-        mock_start.side_effect = ["export-j", "flatten-j", "upload-j", "stop-j"]
+        mock_start.side_effect = [
+            "export-j",
+            "flatten-j",
+            "fscheck-j",
+            "upload-j",
+            "stop-j",
+        ]
         mock_wait.side_effect = [
             {"status": "completed", "result": {"port": 10809}},  # export ok
+            {"status": "completed", "result": {"valid": True}},  # fscheck ok
             {"status": "completed"},  # stop
         ]
         mock_poll.side_effect = [
@@ -457,9 +473,16 @@ class TestCaptureVmViaNbd:
         log_fn = MagicMock()
 
         # Successful capture, but stop fails
-        mock_start.side_effect = ["export-j", "flatten-j", "upload-j", "stop-j"]
+        mock_start.side_effect = [
+            "export-j",
+            "flatten-j",
+            "fscheck-j",
+            "upload-j",
+            "stop-j",
+        ]
         mock_wait.side_effect = [
             {"status": "completed", "result": {"port": 10809}},  # export ok
+            {"status": "completed", "result": {"valid": True}},  # fscheck ok
             Exception("stop failed"),  # stop explodes
         ]
         mock_poll.side_effect = [
@@ -479,6 +502,113 @@ class TestCaptureVmViaNbd:
             log_fn,
         )
         assert len(results) == 1
+
+    @patch("app.services.pattern_service._poll_job_with_progress")
+    @patch("app.services.troshkad_client.wait_for_job")
+    @patch("app.services.troshkad_client.start_job")
+    def test_invalid_rootfs_aborts_before_upload(
+        self, mock_start, mock_wait, mock_poll
+    ):
+        """A captured image whose rootfs won't mount must abort the capture BEFORE
+        upload — a corrupt disk (e.g. XFS 'Structure needs cleaning' from an
+        unfrozen snapshot) must never become a published pattern."""
+        from app.services.pattern_service import _capture_vm_via_nbd
+
+        host = MagicMock()
+        host.private_ip = "10.0.0.1"
+        worker = MagicMock()
+        log_fn = MagicMock()
+
+        # export -> flatten -> fscheck (INVALID) -> stop  (upload never happens)
+        mock_start.side_effect = ["export-j", "flatten-j", "fscheck-j", "stop-j"]
+        mock_wait.side_effect = [
+            {"status": "completed", "result": {"port": 10809}},  # export
+            {
+                "status": "completed",
+                "result": {"valid": False, "reason": "Structure needs cleaning"},
+            },  # fscheck INVALID
+            {"status": "completed"},  # stop
+        ]
+        mock_poll.side_effect = [
+            {"status": "completed", "result": {"size_bytes": 5368709120}},  # flatten
+        ]
+
+        with pytest.raises(RuntimeError, match="[Vv]alidation"):
+            _capture_vm_via_nbd(
+                host,
+                worker,
+                "vm-1",
+                "dom-1",
+                self._make_disk_params(),
+                {},
+                "pat-1",
+                log_fn,
+            )
+
+        # fscheck must run on the worker (pattern-buffer) host against the flat file
+        fscheck_calls = [
+            c for c in mock_start.call_args_list if c[0][1] == "/vms/fscheck"
+        ]
+        assert len(fscheck_calls) == 1
+        assert fscheck_calls[0][0][0] is worker
+        # upload must NOT have been attempted
+        upload_calls = [
+            c
+            for c in mock_start.call_args_list
+            if c[0][1] == "/patterns/upload-and-cache"
+        ]
+        assert upload_calls == []
+        # but the NBD export must still be stopped (cleanup)
+        assert mock_start.call_args_list[-1][0][1] == "/nbd/stop"
+
+    @patch("app.services.pattern_service._poll_job_with_progress")
+    @patch("app.services.troshkad_client.wait_for_job")
+    @patch("app.services.troshkad_client.start_job")
+    def test_valid_rootfs_proceeds_to_upload(self, mock_start, mock_wait, mock_poll):
+        """A captured image with a mountable rootfs validates then uploads."""
+        from app.services.pattern_service import _capture_vm_via_nbd
+
+        host = MagicMock()
+        host.private_ip = "10.0.0.1"
+        worker = MagicMock()
+        creds = {"access_key_id": "ak", "secret_access_key": "sk", "region": "r"}
+        log_fn = MagicMock()
+
+        # export -> flatten -> fscheck (VALID) -> upload -> stop
+        mock_start.side_effect = [
+            "export-j",
+            "flatten-j",
+            "fscheck-j",
+            "upload-j",
+            "stop-j",
+        ]
+        mock_wait.side_effect = [
+            {"status": "completed", "result": {"port": 10809}},  # export
+            {"status": "completed", "result": {"valid": True}},  # fscheck VALID
+            {"status": "completed"},  # stop
+        ]
+        mock_poll.side_effect = [
+            {"status": "completed", "result": {"size_bytes": 5368709120}},  # flatten
+            {"status": "completed", "result": {}},  # upload
+        ]
+
+        results = _capture_vm_via_nbd(
+            host,
+            worker,
+            "vm-1",
+            "dom-1",
+            self._make_disk_params(),
+            creds,
+            "pat-1",
+            log_fn,
+        )
+        assert len(results) == 1
+        upload_calls = [
+            c
+            for c in mock_start.call_args_list
+            if c[0][1] == "/patterns/upload-and-cache"
+        ]
+        assert len(upload_calls) == 1
 
 
 # ═══════════════════════════════════════════════════════════════════════════

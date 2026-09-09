@@ -473,6 +473,29 @@ def _capture_vm_via_nbd(
                 )
             flat_size = flatten_job["result"].get("size_bytes", 0)
 
+            # Fail-closed validation gate: a captured OS disk whose rootfs won't
+            # mount (e.g. XFS 'Structure needs cleaning' from an unfrozen
+            # snapshot) must never become a published pattern. Non-OS/data disks
+            # have no rootfs and validate as OK.
+            job_log_fn("Validating captured filesystem...")
+            fscheck_job_id = start_job(
+                worker_host,
+                "/vms/fscheck",
+                {"disk_path": output_path},
+            )
+            fscheck_job = wait_for_job(worker_host, fscheck_job_id, timeout=600)
+            fscheck_result = fscheck_job.get("result", {}) or {}
+            if fscheck_job["status"] != "completed" or not fscheck_result.get(
+                "valid", False
+            ):
+                reason = fscheck_result.get("reason") or fscheck_job.get(
+                    "result", {}
+                ).get("error", "rootfs unmountable")
+                raise RuntimeError(
+                    f"Filesystem validation failed for {os.path.basename(disk_path)}: "
+                    f"{reason}"
+                )
+
             job_log_fn(f"Uploading {round(flat_size / (1024**3), 1)} GB to S3...")
             upload_job_id = start_job(
                 worker_host,

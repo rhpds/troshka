@@ -2817,5 +2817,125 @@ class TestShowroomInfraForward(unittest.TestCase):
         self.assertIn(fwd_out, cmds)
 
 
+class TestFscheckHandler(unittest.TestCase):
+    """Capture fail-closed validation gate: a captured image whose rootfs won't
+    mount (rw log recovery, like boot) must be reported invalid so a corrupt
+    disk (e.g. XFS 'Structure needs cleaning' from an unfrozen snapshot) never
+    becomes a published pattern."""
+
+    def _fake_run(self, mount_rc, mount_stderr="", blkid_map=None):
+        """Build a subprocess.run side_effect for the fscheck steps."""
+        blkid_map = blkid_map or {"/dev/nbd3p4": "xfs"}
+
+        def _run(cmd, *a, **kw):
+            r = MagicMock()
+            r.returncode = 0
+            r.stdout = ""
+            r.stderr = ""
+            if cmd[0] == "blkid":
+                part = cmd[-1]
+                r.stdout = blkid_map.get(part, "") + "\n"
+            elif cmd[0] == "mount":
+                r.returncode = mount_rc
+                r.stderr = mount_stderr
+            return r
+
+        return _run
+
+    @patch("troshkad._validate_path", side_effect=lambda p: p)
+    @patch("troshkad.glob.glob", return_value=["/dev/nbd3p4"])
+    @patch("troshkad.os.path.exists", return_value=True)
+    @patch("troshkad._release_nbd_device")
+    @patch("troshkad._allocate_nbd_device", return_value="/dev/nbd3")
+    @patch("troshkad._ensure_nbd_module")
+    @patch("troshkad.subprocess.run")
+    def test_corrupt_rootfs_reports_invalid(
+        self, mock_run, _mod, _alloc, _rel, _exists, _glob, _vp
+    ):
+        mock_run.side_effect = self._fake_run(
+            mount_rc=32, mount_stderr="Structure needs cleaning."
+        )
+        job = troshkad._create_job(
+            "vms/fscheck", {"disk_path": "/var/lib/troshka/local/tmp/flat.qcow2"}
+        )
+        result = troshkad._handle_fscheck(job, job["params"])
+        self.assertFalse(result["valid"])
+        self.assertIn("cleaning", result["reason"].lower())
+
+    @patch("troshkad._validate_path", side_effect=lambda p: p)
+    @patch("troshkad.glob.glob", return_value=["/dev/nbd3p4"])
+    @patch("troshkad.os.path.exists", return_value=True)
+    @patch("troshkad._release_nbd_device")
+    @patch("troshkad._allocate_nbd_device", return_value="/dev/nbd3")
+    @patch("troshkad._ensure_nbd_module")
+    @patch("troshkad.subprocess.run")
+    def test_mountable_rootfs_reports_valid(
+        self, mock_run, _mod, _alloc, _rel, _exists, _glob, _vp
+    ):
+        mock_run.side_effect = self._fake_run(mount_rc=0)
+        job = troshkad._create_job(
+            "vms/fscheck", {"disk_path": "/var/lib/troshka/local/tmp/flat.qcow2"}
+        )
+        result = troshkad._handle_fscheck(job, job["params"])
+        self.assertTrue(result["valid"])
+
+    @patch("troshkad._validate_path", side_effect=lambda p: p)
+    @patch("troshkad.glob.glob", return_value=["/dev/nbd3p1"])
+    @patch("troshkad.os.path.exists", return_value=True)
+    @patch("troshkad._release_nbd_device")
+    @patch("troshkad._allocate_nbd_device", return_value="/dev/nbd3")
+    @patch("troshkad._ensure_nbd_module")
+    @patch("troshkad.subprocess.run")
+    def test_data_disk_no_journaling_fs_is_valid(
+        self, mock_run, _mod, _alloc, _rel, _exists, _glob, _vp
+    ):
+        # p1 is vfat/unknown — no journaling rootfs to validate → valid (skip)
+        mock_run.side_effect = self._fake_run(
+            mount_rc=32, blkid_map={"/dev/nbd3p1": "vfat"}
+        )
+        job = troshkad._create_job(
+            "vms/fscheck", {"disk_path": "/var/lib/troshka/local/tmp/data.qcow2"}
+        )
+        result = troshkad._handle_fscheck(job, job["params"])
+        self.assertTrue(result["valid"])
+
+    def test_fscheck_registered(self):
+        self.assertIn("vms/fscheck", troshkad.COMMAND_HANDLERS)
+
+
+class TestFreezeDomainFs(unittest.TestCase):
+    """Guest-FS freeze must be retried — a transient agent-busy failure (under
+    OCP load) previously fell straight through to an unfrozen snapshot, which
+    captured a torn XFS root."""
+
+    @patch("troshkad.time.sleep")
+    @patch("troshkad.subprocess.run")
+    def test_freeze_succeeds_first_try(self, mock_run, _sleep):
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        job = troshkad._create_job("t", {})
+        self.assertTrue(troshkad._freeze_domain_fs(job, "dom-1"))
+        self.assertEqual(mock_run.call_count, 1)
+
+    @patch("troshkad.time.sleep")
+    @patch("troshkad.subprocess.run")
+    def test_freeze_retries_then_succeeds(self, mock_run, _sleep):
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stderr="agent not responding"),
+            MagicMock(returncode=1, stderr="agent not responding"),
+            MagicMock(returncode=0, stderr=""),
+        ]
+        job = troshkad._create_job("t", {})
+        self.assertTrue(troshkad._freeze_domain_fs(job, "dom-1", attempts=3))
+        self.assertEqual(mock_run.call_count, 3)
+
+    @patch("troshkad.time.sleep")
+    @patch("troshkad.subprocess.run")
+    def test_freeze_all_attempts_fail_returns_false(self, mock_run, _sleep):
+        mock_run.return_value = MagicMock(returncode=1, stderr="no agent")
+        job = troshkad._create_job("t", {})
+        self.assertFalse(troshkad._freeze_domain_fs(job, "dom-1", attempts=3))
+        self.assertEqual(mock_run.call_count, 3)
+
+
 if __name__ == "__main__":
     unittest.main()

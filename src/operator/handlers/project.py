@@ -252,6 +252,61 @@ def _create_namespaced_pvc(core_api, namespace: str, body: dict) -> None:
             raise
 
 
+def _kubevirt_vmi_fs_action(vmi_name, namespace, action):
+    """PUT a KubeVirt freeze/unfreeze subresource for a running VMI. Raises on
+    failure (caller decides whether that is fatal)."""
+    api = client.ApiClient()
+    path = (
+        f"/apis/subresources.kubevirt.io/v1/namespaces/{namespace}"
+        f"/virtualmachineinstances/{vmi_name}/{action}"
+    )
+    api.call_api(
+        path,
+        "PUT",
+        header_params={"Content-Type": "application/json"},
+        body={},
+        auth_settings=["BearerToken"],
+        _preload_content=False,
+    )
+
+
+def _freeze_vmi(vmi_name, namespace, attempts=3):
+    """Freeze a running VMI's guest filesystems via the KubeVirt freeze
+    subresource, retrying transient failures (agent busy under load). Returns
+    True if frozen.
+
+    Parity with troshkad's ``_freeze_domain_fs``: an unfrozen snapshot of a
+    running VM captures a torn/crash-inconsistent filesystem (XFS 'Structure
+    needs cleaning' on restore). Best effort — a stopped VMI (offline capture)
+    or a missing agent yields False and the snapshot proceeds crash-consistent
+    (caught downstream by the export-side validation gate)."""
+    last = None
+    for i in range(attempts):
+        try:
+            _kubevirt_vmi_fs_action(vmi_name, namespace, "freeze")
+            if i:
+                logger.info(f"Guest FS frozen for VMI {vmi_name} (attempt {i + 1})")
+            return True
+        except Exception as e:
+            last = e
+        if i < attempts - 1:
+            time.sleep(2)
+    logger.warning(
+        f"Could not freeze guest FS for VMI {vmi_name} after {attempts} attempts "
+        f"({last}) — snapshot will be crash-consistent"
+    )
+    return False
+
+
+def _thaw_vmi(vmi_name, namespace):
+    """Thaw (unfreeze) a VMI's guest filesystems — best effort; never leave a
+    production VM frozen."""
+    try:
+        _kubevirt_vmi_fs_action(vmi_name, namespace, "unfreeze")
+    except Exception as e:
+        logger.warning(f"Could not thaw guest FS for VMI {vmi_name}: {e}")
+
+
 async def _snapshot_and_export_disk(
     disk_info, s3_config, custom_api, core_api, batch_api, namespace, name
 ):
@@ -286,23 +341,31 @@ async def _snapshot_and_export_disk(
     )
     logger.info(f"Capture {name}: snapshotting PVC {pvc_name}")
 
-    snapshot = build_volume_snapshot(snap_name, namespace, pvc_name)
+    # Freeze the guest FS before the point-in-time snapshot (thawed once the
+    # snapshot is ready) so a running VM's rootfs is captured consistently.
+    # Offline capture (VM already stopped) freezes as a no-op.
+    frozen = _freeze_vmi(vm_name, namespace)
     try:
-        custom_api.create_namespaced_custom_object(
-            group=_SNAPSHOT_GROUP,
-            version="v1",
-            namespace=namespace,
-            plural="volumesnapshots",
-            body=snapshot,
-        )
-    except ApiException as e:
-        if e.status != 409:
-            raise
+        snapshot = build_volume_snapshot(snap_name, namespace, pvc_name)
+        try:
+            custom_api.create_namespaced_custom_object(
+                group=_SNAPSHOT_GROUP,
+                version="v1",
+                namespace=namespace,
+                plural="volumesnapshots",
+                body=snapshot,
+            )
+        except ApiException as e:
+            if e.status != 409:
+                raise
 
-    # Poll until snapshot is ready (max 5 min)
-    restore_size_gi = await _wait_volume_snapshot_ready(
-        custom_api, namespace, snap_name, size_gb
-    )
+        # Poll until snapshot is ready (max 5 min)
+        restore_size_gi = await _wait_volume_snapshot_ready(
+            custom_api, namespace, snap_name, size_gb
+        )
+    finally:
+        if frozen:
+            _thaw_vmi(vm_name, namespace)
 
     temp_pvc = build_temp_pvc_from_snapshot(
         temp_pvc_name, namespace, snap_name, restore_size_gi

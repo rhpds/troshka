@@ -18,6 +18,10 @@ rules:
   - apiGroups: ["kubevirt.io"]
     resources: ["kubevirts"]
     verbs: ["get", "list"]
+  # Freeze/thaw a running VMI's guest filesystems for consistent online pattern capture
+  - apiGroups: ["subresources.kubevirt.io"]
+    resources: ["virtualmachineinstances/freeze", "virtualmachineinstances/unfreeze"]
+    verbs: ["update"]
   - apiGroups: ["cdi.kubevirt.io"]
     resources: ["datavolumes"]
     verbs: ["*"]
