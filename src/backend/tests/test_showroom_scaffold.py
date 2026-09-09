@@ -764,6 +764,10 @@ def test_build_wetty_cluster_terminal_container():
     assert not any(a.startswith("--ssh-host") for a in c["command"])
     # still mounts the shared disk for the injected kubeconfig
     assert c["mounts"] == [{"diskNodeId": "disk-0", "mountPath": "/showroom"}]
+    # runs as the unprivileged uid-1000 lab user (not root). Under KubeVirt's
+    # restricted SCC the container can't CAP_SETUID to drop, so it must START as
+    # uid 1000; the SCC is RunAsAny so this is allowed.
+    assert c["securityContext"] == {"runAsUser": 1000}
 
 
 def test_cluster_terminal_uses_baked_image_no_oc_fetch():

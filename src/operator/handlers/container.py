@@ -7,7 +7,9 @@ logger = logging.getLogger(__name__)
 _SHELL = "/bin/sh"
 
 
-def create_container_pods(namespace, containers, nad_refs, owner_reference, disk_pvcs=None):
+def create_container_pods(
+    namespace, containers, nad_refs, owner_reference, disk_pvcs=None
+):
     core_api = client.CoreV1Api()
     disk_pvcs = disk_pvcs or {}
 
@@ -30,7 +32,10 @@ def _env_to_list(env):
         return []
     if isinstance(env, list):
         return [
-            {"name": item.get("key", item.get("name", "")), "value": str(item.get("value", ""))}
+            {
+                "name": item.get("key", item.get("name", "")),
+                "value": str(item.get("value", "")),
+            }
             for item in env
             if item.get("key") or item.get("name")
         ]
@@ -122,7 +127,9 @@ def _create_single_container(
     if ctr.get("ports"):
         container_spec["ports"] = [
             {
-                "containerPort": p.get("container_port", p.get("containerPort", p.get("port", 0))),
+                "containerPort": p.get(
+                    "container_port", p.get("containerPort", p.get("port", 0))
+                ),
                 "protocol": "TCP",
             }
             for p in ctr["ports"]
@@ -190,11 +197,15 @@ def _build_pod_container_spec(pc, index, volume_mounts):
     if pc.get("ports"):
         c_spec["ports"] = [
             {
-                "containerPort": p.get("container_port", p.get("containerPort", p.get("port", 0))),
+                "containerPort": p.get(
+                    "container_port", p.get("containerPort", p.get("port", 0))
+                ),
                 "protocol": "TCP",
             }
             for p in pc["ports"]
         ]
+    if pc.get("securityContext"):
+        c_spec["securityContext"] = pc["securityContext"]
     _apply_volume_mounts(c_spec, volume_mounts)
     return c_spec
 

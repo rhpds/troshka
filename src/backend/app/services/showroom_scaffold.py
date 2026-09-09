@@ -760,6 +760,12 @@ def _oc_terminal_container(item: dict[str, Any], disk_id: str) -> dict[str, Any]
             _CLUSTER_SHELL_PATH,
         ],
         "mounts": [{"diskNodeId": disk_id, "mountPath": "/showroom"}],
+        # Run as the unprivileged uid-1000 lab user, not root. Under KubeVirt's
+        # restricted SCC the container runs root WITHOUT CAP_SETUID, so
+        # cluster-shell's setpriv drop fails and the shell falls back to root.
+        # Starting the container as uid 1000 (SCC is RunAsAny, wetty port 8001 is
+        # unprivileged) yields a labuser shell regardless of the setpriv probe.
+        "securityContext": {"runAsUser": 1000},
     }
 
 

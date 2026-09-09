@@ -2115,6 +2115,34 @@ class TestCreatePodGroup:
         assert body["spec"]["containers"][0]["name"] == "main"
         assert body["spec"]["containers"][0]["image"] == "my-image"
 
+    def test_pod_container_propagates_security_context(self):
+        """A podContainer's securityContext (e.g. the cluster terminal's
+        runAsUser:1000) must reach the pod spec so it can run non-root under
+        KubeVirt's restricted SCC."""
+        from handlers.container import _create_pod_group
+
+        core_api = MagicMock()
+        ctr = {
+            "id": "podid123",
+            "image": "fallback",
+            "nics": [],
+            "podContainers": [
+                {
+                    "name": "wetty-clusters",
+                    "image": "term:1",
+                    "securityContext": {"runAsUser": 1000},
+                }
+            ],
+        }
+
+        _create_pod_group(core_api, "ns1", ctr, {}, {}, {})
+
+        body = core_api.create_namespaced_pod.call_args[1]["body"]
+        wetty = next(
+            c for c in body["spec"]["containers"] if c["name"] == "wetty-clusters"
+        )
+        assert wetty["securityContext"] == {"runAsUser": 1000}
+
     def test_pod_with_ports(self):
         from handlers.container import _create_pod_group
 
