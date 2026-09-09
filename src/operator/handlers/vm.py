@@ -582,6 +582,11 @@ async def _run_guestfish_job(spec, name, namespace, body, disk_pvcs):
             "backoffLimit": 1,
             "template": {
                 "spec": {
+                    # Privileged pod → must use troshka-recert, the SA bound to the
+                    # troshka-privileged-jobs SCC. Without it the pod runs as the
+                    # namespace default SA, which no SCC admits, and the Job hangs
+                    # forever (FailedCreate) → recert never runs → deploy stuck.
+                    "serviceAccountName": "troshka-recert",
                     "containers": [
                         {
                             "name": "guestfish",

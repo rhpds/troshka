@@ -4226,6 +4226,14 @@ class TestRunGuestfishJob:
         asyncio.run(_run_guestfish_job(spec, "vm-1", "ns1", body, disk_pvcs))
 
         mock_batch.create_namespaced_job.assert_called_once()
+        # The privileged guestfish pod must run as troshka-recert (the SA bound to
+        # the troshka-privileged-jobs SCC); default SA is rejected by the SCC and
+        # the Job hangs forever with FailedCreate.
+        created = mock_batch.create_namespaced_job.call_args.kwargs["body"]
+        assert (
+            created["spec"]["template"]["spec"]["serviceAccountName"]
+            == "troshka-recert"
+        )
 
     @patch("handlers.vm.client")
     def test_skips_when_no_commands(self, mock_client):
