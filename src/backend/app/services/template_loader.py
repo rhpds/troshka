@@ -530,6 +530,11 @@ def _build_cluster_boundary_nodes(clusters):
                 "type": "clusterNode",
                 "position": {"x": 100 + i * 900, "y": 250},
                 "data": {
+                    # Canonical cluster key (matches clusters[].id). The install-log
+                    # endpoint keys per-cluster logs by this id; the UI reads it from
+                    # here. Set explicitly so it survives pattern remap (which gives
+                    # the node a bare UUID id the UI can't parse back to the key).
+                    "clusterId": c["id"],
                     "name": c["name"],
                     "type": c["type"],
                     "controlPlane": c["controlPlane"],

@@ -188,6 +188,16 @@ def _remap_clusters(topo: dict, id_map: dict) -> None:
         if node.get("parentId") in id_map:
             node["parentId"] = id_map[node["parentId"]]
 
+    # The clusterNode itself carries no clusterId from older patterns, so the
+    # loop above can't remap it. Set it from its cluster's (remapped) id keyed by
+    # nodeId, so the install-log lookup (clusters[].id) matches what the UI
+    # requests — otherwise a pattern deploy shows "No install log yet".
+    node_by_id = {n.get("id"): n for n in topo.get("nodes", [])}
+    for cluster in topo.get("clusters", []):
+        cn = node_by_id.get(cluster.get("nodeId"))
+        if cn is not None and cn.get("type") == "clusterNode":
+            cn.setdefault("data", {})["clusterId"] = cluster["id"]
+
 
 def _remap_topology(topology: dict) -> dict:
     """Clone a topology dict with all-new UUIDs, MACs, and controller IDs.

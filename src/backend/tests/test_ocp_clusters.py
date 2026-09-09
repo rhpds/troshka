@@ -1,3 +1,45 @@
+def test_remap_clusters_sets_cluster_node_clusterid():
+    """The clusterNode must carry data.clusterId = its (remapped) cluster id.
+
+    The install-log endpoint keys logs by clusters[].id (e.g. ocp-144672), and
+    the UI derives its request key from the clusterNode's data.clusterId. When
+    the pattern remap left that unset, the node fell back to its bare UUID id and
+    the log lookup missed -> the modal showed 'No install log yet'.
+    """
+    from app.api.patterns import _remap_topology
+
+    topo = {
+        "clusters": [{"id": "ocp", "nodeId": "cluster-ocp", "name": "ocp"}],
+        "nodes": [
+            {"id": "cluster-ocp", "type": "clusterNode", "data": {"name": "ocp"}}
+        ],
+        "edges": [],
+    }
+    out = _remap_topology(topo)
+    cn = next(n for n in out["nodes"] if n["type"] == "clusterNode")
+    assert cn["data"].get("clusterId") == out["clusters"][0]["id"]
+
+
+def test_build_cluster_boundary_nodes_includes_clusterid():
+    from app.services.template_loader import _build_cluster_boundary_nodes
+
+    nodes = _build_cluster_boundary_nodes(
+        [
+            {
+                "id": "ocp",
+                "name": "ocp",
+                "type": "compact",
+                "controlPlane": 3,
+                "workers": 0,
+                "baseDomain": "ocp.local",
+                "apiVip": "10.0.0.4",
+                "ingressVip": "10.0.0.5",
+            }
+        ]
+    )
+    assert nodes[0]["data"]["clusterId"] == "ocp"
+
+
 def test_remap_topology_remaps_cluster_refs():
     from app.api.patterns import _remap_topology
 
@@ -216,7 +258,11 @@ def test_materialized_node_data_carries_sizing():
     }
     topo = generate_topology_from_template(resolve_inline_template(tmpl))
 
-    members = [n for n in topo["nodes"] if n["data"].get("clusterId") == "prod"]
+    members = [
+        n
+        for n in topo["nodes"]
+        if n["data"].get("clusterId") == "prod" and n.get("type") == "vmNode"
+    ]
     cp = next(
         n
         for n in members
@@ -340,7 +386,11 @@ def test_generated_topology_has_clusters_and_member_refs():
     ]
     assert len(cluster_nodes) == 1
 
-    members = [n for n in topo["nodes"] if n.get("data", {}).get("clusterId") == "prod"]
+    members = [
+        n
+        for n in topo["nodes"]
+        if n.get("data", {}).get("clusterId") == "prod" and n.get("type") == "vmNode"
+    ]
     assert len(members) == 5  # 3 cp + 2 workers
     assert all(n.get("parentId") == "cluster-prod" for n in members)
 
@@ -372,10 +422,14 @@ def test_generate_topology_multi_cluster_membership():
     assert cluster_node_ids == {"cluster-prod", "cluster-dev"}
 
     prod_members = [
-        n for n in topo["nodes"] if n.get("data", {}).get("clusterId") == "prod"
+        n
+        for n in topo["nodes"]
+        if n.get("data", {}).get("clusterId") == "prod" and n.get("type") == "vmNode"
     ]
     dev_members = [
-        n for n in topo["nodes"] if n.get("data", {}).get("clusterId") == "dev"
+        n
+        for n in topo["nodes"]
+        if n.get("data", {}).get("clusterId") == "dev" and n.get("type") == "vmNode"
     ]
     # prod = 3 cp + 2 workers, dev (sno) = 1 cp.
     assert len(prod_members) == 5
@@ -924,8 +978,16 @@ def test_export_roundtrip_multi_cluster():
     # Re-resolve + regenerate -> two clusters with the same membership counts.
     topo2 = generate_topology_from_template(resolve_inline_template(exported))
     assert {c["id"] for c in topo2["clusters"]} == {"prod", "dev"}
-    prod2 = [n for n in topo2["nodes"] if n.get("data", {}).get("clusterId") == "prod"]
-    dev2 = [n for n in topo2["nodes"] if n.get("data", {}).get("clusterId") == "dev"]
+    prod2 = [
+        n
+        for n in topo2["nodes"]
+        if n.get("data", {}).get("clusterId") == "prod" and n.get("type") == "vmNode"
+    ]
+    dev2 = [
+        n
+        for n in topo2["nodes"]
+        if n.get("data", {}).get("clusterId") == "dev" and n.get("type") == "vmNode"
+    ]
     assert len(prod2) == 5
     assert len(dev2) == 1
 
