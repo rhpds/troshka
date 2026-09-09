@@ -513,6 +513,29 @@ class TestStorageHandlers(unittest.TestCase):
         cmd = mock_popen.call_args[0][0]
         self.assertIn("-b", cmd)
 
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.Popen")
+    def test_disk_create_raw_with_backing_reflink_copies(
+        self, mock_popen, mock_makedirs
+    ):
+        """A RAW disk can't carry a qemu-img backing file (create -f raw -b fails),
+        so a pattern overlay must reflink-copy the backing instead."""
+        mock_popen.return_value = _mock_popen()
+        job = troshkad._create_job(
+            "disks/create",
+            {
+                "path": "/var/lib/troshka/shared/vms/proj/aabb-1122.raw",
+                "size_gb": 5,
+                "format": "raw",
+                "backing_file": "/var/lib/troshka/local/cache/patterns/p/base.raw",
+            },
+        )
+        troshkad._handle_disk_create(job, job["params"])
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        # reflink-copy the backing (not an invalid `qemu-img create -f raw -b`)
+        assert any(c[:2] == ["cp", "--reflink=auto"] for c in cmds), cmds
+        assert not any("create" in c and "-b" in c for c in cmds), cmds
+
     @patch("troshkad.subprocess.Popen")
     def test_disk_resize(self, mock_popen):
         mock_popen.return_value = _mock_popen()

@@ -3139,6 +3139,17 @@ def _handle_disk_create(job, params):
                     size_gb = backing_gb
         except Exception:
             pass
+        if fmt == "raw":
+            # RAW images can't carry a qemu-img backing file (`create -f raw -b`
+            # fails), so a pattern overlay reflink-copies the backing instead:
+            # thin copy-on-write where the filesystem supports it (XFS/btrfs
+            # reflink, e.g. the pattern-buffer NVMe pool), a full copy otherwise.
+            # The disk stays RAW so the VM XML/driver is unchanged, then grow to
+            # the requested size (already expanded to >= the backing above).
+            _run_cmd(job, ["cp", "--reflink=auto", backing, path])
+            _run_cmd(job, ["qemu-img", "resize", "-f", "raw", path, f"{size_gb}G"])
+            _chown_qemu(path)
+            return {"path": path, "status": "created"}
         cmd.extend(["-b", backing, "-F", fmt])
     cmd.extend([path, f"{size_gb}G"])
     _run_cmd(job, cmd)
