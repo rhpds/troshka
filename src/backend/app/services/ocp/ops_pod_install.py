@@ -309,6 +309,107 @@ def _cluster_install_block(
     )
 
 
+def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
+    """One cluster's RECERT (pattern-deploy) steps, backgrounded.
+
+    NO fresh install — the disks are already installed and were recerted offline
+    (SNO: recert tool; multi-node: guestfish kubelet-PKI wipe). Using the admin
+    kubeconfig injected at ``<dir>/kubeconfig`` this block:
+
+    - waits for the cluster API to answer;
+    - approves pending CSRs in a loop until the nodes go Ready (multi-node
+      kubelets re-bootstrap after the PKI wipe; a harmless no-op for SNO);
+    - multi-node ONLY: forces a kube-apiserver redeploy so it adopts the fresh
+      kubelet-serving CA;
+    - waits for cluster operators to settle, then emits the ``install complete``
+      breadcrumb the existing monitor/parser already recognizes.
+
+    Writes to ``<dir>/install.log`` (same as the install path) so the live
+    monitor tails it unchanged, but never emits the reinstall-looking
+    "creating image"/"booting" phases.
+    """
+    cluster_dir = f"{workdir}/{cluster_key}"
+    redeploy = ""
+    if mode == "multinode":
+        redeploy = (
+            "  echo 'Forcing kube-apiserver redeploy for fresh kubelet CA...'\n"
+            "  oc patch kubeapiserver cluster --type=merge "
+            '-p "{\\"spec\\":{\\"forceRedeploymentReason\\":'
+            '\\"recert-$(date +%s)\\"}}" >/dev/null 2>&1 || true\n'
+        )
+    head = (
+        f"# ===== cluster {cluster_key} =====\n"
+        "(\n"
+        f"  exec > {cluster_dir}/install.log 2>&1\n"
+        f'  echo "[{cluster_key}] Waiting for cluster installation to complete (recert)"\n'
+        f"  export KUBECONFIG={cluster_dir}/kubeconfig\n"
+        # Wait for the API to answer (nodes booting from recerted disks).
+        "  for i in $(seq 1 120); do "
+        "oc get --raw /readyz >/dev/null 2>&1 && break; sleep 10; done\n"
+        # Approve CSRs until all nodes are Ready (multi-node kubelet bootstrap).
+        "  for i in $(seq 1 120); do "
+        "oc get csr -o name 2>/dev/null | xargs -r oc adm certificate approve "
+        ">/dev/null 2>&1 || true; "
+        "total=$(oc get nodes --no-headers 2>/dev/null | wc -l); "
+        "notready=$(oc get nodes --no-headers 2>/dev/null | grep -vc ' Ready'); "
+        '[ "$total" -gt 0 ] && [ "$notready" = 0 ] && break; sleep 10; done\n'
+    )
+    tail = (
+        # Wait for cluster operators to stop progressing/degraded.
+        "  for i in $(seq 1 120); do "
+        "bad=$(oc get co --no-headers 2>/dev/null | "
+        'awk \'$3!="True"||$5=="True"{c++} END{print c+0}\'); '
+        '[ "$bad" = 0 ] && break; sleep 15; done\n'
+        f'  echo "[{cluster_key}] install complete"\n'
+        ") &\n"
+        "pids+=($!)\n"
+    )
+    return head + redeploy + tail
+
+
+def build_ops_pod_recert_script(
+    clusters: list[dict],
+    workdir: str,
+    mode_by_cluster: dict[str, str],
+    net_ip_assignments: list[tuple[str, str]] | None = None,
+) -> str:
+    """Ops-pod script for a PATTERN (recert) deploy — recert, never reinstall.
+
+    Mirrors :func:`build_ops_pod_install_script`'s structure (parallel per-cluster
+    subshells, per-PID join, hold-on-success for credential handling) but each
+    block runs :func:`_recert_cluster_block` instead of a fresh agent install.
+    ``mode_by_cluster`` maps a cluster key to ``"sno"`` or ``"multinode"`` — only
+    multi-node forces the kube-apiserver redeploy. The admin kubeconfig is
+    injected per cluster at ``<workdir>/<key>/kubeconfig``.
+    """
+    parts: list[str] = [
+        "#!/bin/bash\n",
+        "# Per-cluster OCP recert runner (ops pod) — pattern deploy, no reinstall.\n",
+        "set -u\n",
+        "\n",
+        _self_assign_net_ips(net_ip_assignments),
+        _ensure_installers_cmd(),
+        "\n",
+        "pids=()\n",
+    ]
+    for cluster in clusters:
+        key = _cluster_key(cluster)
+        parts.append(
+            _recert_cluster_block(key, workdir, mode_by_cluster.get(key, "multinode"))
+        )
+    parts.append("\n")
+    parts.append("fail=0\n")
+    parts.append('for p in "${pids[@]}"; do wait "$p" || fail=1; done\n')
+    # Hold on success (like the install path) so the monitor can mark ready and
+    # reap the pod without racing a restart loop.
+    parts.append('if [ "$fail" = 0 ]; then\n')
+    parts.append('  echo "All clusters recerted. Holding..."\n')
+    parts.append("  sleep infinity\n")
+    parts.append("fi\n")
+    parts.append("exit 1\n")
+    return "".join(parts)
+
+
 def _self_assign_net_ips(net_ip_assignments: list[tuple[str, str]] | None) -> str:
     """`ip addr add` lines for the ops pod's lab-net interfaces.
 

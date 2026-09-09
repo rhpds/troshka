@@ -360,6 +360,71 @@ def test_install_script_downloads_from_same_mirror():
     )
 
 
+# --- Recert-mode ops-pod script (pattern deploys) --------------------------
+
+
+def _recert_script():
+    from app.services.ocp.ops_pod_install import build_ops_pod_recert_script
+
+    clusters = [
+        {"id": "sno", "name": "sno"},
+        {"id": "compact", "name": "compact"},
+    ]
+    mode_by_cluster = {"sno": "sno", "compact": "multinode"}
+    return build_ops_pod_recert_script(clusters, "/workdir", mode_by_cluster)
+
+
+def test_recert_script_no_fresh_install():
+    """A pattern deploy must NOT run a fresh agent install — no agent ISO, no BMC
+    boot, no wait-for-install-complete."""
+    script = _recert_script()
+    assert "agent create image" not in script
+    assert "wait-for install-complete" not in script
+    assert "InsertMedia" not in script
+
+
+def test_recert_script_uses_injected_kubeconfig_per_cluster():
+    script = _recert_script()
+    assert "export KUBECONFIG=/workdir/sno/kubeconfig" in script
+    assert "export KUBECONFIG=/workdir/compact/kubeconfig" in script
+
+
+def test_recert_script_approves_csrs():
+    """Multi-node kubelets bootstrap fresh after the guestfish PKI wipe, so their
+    CSRs must be approved (harmless no-op for SNO)."""
+    script = _recert_script()
+    assert "certificate approve" in script
+
+
+def test_recert_script_multinode_forces_apiserver_redeploy():
+    """Only multi-node needs a kube-apiserver redeploy to pick up the fresh
+    kubelet serving CA; SNO recert is self-sufficient offline."""
+    script = _recert_script()
+    assert script.count("forceRedeploymentReason") == 1  # only the multinode cluster
+    # anchored to the multinode cluster block
+    compact = script.split("# ===== cluster compact =====", 1)[1]
+    assert "forceRedeploymentReason" in compact
+    sno = script.split("# ===== cluster sno =====", 1)[1].split("# ===== cluster", 1)[0]
+    assert "forceRedeploymentReason" not in sno
+
+
+def test_recert_script_reuses_install_complete_marker_and_log():
+    """Reuse the existing monitor: write to <dir>/install.log and emit the
+    'install complete' breadcrumb the progress parser recognizes — but NEVER the
+    reinstall-looking 'creating image'/'booting' phases."""
+    script = _recert_script()
+    assert "/workdir/sno/install.log" in script
+    assert script.count("install complete") == 2
+    assert "starting agent-based install" not in script
+
+
+def test_recert_script_parallel_and_holds():
+    script = _recert_script()
+    assert script.count(") &\n") == 2
+    assert script.count("pids+=($!)") == 2
+    assert "sleep infinity" in script
+
+
 # --- Task 7: install-progress state machine (pure) -------------------------
 
 from app.services.ocp.ops_pod_install import (  # noqa: E402
