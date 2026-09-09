@@ -648,7 +648,9 @@ def _build_capture_disk_manifest(disk_nodes, disk_to_vm, pattern_id, vm_nodes=No
                 "vmId": vm_id,
                 "diskId": disk_id,
                 "pvcName": f"{vm_name}-disk-{disk_id[:8]}",
-                "s3Key": f"patterns/{pattern_id}/{disk_id}.{fmt}",
+                # The operator converts every disk to qcow2 and uploads it to
+                # this key, so it must be .qcow2 (declared `fmt` kept below).
+                "s3Key": f"patterns/{pattern_id}/{disk_id}.{PATTERN_STORED_FORMAT}",
                 "sizeGb": int(disk_node.get("data", {}).get("size", 50)),
                 "format": fmt,
                 "diskLabel": disk_label,

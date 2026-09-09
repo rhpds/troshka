@@ -4101,8 +4101,14 @@ def _resolve_disk_backing(d, pool):
     if d.get("source") == "library" and d.get("library_item_id"):
         return _image_cache_path(d["library_item_id"], d["format"], pool=pool), True
     if d.get("source") == "pattern" and d.get("patternId"):
-        backing = f"/var/lib/troshka/cache/patterns/{d['patternId']}/{d['patternDiskId']}.{d['format']}"
-        return backing, False
+        # Reuse the deploy pipeline's resolver so reconfigure points at the SAME
+        # local cache (/local/cache/patterns/, keyed by source_disk_id + the
+        # actual stored extension), not a stale hand-built path.
+        from app.services.deploy_service import (
+            _resolve_disk_backing as _deploy_resolve_backing,
+        )
+
+        return _deploy_resolve_backing(d, pool), False
     return None, False
 
 

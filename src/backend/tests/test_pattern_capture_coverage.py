@@ -59,6 +59,16 @@ class TestBuildCaptureDiskManifest:
         assert result[0]["format"] == "qcow2"
         assert result[0]["sizeGb"] == 50  # default
 
+    def test_raw_disk_stored_as_qcow2(self):
+        """The operator converts every disk to qcow2 and uploads it to this
+        s3Key, so a raw-declared disk must be keyed .qcow2 (honest), while the
+        declared format is preserved for the VM."""
+        disk_nodes = [{"id": "disk-raw", "data": {"format": "raw", "size": 8}}]
+        disk_to_vm = {"disk-raw": "vm-1"}
+        result = _build_capture_disk_manifest(disk_nodes, disk_to_vm, "pat-5")
+        assert result[0]["s3Key"] == "patterns/pat-5/disk-raw.qcow2"
+        assert result[0]["format"] == "raw"
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # _poll_capture_completion

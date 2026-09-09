@@ -133,7 +133,10 @@ class TestManifestEntries:
 
         p = _mock_pattern()
         d1 = _mock_disk(disk_id="d1", size_bytes=500)
-        d2 = _mock_disk(disk_id="d2", size_bytes=700, fmt="raw")
+        # A genuinely raw-stored disk (.raw s3 key) exports as .raw.
+        d2 = _mock_disk(
+            disk_id="d2", size_bytes=700, fmt="raw", s3_key="patterns/abc/d2.raw"
+        )
 
         entries = list(_manifest_entries(p, [d1, d2]))
         names = [e[0] for e in entries]
@@ -144,6 +147,16 @@ class TestManifestEntries:
         assert names[3] == "disks/d2.raw"
         assert entries[2][1] == 500
         assert entries[3][1] == 700
+
+    def test_disk_named_by_stored_ext_not_declared_format(self):
+        """Tar member follows the ACTUAL stored format (from s3_key), not the
+        declared format — a raw-declared disk stored as qcow2 exports .qcow2."""
+        from app.services.pattern_export import _manifest_entries
+
+        p = _mock_pattern()
+        d = _mock_disk(disk_id="d9", fmt="raw", s3_key="patterns/abc/d9.qcow2")
+        entries = list(_manifest_entries(p, [d]))
+        assert entries[2][0] == "disks/d9.qcow2"
 
     def test_disk_with_no_format_defaults_qcow2(self):
         from app.services.pattern_export import _manifest_entries
@@ -767,5 +780,56 @@ class TestCreatePatternDisks:
             total = _create_pattern_disks(db, pat.id, disk_map, None, new_topo)
             db.commit()
             assert total == 300
+        finally:
+            db.close()
+
+    def test_declared_format_from_metadata_wins(self):
+        """PatternDisk.format must be the DECLARED format (from metadata), not
+        the stored-file extension — a raw disk stored as qcow2 keeps format=raw
+        so the deployed VM materializes raw, while s3_key stays the honest key."""
+        from app.models.pattern import Pattern, PatternDisk
+        from app.models.user import User
+        from app.services.pattern_export import _create_pattern_disks
+
+        db = TestSession()
+        try:
+            user = User(email="declared-fmt@test.com", display_name="Fmt", role="user")
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+
+            pat = Pattern(
+                name="declared-fmt-test",
+                owner_id=user.id,
+                topology={"nodes": [], "edges": []},
+            )
+            db.add(pat)
+            db.commit()
+            db.refresh(pat)
+
+            disk_map = {
+                "old-1": {
+                    "s3_key": "patterns/p/old-1.qcow2",  # honest stored key
+                    "format": "qcow2",  # from the tar member extension
+                    "size_bytes": 100,
+                }
+            }
+            metadata = {
+                "disks": [
+                    {
+                        "id": "old-1",
+                        "source_disk_id": "sd-1",
+                        "source_vm_id": "vm-1",
+                        "format": "raw",  # declared format
+                        "virtual_size_bytes": 200,
+                    }
+                ]
+            }
+            _create_pattern_disks(db, pat.id, disk_map, metadata, {"nodes": []})
+            db.commit()
+
+            pd = db.query(PatternDisk).filter_by(pattern_id=pat.id).one()
+            assert pd.format == "raw"
+            assert pd.s3_key == "patterns/p/old-1.qcow2"
         finally:
             db.close()

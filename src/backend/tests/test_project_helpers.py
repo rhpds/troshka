@@ -2031,7 +2031,9 @@ class TestResolveDiskBacking:
             "format": "qcow2",
         }
         backing, is_lib = self._call(d)
-        assert backing == "/var/lib/troshka/cache/patterns/pat-abc/disk-123.qcow2"
+        # Resolves via the deploy pipeline's resolver to the SAME local cache the
+        # deploy downloads to (was the stale /cache/patterns/ that never held it).
+        assert backing == "/var/lib/troshka/local/cache/patterns/pat-abc/disk-123.qcow2"
         assert is_lib is False
 
     def test_blank_source(self):

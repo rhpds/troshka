@@ -279,6 +279,21 @@ class TestResolveDiskBacking:
         assert "disk-a" in path
         assert is_lib is False
 
+    def test_pattern_disk_uses_local_cache_prefix(self):
+        """Reconfigure must resolve the pattern backing to the SAME local cache
+        the deploy pipeline downloads to (/local/cache/patterns/), not the stale
+        /cache/patterns/ prefix that never held the file."""
+        from app.api.projects import _resolve_disk_backing
+
+        d = {
+            "source": "pattern",
+            "patternId": "pat-1",
+            "patternDiskId": "disk-a",
+            "format": "qcow2",
+        }
+        path, _is_lib = _resolve_disk_backing(d, None)
+        assert "/local/cache/patterns/" in path
+
     def test_blank_disk(self):
         from app.api.projects import _resolve_disk_backing
 

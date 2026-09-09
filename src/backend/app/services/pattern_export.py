@@ -10,6 +10,8 @@ import json
 import logging
 import tarfile
 
+from app.services.deploy_topology import _ext_from_s3_key
+
 logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 8 * 1024 * 1024  # 8 MiB
@@ -43,7 +45,7 @@ def _manifest_entries(pattern, disks):
     yield (_METADATA_FILE, len(meta_bytes))
 
     for disk in disks:
-        ext = disk.format or "qcow2"
+        ext = _ext_from_s3_key(disk.s3_key, disk.format or "qcow2")
         yield (f"disks/{disk.id}.{ext}", disk.size_bytes)
 
 
@@ -215,7 +217,9 @@ def _create_pattern_disks(
             source_disk_id=md.get("source_disk_id", old_id),
             source_vm_id=md.get("source_vm_id", ""),
             s3_key=info["s3_key"],
-            format=info["format"],
+            # Prefer the DECLARED format from metadata (what the VM materializes);
+            # the tar-derived format is only the stored-file extension.
+            format=md.get("format") or info["format"],
             size_bytes=info["size_bytes"],
             virtual_size_bytes=int(md.get("virtual_size_bytes", 0)),
             checksum_sha256=md.get("checksum_sha256"),
