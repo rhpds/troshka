@@ -139,16 +139,16 @@ def test_apply_sno_ocp_vm_flags_no_bastion_skips_browser_flag():
 
 
 def test_apply_cluster_ocp_flags_projects_onto_members():
-    """Cluster-level flags project onto member VMs: recert -> control-plane
-    members, monitor/bastion -> the monitor VM (first control plane)."""
+    """Cluster-level flags project onto member VMs: monitor is ALWAYS on (the
+    monitor VM = first control plane), bastion -> the monitor VM. Recert is no
+    longer projected here — it's decided at deploy by cluster size (SNO tool vs
+    multi-node guestfish)."""
     from app.services.ocp_topology_flags import apply_cluster_ocp_flags
 
     topo = {
         "clusters": [
             {
                 "id": "ocp",
-                "recert": True,
-                "monitorHealth": True,
                 "configureBastionBrowser": True,
             }
         ],
@@ -173,11 +173,11 @@ def test_apply_cluster_ocp_flags_projects_onto_members():
     changed = apply_cluster_ocp_flags(topo)
     assert changed is True
     cp0, cp1, w0 = (n["data"] for n in topo["nodes"])
-    # recert on all control-plane members
-    assert cp0["recertEnabled"] is True
-    assert cp1["recertEnabled"] is True
+    # recert is NOT projected here anymore (decided at deploy)
+    assert "recertEnabled" not in cp0
+    assert "recertEnabled" not in cp1
     assert "recertEnabled" not in w0
-    # monitor + bastion only on the first control-plane (monitor VM)
+    # monitor (always) + bastion only on the first control-plane (monitor VM)
     assert cp0["ocpMonitor"] is True
     assert cp0["configureBastionBrowser"] is True
     assert "ocpMonitor" not in cp1
@@ -209,9 +209,10 @@ def test_apply_cluster_ocp_flags_additive_and_scoped():
     }
     assert apply_cluster_ocp_flags(topo) is True
     a0, b0, loose = (n["data"] for n in topo["nodes"])
+    # monitor is always on for every cluster's monitor VM
     assert a0["ocpMonitor"] is True
-    assert "ocpMonitor" not in b0  # cluster b has no flags
-    assert "ocpMonitor" not in loose  # not a member
+    assert b0["ocpMonitor"] is True
+    assert "ocpMonitor" not in loose  # not a cluster member
 
 
 def test_apply_cluster_ocp_flags_no_clusters_noop():

@@ -46,14 +46,12 @@ def _is_control_plane(node: dict) -> bool:
 def apply_cluster_ocp_flags(topology: dict) -> bool:
     """Project cluster-level OCP flags onto member VMs.
 
-    The cluster object in ``topology["clusters"]`` is the source of truth for
-    ``recert`` / ``monitorHealth`` / ``configureBastionBrowser`` (camelCase, as
-    the frontend ClusterConfig stores them). This projects them onto member VM
-    nodes so the per-VM deploy machinery keeps working unchanged:
-
-    - ``recert``               -> control-plane members' ``recertEnabled``
-    - ``monitorHealth``        -> the monitor VM (first control plane) ``ocpMonitor``
-    - ``configureBastionBrowser`` -> that VM's ``configureBastionBrowser`` (+ ``ocpMonitor``)
+    Monitoring is ALWAYS on (the monitor VM = first control plane gets
+    ``ocpMonitor``) — there is no user toggle. ``configureBastionBrowser`` (a
+    bastion-only feature) still projects onto that VM. Recert is NOT projected
+    here: it is mandatory for every OCP pattern deploy and its mechanism is
+    chosen at deploy time by cluster size (SNO recert tool vs multi-node
+    guestfish), see ``deploy_service._auto_enable_recert_on_rhcos``.
 
     Additive: only ever SETS flags True, never clears them, so explicit per-VM
     flags on legacy topologies remain honored. Returns True if any node changed.
@@ -76,11 +74,7 @@ def apply_cluster_ocp_flags(topology: dict) -> bool:
             continue
         cps = [m for m in members if _is_control_plane(m)]
         monitor_target = (cps or members)[0]
-        if cluster.get("recert"):
-            for m in cps or members:
-                _set(m, "recertEnabled")
-        if cluster.get("monitorHealth") or cluster.get("configureBastionBrowser"):
-            _set(monitor_target, "ocpMonitor")
+        _set(monitor_target, "ocpMonitor")
         if cluster.get("configureBastionBrowser"):
             _set(monitor_target, "configureBastionBrowser")
     return changed

@@ -1080,55 +1080,42 @@ function ClusterEditor({
           </select>
         </div>
       </div>
-      <div className="props-divider" />
-      <div className="props-section">
-        <div className="props-section-title">OCP Options</div>
-        {cluster.type === "sno" && (
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={!!cluster.recert}
-              onChange={(e) => onPatch({ recert: e.target.checked })}
-            />
-            Recert (regenerate certificates, SNO only)
-          </label>
-        )}
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginTop: 4 }}>
-          <input
-            type="checkbox"
-            checked={!!cluster.monitorHealth}
-            disabled={!!cluster.configureBastionBrowser}
-            onChange={(e) => onPatch({ monitorHealth: e.target.checked })}
-          />
-          Monitor cluster health
-        </label>
-        {ocpInstallVia !== "pod" && (
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", marginTop: 4 }}>
-            <input
-              type="checkbox"
-              checked={!!cluster.configureBastionBrowser}
-              onChange={async (e) => {
-                if (!e.target.checked) {
-                  onPatch({ configureBastionBrowser: false });
-                  return;
-                }
-                // At most one cluster configures the bastion browser.
-                const other = clusters.find(
-                  (c) => c.id !== cluster.id && c.configureBastionBrowser,
-                );
-                if (other) {
-                  if (!(await appConfirm({
-                    message: `Move "Configure bastion browser" from ${other.name} to ${cluster.name}?`,
-                  }))) return;
-                  useCanvasStore.getState().updateCluster(other.id, { configureBastionBrowser: false });
-                }
-                onPatch({ configureBastionBrowser: true, monitorHealth: true });
-              }}
-            />
-            Configure bastion browser for this cluster
-          </label>
-        )}
-      </div>
+      {/* Recert + health monitoring are automatic for OCP clusters now (recert
+          is mandatory to redeploy a captured cluster; monitoring always runs),
+          so they are no longer user toggles. The only remaining OCP option is
+          the bastion browser, which applies to the bastion install path only. */}
+      {ocpInstallVia !== "pod" && (
+        <>
+          <div className="props-divider" />
+          <div className="props-section">
+            <div className="props-section-title">OCP Options</div>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={!!cluster.configureBastionBrowser}
+                onChange={async (e) => {
+                  if (!e.target.checked) {
+                    onPatch({ configureBastionBrowser: false });
+                    return;
+                  }
+                  // At most one cluster configures the bastion browser.
+                  const other = clusters.find(
+                    (c) => c.id !== cluster.id && c.configureBastionBrowser,
+                  );
+                  if (other) {
+                    if (!(await appConfirm({
+                      message: `Move "Configure bastion browser" from ${other.name} to ${cluster.name}?`,
+                    }))) return;
+                    useCanvasStore.getState().updateCluster(other.id, { configureBastionBrowser: false });
+                  }
+                  onPatch({ configureBastionBrowser: true });
+                }}
+              />
+              Configure bastion browser for this cluster
+            </label>
+          </div>
+        </>
+      )}
     </>
   );
 }
