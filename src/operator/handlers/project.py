@@ -1684,8 +1684,38 @@ def _recert_job_name_from_cfg(cfg):
     return f"recert-{vm_part}", vm_part, cfg.get("vmName", "vm")
 
 
+def _recert_pvc_datavolume_phase(namespace, name):
+    """Return the CDI DataVolume phase populating a PVC, or None if there is no
+    DataVolume (a plain/blank PVC). The clone DataVolume shares the PVC name."""
+    try:
+        dv = cast(
+            dict[str, Any],
+            client.CustomObjectsApi().get_namespaced_custom_object(
+                group="cdi.kubevirt.io",
+                version="v1beta1",
+                namespace=namespace,
+                plural="datavolumes",
+                name=name,
+            ),
+        )
+        return dv.get("status", {}).get("phase")
+    except ApiException as e:
+        if e.status == 404:
+            return None
+        raise
+    except Exception:
+        return None
+
+
 def _check_recert_pvcs_ready(core_api, recert_cfgs, namespace):
-    """Check if all recert PVCs are Bound. Returns True if all ready."""
+    """True only when every recert PVC is Bound AND its CDI clone has finished.
+
+    Bound alone is not enough: the clone/import happens AFTER the PVC binds, and
+    the CDI clone pod holds the RWO PVC until the DataVolume reaches Succeeded. If
+    the recert Job starts before then it hits FailedAttachVolume: Multi-Attach.
+    So we also require the DataVolume (same name as the PVC) to be Succeeded — a
+    plain/blank PVC (no DataVolume) is ready once Bound.
+    """
     for cfg in recert_cfgs:
         pvc_name = cfg.get("rhcosPvc", "")
         if not pvc_name:
@@ -1697,6 +1727,9 @@ def _check_recert_pvcs_ready(core_api, recert_cfgs, namespace):
             if pvc.status.phase != "Bound":  # type: ignore[union-attr]
                 return False
         except Exception:
+            return False
+        dv_phase = _recert_pvc_datavolume_phase(namespace, pvc_name)
+        if dv_phase is not None and dv_phase != "Succeeded":
             return False
     return True
 

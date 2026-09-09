@@ -306,6 +306,50 @@ class TestGetBmcIpsFromTopology:
 # ---------------------------------------------------------------------------
 
 
+class TestCheckRecertPvcsReady:
+    """The recert Job must wait until the clone DataVolume that populates the
+    RHCOS PVC is Succeeded — otherwise the still-running CDI clone pod holds the
+    RWO PVC and the recert Job fails with Multi-Attach."""
+
+    def _core_api_bound(self):
+        core_api = MagicMock()
+        pvc = MagicMock()
+        pvc.status.phase = "Bound"
+        core_api.read_namespaced_persistent_volume_claim.return_value = pvc
+        return core_api
+
+    @patch("handlers.project.client")
+    def test_false_while_clone_datavolume_not_succeeded(self, mock_client):
+        from handlers.project import _check_recert_pvcs_ready
+
+        mock_client.CustomObjectsApi.return_value.get_namespaced_custom_object.return_value = {
+            "status": {"phase": "CloneInProgress"}
+        }
+        cfgs = [{"rhcosPvc": "vm-a-disk-1"}]
+        assert _check_recert_pvcs_ready(self._core_api_bound(), cfgs, "ns") is False
+
+    @patch("handlers.project.client")
+    def test_true_when_clone_datavolume_succeeded(self, mock_client):
+        from handlers.project import _check_recert_pvcs_ready
+
+        mock_client.CustomObjectsApi.return_value.get_namespaced_custom_object.return_value = {
+            "status": {"phase": "Succeeded"}
+        }
+        cfgs = [{"rhcosPvc": "vm-a-disk-1"}]
+        assert _check_recert_pvcs_ready(self._core_api_bound(), cfgs, "ns") is True
+
+    @patch("handlers.project.client")
+    def test_true_when_no_datavolume_plain_bound_pvc(self, mock_client):
+        # A blank/plain PVC has no DataVolume (404) — Bound is enough.
+        from handlers.project import _check_recert_pvcs_ready
+
+        mock_client.CustomObjectsApi.return_value.get_namespaced_custom_object.side_effect = ApiException(
+            status=404
+        )
+        cfgs = [{"rhcosPvc": "vm-a-disk-1"}]
+        assert _check_recert_pvcs_ready(self._core_api_bound(), cfgs, "ns") is True
+
+
 class TestHandleRecert:
     @patch("handlers.project.client")
     def test_returns_false_when_no_recert_config(self, mock_client):
