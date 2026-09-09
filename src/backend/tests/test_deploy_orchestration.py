@@ -4202,6 +4202,76 @@ class TestShouldUseOpsPod:
         topo["ocpInstallVia"] = "bastion"
         assert _should_use_ops_pod(topo) is False
 
+
+def _ocp_pattern_topology(rhcos_per_cluster):
+    """OCP topology with clusters + RHCOS member VMs carrying a pattern-backed
+    storage node (so _is_pattern_deploy is True) and ocpKubeconfig on the CPs."""
+    topo = _ocp_topology(len(rhcos_per_cluster))
+    nodes = topo.setdefault("nodes", [])
+    nodes.append(
+        {
+            "type": "storageNode",
+            "id": "stor-1",
+            "data": {"patternId": "pat-1", "patternDiskId": "pd-1"},
+        }
+    )
+    for ci, count in enumerate(rhcos_per_cluster):
+        cid = f"cl-{ci}"
+        for vi in range(count):
+            nodes.append(
+                {
+                    "type": "vmNode",
+                    "id": f"{cid}-vm{vi}",
+                    "data": {
+                        "os": "rhcos",
+                        "clusterId": cid,
+                        "clusterRole": "control-plane",
+                        "ocpKubeconfig": f"KUBECONFIG-{cid}",
+                    },
+                }
+            )
+    return topo
+
+
+class TestOpsPodRecertHelpers:
+    def test_mode_by_cluster_sno_vs_multinode(self):
+        from app.services.deploy_service import _ops_pod_recert_mode_by_cluster
+
+        topo = _ocp_pattern_topology([1, 3])
+        clusters = topo["clusters"]
+        modes = _ops_pod_recert_mode_by_cluster(topo, clusters)
+        assert modes == {"cl-0": "sno", "cl-1": "multinode"}
+
+    def test_kubeconfig_files_per_cluster(self):
+        from app.services.deploy_service import _ops_pod_recert_kubeconfig_files
+
+        topo = _ocp_pattern_topology([1, 3])
+        clusters = topo["clusters"]
+        files = _ops_pod_recert_kubeconfig_files(topo, clusters, "/workdir")
+        assert files == {
+            "/workdir/cl-0/kubeconfig": "KUBECONFIG-cl-0",
+            "/workdir/cl-1/kubeconfig": "KUBECONFIG-cl-1",
+        }
+
+    def test_ops_pod_command_uses_recert_script_for_pattern(self):
+        from app.services.deploy_service import _ops_pod_command
+
+        topo = _ocp_pattern_topology([1])
+        cmd = _ops_pod_command(topo["clusters"], topo, "4.20", "/workdir")
+        script = cmd[-1]
+        # recert path: no fresh install
+        assert "agent create image" not in script
+        assert "wait-for install-complete" not in script
+        assert "export KUBECONFIG=/workdir/cl-0/kubeconfig" in script
+
+    def test_ops_pod_command_uses_install_script_for_fresh(self):
+        from app.services.deploy_service import _ops_pod_command
+
+        topo = _ocp_topology(1)
+        # fresh (no pattern storage node) still installs
+        cmd = _ops_pod_command(topo["clusters"], topo, "4.20", "/workdir")
+        assert "agent create image" in cmd[-1]
+
     def test_unset_defaults_to_pod(self):
         from app.services.deploy_service import _should_use_ops_pod
 

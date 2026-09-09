@@ -1891,22 +1891,70 @@ def _ops_pod_command(
     from app.services.ocp.ops_pod_install import (
         bmc_for_cluster,
         build_ops_pod_install_script,
+        build_ops_pod_recert_script,
     )
 
-    bmc_by_cluster = {}
-    for cluster in clusters:
-        key = str(cluster.get("id") or cluster.get("name") or "cluster")
-        bmc_by_cluster[key] = bmc_for_cluster(topology, cluster)
-    script = build_ops_pod_install_script(
-        clusters,
-        bmc_by_cluster,
-        ocp_version,
-        workdir,
-        net_ip_assignments=net_ip_assignments,
-        serving_ip=serving_ip,
-    )
+    if _is_pattern_deploy(topology):
+        # Pattern deploy: recert the already-installed disks, never reinstall.
+        modes = _ops_pod_recert_mode_by_cluster(topology, clusters)
+        script = build_ops_pod_recert_script(
+            clusters, workdir, modes, net_ip_assignments=net_ip_assignments
+        )
+    else:
+        bmc_by_cluster = {}
+        for cluster in clusters:
+            key = str(cluster.get("id") or cluster.get("name") or "cluster")
+            bmc_by_cluster[key] = bmc_for_cluster(topology, cluster)
+        script = build_ops_pod_install_script(
+            clusters,
+            bmc_by_cluster,
+            ocp_version,
+            workdir,
+            net_ip_assignments=net_ip_assignments,
+            serving_ip=serving_ip,
+        )
     preamble = "\n".join(_ops_pod_workdir_lines(clusters, workdir))
     return ["bash", "-c", preamble + "\n" + script]
+
+
+def _ops_pod_recert_mode_by_cluster(topology, clusters) -> dict[str, str]:
+    """Map each cluster key to its recert mode: ``sno`` (1 RHCOS member, offline
+    recert tool) or ``multinode`` (guestfish PKI wipe + online recert)."""
+    from app.services.ocp.agent_template import _cluster_members_for
+
+    modes: dict[str, str] = {}
+    for cluster in clusters:
+        key = str(cluster.get("id") or cluster.get("name") or "cluster")
+        rhcos = [
+            m
+            for m in _cluster_members_for(topology, cluster)
+            if m.get("data", {}).get("os") == "rhcos"
+        ]
+        modes[key] = "sno" if len(rhcos) == 1 else "multinode"
+    return modes
+
+
+def _ops_pod_recert_kubeconfig_files(topology, clusters, workdir) -> dict[str, str]:
+    """Admin-kubeconfig files to inject into the recert-mode ops pod, one per
+    cluster at ``<workdir>/<key>/kubeconfig``.
+
+    Sourced from a control-plane RHCOS member's ``ocpKubeconfig``: for SNO this
+    is the FRESH kubeconfig the offline recert tool just produced (recert runs at
+    the disk-create phase, before the ops pod); for multi-node it is the captured
+    admin kubeconfig, still valid because guestfish wipes only kubelet PKI, not
+    the apiserver/admin PKI.
+    """
+    from app.services.ocp.agent_template import _cluster_members_for
+
+    files: dict[str, str] = {}
+    for cluster in clusters:
+        key = str(cluster.get("id") or cluster.get("name") or "cluster")
+        for m in _cluster_members_for(topology, cluster):
+            d = m.get("data", {})
+            if d.get("os") == "rhcos" and d.get("ocpKubeconfig"):
+                files[f"{workdir}/{key}/kubeconfig"] = str(d["ocpKubeconfig"])
+                break
+    return files
 
 
 def _ops_pod_create_params(
@@ -1948,6 +1996,12 @@ def _ops_pod_create_params(
     networks = ops_pod_infra_network(vni_map, dns_nameserver=dns)
     command = _ops_pod_command(clusters, topology, ocp_version, OPS_POD_WORKDIR)
     files = ops_pod_config_files(clusters, OPS_POD_WORKDIR, pull_secret_json)
+    if _is_pattern_deploy(topology):
+        # Recert mode: inject each cluster's admin kubeconfig so the pod can run
+        # `oc` (CSR approval / apiserver redeploy) — no fresh install configs.
+        files.update(
+            _ops_pod_recert_kubeconfig_files(topology, clusters, OPS_POD_WORKDIR)
+        )
     container = {
         "name": "ops",
         "image": OPS_POD_IMAGE,
@@ -2248,6 +2302,11 @@ def _deploy_ops_pod_kubevirt(
         serving_ip=serving_ip,
     )
     config_files = ops_pod_config_files(clusters, OPS_POD_WORKDIR, "")
+    if _is_pattern_deploy(topology):
+        # Recert mode: inject each cluster's admin kubeconfig (no install configs).
+        config_files.update(
+            _ops_pod_recert_kubeconfig_files(topology, clusters, OPS_POD_WORKDIR)
+        )
     cluster_nads, bmc_nad = ops_pod_network_nads(topology)
     pod, secret = build_ops_pod_kubevirt_manifests(
         namespace=_kubevirt_project_ns(provider, project_id),
