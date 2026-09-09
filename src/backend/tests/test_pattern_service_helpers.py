@@ -837,6 +837,53 @@ class TestBuildNbdVmTasks:
         assert len(tasks) == 1
         assert tasks[0]["disk_metadata"][0]["format"] == "qcow2"
 
+    @patch("app.services.s3_storage._bucket", return_value="my-bucket")
+    @patch("app.services.deploy_topology._disk_path", return_value="/path/disk.raw")
+    def test_raw_declared_disk_stored_as_qcow2(self, mock_dp, mock_bucket):
+        """Capture always flattens to qcow2, so a raw-declared disk's stored
+        file (s3 key + local cache) must be .qcow2 — the extension must not lie
+        about the content. The declared format stays 'raw' for the VM XML."""
+        from app.services.pattern_service import _build_nbd_vm_tasks
+
+        vm_to_disks = {"vm-1": [{"id": "d-raw", "data": {"format": "raw", "size": 8}}]}
+        vm_nodes = {"vm-1": {"id": "vm-1", "data": {"label": "ctr"}}}
+        tasks = _build_nbd_vm_tasks(vm_to_disks, vm_nodes, "proj", "pat", None, {})
+        dp = tasks[0]["disks_params"][0]
+        md = tasks[0]["disk_metadata"][0]
+        assert dp["s3_url"].endswith("/pat/d-raw.qcow2"), dp["s3_url"]
+        assert dp["cache_path"].endswith("/pat/d-raw.qcow2"), dp["cache_path"]
+        assert md["s3_key"].endswith("/pat/d-raw.qcow2"), md["s3_key"]
+        # declared format preserved for the deploy topology / VM XML
+        assert md["format"] == "raw"
+
+
+# ---------------------------------------------------------------------------
+# _build_container_volume_disks
+# ---------------------------------------------------------------------------
+class TestBuildContainerVolumeDisks:
+    def test_raw_volume_stored_as_qcow2(self):
+        """Container volumes are declared 'raw' but captured (flattened) to
+        qcow2, so the stored object/cache must be named .qcow2."""
+        from app.services.pattern_service import _build_container_volume_disks
+
+        volume_disks = [
+            (
+                "ctr-1",
+                {"id": "vol-1", "data": {"format": "raw", "size": 4}},
+                {"disk_path": "/var/lib/troshka/vms/proj/vol.raw"},
+            )
+        ]
+        disks_params, disk_metadata = _build_container_volume_disks(
+            volume_disks, "pat-9", "my-bucket"
+        )
+        assert len(disks_params) == 1
+        assert disks_params[0]["s3_url"].endswith("/pat-9/vol-1.qcow2")
+        assert disks_params[0]["cache_path"].endswith("/pat-9/vol-1.qcow2")
+        assert disk_metadata[0]["s3_key"].endswith("/pat-9/vol-1.qcow2")
+        # declared format preserved (deploy materializes raw from the qcow2 cache)
+        assert disk_metadata[0]["format"] == "raw"
+        assert disk_metadata[0]["virtual_size_bytes"] == 4 * 1073741824
+
 
 # ---------------------------------------------------------------------------
 # _resolve_job_result

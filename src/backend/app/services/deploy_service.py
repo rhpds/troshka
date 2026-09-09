@@ -36,6 +36,7 @@ from app.models.pattern import Pattern
 from app.services.deploy_topology import (
     _auto_assign_container_ips,
     _disk_path,
+    _ext_from_s3_key,
     _extract_bmc_config,
     _extract_containers,
     _extract_vms,
@@ -542,7 +543,7 @@ def _collect_pattern_disks(nodes, db_session, pool, provider_id=None):
         cache_path = _pattern_cache_path(
             pattern_id,
             pd.source_disk_id,
-            pd.format,
+            _ext_from_s3_key(pd.s3_key, pd.format),
             pool,
         )
         disk_name = data.get("label") or data.get("name") or node.get("id", "")[:8]
@@ -1300,10 +1301,13 @@ def _resolve_disk_backing(disk, pool=None):
         _s = _SL()
         _pd = _s.query(_PD).filter_by(id=disk["patternDiskId"]).first()
         _cache_disk_id = _pd.source_disk_id if _pd else disk["patternDiskId"]
-        _s.close()
-        return _pattern_cache_path(
-            disk["patternId"], _cache_disk_id, disk["format"], pool
+        # Cache filename follows the ACTUAL stored format (from the s3 key),
+        # not the disk's declared format — captures always flatten to qcow2.
+        _cache_ext = (
+            _ext_from_s3_key(_pd.s3_key, disk["format"]) if _pd else disk["format"]
         )
+        _s.close()
+        return _pattern_cache_path(disk["patternId"], _cache_disk_id, _cache_ext, pool)
 
     if disk.get("source") == "snapshot" and disk.get("snapshotItemId"):
         from app.core.database import SessionLocal as _SL2

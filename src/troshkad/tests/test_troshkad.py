@@ -536,6 +536,65 @@ class TestStorageHandlers(unittest.TestCase):
         assert any(c[:2] == ["cp", "--reflink=auto"] for c in cmds), cmds
         assert not any("create" in c and "-b" in c for c in cmds), cmds
 
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.Popen")
+    def test_disk_create_raw_with_qcow2_backing_converts_to_raw(
+        self, mock_popen, mock_makedirs
+    ):
+        """The pattern cache is compressed qcow2 even for `.raw`-named disks, so a
+        raw target must be CONVERTED (not reflink-copied, which would leave qcow2
+        content in a .raw file and fail 'container volumes must be raw')."""
+        m = _mock_popen(stdout='{"format": "qcow2", "virtual-size": 1073741824}')
+        # `qemu-img info` runs via subprocess.run -> `with Popen(...) as p`; yield
+        # the same mock and make poll() return 0 (subprocess.run reads returncode
+        # from poll()) so info.stdout parses.
+        m.__enter__.return_value = m
+        m.poll.return_value = 0
+        mock_popen.return_value = m
+        job = troshkad._create_job(
+            "disks/create",
+            {
+                "path": "/var/lib/troshka/shared/vms/proj/aabb-1122.raw",
+                "size_gb": 5,
+                "format": "raw",
+                "backing_file": "/var/lib/troshka/local/cache/patterns/p/vol.raw",
+            },
+        )
+        troshkad._handle_disk_create(job, job["params"])
+        cmds = [c[0][0] for c in mock_popen.call_args_list]
+        # convert qcow2 -> raw (never a plain reflink of qcow2 content)
+        assert any(c[:2] == ["qemu-img", "convert"] and "raw" in c for c in cmds), cmds
+        assert not any(c[:2] == ["cp", "--reflink=auto"] for c in cmds), cmds
+
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.Popen")
+    def test_disk_create_qcow2_overlay_declares_backing_format(
+        self, mock_popen, mock_makedirs
+    ):
+        """A qcow2 overlay on a raw backing must declare -F raw (the BACKING's
+        actual format), not -F qcow2 (the overlay's format)."""
+        m = _mock_popen(stdout='{"format": "raw", "virtual-size": 1073741824}')
+        m.__enter__.return_value = m
+        m.poll.return_value = 0
+        mock_popen.return_value = m
+        job = troshkad._create_job(
+            "disks/create",
+            {
+                "path": "/var/lib/troshka/vms/proj/aabb-1122.qcow2",
+                "size_gb": 5,
+                "format": "qcow2",
+                "backing_file": "/var/lib/troshka/images/base.raw",
+            },
+        )
+        troshkad._handle_disk_create(job, job["params"])
+        create_cmd = next(
+            c[0][0]
+            for c in mock_popen.call_args_list
+            if c[0][0][:2] == ["qemu-img", "create"]
+        )
+        assert "-F" in create_cmd, create_cmd
+        assert create_cmd[create_cmd.index("-F") + 1] == "raw", create_cmd
+
     @patch("troshkad.subprocess.Popen")
     def test_disk_resize(self, mock_popen):
         mock_popen.return_value = _mock_popen()

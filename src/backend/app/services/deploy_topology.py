@@ -1334,6 +1334,19 @@ def _pattern_cache_path(pattern_id: str, disk_id: str, fmt: str, pool=None) -> s
     return f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
 
 
+def _ext_from_s3_key(s3_key: str, default: str) -> str:
+    """Return the actual stored-file extension from an s3 key.
+
+    Pattern captures always flatten to qcow2, so the stored object's extension
+    (not the disk's DECLARED format) is the source of truth for the local cache
+    filename. Legacy patterns stored qcow2 content under a declared-format name
+    (e.g. ``.raw``); parsing the key preserves those too. Falls back to
+    ``default`` when the key has no extension.
+    """
+    tail = (s3_key or "").rsplit("/", 1)[-1]
+    return tail.rsplit(".", 1)[1] if "." in tail else default
+
+
 def _snapshot_cache_path(item_id: str, disk_id: str, fmt: str) -> str:
     return f"/var/lib/troshka/cache/snapshots/{item_id}/{disk_id}.{fmt}"
 

@@ -15,6 +15,12 @@ log = logging.getLogger(__name__)
 
 CAPTURE_REQUEST_ANNOTATION = "troshka.redhat.com/capture-request"
 
+# Captures always flatten disks to compressed qcow2, so the stored object (S3
+# key + local cache file) is named .qcow2 regardless of the disk's DECLARED
+# format. The declared format is preserved separately in metadata for the VM XML
+# and is what the deploy materializes (e.g. raw for container volumes).
+PATTERN_STORED_FORMAT = "qcow2"
+
 
 def _set_capture_progress(pattern_id: str, data: dict):
     from app.core.redis import set_progress
@@ -82,28 +88,22 @@ def _stop_showroom_pods(host, project_id, topology):
             )
 
 
-def _capture_container_volumes(
-    host, topology, project_id, pattern_id, creds, pool, pattern, db
-):
-    """Capture raw volumes attached to container pods (e.g. showroom content)."""
-    from app.services.s3_storage import capture_bucket
-    from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
+def _build_container_volume_disks(volume_disks, pattern_id, bucket):
+    """Build (disks_params, disk_metadata) for container-volume capture.
 
-    volume_disks = _collect_container_volume_disks(topology, project_id, pool)
-    if not volume_disks:
-        return True
-
-    _stop_showroom_pods(host, project_id, topology)
-
-    bucket = capture_bucket(creds)
+    The stored object/cache is named .qcow2 (captures flatten to qcow2); the
+    disk's declared format (typically raw for container volumes) is preserved in
+    metadata so the deploy materializes the right on-disk format.
+    """
     disks_params = []
     disk_metadata = []
     for container_id, disk_node, vol in volume_disks:
         disk_id = disk_node["id"]
         fmt = disk_node.get("data", {}).get("format", "raw")
-        s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
+        s3_key = f"patterns/{pattern_id}/{disk_id}.{PATTERN_STORED_FORMAT}"
         cache_path = (
-            f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
+            f"/var/lib/troshka/local/cache/patterns/{pattern_id}/"
+            f"{disk_id}.{PATTERN_STORED_FORMAT}"
         )
         vsize = int(disk_node.get("data", {}).get("size", 0)) * 1073741824
         disks_params.append(
@@ -123,6 +123,26 @@ def _capture_container_volumes(
                 "virtual_size_bytes": vsize,
             }
         )
+    return disks_params, disk_metadata
+
+
+def _capture_container_volumes(
+    host, topology, project_id, pattern_id, creds, pool, pattern, db
+):
+    """Capture raw volumes attached to container pods (e.g. showroom content)."""
+    from app.services.s3_storage import capture_bucket
+    from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
+
+    volume_disks = _collect_container_volume_disks(topology, project_id, pool)
+    if not volume_disks:
+        return True
+
+    _stop_showroom_pods(host, project_id, topology)
+
+    bucket = capture_bucket(creds)
+    disks_params, disk_metadata = _build_container_volume_disks(
+        volume_disks, pattern_id, bucket
+    )
 
     try:
         job_id = start_job(
@@ -1117,10 +1137,12 @@ def _build_nbd_vm_tasks(vm_to_disks, vm_nodes, project_id, pattern_id, pool, cre
             if fmt == "iso":
                 continue
             disk_path = _disk_path(project_id, vm_id, disk_id, fmt, pool=pool)
-            s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
+            # Stored file is qcow2 (flattened); declared `fmt` kept in metadata.
+            s3_key = f"patterns/{pattern_id}/{disk_id}.{PATTERN_STORED_FORMAT}"
             s3_url = f"s3://{bucket}/{s3_key}"
             cache_path = (
-                f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
+                f"/var/lib/troshka/local/cache/patterns/{pattern_id}/"
+                f"{disk_id}.{PATTERN_STORED_FORMAT}"
             )
             vsize = int(disk_node.get("data", {}).get("size", 0)) * 1073741824
             disks_params.append(
@@ -1441,10 +1463,12 @@ def _capture_direct(
 
             disk_path = _disk_path(project_id, vm_id, disk_id, fmt, pool=pool)
 
-            s3_key = f"patterns/{pattern_id}/{disk_id}.{fmt}"
+            # Stored file is qcow2 (flattened); declared `fmt` kept in metadata.
+            s3_key = f"patterns/{pattern_id}/{disk_id}.{PATTERN_STORED_FORMAT}"
             s3_url = f"s3://{bucket}/{s3_key}"
             cache_path = (
-                f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{disk_id}.{fmt}"
+                f"/var/lib/troshka/local/cache/patterns/{pattern_id}/"
+                f"{disk_id}.{PATTERN_STORED_FORMAT}"
             )
 
             vsize = int(disk_node.get("data", {}).get("size", 0)) * 1073741824

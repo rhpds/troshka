@@ -2563,6 +2563,91 @@ class TestPatternCachePath:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# _ext_from_s3_key
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestExtFromS3Key:
+    """The pattern cache filename must reflect the ACTUAL stored format
+    (parsed from the s3_key), not the disk's declared format — captures always
+    flatten to qcow2, so a raw-declared disk is stored as .qcow2."""
+
+    def test_qcow2_key(self):
+        from app.services.deploy_topology import _ext_from_s3_key
+
+        assert _ext_from_s3_key("patterns/p/d.qcow2", "raw") == "qcow2"
+
+    def test_legacy_raw_key_preserved(self):
+        # Pre-rename patterns stored .raw-named (qcow2-content) objects; the
+        # deploy must still resolve them by their actual stored extension.
+        from app.services.deploy_topology import _ext_from_s3_key
+
+        assert _ext_from_s3_key("patterns/p/d.raw", "qcow2") == "raw"
+
+    def test_no_extension_uses_default(self):
+        from app.services.deploy_topology import _ext_from_s3_key
+
+        assert _ext_from_s3_key("patterns/p/noext", "qcow2") == "qcow2"
+
+    def test_empty_key_uses_default(self):
+        from app.services.deploy_topology import _ext_from_s3_key
+
+        assert _ext_from_s3_key("", "raw") == "raw"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _collect_pattern_disks — cache path from stored s3_key
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestCollectPatternDisksCacheExt:
+    def test_cache_path_uses_stored_qcow2_ext_not_declared_raw(self):
+        """A container volume declared 'raw' is stored as .qcow2; the local
+        cache path must be .qcow2 (from s3_key) so the download lands where the
+        deploy backing resolver looks — not .raw (from the declared format)."""
+        from app.models.pattern import Pattern, PatternDisk
+        from app.services.deploy_service import _collect_pattern_disks
+
+        pd = MagicMock(spec=PatternDisk)
+        pd.s3_key = "patterns/pat-1/src-disk.qcow2"
+        pd.source_disk_id = "src-disk"
+        pd.format = "raw"  # declared (VM/container XML) format
+        pd.size_bytes = 123
+
+        pattern_obj = MagicMock(spec=Pattern)
+        pattern_obj.source_provider_id = None
+
+        def _query(model):
+            q = MagicMock()
+            target = pd if model is PatternDisk else pattern_obj
+            q.filter_by.return_value.first.return_value = target
+            return q
+
+        db = MagicMock()
+        db.query.side_effect = _query
+
+        nodes = [
+            {
+                "type": "storageNode",
+                "id": "stor-1",
+                "data": {
+                    "patternId": "pat-1",
+                    "patternDiskId": "pdisk-1",
+                    "label": "vol",
+                },
+            }
+        ]
+        with patch(
+            "app.services.pattern_locations.pattern_disk_source_for_cluster",
+            return_value="local",
+        ):
+            items = _collect_pattern_disks(nodes, db, None)
+
+        assert len(items) == 1
+        assert items[0]["cache_path"].endswith("/pat-1/src-disk.qcow2")
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # _snapshot_cache_path
 # ═══════════════════════════════════════════════════════════════════════
 

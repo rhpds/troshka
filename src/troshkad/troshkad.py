@@ -3117,7 +3117,9 @@ def _handle_disk_create(job, params):
     if backing:
         backing = _validate_path(backing)
         _job_log(job, f"Using backing image: {os.path.basename(backing)}")
-        # Ensure overlay is at least as large as backing file
+        # Detect the backing's actual format + size (default raw). Ensure the
+        # target is at least as large as the backing.
+        backing_fmt = "raw"
         try:
             info = subprocess.run(
                 ["qemu-img", "info", _PODMAN_JSON, backing],
@@ -3128,7 +3130,9 @@ def _handle_disk_create(job, params):
             if info.returncode == 0:
                 import json as _json
 
-                backing_vsize = _json.loads(info.stdout).get("virtual-size", 0)
+                _binfo = _json.loads(info.stdout)
+                backing_fmt = _binfo.get("format") or "raw"
+                backing_vsize = _binfo.get("virtual-size", 0)
                 requested = size_gb * 1073741824
                 if requested < backing_vsize:
                     backing_gb = (backing_vsize + 1073741823) // 1073741824
@@ -3141,16 +3145,33 @@ def _handle_disk_create(job, params):
             pass
         if fmt == "raw":
             # RAW images can't carry a qemu-img backing file (`create -f raw -b`
-            # fails), so a pattern overlay reflink-copies the backing instead:
-            # thin copy-on-write where the filesystem supports it (XFS/btrfs
-            # reflink, e.g. the pattern-buffer NVMe pool), a full copy otherwise.
-            # The disk stays RAW so the VM XML/driver is unchanged, then grow to
-            # the requested size (already expanded to >= the backing above).
-            _run_cmd(job, ["cp", "--reflink=auto", backing, path])
+            # fails), so materialize a standalone raw disk from the backing:
+            #  - raw backing  -> `cp --reflink=auto` (thin copy-on-write where the
+            #    filesystem supports it, e.g. the pattern-buffer NVMe pool);
+            #  - non-raw (e.g. qcow2 RHCOS/recert) backing -> convert to raw, else
+            #    a qcow2-content file named .raw fails downstream "must be raw"
+            #    checks (KubeVirt/container volumes).
+            # Then grow to the requested size (already expanded to >= backing).
+            if backing_fmt == "raw":
+                _run_cmd(job, ["cp", "--reflink=auto", backing, path])
+            else:
+                _run_cmd(
+                    job,
+                    [
+                        "qemu-img",
+                        "convert",
+                        "-f",
+                        backing_fmt,
+                        "-O",
+                        "raw",
+                        backing,
+                        path,
+                    ],
+                )
             _run_cmd(job, ["qemu-img", "resize", "-f", "raw", path, f"{size_gb}G"])
             _chown_qemu(path)
             return {"path": path, "status": "created"}
-        cmd.extend(["-b", backing, "-F", fmt])
+        cmd.extend(["-b", backing, "-F", backing_fmt])
     cmd.extend([path, f"{size_gb}G"])
     _run_cmd(job, cmd)
     _chown_qemu(path)
