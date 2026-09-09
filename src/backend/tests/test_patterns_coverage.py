@@ -1291,6 +1291,58 @@ def test_remap_boot_devices():
     ]
 
 
+def test_remap_container_mounts_disknodeid():
+    """Container/pod volume mounts reference a disk node by id; remap must update
+    those refs to the new storage-node id (both provider paths resolve the mount
+    by diskNodeId). Otherwise a pattern deploy's showroom /showroom is silently
+    dropped (mount lookup misses)."""
+    from app.api.patterns import _remap_topology
+
+    topo = {
+        "nodes": [
+            {
+                "id": "showroom-1",
+                "type": "containerNode",
+                "data": {
+                    "name": "showroom",
+                    "isPod": True,
+                    # Stored topology uses camelCase pod/init containers.
+                    "mounts": [{"mountPath": "/showroom", "diskNodeId": "disk-1"}],
+                    "podContainers": [
+                        {
+                            "name": "content",
+                            "mounts": [
+                                {"mountPath": "/showroom", "diskNodeId": "disk-1"}
+                            ],
+                        }
+                    ],
+                    "initContainers": [
+                        {
+                            "name": "init",
+                            "mounts": [
+                                {"mountPath": "/showroom", "diskNodeId": "disk-1"}
+                            ],
+                        }
+                    ],
+                },
+            },
+            {
+                "id": "disk-1",
+                "type": "storageNode",
+                "data": {"name": "showroom-vol0"},
+            },
+        ],
+        "edges": [],
+    }
+    result = _remap_topology(topo)
+    new_disk_id = next(n for n in result["nodes"] if n["type"] == "storageNode")["id"]
+    sr = next(n for n in result["nodes"] if n["data"].get("name") == "showroom")
+    assert new_disk_id != "disk-1"
+    assert sr["data"]["mounts"][0]["diskNodeId"] == new_disk_id
+    assert sr["data"]["podContainers"][0]["mounts"][0]["diskNodeId"] == new_disk_id
+    assert sr["data"]["initContainers"][0]["mounts"][0]["diskNodeId"] == new_disk_id
+
+
 def test_clear_external_endpoints():
     from app.api.patterns import _clear_external_endpoints
 

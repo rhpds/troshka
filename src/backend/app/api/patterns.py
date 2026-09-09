@@ -79,6 +79,39 @@ def _remap_node_ids(nodes: list, id_map: dict, handle_id_map: dict) -> None:
             dc["id"] = new_dc_id
 
 
+def _remap_container_mounts(nodes: list, id_map: dict) -> None:
+    """Remap container/pod volume mount disk-node references in-place.
+
+    Container and pod nodes reference their volume disks by node id in
+    ``data.mounts[].diskNodeId`` (and per-container ``pod_containers[].mounts`` /
+    ``init_containers[].mounts``). Without remapping these to the new storage-node
+    ids, the deploy's mount lookup (``_find_container_volumes`` /
+    ``_pod_create_params._resolve_mounts``) misses and the volume — e.g. the
+    shared showroom ``/showroom`` disk — is silently never mounted. Runs on the
+    full ``id_map`` (after node ids are assigned), for BOTH provider paths.
+    """
+
+    def _fix(mounts) -> None:
+        for m in mounts or []:
+            old = m.get("diskNodeId")
+            if old in id_map:
+                m["diskNodeId"] = id_map[old]
+
+    for node in nodes:
+        data = node.get("data", {})
+        _fix(data.get("mounts"))
+        # Stored topology uses camelCase (podContainers/initContainers); accept
+        # snake_case too so the remap is robust across representations.
+        for key in (
+            "podContainers",
+            "pod_containers",
+            "initContainers",
+            "init_containers",
+        ):
+            for sub in data.get(key, []) or []:
+                _fix(sub.get("mounts"))
+
+
 def _remap_boot_devices(nodes: list, id_map: dict) -> None:
     """Remap bootDevices references in-place."""
     for node in nodes:
@@ -219,6 +252,7 @@ def _remap_topology(topology: dict) -> dict:
 
     _remap_node_ids(nodes, id_map, handle_id_map)
     _remap_boot_devices(nodes, id_map)
+    _remap_container_mounts(nodes, id_map)
     _remap_edges(edges, id_map, handle_id_map)
 
     topo["startOrder"] = _remap_start_order(topo.get("startOrder", []), id_map)
