@@ -5773,29 +5773,30 @@ def _resolve_recert_settings(s, topology):
 
 
 def _auto_enable_recert_on_rhcos(topology, deploy_recert, project_id):
-    """Auto-enable recert on RHCOS VMs when pattern has recert enabled."""
+    """Route RHCOS VMs to the correct recert mechanism for an OCP pattern deploy.
+
+    SNO (1 RHCOS VM): the official Red Hat ``recert`` tool runs offline on the
+    disk (self-sufficient), so set ``recertEnabled`` — ``_clean_kubelet_certs``
+    routes recertEnabled VMs through ``/vms/recert``.
+
+    Multi-node: uses the CUSTOM recert — ``guestfish`` wipes kubelet PKI offline
+    (so nodes bootstrap fresh CSRs) and the ops-pod monitor does the online CSR
+    approval + kube-apiserver redeploy. Deliberately leave ``recertEnabled``
+    UNSET so those disks take the guestfish path, not the single-node recert tool.
+    """
     from app.services.ocp_topology_flags import apply_sno_ocp_vm_flags, rhcos_vms
 
     if len(rhcos_vms(topology)) == 1:
         apply_sno_ocp_vm_flags(topology, recert=bool(deploy_recert))
         if deploy_recert:
             logger.info(
-                "Deploy %s: auto-enabled OCP flags on SNO RHCOS VM from pattern",
+                "Deploy %s: SNO pattern — recert tool on the single RHCOS VM",
                 project_id[:8],
             )
         return
-    if not deploy_recert or deploy_recert is False:
-        return
-    has_recert_vm = any(
-        n.get("type") == "vmNode" and n.get("data", {}).get("recertEnabled")
-        for n in topology.get("nodes", [])
-    )
-    if not has_recert_vm:
-        for n in topology.get("nodes", []):
-            if n.get("type") == "vmNode" and n.get("data", {}).get("os") == "rhcos":
-                n.setdefault("data", {})["recertEnabled"] = True
+    if deploy_recert:
         logger.info(
-            "Deploy %s: auto-enabled recert on RHCOS VMs from pattern",
+            "Deploy %s: multi-node pattern — guestfish PKI wipe + online recert",
             project_id[:8],
         )
 
@@ -5804,19 +5805,17 @@ def _deploy_handle_recert(s, host, project_id, topology, pool):
     if not (_is_pattern_deploy(topology) and _is_ocp_topology(topology)):
         return
     _update_deploy_progress(project_id, "certs", "regenerating certificates")
-    deploy_recert, common_password = _resolve_recert_settings(s, topology)
-    _auto_enable_recert_on_rhcos(topology, deploy_recert, project_id)
-    if deploy_recert is False:
-        logger.info(
-            "Deploy %s: recert disabled by user, using guestfish",
-            project_id[:8],
-        )
+    # Recert is MANDATORY to redeploy a captured OCP cluster (certs are time-bound
+    # and cluster identity must be regenerated), so it always runs for an OCP
+    # pattern deploy — the old per-pattern recert flag is advisory only now.
+    _, common_password = _resolve_recert_settings(s, topology)
+    _auto_enable_recert_on_rhcos(topology, True, project_id)
     _clean_kubelet_certs(
         host,
         project_id,
         topology,
         pool,
-        pattern_recert=bool(deploy_recert),
+        pattern_recert=True,
         common_password=common_password,
     )
 

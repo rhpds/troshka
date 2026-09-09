@@ -865,6 +865,31 @@ class TestAutoEnableRecertOnRhcos:
         _auto_enable_recert_on_rhcos(topo, False, PROJECT_ID)
         assert "recertEnabled" not in topo["nodes"][0]["data"]
 
+    def test_multinode_does_not_set_recertenabled(self):
+        """Multi-node clusters use the CUSTOM recert (guestfish kubelet-PKI wipe +
+        online CSR/apiserver refresh), NOT the single-node recert tool — so
+        recertEnabled must stay unset even with recert on, or _clean_kubelet_certs
+        would route the CP disks through the offline recert tool."""
+        topo = {
+            "nodes": [
+                {
+                    "type": "vmNode",
+                    "data": {"os": "rhcos", "clusterRole": "control-plane"},
+                },
+                {
+                    "type": "vmNode",
+                    "data": {"os": "rhcos", "clusterRole": "control-plane"},
+                },
+                {
+                    "type": "vmNode",
+                    "data": {"os": "rhcos", "clusterRole": "control-plane"},
+                },
+            ]
+        }
+        _auto_enable_recert_on_rhcos(topo, True, PROJECT_ID)
+        for n in topo["nodes"]:
+            assert "recertEnabled" not in n["data"]
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # _build_vm_progress_items
@@ -2898,6 +2923,27 @@ class TestDeployHandleRecert:
         _deploy_handle_recert(s, host, PROJECT_ID, topo, None)
         mock_clean.assert_called_once()
         mock_auto.assert_called_once_with(topo, True, PROJECT_ID)
+
+    @patch("app.services.deploy_service._clean_kubelet_certs")
+    @patch("app.services.deploy_service._auto_enable_recert_on_rhcos")
+    @patch(
+        "app.services.deploy_service._resolve_recert_settings",
+        return_value=(False, None),
+    )
+    @patch("app.services.deploy_service._update_deploy_progress")
+    @patch("app.services.deploy_service._is_ocp_topology", return_value=True)
+    @patch("app.services.deploy_service._is_pattern_deploy", return_value=True)
+    def test_recert_forced_on_for_ocp_pattern(
+        self, mock_pattern, mock_ocp, mock_prog, mock_resolve, mock_auto, mock_clean
+    ):
+        """Recert is mandatory to redeploy a captured OCP cluster, so it runs even
+        when the stored pattern flag is False (auto)."""
+        s = MagicMock()
+        host = _make_host()
+        topo = {"nodes": []}
+        _deploy_handle_recert(s, host, PROJECT_ID, topo, None)
+        mock_auto.assert_called_once_with(topo, True, PROJECT_ID)
+        assert mock_clean.call_args.kwargs.get("pattern_recert") is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
