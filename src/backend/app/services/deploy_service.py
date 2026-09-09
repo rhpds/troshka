@@ -5859,9 +5859,21 @@ def _auto_enable_recert_on_rhcos(topology, deploy_recert, project_id):
     """
     from app.services.ocp_topology_flags import apply_sno_ocp_vm_flags, rhcos_vms
 
-    if len(rhcos_vms(topology)) == 1:
+    rhcos = rhcos_vms(topology)
+    if len(rhcos) == 1:
         # SNO: set monitor flags only (recert=False → no RH recert tool).
         apply_sno_ocp_vm_flags(topology, recert=False)
+    # Provider parity for the kubelet-PKI wipe: KubeVirt does it via the operator's
+    # guestfish job (driven by guestfishCommands on the RHCOS node); troshkad
+    # ignores guestfishCommands and does the same wipe in _clean_kubelet_certs.
+    # Set the commands on every RHCOS node so both providers wipe before boot.
+    for vm in rhcos:
+        data = vm.setdefault("data", {})
+        existing = list(data.get("guestfishCommands") or [])
+        for cmd in ("rm-rf /var/lib/kubelet/pki", "rm-f /var/lib/kubelet/kubeconfig"):
+            if cmd not in existing:
+                existing.append(cmd)
+        data["guestfishCommands"] = existing
     if deploy_recert:
         logger.info(
             "Deploy %s: OCP pattern recert — guestfish PKI wipe + online (all node types)",

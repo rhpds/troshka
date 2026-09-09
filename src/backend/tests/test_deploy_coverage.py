@@ -868,6 +868,24 @@ class TestAutoEnableRecertOnRhcos:
         _auto_enable_recert_on_rhcos(topo, False, PROJECT_ID)
         assert "recertEnabled" not in topo["nodes"][0]["data"]
 
+    def test_sets_kubelet_wipe_guestfish_commands_for_kubevirt(self):
+        """KubeVirt wipes the kubelet PKI via the operator's guestfish job, driven
+        by guestfishCommands on the RHCOS nodes (troshkad ignores these and uses
+        _clean_kubelet_certs). Set them on ALL RHCOS nodes for provider parity."""
+        topo = {
+            "nodes": [
+                {"type": "vmNode", "data": {"os": "rhcos"}},
+                {"type": "vmNode", "data": {"os": "rhcos"}},
+                {"type": "vmNode", "data": {"os": "rhel9"}},
+            ]
+        }
+        _auto_enable_recert_on_rhcos(topo, True, PROJECT_ID)
+        for n in topo["nodes"][:2]:
+            gc = n["data"].get("guestfishCommands", [])
+            assert any("rm-rf /var/lib/kubelet/pki" in c for c in gc)
+            assert any("/var/lib/kubelet/kubeconfig" in c for c in gc)
+        assert "guestfishCommands" not in topo["nodes"][2]["data"]  # not RHCOS
+
     def test_multinode_does_not_set_recertenabled(self):
         """Multi-node clusters use the CUSTOM recert (guestfish kubelet-PKI wipe +
         online CSR/apiserver refresh), NOT the single-node recert tool — so
