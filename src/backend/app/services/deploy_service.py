@@ -1685,7 +1685,14 @@ def _pod_create_params(host, project_id, ctr, topology, vni_map, pool=None):
 
     init_containers = ctr.get("init_containers", [])
     if ctr.get("build_content") is False:
-        init_containers = []
+        # Content is pre-built (pattern/snapshot), so skip the content inits
+        # (git-cloner, antora-builder) — but KEEP the nginx-config init, which
+        # (re)writes the pid-specific ui-config.yml / nginx.conf for THIS deploy.
+        # Without it the captured showroom serves the SOURCE project's app-proxy
+        # URLs (e.g. the console tab points at the old project's route -> 503).
+        init_containers = [
+            ic for ic in init_containers if ic.get("name") == "nginx-config"
+        ]
 
     return {
         "project_id": project_id,

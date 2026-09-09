@@ -854,9 +854,15 @@ def _build_init_containers(
             ],
             "ports": [],
             "command": (
-                'mkdir -p /showroom/nginx /showroom/repo && echo "$NGINX_B64" | base64 -d '
-                '> /showroom/nginx/nginx.conf && echo "$UI_CONFIG_B64" | base64 -d '
-                "> /showroom/repo/ui-config.yml"
+                "mkdir -p /showroom/nginx /showroom/repo /showroom/www && "
+                'echo "$NGINX_B64" | base64 -d > /showroom/nginx/nginx.conf && '
+                'echo "$UI_CONFIG_B64" | base64 -d > /showroom/repo/ui-config.yml && '
+                # Also write the SERVED copy: pattern/snapshot deploys skip the
+                # antora build (which produces /showroom/www), so the pid-specific
+                # ui-config only reaches the browser if we write www directly. On
+                # fresh deploys antora rebuilds www afterward from the same repo
+                # ui-config, so the pid stays correct either way.
+                'echo "$UI_CONFIG_B64" | base64 -d > /showroom/www/ui-config.yml'
             ),
             "mounts": [mount],
         },

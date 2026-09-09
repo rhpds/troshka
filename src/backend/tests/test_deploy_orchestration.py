@@ -3996,6 +3996,37 @@ class TestCreateAndStartPod:
     """Tests for _create_and_start_pod."""
 
     @patch(f"{SVC}._find_container_volumes", return_value=[])
+    @patch(f"{SVC}._find_container_networks", return_value=[])
+    def test_pattern_pod_keeps_config_init_drops_content(self, mock_nets, mock_vols):
+        """A pattern/snapshot showroom (build_content False) has pre-built content,
+        so the content inits (git-cloner, antora-builder) are skipped — but the
+        nginx-config init MUST still run to (re)write the pid-specific
+        ui-config.yml / nginx.conf for THIS deploy."""
+        from app.services.deploy_service import _pod_create_params
+
+        host = _make_host()
+        ctr = {
+            "node_id": CTR_NODE_ID,
+            "name": "showroom",
+            "build_content": False,
+            "init_containers": [
+                {"name": "git-cloner", "image": "g", "envVars": [], "mounts": []},
+                {
+                    "name": "nginx-config",
+                    "image": "b",
+                    "envVars": [{"key": "UI_CONFIG_B64", "value": "x"}],
+                    "mounts": [],
+                    "command": "write configs",
+                },
+                {"name": "antora-builder", "image": "a", "envVars": [], "mounts": []},
+            ],
+            "pod_containers": [],
+        }
+        params = _pod_create_params(host, PROJECT_ID, ctr, _minimal_topology(), {})
+        names = [ic["name"] for ic in params["init_containers"]]
+        assert names == ["nginx-config"]
+
+    @patch(f"{SVC}._find_container_volumes", return_value=[])
     @patch(
         f"{SVC}._find_container_networks",
         return_value=[

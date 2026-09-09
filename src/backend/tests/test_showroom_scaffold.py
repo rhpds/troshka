@@ -918,3 +918,18 @@ def test_ns_from_showroom_hostname():
     )
     assert _ns_from_showroom_hostname("") == ""
     assert _ns_from_showroom_hostname("no-port-here.apps.x") == ""
+
+
+def test_nginx_config_init_writes_ui_config_to_served_www():
+    """The nginx-config init must write ui-config.yml to BOTH /showroom/repo AND
+    the served /showroom/www — pattern deploys skip the antora build (which would
+    otherwise produce /showroom/www), so the pid-specific ui-config only reaches
+    the browser if this init writes www directly."""
+    from app.services.showroom_scaffold import _build_init_containers
+
+    inits = _build_init_containers("repo", "ref", "bm5n", "dWk=", "disk-1")
+    nginx_cfg = next(ic for ic in inits if ic["name"] == "nginx-config")
+    cmd = nginx_cfg["command"]
+    assert "/showroom/www/ui-config.yml" in cmd
+    assert "/showroom/repo/ui-config.yml" in cmd
+    assert "/showroom/nginx/nginx.conf" in cmd
