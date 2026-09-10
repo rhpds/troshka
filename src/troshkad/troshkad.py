@@ -7207,6 +7207,64 @@ def _pull_file_candidate_paths(guest_path):
     return [gp, "/ostree/deploy/*/deploy/*" + gp]
 
 
+def _filepull_commit(job, domain, match):
+    """Commit + delete file-pull overlay(s) whose filename contains ``.{match}``
+    so NO orphaned snapshot is left. ``match`` is the unique snap name (this run)
+    or the ``tfp-`` prefix (sweep leftovers from a crashed prior run).
+    ``_commit_overlay_with_retry`` blockcommits --pivot and removes the file."""
+    result = subprocess.run(
+        ["virsh", "domblklist", domain, "--details"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        return
+    for line in result.stdout.strip().split("\n"):
+        parts = line.split()
+        if len(parts) >= 4 and parts[1] == "disk" and f".{match}" in parts[3]:
+            _job_log(job, f"file-pull: committing overlay {parts[2]} back to base")
+            _commit_overlay_with_retry(job, domain, parts[2], parts[3])
+
+
+def _filepull_snapshot(job, domain, snap_name):
+    """Freeze + disk-only overlay snapshot with a UNIQUE per-invocation name so it
+    never collides with pattern captures or the delivery's own retry loop (a
+    reused fixed name leaves an overlay that makes every later snapshot fail
+    'external snapshot file already exists' -> crash-consistent live read -> rc=3).
+    Sweeps any leftover file-pull overlays first. Returns True if created."""
+    _filepull_commit(job, domain, "tfp-")  # sweep leftovers from crashed prior runs
+    frozen = _freeze_domain_fs(job, domain)
+    try:
+        r = subprocess.run(
+            [
+                "virsh",
+                "snapshot-create-as",
+                domain,
+                "--name",
+                snap_name,
+                "--disk-only",
+                "--atomic",
+                "--no-metadata",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if r.returncode != 0:
+            _job_log(job, f"file-pull snapshot failed: {r.stderr.strip()}")
+            return False
+        return True
+    finally:
+        if frozen:
+            subprocess.run(
+                ["virsh", "domfsthaw", domain],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+
+
 def _handle_vm_file_pull_snapshot(job, params):
     """Pull a single file from a (possibly running) VM's disk via a point-in-time
     snapshot read OFFLINE with guestfish — never the live disk. Returns
@@ -7226,7 +7284,13 @@ def _handle_vm_file_pull_snapshot(job, params):
     # the guestfish appliance on the qcow2 write-lock (and qemu-img can't even
     # read the locked overlay's metadata to resolve the backing).
     disk_path = _get_disk_path_by_index(domain, disk_index)
-    snapshotted = _snapshot_domain(job, domain) if running else False
+    # UNIQUE overlay name per invocation — never reuse the capture's fixed
+    # "troshka-capture" name: on the delivery's retry loop a single leftover
+    # overlay would make every subsequent snapshot fail ("external snapshot file
+    # already exists") -> crash-consistent read of the live disk -> rc=3. Unique
+    # names + always-commit-and-remove (finally) guarantee no orphaned snapshot.
+    snap_name = f"tfp-{str(job.get('id', uuid.uuid4().hex))[:8]}"
+    snapshotted = _filepull_snapshot(job, domain, snap_name) if running else False
     try:
         _job_log(job, f"Reading {guest_path} from {os.path.basename(disk_path)}")
         globs = " ".join(
@@ -7240,7 +7304,10 @@ def _handle_vm_file_pull_snapshot(job, params):
             f'PARTS=$(guestfish --ro -a "{disk_path}" run : list-filesystems '
             "2>/dev/null | awk -F': ' '$2 ~ /^(xfs|ext[234])$/{print $1}')\n"
             "for p in $PARTS; do\n"
-            f'  guestfish --ro -a "{disk_path}" run : mount-ro "$p" / {globs} '
+            # guestfish `mount` (not mount-ro) on a --ro appliance overlay so a
+            # dirty XFS/ext journal is replayed (image untouched) — mount-ro skips
+            # log recovery and can fail to mount a live snapshot.
+            f'  guestfish --ro -a "{disk_path}" run : mount "$p" / {globs} '
             "2>/dev/null\n"
             "  [ -s /tmp/troshka-fp.out ] && break\n"
             "done\n"
@@ -7258,7 +7325,7 @@ def _handle_vm_file_pull_snapshot(job, params):
         return {"contentB64": result.stdout.strip()}
     finally:
         if snapshotted:
-            _commit_snapshot(job, domain)
+            _filepull_commit(job, domain, snap_name)
 
 
 COMMAND_HANDLERS["vms/file-pull-snapshot"] = _handle_vm_file_pull_snapshot

@@ -69,7 +69,10 @@ def build_filepull_script(guest_path: str) -> str:
         'PARTS=$(guestfish --ro -a "$IMG" run : list-filesystems 2>/dev/null | '
         "awk -F': ' '$2 ~ /^(xfs|ext[234])$/{print $1}')\n"
         "for p in $PARTS; do\n"
-        f'  guestfish --ro -a "$IMG" run : mount-ro "$p" / {globs} 2>/dev/null\n'
+        # `mount` (not mount-ro) on the --ro appliance overlay so a dirty XFS/ext
+        # journal is replayed (image untouched); mount-ro skips log recovery and
+        # can fail to mount a point-in-time snapshot of a running fs.
+        f'  guestfish --ro -a "$IMG" run : mount "$p" / {globs} 2>/dev/null\n'
         '  [ -s /tmp/out ] && { echo "ROOT=$p"; break; }\n'
         "done\n"
         '[ -s /tmp/out ] || { echo "FILEPULL_ERROR: file not found"; exit 1; }\n'
