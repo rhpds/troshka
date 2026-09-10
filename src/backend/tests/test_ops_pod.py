@@ -1547,3 +1547,21 @@ def test_kubevirt_ops_pod_net_ips_computes_cluster_then_bmc():
     # serving_ip is the BMC-net IP (the sushy BMC pod fetches the ISO from it and
     # is not on the cluster net), not the cluster-net IP.
     assert serving == "192.168.100.50"
+
+
+def test_recert_script_is_valid_bash():
+    """The generated recert script must be syntactically valid bash (guards against
+    f-string brace-escaping bugs, etc.). Regression: a stray `}}` once made the
+    ops-pod exit 2 and crash-loop."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not shutil.which("bash"):
+        return
+    script = _recert_script()
+    with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as f:
+        f.write(script)
+        path = f.name
+    r = subprocess.run(["bash", "-n", path], capture_output=True, text=True)
+    assert r.returncode == 0, f"recert script has bash syntax error:\n{r.stderr}"

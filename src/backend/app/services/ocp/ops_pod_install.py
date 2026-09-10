@@ -363,7 +363,7 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         "sleep 10; done\n"
         # No fallback: if the admin kubeconfig was never delivered, fail closed.
         f'  [ -n "$li" ] || {{ echo "[{cluster_key}] recert failed: admin '
-        'kubeconfig not delivered"; exit 1; }}\n'
+        'kubeconfig not delivered"; exit 1; }\n'
         # Approve CSRs until all nodes are Ready (kubelet re-bootstrap after wipe).
         "  for i in $(seq 1 120); do "
         "oc get csr -o name 2>/dev/null | xargs -r oc adm certificate approve "
