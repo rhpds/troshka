@@ -152,6 +152,7 @@ def extract_containers(topology):
                     "isPod": data.get("isPod", False),
                     "isShowroom": data.get("isShowroom", False),
                     "infraNetworking": data.get("infraNetworking", False),
+                    "dnsNetwork": data.get("dnsNetwork", ""),
                     "initContainers": data.get("initContainers", []),
                     "podContainers": data.get("podContainers", []),
                     "cpus": data.get("cpus", 1),
@@ -305,6 +306,49 @@ def _collect_used_ips(topology):
     return used
 
 
+def _network_dot2(cidr):
+    """The lab dnsmasq address (``.2``) for an IPv4 ``cidr`` — the KubeVirt
+    per-network DNS pod (troshkad uses ``.1``; provider differs)."""
+    if not cidr or "/" not in cidr:
+        return ""
+    octets = cidr.split("/", 1)[0].split(".")
+    if len(octets) != 4:
+        return ""
+    return f"{octets[0]}.{octets[1]}.{octets[2]}.2"
+
+
+def _dns_nameserver_for_showroom(topology, ctr):
+    """Managed DNS nameserver (lab dnsmasq ``.2``) for a showroom pod so its
+    ``oc``/wetty resolve lab names via the project dnsmasq, NOT the host OCP
+    cluster's kube-dns.
+
+    The DNS network is an explicit, user-configured field (``dnsNetwork``), so
+    when it is set it is AUTHORITATIVE — resolve that network's ``.2`` and do not
+    guess. Only when it is unset do we fall back to a ``dns:True`` lab net, then
+    the first lab net."""
+    dns_net_name = str(ctr.get("dnsNetwork") or "").strip()
+    named_cidr = dns_flag_cidr = first_cidr = ""
+    for node in topology.get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        data = node.get("data", {})
+        if data.get("subtype", "") in ("gateway", "router", "loadbalancer"):
+            continue
+        if data.get("networkType") == "bmc":
+            continue
+        cidr = data.get("cidr", "")
+        if not cidr:
+            continue
+        first_cidr = first_cidr or cidr
+        if dns_net_name and data.get("name") == dns_net_name:
+            named_cidr = cidr
+        if not dns_flag_cidr and data.get("dns"):
+            dns_flag_cidr = cidr
+    if dns_net_name:
+        return _network_dot2(named_cidr)  # explicit config wins; never guess
+    return _network_dot2(dns_flag_cidr or first_cidr)
+
+
 def enrich_showroom_infra_networks(topology, containers):
     """KubeVirt: attach showroom pod to all lab NADs so wetty can SSH VM IPs."""
     lab_nets = _lab_network_nodes(topology)
@@ -338,6 +382,9 @@ def enrich_showroom_infra_networks(topology, containers):
                 }
             )
         ctr["nics"] = new_nics
+        ns = _dns_nameserver_for_showroom(topology, ctr)
+        if ns:
+            ctr["dnsNameserver"] = ns
 
 
 def _extract_nic_id(handle):

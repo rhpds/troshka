@@ -159,6 +159,7 @@ def _create_single_container(
             "automountServiceAccountToken": False,
         },
     }
+    _apply_managed_dns(pod_body["spec"], ctr)
     if volumes:
         pod_body["spec"]["volumes"] = volumes
     if net_annotations:
@@ -237,6 +238,17 @@ def _build_setup_ip_init(ctr):
     return inits
 
 
+def _apply_managed_dns(pod_spec, ctr):
+    """Point an infra-networked pod at the project's lab dnsmasq (``dnsNameserver``,
+    a ``.2`` lab address stamped by ``enrich_showroom_infra_networks``) instead of
+    the host OCP cluster's kube-dns — so the cluster terminal's ``oc`` and wetty
+    resolve ``*.ocp.local`` / VM hostnames via the managed DNS."""
+    ns = str(ctr.get("dnsNameserver") or "").strip()
+    if ns:
+        pod_spec["dnsPolicy"] = "None"
+        pod_spec["dnsConfig"] = {"nameservers": [ns]}
+
+
 def _build_network_annotations(ctr, nad_refs):
     """Build network annotations from NICs."""
     net_annotations = []
@@ -292,6 +304,7 @@ def _create_pod_group(core_api, namespace, ctr, nad_refs, owner_reference, disk_
             "automountServiceAccountToken": False,
         },
     }
+    _apply_managed_dns(pod_body["spec"], ctr)
     if volumes:
         pod_body["spec"]["volumes"] = volumes
 

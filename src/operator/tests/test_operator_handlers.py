@@ -502,6 +502,132 @@ class TestEnrichShowroomInfraNetworks:
         assert refs == {"net-net-mgmt", "net-net-clus"}
         assert ctrs[0]["nics"][0]["ip"].endswith(".250")
 
+    def test_stamps_managed_dns_nameserver_from_dns_network(self):
+        """Showroom pod must resolve via the lab dnsmasq (.2), not the host
+        OCP cluster's kube-dns — so enrich stamps the managed DNS nameserver."""
+        from helpers.topology import extract_containers, enrich_showroom_infra_networks
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "net-mgmt",
+                    "type": "networkNode",
+                    "data": {
+                        "name": "mgmt",
+                        "subtype": "network",
+                        "cidr": "10.0.0.0/24",
+                        "dns": True,
+                    },
+                },
+                {
+                    "id": "net-cluster",
+                    "type": "networkNode",
+                    "data": {
+                        "name": "cluster",
+                        "subtype": "network",
+                        "cidr": "192.168.50.0/24",
+                    },
+                },
+                {
+                    "id": "sr-1",
+                    "type": "containerNode",
+                    "data": {
+                        "id": "sr-1",
+                        "label": "showroom",
+                        "isShowroom": True,
+                        "isPod": True,
+                        "infraNetworking": True,
+                        "nics": [],
+                    },
+                },
+            ],
+        }
+        ctrs = extract_containers(topo)
+        enrich_showroom_infra_networks(topo, ctrs)
+        assert ctrs[0]["dnsNameserver"] == "10.0.0.2"
+
+    def test_dns_nameserver_honors_dns_network_name(self):
+        """When a dnsNetwork is named, use that network's dnsmasq (.2), not the
+        dns:True flag / first lab net."""
+        from helpers.topology import extract_containers, enrich_showroom_infra_networks
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "net-mgmt",
+                    "type": "networkNode",
+                    "data": {
+                        "name": "mgmt",
+                        "subtype": "network",
+                        "cidr": "10.0.0.0/24",
+                        "dns": True,
+                    },
+                },
+                {
+                    "id": "net-cluster",
+                    "type": "networkNode",
+                    "data": {
+                        "name": "cluster",
+                        "subtype": "network",
+                        "cidr": "192.168.50.0/24",
+                    },
+                },
+                {
+                    "id": "sr-1",
+                    "type": "containerNode",
+                    "data": {
+                        "id": "sr-1",
+                        "label": "showroom",
+                        "isShowroom": True,
+                        "isPod": True,
+                        "infraNetworking": True,
+                        "dnsNetwork": "cluster",
+                        "nics": [],
+                    },
+                },
+            ],
+        }
+        ctrs = extract_containers(topo)
+        enrich_showroom_infra_networks(topo, ctrs)
+        assert ctrs[0]["dnsNameserver"] == "192.168.50.2"
+
+    def test_configured_dns_network_never_guesses(self):
+        """An explicit dnsNetwork is authoritative: if it doesn't resolve, do NOT
+        silently fall back to a dns:True / first lab net (wrong DNS is worse than
+        none)."""
+        from helpers.topology import extract_containers, enrich_showroom_infra_networks
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "net-mgmt",
+                    "type": "networkNode",
+                    "data": {
+                        "name": "mgmt",
+                        "subtype": "network",
+                        "cidr": "10.0.0.0/24",
+                        "dns": True,
+                    },
+                },
+                {
+                    "id": "sr-1",
+                    "type": "containerNode",
+                    "data": {
+                        "id": "sr-1",
+                        "label": "showroom",
+                        "isShowroom": True,
+                        "isPod": True,
+                        "infraNetworking": True,
+                        "dnsNetwork": "does-not-exist",
+                        "nics": [],
+                    },
+                },
+            ],
+        }
+        ctrs = extract_containers(topo)
+        enrich_showroom_infra_networks(topo, ctrs)
+        assert "dnsNameserver" not in ctrs[0]
+
 
 class TestExtractNicId:
     def test_basic_nic_handle(self):
@@ -2054,6 +2180,34 @@ class TestCreateSingleContainer:
         ann = body["metadata"]["annotations"]["k8s.v1.cni.cncf.io/networks"]
         assert ann == "my-nad-name"
 
+    def test_single_container_uses_managed_dns(self):
+        from handlers.container import _create_single_container
+
+        core_api = MagicMock()
+        ctr = {
+            "id": "test1234",
+            "image": "app",
+            "cpus": 1,
+            "memory": 512,
+            "nics": [],
+            "env": {},
+            "dnsNameserver": "10.0.0.2",
+        }
+        _create_single_container(core_api, "ns1", ctr, {}, {}, {})
+        body = core_api.create_namespaced_pod.call_args[1]["body"]
+        assert body["spec"]["dnsPolicy"] == "None"
+        assert body["spec"]["dnsConfig"]["nameservers"] == ["10.0.0.2"]
+
+    def test_single_container_no_dns_when_unset(self):
+        from handlers.container import _create_single_container
+
+        core_api = MagicMock()
+        ctr = {"id": "test1234", "image": "app", "nics": [], "env": {}}
+        _create_single_container(core_api, "ns1", ctr, {}, {}, {})
+        body = core_api.create_namespaced_pod.call_args[1]["body"]
+        assert "dnsConfig" not in body["spec"]
+        assert "dnsPolicy" not in body["spec"]
+
     def test_409_is_swallowed(self):
         from handlers.container import _create_single_container
         from kubernetes.client import ApiException
@@ -2095,6 +2249,22 @@ class TestCreatePodGroup:
         assert len(body["spec"]["initContainers"]) == 1
         assert len(body["spec"]["containers"]) == 1
         assert body["spec"]["containers"][0]["name"] == "app"
+
+    def test_pod_group_uses_managed_dns(self):
+        from handlers.container import _create_pod_group
+
+        core_api = MagicMock()
+        ctr = {
+            "id": "podid123",
+            "image": "fallback",
+            "nics": [],
+            "dnsNameserver": "10.0.0.2",
+            "podContainers": [{"name": "app", "image": "myapp:1.0"}],
+        }
+        _create_pod_group(core_api, "ns1", ctr, {}, {}, {})
+        body = core_api.create_namespaced_pod.call_args[1]["body"]
+        assert body["spec"]["dnsPolicy"] == "None"
+        assert body["spec"]["dnsConfig"]["nameservers"] == ["10.0.0.2"]
 
     def test_pod_group_disables_sa_token_automount(self):
         """The showroom pod shouldn't mount the host SA token — otherwise the
