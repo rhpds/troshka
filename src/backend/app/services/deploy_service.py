@@ -2527,6 +2527,13 @@ def _ops_pod_install_monitor_job(project_id: str, host_id: str, clusters: list) 
         )
         _release_ops_monitor_lock(project_id)
         return
+    # Recert (pattern) deploys: deliver each cluster's live lb-ext.kubeconfig into
+    # the ops pod (snapshot+guestfish) so the recert block authenticates without
+    # oauth. Runs alongside the monitor; fail-closed if it can't deliver.
+    try:
+        _maybe_start_recert_delivery(host, project_id, clusters)
+    except Exception:
+        logger.exception("recert delivery launch failed for %s", project_id[:8])
     _monitor_ops_pod_install(
         project_id,
         host,
@@ -2646,6 +2653,31 @@ def _exec_ops_pod_cat_kubevirt(core_v1, namespace, pod_name, path) -> str | None
         return result if isinstance(result, str) else ""
     except Exception:  # noqa: BLE001 - missing log / transient exec error -> None
         return None
+
+
+def _ops_pod_exec_kubevirt(core_v1, namespace, pod_name, argv, timeout=60) -> str:
+    """[LIVE-ENV] Run ``argv`` in the kubevirt ops Pod; stdout ("" on failure)."""
+    from kubernetes.stream import stream as k8s_stream
+
+    try:
+        return (
+            k8s_stream(
+                core_v1.connect_get_namespaced_pod_exec,
+                pod_name,
+                namespace,
+                container="ops",
+                command=argv,
+                stderr=True,
+                stdout=True,
+                stdin=False,
+                tty=False,
+                _preload_content=True,
+                _request_timeout=timeout,
+            )
+            or ""
+        )
+    except Exception:  # noqa: BLE001 - transient exec error -> empty
+        return ""
 
 
 def _read_ops_pod_cluster_logs_kubevirt(
@@ -2808,6 +2840,193 @@ def _ops_pod_cat(host, project_id: str, container_name: str, path: str) -> str:
         core_v1, namespace, pod_name = ctx
         return _exec_ops_pod_cat_kubevirt(core_v1, namespace, pod_name, path) or ""
     return _exec_ops_pod_cat(host, container_name, path) or ""
+
+
+# Node-local admin kubeconfig on an OCP RHCOS control-plane node: a client cert
+# from the CURRENT (post-recert) signer that authenticates to :6443 with NO oauth.
+LB_EXT_KUBECONFIG_PATH = (
+    "/etc/kubernetes/static-pod-resources/kube-apiserver-certs/"
+    "secrets/node-kubeconfigs/lb-ext.kubeconfig"
+)
+
+
+def _ops_pod_exec(host, project_id: str, container_name: str, argv, timeout=60) -> str:
+    """[LIVE-ENV] Provider-aware exec in the ops pod; returns stdout ("" on error)."""
+    if host.host_type == "kubevirt-cluster":
+        ctx = _kubevirt_ops_pod_ctx(host, project_id)
+        if not ctx:
+            return ""
+        core_v1, namespace, pod_name = ctx
+        return _ops_pod_exec_kubevirt(
+            core_v1, namespace, pod_name, argv, timeout=timeout
+        )
+    try:
+        job_id = start_job(
+            host,
+            "/containers/exec",
+            {"container_name": container_name, "command": argv},
+        )
+        job = wait_for_job(host, job_id, timeout=timeout)
+        if job.get("status") == "completed":
+            return (job.get("result") or {}).get("stdout", "") or ""
+    except TroshkadError:
+        pass
+    return ""
+
+
+def _ops_pod_write_file(
+    host, project_id: str, container_name: str, path: str, data: bytes
+) -> bool:
+    """[LIVE-ENV] Write ``data`` to ``path`` in the running ops pod (base64 over
+    exec), then verify it is non-empty. Returns True on success."""
+    import base64
+
+    b64 = base64.b64encode(data).decode()
+    argv = [
+        "bash",
+        "-c",
+        f'mkdir -p "$(dirname {path})" && printf %s {b64} | base64 -d > {path}',
+    ]
+    _ops_pod_exec(host, project_id, container_name, argv, timeout=60)
+    check = _ops_pod_exec(
+        host,
+        project_id,
+        container_name,
+        ["bash", "-c", f"[ -s {path} ] && echo OK || echo MISSING"],
+        timeout=20,
+    )
+    return "OK" in check
+
+
+def _recert_cp_member_vm_id(topology: dict, cluster: dict) -> str:
+    """A control-plane RHCOS member's VM node id for a cluster (any one — they all
+    carry lb-ext.kubeconfig). Empty if none."""
+    from app.services.ocp.agent_template import _cluster_members_for
+
+    for m in _cluster_members_for(topology, cluster):
+        d = m.get("data", {})
+        if d.get("os") != "rhcos":
+            continue
+        role = d.get("clusterRole") or ""
+        group = (d.get("tags") or {}).get("AnsibleGroup", "")
+        if role == "worker" or (not role and "workers" in group):
+            continue  # control-plane members only
+        return str(m.get("id") or d.get("id") or "")
+    return ""
+
+
+def _deliver_recert_kubeconfigs(host, project_id, topology, clusters, deadline) -> None:
+    """[LIVE-ENV] Recert deploys: per cluster, once the apiserver (:6443) is up,
+    pull the CP node's live lb-ext.kubeconfig (provider snapshot+guestfish) and
+    write it into the ops pod at ``<workdir>/<key>/auth/kubeconfig`` so the recert
+    block authenticates without oauth. Fail-closed: on any error the recert block
+    times out and fails (no fallback)."""
+    import time as _t
+
+    from app.core.database import SessionLocal
+    from app.models.provider import Provider
+    from app.services.ocp.ops_pod_install import _cluster_key as _ck
+    from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
+    from app.services.providers import get_provider_driver
+
+    db = SessionLocal()
+    try:
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+    finally:
+        db.close()
+    if not provider:
+        logger.error("recert delivery %s: no provider for host", project_id[:8])
+        return
+    driver = get_provider_driver(provider)
+    container_name = _ops_pod_container_name(project_id)
+    workdir = OPS_POD_WORKDIR
+
+    for cluster in clusters:
+        key = _ck(cluster)
+        cp_vm_id = _recert_cp_member_vm_id(topology, cluster)
+        if not cp_vm_id:
+            logger.error("recert delivery %s/%s: no CP member", project_id[:8], key)
+            continue
+        # Wait for the apiserver (:6443) to serve — lb-ext.kubeconfig is written
+        # early in boot. Probe /healthz (unauthenticated) via the captured
+        # kubeconfig's server (its CA is stale, so skip TLS verify).
+        captured = f"{workdir}/{key}/kubeconfig"
+        probe = [
+            "bash",
+            "-c",
+            f"oc --kubeconfig={captured} --insecure-skip-tls-verify "
+            "get --raw /healthz 2>/dev/null",
+        ]
+        up = False
+        while _t.time() < deadline:
+            if (
+                "ok"
+                in _ops_pod_exec(
+                    host, project_id, container_name, probe, timeout=20
+                ).lower()
+            ):
+                up = True
+                break
+            _t.sleep(10)
+        if not up:
+            logger.error(
+                "recert delivery %s/%s: apiserver never came up", project_id[:8], key
+            )
+            continue
+        try:
+            kc = driver.pull_file(
+                provider, project_id, cp_vm_id, LB_EXT_KUBECONFIG_PATH
+            )
+        except Exception:
+            logger.exception(
+                "recert delivery %s/%s: pull_file failed", project_id[:8], key
+            )
+            continue
+        if not kc:
+            logger.error(
+                "recert delivery %s/%s: empty kubeconfig pulled", project_id[:8], key
+            )
+            continue
+        auth_path = f"{workdir}/{key}/auth/kubeconfig"
+        if _ops_pod_write_file(host, project_id, container_name, auth_path, kc):
+            logger.info(
+                "recert delivery %s/%s: delivered lb-ext.kubeconfig (%d bytes)",
+                project_id[:8],
+                key,
+                len(kc),
+            )
+        else:
+            logger.error(
+                "recert delivery %s/%s: write into ops pod failed",
+                project_id[:8],
+                key,
+            )
+
+
+def _maybe_start_recert_delivery(host, project_id: str, clusters: list) -> None:
+    """Launch the recert kubeconfig-delivery thread for a pattern (recert) deploy."""
+    import time as _t
+
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+
+    db = SessionLocal()
+    try:
+        p = db.query(Project).filter_by(id=project_id).first()
+        topo = (p.deployed_topology or p.topology) if p else None
+    finally:
+        db.close()
+    if not topo or not _is_pattern_deploy(topo):
+        return
+    deadline = _t.time() + 1800  # matches the recert block's ~30-min wait
+    threading.Thread(
+        target=_deliver_recert_kubeconfigs,
+        args=(host, project_id, topo, clusters, deadline),
+        daemon=True,
+    ).start()
+    logger.info(
+        "recert delivery %s: kubeconfig-delivery thread started", project_id[:8]
+    )
 
 
 def _apply_ops_pod_creds(topology: dict, creds: dict) -> bool:
