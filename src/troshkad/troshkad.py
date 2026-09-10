@@ -7196,6 +7196,82 @@ def _handle_snapshot_capture(job, params):
     return {"status": "uploaded", "size_bytes": size_bytes}
 
 
+def _pull_file_candidate_paths(guest_path):
+    """In-disk paths to try for a logical guest path: the direct path (normal VM /
+    inspected root) then the ostree translation (/var shared per stateroot;
+    /etc,/usr under the booted deployment checksum). Mirrors the KubeVirt
+    operator's helpers.filepull.candidate_paths for provider parity."""
+    gp = guest_path if guest_path.startswith("/") else "/" + guest_path
+    if gp == "/var" or gp.startswith("/var/"):
+        return [gp, "/ostree/deploy/*" + gp]
+    return [gp, "/ostree/deploy/*/deploy/*" + gp]
+
+
+def _handle_vm_file_pull_snapshot(job, params):
+    """Pull a single file from a (possibly running) VM's disk via a point-in-time
+    snapshot read OFFLINE with guestfish — never the live disk. Returns
+    ``{contentB64}``. Parity with the KubeVirt operator file-pull path: freeze +
+    disk-only overlay snapshot, guestfish --ro the frozen base, commit the overlay
+    back."""
+    domain = _validate_domain_name(params["domain_name"])
+    guest_path = params.get("path", "")
+    disk_index = int(params.get("disk_index", 0))
+    if not guest_path or any(c in guest_path for c in ('"', "\n", "$", "`")):
+        raise ValueError("invalid path")
+
+    running = _is_domain_running(domain)
+    snapshotted = _snapshot_domain(job, domain) if running else False
+    try:
+        disk_path = _get_disk_path_by_index(domain, disk_index)
+        if snapshotted:
+            import json as _json
+
+            info = subprocess.run(
+                ["qemu-img", "info", _PODMAN_JSON, disk_path],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if info.returncode == 0:
+                bfn = _json.loads(info.stdout).get("full-backing-filename", "")
+                if bfn and os.path.exists(bfn):
+                    disk_path = bfn  # frozen base (VM writes to the overlay)
+        _job_log(job, f"Reading {guest_path} from {os.path.basename(disk_path)}")
+        globs = " ".join(
+            f': glob download "{c}" /tmp/troshka-fp.out'
+            for c in _pull_file_candidate_paths(guest_path)
+        )
+        script = (
+            "set +e\n"
+            "export LIBGUESTFS_BACKEND=direct\n"
+            "rm -f /tmp/troshka-fp.out\n"
+            f'PARTS=$(guestfish --ro -a "{disk_path}" run : list-filesystems '
+            "2>/dev/null | awk -F': ' '$2 ~ /^(xfs|ext[234])$/{print $1}')\n"
+            "for p in $PARTS; do\n"
+            f'  guestfish --ro -a "{disk_path}" run : mount-ro "$p" / {globs} '
+            "2>/dev/null\n"
+            "  [ -s /tmp/troshka-fp.out ] && break\n"
+            "done\n"
+            "[ -s /tmp/troshka-fp.out ] || exit 3\n"
+            "base64 -w0 /tmp/troshka-fp.out\n"
+        )
+        result = subprocess.run(
+            ["bash", "-c", script], capture_output=True, text=True, timeout=600
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            raise RuntimeError(
+                "file not found or guestfish failed "
+                f"(rc={result.returncode}): {result.stderr.strip()[:200]}"
+            )
+        return {"contentB64": result.stdout.strip()}
+    finally:
+        if snapshotted:
+            _commit_snapshot(job, domain)
+
+
+COMMAND_HANDLERS["vms/file-pull-snapshot"] = _handle_vm_file_pull_snapshot
+
+
 COMMAND_HANDLERS["snapshots/capture"] = _handle_snapshot_capture
 
 

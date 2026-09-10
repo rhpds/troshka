@@ -10146,3 +10146,24 @@ class TestRedactedCmdStr(unittest.TestCase):
         self.assertEqual(
             troshkad._redacted_cmd_str(cmd), "podman inspect troshka-x-ops"
         )
+
+
+class TestPullFileCandidatePaths(unittest.TestCase):
+    """Parity with the KubeVirt operator helpers.filepull.candidate_paths."""
+
+    def test_etc_gets_ostree_deployment_candidate(self):
+        c = troshkad._pull_file_candidate_paths("/etc/kubernetes/x/lb-ext.kubeconfig")
+        self.assertEqual(c[0], "/etc/kubernetes/x/lb-ext.kubeconfig")
+        self.assertIn("/ostree/deploy/*/deploy/*/etc/kubernetes/x/lb-ext.kubeconfig", c)
+
+    def test_var_uses_shared_stateroot(self):
+        c = troshkad._pull_file_candidate_paths("/var/lib/kubelet/kubeconfig")
+        self.assertIn("/ostree/deploy/*/var/lib/kubelet/kubeconfig", c)
+        self.assertFalse(any("/deploy/*/deploy/" in p for p in c))
+
+    def test_relative_path_normalized(self):
+        c = troshkad._pull_file_candidate_paths("etc/hostname")
+        self.assertEqual(c[0], "/etc/hostname")
+
+    def test_command_registered(self):
+        self.assertIn("vms/file-pull-snapshot", troshkad.COMMAND_HANDLERS)

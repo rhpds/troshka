@@ -646,3 +646,30 @@ def check_disk_usage(host, timeout=15, retries=3):
             if attempt == retries - 1:
                 raise
             time.sleep(2)
+
+
+def pull_file_snapshot(host, project_id, vm_id, guest_path, timeout=900):
+    """Pull a single file from a VM disk via the troshkad snapshot+guestfish
+    command (``vms/file-pull-snapshot``). Returns the file bytes.
+
+    Provider-agnostic parity with the KubeVirt operator file-pull: reads a
+    point-in-time snapshot of the (possibly running) disk OFFLINE — never the live
+    disk — so it works for keyless OCP RHCOS nodes where SCP is impossible.
+    """
+    import base64
+
+    domain = f"troshka-{project_id[:8]}-{vm_id[:8]}"
+    job_id = start_job(
+        host,
+        "/vms/file-pull-snapshot",
+        {"domain_name": domain, "path": guest_path},
+    )
+    job = wait_for_job(host, job_id, timeout=timeout)
+    if job.get("status") != "completed":
+        raise TroshkadError(
+            f"file-pull-snapshot failed: {job.get('error') or job.get('status')}"
+        )
+    b64 = (job.get("result") or {}).get("contentB64", "")
+    if not b64:
+        raise TroshkadError("file-pull-snapshot returned empty content")
+    return base64.b64decode(b64)

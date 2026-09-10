@@ -2975,7 +2975,7 @@ def _deliver_recert_kubeconfigs(host, project_id, topology, clusters, deadline) 
             continue
         try:
             kc = driver.pull_file(
-                provider, project_id, cp_vm_id, LB_EXT_KUBECONFIG_PATH
+                provider, project_id, cp_vm_id, LB_EXT_KUBECONFIG_PATH, host=host
             )
         except Exception:
             logger.exception(

@@ -139,10 +139,20 @@ class ProviderDriver:
         """Destroy a provider-native project (e.g. delete TroshkaProject CR)."""
         raise NotImplementedError
 
-    def pull_file(self, provider, project_id, vm_id, guest_path, **kwargs) -> bytes:
+    def pull_file(
+        self, provider, project_id, vm_id, guest_path, *, host=None, **kwargs
+    ) -> bytes:
         """Extract a single file from a (possibly running) VM's disk via a
         point-in-time snapshot read OFFLINE with guestfish — never touching the
-        live disk. Returns the file bytes. Provider-agnostic seam: KubeVirt does
-        a VolumeSnapshot + guestfish pod (via the operator); troshkad does a
-        libvirt snapshot + guestfish on the host (via the agent)."""
-        raise NotImplementedError
+        live disk. Returns the file bytes. Provider-agnostic seam.
+
+        Default (troshkad-backed hosts: EC2/GCP/Azure/OCP-Virt): the host agent
+        does a libvirt disk-only snapshot + guestfish read. KubeVirt overrides
+        this with the operator VolumeSnapshot + guestfish-pod path."""
+        if host is None:
+            raise NotImplementedError(
+                "pull_file requires a host for troshkad-backed providers"
+            )
+        from app.services.troshkad_client import pull_file_snapshot
+
+        return pull_file_snapshot(host, project_id, vm_id, guest_path)
