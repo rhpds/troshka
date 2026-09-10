@@ -11,14 +11,17 @@ allowHostIPC: false
 allowedCapabilities:
   - NET_ADMIN
   - NET_RAW
+  # SETUID/SETGID let the cluster-terminal (wetty, root) setpriv-drop the
+  # interactive shell to the uid-1000 lab user. Opt-in via the container's
+  # securityContext; must NOT be in requiredDropCapabilities or the add is denied.
+  - SETUID
+  - SETGID
 allowedUnsafeSysctls:
   - net.ipv4.ip_forward
 defaultAddCapabilities: []
 requiredDropCapabilities:
   - KILL
   - MKNOD
-  - SETUID
-  - SETGID
 runAsUser:
   type: RunAsAny
 seLinuxContext:

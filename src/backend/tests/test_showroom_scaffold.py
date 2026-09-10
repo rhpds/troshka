@@ -764,9 +764,12 @@ def test_build_wetty_cluster_terminal_container():
     assert not any(a.startswith("--ssh-host") for a in c["command"])
     # still mounts the shared disk for the injected kubeconfig
     assert c["mounts"] == [{"diskNodeId": "disk-0", "mountPath": "/showroom"}]
-    # wetty must run as root to spawn the --command shell (non-root → "login"
-    # prompt), so NO runAsUser override here.
-    assert "securityContext" not in c
+    # wetty must run as ROOT to spawn the --command shell, but the interactive
+    # shell should drop to labuser. cluster-shell does that via setpriv, which
+    # needs SETUID/SETGID — force-dropped under KubeVirt's restricted SCC. Grant
+    # them here (no runAsUser override → stays root).
+    assert c["securityContext"] == {"capabilities": {"add": ["SETUID", "SETGID"]}}
+    assert "runAsUser" not in c["securityContext"]
 
 
 def test_cluster_terminal_uses_baked_image_no_oc_fetch():
