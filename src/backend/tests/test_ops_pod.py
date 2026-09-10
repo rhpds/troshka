@@ -1585,3 +1585,17 @@ def test_recert_install_complete_still_wins_over_failure_marker():
 
     log = "[ocp] recert failed: transient\n[ocp] install complete\n"
     assert _phase_from_input(log) == PHASE_COMPLETE
+
+
+def test_recert_script_has_smart_pod_reaper():
+    """Post-recert, pods restored from the captured etcd crashloop on stale SA
+    tokens; the recert block must recreate the stuck ones (not-ready + restarting)
+    while skipping static control-plane ns, Completed, and image-pull failures."""
+    script = _recert_script()
+    assert "recreating pods stuck with stale post-recert credentials" in script
+    # targets not-ready ($3 a<b) AND restarting ($5>=1)
+    assert "(r[1]<r[2] && $5+0>=1)" in script
+    # skips static control-plane namespaces + image-pull/Completed
+    assert "^openshift-(etcd|kube-apiserver" in script
+    assert "ImagePull|ErrImage|Completed" in script
+    assert "oc delete pod" in script

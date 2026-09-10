@@ -376,6 +376,24 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         f'{{ echo "[{cluster_key}] all $total node(s) Ready"; break; }}; '
         f'echo "[{cluster_key}] approving CSRs: $notready/$total node(s) not Ready"; '
         "sleep 10; done\n"
+        # SMART pod reaper: pods restored from the captured etcd run with
+        # pre-recert SA tokens; after recert rotates the SA-signing-key/CA they
+        # crashloop (router/console/OVN/monitoring). Recreate ONLY the stuck ones
+        # — not-Ready ($3 a/b with a<b) AND restarting ($5>=1) — so they re-auth
+        # with fresh creds. Skip static control-plane namespaces (kubelet owns
+        # those; deleting via API blips the apiserver), Completed pods, and
+        # image-pull failures (no catalog mirror in a lab — reaping won't help).
+        # Loop until none remain or a cap, letting freshly-recreated pods settle.
+        f'  echo "[{cluster_key}] recreating pods stuck with stale post-recert credentials"\n'
+        "  for i in $(seq 1 8); do "
+        "stale=$(oc get pods -A --no-headers 2>/dev/null | awk '"
+        "$1 ~ /^openshift-(etcd|kube-apiserver|kube-controller-manager|kube-scheduler)$/ {next} "
+        "$4 ~ /ImagePull|ErrImage|Completed/ {next} "
+        '{split($3,r,"/")} (r[1]<r[2] && $5+0>=1){print $1"/"$2}\'); '
+        '[ -z "$stale" ] && break; '
+        'echo "$stale" | while IFS=/ read rns rpod; do '
+        'oc delete pod "$rpod" -n "$rns" --wait=false >/dev/null 2>&1 || true; done; '
+        "sleep 20; done\n"
         f'  echo "[{cluster_key}] waiting for cluster operators (incl oauth + console)"\n'
     )
     gate = (
