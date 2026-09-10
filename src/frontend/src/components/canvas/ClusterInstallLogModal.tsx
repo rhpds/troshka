@@ -25,6 +25,25 @@ const INSTALL_STAGES: { label: string; re: RegExp }[] = [
   { label: "Install complete", re: /install complete|Cluster is installed|Install is complete|installation completed/i },
 ];
 
+// PATTERN (recert) deploys don't reinstall — the disks are already installed and
+// were recerted offline (kubelet-PKI wipe), then the ops pod recerts online. The
+// steps are completely different from a fresh agent install, matched against the
+// recert block's breadcrumbs (ops_pod_install._recert_cluster_block + the backend
+// delivery thread's log lines). Selected when the log carries the "(recert)" marker.
+const RECERT_STAGES: { label: string; re: RegExp }[] = [
+  { label: "Waiting for control-plane API", re: /waiting for the control-plane API|Waiting for cluster installation to complete/i },
+  { label: "Extracting admin kubeconfig", re: /extracting admin kubeconfig|admin kubeconfig received/i },
+  { label: "Approving CSRs", re: /approving pending CSRs|approving CSRs:/i },
+  { label: "Recreating pods", re: /recreating pods stuck/i },
+  { label: "Cluster operators", re: /waiting for cluster operators|waiting on operators/i },
+  { label: "Recert complete", re: /install complete/i },
+];
+
+/** Pattern deploys recert (never reinstall); the ops-pod log carries "(recert)". */
+function stagesFor(log: string): { label: string; re: RegExp }[] {
+  return /\(recert\)/i.test(log) ? RECERT_STAGES : INSTALL_STAGES;
+}
+
 type StageState = "done" | "active" | "pending";
 
 /** Elapsed install seconds from the log's first→last "[HH:MM:SS]" timestamps
@@ -55,17 +74,24 @@ function parseOperators(log: string): { pending: string[] } {
         .map((s) => s.trim())
         .filter(Boolean);
     }
+    // recert block breadcrumb: "waiting on operators: monitoring console" (or "none")
+    const rec = line.match(/waiting on operators:\s*(.+?)\s*$/i);
+    if (rec) {
+      const v = rec[1].trim();
+      pending = v === "none" ? [] : v.split(/\s+/).filter(Boolean);
+    }
   }
   return { pending };
 }
 
 function deriveStages(log: string): { label: string; state: StageState }[] {
+  const stages = stagesFor(log);
   let last = -1;
-  INSTALL_STAGES.forEach((s, i) => {
+  stages.forEach((s, i) => {
     if (s.re.test(log)) last = i;
   });
-  const completeIdx = INSTALL_STAGES.length - 1;
-  return INSTALL_STAGES.map((s, i) => {
+  const completeIdx = stages.length - 1;
+  return stages.map((s, i) => {
     let state: StageState = "pending";
     if (i < last || (i === last && last === completeIdx)) state = "done";
     else if (i === last) state = "active";
