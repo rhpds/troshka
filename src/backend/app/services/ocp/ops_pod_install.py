@@ -81,6 +81,7 @@ _FAILURE_MARKERS = (
     "install-complete command failed",
     "installation failed",
     "failed to wait for install",
+    "recert failed",  # recert-mode block's fail-closed exit (kubeconfig/gate)
 )
 
 

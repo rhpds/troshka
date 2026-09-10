@@ -1565,3 +1565,23 @@ def test_recert_script_is_valid_bash():
         path = f.name
     r = subprocess.run(["bash", "-n", path], capture_output=True, text=True)
     assert r.returncode == 0, f"recert script has bash syntax error:\n{r.stderr}"
+
+
+def test_recert_failure_marker_maps_to_failed():
+    """A 'recert failed: ...' breadcrumb must parse as PHASE_FAILED so the monitor
+    fails fast, not wait for the crash-loop/dead-pod path. (Success 'install
+    complete' still wins outright.)"""
+    from app.services.ocp.ops_pod_install import PHASE_FAILED, _phase_from_input
+
+    log = (
+        "[ocp] Waiting for cluster installation to complete (recert)\n"
+        "[ocp] recert failed: admin kubeconfig not delivered\n"
+    )
+    assert _phase_from_input(log) == PHASE_FAILED
+
+
+def test_recert_install_complete_still_wins_over_failure_marker():
+    from app.services.ocp.ops_pod_install import PHASE_COMPLETE, _phase_from_input
+
+    log = "[ocp] recert failed: transient\n[ocp] install complete\n"
+    assert _phase_from_input(log) == PHASE_COMPLETE
