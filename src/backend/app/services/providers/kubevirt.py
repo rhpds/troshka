@@ -784,6 +784,32 @@ def _count_assigned_ingress(svc) -> int:
     return sum(1 for ing in (ingress or []) if getattr(ing, "ip", None))
 
 
+def _resolve_vm_root_pvc(custom_api, core_api, namespace, vm_name):
+    """Return ``(root_pvc_name, size_gb)`` for a KubeVirt VM's boot disk."""
+    vm = custom_api.get_namespaced_custom_object(
+        group="kubevirt.io",
+        version="v1",
+        namespace=namespace,
+        plural="virtualmachines",
+        name=vm_name,
+    )
+    spec = ((dict(vm).get("spec") or {}).get("template") or {}).get("spec") or {}
+    pvc_name = ""
+    for v in spec.get("volumes") or []:
+        claim = (v.get("persistentVolumeClaim") or {}).get("claimName")
+        if claim:
+            pvc_name = claim
+            break
+    if not pvc_name:
+        raise RuntimeError(f"no root PVC found for VM {vm_name}")
+    pvc = core_api.read_namespaced_persistent_volume_claim(
+        name=pvc_name, namespace=namespace
+    )
+    size_str = str((pvc.spec.resources.requests or {}).get("storage", "20Gi"))
+    digits = "".join(c for c in size_str if c.isdigit())
+    return pvc_name, int(digits or "20")
+
+
 class KubeVirtDriver(ProviderDriver):
     def provision_host(
         self, provider, host_id, instance_type, storage_size_gb, **kwargs
@@ -1445,6 +1471,71 @@ class KubeVirtDriver(ProviderDriver):
             core_api.delete_namespace(name=namespace)
         except Exception:
             pass
+
+    def pull_file(
+        self, provider, project_id, vm_id, guest_path, *, timeout_s=420, **kwargs
+    ):
+        """Pull a file from a VM disk via the operator's snapshot+guestfish path.
+
+        Sets a ``file-pull-request`` annotation on the TroshkaProject CR (the
+        operator freezes/snapshots the VM's root PVC, guestfish-reads the file
+        off a clone, and cleans up), then polls ``status.filePull`` for the
+        base64 result keyed by our requestId."""
+        import base64
+        import json as _json
+        import time as _time
+        import uuid
+
+        custom_api, core_api, _ = _get_k8s_clients(provider)
+        namespace = _project_ns(provider, project_id)
+        cr_name = f"project-{project_id[:8]}"
+        vm_name = f"troshka-vm-{vm_id[:8]}"
+        pvc_name, size_gb = _resolve_vm_root_pvc(
+            custom_api, core_api, namespace, vm_name
+        )
+
+        req_id = uuid.uuid4().hex[:12]
+        payload = {
+            "requestId": req_id,
+            "vmName": vm_name,
+            "pvcName": pvc_name,
+            "sizeGb": size_gb,
+            "path": guest_path,
+        }
+        custom_api.patch_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkaprojects",
+            name=cr_name,
+            body={
+                "metadata": {
+                    "annotations": {
+                        "troshka.redhat.com/file-pull-request": _json.dumps(payload)
+                    }
+                }
+            },
+        )
+
+        deadline = _time.time() + timeout_s
+        while _time.time() < deadline:
+            try:
+                cr = custom_api.get_namespaced_custom_object(
+                    group=CRD_GROUP,
+                    version=CRD_VERSION,
+                    namespace=namespace,
+                    plural="troshkaprojects",
+                    name=cr_name,
+                )
+                fp = (dict(cr).get("status") or {}).get("filePull") or {}  # type: ignore[call-overload]
+            except Exception:
+                fp = {}
+            if fp.get("requestId") == req_id and fp.get("ready"):
+                if fp.get("error"):
+                    raise RuntimeError(f"file-pull failed: {fp['error']}")
+                return base64.b64decode(fp.get("contentB64", ""))
+            _time.sleep(5)
+        raise TimeoutError(f"file-pull timed out for {vm_name}:{guest_path}")
 
     def get_project_status(self, provider, project_id):
         custom_api, _, _ = _get_k8s_clients(provider)
