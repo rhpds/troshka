@@ -1161,3 +1161,34 @@ class TestGetAppsDomain:
             return_value=(capi, MagicMock(), MagicMock()),
         ):
             assert KubeVirtDriver().get_apps_domain(provider) == ""
+
+
+class TestMakePodExecFn:
+    """_make_pod_exec_fn must tolerate no-stdout commands (virsh screenshot /
+    send-key / rm): k8s_stream(_preload_content=True) raises AttributeError
+    ('NoneType' object has no attribute 'decode') when the stream yields no body,
+    which previously bubbled up as '503 console exec failed'."""
+
+    def test_no_stdout_command_returns_empty_not_crash(self):
+        from unittest.mock import MagicMock, patch
+
+        from app.services.providers.kubevirt import _make_pod_exec_fn
+
+        core_v1 = MagicMock()
+        with patch(
+            "kubernetes.stream.stream",
+            side_effect=AttributeError("'NoneType' object has no attribute 'decode'"),
+        ):
+            fn = _make_pod_exec_fn(core_v1, "virt-launcher-x", "ns1", "compute")
+            # e.g. `virsh screenshot` — no stdout; must NOT raise
+            assert fn(["virsh", "screenshot", "dom", "/tmp/x.ppm"]) == ""
+
+    def test_stdout_command_returns_stripped_output(self):
+        from unittest.mock import MagicMock, patch
+
+        from app.services.providers.kubevirt import _make_pod_exec_fn
+
+        core_v1 = MagicMock()
+        with patch("kubernetes.stream.stream", return_value="  dom-1\n"):
+            fn = _make_pod_exec_fn(core_v1, "virt-launcher-x", "ns1", "compute")
+            assert fn(["virsh", "list", "--name"]) == "dom-1"

@@ -90,6 +90,38 @@ if [[ -z "$PROJECT_PREFIX" || -z "$VM_NAME" || -z "$COMMAND" ]]; then
     exit 1
 fi
 
+# PROD: when TROSHKA_API_KEY is set, resolve project/VM via the API (the local
+# dev DB won't have prod projects) and authenticate every call. Otherwise use the
+# local DB (dev default).
+API_KEY="${TROSHKA_API_KEY:-}"
+if [[ -n "$API_KEY" ]]; then
+    read -r PROJECT_ID VM_ID < <("$VENV_PYTHON" -c "
+import sys, json, urllib.request
+API='${API_URL}'.rstrip('/'); KEY='${API_KEY}'
+H={'Authorization': 'Bearer '+KEY}
+def get(path):
+    r=urllib.request.Request(API+path, headers=H)
+    with urllib.request.urlopen(r, timeout=30) as resp: return json.loads(resp.read())
+data=get('/api/v1/projects/')
+projs=data if isinstance(data, list) else data.get('projects', data.get('items', []))
+pre='${PROJECT_PREFIX}'
+m=[p for p in projs if p.get('id','').startswith(pre) or p.get('name')==pre]
+if not m:
+    print('ERROR: No project found matching \"${PROJECT_PREFIX}\"', file=sys.stderr); sys.exit(1)
+if len(m)>1:
+    print('ERROR: Multiple projects match', file=sys.stderr); sys.exit(1)
+p=get('/api/v1/projects/'+m[0]['id'])
+topo=p.get('deployed_topology') or p.get('topology') or {}
+name='${VM_NAME}'.lower(); vm=None
+for n in topo.get('nodes', []):
+    if n.get('type')!='vmNode': continue
+    if n.get('data',{}).get('name','').lower()==name or n['id'].startswith(name):
+        vm=n; break
+if not vm:
+    print(f'ERROR: No VM named \"${VM_NAME}\" in project', file=sys.stderr); sys.exit(1)
+print(m[0]['id'], vm['id'])
+")
+else
 read -r PROJECT_ID VM_ID < <(cd "$BACKEND_DIR" && "$VENV_PYTHON" -c "
 import sys
 from sqlalchemy import cast, String
@@ -129,6 +161,7 @@ if not vm:
 print(p.id, vm['id'])
 db.close()
 ")
+fi
 
 if [[ -z "$PROJECT_ID" ]]; then
     exit 1
@@ -158,10 +191,13 @@ if '${METHOD}':
     payload['method'] = '${METHOD}'
 body = json.dumps(payload).encode()
 
+_headers = {'Content-Type': 'application/json'}
+if '${API_KEY}':
+    _headers['Authorization'] = 'Bearer ${API_KEY}'
 req = urllib.request.Request(
     '${API_URL}/api/v1/projects/${PROJECT_ID}/vms/${VM_ID}/exec',
     data=body,
-    headers={'Content-Type': 'application/json'},
+    headers=_headers,
     method='POST',
 )
 try:
