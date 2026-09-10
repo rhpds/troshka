@@ -60,6 +60,13 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "rolebindings"]
     verbs: ["*"]
+  # Bind the kubevirt-controller SCC clusterrole to the provider SA per project
+  # (so console/serial VM exec into virt-launcher works). RBAC escalation-
+  # prevention requires 'bind' on the referenced clusterrole.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+    resourceNames: ["system:openshift:scc:kubevirt-controller"]
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]

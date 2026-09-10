@@ -1164,10 +1164,36 @@ class TestGetAppsDomain:
 
 
 class TestMakePodExecFn:
-    """_make_pod_exec_fn must tolerate no-stdout commands (virsh screenshot /
-    send-key / rm): k8s_stream(_preload_content=True) raises AttributeError
-    ('NoneType' object has no attribute 'decode') when the stream yields no body,
-    which previously bubbled up as '503 console exec failed'."""
+    """_make_pod_exec_fn must reliably read via _preload_content=False (the
+    streaming loop): _preload_content=True raises AttributeError ('NoneType'...
+    decode) both for no-stdout commands (virsh send-key/rm) AND intermittently
+    for commands with output (virsh list) — so it can't be used."""
+
+    @staticmethod
+    def _stream(chunks):
+        """Fake k8s exec stream yielding the given stdout chunks then closing."""
+        from unittest.mock import MagicMock
+
+        s = MagicMock()
+        state = {"chunks": list(chunks)}
+        s.is_open.side_effect = lambda: bool(state["chunks"]) or not state.get(
+            "drained"
+        )
+
+        def _peek_stdout():
+            return state["chunks"][0] if state["chunks"] else ""
+
+        def _read_stdout():
+            state["drained"] = True
+            return state["chunks"].pop(0) if state["chunks"] else ""
+
+        # is_open True while chunks remain, then one more pass, then False
+        opens = [True] * (len(chunks) + 1) + [False]
+        s.is_open.side_effect = lambda: opens.pop(0) if opens else False
+        s.peek_stdout.side_effect = _peek_stdout
+        s.read_stdout.side_effect = _read_stdout
+        s.peek_stderr.return_value = ""
+        return s
 
     def test_no_stdout_command_returns_empty_not_crash(self):
         from unittest.mock import MagicMock, patch
@@ -1175,12 +1201,8 @@ class TestMakePodExecFn:
         from app.services.providers.kubevirt import _make_pod_exec_fn
 
         core_v1 = MagicMock()
-        with patch(
-            "kubernetes.stream.stream",
-            side_effect=AttributeError("'NoneType' object has no attribute 'decode'"),
-        ):
+        with patch("kubernetes.stream.stream", return_value=self._stream([])):
             fn = _make_pod_exec_fn(core_v1, "virt-launcher-x", "ns1", "compute")
-            # e.g. `virsh screenshot` — no stdout; must NOT raise
             assert fn(["virsh", "screenshot", "dom", "/tmp/x.ppm"]) == ""
 
     def test_stdout_command_returns_stripped_output(self):
@@ -1189,6 +1211,8 @@ class TestMakePodExecFn:
         from app.services.providers.kubevirt import _make_pod_exec_fn
 
         core_v1 = MagicMock()
-        with patch("kubernetes.stream.stream", return_value="  dom-1\n"):
+        with patch(
+            "kubernetes.stream.stream", return_value=self._stream(["  dom-1\n"])
+        ):
             fn = _make_pod_exec_fn(core_v1, "virt-launcher-x", "ns1", "compute")
             assert fn(["virsh", "list", "--name"]) == "dom-1"

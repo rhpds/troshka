@@ -10958,3 +10958,42 @@ class TestClusterVipLeases:
         assert (
             leases[0]["mac"] == "52:54:00:aa:bb:01"
         )  # the real NIC, not a bogus VIP MAC
+
+
+class TestProviderExecRbac:
+    """The KubeVirt provider SA must be able to exec into virt-launcher pods.
+    OpenShift only allows exec if the caller can USE an SCC covering the pod's
+    securityContext (virt-launcher -> kubevirt-controller). Grant that SCC use
+    per PROJECT namespace (RoleBinding, not cluster-wide) so console/serial exec
+    works without over-broad access."""
+
+    def test_creates_scoped_scc_use_rolebinding_for_provider_sa(self):
+        from unittest.mock import MagicMock, patch
+
+        from handlers.vm import _ensure_provider_exec_rbac
+
+        rbac = MagicMock()
+        with patch("handlers.vm.client.RbacAuthorizationV1Api", return_value=rbac):
+            _ensure_provider_exec_rbac("troshka-abc123")
+
+        rbac.create_namespaced_role_binding.assert_called_once()
+        kw = rbac.create_namespaced_role_binding.call_args.kwargs
+        assert kw["namespace"] == "troshka-abc123"
+        body = kw["body"]
+        assert body["roleRef"]["name"] == "system:openshift:scc:kubevirt-controller"
+        assert body["roleRef"]["kind"] == "ClusterRole"
+        subj = body["subjects"][0]
+        assert subj["kind"] == "ServiceAccount"
+        assert subj["name"] == "troshka" and subj["namespace"] == "troshka"
+
+    def test_rolebinding_already_exists_is_ignored(self):
+        from unittest.mock import MagicMock, patch
+
+        from kubernetes.client.exceptions import ApiException
+
+        from handlers.vm import _ensure_provider_exec_rbac
+
+        rbac = MagicMock()
+        rbac.create_namespaced_role_binding.side_effect = ApiException(status=409)
+        with patch("handlers.vm.client.RbacAuthorizationV1Api", return_value=rbac):
+            _ensure_provider_exec_rbac("troshka-abc123")  # must not raise

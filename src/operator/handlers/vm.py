@@ -753,6 +753,48 @@ async def _create_or_adopt_kubevirt_vm(
             raise
 
 
+def _ensure_provider_exec_rbac(namespace):
+    """Let the KubeVirt provider SA exec into this project's virt-launcher pods.
+
+    OpenShift only permits exec into a pod if the caller can USE an SCC covering
+    the pod's securityContext. virt-launcher runs under `kubevirt-controller`
+    (runAsUser 107, kubevirt seccomp, privileged), which the provider SA
+    (`troshka:troshka`) can't use by default → exec 403 (surfacing confusingly as
+    "'NoneType' object has no attribute 'decode'"), breaking console/serial VM
+    exec. Grant that SCC's use to the provider SA, scoped to THIS project
+    namespace via a RoleBinding (NOT cluster-wide — the SA can only exec into its
+    own projects' launchers). Idempotent.
+    """
+    rbac_api = client.RbacAuthorizationV1Api()
+    try:
+        rbac_api.create_namespaced_role_binding(
+            namespace=namespace,
+            body={
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "RoleBinding",
+                "metadata": {
+                    "name": "troshka-provider-scc-exec",
+                    "namespace": namespace,
+                },
+                "roleRef": {
+                    "apiGroup": "rbac.authorization.k8s.io",
+                    "kind": "ClusterRole",
+                    "name": "system:openshift:scc:kubevirt-controller",
+                },
+                "subjects": [
+                    {
+                        "kind": "ServiceAccount",
+                        "name": "troshka",
+                        "namespace": "troshka",
+                    }
+                ],
+            },
+        )
+    except client.ApiException as e:
+        if e.status != 409:
+            raise
+
+
 def _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api):
     """Create BMC service account, patch SCC, and create RBAC role/binding."""
     try:
@@ -988,6 +1030,10 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
 
     core_api = client.CoreV1Api()
     custom_api = client.CustomObjectsApi()
+
+    # Ensure the provider SA can exec into this project's virt-launcher pods
+    # (console/serial VM exec) — scoped SCC-use RoleBinding, idempotent.
+    _ensure_provider_exec_rbac(namespace)
 
     s3_config = _get_s3_config_from_project(namespace)
     central_s3_config = _get_central_s3_config_from_project(namespace)

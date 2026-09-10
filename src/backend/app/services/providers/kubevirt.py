@@ -1986,26 +1986,36 @@ def _make_pod_exec_fn(core_v1, pod_name, namespace, container):
     from kubernetes.stream import stream as k8s_stream
 
     def _exec(cmd, req_timeout=15):
+        # Use _preload_content=False + an explicit read loop. _preload_content=True
+        # is flaky: it raises "'NoneType' object has no attribute 'decode'" both
+        # for no-stdout commands (virsh send-key/rm) AND intermittently for
+        # commands that DO have output (virsh list), so catching that error loses
+        # real output. The streaming read reliably returns "" for empty and the
+        # full text otherwise.
+        resp = k8s_stream(
+            core_v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            container=container,
+            command=cmd,
+            stderr=True,
+            stdout=True,
+            stdin=False,
+            tty=False,
+            _preload_content=False,
+            _request_timeout=req_timeout,
+        )
+        out = ""
         try:
-            ws = k8s_stream(
-                core_v1.connect_get_namespaced_pod_exec,
-                pod_name,
-                namespace,
-                container=container,
-                command=cmd,
-                stderr=True,
-                stdout=True,
-                stdin=False,
-                tty=False,
-                _preload_content=True,
-                _request_timeout=req_timeout,
-            )
-        except AttributeError:
-            # k8s_stream(_preload_content=True) raises "'NoneType' object has no
-            # attribute 'decode'" when the exec yields NO stdout — normal for
-            # virsh screenshot / send-key / rm. Treat as empty output, not a crash.
-            return ""
-        return ws.strip() if isinstance(ws, str) else ""
+            while resp.is_open():
+                resp.update(timeout=req_timeout)
+                if resp.peek_stdout():
+                    out += resp.read_stdout()
+                if resp.peek_stderr():
+                    resp.read_stderr()
+        finally:
+            resp.close()
+        return out.strip()
 
     return _exec
 
