@@ -58,8 +58,17 @@ def build_filepull_script(guest_path: str) -> str:
     ``glob download`` runs zero times on no match (not an error), so chaining the
     candidates in one guestfish invocation per partition costs one appliance boot
     per partition regardless of which candidate hits."""
-    globs = " ".join(
-        f': glob download "{c}" /tmp/out' for c in candidate_paths(guest_path)
+    # Try each candidate in a SEPARATE guestfish invocation: guestfish aborts a
+    # command chain on the FIRST error, and `glob download` errors when the path's
+    # parent doesn't exist on that fs (e.g. the direct "/etc/..." candidate on an
+    # ostree physical root) — chaining both would abort before the ostree
+    # candidate ran. `mount` (not mount-ro) replays a dirty journal on the --ro
+    # appliance overlay (image untouched).
+    tries = "".join(
+        f'  guestfish --ro -a "$IMG" run : mount "$p" / '
+        f': glob download "{c}" /tmp/out 2>/dev/null\n'
+        '  [ -s /tmp/out ] && { echo "ROOT=$p"; break; }\n'
+        for c in candidate_paths(guest_path)
     )
     return (
         "set +e\n"
@@ -69,11 +78,7 @@ def build_filepull_script(guest_path: str) -> str:
         'PARTS=$(guestfish --ro -a "$IMG" run : list-filesystems 2>/dev/null | '
         "awk -F': ' '$2 ~ /^(xfs|ext[234])$/{print $1}')\n"
         "for p in $PARTS; do\n"
-        # `mount` (not mount-ro) on the --ro appliance overlay so a dirty XFS/ext
-        # journal is replayed (image untouched); mount-ro skips log recovery and
-        # can fail to mount a point-in-time snapshot of a running fs.
-        f'  guestfish --ro -a "$IMG" run : mount "$p" / {globs} 2>/dev/null\n'
-        '  [ -s /tmp/out ] && { echo "ROOT=$p"; break; }\n'
+        f"{tries}"
         "done\n"
         '[ -s /tmp/out ] || { echo "FILEPULL_ERROR: file not found"; exit 1; }\n'
         'echo "SIZE=$(stat -c%s /tmp/out)"\n'

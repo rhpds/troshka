@@ -7293,8 +7293,16 @@ def _handle_vm_file_pull_snapshot(job, params):
     snapshotted = _filepull_snapshot(job, domain, snap_name) if running else False
     try:
         _job_log(job, f"Reading {guest_path} from {os.path.basename(disk_path)}")
-        globs = " ".join(
-            f': glob download "{c}" /tmp/troshka-fp.out'
+        # Try each candidate path in a SEPARATE guestfish invocation. guestfish
+        # aborts a command chain on the FIRST error, and `glob download` errors
+        # when the path's parent doesn't exist on that fs (e.g. the direct
+        # "/etc/..." candidate on an ostree physical root) — chaining both in one
+        # call would abort before the ostree candidate ever ran. `mount` (not
+        # mount-ro) on the --ro appliance overlay replays a dirty journal.
+        tries = "".join(
+            f'  guestfish --ro -a "{disk_path}" run : mount "$p" / '
+            f': glob download "{c}" /tmp/troshka-fp.out 2>/dev/null\n'
+            "  [ -s /tmp/troshka-fp.out ] && break\n"
             for c in _pull_file_candidate_paths(guest_path)
         )
         script = (
@@ -7304,12 +7312,7 @@ def _handle_vm_file_pull_snapshot(job, params):
             f'PARTS=$(guestfish --ro -a "{disk_path}" run : list-filesystems '
             "2>/dev/null | awk -F': ' '$2 ~ /^(xfs|ext[234])$/{print $1}')\n"
             "for p in $PARTS; do\n"
-            # guestfish `mount` (not mount-ro) on a --ro appliance overlay so a
-            # dirty XFS/ext journal is replayed (image untouched) — mount-ro skips
-            # log recovery and can fail to mount a live snapshot.
-            f'  guestfish --ro -a "{disk_path}" run : mount "$p" / {globs} '
-            "2>/dev/null\n"
-            "  [ -s /tmp/troshka-fp.out ] && break\n"
+            f"{tries}"
             "done\n"
             "[ -s /tmp/troshka-fp.out ] || exit 3\n"
             "base64 -w0 /tmp/troshka-fp.out\n"
