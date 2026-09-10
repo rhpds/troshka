@@ -7428,8 +7428,19 @@ def _run_recert_for_vm(
     return False
 
 
-def _guestfish_clean_kubelet_certs(host, project_id, vm, topology, pool):
-    """Delete stale kubelet PKI from a single RHCOS VM disk via guestfish."""
+# Max kubelet-PKI wipe appliances to run at once. The wipes are independent per
+# disk and run on the (large) host before any VM boots, so this can be generous;
+# it caps only pathological node counts. Covers SNO/compact/3+2 in one batch.
+_KUBELET_WIPE_MAX_PARALLEL = 6
+
+
+def _start_guestfish_clean_kubelet_certs(host, project_id, vm, topology, pool):
+    """Start the guestfish kubelet-PKI wipe for ONE RHCOS VM on the host agent.
+
+    Returns ``(vm_name, job_id)`` for the caller to await, or ``None`` when there
+    is no boot disk / the start failed non-fatally. Raises ``RuntimeError`` only
+    when guestfish itself is missing on the host (fatal — it affects every node).
+    """
     vm_disks = _find_vm_disks(vm["node_id"], topology)
     boot_disk = next(
         (d for d in vm_disks if d.get("format") == "qcow2"),
@@ -7442,7 +7453,7 @@ def _guestfish_clean_kubelet_certs(host, project_id, vm, topology, pool):
             project_id[:8],
             vm_name,
         )
-        return
+        return None
 
     disk = _disk_path(
         project_id,
@@ -7462,20 +7473,7 @@ def _guestfish_clean_kubelet_certs(host, project_id, vm, topology, pool):
             "/vms/modify-fs",
             {"disk": disk, "operations": operations},
         )
-        job = wait_for_job(host, job_id, timeout=120)
-        if job.get("status") == "failed":
-            logger.warning(
-                "Deploy %s: cert cleanup failed for %s: %s",
-                project_id[:8],
-                vm_name,
-                job.get("result", {}).get("error", "unknown"),
-            )
-        else:
-            logger.info(
-                "Deploy %s: cert cleanup complete for %s",
-                project_id[:8],
-                vm_name,
-            )
+        return (vm_name, job_id)
     except Exception as e:
         err_msg = str(e)
         if "No such file or directory" in err_msg and "guestfish" in err_msg:
@@ -7487,6 +7485,34 @@ def _guestfish_clean_kubelet_certs(host, project_id, vm, topology, pool):
             project_id[:8],
             vm_name,
             exc_info=True,
+        )
+        return None
+
+
+def _await_guestfish_clean_kubelet_certs(host, project_id, vm_name, job_id):
+    """Await a started kubelet-PKI wipe job and log the outcome. Non-fatal."""
+    try:
+        job = wait_for_job(host, job_id, timeout=120)
+    except Exception:
+        logger.warning(
+            "Deploy %s: cert cleanup wait error for %s, continuing",
+            project_id[:8],
+            vm_name,
+            exc_info=True,
+        )
+        return
+    if job.get("status") == "failed":
+        logger.warning(
+            "Deploy %s: cert cleanup failed for %s: %s",
+            project_id[:8],
+            vm_name,
+            job.get("result", {}).get("error", "unknown"),
+        )
+    else:
+        logger.info(
+            "Deploy %s: cert cleanup complete for %s",
+            project_id[:8],
+            vm_name,
         )
 
 
@@ -7510,8 +7536,21 @@ def _clean_kubelet_certs(
     if not rhcos_vms:
         return
 
-    for vm in rhcos_vms:
-        _guestfish_clean_kubelet_certs(host, project_id, vm, topology, pool)
+    # Start each node's guestfish wipe on the host agent, THEN await — batched so
+    # at most _KUBELET_WIPE_MAX_PARALLEL appliances run at once. The host runs the
+    # started jobs concurrently, so a multi-node cluster pays ~one appliance-boot
+    # latency instead of N sequential ones (the wipe happens before any VM boots).
+    step = _KUBELET_WIPE_MAX_PARALLEL
+    for i in range(0, len(rhcos_vms), step):
+        started = []
+        for vm in rhcos_vms[i : i + step]:
+            job = _start_guestfish_clean_kubelet_certs(
+                host, project_id, vm, topology, pool
+            )
+            if job:
+                started.append(job)
+        for vm_name, job_id in started:
+            _await_guestfish_clean_kubelet_certs(host, project_id, vm_name, job_id)
 
 
 def _is_ocp_topology(topology: dict) -> bool:

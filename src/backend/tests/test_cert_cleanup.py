@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.services.deploy_service import (
     _clean_kubelet_certs,
     _extract_vms,
@@ -196,6 +198,68 @@ def test_clean_kubelet_certs_nonfatal_on_exception(mock_start, mock_wait):
 
     # Should not raise
     _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
+
+
+@patch("app.services.deploy_service.wait_for_job")
+@patch("app.services.deploy_service.start_job")
+def test_clean_kubelet_certs_starts_all_before_waiting(mock_start, mock_wait):
+    """The per-node wipes are STARTED on the host together, then awaited — so the
+    host runs the guestfish appliances concurrently (~one appliance-boot latency,
+    not N). Proven by ordering: within a batch, every start_job precedes any
+    wait_for_job."""
+    events = []
+    mock_start.side_effect = lambda *a, **k: (events.append("start"), "job-x")[1]
+    mock_wait.side_effect = lambda *a, **k: (
+        events.append("wait"),
+        {"status": "complete", "result": {}},
+    )[1]
+    host = MagicMock()
+    topo = _make_ocp_topology([{"name": f"cp-{i}", "os": "rhcos"} for i in range(5)])
+
+    _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
+
+    assert events == ["start"] * 5 + ["wait"] * 5
+
+
+@patch("app.services.deploy_service.wait_for_job")
+@patch("app.services.deploy_service.start_job")
+def test_clean_kubelet_certs_respects_parallel_cap(mock_start, mock_wait):
+    """No more than _KUBELET_WIPE_MAX_PARALLEL guestfish appliances run at once:
+    the wipes are batched, so the first wait comes after exactly one full batch of
+    starts."""
+    from app.services.deploy_service import _KUBELET_WIPE_MAX_PARALLEL
+
+    n = _KUBELET_WIPE_MAX_PARALLEL + 2
+    events = []
+    mock_start.side_effect = lambda *a, **k: (events.append("start"), "job-x")[1]
+    mock_wait.side_effect = lambda *a, **k: (
+        events.append("wait"),
+        {"status": "complete", "result": {}},
+    )[1]
+    host = MagicMock()
+    topo = _make_ocp_topology([{"name": f"cp-{i}", "os": "rhcos"} for i in range(n)])
+
+    _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
+
+    # first batch fills the cap before any await
+    assert events.index("wait") == _KUBELET_WIPE_MAX_PARALLEL
+    assert events.count("start") == n
+    assert events.count("wait") == n
+
+
+@patch("app.services.deploy_service.wait_for_job")
+@patch("app.services.deploy_service.start_job")
+def test_clean_kubelet_certs_reraises_guestfish_missing(mock_start, mock_wait):
+    """If guestfish itself is missing on the host (fatal — affects every node), the
+    wipe must raise, not silently continue past a broken recert."""
+    mock_start.side_effect = Exception("guestfish: No such file or directory")
+    host = MagicMock()
+    topo = _make_ocp_topology(
+        [{"name": "cp-0", "os": "rhcos"}, {"name": "cp-1", "os": "rhcos"}]
+    )
+
+    with pytest.raises(RuntimeError, match="guestfish not installed"):
+        _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
 
 
 @patch("app.services.deploy_service.wait_for_job")
