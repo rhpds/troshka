@@ -153,6 +153,10 @@ def _create_single_container(
             "restartPolicy": "Always",
             "securityContext": {"runAsUser": 0, "fsGroup": 0},
             "serviceAccountName": "troshka-network",
+            # Don't mount the host SA token: workload/showroom pods don't call the
+            # host k8s API, and if it's present the cluster terminal's oc falls
+            # back to it (wrong cluster; labuser can't read it → permission denied).
+            "automountServiceAccountToken": False,
         },
     }
     if volumes:
@@ -282,6 +286,10 @@ def _create_pod_group(core_api, namespace, ctr, nad_refs, owner_reference, disk_
             "restartPolicy": "Always",
             "securityContext": {"runAsUser": 0, "fsGroup": 0},
             "serviceAccountName": "troshka-network",
+            # Don't mount the host SA token: workload/showroom pods don't call the
+            # host k8s API, and if it's present the cluster terminal's oc falls
+            # back to it (wrong cluster; labuser can't read it → permission denied).
+            "automountServiceAccountToken": False,
         },
     }
     if volumes:

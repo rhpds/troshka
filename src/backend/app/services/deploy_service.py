@@ -1964,6 +1964,30 @@ def _ops_pod_recert_kubeconfig_files(topology, clusters, workdir) -> dict[str, s
     return files
 
 
+def _ops_pod_recert_kubeadmin_files(topology, clusters, workdir) -> dict[str, str]:
+    """Kubeadmin-password files for the recert-mode ops pod, one per cluster at
+    ``<workdir>/<key>/kubeadmin-password``.
+
+    The recert block logs in as kubeadmin to mint a FRESH kubeconfig (the
+    captured one's CA is stale after the apiserver regenerates its serving signer
+    on recovery). Sourced from a control-plane RHCOS member's
+    ``ocpKubeadminPassword`` (in the captured cluster's etcd, so still valid).
+    """
+    from app.services.ocp.agent_template import _cluster_members_for
+
+    files: dict[str, str] = {}
+    for cluster in clusters:
+        key = str(cluster.get("id") or cluster.get("name") or "cluster")
+        for m in _cluster_members_for(topology, cluster):
+            d = m.get("data", {})
+            if d.get("os") == "rhcos" and d.get("ocpKubeadminPassword"):
+                files[f"{workdir}/{key}/kubeadmin-password"] = str(
+                    d["ocpKubeadminPassword"]
+                )
+                break
+    return files
+
+
 def _ops_pod_create_params(
     project,
     clusters,
@@ -2008,6 +2032,9 @@ def _ops_pod_create_params(
         # `oc` (CSR approval / apiserver redeploy) — no fresh install configs.
         files.update(
             _ops_pod_recert_kubeconfig_files(topology, clusters, OPS_POD_WORKDIR)
+        )
+        files.update(
+            _ops_pod_recert_kubeadmin_files(topology, clusters, OPS_POD_WORKDIR)
         )
     container = {
         "name": "ops",
@@ -2313,6 +2340,9 @@ def _deploy_ops_pod_kubevirt(
         # Recert mode: inject each cluster's admin kubeconfig (no install configs).
         config_files.update(
             _ops_pod_recert_kubeconfig_files(topology, clusters, OPS_POD_WORKDIR)
+        )
+        config_files.update(
+            _ops_pod_recert_kubeadmin_files(topology, clusters, OPS_POD_WORKDIR)
         )
     cluster_nads, bmc_nad = ops_pod_network_nads(topology)
     pod, secret = build_ops_pod_kubevirt_manifests(

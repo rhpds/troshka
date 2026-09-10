@@ -313,20 +313,27 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
     """One cluster's RECERT (pattern-deploy) steps, backgrounded.
 
     NO fresh install — the disks are already installed and were recerted offline
-    (SNO: recert tool; multi-node: guestfish kubelet-PKI wipe). Using the admin
-    kubeconfig injected at ``<dir>/kubeconfig`` this block:
+    (guestfish kubelet-PKI wipe). This block:
 
-    - waits for the cluster API to answer;
-    - approves pending CSRs in a loop until the nodes go Ready (multi-node
-      kubelets re-bootstrap after the PKI wipe; a harmless no-op for SNO);
-    - multi-node ONLY: forces a kube-apiserver redeploy so it adopts the fresh
-      kubelet-serving CA;
-    - waits for cluster operators to settle, then emits the ``install complete``
-      breadcrumb the existing monitor/parser already recognizes.
+    - reads the server URL from the captured kubeconfig at ``<dir>/kubeconfig``
+      (its CA is NOT trusted: the apiserver regenerates its serving signer on
+      recovery, so the captured CA + client cert no longer verify);
+    - logs in as ``kubeadmin`` (password mounted at ``<dir>/kubeadmin-password``)
+      to MINT a fresh, working kubeconfig at ``<dir>/auth/kubeconfig`` — token
+      auth, independent of any rotated cert. This loop also serves as the
+      "API + oauth up" wait;
+    - approves pending CSRs until nodes go Ready (kubelets re-bootstrap after the
+      PKI wipe);
+    - multi-node ONLY: forces a kube-apiserver redeploy;
+    - FAIL-CLOSED readiness gate: every cluster operator Available=True /
+      Degraded=False INCLUDING ``authentication`` (oauth) and ``console`` — an
+      empty/failed ``oc`` is NEVER treated as healthy;
+    - only on genuine success writes ``<dir>/auth/kubeadmin-password`` and emits
+      ``install complete`` (so ``_store_ops_pod_creds`` harvests the FRESH
+      kubeconfig into the showroom terminal); otherwise exits non-zero.
 
     Writes to ``<dir>/install.log`` (same as the install path) so the live
-    monitor tails it unchanged, but never emits the reinstall-looking
-    "creating image"/"booting" phases.
+    monitor tails it unchanged.
     """
     cluster_dir = f"{workdir}/{cluster_key}"
     redeploy = ""
@@ -342,11 +349,19 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         "(\n"
         f"  exec > {cluster_dir}/install.log 2>&1\n"
         f'  echo "[{cluster_key}] Waiting for cluster installation to complete (recert)"\n'
-        f"  export KUBECONFIG={cluster_dir}/kubeconfig\n"
-        # Wait for the API to answer (nodes booting from recerted disks).
-        "  for i in $(seq 1 120); do "
-        "oc get --raw /readyz >/dev/null 2>&1 && break; sleep 10; done\n"
-        # Approve CSRs until all nodes are Ready (multi-node kubelet bootstrap).
+        f"  mkdir -p {cluster_dir}/auth\n"
+        # Server URL only from the captured kubeconfig — its CA is stale post-recert.
+        f"  SERVER=$(oc --kubeconfig={cluster_dir}/kubeconfig config view "
+        "-o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null)\n"
+        '  [ -n "$SERVER" ] || SERVER=https://api.ocp.local:6443\n'
+        f"  PW=$(cat {cluster_dir}/kubeadmin-password 2>/dev/null)\n"
+        # Mint a FRESH working kubeconfig via kubeadmin (also waits for API+oauth).
+        f"  export KUBECONFIG={cluster_dir}/auth/kubeconfig\n"
+        "  li=''\n"
+        "  for i in $(seq 1 180); do "
+        'oc login "$SERVER" -u kubeadmin -p "$PW" --insecure-skip-tls-verify '
+        ">/dev/null 2>&1 && { li=1; break; }; sleep 10; done\n"
+        # Approve CSRs until all nodes are Ready (kubelet re-bootstrap after wipe).
         "  for i in $(seq 1 120); do "
         "oc get csr -o name 2>/dev/null | xargs -r oc adm certificate approve "
         ">/dev/null 2>&1 || true; "
@@ -354,17 +369,33 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         "notready=$(oc get nodes --no-headers 2>/dev/null | grep -vc ' Ready'); "
         '[ "$total" -gt 0 ] && [ "$notready" = 0 ] && break; sleep 10; done\n'
     )
+    gate = (
+        # FAIL-CLOSED: oc must WORK (non-empty co list) AND all operators healthy,
+        # incl authentication (oauth/login) + console. Empty output != healthy.
+        "  ready=''\n"
+        "  for i in $(seq 1 160); do "
+        "out=$(oc get co --no-headers 2>/dev/null); "
+        '[ -z "$out" ] && { sleep 15; continue; }; '
+        'bad=$(echo "$out" | awk \'$3!="True"||$5=="True"{c++} END{print c+0}\'); '
+        'auth=$(echo "$out" | awk \'$1=="authentication"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
+        'con=$(echo "$out" | awk \'$1=="console"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
+        '[ "$bad" = 0 ] && [ "$auth" = 1 ] && [ "$con" = 1 ] && '
+        "{ ready=1; break; }; sleep 15; done\n"
+    )
     tail = (
-        # Wait for cluster operators to stop progressing/degraded.
-        "  for i in $(seq 1 120); do "
-        "bad=$(oc get co --no-headers 2>/dev/null | "
-        'awk \'$3!="True"||$5=="True"{c++} END{print c+0}\'); '
-        '[ "$bad" = 0 ] && break; sleep 15; done\n'
-        f'  echo "[{cluster_key}] install complete"\n'
+        '  if [ -n "$li" ] && [ -n "$ready" ]; then\n'
+        f"    cp {cluster_dir}/kubeadmin-password {cluster_dir}/auth/kubeadmin-password "
+        "2>/dev/null || true\n"
+        f'    echo "[{cluster_key}] install complete"\n'
+        "  else\n"
+        f'    echo "[{cluster_key}] recert failed: cluster not ready '
+        '(login=$li operators=$ready)"\n'
+        "    exit 1\n"
+        "  fi\n"
         ") &\n"
         "pids+=($!)\n"
     )
-    return head + redeploy + tail
+    return head + redeploy + gate + tail
 
 
 def build_ops_pod_recert_script(

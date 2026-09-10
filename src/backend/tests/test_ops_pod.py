@@ -383,10 +383,43 @@ def test_recert_script_no_fresh_install():
     assert "InsertMedia" not in script
 
 
-def test_recert_script_uses_injected_kubeconfig_per_cluster():
+def test_recert_script_mints_fresh_kubeconfig_via_kubeadmin():
+    """The captured kubeconfig's CA is stale after recert (the apiserver
+    regenerates its serving signer on recovery), so the recert block logs in as
+    kubeadmin to MINT a fresh, working kubeconfig at <dir>/auth/kubeconfig —
+    token auth, independent of any rotated cert. The captured kubeconfig is only
+    read for the server URL."""
     script = _recert_script()
-    assert "export KUBECONFIG=/workdir/sno/kubeconfig" in script
-    assert "export KUBECONFIG=/workdir/compact/kubeconfig" in script
+    # reads the kubeadmin password mounted per cluster
+    assert "/workdir/sno/kubeadmin-password" in script
+    # logs in as kubeadmin and writes the fresh kubeconfig under auth/
+    assert "oc login" in script
+    assert "-u kubeadmin" in script
+    assert "export KUBECONFIG=/workdir/sno/auth/kubeconfig" in script
+    assert "export KUBECONFIG=/workdir/compact/auth/kubeconfig" in script
+
+
+def test_recert_script_gate_is_fail_closed():
+    """A failing/empty `oc get co` must NOT read as healthy (the old bug: empty
+    output → awk counted 0 bad → premature 'install complete'). Require oc to
+    return operators AND authentication (oauth) + console Available."""
+    script = _recert_script()
+    # empty output is explicitly skipped, not treated as healthy
+    assert '[ -z "$out" ] && { sleep 15; continue; }' in script
+    # login + operators must BOTH succeed before install complete; else exit 1
+    assert 'if [ -n "$li" ] && [ -n "$ready" ]; then' in script
+    assert "exit 1" in script
+    # oauth/console are part of the readiness gate
+    assert "authentication" in script
+    assert "console" in script
+
+
+def test_recert_script_harvests_fresh_kubeconfig_for_injection():
+    """On success it writes auth/kubeadmin-password (auth/kubeconfig comes from
+    the kubeadmin login) so _store_ops_pod_creds harvests the FRESH kubeconfig
+    into the showroom terminal."""
+    script = _recert_script()
+    assert "/workdir/sno/auth/kubeadmin-password" in script
 
 
 def test_recert_script_approves_csrs():

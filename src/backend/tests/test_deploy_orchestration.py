@@ -4293,7 +4293,10 @@ class TestOpsPodRecertHelpers:
         # recert path: no fresh install
         assert "agent create image" not in script
         assert "wait-for install-complete" not in script
-        assert "export KUBECONFIG=/workdir/cl-0/kubeconfig" in script
+        # mints a fresh kubeconfig via kubeadmin login (captured CA is stale post-
+        # recert) → writes it under auth/ for harvest into the showroom terminal
+        assert "export KUBECONFIG=/workdir/cl-0/auth/kubeconfig" in script
+        assert "oc login" in script
 
     def test_ops_pod_command_uses_install_script_for_fresh(self):
         from app.services.deploy_service import _ops_pod_command
