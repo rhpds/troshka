@@ -97,3 +97,71 @@ class TestBuildFilepullPod:
     def test_custom_sa_override(self):
         pod = self._pod(service_account="troshka-export")
         assert pod["spec"]["serviceAccountName"] == "troshka-export"
+
+
+class TestHandleFilePull:
+    """Orchestration in handlers.project: snapshot -> guestfish pod -> status,
+    with guaranteed cleanup of the snapshot, temp PVC, and pod."""
+
+    def _run(self, pod_log):
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        import handlers.project as p
+
+        custom = MagicMock()
+        core = MagicMock()
+        with patch.object(
+            p.client, "CustomObjectsApi", return_value=custom
+        ), patch.object(p.client, "CoreV1Api", return_value=core), patch.object(
+            p, "_freeze_vmi", return_value=True
+        ), patch.object(
+            p, "_thaw_vmi"
+        ), patch.object(
+            p, "_create_namespaced_pvc"
+        ), patch.object(
+            p, "_wait_volume_snapshot_ready", new=AsyncMock(return_value=144)
+        ), patch.object(
+            p, "_wait_filepull_pod", new=AsyncMock(return_value=pod_log)
+        ):
+            cfg = {
+                "requestId": "req-abc",
+                "vmName": "troshka-vm-x",
+                "pvcName": "vm-x-disk",
+                "sizeGb": 144,
+                "path": "/etc/kubernetes/x/lb-ext.kubeconfig",
+            }
+            asyncio.run(p._handle_file_pull(cfg, "ns1", "proj1"))
+        return custom, core
+
+    def _status(self, custom):
+        return custom.patch_namespaced_custom_object_status.call_args[1]["body"][
+            "status"
+        ]["filePull"]
+
+    def test_success_writes_content_and_cleans_up(self):
+        import base64
+
+        payload = b"LB-EXT-KUBECONFIG-DATA"
+        log = f"SIZE=22\nB64_BEGIN\n{base64.b64encode(payload).decode()}\nB64_END\n"
+        custom, core = self._run(log)
+
+        fp = self._status(custom)
+        assert fp["requestId"] == "req-abc"
+        assert base64.b64decode(fp["contentB64"]) == payload
+        # cleanup always runs
+        assert core.delete_namespaced_pod.called
+        assert core.delete_namespaced_persistent_volume_claim.called
+        assert custom.delete_namespaced_custom_object.called  # snapshot
+        # annotation cleared
+        assert custom.patch_namespaced_custom_object.called
+
+    def test_failure_sets_error_and_still_cleans_up(self):
+        custom, core = self._run("no markers, guestfish failed")
+        fp = self._status(custom)
+        assert fp.get("error")
+        assert "contentB64" not in fp
+        # cleanup still runs on failure
+        assert core.delete_namespaced_pod.called
+        assert core.delete_namespaced_persistent_volume_claim.called
+        assert custom.delete_namespaced_custom_object.called

@@ -168,6 +168,7 @@ def _extract_kubeconfig_secret(
 
 
 CAPTURE_ANNOTATION = "troshka.redhat.com/capture-request"
+FILE_PULL_ANNOTATION = "troshka.redhat.com/file-pull-request"
 
 
 async def _stop_all_vms(custom_api, namespace):
@@ -699,6 +700,160 @@ def _clear_capture_annotation(custom_api, namespace, name):
         )
     except Exception as e:
         logger.warning(f"Failed to clear capture annotation on {name}: {e}")
+
+
+def _clear_file_pull_annotation(custom_api, namespace, name):
+    """Remove the file-pull-request annotation so kopf sees a clean state."""
+    try:
+        custom_api.patch_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkaprojects",
+            name=name,
+            body={"metadata": {"annotations": {FILE_PULL_ANNOTATION: None}}},
+        )
+    except Exception as e:
+        logger.warning(f"Failed to clear file-pull annotation on {name}: {e}")
+
+
+def _cleanup_filepull_resources(
+    core_api, custom_api, namespace, pod_name, tmp_pvc, snap_name
+):
+    """Always remove the file-pull pod, temp PVC, and snapshot (best-effort)."""
+    try:
+        core_api.delete_namespaced_pod(
+            name=pod_name, namespace=namespace, propagation_policy="Background"
+        )
+    except Exception:
+        pass
+    try:
+        core_api.delete_namespaced_persistent_volume_claim(
+            name=tmp_pvc, namespace=namespace
+        )
+    except Exception:
+        pass
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group=_SNAPSHOT_GROUP,
+            version="v1",
+            namespace=namespace,
+            plural="volumesnapshots",
+            name=snap_name,
+        )
+    except Exception:
+        pass
+
+
+async def _wait_filepull_pod(core_api, namespace, pod_name, timeout_s=360):
+    """Poll the file-pull pod until it emits the B64 markers (or errors/exits).
+    Returns the pod log (possibly empty)."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        phase = ""
+        try:
+            pod = core_api.read_namespaced_pod(name=pod_name, namespace=namespace)
+            phase = getattr(pod.status, "phase", "") or ""
+        except Exception:
+            pass
+        log = ""
+        try:
+            log = (
+                core_api.read_namespaced_pod_log(name=pod_name, namespace=namespace)
+                or ""
+            )
+        except Exception:
+            pass
+        if (
+            "B64_END" in log
+            or "FILEPULL_ERROR" in log
+            or phase
+            in (
+                "Succeeded",
+                "Failed",
+            )
+        ):
+            return log
+        await asyncio.sleep(5)
+    return ""
+
+
+async def _handle_file_pull(config, namespace, name):
+    """Extract a single file from a VM's disk via a point-in-time snapshot +
+    guestfish (offline read of a clone — never the live RWO disk). Writes the
+    base64 content to ``status.filePull`` for the backend to harvest, and ALWAYS
+    cleans up the snapshot, temp PVC, and pod."""
+    import base64 as _b64
+
+    from helpers.filepull import build_filepull_pod, parse_filepull_output
+    from helpers.patterns import build_temp_pvc_from_snapshot, build_volume_snapshot
+
+    req_id = str(config.get("requestId", ""))
+    vm_name = config.get("vmName", "")
+    pvc_name = config.get("pvcName", "")
+    size_gb = int(config.get("sizeGb", 0)) or 20
+    guest_path = config.get("path", "")
+
+    custom_api = client.CustomObjectsApi()
+    core_api = client.CoreV1Api()
+
+    suffix = (req_id or vm_name)[:8] or "fp"
+    snap_name = f"filepull-snap-{suffix}"
+    tmp_pvc = f"filepull-tmp-{suffix}"
+    pod_name = f"filepull-{suffix}"
+
+    result = {"requestId": req_id, "ready": True, "error": ""}
+    try:
+        # Consistent point-in-time snapshot of the (possibly running) root disk.
+        frozen = _freeze_vmi(vm_name, namespace)
+        try:
+            snap = build_volume_snapshot(snap_name, namespace, pvc_name)
+            try:
+                custom_api.create_namespaced_custom_object(
+                    group=_SNAPSHOT_GROUP,
+                    version="v1",
+                    namespace=namespace,
+                    plural="volumesnapshots",
+                    body=snap,
+                )
+            except ApiException as e:
+                if e.status != 409:
+                    raise
+            restore_gi = await _wait_volume_snapshot_ready(
+                custom_api, namespace, snap_name, size_gb
+            )
+        finally:
+            if frozen:
+                _thaw_vmi(vm_name, namespace)
+
+        temp_pvc = build_temp_pvc_from_snapshot(
+            tmp_pvc, namespace, snap_name, restore_gi
+        )
+        _create_namespaced_pvc(core_api, namespace, temp_pvc)
+
+        pod = build_filepull_pod(pod_name, namespace, tmp_pvc, guest_path)
+        try:
+            core_api.create_namespaced_pod(namespace=namespace, body=pod)
+        except ApiException as e:
+            if e.status != 409:
+                raise
+
+        log = await _wait_filepull_pod(core_api, namespace, pod_name)
+        content = parse_filepull_output(log)
+        if content is None:
+            result["error"] = "file not found or pull failed"
+        else:
+            result["contentB64"] = _b64.b64encode(content).decode()
+    except Exception as e:
+        logger.exception(f"file-pull failed for {name}: {e}")
+        result["error"] = str(e)[:200]
+    finally:
+        _cleanup_filepull_resources(
+            core_api, custom_api, namespace, pod_name, tmp_pvc, snap_name
+        )
+
+    _patch_cr_status(custom_api, namespace, name, {"filePull": result})
+    _clear_file_pull_annotation(custom_api, namespace, name)
 
 
 async def _handle_capture(capture_config, namespace, name, patch):
@@ -2534,6 +2689,21 @@ async def project_delete(namespace, name, **_):
 @kopf.on.update(CRD_GROUP, CRD_VERSION, "troshkaprojects")
 async def project_update(status, meta, namespace, name, patch, **_):
     annotations = meta.get("annotations", {}) or {}
+
+    file_pull_json = annotations.get(FILE_PULL_ANNOTATION)
+    if file_pull_json:
+        try:
+            fp_config = json.loads(file_pull_json)
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.exception(f"Invalid file-pull annotation JSON on {name}: {e}")
+            return
+        # Idempotency: skip if this exact request was already serviced.
+        served = (status.get("filePull") or {}).get("requestId")
+        if served and served == fp_config.get("requestId"):
+            return
+        await _handle_file_pull(fp_config, namespace, name)
+        return
+
     capture_json = annotations.get(CAPTURE_ANNOTATION)
     if not capture_json:
         return
