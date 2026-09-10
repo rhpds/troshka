@@ -267,7 +267,11 @@ def _cluster_install_block(
     return (
         f"# ===== cluster {cluster_key} =====\n"
         "(\n"
-        f"  exec > {cluster_dir}/install.log 2>&1\n"
+        # Truncate once on (re)start, then reopen in APPEND mode: the kubeconfig
+        # delivery thread appends breadcrumbs with '>>' (O_APPEND) concurrently, and
+        # a non-append 'exec >' here would overwrite its bytes at our stale offset.
+        f"  : > {cluster_dir}/install.log\n"
+        f"  exec >> {cluster_dir}/install.log 2>&1\n"
         "  set -e\n"
         "  set -o pipefail\n"
         f'  echo "[{cluster_key}] starting agent-based install"\n'
@@ -348,7 +352,11 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
     head = (
         f"# ===== cluster {cluster_key} =====\n"
         "(\n"
-        f"  exec > {cluster_dir}/install.log 2>&1\n"
+        # Truncate once on (re)start, then reopen in APPEND mode: the kubeconfig
+        # delivery thread appends breadcrumbs with '>>' (O_APPEND) concurrently, and
+        # a non-append 'exec >' here would overwrite its bytes at our stale offset.
+        f"  : > {cluster_dir}/install.log\n"
+        f"  exec >> {cluster_dir}/install.log 2>&1\n"
         f'  echo "[{cluster_key}] Waiting for cluster installation to complete (recert)"\n'
         f"  mkdir -p {cluster_dir}/auth\n"
         # Both the captured kubeconfig's server AND client CAs roll on recert, and

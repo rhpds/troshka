@@ -467,6 +467,21 @@ def test_recert_script_parallel_and_holds():
     assert "sleep infinity" in script
 
 
+def test_recert_script_opens_log_append_mode():
+    """The ops-pod must open install.log in APPEND mode (after truncating once on
+    restart), not truncating mode. The kubeconfig-delivery thread appends
+    breadcrumbs with '>>' (O_APPEND); if the ops-pod's own FD is a non-append
+    'exec > log', its stale offset overwrites bytes of the delivery's line
+    (the clobbered 'a' in 'admin kubeconfig delivered'). Truncate-then-append
+    keeps restart-truncation while making concurrent appends collision-free."""
+    script = _recert_script()
+    # truncate once, then open append-mode (both clusters)
+    assert script.count(": > /workdir/sno/install.log") == 1
+    assert "exec >> /workdir/sno/install.log 2>&1" in script
+    # the racy truncating redirect must be gone
+    assert "exec > /workdir/sno/install.log" not in script
+
+
 # --- Task 7: install-progress state machine (pure) -------------------------
 
 from app.services.ocp.ops_pod_install import (  # noqa: E402

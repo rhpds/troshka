@@ -2788,8 +2788,9 @@ def cache_ops_pod_logs(project_id: str, logs: dict[str, str]) -> dict[str, str]:
     """Merge freshly-read per-cluster logs into the cache, keeping the LONGEST
     seen per cluster, and return the merged result.
 
-    The ops pod truncates ``install.log`` on every restart (``exec > install.log``)
-    and is eventually stopped, so the live log is transient. Persisting the peak
+    The ops pod truncates ``install.log`` on every restart (``: > install.log``
+    then ``exec >> install.log``) and is eventually stopped, so the live log is
+    transient. Persisting the peak
     (completed) log lets the status box show the full log + derived progress long
     after the pod is gone. A shorter/empty live read never clobbers a longer
     cached one.
