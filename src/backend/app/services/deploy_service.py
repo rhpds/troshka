@@ -2915,17 +2915,151 @@ def _recert_cp_member_vm_id(topology: dict, cluster: dict) -> str:
     return ""
 
 
+def _ops_pod_log_line(host, project_id, container_name, key, workdir, msg) -> None:
+    """[LIVE-ENV] Append a breadcrumb to the ops-pod's per-cluster install.log so
+    the showroom Status & Log surfaces delivery progress during the recert wait.
+    Wording must NOT match a phase marker (see ops_pod_install._LOG_MARKERS /
+    _FAILURE_MARKERS) so it stays cosmetic."""
+    logf = f"{workdir}/{key}/install.log"
+    _ops_pod_exec(
+        host,
+        project_id,
+        container_name,
+        ["bash", "-c", f"echo '[{key}] {msg}' >> {logf} 2>/dev/null || true"],
+        timeout=15,
+    )
+
+
+def _wait_nested_apiserver_up(
+    host, project_id, container_name, key, workdir, deadline
+) -> bool:
+    """Poll the nested apiserver /healthz (unauth, TLS-skip) via the ops pod."""
+    import time as _t
+
+    captured = f"{workdir}/{key}/kubeconfig"
+    probe = [
+        "bash",
+        "-c",
+        f"oc --kubeconfig={captured} --insecure-skip-tls-verify "
+        "get --raw /healthz 2>/dev/null",
+    ]
+    while _t.time() < deadline:
+        if (
+            "ok"
+            in _ops_pod_exec(
+                host, project_id, container_name, probe, timeout=20
+            ).lower()
+        ):
+            return True
+        _t.sleep(10)
+    return False
+
+
+def _pull_recert_kubeconfig(
+    driver, provider, project_id, cp_vm_id, host, deadline, log_fn
+):
+    """Retry pull_file until it returns a non-empty kubeconfig or the deadline.
+
+    lb-ext.kubeconfig is NOT on disk the instant the API answers /healthz — the
+    apiserver static pod is still settling, and on troshkad the VM's disk is
+    relocated to a local copy during boot — so a one-shot pull races. Retry with
+    backoff; each attempt re-resolves the live disk (via domblklist inside
+    pull_file) and takes a fresh point-in-time snapshot."""
+    import time as _t
+
+    attempt = 0
+    while _t.time() < deadline:
+        attempt += 1
+        try:
+            kc = driver.pull_file(
+                provider, project_id, cp_vm_id, LB_EXT_KUBECONFIG_PATH, host=host
+            )
+            if kc:
+                return kc
+        except Exception:
+            logger.exception(
+                "recert delivery %s: pull_file attempt %d failed",
+                project_id[:8],
+                attempt,
+            )
+        log_fn(f"admin kubeconfig not ready on node yet; retrying (attempt {attempt})")
+        _t.sleep(30)
+    return None
+
+
+def _deliver_one_recert_kubeconfig(
+    host,
+    provider,
+    driver,
+    project_id,
+    cluster,
+    topology,
+    container_name,
+    workdir,
+    deadline,
+) -> None:
+    """[LIVE-ENV] One cluster: wait for the nested API, pull the CP node's
+    lb-ext.kubeconfig (retrying until it's on disk), and deliver it into the ops
+    pod at ``<workdir>/<key>/auth/kubeconfig``. Emits progress breadcrumbs into
+    the ops-pod install.log so the showroom shows real steps."""
+    from app.services.ocp.ops_pod_install import _cluster_key as _ck
+
+    key = _ck(cluster)
+
+    def _log(msg):
+        _ops_pod_log_line(host, project_id, container_name, key, workdir, msg)
+
+    cp_vm_id = _recert_cp_member_vm_id(topology, cluster)
+    if not cp_vm_id:
+        logger.error("recert delivery %s/%s: no CP member", project_id[:8], key)
+        return
+
+    _log("waiting for the control-plane API to come up")
+    if not _wait_nested_apiserver_up(
+        host, project_id, container_name, key, workdir, deadline
+    ):
+        logger.error(
+            "recert delivery %s/%s: apiserver never came up", project_id[:8], key
+        )
+        _log("control-plane API never came up; recert runner will time out")
+        return
+
+    _log(
+        "control-plane API up; extracting admin kubeconfig from node (snapshot + guestfish)"
+    )
+    kc = _pull_recert_kubeconfig(
+        driver, provider, project_id, cp_vm_id, host, deadline, _log
+    )
+    if not kc:
+        logger.error(
+            "recert delivery %s/%s: could not extract kubeconfig", project_id[:8], key
+        )
+        _log("could not extract admin kubeconfig; recert runner will time out")
+        return
+
+    auth_path = f"{workdir}/{key}/auth/kubeconfig"
+    if _ops_pod_write_file(host, project_id, container_name, auth_path, kc):
+        logger.info(
+            "recert delivery %s/%s: delivered lb-ext.kubeconfig (%d bytes)",
+            project_id[:8],
+            key,
+            len(kc),
+        )
+        _log("admin kubeconfig delivered")
+    else:
+        logger.error(
+            "recert delivery %s/%s: write into ops pod failed", project_id[:8], key
+        )
+        _log("failed to write admin kubeconfig into the ops pod")
+
+
 def _deliver_recert_kubeconfigs(host, project_id, topology, clusters, deadline) -> None:
     """[LIVE-ENV] Recert deploys: per cluster, once the apiserver (:6443) is up,
     pull the CP node's live lb-ext.kubeconfig (provider snapshot+guestfish) and
-    write it into the ops pod at ``<workdir>/<key>/auth/kubeconfig`` so the recert
-    block authenticates without oauth. Fail-closed: on any error the recert block
-    times out and fails (no fallback)."""
-    import time as _t
-
+    write it into the ops pod so the recert block authenticates without oauth.
+    Fail-closed: on any error the recert block times out and fails (no fallback)."""
     from app.core.database import SessionLocal
     from app.models.provider import Provider
-    from app.services.ocp.ops_pod_install import _cluster_key as _ck
     from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
     from app.services.providers import get_provider_driver
 
@@ -2939,68 +3073,19 @@ def _deliver_recert_kubeconfigs(host, project_id, topology, clusters, deadline) 
         return
     driver = get_provider_driver(provider)
     container_name = _ops_pod_container_name(project_id)
-    workdir = OPS_POD_WORKDIR
 
     for cluster in clusters:
-        key = _ck(cluster)
-        cp_vm_id = _recert_cp_member_vm_id(topology, cluster)
-        if not cp_vm_id:
-            logger.error("recert delivery %s/%s: no CP member", project_id[:8], key)
-            continue
-        # Wait for the apiserver (:6443) to serve — lb-ext.kubeconfig is written
-        # early in boot. Probe /healthz (unauthenticated) via the captured
-        # kubeconfig's server (its CA is stale, so skip TLS verify).
-        captured = f"{workdir}/{key}/kubeconfig"
-        probe = [
-            "bash",
-            "-c",
-            f"oc --kubeconfig={captured} --insecure-skip-tls-verify "
-            "get --raw /healthz 2>/dev/null",
-        ]
-        up = False
-        while _t.time() < deadline:
-            if (
-                "ok"
-                in _ops_pod_exec(
-                    host, project_id, container_name, probe, timeout=20
-                ).lower()
-            ):
-                up = True
-                break
-            _t.sleep(10)
-        if not up:
-            logger.error(
-                "recert delivery %s/%s: apiserver never came up", project_id[:8], key
-            )
-            continue
-        try:
-            kc = driver.pull_file(
-                provider, project_id, cp_vm_id, LB_EXT_KUBECONFIG_PATH, host=host
-            )
-        except Exception:
-            logger.exception(
-                "recert delivery %s/%s: pull_file failed", project_id[:8], key
-            )
-            continue
-        if not kc:
-            logger.error(
-                "recert delivery %s/%s: empty kubeconfig pulled", project_id[:8], key
-            )
-            continue
-        auth_path = f"{workdir}/{key}/auth/kubeconfig"
-        if _ops_pod_write_file(host, project_id, container_name, auth_path, kc):
-            logger.info(
-                "recert delivery %s/%s: delivered lb-ext.kubeconfig (%d bytes)",
-                project_id[:8],
-                key,
-                len(kc),
-            )
-        else:
-            logger.error(
-                "recert delivery %s/%s: write into ops pod failed",
-                project_id[:8],
-                key,
-            )
+        _deliver_one_recert_kubeconfig(
+            host,
+            provider,
+            driver,
+            project_id,
+            cluster,
+            topology,
+            container_name,
+            OPS_POD_WORKDIR,
+            deadline,
+        )
 
 
 def _maybe_start_recert_delivery(host, project_id: str, clusters: list) -> None:
