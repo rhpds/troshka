@@ -74,8 +74,10 @@ function parseOperators(log: string): { pending: string[] } {
         .map((s) => s.trim())
         .filter(Boolean);
     }
-    // recert block breadcrumb: "waiting on operators: monitoring console" (or "none")
-    const rec = line.match(/waiting on operators:\s*(.+?)\s*$/i);
+    // recert block breadcrumb: "waiting on operators: monitoring console" (or
+    // "none"). Stop at "(" so a trailing "(console http=200)" from older logs
+    // isn't wrongly split into fake operator names.
+    const rec = line.match(/waiting on operators:\s*(.+?)\s*(?:\(|$)/i);
     if (rec) {
       const v = rec[1].trim();
       pending = v === "none" ? [] : v.split(/\s+/).filter(Boolean);

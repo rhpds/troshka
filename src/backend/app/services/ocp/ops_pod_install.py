@@ -407,7 +407,10 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         ">/dev/null 2>&1 || true; "
         "out=$(oc get co --no-headers 2>/dev/null); "
         '[ -z "$out" ] && { sleep 15; continue; }; '
-        'bad=$(echo "$out" | awk \'$3!="True"||$5=="True"{c++} END{print c+0}\'); '
+        # Don't block on monitoring: prometheus/metrics-server settle slowly after
+        # the reaper and aren't needed for a usable console/login. It converges on
+        # its own; gating on it just delays "ready" for no user-visible benefit.
+        'bad=$(echo "$out" | awk \'$1=="monitoring"{next} $3!="True"||$5=="True"{c++} END{print c+0}\'); '
         'auth=$(echo "$out" | awk \'$1=="authentication"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
         'con=$(echo "$out" | awk \'$1=="console"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
         # Verify the console route ACTUALLY HTTP-responds (:443 serving), not just
@@ -422,10 +425,12 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         '[ "$bad" = 0 ] && [ "$auth" = 1 ] && [ "$con" = 1 ] && [ "$resp" = 1 ] && '
         "{ ready=1; break; }; "
         # Log which operators are still not ready + the console HTTP status so the
-        # showroom log is informative.
-        'nr=$(echo "$out" | awk \'$3!="True"||$5=="True"{printf "%s ",$1}\'); '
-        f'echo "[{cluster_key}] waiting on operators: ${{nr:-none}} '
-        '(console http=$ccode)"; '
+        # showroom log is informative. Keep them on SEPARATE lines: the frontend
+        # parses everything after "waiting on operators:" as operator names, so the
+        # console status must not share that line (it'd render as fake operators).
+        'nr=$(echo "$out" | awk \'$1=="monitoring"{next} $3!="True"||$5=="True"{printf "%s ",$1}\'); '
+        f'echo "[{cluster_key}] waiting on operators: ${{nr:-none}}"; '
+        f'echo "[{cluster_key}] console http=$ccode"; '
         "sleep 15; done\n"
     )
     tail = (

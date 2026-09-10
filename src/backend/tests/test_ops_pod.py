@@ -1618,3 +1618,24 @@ def test_recert_gate_requires_console_http_response():
     assert "oc get route console -n openshift-console" in script
     assert "curl -sk" in script and "%{http_code}" in script
     assert '[ "$resp" = 1 ]' in script
+
+
+def test_recert_gate_does_not_block_on_monitoring():
+    """The gate must NOT wait on the monitoring operator: prometheus/metrics-server
+    settle slowly after the reaper and aren't needed for a usable console. Both the
+    blocking 'bad' count and the pending display skip $1=="monitoring"."""
+    script = _recert_script()
+    # both the bad-count awk and the pending-display awk skip monitoring
+    assert script.count('$1=="monitoring"{next}') >= 2
+
+
+def test_recert_gate_console_status_on_own_line():
+    """The console HTTP status must be a SEPARATE log line — the frontend parses
+    everything after 'waiting on operators:' as operator names, so a trailing
+    '(console http=...)' on that line would render as fake pending operators."""
+    script = _recert_script()
+    # operators breadcrumb ends right after the operator list (no console suffix)
+    assert 'waiting on operators: ${nr:-none}"' in script
+    assert "operators: ${nr:-none} (console" not in script
+    # console status lives on its own line
+    assert "console http=$ccode" in script
