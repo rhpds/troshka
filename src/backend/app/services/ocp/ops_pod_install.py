@@ -329,7 +329,8 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
       arrives;
     - approves pending CSRs until nodes go Ready (kubelets re-bootstrap after the
       PKI wipe);
-    - multi-node ONLY: forces a kube-apiserver redeploy;
+    - forces a kube-apiserver redeploy (ALL clusters, SNO included) to recover
+      post-recert API-aggregation trust;
     - FAIL-CLOSED readiness gate: every cluster operator Available=True /
       Degraded=False INCLUDING ``authentication`` (oauth) and ``console`` — an
       empty/failed ``oc`` is NEVER treated as healthy;
@@ -341,14 +342,21 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
     monitor tails it unchanged.
     """
     cluster_dir = f"{workdir}/{cluster_key}"
-    redeploy = ""
-    if mode == "multinode":
-        redeploy = (
-            "  echo 'Forcing kube-apiserver redeploy for fresh kubelet CA...'\n"
-            "  oc patch kubeapiserver cluster --type=merge "
-            '-p "{\\"spec\\":{\\"forceRedeploymentReason\\":'
-            '\\"recert-$(date +%s)\\"}}" >/dev/null 2>&1 || true\n'
-        )
+    _ = mode  # (was multinode-only; the redeploy is now needed for SNO too)
+    # Force a kube-apiserver redeploy on EVERY recert (SNO included). Post-recert
+    # the API-aggregation trust (requestheader CA / extension-apiserver-
+    # authentication) needs the kube-apiserver kicked to repopulate; without it
+    # route.openshift.io stays flaky, the router can't list routes (has-synced
+    # fails), :443 never serves, and the console/oauth hang at 503 forever. SNO
+    # skipping this was THE recert instability (a stuck SNO recovered the instant
+    # the redeploy was forced).
+    redeploy = (
+        "  echo 'Forcing kube-apiserver redeploy "
+        "(recover API-aggregation trust + fresh serving)...'\n"
+        "  oc patch kubeapiserver cluster --type=merge "
+        '-p "{\\"spec\\":{\\"forceRedeploymentReason\\":'
+        '\\"recert-$(date +%s)\\"}}" >/dev/null 2>&1 || true\n'
+    )
     head = (
         f"# ===== cluster {cluster_key} =====\n"
         "(\n"

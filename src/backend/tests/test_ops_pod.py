@@ -461,16 +461,17 @@ def test_recert_script_approves_csrs():
     assert "certificate approve" in script
 
 
-def test_recert_script_multinode_forces_apiserver_redeploy():
-    """Only multi-node needs a kube-apiserver redeploy to pick up the fresh
-    kubelet serving CA; SNO recert is self-sufficient offline."""
+def test_recert_script_forces_apiserver_redeploy_all_clusters():
+    """EVERY recert forces a kube-apiserver redeploy — SNO too, not just multinode.
+    It repopulates API-aggregation trust (requestheader CA / extension-apiserver-
+    authentication) so route.openshift.io recovers; without it the router can't
+    list routes (has-synced fails), :443 stays down, and the console never comes
+    up. Confirmed live: a stuck SNO recovered the instant the redeploy was forced."""
     script = _recert_script()
-    assert script.count("forceRedeploymentReason") == 1  # only the multinode cluster
-    # anchored to the multinode cluster block
-    compact = script.split("# ===== cluster compact =====", 1)[1]
-    assert "forceRedeploymentReason" in compact
-    sno = script.split("# ===== cluster sno =====", 1)[1].split("# ===== cluster", 1)[0]
-    assert "forceRedeploymentReason" not in sno
+    assert script.count("forceRedeploymentReason") == 2  # BOTH clusters, incl SNO
+    for marker in ("# ===== cluster sno =====", "# ===== cluster compact ====="):
+        block = script.split(marker, 1)[1].split("# ===== cluster", 1)[0]
+        assert "forceRedeploymentReason" in block
 
 
 def test_recert_script_reuses_install_complete_marker_and_log():
