@@ -2021,7 +2021,7 @@ def _poll_recert_jobs(batch_api, recert_cfgs, namespace, status, patch):
     if done_count < len(recert_cfgs):
         patch.status["deployProgress"] = {
             "percent": 70 + int(10 * done_count / len(recert_cfgs)),
-            "stage": "Regenerating certificates",
+            "stage": "Wiping kubelet PKI",
             "detail": f"recert {done_count}/{len(recert_cfgs)} ({', '.join(running_names)})",
         }
         return False, True

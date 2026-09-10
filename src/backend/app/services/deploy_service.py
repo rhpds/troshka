@@ -6226,7 +6226,7 @@ def _deploy_handle_recert(s, host, project_id, topology, pool):
     """
     if not (_is_pattern_deploy(topology) and _is_ocp_topology(topology)):
         return
-    _update_deploy_progress(project_id, "certs", "regenerating certificates")
+    _update_deploy_progress(project_id, "certs", "wiping kubelet PKI")
     _, common_password = _resolve_recert_settings(s, topology)
     _clean_kubelet_certs(
         host,
