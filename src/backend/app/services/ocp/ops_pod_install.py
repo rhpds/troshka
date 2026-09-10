@@ -359,20 +359,39 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         f"  exec >> {cluster_dir}/install.log 2>&1\n"
         f'  echo "[{cluster_key}] Waiting for cluster installation to complete (recert)"\n'
         f"  mkdir -p {cluster_dir}/auth\n"
-        # Both the captured kubeconfig's server AND client CAs roll on recert, and
         # oauth (ingress :443) is typically down on a freshly-recert'd cluster, so
-        # we CANNOT oc-login. The backend delivers the node's live lb-ext.kubeconfig
-        # (pulled via an offline snapshot+guestfish read — a CA-independent admin
-        # cert that authenticates to :6443 with no oauth) to auth/kubeconfig. Wait
-        # for it to appear AND authenticate, then use it directly.
+        # we CANNOT oc-login — we need a client-cert admin kubeconfig. Two arrive:
+        # the CAPTURED one ({dir}/kubeconfig, long-lived admin-kubeconfig-signer
+        # client cert) and the DELIVERED lb-ext one ({dir}/auth/kubeconfig, pulled
+        # via offline snapshot+guestfish). NEITHER is universally valid: server and
+        # client CAs roll differently per provider (on ocpvirt the captured one
+        # works while lb-ext is stale; on KubeVirt it's the reverse). So try BOTH
+        # and use whichever authenticates. Strip the embedded CA + set insecure so
+        # a rotated SERVER cert never fails selection (auth rests on the client
+        # cert; the nested endpoint is trusted). The winner is written to
+        # auth/kubeconfig so _store_ops_pod_creds harvests it for the terminal.
         f"  export KUBECONFIG={cluster_dir}/auth/kubeconfig\n"
         "  li=''\n"
         "  for i in $(seq 1 180); do "
-        '[ -s "$KUBECONFIG" ] && oc get nodes >/dev/null 2>&1 && { li=1; break; }; '
+        f"for src in {cluster_dir}/kubeconfig {cluster_dir}/auth/kubeconfig; do "
+        '[ -s "$src" ] || continue; '
+        f'cp "$src" {cluster_dir}/.recert-try 2>/dev/null || continue; '
+        f"cl=$(KUBECONFIG={cluster_dir}/.recert-try oc config view "
+        "-o jsonpath='{.clusters[0].name}' 2>/dev/null); "
+        '[ -n "$cl" ] || continue; '
+        f"KUBECONFIG={cluster_dir}/.recert-try oc config unset "
+        '"clusters.$cl.certificate-authority-data" >/dev/null 2>&1; '
+        f'KUBECONFIG={cluster_dir}/.recert-try oc config set-cluster "$cl" '
+        "--insecure-skip-tls-verify=true >/dev/null 2>&1; "
+        f"KUBECONFIG={cluster_dir}/.recert-try oc get nodes >/dev/null 2>&1 && "
+        f'{{ mv {cluster_dir}/.recert-try "$KUBECONFIG"; li=1; break; }}; '
+        "done; "
+        '[ -n "$li" ] && break; '
         "sleep 10; done\n"
-        # No fallback: if the admin kubeconfig was never delivered, fail closed.
-        f'  [ -n "$li" ] || {{ echo "[{cluster_key}] recert failed: admin '
-        'kubeconfig not delivered"; exit 1; }\n'
+        f"  rm -f {cluster_dir}/.recert-try\n"
+        # No fallback: if NEITHER kubeconfig ever authenticates, fail closed.
+        f'  [ -n "$li" ] || {{ echo "[{cluster_key}] recert failed: no working '
+        'admin kubeconfig (captured or delivered)"; exit 1; }\n'
         f'  echo "[{cluster_key}] admin kubeconfig received; approving pending CSRs"\n'
         # Approve CSRs until all nodes are Ready (kubelet re-bootstrap after wipe).
         "  for i in $(seq 1 120); do "
@@ -415,10 +434,11 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         ">/dev/null 2>&1 || true; "
         "out=$(oc get co --no-headers 2>/dev/null); "
         '[ -z "$out" ] && { sleep 15; continue; }; '
-        # Don't block on monitoring: prometheus/metrics-server settle slowly after
-        # the reaper and aren't needed for a usable console/login. It converges on
-        # its own; gating on it just delays "ready" for no user-visible benefit.
-        'bad=$(echo "$out" | awk \'$1=="monitoring"{next} $3!="True"||$5=="True"{c++} END{print c+0}\'); '
+        # Don't block on slow-settling operators that aren't needed for a usable
+        # console/login: monitoring (prometheus/metrics-server) and OLM
+        # packageserver (catalog-dependent). They converge on their own; gating on
+        # them just delays "ready" for no user-visible benefit.
+        'bad=$(echo "$out" | awk \'$1=="monitoring"||$1=="operator-lifecycle-manager-packageserver"{next} $3!="True"||$5=="True"{c++} END{print c+0}\'); '
         'auth=$(echo "$out" | awk \'$1=="authentication"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
         'con=$(echo "$out" | awk \'$1=="console"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
         # Verify the console route ACTUALLY HTTP-responds (:443 serving), not just
@@ -436,7 +456,7 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         # showroom log is informative. Keep them on SEPARATE lines: the frontend
         # parses everything after "waiting on operators:" as operator names, so the
         # console status must not share that line (it'd render as fake operators).
-        'nr=$(echo "$out" | awk \'$1=="monitoring"{next} $3!="True"||$5=="True"{printf "%s ",$1}\'); '
+        'nr=$(echo "$out" | awk \'$1=="monitoring"||$1=="operator-lifecycle-manager-packageserver"{next} $3!="True"||$5=="True"{printf "%s ",$1}\'); '
         f'echo "[{cluster_key}] waiting on operators: ${{nr:-none}}"; '
         f'echo "[{cluster_key}] console http=$ccode"; '
         "sleep 15; done\n"

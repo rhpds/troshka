@@ -384,28 +384,51 @@ def test_recert_script_no_fresh_install():
 
 
 def test_recert_script_uses_delivered_kubeconfig_no_oauth():
-    """Both the captured kubeconfig's server AND client CAs roll on recert, and
-    oauth (ingress :443) is typically down on a freshly-recert'd cluster — so the
-    recert block must NOT oc-login. The backend delivers the node's live
-    lb-ext.kubeconfig (pulled via an offline snapshot+guestfish read) to
-    <dir>/auth/kubeconfig; the block waits for it to appear AND authenticate,
-    then proceeds. No oauth, no kubeadmin login."""
+    """oauth (ingress :443) is typically down on a freshly-recert'd cluster — so
+    the recert block must NOT oc-login. It authenticates with a client-cert admin
+    kubeconfig (no oauth, no kubeadmin login) and lands the winner at
+    <dir>/auth/kubeconfig so the showroom terminal harvests it."""
     script = _recert_script()
     assert "oc login" not in script
     assert "-u kubeadmin" not in script
-    # uses the delivered admin kubeconfig directly
+    # the working kubeconfig is used from auth/kubeconfig
     assert "export KUBECONFIG=/workdir/sno/auth/kubeconfig" in script
     assert "export KUBECONFIG=/workdir/compact/auth/kubeconfig" in script
-    # waits for it to exist AND authenticate (oc get nodes) before proceeding
-    assert '[ -s "$KUBECONFIG" ]' in script
+    # authenticates by actually running oc get nodes
     assert "oc get nodes" in script
 
 
-def test_recert_script_fails_closed_if_kubeconfig_not_delivered():
-    """No fallback: if the admin kubeconfig never arrives, the recert must fail
-    (exit 1), not silently degrade."""
+def test_recert_script_tries_captured_and_delivered_kubeconfig():
+    """Neither kubeconfig is universally valid on recert: the captured one (long-
+    lived admin-kubeconfig-signer client cert) works on ocpvirt while its lb-ext
+    counterpart is stale; on KubeVirt it's the reverse. So try BOTH candidates and
+    use whichever authenticates. Strip the embedded CA + set insecure so a rotated
+    SERVER cert can't fail us (auth rests on the client cert)."""
     script = _recert_script()
-    assert "admin kubeconfig not delivered" in script
+    # both candidates are tried as sources
+    assert "for src in /workdir/sno/kubeconfig /workdir/sno/auth/kubeconfig" in script
+    # CA stripped + insecure so a rotated server cert doesn't fail selection
+    assert "certificate-authority-data" in script
+    assert "--insecure-skip-tls-verify=true" in script
+    # the winner is moved into auth/kubeconfig (harvested by the terminal)
+    assert 'mv /workdir/sno/.recert-try "$KUBECONFIG"' in script
+
+
+def test_recert_script_fails_closed_if_no_working_kubeconfig():
+    """No fallback: if NEITHER the captured nor the delivered kubeconfig ever
+    authenticates, the recert must fail (exit 1), not silently degrade."""
+    script = _recert_script()
+    assert "no working admin kubeconfig (captured or delivered)" in script
+    # still no oauth/password fallback
+    assert "oc login" not in script
+
+
+def test_recert_gate_does_not_block_on_olm_packageserver():
+    """Like monitoring, operator-lifecycle-manager-packageserver settles slowly
+    (catalog-dependent) and isn't needed for a usable console/login, so the gate
+    must not wait on it."""
+    script = _recert_script()
+    assert script.count('$1=="operator-lifecycle-manager-packageserver"') >= 2
 
 
 def test_recert_script_gate_is_fail_closed():
@@ -1641,7 +1664,7 @@ def test_recert_gate_does_not_block_on_monitoring():
     blocking 'bad' count and the pending display skip $1=="monitoring"."""
     script = _recert_script()
     # both the bad-count awk and the pending-display awk skip monitoring
-    assert script.count('$1=="monitoring"{next}') >= 2
+    assert script.count('$1=="monitoring"') >= 2
 
 
 def test_recert_gate_console_status_on_own_line():
