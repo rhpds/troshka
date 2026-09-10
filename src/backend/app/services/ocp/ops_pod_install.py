@@ -315,13 +315,13 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
     NO fresh install — the disks are already installed and were recerted offline
     (guestfish kubelet-PKI wipe). This block:
 
-    - reads the server URL from the captured kubeconfig at ``<dir>/kubeconfig``
-      (its CA is NOT trusted: the apiserver regenerates its serving signer on
-      recovery, so the captured CA + client cert no longer verify);
-    - logs in as ``kubeadmin`` (password mounted at ``<dir>/kubeadmin-password``)
-      to MINT a fresh, working kubeconfig at ``<dir>/auth/kubeconfig`` — token
-      auth, independent of any rotated cert. This loop also serves as the
-      "API + oauth up" wait;
+    - waits for the backend to deliver the node's live ``lb-ext.kubeconfig`` at
+      ``<dir>/auth/kubeconfig`` (pulled via an offline snapshot+guestfish read).
+      Both the captured kubeconfig's server AND client CAs roll on recert and
+      oauth (ingress :443) is typically down, so the delivered admin cert — which
+      authenticates to :6443 with NO oauth — is the only usable credential. Waits
+      for it to appear AND authenticate; FAILS CLOSED (no fallback) if it never
+      arrives;
     - approves pending CSRs until nodes go Ready (kubelets re-bootstrap after the
       PKI wipe);
     - multi-node ONLY: forces a kube-apiserver redeploy;
@@ -350,17 +350,20 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         f"  exec > {cluster_dir}/install.log 2>&1\n"
         f'  echo "[{cluster_key}] Waiting for cluster installation to complete (recert)"\n'
         f"  mkdir -p {cluster_dir}/auth\n"
-        # Server URL only from the captured kubeconfig — its CA is stale post-recert.
-        f"  SERVER=$(oc --kubeconfig={cluster_dir}/kubeconfig config view "
-        "-o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null)\n"
-        '  [ -n "$SERVER" ] || SERVER=https://api.ocp.local:6443\n'
-        f"  PW=$(cat {cluster_dir}/kubeadmin-password 2>/dev/null)\n"
-        # Mint a FRESH working kubeconfig via kubeadmin (also waits for API+oauth).
+        # Both the captured kubeconfig's server AND client CAs roll on recert, and
+        # oauth (ingress :443) is typically down on a freshly-recert'd cluster, so
+        # we CANNOT oc-login. The backend delivers the node's live lb-ext.kubeconfig
+        # (pulled via an offline snapshot+guestfish read — a CA-independent admin
+        # cert that authenticates to :6443 with no oauth) to auth/kubeconfig. Wait
+        # for it to appear AND authenticate, then use it directly.
         f"  export KUBECONFIG={cluster_dir}/auth/kubeconfig\n"
         "  li=''\n"
         "  for i in $(seq 1 180); do "
-        'oc login "$SERVER" -u kubeadmin -p "$PW" --insecure-skip-tls-verify '
-        ">/dev/null 2>&1 && { li=1; break; }; sleep 10; done\n"
+        '[ -s "$KUBECONFIG" ] && oc get nodes >/dev/null 2>&1 && { li=1; break; }; '
+        "sleep 10; done\n"
+        # No fallback: if the admin kubeconfig was never delivered, fail closed.
+        f'  [ -n "$li" ] || {{ echo "[{cluster_key}] recert failed: admin '
+        'kubeconfig not delivered"; exit 1; }}\n'
         # Approve CSRs until all nodes are Ready (kubelet re-bootstrap after wipe).
         "  for i in $(seq 1 120); do "
         "oc get csr -o name 2>/dev/null | xargs -r oc adm certificate approve "

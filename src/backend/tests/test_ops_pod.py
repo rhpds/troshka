@@ -383,20 +383,29 @@ def test_recert_script_no_fresh_install():
     assert "InsertMedia" not in script
 
 
-def test_recert_script_mints_fresh_kubeconfig_via_kubeadmin():
-    """The captured kubeconfig's CA is stale after recert (the apiserver
-    regenerates its serving signer on recovery), so the recert block logs in as
-    kubeadmin to MINT a fresh, working kubeconfig at <dir>/auth/kubeconfig —
-    token auth, independent of any rotated cert. The captured kubeconfig is only
-    read for the server URL."""
+def test_recert_script_uses_delivered_kubeconfig_no_oauth():
+    """Both the captured kubeconfig's server AND client CAs roll on recert, and
+    oauth (ingress :443) is typically down on a freshly-recert'd cluster — so the
+    recert block must NOT oc-login. The backend delivers the node's live
+    lb-ext.kubeconfig (pulled via an offline snapshot+guestfish read) to
+    <dir>/auth/kubeconfig; the block waits for it to appear AND authenticate,
+    then proceeds. No oauth, no kubeadmin login."""
     script = _recert_script()
-    # reads the kubeadmin password mounted per cluster
-    assert "/workdir/sno/kubeadmin-password" in script
-    # logs in as kubeadmin and writes the fresh kubeconfig under auth/
-    assert "oc login" in script
-    assert "-u kubeadmin" in script
+    assert "oc login" not in script
+    assert "-u kubeadmin" not in script
+    # uses the delivered admin kubeconfig directly
     assert "export KUBECONFIG=/workdir/sno/auth/kubeconfig" in script
     assert "export KUBECONFIG=/workdir/compact/auth/kubeconfig" in script
+    # waits for it to exist AND authenticate (oc get nodes) before proceeding
+    assert '[ -s "$KUBECONFIG" ]' in script
+    assert "oc get nodes" in script
+
+
+def test_recert_script_fails_closed_if_kubeconfig_not_delivered():
+    """No fallback: if the admin kubeconfig never arrives, the recert must fail
+    (exit 1), not silently degrade."""
+    script = _recert_script()
+    assert "admin kubeconfig not delivered" in script
 
 
 def test_recert_script_gate_is_fail_closed():
