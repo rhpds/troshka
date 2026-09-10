@@ -376,31 +376,35 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         f'{{ echo "[{cluster_key}] all $total node(s) Ready"; break; }}; '
         f'echo "[{cluster_key}] approving CSRs: $notready/$total node(s) not Ready"; '
         "sleep 10; done\n"
-        # SMART pod reaper: pods restored from the captured etcd run with
-        # pre-recert SA tokens; after recert rotates the SA-signing-key/CA they
-        # crashloop (router/console/OVN/monitoring). Recreate ONLY the stuck ones
-        # — not-Ready ($3 a/b with a<b) AND restarting ($5>=1) — so they re-auth
-        # with fresh creds. Skip static control-plane namespaces (kubelet owns
-        # those; deleting via API blips the apiserver), Completed pods, and
-        # image-pull failures (no catalog mirror in a lab — reaping won't help).
-        # Loop until none remain or a cap, letting freshly-recreated pods settle.
-        f'  echo "[{cluster_key}] recreating pods stuck with stale post-recert credentials"\n'
-        "  for i in $(seq 1 8); do "
-        "stale=$(oc get pods -A --no-headers 2>/dev/null | awk '"
+        # POD REAPER: pods restored from the captured etcd are ZOMBIES after the
+        # cluster's post-recert crypto rotation — still Running but holding stale
+        # in-memory SA tokens / cert trust / API connections (router won't bind
+        # :443, kubelet :10250 logs fail, console down). They are NOT crashlooping,
+        # so a health-based reap misses them: recreate ALL workload pods ONCE so
+        # they re-read fresh creds. Skip static control-plane namespaces
+        # (kubelet-owned; deleting via API blips the apiserver), Completed pods,
+        # and image-pull failures (no catalog mirror in a lab). `--force
+        # --grace-period=0` avoids the hostNetwork router Pending<->Terminating
+        # deadlock (a stuck-Terminating pod holds :443 so the new one can't bind).
+        f'  echo "[{cluster_key}] recreating pods to clear stale post-recert state (zombies)"\n'
+        "  oc get pods -A --no-headers 2>/dev/null | awk '"
         "$1 ~ /^openshift-(etcd|kube-apiserver|kube-controller-manager|kube-scheduler)$/ {next} "
         "$4 ~ /ImagePull|ErrImage|Completed/ {next} "
-        '{split($3,r,"/")} (r[1]<r[2] && $5+0>=1){print $1"/"$2}\'); '
-        '[ -z "$stale" ] && break; '
-        'echo "$stale" | while IFS=/ read rns rpod; do '
-        'oc delete pod "$rpod" -n "$rns" --wait=false >/dev/null 2>&1 || true; done; '
-        "sleep 20; done\n"
-        f'  echo "[{cluster_key}] waiting for cluster operators (incl oauth + console)"\n'
+        '{print $1" "$2}\' | while read rns rpod; do '
+        'oc delete pod "$rpod" -n "$rns" --force --grace-period=0 --wait=false '
+        ">/dev/null 2>&1 || true; done\n"
+        f'  echo "[{cluster_key}] pods recreated; waiting for cluster operators (incl oauth + console)"\n'
     )
     gate = (
         # FAIL-CLOSED: oc must WORK (non-empty co list) AND all operators healthy,
         # incl authentication (oauth/login) + console. Empty output != healthy.
         "  ready=''\n"
         "  for i in $(seq 1 160); do "
+        # Keep approving CSRs: the pod reaper's recreated pods (e.g. monitoring)
+        # and the kubelet's re-bootstrap issue fresh CSRs that must be approved
+        # for their operators to go Available.
+        "oc get csr -o name 2>/dev/null | xargs -r oc adm certificate approve "
+        ">/dev/null 2>&1 || true; "
         "out=$(oc get co --no-headers 2>/dev/null); "
         '[ -z "$out" ] && { sleep 15; continue; }; '
         'bad=$(echo "$out" | awk \'$3!="True"||$5=="True"{c++} END{print c+0}\'); '

@@ -1587,15 +1587,24 @@ def test_recert_install_complete_still_wins_over_failure_marker():
     assert _phase_from_input(log) == PHASE_COMPLETE
 
 
-def test_recert_script_has_smart_pod_reaper():
-    """Post-recert, pods restored from the captured etcd crashloop on stale SA
-    tokens; the recert block must recreate the stuck ones (not-ready + restarting)
-    while skipping static control-plane ns, Completed, and image-pull failures."""
+def test_recert_script_reaps_all_zombie_pods():
+    """Post-recert, pods restored from the captured etcd are ZOMBIES (Running but
+    holding stale creds — NOT crashlooping), so the recert block recreates ALL
+    workload pods (no health filter), force-deleting to avoid the hostNetwork
+    Pending<->Terminating deadlock, and skips static control-plane ns, Completed,
+    and image-pull failures."""
     script = _recert_script()
-    assert "recreating pods stuck with stale post-recert credentials" in script
-    # targets not-ready ($3 a<b) AND restarting ($5>=1)
-    assert "(r[1]<r[2] && $5+0>=1)" in script
-    # skips static control-plane namespaces + image-pull/Completed
+    assert "recreating pods to clear stale post-recert state (zombies)" in script
     assert "^openshift-(etcd|kube-apiserver" in script
     assert "ImagePull|ErrImage|Completed" in script
     assert "oc delete pod" in script
+    assert "--force --grace-period=0" in script
+    # no longer gated on crashloop/not-ready
+    assert "r[1]<r[2]" not in script
+
+
+def test_recert_gate_keeps_approving_csrs():
+    """The reaper's recreated pods + kubelet re-bootstrap issue new CSRs, so CSR
+    approval must run in the gate loop too (not only the pre-reaper node loop)."""
+    script = _recert_script()
+    assert script.count("oc adm certificate approve") >= 2
