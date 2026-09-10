@@ -46,17 +46,6 @@ function stagesFor(log: string): { label: string; re: RegExp }[] {
 
 type StageState = "done" | "active" | "pending";
 
-/** Elapsed install seconds from the log's first→last "[HH:MM:SS]" timestamps
- *  (handles a single midnight wrap). Null until there are two timestamps. */
-function logElapsedSecs(log: string): number | null {
-  const ts = [...log.matchAll(/\[(\d{2}):(\d{2}):(\d{2})\]/g)];
-  if (ts.length < 2) return null;
-  const secs = (m: RegExpMatchArray) => +m[1] * 3600 + +m[2] * 60 + +m[3];
-  let d = secs(ts[ts.length - 1]) - secs(ts[0]);
-  if (d < 0) d += 86400;
-  return d;
-}
-
 function fmtElapsed(total: number): string {
   return `${Math.floor(total / 60)}m ${(total % 60).toString().padStart(2, "0")}s`;
 }
@@ -110,7 +99,11 @@ export default function ClusterInstallLogModal() {
   const [log, setLog] = useState("");
   const [loading, setLoading] = useState(false);
   const [revealPw, setRevealPw] = useState(false);
-  const [fetchedAt, setFetchedAt] = useState(0);
+  // Timer basis: deployment START (epoch seconds), frozen at the backend's total
+  // once terminal. Elapse from deploy start — NOT from log timestamps (recert
+  // breadcrumbs have none, and installs should match).
+  const [deployStartedAt, setDeployStartedAt] = useState<number | null>(null);
+  const [installElapsed, setInstallElapsed] = useState<number | null>(null);
   // kubeadmin password + kubeconfig availability, polled live from the backend
   // (harvested from the ops pod after install) so credentials appear without a
   // project reload. Null until the first poll returns.
@@ -127,6 +120,8 @@ export default function ClusterInstallLogModal() {
     let cancelled = false;
     setLog("");
     setAccess(null);
+    setDeployStartedAt(null);
+    setInstallElapsed(null);
     setLoading(true);
     const fetchLog = async () => {
       try {
@@ -137,7 +132,12 @@ export default function ClusterInstallLogModal() {
         const data = await r.json();
         if (!cancelled) {
           setLog(data.output || "");
-          setFetchedAt(Date.now());
+          setDeployStartedAt(
+            typeof data.deploy_started_at === "number" ? data.deploy_started_at : null,
+          );
+          setInstallElapsed(
+            typeof data.ocp_install_elapsed === "number" ? data.ocp_install_elapsed : null,
+          );
           if (data.kubeadmin_password || data.kubeconfig_available) {
             setAccess({
               kubeadmin_password: data.kubeadmin_password || "",
@@ -197,13 +197,16 @@ export default function ClusterInstallLogModal() {
         ? { label: "Re-Certing", fg: "#c084fc", bg: "rgba(192,132,252,0.14)", bd: "rgba(192,132,252,0.45)" }
         : { label: "Installing", fg: "#60a5fa", bg: "rgba(96,165,250,0.14)", bd: "rgba(96,165,250,0.45)" };
 
-  // Elapsed = log-derived base + seconds since the last poll (ticks live while
-  // installing; frozen at the log's value once the install is complete or failed).
-  const baseSecs = logElapsedSecs(log);
-  const elapsed =
-    baseSecs == null
-      ? null
-      : fmtElapsed(baseSecs + (terminal || !fetchedAt ? 0 : Math.floor((Date.now() - fetchedAt) / 1000)));
+  // Elapsed always counts from deployment START (deploy_started_at), ticking live
+  // via the 1s tick; once terminal the backend's frozen total (ocp_install_elapsed)
+  // takes over so it stays correct even after the modal is closed and reopened.
+  const elapsedSecs =
+    installElapsed != null
+      ? installElapsed
+      : deployStartedAt != null
+        ? Math.max(0, Math.floor(Date.now() / 1000 - deployStartedAt))
+        : null;
+  const elapsed = elapsedSecs == null ? null : fmtElapsed(elapsedSecs);
 
   // kubeadmin password + kubeconfig live on the cluster's member VM nodes; show
   // them here (the palette OCP panel is gone for pod installs) once present.

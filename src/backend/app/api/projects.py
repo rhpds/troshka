@@ -1146,6 +1146,16 @@ def get_ocp_install_log(
 
     from app.services.deploy_service import read_ops_pod_install_log
 
+    # Timer basis: elapse from deployment START, not from log timestamps (which
+    # recert breadcrumbs lack). deploy_started_at is the live base; once terminal,
+    # ocp_install_elapsed holds the frozen total (also correct after a reopen).
+    timing = {
+        "deploy_started_at": (
+            project.deploy_started_at.timestamp() if project.deploy_started_at else None
+        ),
+        "ocp_install_elapsed": project.ocp_install_elapsed,
+    }
+
     logs = read_ops_pod_install_log(host, project_id, topology)
     keys = list(logs.keys())
     if cluster is not None:
@@ -1158,6 +1168,7 @@ def get_ocp_install_log(
             "output": logs.get(cluster, ""),
             "cluster": cluster,
             "clusters": keys,
+            **timing,
             **access,
         }
     if not logs:
@@ -1166,7 +1177,7 @@ def get_ocp_install_log(
         output = next(iter(logs.values()))
     else:
         output = "\n\n".join(f"=== {key} ===\n{text}" for key, text in logs.items())
-    return {"install_via": "pod", "output": output, "clusters": keys}
+    return {"install_via": "pod", "output": output, "clusters": keys, **timing}
 
 
 @router.get("/{project_id}/kubeconfigs", responses={403: {}, 404: {}})
