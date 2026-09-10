@@ -1608,3 +1608,13 @@ def test_recert_gate_keeps_approving_csrs():
     approval must run in the gate loop too (not only the pre-reaper node loop)."""
     script = _recert_script()
     assert script.count("oc adm certificate approve") >= 2
+
+
+def test_recert_gate_requires_console_http_response():
+    """'ready' must require the console route to actually HTTP-respond (:443
+    serving) — not just the console operator reporting Available. A zombie router
+    leaves the operator Available while :443 is refused, so probe the route."""
+    script = _recert_script()
+    assert "oc get route console -n openshift-console" in script
+    assert "curl -sk" in script and "%{http_code}" in script
+    assert '[ "$resp" = 1 ]' in script
