@@ -4242,7 +4242,10 @@ class TestRunGuestfishJob:
         mock_batch.read_namespaced_job.return_value = job_status
 
         spec = {
-            "guestfishCommands": ["rm /etc/old-cert"],
+            "guestfishCommands": [
+                "rm-rf /var/lib/kubelet/pki",
+                "rm-f /var/lib/kubelet/kubeconfig",
+            ],
             "disks": [{"id": "disk-1"}],
         }
         body = {
@@ -4254,14 +4257,28 @@ class TestRunGuestfishJob:
         asyncio.run(_run_guestfish_job(spec, "vm-1", "ns1", body, disk_pvcs))
 
         mock_batch.create_namespaced_job.assert_called_once()
+        created = mock_batch.create_namespaced_job.call_args.kwargs["body"]
         # The privileged guestfish pod must run as troshka-recert (the SA bound to
         # the troshka-privileged-jobs SCC); default SA is rejected by the SCC and
         # the Job hangs forever with FailedCreate.
-        created = mock_batch.create_namespaced_job.call_args.kwargs["body"]
         assert (
             created["spec"]["template"]["spec"]["serviceAccountName"]
             == "troshka-recert"
         )
+        cmd = created["spec"]["template"]["spec"]["containers"][0]["command"][-1]
+        # Must use the direct backend (no libvirtd in the pod), else guestfish
+        # errors "could not connect to libvirt".
+        assert "LIBGUESTFS_BACKEND=direct" in cmd
+        # -i inspection FAILS on the RHCOS ostree disk ("no operating system was
+        # found"); mount the root partition (sda4) explicitly instead.
+        assert "-i " not in cmd
+        assert "mount /dev/sda4 /" in cmd
+        # RHCOS keeps kubelet state at the ostree stateful-var path, NOT /var/...;
+        # target it via glob (stateroot-agnostic), joined with guestfish's ' : '.
+        assert 'glob rm-rf "/ostree/deploy/*/var/lib/kubelet/pki"' in cmd
+        assert 'glob rm-f "/ostree/deploy/*/var/lib/kubelet/kubeconfig"' in cmd
+        assert " : " in cmd
+        assert "; rm-f" not in cmd
 
     @patch("handlers.vm.client")
     def test_skips_when_no_commands(self, mock_client):

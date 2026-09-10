@@ -559,6 +559,29 @@ async def _provision_cdrom(
         return None
 
 
+def _build_guestfish_ops(gf_commands):
+    """Build the guestfish command tail for the RHCOS kubelet-PKI wipe.
+
+    RHCOS/ostree specifics learned the hard way:
+    - ``guestfish -i`` FAILS ("no operating system was found") on the ostree
+      disk, so mount the root partition (sda4) explicitly.
+    - kubelet state lives at the ostree stateful-var path
+      (``/ostree/deploy/<stateroot>/var/...``), NOT ``/var/...``; rewrite the
+      generic ``/var/`` paths and run via ``glob`` so we're stateroot-agnostic.
+    - commands join with guestfish's ``:`` separator (a shell ``;`` would run
+      the rest in the shell → "rm-f: command not found").
+    """
+    ops = ["run", "mount /dev/sda4 /"]
+    for cmd in gf_commands:
+        parts = cmd.split(None, 1)
+        if len(parts) == 2 and parts[1].startswith("/var/"):
+            verb, path = parts
+            ops.append(f'glob {verb} "/ostree/deploy/*{path}"')
+        else:
+            ops.append(cmd)
+    return " : ".join(ops)
+
+
 async def _run_guestfish_job(spec, name, namespace, body, disk_pvcs):
     """Run guestfish commands against the root disk if specified."""
     if not spec.get("guestfishCommands"):
@@ -569,7 +592,7 @@ async def _run_guestfish_job(spec, name, namespace, body, disk_pvcs):
     if not root_pvc or not gf_commands:
         return
     gf_job_name = f"guestfish-{name}"
-    gf_cmd = "; ".join(gf_commands)
+    gf_cmd = _build_guestfish_ops(gf_commands)
     job = {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -594,7 +617,11 @@ async def _run_guestfish_job(spec, name, namespace, body, disk_pvcs):
                             "command": [
                                 "sh",
                                 "-c",
-                                f"guestfish --rw -a /disk/disk.img -i {gf_cmd}",
+                                # direct backend: no libvirtd in the pod, so the
+                                # default libvirt backend errors "could not
+                                # connect to libvirt".
+                                "export LIBGUESTFS_BACKEND=direct; "
+                                f"guestfish --rw -a /disk/disk.img {gf_cmd}",
                             ],
                             "volumeMounts": [{"name": "disk", "mountPath": "/disk"}],
                             "securityContext": {"privileged": True},
