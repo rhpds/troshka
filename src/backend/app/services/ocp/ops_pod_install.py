@@ -365,13 +365,18 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         # No fallback: if the admin kubeconfig was never delivered, fail closed.
         f'  [ -n "$li" ] || {{ echo "[{cluster_key}] recert failed: admin '
         'kubeconfig not delivered"; exit 1; }\n'
+        f'  echo "[{cluster_key}] admin kubeconfig received; approving pending CSRs"\n'
         # Approve CSRs until all nodes are Ready (kubelet re-bootstrap after wipe).
         "  for i in $(seq 1 120); do "
         "oc get csr -o name 2>/dev/null | xargs -r oc adm certificate approve "
         ">/dev/null 2>&1 || true; "
         "total=$(oc get nodes --no-headers 2>/dev/null | wc -l); "
         "notready=$(oc get nodes --no-headers 2>/dev/null | grep -vc ' Ready'); "
-        '[ "$total" -gt 0 ] && [ "$notready" = 0 ] && break; sleep 10; done\n'
+        '[ "$total" -gt 0 ] && [ "$notready" = 0 ] && '
+        f'{{ echo "[{cluster_key}] all $total node(s) Ready"; break; }}; '
+        f'echo "[{cluster_key}] approving CSRs: $notready/$total node(s) not Ready"; '
+        "sleep 10; done\n"
+        f'  echo "[{cluster_key}] waiting for cluster operators (incl oauth + console)"\n'
     )
     gate = (
         # FAIL-CLOSED: oc must WORK (non-empty co list) AND all operators healthy,
@@ -384,7 +389,11 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         'auth=$(echo "$out" | awk \'$1=="authentication"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
         'con=$(echo "$out" | awk \'$1=="console"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
         '[ "$bad" = 0 ] && [ "$auth" = 1 ] && [ "$con" = 1 ] && '
-        "{ ready=1; break; }; sleep 15; done\n"
+        "{ ready=1; break; }; "
+        # Log which operators are still not ready so the showroom log is informative.
+        'nr=$(echo "$out" | awk \'$3!="True"||$5=="True"{printf "%s ",$1}\'); '
+        f'echo "[{cluster_key}] waiting on operators: ${{nr:-none}}"; '
+        "sleep 15; done\n"
     )
     tail = (
         '  if [ -n "$li" ] && [ -n "$ready" ]; then\n'

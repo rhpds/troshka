@@ -7220,22 +7220,14 @@ def _handle_vm_file_pull_snapshot(job, params):
         raise ValueError("invalid path")
 
     running = _is_domain_running(domain)
+    # Capture the active disk path BEFORE snapshotting: a --disk-only snapshot
+    # moves the VM onto a NEW overlay and THIS path becomes the frozen, read-only
+    # base — safe for guestfish. Reading the live active overlay instead crashes
+    # the guestfish appliance on the qcow2 write-lock (and qemu-img can't even
+    # read the locked overlay's metadata to resolve the backing).
+    disk_path = _get_disk_path_by_index(domain, disk_index)
     snapshotted = _snapshot_domain(job, domain) if running else False
     try:
-        disk_path = _get_disk_path_by_index(domain, disk_index)
-        if snapshotted:
-            import json as _json
-
-            info = subprocess.run(
-                ["qemu-img", "info", _PODMAN_JSON, disk_path],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if info.returncode == 0:
-                bfn = _json.loads(info.stdout).get("full-backing-filename", "")
-                if bfn and os.path.exists(bfn):
-                    disk_path = bfn  # frozen base (VM writes to the overlay)
         _job_log(job, f"Reading {guest_path} from {os.path.basename(disk_path)}")
         globs = " ".join(
             f': glob download "{c}" /tmp/troshka-fp.out'
