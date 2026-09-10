@@ -184,11 +184,16 @@ export default function ClusterInstallLogModal() {
 
   // Prominent header status badge — mirrors the canvas/project-list OCP status
   // so the outcome is obvious from the log view itself, not just the palette.
+  // Pattern deploys recert (never reinstall) — surface that distinctly (violet)
+  // so it's not mistaken for a fresh install.
+  const isRecert = /\(recert\)/i.test(log);
   const statusBadge = failed
     ? { label: "Error", fg: "#f87171", bg: "rgba(248,113,113,0.14)", bd: "rgba(248,113,113,0.45)" }
     : installed
-      ? { label: "Complete", fg: "#4ade80", bg: "rgba(74,222,128,0.14)", bd: "rgba(74,222,128,0.45)" }
-      : { label: "Installing", fg: "#60a5fa", bg: "rgba(96,165,250,0.14)", bd: "rgba(96,165,250,0.45)" };
+      ? { label: isRecert ? "Re-Certified" : "Complete", fg: "#4ade80", bg: "rgba(74,222,128,0.14)", bd: "rgba(74,222,128,0.45)" }
+      : isRecert
+        ? { label: "Re-Certing", fg: "#c084fc", bg: "rgba(192,132,252,0.14)", bd: "rgba(192,132,252,0.45)" }
+        : { label: "Installing", fg: "#60a5fa", bg: "rgba(96,165,250,0.14)", bd: "rgba(96,165,250,0.45)" };
 
   // Elapsed = log-derived base + seconds since the last poll (ticks live while
   // installing; frozen at the log's value once the install is complete or failed).
