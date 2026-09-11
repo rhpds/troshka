@@ -6278,6 +6278,12 @@ def _auto_enable_recert_on_rhcos(topology, deploy_recert, project_id):
             if cmd not in existing:
                 existing.append(cmd)
         data["guestfishCommands"] = existing
+        # Legacy patterns may still carry recertEnabled; the RH recert tool is
+        # retired for all OCP sizes (guestfish kubelet-PKI wipe only). Clearing
+        # the flag prevents the KubeVirt operator from running the slow recert
+        # Job (etcd scan + full cert regen) and racing the VM for the boot disk.
+        if data.get("recertEnabled"):
+            data["recertEnabled"] = False
     if deploy_recert:
         logger.info(
             "Deploy %s: OCP pattern recert — guestfish PKI wipe + online (all node types)",

@@ -1063,7 +1063,8 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
     if cdrom_pvc:
         disk_pvcs["cdrom"] = cdrom_pvc
 
-    # Recert is handled by the project handler before VMs are created
+    # Recert (when recertEnabled) runs in the project handler after disks exist.
+    # The KubeVirt VM is created Halted so recert keeps exclusive RWO access.
 
     cloudinit_secret_name = None
     ci_secret = build_cloudinit_secret(body)
@@ -1126,9 +1127,9 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
 
     _setup_bmc(spec, namespace, core_api, custom_api, domain_uuid=domain_uuid)
 
-    patch.status["state"] = (
-        "Running" if spec.get("powerOnAtDeploy", True) else "Stopped"
-    )
+    awaiting_recert = spec.get("recertEnabled", False)
+    power_on = spec.get("powerOnAtDeploy", True) and not awaiting_recert
+    patch.status["state"] = "Running" if power_on else "Stopped"
     patch.status["kubevirtVmName"] = kv_vm["metadata"]["name"]
     patch.status.pop("message", None)
     _mark_observed(patch, meta)

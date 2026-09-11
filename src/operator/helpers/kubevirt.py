@@ -479,7 +479,9 @@ def build_kubevirt_vm(
     if spec.get("bmcEnabled"):
         template_spec["rebootPolicy"] = "Terminate"
 
-    power_on = spec.get("powerOnAtDeploy", True)
+    # Recert needs exclusive RWO access to the boot disk; keep the VM halted
+    # until the project handler finishes recert and calls _start_kubevirt_vms.
+    power_on = spec.get("powerOnAtDeploy", True) and not spec.get("recertEnabled")
     vm_body = {
         "apiVersion": "kubevirt.io/v1",
         "kind": "VirtualMachine",
@@ -759,6 +761,15 @@ def build_recert_job(
         "[ -n \"$RHCOS_PART\" ] || { echo 'ERROR: no RHCOS partition found';"
         " fdisk -l $LOOP 2>&1; kpartx -dv $LOOP; losetup -d $LOOP; exit 1; }\n"
         'echo "Found RHCOS on $RHCOS_PART"\n'
+        "# Guestfish or an unfrozen snapshot can leave XFS dirty (EUCLEAN on write).\n"
+        "# Log replay (-L) during mount is not always enough — probe and repair.\n"
+        "if ! touch /mnt/rhcos/.troshka-xfs-probe 2>/dev/null; then\n"
+        '  echo "XFS dirty on $RHCOS_PART — running xfs_repair"\n'
+        "  umount /mnt/rhcos\n"
+        "  xfs_repair $RHCOS_PART\n"
+        "  mount $RHCOS_PART /mnt/rhcos 2>/dev/null || mount -o nouuid $RHCOS_PART /mnt/rhcos\n"
+        "fi\n"
+        "rm -f /mnt/rhcos/.troshka-xfs-probe\n"
         "DEPLOY_DIR=/mnt/rhcos/ostree/deploy/rhcos/deploy\n"
         "DEPLOY_HASH=$(ls $DEPLOY_DIR | grep -v .origin | head -1)\n"
         '[ -n "$DEPLOY_HASH" ] || { echo "ERROR: no OSTree deploy";'

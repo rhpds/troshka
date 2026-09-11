@@ -1510,6 +1510,8 @@ def _build_vm_cr(
         vm_cr["spec"]["cdrom"] = cdrom
     if vm.get("guestfishCommands"):
         vm_cr["spec"]["guestfishCommands"] = vm["guestfishCommands"]
+    if vm.get("recertEnabled"):
+        vm_cr["spec"]["recertEnabled"] = True
     if vm.get("os") == "rhcos" and bastion_boot_pvc:
         vm_cr["spec"]["bastionPvc"] = bastion_boot_pvc
     return vm_cr

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services.deploy_service import (
+    _auto_enable_recert_on_rhcos,
     _clean_kubelet_certs,
     _extract_vms,
     _find_vm_disks,
@@ -307,3 +308,20 @@ def test_clean_kubelet_certs_skips_non_qcow2(mock_start, mock_wait):
 
     # Should skip cp-0 because its disk is iso, not qcow2
     assert mock_start.call_count == 0
+
+
+def test_auto_enable_recert_clears_legacy_recert_enabled_flag():
+    """OCP pattern deploys use guestfish only — legacy recertEnabled must not reach the operator."""
+    topo = _make_ocp_topology(
+        [
+            {"name": "bastion", "label": "bastion", "os": "rhel"},
+            {"name": "cp-0", "os": "rhcos", "recertEnabled": True},
+        ]
+    )
+    cp0 = next(n for n in topo["nodes"] if n["data"].get("name") == "cp-0")
+    assert cp0["data"]["recertEnabled"] is True
+
+    _auto_enable_recert_on_rhcos(topo, True, "proj-0001-0000")
+
+    assert cp0["data"]["recertEnabled"] is False
+    assert "rm-rf /var/lib/kubelet/pki" in cp0["data"]["guestfishCommands"]

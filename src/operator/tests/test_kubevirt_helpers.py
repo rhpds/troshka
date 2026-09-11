@@ -8,6 +8,7 @@ from helpers.kubevirt import (
     build_clone_datavolume,
     build_datavolume_from_s3,
     build_kubevirt_vm,
+    build_recert_job,
     collect_kubevirt_vm_warnings,
     golden_import_matches,
     is_video_config_enabled,
@@ -165,6 +166,29 @@ def test_apply_serial_console_keeps_graphics_for_linux():
     _apply_serial_console(domain, {"serialExecType": "linux"})
     assert domain["devices"]["autoattachSerialConsole"] is True
     assert "autoattachGraphicsDevice" not in domain["devices"]
+
+
+def test_build_kubevirt_vm_halts_when_recert_enabled():
+    vm_cr = {
+        "metadata": {"name": "vm-abc12345", "namespace": "troshka-test"},
+        "spec": {
+            "cpus": 2,
+            "memory": 4096,
+            "powerOnAtDeploy": True,
+            "recertEnabled": True,
+            "disks": [],
+            "nics": [],
+        },
+    }
+    body = build_kubevirt_vm(vm_cr, {}, {}, None)
+    assert body["spec"]["runStrategy"] == "Halted"
+
+
+def test_build_recert_job_repairs_dirty_xfs_before_recert():
+    job = build_recert_job("vm-abc12345", "troshka-test", "boot-pvc")
+    script = job["spec"]["template"]["spec"]["containers"][0]["command"][2]
+    assert "troshka-xfs-probe" in script
+    assert "xfs_repair $RHCOS_PART" in script
 
 
 def test_build_kubevirt_vm_includes_serial_console():
