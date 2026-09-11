@@ -5,9 +5,20 @@
   gather_facts: false
   vars:
     s4_namespace: troshka-images
-    s4_pvc_size: 200Gi
+    # Gold patterns + library; size for many full OCP 4.x patterns (~300Gi each).
+    s4_pvc_size: 1Ti
     s4_bucket: troshka-gold-images
     kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config') }}"
+    # Single S4 pod serves all dedicated instances (sync-central + pattern disk pulls).
+    # RWO PVC => replicas must stay 1 unless s4_access_mode is ReadWriteMany (CephFS).
+    # For hundreds of concurrent deploys, plan ODF RGW (3+ pods) or RWX + s4_replicas > 1.
+    s4_replicas: 1
+    s4_access_mode: ReadWriteOnce
+    s4_storage_class: ocs-storagecluster-ceph-rbd
+    s4_cpu_request: "2"
+    s4_cpu_limit: "4"
+    s4_memory_request: 8Gi
+    s4_memory_limit: 8Gi
 
   tasks:
     - name: Check if S4 secret already exists
@@ -61,7 +72,8 @@
             name: s4-data
             namespace: "{{ s4_namespace }}"
           spec:
-            accessModes: [ReadWriteOnce]
+            accessModes: ["{{ s4_access_mode }}"]
+            storageClassName: "{{ s4_storage_class }}"
             resources:
               requests:
                 storage: "{{ s4_pvc_size }}"
@@ -79,15 +91,27 @@
             labels:
               app.kubernetes.io/name: s4
           spec:
-            replicas: 1
+            replicas: "{{ s4_replicas }}"
             selector:
               matchLabels:
                 app.kubernetes.io/name: s4
+            strategy:
+              type: Recreate
             template:
               metadata:
                 labels:
                   app.kubernetes.io/name: s4
               spec:
+                # Prefer storage-heavy nodes (same class as OCS); co-locate with Ceph when possible.
+                affinity:
+                  nodeAffinity:
+                    preferredDuringSchedulingIgnoredDuringExecution:
+                      - weight: 50
+                        preference:
+                          matchExpressions:
+                            - key: cluster.ocs.openshift.io/openshift-storage
+                              operator: In
+                              values: ["true"]
                 containers:
                   - name: s4
                     image: quay.io/rh-aiservices-bu/s4:latest
@@ -112,11 +136,11 @@
                         mountPath: /var/lib/ceph/radosgw
                     resources:
                       requests:
-                        cpu: 500m
-                        memory: 4Gi
+                        cpu: "{{ s4_cpu_request }}"
+                        memory: "{{ s4_memory_request }}"
                       limits:
-                        cpu: 500m
-                        memory: 4Gi
+                        cpu: "{{ s4_cpu_limit }}"
+                        memory: "{{ s4_memory_limit }}"
                 volumes:
                   - name: data
                     persistentVolumeClaim:
@@ -207,7 +231,7 @@
         name: s4
         namespace: "{{ s4_namespace }}"
       register: _s4_deploy
-      until: (_s4_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+      until: (_s4_deploy.resources[0].status.readyReplicas | default(0)) >= (s4_replicas | int)
       retries: 30
       delay: 10
 

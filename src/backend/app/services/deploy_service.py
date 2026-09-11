@@ -520,7 +520,6 @@ def _collect_pattern_disks(nodes, db_session, pool, provider_id=None):
     from app.models.pattern import Pattern, PatternDisk
     from app.services.pattern_locations import pattern_disk_source_for_cluster
     from app.services.s3_storage import (
-        _get_s3_config,
         cluster_s3_to_upload_creds,
         get_cluster_s3_config,
     )
@@ -568,8 +567,7 @@ def _collect_pattern_disks(nodes, db_session, pool, provider_id=None):
             obc_cfg = get_cluster_s3_config(db_session, source_provider_id)
             if obc_cfg:
                 item["download_creds"] = cluster_s3_to_upload_creds(obc_cfg)
-        elif source == "central":
-            item["download_creds"] = _get_s3_config()
+        # central: omit download_creds — _start_download_jobs uses s3_readonly provider
         items.append(item)
     return items
 

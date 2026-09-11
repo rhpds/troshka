@@ -2646,6 +2646,52 @@ class TestCollectPatternDisksCacheExt:
         assert len(items) == 1
         assert items[0]["cache_path"].endswith("/pat-1/src-disk.qcow2")
 
+    def test_central_source_omits_download_creds(self):
+        """Central pattern disks must not pin local S3 creds on the cache item.
+
+        _start_download_jobs selects the s3_readonly (gold) provider when
+        source=='central' and download_creds is absent.
+        """
+        from app.models.pattern import Pattern, PatternDisk
+        from app.services.deploy_service import _collect_pattern_disks
+
+        pd = MagicMock(spec=PatternDisk)
+        pd.s3_key = "patterns/pat-1/disk.qcow2"
+        pd.source_disk_id = "disk"
+        pd.format = "qcow2"
+        pd.size_bytes = 1
+
+        pattern_obj = MagicMock(spec=Pattern)
+        pattern_obj.source_provider_id = None
+
+        def _query(model):
+            q = MagicMock()
+            target = pd if model is PatternDisk else pattern_obj
+            q.filter_by.return_value.first.return_value = target
+            return q
+
+        db = MagicMock()
+        db.query.side_effect = _query
+
+        nodes = [
+            {
+                "type": "storageNode",
+                "data": {
+                    "patternId": "pat-1",
+                    "patternDiskId": "pdisk-1",
+                },
+            }
+        ]
+        with patch(
+            "app.services.pattern_locations.pattern_disk_source_for_cluster",
+            return_value="central",
+        ):
+            items = _collect_pattern_disks(nodes, db, "prov-1")
+
+        assert len(items) == 1
+        assert items[0]["source"] == "central"
+        assert "download_creds" not in items[0]
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # _snapshot_cache_path
