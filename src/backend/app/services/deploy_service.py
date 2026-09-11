@@ -8,6 +8,7 @@ then sends structured commands to the troshkad agent on the host.
 import copy
 import datetime
 import logging
+import shlex
 import threading
 import time as _time
 
@@ -2997,9 +2998,11 @@ def _captured_kubeconfig_works(
     block will use the captured kubeconfig, so the expensive snapshot+guestfish
     lb-ext pull is redundant (ocpvirt); when False we still pull it (KubeVirt,
     where the captured CAs roll)."""
-    d = f"{workdir}/{key}"
+    # shlex.quote the path: `key` derives from the cluster name (user-influenced),
+    # so it must never be interpolated raw into a `bash -c` string.
+    d = shlex.quote(f"{workdir}/{key}")
     script = (
-        f'd="{d}"; [ -s "$d/kubeconfig" ] || exit 0; '
+        f'd={d}; [ -s "$d/kubeconfig" ] || exit 0; '
         'cp "$d/kubeconfig" "$d/.lazychk" 2>/dev/null || exit 0; '
         'cl=$(KUBECONFIG="$d/.lazychk" oc config view '
         "-o jsonpath='{.clusters[0].name}' 2>/dev/null); "
