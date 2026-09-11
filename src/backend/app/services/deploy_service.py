@@ -3474,6 +3474,24 @@ def _ops_pod_overall_to_ocp_status(overall: str) -> str | None:
     return None
 
 
+def _project_deploy_start_epoch(project_id: str) -> float | None:
+    """``deploy_started_at`` as epoch seconds — the SAME baseline the frontend
+    timer counts from — or None. Used so the frozen ``ocp_install_elapsed`` matches
+    the live timer instead of jumping backward when it takes over (the monitor
+    starts minutes after deploy_started_at, once the VMs have booted)."""
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+
+    try:
+        db = SessionLocal()
+        p = db.query(Project).filter_by(id=project_id).first()
+        ts = p.deploy_started_at if p else None
+        db.close()
+        return ts.timestamp() if ts else None
+    except Exception:
+        return None
+
+
 def _finalize_ops_pod_ocp_status(
     project_id: str, overall: str, elapsed_secs: int
 ) -> None:
@@ -3522,6 +3540,10 @@ def _monitor_ops_pod_install(
     cluster_keys = [_ops_cluster_key(c) for c in clusters]
     start = _t.time()
     deadline = start + timeout
+    # Report elapsed from deploy_started_at (the frontend timer's baseline) so the
+    # frozen ocp_install_elapsed matches the live timer — not from the monitor
+    # start, which is minutes later (after VM boot) and made the timer jump back.
+    elapsed_base = _project_deploy_start_epoch(project_id) or start
     dead_count = 0
 
     while _t.time() < deadline:
@@ -3560,7 +3582,7 @@ def _monitor_ops_pod_install(
         _publish_ops_pod_progress(project_id, progress)
         if progress["done"]:
             _finalize_ops_pod_ocp_status(
-                project_id, progress["overall"], int(_t.time() - start)
+                project_id, progress["overall"], int(_t.time() - elapsed_base)
             )
             # On success: harvest kubeadmin password + kubeconfig from the ops
             # pod onto the control-plane node (bastionless has no bastion monitor
@@ -3589,7 +3611,7 @@ def _monitor_ops_pod_install(
         _t.sleep(poll_interval)
 
     logger.warning("Ops pod %s: install monitor timed out", project_id[:8])
-    _finalize_ops_pod_ocp_status(project_id, "timeout", int(_t.time() - start))
+    _finalize_ops_pod_ocp_status(project_id, "timeout", int(_t.time() - elapsed_base))
     _release_ops_monitor_lock(project_id)
     return "timeout"
 
