@@ -461,16 +461,23 @@ def test_recert_script_approves_csrs():
     assert "certificate approve" in script
 
 
-def test_recert_does_not_reap_pods_or_force_redeploy():
-    """Recert lets the cluster self-heal after the kubelet re-bootstrap. It must
-    NOT mass-reap pods or force a kube-apiserver redeploy — those recreate the
-    operators mid-rotation (creating zombies/wedges) and churn the aggregated API,
-    which DELAYS recovery. (Live testing showed the reap itself wedged the SNO's
-    kube-apiserver-operator, and the cluster self-heals without either kick.)"""
+def test_recert_surgical_nudge_aggregated_apiservers_only():
+    """The ONLY nudge is a targeted restart of the aggregated apiservers
+    (openshift-apiserver + openshift-oauth-apiserver). Those workload pods,
+    restored from captured etcd, cache the OLD requestheader CA and reject the
+    aggregator (401) -> route.openshift.io dead -> console dead; restarting just
+    them (with CSR approval running) makes them re-read the current CA. It must NOT
+    force a kube-apiserver redeploy, NOT mass-reap all namespaces, and NOT touch
+    any *-operator namespace (restarting operators mid-rotation wedges them)."""
     script = _recert_script()
     assert "forceRedeploymentReason" not in script
-    assert "--force --grace-period=0" not in script  # no mass pod reap
-    assert "recreating pods" not in script
+    # surgical: exactly the two aggregated apiservers get restarted
+    assert "oc delete pod -n openshift-apiserver" in script
+    assert "oc delete pod -n openshift-oauth-apiserver" in script
+    # NOT a mass reap and NOT the operators
+    assert "get pods -A" not in script
+    assert "oc delete pod -n openshift-kube-apiserver-operator" not in script
+    assert "-n openshift-apiserver-operator" not in script
 
 
 def test_recert_script_reuses_install_complete_marker_and_log():

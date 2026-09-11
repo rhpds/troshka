@@ -328,9 +328,12 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
       for it to appear AND authenticate; FAILS CLOSED (no fallback) if it never
       arrives;
     - approves pending CSRs until nodes go Ready (kubelets re-bootstrap after the
-      PKI wipe), and keeps approving them in the readiness loop;
-    - then lets the cluster self-heal (NO mass pod reap, NO forced kube-apiserver
-      redeploy — those churn the cluster mid-rotation and delay recovery);
+      PKI wipe), and keeps approving them (per-CSR) in the readiness loop;
+    - surgically restarts ONLY the aggregated apiservers (openshift-apiserver +
+      oauth-apiserver) so they re-read the current requestheader CA (clearing the
+      post-recert aggregation 401 that kills route.openshift.io / the console) —
+      NO mass reap, NO forced kube-apiserver redeploy, and NEVER the operators
+      (restarting operators mid-rotation wedges them);
     - FAIL-CLOSED readiness gate on cluster operators: every operator
       Available=True / Degraded=False (skipping slow-settling monitoring + OLM
       packageserver) INCLUDING ``authentication`` (oauth) and ``console`` (whose
@@ -402,12 +405,21 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         f'{{ echo "[{cluster_key}] all $total node(s) Ready"; break; }}; '
         f'echo "[{cluster_key}] approving CSRs: $notready/$total node(s) not Ready"; '
         "sleep 10; done\n"
-        # After the kubelet re-bootstrap the cluster self-heals on its own: its
-        # operators rotate any aged crypto and reconnect. We deliberately do NOT
-        # mass-reap pods or force a kube-apiserver redeploy — those recreate the
-        # operators mid-rotation (creating zombies/wedges) and churn the aggregated
-        # API, which DELAYS recovery rather than helping. Just wait for the cluster
-        # operators to report healthy.
+        # SURGICAL NUDGE: the aggregated apiserver pods (openshift-apiserver +
+        # openshift-oauth-apiserver), restored from the captured etcd, cache the
+        # OLD requestheader CA in memory and reject the kube-apiserver aggregator
+        # with 401 -> route.openshift.io (and the oauth well-known) go unavailable
+        # -> router can't serve -> web console + login are down. The operators
+        # recreate these only unreliably/slowly (SNO often jams for 20min+), so
+        # restart JUST these two workload deployments once: they come back fresh
+        # (CSR approval below lets their kubelets issue serving certs) and re-read
+        # the CURRENT CA, clearing the 401 in ~1 minute. NEVER restart the
+        # *-operators (recreating them mid-rotation wedges them) or mass-reap.
+        f'  echo "[{cluster_key}] nudging aggregated apiservers (openshift-apiserver + oauth) to clear stale post-recert trust"\n'
+        "  oc delete pod -n openshift-apiserver --all --force --grace-period=0 "
+        ">/dev/null 2>&1 || true\n"
+        "  oc delete pod -n openshift-oauth-apiserver --all --force --grace-period=0 "
+        ">/dev/null 2>&1 || true\n"
         f'  echo "[{cluster_key}] nodes ready; waiting for cluster operators (incl oauth + console)"\n'
     )
     gate = (
