@@ -269,6 +269,13 @@ export default function AdminHostsPage() {
     disconnected: "agent: disconnected",
   };
 
+  const formatAgo = (seconds: number): string => {
+    if (seconds < 60) return `${Math.round(seconds)}s ago`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.round(seconds / 3600)}h ago`;
+    return `${Math.round(seconds / 86400)}d ago`;
+  };
+
   const [showKeyFor, setShowKeyFor] = useState<string | null>(null);
   const [keyData, setKeyData] = useState<Record<string, { key_pair_name: string; private_key: string; ssh_command: string | null; ssh_script_command?: string; public_key?: string }>>({});
 
@@ -873,7 +880,7 @@ export default function AdminHostsPage() {
                   ); })()}
                   {h.agent_status === "connected" && h.last_health_at && (
                     <span style={{ fontSize: 11, opacity: 0.5 }}>
-                      health: {Math.round((Date.now() - new Date(h.last_health_at).getTime()) / 1000)}s ago
+                      health: {formatAgo((Date.now() - new Date(h.last_health_at).getTime()) / 1000)}
                     </span>
                   )}
                 </div>
