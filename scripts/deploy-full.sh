@@ -55,11 +55,15 @@ OPERATOR_KUBECONFIGS+=("$HOME/secrets/ocpvdev01.dal13.infra.demo.redhat.com.kube
 
 if [ "$SKIP_OPERATORS" = false ]; then
   echo ""
-  echo "=== Step 3b: Apply operator CRDs + provider RBAC ==="
+  echo "=== Step 3b: Apply operator CRDs + RBAC ==="
   # Operator images are promoted above, but CRD schema changes (new spec fields)
   # only reach a cluster when the CRDs are applied. Do this before the operator
   # restart so the new reconcile logic sees the updated schema (unknown fields are
   # otherwise pruned on write). Applying CRDs is additive/idempotent.
+  #
+  # Operator ClusterRole (src/operator/deploy/clusterrole.yaml) is only created at
+  # install time; rules added later (e.g. bind on kubevirt-controller SCC for
+  # per-project console exec) never reach live clusters unless re-applied here.
   #
   # Provider RBAC (infra/ocpvirt-rbac.yaml) is applied at cluster onboarding, so
   # permissions ADDED to it later (e.g. routes/custom-host for app-proxy console
@@ -86,13 +90,15 @@ PY
     cluster=$(basename "$kc" .kubeconfig | cut -d. -f1)
     printf "  %s: " "$cluster"
     crd_ok=false
-    rbac_ok=false
+    operator_rbac_ok=false
+    provider_rbac_ok=false
     oc apply -f src/operator/crds/ --kubeconfig="$kc" >/dev/null 2>&1 && crd_ok=true
-    oc apply -f "$PROVIDER_RBAC" --kubeconfig="$kc" >/dev/null 2>&1 && rbac_ok=true
-    if [ "$crd_ok" = true ] && [ "$rbac_ok" = true ]; then
-      echo "CRDs + provider RBAC applied"
+    oc apply -f src/operator/deploy/clusterrole.yaml --kubeconfig="$kc" >/dev/null 2>&1 && operator_rbac_ok=true
+    oc apply -f "$PROVIDER_RBAC" --kubeconfig="$kc" >/dev/null 2>&1 && provider_rbac_ok=true
+    if [ "$crd_ok" = true ] && [ "$operator_rbac_ok" = true ] && [ "$provider_rbac_ok" = true ]; then
+      echo "CRDs + operator/provider RBAC applied"
     else
-      echo "FAILED (crds=$crd_ok rbac=$rbac_ok)"
+      echo "FAILED (crds=$crd_ok operator_rbac=$operator_rbac_ok provider_rbac=$provider_rbac_ok)"
     fi
   done
   rm -f "$PROVIDER_RBAC"
