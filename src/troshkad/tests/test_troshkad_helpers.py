@@ -5733,8 +5733,9 @@ class TestCleanOrphanDomains(unittest.TestCase):
 
 
 class TestCleanOrphanContainers(unittest.TestCase):
+    @patch("troshkad._container_pod", return_value=(True, ""))
     @patch("troshkad._run_cmd")
-    def test_removes_container(self, mock_run):
+    def test_removes_container(self, mock_run, _pod):
         mock_run.return_value = MagicMock(returncode=0)
         job = {"job_id": "j1", "output": []}
         removed = troshkad._clean_orphan_containers(job, ["troshka-aabb-ctr"])
@@ -5744,6 +5745,45 @@ class TestCleanOrphanContainers(unittest.TestCase):
         job = {"job_id": "j1", "output": []}
         removed = troshkad._clean_orphan_containers(job, ["evil-container"])
         self.assertEqual(removed, 0)
+
+    @patch("troshkad._container_pod", return_value=(True, "pod123"))
+    @patch("troshkad._run_cmd")
+    def test_pod_member_removed_via_pod_rm(self, mock_run, _pod):
+        """A pod member (e.g. an -ops-infra container) is removed by destroying
+        its pod — podman refuses 'rm' on a pod's infra container."""
+        mock_run.return_value = MagicMock(returncode=0)
+        job = {"job_id": "j1", "output": []}
+        removed = troshkad._clean_orphan_containers(job, ["troshka-f74f063e-ops-infra"])
+        self.assertEqual(removed, 1)
+        cmds = [c.args[1] for c in mock_run.call_args_list]
+        self.assertIn(["podman", "pod", "rm", "-f", "pod123"], cmds)
+        # never attempts a bare 'podman rm' on the infra container
+        self.assertFalse(any(c[:3] == ["podman", "rm", "-f"] for c in cmds))
+
+    @patch("troshkad._container_pod", return_value=(True, "pod123"))
+    @patch("troshkad._run_cmd")
+    def test_pod_removed_once_for_multiple_members(self, mock_run, _pod):
+        mock_run.return_value = MagicMock(returncode=0)
+        job = {"job_id": "j1", "output": []}
+        removed = troshkad._clean_orphan_containers(
+            job, ["troshka-x-content", "troshka-x-infra", "troshka-x-proxy"]
+        )
+        # one pod rm total, counted once (all three share pod123)
+        self.assertEqual(removed, 1)
+        pod_rms = [
+            c.args[1]
+            for c in mock_run.call_args_list
+            if c.args[1][:2] == ["podman", "pod"]
+        ]
+        self.assertEqual(len(pod_rms), 1)
+
+    @patch("troshkad._container_pod", return_value=(False, ""))
+    @patch("troshkad._run_cmd")
+    def test_gone_container_skipped(self, mock_run, _pod):
+        job = {"job_id": "j1", "output": []}
+        removed = troshkad._clean_orphan_containers(job, ["troshka-gone"])
+        self.assertEqual(removed, 0)
+        mock_run.assert_not_called()
 
 
 class TestCleanOrphanBridges(unittest.TestCase):
@@ -6002,6 +6042,21 @@ class TestKillBmcProcessesBmcVersion(unittest.TestCase):
         killed = troshkad._kill_bmc_processes(job, "/var/lib/troshka/bmc/proj")
         self.assertGreaterEqual(killed, 1)
         mock_kill.assert_called()
+
+    @patch("troshkad._safe_kill", return_value=False)
+    @patch("builtins.open", new_callable=mock_open, read_data="0")
+    @patch("troshkad.os.path.exists", return_value=True)
+    @patch("troshkad.os.listdir", return_value=[])
+    @patch("troshkad.os.path.isdir", return_value=True)
+    def test_refused_kill_not_counted_or_logged(
+        self, _isdir, _listdir, _exists, _open, _kill
+    ):
+        """When _safe_kill refuses (e.g. a stale PID 0), the process must not be
+        counted as killed and no misleading 'Killed' line is logged."""
+        job = {"job_id": "j1", "output": []}
+        killed = troshkad._kill_bmc_processes(job, "/var/lib/troshka/bmc/proj")
+        self.assertEqual(killed, 0)
+        self.assertFalse(any("Killed" in line for line in job["output"]))
 
 
 # ── VM migrate ──

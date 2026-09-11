@@ -6555,13 +6555,46 @@ def _clean_orphan_domains(job, orphan_domains):
     return removed
 
 
+def _container_pod(ctr):
+    """Return (exists, pod_id) for a container. pod_id is '' for a standalone
+    container; exists is False when the container is already gone."""
+    try:
+        out = subprocess.check_output(
+            ["podman", "container", "inspect", ctr, "--format", "{{.Pod}}"],
+            text=True,
+            timeout=15,
+            stderr=subprocess.DEVNULL,
+        )
+        return True, out.strip()
+    except subprocess.CalledProcessError:
+        return False, ""  # no such container
+    except Exception:
+        # inspect failed for another reason (podman missing, timeout) — treat as
+        # standalone and let the caller attempt a normal rm.
+        return True, ""
+
+
 def _clean_orphan_containers(job, orphan_containers):
-    """Remove orphan containers via podman stop + rm. Returns count removed."""
+    """Remove orphan containers via podman. A container that belongs to a pod is
+    removed by destroying its pod — podman refuses to rm a pod's infra container
+    on its own. Returns count removed."""
     removed = 0
+    removed_pods = set()
     for ctr in orphan_containers:
         try:
             if not ctr.startswith("troshka-"):
                 raise ValueError(f"Invalid container name: {ctr}")
+            exists, pod = _container_pod(ctr)
+            if not exists:
+                continue  # already gone (e.g. removed with its pod earlier)
+            if pod:
+                if pod in removed_pods:
+                    continue
+                _run_cmd(job, ["podman", "pod", "rm", "-f", pod], timeout=30)
+                removed_pods.add(pod)
+                _job_log(job, f"Removed pod {pod[:12]} (via {ctr})")
+                removed += 1
+                continue
             try:
                 _run_cmd(job, ["podman", "stop", "-t", "5", ctr], timeout=15)
             except RuntimeError:
@@ -6660,25 +6693,6 @@ def _handle_pool_cleanup(job, params):
 
 
 COMMAND_HANDLERS["pools/cleanup"] = _handle_pool_cleanup
-
-
-def _kill_bmc_processes(job, bmc_dir):
-    """Kill all BMC processes in a directory."""
-    for fname in os.listdir(bmc_dir):
-        if fname.endswith(".pid"):
-            pid_path = os.path.join(bmc_dir, fname)
-            try:
-                with open(pid_path) as f:
-                    p = int(f.read().strip())
-                _safe_kill(p, signal.SIGTERM)
-                _job_log(job, f"Killed BMC process PID {p} ({fname})")
-            except (
-                ValueError,
-                ProcessLookupError,
-                PermissionError,
-                FileNotFoundError,
-            ):
-                pass
 
 
 def _remove_bmc_bridge(job, project_id):
@@ -6822,9 +6836,12 @@ def _clean_orphan_metadata(job, orphan_metadata_ids):
 
 def _handle_gc_clean(job, params):
     """Remove specific orphaned resources provided by the backend."""
-    removed_dirs = _clean_orphan_dirs(job, params.get("orphan_dirs", []))
+    # Order matters: destroy domains and storage pools before removing the VM
+    # directories they reference. A still-defined libvirt pool keeps its target
+    # dir populated, so rmtree would fail with "Directory not empty".
     removed_domains = _clean_orphan_domains(job, params.get("orphan_domains", []))
     removed_pools = _clean_orphan_pools(job, params.get("orphan_pools", []))
+    removed_dirs = _clean_orphan_dirs(job, params.get("orphan_dirs", []))
     removed_containers = _clean_orphan_containers(
         job, params.get("orphan_containers", [])
     )
@@ -9527,9 +9544,9 @@ def _kill_bmc_processes(job, bmc_dir):
                 try:
                     with open(pid_path) as f:
                         p = int(f.read().strip())
-                    _safe_kill(p, signal.SIGTERM)
-                    killed += 1
-                    _job_log(job, f"Killed sushy-emulator PID {p}")
+                    if _safe_kill(p, signal.SIGTERM):
+                        killed += 1
+                        _job_log(job, f"Killed sushy-emulator PID {p}")
                 except (ValueError, ProcessLookupError, PermissionError):
                     pass
 
@@ -9539,9 +9556,9 @@ def _kill_bmc_processes(job, bmc_dir):
         try:
             with open(vbmcd_pid_path) as f:
                 p = int(f.read().strip())
-            _safe_kill(p, signal.SIGTERM)
-            killed += 1
-            _job_log(job, f"Killed vbmcd PID {p}")
+            if _safe_kill(p, signal.SIGTERM):
+                killed += 1
+                _job_log(job, f"Killed vbmcd PID {p}")
         except (ValueError, ProcessLookupError, PermissionError):
             pass
     return killed
@@ -9555,9 +9572,9 @@ def _teardown_bmc_dnsmasq(job, pid):
         try:
             with open(dnsmasq_pid_file) as f:
                 p = int(f.read().strip())
-            _safe_kill(p, signal.SIGTERM)
-            killed = 1
-            _job_log(job, f"Killed BMC dnsmasq PID {p}")
+            if _safe_kill(p, signal.SIGTERM):
+                killed = 1
+                _job_log(job, f"Killed BMC dnsmasq PID {p}")
         except (ValueError, ProcessLookupError, PermissionError):
             pass
     for f_path in [
