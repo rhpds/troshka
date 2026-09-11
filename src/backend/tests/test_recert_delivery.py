@@ -117,3 +117,66 @@ def test_pull_recert_kubeconfig_gives_up_at_deadline():
             lambda m: None,
         )
     assert kc is None
+
+
+def test_delivery_skips_snapshot_pull_when_captured_kubeconfig_works():
+    """Lazy delivery: if the captured kubeconfig already authenticates (ocpvirt),
+    skip the expensive snapshot+guestfish lb-ext pull entirely (and its extra
+    'admin kubeconfig ...' log lines) — the block will use the captured one."""
+    from unittest.mock import MagicMock, patch
+
+    import app.services.deploy_service as ds
+
+    with patch.object(ds, "_wait_nested_apiserver_up", return_value=True), patch.object(
+        ds, "_captured_kubeconfig_works", return_value=True
+    ) as cap, patch.object(ds, "_pull_recert_kubeconfig") as pull, patch.object(
+        ds, "_ops_pod_log_line"
+    ), patch.object(
+        ds, "_recert_cp_member_vm_id", return_value="cp-node-1"
+    ):
+        ds._deliver_one_recert_kubeconfig(
+            MagicMock(),
+            "prov",
+            MagicMock(),
+            "proj",
+            {"id": "c1", "name": "c1"},
+            _topo(),
+            "ctr",
+            "/workdir",
+            10**12,
+        )
+        cap.assert_called_once()
+        pull.assert_not_called()  # snapshot pull skipped when captured works
+
+
+def test_delivery_pulls_when_captured_kubeconfig_fails():
+    """KubeVirt: the captured kubeconfig's CAs roll, so it fails to authenticate —
+    the snapshot lb-ext pull must still run and deliver."""
+    from unittest.mock import MagicMock, patch
+
+    import app.services.deploy_service as ds
+
+    with patch.object(ds, "_wait_nested_apiserver_up", return_value=True), patch.object(
+        ds, "_captured_kubeconfig_works", return_value=False
+    ), patch.object(
+        ds, "_pull_recert_kubeconfig", return_value="KC"
+    ) as pull, patch.object(
+        ds, "_ops_pod_write_file", return_value=True
+    ) as write, patch.object(
+        ds, "_ops_pod_log_line"
+    ), patch.object(
+        ds, "_recert_cp_member_vm_id", return_value="cp-node-1"
+    ):
+        ds._deliver_one_recert_kubeconfig(
+            MagicMock(),
+            "prov",
+            MagicMock(),
+            "proj",
+            {"id": "c1", "name": "c1"},
+            _topo(),
+            "ctr",
+            "/workdir",
+            10**12,
+        )
+        pull.assert_called_once()  # still pulls when captured fails
+        write.assert_called_once()

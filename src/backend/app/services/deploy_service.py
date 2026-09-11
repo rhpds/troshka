@@ -2988,6 +2988,35 @@ def _pull_recert_kubeconfig(
     return None
 
 
+def _captured_kubeconfig_works(
+    host, project_id: str, container_name: str, key: str, workdir: str
+) -> bool:
+    """[LIVE-ENV] Does the CAPTURED kubeconfig already authenticate? Tests it the
+    SAME way the recert block selects one — strip the embedded CA + set insecure
+    (so a rotated server cert doesn't matter) then ``oc get nodes``. When True the
+    block will use the captured kubeconfig, so the expensive snapshot+guestfish
+    lb-ext pull is redundant (ocpvirt); when False we still pull it (KubeVirt,
+    where the captured CAs roll)."""
+    d = f"{workdir}/{key}"
+    script = (
+        f'd="{d}"; [ -s "$d/kubeconfig" ] || exit 0; '
+        'cp "$d/kubeconfig" "$d/.lazychk" 2>/dev/null || exit 0; '
+        'cl=$(KUBECONFIG="$d/.lazychk" oc config view '
+        "-o jsonpath='{.clusters[0].name}' 2>/dev/null); "
+        '[ -n "$cl" ] || { rm -f "$d/.lazychk"; exit 0; }; '
+        'KUBECONFIG="$d/.lazychk" oc config unset '
+        '"clusters.$cl.certificate-authority-data" >/dev/null 2>&1; '
+        'KUBECONFIG="$d/.lazychk" oc config set-cluster "$cl" '
+        "--insecure-skip-tls-verify=true >/dev/null 2>&1; "
+        'KUBECONFIG="$d/.lazychk" oc get nodes >/dev/null 2>&1 && echo LAZY_OK; '
+        'rm -f "$d/.lazychk"'
+    )
+    out = _ops_pod_exec(
+        host, project_id, container_name, ["bash", "-c", script], timeout=30
+    )
+    return "LAZY_OK" in (out or "")
+
+
 def _deliver_one_recert_kubeconfig(
     host,
     provider,
@@ -3023,6 +3052,21 @@ def _deliver_one_recert_kubeconfig(
             "recert delivery %s/%s: apiserver never came up", project_id[:8], key
         )
         _log("control-plane API never came up; recert runner will time out")
+        return
+
+    # LAZY: only do the expensive snapshot+guestfish lb-ext pull if the captured
+    # kubeconfig doesn't already authenticate. On ocpvirt the captured one works, so
+    # the block uses it and this pull is redundant (and clutters the log with a
+    # second/third "admin kubeconfig ..." line). On KubeVirt the captured CAs roll,
+    # so we still pull the lb-ext one.
+    if _captured_kubeconfig_works(host, project_id, container_name, key, workdir):
+        logger.info(
+            "recert delivery %s/%s: captured kubeconfig authenticates; skipping "
+            "snapshot pull",
+            project_id[:8],
+            key,
+        )
+        _log("captured kubeconfig valid; snapshot delivery not needed")
         return
 
     _log(
