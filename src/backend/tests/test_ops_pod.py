@@ -1625,26 +1625,39 @@ def test_recert_install_complete_still_wins_over_failure_marker():
     assert _phase_from_input(log) == PHASE_COMPLETE
 
 
-def test_recert_gate_keeps_approving_csrs():
-    """The kubelet re-bootstrap + self-healing operators issue new CSRs, so CSR
-    approval must run in the gate loop too (not only the pre-gate node loop)."""
+def test_recert_csr_approval_is_per_csr_pending_only():
+    """CSR approval must filter to Pending and approve EACH with -n 1. The batch
+    form (all names to one `oc adm certificate approve`) bails on the first
+    already-approved/racing CSR and approves NONE of the rest — silently starving
+    kubelets so pod lifecycle freezes (pods stuck Pending/Terminating). Both the
+    node-ready loop and the gate loop must use the robust form."""
     script = _recert_script()
-    assert script.count("oc adm certificate approve") >= 2
+    # per-CSR approval in both loops (node-ready + gate)
+    assert script.count("xargs -r -n 1 oc adm certificate approve") >= 2
+    # Pending-only filter (don't re-approve already-approved CSRs)
+    assert script.count("awk '/Pending/{print $1}'") >= 2
+    # NOT the fragile batch form
+    assert "-o name 2>/dev/null | xargs -r oc adm certificate approve" not in script
 
 
-def test_recert_gate_uses_cluster_operators_not_ops_pod_http_probe():
-    """Readiness gates on cluster operators (reliable from the API), NOT an
-    ops-pod curl to the console route. The console operator's Available already
-    includes a route-health check, and the ops-pod probe false-negatived on
-    route-API blips / ops-pod DNS to *.apps — reporting console-down when it was
-    up. So: gate on bad=0 + auth + console Available; no curl, no route lookup."""
+def test_recert_gate_requires_aggregated_route_api_up():
+    """`oc get co` status can be STALE right after recert (restored from captured
+    etcd -> reads Available before operators re-evaluate), so the gate false-
+    positived and tore down while the console was down. ALSO require the aggregated
+    route.openshift.io API to actually serve (oc get route succeeds) — the reliable
+    'aggregation recovered -> console serves' signal — before declaring ready. No
+    curl / no ops-pod DNS to *.apps."""
     script = _recert_script()
-    # the console-route http probe is gone (no route lookup, no curl of the route)
-    assert "oc get route console" not in script
+    assert "oc get route console -n openshift-console" in script
+    assert '[ "$raok" = 1 ]' in script
+    # combined with operator health in the ready condition
+    assert (
+        '[ "$bad" = 0 ] && [ "$auth" = 1 ] && [ "$con" = 1 ] && [ "$raok" = 1 ]'
+        in script
+    )
+    # still no fragile http probe (curl / http_code)
     assert "%{http_code}" not in script
-    assert "https://$chost" not in script
-    # still gates on the operator health signals
-    assert '[ "$bad" = 0 ] && [ "$auth" = 1 ] && [ "$con" = 1 ]' in script
+    assert "curl -sk" not in script
 
 
 def test_recert_gate_does_not_block_on_monitoring():

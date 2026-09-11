@@ -390,9 +390,12 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         'admin kubeconfig (captured or delivered)"; exit 1; }\n'
         f'  echo "[{cluster_key}] admin kubeconfig received; approving pending CSRs"\n'
         # Approve CSRs until all nodes are Ready (kubelet re-bootstrap after wipe).
+        # Filter to Pending then approve EACH with -n 1: the batch form passes all
+        # names to one `oc` invocation, where a single already-approved/racing CSR
+        # makes it bail and approve NONE of the rest — silently starving kubelets.
         "  for i in $(seq 1 120); do "
-        "oc get csr -o name 2>/dev/null | xargs -r oc adm certificate approve "
-        ">/dev/null 2>&1 || true; "
+        "oc get csr --no-headers 2>/dev/null | awk '/Pending/{print $1}' "
+        "| xargs -r -n 1 oc adm certificate approve >/dev/null 2>&1 || true; "
         "total=$(oc get nodes --no-headers 2>/dev/null | wc -l); "
         "notready=$(oc get nodes --no-headers 2>/dev/null | grep -vc ' Ready'); "
         '[ "$total" -gt 0 ] && [ "$notready" = 0 ] && '
@@ -412,11 +415,13 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         # incl authentication (oauth/login) + console. Empty output != healthy.
         "  ready=''\n"
         "  for i in $(seq 1 160); do "
-        # Keep approving CSRs: the pod reaper's recreated pods (e.g. monitoring)
-        # and the kubelet's re-bootstrap issue fresh CSRs that must be approved
-        # for their operators to go Available.
-        "oc get csr -o name 2>/dev/null | xargs -r oc adm certificate approve "
-        ">/dev/null 2>&1 || true; "
+        # Keep approving CSRs EVERY iteration (Pending only, -n 1 per-CSR): after
+        # the PKI wipe the kubelets continuously issue client/serving CSRs; if
+        # approval stops or under-approves (batch form), the kubelets starve and
+        # freeze pod lifecycle (pods stuck Pending/Terminating) — which stalls the
+        # whole self-heal. This loop is the cluster's lifeline until genuinely ready.
+        "oc get csr --no-headers 2>/dev/null | awk '/Pending/{print $1}' "
+        "| xargs -r -n 1 oc adm certificate approve >/dev/null 2>&1 || true; "
         "out=$(oc get co --no-headers 2>/dev/null); "
         '[ -z "$out" ] && { sleep 15; continue; }; '
         # Don't block on slow-settling operators that aren't needed for a usable
@@ -426,15 +431,20 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         'bad=$(echo "$out" | awk \'$1=="monitoring"||$1=="operator-lifecycle-manager-packageserver"{next} $3!="True"||$5=="True"{c++} END{print c+0}\'); '
         'auth=$(echo "$out" | awk \'$1=="authentication"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
         'con=$(echo "$out" | awk \'$1=="console"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
-        # Readiness = cluster operators healthy. The console operator's Available
-        # already INCLUDES a RouteHealthAvailable check (it probes the console route
-        # itself), so `con=1` means the console genuinely serves — no need for a
-        # separate ops-pod curl to *.apps (that false-negatives on route-API blips
-        # and ops-pod DNS/network, and was reporting console-down when it was up).
-        '[ "$bad" = 0 ] && [ "$auth" = 1 ] && [ "$con" = 1 ] && '
+        # The `oc get co` status can be STALE (restored from the captured etcd)
+        # right after recert — it reads Available before the operators re-evaluate.
+        # So ALSO require the aggregated route.openshift.io API to actually serve
+        # (oc get route succeeds): it's down while the openshift-apiserver hasn't
+        # restarted with fresh certs, and it's the reliable "aggregation recovered
+        # -> console will serve" signal. API-level (no curl/DNS to *.apps).
+        "raok=0; oc get route console -n openshift-console "
+        ">/dev/null 2>&1 && raok=1; "
+        '[ "$bad" = 0 ] && [ "$auth" = 1 ] && [ "$con" = 1 ] && [ "$raok" = 1 ] && '
         "{ ready=1; break; }; "
-        # Log which operators are still not ready so the showroom log is informative.
+        # Log which operators are still not ready so the showroom log is informative;
+        # surface a stuck aggregated API as a pending item too.
         'nr=$(echo "$out" | awk \'$1=="monitoring"||$1=="operator-lifecycle-manager-packageserver"{next} $3!="True"||$5=="True"{printf "%s ",$1}\'); '
+        '[ "$raok" = 1 ] || nr="${nr}route-api "; '
         f'echo "[{cluster_key}] waiting on operators: ${{nr:-none}}"; '
         "sleep 15; done\n"
     )
