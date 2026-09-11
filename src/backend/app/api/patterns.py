@@ -134,16 +134,25 @@ def _remap_handle(handle: str, handle_id_map: dict) -> str:
 
 
 def _remap_edges(edges: list, id_map: dict, handle_id_map: dict) -> None:
-    """Remap edge source/target and handles in-place."""
+    """Remap edge source/target and handles in-place.
+
+    Handles are remapped against BOTH maps: most embed a handle id (NIC /
+    disk-controller → ``handle_id_map``), but the container-mount handle uniquely
+    embeds the storage NODE id (``mnt-<diskNodeId>-left``, see ContainerNode), which
+    lives in ``id_map``. Missing that left the mount edge pointing at the old
+    storage id, so React Flow dropped it (the /showroom volume line disappeared on
+    pattern deploy).
+    """
+    handle_map = {**handle_id_map, **id_map}
     for edge in edges:
         if edge.get("source") in id_map:
             edge["source"] = id_map[edge["source"]]
         if edge.get("target") in id_map:
             edge["target"] = id_map[edge["target"]]
         if edge.get("sourceHandle"):
-            edge["sourceHandle"] = _remap_handle(edge["sourceHandle"], handle_id_map)
+            edge["sourceHandle"] = _remap_handle(edge["sourceHandle"], handle_map)
         if edge.get("targetHandle"):
-            edge["targetHandle"] = _remap_handle(edge["targetHandle"], handle_id_map)
+            edge["targetHandle"] = _remap_handle(edge["targetHandle"], handle_map)
         if "id" in edge:
             src = edge.get("source", "")
             tgt = edge.get("target", "")

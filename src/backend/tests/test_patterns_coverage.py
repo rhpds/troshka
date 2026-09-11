@@ -1046,6 +1046,53 @@ def test_remap_edges():
     assert "new-net" in edges[0]["id"]
 
 
+def test_remap_container_mount_edge_handle_follows_storage_node():
+    """A container-mount edge's targetHandle embeds the storage NODE id
+    (mnt-<diskNodeId>-left, keyed on diskNodeId in ContainerNode). On pattern clone
+    the storage node gets a new id, so the edge handle must be remapped to match —
+    otherwise React Flow can't find the handle and drops the edge (the showroom
+    /showroom volume connection vanishes on pattern deploy)."""
+    from app.api.patterns import _remap_topology
+
+    topo = {
+        "nodes": [
+            {
+                "id": "stor-1",
+                "type": "storageNode",
+                "data": {"label": "showroom-vol0"},
+            },
+            {
+                "id": "ctr-1",
+                "type": "containerNode",
+                "data": {
+                    "label": "showroom",
+                    "mounts": [{"diskNodeId": "stor-1", "mountPath": "/showroom"}],
+                },
+            },
+        ],
+        "edges": [
+            {
+                "id": "xy-edge__stor-1right-ctr-1mnt-stor-1-left",
+                "source": "stor-1",
+                "sourceHandle": "right",
+                "target": "ctr-1",
+                "targetHandle": "mnt-stor-1-left",
+            }
+        ],
+    }
+    out = _remap_topology(topo)
+    by_label = {n["data"]["label"]: n for n in out["nodes"]}
+    new_stor = by_label["showroom-vol0"]["id"]
+    edge = out["edges"][0]
+    # endpoints remapped
+    assert edge["source"] == new_stor
+    assert edge["target"] == by_label["showroom"]["id"]
+    # the container renders its handle as mnt-<diskNodeId>-left, so the edge's
+    # targetHandle must remap the embedded storage id to match
+    assert by_label["showroom"]["data"]["mounts"][0]["diskNodeId"] == new_stor
+    assert edge["targetHandle"] == f"mnt-{new_stor}-left"
+
+
 def test_remap_start_order():
     from app.api.patterns import _remap_start_order
 
