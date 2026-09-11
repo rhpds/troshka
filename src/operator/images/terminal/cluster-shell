@@ -43,7 +43,12 @@ fi
 if [ -n "$_can_drop" ]; then
     # Privilege drop available: prep uid-1000's home + kubeconfig, then drop.
     export HOME=/home/labuser
-    export KUBECONFIG="$HOME/.kube/config"
+    # Include the live /showroom/kube/config as a fallback (it's 0644, readable by
+    # uid-1000): the writable copy below is made ONCE at terminal start, so a
+    # terminal opened DURING the install — before the kubeconfig is injected — would
+    # otherwise never see it. With it in KUBECONFIG, oc reads the injected file as
+    # soon as it appears, no reconnect needed; writes still go to the copy (first).
+    export KUBECONFIG="$HOME/.kube/config:/showroom/kube/config"
     if [ -f /showroom/kube/config ]; then
         install -d -o 1000 -g 1000 -m 0700 "$HOME/.kube"
         install -o 1000 -g 1000 -m 0600 /showroom/kube/config "$KUBECONFIG"
@@ -57,7 +62,9 @@ fi
 if [ -z "$HOME" ] || [ ! -w "$HOME" ]; then
     export HOME=/tmp
 fi
-export KUBECONFIG="$HOME/.kube/config"
+# Live /showroom/kube/config as a fallback so a terminal opened before the
+# kubeconfig is injected still picks it up once it appears (see the drop path).
+export KUBECONFIG="$HOME/.kube/config:/showroom/kube/config"
 if [ -f /showroom/kube/config ]; then
     mkdir -p "$HOME/.kube"
     cp /showroom/kube/config "$KUBECONFIG" 2>/dev/null && chmod 0600 "$KUBECONFIG" 2>/dev/null
