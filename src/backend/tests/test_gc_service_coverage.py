@@ -247,7 +247,10 @@ class TestCollectBmcProjectIds:
         result = gc._collect_bmc_project_ids(db, ["host-1"])
         assert result == []
 
-    def test_non_active_project_excluded(self):
+    def test_deploying_project_included(self):
+        """A project mid-deploy needs its BMC for virtual-media boot, so it must
+        be protected regardless of state (destroyed projects are already gone
+        from the table)."""
         db = MagicMock()
         p = MagicMock()
         p.id = "deploying-1111-2222-3333-444455556666"
@@ -260,7 +263,7 @@ class TestCollectBmcProjectIds:
         p.topology = None
         db.query.return_value.filter.return_value.all.return_value = [p]
         result = gc._collect_bmc_project_ids(db, ["host-1"])
-        assert result == []
+        assert p.id in result
 
     def test_empty_topology(self):
         db = MagicMock()

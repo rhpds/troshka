@@ -142,8 +142,10 @@ def _collect_bmc_project_ids(db: Session, pool_host_ids) -> list[str]:
 
     bmc_project_ids = set()
     for p in db.query(Project).filter(Project.host_id.in_(pool_host_ids)).all():
-        if p.state not in ("active", "stopped"):
-            continue
+        # Keep BMC for any project that still exists — destroyed projects are
+        # already gone from this table. A project mid-deploy needs its BMC for
+        # virtual-media boot, and an active/stopped project's lab may mount
+        # virtual media long after install, so we must not gate on state here.
         topo = p.deployed_topology or p.topology or {}
         for node in topo.get("nodes", []):
             if (

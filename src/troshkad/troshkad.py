@@ -6308,6 +6308,14 @@ def _check_bridge_is_orphan(bridge_name, all_vm_bridges):
     """Return True if the bridge is an orphan (br-* prefix, not used by VMs, exists in host namespace)."""
     if not bridge_name.startswith("br-") or bridge_name in all_vm_bridges:
         return False
+    # BMC bridges (br-bmc-<pid>) carry the sushy-emulator/vbmcd virtual BMC, not
+    # a libvirt VM's <source bridge>, so they never appear in all_vm_bridges and
+    # would always look "orphan" here. Their lifecycle is owned by the BMC
+    # discovery (_discover_orphan_bmc), which keeps them for any project that
+    # still exists — a lab may mount virtual media well after install. Never reap
+    # them via the generic sweep.
+    if bridge_name.startswith("br-bmc-"):
+        return False
     ns_check = subprocess.run(
         ["ip", "link", "show", bridge_name],
         capture_output=True,

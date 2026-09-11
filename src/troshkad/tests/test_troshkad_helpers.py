@@ -5920,6 +5920,25 @@ class TestDanglingImages(unittest.TestCase):
         self.assertEqual(troshkad._clean_dangling_images(job, True), 3)
 
 
+class TestCheckBridgeIsOrphan(unittest.TestCase):
+    @patch("troshkad.subprocess.run")
+    def test_bmc_bridge_never_orphan(self, mock_run):
+        """br-bmc-* is owned by the BMC lifecycle (used by sushy/vbmcd, not a VM
+        <source bridge>). The generic sweep must never reap it — a lab may mount
+        virtual media long after install."""
+        mock_run.return_value = MagicMock(returncode=0)  # would look "present"
+        self.assertFalse(troshkad._check_bridge_is_orphan("br-bmc-02cea216", set()))
+        mock_run.assert_not_called()  # short-circuits before the ip-link check
+
+    @patch("troshkad.subprocess.run")
+    def test_unreferenced_bridge_is_orphan(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        self.assertTrue(troshkad._check_bridge_is_orphan("br-troshka-dead", set()))
+
+    def test_referenced_bridge_not_orphan(self):
+        self.assertFalse(troshkad._check_bridge_is_orphan("br-1929", {"br-1929"}))
+
+
 class TestCleanOrphanMetadata(unittest.TestCase):
     @patch("troshkad.os.remove")
     @patch("troshkad._run_cmd")
