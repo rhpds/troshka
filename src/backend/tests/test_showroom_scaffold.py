@@ -939,3 +939,21 @@ def test_nginx_config_init_writes_ui_config_to_served_www():
     assert "/showroom/www/ui-config.yml" in cmd
     assert "/showroom/repo/ui-config.yml" in cmd
     assert "/showroom/nginx/nginx.conf" in cmd
+
+
+def test_nginx_config_init_makes_www_writable_for_antora():
+    """nginx-config runs as root (busybox) and pre-creates /showroom/www, but the
+    antora-builder that fills it runs as a non-root user (antora image USER 1001)
+    under podman on troshkad hosts. Without making www writable, antora gets
+    EACCES on mkdir /showroom/www/modules. The init must chmod www world-writable
+    so the non-root antora build can create its output tree (regression: 2f12cd20
+    added the root-owned www without this)."""
+    from app.services.showroom_scaffold import _build_init_containers
+
+    inits = _build_init_containers("repo", "ref", "bm5n", "dWk=", "disk-1")
+    nginx_cfg = next(ic for ic in inits if ic["name"] == "nginx-config")
+    cmd = nginx_cfg["command"]
+    assert "chmod 0777 /showroom/www" in cmd
+    # The chmod must precede the antora build's use of www — i.e. appear in the
+    # same nginx-config command that creates www.
+    assert cmd.index("mkdir") < cmd.index("chmod 0777 /showroom/www")
