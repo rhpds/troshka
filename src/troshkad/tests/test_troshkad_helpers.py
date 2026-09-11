@@ -10167,3 +10167,32 @@ class TestPullFileCandidatePaths(unittest.TestCase):
 
     def test_command_registered(self):
         self.assertIn("vms/file-pull-snapshot", troshkad.COMMAND_HANDLERS)
+
+
+class TestNetToken(unittest.TestCase):
+    """Per-pod netns/veth naming must be unique across projects.
+
+    Regression: the old ``name[-8:]`` scheme collapsed every project's showroom
+    pod (``troshka-<proj8>-showroom``) onto ``ctr-showroom`` + identical veths,
+    so a new project collided with a leftover one on the same host (EEXIST on
+    /var/run/netns/ctr-showroom)."""
+
+    def test_deterministic(self):
+        n = "troshka-da63de48-showroom"
+        self.assertEqual(troshkad._net_token(n), troshkad._net_token(n))
+
+    def test_unique_across_projects_same_suffix(self):
+        # Two different projects, both with a 'showroom' container.
+        a = troshkad._net_token("troshka-da63de48-showroom")
+        b = troshkad._net_token("troshka-d80817d5-showroom")
+        self.assertNotEqual(a, b)
+
+    def test_token_is_short_hex(self):
+        tok = troshkad._net_token("troshka-d80817d5-showroom")
+        self.assertEqual(len(tok), 8)
+        self.assertTrue(all(c in "0123456789abcdef" for c in tok))
+
+    def test_veth_name_within_ifnamsiz(self):
+        # vp<tok><idx>h must stay <= 15 chars (IFNAMSIZ).
+        tok = troshkad._net_token("troshka-d80817d5-showroom")
+        self.assertLessEqual(len(f"vp{tok}9h"), 15)

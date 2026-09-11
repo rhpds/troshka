@@ -11522,6 +11522,19 @@ def _configure_container_interface_ip(job, idx, ip, cidr, netns_name):
             pass
 
 
+def _net_token(name: str) -> str:
+    """Stable, project-unique short token for per-pod netns/veth names.
+
+    Derived from a hash of the FULL pod/container name so it stays unique across
+    projects. The old scheme used ``name[-8:]``, but pod names end in the human
+    container name (e.g. ``troshka-<proj8>-showroom``) — so the last 8 chars were
+    always ``"showroom"``, collapsing every project onto the same ``ctr-showroom``
+    netns and ``v*showroom*`` veths and colliding on a shared host. 8 hex chars
+    keep veth names within the 15-char IFNAMSIZ limit.
+    """
+    return hashlib.sha1(name.encode()).hexdigest()[:8]
+
+
 def _attach_container_to_bridges(job, name, networks):
     """Attach a container to VXLAN bridges via veth pairs."""
     _run_cmd(job, ["podman", "start", name], timeout=30)
@@ -11536,14 +11549,15 @@ def _attach_container_to_bridges(job, name, networks):
         raise RuntimeError(f"Failed to get container PID: {inspect.stderr}")
     ctr_pid = inspect.stdout.strip()
 
-    netns_path = f"/var/run/netns/ctr-{name[-8:]}"
+    tok = _net_token(name)
+    netns_path = f"/var/run/netns/ctr-{tok}"
     os.makedirs("/var/run/netns", exist_ok=True)
     try:
         os.symlink(f"/proc/{ctr_pid}/ns/net", netns_path)
     except FileExistsError:
         os.remove(netns_path)
         os.symlink(f"/proc/{ctr_pid}/ns/net", netns_path)
-    netns_name = f"ctr-{name[-8:]}"
+    netns_name = f"ctr-{tok}"
 
     for idx, net in enumerate(networks):
         bridge = _validate_bridge_name(net["bridge"])
@@ -11551,8 +11565,8 @@ def _attach_container_to_bridges(job, name, networks):
         ip = net.get("ip", "")
         cidr = net.get("cidr", "10.0.0.0/24")
 
-        veth_host = f"vc{name[-8:]}{idx}h"[:15]
-        veth_ctr = f"vc{name[-8:]}{idx}n"[:15]
+        veth_host = f"vc{tok}{idx}h"[:15]
+        veth_ctr = f"vc{tok}{idx}n"[:15]
 
         _setup_container_veth_pair(
             job, name, idx, veth_host, veth_ctr, mac, netns_name, bridge
@@ -11914,17 +11928,21 @@ def _set_pod_gateway_neigh(job, netns_name, gateway, lladdr):
 
 def _attach_pod_to_infra_transit(job, full_pod_name, infra_pid, net, project_id):
     """Attach showroom pod to project netns transit (not a lab bridge)."""
-    netns_name = f"ctr-{full_pod_name[-8:]}"
+    tok = _net_token(full_pod_name)
+    netns_name = f"ctr-{tok}"
     os.makedirs("/var/run/netns", exist_ok=True)
     ns_path = f"/var/run/netns/{netns_name}"
     proc_ns = f"/proc/{infra_pid}/ns/net"
-    if os.path.exists(ns_path):
+    # lexists (not exists) so a stale/dangling symlink from a prior deploy of
+    # THIS pod is removed; exists() follows the link and misses dangling ones,
+    # which then made os.symlink raise EEXIST.
+    if os.path.lexists(ns_path):
         os.unlink(ns_path)
     os.symlink(proc_ns, ns_path)
 
     proj_ns = f"troshka-{project_id[:8]}"
-    veth_host = f"vi{full_pod_name[-8:]}h"[:15]
-    veth_ctr = f"vi{full_pod_name[-8:]}n"[:15]
+    veth_host = f"vi{tok}h"[:15]
+    veth_ctr = f"vi{tok}n"[:15]
 
     try:
         _run_cmd(
@@ -12165,11 +12183,14 @@ def _allow_infra_veth_forward(job, proj_ns, veth_host):
 
 def _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id):
     """Attach a pod's infra container to VXLAN bridges via veth pairs."""
-    netns_name = f"ctr-{full_pod_name[-8:]}"
+    tok = _net_token(full_pod_name)
+    netns_name = f"ctr-{tok}"
     os.makedirs("/var/run/netns", exist_ok=True)
     ns_path = f"/var/run/netns/{netns_name}"
     proc_ns = f"/proc/{infra_pid}/ns/net"
-    if os.path.exists(ns_path):
+    # lexists (not exists) so a stale/dangling symlink from a prior deploy of
+    # THIS pod is removed; exists() follows the link and misses dangling ones.
+    if os.path.lexists(ns_path):
         os.unlink(ns_path)
     os.symlink(proc_ns, ns_path)
 
@@ -12180,8 +12201,8 @@ def _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id):
         ip_addr = net.get("ip", "")
         cidr = net.get("cidr", "")
 
-        veth_host = f"vp{full_pod_name[-8:]}{idx}h"[:15]
-        veth_ctr = f"vp{full_pod_name[-8:]}{idx}n"[:15]
+        veth_host = f"vp{tok}{idx}h"[:15]
+        veth_ctr = f"vp{tok}{idx}n"[:15]
 
         _setup_pod_veth_pair(
             job,
@@ -12484,9 +12505,9 @@ def _handle_pod_destroy(job, params):
     _ = params.get("project_id", "")
     volumes = params.get("volumes", [])
 
-    netns_name = f"ctr-{pod_name[-8:]}"
+    netns_name = f"ctr-{_net_token(pod_name)}"
     ns_path = f"/var/run/netns/{netns_name}"
-    if os.path.exists(ns_path):
+    if os.path.lexists(ns_path):
         os.unlink(ns_path)
 
     _run_cmd(job, ["podman", "pod", "rm", "-f", pod_name], check=False)
