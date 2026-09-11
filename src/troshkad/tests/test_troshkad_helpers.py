@@ -5842,6 +5842,84 @@ class TestCleanCacheItems(unittest.TestCase):
         self.assertEqual(removed, 0)
 
 
+class TestDiscoverStaleAgentIsos(unittest.TestCase):
+    @patch("troshkad.time.time", return_value=1_000_000)
+    @patch("troshkad.os.path.getmtime", return_value=0)  # very old
+    @patch("troshkad.os.path.isfile", return_value=True)
+    @patch("troshkad.os.path.isdir", return_value=True)
+    @patch("troshkad.os.listdir", return_value=["tmpABCD1234"])
+    def test_finds_stale_iso_dir(self, _ls, _isdir, _isfile, _mtime, _now):
+        job = {"job_id": "j1", "output": []}
+        stale = troshkad._discover_stale_agent_isos(job)
+        self.assertEqual(stale, ["/tmp/tmpABCD1234"])
+
+    @patch("troshkad.time.time", return_value=1_000_000)
+    @patch("troshkad.os.path.getmtime", return_value=999_999)  # 1s old — fresh
+    @patch("troshkad.os.path.isfile", return_value=True)
+    @patch("troshkad.os.path.isdir", return_value=True)
+    @patch("troshkad.os.listdir", return_value=["tmpFRESH"])
+    def test_skips_fresh_iso_dir(self, _ls, _isdir, _isfile, _mtime, _now):
+        """An in-flight install's ISO (recent mtime) must not be reaped."""
+        job = {"job_id": "j1", "output": []}
+        self.assertEqual(troshkad._discover_stale_agent_isos(job), [])
+
+    @patch("troshkad.os.path.isfile", return_value=False)  # no agent.x86_64.iso
+    @patch("troshkad.os.path.isdir", return_value=True)
+    @patch("troshkad.os.listdir", return_value=["some-other-dir"])
+    def test_ignores_dirs_without_iso(self, _ls, _isdir, _isfile):
+        job = {"job_id": "j1", "output": []}
+        self.assertEqual(troshkad._discover_stale_agent_isos(job), [])
+
+
+class TestCleanStaleAgentIsos(unittest.TestCase):
+    @patch("troshkad.shutil.rmtree")
+    @patch("troshkad.os.path.realpath", side_effect=lambda p: p)
+    def test_removes_tmp_dir(self, _rp, mock_rmtree):
+        job = {"job_id": "j1", "output": []}
+        removed = troshkad._clean_stale_agent_isos(job, ["/tmp/tmpABCD1234"])
+        self.assertEqual(removed, 1)
+        mock_rmtree.assert_called_once_with("/tmp/tmpABCD1234")
+
+    @patch("troshkad.shutil.rmtree")
+    @patch("troshkad.os.path.realpath", side_effect=lambda p: p)
+    def test_refuses_non_tmp_path(self, _rp, mock_rmtree):
+        """Hard containment: never rmtree outside /tmp even if asked."""
+        job = {"job_id": "j1", "output": []}
+        removed = troshkad._clean_stale_agent_isos(job, ["/etc", "/tmp"])
+        self.assertEqual(removed, 0)
+        mock_rmtree.assert_not_called()
+
+    @patch("troshkad.os.path.realpath", side_effect=lambda p: "/etc/passwd")
+    @patch("troshkad.shutil.rmtree")
+    def test_refuses_symlink_escape(self, mock_rmtree, _rp):
+        """A /tmp entry that resolves outside /tmp (symlink) is refused."""
+        job = {"job_id": "j1", "output": []}
+        removed = troshkad._clean_stale_agent_isos(job, ["/tmp/evil"])
+        self.assertEqual(removed, 0)
+        mock_rmtree.assert_not_called()
+
+
+class TestDanglingImages(unittest.TestCase):
+    @patch("troshkad.subprocess.check_output", return_value="id1\nid2\n")
+    def test_discover_true_when_present(self, _co):
+        job = {"job_id": "j1", "output": []}
+        self.assertTrue(troshkad._discover_dangling_images(job))
+
+    @patch("troshkad.subprocess.check_output", return_value="\n")
+    def test_discover_false_when_none(self, _co):
+        job = {"job_id": "j1", "output": []}
+        self.assertFalse(troshkad._discover_dangling_images(job))
+
+    def test_clean_noop_when_not_pruning(self):
+        job = {"job_id": "j1", "output": []}
+        self.assertEqual(troshkad._clean_dangling_images(job, False), 0)
+
+    @patch("troshkad.subprocess.check_output", return_value="sha1\nsha2\nsha3\n")
+    def test_clean_prunes_and_counts(self, _co):
+        job = {"job_id": "j1", "output": []}
+        self.assertEqual(troshkad._clean_dangling_images(job, True), 3)
+
+
 class TestCleanOrphanMetadata(unittest.TestCase):
     @patch("troshkad.os.remove")
     @patch("troshkad._run_cmd")

@@ -6473,6 +6473,59 @@ def _discover_orphan_metadata(job, known_project_ids):
     return orphaned_metadata_ids
 
 
+_AGENT_ISO_NAME = "agent.x86_64.iso"
+# Well beyond any OpenShift agent install (minutes-to-~2h); guards against
+# reaping an ISO dir belonging to an install still in progress.
+_STALE_AGENT_ISO_AGE = 6 * 3600
+
+
+def _discover_stale_agent_isos(job):
+    """Leftover OpenShift agent-installer ISO dirs (``/tmp/<x>/agent.x86_64.iso``,
+    ~1.4G each). These are created on the root filesystem outside troshkad's temp
+    dir, so the normal stale-temp scan (which only covers the local mount) misses
+    them and they pile up until the root disk fills. Age-guarded so an in-flight
+    install is never touched."""
+    stale = []
+    now = time.time()
+    try:
+        entries = os.listdir("/tmp")
+    except OSError as e:
+        _job_log(job, f"Failed to scan /tmp for agent ISOs: {e}")
+        return stale
+    for entry in entries:
+        d = os.path.join("/tmp", entry)
+        iso = os.path.join(d, _AGENT_ISO_NAME)
+        if not os.path.isdir(d) or not os.path.isfile(iso):
+            continue
+        try:
+            if now - os.path.getmtime(iso) < _STALE_AGENT_ISO_AGE:
+                continue
+        except OSError:
+            continue
+        stale.append(d)
+        _job_log(job, f"Stale agent ISO dir: {d}")
+    return stale
+
+
+def _discover_dangling_images(job):
+    """Whether any dangling (untagged ``<none>``) podman images exist. These are
+    orphaned image layers left by image rebuilds/updates; GC never reclaimed them
+    and they are not tied to any project, so the orphan scan misses them."""
+    try:
+        out = subprocess.check_output(
+            ["podman", "images", "-f", "dangling=true", "-q"],
+            text=True,
+            timeout=30,
+            stderr=subprocess.DEVNULL,
+        )
+        ids = [x for x in out.split() if x]
+        if ids:
+            _job_log(job, f"Dangling podman images: {len(ids)}")
+        return bool(ids)
+    except Exception:
+        return False
+
+
 def _handle_gc_discover(job, params):
     """Scan host for orphaned resources (dirs, domains, bridges, namespaces, cache items)."""
     known_project_ids = params.get("known_project_ids", [])
@@ -6489,6 +6542,8 @@ def _handle_gc_discover(job, params):
     _discover_orphan_leases(job, known_project_ids)
     orphaned_bmc = _discover_orphan_bmc(job, known_bmc_project_ids)
     stale_temps = _discover_stale_temps(job)
+    stale_agent_isos = _discover_stale_agent_isos(job)
+    dangling_images = _discover_dangling_images(job)
     orphaned_metadata_ids = _discover_orphan_metadata(job, known_project_ids)
 
     return {
@@ -6502,6 +6557,8 @@ def _handle_gc_discover(job, params):
         "orphaned_bmc_project_ids": orphaned_bmc,
         "orphaned_metadata_ids": orphaned_metadata_ids,
         "stale_temps": stale_temps,
+        "stale_agent_isos": stale_agent_isos,
+        "dangling_images": dangling_images,
     }
 
 
@@ -6834,6 +6891,43 @@ def _clean_orphan_metadata(job, orphan_metadata_ids):
     return removed
 
 
+def _clean_stale_agent_isos(job, paths):
+    """Remove leftover agent-installer ISO dirs. Hard-restricted to /tmp so a
+    bad path can never delete outside it. Returns count removed."""
+    removed = 0
+    for path in paths:
+        try:
+            rp = os.path.realpath(path)
+            if rp == "/tmp" or not rp.startswith("/tmp/"):
+                _job_log(job, f"Refusing to remove non-/tmp path: {path}")
+                continue
+            shutil.rmtree(rp)
+            _job_log(job, f"Removed stale agent ISO dir: {rp}")
+            removed += 1
+        except OSError as e:
+            _job_log(job, f"Failed to remove {path}: {e}")
+    return removed
+
+
+def _clean_dangling_images(job, prune):
+    """Prune dangling podman images in one pass. Returns count pruned."""
+    if not prune:
+        return 0
+    try:
+        out = subprocess.check_output(
+            ["podman", "image", "prune", "-f"],
+            text=True,
+            timeout=120,
+            stderr=subprocess.STDOUT,
+        )
+        pruned = len([x for x in out.split() if x])
+        _job_log(job, f"Pruned {pruned} dangling image(s)")
+        return pruned
+    except Exception as e:
+        _job_log(job, f"Failed to prune dangling images: {e}")
+        return 0
+
+
 def _handle_gc_clean(job, params):
     """Remove specific orphaned resources provided by the backend."""
     # Order matters: destroy domains and storage pools before removing the VM
@@ -6855,6 +6949,10 @@ def _handle_gc_clean(job, params):
         job, params.get("orphan_metadata_ids", [])
     )
     removed_temps = _clean_stale_temps(job, params.get("stale_temps", []))
+    removed_agent_isos = _clean_stale_agent_isos(
+        job, params.get("stale_agent_isos", [])
+    )
+    removed_images = _clean_dangling_images(job, params.get("prune_images", False))
 
     return {
         "removed_dirs": removed_dirs,
@@ -6863,6 +6961,8 @@ def _handle_gc_clean(job, params):
         "removed_containers": removed_containers,
         "removed_bridges": removed_bridges,
         "removed_namespaces": removed_namespaces,
+        "removed_agent_isos": removed_agent_isos,
+        "removed_images": removed_images,
         "removed_cache": removed_cache,
         "removed_bmc": removed_bmc,
         "removed_metadata": removed_metadata,

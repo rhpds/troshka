@@ -233,6 +233,8 @@ def clean_orphans(host, orphans: dict, db: Session | None = None) -> dict:
     orphan_bridges = list(set(orphans.get("orphan_bridges", [])))
     orphan_namespaces = list(set(orphans.get("orphan_namespaces", [])))
     orphan_bmc = orphans.get("orphaned_bmc_project_ids", [])
+    stale_agent_isos = list(set(orphans.get("stale_agent_isos", [])))
+    prune_images = bool(orphans.get("dangling_images", False))
 
     job_id = start_job(
         host,
@@ -247,6 +249,8 @@ def clean_orphans(host, orphans: dict, db: Session | None = None) -> dict:
             "cache_items": cache_items,
             "orphan_bmc_project_ids": orphan_bmc,
             "orphan_metadata_ids": orphans.get("orphaned_metadata_ids", []),
+            "stale_agent_isos": stale_agent_isos,
+            "prune_images": prune_images,
         },
     )
     job = wait_for_job(host, job_id, timeout=120)
@@ -259,11 +263,15 @@ def clean_orphans(host, orphans: dict, db: Session | None = None) -> dict:
         + len(orphan_namespaces)
         + len(orphan_bmc)
         + len(cache_items)
+        + len(stale_agent_isos)
     )
+    result = job.get("result") or {}
     return {
         "success": job["status"] == "completed",
         "cleaned": cleaned,
         "cache_cleaned": len(cache_items),
+        "agent_isos_cleaned": result.get("removed_agent_isos", len(stale_agent_isos)),
+        "images_pruned": result.get("removed_images", 0),
         "output": "\n".join(job.get("output", [])),
     }
 
@@ -660,13 +668,22 @@ def _reconcile_clean_orphans(db, host, host_id, orphans, dry_run, report):
     total_orphans = _count_total_orphans(orphans)
     orphaned_cache = _find_orphaned_cache(db, orphans.get("cache_items", []))
     stale_temps = orphans.get("stale_temps", [])
-    # Report "found" on the same basis as "cleaned" (which includes cache +
-    # temps); otherwise found < cleaned whenever any cache is reaped.
-    report["orphans_found"] = total_orphans + len(orphaned_cache) + len(stale_temps)
+    stale_agent_isos = orphans.get("stale_agent_isos", [])
+    # A prune reclaims disk but has no countable list; treat "any dangling" as 1
+    # unit so a host that only needs a prune still triggers cleanup below.
+    dangling_images = 1 if orphans.get("dangling_images") else 0
+    # Report "found" on the same basis as "cleaned" (which includes cache, temps,
+    # agent ISOs, images); otherwise found < cleaned whenever disk is reclaimed.
+    disk_extra = len(stale_agent_isos) + dangling_images
+    report["orphans_found"] = (
+        total_orphans + len(orphaned_cache) + len(stale_temps) + disk_extra
+    )
     report["cache_orphaned"] = len(orphaned_cache)
     report["stale_temps_found"] = len(stale_temps)
+    report["agent_isos_found"] = len(stale_agent_isos)
+    report["dangling_images_found"] = dangling_images
 
-    cleanable = total_orphans + len(orphaned_cache) + len(stale_temps)
+    cleanable = total_orphans + len(orphaned_cache) + len(stale_temps) + disk_extra
     if cleanable > 0 and not dry_run:
         cleanup = clean_orphans(host, orphans, db)
         report["cleanup"] = cleanup

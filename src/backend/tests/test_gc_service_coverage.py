@@ -486,6 +486,31 @@ class TestCleanOrphans:
         assert payload["orphan_containers"] == ["troshka-x"]
         assert payload["cache_items"] == ["/tmp/t"]
 
+    @patch("app.services.troshkad_client.wait_for_job")
+    @patch("app.services.troshkad_client.start_job", return_value="clean-disk")
+    def test_passes_agent_isos_and_prune_flag(self, mock_start, mock_wait):
+        """Disk-reclaim categories (agent ISOs + dangling-image prune) reach the
+        host and are reflected in the counts."""
+        mock_wait.return_value = {
+            "status": "completed",
+            "output": [],
+            "result": {"removed_agent_isos": 2, "removed_images": 5},
+        }
+        host = MagicMock()
+        host.ip_address = "10.0.0.1"
+        host.agent_status = "connected"
+        orphans = {
+            "stale_agent_isos": ["/tmp/tmpA", "/tmp/tmpB"],
+            "dangling_images": True,
+        }
+        result = gc.clean_orphans(host, orphans)
+        payload = mock_start.call_args[0][2]
+        assert sorted(payload["stale_agent_isos"]) == ["/tmp/tmpA", "/tmp/tmpB"]
+        assert payload["prune_images"] is True
+        assert result["cleaned"] == 2  # 2 agent ISO dirs
+        assert result["agent_isos_cleaned"] == 2
+        assert result["images_pruned"] == 5
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # _get_existing_bridges
@@ -597,6 +622,23 @@ class TestReconcileCleanOrphans:
         assert report["orphans_found"] == 5
         assert report["cache_orphaned"] == 2
         assert report["stale_temps_found"] == 1
+
+    @patch("app.services.gc_service.clean_orphans")
+    @patch("app.services.gc_service._find_orphaned_cache", return_value=[])
+    def test_disk_reclaim_triggers_cleanup_and_counts(self, mock_cache, mock_clean):
+        """A host with only disk reclaim (agent ISOs / dangling images) and no
+        classic orphans must still trigger cleanup and report found>0."""
+        mock_clean.return_value = {"cleaned": 2, "cache_cleaned": 0}
+        db = MagicMock()
+        host = MagicMock()
+        orphans = {"stale_agent_isos": ["/tmp/a", "/tmp/b"], "dangling_images": True}
+        report = {}
+        gc._reconcile_clean_orphans(db, host, "host-1234abcd", orphans, False, report)
+        mock_clean.assert_called_once()  # cleanable>0 despite no classic orphans
+        # 2 agent ISOs + 1 dangling-images unit
+        assert report["orphans_found"] == 3
+        assert report["agent_isos_found"] == 2
+        assert report["dangling_images_found"] == 1
 
     @patch("app.services.gc_service._find_orphaned_cache", return_value=["/stale"])
     def test_orphans_found_dry_run(self, mock_cache):
