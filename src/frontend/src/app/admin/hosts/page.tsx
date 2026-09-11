@@ -843,6 +843,11 @@ export default function AdminHostsPage() {
                     {h.state === "starting" && h.agent_status === "disconnected" ? "reconnecting" : (agentLabels[h.agent_status] || h.agent_status)}{h.agent_version && h.agent_status === "connected" ? ` (${h.agent_version})` : ""}
                   </span>
                   )}
+                  {expectedVersion && h.agent_version && h.agent_status === "connected" && h.agent_version !== expectedVersion && (
+                    <Tooltip content="Agent update available — use Update Agent">
+                      <ExclamationTriangleIcon style={{ color: "var(--pf-t--global--color--status--warning--default)", marginLeft: 8 }} />
+                    </Tooltip>
+                  )}
                   {(() => {
                     const localWarnings = (h.storage_warnings || []).filter((w: any) =>
                       !h.storage_pool_id || !w.mount.includes("/shared")
