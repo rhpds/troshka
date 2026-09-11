@@ -865,11 +865,14 @@ def _build_init_containers(
                 "mkdir -p /showroom/nginx /showroom/repo /showroom/www && "
                 # nginx-config runs as root (busybox), but the antora-builder that
                 # fills /showroom/www runs as a non-root user (antora image USER
-                # 1001) under podman on troshkad hosts. Make www world-writable so
-                # antora can create its output tree (modules/, _/); otherwise it
-                # gets EACCES on mkdir /showroom/www/modules. No-op on the k8s path
-                # where the pod's runAsUser:0 makes antora root.
-                "chmod 0777 /showroom/www && "
+                # 1001) under podman on troshkad hosts. Hand that uid ownership of
+                # www so antora can create its output tree (modules/, _/); otherwise
+                # it gets EACCES on mkdir /showroom/www/modules. chown (not a
+                # world-writable 0777) keeps www writable only by the builder and
+                # root; it works because root creates the dir and both containers
+                # share this volume and the pod's user namespace. No-op on the k8s
+                # path where runAsUser:0 makes antora root and already owns the tree.
+                "chown 1001 /showroom/www && "
                 'echo "$NGINX_B64" | base64 -d > /showroom/nginx/nginx.conf && '
                 'echo "$UI_CONFIG_B64" | base64 -d > /showroom/repo/ui-config.yml && '
                 # Also write the SERVED copy: pattern/snapshot deploys skip the
