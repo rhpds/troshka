@@ -2524,21 +2524,23 @@ class TestPodStart(unittest.TestCase):
 class TestPodDestroy(unittest.TestCase):
     """Tests for pods/destroy handler."""
 
-    @patch("troshkad.os.path.exists", return_value=True)
+    @patch("troshkad.os.path.lexists", return_value=True)
     @patch("troshkad.os.unlink")
     @patch("troshkad.subprocess.Popen")
-    def test_pod_destroy_cleans_up(self, mock_popen, mock_unlink, mock_exists):
+    def test_pod_destroy_cleans_up(self, mock_popen, mock_unlink, mock_lexists):
         mock_popen.return_value = _mock_popen()
+        pod_name = "troshka-aabbccdd-mypod"
         job = troshkad._create_job(
             "pods/destroy",
             {
-                "pod_name": "troshka-aabbccdd-mypod",
+                "pod_name": pod_name,
             },
         )
         result = troshkad._handle_pod_destroy(job, job["params"])
         self.assertEqual(result["status"], "destroyed")
-        # Should remove netns symlink
-        mock_unlink.assert_called_with("/var/run/netns/ctr-dd-mypod")
+        # Should remove the netns symlink (name is a hash of the full pod name)
+        expected_ns = f"/var/run/netns/ctr-{troshkad._net_token(pod_name)}"
+        mock_unlink.assert_called_with(expected_ns)
         # Should call podman pod rm -f
         cmds = [c[0][0] for c in mock_popen.call_args_list]
         pod_rm = [c for c in cmds if "pod" in c and "rm" in c]
