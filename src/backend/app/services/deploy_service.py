@@ -10287,7 +10287,12 @@ def destroy_project_sync(ctx: dict, *, delete_record: bool = True):
         _deploy_semaphore.release()
 
 
-def _wait_for_namespace_deletion(provider, project_id):
+def _wait_for_namespace_deletion(provider, project_id) -> bool:
+    """Poll until the project namespace is gone. Returns True only when the
+    namespace is confirmed terminated (404); False if it is still present after
+    the timeout (stuck finalizers) or its state could not be determined. The
+    caller must NOT delete the DB record on False, or the namespace and all its
+    PVCs/DataVolumes leak with no record left to retry or reconcile against."""
     import time as _del_time
 
     from kubernetes.client.exceptions import ApiException as _KApiErr
@@ -10302,11 +10307,20 @@ def _wait_for_namespace_deletion(provider, project_id):
             _del_time.sleep(5)
         except _KApiErr as e:
             if e.status == 404:
-                break
+                logger.info("Destroy %s: namespace terminated", project_id[:8])
+                return True
             _del_time.sleep(5)
         except Exception:
-            break
-    logger.info("Destroy %s: namespace cleanup complete", project_id[:8])
+            logger.warning(
+                "Destroy %s: could not confirm namespace deletion", project_id[:8]
+            )
+            return False
+    logger.warning(
+        "Destroy %s: namespace %s still present after timeout (stuck finalizers?)",
+        project_id[:8],
+        ns_name,
+    )
+    return False
 
 
 def _destroy_kubevirt_native(project_id, host, session, delete_record):
@@ -10341,7 +10355,19 @@ def _destroy_kubevirt_native(project_id, host, session, delete_record):
         _set_destroy_error(project_id, str(e))
         return
 
-    _wait_for_namespace_deletion(provider, project_id)
+    terminated = _wait_for_namespace_deletion(provider, project_id)
+    if not terminated:
+        # Namespace is stuck Terminating (finalizers) — its PVCs/DataVolumes are
+        # still consuming cluster storage. Keep the project record (in error) so
+        # the leak stays visible/retryable and the namespace GC can reconcile it,
+        # rather than deleting the record and orphaning the storage silently.
+        if delete_record:
+            _set_destroy_error(
+                project_id,
+                "Namespace stuck terminating; cluster storage may remain. "
+                "Retry destroy or let GC reconcile.",
+            )
+        return
     if delete_record:
         _delete_project_record(project_id)
 

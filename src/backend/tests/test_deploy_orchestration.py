@@ -3468,6 +3468,39 @@ class TestDestroyKubevirtNative:
         mock_driver.destroy_project.assert_called_once()
         mock_delete.assert_called_once_with(PROJECT_ID)
 
+    @patch("time.sleep")
+    @patch(f"{SVC}._set_destroy_error")
+    @patch(f"{SVC}._delete_project_record")
+    def test_stuck_namespace_keeps_record(self, mock_delete, mock_set_err, _sleep):
+        """A namespace stuck Terminating past the timeout must NOT delete the DB
+        record — that would orphan its PVCs/DataVolumes with nothing to retry or
+        reconcile against. Set a destroy error and keep the record instead."""
+        from app.services.deploy_service import _destroy_kubevirt_native
+
+        host = _make_host(host_type="kubevirt-cluster")
+        provider = MagicMock()
+        provider.type = "kubevirt"
+        session = MagicMock()
+        session.query.return_value.filter_by.return_value.first.return_value = provider
+
+        mock_driver = MagicMock()
+        mock_core_api = MagicMock()
+        # Namespace never 404s — stuck Terminating on finalizers.
+        mock_core_api.read_namespace.return_value = MagicMock()
+
+        with patch(
+            "app.services.providers.get_provider_driver", return_value=mock_driver
+        ), patch(
+            f"{KV_MOD}._get_k8s_clients",
+            return_value=(None, mock_core_api, None),
+        ), patch(
+            f"{KV_MOD}._project_ns", return_value="troshka-test-ns"
+        ):
+            _destroy_kubevirt_native(PROJECT_ID, host, session, True)
+
+        mock_delete.assert_not_called()
+        mock_set_err.assert_called_once()
+
 
 class TestStopUnexpectedError:
     """Tests for stop_project_async exception handling."""
