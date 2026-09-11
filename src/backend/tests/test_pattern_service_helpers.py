@@ -595,6 +595,82 @@ class TestFinalizePatternCapture:
         assert locs[0].provider_id == "prov-obc"
         _clear_capture_progress("pat-obc")
 
+    @patch("app.services.pattern_service._enqueue_pattern_sync")
+    @patch("app.services.ws_pubsub.notify_project")
+    @patch("app.services.s3_storage._get_s3_client")
+    @patch("app.services.s3_storage._bucket", return_value="b")
+    @patch("app.services.pattern_service._run_recert_force_expire")
+    def test_obc_capture_enqueues_central_sync(
+        self, mock_recert, mock_bucket, mock_s3, mock_notify, mock_enqueue
+    ):
+        """A cluster-OBC capture (source_provider_id set) must replicate to central
+        S4, else the pattern can only deploy on its source cluster and fails
+        cross-provider deploys with 'storage not ready'. Regression: the troshkad
+        finalize used to record the OBC location but never enqueue the sync."""
+        from app.services.pattern_service import (
+            _clear_capture_progress,
+            _finalize_pattern_capture,
+        )
+
+        disk1 = MagicMock()
+        disk1.source_disk_id = "d1"
+        disk1.id = "pd1"
+        disk1.size_bytes = 1000
+        disk1.s3_key = "patterns/pat-sync/d1.qcow2"
+
+        pattern = MagicMock()
+        pattern.id = "pat-sync"
+        pattern.topology = {"nodes": []}
+        pattern.disks = [disk1]
+        pattern.recert = False
+        pattern.source_provider_id = "prov-obc"
+
+        db = MagicMock()
+        scalar_result = MagicMock()
+        scalar_result.first.return_value = None
+        db.scalars.return_value = scalar_result
+        _finalize_pattern_capture(pattern, "pat-sync", None, MagicMock(), db)
+
+        mock_enqueue.assert_called_once_with("pat-sync", "prov-obc")
+        _clear_capture_progress("pat-sync")
+
+    @patch("app.services.pattern_service._enqueue_pattern_sync")
+    @patch("app.services.ws_pubsub.notify_project")
+    @patch("app.services.s3_storage._get_s3_client")
+    @patch("app.services.s3_storage._bucket", return_value="b")
+    @patch("app.services.pattern_service._run_recert_force_expire")
+    def test_central_capture_does_not_enqueue_sync(
+        self, mock_recert, mock_bucket, mock_s3, mock_notify, mock_enqueue
+    ):
+        """A capture straight to central (no source provider) is already on central
+        S4; no OBC->central sync is needed."""
+        from app.services.pattern_service import (
+            _clear_capture_progress,
+            _finalize_pattern_capture,
+        )
+
+        disk1 = MagicMock()
+        disk1.source_disk_id = "d1"
+        disk1.id = "pd1"
+        disk1.size_bytes = 1000
+        disk1.s3_key = "patterns/pat-central/d1.qcow2"
+
+        pattern = MagicMock()
+        pattern.id = "pat-central"
+        pattern.topology = {"nodes": []}
+        pattern.disks = [disk1]
+        pattern.recert = False
+        pattern.source_provider_id = None
+
+        db = MagicMock()
+        scalar_result = MagicMock()
+        scalar_result.first.return_value = None
+        db.scalars.return_value = scalar_result
+        _finalize_pattern_capture(pattern, "pat-central", None, MagicMock(), db)
+
+        mock_enqueue.assert_not_called()
+        _clear_capture_progress("pat-central")
+
     @patch("app.services.ws_pubsub.notify_project")
     @patch("app.services.s3_storage._get_s3_client")
     @patch("app.services.s3_storage._bucket", return_value="b")

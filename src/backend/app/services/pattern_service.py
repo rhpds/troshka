@@ -1809,6 +1809,13 @@ def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
     else:
         _ensure_central_pattern_locations(db, pattern)
     db.commit()
+    # A cluster-OBC capture lives only on its source cluster; replicate it to
+    # central S4 so the pattern can also deploy on OTHER providers (mirrors
+    # _capture_kubevirt_native, which already does this). Without it a
+    # troshkad/ocpvirt capture fails cross-provider deploys with "storage not
+    # ready". Enqueue after commit so the sync worker sees the OBC rows.
+    if pattern.source_provider_id:
+        _enqueue_pattern_sync(pattern_id, pattern.source_provider_id)
 
     # Save the canonical metadata.json to central S4 for recovery after DB loss
     _save_pattern_metadata_to_s3(pattern, pattern_id)
