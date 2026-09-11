@@ -145,20 +145,28 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     if (pathname === "/getting-started" && showGettingStartedShine) dismissGettingStartedShine();
   }, [pathname, showGettingStartedShine]);
 
-  const [navWarnings, setNavWarnings] = useState<{ hosts: boolean; pools: boolean }>({ hosts: false, pools: false });
+  const [navWarnings, setNavWarnings] = useState<{ hosts: boolean; hostsAgent: boolean; pools: boolean }>({ hosts: false, hostsAgent: false, pools: false });
   useEffect(() => {
     if (!isAdmin) return;
     const check = () => {
-      fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []).then((hosts: any[]) => {
+      Promise.all([
+        fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []),
+        fetch("/api/v1/hosts/expected-agent-version").then(r => r.ok ? r.json() : {}),
+      ]).then(([hosts, ev]: [any[], { version?: string }]) => {
+        const expected = ev?.version || "";
         let hostWarn = false;
+        let hostAgentWarn = false;
         let poolWarn = false;
         for (const h of hosts) {
           for (const w of (h.storage_warnings || [])) {
             if (w.mount.includes("/shared") && h.storage_pool_id) poolWarn = true;
             else if (w.level === "warning" || w.level === "critical") hostWarn = true;
           }
+          // A connected host running an agent that doesn't match the current
+          // troshkad source needs an update/reinstall.
+          if (expected && h.agent_status === "connected" && h.agent_version && h.agent_version !== expected) hostAgentWarn = true;
         }
-        setNavWarnings({ hosts: hostWarn, pools: poolWarn });
+        setNavWarnings({ hosts: hostWarn, hostsAgent: hostAgentWarn, pools: poolWarn });
       }).catch(() => {});
     };
     check();
@@ -421,8 +429,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Nav aria-label="Admin">
             <NavList title="Admin">
               {adminItems.map((item) => {
-                const warn = (item.path === "/admin/hosts" && navWarnings.hosts) ||
-                             (item.path === "/admin/storage-pools" && navWarnings.pools);
+                const hostsWarn = item.path === "/admin/hosts" && (navWarnings.hosts || navWarnings.hostsAgent);
+                const poolsWarn = item.path === "/admin/storage-pools" && navWarnings.pools;
+                const warn = hostsWarn || poolsWarn;
+                let warnTitle = "";
+                if (hostsWarn) {
+                  const reasons: string[] = [];
+                  if (navWarnings.hosts) reasons.push("storage");
+                  if (navWarnings.hostsAgent) reasons.push("agent update needed");
+                  warnTitle = `Hosts need attention: ${reasons.join(", ")}`;
+                } else if (poolsWarn) {
+                  warnTitle = "Storage pool needs attention";
+                }
                 return (
                 <NavItem
                   key={item.path}
@@ -430,7 +448,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   onClick={() => router.push(item.path)}
                 >
                   {item.label}
-                  {warn && <span style={{ color: "#facc15", marginLeft: 6, fontSize: 10 }}>&#9888;</span>}
+                  {warn && <span title={warnTitle} style={{ color: "#facc15", marginLeft: 6, fontSize: 10 }}>&#9888;</span>}
                 </NavItem>
                 );
               })}

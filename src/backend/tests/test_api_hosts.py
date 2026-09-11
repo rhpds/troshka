@@ -97,6 +97,22 @@ def test_list_hosts_with_host(mock_sync):
 
 
 @patch("app.services.placement.sync_host_capacity")
+def test_list_hosts_exposes_agent_version(mock_sync):
+    """The nav 'needs update' badge relies on agent_version + agent_status
+    being present in the host list response."""
+    _ensure_dev_user()
+    hid = _create_host(agent_status="connected", agent_version="stale00000000")
+    try:
+        resp = client.get("/api/v1/hosts/")
+        assert resp.status_code == 200
+        host = next(h for h in resp.json() if h["id"] == hid)
+        assert host["agent_version"] == "stale00000000"
+        assert host["agent_status"] == "connected"
+    finally:
+        _cleanup_host(hid)
+
+
+@patch("app.services.placement.sync_host_capacity")
 def test_list_hosts_filter_by_region(mock_sync):
     _ensure_dev_user()
     hid = _create_host(region="eu-west-1")
