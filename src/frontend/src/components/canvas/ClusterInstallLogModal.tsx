@@ -34,7 +34,6 @@ const RECERT_STAGES: { label: string; re: RegExp }[] = [
   { label: "Waiting for control-plane API", re: /waiting for the control-plane API|Waiting for cluster installation to complete/i },
   { label: "Extracting admin kubeconfig", re: /extracting admin kubeconfig|admin kubeconfig received/i },
   { label: "Approving CSRs", re: /approving pending CSRs|approving CSRs:/i },
-  { label: "Recreating pods", re: /recreating pods stuck/i },
   { label: "Cluster operators", re: /waiting for cluster operators|waiting on operators/i },
   { label: "Recert complete", re: /install complete/i },
 ];

@@ -328,12 +328,14 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
       for it to appear AND authenticate; FAILS CLOSED (no fallback) if it never
       arrives;
     - approves pending CSRs until nodes go Ready (kubelets re-bootstrap after the
-      PKI wipe);
-    - forces a kube-apiserver redeploy (ALL clusters, SNO included) to recover
-      post-recert API-aggregation trust;
-    - FAIL-CLOSED readiness gate: every cluster operator Available=True /
-      Degraded=False INCLUDING ``authentication`` (oauth) and ``console`` — an
-      empty/failed ``oc`` is NEVER treated as healthy;
+      PKI wipe), and keeps approving them in the readiness loop;
+    - then lets the cluster self-heal (NO mass pod reap, NO forced kube-apiserver
+      redeploy — those churn the cluster mid-rotation and delay recovery);
+    - FAIL-CLOSED readiness gate on cluster operators: every operator
+      Available=True / Degraded=False (skipping slow-settling monitoring + OLM
+      packageserver) INCLUDING ``authentication`` (oauth) and ``console`` (whose
+      Available already includes a route-health probe) — an empty/failed ``oc`` is
+      NEVER treated as healthy;
     - only on genuine success writes ``<dir>/auth/kubeadmin-password`` and emits
       ``install complete`` (so ``_store_ops_pod_creds`` harvests the FRESH
       kubeconfig into the showroom terminal); otherwise exits non-zero.
@@ -342,21 +344,7 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
     monitor tails it unchanged.
     """
     cluster_dir = f"{workdir}/{cluster_key}"
-    _ = mode  # (was multinode-only; the redeploy is now needed for SNO too)
-    # Force a kube-apiserver redeploy on EVERY recert (SNO included). Post-recert
-    # the API-aggregation trust (requestheader CA / extension-apiserver-
-    # authentication) needs the kube-apiserver kicked to repopulate; without it
-    # route.openshift.io stays flaky, the router can't list routes (has-synced
-    # fails), :443 never serves, and the console/oauth hang at 503 forever. SNO
-    # skipping this was THE recert instability (a stuck SNO recovered the instant
-    # the redeploy was forced).
-    redeploy = (
-        "  echo 'Forcing kube-apiserver redeploy "
-        "(recover API-aggregation trust + fresh serving)...'\n"
-        "  oc patch kubeapiserver cluster --type=merge "
-        '-p "{\\"spec\\":{\\"forceRedeploymentReason\\":'
-        '\\"recert-$(date +%s)\\"}}" >/dev/null 2>&1 || true\n'
-    )
+    _ = mode  # (unused: recert flow is the same for SNO and multi-node)
     head = (
         f"# ===== cluster {cluster_key} =====\n"
         "(\n"
@@ -411,24 +399,13 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         f'{{ echo "[{cluster_key}] all $total node(s) Ready"; break; }}; '
         f'echo "[{cluster_key}] approving CSRs: $notready/$total node(s) not Ready"; '
         "sleep 10; done\n"
-        # POD REAPER: pods restored from the captured etcd are ZOMBIES after the
-        # cluster's post-recert crypto rotation — still Running but holding stale
-        # in-memory SA tokens / cert trust / API connections (router won't bind
-        # :443, kubelet :10250 logs fail, console down). They are NOT crashlooping,
-        # so a health-based reap misses them: recreate ALL workload pods ONCE so
-        # they re-read fresh creds. Skip static control-plane namespaces
-        # (kubelet-owned; deleting via API blips the apiserver), Completed pods,
-        # and image-pull failures (no catalog mirror in a lab). `--force
-        # --grace-period=0` avoids the hostNetwork router Pending<->Terminating
-        # deadlock (a stuck-Terminating pod holds :443 so the new one can't bind).
-        f'  echo "[{cluster_key}] recreating pods to clear stale post-recert state (zombies)"\n'
-        "  oc get pods -A --no-headers 2>/dev/null | awk '"
-        "$1 ~ /^openshift-(etcd|kube-apiserver|kube-controller-manager|kube-scheduler)$/ {next} "
-        "$4 ~ /ImagePull|ErrImage|Completed/ {next} "
-        '{print $1" "$2}\' | while read rns rpod; do '
-        'oc delete pod "$rpod" -n "$rns" --force --grace-period=0 --wait=false '
-        ">/dev/null 2>&1 || true; done\n"
-        f'  echo "[{cluster_key}] pods recreated; waiting for cluster operators (incl oauth + console)"\n'
+        # After the kubelet re-bootstrap the cluster self-heals on its own: its
+        # operators rotate any aged crypto and reconnect. We deliberately do NOT
+        # mass-reap pods or force a kube-apiserver redeploy — those recreate the
+        # operators mid-rotation (creating zombies/wedges) and churn the aggregated
+        # API, which DELAYS recovery rather than helping. Just wait for the cluster
+        # operators to report healthy.
+        f'  echo "[{cluster_key}] nodes ready; waiting for cluster operators (incl oauth + console)"\n'
     )
     gate = (
         # FAIL-CLOSED: oc must WORK (non-empty co list) AND all operators healthy,
@@ -449,24 +426,16 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         'bad=$(echo "$out" | awk \'$1=="monitoring"||$1=="operator-lifecycle-manager-packageserver"{next} $3!="True"||$5=="True"{c++} END{print c+0}\'); '
         'auth=$(echo "$out" | awk \'$1=="authentication"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
         'con=$(echo "$out" | awk \'$1=="console"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
-        # Verify the console route ACTUALLY HTTP-responds (:443 serving), not just
-        # that the operator reports Available — a "zombie" router leaves the
-        # operator Available while :443 is refused. curl code 000 == no connection.
-        "chost=$(oc get route console -n openshift-console "
-        "-o jsonpath='{.spec.host}' 2>/dev/null); "
-        'ccode=$(curl -sk --max-time 8 -o /dev/null -w "%{http_code}" '
-        '"https://$chost/" 2>/dev/null); '
-        'resp=0; [ -n "$chost" ] && [ "$ccode" != "000" ] && '
-        '[ "$ccode" -ge 200 ] 2>/dev/null && resp=1; '
-        '[ "$bad" = 0 ] && [ "$auth" = 1 ] && [ "$con" = 1 ] && [ "$resp" = 1 ] && '
+        # Readiness = cluster operators healthy. The console operator's Available
+        # already INCLUDES a RouteHealthAvailable check (it probes the console route
+        # itself), so `con=1` means the console genuinely serves — no need for a
+        # separate ops-pod curl to *.apps (that false-negatives on route-API blips
+        # and ops-pod DNS/network, and was reporting console-down when it was up).
+        '[ "$bad" = 0 ] && [ "$auth" = 1 ] && [ "$con" = 1 ] && '
         "{ ready=1; break; }; "
-        # Log which operators are still not ready + the console HTTP status so the
-        # showroom log is informative. Keep them on SEPARATE lines: the frontend
-        # parses everything after "waiting on operators:" as operator names, so the
-        # console status must not share that line (it'd render as fake operators).
+        # Log which operators are still not ready so the showroom log is informative.
         'nr=$(echo "$out" | awk \'$1=="monitoring"||$1=="operator-lifecycle-manager-packageserver"{next} $3!="True"||$5=="True"{printf "%s ",$1}\'); '
         f'echo "[{cluster_key}] waiting on operators: ${{nr:-none}}"; '
-        f'echo "[{cluster_key}] console http=$ccode"; '
         "sleep 15; done\n"
     )
     tail = (
@@ -482,7 +451,7 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         ") &\n"
         "pids+=($!)\n"
     )
-    return head + redeploy + gate + tail
+    return head + gate + tail
 
 
 def build_ops_pod_recert_script(

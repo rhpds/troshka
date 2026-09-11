@@ -461,17 +461,16 @@ def test_recert_script_approves_csrs():
     assert "certificate approve" in script
 
 
-def test_recert_script_forces_apiserver_redeploy_all_clusters():
-    """EVERY recert forces a kube-apiserver redeploy — SNO too, not just multinode.
-    It repopulates API-aggregation trust (requestheader CA / extension-apiserver-
-    authentication) so route.openshift.io recovers; without it the router can't
-    list routes (has-synced fails), :443 stays down, and the console never comes
-    up. Confirmed live: a stuck SNO recovered the instant the redeploy was forced."""
+def test_recert_does_not_reap_pods_or_force_redeploy():
+    """Recert lets the cluster self-heal after the kubelet re-bootstrap. It must
+    NOT mass-reap pods or force a kube-apiserver redeploy — those recreate the
+    operators mid-rotation (creating zombies/wedges) and churn the aggregated API,
+    which DELAYS recovery. (Live testing showed the reap itself wedged the SNO's
+    kube-apiserver-operator, and the cluster self-heals without either kick.)"""
     script = _recert_script()
-    assert script.count("forceRedeploymentReason") == 2  # BOTH clusters, incl SNO
-    for marker in ("# ===== cluster sno =====", "# ===== cluster compact ====="):
-        block = script.split(marker, 1)[1].split("# ===== cluster", 1)[0]
-        assert "forceRedeploymentReason" in block
+    assert "forceRedeploymentReason" not in script
+    assert "--force --grace-period=0" not in script  # no mass pod reap
+    assert "recreating pods" not in script
 
 
 def test_recert_script_reuses_install_complete_marker_and_log():
@@ -1626,55 +1625,32 @@ def test_recert_install_complete_still_wins_over_failure_marker():
     assert _phase_from_input(log) == PHASE_COMPLETE
 
 
-def test_recert_script_reaps_all_zombie_pods():
-    """Post-recert, pods restored from the captured etcd are ZOMBIES (Running but
-    holding stale creds — NOT crashlooping), so the recert block recreates ALL
-    workload pods (no health filter), force-deleting to avoid the hostNetwork
-    Pending<->Terminating deadlock, and skips static control-plane ns, Completed,
-    and image-pull failures."""
-    script = _recert_script()
-    assert "recreating pods to clear stale post-recert state (zombies)" in script
-    assert "^openshift-(etcd|kube-apiserver" in script
-    assert "ImagePull|ErrImage|Completed" in script
-    assert "oc delete pod" in script
-    assert "--force --grace-period=0" in script
-    # no longer gated on crashloop/not-ready
-    assert "r[1]<r[2]" not in script
-
-
 def test_recert_gate_keeps_approving_csrs():
-    """The reaper's recreated pods + kubelet re-bootstrap issue new CSRs, so CSR
-    approval must run in the gate loop too (not only the pre-reaper node loop)."""
+    """The kubelet re-bootstrap + self-healing operators issue new CSRs, so CSR
+    approval must run in the gate loop too (not only the pre-gate node loop)."""
     script = _recert_script()
     assert script.count("oc adm certificate approve") >= 2
 
 
-def test_recert_gate_requires_console_http_response():
-    """'ready' must require the console route to actually HTTP-respond (:443
-    serving) — not just the console operator reporting Available. A zombie router
-    leaves the operator Available while :443 is refused, so probe the route."""
+def test_recert_gate_uses_cluster_operators_not_ops_pod_http_probe():
+    """Readiness gates on cluster operators (reliable from the API), NOT an
+    ops-pod curl to the console route. The console operator's Available already
+    includes a route-health check, and the ops-pod probe false-negatived on
+    route-API blips / ops-pod DNS to *.apps — reporting console-down when it was
+    up. So: gate on bad=0 + auth + console Available; no curl, no route lookup."""
     script = _recert_script()
-    assert "oc get route console -n openshift-console" in script
-    assert "curl -sk" in script and "%{http_code}" in script
-    assert '[ "$resp" = 1 ]' in script
+    # the console-route http probe is gone (no route lookup, no curl of the route)
+    assert "oc get route console" not in script
+    assert "%{http_code}" not in script
+    assert "https://$chost" not in script
+    # still gates on the operator health signals
+    assert '[ "$bad" = 0 ] && [ "$auth" = 1 ] && [ "$con" = 1 ]' in script
 
 
 def test_recert_gate_does_not_block_on_monitoring():
     """The gate must NOT wait on the monitoring operator: prometheus/metrics-server
-    settle slowly after the reaper and aren't needed for a usable console. Both the
-    blocking 'bad' count and the pending display skip $1=="monitoring"."""
+    settle slowly and aren't needed for a usable console. Both the blocking 'bad'
+    count and the pending display skip $1=="monitoring"."""
     script = _recert_script()
     # both the bad-count awk and the pending-display awk skip monitoring
     assert script.count('$1=="monitoring"') >= 2
-
-
-def test_recert_gate_console_status_on_own_line():
-    """The console HTTP status must be a SEPARATE log line — the frontend parses
-    everything after 'waiting on operators:' as operator names, so a trailing
-    '(console http=...)' on that line would render as fake pending operators."""
-    script = _recert_script()
-    # operators breadcrumb ends right after the operator list (no console suffix)
-    assert 'waiting on operators: ${nr:-none}"' in script
-    assert "operators: ${nr:-none} (console" not in script
-    # console status lives on its own line
-    assert "console http=$ccode" in script
