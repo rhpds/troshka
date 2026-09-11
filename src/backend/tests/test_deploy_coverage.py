@@ -853,15 +853,17 @@ class TestAutoEnableRecertOnRhcos:
         assert topo["nodes"][0]["data"]["ocpMonitor"] is True
         assert "recertEnabled" not in topo["nodes"][1]["data"]
 
-    def test_skips_if_already_has_recert(self):
+    def test_clears_legacy_recert_flag(self):
+        """The RH recert tool is retired for all OCP sizes (guestfish kubelet-PKI
+        wipe only). A legacy pattern carrying recertEnabled=True must have the
+        flag cleared so the KubeVirt operator doesn't run the slow recert Job."""
         topo = {
             "nodes": [
                 {"type": "vmNode", "data": {"os": "rhcos", "recertEnabled": True}},
             ]
         }
         _auto_enable_recert_on_rhcos(topo, True, PROJECT_ID)
-        # Should not add a second time; the existing flag is preserved
-        assert topo["nodes"][0]["data"]["recertEnabled"] is True
+        assert topo["nodes"][0]["data"]["recertEnabled"] is False
 
     def test_no_op_when_disabled(self):
         topo = {"nodes": [{"type": "vmNode", "data": {"os": "rhcos"}}]}
