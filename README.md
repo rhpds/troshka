@@ -17,6 +17,41 @@ Troshka is a self-service web platform for building nested VM environments. User
 
 The name "troshka" evokes nesting — VMs inside VMs inside cloud infrastructure, like a matryoshka doll.
 
+## See it in action
+
+Build an environment visually — drop components onto the canvas, wire them together, and Troshka takes care of the rest:
+
+<p align="center">
+  <img src="docs/images/canvas-demo.gif" alt="Building a project on the Troshka canvas" width="900" />
+</p>
+
+Real environments running on the canvas — from a single node, to a full cluster, to a multi-vendor network lab:
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/project-sno.png" alt="Single-Node OpenShift on the canvas" /></td>
+    <td width="50%"><img src="docs/images/project-ocp-3plus2.png" alt="OpenShift with three control planes and two workers" /></td>
+  </tr>
+  <tr>
+    <td><strong>Single-Node OpenShift</strong> — showroom lab guide, NAT gateway, cluster network, and the cluster itself</td>
+    <td><strong>OpenShift 4.22 (3+2)</strong> — three control planes and two workers in one cluster box</td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/project-net-automation.png" alt="Network automation workshop topology" /></td>
+    <td><img src="docs/images/megaconsole-net-automation.png" alt="MegaConsole showing every VM console" /></td>
+  </tr>
+  <tr>
+    <td><strong>Network automation workshop</strong> — RHEL hosts alongside Cisco IOS-XE and Juniper routers</td>
+    <td><strong>MegaConsole</strong> — every VM console in a single live grid</td>
+  </tr>
+</table>
+
+OpenShift installs run right on the host, with live per-cluster status and streaming install logs:
+
+<p align="center">
+  <img src="docs/images/ocp-status-log.png" alt="OpenShift install status and log" width="900" />
+</p>
+
 ## Why Troshka?
 
 Today, every lab environment is built from scratch: provision cloud VMs, install an OS, deploy OpenShift, install operators, configure the lab. It works, but it's slow (45-90 minutes per environment), fragile (any step in the chain can fail), and expensive (each deploy burns compute time reproducing identical work).
