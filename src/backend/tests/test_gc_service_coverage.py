@@ -278,6 +278,94 @@ class TestCollectBmcProjectIds:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# KubeVirt cluster GC (report-only)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _ns_obj(name, phase=None):
+    m = MagicMock()
+    m.metadata.name = name
+    m.status.phase = phase
+    return m
+
+
+class TestKubevirtClusterGc:
+    def test_is_kubevirt_project_ns(self):
+        assert gc._is_kubevirt_project_ns("troshka-02cea216")
+        assert not gc._is_kubevirt_project_ns("troshka-cache")
+        assert not gc._is_kubevirt_project_ns("troshka-02cea2")  # too short
+        assert not gc._is_kubevirt_project_ns("kube-system")
+        assert not gc._is_kubevirt_project_ns("troshka-ZZZZZZZZ")  # non-hex
+
+    @patch("app.services.providers.kubevirt._get_k8s_clients")
+    def test_detect_orphan_namespaces(self, mock_clients):
+        core = MagicMock()
+        core.list_namespace.return_value.items = [
+            _ns_obj("troshka-aaaaaaaa"),  # project exists -> protected
+            _ns_obj("troshka-deadbeef"),  # no project -> orphan
+            _ns_obj("troshka-cccccccc", phase="Terminating"),  # already going
+            _ns_obj("troshka-cache"),  # cache -> skip
+            _ns_obj("kube-system"),  # not a project ns -> skip
+        ]
+        mock_clients.return_value = (MagicMock(), core, MagicMock())
+        db = MagicMock()
+        proj = MagicMock()
+        proj.id = "aaaaaaaa-1111-2222-3333-444455556666"
+        db.query.return_value.all.return_value = [proj]
+        result = gc._detect_orphan_kubevirt_namespaces(db, MagicMock())
+        assert result == ["troshka-deadbeef"]
+
+    @patch("app.services.providers.kubevirt._get_k8s_clients")
+    def test_detect_unreferenced_goldens(self, mock_clients):
+        custom = MagicMock()
+        custom.list_cluster_custom_object.return_value = {
+            "items": [
+                {"metadata": {"name": "golden-used", "namespace": "troshka-cache"}},
+                {"metadata": {"name": "golden-orphan", "namespace": "troshka-cache"}},
+                {
+                    "metadata": {"name": "clone1", "namespace": "troshka-aaaaaaaa"},
+                    "spec": {
+                        "source": {
+                            "pvc": {"namespace": "troshka-cache", "name": "golden-used"}
+                        }
+                    },
+                },
+            ]
+        }
+        mock_clients.return_value = (custom, MagicMock(), MagicMock())
+        result = gc._detect_unreferenced_goldens(MagicMock())
+        assert result == ["golden-orphan"]
+
+    @patch("app.services.gc_service._detect_unreferenced_goldens", return_value=["g1"])
+    @patch(
+        "app.services.gc_service._detect_orphan_kubevirt_namespaces",
+        return_value=["troshka-deadbeef"],
+    )
+    def test_reconcile_reports_but_does_not_delete(self, _ns, _gold):
+        db = MagicMock()
+        provider = MagicMock()
+        provider.type = "kubevirt"
+        db.query.return_value.filter_by.return_value.first.return_value = provider
+        host = MagicMock()
+        host.provider_id = "prov-1"
+        report: dict = {}
+        gc._reconcile_kubevirt_cluster(db, host, "host-1234abcd", report)
+        assert report["kubevirt_orphan_namespaces"] == ["troshka-deadbeef"]
+        assert report["kubevirt_unreferenced_goldens"] == ["g1"]
+
+    def test_reconcile_skips_non_kubevirt_provider(self):
+        db = MagicMock()
+        provider = MagicMock()
+        provider.type = "ocpvirt"
+        db.query.return_value.filter_by.return_value.first.return_value = provider
+        host = MagicMock()
+        host.provider_id = "prov-1"
+        report: dict = {}
+        gc._reconcile_kubevirt_cluster(db, host, "host-1234abcd", report)
+        assert "kubevirt_orphan_namespaces" not in report
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # discover_orphans
 # ═══════════════════════════════════════════════════════════════════════════
 

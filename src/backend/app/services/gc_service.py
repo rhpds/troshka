@@ -724,6 +724,113 @@ def _reconcile_ocp_routes(db, host, host_id, report):
         )
 
 
+def _is_kubevirt_project_ns(name: str) -> bool:
+    """True for a per-project namespace name 'troshka-<8 lowercase hex>'."""
+    if not name.startswith("troshka-"):
+        return False
+    suffix = name[len("troshka-") :]
+    return len(suffix) == 8 and all(c in "0123456789abcdef" for c in suffix)
+
+
+def _detect_orphan_kubevirt_namespaces(db, provider) -> list[str]:
+    """Per-project KubeVirt namespaces whose project no longer exists. A
+    namespace is protected if ANY project with that id-prefix is still in the DB
+    (destroyed projects are already gone from the table); Terminating namespaces
+    are skipped (already being reclaimed). REPORT-ONLY — the caller does not
+    delete."""
+    from typing import Any, cast
+
+    from app.models.project import Project
+    from app.services.providers.kubevirt import CACHE_NAMESPACE, _get_k8s_clients
+
+    core_api = cast(Any, _get_k8s_clients(provider)[1])
+    ns_list = core_api.list_namespace(label_selector="app=troshka")
+    known = {p.id[:8] for p in db.query(Project).all()}
+    orphans = []
+    for ns in ns_list.items:
+        name = ns.metadata.name
+        if name == CACHE_NAMESPACE or not _is_kubevirt_project_ns(name):
+            continue
+        if getattr(ns.status, "phase", None) == "Terminating":
+            continue
+        if name[len("troshka-") :] not in known:
+            orphans.append(name)
+    return orphans
+
+
+def _detect_unreferenced_goldens(provider) -> list[str]:
+    """Golden-image DataVolumes in the cache namespace not used as a clone source
+    by any project DataVolume — the analog of dangling images. REPORT-ONLY."""
+    from typing import Any, cast
+
+    from app.services.providers.kubevirt import CACHE_NAMESPACE, _get_k8s_clients
+
+    custom_api = cast(Any, _get_k8s_clients(provider)[0])
+    items = custom_api.list_cluster_custom_object(
+        group="cdi.kubevirt.io", version="v1beta1", plural="datavolumes"
+    ).get("items", [])
+    goldens: set[str] = set()
+    referenced: set[str] = set()
+    for dv in items:
+        meta = dv.get("metadata", {})
+        ns = meta.get("namespace", "")
+        if ns == CACHE_NAMESPACE:
+            goldens.add(meta.get("name", ""))
+        elif ns.startswith("troshka-"):
+            src = ((dv.get("spec") or {}).get("source") or {}).get("pvc") or {}
+            if src.get("namespace") == CACHE_NAMESPACE:
+                referenced.add(src.get("name", ""))
+    return sorted(goldens - referenced - {""})
+
+
+def _reconcile_kubevirt_cluster(db, host, host_id, report) -> None:
+    """Report-only detection of orphaned KubeVirt cluster resources: per-project
+    namespaces with no matching project, and unreferenced golden-image
+    DataVolumes. Surfaces them in the report/logs; does NOT delete (deletion is
+    intentionally opt-in until the detection is proven in the field)."""
+    if not host.provider_id:
+        return
+    from app.models.provider import Provider
+
+    provider = db.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider or provider.type != "kubevirt":
+        return
+    try:
+        orphan_ns = _detect_orphan_kubevirt_namespaces(db, provider)
+        report["kubevirt_orphan_namespaces"] = orphan_ns
+        if orphan_ns:
+            log.warning(
+                "Host %s GC: %d orphan KubeVirt namespace(s) (report-only, NOT "
+                "deleted): %s",
+                host_id[:8],
+                len(orphan_ns),
+                orphan_ns,
+            )
+    except Exception:
+        log.warning(
+            "Host %s GC: KubeVirt namespace scan failed (non-fatal)",
+            host_id[:8],
+            exc_info=True,
+        )
+    try:
+        unref = _detect_unreferenced_goldens(provider)
+        report["kubevirt_unreferenced_goldens"] = unref
+        if unref:
+            log.warning(
+                "Host %s GC: %d unreferenced golden image(s) (report-only, NOT "
+                "deleted): %s",
+                host_id[:8],
+                len(unref),
+                unref,
+            )
+    except Exception:
+        log.warning(
+            "Host %s GC: golden-image scan failed (non-fatal)",
+            host_id[:8],
+            exc_info=True,
+        )
+
+
 def _reconcile_shared_cache_entries(db, host, host_id, report):
     """Clean orphaned SharedCacheEntries for the host's storage pool."""
     if not host.storage_pool_id:
@@ -825,6 +932,13 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
             return report
 
         report["capacity"] = sync_host_capacity(db, host)
+
+        # KubeVirt-cluster hosts have no troshkad agent — the troshkad orphan
+        # scan doesn't apply. Reconcile cluster-level orphans (namespaces, golden
+        # images) instead.
+        if host.host_type == "kubevirt-cluster":
+            _reconcile_kubevirt_cluster(db, host, host_id, report)
+            return report
 
         if not host.ip_address or host.agent_status != "connected":
             report["orphans"] = {"error": "Host not reachable — skipping orphan scan"}
