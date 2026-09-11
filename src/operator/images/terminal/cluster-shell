@@ -10,6 +10,49 @@
 # can't drop, fall back to a shell as the current uid.
 export PATH=/usr/local/bin:/usr/bin:/bin
 
+# Wait (bounded) for the cluster to finish BUILDING before dropping to the prompt.
+# While a cluster is installing (fresh install) or being recert'd (pattern deploy)
+# the backend has not yet injected /showroom/kube/config, so `oc` would fail with a
+# bare "Missing or incomplete configuration info" and no explanation. Show a
+# friendly banner and wait for the kubeconfig to appear so `oc` works the moment we
+# hand over the prompt. The user can press Ctrl-C to skip straight to a shell; a
+# bounded 45-minute timeout guarantees we never hang forever (comfortably outlasts
+# a slow install; a pattern recert clears in minutes). When the kubeconfig is
+# already present (cluster up, or a browser reconnect after it came up) this returns
+# immediately and prints nothing. Keys off the kubeconfig file, so it is identical
+# for fresh-install and pattern-deployed clusters.
+_wait_for_cluster_ready() {
+    local kc=/showroom/kube/config i max=540 _skip=""   # 540 * 5s = 45 min
+    [ -f "$kc" ] && return 0
+    echo
+    echo "  ⏳  Your OpenShift cluster is still being built."
+    echo "      Waiting for it to come up — press Ctrl-C to skip to a shell."
+    echo "      ('oc' starts working automatically once the cluster is ready.)"
+    printf '      '
+    # Ctrl-C sets a flag and breaks the wait instead of terminating the terminal;
+    # `sleep & wait` keeps the SIGINT responsive (a bare sleep would swallow it).
+    trap '_skip=1' INT
+    for i in $(seq 1 "$max"); do
+        [ -f "$kc" ] && break
+        [ -n "$_skip" ] && break
+        printf '.'
+        sleep 5 & wait $! 2>/dev/null
+    done
+    trap - INT
+    echo
+    if [ -f "$kc" ]; then
+        echo "  ✅  Cluster ready!"
+    elif [ -n "$_skip" ]; then
+        echo "  Skipping — dropping to a shell. 'oc' will work once the cluster is"
+        echo "  ready; just retry your command (no need to reconnect)."
+    else
+        echo "  NOTE: cluster still not ready after 45m — dropping to a shell."
+        echo "  'oc' will work once it comes up; just retry your command."
+    fi
+    echo
+}
+_wait_for_cluster_ready
+
 # Wait (bounded) for the cluster API to answer before dropping to the prompt, so a
 # user who opens the terminal during the post-install VIP-settling window doesn't
 # hit "connection refused". Reads the API server straight from the injected
@@ -55,7 +98,14 @@ if [ -n "$_can_drop" ]; then
         install -d -o 1000 -g 1000 -m 0700 "$HOME/.kube"
         install -o 1000 -g 1000 -m 0600 /showroom/kube/config "$KC_COPY"
     fi
-    cd "$HOME" 2>/dev/null || cd /tmp
+    cd "$HOME" 2>/dev/null || cd /tmp || cd /
+    # Launch inside tmux (attach-or-create session "main") so a browser refresh /
+    # iframe reload / network blip reattaches to the SAME session and running
+    # commands (e.g. `watch oc get nodes`) survive. Fall back to bash if tmux is
+    # unavailable.
+    if command -v tmux >/dev/null 2>&1; then
+        exec setpriv --reuid=1000 --regid=1000 --init-groups tmux new-session -A -s main
+    fi
     exec setpriv --reuid=1000 --regid=1000 --init-groups /bin/bash
 fi
 
@@ -73,5 +123,9 @@ if [ -f /showroom/kube/config ]; then
     mkdir -p "$HOME/.kube"
     cp /showroom/kube/config "$KC_COPY" 2>/dev/null && chmod 0600 "$KC_COPY" 2>/dev/null
 fi
-cd "$HOME" 2>/dev/null || cd /tmp
+cd "$HOME" 2>/dev/null || cd /tmp || cd /
+# Session persistence via tmux (see the drop path above); bash if tmux is absent.
+if command -v tmux >/dev/null 2>&1; then
+    exec tmux new-session -A -s main
+fi
 exec /bin/bash
