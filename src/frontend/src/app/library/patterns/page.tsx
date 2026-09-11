@@ -507,7 +507,7 @@ export default function PatternsPage() {
                       });
                     }}>Cancel</Button>
                   )}
-                  {!saving && pattern.visibility !== "public" && (
+                  {!saving && (pattern.visibility !== "public" || me.role === "admin") && (
                     <Button variant="danger" size="sm" onClick={async () => {
                       if (!(await appConfirm({
                         message: `Delete pattern "${pattern.name}"? This cannot be undone.`,
