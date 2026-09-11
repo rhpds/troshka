@@ -959,3 +959,10 @@ def test_nginx_config_init_makes_www_writable_for_antora():
     # The chown must precede the antora build's use of www — i.e. appear in the
     # same nginx-config command that creates www.
     assert cmd.index("mkdir") < cmd.index("chown 1001 /showroom/www")
+    # The served www/ui-config.yml is written by root here but rewritten by the
+    # content container (USER 1001) on start; it must be chowned to 1001 after it
+    # is written, or the content server crash-loops with EACCES (502).
+    assert "chown 1001 /showroom/www/ui-config.yml" in cmd
+    assert cmd.index("> /showroom/www/ui-config.yml") < cmd.index(
+        "chown 1001 /showroom/www/ui-config.yml"
+    )

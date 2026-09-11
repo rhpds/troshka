@@ -880,7 +880,13 @@ def _build_init_containers(
                 # ui-config only reaches the browser if we write www directly. On
                 # fresh deploys antora rebuilds www afterward from the same repo
                 # ui-config, so the pid stays correct either way.
-                'echo "$UI_CONFIG_B64" | base64 -d > /showroom/www/ui-config.yml'
+                'echo "$UI_CONFIG_B64" | base64 -d > /showroom/www/ui-config.yml && '
+                # Hand the served copy to the antora/content uid: the content
+                # container (USER 1001) rewrites www/ui-config.yml from the repo on
+                # every start, and a root-owned copy here blocks that with EACCES,
+                # crash-looping the content server (502). No-op on the k8s path
+                # where content runs as root and can overwrite it anyway.
+                "chown 1001 /showroom/www/ui-config.yml"
             ),
             "mounts": [mount],
         },
