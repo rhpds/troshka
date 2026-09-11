@@ -335,11 +335,8 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
       scheduler never runs -> nothing schedules), then (2) the aggregated apiservers
       openshift-apiserver + oauth-apiserver (they cache the OLD requestheader CA ->
       401 -> route.openshift.io / console down; restarting re-reads the current CA).
-      Between them it restarts the kube-apiserver-operator ONCE to force a
-      kube-apiserver revision roll (re-mint the aggregator-client cert, which the
-      401 needs when the kube-apiserver is the stale side) instead of waiting ~10min
-      for the self-roll. NEVER touches OTHER operators (recreating them mid-rotation
-      wedges them), etcd, or the kube-apiserver static pods, and never mass-reaps;
+      NEVER touches the *-operators (recreating them mid-rotation wedges them),
+      etcd, or the kube-apiserver static pods, and never mass-reaps;
     - FAIL-CLOSED readiness gate on cluster operators: every operator
       Available=True / Degraded=False (skipping slow-settling monitoring + OLM
       packageserver) INCLUDING ``authentication`` (oauth) and ``console`` (whose
@@ -437,16 +434,6 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         "| grep 'kube-scheduler-cp-' | grep -c ' Running '); "
         '[ "${sr:-0}" -ge 1 ] 2>/dev/null && break; '
         "sleep 10; done\n"
-        # Step 1b: force the kube-apiserver to roll a new revision so it RE-MINTS
-        # its aggregator-client cert. The post-recert 401 clears only when that cert
-        # is re-minted (openshift-apiserver refresh alone isn't enough when the
-        # kube-apiserver is serving the stale captured cert). The operator self-rolls
-        # eventually (~10min) — restarting it now (scheduler is up so it reschedules)
-        # makes it reconcile and roll on-demand, cutting the wait. This is the ONE
-        # operator we restart, and only after the control plane is fresh.
-        f'  echo "[{cluster_key}] restarting kube-apiserver-operator to force a revision roll (re-mint aggregator cert)"\n'
-        "  oc delete pod -n openshift-kube-apiserver-operator --all --force "
-        "--grace-period=0 >/dev/null 2>&1 || true\n"
         # Step 2: aggregated apiservers (openshift-apiserver + oauth-apiserver).
         # Restored from captured etcd, they cache the OLD requestheader CA and
         # reject the kube-apiserver aggregator with 401 -> route.openshift.io /

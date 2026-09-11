@@ -482,20 +482,12 @@ def test_recert_ordered_control_plane_recovery():
     )
     # wait for the scheduler to be Running before restarting the apiservers
     assert "grep 'kube-scheduler-cp-' | grep -c ' Running '" in script
-    # step 1b: force the kas roll by restarting the kube-apiserver-OPERATOR (the one
-    # operator we restart, to re-mint the aggregator cert), AFTER the scheduler wait
-    assert "oc delete pod -n openshift-kube-apiserver-operator --all" in script
-    assert script.index("grep -c ' Running '") < script.index(
-        "openshift-kube-apiserver-operator --all"
-    )
-    # never other operators / etcd / kube-apiserver static pods / mass reap / redeploy
+    # never the operators / etcd / kube-apiserver static pods / mass reap
     assert "forceRedeploymentReason" not in script
     assert "get pods -A" not in script
+    assert "-operator --all" not in script
     assert "oc delete pod -n openshift-etcd" not in script
     assert "oc delete pod -n openshift-kube-apiserver --all" not in script
-    # the aggregated-apiserver operators are NOT restarted (only kube-apiserver-operator)
-    assert "openshift-apiserver-operator --all" not in script
-    assert "openshift-oauth-apiserver-operator --all" not in script
 
 
 def test_recert_script_reuses_install_complete_marker_and_log():
