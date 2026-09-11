@@ -329,11 +329,14 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
       arrives;
     - approves pending CSRs until nodes go Ready (kubelets re-bootstrap after the
       PKI wipe), and keeps approving them (per-CSR) in the readiness loop;
-    - surgically restarts ONLY the aggregated apiservers (openshift-apiserver +
-      oauth-apiserver) so they re-read the current requestheader CA (clearing the
-      post-recert aggregation 401 that kills route.openshift.io / the console) —
-      NO mass reap, NO forced kube-apiserver redeploy, and NEVER the operators
-      (restarting operators mid-rotation wedges them);
+    - restarts the stale captured control plane in order so the console comes up
+      fast/deterministically instead of waiting 13-16min for the operators to
+      reconcile: (1) static CP scheduler + kcm (they come up wedged -> the
+      scheduler never runs -> nothing schedules), then (2) the aggregated apiservers
+      openshift-apiserver + oauth-apiserver (they cache the OLD requestheader CA ->
+      401 -> route.openshift.io / console down; restarting re-reads the current CA).
+      NEVER touches the *-operators (recreating them mid-rotation wedges them),
+      etcd, or the kube-apiserver static pods, and never mass-reaps;
     - FAIL-CLOSED readiness gate on cluster operators: every operator
       Available=True / Degraded=False (skipping slow-settling monitoring + OLM
       packageserver) INCLUDING ``authentication`` (oauth) and ``console`` (whose
@@ -405,17 +408,39 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         f'{{ echo "[{cluster_key}] all $total node(s) Ready"; break; }}; '
         f'echo "[{cluster_key}] approving CSRs: $notready/$total node(s) not Ready"; '
         "sleep 10; done\n"
-        # SURGICAL NUDGE: the aggregated apiserver pods (openshift-apiserver +
-        # openshift-oauth-apiserver), restored from the captured etcd, cache the
-        # OLD requestheader CA in memory and reject the kube-apiserver aggregator
-        # with 401 -> route.openshift.io (and the oauth well-known) go unavailable
-        # -> router can't serve -> web console + login are down. The operators
-        # recreate these only unreliably/slowly (SNO often jams for 20min+), so
-        # restart JUST these two workload deployments once: they come back fresh
-        # (CSR approval below lets their kubelets issue serving certs) and re-read
-        # the CURRENT CA, clearing the 401 in ~1 minute. NEVER restart the
-        # *-operators (recreating them mid-rotation wedges them) or mass-reap.
-        f'  echo "[{cluster_key}] nudging aggregated apiservers (openshift-apiserver + oauth) to clear stale post-recert trust"\n'
+        # ORDERED RECOVERY of the stale captured control plane (do NOT wait for the
+        # operators to reconcile — that's slow/variable, 13-16min, and sometimes
+        # wedges). Restarting these workload/static pods (kubelet recreates them
+        # fresh) with CSR approval flowing shed the captured in-memory state. We
+        # NEVER touch the *-operators (recreating them mid-rotation wedges them) and
+        # NEVER touch etcd.
+        #
+        # Step 1: static control-plane (scheduler + kcm). After recert these come up
+        # wedged/churning (stuck revision rollout, guards stuck Terminating), so the
+        # SCHEDULER never runs -> nothing schedules -> everything below stays Pending.
+        # This is the actual stuck point. The kubelet recreates them from the on-disk
+        # manifests.
+        f'  echo "[{cluster_key}] restarting static control-plane (scheduler + kcm) to unwedge scheduling"\n'
+        "  oc delete pod -n openshift-kube-scheduler --all --force --grace-period=0 "
+        ">/dev/null 2>&1 || true\n"
+        "  oc delete pod -n openshift-kube-controller-manager --all --force "
+        "--grace-period=0 >/dev/null 2>&1 || true\n"
+        # Wait for the scheduler to come back Running (approving CSRs meanwhile) so
+        # the aggregated apiservers below can actually be scheduled.
+        "  for i in $(seq 1 30); do "
+        "oc get csr --no-headers 2>/dev/null | awk '/Pending/{print $1}' "
+        "| xargs -r -n 1 oc adm certificate approve >/dev/null 2>&1 || true; "
+        "sr=$(oc get pods -n openshift-kube-scheduler --no-headers 2>/dev/null "
+        "| grep 'kube-scheduler-cp-' | grep -c ' Running '); "
+        '[ "${sr:-0}" -ge 1 ] 2>/dev/null && break; '
+        "sleep 10; done\n"
+        # Step 2: aggregated apiservers (openshift-apiserver + oauth-apiserver).
+        # Restored from captured etcd, they cache the OLD requestheader CA and
+        # reject the kube-apiserver aggregator with 401 -> route.openshift.io /
+        # oauth well-known unavailable -> router can't serve -> console + login down.
+        # Restart them (now schedulable) so they re-read the CURRENT CA and clear
+        # the 401.
+        f'  echo "[{cluster_key}] restarting aggregated apiservers (openshift-apiserver + oauth) to clear stale trust"\n'
         "  oc delete pod -n openshift-apiserver --all --force --grace-period=0 "
         ">/dev/null 2>&1 || true\n"
         "  oc delete pod -n openshift-oauth-apiserver --all --force --grace-period=0 "

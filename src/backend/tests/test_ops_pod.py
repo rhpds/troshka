@@ -461,23 +461,33 @@ def test_recert_script_approves_csrs():
     assert "certificate approve" in script
 
 
-def test_recert_surgical_nudge_aggregated_apiservers_only():
-    """The ONLY nudge is a targeted restart of the aggregated apiservers
-    (openshift-apiserver + openshift-oauth-apiserver). Those workload pods,
-    restored from captured etcd, cache the OLD requestheader CA and reject the
-    aggregator (401) -> route.openshift.io dead -> console dead; restarting just
-    them (with CSR approval running) makes them re-read the current CA. It must NOT
-    force a kube-apiserver redeploy, NOT mass-reap all namespaces, and NOT touch
-    any *-operator namespace (restarting operators mid-rotation wedges them)."""
+def test_recert_ordered_control_plane_recovery():
+    """Recovery restarts the stale captured control plane in ORDER, not a mass reap:
+    (1) static CP scheduler + kcm (the actual wedge — the scheduler comes up stuck
+    so nothing schedules), then (2) the aggregated apiservers openshift-apiserver +
+    oauth-apiserver (cache the OLD requestheader CA -> 401 -> route.openshift.io /
+    console down). It must NOT touch any *-operator (recreating operators
+    mid-rotation wedges them), etcd, or the kube-apiserver static pods, and NOT
+    mass-reap."""
     script = _recert_script()
+    # step 1: static control-plane
+    assert "oc delete pod -n openshift-kube-scheduler --all" in script
+    assert "oc delete pod -n openshift-kube-controller-manager --all" in script
+    # step 2: aggregated apiservers
+    assert "oc delete pod -n openshift-apiserver --all" in script
+    assert "oc delete pod -n openshift-oauth-apiserver --all" in script
+    # ordering: scheduler restart precedes the aggregated-apiserver restart
+    assert script.index("openshift-kube-scheduler --all") < script.index(
+        "oc delete pod -n openshift-apiserver --all"
+    )
+    # wait for the scheduler to be Running before restarting the apiservers
+    assert "grep 'kube-scheduler-cp-' | grep -c ' Running '" in script
+    # never the operators / etcd / kube-apiserver static pods / mass reap
     assert "forceRedeploymentReason" not in script
-    # surgical: exactly the two aggregated apiservers get restarted
-    assert "oc delete pod -n openshift-apiserver" in script
-    assert "oc delete pod -n openshift-oauth-apiserver" in script
-    # NOT a mass reap and NOT the operators
     assert "get pods -A" not in script
-    assert "oc delete pod -n openshift-kube-apiserver-operator" not in script
-    assert "-n openshift-apiserver-operator" not in script
+    assert "-operator --all" not in script
+    assert "oc delete pod -n openshift-etcd" not in script
+    assert "oc delete pod -n openshift-kube-apiserver --all" not in script
 
 
 def test_recert_script_reuses_install_complete_marker_and_log():
