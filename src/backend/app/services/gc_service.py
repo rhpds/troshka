@@ -220,31 +220,44 @@ def clean_orphans(host, orphans: dict, db: Session | None = None) -> dict:
     if db:
         cache_items = _find_orphaned_cache(db, orphans.get("cache_items", []))
     cache_items.extend(orphans.get("stale_temps", []))
+    # Dedup so the host doesn't remove-then-skip the same path (and so the
+    # "cleaned" count below is not inflated by duplicates in the input lists).
+    cache_items = list(set(cache_items))
+
+    # Dedup every category once; reuse the deduped lists for both the payload
+    # sent to the host and the "cleaned" count so the two stay consistent.
+    orphan_dirs = list(set(orphans.get("orphan_dirs", [])))
+    orphan_domains = list(set(orphans.get("orphan_domains", [])))
+    orphan_pools = list(set(orphans.get("orphan_pools", [])))
+    orphan_containers = list(set(orphans.get("orphan_containers", [])))
+    orphan_bridges = list(set(orphans.get("orphan_bridges", [])))
+    orphan_namespaces = list(set(orphans.get("orphan_namespaces", [])))
+    orphan_bmc = orphans.get("orphaned_bmc_project_ids", [])
 
     job_id = start_job(
         host,
         "/gc/clean",
         {
-            "orphan_dirs": list(set(orphans.get("orphan_dirs", []))),
-            "orphan_domains": list(set(orphans.get("orphan_domains", []))),
-            "orphan_pools": list(set(orphans.get("orphan_pools", []))),
-            "orphan_containers": orphans.get("orphan_containers", []),
-            "orphan_bridges": orphans.get("orphan_bridges", []),
-            "orphan_namespaces": orphans.get("orphan_namespaces", []),
+            "orphan_dirs": orphan_dirs,
+            "orphan_domains": orphan_domains,
+            "orphan_pools": orphan_pools,
+            "orphan_containers": orphan_containers,
+            "orphan_bridges": orphan_bridges,
+            "orphan_namespaces": orphan_namespaces,
             "cache_items": cache_items,
-            "orphan_bmc_project_ids": orphans.get("orphaned_bmc_project_ids", []),
+            "orphan_bmc_project_ids": orphan_bmc,
             "orphan_metadata_ids": orphans.get("orphaned_metadata_ids", []),
         },
     )
     job = wait_for_job(host, job_id, timeout=120)
 
     cleaned = (
-        len(orphans.get("orphan_dirs", []))
-        + len(orphans.get("orphan_domains", []))
-        + len(orphans.get("orphan_containers", []))
-        + len(orphans.get("orphan_bridges", []))
-        + len(orphans.get("orphan_namespaces", []))
-        + len(orphans.get("orphaned_bmc_project_ids", []))
+        len(orphan_dirs)
+        + len(orphan_domains)
+        + len(orphan_containers)
+        + len(orphan_bridges)
+        + len(orphan_namespaces)
+        + len(orphan_bmc)
         + len(cache_items)
     )
     return {
@@ -645,9 +658,11 @@ def _count_total_orphans(orphans: dict) -> int:
 def _reconcile_clean_orphans(db, host, host_id, orphans, dry_run, report):
     """Discover and clean orphaned resources, populate report."""
     total_orphans = _count_total_orphans(orphans)
-    report["orphans_found"] = total_orphans
     orphaned_cache = _find_orphaned_cache(db, orphans.get("cache_items", []))
     stale_temps = orphans.get("stale_temps", [])
+    # Report "found" on the same basis as "cleaned" (which includes cache +
+    # temps); otherwise found < cleaned whenever any cache is reaped.
+    report["orphans_found"] = total_orphans + len(orphaned_cache) + len(stale_temps)
     report["cache_orphaned"] = len(orphaned_cache)
     report["stale_temps_found"] = len(stale_temps)
 

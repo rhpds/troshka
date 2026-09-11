@@ -462,6 +462,30 @@ class TestCleanOrphans:
         # stale_temps are passed as cache_items to the job
         assert result["cache_cleaned"] == 2
 
+    @patch("app.services.troshkad_client.wait_for_job")
+    @patch("app.services.troshkad_client.start_job", return_value="clean-dedup")
+    def test_dedups_input_lists(self, mock_start, mock_wait):
+        """Duplicate paths must be deduped before being sent to the host, so
+        the host doesn't remove-then-skip and the count isn't inflated."""
+        mock_wait.return_value = {"status": "completed", "output": []}
+        host = MagicMock()
+        host.ip_address = "10.0.0.1"
+        host.agent_status = "connected"
+        orphans = {
+            "orphan_dirs": ["/tmp/a", "/tmp/a", "/tmp/b"],
+            "orphan_containers": ["troshka-x", "troshka-x"],
+            "stale_temps": ["/tmp/t", "/tmp/t"],
+        }
+        result = gc.clean_orphans(host, orphans)
+        # 2 unique dirs + 1 unique container + 1 unique temp
+        assert result["cleaned"] == 4
+        assert result["cache_cleaned"] == 1
+        # Payload sent to the host is deduped too
+        payload = mock_start.call_args[0][2]
+        assert sorted(payload["orphan_dirs"]) == ["/tmp/a", "/tmp/b"]
+        assert payload["orphan_containers"] == ["troshka-x"]
+        assert payload["cache_items"] == ["/tmp/t"]
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # _get_existing_bridges
@@ -554,6 +578,25 @@ class TestReconcileCleanOrphans:
         mock_clean.assert_called_once()
         assert report["orphans_found"] == 3
         assert report["cleanup"]["cleaned"] == 3
+
+    @patch("app.services.gc_service.clean_orphans")
+    @patch(
+        "app.services.gc_service._find_orphaned_cache",
+        return_value=["/c1", "/c2"],
+    )
+    def test_orphans_found_includes_cache_and_temps(self, mock_cache, mock_clean):
+        """found must be reported on the same basis as cleaned (dirs + cache +
+        temps), otherwise found < cleaned whenever cache is reaped."""
+        mock_clean.return_value = {"cleaned": 5, "cache_cleaned": 2}
+        db = MagicMock()
+        host = MagicMock()
+        orphans = {"orphan_dirs": ["a", "b"], "stale_temps": ["/t"]}
+        report = {}
+        gc._reconcile_clean_orphans(db, host, "host-1234abcd", orphans, False, report)
+        # 2 dirs + 2 cache + 1 temp
+        assert report["orphans_found"] == 5
+        assert report["cache_orphaned"] == 2
+        assert report["stale_temps_found"] == 1
 
     @patch("app.services.gc_service._find_orphaned_cache", return_value=["/stale"])
     def test_orphans_found_dry_run(self, mock_cache):
