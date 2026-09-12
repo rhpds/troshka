@@ -393,29 +393,155 @@ def _publish_workload_progress(run_id: str, progress: dict) -> None:
         db.close()
 
 
-def _read_runner_pod_logs(host, run_id: str) -> str:
-    """Read logs from the runner pod via troshkad or k8s API.
+def _get_project_id_for_run(run_id: str) -> str | None:
+    """Get project_id from a WorkloadRun (for KubeVirt namespace resolution)."""
+    db = SessionLocal()
+    try:
+        run = db.get(WorkloadRun, run_id)
+        return run.project_id if run else None
+    finally:
+        db.close()
 
-    TODO(Task 8): Implement actual log reading via:
-    - KubeVirt: k8s CoreV1Api.read_namespaced_pod_log
-    - troshkad: POST /containers/logs endpoint
+
+def _read_runner_pod_logs(host, run_id: str) -> str:
+    """Read logs from the runner pod via troshkad containers/exec (cat logfile)."""
+    if host.host_type == "kubevirt-cluster":
+        return _read_runner_logs_kubevirt(host, run_id)
+    return _read_runner_logs_troshkad(host)
+
+
+def _read_runner_logs_troshkad(host) -> str:
+    """[LIVE-ENV] Read runner logs via troshkad containers/exec cat.
+
+    Mirrors _exec_ops_pod_cat: exec `cat /workdir/run.log` inside the runner
+    container. Returns empty string if logfile not yet written or exec fails.
     """
-    # Stubbed for now - real implementation needs integration testing
-    _ = host
-    _ = run_id
+    from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
+
+    container_name = "runner"
+    log_path = "/workdir/run.log"
+
+    try:
+        job_id = start_job(
+            host,
+            "/containers/exec",
+            {"container_name": container_name, "command": ["cat", log_path]},
+        )
+        job = wait_for_job(host, job_id, timeout=30)
+        if job.get("status") == "completed":
+            return (job.get("result") or {}).get("stdout", "")
+    except TroshkadError:
+        pass
     return ""
+
+
+def _read_runner_logs_kubevirt(host, run_id: str) -> str:
+    """[LIVE-ENV] Read runner logs via k8s exec cat.
+
+    Mirrors _exec_ops_pod_cat_kubevirt: exec `cat /workdir/run.log` via
+    k8s stream API. Returns empty string on any failure or missing file.
+    """
+    ctx = _runner_pod_kubevirt_ctx(host, run_id)
+    if not ctx:
+        return ""
+    core_v1, namespace, pod_name = ctx
+    log_path = "/workdir/run.log"
+
+    from kubernetes.stream import stream as k8s_stream
+
+    try:
+        result = k8s_stream(
+            core_v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            container="ops",
+            command=["cat", log_path],
+            stderr=True,
+            stdout=True,
+            stdin=False,
+            tty=False,
+            _preload_content=True,
+            _request_timeout=35,
+        )
+        return result if isinstance(result, str) else ""
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _runner_pod_kubevirt_ctx(host, run_id: str):
+    """Resolve (core_v1, namespace, pod_name) for a KubeVirt runner pod.
+
+    Mirrors _kubevirt_ops_pod_ctx. Returns None if provider missing.
+    """
+    from app.core.database import SessionLocal
+    from app.models.provider import Provider
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+    project_id = _get_project_id_for_run(run_id)
+    if not project_id:
+        return None
+
+    db = SessionLocal()
+    try:
+        provider = db.query(Provider).filter_by(id=host.provider_id).first()
+        if not provider:
+            return None
+        _, core_v1, _ = _get_k8s_clients(provider)
+        namespace = _project_ns(provider, project_id)
+    finally:
+        db.close()
+    return core_v1, namespace, "workload-runner"
 
 
 def _is_runner_pod_running(host, run_id: str) -> bool:
     """Check if the runner pod/container is still running.
 
-    TODO(Task 8): Implement actual status check via:
-    - KubeVirt: k8s CoreV1Api.read_namespaced_pod_status
-    - troshkad: POST /containers/inspect endpoint
+    Mirrors _ops_pod_running: conservative on uncertainty (transient errors
+    assume running). Only terminal states (container stopped, pod Succeeded/Failed)
+    count as dead.
     """
-    _ = host
-    _ = run_id
-    return False  # Stubbed - assumes pod completed
+    if host.host_type == "kubevirt-cluster":
+        return _runner_pod_running_kubevirt(host, run_id)
+    return _runner_pod_running_troshkad(host)
+
+
+def _runner_pod_running_troshkad(host) -> bool:
+    """[LIVE-ENV] Whether the runner container reports running state.
+
+    Mirrors _ops_pod_running: conservative (None states → True). Only an
+    explicit non-running state counts as dead.
+    """
+    from app.services.troshkad_client import get_all_container_states
+
+    states = get_all_container_states(host)
+    if states is None:
+        return True
+    info = states.get("runner")
+    if info is None:
+        return False
+    return str(info.get("state", "")).lower() == "running"
+
+
+def _runner_pod_running_kubevirt(host, run_id: str) -> bool:
+    """[LIVE-ENV] Whether the runner Pod is in Running phase.
+
+    Mirrors _ops_pod_running_kubevirt: conservative (transient API error → True).
+    Only terminal phases (Succeeded/Failed) or 404 count as dead.
+    """
+    from kubernetes.client.exceptions import ApiException
+
+    ctx = _runner_pod_kubevirt_ctx(host, run_id)
+    if not ctx:
+        return True
+    core_v1, namespace, pod_name = ctx
+    try:
+        pod = core_v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+    except ApiException as e:
+        return e.status != 404
+    except Exception:  # noqa: BLE001
+        return True
+    phase = str(getattr(getattr(pod, "status", None), "phase", "") or "").lower()
+    return phase not in ("succeeded", "failed")
 
 
 def monitor_workload_run(run_id: str, host_id: str) -> None:
@@ -476,12 +602,56 @@ def monitor_workload_run(run_id: str, host_id: str) -> None:
 def _check_runner_pod_exit_status(host, run_id: str, logs: str) -> str:
     """Check pod exit status to determine success or failure.
 
-    TODO(Task 8): Implement actual exit status check via:
-    - KubeVirt: k8s CoreV1Api.read_namespaced_pod_status (check phase + exit codes)
-    - troshkad: POST /containers/inspect (check state.exit_code)
+    Prefers real exit code over log inference. Falls back to log inspection
+    only if API check fails.
     """
-    _ = host
-    _ = run_id
+    if host.host_type == "kubevirt-cluster":
+        return _check_exit_status_kubevirt(host, run_id, logs)
+    return _check_exit_status_troshkad(host, logs)
+
+
+def _check_exit_status_troshkad(host, logs: str) -> str:
+    """[LIVE-ENV] Get runner container exit code via troshkad states.
+
+    Mirrors ops-pod exit-code check. Returns "succeeded" if exit_code == 0,
+    "error" otherwise. Falls back to log inference on any failure.
+    """
+    from app.services.troshkad_client import get_all_container_states
+
+    states = get_all_container_states(host)
+    if states:
+        info = states.get("runner")
+        if info:
+            exit_code = info.get("exit_code")
+            if exit_code is not None:
+                return "succeeded" if exit_code == 0 else "error"
+    return _infer_status_from_logs(logs)
+
+
+def _check_exit_status_kubevirt(host, run_id: str, logs: str) -> str:
+    """[LIVE-ENV] Get runner Pod exit code via k8s container status.
+
+    Reads pod.status.container_statuses[0].state.terminated.exit_code. Returns
+    "succeeded" if 0, "error" otherwise. Falls back to log inference on failure.
+    """
+    ctx = _runner_pod_kubevirt_ctx(host, run_id)
+    if not ctx:
+        return _infer_status_from_logs(logs)
+    core_v1, namespace, pod_name = ctx
+    try:
+        pod = core_v1.read_namespaced_pod(name=pod_name, namespace=namespace)
+        container_statuses = getattr(
+            getattr(pod, "status", None), "container_statuses", None
+        )
+        if container_statuses:
+            for cs in container_statuses:
+                terminated = getattr(getattr(cs, "state", None), "terminated", None)
+                if terminated:
+                    exit_code = getattr(terminated, "exit_code", None)
+                    if exit_code is not None:
+                        return "succeeded" if exit_code == 0 else "error"
+    except Exception:  # noqa: BLE001
+        pass
     return _infer_status_from_logs(logs)
 
 

@@ -23,6 +23,7 @@ class RunPaths:
     cloud_creds: str = f"{_WORKDIR}/cloud-creds.env"
     agnosticd: str = f"{_WORKDIR}/agnosticd-v2"
     collections: str = f"{_WORKDIR}/collections"
+    log: str = f"{_WORKDIR}/run.log"
 
 
 def build_artifact_files(
@@ -54,10 +55,13 @@ def build_run_command(_resolved_item, paths: RunPaths) -> list[str]:
     Runs ONLY the software/workloads stage against existing infra (no infra deploy).
     Entrypoint confirmed against ~/agnosticd-v2/ansible/main.yml (imports
     configs/{config}/software.yml which runs the openshift_workload_deployer role).
+
+    Output is tee'd to a logfile so the monitor can tail progress.
     """
     # item vars / requirements_content are threaded in Task 6 (run_service)
     # Build the ansible-playbook command - always run main.yml with config=openshift-workloads
     # and cloud_provider=none (we're running against existing infra, not deploying new).
+    # Tee output to logfile for monitor (pipefail preserves playbook exit code).
     script_parts = [
         "set -euo pipefail",
         f"cd {paths.agnosticd}/ansible",
@@ -67,6 +71,7 @@ def build_run_command(_resolved_item, paths: RunPaths) -> list[str]:
         f"-e @{paths.extra_vars}",
         "-e ACTION=provision",
         "-e cloud_provider=none",
+        f"2>&1 | tee {paths.log}",
     ]
     script = "; ".join(script_parts)
     return ["bash", "-lc", script]

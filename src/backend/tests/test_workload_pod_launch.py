@@ -29,6 +29,7 @@ def test_build_run_command_invokes_ansible_playbook():
     cmd = pod_launch.build_run_command(item, paths)
     joined = " ".join(cmd)
     assert "ansible-playbook" in joined
+    assert "tee /workdir/run.log" in joined
     assert paths.inventory in joined
     assert paths.extra_vars in joined
 
