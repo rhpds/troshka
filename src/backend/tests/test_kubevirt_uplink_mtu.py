@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 from app.services.providers import get_provider_driver
+from app.services.providers.kubevirt import KubeVirtDriver
 
 
 def _make_provider(provider_type="kubevirt"):
@@ -21,7 +22,7 @@ def _make_provider(provider_type="kubevirt"):
 def test_read_cluster_network_mtu_returns_value():
     """_read_cluster_network_mtu returns int when clusterNetworkMTU present."""
     provider = _make_provider()
-    driver = get_provider_driver(provider)
+    driver: KubeVirtDriver = get_provider_driver(provider)  # type: ignore[assignment]
 
     with patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients:
         mock_custom = MagicMock()
@@ -39,7 +40,7 @@ def test_read_cluster_network_mtu_returns_value():
 def test_read_cluster_network_mtu_returns_none_when_field_absent():
     """_read_cluster_network_mtu returns None when status or field missing."""
     provider = _make_provider()
-    driver = get_provider_driver(provider)
+    driver: KubeVirtDriver = get_provider_driver(provider)  # type: ignore[assignment]
 
     with patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients:
         mock_custom = MagicMock()
@@ -55,7 +56,7 @@ def test_read_cluster_network_mtu_returns_none_when_field_absent():
 def test_read_cluster_network_mtu_returns_none_on_exception():
     """_read_cluster_network_mtu returns None when API call raises."""
     provider = _make_provider()
-    driver = get_provider_driver(provider)
+    driver: KubeVirtDriver = get_provider_driver(provider)  # type: ignore[assignment]
 
     with patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients:
         mock_custom = MagicMock()
@@ -71,7 +72,7 @@ def test_read_cluster_network_mtu_returns_none_on_exception():
 def test_get_host_status_includes_uplink_mtu():
     """get_host_status includes uplink_mtu key in returned dict."""
     provider = _make_provider()
-    driver = get_provider_driver(provider)
+    driver: KubeVirtDriver = get_provider_driver(provider)  # type: ignore[assignment]
 
     with patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients:
         mock_custom = MagicMock()
