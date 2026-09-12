@@ -5,9 +5,9 @@ WORKDIR /opt/app-root/src
 
 # agnosticv CLI — the workloads subsystem shells out to it to list/merge AgnosticV catalog items.
 ARG AGNOSTICV_VERSION=1.0.0
-RUN curl -fsSL -o /usr/local/bin/agnosticv \
+RUN curl -fsSL -o /opt/app-root/bin/agnosticv \
       "https://github.com/redhat-cop/agnosticv/releases/download/v${AGNOSTICV_VERSION}/agnosticv_linux_amd64" \
-    && chmod +x /usr/local/bin/agnosticv
+    && chmod +x /opt/app-root/bin/agnosticv
 
 COPY src/backend/requirements.txt .
 # libvirt-python needs system headers not available in container — exclude it
