@@ -740,3 +740,53 @@ def test_infra_ip_reservations_skips_already_reserved():
     res = _infra_ip_reservations({"cidr": "10.0.0.0/24"}, {"10.0.0.2"})
     ips = {r["ip"] for r in res}
     assert ips == {"10.0.0.1"}
+
+
+def test_build_host_network_config_includes_mtu():
+    """Network config includes MTU when present in network node data."""
+    topology = {
+        "nodes": [
+            {
+                "id": "net-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "network",
+                    "name": "jumbo-net",
+                    "cidr": "10.0.0.0/24",
+                    "mtu": 9000,
+                },
+            },
+        ],
+        "edges": [],
+    }
+    vni_map = {"net-1": 8000}
+
+    result = build_host_network_config(topology, vni_map, [])
+
+    assert len(result["networks"]) == 1
+    net = result["networks"][0]
+    assert net["mtu"] == 9000
+
+
+def test_build_host_network_config_mtu_none_when_absent():
+    """Network config has mtu=None when not set in network node data."""
+    topology = {
+        "nodes": [
+            {
+                "id": "net-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "network",
+                    "name": "standard-net",
+                    "cidr": "10.0.0.0/24",
+                },
+            },
+        ],
+        "edges": [],
+    }
+    vni_map = {"net-1": 9000}
+
+    result = build_host_network_config(topology, vni_map, [])
+
+    net = result["networks"][0]
+    assert net["mtu"] is None

@@ -1124,6 +1124,7 @@ def _setup_remote_host_network(
                     "vni": vni,
                     "bridge_name": f"br-{vni}",
                     "wg_peer_ips": all_wg_ips,
+                    "mtu": node.get("data", {}).get("mtu"),
                 }
             )
 

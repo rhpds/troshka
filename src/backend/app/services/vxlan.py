@@ -408,6 +408,7 @@ def _build_network_configs(
             "connected_vms": connected_vms,
             "dhcp_hosts": dhcp_hosts,
             "peers": peer_ips,
+            "mtu": data.get("mtu"),
         }
 
         if net_config["dhcp_enabled"]:

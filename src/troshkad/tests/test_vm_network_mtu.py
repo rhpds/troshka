@@ -1,5 +1,5 @@
 # src/troshkad/tests/test_vm_network_mtu.py
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import troshkad
 
 
