@@ -32,6 +32,7 @@ def test_start_workload_run_creates_row_and_enqueues(monkeypatch):
     db = TestSession()
     try:
         proj = _active_project(db)
+        assert proj is not None
         enq = MagicMock()
         monkeypatch.setattr(run_service, "enqueue_job", enq)
         run = run_service.start_workload_run(
@@ -51,6 +52,7 @@ def test_start_workload_run_creates_row_and_enqueues(monkeypatch):
 def test_run_workload_job_happy_path(monkeypatch):
     db = TestSession()
     proj = _active_project(db, name="rs2")
+    assert proj is not None
     run = WorkloadRun(
         project_id=proj.id,
         kind="catalog_item",
@@ -78,7 +80,7 @@ def test_run_workload_job_happy_path(monkeypatch):
             requirements_content=None,
         ),
     )
-    monkeypatch.setattr(run_service, "_prepare_agnosticd", lambda item: None)
+    monkeypatch.setattr(run_service, "_prepare_agnosticd", lambda db, item: None)
     monkeypatch.setattr(run_service, "mint_run_key", lambda db, p: "trk_k")
     monkeypatch.setattr(run_service, "resolve_cluster_access", lambda p: {})
     monkeypatch.setattr(
@@ -92,6 +94,7 @@ def test_run_workload_job_happy_path(monkeypatch):
 
     db = TestSession()
     row = db.get(WorkloadRun, rid)
+    assert row is not None
     assert row.status == "running"
     assert row.started_at is not None
     assert launched.called

@@ -68,42 +68,37 @@ def _host_for_project(db, project):
     return host
 
 
-def _prepare_agnosticd(item) -> None:
+def _prepare_agnosticd(db, item) -> None:
     """Ensure agnosticd-v2 checkout + required collections are cached."""
-    from app.core.database import get_db
     from app.services.workloads import repo_cache, secret_store
 
     # Get agnosticd-v2 git URL + credentials
-    db = next(get_db())
-    try:
-        git_conf = secret_store.get_json_secret(db, "agnosticd_v2_git")
-        if not git_conf or not git_conf.get("url"):
-            raise RuntimeError("agnosticd_v2_git secret is not configured")
+    git_conf = secret_store.get_json_secret(db, "agnosticd_v2_git")
+    if not git_conf or not git_conf.get("url"):
+        raise RuntimeError("agnosticd_v2_git secret is not configured")
 
-        # Authenticated URL for private repos
-        git_url = git_conf["url"]
-        token = git_conf.get("token")
-        if token:
-            from urllib.parse import urlsplit, urlunsplit
+    # Authenticated URL for private repos
+    git_url = git_conf["url"]
+    token = git_conf.get("token")
+    if token:
+        from urllib.parse import urlsplit, urlunsplit
 
-            parts = urlsplit(git_url)
-            if parts.scheme in ("http", "https") and parts.hostname:
-                netloc = f"x-access-token:{token}@{parts.hostname}"
-                if parts.port:
-                    netloc += f":{parts.port}"
-                git_url = urlunsplit(
-                    (parts.scheme, netloc, parts.path, parts.query, parts.fragment)
-                )
+        parts = urlsplit(git_url)
+        if parts.scheme in ("http", "https") and parts.hostname:
+            netloc = f"x-access-token:{token}@{parts.hostname}"
+            if parts.port:
+                netloc += f":{parts.port}"
+            git_url = urlunsplit(
+                (parts.scheme, netloc, parts.path, parts.query, parts.fragment)
+            )
 
-        # Ensure agnosticd-v2 checkout at item.scm_ref
-        ref = item.scm_ref or repo_cache.default_ref("agnosticd-v2")
-        repo_cache.ensure_repo("agnosticd-v2", git_url, ref)
+    # Ensure agnosticd-v2 checkout at item.scm_ref
+    ref = item.scm_ref or repo_cache.default_ref("agnosticd-v2")
+    repo_cache.ensure_repo("agnosticd-v2", git_url, ref)
 
-        # Ensure workload collections from requirements_content
-        if item.requirements_content:
-            _ensure_collections(item.requirements_content)
-    finally:
-        db.close()
+    # Ensure workload collections from requirements_content
+    if item.requirements_content:
+        _ensure_collections(item.requirements_content)
 
 
 def _ensure_collections(requirements_content: dict) -> None:
@@ -136,7 +131,7 @@ def run_workload_job(run_id: str) -> None:
 
         host = _host_for_project(db, project)
         item = _resolve_item(db, run)
-        _prepare_agnosticd(item)
+        _prepare_agnosticd(db, item)
         key = mint_run_key(db, project)
         topo = project.deployed_topology or project.topology or {}
         validate_ansible_groups(topo, require_bastion=(not _has_ocp(project)))
