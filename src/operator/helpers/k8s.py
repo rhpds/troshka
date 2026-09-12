@@ -78,7 +78,7 @@ def build_nad(network_cr):
     namespace = network_cr["metadata"]["namespace"]
 
     nad_name = f"{name}-nad"
-    config = {
+    config: dict[str, object] = {
         "cniVersion": "0.3.1",
         "name": nad_name,
         "netAttachDefName": f"{namespace}/{nad_name}",
