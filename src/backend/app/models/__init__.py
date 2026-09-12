@@ -22,6 +22,7 @@ from app.models.storage_pool import SharedCacheEntry, StoragePool
 from app.models.system_config import SystemConfig
 from app.models.user import User
 from app.models.vm import VM, BootPrereq, VMInterface
+from app.models.workload_run import WorkloadRun
 
 __all__ = [
     "User",
@@ -54,4 +55,5 @@ __all__ = [
     "SystemConfig",
     "ProjectMeshPeer",
     "PatternLocation",
+    "WorkloadRun",
 ]
