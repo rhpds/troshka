@@ -7,6 +7,7 @@ under ``workload.secret.``. Values are Fernet-encrypted via
 """
 
 import json
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -49,10 +50,10 @@ def list_secret_names(db: Session) -> list[str]:
     return sorted(r.key[len(_PREFIX) :] for r in rows)
 
 
-def set_json_secret(db: Session, name: str, obj) -> None:
+def set_json_secret(db: Session, name: str, obj: Any) -> None:
     set_secret(db, name, json.dumps(obj))
 
 
-def get_json_secret(db: Session, name: str):
+def get_json_secret(db: Session, name: str) -> Any:
     raw = get_secret(db, name)
     return None if raw is None else json.loads(raw)

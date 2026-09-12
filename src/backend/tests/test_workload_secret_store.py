@@ -71,6 +71,7 @@ def test_json_secret_roundtrip():
         assert secret_store.get_json_secret(db, "agnosticv_git_t7") == creds
         # and it is stored encrypted, not as readable json
         row = db.get(SystemConfig, "workload.secret.agnosticv_git_t7")
+        assert row is not None
         assert "github.com" not in row.value
     finally:
         db.close()
