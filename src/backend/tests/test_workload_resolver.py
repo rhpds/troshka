@@ -15,14 +15,14 @@ def test_resolve_catalog_item_happy_path(monkeypatch):
     db = TestSession()
     try:
         _seed_secrets(db)
-        monkeypatch.setattr(repo_cache, "ensure_agnosticv", lambda url: "/fake/root")
+        monkeypatch.setattr(repo_cache, "ensure_agnosticv", lambda _url: "/fake/root")
         monkeypatch.setattr(
-            agnosticv, "resolve_path", lambda root, cid: "agd_v2/x/prod.yaml"
+            agnosticv, "resolve_path", lambda _root, _cid: "agd_v2/x/prod.yaml"
         )
         monkeypatch.setattr(
             agnosticv,
             "merge_path",
-            lambda root, rel: {
+            lambda _root, _rel: {
                 "k": "$ANSIBLE_VAULT-marker",
                 "__meta__": {
                     "deployer": {
@@ -50,7 +50,7 @@ def test_resolve_requires_vault_key(monkeypatch):
     try:
         secret_store.delete_secret(db, "vault_key")
         secret_store.set_json_secret(db, "agnosticv_git", {"url": "u"})
-        monkeypatch.setattr(repo_cache, "ensure_agnosticv", lambda url: "/fake/root")
+        monkeypatch.setattr(repo_cache, "ensure_agnosticv", lambda _url: "/fake/root")
         with pytest.raises(resolver.ResolverError):
             resolver.resolve_catalog_item(db, "agd-v2.x.prod")
     finally:
@@ -62,7 +62,7 @@ def test_resolve_requires_git_config(monkeypatch):
     try:
         secret_store.set_secret(db, "vault_key", "testpass")
         secret_store.delete_secret(db, "agnosticv_git")
-        monkeypatch.setattr(repo_cache, "ensure_agnosticv", lambda url: "/fake/root")
+        monkeypatch.setattr(repo_cache, "ensure_agnosticv", lambda _url: "/fake/root")
         with pytest.raises(resolver.ResolverError):
             resolver.resolve_catalog_item(db, "agd-v2.x.prod")
     finally:

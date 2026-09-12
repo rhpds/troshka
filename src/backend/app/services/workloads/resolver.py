@@ -26,5 +26,8 @@ def resolve_catalog_item(db: Session, catalog_id: str) -> agnosticv.ResolvedItem
     rel_path = agnosticv.resolve_path(repo_root, catalog_id)
     merged = agnosticv.merge_path(repo_root, rel_path)
     decrypted = agnosticv.decrypt_vault_strings(merged, vault_password)
-    assert isinstance(decrypted, dict)
+    if not isinstance(decrypted, dict):
+        raise ResolverError(
+            f"expected dict from decrypt_vault_strings, got {type(decrypted).__name__}"
+        )
     return agnosticv.to_resolved_item(decrypted)
