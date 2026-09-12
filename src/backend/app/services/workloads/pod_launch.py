@@ -48,13 +48,14 @@ def build_artifact_files(
     return files
 
 
-def build_run_command(resolved_item, paths: RunPaths) -> list[str]:
+def build_run_command(_resolved_item, paths: RunPaths) -> list[str]:
     """Build the ansible-playbook invocation for the AgnosticD-v2 openshift-workloads config.
 
     Runs ONLY the software/workloads stage against existing infra (no infra deploy).
     Entrypoint confirmed against ~/agnosticd-v2/ansible/main.yml (imports
     configs/{config}/software.yml which runs the openshift_workload_deployer role).
     """
+    # item vars / requirements_content are threaded in Task 6 (run_service)
     # Build the ansible-playbook command - always run main.yml with config=openshift-workloads
     # and cloud_provider=none (we're running against existing infra, not deploying new).
     script_parts = [
@@ -88,7 +89,7 @@ def launch_runner_pod(
             ee_image=ee_image,
             command=command,
             files=files,
-            networks=networks,
+            _networks=networks,
         )
     return _launch_troshkad(
         host,
@@ -141,9 +142,10 @@ def _launch_kubevirt(
     ee_image: str,
     command: list[str],
     files: dict[str, str],
-    networks: list,
+    _networks: list,
 ) -> str:
     """KubeVirt runner-pod path: build Pod+Secret manifests and create via k8s."""
+    # KubeVirt runner project-network attachment is wired in Task 6 (run_service maps project NADs -> cluster_nads)
     from app.services.ocp.ops_pod_scaffold import build_ops_pod_kubevirt_manifests
     from app.services.providers.kubevirt import create_ops_pod
 

@@ -60,6 +60,7 @@ def test_launch_runner_pod_kubevirt(monkeypatch):
     project = SimpleNamespace(id="p1234567890", provider_id="prov1")
     fake_provider = MagicMock()
     fake_create = MagicMock()
+    fake_build_manifests = MagicMock(return_value=({"kind": "Pod"}, {"kind": "Secret"}))
     monkeypatch.setattr(
         pod_launch, "_provider_for_host", MagicMock(return_value=fake_provider)
     )
@@ -68,7 +69,7 @@ def test_launch_runner_pod_kubevirt(monkeypatch):
     )
     with patch("app.services.providers.kubevirt.create_ops_pod", fake_create), patch(
         "app.services.ocp.ops_pod_scaffold.build_ops_pod_kubevirt_manifests",
-        return_value=({"kind": "Pod"}, {"kind": "Secret"}),
+        fake_build_manifests,
     ):
         job = pod_launch.launch_runner_pod(
             host,
@@ -81,3 +82,5 @@ def test_launch_runner_pod_kubevirt(monkeypatch):
     assert job == "workload-runner-p1234567"
     args, _kwargs = fake_create.call_args
     assert args[1] == "p1234567890"  # project_id is 2nd positional arg
+    # Assert EE image is passed to manifest builder
+    assert fake_build_manifests.call_args.kwargs["image"] == "ee:2"
