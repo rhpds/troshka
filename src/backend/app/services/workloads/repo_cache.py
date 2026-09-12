@@ -83,7 +83,10 @@ def _dir_size(path: str) -> int:
         for name in files:
             fp = os.path.join(root, name)
             if not os.path.islink(fp):
-                total += os.path.getsize(fp)
+                try:
+                    total += os.path.getsize(fp)
+                except OSError:
+                    continue
     return total
 
 
@@ -94,8 +97,12 @@ def _all_worktrees() -> list[str]:
         return result
     for repo_key in os.listdir(base):
         repo_dir = os.path.join(base, repo_key)
+        if not os.path.isdir(repo_dir):
+            continue
         for ref in os.listdir(repo_dir):
-            result.append(os.path.join(repo_dir, ref))
+            ref_path = os.path.join(repo_dir, ref)
+            if os.path.isdir(ref_path):
+                result.append(ref_path)
     return result
 
 

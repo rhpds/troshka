@@ -100,3 +100,17 @@ def test_lru_eviction_under_budget(monkeypatch, tmp_path):
     worktrees = os.path.join(root, "worktrees", "wl")
     # With a zero budget, only the most-recent worktree survives eviction.
     assert os.listdir(worktrees) == ["development"]
+
+
+def test_eviction_ignores_stray_files(monkeypatch, tmp_path):
+    """Eviction should skip non-directory entries (e.g. .DS_Store on macOS)."""
+    repo_cache, root = _configure_cache(monkeypatch, tmp_path)
+    url = _make_remote(tmp_path, "wl", ["main"])
+    # Create a worktree, which creates the worktrees/ and worktrees/wl/ dirs.
+    repo_cache.ensure_repo("wl", url, "main")
+    # Plant stray files: one in worktrees/ base, one in worktrees/wl/.
+    (tmp_path / "cache" / "worktrees" / ".DS_Store").write_text("stray base")
+    (tmp_path / "cache" / "worktrees" / "wl" / ".DS_Store").write_text("stray repo")
+    # Eviction runs on every ensure_repo() call; should not crash.
+    wt = repo_cache.ensure_repo("wl", url, "main")
+    assert (open(os.path.join(wt, "marker.txt")).read()) == "main"
