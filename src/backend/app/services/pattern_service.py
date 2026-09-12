@@ -47,6 +47,21 @@ def apply_showroom_pattern_flags(topology: dict) -> None:
             data["buildContent"] = False
 
 
+def carry_resolved_mtu(pattern_topology, deployed_topology):
+    """Freeze each network node's concrete resolved MTU into the pattern."""
+    resolved = {
+        n["id"]: (n.get("data") or {}).get("mtu")
+        for n in (deployed_topology or {}).get("nodes", [])
+        if n.get("type") == "networkNode"
+    }
+    for node in (pattern_topology or {}).get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        mtu = resolved.get(node["id"])
+        if isinstance(mtu, int) and mtu > 0:
+            node.setdefault("data", {})["mtu"] = mtu
+
+
 def _collect_container_volume_disks(topology, project_id, pool):
     """Return (container_id, disk_node) pairs for container-attached volumes."""
     from app.services.deploy_topology import (

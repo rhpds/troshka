@@ -477,6 +477,13 @@ def create_pattern(
 
         apply_sno_ocp_vm_flags(topology, recert=True)
 
+    # Freeze resolved MTU values from deployed topology into pattern
+    if source_project:
+        from app.services.pattern_service import carry_resolved_mtu
+
+        deployed = source_project.deployed_topology or source_project.topology or {}
+        carry_resolved_mtu(topology, deployed)
+
     pattern_description = body.description or (
         source_project.description if source_project else None
     )
