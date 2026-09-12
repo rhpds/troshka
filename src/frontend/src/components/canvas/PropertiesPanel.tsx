@@ -3950,6 +3950,67 @@ export default function PropertiesPanel() {
                       );
                     })()}
                   </div>
+
+                  {/* MTU Configuration */}
+                  <div className="props-field">
+                    <label className="props-label">MTU</label>
+                    {(() => {
+                      const mtuMode = and.mtu === "auto" || and.mtu == null ? "auto" : "custom";
+                      const mtuValue = typeof and.mtu === "number" ? and.mtu : 1500;
+                      const isInvalid = typeof and.mtu === "number" && (and.mtu < 1280 || and.mtu > 9000);
+
+                      return (
+                        <>
+                          <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                            <select
+                              className="props-select"
+                              value={mtuMode}
+                              onChange={(e) => {
+                                if (e.target.value === "auto") {
+                                  update("mtu", "auto");
+                                } else {
+                                  update("mtu", 1500);
+                                }
+                              }}
+                              style={{ flex: "0 0 auto", minWidth: 90 }}
+                            >
+                              <option value="auto">Auto</option>
+                              <option value="custom">Custom</option>
+                            </select>
+                            {mtuMode === "custom" && (
+                              <input
+                                type="number"
+                                className="props-input"
+                                value={mtuValue}
+                                onChange={(e) => {
+                                  const val = parseInt(e.target.value, 10);
+                                  if (!isNaN(val)) {
+                                    update("mtu", val);
+                                  }
+                                }}
+                                min={1280}
+                                max={9000}
+                                style={{
+                                  flex: 1,
+                                  fontFamily: "monospace",
+                                  borderColor: isInvalid ? "var(--troshka-red)" : undefined
+                                }}
+                              />
+                            )}
+                          </div>
+                          {mtuMode === "auto" ? (
+                            <span style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 2, display: "block" }}>
+                              Auto = host uplink; jumbo when the host supports it.
+                            </span>
+                          ) : isInvalid ? (
+                            <span style={{ fontSize: 11, color: "var(--troshka-red)", marginTop: 2, display: "block" }}>
+                              ⚠ MTU must be between 1280 and 9000
+                            </span>
+                          ) : null}
+                        </>
+                      );
+                    })()}
+                  </div>
                 </>
               )}
             </div>
