@@ -197,6 +197,7 @@ def _seed_deploy_env(
             storage_size_gb=1000,
             used_vcpus=0,
             used_ram_mb=0,
+            uplink_mtu=9000,
         )
         db.add(host)
         db.flush()

@@ -6894,6 +6894,34 @@ def _set_deploy_error_and_notify(s, project_id, project, error_msg):
     )
 
 
+def _ensure_host_uplink_mtu(host, s):
+    """Populate host.uplink_mtu synchronously if unknown (closes the deploy-vs-health-poll race).
+    Returns the resolved int, or None if it still can't be determined.
+
+    For KubeVirt-native hosts, returns host.uplink_mtu as-is (no troshkad /health endpoint).
+    """
+    # KubeVirt-native hosts have no troshkad agent — skip check_health
+    if host.host_type == "kubevirt-cluster":
+        return host.uplink_mtu
+
+    if host.uplink_mtu is not None:
+        return host.uplink_mtu
+    from app.services.health_poller import _apply_uplink_mtu
+    from app.services.troshkad_client import check_health
+
+    try:
+        health = check_health(host)  # synchronous GET /health
+    except Exception:
+        health = None
+    if health:
+        _apply_uplink_mtu(
+            host, health
+        )  # sets host.uplink_mtu when health has a positive int
+        if host.uplink_mtu is not None:
+            s.commit()
+    return host.uplink_mtu
+
+
 def _deploy_resolve_host(s, project, project_id):
     """Resolve or auto-place a host for the project.
 
@@ -7372,6 +7400,19 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
 
         topology, clock_offset, vni_map = _deploy_init_context(s, project, project_id)
 
+        # Ensure uplink MTU is known before resolving network MTUs
+        uplink_mtu = _ensure_host_uplink_mtu(host, s)
+        # Fail loud for non-kubevirt hosts when uplink MTU can't be determined
+        # (kubevirt-cluster MTU handling is a separate follow-up; this branch must not change KubeVirt behavior)
+        if uplink_mtu is None and host.host_type != "kubevirt-cluster":
+            _set_deploy_error_and_notify(
+                s,
+                project_id,
+                project,
+                "Cannot determine host uplink MTU (agent health unavailable) — refusing to deploy at an unknown MTU",
+            )
+            return
+
         # Resolve per-network MTU
         from app.services.deploy_topology import (
             network_mtu_map,
@@ -7379,11 +7420,11 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
         )
 
         spans_hosts = bool(project.mesh_network_host_id)
-        mtu_warnings = resolve_topology_mtus(topology, host.uplink_mtu, spans_hosts)
+        mtu_warnings = resolve_topology_mtus(topology, uplink_mtu, spans_hosts)
         for w in mtu_warnings:
             _update_deploy_progress(project_id, "networks", w)
             logger.warning("Deploy %s: MTU: %s", project_id[:8], w)
-        mtu_map = network_mtu_map(topology, host.uplink_mtu, spans_hosts)
+        mtu_map = network_mtu_map(topology, uplink_mtu, spans_hosts)
 
         # Multi-host deploy: mesh setup -> network setup -> VM distribution
         if project.mesh_network_host_id:
