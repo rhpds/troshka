@@ -849,6 +849,21 @@ class TroshkadHandler(BaseHTTPRequestHandler):
 # ── Route handlers ──
 
 
+def _default_route_mtu():
+    """MTU of the host's default-route interface, or None on any failure."""
+    try:
+        route = subprocess.check_output(
+            ["ip", "route", "show", "default"], text=True, timeout=5
+        )
+        iface = route.split("dev", 1)[1].split()[0]
+        link = subprocess.check_output(
+            ["ip", "link", "show", "dev", iface], text=True, timeout=5
+        )
+        return int(link.split("mtu", 1)[1].split()[0])
+    except Exception:
+        return None
+
+
 @route("GET", "/health")
 def handle_health(handler, params):
     status = "draining" if _draining else "ok"
@@ -862,6 +877,7 @@ def handle_health(handler, params):
         "running_jobs": _running_job_count(),
         "capacity": _get_capacity(),
         "partitions": _get_partitions(),
+        "uplink_mtu": _default_route_mtu(),
         "features": {
             "batch_vm_states": True,
             "libvirt_events": _libvirt_events_available,

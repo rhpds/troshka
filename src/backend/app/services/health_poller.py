@@ -240,6 +240,12 @@ def _handle_pool_fsx_extend(host, health, db, checked_pools: set) -> None:
         )
 
 
+def _apply_uplink_mtu(host, health):
+    mtu = (health or {}).get("uplink_mtu")
+    if isinstance(mtu, int) and mtu > 0:
+        host.uplink_mtu = mtu
+
+
 def _handle_health_success(host, health, db, checked_pools: set) -> None:
     """Process a successful health check response."""
     now_dt = datetime.now(UTC)
@@ -247,6 +253,7 @@ def _handle_health_success(host, health, db, checked_pools: set) -> None:
     _skip_until.pop(host.id, None)
     if health.get("version"):
         host.agent_version = health["version"]
+    _apply_uplink_mtu(host, health)
 
     # Sync capacity from live data
     capacity = health.get("capacity", {})
