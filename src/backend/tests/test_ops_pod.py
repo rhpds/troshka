@@ -1684,3 +1684,14 @@ def test_recert_gate_does_not_block_on_monitoring():
     script = _recert_script()
     # both the bad-count awk and the pending-display awk skip monitoring
     assert script.count('$1=="monitoring"') >= 2
+
+
+def test_recert_gate_fast_fails_on_ovn_mtu_mismatch():
+    """When the network cluster operator is Degraded due to 'MTU too small for
+    specified overlay MTU', the gate should fail fast with a clear breadcrumb
+    instead of looping through the full timeout."""
+    from app.services.ocp.ops_pod_install import _recert_cluster_block
+
+    script = _recert_cluster_block("ocp-x", "/workdir", "multinode")
+    assert "too small for specified overlay MTU" in script
+    assert "recert failed" in script

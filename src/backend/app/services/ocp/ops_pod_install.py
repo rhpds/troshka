@@ -314,6 +314,24 @@ def _cluster_install_block(
     )
 
 
+def _recert_mtu_fastfail(cluster_key: str) -> str:
+    """Bash fragment to fast-fail the recert gate when the network operator is
+    Degraded due to 'MTU too small for specified overlay MTU'.
+
+    Returns a case statement that inspects the network operator's degraded message
+    and exits with a legible breadcrumb on MTU mismatch, instead of looping through
+    the full timeout.
+    """
+    return (
+        "netmsg=$(oc get co network -o jsonpath="
+        '"{.status.conditions[?(@.type==\\"Degraded\\")].message}" 2>/dev/null); '
+        'case "$netmsg" in '
+        '*"too small for specified overlay MTU"*) '
+        f'echo "[{cluster_key}] recert failed: cluster OVN MTU exceeds node '
+        'interface MTU - $netmsg"; exit 1;; esac; '
+    )
+
+
 def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
     """One cluster's RECERT (pattern-deploy) steps, backgrounded.
 
@@ -483,7 +501,8 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         'nr=$(echo "$out" | awk \'$1=="monitoring"||$1=="operator-lifecycle-manager-packageserver"{next} $3!="True"||$5=="True"{printf "%s ",$1}\'); '
         '[ "$raok" = 1 ] || nr="${nr}route-api "; '
         f'echo "[{cluster_key}] waiting on operators: ${{nr:-none}}"; '
-        "sleep 15; done\n"
+        # Fast-fail on OVN MTU mismatch instead of looping through full timeout.
+        + _recert_mtu_fastfail(cluster_key) + "sleep 15; done\n"
     )
     tail = (
         '  if [ -n "$li" ] && [ -n "$ready" ]; then\n'
