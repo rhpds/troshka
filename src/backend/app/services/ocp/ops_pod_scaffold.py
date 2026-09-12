@@ -184,6 +184,7 @@ def build_ops_pod_kubevirt_manifests(
     bmc_nad: str | None,
     image: str = OPS_POD_IMAGE,
     dns_nameserver: str = "",
+    pod_name: str | None = None,
 ) -> tuple[dict, dict]:
     """Build the ``(Pod, Secret)`` manifests for the KubeVirt ops pod.
 
@@ -201,7 +202,8 @@ def build_ops_pod_kubevirt_manifests(
     already-installed clusters on restart).
     """
     pid = project_id[:8]
-    pod_name = f"troshka-{pid}-ops"
+    if pod_name is None:
+        pod_name = f"troshka-{pid}-ops"
     secret_name = f"{pod_name}-config"
     labels = {"app": "troshka-ops-pod", "troshka-project": pid}
 
