@@ -8,6 +8,8 @@ the TokenRequest API — mirroring agnosticd's openshift_cluster_admin_service_a
 
 from __future__ import annotations
 
+from typing import Any
+
 import yaml
 
 from app.services.deploy_service import _stored_cluster_creds
@@ -17,7 +19,7 @@ class ClusterAccessError(Exception):
     pass
 
 
-def _core_v1_from_kubeconfig(kubeconfig_str: str) -> tuple:
+def _core_v1_from_kubeconfig(kubeconfig_str: str) -> tuple[Any, str]:
     """Bootstrap a Kubernetes CoreV1Api client and return API host."""
     from kubernetes import client, config
 

@@ -28,9 +28,11 @@ def test_mint_admin_token_calls_tokenrequest(monkeypatch):
     monkeypatch.setattr(
         cluster_access,
         "_core_v1_from_kubeconfig",
-        lambda kc: (fake_core, "https://api.cl.example.com:6443"),
+        lambda _kc: (fake_core, "https://api.cl.example.com:6443"),
     )
-    monkeypatch.setattr(cluster_access, "_ensure_admin_sa", lambda core, sa, ns: None)
+    monkeypatch.setattr(
+        cluster_access, "_ensure_admin_sa", lambda _core, _sa, _ns: None
+    )
 
     api_url, token = cluster_access._mint_admin_token(_KUBECONFIG)
     assert api_url == "https://api.cl.example.com:6443"
@@ -46,12 +48,12 @@ def test_resolve_cluster_access_maps_by_cluster_name(monkeypatch):
     monkeypatch.setattr(
         cluster_access,
         "_stored_cluster_creds",
-        lambda topo: {"cl-1": ("pw", _KUBECONFIG)},
+        lambda _topo: {"cl-1": ("pw", _KUBECONFIG)},
     )
     monkeypatch.setattr(
         cluster_access,
         "_mint_admin_token",
-        lambda kc, **kw: ("https://api.cl.example.com:6443", "tok-1"),
+        lambda _kc, **_kw: ("https://api.cl.example.com:6443", "tok-1"),
     )
     out = cluster_access.resolve_cluster_access(project)
     assert out["cl-1"]["api_url"].endswith(":6443")
@@ -60,6 +62,6 @@ def test_resolve_cluster_access_maps_by_cluster_name(monkeypatch):
 
 def test_resolve_cluster_access_no_clusters_raises(monkeypatch):
     project = SimpleNamespace(deployed_topology=None, topology={"nodes": []})
-    monkeypatch.setattr(cluster_access, "_stored_cluster_creds", lambda topo: {})
+    monkeypatch.setattr(cluster_access, "_stored_cluster_creds", lambda _topo: {})
     with pytest.raises(cluster_access.ClusterAccessError):
         cluster_access.resolve_cluster_access(project)
