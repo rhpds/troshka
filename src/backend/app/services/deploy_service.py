@@ -5267,7 +5267,9 @@ def _resolve_multihost_ips(host_assignments, db):
     return host_ips
 
 
-def _deploy_vms_on_host(host, project_id, project, host_vms, topology, vni_map, db):
+def _deploy_vms_on_host(
+    host, project_id, project, host_vms, topology, vni_map, db, mtu_map=None
+):
     pool = _get_host_pool(host, db)
     host_label = f"{host.ip_address} ({len(host_vms)} VMs)"
     vm_node_ids = {vm["node_id"] for vm in host_vms}
@@ -5301,7 +5303,15 @@ def _deploy_vms_on_host(host, project_id, project, host_vms, topology, vni_map, 
         clock_offset = compute_clock_offset(project.clock_target)
 
     return _define_multihost_vms(
-        host, project_id, host_vms, topology, vni_map, pool, clock_offset, host_label
+        host,
+        project_id,
+        host_vms,
+        topology,
+        vni_map,
+        pool,
+        clock_offset,
+        host_label,
+        mtu_map,
     )
 
 
@@ -5346,7 +5356,15 @@ def _clean_stale_domains(host, project_id, host_vms, host_label):
 
 
 def _define_multihost_vms(
-    host, project_id, host_vms, topology, vni_map, pool, clock_offset, host_label
+    host,
+    project_id,
+    host_vms,
+    topology,
+    vni_map,
+    pool,
+    clock_offset,
+    host_label,
+    mtu_map=None,
 ):
     for vm in host_vms:
         job_id = _create_vm_via_troshkad(
@@ -5357,6 +5375,7 @@ def _define_multihost_vms(
             vni_map,
             pool,
             clock_offset=clock_offset,
+            mtu_map=mtu_map,
         )
         if not job_id:
             continue
@@ -5396,7 +5415,7 @@ def _start_multihost_vms(project_id, vm_id_set_by_host, topology, db):
             )
 
 
-def _deploy_multihost(project_id: str, project, db):
+def _deploy_multihost(project_id: str, project, db, mtu_map: dict | None = None):
     """Multi-host deploy orchestration: mesh → networks → VMs per host."""
     logger.info("Deploy %s: starting multi-host orchestration", project_id[:8])
 
@@ -5479,7 +5498,7 @@ def _deploy_multihost(project_id: str, project, db):
             continue
         host_vms = [v for v in all_vms if v["node_id"] in vm_node_ids]
         err = _deploy_vms_on_host(
-            host, project_id, project, host_vms, topology, vni_map, db
+            host, project_id, project, host_vms, topology, vni_map, db, mtu_map
         )
         if err:
             project.state = "error"
@@ -7371,7 +7390,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                 project_id[:8],
                 project.mesh_network_host_id[:8],
             )
-            _deploy_multihost(project_id, project, s)
+            _deploy_multihost(project_id, project, s, mtu_map)
             # A pod-default OCP project deployed multi-host still needs the ops
             # pod to run the install (the primary host reaches cross-host cluster
             # VMs over the VXLAN mesh). Only after a non-error VM bring-up.

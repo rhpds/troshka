@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock, patch
+
 from app.services.deploy_topology import (
     _find_vm_networks,
     network_mtu_map,
@@ -64,3 +66,56 @@ def test_net_dict_builder_includes_mtu():
     assert nets[0]["mac"] == "52:54:00:11:22:33"
     assert nets[0]["model"] == "virtio"
     assert nets[0]["mtu"] == 8900
+
+
+def test_multihost_path_includes_mtu():
+    """Verify _define_multihost_vms passes mtu_map to _create_vm_via_troshkad."""
+    from app.services.deploy_service import _define_multihost_vms
+
+    host = MagicMock(ip_address="10.0.0.1")
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "nics": [
+                        {"id": "nic-abc", "mac": "52:54:00:11:22:33", "model": "virtio"}
+                    ]
+                },
+            },
+            {"id": "net1", "type": "networkNode", "data": {}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "vm1", "target": "net1", "sourceHandle": "nic-abc"}
+        ],
+    }
+    host_vms = [{"node_id": "vm1", "vcpus": 2, "ram_gb": 4, "uuid": "vm1"}]
+    vni_map = {"net1": 1001}
+    mtu_map = {"net1": 7500}
+    pool = None
+    clock_offset = None
+
+    with patch("app.services.deploy_service._create_vm_via_troshkad") as mock_create:
+        mock_create.return_value = "job-123"
+        with patch("app.services.deploy_service.wait_for_job") as mock_wait:
+            mock_wait.return_value = {
+                "status": "completed",
+                "result": {"domain_uuid": "dom-uuid"},
+            }
+            _define_multihost_vms(
+                host,
+                "proj-id",
+                host_vms,
+                topo,
+                vni_map,
+                pool,
+                clock_offset,
+                "host-label",
+                mtu_map,
+            )
+
+    # Verify _create_vm_via_troshkad was called with mtu_map
+    assert mock_create.call_count == 1
+    call_kwargs = mock_create.call_args.kwargs
+    assert call_kwargs["mtu_map"] == mtu_map
