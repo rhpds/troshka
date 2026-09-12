@@ -6895,28 +6895,45 @@ def _set_deploy_error_and_notify(s, project_id, project, error_msg):
 
 
 def _ensure_host_uplink_mtu(host, s):
-    """Populate host.uplink_mtu synchronously if unknown (closes the deploy-vs-health-poll race).
-    Returns the resolved int, or None if it still can't be determined.
-
-    For KubeVirt-native hosts, returns host.uplink_mtu as-is (no troshkad /health endpoint).
-    """
-    # KubeVirt-native hosts have no troshkad agent — skip check_health
-    if host.host_type == "kubevirt-cluster":
-        return host.uplink_mtu
-
+    """Populate host.uplink_mtu synchronously if unknown, per provider.
+    troshkad hosts: GET /health. KubeVirt-cluster hosts: read the cluster OVN MTU
+    via the provider driver. Returns the int, or None if undeterminable."""
     if host.uplink_mtu is not None:
         return host.uplink_mtu
+    if host.host_type == "kubevirt-cluster":
+        return _kubevirt_uplink_mtu(host, s)
+    return _troshkad_uplink_mtu(host, s)
+
+
+def _kubevirt_uplink_mtu(host, s):
+    try:
+        from app.models.provider import Provider
+        from app.services.providers import get_provider_driver
+
+        provider = s.query(Provider).filter_by(id=host.provider_id).first()
+        if provider:
+            driver = get_provider_driver(provider)
+            read_mtu = getattr(driver, "_read_cluster_network_mtu", None)
+            if read_mtu:
+                mtu = read_mtu(provider)
+                if isinstance(mtu, int) and mtu > 0:
+                    host.uplink_mtu = mtu
+                    s.commit()
+    except Exception:
+        pass
+    return host.uplink_mtu
+
+
+def _troshkad_uplink_mtu(host, s):
     from app.services.health_poller import _apply_uplink_mtu
     from app.services.troshkad_client import check_health
 
     try:
-        health = check_health(host)  # synchronous GET /health
+        health = check_health(host)
     except Exception:
         health = None
     if health:
-        _apply_uplink_mtu(
-            host, health
-        )  # sets host.uplink_mtu when health has a positive int
+        _apply_uplink_mtu(host, health)
         if host.uplink_mtu is not None:
             s.commit()
     return host.uplink_mtu
@@ -7405,14 +7422,12 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
 
         # Ensure uplink MTU is known before resolving network MTUs
         uplink_mtu = _ensure_host_uplink_mtu(host, s)
-        # Fail loud for non-kubevirt hosts when uplink MTU can't be determined
-        # (kubevirt-cluster MTU handling is a separate follow-up; this branch must not change KubeVirt behavior)
-        if uplink_mtu is None and host.host_type != "kubevirt-cluster":
+        if uplink_mtu is None:
             _set_deploy_error_and_notify(
                 s,
                 project_id,
                 project,
-                "Cannot determine host uplink MTU (agent health unavailable) — refusing to deploy at an unknown MTU",
+                "Cannot determine host uplink MTU — refusing to deploy at an unknown MTU",
             )
             return
 
