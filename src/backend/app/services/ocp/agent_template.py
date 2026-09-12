@@ -19,6 +19,8 @@ import shlex
 import uuid
 from dataclasses import dataclass
 
+from app.services.network_mtu import OVN_GENEVE_OVERHEAD
+
 logger = logging.getLogger(__name__)
 
 _MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
@@ -342,6 +344,39 @@ def _cluster_control_plane_ip(members):
         ip = nics[0].get("ip") if nics else None
         if ip:
             return ip
+    return None
+
+
+def _cluster_network_mtu(nic_mtu):
+    if not isinstance(nic_mtu, int) or nic_mtu <= 0:
+        return None
+    return nic_mtu - OVN_GENEVE_OVERHEAD
+
+
+def _machine_network_mtu_for_members(members, topology):
+    """Return resolved MTU from the members' machine network node."""
+    member_ips = [
+        nic.get("ip")
+        for m in members
+        if m.get("type") == "vmNode"
+        for nic in m.get("data", {}).get("nics", [])
+        if nic.get("ip")
+    ]
+    for node in topology.get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        data = node.get("data", {})
+        if data.get("subtype") != "network" or data.get("networkType") == "bmc":
+            continue
+        cidr = data.get("cidr")
+        if not cidr:
+            continue
+        try:
+            net = ipaddress.ip_network(cidr, strict=False)
+        except ValueError:
+            continue
+        if any(ipaddress.ip_address(ip) in net for ip in member_ips):
+            return data.get("mtu")
     return None
 
 
@@ -1523,6 +1558,9 @@ def _build_install_config(
     num_masters, num_workers = _cluster_replicas(cluster, topology)
     api_vip, ingress_vip = resolve_cluster_vips(cluster, members, topology)
 
+    nic_mtu = _machine_network_mtu_for_members(members, topology)
+    cluster_mtu = _cluster_network_mtu(nic_mtu)
+
     ic_lines = [
         "apiVersion: v1",
         f"baseDomain: {base_domain}",
@@ -1538,14 +1576,20 @@ def _build_install_config(
         "  architecture: amd64",
         "networking:",
         "  networkType: OVNKubernetes",
-        "  clusterNetwork:",
-        "    - cidr: 10.128.0.0/14",
-        "      hostPrefix: 23",
-        "  serviceNetwork:",
-        "    - 172.30.0.0/16",
-        "  machineNetwork:",
-        f"    - cidr: {_cidr_for_members(members, topology)}",
     ]
+    if cluster_mtu is not None:
+        ic_lines.append(f"  clusterNetworkMTU: {cluster_mtu}")
+    ic_lines.extend(
+        [
+            "  clusterNetwork:",
+            "    - cidr: 10.128.0.0/14",
+            "      hostPrefix: 23",
+            "  serviceNetwork:",
+            "    - 172.30.0.0/16",
+            "  machineNetwork:",
+            f"    - cidr: {_cidr_for_members(members, topology)}",
+        ]
+    )
     if _cluster_is_sno(cluster, members):
         ic_lines.extend(["platform:", "  none: {}"])
     else:
