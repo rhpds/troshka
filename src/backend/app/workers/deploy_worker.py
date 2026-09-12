@@ -110,6 +110,14 @@ def run_worker():
     except Exception:
         _logger.exception("resume_ops_pod_monitors on startup failed")
 
+    # Re-attach workload run monitors stranded by a prior worker exit
+    try:
+        from app.services.workloads.run_service import resume_workload_monitors
+
+        resume_workload_monitors()
+    except Exception:
+        _logger.exception("resume_workload_monitors on startup failed")
+
     w = worker_class(queues, connection=conn, name=worker_name)
     w.work()
 

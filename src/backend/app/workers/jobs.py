@@ -361,3 +361,13 @@ def job_run_workload(run_id: str):
     from app.services.workloads.run_service import run_workload_job
 
     run_workload_job(run_id)
+
+
+def job_workload_monitor(run_id: str, host_id: str):
+    """Monitor a workload run (RQ job entrypoint).
+
+    Tails runner pod logs, publishes progress, and sets terminal status.
+    """
+    from app.services.workloads.run_service import monitor_workload_run
+
+    monitor_workload_run(run_id, host_id)

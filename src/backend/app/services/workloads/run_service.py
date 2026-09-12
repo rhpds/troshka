@@ -5,6 +5,8 @@ never leave the backend; see Plan 1)."""
 from __future__ import annotations
 
 import datetime
+import logging
+import re
 
 from app.core.database import SessionLocal
 from app.core.redis import enqueue_job
@@ -24,6 +26,8 @@ from app.services.workloads.pod_launch import (
 from app.services.workloads.resolver import resolve_catalog_item
 from app.services.workloads.run_key import mint_run_key
 from app.workers.jobs import job_run_workload
+
+logger = logging.getLogger(__name__)
 
 
 def _now():
@@ -251,7 +255,311 @@ def _fail_run(db, run_id, message: str) -> None:
         db.commit()
 
 
+# ── Workload monitor (Plan 2, Task 7) ──────────────────────────────────────
+
+_WORKLOAD_MONITOR_TTL = 120
+
+
+def _workload_monitor_lock_key(run_id: str) -> str:
+    return f"workload-monitor:{run_id}"
+
+
+def _acquire_workload_monitor_lock(run_id: str) -> bool:
+    """True if this caller may run the monitor. Redis SET NX; if Redis is
+    unavailable (in-memory, not shared), allow (single-process fallback)."""
+    from app.core.redis import get_redis, is_redis_available
+
+    if not is_redis_available():
+        return True
+    try:
+        return bool(
+            get_redis().set(
+                _workload_monitor_lock_key(run_id),
+                "1",
+                nx=True,
+                ex=_WORKLOAD_MONITOR_TTL,
+            )
+        )
+    except Exception:
+        return True
+
+
+def _refresh_workload_monitor_lock(run_id: str) -> None:
+    from app.core.redis import get_redis, is_redis_available
+
+    if not is_redis_available():
+        return
+    try:
+        get_redis().set(
+            _workload_monitor_lock_key(run_id), "1", ex=_WORKLOAD_MONITOR_TTL
+        )
+    except Exception:
+        pass
+
+
+def _release_workload_monitor_lock(run_id: str) -> None:
+    from app.core.redis import get_redis, is_redis_available
+
+    if not is_redis_available():
+        return
+    try:
+        get_redis().delete(_workload_monitor_lock_key(run_id))
+    except Exception:
+        pass
+
+
+def _detached_host_copy(host_id: str):
+    """Return a session-detached Host with all columns eager-loaded.
+
+    Background monitor jobs must never touch the run job's Session — sharing
+    the ORM object raises SQLAlchemy "This session is provisioning a new
+    connection; concurrent operations are not permitted". Loading every mapped
+    column and expunging yields a plain object safe to use off-thread.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    from app.models.host import Host
+
+    s = SessionLocal()
+    try:
+        host = s.query(Host).filter_by(id=host_id).first()
+        if host is not None:
+            for col in sa_inspect(host).mapper.column_attrs:
+                getattr(host, col.key)  # force-load before detaching
+            s.expunge(host)
+        return host
+    finally:
+        s.close()
+
+
+def parse_workload_progress(log_text: str) -> dict:
+    """PURE: extract Ansible task name from log text for progress display.
+
+    Searches for "TASK [role_name : task_description]" patterns and returns
+    the most recent task name found. Returns empty dict if no task found.
+    """
+    # Match "TASK [role : description]" or "TASK [description]"
+    # Take the last match (most recent task in the log)
+    matches = re.findall(r"TASK \[(.*?)\]", log_text)
+    if matches:
+        return {"step": matches[-1]}
+    return {}
+
+
+def _enqueue_monitor(host, run_id: str) -> None:
+    """Start the workload run monitor as its own RQ job.
+
+    Enqueues a background job that tails the runner pod logs, publishes
+    progress, and sets terminal status. One monitor per run across workers
+    via Redis lock (acquired here, refreshed by loop, released on exit).
+    """
+    from app.workers.jobs import job_workload_monitor
+
+    if not _acquire_workload_monitor_lock(run_id):
+        logger.info(
+            "Workload monitor %s: already running elsewhere, not starting",
+            run_id[:8],
+        )
+        return
+    enqueue_job(
+        job_workload_monitor,
+        run_id,
+        host.id,
+        job_timeout=14400,
+    )
+
+
 def _start_workload_monitor(host, run_id: str) -> None:
-    """Monitor stub — real monitor implemented in Task 7."""
-    # Implemented in Task 7 (enqueued monitor job + Redis lock).
-    pass
+    """Start monitoring a workload run (enqueued RQ job)."""
+    _enqueue_monitor(host, run_id)
+
+
+def _publish_workload_progress(run_id: str, progress: dict) -> None:
+    """Publish workload progress to WebSocket channel and persist to DB."""
+    from app.core.redis import set_progress
+    from app.services.ws_pubsub import notify_project
+
+    set_progress(f"workload:{run_id}", progress)
+
+    # Get project_id for WebSocket notification
+    db = SessionLocal()
+    try:
+        run = db.get(WorkloadRun, run_id)
+        if run and run.project_id:
+            notify_project(
+                run.project_id, {"type": "workload-progress", "progress": progress}
+            )
+    finally:
+        db.close()
+
+
+def _read_runner_pod_logs(host, run_id: str) -> str:
+    """Read logs from the runner pod via troshkad or k8s API.
+
+    TODO(Task 8): Implement actual log reading via:
+    - KubeVirt: k8s CoreV1Api.read_namespaced_pod_log
+    - troshkad: POST /containers/logs endpoint
+    """
+    # Stubbed for now - real implementation needs integration testing
+    _ = host
+    _ = run_id
+    return ""
+
+
+def _is_runner_pod_running(host, run_id: str) -> bool:
+    """Check if the runner pod/container is still running.
+
+    TODO(Task 8): Implement actual status check via:
+    - KubeVirt: k8s CoreV1Api.read_namespaced_pod_status
+    - troshkad: POST /containers/inspect endpoint
+    """
+    _ = host
+    _ = run_id
+    return False  # Stubbed - assumes pod completed
+
+
+def monitor_workload_run(run_id: str, host_id: str) -> None:
+    """[LIVE-ENV loop] Poll runner pod logs and stream workload progress.
+
+    Loops until the pod completes (exits successfully), fails, or times out.
+    Each iteration reads logs, extracts progress, publishes updates, and checks
+    for terminal conditions. On success sets status=succeeded; on failure sets
+    status=error. Always releases the monitor lock before returning.
+    """
+    import time as _t
+
+    host = _detached_host_copy(host_id)
+    if host is None:
+        logger.warning(
+            "Workload monitor %s: host %s not found; monitor not started",
+            run_id[:8],
+            str(host_id)[:8],
+        )
+        _release_workload_monitor_lock(run_id)
+        return
+
+    timeout = 7200  # 2 hours
+    poll_interval = 15
+    deadline = _t.time() + timeout
+    last_progress = {}
+
+    while _t.time() < deadline:
+        _refresh_workload_monitor_lock(run_id)
+
+        # Read logs and extract progress
+        logs = _read_runner_pod_logs(host, run_id)
+        progress = parse_workload_progress(logs)
+
+        # Publish if progress changed
+        if progress != last_progress:
+            _publish_workload_progress(run_id, progress)
+            last_progress = progress
+
+        # Check if pod is still running
+        pod_running = _is_runner_pod_running(host, run_id)
+
+        if not pod_running:
+            # Pod stopped — check exit status to determine success/failure
+            terminal_status = _check_runner_pod_exit_status(host, run_id, logs)
+            _finalize_workload_run(run_id, terminal_status, logs)
+            _release_workload_monitor_lock(run_id)
+            return
+
+        _t.sleep(poll_interval)
+
+    # Timeout
+    logger.warning("Workload monitor %s: timed out", run_id[:8])
+    _finalize_workload_run(run_id, "timeout", "Monitor timeout after 2 hours")
+    _release_workload_monitor_lock(run_id)
+
+
+def _check_runner_pod_exit_status(host, run_id: str, logs: str) -> str:
+    """Check pod exit status to determine success or failure.
+
+    TODO(Task 8): Implement actual exit status check via:
+    - KubeVirt: k8s CoreV1Api.read_namespaced_pod_status (check phase + exit codes)
+    - troshkad: POST /containers/inspect (check state.exit_code)
+    """
+    _ = host
+    _ = run_id
+    return _infer_status_from_logs(logs)
+
+
+def _infer_status_from_logs(logs: str) -> str:
+    """Infer status from log content when API checks unavailable."""
+    # Look for common Ansible success/failure markers
+    if "failed=0" in logs or "PLAY RECAP" in logs and "failed=0" in logs:
+        return "succeeded"
+    if "fatal:" in logs or "ERROR" in logs:
+        return "error"
+    return "error"
+
+
+def _finalize_workload_run(run_id: str, status: str, error_or_logs: str) -> None:
+    """Set terminal status on WorkloadRun."""
+    db = SessionLocal()
+    try:
+        run = db.get(WorkloadRun, run_id)
+        if run is not None:
+            run.status = status
+            run.ended_at = _now()
+            if status == "error" or status == "timeout":
+                run.error = error_or_logs[:2000]
+            db.commit()
+            logger.info("Workload run %s finalized: %s", run_id[:8], status)
+    finally:
+        db.close()
+
+
+def _enqueue_monitor_by_ids(run_id: str, host_id: str) -> None:
+    """Enqueue monitor given run_id and host_id (for resume)."""
+    from app.workers.jobs import job_workload_monitor
+
+    if not _acquire_workload_monitor_lock(run_id):
+        logger.info(
+            "Workload monitor %s: already running elsewhere, not resuming",
+            run_id[:8],
+        )
+        return
+    enqueue_job(
+        job_workload_monitor,
+        run_id,
+        host_id,
+        job_timeout=14400,
+    )
+
+
+def resume_workload_monitors() -> None:
+    """[worker startup] Re-attach monitors for stranded workload runs.
+
+    Covers workload runs stuck at status='running' (a prior worker died
+    mid-run, leaving no finalization). The per-run lock makes this safe
+    across all worker processes. The monitor is idempotent: it re-reads
+    logs and finalizes if the run already completed.
+    """
+    from sqlalchemy import text
+
+    db = SessionLocal()
+    try:
+        # Use a raw query to avoid UUID conversion issues in test DB
+        result = db.execute(
+            text(
+                "SELECT wr.id, p.host_id "
+                "FROM workload_runs wr "
+                "JOIN projects p ON wr.project_id = p.id "
+                "WHERE wr.status = 'running' AND p.host_id IS NOT NULL"
+            )
+        )
+        for row in result:
+            try:
+                run_id: str = row[0]
+                host_id: str = row[1]
+                logger.info("Resuming workload monitor for %s", run_id[:8])
+                _enqueue_monitor_by_ids(run_id, host_id)
+            except Exception as exc:
+                logger.exception("Failed to resume monitor: %s", exc)
+                continue
+    except Exception:
+        logger.exception("resume_workload_monitors failed")
+    finally:
+        db.close()
