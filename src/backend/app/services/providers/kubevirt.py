@@ -866,6 +866,23 @@ class KubeVirtDriver(ProviderDriver):
             "available": max(0, total - used),
         }
 
+    def _read_cluster_network_mtu(self, provider):
+        """Cluster OVN MTU (config.openshift.io networks/cluster .status.clusterNetworkMTU), or None."""
+        try:
+            custom_api, _, _ = _get_k8s_clients(provider)
+            net = custom_api.get_cluster_custom_object(
+                "config.openshift.io", "v1", "networks", "cluster"
+            )
+            if not isinstance(net, dict):
+                return None
+            status = net.get("status")
+            if not isinstance(status, dict):
+                return None
+            mtu = status.get("clusterNetworkMTU")
+            return int(mtu) if mtu else None
+        except Exception:
+            return None
+
     def get_host_status(self, provider, instance_id):
         try:
             _, core_api, _ = _get_k8s_clients(provider)
@@ -877,6 +894,7 @@ class KubeVirtDriver(ProviderDriver):
                 "state": "running",
                 "public_ip": instance_id.replace("https://", "").split(":")[0],
                 "private_ip": instance_id.replace("https://", "").split(":")[0],
+                "uplink_mtu": self._read_cluster_network_mtu(provider),
             }
         except Exception:
             return None

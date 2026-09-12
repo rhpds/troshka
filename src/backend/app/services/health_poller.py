@@ -180,6 +180,7 @@ def _poll_kubevirt_host(host, db) -> None:
             if status:
                 host.agent_status = "connected"
                 host.last_health_at = datetime.now(UTC)
+                _apply_uplink_mtu(host, status)
                 _refresh_kubevirt_eip_capacity(host, driver, provider)
             else:
                 host.agent_status = "disconnected"
