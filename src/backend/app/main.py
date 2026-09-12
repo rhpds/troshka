@@ -675,6 +675,7 @@ from app.api import templates as template_routes  # noqa: E402
 from app.api import updates as update_routes  # noqa: E402
 from app.api import users as user_routes  # noqa: E402
 from app.api import vms as vm_routes  # noqa: E402
+from app.api import workloads as workload_routes  # noqa: E402
 from app.api import ws as ws_routes  # noqa: E402
 
 _API_PREFIX = "/api/v1"
@@ -695,6 +696,7 @@ app.include_router(provider_routes.router, prefix=_API_PREFIX)
 app.include_router(library_routes.router, prefix=_API_PREFIX)
 app.include_router(pattern_routes.router, prefix=_API_PREFIX)
 app.include_router(eip_routes.router, prefix=_API_PREFIX)
+app.include_router(workload_routes.router, prefix=_API_PREFIX)
 app.include_router(ws_routes.router)
 app.include_router(storage_pool_routes.router, prefix=_API_PREFIX)
 app.include_router(dns_provider_routes.router, prefix=_API_PREFIX)

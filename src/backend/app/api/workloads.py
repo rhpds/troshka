@@ -1,0 +1,191 @@
+"""Workload runs REST API — trigger, status, list."""
+
+from __future__ import annotations
+
+import logging
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.core.auth import get_current_user
+from app.core.database import get_db
+from app.core.redis import get_progress
+from app.models.project import Project
+from app.models.user import User
+from app.models.workload_run import WorkloadRun
+from app.services.workloads.run_service import start_workload_run
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["workloads"])
+
+CurrentUser = Annotated[User, Depends(get_current_user)]
+DbSession = Annotated[Session, Depends(get_db)]
+
+_PROJECT_NOT_FOUND = "Project not found"
+_RUN_NOT_FOUND = "Workload run not found"
+_ACCESS_DENIED = "Access denied"
+_PROJECT_MUST_BE_ACTIVE = "Project must be active to run workloads"
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
+class WorkloadRunRequest(BaseModel):
+    kind: str
+    catalog_item: str | None = None
+    role_fqcn: str | None = None
+    target_map: dict | None = None
+
+
+class WorkloadRunResponse(BaseModel):
+    id: str
+    status: str
+    progress: dict | None = None
+
+
+class WorkloadRunListItem(BaseModel):
+    id: str
+    project_id: str | None
+    kind: str
+    catalog_item: str | None
+    role_fqcn: str | None
+    status: str
+    error: str | None
+    created_at: str
+
+
+# ---------------------------------------------------------------------------
+# Helper: authorization guard
+# ---------------------------------------------------------------------------
+def _enforce_project_access(project: Project, user: User) -> None:
+    """Raise 403 if user is not owner/admin."""
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+
+
+# ---------------------------------------------------------------------------
+# POST /projects/{project_id}/workloads — trigger run
+# ---------------------------------------------------------------------------
+@router.post(
+    "/projects/{project_id}/workloads",
+    response_model=WorkloadRunResponse,
+    status_code=202,
+    responses={403: {}, 404: {}, 409: {}},
+)
+def trigger_workload_run(
+    project_id: str,
+    body: WorkloadRunRequest,
+    user: CurrentUser,
+    db: DbSession,
+):
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
+
+    _enforce_project_access(project, user)
+
+    if project.state != "active":
+        raise HTTPException(status_code=409, detail=_PROJECT_MUST_BE_ACTIVE)
+
+    run = start_workload_run(
+        db,
+        project_id=project_id,
+        kind=body.kind,
+        catalog_item=body.catalog_item,
+        role_fqcn=body.role_fqcn,
+        target_map=body.target_map,
+        owner_id=user.id,
+    )
+
+    return WorkloadRunResponse(
+        id=run.id,
+        status=run.status,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /projects/{project_id}/workloads — list runs
+# ---------------------------------------------------------------------------
+@router.get(
+    "/projects/{project_id}/workloads",
+    response_model=list[WorkloadRunListItem],
+    responses={403: {}, 404: {}},
+)
+def list_workload_runs(
+    project_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
+
+    _enforce_project_access(project, user)
+
+    runs = (
+        db.query(WorkloadRun)
+        .filter_by(project_id=project_id)
+        .order_by(WorkloadRun.created_at.desc())
+        .all()
+    )
+
+    items = []
+    for r in runs:
+        created_at_str = ""
+        if r.created_at and hasattr(r.created_at, "isoformat"):
+            created_at_str = r.created_at.isoformat()  # type: ignore
+        items.append(
+            WorkloadRunListItem(
+                id=r.id,
+                project_id=r.project_id,
+                kind=r.kind,
+                catalog_item=r.catalog_item,
+                role_fqcn=r.role_fqcn,
+                status=r.status,
+                error=r.error,
+                created_at=created_at_str,
+            )
+        )
+    return items
+
+
+# ---------------------------------------------------------------------------
+# GET /workloads/{run_id} — get run status/progress
+# ---------------------------------------------------------------------------
+@router.get(
+    "/workloads/{run_id}",
+    response_model=WorkloadRunResponse,
+    responses={403: {}, 404: {}},
+)
+def get_workload_run_status(
+    run_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    run = db.get(WorkloadRun, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=_RUN_NOT_FOUND)
+
+    # Load the run's project for authorization
+    if run.project_id:
+        project = db.get(Project, run.project_id)
+        assert project is not None, f"Project {run.project_id} not found"
+        _enforce_project_access(project, user)
+    else:
+        # Orphan run (project deleted) — admin-only
+        if user.role != "admin":
+            raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+
+    # Redis-first progress, DB fallback
+    progress = get_progress(f"workload:{run_id}")
+    if not progress and hasattr(run, "progress"):
+        progress = run.progress  # type: ignore
+
+    return WorkloadRunResponse(
+        id=run.id,
+        status=run.status,
+        progress=progress,
+    )
