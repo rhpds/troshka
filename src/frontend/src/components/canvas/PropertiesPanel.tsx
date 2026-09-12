@@ -1143,6 +1143,7 @@ export default function PropertiesPanel() {
   const [wipeDiskModal, setWipeDiskModal] = useState<{ diskNodeId: string; connVmId: string; vmIsRunning: boolean; diskName: string } | null>(null);
   const [wipeDiskRestart, setWipeDiskRestart] = useState(true);
   const [wipeDiskLoading, setWipeDiskLoading] = useState(false);
+  const [mtuInputValue, setMtuInputValue] = useState<string>("");
 
   React.useEffect(() => {
     fetch("/api/v1/auth/ssh-keys")
@@ -1159,6 +1160,19 @@ export default function PropertiesPanel() {
   }, []);
 
   const node = nodes.find((n) => n.id === nodeId);
+
+  React.useEffect(() => {
+    if (node?.type === "networkNode") {
+      const mtu = (node.data as NetworkNodeData).mtu;
+      if (typeof mtu === "number") {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setMtuInputValue(mtu.toString());
+      } else {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setMtuInputValue("");
+      }
+    }
+  }, [node?.id, node?.type, node?.data]);
 
   if (!node) {
     return (
@@ -3957,7 +3971,8 @@ export default function PropertiesPanel() {
                     {(() => {
                       const mtuMode = and.mtu === "auto" || and.mtu == null ? "auto" : "custom";
                       const mtuValue = typeof and.mtu === "number" ? and.mtu : 1500;
-                      const isInvalid = typeof and.mtu === "number" && (and.mtu < 1280 || and.mtu > 9000);
+                      const inputVal = parseInt(mtuInputValue, 10);
+                      const isInvalid = mtuInputValue !== "" && (!isNaN(inputVal) && (inputVal < 1280 || inputVal > 9000));
 
                       return (
                         <>
@@ -3968,8 +3983,10 @@ export default function PropertiesPanel() {
                               onChange={(e) => {
                                 if (e.target.value === "auto") {
                                   update("mtu", "auto");
+                                  setMtuInputValue("");
                                 } else {
                                   update("mtu", 1500);
+                                  setMtuInputValue("1500");
                                 }
                               }}
                               style={{ flex: "0 0 auto", minWidth: 90 }}
@@ -3981,10 +3998,11 @@ export default function PropertiesPanel() {
                               <input
                                 type="number"
                                 className="props-input"
-                                value={mtuValue}
+                                value={mtuInputValue || mtuValue}
                                 onChange={(e) => {
+                                  setMtuInputValue(e.target.value);
                                   const val = parseInt(e.target.value, 10);
-                                  if (!isNaN(val)) {
+                                  if (!isNaN(val) && val >= 1280 && val <= 9000) {
                                     update("mtu", val);
                                   }
                                 }}
