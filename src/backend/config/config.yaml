@@ -91,3 +91,19 @@ ocp:
   install_via_default: "pod"
   install_via_pod: false
   ops_pod_image: "quay.io/redhat-gpte/troshka-ops-pod:latest"
+
+# Workloads subsystem: repo cache + default git refs.
+#   cache_root: base dir for the agnosticv working copy, bare mirrors, worktrees.
+#   disk_budget_gb: soft cap; least-recently-used worktrees are evicted above it.
+#   agnosticv_branch: agnosticv is a single-branch pull (always master).
+#   default_refs: fallback git ref per repo when a catalog item pins none.
+workloads:
+  cache_root: "/var/lib/troshka/workload-cache"
+  disk_budget_gb: 20
+  agnosticv_branch: "master"
+  default_refs:
+    agnosticd-v2: "main"
+    agnosticd: "development"
+    core_workloads: "main"
+    demo_workloads: "main"
+    namespaced_workloads: "main"
