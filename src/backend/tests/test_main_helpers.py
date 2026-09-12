@@ -335,7 +335,12 @@ class TestStartupClearHealthMonitors:
 
                 _startup_clear_health_monitors()
 
-        mock_redis.delete.assert_called_once_with("deploy:health_monitors")
+        # assert_any_call (not assert_called_once): deploys fall back to daemon
+        # threads when Redis is unavailable, and a leaked deploy thread from an
+        # earlier test can call delete() on this same globally-patched mock
+        # (e.g. delete("progress:deploy:<uuid>")). We only care that OUR function
+        # deleted the health-monitor key.
+        mock_redis.delete.assert_any_call("deploy:health_monitors")
 
     def test_skips_when_redis_unavailable(self):
         """When Redis is unavailable, the function returns without error."""
