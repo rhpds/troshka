@@ -1070,6 +1070,23 @@ def _validate_bridge_name(name):
     return name
 
 
+def _network_arg(net):
+    """Build virt-install --network argument from net dict.
+
+    Returns: "bridge=<b>,model=<m>[,mac=<mac>][,mtu.size=<n>]"
+    """
+    bridge = _validate_bridge_name(net.get("bridge", "br-troshka-00000000"))
+    model = _validate_net_model(net.get("model", "virtio"))
+    arg = f"bridge={bridge},model={model}"
+    mac = net.get("mac", "")
+    if mac:
+        arg += f",mac={_validate_mac(mac)}"
+    mtu = net.get("mtu")
+    if isinstance(mtu, int) and mtu > 0:
+        arg += f",mtu.size={int(mtu)}"
+    return arg
+
+
 def _validate_project_id(pid):
     if not _UUID_RE.match(pid):
         raise ValueError(f"Invalid project ID: {pid}")
@@ -1284,13 +1301,7 @@ def _handle_vm_create(job, params):
         disk_arg = _build_disk_arg(path, disk, disk_cache)
         cmd.extend(["--disk", disk_arg])
     for net in networks:
-        bridge = _validate_bridge_name(net.get("bridge", "br-troshka-00000000"))
-        model = _validate_net_model(net.get("model", "virtio"))
-        mac = net.get("mac", "")
-        net_arg = f"bridge={bridge},model={model}"
-        if mac:
-            net_arg += f",mac={_validate_mac(mac)}"
-        cmd.extend(["--network", net_arg])
+        cmd.extend(["--network", _network_arg(net)])
     if seed_iso:
         cmd.extend(["--disk", f"path={_validate_path(seed_iso)},device=cdrom,bus=sata"])
     headless = _resolve_headless(params)
@@ -4147,6 +4158,10 @@ def _setup_vxlan_bridge(job, ns, host_ip, net, _pid):
 
     _ensure_host_dummy_bridge(job, bridge)
 
+    mtu = net.get("mtu")
+    if isinstance(mtu, int) and mtu > 0:
+        _run_cmd(job, ["ip", "link", "set", bridge, "mtu", str(mtu)], check=False)
+
     _assign_bridge_gateway_ip(job, ns, net, bridge, cidr)
 
     _job_log(job, f"VXLAN {vxlan_if} (VNI {vni}) + bridge {bridge} configured")
@@ -5613,6 +5628,25 @@ def _handle_mesh_join_network(job, params):
         )
 
         _run_cmd(job, ["ip", "link", "set", vxlan_if, "netns", ns])
+
+        mtu = net.get("mtu")
+        if isinstance(mtu, int) and mtu > 0:
+            _run_cmd(
+                job,
+                [
+                    "ip",
+                    "netns",
+                    "exec",
+                    ns,
+                    "ip",
+                    "link",
+                    "set",
+                    vxlan_if,
+                    "mtu",
+                    str(mtu),
+                ],
+                check=False,
+            )
 
         for peer_ip in peers:
             if peer_ip != wg_local_ip:
