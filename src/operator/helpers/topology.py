@@ -62,6 +62,7 @@ def _build_network_entry(data, node, node_id, networks_with_gateway):
         "pxeConfig": data.get("pxeConfig", {}),
         "dnsRecords": data.get("dnsRecords", []),
         "staticLeases": [],
+        "mtu": data.get("mtu"),
     }
 
 

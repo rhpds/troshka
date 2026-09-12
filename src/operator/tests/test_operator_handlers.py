@@ -298,6 +298,47 @@ class TestExtractNetworks:
         nets = extract_networks(topo)
         assert nets[0]["dnsForwarders"] == ["8.8.8.8", "1.1.1.1"]
 
+    def test_mtu_carried_through(self):
+        from helpers.topology import extract_networks
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "net1",
+                    "type": "networkNode",
+                    "data": {
+                        "id": "net1",
+                        "cidr": "10.0.0.0/24",
+                        "mtu": 8900,
+                    },
+                },
+            ],
+            "edges": [],
+        }
+        nets = extract_networks(topo)
+        assert len(nets) == 1
+        assert nets[0]["mtu"] == 8900
+
+    def test_mtu_none_when_absent(self):
+        from helpers.topology import extract_networks
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "net1",
+                    "type": "networkNode",
+                    "data": {
+                        "id": "net1",
+                        "cidr": "10.0.0.0/24",
+                    },
+                },
+            ],
+            "edges": [],
+        }
+        nets = extract_networks(topo)
+        assert len(nets) == 1
+        assert nets[0]["mtu"] is None
+
 
 class TestExtractVms:
     def test_empty_topology(self):
