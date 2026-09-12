@@ -1264,6 +1264,8 @@ def get_cluster_access(project_id: str, user: CurrentUser, db: DbSession):
     project = db.query(Project).filter_by(id=project_id).first()
     if project is None:
         raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
     clusters = resolve_cluster_access(project)
     return {"clusters": clusters}
 
