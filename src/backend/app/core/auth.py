@@ -290,6 +290,7 @@ def _enforce_access(email: str, ocp_username: str | None = None):
 _SCOPED_KEY_ROUTE_ALLOWLIST: dict[str, str] = {
     "get_project": "topology:read",
     "vm_exec": "vm:exec",
+    "get_cluster_access": "cluster:access",
 }
 
 
