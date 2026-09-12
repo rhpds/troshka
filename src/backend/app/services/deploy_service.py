@@ -6937,15 +6937,18 @@ def _deploy_resolve_host(s, project, project_id):
         from app.services.placement import (
             calculate_project_requirements,
             find_available_host,
+            required_network_mtu,
         )
 
         reqs = calculate_project_requirements(project.topology or {})
         pattern_disk_ids = pattern_disk_ids_from_topology(project.topology or {})
+        required_mtu = required_network_mtu(project.topology or {})
         host = find_available_host(
             s,
             reqs["total_vcpus"],
             reqs["total_ram_mb"],
             pattern_disk_ids=pattern_disk_ids,
+            required_mtu=required_mtu,
         )
         if host:
             project.host_id = host.id

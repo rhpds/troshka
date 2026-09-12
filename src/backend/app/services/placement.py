@@ -98,6 +98,25 @@ def sync_host_capacity(db: Session, host: Host):
     host.used_ram_mb = total_ram_mb
 
 
+def required_network_mtu(topology):
+    """Max concrete network-node MTU in the topology, or None if none is concrete."""
+    vals = []
+    for n in (topology or {}).get("nodes", []):
+        if n.get("type") != "networkNode":
+            continue
+        m = (n.get("data") or {}).get("mtu")
+        if isinstance(m, int) and m > 0:
+            vals.append(m)
+    return max(vals) if vals else None
+
+
+def _host_mtu_ok(host, required_mtu):
+    """True if host can satisfy required_mtu (None required = always ok)."""
+    if required_mtu is None:
+        return True
+    return host.uplink_mtu is not None and host.uplink_mtu >= required_mtu
+
+
 def _get_inflight_deploys(host_id: str) -> int:
     """Get count of queued/running deploys targeting a host (from Redis)."""
     try:
@@ -194,6 +213,7 @@ def find_available_host(
     storage_pool_id: str | None = None,
     provider_id: str | None = None,
     pattern_disk_ids: list[str] | None = None,
+    required_mtu: int | None = None,
 ) -> Host | None:
     """Find the least-loaded active host with enough free capacity (with overcommit).
 
@@ -227,6 +247,9 @@ def find_available_host(
                 continue
 
             if not _host_has_pattern_storage(db, host, pattern_disk_ids):
+                continue
+
+            if not _host_mtu_ok(host, required_mtu):
                 continue
 
             inflight = _get_inflight_deploys(host.id)
@@ -431,7 +454,10 @@ def _build_placement_units(
 
 
 def _prepare_hosts(
-    db: Session, pool_id: str | None, provider_id: str | None
+    db: Session,
+    pool_id: str | None,
+    provider_id: str | None,
+    required_mtu: int | None = None,
 ) -> tuple[list[Host], dict[str, dict]] | tuple[None, None]:
     """Query and prepare available hosts with capacity tracking."""
     hosts_query = db.query(Host).filter(
@@ -449,6 +475,11 @@ def _prepare_hosts(
         hosts_query = hosts_query.filter(Host.provider_id == provider_id)
 
     available_hosts = hosts_query.all()
+    if not available_hosts:
+        return None, None
+
+    # Filter by MTU before syncing capacity
+    available_hosts = [h for h in available_hosts if _host_mtu_ok(h, required_mtu)]
     if not available_hosts:
         return None, None
 
@@ -530,6 +561,7 @@ def find_multihost_placement(
     topology: dict,
     pool_id: str | None,
     provider_id: str | None,
+    required_mtu: int | None = None,
 ) -> dict[str, list[str]] | None:
     """Bin-pack VMs across multiple hosts. Returns {host_id: [vm_node_ids]} or None."""
     vm_nodes = [
@@ -542,7 +574,9 @@ def find_multihost_placement(
 
     affinity_groups, ungrouped, anti_affinity_map = _parse_affinity_groups(vm_nodes)
     units = _build_placement_units(affinity_groups, ungrouped)
-    available_hosts, host_remaining = _prepare_hosts(db, pool_id, provider_id)
+    available_hosts, host_remaining = _prepare_hosts(
+        db, pool_id, provider_id, required_mtu
+    )
 
     if not available_hosts or host_remaining is None:
         return None
@@ -597,12 +631,21 @@ def _select_host(
     storage_pool_id: str | None,
     host_id: str | None,
     pattern_disk_ids: list[str] | None = None,
+    required_mtu: int | None = None,
 ) -> tuple[Host | None, str | None, dict | None]:
     """Select a host for the project. Returns (host, storage_pool_id, error_dict)."""
     if host_id:
         host, err = _resolve_specified_host(db, host_id)
         if err or not host:
             return None, storage_pool_id, {"error": err or "Host not found"}
+        if not _host_mtu_ok(host, required_mtu):
+            return (
+                None,
+                storage_pool_id,
+                {
+                    "error": f"Host {host.id[:8]} (cluster MTU {host.uplink_mtu}) cannot run this deployment which requires MTU {required_mtu}"
+                },
+            )
         if not storage_pool_id and host.storage_pool_id:
             storage_pool_id = host.storage_pool_id
         return host, storage_pool_id, None
@@ -620,6 +663,7 @@ def _select_host(
             storage_pool_id=storage_pool_id,
             provider_id=project.provider_id,
             pattern_disk_ids=pattern_disk_ids,
+            required_mtu=required_mtu,
         )
     if not host and not has_anti_affinity and storage_pool_id:
         host = find_available_host(
@@ -629,6 +673,7 @@ def _select_host(
             reqs["requested_eips"],
             provider_id=project.provider_id,
             pattern_disk_ids=pattern_disk_ids,
+            required_mtu=required_mtu,
         )
     return host, storage_pool_id, None
 
@@ -689,6 +734,7 @@ def _try_multihost_placement(
     project: Project,
     storage_pool_id: str | None,
     has_anti_affinity: bool,
+    required_mtu: int | None = None,
 ) -> dict | None:
     """Try multi-host placement. Returns result dict, error dict, or None if no placement found."""
     multihost_provider = project.provider_id
@@ -704,7 +750,7 @@ def _try_multihost_placement(
 
     assert project.topology is not None
     host_assignments = find_multihost_placement(
-        db, project.topology, multihost_pool, multihost_provider
+        db, project.topology, multihost_pool, multihost_provider, required_mtu
     )
     if not host_assignments:
         return None
@@ -812,16 +858,24 @@ def place_project(
         }
 
     has_anti_affinity = _has_anti_affinity(project.topology)
+    required_mtu = required_network_mtu(project.topology)
 
     host, storage_pool_id, error = _select_host(
-        db, project, reqs, has_anti_affinity, storage_pool_id, host_id, pattern_disk_ids
+        db,
+        project,
+        reqs,
+        has_anti_affinity,
+        storage_pool_id,
+        host_id,
+        pattern_disk_ids,
+        required_mtu,
     )
     if error:
         return error
 
     if not host:
         multihost_result = _try_multihost_placement(
-            db, project, storage_pool_id, has_anti_affinity
+            db, project, storage_pool_id, has_anti_affinity, required_mtu
         )
         if isinstance(multihost_result, dict):
             return multihost_result
