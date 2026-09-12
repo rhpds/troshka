@@ -1429,11 +1429,14 @@ def _create_vm_via_troshkad(
     pool=None,
     disk_cache=None,
     clock_offset=None,
+    mtu_map=None,
 ):
     """Create a VM definition via troshkad vms/create."""
     vm_name = _vm_domain_name(project_id, vm["node_id"])
     vm_disks = _find_vm_disks(vm["node_id"], topology)
-    vm_networks = _find_vm_networks(vm["node_id"], topology, vni_map, project_id)
+    vm_networks = _find_vm_networks(
+        vm["node_id"], topology, vni_map, project_id, mtu_map
+    )
 
     disks = _build_vm_disk_list(vm, vm_disks, project_id, pool)
 
@@ -1442,6 +1445,8 @@ def _create_vm_via_troshkad(
         entry = {"bridge": net["bridge"], "model": net.get("model", "virtio")}
         if net["mac"]:
             entry["mac"] = net["mac"]
+        if net.get("mtu") is not None:
+            entry["mtu"] = net["mtu"]
         networks.append(entry)
 
     from app.services.headless import serial_exec_needs_headless
@@ -6357,13 +6362,21 @@ def _clean_stale_domain(host, project_id, domain_name):
 
 
 def _define_single_vm(
-    host, project_id, vm, topology, vni_map, pool, disk_cache, clock_offset
+    host,
+    project_id,
+    vm,
+    topology,
+    vni_map,
+    pool,
+    disk_cache,
+    clock_offset,
+    mtu_map=None,
 ):
     """Define a single VM via troshkad and capture its domain UUID."""
     domain_name = f"troshka-{project_id[:8]}-{vm['node_id'][:8]}"
     _clean_stale_domain(host, project_id, domain_name)
     job_id = _create_vm_via_troshkad(
-        host, project_id, vm, topology, vni_map, pool, disk_cache, clock_offset
+        host, project_id, vm, topology, vni_map, pool, disk_cache, clock_offset, mtu_map
     )
     if not job_id:
         return
@@ -6381,7 +6394,15 @@ def _define_single_vm(
 
 
 def _deploy_define_vms(
-    host, project_id, vms, topology, vni_map, pool, disk_cache, clock_offset
+    host,
+    project_id,
+    vms,
+    topology,
+    vni_map,
+    pool,
+    disk_cache,
+    clock_offset,
+    mtu_map=None,
 ):
     for vi, vm in enumerate(vms):
         items = _build_vm_progress_items(vms, vi)
@@ -6390,7 +6411,15 @@ def _deploy_define_vms(
         )
         try:
             _define_single_vm(
-                host, project_id, vm, topology, vni_map, pool, disk_cache, clock_offset
+                host,
+                project_id,
+                vm,
+                topology,
+                vni_map,
+                pool,
+                disk_cache,
+                clock_offset,
+                mtu_map,
             )
         except TroshkadError as e:
             logger.exception("Deploy %s: VM creation failed: %s", project_id[:8], e)
@@ -7127,6 +7156,7 @@ def _deploy_single_host_execute(
     lb_config,
     external_ips,
     resume_from: str | None = None,
+    mtu_map: dict | None = None,
 ):
     """Create VMs, start them, and finalize single-host deploy."""
     vms = _extract_vms(topology)
@@ -7142,7 +7172,15 @@ def _deploy_single_host_execute(
     if not _should_skip(resume_from, "vms"):
         _checkpoint(s, project_id, "vms")
         _deploy_define_vms(
-            host, project_id, vms, topology, vni_map, pool, disk_cache, clock_offset
+            host,
+            project_id,
+            vms,
+            topology,
+            vni_map,
+            pool,
+            disk_cache,
+            clock_offset,
+            mtu_map,
         )
 
         project.topology = topology
@@ -7313,6 +7351,19 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
 
         topology, clock_offset, vni_map = _deploy_init_context(s, project, project_id)
 
+        # Resolve per-network MTU
+        from app.services.deploy_topology import (
+            network_mtu_map,
+            resolve_topology_mtus,
+        )
+
+        spans_hosts = bool(project.mesh_network_host_id)
+        mtu_warnings = resolve_topology_mtus(topology, host.uplink_mtu, spans_hosts)
+        for w in mtu_warnings:
+            _update_deploy_progress(project_id, "networks", w)
+            logger.warning("Deploy %s: MTU: %s", project_id[:8], w)
+        mtu_map = network_mtu_map(topology, host.uplink_mtu, spans_hosts)
+
         # Multi-host deploy: mesh setup -> network setup -> VM distribution
         if project.mesh_network_host_id:
             logger.info(
@@ -7362,6 +7413,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             ctx["lb_config"],
             ctx["external_ips"],
             resume_from,
+            mtu_map,
         )
     except Exception as e:
         _deploy_handle_failure(s, project_id, e)

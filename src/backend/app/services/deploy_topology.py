@@ -870,7 +870,11 @@ def metadata_bridges_for_topology(topology: dict, vni_map: dict) -> list[str]:
 
 
 def _find_vm_networks(
-    vm_node_id: str, topology: dict, vni_map: dict, project_id: str = ""
+    vm_node_id: str,
+    topology: dict,
+    vni_map: dict,
+    project_id: str = "",
+    mtu_map: dict | None = None,
 ) -> list[dict]:
     """Find networks connected to a VM via NIC handles."""
     edges = topology.get("edges", [])
@@ -878,7 +882,9 @@ def _find_vm_networks(
     networks = []
 
     for edge in edges:
-        entry = _resolve_vm_network_entry(edge, vm_node_id, nodes, vni_map, project_id)
+        entry = _resolve_vm_network_entry(
+            edge, vm_node_id, nodes, vni_map, project_id, mtu_map
+        )
         if entry is not None:
             networks.append(entry)
 
@@ -891,6 +897,7 @@ def _resolve_vm_network_entry(
     nodes: list[dict],
     vni_map: dict,
     project_id: str,
+    mtu_map: dict | None = None,
 ) -> dict | None:
     handle, network_node_id = _extract_nic_edge(edge, vm_node_id)
     if not handle:
@@ -906,7 +913,12 @@ def _resolve_vm_network_entry(
         return None
 
     vni = vni_map[network_node_id]
-    return {"bridge": f"br-{vni}", "mac": mac, "nic_id": handle, "model": model}
+    entry = {"bridge": f"br-{vni}", "mac": mac, "nic_id": handle, "model": model}
+    if mtu_map:
+        mtu = mtu_map.get(network_node_id)
+        if mtu is not None:
+            entry["mtu"] = mtu
+    return entry
 
 
 def _extract_nic_edge(edge: dict, vm_node_id: str) -> tuple[str | None, str | None]:
@@ -1863,3 +1875,32 @@ def _compute_dhcp_bounds(
     except ValueError:
         pass
     return range_start, range_end
+
+
+def network_mtu_map(topology, host_uplink_mtu, spans_hosts):
+    """{network_node_id: resolved_mtu} for every network node."""
+    from app.services.network_mtu import resolve_network_mtu
+
+    out = {}
+    for node in topology.get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        mtu, _ = resolve_network_mtu(node.get("data", {}), host_uplink_mtu, spans_hosts)
+        out[node["id"]] = mtu
+    return out
+
+
+def resolve_topology_mtus(topology, host_uplink_mtu, spans_hosts):
+    """Write resolved concrete MTU back into each network node; return warnings."""
+    from app.services.network_mtu import resolve_network_mtu
+
+    warnings = []
+    for node in topology.get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        data = node.setdefault("data", {})
+        mtu, warn = resolve_network_mtu(data, host_uplink_mtu, spans_hosts)
+        data["mtu"] = mtu
+        if warn:
+            warnings.append(f"{data.get('name', node['id'])}: {warn}")
+    return warnings
