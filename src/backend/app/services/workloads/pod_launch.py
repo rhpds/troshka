@@ -89,7 +89,7 @@ def launch_runner_pod(
             ee_image=ee_image,
             command=command,
             files=files,
-            _networks=networks,
+            cluster_nads=networks,
         )
     return _launch_troshkad(
         host,
@@ -142,10 +142,9 @@ def _launch_kubevirt(
     ee_image: str,
     command: list[str],
     files: dict[str, str],
-    _networks: list,
+    cluster_nads: list,
 ) -> str:
     """KubeVirt runner-pod path: build Pod+Secret manifests and create via k8s."""
-    # KubeVirt runner project-network attachment is wired in Task 6 (run_service maps project NADs -> cluster_nads)
     from app.services.ocp.ops_pod_scaffold import build_ops_pod_kubevirt_manifests
     from app.services.providers.kubevirt import create_ops_pod
 
@@ -157,7 +156,7 @@ def _launch_kubevirt(
         command=command,
         env={},
         config_files=files,
-        cluster_nads=[],
+        cluster_nads=cluster_nads,
         bmc_nad=None,
         dns_nameserver="",
         image=ee_image,

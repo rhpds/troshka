@@ -351,3 +351,13 @@ def job_provision_kubevirt(provider_id: str):
             s.commit()
     finally:
         s.close()
+
+
+def job_run_workload(run_id: str):
+    """Run a workload (catalog item or ad-hoc role).
+
+    Previously defined in run_service.py.
+    """
+    from app.services.workloads.run_service import run_workload_job
+
+    run_workload_job(run_id)
