@@ -151,8 +151,12 @@ User / API
 
 **Cluster Access Resolver** *(backend)*
 - For each target cluster in the project, produces `{api_url, api_token}` where
-  `api_token` is a cluster-admin **SA token** (minted/read via the stored admin
-  kubeconfig harvested at install / recert).
+  `api_token` is a cluster-admin **SA token minted via the Kubernetes
+  `TokenRequest` API**, using a client bootstrapped from the stored admin
+  kubeconfig (`Project.topology`/`deployed_topology` control-plane node
+  `data.ocpKubeconfig`, read via `_stored_cluster_creds`). Mirrors AgnosticD's
+  `openshift_cluster_admin_service_account` role; works even when the stored
+  kubeconfig is client-cert based.
 - Injects a `clusters:` dict keyed by cluster name into the resolved extra-vars;
   the AgnosticD `openshift_workload_deployer` translates `workloads[].clusters`
   into per-role `K8S_AUTH_HOST`/`K8S_AUTH_API_KEY`/`K8S_AUTH_VERIFY_SSL=false`.
@@ -170,9 +174,13 @@ User / API
 - Receives resolved artifacts as 0600 read-only mounts (extra-vars, inventory,
   scoped key, cluster access, needed cloud-cred set). Never receives git creds or
   the Vault key.
-- Runs `ansible-navigator` with the item's public EE image (nested podman in the
-  privileged pod), driving AgnosticD-v2's `openshift-workloads` config
-  (`config: openshift-workloads`, `workloads:` list, `requirements_content`).
+- **The runner pod's container image IS the resolved EE image** (public, from
+  `__meta__.deployer.execution_environment.image`). It runs `ansible-playbook`
+  (the AgnosticD-v2 `openshift-workloads` config) **directly inside the EE** — no
+  `ansible-navigator`, no nested podman (the EE already is a self-contained ansible
+  runtime). The AgnosticD-v2 checkout and the workload collections are delivered
+  from the Plan 1 repo cache as read-only mounts (`ANSIBLE_COLLECTIONS_PATH`),
+  with `requirements_content` resolved offline from the cache where possible.
 - Ad-hoc single-role runs synthesize a minimal `workloads: [<role>]` +
   `requirements_content` for that role's collection, then run the same path.
 
