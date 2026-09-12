@@ -5090,7 +5090,7 @@ def _wait_for_old_kubevirt_resources(_ca, _cv1, _ns, cr_name, project_id):
         )
 
 
-def _deploy_kubevirt_native(project_id, project, host, topology, db):
+def _deploy_kubevirt_native(project_id, project, host, topology, db, mtu_map):
     """Deploy via KubeVirt operator — create TroshkaProject CR and poll status."""
     from app.models.provider import Provider
     from app.services.providers import get_provider_driver
@@ -5211,6 +5211,7 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db):
                 exec_ssh_key=exec_privkey_pem,
                 central_s3_config=central_s3_config,
                 db=db,
+                mtu_map=mtu_map,
             )
         except Exception as e:
             if "AlreadyExists" in str(e):
@@ -7400,7 +7401,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
 
         # KubeVirt native: delegate entire deploy to operator via CRDs
         if host.host_type == "kubevirt-cluster":
-            _deploy_kubevirt_native(project_id, project, host, topology, s)
+            _deploy_kubevirt_native(project_id, project, host, topology, s, mtu_map)
             # _deploy_kubevirt_native blocks until the VMs reach Running (or sets
             # project.state="error"), so this is the correct point to launch the
             # pod-default OCP install. Without it a pod OCP project on a kubevirt

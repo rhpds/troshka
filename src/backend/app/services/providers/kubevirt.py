@@ -1384,6 +1384,15 @@ class KubeVirtDriver(ProviderDriver):
                 "credentialsSecret": "s3-obc-credentials",  # pragma: allowlist secret
             }
 
+        # Enrich network nodes with resolved MTU from the map
+        mtu_map = kwargs.get("mtu_map", {})
+        if mtu_map:
+            for node in topology.get("nodes", []):
+                if node.get("type") == "networkNode":
+                    net_id = node.get("id")
+                    if net_id in mtu_map:
+                        node.setdefault("data", {})["mtu"] = mtu_map[net_id]
+
         project_cr = {
             "apiVersion": f"{CRD_GROUP}/{CRD_VERSION}",
             "kind": "TroshkaProject",

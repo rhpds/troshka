@@ -375,3 +375,39 @@ def test_create_ops_pod_retries_recreate_through_terminating_window():
         grace_period_seconds=0,
     )
     assert core.create_namespaced_pod.call_count == 3
+
+
+def test_deploy_project_enriches_topology_with_mtu():
+    """Verify deploy_project adds MTU from mtu_map to network nodes."""
+    provider = _make_provider()
+    driver = get_provider_driver(provider)
+
+    topology = {
+        "nodes": [
+            {"type": "networkNode", "id": "net1", "data": {"cidr": "10.0.0.0/24"}},
+            {"type": "vmNode", "id": "vm1"},
+        ]
+    }
+    s3_config = {}
+    mtu_map = {"net1": 8950}
+
+    with (
+        patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients,
+        patch("app.services.providers.kubevirt._ensure_operator_crds"),
+        patch("app.services.providers.kubevirt._ensure_s3_secret"),
+        patch("app.services.providers.kubevirt._ensure_cache_s3_secrets"),
+        patch("app.services.s3_storage.get_cluster_s3_config", return_value=None),
+    ):
+        mock_custom = MagicMock()
+        mock_core = MagicMock()
+        mock_clients.return_value = (mock_custom, mock_core, MagicMock())
+
+        driver.deploy_project(provider, "proj123", topology, s3_config, mtu_map=mtu_map)
+
+        # Verify the CR was created with MTU in the network node
+        call_args = mock_custom.create_namespaced_custom_object.call_args
+        body = call_args.kwargs["body"]
+        net_node = next(
+            n for n in body["spec"]["topology"]["nodes"] if n["type"] == "networkNode"
+        )
+        assert net_node["data"]["mtu"] == 8950

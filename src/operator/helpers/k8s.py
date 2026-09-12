@@ -86,6 +86,10 @@ def build_nad(network_cr):
         "topology": "layer2",
     }
 
+    mtu = _spec.get("mtu")
+    if isinstance(mtu, int) and mtu > 0:
+        config["mtu"] = mtu
+
     return {
         "apiVersion": "k8s.cni.cncf.io/v1",
         "kind": "NetworkAttachmentDefinition",

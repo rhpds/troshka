@@ -1064,6 +1064,9 @@ def _create_network_crs(
         }
         if net.get("pxeConfig"):
             net_spec["pxeConfig"] = net["pxeConfig"]
+        mtu = net.get("mtu")
+        if isinstance(mtu, int) and mtu > 0:
+            net_spec["mtu"] = mtu
 
         net_cr = {
             "apiVersion": f"{CRD_GROUP}/{CRD_VERSION}",
