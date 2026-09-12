@@ -177,6 +177,10 @@ def update_operator(provider) -> dict:
 
     from app.services.providers.kubevirt import _ensure_operator_crds
 
+    # NOTE: _ensure_operator_crds applies the operator CRDs BUNDLED in THIS
+    # (backend) image (src/operator/crds/*). A CRD schema change therefore only
+    # takes effect once the backend image is rebuilt — CI's backend build filter
+    # includes src/operator/crds/ so CRD edits trigger a backend rebuild.
     try:
         _ensure_operator_crds(provider)
     except Exception as e:
