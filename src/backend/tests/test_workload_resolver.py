@@ -67,3 +67,99 @@ def test_resolve_requires_git_config(monkeypatch):
             resolver.resolve_catalog_item(db, "agd-v2.x.prod")
     finally:
         db.close()
+
+
+def test_authenticated_url_embeds_token_for_https():
+    url_with_token = resolver._authenticated_url(
+        "https://github.com/rhpds/agnosticv.git", "s3cr3t"
+    )
+    assert "x-access-token:s3cr3t@github.com" in url_with_token
+    assert "rhpds/agnosticv.git" in url_with_token
+
+
+def test_authenticated_url_passes_through_without_token():
+    plain = "https://github.com/rhpds/agnosticv.git"
+    assert resolver._authenticated_url(plain, None) == plain
+    assert resolver._authenticated_url(plain, "") == plain
+
+
+def test_authenticated_url_passes_through_ssh():
+    ssh = "git@github.com:rhpds/agnosticv.git"
+    assert resolver._authenticated_url(ssh, "token") == ssh
+
+
+def test_resolve_catalog_item_with_token(monkeypatch):
+    db = TestSession()
+    captured_url = []
+
+    def _capture_url(url):
+        captured_url.append(url)
+        return "/fake/root"
+
+    try:
+        secret_store.set_secret(db, "vault_key", "testpass")
+        secret_store.set_json_secret(
+            db,
+            "agnosticv_git",
+            {"url": "https://github.com/rhpds/agnosticv.git", "token": "s3cr3t"},
+        )
+        monkeypatch.setattr(repo_cache, "ensure_agnosticv", _capture_url)
+        monkeypatch.setattr(
+            agnosticv, "resolve_path", lambda _root, _cid: "agd_v2/x/prod.yaml"
+        )
+        monkeypatch.setattr(
+            agnosticv,
+            "merge_path",
+            lambda _root, _rel: {
+                "__meta__": {
+                    "deployer": {
+                        "scm_ref": "main",
+                        "execution_environment": {"image": "ee:1"},
+                    }
+                }
+            },
+        )
+        monkeypatch.setattr(agnosticv, "decrypt_vault_strings", lambda data, _pw: data)
+        resolver.resolve_catalog_item(db, "agd-v2.x.prod")
+        assert len(captured_url) == 1
+        assert "x-access-token:s3cr3t@github.com" in captured_url[0]
+        assert "rhpds/agnosticv.git" in captured_url[0]
+    finally:
+        db.close()
+
+
+def test_resolve_catalog_item_without_token(monkeypatch):
+    db = TestSession()
+    captured_url = []
+
+    def _capture_url(url):
+        captured_url.append(url)
+        return "/fake/root"
+
+    try:
+        secret_store.set_secret(db, "vault_key", "testpass")
+        secret_store.set_json_secret(
+            db, "agnosticv_git", {"url": "https://github.com/rhpds/agnosticv.git"}
+        )
+        monkeypatch.setattr(repo_cache, "ensure_agnosticv", _capture_url)
+        monkeypatch.setattr(
+            agnosticv, "resolve_path", lambda _root, _cid: "agd_v2/x/prod.yaml"
+        )
+        monkeypatch.setattr(
+            agnosticv,
+            "merge_path",
+            lambda _root, _rel: {
+                "__meta__": {
+                    "deployer": {
+                        "scm_ref": "main",
+                        "execution_environment": {"image": "ee:1"},
+                    }
+                }
+            },
+        )
+        monkeypatch.setattr(agnosticv, "decrypt_vault_strings", lambda data, _pw: data)
+        resolver.resolve_catalog_item(db, "agd-v2.x.prod")
+        assert len(captured_url) == 1
+        assert captured_url[0] == "https://github.com/rhpds/agnosticv.git"
+    finally:
+        db.close()

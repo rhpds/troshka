@@ -56,4 +56,6 @@ def set_json_secret(db: Session, name: str, obj: Any) -> None:
 
 def get_json_secret(db: Session, name: str) -> Any:
     raw = get_secret(db, name)
-    return None if raw is None else json.loads(raw)
+    if not raw:
+        return None
+    return json.loads(raw)

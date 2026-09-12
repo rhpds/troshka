@@ -75,3 +75,15 @@ def test_json_secret_roundtrip():
         assert "github.com" not in row.value
     finally:
         db.close()
+
+
+def test_get_json_secret_returns_none_on_invalid_decrypt():
+    db = TestSession()
+    try:
+        # Simulate a corrupted or key-rotated secret by storing an invalid Fernet token.
+        # decrypt() returns "" on InvalidToken, so get_json_secret should return None.
+        db.add(SystemConfig(key="workload.secret.broken_t8", value="not-a-valid-token"))
+        db.commit()
+        assert secret_store.get_json_secret(db, "broken_t8") is None
+    finally:
+        db.close()
