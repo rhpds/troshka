@@ -23,6 +23,7 @@ class RunPaths:
     cloud_creds: str = f"{_WORKDIR}/cloud-creds.env"
     agnosticd: str = f"{_WORKDIR}/agnosticd-v2"
     log: str = f"{_WORKDIR}/run.log"
+    kubeconfig: str = f"{_WORKDIR}/kubeconfig"
 
 
 def build_artifact_files(
@@ -31,6 +32,7 @@ def build_artifact_files(
     inventory_yaml: str,
     cluster_access: dict,
     cloud_creds: dict | None,
+    kubeconfig: str | None = None,
     paths: RunPaths,
 ) -> dict[str, str]:
     """Map container paths to artifact contents for 0600 read-only mounts.
@@ -45,6 +47,8 @@ def build_artifact_files(
     }
     if cloud_creds:
         files[paths.cloud_creds] = "\n".join(f"{k}={v}" for k, v in cloud_creds.items())
+    if kubeconfig:
+        files[paths.kubeconfig] = kubeconfig
     return files
 
 
@@ -68,6 +72,7 @@ def build_run_command(
     safe_extra_vars = paths.extra_vars.replace("'", "'\\''")
     safe_inventory = paths.inventory.replace("'", "'\\''")
     safe_log = paths.log.replace("'", "'\\''")
+    safe_kubeconfig = paths.kubeconfig.replace("'", "'\\''")
 
     script_parts = [
         "set -euo pipefail",
@@ -78,6 +83,8 @@ def build_run_command(
         f"cd '{safe_agnosticd}/ansible'",
         # Point ANSIBLE_CONFIG to repo root's ansible.cfg (roles_path, etc.)
         f"export ANSIBLE_CONFIG='{safe_agnosticd}/ansible.cfg'",
+        # Export KUBECONFIG (file only exists when delivered; unconditional path is fine)
+        f"export KUBECONFIG='{safe_kubeconfig}'",
         # Install dynamic dependencies (collections from requirements_content)
         "ansible-playbook install_dynamic_dependencies.yml"
         f" -e @'{safe_extra_vars}'"

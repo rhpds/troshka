@@ -12,6 +12,7 @@ from app.core.database import SessionLocal
 from app.core.redis import enqueue_job
 from app.models.project import Project
 from app.models.workload_run import WorkloadRun
+from app.services.deploy_service import _stored_cluster_creds
 from app.services.workloads.inventory import (
     build_inventory_yaml,
     validate_ansible_groups,
@@ -106,11 +107,17 @@ def run_workload_job(run_id: str) -> None:
         if item.requirements_content:
             extra_vars["requirements_content"] = item.requirements_content
 
+        # Read stored kubeconfig from the first cluster's control-plane node (D12: no API calls)
+        kubeconfig = next(
+            (kc for (_pw, kc) in _stored_cluster_creds(topo).values() if kc), None
+        )
+
         files = build_artifact_files(
             extra_vars=extra_vars,
             inventory_yaml=inv,
             cluster_access={},
             cloud_creds=None,
+            kubeconfig=kubeconfig,
             paths=paths,
         )
 

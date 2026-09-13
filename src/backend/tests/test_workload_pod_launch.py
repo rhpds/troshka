@@ -107,3 +107,59 @@ def test_launch_runner_pod_kubevirt(monkeypatch):
     assert fake_build_manifests.call_args.kwargs["image"] == "ee:2"
     # Assert runner Pod gets restart_policy="Never" (not "Always" like OCP ops pod)
     assert fake_build_manifests.call_args.kwargs["restart_policy"] == "Never"
+
+
+def test_build_artifact_files_with_kubeconfig():
+    """Verify kubeconfig lands in the files map when provided."""
+    paths = pod_launch.RunPaths()
+    files = pod_launch.build_artifact_files(
+        extra_vars={"a": 1},
+        inventory_yaml="plugin: troshka.cloud.troshka\n",
+        cluster_access={},
+        cloud_creds=None,
+        kubeconfig="KC-CONTENTS",
+        paths=paths,
+    )
+    assert paths.kubeconfig in files
+    assert files[paths.kubeconfig] == "KC-CONTENTS"
+
+
+def test_build_artifact_files_without_kubeconfig():
+    """Verify kubeconfig is omitted from the files map when None."""
+    paths = pod_launch.RunPaths()
+    files = pod_launch.build_artifact_files(
+        extra_vars={"a": 1},
+        inventory_yaml="plugin: troshka.cloud.troshka\n",
+        cluster_access={},
+        cloud_creds=None,
+        kubeconfig=None,
+        paths=paths,
+    )
+    assert paths.kubeconfig not in files
+
+
+def test_build_run_command_exports_kubeconfig():
+    """Verify KUBECONFIG is exported before ansible-playbook invocation."""
+    paths = pod_launch.RunPaths()
+    item = SimpleNamespace(
+        extra_vars={"config": "openshift-workloads"},
+        ee_image="ee:1",
+        scm_ref="main",
+        requirements_content=None,
+    )
+    cmd = pod_launch.build_run_command(
+        item,
+        paths,
+        agnosticd_v2_url="https://github.com/rhpds/agnosticd-v2.git",
+        scm_ref="main",
+    )
+    joined = " ".join(cmd)
+    # Verify KUBECONFIG is exported
+    assert "export KUBECONFIG=" in joined
+    assert paths.kubeconfig in joined
+    # Verify KUBECONFIG export appears BEFORE ansible-playbook
+    kubeconfig_pos = joined.find("export KUBECONFIG=")
+    ansible_pos = joined.find("ansible-playbook")
+    assert (
+        kubeconfig_pos < ansible_pos
+    ), "KUBECONFIG must be set before ansible-playbook"
