@@ -13,6 +13,12 @@ interface DeployProgress {
   items?: string[];
 }
 
+interface WorkloadProgress {
+  run_id?: string;
+  step: string;
+  detail: string;
+}
+
 export interface OcpHealth {
   phase: string;
   detail: string;
@@ -27,6 +33,7 @@ interface VmStateSocket {
   projectState: string | null;
   deployError: string | null;
   deployProgress: DeployProgress | null;
+  workloadProgress: WorkloadProgress | null;
   ocpHealth: OcpHealth | null;
   topologyUpdate: any | null;
   externalIpsUpdate: Array<{ id: string; name: string; ip?: string; _private_ip?: string; state?: string }> | null;
@@ -49,6 +56,7 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
   const [projectState, setProjectState] = useState<string | null>(null);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [deployProgress, setDeployProgress] = useState<DeployProgress | null>(null);
+  const [workloadProgress, setWorkloadProgress] = useState<WorkloadProgress | null>(null);
   const [ocpHealth, setOcpHealth] = useState<OcpHealth | null>(null);
   const [topologyUpdate, setTopologyUpdate] = useState<any | null>(null);
   const [externalIpsUpdate, setExternalIpsUpdate] = useState<VmStateSocket["externalIpsUpdate"]>(null);
@@ -124,6 +132,11 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
             }
             break;
           }
+          case "workload-progress": {
+            const wp = msg.progress || msg;
+            setWorkloadProgress({ run_id: wp.run_id, step: wp.step || "", detail: wp.detail || "" });
+            break;
+          }
           case "ocp-health":
             setOcpHealth({ phase: msg.phase, detail: msg.detail, items: msg.items });
             break;
@@ -177,5 +190,5 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
     };
   }, [connect]);
 
-  return { connected, vmStates, vmProgress, vmBootDevs, projectState, deployError, deployProgress, ocpHealth, topologyUpdate, externalIpsUpdate, deleted, timerWarning, timerFired, autoStopExpiresAt, lifetimeExpiresAt, autoStopped };
+  return { connected, vmStates, vmProgress, vmBootDevs, projectState, deployError, deployProgress, workloadProgress, ocpHealth, topologyUpdate, externalIpsUpdate, deleted, timerWarning, timerFired, autoStopExpiresAt, lifetimeExpiresAt, autoStopped };
 }
