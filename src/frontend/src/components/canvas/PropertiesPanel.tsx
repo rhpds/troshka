@@ -2271,6 +2271,27 @@ export default function PropertiesPanel() {
               cluster-level now, projected onto member VMs at deploy). */}
           <div className="props-divider" />
 
+          {/* Ansible Groups (workloads inventory targeting) */}
+          <div className="props-section">
+            <div className="props-section-title">Ansible Groups</div>
+            <div className="props-section-body">
+              <input
+                className="props-input"
+                value={((data.tags || {}).AnsibleGroup as string) || ""}
+                onChange={(e) =>
+                  update("tags", { ...(data.tags || {}), AnsibleGroup: e.target.value })
+                }
+                placeholder="e.g. bastions, webservers"
+                style={{ width: "100%", fontSize: 11 }}
+              />
+              <div style={{ fontSize: 10, opacity: 0.6, marginTop: 4 }}>
+                Comma-separated. VM-targeted runs need a name + first-NIC IP; SSH mode
+                needs exactly one "bastions" VM with an external IP.
+              </div>
+            </div>
+          </div>
+          <div className="props-divider" />
+
           {/* Tags Section */}
           <div className="props-section">
             <div className="props-section-title" style={{ cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }} onClick={() => toggleSection("tags")}>
