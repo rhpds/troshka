@@ -65,6 +65,15 @@ class WorkloadRunListItem(BaseModel):
     created_at: str
 
 
+class InventoryPreviewRequest(BaseModel):
+    target_map: dict | None = None
+
+
+class InventoryPreviewResponse(BaseModel):
+    groups: dict[str, list[str]]
+    errors: list[str]
+
+
 # ---------------------------------------------------------------------------
 # Helper: authorization guard
 # ---------------------------------------------------------------------------
@@ -226,3 +235,38 @@ def get_workload_run_log(run_id: str, user: CurrentUser, db: DbSession):
     return WorkloadLogResponse(
         id=run.id, status=run.status, log=get_workload_log(db, run)
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /projects/{project_id}/workloads/inventory-preview — preview inventory
+# ---------------------------------------------------------------------------
+@router.post(
+    "/projects/{project_id}/workloads/inventory-preview",
+    response_model=InventoryPreviewResponse,
+    responses={403: {}, 404: {}},
+)
+def preview_workload_inventory(
+    project_id: str,
+    body: InventoryPreviewRequest,  # noqa: ARG001 — reserved for future scoping
+    user: CurrentUser,
+    db: DbSession,
+):
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
+    _enforce_project_access(project, user)
+
+    from app.services.workloads.inventory import (
+        InventoryError,
+        preview_inventory,
+        validate_ansible_groups,
+    )
+
+    topo = project.deployed_topology or project.topology or {}
+    groups = preview_inventory(topo)
+    errors: list[str] = []
+    try:
+        validate_ansible_groups(topo, require_bastion=(not _has_ocp(project)))
+    except InventoryError as exc:
+        errors.append(str(exc))
+    return InventoryPreviewResponse(groups=groups, errors=errors)
