@@ -383,6 +383,7 @@ def test_finalize_persists_log_tail_for_success():
 
     db = TestSession()
     saved = db.get(WorkloadRun, run_id)
+    assert saved is not None
     assert saved.status == "succeeded"
     assert saved.log_ref is not None
     assert len(saved.log_ref) == _LOG_TAIL_BYTES

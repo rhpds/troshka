@@ -436,6 +436,7 @@ def test_get_run_log_endpoint_terminal():
     rid = _create_workload_run(pid, kind="ad_hoc", status="succeeded")
     db = TestSession()
     run = db.get(WorkloadRun, rid)
+    assert run is not None
     run.log_ref = "hello from the pod"
     db.commit()
     db.close()
