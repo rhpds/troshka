@@ -12,6 +12,7 @@ import { useCanvasStore, computeTopologyDirty, computeTopologyDiff, setLatestVmS
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
 import RunWorkloadModal from "@/components/canvas/RunWorkloadModal";
+import WorkloadRunDetailModal from "@/components/canvas/WorkloadRunDetailModal";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
 import { useVmStateSocket } from "@/hooks/useVmStateSocket";
 import AlertModal from "@/components/AlertModal";
@@ -1116,6 +1117,13 @@ export default function ProjectCanvasPage() {
             showToast("VM snapshot saved to library");
           }}
           onClose={() => setSnapshotTarget(null)}
+        />
+      )}
+      {openRunId && (
+        <WorkloadRunDetailModal
+          runId={openRunId}
+          wsNudge={ws.workloadProgress}
+          onClose={() => setOpenRunId(null)}
         />
       )}
       {showMigrate && (
