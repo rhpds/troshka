@@ -134,7 +134,8 @@ def test_synthesize_ad_hoc_minimal():
     assert item.extra_vars["config"] == "openshift-workloads"
     assert item.extra_vars["workloads"] == ["redhat.openshift.install_operator"]
     assert item.requirements_content == {"collections": [{"name": "redhat.openshift"}]}
-    assert item.ee_image == "quay.io/redhat-gpte/troshka-runner:latest"
+    # Verify ad-hoc uses the configured default EE image (not the dead troshka-runner)
+    assert item.ee_image == "quay.io/redhat-gpte/troshka-ops-pod:latest"
     assert item.scm_ref is None
     db.close()
 

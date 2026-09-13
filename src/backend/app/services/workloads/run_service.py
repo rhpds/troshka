@@ -133,7 +133,9 @@ def run_workload_job(run_id: str) -> None:
         launch_runner_pod(
             host,
             project,
-            ee_image=item.ee_image or "quay.io/redhat-gpte/troshka-runner:latest",
+            ee_image=item.ee_image
+            or getattr(config.workloads, "default_ee_image", None)
+            or "quay.io/redhat-gpte/troshka-ops-pod:latest",
             command=command,
             files=files,
             networks=networks,
@@ -163,6 +165,8 @@ def _synthesize_ad_hoc(db, run):
     """
     from types import SimpleNamespace
 
+    from app.core.config import config
+
     if not run.role_fqcn:
         raise RuntimeError("Ad-hoc run requires role_fqcn")
 
@@ -188,7 +192,8 @@ def _synthesize_ad_hoc(db, run):
 
     return SimpleNamespace(
         extra_vars=extra_vars,
-        ee_image="quay.io/redhat-gpte/troshka-runner:latest",
+        ee_image=getattr(config.workloads, "default_ee_image", None)
+        or "quay.io/redhat-gpte/troshka-ops-pod:latest",
         scm_ref=None,
         requirements_content=requirements_content,
     )
