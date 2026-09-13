@@ -40,6 +40,7 @@ class WorkloadRunRequest(BaseModel):
     # (git-sourced), e.g. {"collections": [{"name": "https://github.com/rhpds/
     # core_workloads.git", "type": "git", "version": "main"}]}.
     requirements_content: dict | None = None
+    ee_image: str | None = None
 
 
 class WorkloadRunResponse(BaseModel):
@@ -119,6 +120,7 @@ def trigger_workload_run(
         role_fqcn=body.role_fqcn,
         target_map=body.target_map,
         requirements_content=body.requirements_content,
+        ee_image=body.ee_image,
         owner_id=user.id,
     )
 

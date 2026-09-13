@@ -494,3 +494,29 @@ def test_inventory_preview_valid_ssh_topology():
     body = r.json()
     assert body["errors"] == []
     assert body["groups"]["bastions"] == ["bastion"]
+
+
+def test_trigger_workload_run_with_custom_ee_image():
+    """POST with ee_image sets it on the WorkloadRun."""
+    pid = _create_project(state="active")
+
+    with patch("app.services.workloads.run_service.enqueue_job"):
+        resp = client.post(
+            f"/api/v1/projects/{pid}/workloads",
+            json={
+                "kind": "ad_hoc",
+                "role_fqcn": "demo_workloads.test_role",
+                "ee_image": "quay.io/example/custom-ee:latest",
+            },
+        )
+
+        assert resp.status_code == 202
+        data = resp.json()
+        run_id = data["id"]
+
+        # Load the run from the DB and verify ee_image was persisted
+        db = TestSession()
+        run = db.get(WorkloadRun, run_id)
+        assert run is not None, f"WorkloadRun {run_id} not found in DB"
+        assert run.ee_image == "quay.io/example/custom-ee:latest"
+        db.close()

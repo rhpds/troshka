@@ -46,6 +46,7 @@ def start_workload_run(
     role_fqcn=None,
     target_map=None,
     requirements_content=None,
+    ee_image=None,
     owner_id=None,
 ) -> WorkloadRun:
     run = WorkloadRun(
@@ -55,6 +56,7 @@ def start_workload_run(
         role_fqcn=role_fqcn,
         target_map=target_map,
         requirements_content=requirements_content,
+        ee_image=ee_image,
         owner_id=owner_id,
         status="pending",
     )
@@ -156,7 +158,8 @@ def run_workload_job(run_id: str) -> None:
         launch_runner_pod(
             host,
             project,
-            ee_image=item.ee_image
+            ee_image=run.ee_image
+            or item.ee_image
             or getattr(config.workloads, "default_ee_image", None)
             or "quay.io/agnosticd/ee-multicloud:chained-latest",
             command=command,

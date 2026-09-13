@@ -48,7 +48,7 @@ export default function WorkloadRunDetailModal({ runId, onClose, wsNudge }: Prop
       cancelled = true;
       clearInterval(timer);
     };
-  }, [runId, wsNudge]);
+  }, [runId, (wsNudge as { run_id?: string } | null | undefined)?.run_id === runId ? wsNudge : null]);
 
   useEffect(() => {
     if (preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight;
