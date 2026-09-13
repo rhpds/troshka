@@ -124,15 +124,22 @@ def _mint_prelude_steps(paths: RunPaths, log_path: str) -> list[str]:
     mounted playbook from ``/workdir`` would not resolve ``agnosticd.core`` (its
     role uses ``agnosticd.core.agnosticd_user_info``), so it must share main.yml's
     playbook_dir.
+
+    ``K8S_AUTH_KUBECONFIG`` is set for the mint invocation so ``kubernetes.core.k8s``
+    (used by the role to create the cluster-admin SA) authenticates via the
+    delivered admin kubeconfig against the target cluster. Plain ``KUBECONFIG`` is
+    NOT honored by kubernetes.core inside a pod — without this it falls back to the
+    runner pod's own in-cluster ServiceAccount (which has no rights on the target).
     """
     safe_mint = _safe_sq(paths.mint_playbook)
     safe_log = _safe_sq(log_path)
+    safe_kubeconfig = _safe_sq(paths.kubeconfig)
     dest = f"{paths.agnosticd}/ansible/_troshka_mint_cluster_admin.yml"
     safe_dest = _safe_sq(dest)
     return [
         f"cp '{safe_mint}' '{safe_dest}'",
-        f"ansible-playbook '{safe_dest}' -e output_dir='{_safe_sq(_WORKDIR)}'"
-        f" 2>&1 | tee -a '{safe_log}'",
+        f"K8S_AUTH_KUBECONFIG='{safe_kubeconfig}' ansible-playbook '{safe_dest}'"
+        f" -e output_dir='{_safe_sq(_WORKDIR)}' 2>&1 | tee -a '{safe_log}'",
     ]
 
 

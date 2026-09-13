@@ -185,9 +185,14 @@ def test_build_run_command_mints_cluster_admin_when_kubeconfig():
     # The mint playbook is copied next to main.yml so agnosticd.core (bundled in
     # the repo's ansible/collections) resolves via the playbook-adjacent dir.
     mint_dest = f"{paths.agnosticd}/ansible/_troshka_mint_cluster_admin.yml"
-    # (a) mint prelude is copied into the repo and run from there (runs the SA role)
+    # (a) mint prelude is copied into the repo and run from there (runs the SA role),
+    # authenticating via the delivered admin kubeconfig (K8S_AUTH_KUBECONFIG) so
+    # kubernetes.core.k8s targets the cluster, not the pod's in-cluster SA.
     assert f"cp '{paths.mint_playbook}' '{mint_dest}'" in joined
-    assert f"ansible-playbook '{mint_dest}'" in joined
+    assert (
+        f"K8S_AUTH_KUBECONFIG='{paths.kubeconfig}' ansible-playbook '{mint_dest}'"
+        in joined
+    )
     # (b) clusters extra-var consumed by main.yml
     assert f"-e @'{paths.clusters}'" in joined
     # (c) ordering: install_dynamic_dependencies -> mint prelude -> main.yml
