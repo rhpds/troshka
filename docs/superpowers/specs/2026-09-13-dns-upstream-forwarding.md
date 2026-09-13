@@ -1,8 +1,17 @@
 # DNS Upstream Forwarding — Functional, Honest, Consistent
 
-**Status:** Draft for review
+**Status:** Draft — implementation DEFERRED (2026-09-13)
 **Date:** 2026-09-13
 **Author:** Patrick Rutledge (with Claude)
+
+> **REVISION 2026-09-13:** The "bare `53` is TCP-only" firewall theory is
+> **WRONG** — `troshkad.py:_add_outbound_port_rule` already opens **both tcp and
+> udp** for a bare port, and the KubeVirt operator forwards too. So there is **no
+> firewall fix** here (dropped from scope). The troshkad workload-runner's
+> `Could not resolve host` was a **separate** bug — a transit IP collision (runner
+> reused the ops pod's fixed `.4`), tracked/fixed independently, NOT this spec.
+> This spec is now scoped to making `dnsUpstream` **functional + honest +
+> consistent** only (§4.1–4.3, §4.5). Implementation is **deferred**.
 
 ## 1. Summary
 
@@ -23,10 +32,10 @@ DNS. It failed to resolve github.com. Findings:
 
 - The project's cluster dnsmasq **does** forward (`server=8.8.8.8`, `1.1.1.1`) and
   serves internal names (`address=/api.ocp.local/…`). Forwarding config is present.
-- The gateway restricts outbound to `outboundPorts = 53,80/tcp,443/tcp,123/udp`.
-  The DNS entry is a **bare `53`** (no protocol) while others specify `/tcp`,`/udp`.
-  DNS forwarding is **UDP 53**; the generated egress rule does not reliably open
-  UDP 53 → the forward is blocked.
+- The gateway restricts outbound to `outboundPorts = 53,80/tcp,443/tcp,123/udp`
+  (bare `53`). **This is fine:** the daemon opens bare ports as **both** tcp+udp,
+  so UDP DNS egress is permitted. (The workload-runner's resolve failure was a
+  separate transit IP collision, not this.)
 - KubeVirt's operator dnsmasq (`src/operator/helpers/dnsmasq.py`
   `_add_dns_forwarder_config`) **always** adds `server=` forwarders, ignoring the
   checkbox — which is why the KubeVirt workload E2E succeeded and masked the issue.
@@ -38,8 +47,7 @@ DNS. It failed to resolve github.com. Findings:
 
 ### Goals
 - `dnsUpstream` **functionally gates** upstream DNS forwarding on **both**
-  providers (ON = forward + allow UDP/TCP 53 egress; OFF = internal-only).
-- Fix the gateway egress rule so upstream DNS uses **`53/udp`** (+ `53/tcp`).
+  providers (ON = forward; OFF = internal-only).
 - The checkbox **displays the real state** (default ON for new networks) and shows
   a **warning** when turned OFF (workloads/agnosticd may break).
 - **Backwards-compatible migration:** existing networks with no `dnsUpstream` field
@@ -65,13 +73,9 @@ DNS. It failed to resolve github.com. Findings:
   Gate them on the effective `dnsUpstream` (absent⇒true): emit `server=` +
   `no-resolv` only when ON; when OFF, no upstream servers (internal-only), leaving
   the `address=/…` internal records intact.
-- Managed DNS outbound port for the gateway becomes **`53/udp`** (and `53/tcp`),
-  not bare `53`, so UDP DNS egress is actually permitted when forwarding is ON.
-  (`_outbound_entries_include_port` already matches `53/udp` for the `53` check, so
-  `_gateway_allows_dns_upstream` continues to work.)
-- The exact troshkad-daemon dnsmasq/firewall code path is located during planning
-  (grounding step); the requirement is: forwarding servers + 53/udp egress are
-  present iff `dnsUpstream` is ON.
+- The troshkad daemon path is `troshkad.py:_build_dnsmasq_config_lines` (~4188,
+  the `no-resolv`/`server=` lines) — gate those on the effective `dnsUpstream`.
+  (No outbound-port change needed — bare `53` already allows udp.)
 
 ### 4.3 Gating — KubeVirt operator
 - `src/operator/helpers/dnsmasq.py` `_add_dns_forwarder_config` becomes
@@ -79,13 +83,10 @@ DNS. It failed to resolve github.com. Findings:
   no `server=` forwarders are written. This removes the "always forwards" bug and
   makes KubeVirt consistent with troshkad.
 
-### 4.4 Firewall (folded in)
-- Replace bare `53` with **`53/udp`** (+`53/tcp`) in:
-  - `deploy_topology.py` `SHOWROOM_MANAGED_OUTBOUND_PORTS`
-  - `templates/*.yaml` gateway `outbound_ports` (any bare `53`)
-  - any other auto-injection of DNS outbound.
-- The daemon already honors `/udp` (e.g. `123/udp`), so specifying `53/udp`
-  generates a UDP egress rule.
+### 4.4 Firewall — REMOVED (no-op)
+`troshkad.py:_add_outbound_port_rule` already emits **both tcp and udp** rules for
+a bare port (`for proto in ("tcp","udp")`), so bare `53` already permits UDP DNS.
+No firewall change is needed. (Original theory disproven — see the revision note.)
 
 ### 4.5 UI
 - Checkbox reads the effective value (absent⇒checked); default checked for new
@@ -98,28 +99,23 @@ DNS. It failed to resolve github.com. Findings:
 - **Frontend:** `src/frontend/src/components/canvas/PropertiesPanel.tsx` (default +
   warning), `src/frontend/src/lib/gatewayValidation.ts` (effective-value helper if
   needed).
-- **Backend:** `src/backend/app/services/deploy_topology.py` (`53/udp`,
-  effective-`dnsUpstream` read), the troshkad dnsmasq config path (grounding),
-  templates.
+- **Backend:** `src/backend/app/services/deploy_topology.py` (effective-`dnsUpstream`
+  read), `src/troshkad/troshkad.py:_build_dnsmasq_config_lines` (gate `server=`),
+  templates/canvas default.
 - **Operator:** `src/operator/helpers/dnsmasq.py` (`_add_dns_forwarder_config`
   gated on the flag).
 
 ## 6. Error handling & edge cases
 - Absent `dnsUpstream` ⇒ ON (migration safety) — asserted by tests on all readers.
 - `dnsUpstream` ON but gateway `outboundPolicy=restrict` without 53 ⇒ existing
-  validation already flags "gateway outbound must allow DNS (53)"; keep it, and the
-  managed injection adds `53/udp`.
+  validation already flags "gateway outbound must allow DNS (53)"; keep it.
 - OFF ⇒ internal names still resolve; only upstream stops.
 
 ## 7. Testing
 - Backend unit: effective-`dnsUpstream` (absent⇒true; explicit false⇒false);
-  dnsmasq `server=` present iff ON; managed/template outbound emits `53/udp`.
+  daemon dnsmasq `server=`/`no-resolv` present iff ON.
 - Operator unit: `_add_dns_forwarder_config` emits `server=` iff ON.
 - Frontend: `tsc` clean; checkbox default checked; warning renders when off.
-- Live re-validation: troshkad workload E2E resolves github.com and succeeds
-  (the current blocker) with `dnsUpstream` ON.
 
 ## 8. Open items
-- Confirm the exact troshkad-daemon file that emits dnsmasq `server=` /
-  outbound-53 rules (planning grounding step).
-- Whether to also add `53/tcp` (large/TCP DNS) or `53/udp` alone — default to both.
+- None blocking (daemon path identified). Implementation deferred per 2026-09-13.
