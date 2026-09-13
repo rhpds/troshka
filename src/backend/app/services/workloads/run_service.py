@@ -129,6 +129,7 @@ def run_workload_job(run_id: str) -> None:
             paths,
             agnosticd_v2_url=config.workloads.agnosticd_v2_url,
             scm_ref=scm_ref,
+            kubeconfig=kubeconfig,
         )
 
         # Wire KubeVirt project-network attachment (HARD REQUIREMENT B)

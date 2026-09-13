@@ -88,9 +88,15 @@ def test_run_workload_job_happy_path(monkeypatch):
     # Capture build_run_command calls to verify agnosticd_v2_url and scm_ref are passed
     build_run_calls = []
 
-    def mock_build_run_command(item, paths, *, agnosticd_v2_url, scm_ref):
+    def mock_build_run_command(
+        item, paths, *, agnosticd_v2_url, scm_ref, kubeconfig=None
+    ):
         build_run_calls.append(
-            {"agnosticd_v2_url": agnosticd_v2_url, "scm_ref": scm_ref}
+            {
+                "agnosticd_v2_url": agnosticd_v2_url,
+                "scm_ref": scm_ref,
+                "kubeconfig": kubeconfig,
+            }
         )
         return ["bash", "-lc", "echo test"]
 

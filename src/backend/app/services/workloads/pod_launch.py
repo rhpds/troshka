@@ -24,6 +24,60 @@ class RunPaths:
     agnosticd: str = f"{_WORKDIR}/agnosticd-v2"
     log: str = f"{_WORKDIR}/run.log"
     kubeconfig: str = f"{_WORKDIR}/kubeconfig"
+    mint_playbook: str = f"{_WORKDIR}/mint_cluster_admin.yml"
+    clusters: str = f"{_WORKDIR}/clusters.yml"
+
+
+def _mint_prelude_playbook(paths: RunPaths) -> str:
+    """Static prelude playbook: mint a cluster-admin SA token in-pod and write the
+    `clusters` extra-var that the openshift-workloads config consumes.
+
+    Runs the agnosticd role ``openshift_cluster_admin_service_account`` (which sets
+    the role-internal fact ``_openshift_cluster_admin_token``, b64-decoded), derives
+    the in-cluster API server URL from the delivered KUBECONFIG, and writes
+    ``clusters: {default: {api_url, api_token}}`` to ``paths.clusters``. The backend
+    makes NO cluster calls (D12); everything here executes in-pod at runtime. The
+    token is written to a 0600 file, never placed in argv/env (D7).
+    """
+    clusters_expr = (
+        "{{ {'clusters': {'default': {"
+        "'api_url': _troshka_api_server.stdout, "
+        "'api_token': _openshift_cluster_admin_token}}} | to_nice_yaml }}"
+    )
+    playbook = [
+        {
+            "name": "Mint cluster-admin token and build clusters dict",
+            "hosts": "localhost",
+            "connection": "local",
+            "gather_facts": False,
+            "tasks": [
+                {
+                    "name": "Create cluster-admin service account and token",
+                    "ansible.builtin.include_role": {
+                        "name": "openshift_cluster_admin_service_account"
+                    },
+                },
+                {
+                    "name": "Read API server URL from delivered kubeconfig",
+                    "ansible.builtin.command": {
+                        "cmd": "oc config view --minify "
+                        "-o jsonpath={.clusters[0].cluster.server}"
+                    },
+                    "register": "_troshka_api_server",
+                    "changed_when": False,
+                },
+                {
+                    "name": "Write clusters dict for openshift-workloads",
+                    "ansible.builtin.copy": {
+                        "dest": paths.clusters,
+                        "mode": "0600",
+                        "content": clusters_expr,
+                    },
+                },
+            ],
+        }
+    ]
+    return yaml.safe_dump(playbook, sort_keys=False, default_flow_style=False)
 
 
 def build_artifact_files(
@@ -49,30 +103,59 @@ def build_artifact_files(
         files[paths.cloud_creds] = "\n".join(f"{k}={v}" for k, v in cloud_creds.items())
     if kubeconfig:
         files[paths.kubeconfig] = kubeconfig
+        # OCP run: deliver the in-pod mint prelude that produces `clusters`.
+        files[paths.mint_playbook] = _mint_prelude_playbook(paths)
     return files
 
 
+def _safe_sq(value: str) -> str:
+    """Escape a value for single-quoted shell interpolation."""
+    return value.replace("'", "'\\''")
+
+
+def _mint_prelude_steps(paths: RunPaths) -> list[str]:
+    """Command step(s) running the in-pod mint prelude playbook.
+
+    Runs AFTER install_dynamic_dependencies (so kubernetes.core + agnosticd.core
+    collections are installed) and BEFORE main.yml. Writes `clusters` to
+    ``paths.clusters`` for main.yml to consume via ``-e @``. ``output_dir`` is set
+    so the role's agnosticd_user_info task has a writable target in-pod.
+    """
+    safe_mint = _safe_sq(paths.mint_playbook)
+    return [
+        f"ansible-playbook '{safe_mint}' -e output_dir='{_safe_sq(_WORKDIR)}'",
+    ]
+
+
 def build_run_command(
-    _resolved_item, paths: RunPaths, *, agnosticd_v2_url: str, scm_ref: str
+    _resolved_item,
+    paths: RunPaths,
+    *,
+    agnosticd_v2_url: str,
+    scm_ref: str,
+    kubeconfig: str | None = None,
 ) -> list[str]:
     """Build the runner pod command: clone agnosticd-v2, install collections, run playbook.
 
     Clones agnosticd-v2 at the specified scm_ref INSIDE the pod, then runs
     install_dynamic_dependencies.yml (which installs collections from requirements_content
-    in extra_vars), then runs the main playbook.
+    in extra_vars). For OCP runs (a kubeconfig was delivered) it then exports KUBECONFIG,
+    runs the in-pod mint prelude (which mints a cluster-admin token and writes the
+    `clusters` extra-var), and passes ``-e @clusters.yml`` to main.yml. VM-only runs
+    (no kubeconfig) get a clean command with no KUBECONFIG/mint/clusters wiring.
 
     Mirrors the EE entrypoint pattern: install_dynamic_dependencies.yml before main.yml.
 
     Output is tee'd to a logfile so the monitor can tail progress.
     """
+    has_kubeconfig = bool(kubeconfig)
     # Shell-quote the ref and url for safety (they come from config, but keep them safe)
-    safe_url = agnosticd_v2_url.replace("'", "'\\''")
-    safe_ref = scm_ref.replace("'", "'\\''")
-    safe_agnosticd = paths.agnosticd.replace("'", "'\\''")
-    safe_extra_vars = paths.extra_vars.replace("'", "'\\''")
-    safe_inventory = paths.inventory.replace("'", "'\\''")
-    safe_log = paths.log.replace("'", "'\\''")
-    safe_kubeconfig = paths.kubeconfig.replace("'", "'\\''")
+    safe_url = _safe_sq(agnosticd_v2_url)
+    safe_ref = _safe_sq(scm_ref)
+    safe_agnosticd = _safe_sq(paths.agnosticd)
+    safe_extra_vars = _safe_sq(paths.extra_vars)
+    safe_inventory = _safe_sq(paths.inventory)
+    safe_log = _safe_sq(paths.log)
 
     script_parts = [
         "set -euo pipefail",
@@ -83,20 +166,32 @@ def build_run_command(
         f"cd '{safe_agnosticd}/ansible'",
         # Point ANSIBLE_CONFIG to repo root's ansible.cfg (roles_path, etc.)
         f"export ANSIBLE_CONFIG='{safe_agnosticd}/ansible.cfg'",
-        # Export KUBECONFIG (file only exists when delivered; unconditional path is fine)
-        f"export KUBECONFIG='{safe_kubeconfig}'",
-        # Install dynamic dependencies (collections from requirements_content)
+    ]
+    # Export KUBECONFIG only when one was delivered (OCP runs).
+    if has_kubeconfig:
+        script_parts.append(f"export KUBECONFIG='{_safe_sq(paths.kubeconfig)}'")
+    # Install dynamic dependencies (collections from requirements_content)
+    script_parts.append(
         "ansible-playbook install_dynamic_dependencies.yml"
         f" -e @'{safe_extra_vars}'"
-        " -e config=openshift-workloads",
-        # Run main playbook
+        " -e config=openshift-workloads"
+    )
+    # Mint cluster-admin token + build `clusters` (after deps, before main.yml).
+    if has_kubeconfig:
+        script_parts.extend(_mint_prelude_steps(paths))
+    # Run main playbook (consume `clusters` for OCP runs).
+    main_cmd = (
         "ansible-playbook main.yml"
         f" -i '{safe_inventory}'"
         f" -e @'{safe_extra_vars}'"
-        " -e ACTION=provision"
-        " -e cloud_provider=none"
-        f" 2>&1 | tee '{safe_log}'",
-    ]
+    )
+    if has_kubeconfig:
+        main_cmd += f" -e @'{_safe_sq(paths.clusters)}'"
+    main_cmd += (
+        " -e ACTION=provision" " -e cloud_provider=none" f" 2>&1 | tee '{safe_log}'"
+    )
+    script_parts.append(main_cmd)
+
     script = "; ".join(script_parts)
     return ["bash", "-lc", script]
 

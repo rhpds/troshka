@@ -138,20 +138,24 @@ def test_build_artifact_files_without_kubeconfig():
     assert paths.kubeconfig not in files
 
 
-def test_build_run_command_exports_kubeconfig():
-    """Verify KUBECONFIG is exported before ansible-playbook invocation."""
-    paths = pod_launch.RunPaths()
-    item = SimpleNamespace(
+def _ocp_item():
+    return SimpleNamespace(
         extra_vars={"config": "openshift-workloads"},
         ee_image="ee:1",
         scm_ref="main",
         requirements_content=None,
     )
+
+
+def test_build_run_command_exports_kubeconfig_when_delivered():
+    """OCP run (kubeconfig delivered): KUBECONFIG exported before ansible-playbook."""
+    paths = pod_launch.RunPaths()
     cmd = pod_launch.build_run_command(
-        item,
+        _ocp_item(),
         paths,
         agnosticd_v2_url="https://github.com/rhpds/agnosticd-v2.git",
         scm_ref="main",
+        kubeconfig="KC-CONTENTS",
     )
     joined = " ".join(cmd)
     # Verify KUBECONFIG is exported
@@ -163,3 +167,76 @@ def test_build_run_command_exports_kubeconfig():
     assert (
         kubeconfig_pos < ansible_pos
     ), "KUBECONFIG must be set before ansible-playbook"
+
+
+def test_build_run_command_mints_cluster_admin_when_kubeconfig():
+    """OCP run: mint prelude runs the SA role, produces the clusters extra-var,
+    ordered AFTER install_dynamic_dependencies and BEFORE main.yml."""
+    paths = pod_launch.RunPaths()
+    cmd = pod_launch.build_run_command(
+        _ocp_item(),
+        paths,
+        agnosticd_v2_url="https://github.com/rhpds/agnosticd-v2.git",
+        scm_ref="main",
+        kubeconfig="KC-CONTENTS",
+    )
+    joined = " ".join(cmd)
+    # (a) mint step references the prelude playbook (which runs the SA role)
+    assert paths.mint_playbook in joined
+    # (b) clusters extra-var consumed by main.yml
+    assert f"-e @'{paths.clusters}'" in joined
+    # (c) ordering: install_dynamic_dependencies -> mint prelude -> main.yml
+    install_pos = joined.find("install_dynamic_dependencies.yml")
+    mint_pos = joined.find(paths.mint_playbook)
+    main_pos = joined.find("main.yml")
+    assert install_pos != -1 and mint_pos != -1 and main_pos != -1
+    assert install_pos < mint_pos < main_pos
+    # clusters consumed only alongside main.yml (after the mint prelude produced it)
+    assert joined.find(f"-e @'{paths.clusters}'") > mint_pos
+
+
+def test_build_run_command_no_mint_for_vm_only():
+    """VM-only run (no kubeconfig): no KUBECONFIG export, no mint/clusters wiring."""
+    paths = pod_launch.RunPaths()
+    cmd = pod_launch.build_run_command(
+        _ocp_item(),
+        paths,
+        agnosticd_v2_url="https://github.com/rhpds/agnosticd-v2.git",
+        scm_ref="main",
+        kubeconfig=None,
+    )
+    joined = " ".join(cmd)
+    assert "export KUBECONFIG=" not in joined
+    assert paths.mint_playbook not in joined
+    assert paths.clusters not in joined
+    # main.yml still runs (VM workloads)
+    assert "main.yml" in joined
+
+
+def test_build_artifact_files_includes_mint_playbook_with_kubeconfig():
+    """Prelude playbook artifact is delivered (with the SA role name) when kubeconfig present."""
+    paths = pod_launch.RunPaths()
+    files = pod_launch.build_artifact_files(
+        extra_vars={"a": 1},
+        inventory_yaml="plugin: troshka.cloud.troshka\n",
+        cluster_access={},
+        cloud_creds=None,
+        kubeconfig="KC-CONTENTS",
+        paths=paths,
+    )
+    assert paths.mint_playbook in files
+    assert "openshift_cluster_admin_service_account" in files[paths.mint_playbook]
+
+
+def test_build_artifact_files_omits_mint_playbook_without_kubeconfig():
+    """No prelude playbook artifact when kubeconfig absent (VM-only run)."""
+    paths = pod_launch.RunPaths()
+    files = pod_launch.build_artifact_files(
+        extra_vars={"a": 1},
+        inventory_yaml="plugin: troshka.cloud.troshka\n",
+        cluster_access={},
+        cloud_creds=None,
+        kubeconfig=None,
+        paths=paths,
+    )
+    assert paths.mint_playbook not in files
