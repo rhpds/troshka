@@ -75,18 +75,20 @@ def test_launch_runner_pod_troshkad(monkeypatch):
 
 
 def test_launch_runner_pod_kubevirt(monkeypatch):
+    # A project row carries NO provider_id — the KubeVirt provider lives on the
+    # host. The namespace must be resolved from the host-resolved provider.
     host = SimpleNamespace(id="h1", host_type="kubevirt-cluster", provider_id="prov1")
-    project = SimpleNamespace(id="p1234567890", provider_id="prov1")
+    project = SimpleNamespace(id="p1234567890", provider_id=None)
     fake_provider = MagicMock()
     fake_create = MagicMock()
+    fake_project_ns = MagicMock(return_value="ns-p1234567")
     fake_build_manifests = MagicMock(return_value=({"kind": "Pod"}, {"kind": "Secret"}))
     monkeypatch.setattr(
         pod_launch, "_provider_for_host", MagicMock(return_value=fake_provider)
     )
-    monkeypatch.setattr(
-        pod_launch, "_namespace_for_project", MagicMock(return_value="ns-p1234567")
-    )
-    with patch("app.services.providers.kubevirt.create_ops_pod", fake_create), patch(
+    with patch("app.services.providers.kubevirt._project_ns", fake_project_ns), patch(
+        "app.services.providers.kubevirt.create_ops_pod", fake_create
+    ), patch(
         "app.services.ocp.ops_pod_scaffold.build_ops_pod_kubevirt_manifests",
         fake_build_manifests,
     ):
@@ -99,6 +101,9 @@ def test_launch_runner_pod_kubevirt(monkeypatch):
             networks=[],
         )
     assert job == "workload-runner-p1234567"
+    # Namespace resolved from the HOST-resolved provider (not project.provider_id).
+    fake_project_ns.assert_called_once_with(fake_provider, "p1234567890")
+    assert fake_build_manifests.call_args.kwargs["namespace"] == "ns-p1234567"
     args, _kwargs = fake_create.call_args
     assert args[1] == "p1234567890"  # project_id is 2nd positional arg
     # Assert EE image is passed to manifest builder

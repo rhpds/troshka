@@ -268,10 +268,12 @@ def _launch_kubevirt(
 ) -> str:
     """KubeVirt runner-pod path: build Pod+Secret manifests and create via k8s."""
     from app.services.ocp.ops_pod_scaffold import build_ops_pod_kubevirt_manifests
-    from app.services.providers.kubevirt import create_ops_pod
+    from app.services.providers.kubevirt import _project_ns, create_ops_pod
 
+    # Resolve the provider from the HOST (a project row carries no provider_id;
+    # the KubeVirt provider lives on the host). Reuse it for the namespace too.
     provider = _provider_for_host(host)
-    namespace = _namespace_for_project(project)
+    namespace = _project_ns(provider, project.id)
     pod, secret = build_ops_pod_kubevirt_manifests(
         namespace=namespace,
         project_id=project.id,
@@ -302,26 +304,5 @@ def _provider_for_host(host):
         if not provider:
             raise RuntimeError(f"Provider {host.provider_id} not found for runner pod")
         return provider
-    finally:
-        s.close()
-
-
-def _namespace_for_project(project):
-    """Resolve the project namespace (mirrors deploy_service _kubevirt_project_ns)."""
-    # Import in function scope to avoid circular imports
-    from app.core.database import get_db
-
-    s = next(get_db())
-    try:
-        from app.models.provider import Provider
-
-        provider = s.get(Provider, project.provider_id)
-        if not provider:
-            raise RuntimeError(
-                f"Provider {project.provider_id} not found for namespace"
-            )
-        from app.services.providers.kubevirt import _project_ns
-
-        return _project_ns(provider, project.id)
     finally:
         s.close()
