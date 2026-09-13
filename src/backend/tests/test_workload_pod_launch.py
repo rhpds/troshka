@@ -40,10 +40,18 @@ def test_build_run_command_invokes_ansible_playbook():
     assert "tee" in joined and paths.log in joined
     assert paths.inventory in joined
     assert paths.extra_vars in joined
+    # Verify ANSIBLE_CONFIG points to repo root's ansible.cfg (before ansible-playbook)
+    assert "export ANSIBLE_CONFIG=" in joined
+    assert "agnosticd-v2/ansible.cfg" in joined
     # Verify git clone appears BEFORE ansible-playbook in the command
     git_pos = joined.find("git clone")
     ansible_pos = joined.find("ansible-playbook")
     assert git_pos < ansible_pos, "git clone must appear before ansible-playbook"
+    # Verify ANSIBLE_CONFIG export appears BEFORE ansible-playbook
+    config_pos = joined.find("export ANSIBLE_CONFIG=")
+    assert (
+        config_pos < ansible_pos
+    ), "ANSIBLE_CONFIG must be set before ansible-playbook"
 
 
 def test_launch_runner_pod_troshkad(monkeypatch):

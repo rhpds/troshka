@@ -76,6 +76,8 @@ def build_run_command(
         f" || {{ git clone '{safe_url}' '{safe_agnosticd}' && git -C '{safe_agnosticd}' checkout '{safe_ref}'; }}",
         # Change to agnosticd-v2/ansible directory
         f"cd '{safe_agnosticd}/ansible'",
+        # Point ANSIBLE_CONFIG to repo root's ansible.cfg (roles_path, etc.)
+        f"export ANSIBLE_CONFIG='{safe_agnosticd}/ansible.cfg'",
         # Install dynamic dependencies (collections from requirements_content)
         "ansible-playbook install_dynamic_dependencies.yml"
         f" -e @'{safe_extra_vars}'"
