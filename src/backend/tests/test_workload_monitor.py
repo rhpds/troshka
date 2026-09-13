@@ -47,11 +47,11 @@ def test_resume_workload_monitors_reattaches_running(monkeypatch):
     assert called_run_id == expected_run_id
 
 
-def test_read_runner_logs_troshkad_returns_stdout(monkeypatch):
-    """Mocked transport: troshkad containers/exec cat returns logfile contents."""
+def test_read_runner_logs_troshkad_returns_logs(monkeypatch):
+    """troshkad `containers/logs` (podman logs) — works on running AND exited."""
     fake_job_result = {
         "status": "completed",
-        "result": {"stdout": "TASK [x] ***\nok: [localhost]"},
+        "result": {"logs": "TASK [x] ***\nok: [localhost]"},
     }
 
     start_job_mock = MagicMock(return_value="job-123")
@@ -66,9 +66,9 @@ def test_read_runner_logs_troshkad_returns_stdout(monkeypatch):
     logs = run_service._read_runner_logs_troshkad(host, cname)
 
     assert logs == "TASK [x] ***\nok: [localhost]"
-    assert start_job_mock.call_args[0][1] == "/containers/exec"
+    # podman logs (containers/logs), NOT exec cat — exec can't reach an exited pod.
+    assert start_job_mock.call_args[0][1] == "/containers/logs"
     assert start_job_mock.call_args[0][2]["container_name"] == cname
-    assert start_job_mock.call_args[0][2]["command"] == ["cat", "/workdir/run.log"]
 
 
 def test_is_runner_pod_running_troshkad_checks_state(monkeypatch):

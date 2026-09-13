@@ -429,24 +429,25 @@ def _troshkad_container_for_run(run_id: str) -> str:
 
 
 def _read_runner_logs_troshkad(host, container_name: str) -> str:
-    """[LIVE-ENV] Read runner logs via troshkad containers/exec cat.
+    """[LIVE-ENV] Read runner logs via troshkad `containers/logs` (podman logs).
 
-    Mirrors _exec_ops_pod_cat: exec `cat /workdir/run.log` inside the runner
-    container. Returns empty string if logfile not yet written or exec fails.
+    Uses `podman logs` (not `exec cat`) because the monitor reads the log at
+    FINALIZATION too — when the runner container has EXITED and exec can no longer
+    reach it (exec requires a running container). The runner tees its output to
+    both stdout and /workdir/run.log, so `podman logs` returns the same content and
+    works whether the container is running or stopped. Empty string on failure.
     """
     from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
-
-    log_path = "/workdir/run.log"
 
     try:
         job_id = start_job(
             host,
-            "/containers/exec",
-            {"container_name": container_name, "command": ["cat", log_path]},
+            "/containers/logs",
+            {"container_name": container_name, "tail": 2000},
         )
         job = wait_for_job(host, job_id, timeout=30)
         if job.get("status") == "completed":
-            return (job.get("result") or {}).get("stdout", "")
+            return (job.get("result") or {}).get("logs", "")
     except TroshkadError:
         pass
     return ""
