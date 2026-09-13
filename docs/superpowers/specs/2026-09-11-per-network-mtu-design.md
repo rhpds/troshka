@@ -229,24 +229,27 @@ The core epic shipped and is validated e2e on troshkad + KubeVirt. These are
 robustness/UX refinements surfaced during the final review; none blocks the
 feature, each is independently pickable:
 
-- **Multi-host uses `min()` across mesh peers.** `auto` resolution keys off the
-  *primary* host's `uplink_mtu` only. A mesh peer with a smaller uplink can be
-  left undersized. Fix: resolve `auto` against `min(uplink_mtu)` over all hosts a
-  network spans, not just the primary. (`resolve_network_mtu` caller in
-  `deploy_service` — pass the peer set / their `Host.uplink_mtu`.)
-- **No warning on sub-1280 bump-up.** When an explicit MTU below the 1280 floor is
-  bumped *up* to the floor, no warning is emitted (only the clamp-*down* path
-  warns). Fix: emit the same warning surface on the floor-bump branch in
-  `resolve_network_mtu`.
-- **Frontend MTU input resets mid-edit.** `PropertiesPanel.tsx` MTU `useEffect`
-  depends on the broad `node?.data`, so unrelated node-data changes can reset the
-  field while typing. Fix: narrow the dep to `node?.id` / `data.mtu`.
-- **KubeVirt-native `/health` uplink path unwired.** Only the http-poll path
-  persists `uplink_mtu`; KubeVirt hosts fall back to 1500 for `auto` (the brief
-  made this optional). Deploy-time sync (`_ensure_host_uplink_mtu` →
-  `KubeVirtDriver._read_cluster_network_mtu`) already covers the deploy path;
-  wiring the KubeVirt health-poll path would keep `Host.uplink_mtu` fresh between
-  deploys. (`health_poller._poll_kubevirt_host` / `_apply_uplink_mtu`.)
+- **Multi-host uses `min()` across mesh peers.** _(deferred)_ `auto` resolution
+  keys off the *primary* host's `uplink_mtu` only. A mesh peer with a smaller
+  uplink can be left undersized. Fix: resolve `auto` against `min(uplink_mtu)`
+  over all hosts a network spans, not just the primary. (`resolve_network_mtu`
+  caller in `deploy_service` — pass the peer set / their `Host.uplink_mtu`.)
+- **No warning on sub-1280 bump-up.** _(DONE 2026-09-13)_ The floor-bump branch in
+  `resolve_network_mtu` now emits a warning ("raised to floor 1280"), and when a
+  clamp-down and a floor-bump both apply it reports both. Tests:
+  `test_explicit_below_floor_warns_on_bump_up`, `test_auto_below_floor_warns`,
+  `test_clamp_down_then_floor_reports_both`.
+- **Frontend MTU input resets mid-edit.** _(DONE 2026-09-13)_ `PropertiesPanel.tsx`
+  MTU sync `useEffect` now depends on an extracted `networkMtu` (the persisted
+  `data.mtu`) instead of the whole `node.data`, so an unrelated field edit that
+  yields a new `data` reference no longer clobbers in-progress typing.
+- **KubeVirt-native `/health` uplink path.** _(already shipped — this bullet was
+  stale)_ The KubeVirt health-poll path IS wired: `KubeVirtDriver.get_host_status`
+  returns `uplink_mtu` via `_read_cluster_network_mtu`, and
+  `health_poller._poll_kubevirt_host` persists it through `_apply_uplink_mtu`.
+  Prod-validated: infra01 health poll populated `Host.uplink_mtu` per-cluster for
+  all KubeVirt hosts (5×8900 + 1×1400). Tests:
+  `test_get_host_status_includes_uplink_mtu`, `test_poll_kubevirt_host_sets_uplink_mtu`.
 
 ## 12. Affected files (implementation map)
 

@@ -31,5 +31,9 @@ def resolve_network_mtu(network_data, host_uplink_mtu, spans_hosts):
         candidate = ceiling
 
     if candidate < MTU_FLOOR:
+        floor_warning = (
+            f"MTU {candidate} raised to floor {MTU_FLOOR} (minimum supported)"
+        )
+        warning = floor_warning if warning is None else f"{warning}; {floor_warning}"
         candidate = MTU_FLOOR
     return candidate, warning

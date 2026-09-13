@@ -38,3 +38,28 @@ def test_unknown_uplink_falls_back_to_1500_with_warning():
 def test_floor_is_enforced():
     mtu, _ = resolve_network_mtu({"mtu": 800}, 8900, spans_hosts=False)
     assert mtu == MTU_FLOOR
+
+
+def test_explicit_below_floor_warns_on_bump_up():
+    # An explicit sub-floor request is raised to the floor AND surfaces a warning
+    # (previously the bump-up path was silent; only clamp-down warned).
+    mtu, warn = resolve_network_mtu({"mtu": 800}, 8900, spans_hosts=False)
+    assert mtu == MTU_FLOOR
+    assert warn is not None and str(MTU_FLOOR) in warn
+
+
+def test_auto_below_floor_warns():
+    # auto against a tiny uplink resolves below the floor -> bumped + warned
+    mtu, warn = resolve_network_mtu({"mtu": "auto"}, 1000, spans_hosts=False)
+    assert mtu == MTU_FLOOR
+    assert warn is not None and str(MTU_FLOOR) in warn
+
+
+def test_clamp_down_then_floor_reports_both():
+    # requested exceeds a tiny ceiling that is itself below the floor:
+    # both the reduction and the floor-bump must be reported.
+    mtu, warn = resolve_network_mtu({"mtu": 9000}, 1000, spans_hosts=False)
+    assert mtu == MTU_FLOOR
+    assert warn is not None
+    assert "reduced" in warn.lower()
+    assert str(MTU_FLOOR) in warn

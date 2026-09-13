@@ -1160,19 +1160,19 @@ export default function PropertiesPanel() {
   }, []);
 
   const node = nodes.find((n) => n.id === nodeId);
+  const networkMtu =
+    node?.type === "networkNode"
+      ? (node.data as NetworkNodeData).mtu
+      : undefined;
 
   React.useEffect(() => {
-    if (node?.type === "networkNode") {
-      const mtu = (node.data as NetworkNodeData).mtu;
-      if (typeof mtu === "number") {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setMtuInputValue(mtu.toString());
-      } else {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setMtuInputValue("");
-      }
-    }
-  }, [node?.id, node?.type, node?.data]);
+    if (node?.type !== "networkNode") return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMtuInputValue(typeof networkMtu === "number" ? networkMtu.toString() : "");
+    // Depend only on the persisted mtu (not the whole `data` object) so an
+    // unrelated field edit that yields a new `data` reference does not reset
+    // the input mid-type. See per-network-mtu design §11 (deferred niceties).
+  }, [node?.id, node?.type, networkMtu]);
 
   if (!node) {
     return (
