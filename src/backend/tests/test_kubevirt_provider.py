@@ -328,12 +328,17 @@ def test_create_ops_pod_replaces_existing_pod():
     ):
         core = MagicMock()
         # Secret + Pod already exist on the first create attempt.
-        core.create_namespaced_secret.side_effect = Exception("AlreadyExists")
+        # Secret: create raises AlreadyExists, then delete+create succeeds (the SA
+        # can create+delete but NOT update, so it must NOT call replace).
+        core.create_namespaced_secret.side_effect = [Exception("AlreadyExists"), None]
         core.create_namespaced_pod.side_effect = [Exception("AlreadyExists"), None]
         mock_clients.return_value = (MagicMock(), core, MagicMock())
         create_ops_pod(provider, "abcdef12-0000", pod, secret)
 
-    core.replace_namespaced_secret.assert_called_once()
+    # Delete-then-create (NOT replace — the SA has no update verb on secrets).
+    core.replace_namespaced_secret.assert_not_called()
+    core.delete_namespaced_secret.assert_called_once()
+    assert core.create_namespaced_secret.call_count == 2
     # Delete with grace_period_seconds=0 so the terminating window is short.
     core.delete_namespaced_pod.assert_called_once_with(
         name="troshka-abcdef12-ops",

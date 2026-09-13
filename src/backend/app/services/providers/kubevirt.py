@@ -179,14 +179,23 @@ def _ensure_s3_secret(
 
 
 def _apply_ops_pod_secret(core_api, namespace: str, secret: dict) -> None:
-    """Create-or-replace the ops-pod config Secret (idempotent)."""
+    """Create-or-recreate the ops-pod/runner config Secret (idempotent).
+
+    On a re-run the Secret already exists. The project provider SA can
+    create+delete Secrets but NOT update them (it has no ``update`` verb), so a
+    ``replace`` 403s ("cannot update resource secrets"). Delete-then-create
+    instead — mirrors :func:`_apply_ops_pod`'s pod delete+recreate. The Secret is
+    recreated immediately and before the Pod that mounts it (see
+    :func:`create_ops_pod` ordering).
+    """
     name = secret["metadata"]["name"]
     try:
         core_api.create_namespaced_secret(namespace=namespace, body=secret)
     except Exception as e:
         if "AlreadyExists" not in str(e):
             raise
-        core_api.replace_namespaced_secret(name=name, namespace=namespace, body=secret)
+        core_api.delete_namespaced_secret(name=name, namespace=namespace)
+        core_api.create_namespaced_secret(namespace=namespace, body=secret)
 
 
 _OPS_POD_RECREATE_RETRIES = 12
