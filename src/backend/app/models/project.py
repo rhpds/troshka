@@ -69,6 +69,12 @@ class Project(Base):
     ocp_monitor_started_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    ocp_control_plane_usable_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    ocp_control_plane_usable_elapsed: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
     deploy_started_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

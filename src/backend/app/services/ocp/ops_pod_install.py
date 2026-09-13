@@ -181,6 +181,19 @@ def ops_pod_progress_items(progress: dict) -> list[str]:
     return [f"{cid}: {clusters[cid]}" for cid in sorted(clusters)]
 
 
+def has_control_plane_usable_marker(log_text: str, cluster_id: str) -> bool:
+    """Pure: True if the log contains the control-plane-usable marker for this cluster.
+
+    The recert script emits ``[<clusterId>] control-plane-usable`` when the minimal
+    control-plane-usable milestone is reached (kube-apiserver + authentication
+    available, no degraded operators). This parser detects that one-time marker.
+    """
+    if not log_text:
+        return False
+    marker = f"[{cluster_id}] control-plane-usable"
+    return marker.lower() in log_text.lower()
+
+
 def _cluster_key(cluster: dict) -> str:
     """Workdir-relative key for a cluster (id, else name), matching the scaffold."""
     return str(cluster.get("id") or cluster.get("name") or "cluster")
@@ -469,6 +482,7 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         # FAIL-CLOSED: oc must WORK (non-empty co list) AND all operators healthy,
         # incl authentication (oauth/login) + console. Empty output != healthy.
         "  ready=''\n"
+        "  cp_usable=''\n"
         "  for i in $(seq 1 160); do "
         # Keep approving CSRs EVERY iteration (Pending only, -n 1 per-CSR): after
         # the PKI wipe the kubelets continuously issue client/serving CSRs; if
@@ -486,6 +500,11 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         'bad=$(echo "$out" | awk \'$1=="monitoring"||$1=="operator-lifecycle-manager-packageserver"{next} $3!="True"||$5=="True"{c++} END{print c+0}\'); '
         'auth=$(echo "$out" | awk \'$1=="authentication"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
         'con=$(echo "$out" | awk \'$1=="console"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
+        # Minimal control-plane-usable milestone (D13): kube-apiserver + authentication
+        # available with no degraded operators. Emit once when first reached (weaker
+        # than full-ready, which also requires console + route-api).
+        '[ "$bad" = 0 ] && [ "$auth" = 1 ] && [ -z "$cp_usable" ] && '
+        f'{{ cp_usable=1; echo "[{cluster_key}] control-plane-usable"; }}; '
         # The `oc get co` status can be STALE (restored from the captured etcd)
         # right after recert — it reads Available before the operators re-evaluate.
         # So ALSO require the aggregated route.openshift.io API to actually serve

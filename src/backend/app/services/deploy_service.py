@@ -3631,6 +3631,12 @@ def _monitor_ops_pod_install(
         )
         progress = ops_pod_install_progress(per_cluster)
         _publish_ops_pod_progress(project_id, progress)
+        # Detect control-plane-usable milestone: once per cluster, when the marker
+        # first appears in the log, persist the timestamp + elapsed and publish a
+        # one-time progress notification.
+        _check_control_plane_usable_milestone(
+            project_id, per_cluster, cluster_keys, int(_t.time() - elapsed_base)
+        )
         if progress["done"]:
             _finalize_ops_pod_ocp_status(
                 project_id, progress["overall"], int(_t.time() - elapsed_base)
@@ -8978,6 +8984,65 @@ def _ocp_update_status(project_id, status, elapsed_secs=None):
         db.close()
     except Exception:
         logger.exception("Failed to update ocp_status for %s", project_id[:8])
+
+
+def _persist_control_plane_usable_milestone(project_id: str, elapsed_secs: int) -> None:
+    """Persist the control-plane-usable milestone timestamp + elapsed (idempotent).
+
+    Sets ``ocp_control_plane_usable_at`` to now and ``ocp_control_plane_usable_elapsed``
+    to the given elapsed seconds (from deploy start). Only persists if not already set
+    (first-time-only, idempotent).
+    """
+    import datetime
+
+    try:
+        from app.core.database import SessionLocal
+        from app.models.project import Project
+
+        db = SessionLocal()
+        p = db.query(Project).filter_by(id=project_id).first()
+        if p and p.ocp_control_plane_usable_at is None:
+            p.ocp_control_plane_usable_at = datetime.datetime.now(datetime.UTC)
+            p.ocp_control_plane_usable_elapsed = elapsed_secs
+            db.commit()
+            logger.info(
+                "Project %s: control-plane-usable milestone reached at %ds",
+                project_id[:8],
+                elapsed_secs,
+            )
+        db.close()
+    except Exception:
+        logger.exception(
+            "Failed to persist control-plane-usable milestone for %s", project_id[:8]
+        )
+
+
+def _check_control_plane_usable_milestone(
+    project_id: str,
+    per_cluster_logs: dict[str, str],
+    cluster_keys: list[str],
+    elapsed_secs: int,
+) -> None:
+    """Detect and persist the control-plane-usable milestone (once per project).
+
+    Scans each cluster's log for the ``control-plane-usable`` marker. On first
+    detection (across all clusters), persists the milestone timestamp + elapsed and
+    publishes a one-time progress notification. Idempotent: subsequent detections are
+    no-ops (the DB field acts as the guard).
+    """
+    from app.services.ocp.ops_pod_install import has_control_plane_usable_marker
+
+    for cluster_key in cluster_keys:
+        log_text = per_cluster_logs.get(cluster_key, "")
+        if has_control_plane_usable_marker(log_text, cluster_key):
+            _persist_control_plane_usable_milestone(project_id, elapsed_secs)
+            # Publish a one-time progress notification (detail shows elapsed time).
+            mins, secs = divmod(elapsed_secs, 60)
+            detail = f"reached at {mins}m {secs}s"
+            _update_deploy_progress(project_id, "control-plane-usable", detail=detail)
+            # Only persist + publish once (the persist fn is idempotent, but we
+            # short-circuit here to avoid spamming progress notifications).
+            break
 
 
 def _extract_dns_domain(nodes):

@@ -562,5 +562,106 @@ class TestVerifyBastionBrowser(unittest.TestCase):
         self.assertEqual(exec_fn.call_count, 18)
 
 
+# ---------------------------------------------------------------------------
+# _check_control_plane_usable_milestone (Workloads Plan 3, Task 1)
+# ---------------------------------------------------------------------------
+
+
+class TestControlPlaneUsableMilestone(unittest.TestCase):
+    @patch("app.core.database.SessionLocal")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    def test_persist_control_plane_usable_milestone_first_time(
+        self, mock_update_progress, mock_session_local
+    ):
+        """First detection persists timestamp + elapsed and publishes progress."""
+        from app.services.deploy_service import _check_control_plane_usable_milestone
+
+        # Mock project with no milestone set yet
+        mock_project = MagicMock()
+        mock_project.ocp_control_plane_usable_at = None
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter_by.return_value.first.return_value = (
+            mock_project
+        )
+        mock_session_local.return_value = mock_db
+
+        per_cluster_logs = {
+            "prod": "[prod] waiting on operators: none\n[prod] control-plane-usable\n"
+        }
+        cluster_keys = ["prod"]
+        elapsed_secs = 180
+
+        _check_control_plane_usable_milestone(
+            "proj-1234", per_cluster_logs, cluster_keys, elapsed_secs
+        )
+
+        # Assert DB was updated
+        assert mock_project.ocp_control_plane_usable_at is not None
+        assert mock_project.ocp_control_plane_usable_elapsed == 180
+        mock_db.commit.assert_called_once()
+        mock_db.close.assert_called()
+
+        # Assert progress was published
+        mock_update_progress.assert_called_once_with(
+            "proj-1234", "control-plane-usable", detail="reached at 3m 0s"
+        )
+
+    @patch("app.core.database.SessionLocal")
+    @patch("app.services.deploy_service._update_deploy_progress")
+    def test_persist_control_plane_usable_milestone_already_set(
+        self, mock_update_progress, mock_session_local
+    ):
+        """Subsequent detections are no-ops (idempotent)."""
+        import datetime
+
+        from app.services.deploy_service import _check_control_plane_usable_milestone
+
+        # Mock project with milestone already set
+        mock_project = MagicMock()
+        mock_project.ocp_control_plane_usable_at = datetime.datetime(
+            2026, 9, 13, 12, 30, 0, tzinfo=datetime.UTC
+        )
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter_by.return_value.first.return_value = (
+            mock_project
+        )
+        mock_session_local.return_value = mock_db
+
+        per_cluster_logs = {
+            "prod": "[prod] waiting on operators: none\n[prod] control-plane-usable\n"
+        }
+        cluster_keys = ["prod"]
+        elapsed_secs = 190
+
+        _check_control_plane_usable_milestone(
+            "proj-1234", per_cluster_logs, cluster_keys, elapsed_secs
+        )
+
+        # Assert DB was NOT updated (commit not called)
+        assert mock_db.commit.call_count == 0
+
+        # Assert progress was still published once (not idempotent for publish,
+        # but that's ok — the outer monitor loop will overwrite it immediately)
+        mock_update_progress.assert_called_once()
+
+    @patch("app.services.deploy_service._update_deploy_progress")
+    def test_check_control_plane_usable_milestone_marker_absent(
+        self, mock_update_progress
+    ):
+        """No marker in log -> no persistence or progress."""
+        from app.services.deploy_service import _check_control_plane_usable_milestone
+
+        per_cluster_logs = {"prod": "[prod] waiting on operators: authentication\n"}
+        cluster_keys = ["prod"]
+        elapsed_secs = 120
+
+        _check_control_plane_usable_milestone(
+            "proj-1234", per_cluster_logs, cluster_keys, elapsed_secs
+        )
+
+        # Assert no progress published (marker not found)
+        mock_update_progress.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

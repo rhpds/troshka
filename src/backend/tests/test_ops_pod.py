@@ -643,6 +643,38 @@ def test_progress_items_pure_helper():
     assert items == ["c1: waiting", "c2: complete"]
 
 
+# --- Workloads Plan 3, Task 1: control-plane-usable marker parser ----------
+
+from app.services.ocp.ops_pod_install import (  # noqa: E402
+    has_control_plane_usable_marker,
+)
+
+
+def test_has_control_plane_usable_marker_true_when_present():
+    log = "[prod] waiting on operators: none\n[prod] control-plane-usable\n[prod] ready"
+    assert has_control_plane_usable_marker(log, "prod") is True
+
+
+def test_has_control_plane_usable_marker_false_when_absent():
+    log = "[prod] waiting on operators: authentication\n[prod] ready"
+    assert has_control_plane_usable_marker(log, "prod") is False
+
+
+def test_has_control_plane_usable_marker_false_for_different_cluster():
+    log = "[other] control-plane-usable"
+    assert has_control_plane_usable_marker(log, "prod") is False
+
+
+def test_has_control_plane_usable_marker_case_insensitive():
+    log = "[PROD] CONTROL-PLANE-USABLE"
+    assert has_control_plane_usable_marker(log, "prod") is True
+
+
+def test_has_control_plane_usable_marker_false_for_empty_log():
+    assert has_control_plane_usable_marker("", "prod") is False
+    assert has_control_plane_usable_marker(None, "prod") is False
+
+
 # --- Task 5 (Plan 4b): dead-job → failed injection (pure) ------------------
 
 from app.services.ocp.ops_pod_install import (  # noqa: E402

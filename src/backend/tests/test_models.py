@@ -56,6 +56,32 @@ def test_create_project_with_owner():
     db.close()
 
 
+def test_project_control_plane_usable_fields():
+    """Project model has ocp_control_plane_usable_at and _elapsed fields."""
+    import datetime
+
+    db = Session()
+    user = db.query(User).filter_by(email="test@example.com").first()
+    project = Project(
+        name="OCP Test Project",
+        owner_id=user.id,
+        state="deploying",
+        poweroff_mode="simultaneous",
+        ocp_control_plane_usable_at=datetime.datetime(
+            2026, 9, 13, 12, 30, 0, tzinfo=datetime.UTC
+        ),
+        ocp_control_plane_usable_elapsed=180,
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    assert project.ocp_control_plane_usable_at is not None
+    assert project.ocp_control_plane_usable_elapsed == 180
+    db.delete(project)
+    db.commit()
+    db.close()
+
+
 def test_create_vm_in_project():
     db = Session()
     project = db.query(Project).first()
