@@ -1154,6 +1154,12 @@ def get_ocp_install_log(
             project.deploy_started_at.timestamp() if project.deploy_started_at else None
         ),
         "ocp_install_elapsed": project.ocp_install_elapsed,
+        "ocp_control_plane_usable_elapsed": project.ocp_control_plane_usable_elapsed,
+        "ocp_control_plane_usable_at": (
+            project.ocp_control_plane_usable_at.timestamp()
+            if project.ocp_control_plane_usable_at
+            else None
+        ),
     }
 
     logs = read_ops_pod_install_log(host, project_id, topology)

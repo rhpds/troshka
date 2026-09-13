@@ -103,6 +103,7 @@ export default function ClusterInstallLogModal() {
   // breadcrumbs have none, and installs should match).
   const [deployStartedAt, setDeployStartedAt] = useState<number | null>(null);
   const [installElapsed, setInstallElapsed] = useState<number | null>(null);
+  const [controlPlaneUsableElapsed, setControlPlaneUsableElapsed] = useState<number | null>(null);
   // kubeadmin password + kubeconfig availability, polled live from the backend
   // (harvested from the ops pod after install) so credentials appear without a
   // project reload. Null until the first poll returns.
@@ -121,6 +122,7 @@ export default function ClusterInstallLogModal() {
     setAccess(null);
     setDeployStartedAt(null);
     setInstallElapsed(null);
+    setControlPlaneUsableElapsed(null);
     setLoading(true);
     const fetchLog = async () => {
       try {
@@ -136,6 +138,11 @@ export default function ClusterInstallLogModal() {
           );
           setInstallElapsed(
             typeof data.ocp_install_elapsed === "number" ? data.ocp_install_elapsed : null,
+          );
+          setControlPlaneUsableElapsed(
+            typeof data.ocp_control_plane_usable_elapsed === "number"
+              ? data.ocp_control_plane_usable_elapsed
+              : null,
           );
           if (data.kubeadmin_password || data.kubeconfig_available) {
             setAccess({
@@ -325,6 +332,18 @@ export default function ClusterInstallLogModal() {
             </button>
           </div>
         </div>
+        {controlPlaneUsableElapsed != null && (
+          <div
+            style={{
+              fontSize: 11,
+              color: "var(--troshka-text-dim, #94a3b8)",
+              marginBottom: 8,
+              paddingLeft: 4,
+            }}
+          >
+            minimal control-plane-usable reached at {fmtElapsed(controlPlaneUsableElapsed)}
+          </div>
+        )}
         {/* Status (left) beside the log (right). */}
         <div style={{ display: "flex", gap: 12, flex: 1, minHeight: 0 }}>
           <div
