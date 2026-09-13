@@ -108,20 +108,55 @@ def test_ensure_host_uplink_mtu_health_raises():
     s.commit.assert_not_called()
 
 
-def test_ensure_host_uplink_mtu_kubevirt_cluster_skips_check():
-    """KubeVirt-cluster hosts skip check_health and return uplink_mtu as-is."""
+def test_ensure_host_uplink_mtu_kubevirt_cluster_fetches_from_driver():
+    """KubeVirt-cluster hosts fetch uplink MTU from the provider driver."""
     from app.services.deploy_service import _ensure_host_uplink_mtu
 
     host = MagicMock()
     host.host_type = "kubevirt-cluster"
     host.uplink_mtu = None
+    host.provider_id = "provider-123"
     s = MagicMock()
 
-    with patch("app.services.troshkad_client.check_health") as mock_check_health:
+    mock_provider = MagicMock()
+    s.query.return_value.filter_by.return_value.first.return_value = mock_provider
+
+    mock_driver = MagicMock()
+    mock_driver._read_cluster_network_mtu.return_value = 8900
+
+    with patch("app.services.providers.get_provider_driver") as mock_get_driver:
+        with patch("app.services.troshkad_client.check_health") as mock_check_health:
+            mock_get_driver.return_value = mock_driver
+            result = _ensure_host_uplink_mtu(host, s)
+
+    assert result == 8900
+    assert host.uplink_mtu == 8900
+    mock_check_health.assert_not_called()  # kubevirt hosts don't use check_health
+    s.commit.assert_called_once()
+
+
+def test_ensure_host_uplink_mtu_kubevirt_cluster_driver_returns_none():
+    """KubeVirt-cluster hosts return None when driver can't determine MTU."""
+    from app.services.deploy_service import _ensure_host_uplink_mtu
+
+    host = MagicMock()
+    host.host_type = "kubevirt-cluster"
+    host.uplink_mtu = None
+    host.provider_id = "provider-123"
+    s = MagicMock()
+
+    mock_provider = MagicMock()
+    s.query.return_value.filter_by.return_value.first.return_value = mock_provider
+
+    mock_driver = MagicMock()
+    mock_driver._read_cluster_network_mtu.return_value = None
+
+    with patch("app.services.providers.get_provider_driver") as mock_get_driver:
+        mock_get_driver.return_value = mock_driver
         result = _ensure_host_uplink_mtu(host, s)
 
     assert result is None
-    mock_check_health.assert_not_called()  # kubevirt hosts skip check_health
+    assert host.uplink_mtu is None
     s.commit.assert_not_called()
 
 
@@ -135,8 +170,10 @@ def test_ensure_host_uplink_mtu_kubevirt_cluster_with_uplink_set():
     s = MagicMock()
 
     with patch("app.services.troshkad_client.check_health") as mock_check_health:
-        result = _ensure_host_uplink_mtu(host, s)
+        with patch("app.services.providers.get_provider_driver") as mock_get_driver:
+            result = _ensure_host_uplink_mtu(host, s)
 
     assert result == 8900
     mock_check_health.assert_not_called()
+    mock_get_driver.assert_not_called()  # early return when uplink_mtu is set
     s.commit.assert_not_called()

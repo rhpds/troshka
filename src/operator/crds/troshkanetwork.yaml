@@ -22,6 +22,8 @@ spec:
                   type: string
                 gateway:
                   type: string
+                mtu:
+                  type: integer
                 dhcpRange:
                   type: string
                 networkType:
