@@ -61,37 +61,63 @@ def test_read_runner_logs_troshkad_returns_stdout(monkeypatch):
     monkeypatch.setattr("app.services.troshkad_client.wait_for_job", wait_for_job_mock)
 
     host = SimpleNamespace(host_type="shared")
-    logs = run_service._read_runner_logs_troshkad(host)
+    # The monitor must target the FULL podman container name, not bare "runner".
+    cname = "troshka-p1234567-workload-runner-runner"
+    logs = run_service._read_runner_logs_troshkad(host, cname)
 
     assert logs == "TASK [x] ***\nok: [localhost]"
     assert start_job_mock.call_args[0][1] == "/containers/exec"
-    assert start_job_mock.call_args[0][2]["container_name"] == "runner"
+    assert start_job_mock.call_args[0][2]["container_name"] == cname
     assert start_job_mock.call_args[0][2]["command"] == ["cat", "/workdir/run.log"]
 
 
 def test_is_runner_pod_running_troshkad_checks_state(monkeypatch):
-    """Mocked transport: troshkad get_all_container_states returns running."""
-    fake_states = {"runner": {"state": "running"}}
-    get_states_mock = MagicMock(return_value=fake_states)
+    """Mocked transport: troshkad get_all_container_states keyed by full name."""
+    cname = "troshka-p1234567-workload-runner-runner"
+    get_states_mock = MagicMock(return_value={cname: {"state": "running"}})
 
     monkeypatch.setattr(
         "app.services.troshkad_client.get_all_container_states", get_states_mock
     )
 
     host = SimpleNamespace(host_type="shared")
-    assert run_service._runner_pod_running_troshkad(host) is True
+    assert run_service._runner_pod_running_troshkad(host, cname) is True
+
+
+def test_is_runner_pod_running_troshkad_created_is_alive(monkeypatch):
+    """A just-started container reports 'created' briefly — treat as alive."""
+    cname = "troshka-p1234567-workload-runner-runner"
+    get_states_mock = MagicMock(return_value={cname: {"state": "created"}})
+    monkeypatch.setattr(
+        "app.services.troshkad_client.get_all_container_states", get_states_mock
+    )
+    host = SimpleNamespace(host_type="shared")
+    assert run_service._runner_pod_running_troshkad(host, cname) is True
+
+
+def test_is_runner_pod_running_troshkad_exited_is_dead(monkeypatch):
+    """An exited container is dead."""
+    cname = "troshka-p1234567-workload-runner-runner"
+    get_states_mock = MagicMock(return_value={cname: {"state": "exited"}})
+    monkeypatch.setattr(
+        "app.services.troshkad_client.get_all_container_states", get_states_mock
+    )
+    host = SimpleNamespace(host_type="shared")
+    assert run_service._runner_pod_running_troshkad(host, cname) is False
 
 
 def test_check_exit_status_troshkad_reads_exit_code(monkeypatch):
     """Mocked transport: troshkad get_all_container_states returns exit_code."""
-    fake_states = {"runner": {"state": "exited", "exit_code": 0}}
-    get_states_mock = MagicMock(return_value=fake_states)
+    cname = "troshka-p1234567-workload-runner-runner"
+    get_states_mock = MagicMock(
+        return_value={cname: {"state": "exited", "exit_code": 0}}
+    )
 
     monkeypatch.setattr(
         "app.services.troshkad_client.get_all_container_states", get_states_mock
     )
 
     host = SimpleNamespace(host_type="shared")
-    status = run_service._check_exit_status_troshkad(host, "")
+    status = run_service._check_exit_status_troshkad(host, "", cname)
 
     assert status == "succeeded"

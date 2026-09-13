@@ -110,6 +110,23 @@ def _safe_sq(value: str) -> str:
     return value.replace("'", "'\\''")
 
 
+# troshkad names a pod's containers "troshka-<pid8>-<pod_name>-<container_name>"
+# (see deploy_service._start_pod / _pod_create_params). The runner pod is
+# pod_name="workload-runner" with a single container name="runner".
+_TROSHKAD_RUNNER_POD = "workload-runner"
+_TROSHKAD_RUNNER_CONTAINER = "runner"
+
+
+def _troshkad_runner_pod_name(project_id: str) -> str:
+    return f"troshka-{project_id[:8]}-{_TROSHKAD_RUNNER_POD}"
+
+
+def troshkad_runner_container_name(project_id: str) -> str:
+    """Full podman container name of the troshkad runner (what /containers/states
+    keys by and /containers/exec expects) — NOT the bare "runner"."""
+    return f"{_troshkad_runner_pod_name(project_id)}-{_TROSHKAD_RUNNER_CONTAINER}"
+
+
 def _mint_prelude_steps(paths: RunPaths, log_path: str) -> list[str]:
     """Command step(s) running the in-pod mint prelude playbook.
 
@@ -287,7 +304,17 @@ def _launch_troshkad(
         "restart_policy": "never",
         "privileged": True,
     }
-    return start_job(host, "/pods/create", params)
+    # /pods/create only CREATES the pod (containers land in "Created"); a separate
+    # /pods/start is required to actually run them (mirrors the ops pod's
+    # create-then-_start_pod). Without the start the runner never executes and the
+    # monitor sees a non-running container.
+    from app.services.troshkad_client import wait_for_job
+
+    job_id = start_job(host, "/pods/create", params)
+    wait_for_job(host, job_id, timeout=300)
+    full_pod_name = _troshkad_runner_pod_name(project.id)
+    start_job(host, "/pods/start", {"pod_name": full_pod_name})
+    return full_pod_name
 
 
 def _launch_kubevirt(

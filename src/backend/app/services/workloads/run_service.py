@@ -411,10 +411,22 @@ def _read_runner_pod_logs(host, run_id: str) -> str:
     """Read logs from the runner pod via troshkad containers/exec (cat logfile)."""
     if host.host_type == "kubevirt-cluster":
         return _read_runner_logs_kubevirt(host, run_id)
-    return _read_runner_logs_troshkad(host)
+    return _read_runner_logs_troshkad(host, _troshkad_container_for_run(run_id))
 
 
-def _read_runner_logs_troshkad(host) -> str:
+def _troshkad_container_for_run(run_id: str) -> str:
+    """Full podman container name of the troshkad runner for this run.
+
+    troshkad prefixes a pod's containers (troshka-<pid8>-<pod>-<container>), so the
+    monitor must NOT look up the bare "runner" — it won't match /containers/states.
+    """
+    from app.services.workloads.pod_launch import troshkad_runner_container_name
+
+    project_id = _get_project_id_for_run(run_id) or ""
+    return troshkad_runner_container_name(project_id)
+
+
+def _read_runner_logs_troshkad(host, container_name: str) -> str:
     """[LIVE-ENV] Read runner logs via troshkad containers/exec cat.
 
     Mirrors _exec_ops_pod_cat: exec `cat /workdir/run.log` inside the runner
@@ -422,7 +434,6 @@ def _read_runner_logs_troshkad(host) -> str:
     """
     from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
 
-    container_name = "runner"
     log_path = "/workdir/run.log"
 
     try:
@@ -506,24 +517,32 @@ def _is_runner_pod_running(host, run_id: str) -> bool:
     """
     if host.host_type == "kubevirt-cluster":
         return _runner_pod_running_kubevirt(host, run_id)
-    return _runner_pod_running_troshkad(host)
+    return _runner_pod_running_troshkad(host, _troshkad_container_for_run(run_id))
 
 
-def _runner_pod_running_troshkad(host) -> bool:
-    """[LIVE-ENV] Whether the runner container reports running state.
+# Explicit terminal container states — anything else (running, created, configured,
+# starting, or transient/unknown) is treated as still-alive so the monitor doesn't
+# finalize during the create→running startup window.
+_TROSHKAD_DEAD_STATES = {"exited", "stopped", "died"}
 
-    Mirrors _ops_pod_running: conservative (None states → True). Only an
-    explicit non-running state counts as dead.
+
+def _runner_pod_running_troshkad(host, container_name: str) -> bool:
+    """[LIVE-ENV] Whether the runner container is still alive.
+
+    Mirrors _ops_pod_running: conservative — only an EXPLICIT terminal state
+    (exited/stopped/died) counts as dead. A just-started container reports
+    "created"/"configured" briefly before "running"; treating those as dead
+    finalized runs prematurely. None states (transient API error) → alive.
     """
     from app.services.troshkad_client import get_all_container_states
 
     states = get_all_container_states(host)
     if states is None:
         return True
-    info = states.get("runner")
+    info = states.get(container_name)
     if info is None:
-        return False
-    return str(info.get("state", "")).lower() == "running"
+        return True  # not yet registered / transient — do not declare dead
+    return str(info.get("state", "")).lower() not in _TROSHKAD_DEAD_STATES
 
 
 def _runner_pod_running_kubevirt(host, run_id: str) -> bool:
@@ -611,10 +630,10 @@ def _check_runner_pod_exit_status(host, run_id: str, logs: str) -> str:
     """
     if host.host_type == "kubevirt-cluster":
         return _check_exit_status_kubevirt(host, run_id, logs)
-    return _check_exit_status_troshkad(host, logs)
+    return _check_exit_status_troshkad(host, logs, _troshkad_container_for_run(run_id))
 
 
-def _check_exit_status_troshkad(host, logs: str) -> str:
+def _check_exit_status_troshkad(host, logs: str, container_name: str) -> str:
     """[LIVE-ENV] Get runner container exit code via troshkad states.
 
     Mirrors ops-pod exit-code check. Returns "succeeded" if exit_code == 0,
@@ -624,7 +643,7 @@ def _check_exit_status_troshkad(host, logs: str) -> str:
 
     states = get_all_container_states(host)
     if states:
-        info = states.get("runner")
+        info = states.get(container_name)
         if info:
             exit_code = info.get("exit_code")
             if exit_code is not None:

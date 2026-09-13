@@ -54,9 +54,14 @@ def test_build_run_command_invokes_ansible_playbook():
 
 def test_launch_runner_pod_troshkad(monkeypatch):
     host = SimpleNamespace(id="h1", host_type="shared")
-    project = SimpleNamespace(id="p1")
+    project = SimpleNamespace(id="p1234567")
     fake_start = MagicMock(return_value="job-123")
     monkeypatch.setattr(pod_launch, "start_job", fake_start)
+    # /pods/create must be followed by a wait + /pods/start (else the container
+    # stays "Created" and never runs).
+    monkeypatch.setattr(
+        "app.services.troshkad_client.wait_for_job", MagicMock(return_value={})
+    )
     job = pod_launch.launch_runner_pod(
         host,
         project,
@@ -65,13 +70,19 @@ def test_launch_runner_pod_troshkad(monkeypatch):
         files={"/run/x": "y"},
         networks=[],
     )
-    assert job == "job-123"
-    args, _kwargs = fake_start.call_args
-    assert args[1] == "/pods/create"
-    params = args[2]
+    # Returns the full pod name (used by the monitor), not the create job id.
+    assert job == "troshka-p1234567-workload-runner"
+    # First call: /pods/create with the runner container.
+    create_call = fake_start.call_args_list[0]
+    assert create_call[0][1] == "/pods/create"
+    params = create_call[0][2]
     assert params["containers"][0]["image"] == "ee:1"
     assert params["files"] == {"/run/x": "y"}
     assert params["privileged"] is True
+    # Second call: /pods/start with the full pod name.
+    start_call = fake_start.call_args_list[1]
+    assert start_call[0][1] == "/pods/start"
+    assert start_call[0][2]["pod_name"] == "troshka-p1234567-workload-runner"
 
 
 def test_launch_runner_pod_kubevirt(monkeypatch):
