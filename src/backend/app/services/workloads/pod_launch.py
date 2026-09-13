@@ -166,6 +166,7 @@ def _launch_kubevirt(
         dns_nameserver="",
         image=ee_image,
         pod_name="workload-runner",
+        restart_policy="Never",
     )
     create_ops_pod(provider, project.id, pod, secret)
     return f"workload-runner-{project.id[:8]}"

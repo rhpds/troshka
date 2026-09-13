@@ -658,7 +658,8 @@ def _check_exit_status_kubevirt(host, run_id: str, logs: str) -> str:
 def _infer_status_from_logs(logs: str) -> str:
     """Infer status from log content when API checks unavailable."""
     # Look for common Ansible success/failure markers
-    if "failed=0" in logs or "PLAY RECAP" in logs and "failed=0" in logs:
+    # Require PLAY RECAP presence AND no failed=[1-9]+ to infer success
+    if "PLAY RECAP" in logs and not re.search(r"failed=[1-9]\d*", logs):
         return "succeeded"
     if "fatal:" in logs or "ERROR" in logs:
         return "error"
@@ -740,9 +741,9 @@ def prune_workload_runs(
 ) -> int:
     """Delete terminal WorkloadRun records older than the retention window.
 
-    Deletes runs with status in ("succeeded", "error") and ended_at older than
-    (now - retention_days). Never deletes running or pending runs. Returns count
-    of deleted runs.
+    Deletes runs with status in ("succeeded", "error", "timeout") and ended_at
+    older than (now - retention_days). Never deletes running or pending runs.
+    Returns count of deleted runs.
 
     Args:
         db: SQLAlchemy session.
@@ -760,7 +761,7 @@ def prune_workload_runs(
     runs_to_delete = (
         db.query(WorkloadRun)
         .filter(
-            WorkloadRun.status.in_(("succeeded", "error")),
+            WorkloadRun.status.in_(("succeeded", "error", "timeout")),
             WorkloadRun.ended_at < cutoff,
         )
         .all()

@@ -141,3 +141,32 @@ def test_synthesize_ad_hoc_invalid_fqcn():
         assert "Invalid role FQCN" in str(e)
     finally:
         db.close()
+
+
+def test_infer_status_from_logs_multihost_recap_with_failure():
+    """Log inference should NOT infer succeeded when multi-host recap has failures."""
+    logs = """
+PLAY RECAP *********************************************************************
+host1.example.com          : ok=10   changed=3    unreachable=0    failed=0    skipped=1    rescued=0    ignored=0
+host2.example.com          : ok=8    changed=2    unreachable=0    failed=2    skipped=0    rescued=0    ignored=0
+"""
+    status = run_service._infer_status_from_logs(logs)
+    assert status == "error"  # NOT "succeeded" despite host1 having failed=0
+
+
+def test_infer_status_from_logs_all_hosts_succeeded():
+    """Log inference should infer succeeded when all hosts have failed=0."""
+    logs = """
+PLAY RECAP *********************************************************************
+host1.example.com          : ok=10   changed=3    unreachable=0    failed=0    skipped=1    rescued=0    ignored=0
+host2.example.com          : ok=8    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+"""
+    status = run_service._infer_status_from_logs(logs)
+    assert status == "succeeded"
+
+
+def test_infer_status_from_logs_no_recap():
+    """Log inference without PLAY RECAP should infer error."""
+    logs = "Some ansible output without recap"
+    status = run_service._infer_status_from_logs(logs)
+    assert status == "error"

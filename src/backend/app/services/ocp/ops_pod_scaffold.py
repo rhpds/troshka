@@ -185,6 +185,7 @@ def build_ops_pod_kubevirt_manifests(
     image: str = OPS_POD_IMAGE,
     dns_nameserver: str = "",
     pod_name: str | None = None,
+    restart_policy: str = "Always",
 ) -> tuple[dict, dict]:
     """Build the ``(Pod, Secret)`` manifests for the KubeVirt ops pod.
 
@@ -198,8 +199,9 @@ def build_ops_pod_kubevirt_manifests(
     absolute ``<workdir>/<clusterId>/...`` paths the install script reads — so no
     secret appears in the pod argv. ``command`` is the shared install-runner
     script; ``TROSHKA_API_KEY`` rides in ``env`` (not exposed in the argv).
-    ``restartPolicy`` is ``Always`` (the install script is idempotent and skips
-    already-installed clusters on restart).
+    ``restart_policy`` defaults to ``Always`` (OCP ops pod is idempotent and skips
+    already-installed clusters on restart); workload runners pass ``Never`` so the
+    pod reaches terminal state after completion.
     """
     pid = project_id[:8]
     if pod_name is None:
@@ -261,7 +263,7 @@ def build_ops_pod_kubevirt_manifests(
 
     spec = {
         "serviceAccountName": _OPS_POD_SERVICE_ACCOUNT,
-        "restartPolicy": "Always",
+        "restartPolicy": restart_policy,
         "containers": [container],
         "volumes": [
             {"name": "ops-workdir", "emptyDir": {}},

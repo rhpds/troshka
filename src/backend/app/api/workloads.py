@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,8 +15,6 @@ from app.models.project import Project
 from app.models.user import User
 from app.models.workload_run import WorkloadRun
 from app.services.workloads.run_service import start_workload_run
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["workloads"])
 
@@ -179,10 +176,8 @@ def get_workload_run_status(
         if user.role != "admin":
             raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
-    # Redis-first progress, DB fallback
+    # Redis-only progress (WorkloadRun has no progress column)
     progress = get_progress(f"workload:{run_id}")
-    if not progress and hasattr(run, "progress"):
-        progress = run.progress  # type: ignore
 
     return WorkloadRunResponse(
         id=run.id,

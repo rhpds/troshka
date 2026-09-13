@@ -85,3 +85,5 @@ def test_launch_runner_pod_kubevirt(monkeypatch):
     assert args[1] == "p1234567890"  # project_id is 2nd positional arg
     # Assert EE image is passed to manifest builder
     assert fake_build_manifests.call_args.kwargs["image"] == "ee:2"
+    # Assert runner Pod gets restart_policy="Never" (not "Always" like OCP ops pod)
+    assert fake_build_manifests.call_args.kwargs["restart_policy"] == "Never"

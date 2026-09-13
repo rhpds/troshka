@@ -14,6 +14,12 @@ def test_prune_deletes_old_terminal_runs():
             status="succeeded",
             ended_at=datetime.datetime(2000, 1, 1, tzinfo=datetime.UTC),
         )
+        old_timeout = WorkloadRun(
+            kind="ad_hoc",
+            role_fqcn="t",
+            status="timeout",
+            ended_at=datetime.datetime(2000, 1, 1, tzinfo=datetime.UTC),
+        )
         recent = WorkloadRun(
             kind="ad_hoc",
             role_fqcn="y",
@@ -21,12 +27,18 @@ def test_prune_deletes_old_terminal_runs():
             ended_at=datetime.datetime.now(datetime.UTC),
         )
         running = WorkloadRun(kind="ad_hoc", role_fqcn="z", status="running")
-        db.add_all([old, recent, running])
+        db.add_all([old, old_timeout, recent, running])
         db.commit()
-        old_id, recent_id, running_id = old.id, recent.id, running.id
+        old_id, old_timeout_id, recent_id, running_id = (
+            old.id,
+            old_timeout.id,
+            recent.id,
+            running.id,
+        )
         n = prune_workload_runs(db, retention_days=30)
-        assert n == 1
+        assert n == 2  # both old succeeded and old timeout pruned
         assert db.get(WorkloadRun, old_id) is None
+        assert db.get(WorkloadRun, old_timeout_id) is None
         assert db.get(WorkloadRun, recent_id) is not None
         assert db.get(WorkloadRun, running_id) is not None  # never prune running
     finally:
