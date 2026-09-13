@@ -359,3 +359,32 @@ def test_runner_pod_infra_network_distinct_ip():
     assert runner[0]["cidr"] == ops[0]["cidr"]
     assert runner[0]["gateway"] == ops[0]["gateway"]
     assert runner[0]["dns_nameserver"] == "10.0.0.1"
+
+
+def test_finalize_persists_log_tail_for_success():
+    import uuid
+
+    from app.models.workload_run import WorkloadRun
+    from app.services.workloads.run_service import (
+        _LOG_TAIL_BYTES,
+        _finalize_workload_run,
+    )
+    from tests.conftest import TestSession
+
+    db = TestSession()
+    run = WorkloadRun(id=str(uuid.uuid4()), kind="ad_hoc", status="running")
+    db.add(run)
+    db.commit()
+    run_id = run.id
+    db.close()
+
+    big = "x" * (_LOG_TAIL_BYTES + 5000)
+    _finalize_workload_run(run_id, "succeeded", big)
+
+    db = TestSession()
+    saved = db.get(WorkloadRun, run_id)
+    assert saved.status == "succeeded"
+    assert saved.log_ref is not None
+    assert len(saved.log_ref) == _LOG_TAIL_BYTES
+    assert saved.log_ref == big[-_LOG_TAIL_BYTES:]
+    db.close()

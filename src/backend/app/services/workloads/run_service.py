@@ -29,6 +29,8 @@ from app.workers.jobs import job_run_workload
 
 logger = logging.getLogger(__name__)
 
+_LOG_TAIL_BYTES = 256 * 1024
+
 
 def _now():
     return datetime.datetime.now(datetime.UTC)
@@ -700,6 +702,7 @@ def _finalize_workload_run(run_id: str, status: str, error_or_logs: str) -> None
         if run is not None:
             run.status = status
             run.ended_at = _now()
+            run.log_ref = (error_or_logs or "")[-_LOG_TAIL_BYTES:]
             if status == "error" or status == "timeout":
                 run.error = error_or_logs[:2000]
             db.commit()
