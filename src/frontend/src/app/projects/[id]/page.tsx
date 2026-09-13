@@ -12,6 +12,7 @@ import { useCanvasStore, computeTopologyDirty, computeTopologyDiff, setLatestVmS
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
 import RunWorkloadModal from "@/components/canvas/RunWorkloadModal";
+import WorkloadRunsModal from "@/components/canvas/WorkloadRunsModal";
 import WorkloadRunDetailModal from "@/components/canvas/WorkloadRunDetailModal";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
 import { useVmStateSocket } from "@/hooks/useVmStateSocket";
@@ -32,6 +33,7 @@ export default function ProjectCanvasPage() {
   const [showProperties, setShowProperties] = useState(true);
   const [showPatternModal, setShowPatternModal] = useState(false);
   const [showWorkloadModal, setShowWorkloadModal] = useState(false);
+  const [showWorkloadRuns, setShowWorkloadRuns] = useState(false);
   const [openRunId, setOpenRunId] = useState<string | null>(null);
   const [snapshotTarget, setSnapshotTarget] = useState<{ vmId: string; vmName: string; isRunning: boolean } | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
@@ -743,6 +745,15 @@ export default function ProjectCanvasPage() {
               Run Workload
             </button>
           )}
+          {projectState === "active" && (
+            <button
+              className="project-publish-btn"
+              onClick={() => setShowWorkloadRuns(true)}
+              style={{ opacity: 0.85 }}
+            >
+              Workload Runs
+            </button>
+          )}
           {nodes.length > 0 && (
             <button
               className="project-publish-btn"
@@ -1102,6 +1113,16 @@ export default function ProjectCanvasPage() {
           onClose={() => setShowWorkloadModal(false)}
           onLaunched={(runId) => {
             setShowWorkloadModal(false);
+            setOpenRunId(runId);
+          }}
+        />
+      )}
+      {showWorkloadRuns && (
+        <WorkloadRunsModal
+          projectId={projectId}
+          onClose={() => setShowWorkloadRuns(false)}
+          onOpenRun={(runId) => {
+            setShowWorkloadRuns(false);
             setOpenRunId(runId);
           }}
         />
