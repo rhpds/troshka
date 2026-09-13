@@ -11,6 +11,7 @@ import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
 import { useCanvasStore, computeTopologyDirty, computeTopologyDiff, setLatestVmStates, setLatestContainerStates, type ExternalIp, type TopologyDiffEntry } from "@/stores/canvasStore";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
+import RunWorkloadModal from "@/components/canvas/RunWorkloadModal";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
 import { useVmStateSocket } from "@/hooks/useVmStateSocket";
 import AlertModal from "@/components/AlertModal";
@@ -29,6 +30,8 @@ export default function ProjectCanvasPage() {
   const [showPalette, setShowPalette] = useState(true);
   const [showProperties, setShowProperties] = useState(true);
   const [showPatternModal, setShowPatternModal] = useState(false);
+  const [showWorkloadModal, setShowWorkloadModal] = useState(false);
+  const [openRunId, setOpenRunId] = useState<string | null>(null);
   const [snapshotTarget, setSnapshotTarget] = useState<{ vmId: string; vmName: string; isRunning: boolean } | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
@@ -730,6 +733,15 @@ export default function ProjectCanvasPage() {
               Save as Pattern
             </button>
           )}
+          {projectState === "active" && (
+            <button
+              className="project-publish-btn"
+              onClick={() => setShowWorkloadModal(true)}
+              style={{ opacity: 0.85 }}
+            >
+              Run Workload
+            </button>
+          )}
           {nodes.length > 0 && (
             <button
               className="project-publish-btn"
@@ -1081,6 +1093,16 @@ export default function ProjectCanvasPage() {
             showToast(capturing ? "Pattern capture started — track progress on the Patterns page" : "Pattern saved successfully");
           }}
           onClose={() => setShowPatternModal(false)}
+        />
+      )}
+      {showWorkloadModal && (
+        <RunWorkloadModal
+          projectId={projectId}
+          onClose={() => setShowWorkloadModal(false)}
+          onLaunched={(runId) => {
+            setShowWorkloadModal(false);
+            setOpenRunId(runId);
+          }}
         />
       )}
       {snapshotTarget && (
