@@ -343,6 +343,7 @@ Troshka uses [EC2 nested virtualization](https://docs.aws.amazon.com/AWSEC2/late
 - [ ] Recert-based SNO rename for unique DNS on pattern-deployed clusters
 - [ ] Project auto-timers via agnosticv integration (auto-stop/delete lifecycle)
 - [ ] Enhanced WebSocket state push (replace polling with full pub/sub)
+- [ ] DNS upstream forwarding: make the network "Forward to upstream" toggle functional, honest, and consistent across providers (spec: `docs/superpowers/specs/2026-09-13-dns-upstream-forwarding.md`)
 
 ## License
 
