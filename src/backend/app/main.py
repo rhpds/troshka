@@ -480,6 +480,7 @@ async def lifespan(app):
     from app.core.redis import get_redis
     from app.services.health_poller import start_health_poller
     from app.services.project_timer import start_project_timer
+    from app.services.workload_timer import start_workload_timer
     from app.services.ws_pubsub import (
         set_event_loop,
         start_redis_listener,
@@ -506,6 +507,7 @@ async def lifespan(app):
 
     start_health_poller()
     start_project_timer()
+    start_workload_timer()
     start_state_poller()
     start_redis_listener()
 

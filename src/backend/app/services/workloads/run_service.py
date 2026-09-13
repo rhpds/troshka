@@ -733,3 +733,46 @@ def resume_workload_monitors() -> None:
         logger.exception("resume_workload_monitors failed")
     finally:
         db.close()
+
+
+def prune_workload_runs(
+    db, *, retention_days: int, now: datetime.datetime | None = None
+) -> int:
+    """Delete terminal WorkloadRun records older than the retention window.
+
+    Deletes runs with status in ("succeeded", "error") and ended_at older than
+    (now - retention_days). Never deletes running or pending runs. Returns count
+    of deleted runs.
+
+    Args:
+        db: SQLAlchemy session.
+        retention_days: Number of days to retain terminal runs.
+        now: Reference time (defaults to UTC now if not provided).
+
+    Returns:
+        Number of WorkloadRun records deleted.
+    """
+    if now is None:
+        now = _now()
+
+    cutoff = now - datetime.timedelta(days=retention_days)
+
+    runs_to_delete = (
+        db.query(WorkloadRun)
+        .filter(
+            WorkloadRun.status.in_(("succeeded", "error")),
+            WorkloadRun.ended_at < cutoff,
+        )
+        .all()
+    )
+
+    count = len(runs_to_delete)
+    for run in runs_to_delete:
+        db.delete(run)
+    if count > 0:
+        db.commit()
+        logger.info(
+            "Pruned %d WorkloadRun records older than %d days", count, retention_days
+        )
+
+    return count

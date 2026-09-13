@@ -100,6 +100,7 @@ ocp:
 workloads:
   cache_root: "/var/lib/troshka/workload-cache"
   disk_budget_gb: 20
+  run_retention_days: 30
   agnosticv_branch: "master"
   default_refs:
     agnosticd-v2: "main"
