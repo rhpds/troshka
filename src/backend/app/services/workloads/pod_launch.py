@@ -113,15 +113,26 @@ def _safe_sq(value: str) -> str:
 def _mint_prelude_steps(paths: RunPaths, log_path: str) -> list[str]:
     """Command step(s) running the in-pod mint prelude playbook.
 
-    Runs AFTER install_dynamic_dependencies (so kubernetes.core + agnosticd.core
-    collections are installed) and BEFORE main.yml. Writes `clusters` to
-    ``paths.clusters`` for main.yml to consume via ``-e @``. ``output_dir`` is set
-    so the role's agnosticd_user_info task has a writable target in-pod.
+    Runs AFTER install_dynamic_dependencies (so kubernetes.core is available) and
+    BEFORE main.yml. Writes `clusters` to ``paths.clusters`` for main.yml to
+    consume via ``-e @``. ``output_dir`` is set so the role's agnosticd_user_info
+    task has a writable target in-pod.
+
+    The playbook is COPIED next to main.yml (``{agnosticd}/ansible/``) before it
+    runs: ``agnosticd.core`` is bundled in the repo's ``ansible/collections`` and
+    is only discoverable via the playbook-adjacent collections dir. Running the
+    mounted playbook from ``/workdir`` would not resolve ``agnosticd.core`` (its
+    role uses ``agnosticd.core.agnosticd_user_info``), so it must share main.yml's
+    playbook_dir.
     """
     safe_mint = _safe_sq(paths.mint_playbook)
     safe_log = _safe_sq(log_path)
+    dest = f"{paths.agnosticd}/ansible/_troshka_mint_cluster_admin.yml"
+    safe_dest = _safe_sq(dest)
     return [
-        f"ansible-playbook '{safe_mint}' -e output_dir='{_safe_sq(_WORKDIR)}' 2>&1 | tee -a '{safe_log}'",
+        f"cp '{safe_mint}' '{safe_dest}'",
+        f"ansible-playbook '{safe_dest}' -e output_dir='{_safe_sq(_WORKDIR)}'"
+        f" 2>&1 | tee -a '{safe_log}'",
     ]
 
 

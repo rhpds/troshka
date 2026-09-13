@@ -182,21 +182,24 @@ def test_build_run_command_mints_cluster_admin_when_kubeconfig():
         kubeconfig="KC-CONTENTS",
     )
     joined = " ".join(cmd)
-    # (a) mint step references the prelude playbook (which runs the SA role)
-    assert paths.mint_playbook in joined
+    # The mint playbook is copied next to main.yml so agnosticd.core (bundled in
+    # the repo's ansible/collections) resolves via the playbook-adjacent dir.
+    mint_dest = f"{paths.agnosticd}/ansible/_troshka_mint_cluster_admin.yml"
+    # (a) mint prelude is copied into the repo and run from there (runs the SA role)
+    assert f"cp '{paths.mint_playbook}' '{mint_dest}'" in joined
+    assert f"ansible-playbook '{mint_dest}'" in joined
     # (b) clusters extra-var consumed by main.yml
     assert f"-e @'{paths.clusters}'" in joined
     # (c) ordering: install_dynamic_dependencies -> mint prelude -> main.yml
     install_pos = joined.find("install_dynamic_dependencies.yml")
-    mint_pos = joined.find(paths.mint_playbook)
+    mint_pos = joined.find(mint_dest)
     main_pos = joined.find("main.yml")
     assert install_pos != -1 and mint_pos != -1 and main_pos != -1
     assert install_pos < mint_pos < main_pos
     # clusters consumed only alongside main.yml (after the mint prelude produced it)
     assert joined.find(f"-e @'{paths.clusters}'") > mint_pos
     # (d) mint step tees to run.log for monitor visibility
-    # Find the mint ansible-playbook invocation and verify it tees to the log
-    mint_line_start = joined.find(f"ansible-playbook '{paths.mint_playbook}'")
+    mint_line_start = joined.find(f"ansible-playbook '{mint_dest}'")
     mint_line_end = joined.find(";", mint_line_start)
     if mint_line_end == -1:
         mint_line_end = len(joined)
