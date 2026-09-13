@@ -22,7 +22,6 @@ class RunPaths:
     cluster_access: str = f"{_WORKDIR}/cluster-access.json"
     cloud_creds: str = f"{_WORKDIR}/cloud-creds.env"
     agnosticd: str = f"{_WORKDIR}/agnosticd-v2"
-    collections: str = f"{_WORKDIR}/collections"
     log: str = f"{_WORKDIR}/run.log"
 
 
@@ -49,29 +48,45 @@ def build_artifact_files(
     return files
 
 
-def build_run_command(_resolved_item, paths: RunPaths) -> list[str]:
-    """Build the ansible-playbook invocation for the AgnosticD-v2 openshift-workloads config.
+def build_run_command(
+    _resolved_item, paths: RunPaths, *, agnosticd_v2_url: str, scm_ref: str
+) -> list[str]:
+    """Build the runner pod command: clone agnosticd-v2, install collections, run playbook.
 
-    Runs ONLY the software/workloads stage against existing infra (no infra deploy).
-    Entrypoint confirmed against ~/agnosticd-v2/ansible/main.yml (imports
-    configs/{config}/software.yml which runs the openshift_workload_deployer role).
+    Clones agnosticd-v2 at the specified scm_ref INSIDE the pod, then runs
+    install_dynamic_dependencies.yml (which installs collections from requirements_content
+    in extra_vars), then runs the main playbook.
+
+    Mirrors the EE entrypoint pattern: install_dynamic_dependencies.yml before main.yml.
 
     Output is tee'd to a logfile so the monitor can tail progress.
     """
-    # item vars / requirements_content are threaded in Task 6 (run_service)
-    # Build the ansible-playbook command - always run main.yml with config=openshift-workloads
-    # and cloud_provider=none (we're running against existing infra, not deploying new).
-    # Tee output to logfile for monitor (pipefail preserves playbook exit code).
+    # Shell-quote the ref and url for safety (they come from config, but keep them safe)
+    safe_url = agnosticd_v2_url.replace("'", "'\\''")
+    safe_ref = scm_ref.replace("'", "'\\''")
+    safe_agnosticd = paths.agnosticd.replace("'", "'\\''")
+    safe_extra_vars = paths.extra_vars.replace("'", "'\\''")
+    safe_inventory = paths.inventory.replace("'", "'\\''")
+    safe_log = paths.log.replace("'", "'\\''")
+
     script_parts = [
         "set -euo pipefail",
-        f"cd {paths.agnosticd}/ansible",
-        f"export ANSIBLE_COLLECTIONS_PATH={paths.collections}",
-        "ansible-playbook main.yml",
-        f"-i {paths.inventory}",
-        f"-e @{paths.extra_vars}",
-        "-e ACTION=provision",
-        "-e cloud_provider=none",
-        f"2>&1 | tee {paths.log}",
+        # Clone agnosticd-v2 at the specified ref (try --branch first, fall back to checkout)
+        f"git clone --depth 1 --branch '{safe_ref}' '{safe_url}' '{safe_agnosticd}' 2>/dev/null"
+        f" || {{ git clone '{safe_url}' '{safe_agnosticd}' && git -C '{safe_agnosticd}' checkout '{safe_ref}'; }}",
+        # Change to agnosticd-v2/ansible directory
+        f"cd '{safe_agnosticd}/ansible'",
+        # Install dynamic dependencies (collections from requirements_content)
+        "ansible-playbook install_dynamic_dependencies.yml"
+        f" -e @'{safe_extra_vars}'"
+        " -e config=openshift-workloads",
+        # Run main playbook
+        "ansible-playbook main.yml"
+        f" -i '{safe_inventory}'"
+        f" -e @'{safe_extra_vars}'"
+        " -e ACTION=provision"
+        " -e cloud_provider=none"
+        f" 2>&1 | tee '{safe_log}'",
     ]
     script = "; ".join(script_parts)
     return ["bash", "-lc", script]

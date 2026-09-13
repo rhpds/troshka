@@ -80,12 +80,22 @@ def test_run_workload_job_happy_path(monkeypatch):
             requirements_content=None,
         ),
     )
-    monkeypatch.setattr(run_service, "_prepare_agnosticd", lambda db, item: None)
     monkeypatch.setattr(run_service, "mint_run_key", lambda db, p: "trk_k")
     monkeypatch.setattr(run_service, "resolve_cluster_access", lambda p: {})
     monkeypatch.setattr(
         run_service, "validate_ansible_groups", lambda t, require_bastion: None
     )
+
+    # Capture build_run_command calls to verify agnosticd_v2_url and scm_ref are passed
+    build_run_calls = []
+
+    def mock_build_run_command(item, paths, *, agnosticd_v2_url, scm_ref):
+        build_run_calls.append(
+            {"agnosticd_v2_url": agnosticd_v2_url, "scm_ref": scm_ref}
+        )
+        return ["bash", "-lc", "echo test"]
+
+    monkeypatch.setattr(run_service, "build_run_command", mock_build_run_command)
     launched = MagicMock(return_value="job-1")
     monkeypatch.setattr(run_service, "launch_runner_pod", launched)
     monkeypatch.setattr(run_service, "_start_workload_monitor", lambda *a, **k: None)
@@ -98,6 +108,13 @@ def test_run_workload_job_happy_path(monkeypatch):
     assert row.status == "running"
     assert row.started_at is not None
     assert launched.called
+    # Verify build_run_command was called with agnosticd_v2_url and scm_ref
+    assert len(build_run_calls) == 1
+    assert (
+        build_run_calls[0]["agnosticd_v2_url"]
+        == "https://github.com/rhpds/agnosticd-v2.git"
+    )
+    assert build_run_calls[0]["scm_ref"] == "main"
     db.close()
 
 

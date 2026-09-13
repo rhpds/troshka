@@ -26,12 +26,24 @@ def test_build_run_command_invokes_ansible_playbook():
         scm_ref="main",
         requirements_content=None,
     )
-    cmd = pod_launch.build_run_command(item, paths)
+    cmd = pod_launch.build_run_command(
+        item,
+        paths,
+        agnosticd_v2_url="https://github.com/rhpds/agnosticd-v2.git",
+        scm_ref="main",
+    )
     joined = " ".join(cmd)
+    assert "git clone" in joined
+    assert "agnosticd-v2" in joined
+    assert "--branch 'main'" in joined or "checkout 'main'" in joined
     assert "ansible-playbook" in joined
-    assert "tee /workdir/run.log" in joined
+    assert "tee" in joined and paths.log in joined
     assert paths.inventory in joined
     assert paths.extra_vars in joined
+    # Verify git clone appears BEFORE ansible-playbook in the command
+    git_pos = joined.find("git clone")
+    ansible_pos = joined.find("ansible-playbook")
+    assert git_pos < ansible_pos, "git clone must appear before ansible-playbook"
 
 
 def test_launch_runner_pod_troshkad(monkeypatch):

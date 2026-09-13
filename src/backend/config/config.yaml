@@ -102,6 +102,7 @@ workloads:
   disk_budget_gb: 20
   run_retention_days: 30
   agnosticv_branch: "master"
+  agnosticd_v2_url: "https://github.com/rhpds/agnosticd-v2.git"
   default_refs:
     agnosticd-v2: "main"
     agnosticd: "development"
