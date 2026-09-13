@@ -473,3 +473,12 @@ def test_get_workload_log_running_falls_back_on_error(monkeypatch):
     monkeypatch.setattr(run_service, "_host_for_project", _boom)
     assert run_service.get_workload_log(db, run) == "fallback log"
     db.close()
+
+
+def test_should_validate_inventory_modes():
+    from app.services.workloads.run_service import _should_validate_inventory
+
+    assert _should_validate_inventory(None) is True  # legacy default
+    assert _should_validate_inventory({}) is True
+    assert _should_validate_inventory({"mode": "vms"}) is True
+    assert _should_validate_inventory({"mode": "cluster"}) is False

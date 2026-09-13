@@ -98,7 +98,8 @@ def run_workload_job(run_id: str) -> None:
         item = _resolve_item(db, run)
         key = mint_run_key(db, project)
         topo = project.deployed_topology or project.topology or {}
-        validate_ansible_groups(topo, require_bastion=(not _has_ocp(project)))
+        if _should_validate_inventory(run.target_map):
+            validate_ansible_groups(topo, require_bastion=(not _has_ocp(project)))
 
         from app.core.config import config
         from app.services.workloads import repo_cache
@@ -724,6 +725,11 @@ def get_workload_log(db, run) -> str:
         return _read_runner_pod_logs(host, run.id) or run.log_ref or ""
     except Exception:  # noqa: BLE001 — transient pod-read failure → persisted tail
         return run.log_ref or ""
+
+
+def _should_validate_inventory(target_map) -> bool:
+    """Skip the whole-project AnsibleGroup contract only for cluster-only runs."""
+    return (target_map or {}).get("mode") != "cluster"
 
 
 def _enqueue_monitor_by_ids(run_id: str, host_id: str) -> None:
