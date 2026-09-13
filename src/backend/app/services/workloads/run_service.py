@@ -131,16 +131,23 @@ def run_workload_job(run_id: str) -> None:
         # Resolve scm_ref for agnosticd-v2 clone
         scm_ref = item.scm_ref or repo_cache.default_ref("agnosticd-v2")
 
+        # Runner-pod networking so the pod can resolve/reach the cluster API
+        # (api.<cluster>.local via the project dnsmasq). Works on BOTH providers:
+        # KubeVirt returns cluster NADs + a self-assign-IP prelude + dnsmasq (.2);
+        # troshkad returns podman network entries carrying the gateway dnsmasq (.1)
+        # and an empty prelude (podman does IPAM).
+        networks, dns_nameserver, net_prelude = _resolve_pod_networks(
+            host, project, topo
+        )
+
         command = build_run_command(
             item,
             paths,
             agnosticd_v2_url=config.workloads.agnosticd_v2_url,
             scm_ref=scm_ref,
             kubeconfig=kubeconfig,
+            net_prelude=net_prelude,
         )
-
-        # Wire KubeVirt project-network attachment (HARD REQUIREMENT B)
-        networks = _resolve_pod_networks(host, project, topo)
 
         launch_runner_pod(
             host,
@@ -151,6 +158,7 @@ def run_workload_job(run_id: str) -> None:
             command=command,
             files=files,
             networks=networks,
+            dns_nameserver=dns_nameserver,
         )
         run.status = "running"
         run.started_at = _now()
@@ -204,26 +212,42 @@ def _synthesize_ad_hoc(db, run):
     return SimpleNamespace(
         extra_vars=extra_vars,
         ee_image=getattr(config.workloads, "default_ee_image", None)
-        or "quay.io/redhat-gpte/troshka-ops-pod:latest",
+        or "quay.io/agnosticd/ee-multicloud:chained-latest",
         scm_ref=None,
         requirements_content=run.requirements_content,
     )
 
 
 def _resolve_pod_networks(host, project, topo):
-    """Resolve pod network attachment for runner pod.
+    """Resolve runner-pod networking so it can resolve/reach the cluster API
+    (``api.<cluster>.local`` via the project dnsmasq). Mirrors the ops pod on
+    BOTH providers. Returns ``(networks, dns_nameserver, net_prelude)``:
 
-    - KubeVirt hosts: project NADs (for project-network attachment)
-    - troshkad hosts: project networks (dict entries)
+    - KubeVirt: cluster NAD name(s) + the dnsmasq (``<cidr>.2``) nameserver +
+      a ``net_prelude`` of ``ip addr add`` lines (OVN-L2 NADs have no IPAM, so the
+      pod must self-assign its lab-net IP before any lookup).
+    - troshkad: podman network entries carrying the gateway dnsmasq (``<cidr>.1``);
+      podman does IPAM, so ``net_prelude`` is empty.
     """
     if getattr(host, "host_type", None) == "kubevirt-cluster":
-        # KubeVirt: return NAD names for project networks
+        from app.services.deploy_service import (
+            _kubevirt_ops_pod_dns,
+            _kubevirt_ops_pod_net_ips,
+        )
+        from app.services.ocp.ops_pod_install import _self_assign_net_ips
         from app.services.ocp.ops_pod_scaffold import ops_pod_network_nads
 
         cluster_nads, _bmc_nad = ops_pod_network_nads(topo)
-        return cluster_nads
-    # troshkad: return network entries (mirrors deploy_service ops pod pattern)
-    return []
+        net_ip_assignments, _serving = _kubevirt_ops_pod_net_ips(topo)
+        dns = _kubevirt_ops_pod_dns(net_ip_assignments)
+        return cluster_nads, dns, _self_assign_net_ips(net_ip_assignments)
+    # troshkad: podman networks (IPAM) + gateway dnsmasq; no self-assign prelude.
+    from app.services.deploy_topology import _gateway_connected_dns_nameserver
+    from app.services.ocp.ops_pod_scaffold import ops_pod_infra_network
+
+    dns = _gateway_connected_dns_nameserver(topo)
+    networks = ops_pod_infra_network(project.vni_map or {}, dns_nameserver=dns)
+    return networks, dns, ""
 
 
 def _fail_run(db, run_id, message: str) -> None:

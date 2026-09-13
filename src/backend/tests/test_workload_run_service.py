@@ -89,18 +89,23 @@ def test_run_workload_job_happy_path(monkeypatch):
     build_run_calls = []
 
     def mock_build_run_command(
-        item, paths, *, agnosticd_v2_url, scm_ref, kubeconfig=None
+        item, paths, *, agnosticd_v2_url, scm_ref, kubeconfig=None, net_prelude=""
     ):
         build_run_calls.append(
             {
                 "agnosticd_v2_url": agnosticd_v2_url,
                 "scm_ref": scm_ref,
                 "kubeconfig": kubeconfig,
+                "net_prelude": net_prelude,
             }
         )
         return ["bash", "-lc", "echo test"]
 
     monkeypatch.setattr(run_service, "build_run_command", mock_build_run_command)
+    # Isolate networking resolution (its own tests cover both providers).
+    monkeypatch.setattr(
+        run_service, "_resolve_pod_networks", lambda h, p, t: ([], "", "")
+    )
     launched = MagicMock(return_value="job-1")
     monkeypatch.setattr(run_service, "launch_runner_pod", launched)
     monkeypatch.setattr(run_service, "_start_workload_monitor", lambda *a, **k: None)
@@ -293,3 +298,44 @@ def test_run_workload_job_ocp_no_kubeconfig_fails(monkeypatch):
     assert row.error is not None
     assert "kubeconfig" in row.error.lower()
     db.close()
+
+
+def test_resolve_pod_networks_kubevirt(monkeypatch):
+    """KubeVirt: cluster NADs + dnsmasq (.2) nameserver + self-assign-IP prelude."""
+    import app.services.deploy_service as ds
+    import app.services.ocp.ops_pod_install as opi
+    import app.services.ocp.ops_pod_scaffold as ops
+
+    monkeypatch.setattr(ops, "ops_pod_network_nads", lambda t: (["net-abc-nad"], None))
+    monkeypatch.setattr(
+        ds,
+        "_kubevirt_ops_pod_net_ips",
+        lambda t: ([("net1", "192.168.47.50/24")], None),
+    )
+    monkeypatch.setattr(ds, "_kubevirt_ops_pod_dns", lambda a: "192.168.47.2")
+    monkeypatch.setattr(opi, "_self_assign_net_ips", lambda a: "ip addr add x\n")
+
+    host = SimpleNamespace(host_type="kubevirt-cluster")
+    project = SimpleNamespace(id="p1", vni_map={})
+    networks, dns, prelude = run_service._resolve_pod_networks(host, project, {})
+    assert networks == ["net-abc-nad"]
+    assert dns == "192.168.47.2"
+    assert "ip addr add" in prelude
+
+
+def test_resolve_pod_networks_troshkad(monkeypatch):
+    """troshkad: podman network entries + gateway dnsmasq (.1), no prelude (IPAM)."""
+    import app.services.deploy_topology as dt
+    import app.services.ocp.ops_pod_scaffold as ops
+
+    monkeypatch.setattr(dt, "_gateway_connected_dns_nameserver", lambda t: "10.0.0.1")
+    monkeypatch.setattr(
+        ops, "ops_pod_infra_network", lambda vni, dns_nameserver="": [{"vni": 1}]
+    )
+
+    host = SimpleNamespace(host_type="shared")
+    project = SimpleNamespace(id="p1", vni_map={"n1": 1})
+    networks, dns, prelude = run_service._resolve_pod_networks(host, project, {})
+    assert networks == [{"vni": 1}]
+    assert dns == "10.0.0.1"
+    assert prelude == ""

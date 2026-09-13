@@ -150,6 +150,7 @@ def build_run_command(
     agnosticd_v2_url: str,
     scm_ref: str,
     kubeconfig: str | None = None,
+    net_prelude: str = "",
 ) -> list[str]:
     """Build the runner pod command: clone agnosticd-v2, install collections, run playbook.
 
@@ -159,6 +160,10 @@ def build_run_command(
     runs the in-pod mint prelude (which mints a cluster-admin token and writes the
     `clusters` extra-var), and passes ``-e @clusters.yml`` to main.yml. VM-only runs
     (no kubeconfig) get a clean command with no KUBECONFIG/mint/clusters wiring.
+
+    ``net_prelude`` (KubeVirt only) is a block of ``ip addr add`` lines run FIRST so
+    the pod self-assigns its lab-net IP (OVN-L2 NADs have no IPAM) before it clones
+    or resolves anything. Empty on troshkad (podman does IPAM).
 
     Mirrors the EE entrypoint pattern: install_dynamic_dependencies.yml before main.yml.
 
@@ -173,8 +178,11 @@ def build_run_command(
     safe_inventory = _safe_sq(paths.inventory)
     safe_log = _safe_sq(paths.log)
 
-    script_parts = [
-        "set -euo pipefail",
+    script_parts = ["set -euo pipefail"]
+    # Self-assign lab-net IP(s) FIRST (KubeVirt OVN-L2 has no IPAM); empty on troshkad.
+    if net_prelude.strip():
+        script_parts.append(net_prelude.strip())
+    script_parts += [
         # Clone agnosticd-v2 at the specified ref (try --branch first, fall back to checkout)
         f"git clone --depth 1 --branch '{safe_ref}' '{safe_url}' '{safe_agnosticd}' 2>/dev/null"
         f" || {{ git clone '{safe_url}' '{safe_agnosticd}' && git -C '{safe_agnosticd}' checkout '{safe_ref}'; }}",
@@ -220,8 +228,14 @@ def launch_runner_pod(
     command: list[str],
     files: dict[str, str],
     networks: list,
+    dns_nameserver: str = "",
 ) -> str:
-    """Launch the workload runner pod on the host, returning a job/pod identifier."""
+    """Launch the workload runner pod on the host, returning a job/pod identifier.
+
+    ``dns_nameserver`` points the pod at the project dnsmasq so it resolves the
+    cluster API (``api.<cluster>.local``). On KubeVirt it becomes the pod's
+    ``dnsConfig``; on troshkad the resolver is already embedded per-network entry.
+    """
     if getattr(host, "host_type", None) == "kubevirt-cluster":
         return _launch_kubevirt(
             host,
@@ -230,6 +244,7 @@ def launch_runner_pod(
             command=command,
             files=files,
             cluster_nads=networks,
+            dns_nameserver=dns_nameserver,
         )
     return _launch_troshkad(
         host,
@@ -283,6 +298,7 @@ def _launch_kubevirt(
     command: list[str],
     files: dict[str, str],
     cluster_nads: list,
+    dns_nameserver: str = "",
 ) -> str:
     """KubeVirt runner-pod path: build Pod+Secret manifests and create via k8s."""
     from app.services.ocp.ops_pod_scaffold import build_ops_pod_kubevirt_manifests
@@ -300,7 +316,7 @@ def _launch_kubevirt(
         config_files=files,
         cluster_nads=cluster_nads,
         bmc_nad=None,
-        dns_nameserver="",
+        dns_nameserver=dns_nameserver,
         image=ee_image,
         pod_name="workload-runner",
         restart_policy="Never",
