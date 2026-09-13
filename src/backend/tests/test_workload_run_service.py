@@ -199,6 +199,7 @@ def test_run_workload_job_ocp_no_kubeconfig_fails(monkeypatch):
     """OCP project with no resolvable kubeconfig should fail the run."""
     db = TestSession()
     proj = _active_project(db, name="rs-ocp-bad")
+    assert proj is not None
     # Topology has a node with ocpKubeconfig (so _has_ocp returns True),
     # but NOT a vmNode with clusterId (so _stored_cluster_creds yields nothing)
     proj.topology = {
@@ -207,7 +208,6 @@ def test_run_workload_job_ocp_no_kubeconfig_fails(monkeypatch):
     # deployed_topology is None so _has_ocp falls back to topology
     proj.deployed_topology = None
     db.commit()
-    assert proj is not None
     run = WorkloadRun(
         project_id=proj.id,
         kind="catalog_item",
@@ -253,5 +253,6 @@ def test_run_workload_job_ocp_no_kubeconfig_fails(monkeypatch):
     row = db.get(WorkloadRun, rid)
     assert row is not None
     assert row.status == "error"
+    assert row.error is not None
     assert "kubeconfig" in row.error.lower()
     db.close()
