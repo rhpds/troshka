@@ -1,5 +1,6 @@
 """Tests for /api/v1/workloads endpoints — trigger, status, list."""
 
+import datetime
 import uuid
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -38,12 +39,14 @@ def _create_project(name="test-proj", state="active", owner_id=None, **kwargs):
     if owner_id is None:
         owner_id = _ensure_dev_user()
     db = TestSession()
+    # Only set topology={} if not provided in kwargs
+    if "topology" not in kwargs:
+        kwargs["topology"] = {}
     p = Project(
         id=str(uuid.uuid4()),
         name=name,
         state=state,
         owner_id=owner_id,
-        topology={},
         **kwargs,
     )
     db.add(p)
@@ -138,6 +141,88 @@ def test_trigger_workload_run_project_not_found_404():
     )
 
     assert resp.status_code == 404
+
+
+def test_trigger_workload_run_ocp_not_ready_409():
+    """POST rejects OCP project without control-plane-usable milestone with 409."""
+    # Create OCP project (topology with ocpKubeconfig node), active but recert incomplete
+    pid = _create_project(
+        state="active",
+        topology={
+            "nodes": [
+                {
+                    "id": "node-1",
+                    "data": {"ocpKubeconfig": "some-kubeconfig-content"},
+                }
+            ]
+        },
+        ocp_control_plane_usable_at=None,
+    )
+
+    resp = client.post(
+        f"/api/v1/projects/{pid}/workloads",
+        json={"kind": "catalog_item", "catalog_item": "test_item"},
+    )
+
+    assert resp.status_code == 409
+    assert "minimal control-plane-usable" in resp.json()["detail"].lower()
+
+
+def test_trigger_workload_run_ocp_ready_proceeds():
+    """POST proceeds when OCP project has control-plane-usable milestone set."""
+    # Create OCP project with recert complete
+    pid = _create_project(
+        state="active",
+        topology={
+            "nodes": [
+                {
+                    "id": "node-1",
+                    "data": {"ocpKubeconfig": "some-kubeconfig-content"},
+                }
+            ]
+        },
+        ocp_control_plane_usable_at=datetime.datetime(2026, 9, 13, 10, 0, 0),
+    )
+
+    with patch("app.api.workloads.start_workload_run") as mock_start:
+        mock_run = SimpleNamespace(id="run-ocp-123", status="pending")
+        mock_start.return_value = mock_run
+
+        resp = client.post(
+            f"/api/v1/projects/{pid}/workloads",
+            json={"kind": "catalog_item", "catalog_item": "test_item"},
+        )
+
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["id"] == "run-ocp-123"
+        assert data["status"] == "pending"
+        assert mock_start.called
+
+
+def test_trigger_workload_run_vm_only_ignores_recert():
+    """POST proceeds for VM-only project regardless of recert field."""
+    # Create VM-only project (no ocpKubeconfig node), active
+    pid = _create_project(
+        state="active",
+        topology={"nodes": [{"id": "vm-1", "data": {"name": "test-vm"}}]},
+        ocp_control_plane_usable_at=None,  # Not set, but shouldn't matter for VM-only
+    )
+
+    with patch("app.api.workloads.start_workload_run") as mock_start:
+        mock_run = SimpleNamespace(id="run-vm-123", status="pending")
+        mock_start.return_value = mock_run
+
+        resp = client.post(
+            f"/api/v1/projects/{pid}/workloads",
+            json={"kind": "catalog_item", "catalog_item": "test_item"},
+        )
+
+        assert resp.status_code == 202
+        data = resp.json()
+        assert data["id"] == "run-vm-123"
+        assert data["status"] == "pending"
+        assert mock_start.called
 
 
 def test_trigger_workload_run_forbidden_non_owner():

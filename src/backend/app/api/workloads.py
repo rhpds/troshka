@@ -14,7 +14,7 @@ from app.core.redis import get_progress
 from app.models.project import Project
 from app.models.user import User
 from app.models.workload_run import WorkloadRun
-from app.services.workloads.run_service import start_workload_run
+from app.services.workloads.run_service import _has_ocp, start_workload_run
 
 router = APIRouter(tags=["workloads"])
 
@@ -25,6 +25,7 @@ _PROJECT_NOT_FOUND = "Project not found"
 _RUN_NOT_FOUND = "Workload run not found"
 _ACCESS_DENIED = "Access denied"
 _PROJECT_MUST_BE_ACTIVE = "Project must be active to run workloads"
+_CLUSTER_NOT_WORKLOAD_READY = "Cluster not yet workload-ready (minimal control-plane-usable milestone not reached)"
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +87,10 @@ def trigger_workload_run(
 
     if project.state != "active":
         raise HTTPException(status_code=409, detail=_PROJECT_MUST_BE_ACTIVE)
+
+    # OCP-targeting runs require the minimal control-plane-usable milestone
+    if _has_ocp(project) and project.ocp_control_plane_usable_at is None:
+        raise HTTPException(status_code=409, detail=_CLUSTER_NOT_WORKLOAD_READY)
 
     run = start_workload_run(
         db,
