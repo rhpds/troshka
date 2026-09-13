@@ -147,7 +147,7 @@ def run_workload_job(run_id: str) -> None:
             project,
             ee_image=item.ee_image
             or getattr(config.workloads, "default_ee_image", None)
-            or "quay.io/redhat-gpte/troshka-ops-pod:latest",
+            or "quay.io/agnosticd/ee-multicloud:chained-latest",
             command=command,
             files=files,
             networks=networks,

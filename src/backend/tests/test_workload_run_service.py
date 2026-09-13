@@ -141,8 +141,11 @@ def test_synthesize_ad_hoc_minimal():
     # No requirements_content provided → none is inferred (a bare Galaxy name is
     # wrong: agnosticd workload collections are git-hosted, not on Galaxy).
     assert item.requirements_content is None
-    # Verify ad-hoc uses the configured default EE image (not the dead troshka-runner)
-    assert item.ee_image == "quay.io/redhat-gpte/troshka-ops-pod:latest"
+    # Verify ad-hoc uses the configured default EE image (whatever it is set to),
+    # not a hardcoded value — catalog items override via __meta__.deployer.
+    from app.core.config import config as _cfg
+
+    assert item.ee_image == getattr(_cfg.workloads, "default_ee_image", None)
     assert item.scm_ref is None
     db.close()
 
