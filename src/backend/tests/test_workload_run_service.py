@@ -324,13 +324,13 @@ def test_resolve_pod_networks_kubevirt(monkeypatch):
 
 
 def test_resolve_pod_networks_troshkad(monkeypatch):
-    """troshkad: podman network entries + gateway dnsmasq (.1), no prelude (IPAM)."""
+    """troshkad: runner transit network (.5, NOT ops .4) + gateway dnsmasq, no prelude."""
     import app.services.deploy_topology as dt
     import app.services.ocp.ops_pod_scaffold as ops
 
     monkeypatch.setattr(dt, "_gateway_connected_dns_nameserver", lambda t: "10.0.0.1")
     monkeypatch.setattr(
-        ops, "ops_pod_infra_network", lambda vni, dns_nameserver="": [{"vni": 1}]
+        ops, "runner_pod_infra_network", lambda vni, dns_nameserver="": [{"vni": 1}]
     )
 
     host = SimpleNamespace(host_type="shared")
@@ -339,3 +339,23 @@ def test_resolve_pod_networks_troshkad(monkeypatch):
     assert networks == [{"vni": 1}]
     assert dns == "10.0.0.1"
     assert prelude == ""
+
+
+def test_runner_pod_infra_network_distinct_ip():
+    """Runner transit IP is .5 — distinct from showroom (.3) and ops (.4)."""
+    from app.services.ocp.ops_pod_scaffold import (
+        ops_pod_infra_network,
+        runner_pod_infra_network,
+    )
+
+    vni_map = {"39483e1f-2bdb-420c-bd7c-67c1da6c21e1": 2078}
+    runner = runner_pod_infra_network(vni_map, dns_nameserver="10.0.0.1")
+    ops = ops_pod_infra_network(vni_map, dns_nameserver="10.0.0.1")
+    assert runner and ops
+    assert runner[0]["ip"].endswith(".5")
+    assert ops[0]["ip"].endswith(".4")
+    assert runner[0]["ip"] != ops[0]["ip"]
+    # Same subnet + gateway + dns as the ops pod (only the host IP differs).
+    assert runner[0]["cidr"] == ops[0]["cidr"]
+    assert runner[0]["gateway"] == ops[0]["gateway"]
+    assert runner[0]["dns_nameserver"] == "10.0.0.1"

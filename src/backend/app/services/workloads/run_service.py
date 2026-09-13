@@ -242,11 +242,13 @@ def _resolve_pod_networks(host, project, topo):
         dns = _kubevirt_ops_pod_dns(net_ip_assignments)
         return cluster_nads, dns, _self_assign_net_ips(net_ip_assignments)
     # troshkad: podman networks (IPAM) + gateway dnsmasq; no self-assign prelude.
+    # Use a DISTINCT transit IP (.5) — NOT ops_pod_infra_network (.4), which would
+    # collide with the (often still-running) ops pod and break the runner's egress.
     from app.services.deploy_topology import _gateway_connected_dns_nameserver
-    from app.services.ocp.ops_pod_scaffold import ops_pod_infra_network
+    from app.services.ocp.ops_pod_scaffold import runner_pod_infra_network
 
     dns = _gateway_connected_dns_nameserver(topo)
-    networks = ops_pod_infra_network(project.vni_map or {}, dns_nameserver=dns)
+    networks = runner_pod_infra_network(project.vni_map or {}, dns_nameserver=dns)
     return networks, dns, ""
 
 

@@ -68,6 +68,36 @@ def ops_pod_infra_network(
     return [net]
 
 
+def runner_pod_infra_network(
+    vni_map: dict, mac: str = "", dns_nameserver: str = ""
+) -> list[dict]:
+    """Transit-side workload-runner addressing in the project netns.
+
+    Mirrors :func:`ops_pod_infra_network` but uses a DISTINCT pod IP
+    (``172.30.{octet3}.5`` vs showroom ``.3`` and the ops pod ``.4``) so the
+    workload runner can coexist on the transit subnet without colliding with the
+    (often still-running) ops pod. Egress is via the transit gateway ``.2`` (same
+    as ``.3``/``.4``); the runner needs no inbound port-forwards, so no per-IP
+    reachability gating is required.
+    """
+    from app.services.deploy_topology import showroom_transit_octet3
+
+    octet3 = showroom_transit_octet3(vni_map)
+    if octet3 is None:
+        return []
+    net: dict = {
+        "bridge": "",
+        "mac": mac,
+        "ip": f"172.30.{octet3}.5",
+        "cidr": f"172.30.{octet3}.0/24",
+        "gateway": f"172.30.{octet3}.2",
+        "infra_transit": True,
+    }
+    if dns_nameserver:
+        net["dns_nameserver"] = dns_nameserver
+    return [net]
+
+
 def ops_pod_config_files(
     clusters: list[dict], workdir: str, pull_secret_json: str
 ) -> dict[str, str]:
