@@ -138,10 +138,44 @@ def test_synthesize_ad_hoc_minimal():
     item = run_service._synthesize_ad_hoc(db, run)
     assert item.extra_vars["config"] == "openshift-workloads"
     assert item.extra_vars["workloads"] == ["redhat.openshift.install_operator"]
-    assert item.requirements_content == {"collections": [{"name": "redhat.openshift"}]}
+    # No requirements_content provided → none is inferred (a bare Galaxy name is
+    # wrong: agnosticd workload collections are git-hosted, not on Galaxy).
+    assert item.requirements_content is None
     # Verify ad-hoc uses the configured default EE image (not the dead troshka-runner)
     assert item.ee_image == "quay.io/redhat-gpte/troshka-ops-pod:latest"
     assert item.scm_ref is None
+    db.close()
+
+
+def test_synthesize_ad_hoc_with_requirements_content():
+    """Ad-hoc synthesis passes caller-supplied requirements_content through
+    verbatim (AgnosticD-compatible git-sourced collections)."""
+    db = TestSession()
+    reqs = {
+        "collections": [
+            {
+                "name": "https://github.com/rhpds/core_workloads.git",
+                "type": "git",
+                "version": "main",
+            }
+        ]
+    }
+    run = WorkloadRun(
+        project_id=str(uuid.uuid4()),
+        kind="ad_hoc",
+        role_fqcn="agnosticd.core_workloads.ocp4_workload_example",
+        requirements_content=reqs,
+        status="pending",
+    )
+    db.add(run)
+    db.commit()
+
+    item = run_service._synthesize_ad_hoc(db, run)
+    assert item.extra_vars["workloads"] == [
+        "agnosticd.core_workloads.ocp4_workload_example"
+    ]
+    # requirements_content threaded through unchanged (not inferred/rewritten).
+    assert item.requirements_content == reqs
     db.close()
 
 

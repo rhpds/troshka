@@ -36,6 +36,10 @@ class WorkloadRunRequest(BaseModel):
     catalog_item: str | None = None
     role_fqcn: str | None = None
     target_map: dict | None = None
+    # AgnosticD-compatible collections/roles to install before the workload runs
+    # (git-sourced), e.g. {"collections": [{"name": "https://github.com/rhpds/
+    # core_workloads.git", "type": "git", "version": "main"}]}.
+    requirements_content: dict | None = None
 
 
 class WorkloadRunResponse(BaseModel):
@@ -99,6 +103,7 @@ def trigger_workload_run(
         catalog_item=body.catalog_item,
         role_fqcn=body.role_fqcn,
         target_map=body.target_map,
+        requirements_content=body.requirements_content,
         owner_id=user.id,
     )
 

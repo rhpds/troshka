@@ -28,6 +28,9 @@ class WorkloadRun(Base):
     scm_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
     ee_image: Mapped[str | None] = mapped_column(String(512), nullable=True)
     target_map: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # AgnosticD-compatible requirements_content (collections/roles with git
+    # sources), passed through verbatim to the runner for install before main.yml.
+    requirements_content: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     log_ref: Mapped[str | None] = mapped_column(Text, nullable=True)

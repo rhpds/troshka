@@ -42,6 +42,7 @@ def start_workload_run(
     catalog_item=None,
     role_fqcn=None,
     target_map=None,
+    requirements_content=None,
     owner_id=None,
 ) -> WorkloadRun:
     run = WorkloadRun(
@@ -50,6 +51,7 @@ def start_workload_run(
         catalog_item=catalog_item,
         role_fqcn=role_fqcn,
         target_map=target_map,
+        requirements_content=requirements_content,
         owner_id=owner_id,
         status="pending",
     )
@@ -170,8 +172,15 @@ def _resolve_item(db, run):
 def _synthesize_ad_hoc(db, run):
     """Build a ResolvedItem-like object for an ad-hoc single role.
 
-    Infers the collection from the role FQCN (namespace.collection.role) and
-    builds a minimal extra_vars + requirements_content.
+    Synthesizes the minimal openshift-workloads extra_vars (``config`` +
+    ``workloads: [role_fqcn]``) and threads the caller-supplied
+    ``requirements_content`` through VERBATIM. This matches how AgnosticD/
+    AgnosticV developers declare collections — git-sourced entries such as
+    ``{name: https://github.com/rhpds/core_workloads.git, type: git, version: main}``.
+    A bare Galaxy name is NOT inferred: agnosticd workload collections are
+    git-hosted and not published to Galaxy, so inference would produce an
+    unresolvable requirement. If the caller omits ``requirements_content``, none
+    is set (the run relies on whatever the EE bundles).
     """
     from types import SimpleNamespace
 
@@ -180,16 +189,11 @@ def _synthesize_ad_hoc(db, run):
     if not run.role_fqcn:
         raise RuntimeError("Ad-hoc run requires role_fqcn")
 
-    # Parse FQCN: namespace.collection.role → collection namespace.collection
-    parts = run.role_fqcn.split(".")
-    if len(parts) < 3:
+    # Validate FQCN shape: namespace.collection.role
+    if len(run.role_fqcn.split(".")) < 3:
         raise RuntimeError(
             f"Invalid role FQCN: {run.role_fqcn} (expected namespace.collection.role)"
         )
-
-    namespace = parts[0]
-    collection_name = parts[1]
-    collection_fqcn = f"{namespace}.{collection_name}"
 
     # Build minimal extra_vars with workloads: [role_fqcn]
     extra_vars = {
@@ -197,15 +201,12 @@ def _synthesize_ad_hoc(db, run):
         "workloads": [run.role_fqcn],
     }
 
-    # Build requirements_content inferring the collection from the role FQCN
-    requirements_content = {"collections": [{"name": collection_fqcn}]}
-
     return SimpleNamespace(
         extra_vars=extra_vars,
         ee_image=getattr(config.workloads, "default_ee_image", None)
         or "quay.io/redhat-gpte/troshka-ops-pod:latest",
         scm_ref=None,
-        requirements_content=requirements_content,
+        requirements_content=run.requirements_content,
     )
 
 
