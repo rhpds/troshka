@@ -81,7 +81,6 @@ def test_run_workload_job_happy_path(monkeypatch):
         ),
     )
     monkeypatch.setattr(run_service, "mint_run_key", lambda db, p: "trk_k")
-    monkeypatch.setattr(run_service, "resolve_cluster_access", lambda p: {})
     monkeypatch.setattr(
         run_service, "validate_ansible_groups", lambda t, require_bastion: None
     )

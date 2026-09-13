@@ -34,6 +34,6 @@ def test_mint_run_key_has_expected_scopes():
         assert raw.startswith("trk_")
         row = db.query(ApiKey).filter_by(key_hash=hash_key(raw)).one()
         assert row.project_id == proj.id
-        assert set(row.scopes or []) == {"topology:read", "vm:exec", "cluster:access"}
+        assert set(row.scopes or []) == {"topology:read", "vm:exec"}
     finally:
         db.close()

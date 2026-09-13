@@ -11,7 +11,7 @@ from app.models.api_key import ApiKey, generate_api_key, hash_key
 if TYPE_CHECKING:
     from app.models.project import Project
 
-RUN_KEY_SCOPES = ["topology:read", "vm:exec", "cluster:access"]
+RUN_KEY_SCOPES = ["topology:read", "vm:exec"]
 
 
 def _key_name(project_id: str) -> str:

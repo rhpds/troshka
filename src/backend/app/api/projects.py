@@ -67,7 +67,6 @@ from app.services.troshkad_client import (
 from app.services.troshkad_client import (
     undefine_vm as troshkad_undefine_vm,
 )
-from app.services.workloads.cluster_access import resolve_cluster_access
 from app.services.ws_pubsub import notify_project
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -1257,17 +1256,6 @@ def get_kubeconfig(
         media_type="application/x-yaml",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-
-
-@router.get("/{project_id}/cluster-access")
-def get_cluster_access(project_id: str, user: CurrentUser, db: DbSession):
-    project = db.query(Project).filter_by(id=project_id).first()
-    if project is None:
-        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
-    if project.owner_id != user.id and user.role != "admin":
-        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
-    clusters = resolve_cluster_access(project)
-    return {"clusters": clusters}
 
 
 def _recompute_auto_stop_timer(project, fields):

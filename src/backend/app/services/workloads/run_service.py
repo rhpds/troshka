@@ -12,7 +12,6 @@ from app.core.database import SessionLocal
 from app.core.redis import enqueue_job
 from app.models.project import Project
 from app.models.workload_run import WorkloadRun
-from app.services.workloads.cluster_access import resolve_cluster_access
 from app.services.workloads.inventory import (
     build_inventory_yaml,
     validate_ansible_groups,
@@ -99,11 +98,9 @@ def run_workload_job(run_id: str) -> None:
         from app.services.workloads import repo_cache
 
         inv = build_inventory_yaml(config.app.external_url, key, project.id)
-        cluster_access = resolve_cluster_access(project) if _has_ocp(project) else {}
 
         paths = RunPaths()
         extra_vars = dict(item.extra_vars)
-        extra_vars["clusters"] = cluster_access
 
         # Thread requirements_content to the pod (HARD REQUIREMENT A)
         if item.requirements_content:
@@ -112,7 +109,7 @@ def run_workload_job(run_id: str) -> None:
         files = build_artifact_files(
             extra_vars=extra_vars,
             inventory_yaml=inv,
-            cluster_access=cluster_access,
+            cluster_access={},
             cloud_creds=None,
             paths=paths,
         )
