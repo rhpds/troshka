@@ -675,6 +675,23 @@ def test_has_control_plane_usable_marker_false_for_empty_log():
     assert has_control_plane_usable_marker(None, "prod") is False
 
 
+def test_recert_script_checks_kube_apiserver_progressing_false():
+    """Recert gate checks kube-apiserver Progressing=False (D13 requirement).
+
+    The control-plane-usable marker gates on `kapisa` (kube-apiserver Available=True,
+    Progressing=False, Degraded=False). This test verifies the script computes that
+    variable and gates the marker on it (not just `bad` and `auth`).
+    """
+    script = _recert_script()
+    # Verify kube-apiserver-specific check is present (col 3=Available, 4=Progressing, 5=Degraded)
+    assert (
+        'kapisa=$(echo "$out" | awk \'$1=="kube-apiserver"&&$3=="True"&&$4=="False"&&$5=="False"{c++} END{print c+0}\');'
+        in script
+    )
+    # Verify the control-plane-usable marker gates on kapisa (not just bad+auth)
+    assert '[ "$bad" = 0 ] && [ "$auth" = 1 ] && [ "$kapisa" = 1 ]' in script
+
+
 # --- Task 5 (Plan 4b): dead-job → failed injection (pure) ------------------
 
 from app.services.ocp.ops_pod_install import (  # noqa: E402

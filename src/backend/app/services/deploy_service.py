@@ -8986,12 +8986,14 @@ def _ocp_update_status(project_id, status, elapsed_secs=None):
         logger.exception("Failed to update ocp_status for %s", project_id[:8])
 
 
-def _persist_control_plane_usable_milestone(project_id: str, elapsed_secs: int) -> None:
+def _persist_control_plane_usable_milestone(project_id: str, elapsed_secs: int) -> bool:
     """Persist the control-plane-usable milestone timestamp + elapsed (idempotent).
 
     Sets ``ocp_control_plane_usable_at`` to now and ``ocp_control_plane_usable_elapsed``
     to the given elapsed seconds (from deploy start). Only persists if not already set
     (first-time-only, idempotent).
+
+    Returns True if the milestone was newly persisted, False if already set.
     """
     import datetime
 
@@ -9010,11 +9012,15 @@ def _persist_control_plane_usable_milestone(project_id: str, elapsed_secs: int) 
                 project_id[:8],
                 elapsed_secs,
             )
+            db.close()
+            return True
         db.close()
+        return False
     except Exception:
         logger.exception(
             "Failed to persist control-plane-usable milestone for %s", project_id[:8]
         )
+        return False
 
 
 def _check_control_plane_usable_milestone(
@@ -9028,20 +9034,25 @@ def _check_control_plane_usable_milestone(
     Scans each cluster's log for the ``control-plane-usable`` marker. On first
     detection (across all clusters), persists the milestone timestamp + elapsed and
     publishes a one-time progress notification. Idempotent: subsequent detections are
-    no-ops (the DB field acts as the guard).
+    no-ops (the persist function returns False when already set, preventing repeated
+    progress notifications across monitor iterations).
     """
     from app.services.ocp.ops_pod_install import has_control_plane_usable_marker
 
     for cluster_key in cluster_keys:
         log_text = per_cluster_logs.get(cluster_key, "")
         if has_control_plane_usable_marker(log_text, cluster_key):
-            _persist_control_plane_usable_milestone(project_id, elapsed_secs)
-            # Publish a one-time progress notification (detail shows elapsed time).
-            mins, secs = divmod(elapsed_secs, 60)
-            detail = f"reached at {mins}m {secs}s"
-            _update_deploy_progress(project_id, "control-plane-usable", detail=detail)
-            # Only persist + publish once (the persist fn is idempotent, but we
-            # short-circuit here to avoid spamming progress notifications).
+            persisted = _persist_control_plane_usable_milestone(
+                project_id, elapsed_secs
+            )
+            # Only publish progress if we just persisted the milestone (first time).
+            if persisted:
+                mins, secs = divmod(elapsed_secs, 60)
+                detail = f"reached at {mins}m {secs}s"
+                _update_deploy_progress(
+                    project_id, "control-plane-usable", detail=detail
+                )
+            # Once we've found the marker in any cluster, no need to check others.
             break
 
 

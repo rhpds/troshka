@@ -181,7 +181,7 @@ def ops_pod_progress_items(progress: dict) -> list[str]:
     return [f"{cid}: {clusters[cid]}" for cid in sorted(clusters)]
 
 
-def has_control_plane_usable_marker(log_text: str, cluster_id: str) -> bool:
+def has_control_plane_usable_marker(log_text: str | None, cluster_id: str) -> bool:
     """Pure: True if the log contains the control-plane-usable marker for this cluster.
 
     The recert script emits ``[<clusterId>] control-plane-usable`` when the minimal
@@ -500,10 +500,13 @@ def _recert_cluster_block(cluster_key: str, workdir: str, mode: str) -> str:
         'bad=$(echo "$out" | awk \'$1=="monitoring"||$1=="operator-lifecycle-manager-packageserver"{next} $3!="True"||$5=="True"{c++} END{print c+0}\'); '
         'auth=$(echo "$out" | awk \'$1=="authentication"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
         'con=$(echo "$out" | awk \'$1=="console"&&$3=="True"&&$5=="False"{c++} END{print c+0}\'); '
-        # Minimal control-plane-usable milestone (D13): kube-apiserver + authentication
-        # available with no degraded operators. Emit once when first reached (weaker
+        # Minimal control-plane-usable milestone (D13): kube-apiserver Available=True
+        # + Progressing=False + no degraded operators, authentication Available=True.
+        # SNO tolerance for cosmetic Progressing applies to OTHER operators (OLM,
+        # monitoring), NOT kube-apiserver itself. Emit once when first reached (weaker
         # than full-ready, which also requires console + route-api).
-        '[ "$bad" = 0 ] && [ "$auth" = 1 ] && [ -z "$cp_usable" ] && '
+        'kapisa=$(echo "$out" | awk \'$1=="kube-apiserver"&&$3=="True"&&$4=="False"&&$5=="False"{c++} END{print c+0}\'); '
+        '[ "$bad" = 0 ] && [ "$auth" = 1 ] && [ "$kapisa" = 1 ] && [ -z "$cp_usable" ] && '
         f'{{ cp_usable=1; echo "[{cluster_key}] control-plane-usable"; }}; '
         # The `oc get co` status can be STALE (restored from the captured etcd)
         # right after recert — it reads Available before the operators re-evaluate.

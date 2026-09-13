@@ -640,9 +640,8 @@ class TestControlPlaneUsableMilestone(unittest.TestCase):
         # Assert DB was NOT updated (commit not called)
         assert mock_db.commit.call_count == 0
 
-        # Assert progress was still published once (not idempotent for publish,
-        # but that's ok — the outer monitor loop will overwrite it immediately)
-        mock_update_progress.assert_called_once()
+        # Assert progress was NOT published (idempotent across monitor iterations)
+        mock_update_progress.assert_not_called()
 
     @patch("app.services.deploy_service._update_deploy_progress")
     def test_check_control_plane_usable_milestone_marker_absent(
