@@ -223,6 +223,31 @@ mesh at deploy time.
 - Recovery of the three currently-wedged clusters (redeploy after this fix is the
   clean path; they are effectively unrecoverable in place).
 
+### Deferred niceties (post-ship, non-blocking — from final review)
+
+The core epic shipped and is validated e2e on troshkad + KubeVirt. These are
+robustness/UX refinements surfaced during the final review; none blocks the
+feature, each is independently pickable:
+
+- **Multi-host uses `min()` across mesh peers.** `auto` resolution keys off the
+  *primary* host's `uplink_mtu` only. A mesh peer with a smaller uplink can be
+  left undersized. Fix: resolve `auto` against `min(uplink_mtu)` over all hosts a
+  network spans, not just the primary. (`resolve_network_mtu` caller in
+  `deploy_service` — pass the peer set / their `Host.uplink_mtu`.)
+- **No warning on sub-1280 bump-up.** When an explicit MTU below the 1280 floor is
+  bumped *up* to the floor, no warning is emitted (only the clamp-*down* path
+  warns). Fix: emit the same warning surface on the floor-bump branch in
+  `resolve_network_mtu`.
+- **Frontend MTU input resets mid-edit.** `PropertiesPanel.tsx` MTU `useEffect`
+  depends on the broad `node?.data`, so unrelated node-data changes can reset the
+  field while typing. Fix: narrow the dep to `node?.id` / `data.mtu`.
+- **KubeVirt-native `/health` uplink path unwired.** Only the http-poll path
+  persists `uplink_mtu`; KubeVirt hosts fall back to 1500 for `auto` (the brief
+  made this optional). Deploy-time sync (`_ensure_host_uplink_mtu` →
+  `KubeVirtDriver._read_cluster_network_mtu`) already covers the deploy path;
+  wiring the KubeVirt health-poll path would keep `Host.uplink_mtu` fresh between
+  deploys. (`health_poller._poll_kubevirt_host` / `_apply_uplink_mtu`.)
+
 ## 12. Affected files (implementation map)
 
 - `src/backend/app/models/host.py` — `uplink_mtu` column.
