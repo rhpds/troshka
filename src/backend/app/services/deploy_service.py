@@ -9039,6 +9039,9 @@ def _check_control_plane_usable_milestone(
     """
     from app.services.ocp.ops_pod_install import has_control_plane_usable_marker
 
+    # Multi-cluster simplification: milestone is project-level, not per-cluster.
+    # Once ANY cluster reaches control-plane-usable, the project gate opens. This
+    # break means we persist the milestone on first detection and stop checking.
     for cluster_key in cluster_keys:
         log_text = per_cluster_logs.get(cluster_key, "")
         if has_control_plane_usable_marker(log_text, cluster_key):

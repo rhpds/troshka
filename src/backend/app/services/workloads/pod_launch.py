@@ -5,7 +5,6 @@ as read-only 0600 mounts, and the pod runs ansible-playbook directly.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 
 import yaml
@@ -19,7 +18,6 @@ _WORKDIR = "/workdir"
 class RunPaths:
     extra_vars: str = f"{_WORKDIR}/extra-vars.yml"
     inventory: str = f"{_WORKDIR}/inventory.troshka.yml"
-    cluster_access: str = f"{_WORKDIR}/cluster-access.json"
     cloud_creds: str = f"{_WORKDIR}/cloud-creds.env"
     agnosticd: str = f"{_WORKDIR}/agnosticd-v2"
     log: str = f"{_WORKDIR}/run.log"
@@ -73,6 +71,7 @@ def _mint_prelude_playbook(paths: RunPaths) -> str:
                         "mode": "0600",
                         "content": clusters_expr,
                     },
+                    "no_log": True,
                 },
             ],
         }
@@ -84,7 +83,6 @@ def build_artifact_files(
     *,
     extra_vars: dict,
     inventory_yaml: str,
-    cluster_access: dict,
     cloud_creds: dict | None,
     kubeconfig: str | None = None,
     paths: RunPaths,
@@ -97,7 +95,6 @@ def build_artifact_files(
     files = {
         paths.extra_vars: yaml.safe_dump(extra_vars, sort_keys=False),
         paths.inventory: inventory_yaml,
-        paths.cluster_access: json.dumps(cluster_access),
     }
     if cloud_creds:
         files[paths.cloud_creds] = "\n".join(f"{k}={v}" for k, v in cloud_creds.items())
@@ -113,7 +110,7 @@ def _safe_sq(value: str) -> str:
     return value.replace("'", "'\\''")
 
 
-def _mint_prelude_steps(paths: RunPaths) -> list[str]:
+def _mint_prelude_steps(paths: RunPaths, log_path: str) -> list[str]:
     """Command step(s) running the in-pod mint prelude playbook.
 
     Runs AFTER install_dynamic_dependencies (so kubernetes.core + agnosticd.core
@@ -122,8 +119,9 @@ def _mint_prelude_steps(paths: RunPaths) -> list[str]:
     so the role's agnosticd_user_info task has a writable target in-pod.
     """
     safe_mint = _safe_sq(paths.mint_playbook)
+    safe_log = _safe_sq(log_path)
     return [
-        f"ansible-playbook '{safe_mint}' -e output_dir='{_safe_sq(_WORKDIR)}'",
+        f"ansible-playbook '{safe_mint}' -e output_dir='{_safe_sq(_WORKDIR)}' 2>&1 | tee -a '{safe_log}'",
     ]
 
 
@@ -178,7 +176,7 @@ def build_run_command(
     )
     # Mint cluster-admin token + build `clusters` (after deps, before main.yml).
     if has_kubeconfig:
-        script_parts.extend(_mint_prelude_steps(paths))
+        script_parts.extend(_mint_prelude_steps(paths, paths.log))
     # Run main playbook (consume `clusters` for OCP runs).
     main_cmd = (
         "ansible-playbook main.yml"

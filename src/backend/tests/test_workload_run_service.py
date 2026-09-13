@@ -193,3 +193,65 @@ def test_infer_status_from_logs_no_recap():
     logs = "Some ansible output without recap"
     status = run_service._infer_status_from_logs(logs)
     assert status == "error"
+
+
+def test_run_workload_job_ocp_no_kubeconfig_fails(monkeypatch):
+    """OCP project with no resolvable kubeconfig should fail the run."""
+    db = TestSession()
+    proj = _active_project(db, name="rs-ocp-bad")
+    # Topology has a node with ocpKubeconfig (so _has_ocp returns True),
+    # but NOT a vmNode with clusterId (so _stored_cluster_creds yields nothing)
+    proj.topology = {
+        "nodes": [{"type": "networkNode", "data": {"ocpKubeconfig": True}}]
+    }
+    # deployed_topology is None so _has_ocp falls back to topology
+    proj.deployed_topology = None
+    db.commit()
+    assert proj is not None
+    run = WorkloadRun(
+        project_id=proj.id,
+        kind="catalog_item",
+        catalog_item="agd-v2.x.prod",
+        status="pending",
+    )
+    db.add(run)
+    db.commit()
+    rid = run.id
+    db.close()
+
+    monkeypatch.setattr(run_service, "SessionLocal", TestSession)
+    monkeypatch.setattr(
+        run_service,
+        "_host_for_project",
+        lambda db, p: SimpleNamespace(id="h1", host_type="shared"),
+    )
+    monkeypatch.setattr(
+        run_service,
+        "resolve_catalog_item",
+        lambda db, cid: SimpleNamespace(
+            extra_vars={"config": "openshift-workloads"},
+            ee_image="ee:1",
+            scm_ref="main",
+            requirements_content=None,
+        ),
+    )
+    monkeypatch.setattr(run_service, "mint_run_key", lambda db, p: "trk_k")
+    monkeypatch.setattr(
+        run_service, "validate_ansible_groups", lambda t, require_bastion: None
+    )
+    monkeypatch.setattr(run_service, "build_inventory_yaml", lambda *a, **k: "inv")
+
+    # The job should raise before reaching launch_runner_pod
+    try:
+        run_service.run_workload_job(rid)
+        assert False, "Expected RuntimeError for OCP project with no kubeconfig"
+    except RuntimeError as e:
+        assert "targets OCP but no admin kubeconfig" in str(e)
+
+    # Verify the run was failed
+    db = TestSession()
+    row = db.get(WorkloadRun, rid)
+    assert row is not None
+    assert row.status == "error"
+    assert "kubeconfig" in row.error.lower()
+    db.close()

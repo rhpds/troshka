@@ -112,10 +112,15 @@ def run_workload_job(run_id: str) -> None:
             (kc for (_pw, kc) in _stored_cluster_creds(topo).values() if kc), None
         )
 
+        if _has_ocp(project) and not kubeconfig:
+            raise RuntimeError(
+                f"Project {project.id} targets OCP but no admin kubeconfig is "
+                "resolvable from stored topology; cannot run workloads"
+            )
+
         files = build_artifact_files(
             extra_vars=extra_vars,
             inventory_yaml=inv,
-            cluster_access={},
             cloud_creds=None,
             kubeconfig=kubeconfig,
             paths=paths,

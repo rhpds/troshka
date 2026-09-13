@@ -9,13 +9,11 @@ def test_build_artifact_files_maps_paths():
     files = pod_launch.build_artifact_files(
         extra_vars={"a": 1},
         inventory_yaml="plugin: troshka.cloud.troshka\n",
-        cluster_access={"cl": {"api_url": "u", "api_token": "t"}},
         cloud_creds=None,
         paths=paths,
     )
     assert paths.extra_vars in files
     assert "troshka.cloud" in files[paths.inventory]
-    assert "api_token" in files[paths.cluster_access]
 
 
 def test_build_run_command_invokes_ansible_playbook():
@@ -115,7 +113,6 @@ def test_build_artifact_files_with_kubeconfig():
     files = pod_launch.build_artifact_files(
         extra_vars={"a": 1},
         inventory_yaml="plugin: troshka.cloud.troshka\n",
-        cluster_access={},
         cloud_creds=None,
         kubeconfig="KC-CONTENTS",
         paths=paths,
@@ -130,7 +127,6 @@ def test_build_artifact_files_without_kubeconfig():
     files = pod_launch.build_artifact_files(
         extra_vars={"a": 1},
         inventory_yaml="plugin: troshka.cloud.troshka\n",
-        cluster_access={},
         cloud_creds=None,
         kubeconfig=None,
         paths=paths,
@@ -193,6 +189,15 @@ def test_build_run_command_mints_cluster_admin_when_kubeconfig():
     assert install_pos < mint_pos < main_pos
     # clusters consumed only alongside main.yml (after the mint prelude produced it)
     assert joined.find(f"-e @'{paths.clusters}'") > mint_pos
+    # (d) mint step tees to run.log for monitor visibility
+    # Find the mint ansible-playbook invocation and verify it tees to the log
+    mint_line_start = joined.find(f"ansible-playbook '{paths.mint_playbook}'")
+    mint_line_end = joined.find(";", mint_line_start)
+    if mint_line_end == -1:
+        mint_line_end = len(joined)
+    mint_line = joined[mint_line_start:mint_line_end]
+    assert "tee -a" in mint_line
+    assert paths.log in mint_line
 
 
 def test_build_run_command_no_mint_for_vm_only():
@@ -219,7 +224,6 @@ def test_build_artifact_files_includes_mint_playbook_with_kubeconfig():
     files = pod_launch.build_artifact_files(
         extra_vars={"a": 1},
         inventory_yaml="plugin: troshka.cloud.troshka\n",
-        cluster_access={},
         cloud_creds=None,
         kubeconfig="KC-CONTENTS",
         paths=paths,
@@ -234,7 +238,6 @@ def test_build_artifact_files_omits_mint_playbook_without_kubeconfig():
     files = pod_launch.build_artifact_files(
         extra_vars={"a": 1},
         inventory_yaml="plugin: troshka.cloud.troshka\n",
-        cluster_access={},
         cloud_creds=None,
         kubeconfig=None,
         paths=paths,
