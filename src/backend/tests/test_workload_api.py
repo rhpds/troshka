@@ -429,3 +429,25 @@ def test_get_workload_run_forbidden_non_owner():
     finally:
         # Restore original auth
         app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_get_run_log_endpoint_terminal():
+    pid = _create_project()
+    rid = _create_workload_run(pid, kind="ad_hoc", status="succeeded")
+    db = TestSession()
+    run = db.get(WorkloadRun, rid)
+    run.log_ref = "hello from the pod"
+    db.commit()
+    db.close()
+
+    r = client.get(f"/api/v1/workloads/{rid}/log")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == rid
+    assert body["status"] == "succeeded"
+    assert body["log"] == "hello from the pod"
+
+
+def test_get_run_log_endpoint_404():
+    r = client.get("/api/v1/workloads/00000000-0000-0000-0000-000000000000/log")
+    assert r.status_code == 404

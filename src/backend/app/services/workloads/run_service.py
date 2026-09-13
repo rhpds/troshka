@@ -30,6 +30,7 @@ from app.workers.jobs import job_run_workload
 logger = logging.getLogger(__name__)
 
 _LOG_TAIL_BYTES = 256 * 1024
+_TERMINAL_STATUSES = {"succeeded", "error", "timeout"}
 
 
 def _now():
@@ -709,6 +710,20 @@ def _finalize_workload_run(run_id: str, status: str, error_or_logs: str) -> None
             logger.info("Workload run %s finalized: %s", run_id[:8], status)
     finally:
         db.close()
+
+
+def get_workload_log(db, run) -> str:
+    """Return the runner log: persisted tail for terminal/orphan runs, live otherwise."""
+    if run.status in _TERMINAL_STATUSES or not run.project_id:
+        return run.log_ref or ""
+    try:
+        project = db.get(Project, run.project_id)
+        if not project or not project.host_id:
+            return run.log_ref or ""
+        host = _host_for_project(db, project)
+        return _read_runner_pod_logs(host, run.id) or run.log_ref or ""
+    except Exception:  # noqa: BLE001 — transient pod-read failure → persisted tail
+        return run.log_ref or ""
 
 
 def _enqueue_monitor_by_ids(run_id: str, host_id: str) -> None:

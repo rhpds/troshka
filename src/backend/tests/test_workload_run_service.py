@@ -388,3 +388,88 @@ def test_finalize_persists_log_tail_for_success():
     assert len(saved.log_ref) == _LOG_TAIL_BYTES
     assert saved.log_ref == big[-_LOG_TAIL_BYTES:]
     db.close()
+
+
+def test_get_workload_log_terminal_returns_persisted():
+    import uuid
+
+    from app.models.workload_run import WorkloadRun
+    from app.services.workloads.run_service import get_workload_log
+    from tests.conftest import TestSession
+
+    db = TestSession()
+    run = WorkloadRun(
+        id=str(uuid.uuid4()), kind="ad_hoc", status="succeeded", log_ref="persisted log"
+    )
+    assert get_workload_log(db, run) == "persisted log"
+    db.close()
+
+
+def test_get_workload_log_running_reads_live(monkeypatch):
+    import uuid
+
+    from app.models.project import Project
+    from app.models.workload_run import WorkloadRun
+    from app.services.workloads import run_service
+    from tests.conftest import TestSession
+
+    db = TestSession()
+    proj = Project(
+        id=str(uuid.uuid4()),
+        name="p",
+        state="active",
+        host_id=str(uuid.uuid4()),
+        topology={},
+        owner_id=str(uuid.uuid4()),
+    )
+    db.add(proj)
+    db.commit()
+    run = WorkloadRun(
+        id=str(uuid.uuid4()),
+        kind="ad_hoc",
+        status="running",
+        project_id=proj.id,
+        log_ref="stale",
+    )
+
+    monkeypatch.setattr(run_service, "_host_for_project", lambda _db, _p: object())
+    monkeypatch.setattr(
+        run_service, "_read_runner_pod_logs", lambda _h, _rid: "LIVE OUTPUT"
+    )
+    assert run_service.get_workload_log(db, run) == "LIVE OUTPUT"
+    db.close()
+
+
+def test_get_workload_log_running_falls_back_on_error(monkeypatch):
+    import uuid
+
+    from app.models.project import Project
+    from app.models.workload_run import WorkloadRun
+    from app.services.workloads import run_service
+    from tests.conftest import TestSession
+
+    db = TestSession()
+    proj = Project(
+        id=str(uuid.uuid4()),
+        name="p",
+        state="active",
+        host_id=str(uuid.uuid4()),
+        topology={},
+        owner_id=str(uuid.uuid4()),
+    )
+    db.add(proj)
+    db.commit()
+    run = WorkloadRun(
+        id=str(uuid.uuid4()),
+        kind="ad_hoc",
+        status="running",
+        project_id=proj.id,
+        log_ref="fallback log",
+    )
+
+    def _boom(_db, _p):
+        raise RuntimeError("no host")
+
+    monkeypatch.setattr(run_service, "_host_for_project", _boom)
+    assert run_service.get_workload_log(db, run) == "fallback log"
+    db.close()

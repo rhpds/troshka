@@ -48,6 +48,12 @@ class WorkloadRunResponse(BaseModel):
     progress: dict | None = None
 
 
+class WorkloadLogResponse(BaseModel):
+    id: str
+    status: str
+    log: str
+
+
 class WorkloadRunListItem(BaseModel):
     id: str
     project_id: str | None
@@ -193,4 +199,30 @@ def get_workload_run_status(
         id=run.id,
         status=run.status,
         progress=progress,
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /workloads/{run_id}/log — get run log
+# ---------------------------------------------------------------------------
+@router.get(
+    "/workloads/{run_id}/log",
+    response_model=WorkloadLogResponse,
+    responses={403: {}, 404: {}},
+)
+def get_workload_run_log(run_id: str, user: CurrentUser, db: DbSession):
+    run = db.get(WorkloadRun, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=_RUN_NOT_FOUND)
+    if run.project_id:
+        project = db.get(Project, run.project_id)
+        assert project is not None, f"Project {run.project_id} not found"
+        _enforce_project_access(project, user)
+    elif user.role != "admin":
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+
+    from app.services.workloads.run_service import get_workload_log
+
+    return WorkloadLogResponse(
+        id=run.id, status=run.status, log=get_workload_log(db, run)
     )
