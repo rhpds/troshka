@@ -1406,6 +1406,92 @@ def test_clear_external_endpoints():
     assert "externalEndpoints" not in nodes[1]["data"]
 
 
+def test_remap_clusters_network_ids():
+    """Clusters reference network nodes via networkIds and dnsNetworkId.
+
+    Pattern deploy remaps all node IDs, so cluster network references must
+    remap too. Without remapping, clusters[].networkIds/dnsNetworkId point
+    at the old pattern network id while the actual network node has a new id.
+    Downstream (frontend effectiveDnsNetworkId→applyClusterDns) strips DNS
+    and sets dns=false, causing a false "needs DNS member network" error,
+    unchecked Member Networks, and a perpetually-dirty canvas on deployed
+    pattern clusters.
+    """
+    from app.api.patterns import _remap_topology
+
+    topo = {
+        "nodes": [
+            {
+                "id": "net-old",
+                "type": "networkNode",
+                "data": {"name": "cluster-net", "cidr": "10.0.1.0/24", "dns": True},
+            },
+            {
+                "id": "cluster-old",
+                "type": "clusterNode",
+                "data": {"name": "ocp", "clusterType": "openshift"},
+            },
+        ],
+        "clusters": [
+            {
+                "id": "ocp-x",
+                "nodeId": "cluster-old",
+                "name": "ocp",
+                "networkIds": ["net-old"],
+                "dnsNetworkId": "net-old",
+            }
+        ],
+        "edges": [],
+    }
+
+    result = _remap_topology(topo)
+
+    # Find the new network node id (by name since ids are random)
+    new_network = next(n for n in result["nodes"] if n["data"]["name"] == "cluster-net")
+    new_network_id = new_network["id"]
+
+    # networkIds and dnsNetworkId must be remapped to the new network node id
+    cluster = result["clusters"][0]
+    assert cluster["networkIds"] == [
+        new_network_id
+    ], f"Expected networkIds=[{new_network_id}], got {cluster['networkIds']}"
+    assert (
+        cluster["dnsNetworkId"] == new_network_id
+    ), f"Expected dnsNetworkId={new_network_id}, got {cluster['dnsNetworkId']}"
+
+
+def test_remap_clusters_without_network_ids():
+    """Clusters without networkIds/dnsNetworkId should not crash."""
+    from app.api.patterns import _remap_topology
+
+    topo = {
+        "nodes": [
+            {
+                "id": "cluster-old",
+                "type": "clusterNode",
+                "data": {"name": "ocp", "clusterType": "openshift"},
+            },
+        ],
+        "clusters": [
+            {
+                "id": "ocp-x",
+                "nodeId": "cluster-old",
+                "name": "ocp",
+                # No networkIds or dnsNetworkId
+            }
+        ],
+        "edges": [],
+    }
+
+    result = _remap_topology(topo)
+
+    # Should not crash, and cluster should have a new nodeId
+    cluster = result["clusters"][0]
+    assert cluster["nodeId"] != "cluster-old"
+    assert "networkIds" not in cluster or cluster["networkIds"] == []
+    assert "dnsNetworkId" not in cluster or cluster["dnsNetworkId"] is None
+
+
 # ---------------------------------------------------------------------------
 # List patterns - additional filter tests
 # ---------------------------------------------------------------------------

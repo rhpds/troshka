@@ -223,6 +223,16 @@ def _remap_clusters(topo: dict, id_map: dict) -> None:
         if old_cluster_id is not None:
             old_to_new[old_cluster_id] = new_cluster_id
 
+        # Remap network node references in clusters
+        if cluster.get("networkIds"):
+            cluster["networkIds"] = [
+                id_map.get(nid, nid) for nid in cluster["networkIds"]
+            ]
+        if cluster.get("dnsNetworkId"):
+            cluster["dnsNetworkId"] = id_map.get(
+                cluster["dnsNetworkId"], cluster["dnsNetworkId"]
+            )
+
     for node in topo.get("nodes", []):
         data = node.get("data", {})
         if data.get("clusterId") in old_to_new:
