@@ -56,7 +56,9 @@ Runs are **provision-only** and normally happen once.
 | D4 | Unit of work: **both** catalog items (`agd-v2.<item>.<stage>`) and ad-hoc single roles. |
 | D5 | Trigger: **both** UI and REST API. |
 | D6 | Inventory: **reuse the `troshka.cloud` inventory plugin**; VMs carry an `AnsibleGroup` tag; the backend emits the `*.troshka.yml` inventory and mints a scoped `trk_` key. |
-| D7 | Cluster access delivered as **variables**, not a kubeconfig: a `clusters:` dict keyed by name, each `{api_url, api_token}` (cluster-admin SA token). Mirrored to `sandbox_openshift_api_url` / `cluster_admin_agnosticd_sa_token` for tenant workloads. Legacy `KUBECONFIG` file provided only if needed. |
+| D7 | **Cluster access is resolved IN-POD, never on the backend** (revised 2026-09-13 after live validation). The backend makes **no cluster API calls** — it can't resolve the in-cluster API name (`api.ocp.local`). The backend delivers only the **stored admin kubeconfig** (`Project.topology` control-plane node `data.ocpKubeconfig`) to the runner pod as a 0600 mount + `KUBECONFIG`. The runner pod (in the project namespace, which *can* resolve `api.ocp.local`) mints the cluster-admin SA token via AgnosticD's `openshift_cluster_admin_service_account` role and builds the `clusters: {api_url, api_token}` dict for `openshift_workload_deployer`. |
+| D12 | **Backend-minimal / distribute the load** (architectural principle, 2026-09-13). The backend is a thin orchestrator: resolve the catalog item (the agnosticv merge — stays central because it holds private creds), deliver artifacts + the admin kubeconfig, launch the runner pod, and track state. All heavy per-project work — ansible playbooks, cluster API calls, token minting — happens in per-project-namespace pods, not a central location. |
+| D13 | **Recert-complete gate = "minimal control-plane-usable"** (2026-09-13). A workload run refuses (409) until the target cluster reaches the *minimal control-plane-usable* milestone — NOT full operator quiescence (which over-waits on cosmetic/non-critical operators) and NOT merely "console up" (a false-ready signal while the apiserver cert-revision rollout is still in flight). Concretely, control-plane-usable = `kube-apiserver` Progressing=False + Available=True, `authentication` Available=True, and no clusteroperator Degraded=True (with SNO tolerance for operators that are only *cosmetically* Progressing, e.g. a 2-replica Deployment that can't place a 2nd pod on one node). Per D12, the runner pod's in-pod agnosticd flow then waits for whatever *specific* operators/CRDs that workload needs — the backend gate stays lean. **Visibility:** the recert **Status & Log** panel shows a **separate timestamp** for this milestone — e.g. `minimal control-plane-usable reached at Xm Ys` — distinct from the overall recert duration (the panel's `RE-CERTIFIED · 20m 46s`). The monitor records the elapsed time when the control-plane-usable condition is *first* met and surfaces it as its own field (persisted so it survives refresh/restart), so an operator can see at a glance both how long until the cluster was workload-ready and how long the full recert took. |
 | D8 | Lifecycle: **provision-only**, run once, to bake a pattern or overlay onto a base. |
 | D9 | Cloud CLI creds (aws/gcloud/azure) are **admin-central named sets**, injected as scoped 0600 mounts only when needed. **EE images are public** (no registry creds). |
 | D10 | **Repo Cache** with a per-repo default-ref config map and a disk budget (bare treeless mirror + per-ref worktrees + LRU eviction). |
@@ -149,24 +151,22 @@ User / API
   in SSH mode; every VM needs a name and a first-NIC IP; groups are the tag values
   verbatim.
 
-**Cluster Access Resolver** *(backend)*
-- For each target cluster in the project, produces `{api_url, api_token}` where
-  `api_token` is a cluster-admin **SA token minted via the Kubernetes
-  `TokenRequest` API**, using a client bootstrapped from the stored admin
-  kubeconfig (`Project.topology`/`deployed_topology` control-plane node
-  `data.ocpKubeconfig`, read via `_stored_cluster_creds`). Mirrors AgnosticD's
-  `openshift_cluster_admin_service_account` role; works even when the stored
-  kubeconfig is client-cert based.
-- Injects a `clusters:` dict keyed by cluster name into the resolved extra-vars;
-  the AgnosticD `openshift_workload_deployer` translates `workloads[].clusters`
-  into per-role `K8S_AUTH_HOST`/`K8S_AUTH_API_KEY`/`K8S_AUTH_VERIFY_SSL=false`.
-- Also surfaces `sandbox_openshift_api_url` + `cluster_admin_agnosticd_sa_token`
-  for tenant workloads, and (only when required) a legacy kubeconfig file +
-  `KUBECONFIG`.
-- Exposed via a new ops-pod-scoped endpoint `GET /projects/{id}/cluster-access`.
-- **Optional** convenience: a `troshka.cloud` lookup/module that auto-populates the
-  `clusters:` dict from the project (keeps AgnosticV configs from hard-coding
-  endpoints). Not required for the core path.
+**Cluster Access** *(in-pod — REVISED 2026-09-13)*
+- **The backend does NOT mint tokens or call the cluster API.** Live validation
+  showed the stored kubeconfig's server is the in-cluster name `api.ocp.local`,
+  which the backend cannot resolve — only pods in the project network can. (The
+  earlier backend `TokenRequest`/`resolve_cluster_access`/`GET /cluster-access`
+  design is removed.)
+- The backend reads the control-plane node's `data.ocpKubeconfig` from
+  `Project.topology` (stored data — no cluster call) and delivers it to the runner
+  pod as a 0600 mount; the run command exports `KUBECONFIG`.
+- The runner pod runs AgnosticD's `openshift_cluster_admin_service_account` role
+  (in-cluster, using the delivered kubeconfig) to mint the cluster-admin SA token,
+  then builds `clusters: {default: {api_url, api_token}}` for
+  `openshift_workload_deployer` (which sets `K8S_AUTH_HOST`/`K8S_AUTH_API_KEY` per
+  workload). Tenant workloads get `sandbox_openshift_api_url` +
+  `cluster_admin_agnosticd_sa_token` from the same in-pod step.
+- **Precondition:** the run is gated on recert-complete (D13) before launch.
 
 **Workload Runner** *(runner pod)*
 - Generalizes the existing ops-pod scaffolding so any active project can get a
