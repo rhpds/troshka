@@ -3998,11 +3998,24 @@ class TestGetContainerStates(unittest.TestCase):
     def test_parses_states(self, mock_run):
         mock_run.return_value = MagicMock(
             returncode=0,
-            stdout="troshka-proj-ctr1 running\ntroshka-proj-ctr2 exited\n",
+            stdout="troshka-proj-ctr1 running 0\ntroshka-proj-ctr2 exited 0\n",
         )
         result = troshkad._get_container_states()
         self.assertEqual(result["troshka-proj-ctr1"]["state"], "running")
         self.assertEqual(result["troshka-proj-ctr2"]["state"], "stopped")
+        # exit_code is surfaced so the workload monitor can determine success of
+        # an exited container (exec/cat can't reach a stopped container).
+        self.assertEqual(result["troshka-proj-ctr2"]["exit_code"], 0)
+
+    @patch("troshkad.subprocess.run")
+    def test_parses_nonzero_exit_code(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="troshka-proj-ctr2 exited 2\n",
+        )
+        result = troshkad._get_container_states()
+        self.assertEqual(result["troshka-proj-ctr2"]["state"], "stopped")
+        self.assertEqual(result["troshka-proj-ctr2"]["exit_code"], 2)
 
     @patch("troshkad.subprocess.run")
     def test_empty_output(self, mock_run):

@@ -12715,7 +12715,7 @@ def _get_container_states():
             "--filter",
             _TROSHKA_FILTER,
             "--format",
-            "{{.Names}} {{.State}}",
+            "{{.Names}} {{.State}} {{.ExitCode}}",
         ],
         capture_output=True,
         text=True,
@@ -12731,10 +12731,20 @@ def _get_container_states():
     for line in result.stdout.strip().split("\n"):
         if not line.strip():
             continue
-        parts = line.strip().split(None, 1)
-        if len(parts) == 2:
-            name, state = parts
-            containers[name] = {"state": state_map.get(state.lower(), state.lower())}
+        # "<name> <state> <exit_code>" — exit_code lets the workload monitor
+        # determine success/failure of an EXITED container (exec/cat can't reach
+        # a stopped container, so status must come from the exit code).
+        parts = line.strip().split(None, 2)
+        if len(parts) < 2:
+            continue
+        name, state = parts[0], parts[1]
+        entry: dict = {"state": state_map.get(state.lower(), state.lower())}
+        if len(parts) == 3:
+            try:
+                entry["exit_code"] = int(parts[2])
+            except ValueError:
+                pass
+        containers[name] = entry
     return containers
 
 
