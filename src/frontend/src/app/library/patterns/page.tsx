@@ -114,19 +114,19 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
             onKeyDown={(e) => { if (e.key === "Enter" && name.trim()) onDeploy(name, guid || undefined, domain || undefined, dnsProviderId || undefined, autoDeploy, autoStart, deployHostId || undefined); }}
           />
         </div>
-        <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
-          <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>DNS Integration (optional)</div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-            <div style={{ flex: 1 }}>
-              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>GUID</label>
-              <input style={inputStyle} value={guid} onChange={(e) => setGuid(e.target.value)} placeholder="abc123" />
+        {dnsProviders.length > 0 && (
+          <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
+            <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>DNS Integration (optional)</div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+              <div style={{ flex: 1 }}>
+                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>GUID</label>
+                <input style={inputStyle} value={guid} onChange={(e) => setGuid(e.target.value)} placeholder="abc123" />
+              </div>
+              <div style={{ flex: 2 }}>
+                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Domain</label>
+                <input style={inputStyle} value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="sandbox.example.com" />
+              </div>
             </div>
-            <div style={{ flex: 2 }}>
-              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Domain</label>
-              <input style={inputStyle} value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="sandbox.example.com" />
-            </div>
-          </div>
-          {dnsProviders.length > 0 && (
             <div>
               <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>DNS Provider</label>
               <select style={inputStyle} value={dnsProviderId} onChange={(e) => setDnsProviderId(e.target.value)}>
@@ -134,8 +134,8 @@ function DeployNameModal({ patternName, deploying, onDeploy, onClose }: {
                 {dnsProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
-          )}
-        </div>
+          </div>
+        )}
         <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8, marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
           <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
             <input type="checkbox" checked={autoDeploy} onChange={(e) => { setAutoDeploy(e.target.checked); if (!e.target.checked) setAutoStart(false); }} />

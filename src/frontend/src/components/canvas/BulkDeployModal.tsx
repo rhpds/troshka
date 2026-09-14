@@ -132,22 +132,22 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
             </label>
           </div>
 
-          <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12 }}>
-            <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>DNS Integration (optional)</div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-              <div style={{ flex: 1 }}>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
-                  GUID Template
-                  <span style={{ opacity: 0.5, marginLeft: 8 }}>{"{n}"} = seq</span>
-                </label>
-                <input style={inputStyle} value={guidTemplate} onChange={(e) => setGuidTemplate(e.target.value)} placeholder="lab-{n}" />
+          {dnsProviders.length > 0 && (
+            <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12 }}>
+              <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>DNS Integration (optional)</div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
+                    GUID Template
+                    <span style={{ opacity: 0.5, marginLeft: 8 }}>{"{n}"} = seq</span>
+                  </label>
+                  <input style={inputStyle} value={guidTemplate} onChange={(e) => setGuidTemplate(e.target.value)} placeholder="lab-{n}" />
+                </div>
+                <div style={{ flex: 2 }}>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Domain</label>
+                  <input style={inputStyle} value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="sandbox.example.com" />
+                </div>
               </div>
-              <div style={{ flex: 2 }}>
-                <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Domain</label>
-                <input style={inputStyle} value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="sandbox.example.com" />
-              </div>
-            </div>
-            {dnsProviders.length > 0 && (
               <div>
                 <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>DNS Provider</label>
                 <select style={inputStyle} value={dnsProviderId} onChange={(e) => setDnsProviderId(e.target.value)}>
@@ -155,8 +155,8 @@ export default function BulkDeployModal({ patternId, onClose, onDeployed }: Bulk
                   {dnsProviders.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           <div style={{
             padding: "8px 12px", borderRadius: 6,
