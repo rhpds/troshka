@@ -28,7 +28,7 @@ spec:
                   type: string
                 networkType:
                   type: string
-                  enum: [standard, external, bmc]
+                  enum: [standard, external, bmc, migration]
                   default: standard
                 staticLeases:
                   type: array
