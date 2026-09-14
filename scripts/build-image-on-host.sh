@@ -86,7 +86,9 @@ tar czf - "${TAR_EXCLUDES[@]}" -C "$CONTEXT" . | "$HOST_SSH" "$HOST" "mkdir -p '
 
 # shellcheck disable=SC2016 - $RDIR/$TAG are expanded locally into the remote cmd on purpose
 BUILD_ARG_STR=""
-for a in "${BUILD_ARGS[@]}"; do BUILD_ARG_STR+=" $a"; done
+if ((${#BUILD_ARGS[@]})); then
+    for a in "${BUILD_ARGS[@]}"; do BUILD_ARG_STR+=" $a"; done
+fi
 FILE_STR=""
 [[ -n "$FILE" ]] && FILE_STR=" -f '$FILE'"
 
