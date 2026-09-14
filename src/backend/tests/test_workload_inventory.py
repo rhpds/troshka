@@ -62,37 +62,6 @@ def test_validate_bastion_needs_external_ip():
         inventory.validate_ansible_groups(topo, require_bastion=True)
 
 
-def test_preview_inventory_maps_groups_to_names():
-    from app.services.workloads.inventory import preview_inventory
-
-    topo = {
-        "nodes": [
-            {
-                "id": "n1",
-                "type": "vmNode",
-                "data": {"name": "bastion", "tags": {"AnsibleGroup": "bastions, all"}},
-            },
-            {
-                "id": "n2",
-                "type": "vmNode",
-                "data": {"name": "web1", "tags": {"AnsibleGroup": "web"}},
-            },
-            {"id": "n3", "type": "networkNode", "data": {"name": "net"}},
-        ]
-    }
-    groups = preview_inventory(topo)
-    assert groups["bastions"] == ["bastion"]
-    assert groups["all"] == ["bastion"]
-    assert groups["web"] == ["web1"]
-    assert "net" not in {v for vs in groups.values() for v in vs}
-
-
-def test_preview_inventory_empty():
-    from app.services.workloads.inventory import preview_inventory
-
-    assert preview_inventory({"nodes": []}) == {}
-
-
 def test_validate_vm_names_success():
     """validate_vm_names accepts all VMs with first-NIC IPs."""
     from app.services.workloads.inventory import validate_vm_names

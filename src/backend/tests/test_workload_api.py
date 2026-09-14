@@ -476,48 +476,6 @@ def test_get_run_log_endpoint_404():
     assert r.status_code == 404
 
 
-def test_inventory_preview_reports_contract_errors():
-    # VM with no AnsibleGroup tag → validation error surfaced, groups empty
-    topo = {
-        "nodes": [
-            {
-                "id": "n1",
-                "type": "vmNode",
-                "data": {"name": "vm1", "nics": [{"ip": "10.0.0.5"}]},
-            }
-        ]
-    }
-    pid = _create_project(topology=topo)
-    r = client.post(f"/api/v1/projects/{pid}/workloads/inventory-preview", json={})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["groups"] == {}
-    assert any("AnsibleGroup" in e for e in body["errors"])
-
-
-def test_inventory_preview_valid_ssh_topology():
-    topo = {
-        "nodes": [
-            {
-                "id": "n1",
-                "type": "vmNode",
-                "data": {
-                    "name": "bastion",
-                    "nics": [{"ip": "10.0.0.5"}],
-                    "tags": {"AnsibleGroup": "bastions"},
-                },
-            }
-        ],
-        "externalIps": [{"vmId": "n1", "ip": "1.2.3.4"}],
-    }
-    pid = _create_project(topology=topo)
-    r = client.post(f"/api/v1/projects/{pid}/workloads/inventory-preview", json={})
-    assert r.status_code == 200
-    body = r.json()
-    assert body["errors"] == []
-    assert body["groups"]["bastions"] == ["bastion"]
-
-
 def test_trigger_workload_run_with_custom_ee_image():
     """POST with ee_image sets it on the WorkloadRun."""
     pid = _create_project(state="active")

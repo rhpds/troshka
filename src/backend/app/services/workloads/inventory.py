@@ -69,16 +69,6 @@ def _validate_bastion(bastions: list[str], topology: dict) -> None:
         raise InventoryError("bastion VM has no external IP")
 
 
-def preview_inventory(topology: dict) -> dict[str, list[str]]:
-    """PURE: map each AnsibleGroup tag value to the VM names in it (no validation)."""
-    groups: dict[str, list[str]] = {}
-    for node in _vm_nodes(topology):
-        name = (node.get("data") or {}).get("name") or node.get("id") or ""
-        for group in _groups(node):
-            groups.setdefault(group, []).append(name)
-    return groups
-
-
 def validate_vm_names(topology: dict, vm_names: list[str]) -> None:
     """Validate that all named VMs exist in the topology and have first-NIC IPs.
     Raises InventoryError if any VM is missing or has no IP."""

@@ -643,3 +643,90 @@ def test_build_run_command_no_limit_when_none():
 
     full_cmd = " ".join(cmd)
     assert "--limit" not in full_cmd
+
+
+def test_requirements_content_wins_over_user_extra_vars(monkeypatch):
+    """requirements_content from item must override user-supplied extra_vars."""
+    db = TestSession()
+    try:
+        proj = _active_project(db, name="rs-reqs-test")
+        assert proj is not None
+
+        # Create run with user extra_vars that tries to clobber requirements_content
+        run = WorkloadRun(
+            project_id=proj.id,
+            kind="ad_hoc",
+            role_fqcn="demo.test.role",
+            status="pending",
+            extra_vars={"requirements_content": {"malicious": "override"}},
+        )
+        db.add(run)
+        db.commit()
+        rid = run.id
+        db.close()
+
+        monkeypatch.setattr(run_service, "SessionLocal", TestSession)
+        monkeypatch.setattr(
+            run_service,
+            "_host_for_project",
+            lambda db, p: SimpleNamespace(id="h1", host_type="shared"),
+        )
+
+        # Item with real requirements_content
+        real_reqs = {
+            "collections": [
+                {
+                    "name": "https://github.com/real/repo.git",
+                    "type": "git",
+                    "version": "main",
+                }
+            ]
+        }
+        monkeypatch.setattr(
+            run_service,
+            "_resolve_item",
+            lambda db, r: SimpleNamespace(
+                extra_vars={"config": "openshift-workloads"},
+                ee_image="ee:1",
+                scm_ref="main",
+                requirements_content=real_reqs,
+            ),
+        )
+        monkeypatch.setattr(run_service, "mint_run_key", lambda db, p: "trk_k")
+        monkeypatch.setattr(
+            run_service, "validate_ansible_groups", lambda t, require_bastion: None
+        )
+
+        # Capture build_artifact_files to check the final extra_vars
+        captured_files = []
+
+        def mock_build_artifact_files(
+            *, extra_vars, inventory_yaml, cloud_creds, kubeconfig, paths
+        ):
+            captured_files.append(extra_vars.copy())
+            return {}
+
+        monkeypatch.setattr(
+            run_service, "build_artifact_files", mock_build_artifact_files
+        )
+
+        monkeypatch.setattr(
+            run_service, "build_run_command", lambda *a, **k: ["echo", "test"]
+        )
+        monkeypatch.setattr(
+            run_service, "_resolve_pod_networks", lambda h, p, t: ([], "", "")
+        )
+        monkeypatch.setattr(run_service, "launch_runner_pod", MagicMock())
+        monkeypatch.setattr(
+            run_service, "_start_workload_monitor", lambda *a, **k: None
+        )
+
+        run_service.run_workload_job(rid)
+
+        # Verify requirements_content from item won over user extra_vars
+        assert len(captured_files) == 1
+        assert captured_files[0]["requirements_content"] == real_reqs
+        assert captured_files[0]["requirements_content"] != {"malicious": "override"}
+    finally:
+        if db.is_active:
+            db.close()

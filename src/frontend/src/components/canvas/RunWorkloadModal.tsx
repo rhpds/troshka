@@ -50,7 +50,7 @@ export default function RunWorkloadModal({
 
   const clusters = useCanvasStore((s) => s.clusters);
   const nodes = useCanvasStore((s) => s.nodes);
-  const vmNodes = nodes.filter((n) => n.type === "vmNode");
+  const vmNodes = nodes.filter((n) => n.type === "vmNode" && !(n.data as any).clusterId);
 
   // Auto-select a single cluster ONLY when initialClusterIds === undefined.
   // An explicit [] disables auto-select (e.g., right-click on a clusterNode with
@@ -115,8 +115,9 @@ export default function RunWorkloadModal({
 
     try {
       if (mode === "cluster") {
-        // Fan-out: one POST per cluster
+        // Fan-out: one POST per cluster (best-effort, continue on partial failure)
         const runIds: string[] = [];
+        const failures: Array<{ clusterId: string; detail: string }> = [];
         for (const clusterId of selectedClusterIds) {
           const body = {
             ...baseBody,
@@ -129,14 +130,28 @@ export default function RunWorkloadModal({
           });
           if (r.status !== 202) {
             const data = await r.json().catch(() => ({}));
-            setError(data.detail || `Launch failed (${r.status})`);
-            setLaunching(false);
-            return;
+            const clusterName = clusters.find((c) => c.id === clusterId)?.name || clusterId;
+            failures.push({ clusterId: clusterName, detail: data.detail || `${r.status}` });
+          } else {
+            const data = await r.json();
+            runIds.push(data.id);
           }
-          const data = await r.json();
-          runIds.push(data.id);
         }
-        onLaunched(runIds);
+        // If all succeeded → route to run(s)
+        if (failures.length === 0) {
+          onLaunched(runIds);
+        } else {
+          // Partial or total failure: show summary error, don't auto-close
+          const successCount = runIds.length;
+          const totalCount = selectedClusterIds.length;
+          const failedClusters = failures.map((f) => `${f.clusterId} (${f.detail})`).join(", ");
+          let errorMsg = `Launched ${successCount} of ${totalCount}. Failed: ${failedClusters}`;
+          if (successCount > 0) {
+            errorMsg += `. Created runs: ${runIds.join(", ")}`;
+          }
+          setError(errorMsg);
+          setLaunching(false);
+        }
       } else {
         // VMs mode: one POST with vm_names
         const body = {

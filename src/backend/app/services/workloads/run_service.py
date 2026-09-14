@@ -142,13 +142,14 @@ def run_workload_job(run_id: str) -> None:
         paths = RunPaths()
         extra_vars = dict(item.extra_vars)
 
-        # Thread requirements_content to the pod (HARD REQUIREMENT A)
-        if item.requirements_content:
-            extra_vars["requirements_content"] = item.requirements_content
-
-        # Merge user-supplied extra_vars (user keys win)
+        # Merge user-supplied extra_vars first
         if run.extra_vars:
             extra_vars.update(run.extra_vars)
+
+        # Thread requirements_content to the pod AFTER user vars (HARD REQUIREMENT A)
+        # so user cannot clobber the real collections
+        if item.requirements_content:
+            extra_vars["requirements_content"] = item.requirements_content
 
         # Read stored kubeconfig (targeted by cluster_id if specified, else first)
         kubeconfig = _resolve_kubeconfig(topo, run.target_map)

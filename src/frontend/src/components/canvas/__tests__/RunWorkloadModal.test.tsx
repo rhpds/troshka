@@ -130,9 +130,94 @@ describe("RunWorkloadModal", () => {
         expect(checkbox.checked).toBe(true);
       });
     });
+
+    it("continues fan-out on partial failure, surfaces created runs and error", async () => {
+      seedStore(
+        [
+          { id: "c1", name: "hub" },
+          { id: "c2", name: "sno1" },
+          { id: "c3", name: "sno2" },
+        ],
+        [],
+      );
+
+      let postCount = 0;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === "string" ? input : input.toString();
+          if (url.endsWith("/workloads") && init?.method === "POST") {
+            postCount++;
+            // c2 (second cluster) fails
+            if (postCount === 2) {
+              return okJson({ detail: "Cluster unhealthy" }, 409);
+            }
+            return okJson({ id: `run-${postCount}`, status: "pending" }, 202);
+          }
+          return okJson({});
+        }),
+      );
+
+      const onLaunched = vi.fn();
+      render(<RunWorkloadModal projectId="p1" onClose={() => {}} onLaunched={onLaunched} />);
+
+      fireEvent.change(screen.getByPlaceholderText(/role/i), {
+        target: { value: "agnosticd.core.test" },
+      });
+
+      // Select all three clusters
+      fireEvent.click(screen.getByLabelText("All"));
+      fireEvent.click(screen.getByRole("button", { name: /launch/i }));
+
+      await waitFor(() => expect(postCount).toBe(3));
+      // onLaunched should NOT be called (partial failure)
+      expect(onLaunched).not.toHaveBeenCalled();
+      // Error should mention 2 of 3, failed cluster, and created run ids
+      const errorText = screen.getByText(/Launched 2 of 3/);
+      expect(errorText).toBeInTheDocument();
+      expect(errorText.textContent).toContain("sno1");
+      expect(errorText.textContent).toContain("run-1");
+      expect(errorText.textContent).toContain("run-3");
+    });
   });
 
   describe("VMs mode multi-select", () => {
+    it("excludes cluster-member VMs from list", () => {
+      useCanvasStore.setState({
+        nodes: [
+          {
+            id: "vm-1",
+            type: "vmNode",
+            position: { x: 0, y: 0 },
+            data: { name: "standalone-vm" },
+          },
+          {
+            id: "vm-2",
+            type: "vmNode",
+            position: { x: 0, y: 0 },
+            data: { name: "cluster-member-vm", clusterId: "c1" },
+          },
+        ],
+        edges: [],
+        clusters: [],
+        selectedNodeId: null,
+        projectState: "draft",
+        deployedNodeData: {},
+        deployedEdgeKey: "",
+        deployedExternalIps: "[]",
+        deployedClusters: "[]",
+        externalIps: [],
+      } as never);
+
+      render(<RunWorkloadModal projectId="p1" onClose={() => {}} onLaunched={() => {}} />);
+      fireEvent.click(screen.getByLabelText("VMs"));
+
+      // standalone-vm should appear
+      expect(screen.getByLabelText("standalone-vm")).toBeInTheDocument();
+      // cluster-member-vm should NOT appear
+      expect(screen.queryByLabelText("cluster-member-vm")).not.toBeInTheDocument();
+    });
+
     it("sends ONE POST with vm_names array when VMs selected", async () => {
       seedStore(
         [],
