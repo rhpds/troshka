@@ -537,6 +537,7 @@ def test_customize_topology_single_cluster_bakes_bastion():
     }
     customize_topology(topo, "ocp-sno", config)
 
+    assert topo["clusters"][0]["installOnDeploy"] is True
     bastion = next(n for n in topo["nodes"] if n["data"].get("name") == "bastion")
     assert bastion["data"].get("ciUserData")
     assert bastion["data"].get("cloudInit") is True
@@ -753,6 +754,18 @@ def test_customize_pod_single_cluster_no_bake_but_generated():
     cluster = topo["clusters"][0]
     assert cluster["_generatedInstallConfig"]
     assert cluster["_generatedAgentConfig"]
+    assert cluster["installOnDeploy"] is True
+
+
+def test_customize_auto_install_false_stamps_install_on_deploy():
+    """Quickstart auto_install_ocp=false maps to cluster installOnDeploy=false."""
+    from app.services.ocp.agent_template import customize_topology
+
+    topo = _single_cluster_topo_with_bastion()
+    config = {**_install_via_config("pod"), "auto_install_ocp": False}
+    customize_topology(topo, "ocp-sno", config)
+
+    assert topo["clusters"][0]["installOnDeploy"] is False
 
 
 def test_customize_pod_multi_cluster_no_bake_generated_on_all():

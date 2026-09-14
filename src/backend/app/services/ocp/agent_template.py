@@ -791,6 +791,11 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     clusters = topology.get("clusters") or [
         _legacy_cluster_from_config(topology, template_id, config)
     ]
+    install_on_deploy = config.get("auto_install_ocp", True)
+    for cluster in clusters:
+        cluster["installOnDeploy"] = install_on_deploy
+    if not topology.get("clusters"):
+        topology["clusters"] = clusters
 
     # Prefer the config value (Task 1), fall back to what's persisted on the
     # topology, then the config default (all handled by resolve_install_via).

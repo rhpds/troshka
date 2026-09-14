@@ -1080,42 +1080,56 @@ function ClusterEditor({
           </select>
         </div>
       </div>
-      {/* Recert + health monitoring are automatic for OCP clusters now (recert
-          is mandatory to redeploy a captured cluster; monitoring always runs),
-          so they are no longer user toggles. The only remaining OCP option is
-          the bastion browser, which applies to the bastion install path only. */}
-      {ocpInstallVia !== "pod" && (
-        <>
-          <div className="props-divider" />
-          <div className="props-section">
-            <div className="props-section-title">OCP Options</div>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={!!cluster.configureBastionBrowser}
-                onChange={async (e) => {
-                  if (!e.target.checked) {
-                    onPatch({ configureBastionBrowser: false });
-                    return;
-                  }
-                  // At most one cluster configures the bastion browser.
-                  const other = clusters.find(
-                    (c) => c.id !== cluster.id && c.configureBastionBrowser,
-                  );
-                  if (other) {
-                    if (!(await appConfirm({
-                      message: `Move "Configure bastion browser" from ${other.name} to ${cluster.name}?`,
-                    }))) return;
-                    useCanvasStore.getState().updateCluster(other.id, { configureBastionBrowser: false });
-                  }
-                  onPatch({ configureBastionBrowser: true });
-                }}
-              />
-              Configure bastion browser for this cluster
-            </label>
-          </div>
-        </>
-      )}
+      <div className="props-divider" />
+      <div className="props-section">
+        <div className="props-section-title">OpenShift Options</div>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            fontSize: 12,
+            cursor: clusterDeployed ? "not-allowed" : "pointer",
+            marginBottom: ocpInstallVia !== "pod" ? 8 : 0,
+            opacity: clusterDeployed ? 0.6 : 1,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={cluster.installOnDeploy !== false}
+            disabled={clusterDeployed}
+            title={clusterDeployed ? "🔒 Locked while deployed." : undefined}
+            onChange={(e) => onPatch({ installOnDeploy: e.target.checked })}
+          />
+          Install OpenShift on deploy
+        </label>
+        {ocpInstallVia !== "pod" && (
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={!!cluster.configureBastionBrowser}
+              onChange={async (e) => {
+                if (!e.target.checked) {
+                  onPatch({ configureBastionBrowser: false });
+                  return;
+                }
+                // At most one cluster configures the bastion browser.
+                const other = clusters.find(
+                  (c) => c.id !== cluster.id && c.configureBastionBrowser,
+                );
+                if (other) {
+                  if (!(await appConfirm({
+                    message: `Move "Configure bastion browser" from ${other.name} to ${cluster.name}?`,
+                  }))) return;
+                  useCanvasStore.getState().updateCluster(other.id, { configureBastionBrowser: false });
+                }
+                onPatch({ configureBastionBrowser: true });
+              }}
+            />
+            Configure bastion browser for this cluster
+          </label>
+        )}
+      </div>
     </>
   );
 }

@@ -219,3 +219,20 @@ def test_apply_cluster_ocp_flags_no_clusters_noop():
     from app.services.ocp_topology_flags import apply_cluster_ocp_flags
 
     assert apply_cluster_ocp_flags({"nodes": []}) is False
+
+
+def test_apply_cluster_ocp_flags_skips_install_on_deploy_false():
+    from app.services.ocp_topology_flags import apply_cluster_ocp_flags
+
+    topo = {
+        "clusters": [{"id": "ocp", "installOnDeploy": False}],
+        "nodes": [
+            {
+                "id": "cp0",
+                "type": "vmNode",
+                "data": {"clusterId": "ocp", "clusterRole": "control-plane"},
+            },
+        ],
+    }
+    assert apply_cluster_ocp_flags(topo) is False
+    assert "ocpMonitor" not in topo["nodes"][0]["data"]

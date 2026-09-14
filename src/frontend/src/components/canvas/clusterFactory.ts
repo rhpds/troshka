@@ -42,6 +42,7 @@ const CLUSTER_DEFAULTS = {
   recert: true, // SNO default regenerates certs for a unique identity
   monitorHealth: true,
   configureBastionBrowser: false,
+  installOnDeploy: true,
 } as const;
 
 /** The default rendered footprint of a cluster boundary node (px). */
@@ -119,6 +120,7 @@ export function makeCluster(
     recert: CLUSTER_DEFAULTS.recert,
     monitorHealth: CLUSTER_DEFAULTS.monitorHealth,
     configureBastionBrowser: CLUSTER_DEFAULTS.configureBastionBrowser,
+    installOnDeploy: CLUSTER_DEFAULTS.installOnDeploy,
   };
 
   return { node, cluster };

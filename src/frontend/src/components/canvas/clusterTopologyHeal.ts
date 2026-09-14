@@ -21,10 +21,8 @@ export function isLegacyMigrationGhost(c: ClusterConfig): boolean {
   );
 }
 
-function stripDeployOnlyClusterFields(
-  dc: Record<string, unknown>,
-): ClusterConfig {
-  const c = { ...dc };
+function stripDeployOnlyClusterFields(dc: ClusterConfig): ClusterConfig {
+  const c = { ...dc } as Record<string, unknown>;
   for (const f of DEPLOY_ONLY_CLUSTER_FIELDS) delete c[f];
   return c as unknown as ClusterConfig;
 }
@@ -66,6 +64,7 @@ function clusterConfigFromBoundaryNode(
     recert: deployed?.recert,
     monitorHealth: deployed?.monitorHealth,
     configureBastionBrowser: deployed?.configureBastionBrowser,
+    installOnDeploy: deployed?.installOnDeploy,
   };
 }
 
@@ -75,7 +74,7 @@ function clusterConfigFromBoundaryNode(
  */
 export function reconcileCanvasClusters(
   canvasClusters: ClusterConfig[],
-  deployedClusters: Array<Record<string, unknown>> | undefined,
+  deployedClusters: ClusterConfig[] | undefined,
   nodes: Node[],
 ): ClusterConfig[] {
   const strippedDeployed = (deployedClusters || []).map(stripDeployOnlyClusterFields);
@@ -121,10 +120,11 @@ export function reconcileCanvasClusters(
 function resolveMemberClusterId(
   node: Node,
   clusters: ClusterConfig[],
+  deployedIds: Set<string>,
 ): string | null {
   const d = node.data as Record<string, unknown>;
   const byId = new Map(clusters.map((c) => [c.id, c]));
-  let cid = d.clusterId as string | undefined;
+  const cid = d.clusterId as string | undefined;
 
   const inferred = inferClusterIdFromMemberId(node.id);
   if (inferred && byId.has(inferred)) {
@@ -137,10 +137,12 @@ function resolveMemberClusterId(
   ) {
     const name = String(d.name || "");
     if (/^cp-\d+$/.test(name)) {
-      const sno = clusters.find(
+      const sno = clusters.filter(
         (c) => c.type === "sno" && !isLegacyMigrationGhost(c),
       );
-      if (sno) return sno.id;
+      const deployedSno = sno.filter((c) => deployedIds.has(c.id));
+      if (deployedSno.length === 1) return deployedSno[0].id;
+      if (sno.length === 1) return sno[0].id;
     }
     if (inferred) return inferred;
   }
@@ -153,14 +155,18 @@ function resolveMemberClusterId(
 export function healClusterMembership(
   nodes: Node[],
   clusters: ClusterConfig[],
+  deployedClusters?: ClusterConfig[],
 ): Node[] {
   const byId = new Map(clusters.map((c) => [c.id, c]));
+  const deployedIds = new Set(
+    (deployedClusters || []).map((c) => String(c.id || "")).filter(Boolean),
+  );
 
   return nodes.map((n) => {
     const d = n.data as Record<string, unknown>;
 
     if (n.type === "vmNode" && (d.os === "rhcos" || d.clusterId)) {
-      const cid = resolveMemberClusterId(n, clusters);
+      const cid = resolveMemberClusterId(n, clusters, deployedIds);
       const cluster = cid ? byId.get(cid) : undefined;
       if (!cluster) return n;
       return {
@@ -180,7 +186,7 @@ export function healClusterMembership(
       const diskOwner = n.id.replace(/-disk-\d+$/, "");
       const owner = nodes.find((x) => x.id === diskOwner);
       if (!owner) return n;
-      const cid = resolveMemberClusterId(owner, clusters);
+      const cid = resolveMemberClusterId(owner, clusters, deployedIds);
       const cluster = cid ? byId.get(cid) : undefined;
       if (!cluster) return n;
       return { ...n, parentId: cluster.nodeId };
@@ -221,7 +227,7 @@ export interface HealClusterTopologyInput {
   nodes: Node[];
   edges: Edge[];
   clusters: ClusterConfig[];
-  deployedClusters?: Array<Record<string, unknown>>;
+  deployedClusters?: ClusterConfig[];
 }
 
 export interface HealClusterTopologyResult {
@@ -244,7 +250,7 @@ export function healClusterTopology(
   );
   let nodes = dedupeNodeIds(input.nodes);
   nodes = removeLegacyGhostBoundary(nodes, clusters);
-  nodes = healClusterMembership(nodes, clusters);
+  nodes = healClusterMembership(nodes, clusters, input.deployedClusters);
   nodes = orderClusterParentsBeforeChildren(nodes);
   return { nodes, edges: input.edges, clusters };
 }

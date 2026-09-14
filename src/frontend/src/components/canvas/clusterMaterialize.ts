@@ -2,6 +2,7 @@ import type { Node, Edge } from "@xyflow/react";
 import type { ClusterConfig, VMDiskController, DiskSpec, VMNic } from "@/stores/canvasStore";
 import { generateDiskControllerId, generateNicId, generateMac } from "@/stores/canvasStore";
 import { collectUsedIps, listCidrHosts } from "@/lib/dhcpIpAssignment";
+import { applyClusterBmc } from "@/components/canvas/clusterBmc";
 
 /**
  * Count-driven, existence-aware materialization of a cluster's member VMs on
@@ -680,7 +681,7 @@ export function reconcileClusterVms(
       : n,
   );
 
-  return { nodes: resultNodes, edges: resultEdges };
+  return applyClusterBmc(cluster, resultNodes, resultEdges);
 }
 
 /**

@@ -15,6 +15,7 @@ beforeEach(() => {
     nodes: [],
     edges: [],
     clusters: [],
+    deployedClusterRows: [],
     deployedNodeData: {},
     deployedEdgeKey: "",
     deployedExternalIps: "[]",

@@ -667,7 +667,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                     {_isOcp && <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
                       <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                         <input type="checkbox" checked={autoInstallOcp} onChange={(e) => setAutoInstallOcp(e.target.checked)} />
-                        Auto-run OCP installer
+                        Install OpenShift on deploy
                       </label>
                       <div style={{ position: "relative", display: "inline-block" }}>
                         <span

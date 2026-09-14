@@ -9,6 +9,7 @@ import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
 import { useCanvasStore, computeTopologyDirty, computeTopologyDiff, setLatestVmStates, setLatestContainerStates, type ExternalIp, type TopologyDiffEntry } from "@/stores/canvasStore";
+import { healClusterTopology } from "@/components/canvas/clusterTopologyHeal";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
 import RunWorkloadModal from "@/components/canvas/RunWorkloadModal";
@@ -229,10 +230,24 @@ export default function ProjectCanvasPage() {
         }
         return n;
       });
-      const currentKey = store.nodes.map((n: any) => `${n.id}:${JSON.stringify(n.data)}`).join("|");
-      const incomingKey = mergedNodes.map((n: any) => `${n.id}:${JSON.stringify(n.data)}`).join("|");
+      const healed = healClusterTopology({
+        nodes: mergedNodes as typeof store.nodes,
+        edges: topo.edges,
+        clusters: Array.isArray(topo.clusters) ? topo.clusters : store.clusters,
+        deployedClusters: store.deployedClusterRows,
+      });
+      const currentKey =
+        store.nodes.map((n) => `${n.id}:${JSON.stringify(n.data)}`).join("|")
+        + "||cl:" + JSON.stringify(store.clusters);
+      const incomingKey =
+        healed.nodes.map((n) => `${n.id}:${JSON.stringify(n.data)}`).join("|")
+        + "||cl:" + JSON.stringify(healed.clusters);
       if (currentKey !== incomingKey) {
-        useCanvasStore.setState({ nodes: mergedNodes, edges: topo.edges });
+        useCanvasStore.setState({
+          nodes: healed.nodes,
+          edges: healed.edges,
+          clusters: healed.clusters,
+        });
       }
     }
   }, [ws.topologyUpdate]);

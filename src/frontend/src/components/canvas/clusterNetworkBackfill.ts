@@ -68,13 +68,13 @@ const _DEPLOY_ONLY_CLUSTER_FIELDS = [
  */
 export function seedClustersFromDeployed(
   canvasClusters: ClusterConfig[],
-  deployedClusters: Array<Record<string, unknown>> | undefined,
+  deployedClusters: ClusterConfig[] | undefined,
 ): ClusterConfig[] {
   if (canvasClusters.length > 0 || !deployedClusters || deployedClusters.length === 0) {
     return canvasClusters;
   }
   return deployedClusters.map((dc) => {
-    const c = { ...dc };
+    const c = { ...dc } as Record<string, unknown>;
     for (const f of _DEPLOY_ONLY_CLUSTER_FIELDS) delete c[f];
     return c as unknown as ClusterConfig;
   });

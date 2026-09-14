@@ -1361,7 +1361,12 @@ def update_project(
     if "topology" in fields:
         import copy
 
-        topo = copy.deepcopy(project.topology or {})
+        from app.services.ocp.cluster_topology_heal import heal_cluster_topology
+
+        topo = heal_cluster_topology(
+            copy.deepcopy(project.topology or {}),
+            deployed_clusters=(project.deployed_topology or {}).get("clusters") or [],
+        )
         _enforce_single_bastion_browser(topo)
         for ext_ip in topo.get("externalIps", []):
             ext_ip.pop("ip", None)

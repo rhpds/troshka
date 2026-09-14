@@ -1817,6 +1817,16 @@ def _ocp_clusters(topology) -> list:
     return (topology or {}).get("clusters") or []
 
 
+def _cluster_install_on_deploy(cluster: dict) -> bool:
+    """True unless the cluster explicitly opts out of the OpenShift install."""
+    return cluster.get("installOnDeploy", True) is not False
+
+
+def _clusters_for_ocp_install(clusters: list) -> list:
+    """Clusters that should run openshift-install on deploy."""
+    return [c for c in clusters if _cluster_install_on_deploy(c)]
+
+
 def _ops_pod_api_url() -> str:
     """Public Troshka API URL the ops pod calls back to (from `app.external_url`)."""
     try:
@@ -2082,16 +2092,30 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map):
     from app.services.ocp.ops_pod_auth import mint_ops_pod_key
 
     clusters = _ocp_clusters(topology)
+    install_clusters = _clusters_for_ocp_install(clusters)
+    if not install_clusters:
+        logger.info(
+            "Deploy %s: no clusters marked for OpenShift install, skipping ops pod",
+            project_id[:8],
+        )
+        return
     api_key = mint_ops_pod_key(s, project)
-    ocp_version = str(clusters[0].get("ocpVersion", "4.20")) if clusters else "4.20"
+    ocp_version = str(install_clusters[0].get("ocpVersion", "4.20"))
     logger.info(
         "Deploy %s: creating ops pod for %d cluster(s)",
         project_id[:8],
-        len(clusters),
+        len(install_clusters),
     )
     if host.host_type == "kubevirt-cluster":
         _deploy_ops_pod_kubevirt(
-            s, host, project_id, project, topology, clusters, api_key, ocp_version
+            s,
+            host,
+            project_id,
+            project,
+            topology,
+            install_clusters,
+            api_key,
+            ocp_version,
         )
     else:
         _deploy_ops_pod_troshkad(
@@ -2101,7 +2125,7 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map):
             project,
             topology,
             vni_map,
-            clusters,
+            install_clusters,
             api_key,
             ocp_version,
         )
@@ -3689,7 +3713,7 @@ def _resume_one_ops_pod_monitor(db, p) -> None:
     topo = p.deployed_topology or p.topology or {}
     if ocp_install_via(topo) != "pod" or not p.host_id:
         return
-    clusters = _ocp_clusters(topo)
+    clusters = _clusters_for_ocp_install(_ocp_clusters(topo))
     if not clusters:
         return
     host = db.query(Host).filter_by(id=p.host_id).first()

@@ -100,7 +100,9 @@ def _reconcile_canvas_clusters(
     return [c for c in base if not _is_legacy_migration_ghost(c)]
 
 
-def _resolve_member_cluster_id(node: dict, clusters: list) -> str | None:
+def _resolve_member_cluster_id(
+    node: dict, clusters: list, deployed_ids: set[str]
+) -> str | None:
     data = node.get("data") or {}
     by_id = {c.get("id"): c for c in clusters if c.get("id")}
     cid = data.get("clusterId")
@@ -114,9 +116,16 @@ def _resolve_member_cluster_id(node: dict, clusters: list) -> str | None:
     ):
         name = str(data.get("name") or "")
         if re.match(r"^cp-\d+$", name):
-            for c in clusters:
-                if c.get("type") == "sno" and not _is_legacy_migration_ghost(c):
-                    return c.get("id")
+            sno = [
+                c
+                for c in clusters
+                if c.get("type") == "sno" and not _is_legacy_migration_ghost(c)
+            ]
+            deployed_sno = [c for c in sno if c.get("id") in deployed_ids]
+            if len(deployed_sno) == 1:
+                return deployed_sno[0].get("id")
+            if len(sno) == 1:
+                return sno[0].get("id")
         if inferred:
             return inferred
 
@@ -125,16 +134,17 @@ def _resolve_member_cluster_id(node: dict, clusters: list) -> str | None:
     return inferred if inferred in by_id else None
 
 
-def _heal_membership(nodes: list, clusters: list) -> None:
+def _heal_membership(nodes: list, clusters: list, deployed_clusters: list) -> None:
     by_id = {c.get("id"): c for c in clusters if c.get("id")}
     node_by_id = {n.get("id"): n for n in nodes}
+    deployed_ids = {str(c.get("id")) for c in deployed_clusters if c.get("id")}
 
     for node in nodes:
         ntype = node.get("type")
         data = node.get("data") or {}
 
         if ntype == "vmNode" and (data.get("os") == "rhcos" or data.get("clusterId")):
-            cid = _resolve_member_cluster_id(node, clusters)
+            cid = _resolve_member_cluster_id(node, clusters, deployed_ids)
             cluster = by_id.get(cid) if cid else None
             if not cluster:
                 continue
@@ -151,7 +161,7 @@ def _heal_membership(nodes: list, clusters: list) -> None:
             owner = node_by_id.get(owner_id)
             if not owner:
                 continue
-            cid = _resolve_member_cluster_id(owner, clusters)
+            cid = _resolve_member_cluster_id(owner, clusters, deployed_ids)
             cluster = by_id.get(cid) if cid else None
             if cluster:
                 node["parentId"] = cluster.get("nodeId")
@@ -202,7 +212,7 @@ def heal_cluster_topology(
     if clusters and any(not _is_legacy_migration_ghost(c) for c in clusters):
         nodes = [n for n in nodes if n.get("id") != LEGACY_GHOST_NODE_ID]
 
-    _heal_membership(nodes, clusters)
+    _heal_membership(nodes, clusters, deployed)
     topo["nodes"] = _order_parents_before_children(nodes)
     return topo
 

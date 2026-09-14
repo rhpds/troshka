@@ -140,6 +140,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
         workerDisks: srcCluster.workerDisks ? [...srcCluster.workerDisks] : cluster.workerDisks,
         recert: srcCluster.recert,
         monitorHealth: srcCluster.monitorHealth,
+        installOnDeploy: srcCluster.installOnDeploy,
         // A clone is never the (single) bastion-browser owner by default.
         configureBastionBrowser: false,
         networkIds: [],

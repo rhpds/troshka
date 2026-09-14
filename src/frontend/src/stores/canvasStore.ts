@@ -16,6 +16,7 @@ import { appConfirm } from "@/lib/confirm";
 // clusterMaterialize which imports store values.
 import { backfillClusterNetworkIds, reconcileDeployedClusters, reconcileManagedClusterDns, seedClustersFromDeployed } from "@/components/canvas/clusterNetworkBackfill";
 import { healClusterTopology } from "@/components/canvas/clusterTopologyHeal";
+import { createBmcNetworkNode, findBmcNetwork, nextFreeBmcIp } from "@/components/canvas/clusterBmc";
 import {
   type ShowroomConfig,
   DEFAULT_SHOWROOM_CONFIG,
@@ -223,6 +224,8 @@ export interface ClusterConfig {
   recert?: boolean;
   monitorHealth?: boolean;
   configureBastionBrowser?: boolean;
+  /** When false, deploy provisions VMs/BMC but skips the OpenShift install. */
+  installOnDeploy?: boolean;
 }
 
 /** The `node.data` summary rendered on a cluster container node. */
@@ -277,6 +280,8 @@ interface CanvasState {
   deployedEdges: Array<{ source: string; sourceHandle?: string; target: string; targetHandle?: string }>;
   deployedExternalIps: string;
   deployedClusters: string;
+  /** Deployed cluster configs (stripped); used to heal canvas topology on save. */
+  deployedClusterRows: ClusterConfig[];
   showMinimap: boolean;
   hiddenNodeIds: string[];
   suppressDeleteWarning: boolean;
@@ -1063,6 +1068,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   deployedEdges: [] as Array<{ source: string; sourceHandle?: string; target: string; targetHandle?: string }>,
   deployedExternalIps: "[]",
   deployedClusters: "[]",
+  deployedClusterRows: [] as ClusterConfig[],
   topologyDirty: false,
   startOrder: [] as StartOrderEntry[],
   externalIps: [] as ExternalIp[],
@@ -1742,7 +1748,18 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       if (get().nodes.length > 0) {
         _saveTopologyToApi(current, get());
       }
-      set({ currentProjectId: projectId, nodes: [], edges: [], hiddenNodeIds: [], startOrder: [], externalIps: [], vniMap: {}, clusters: [], selectedNodeId: null });
+      set({
+        currentProjectId: projectId,
+        nodes: [],
+        edges: [],
+        hiddenNodeIds: [],
+        startOrder: [],
+        externalIps: [],
+        vniMap: {},
+        clusters: [],
+        deployedClusterRows: [],
+        selectedNodeId: null,
+      });
     } else {
       set({ currentProjectId: projectId });
     }
@@ -1877,9 +1894,21 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           // Backfill member networkIds from the members' NIC edges when unset
           // (deployed projects can load with them empty, wrongly tripping the
           // "select a member network" validation though the line is connected).
-          const deployedClusterRows =
+          const deployedClusterRowsRaw =
             ((project.deployed_topology as { clusters?: Array<Record<string, unknown>> } | null)
               ?.clusters) || [];
+          const deployedClusterRows = deployedClusterRowsRaw.map((dc) => {
+            const c = { ...dc };
+            for (const f of [
+              "_generatedInstallConfig",
+              "_generatedAgentConfig",
+              "controlPlaneDisks",
+              "workerDisks",
+            ] as const) {
+              delete c[f];
+            }
+            return c as unknown as ClusterConfig;
+          });
           const preHealClusters = reconcileDeployedClusters(
             backfillClusterNetworkIds(
               // Seed from deployed_topology when the canvas clusters list drifted
@@ -1914,6 +1943,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             vniMap,
             showroom: parseShowroomFromTopology(t.showroom, nodes, lbEdges),
             clusters: finalClusters,
+            deployedClusterRows,
             ocpInstallVia: (t.ocpInstallVia as string) || null,
             providerType: project.provider_type || null,
             clusterCapabilities: project.cluster_capabilities || null,
@@ -2313,41 +2343,14 @@ export function syncBmcNetwork() {
   const hasBmcVm = nodes.some(
     (n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled
   );
-  const bmcNetNode = nodes.find(
-    (n) => n.type === "networkNode" && (n.data as Record<string, any>).networkType === "bmc"
-  );
+  const bmcNetNode = findBmcNetwork(nodes);
 
   if (hasBmcVm && !bmcNetNode) {
-    // Auto-create BMC network node
-    const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-    const randomBytes = new Uint8Array(16);
-    crypto.getRandomValues(randomBytes);
-    const password = Array.from(randomBytes, (b) => chars[b % chars.length]).join("");
-
-    // Position near the center of existing BMC-enabled VM nodes
     const vmNodes = nodes.filter((n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled);
     const avgX = vmNodes.reduce((sum, n) => sum + (n.position?.x || 0), 0) / Math.max(vmNodes.length, 1);
     const avgY = vmNodes.reduce((sum, n) => sum + (n.position?.y || 0), 0) / Math.max(vmNodes.length, 1);
-
-    const bmcNode = {
-      id: `bmc-network-${Date.now()}`,
-      type: "networkNode",
-      position: { x: avgX + 300, y: avgY },
-      data: {
-        label: "BMC Network",
-        name: "BMC Network",
-        subtype: "network" as const,
-        networkType: "bmc",
-        cidr: "192.168.100.0/24",
-        dhcp: true,
-        dns: false,
-        bmcUsername: "admin",
-        bmcPassword: password,
-      },
-    };
-    state.addNode(bmcNode);
+    state.addNode(createBmcNetworkNode({ x: avgX + 300, y: avgY }));
   } else if (!hasBmcVm && bmcNetNode) {
-    // Auto-remove BMC network and its edges
     state.deleteNode(bmcNetNode.id);
   }
 }
@@ -2356,30 +2359,8 @@ export function syncBmcNetwork() {
  * Allocate the next available BMC IP from the BMC network CIDR.
  */
 export function allocateBmcIp(): string {
-  const state = useCanvasStore.getState();
-  const nodes = state.nodes;
-
-  const bmcNet = nodes.find(
-    (n) => n.type === "networkNode" && (n.data as Record<string, any>).networkType === "bmc"
-  );
-  const cidr = (bmcNet?.data as Record<string, any>)?.cidr || "192.168.100.0/24";
-  const base = cidr.split("/")[0].split(".").slice(0, 3).join(".");
-
-  // Collect all used BMC IPs
-  const usedIps = new Set<string>();
-  for (const n of nodes) {
-    if (n.type === "vmNode") {
-      const ip = (n.data as Record<string, any>).bmcIp;
-      if (ip) usedIps.add(ip);
-    }
-  }
-
-  // Allocate from .11 upward (gateway is .1)
-  for (let i = 11; i < 250; i++) {
-    const candidate = `${base}.${i}`;
-    if (!usedIps.has(candidate)) return candidate;
-  }
-  return `${base}.11`;
+  const nodes = useCanvasStore.getState().nodes;
+  return nextFreeBmcIp(nodes);
 }
 
 // Save topology to API
@@ -2393,21 +2374,28 @@ export function _saveTopologyToApi(
     externalIps: ExternalIp[];
     showroom: ShowroomConfig | null;
     clusters?: ClusterConfig[];
+    deployedClusterRows?: ClusterConfig[];
     ocpInstallVia?: string | null;
   },
 ): Promise<Record<string, unknown> | null> {
-  const cleanNodes = state.nodes.map((n) => {
+  const healed = healClusterTopology({
+    nodes: state.nodes,
+    edges: state.edges,
+    clusters: state.clusters ?? [],
+    deployedClusters: state.deployedClusterRows,
+  });
+  const cleanNodes = healed.nodes.map((n) => {
     if (n.type !== "vmNode") return n;
     const { status, redeployStep, redeployDetail, ...rest } = n.data as Record<string, any>;
     return { ...n, data: rest };
   });
   const topology: Record<string, unknown> = {
     nodes: cleanNodes,
-    edges: state.edges,
+    edges: healed.edges,
     hiddenNodeIds: state.hiddenNodeIds,
     startOrder: state.startOrder,
     externalIps: state.externalIps,
-    clusters: state.clusters ?? [],
+    clusters: healed.clusters,
   };
   // Preserve the project-level OCP install method — auto-save was dropping it,
   // which reverted pod projects (the palette gate / bastion-browser read it) and

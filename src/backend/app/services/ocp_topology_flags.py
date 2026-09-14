@@ -66,6 +66,8 @@ def apply_cluster_ocp_flags(topology: dict) -> bool:
             changed = True
 
     for cluster in topology.get("clusters", []):
+        if cluster.get("installOnDeploy") is False:
+            continue
         cid = cluster.get("id")
         if not cid:
             continue
