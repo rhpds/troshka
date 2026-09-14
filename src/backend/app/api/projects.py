@@ -1029,20 +1029,46 @@ def _migrate_response_clusters(resp: dict) -> None:
     """Lazily add ``clusters[]`` to legacy OCP topology in the response.
 
     Applies to openshift-category projects only — detected via the presence of
-    RHCOS VM nodes — and only when ``clusters`` is absent. Works on a deep copy
-    so the synthesized structure is returned to the client without persisting;
-    persistence happens on the next save.
+    RHCOS VM nodes — and only when ``clusters`` is absent or holds only the
+    legacy migration ghost. Works on a deep copy so the synthesized structure is
+    returned to the client without persisting; persistence happens on the next
+    save.
     """
     topo = resp.get("topology")
-    if not isinstance(topo, dict) or topo.get("clusters"):
+    if not isinstance(topo, dict):
         return
+
+    import copy
+
+    from app.services.ocp.cluster_topology_heal import (
+        _clusters_are_legacy_ghost_only,
+        heal_cluster_topology,
+        seed_topology_clusters_from_deployed,
+    )
+
+    deployed_clusters = (resp.get("deployed_topology") or {}).get("clusters") or []
+    canvas_clusters = topo.get("clusters") or []
+
+    if canvas_clusters and not _clusters_are_legacy_ghost_only(canvas_clusters):
+        return
+
     has_rhcos = any(
         n.get("data", {}).get("os") == "rhcos" for n in topo.get("nodes", [])
     )
     if not has_rhcos:
         return
 
-    import copy
+    if deployed_clusters:
+        resp["topology"] = seed_topology_clusters_from_deployed(
+            copy.deepcopy(topo), deployed_clusters
+        )
+        return
+
+    if canvas_clusters:
+        resp["topology"] = heal_cluster_topology(
+            copy.deepcopy(topo), deployed_clusters=[]
+        )
+        return
 
     from app.services.ocp.cluster_migration import migrate_topology_clusters
 

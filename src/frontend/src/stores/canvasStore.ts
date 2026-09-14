@@ -15,6 +15,7 @@ import { appConfirm } from "@/lib/confirm";
 // Cycle-free module (type-only imports) — safe to import into the store, unlike
 // clusterMaterialize which imports store values.
 import { backfillClusterNetworkIds, reconcileDeployedClusters, reconcileManagedClusterDns, seedClustersFromDeployed } from "@/components/canvas/clusterNetworkBackfill";
+import { healClusterTopology } from "@/components/canvas/clusterTopologyHeal";
 import {
   type ShowroomConfig,
   DEFAULT_SHOWROOM_CONFIG,
@@ -1876,29 +1877,37 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
           // Backfill member networkIds from the members' NIC edges when unset
           // (deployed projects can load with them empty, wrongly tripping the
           // "select a member network" validation though the line is connected).
-          const finalClusters = reconcileDeployedClusters(
+          const deployedClusterRows =
+            ((project.deployed_topology as { clusters?: Array<Record<string, unknown>> } | null)
+              ?.clusters) || [];
+          const preHealClusters = reconcileDeployedClusters(
             backfillClusterNetworkIds(
               // Seed from deployed_topology when the canvas clusters list drifted
               // empty (a deployed project must never load config-less — that path
               // corrupted metadata and killed Apply Changes).
               seedClustersFromDeployed(
                 Array.isArray(t.clusters) ? t.clusters : [],
-                (project.deployed_topology as { clusters?: Array<Record<string, unknown>> } | null)
-                  ?.clusters,
+                deployedClusterRows,
               ),
               synced.nodes,
               synced.edges,
             ),
-            ((project.deployed_topology as { clusters?: Array<{ id?: string; ocpVersion?: string; baseDomain?: string }> } | null)
-              ?.clusters) || [],
+            deployedClusterRows as Array<{ id?: string; ocpVersion?: string; baseDomain?: string }>,
           );
+          const healed = healClusterTopology({
+            nodes: synced.nodes,
+            edges: synced.edges,
+            clusters: preHealClusters,
+            deployedClusters: deployedClusterRows,
+          });
+          const finalClusters = healed.clusters;
           set({
             // Tag cluster-managed DNS records (api/api-int/*.apps) so they render
             // in the read-only ☸ group instead of the editable list (deploy stores
             // them as plain {name,ip}). The gateway's nat-portforward mode for the
             // managed showroom forward is handled by syncShowroomGatewayAccess.
-            nodes: reconcileManagedClusterDns(synced.nodes, finalClusters),
-            edges: synced.edges,
+            nodes: reconcileManagedClusterDns(healed.nodes, finalClusters),
+            edges: healed.edges,
             hiddenNodeIds: t.hiddenNodeIds || [],
             startOrder: t.startOrder || [],
             externalIps: synced.externalIps,
