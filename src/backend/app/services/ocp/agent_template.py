@@ -1936,12 +1936,22 @@ def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
         f'{b2}curl -s -u admin:$BMC_PASS -X POST "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \\\n'
         f"{b4}-H 'Content-Type: application/json' \\\n"
         f'{b4}-d "{{\\"Image\\": \\"${{ISO_URL}}\\", \\"Inserted\\": true, \\"WriteProtected\\": true}}" || true\n'
-        f"{b2}# Reboot — UEFI boot order is hd,cdrom so empty disk falls through to ISO\n"
-        f"{b2}# After agent writes CoreOS to disk, next reboot boots from disk first\n"
+        f"{b2}# Power on from ISO when off; reboot when already running (ForceRestart\n"
+        f"{b2}# is a no-op on a shut-off libvirt domain).\n"
+        f'{b2}POWER=$(curl -s -u admin:$BMC_PASS "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('
+        "'"
+        "PowerState"
+        "'"
+        ","
+        "'"
+        ""
+        "'"
+        '))" 2>/dev/null || echo "")\n'
+        f'{b2}case "$POWER" in Off|PoweringOff) RESET=On;; *) RESET=ForceRestart;; esac\n'
         f'{b2}curl -s -u admin:$BMC_PASS -X POST "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/Actions/ComputerSystem.Reset" \\\n'
         f"{b4}-H 'Content-Type: application/json' \\\n"
-        f'{b4}-d \'{{"ResetType": "ForceRestart"}}\' || true\n'
-        f'{b2}echo "Booted $BMC_IP from ISO"\n'
+        f'{b4}-d "{{\\"ResetType\\": \\"${{RESET}}\\"}}" || true\n'
+        f'{b2}echo "Booted $BMC_IP from ISO (ResetType=$RESET, was $POWER)"\n'
         f"{b}done\n"
     )
 

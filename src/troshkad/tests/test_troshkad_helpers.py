@@ -3388,6 +3388,59 @@ class TestHandleDiskResize(unittest.TestCase):
         self.assertEqual(result["status"], "resized")
 
 
+# ── _handle_disk_wipe ──
+
+
+class TestHandleDiskWipe(unittest.TestCase):
+    @patch("troshkad._validate_path", side_effect=lambda p: p)
+    @patch("troshkad._chown_qemu")
+    @patch("troshkad._run_cmd")
+    @patch("troshkad._wait_disk_released")
+    @patch("os.path.exists", return_value=True)
+    @patch("os.remove")
+    def test_recreate_qcow2_when_size_gb_given(
+        self,
+        _mock_remove,
+        _mock_exists,
+        _mock_wait,
+        mock_run_cmd,
+        _mock_chown,
+        _mock_validate,
+    ):
+        job = {"job_id": "wipe-0000", "output": [], "_process": None}
+        path = "/var/lib/troshka/shared/vms/p/d0.qcow2"
+        result = troshkad._handle_disk_wipe(
+            job, {"path": path, "size_gb": 120, "format": "qcow2"}
+        )
+        self.assertEqual(result["status"], "recreated")
+        mock_run_cmd.assert_called_once_with(
+            job,
+            ["qemu-img", "create", "-f", "qcow2", path, "120G"],
+        )
+
+    @patch("troshkad._validate_path", side_effect=lambda p: p)
+    @patch("os.path.exists", return_value=False)
+    def test_missing_disk_raises(self, _mock_exists, _mock_validate):
+        job = {"job_id": "wipe-miss", "output": [], "_process": None}
+        with self.assertRaises(FileNotFoundError):
+            troshkad._handle_disk_wipe(
+                job, {"path": "/missing/d0.qcow2", "size_gb": 120}
+            )
+
+    @patch("troshkad._validate_path", side_effect=lambda p: p)
+    @patch("os.path.exists", return_value=True)
+    @patch("builtins.open", new_callable=mock_open)
+    def test_legacy_raw_wipe_zeros_first_megabyte(
+        self, mock_open_fn, _mock_exists, _mock_validate
+    ):
+        job = {"job_id": "wipe-0001", "output": [], "_process": None}
+        result = troshkad._handle_disk_wipe(
+            job, {"path": "/var/lib/troshka/shared/vms/p/d.raw"}
+        )
+        self.assertEqual(result["status"], "wiped")
+        mock_open_fn().write.assert_called_once_with(b"\x00" * 1048576)
+
+
 # ── _handle_seed_create ──
 
 
@@ -4122,8 +4175,30 @@ class TestConsoleDetectState(unittest.TestCase):
         result = troshkad._console_detect_state("Welcome\nlogin:")
         self.assertEqual(result, "login")
 
+    def test_login_prompt_hostname_prefixed(self):
+        result = troshkad._console_detect_state(
+            "Cluster installation in progress\nocp-2-k5zq4y-cp-0 login:"
+        )
+        self.assertEqual(result, "login")
+
+    def test_login_submit_when_username_present(self):
+        result = troshkad._console_detect_state("ocp-2-k5zq4y-cp-0 login: core")
+        self.assertEqual(result, "login_submit")
+
+    def test_login_not_submit_when_boot_text_appended(self):
+        result = troshkad._console_detect_state(
+            "ocp-2-k5zq4y-cp-0 login: Starting rpm-ostree System Management Daemon"
+        )
+        self.assertEqual(result, "login")
+
     def test_password_prompt(self):
         result = troshkad._console_detect_state("login: root\nPassword:")
+        self.assertEqual(result, "password")
+
+    def test_password_before_login_when_both_visible(self):
+        result = troshkad._console_detect_state(
+            "ocp-2-k5zq4y-cp-0 login: core\nPassuord :"
+        )
         self.assertEqual(result, "password")
 
     def test_shell_prompt(self):
@@ -5482,6 +5557,7 @@ class TestHandleNetworkFullTeardown(unittest.TestCase):
 
 
 class TestHandleNetworkFullSetup(unittest.TestCase):
+    @patch("troshkad._refresh_infra_transit_veth_rules")
     @patch("troshkad._setup_host_nftables")
     @patch("troshkad._setup_ns_port_forward_dnat", return_value={})
     @patch("troshkad._setup_ns_outbound_rules")
@@ -5502,6 +5578,7 @@ class TestHandleNetworkFullSetup(unittest.TestCase):
         _mock_outbound,
         _mock_pf,
         _mock_host_nft,
+        mock_refresh_veth,
     ):
         job = {"job_id": "j1", "output": []}
         params = {
@@ -5516,6 +5593,7 @@ class TestHandleNetworkFullSetup(unittest.TestCase):
         result = troshkad._handle_network_full_setup(job, params)
         self.assertEqual(result["status"], "configured")
         self.assertEqual(result["networks"], 1)
+        mock_refresh_veth.assert_called_once_with(job, "troshka-aabbccdd")
 
 
 # ── Image cache ──

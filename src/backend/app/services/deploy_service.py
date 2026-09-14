@@ -63,6 +63,7 @@ from app.services.mesh_service import (
 from app.services.troshkad_client import (
     TroshkadError,
     get_all_vm_states,
+    get_vm_state,
     start_job,
     troshkad_request,
     wait_for_job,
@@ -2220,6 +2221,7 @@ def _ops_pod_create_params(
     api_key,
     ocp_version,
     pull_secret_json,
+    fresh_install_log: bool = False,
 ):
     """Build the real troshkad ``/pods/create`` params for the ops pod.
 
@@ -2265,17 +2267,20 @@ def _ops_pod_create_params(
         files.update(
             _ops_pod_recert_kubeadmin_files(topology, recert_clusters, OPS_POD_WORKDIR)
         )
+    env = {
+        "TROSHKA_API_URL": api_url,
+        "TROSHKA_API_KEY": api_key,
+        "TROSHKA_PROJECT_ID": project_id,
+        "OCP_VERSION": ocp_version,
+    }
+    if fresh_install_log:
+        env["TROSHKA_FRESH_INSTALL_LOG"] = "1"
     container = {
         "name": "ops",
         "image": OPS_POD_IMAGE,
         "cpus": 2,
         "memory": 2048,
-        "env": {
-            "TROSHKA_API_URL": api_url,
-            "TROSHKA_API_KEY": api_key,
-            "TROSHKA_PROJECT_ID": project_id,
-            "OCP_VERSION": ocp_version,
-        },
+        "env": env,
         "mounts": [],
         "command": command,
         "privileged": True,
@@ -2302,6 +2307,7 @@ def _deploy_ops_pod(
     vni_map,
     clusters=None,
     log_cache_keys_to_clear=None,
+    fresh_install_log: bool = False,
 ):
     """Mint a scoped key and create+start the in-cluster OCP install ops pod.
 
@@ -2350,6 +2356,7 @@ def _deploy_ops_pod(
             api_key,
             ocp_version,
             log_cache_keys_to_clear=log_cache_keys_to_clear,
+            fresh_install_log=fresh_install_log,
         )
     else:
         _deploy_ops_pod_troshkad(
@@ -2364,6 +2371,7 @@ def _deploy_ops_pod(
             ocp_version,
             pull_secret_json,
             log_cache_keys_to_clear=log_cache_keys_to_clear,
+            fresh_install_log=fresh_install_log,
         )
 
 
@@ -2394,6 +2402,7 @@ def _deploy_ops_pod_troshkad(
     ocp_version,
     pull_secret_json,
     log_cache_keys_to_clear=None,
+    fresh_install_log: bool = False,
 ):
     """troshkad (podman) ops-pod path: shape ``/pods/create`` params, create+start."""
     # Reconfigure may add a cluster to a project whose ops pod still exists from
@@ -2416,6 +2425,7 @@ def _deploy_ops_pod_troshkad(
         api_key=api_key,
         ocp_version=ocp_version,
         pull_secret_json=pull_secret_json,
+        fresh_install_log=fresh_install_log,
     )
     _validate_ops_pod_config_files(clusters, params.get("files") or {})
     job_id = start_job(host, "/pods/create", params)
@@ -2595,6 +2605,7 @@ def _deploy_ops_pod_kubevirt(
     api_key,
     ocp_version,
     log_cache_keys_to_clear=None,
+    fresh_install_log: bool = False,
 ):
     """KubeVirt ops-pod path: build Pod+Secret manifests and create them via k8s.
 
@@ -2651,16 +2662,19 @@ def _deploy_ops_pod_kubevirt(
             _ops_pod_recert_kubeadmin_files(topology, recert_clusters, OPS_POD_WORKDIR)
         )
     cluster_nads, bmc_nad = ops_pod_network_nads(topology)
+    kv_env = {
+        "TROSHKA_API_URL": _ops_pod_api_url(),
+        "TROSHKA_API_KEY": api_key,
+        "TROSHKA_PROJECT_ID": project_id,
+        "OCP_VERSION": ocp_version,
+    }
+    if fresh_install_log:
+        kv_env["TROSHKA_FRESH_INSTALL_LOG"] = "1"
     pod, secret = build_ops_pod_kubevirt_manifests(
         namespace=_kubevirt_project_ns(provider, project_id),
         project_id=project_id,
         command=command,
-        env={
-            "TROSHKA_API_URL": _ops_pod_api_url(),
-            "TROSHKA_API_KEY": api_key,
-            "TROSHKA_PROJECT_ID": project_id,
-            "OCP_VERSION": ocp_version,
-        },
+        env=kv_env,
         config_files=config_files,
         cluster_nads=cluster_nads,
         bmc_nad=bmc_nad,
@@ -2809,13 +2823,16 @@ def _wait_ops_monitor_idle(project_id: str, timeout: int = 90) -> None:
     _request_ops_monitor_exit(project_id)
     if not is_redis_available():
         _time.sleep(2)
+        _clear_ops_monitor_exit_request(project_id)
         return
     deadline = _time.time() + timeout
     while _time.time() < deadline:
         try:
             if not get_redis().exists(_ops_monitor_lock_key(project_id)):
+                _clear_ops_monitor_exit_request(project_id)
                 return
         except Exception:
+            _clear_ops_monitor_exit_request(project_id)
             return
         _time.sleep(1)
 
@@ -3162,6 +3179,13 @@ def _ops_pod_log_cache_key(project_id: str) -> str:
     return f"ocp-install-log:{project_id}"
 
 
+def _ocp_install_restart_in_progress(project_id: str, cluster_key: str) -> bool:
+    """True while an async restart job is running for this cluster."""
+    from app.core.redis import get_progress
+
+    return bool(get_progress(f"ocp-restart:{project_id}:{cluster_key}"))
+
+
 def clear_ops_pod_log_cache_keys(project_id: str, cluster_keys: list[str]) -> None:
     """Drop cached install logs for specific clusters (e.g. before a re-install)."""
     if not cluster_keys:
@@ -3194,6 +3218,8 @@ def cache_ops_pod_logs(project_id: str, logs: dict[str, str]) -> dict[str, str]:
     cached = get_progress(key) or {}
     merged = dict(cached)
     for ckey, text in (logs or {}).items():
+        if _ocp_install_restart_in_progress(project_id, ckey):
+            continue
         if len(text or "") >= len(merged.get(ckey, "")):
             merged[ckey] = text
     if merged != cached:
@@ -3224,7 +3250,11 @@ def read_ops_pod_install_log(host, project_id: str, topology: dict) -> dict[str,
     )
     # Merge with (and refresh) the persisted cache so a stopped/truncated pod
     # still returns the full log.
-    return cache_ops_pod_logs(project_id, live)
+    merged = cache_ops_pod_logs(project_id, live)
+    for ckey in cluster_keys:
+        if _ocp_install_restart_in_progress(project_id, ckey):
+            merged[ckey] = ""
+    return merged
 
 
 def _ops_pod_cat(host, project_id: str, container_name: str, path: str) -> str:
@@ -4014,33 +4044,39 @@ def _cluster_key(cluster: dict) -> str:
 def _wipe_vm_boot_disk_troshkad(
     host, project_id: str, vm_node_id: str, topology, pool
 ) -> None:
+    """Delete and recreate every qcow2 disk on the VM (not just the first)."""
     vm_disks = _find_vm_disks(vm_node_id, topology)
-    boot_disk = next((d for d in vm_disks if d.get("format") == "qcow2"), None)
-    if not boot_disk:
+    qcow2_disks = [d for d in vm_disks if d.get("format") == "qcow2"]
+    if not qcow2_disks:
         return
-    disk_path = _disk_path(
-        project_id,
-        vm_node_id,
-        boot_disk["node_id"],
-        boot_disk["format"],
-        pool,
-    )
     dom = _vm_domain_name(project_id, vm_node_id)
-    try:
-        job_id = start_job(host, "/vms/stop", {"domain_name": dom})
-        wait_for_job(host, job_id, timeout=120)
-    except TroshkadError:
-        pass
-    try:
-        job_id = start_job(host, "/disks/wipe", {"path": disk_path})
-        wait_for_job(host, job_id, timeout=120)
-    except TroshkadError as e:
-        logger.warning(
-            "Restart %s: failed to wipe boot disk for %s: %s",
-            project_id[:8],
-            dom,
-            e,
+    for boot_disk in qcow2_disks:
+        disk_path = _disk_path(
+            project_id,
+            vm_node_id,
+            boot_disk["node_id"],
+            boot_disk["format"],
+            pool,
         )
+        size_gb = boot_disk.get("size_gb") or boot_disk.get("size") or 120
+        try:
+            job_id = start_job(
+                host,
+                "/disks/wipe",
+                {
+                    "path": disk_path,
+                    "size_gb": size_gb,
+                    "format": boot_disk.get("format", "qcow2"),
+                },
+            )
+            job = wait_for_job(host, job_id, timeout=120)
+            if job.get("status") == "failed":
+                err = (job.get("result") or {}).get("error") or "disk wipe failed"
+                raise RuntimeError(f"{disk_path}: {err}")
+        except (TroshkadError, RuntimeError) as e:
+            raise RuntimeError(
+                f"Restart {project_id[:8]}: failed to wipe {disk_path} for {dom}: {e}"
+            ) from e
 
 
 def _wipe_vm_boot_disk_kubevirt(
@@ -4159,6 +4195,37 @@ def _clear_ocp_install_restart_marker(project_id: str, cluster_key: str) -> None
     delete_progress(f"ocp-restart:{project_id}:{cluster_key}")
 
 
+def _truncate_ops_pod_cluster_install_logs(
+    host, project_id: str, cluster_keys: list[str]
+) -> None:
+    """Best-effort truncate of per-cluster install.log before ops-pod recycle."""
+    from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
+
+    if not cluster_keys or not host:
+        return
+    try:
+        container_name = _ops_pod_container_name(project_id)
+        if not _ops_pod_running(host, container_name, project_id):
+            return
+        lines = []
+        for key in cluster_keys:
+            path = f"{OPS_POD_WORKDIR}/{key}/install.log"
+            lines.append(f": > {path}")
+        script = "\n".join(lines) + "\n"
+        _ops_pod_exec(
+            host,
+            project_id,
+            container_name,
+            ["bash", "-c", script],
+            timeout=30,
+        )
+    except Exception:
+        logger.warning(
+            "Restart %s: failed to truncate install.log on running ops pod",
+            project_id[:8],
+        )
+
+
 def _persist_cluster_install_restart(s, project, cluster_key: str) -> None:
     from sqlalchemy.orm.attributes import flag_modified
 
@@ -4200,26 +4267,23 @@ def _clusters_for_ops_pod_restart(
 def _restart_cluster_post_boot_cleanup(
     s, host, project_id: str, topology: dict, cluster: dict
 ) -> None:
-    """Stop cluster VMs, wipe boot disks, then power VMs back on for ISO boot."""
+    """Stop cluster VMs and wipe boot disks; BMC ISO boot powers nodes back on."""
     vms = _cluster_member_vm_entries(topology, cluster)
     if host.host_type == "kubevirt-cluster":
         _stop_kubevirt_vms(s, host, project_id, vms)
         for vm in vms:
             vm_disks = _find_vm_disks(vm["node_id"], topology)
-            boot_disk = next((d for d in vm_disks if d.get("format") == "qcow2"), None)
-            if boot_disk:
+            for boot_disk in (d for d in vm_disks if d.get("format") == "qcow2"):
                 _wipe_vm_boot_disk_kubevirt(
                     s, host, project_id, vm["node_id"], boot_disk["node_id"]
                 )
-        _start_kubevirt_vms(s, host, project_id, vms)
         return
     if not host.ip_address:
         return
-    _stop_troshkad_vms(host, project_id, vms)
+    _force_off_troshkad_vms(host, project_id, vms)
     pool = _get_host_pool(host, s)
     for vm in vms:
         _wipe_vm_boot_disk_troshkad(host, project_id, vm["node_id"], topology, pool)
-    _start_troshkad_vms(host, project_id, vms)
 
 
 def restart_ocp_cluster_install(project_id: str, cluster_key: str) -> None:
@@ -4251,6 +4315,7 @@ def restart_ocp_cluster_install(project_id: str, cluster_key: str) -> None:
         )
         delete_progress(f"ocp-restart-post-boot:{project_id}:{cluster_key}")
         _wait_ops_monitor_idle(project_id)
+        _truncate_ops_pod_cluster_install_logs(host, project_id, [cluster_key])
         if post_boot:
             _eject_cluster_bmc_media(host, project_id, topology, cluster)
         if host.host_type == "kubevirt-cluster":
@@ -4277,6 +4342,7 @@ def restart_ocp_cluster_install(project_id: str, cluster_key: str) -> None:
             vni_map,
             clusters=pod_clusters,
             log_cache_keys_to_clear=[cluster_key],
+            fresh_install_log=True,
         )
         logger.info(
             "Restart %s: relaunched ops pod install for cluster %s (post_boot=%s)",
@@ -11018,6 +11084,42 @@ def _stop_troshkad_vms(host, project_id, vms):
         except TroshkadError as e:
             logger.warning(
                 "Stop %s: failed to stop %s: %s",
+                project_id[:8],
+                vm_name,
+                e,
+            )
+
+
+def _wait_troshkad_vm_off(host, domain_name: str, timeout: int = 90) -> None:
+    """Poll until virsh reports the domain is shut off (or gone)."""
+    import time
+
+    deadline = time.time() + timeout
+    last_state = "unknown"
+    while time.time() < deadline:
+        last_state = get_vm_state(host, domain_name).get("state", "unknown")
+        if last_state in ("shut_off", "not_found"):
+            return
+        time.sleep(2)
+    logger.warning(
+        "Force-off wait: %s still %s after %ss",
+        domain_name,
+        last_state,
+        timeout,
+    )
+
+
+def _force_off_troshkad_vms(host, project_id, vms):
+    """Force-power-off VMs and wait for disk locks to drop before wipe."""
+    for vm in vms:
+        vm_name = _vm_domain_name(project_id, vm["node_id"])
+        try:
+            job_id = start_job(host, "/vms/force-off", {"domain_name": vm_name})
+            wait_for_job(host, job_id, timeout=60)
+            _wait_troshkad_vm_off(host, vm_name)
+        except TroshkadError as e:
+            logger.warning(
+                "Force-off %s: failed for %s: %s",
                 project_id[:8],
                 vm_name,
                 e,

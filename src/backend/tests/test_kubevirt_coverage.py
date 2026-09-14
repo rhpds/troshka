@@ -940,6 +940,22 @@ class TestDetectVncState:
     def test_login_prompt_with_space(self):
         assert _detect_vnc_state("host login: ") == "login"
 
+    def test_login_prompt_hostname_prefixed(self):
+        assert _detect_vnc_state("ocp-2-k5zq4y-cp-0 login:") == "login"
+
+    def test_login_submit_when_username_present(self):
+        assert _detect_vnc_state("ocp-2-k5zq4y-cp-0 login: core") == "login_submit"
+
+    def test_login_not_submit_when_boot_text_appended(self):
+        assert (
+            _detect_vnc_state("ocp-2-k5zq4y-cp-0 login: Starting rpm-ostree") == "login"
+        )
+
+    def test_password_before_login_when_both_visible(self):
+        assert (
+            _detect_vnc_state("ocp-2-k5zq4y-cp-0 login: core\nPassuord :") == "password"
+        )
+
     def test_password_prompt(self):
         assert _detect_vnc_state("some text\nPassword:") == "password"
 

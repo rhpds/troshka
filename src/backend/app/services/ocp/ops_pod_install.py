@@ -366,12 +366,29 @@ def _ensure_installers_cmd(ocp_version: str) -> str:
     )
 
 
+def _fresh_install_reset_cmd(indent: str, cluster_dir: str) -> str:
+    """Drop ops-pod idempotency markers on user-initiated restart."""
+    return (
+        f'{indent}if [ -n "${{TROSHKA_FRESH_INSTALL_LOG:-}}" ]; then\n'
+        f"{indent}  rm -f {cluster_dir}/.agent-iso-booted "
+        f"{cluster_dir}/.install-complete "
+        f"{cluster_dir}/agent.x86_64.iso "
+        f"{cluster_dir}/.openshift_install_state.json\n"
+        f"{indent}  rm -rf {cluster_dir}/auth\n"
+        f"{indent}fi\n"
+    )
+
+
 def _install_log_open_cmd(cluster_dir: str, indent: str = "  ") -> str:
     """Open install.log: truncate on first run, append a resume marker on restart."""
     i = indent
     return (
-        f"{i}# Preserve history across restart_policy=always pod restarts.\n"
-        f"{i}if [ -f {cluster_dir}/install.log ]; then\n"
+        f"{i}# User-initiated restart truncates; pod crash-resume appends a marker.\n"
+        f'{i}if [ -n "${{TROSHKA_FRESH_INSTALL_LOG:-}}" ]; then\n'
+        f"{i}  : > {cluster_dir}/install.log\n"
+        f'{i}  echo "=== install restart $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" '
+        f"> {cluster_dir}/install.log\n"
+        f"{i}elif [ -f {cluster_dir}/install.log ]; then\n"
         f'{i}  echo "=== ops pod resume $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" '
         f">> {cluster_dir}/install.log\n"
         f"{i}else\n"
@@ -384,7 +401,8 @@ def _install_log_open_cmd(cluster_dir: str, indent: str = "  ") -> str:
 def _agent_create_image_resume_cmd(indent: str) -> str:
     """Run create-image only when the ISO and installer state are not already present."""
     return (
-        f"{indent}if [ -f agent.x86_64.iso ] && [ -f .openshift_install_state.json ]; then\n"
+        f'{indent}if [ -z "${{TROSHKA_FRESH_INSTALL_LOG:-}}" ] '
+        f"&& [ -f agent.x86_64.iso ] && [ -f .openshift_install_state.json ]; then\n"
         f'{indent}  echo "Agent ISO and installer state present, skipping create-image"\n'
         f"{indent}else\n"
         f"{indent}  cp -f .src/install-config.yaml .src/agent-config.yaml ./\n"
@@ -469,6 +487,7 @@ def _cluster_install_block(
         + "  set -o pipefail\n"
         + f'  echo "[{cluster_key}] starting agent-based install"\n'
         + f"  cd {cluster_dir}\n"
+        + _fresh_install_reset_cmd("  ", cluster_dir)
         # Idempotency guard: a restarted pod (restart_policy=always) must not
         # re-run the installer for a cluster whose install ACTUALLY completed.
         # Key on the post-install sentinel (written only after `wait-for

@@ -265,26 +265,63 @@ def app_proxy_internal_hosts(tabs: list[dict[str, Any]]) -> list[str]:
 # host as <route-name>-<namespace>.<apps-domain> (like the showroom route already
 # does). The full internal-host label (e.g. "console-openshift-console") would push
 # that generated first DNS label past the 63-char limit once the namespace is
-# appended, so map the known console/oauth hosts to short codes.
+# appended, so map the known console/oauth hosts to short codes. The cluster name
+# from ``<svc>.apps.<cluster>.<base>`` is appended so multi-cluster projects never
+# collide on the same ``con``/``oauth`` route (two clusters would otherwise share
+# one public URL and the second console tab would open the first cluster).
 _APP_PROXY_CODES = {
     "console-openshift-console": "con",
     "oauth-openshift": "oauth",
 }
 
 
+def _apps_cluster_slug(internal_host: str) -> str:
+    """Cluster name from an OCP apps-route host (``<svc>.apps.<cluster>.<base>``)."""
+    parts = (internal_host or "").strip().lower().split(".")
+    if len(parts) < 3 or parts[1] != "apps":
+        return ""
+    slug = re.sub(r"[^a-z0-9-]+", "-", parts[2]).strip("-")
+    return slug[:16]
+
+
+def _app_proxy_server_name_regex(code: str, all_codes: list[str]) -> str:
+    """nginx server_name regex for ``tpf-<pid8>-<code>-<ns>``.
+
+    Shorter route codes must not prefix-match longer siblings: ``con-ocp`` would
+    otherwise capture ``con-ocp-2-…`` with ``troshka_ns=2-troshka…`` and proxy to
+    the wrong cluster console.
+    """
+    extensions = sorted(
+        other[len(code) + 1 :]
+        for other in all_codes
+        if other != code and other.startswith(f"{code}-")
+    )
+    lookahead = ""
+    if extensions:
+        alts = "|".join(re.escape(ext) for ext in extensions)
+        lookahead = f"(?!{alts}-)"
+    return (
+        f'"~^tpf-(?<troshka_pid>[0-9a-f]{{8}})-{code}-{lookahead}' '(?<troshka_ns>.+)$"'
+    )
+
+
 def app_proxy_route_code(internal_host: str) -> str:
     """Short DNS-safe code identifying an app-proxy internal host, embedded in the
     route name (tpf-<pid8>-<code>) and the nginx server_name. Known console/oauth
-    hosts get readable codes; anything else gets a truncated label + short hash
-    (stable + collision-safe)."""
+    hosts get readable codes suffixed with the cluster name; anything else gets a
+    truncated label + short hash (stable + collision-safe)."""
     import hashlib
 
-    label = (internal_host or "").split(".")[0]
+    host = (internal_host or "").strip().lower()
+    label = host.split(".")[0] if host else ""
+    cluster = _apps_cluster_slug(host)
     if label in _APP_PROXY_CODES:
-        return _APP_PROXY_CODES[label]
-    slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")[:8].strip("-")
-    h = hashlib.sha1((internal_host or "").encode()).hexdigest()[:6]
-    return f"{slug}-{h}" if slug else h
+        base = _APP_PROXY_CODES[label]
+        return f"{base}-{cluster}" if cluster else base
+    slug = re.sub(r"[^a-z0-9]+", "-", label).strip("-")[:8].strip("-")
+    h = hashlib.sha1(host.encode()).hexdigest()[:6]
+    generic = f"{slug}-{h}" if slug else h
+    return f"{generic}-{cluster}" if cluster else generic
 
 
 def app_proxy_route_name(project_id: str, internal_host: str) -> str:
@@ -681,6 +718,7 @@ def build_app_proxy_config(
             "$troshka_rest;"
         )
 
+    all_codes = [app_proxy_route_code(h) for h in internal_hosts]
     blocks: list[str] = []
     for i, host in enumerate(internal_hosts):
         code = app_proxy_route_code(host)
@@ -702,9 +740,7 @@ def build_app_proxy_config(
             [
                 "server {",
                 "  listen 80;",
-                # Quote the regex: nginx treats bare {8} as block syntax.
-                f'  server_name "~^tpf-(?<troshka_pid>[0-9a-f]{{8}})-{code}-'
-                '(?<troshka_ns>.+)$";',
+                f"  server_name {_app_proxy_server_name_regex(code, all_codes)};",
                 "  location / {",
                 *proxy_lines,
                 "    proxy_ssl_server_name on;",

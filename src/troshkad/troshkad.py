@@ -945,6 +945,8 @@ _DOMAIN_RE = re.compile(r"^troshka-[a-f0-9]{8}-[a-f0-9]{8}$")
 _UUID_RE = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
 _NET_NAME_RE = re.compile(r"^troshka-net-[a-f0-9]+$")
 _BRIDGE_RE = re.compile(r"^br-(?:troshka-|bmc-)?[a-f0-9]+$")
+# Host-side ends of infra-transit pod veths (showroom/ops/runner): vi<token>h
+_INFRA_TRANSIT_VETH_HOST_RE = re.compile(r"^vi[a-f0-9]{1,12}h$")
 _MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 _URL_RE = re.compile(r"^https?://[a-zA-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$")
 _SOURCE_BRIDGE_RE = re.compile(r"source bridge='([^']+)'")
@@ -1432,8 +1434,28 @@ COMMAND_HANDLERS["vms/destroy"] = _handle_vm_destroy
 
 def _handle_vm_force_off(job, params):
     domain = _validate_domain_name(params["domain_name"])
-    _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
-    return {"domain": domain, "status": "off"}
+    timeout = int(params.get("timeout", 60))
+    deadline = time.time() + timeout
+    method = "already_off"
+    while time.time() < deadline:
+        result = subprocess.run(
+            ["virsh", "domstate", domain],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return {"domain": domain, "status": "off", "method": "not_found"}
+        state = result.stdout.strip()
+        if state == "shut off":
+            return {"domain": domain, "status": "off", "method": method}
+        method = "destroy"
+        try:
+            _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
+        except RuntimeError:
+            pass
+        time.sleep(1)
+    raise RuntimeError(f"Force-off timed out for {domain} after {timeout}s")
 
 
 COMMAND_HANDLERS["vms/force-off"] = _handle_vm_force_off
@@ -3229,11 +3251,94 @@ def _handle_disk_resize(job, params):
 COMMAND_HANDLERS["disks/resize"] = _handle_disk_resize
 
 
+def _disk_write_locked(path):
+    """True when qemu-img cannot take a write lock (domain still using disk)."""
+    result = subprocess.run(
+        ["qemu-img", "info", path],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    err = (result.stderr or "") + (result.stdout or "")
+    return "Failed to get shared" in err and "write" in err.lower()
+
+
+def _force_off_domains_holding_disk(job, path):
+    """Destroy any running domain that still has *path* attached."""
+    list_result = subprocess.run(
+        ["virsh", "list", "--name"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if list_result.returncode != 0:
+        return
+    for domain in list_result.stdout.strip().splitlines():
+        domain = domain.strip()
+        if not domain:
+            continue
+        blk_result = subprocess.run(
+            ["virsh", "domblklist", domain, "--details"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if blk_result.returncode != 0 or path not in blk_result.stdout:
+            continue
+        state_result = subprocess.run(
+            ["virsh", "domstate", domain],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if state_result.returncode != 0:
+            continue
+        if state_result.stdout.strip() == "shut off":
+            continue
+        _job_log(job, f"Force-off {domain} still holding {path}")
+        try:
+            _run_cmd(job, ["virsh", "destroy", domain], timeout=30)
+        except RuntimeError:
+            pass
+
+
+def _wait_disk_released(job, path, timeout=90):
+    """Block until no running domain holds a write lock on *path*."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not os.path.exists(path):
+            return
+        _force_off_domains_holding_disk(job, path)
+        if not _disk_write_locked(path):
+            return
+        time.sleep(1)
+    raise RuntimeError(f"Disk still locked after {timeout}s: {path}")
+
+
 def _handle_disk_wipe(job, params):
-    """Zero the first 1MB of a disk image (destroys boot sector/GPT)."""
+    """Wipe a disk for reinstall.
+
+    With ``size_gb`` (and optional ``format``): remove and recreate an empty
+    image. Required for qcow2 — zeroing the first 1MB destroys the qcow2 header
+    and makes ``virsh start`` fail with "Image is not in qcow2 format".
+
+    Without ``size_gb``: legacy raw-disk behavior — zero the first 1MB only
+    (destroys MBR/GPT while keeping a valid raw image).
+    """
     path = _validate_path(params["path"])
     if not os.path.exists(path):
-        return {"error": f"Disk not found: {path}"}
+        raise FileNotFoundError(f"Disk not found: {path}")
+    size_gb = params.get("size_gb")
+    if size_gb is not None:
+        size_gb = int(size_gb)
+        fmt = params.get("format", "qcow2")
+        if fmt not in _DISK_FORMATS:
+            raise ValueError(f"Invalid disk format: {fmt}")
+        _wait_disk_released(job, path)
+        os.remove(path)
+        _run_cmd(job, ["qemu-img", "create", "-f", fmt, path, f"{size_gb}G"])
+        _chown_qemu(path)
+        return {"status": "recreated", "path": path, "size_gb": size_gb}
     with open(path, "r+b") as f:
         f.write(b"\x00" * 1048576)
     return {"status": "wiped", "path": path}
@@ -3755,6 +3860,10 @@ def _handle_network_setup(job, params):
     )
     _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", bridge_name, "up"])
     _run_cmd(job, ["ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up"])
+
+    # A new lab bridge needs forward + SNAT rules on any already-running
+    # infra-transit pods (ops/showroom) so openshift-install can reach rendezvous.
+    _refresh_infra_transit_veth_rules(job, ns)
 
     return {"network": network_name, "namespace": ns, "status": "configured"}
 
@@ -5113,6 +5222,10 @@ def _handle_network_full_setup(job, params):
     _setup_host_nftables(
         job, pid, veth_host, transit_cidr, gateway, pf_transit_ips, transit_ns_ip
     )
+
+    # full-setup flushes namespace nftables; re-apply per-pod lab-bridge SNAT for
+    # any infra-transit pods (ops/showroom) that were attached before this run.
+    _refresh_infra_transit_veth_rules(job, ns)
 
     return {
         "project_id": project_id,
@@ -10429,18 +10542,23 @@ def _console_detect_state(ocr_text):
     if not text or len(text) < 3:
         return "unknown"
     last_lines = "\n".join(text.split("\n")[-5:])
-    if re.search(r"login\s*:?\s*$", last_lines, re.IGNORECASE | re.MULTILINE):
-        return "login"
+    # Password before login — OCR often leaves "hostname login: core" on screen.
     if re.search(r"[Pp]ass[wvu]ord\s*:?\s*$", last_lines, re.MULTILINE):
         return "password"
     if re.search(r"[\]$#~]\s*$", last_lines, re.MULTILINE):
         return "shell"
+    _login = r"(?:\blogin\s*:?|\S+\s+login\s*:?)"
+    # Username only at EOL — OCR often appends boot text after "login:" on the same line.
+    if re.search(_login + r"\s+[\w.-]+\s*$", last_lines, re.IGNORECASE | re.MULTILINE):
+        return "login_submit"
+    if re.search(_login + r"\s*_?\s*$", last_lines, re.IGNORECASE | re.MULTILINE):
+        return "login"
     return "unknown"
 
 
 def _console_login(job, domain, username, password):
     """Log into the console if needed. Returns True if shell prompt reached."""
-    for attempt in range(4):
+    for attempt in range(6):
         ocr = _console_screenshot_ocr(domain)
         state = _console_detect_state(ocr)
         last_line = ocr.strip().split("\n")[-1] if ocr.strip() else "(empty)"
@@ -10453,7 +10571,9 @@ def _console_login(job, domain, username, password):
             return True
 
         if state == "unknown":
-            _console_send_keys(domain, "KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_F3")
+            # RHCOS/agent installer getty is often on TTY1; cycle TTYs before giving up.
+            fkey = "KEY_F1" if attempt % 2 == 0 else "KEY_F3"
+            _console_send_keys(domain, "KEY_LEFTCTRL", "KEY_LEFTALT", fkey)
             time.sleep(2)
             _console_send_keys(domain, "KEY_ENTER")
             time.sleep(1)
@@ -10464,9 +10584,16 @@ def _console_login(job, domain, username, password):
             time.sleep(2)
             continue
 
+        if state == "login_submit":
+            _console_send_keys(domain, "KEY_ENTER")
+            time.sleep(2)
+            continue
+
         if state == "password":
             _console_send_text(domain, password + "\n")
             time.sleep(3)
+            if _console_detect_state(_console_screenshot_ocr(domain)) == "shell":
+                return True
 
     return False
 
@@ -10511,11 +10638,11 @@ def _handle_vm_console_exec(job, params):
     if "running" not in state_result.stdout.lower():
         raise RuntimeError(f"{domain} is not running")
 
-    # Switch to TTY3 if requested (TTY1-2 used by Wayland/GNOME)
+    # Switch to TTY1 if requested (RHCOS/agent installer login is on the graphical console)
     if force_tty:
-        _console_send_keys(domain, "KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_F3")
+        _console_send_keys(domain, "KEY_LEFTCTRL", "KEY_LEFTALT", "KEY_F1")
         time.sleep(2)
-        _job_log(job, "Switched to TTY3")
+        _job_log(job, "Switched to TTY1")
 
     # Login if needed
     if not _console_login(job, domain, username, password):
@@ -12271,8 +12398,42 @@ def _allow_infra_transit_internet(job, proj_ns, infra_veth_host, transit_veth_ns
         )
 
 
+def _list_infra_transit_veth_hosts(job, proj_ns):
+    """Host-side veth names for infra-transit pods still attached in ``proj_ns``."""
+    out = _run_cmd(
+        job,
+        ["ip", "netns", "exec", proj_ns, "ip", "-o", "link", "show"],
+        check=False,
+        timeout=10,
+    )
+    hosts: list[str] = []
+    for line in (out or "").strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split(":", 2)
+        if len(parts) < 2:
+            continue
+        name = parts[1].strip().split("@")[0]
+        if _INFRA_TRANSIT_VETH_HOST_RE.match(name):
+            hosts.append(name)
+    return hosts
+
+
+def _refresh_infra_transit_veth_rules(job, proj_ns):
+    """Re-apply lab-bridge forward + SNAT for every infra-transit pod veth.
+
+    ``networks/full-setup`` flushes namespace nftables (``_setup_ns_nftables_base``),
+    which drops the per-pod rules added when a showroom/ops pod is created. Pods
+    keep their veths across network reconfigure, so without this refresh the ops
+    pod cannot reach cluster-network rendezvous IPs (e.g. 10.0.0.254) and
+    ``openshift-install agent wait-for`` hangs forever.
+    """
+    for veth_host in _list_infra_transit_veth_hosts(job, proj_ns):
+        _allow_infra_veth_forward(job, proj_ns, veth_host)
+
+
 def _allow_infra_veth_forward(job, proj_ns, veth_host):
-    """Allow showroom infra veth to reach lab bridges inside the project netns."""
+    """Allow infra-transit pod veths (showroom, ops, runner) to reach lab bridges."""
     out = _run_cmd(
         job,
         [
@@ -12341,10 +12502,10 @@ def _allow_infra_veth_forward(job, proj_ns, veth_host):
                 "accept",
             ],
         )
-        # SNAT showroom->lab-bridge traffic to the bridge gateway IP. The
-        # showroom pod lives on the project transit subnet, so without this the
-        # lab VMs (e.g. a nested OCP node) receive packets from a foreign source
-        # subnet they will not route replies back to, and the proxy hangs (504).
+        # SNAT infra-transit pod -> lab-bridge traffic to the bridge gateway IP.
+        # Showroom/ops pods live on the project transit subnet (172.30.x.4), so
+        # without this nested OCP nodes see a foreign source and never route
+        # replies back — openshift-install wait-for hangs and console proxies 504.
         _nft_try(
             job,
             [

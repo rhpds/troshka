@@ -137,14 +137,21 @@ export default function ClusterInstallLogModal() {
         if (!r.ok || cancelled) return;
         const data = await r.json();
         if (!cancelled) {
-          // Ignore stale cached failure logs briefly after a restart click.
-          if (
-            restartGuardRef.current &&
-            data.cluster_status === "error" &&
-            /level=fatal/i.test(data.output || "")
-          ) {
-            if (Date.now() - restartGuardRef.current < 30000) return;
-            restartGuardRef.current = null;
+          // Ignore stale logs briefly after restart — the dying ops pod can still
+          // serve the old install.log until the worker recycles it.
+          if (restartGuardRef.current) {
+            const out = data.output || "";
+            const freshAttempt = /starting agent-based install|=== install restart/i.test(
+              out,
+            );
+            if (
+              out &&
+              !freshAttempt &&
+              Date.now() - restartGuardRef.current < 120000
+            ) {
+              return;
+            }
+            if (freshAttempt) restartGuardRef.current = null;
           }
           setLog(data.output || "");
           setDeployStartedAt(

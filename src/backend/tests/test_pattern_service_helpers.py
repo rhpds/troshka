@@ -846,7 +846,9 @@ class TestBuildNbdVmTasks:
         task = tasks[0]
         assert task["vm_id"] == "vm-1234abcd"
         assert task["vm_name"] == "master"
-        assert task["domain_name"] == "troshka-proj-123-vm-1234a"
+        from app.services.deploy_topology import _vm_domain_name
+
+        assert task["domain_name"] == _vm_domain_name("proj-1234", "vm-1234abcd")
         assert len(task["disks_params"]) == 1
         assert (
             task["disks_params"][0]["s3_url"]
@@ -855,6 +857,30 @@ class TestBuildNbdVmTasks:
         assert task["disks_params"][0]["virtual_size_bytes"] == 20 * 1073741824
         assert task["disk_metadata"][0]["disk_id"] == "d-aabbccdd"
         assert task["disk_metadata"][0]["format"] == "qcow2"
+
+    @patch("app.services.s3_storage._bucket", return_value="bucket")
+    @patch("app.services.deploy_topology._disk_path", return_value="/path/disk")
+    def test_descriptive_node_id_uses_vm_domain_name(self, mock_dp, mock_bucket):
+        """Canvas node ids like ocp-* must not use vm_id[:8] for libvirt domain names."""
+        from app.services.deploy_topology import _vm_domain_name
+        from app.services.pattern_service import _build_nbd_vm_tasks
+
+        vm_id = "ocp-54230q-cp-0"
+        project_id = "856d587c-521d-46ce-aab4-15d53676a3ab"
+        vm_to_disks = {
+            vm_id: [
+                {
+                    "id": "ocp-54230q-cp-0-disk-0",
+                    "data": {"format": "qcow2", "size": 120},
+                }
+            ],
+        }
+        vm_nodes = {vm_id: {"id": vm_id, "data": {"label": vm_id}}}
+        tasks = _build_nbd_vm_tasks(
+            vm_to_disks, vm_nodes, project_id, "pat-5678", None, {}
+        )
+        assert tasks[0]["domain_name"] == _vm_domain_name(project_id, vm_id)
+        assert tasks[0]["domain_name"] == "troshka-856d587c-dfb526ae"
 
     @patch("app.services.s3_storage._bucket", return_value="bucket")
     @patch("app.services.deploy_topology._disk_path", return_value="/path/disk")

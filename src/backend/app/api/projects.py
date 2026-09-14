@@ -2471,8 +2471,14 @@ def wipe_disk(
                 status_code=409, detail=f"Failed to stop VM before wipe: {e}"
             )
 
+    wipe_params: dict = {"path": disk_path}
+    if disk.get("format") == "qcow2":
+        size_gb = disk.get("size_gb") or disk.get("size")
+        if size_gb:
+            wipe_params["size_gb"] = size_gb
+            wipe_params["format"] = "qcow2"
     try:
-        job_id = start_job(host, "/disks/wipe", {"path": disk_path})
+        job_id = start_job(host, "/disks/wipe", wipe_params)
         wait_for_job(host, job_id, timeout=60, poll_interval=2)
     except TroshkadError as e:
         logger.exception("Failed to wipe disk %s: %s", sanitize_log(disk_path), e)

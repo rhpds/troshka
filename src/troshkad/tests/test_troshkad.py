@@ -2750,8 +2750,47 @@ class TestRateLimitingEdgeCases(unittest.TestCase):
         self.assertEqual(len(troshkad._fail_tracker[ip]), 1)
 
 
+class TestInfraTransitVethDiscovery(unittest.TestCase):
+    """Infra-transit pod veth discovery for SNAT refresh."""
+
+    def test_list_infra_transit_veth_hosts(self):
+        link_listing = "\n".join(
+            [
+                "2463: ve4dbbe9d5n@if2464: <BROADCAST,MULTICAST,UP,LOWER_UP>",
+                "2576: vi897f9fd1h@if2575: <BROADCAST,MULTICAST,UP,LOWER_UP>",
+                "2591: vib7b7ddd8h@if2590: <BROADCAST,MULTICAST,UP,LOWER_UP>",
+                "2: br-2081: <BROADCAST,MULTICAST,UP,LOWER_UP>",
+            ]
+        )
+
+        def fake_run_cmd(job, cmd, **kwargs):
+            if cmd[-1] == "show":
+                return link_listing
+            return ""
+
+        with patch("troshkad._run_cmd", side_effect=fake_run_cmd):
+            hosts = troshkad._list_infra_transit_veth_hosts(
+                {"log": []}, "troshka-4dbbe9d5"
+            )
+        self.assertEqual(hosts, ["vi897f9fd1h", "vib7b7ddd8h"])
+
+    def test_refresh_calls_allow_forward_per_veth(self):
+        with patch(
+            "troshkad._list_infra_transit_veth_hosts",
+            return_value=["viopsh", "vishowh"],
+        ) as mock_list:
+            with patch("troshkad._allow_infra_veth_forward") as mock_allow:
+                troshkad._refresh_infra_transit_veth_rules(
+                    {"log": []}, "troshka-4dbbe9d5"
+                )
+        mock_list.assert_called_once_with({"log": []}, "troshka-4dbbe9d5")
+        self.assertEqual(mock_allow.call_count, 2)
+        mock_allow.assert_any_call({"log": []}, "troshka-4dbbe9d5", "viopsh")
+        mock_allow.assert_any_call({"log": []}, "troshka-4dbbe9d5", "vishowh")
+
+
 class TestShowroomInfraForward(unittest.TestCase):
-    """Showroom pod -> lab-bridge forwarding + SNAT rule generation."""
+    """Infra-transit pod -> lab-bridge forwarding + SNAT rule generation."""
 
     def _run_and_capture(self):
         """Run _allow_infra_veth_forward with a mocked _run_cmd, return calls."""

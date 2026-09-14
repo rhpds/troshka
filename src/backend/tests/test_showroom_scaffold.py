@@ -320,14 +320,14 @@ def test_build_app_proxy_config_per_host_literal_blocks():
     )
 
     # deterministic auto-host match (tpf-<pid>-<code>-<ns>): pid + "<ns>.apps.<cluster>"
-    # captured from the request Host. Short codes (con/oauth) keep the auto-generated
-    # host under the 63-char DNS label limit and avoid needing routes/custom-host.
+    # captured from the request Host. Short codes (con/oauth) + cluster slug keep
+    # multi-cluster projects from colliding and stay under the 63-char DNS limit.
     assert (
-        'server_name "~^tpf-(?<troshka_pid>[0-9a-f]{8})-con-(?<troshka_ns>.+)$";'
+        'server_name "~^tpf-(?<troshka_pid>[0-9a-f]{8})-con-ocp-(?<troshka_ns>.+)$";'
         in conf
     )
     assert (
-        'server_name "~^tpf-(?<troshka_pid>[0-9a-f]{8})-oauth-(?<troshka_ns>.+)$";'
+        'server_name "~^tpf-(?<troshka_pid>[0-9a-f]{8})-oauth-ocp-(?<troshka_ns>.+)$";'
         in conf
     )
     # literal upstream => no resolver / map needed
@@ -341,12 +341,12 @@ def test_build_app_proxy_config_per_host_literal_blocks():
     # per-host redirect: internal host -> public equivalent tpf-$pid-<code>-$ns
     assert (
         "proxy_redirect ~^https://console-openshift-console\\.apps\\.ocp\\.ocp\\.local"
-        "(?<troshka_rest>.*)$ https://tpf-$troshka_pid-con-$troshka_ns$troshka_rest;"
+        "(?<troshka_rest>.*)$ https://tpf-$troshka_pid-con-ocp-$troshka_ns$troshka_rest;"
         in conf
     )
     assert (
         "proxy_redirect ~^https://oauth-openshift\\.apps\\.ocp\\.ocp\\.local"
-        "(?<troshka_rest>.*)$ https://tpf-$troshka_pid-oauth-$troshka_ns$troshka_rest;"
+        "(?<troshka_rest>.*)$ https://tpf-$troshka_pid-oauth-ocp-$troshka_ns$troshka_rest;"
         in conf
     )
     assert "proxy_cookie_domain .apps.ocp.ocp.local $host;" in conf
@@ -356,11 +356,11 @@ def test_build_app_proxy_config_per_host_literal_blocks():
     assert "sub_filter_once off;" in conf
     assert (
         'sub_filter "//console-openshift-console.apps.ocp.ocp.local" '
-        '"//tpf-$troshka_pid-con-$troshka_ns";' in conf
+        '"//tpf-$troshka_pid-con-ocp-$troshka_ns";' in conf
     )
     assert (
         'sub_filter "//oauth-openshift.apps.ocp.ocp.local" '
-        '"//tpf-$troshka_pid-oauth-$troshka_ns";' in conf
+        '"//tpf-$troshka_pid-oauth-ocp-$troshka_ns";' in conf
     )
     # must NOT rewrite the bare host (would corrupt the encoded redirect_uri)
     assert 'sub_filter "console-openshift-console.apps.ocp.ocp.local"' not in conf
@@ -545,7 +545,7 @@ def test_build_nginx_config_bakes_app_proxy_server_blocks():
     ]
     nginx = build_nginx_config(resolved)
     assert (
-        'server_name "~^tpf-(?<troshka_pid>[0-9a-f]{8})-con-(?<troshka_ns>.+)$";'
+        'server_name "~^tpf-(?<troshka_pid>[0-9a-f]{8})-con-ocp-(?<troshka_ns>.+)$";'
         in nginx
     )
     assert "proxy_pass https://oauth-openshift.apps.ocp.ocp.local;" in nginx
@@ -564,7 +564,7 @@ def test_app_proxy_public_host():
             "apps.ocpvdev01.dal13.infra.demo.redhat.com",
             "sandbox-8zsqb-troshka",
         )
-        == "tpf-6fcf0e3e-con-sandbox-8zsqb-troshka.apps.ocpvdev01.dal13.infra.demo.redhat.com"
+        == "tpf-6fcf0e3e-con-ocp-sandbox-8zsqb-troshka.apps.ocpvdev01.dal13.infra.demo.redhat.com"
     )
 
 
@@ -580,7 +580,7 @@ def test_fill_app_proxy_tab_urls():
         ui, "6fcf0e3e", "apps.ocpvdev01.example.com", "sandbox-8zsqb-troshka"
     )
     assert (
-        "url: 'https://tpf-6fcf0e3e-con-sandbox-8zsqb-troshka.apps.ocpvdev01.example.com'"
+        "url: 'https://tpf-6fcf0e3e-con-ocp-sandbox-8zsqb-troshka.apps.ocpvdev01.example.com'"
         in out
     )
     assert "__TROSHKA_APP_PROXY__" not in out
@@ -614,7 +614,7 @@ def test_build_app_proxy_config_derives_apps_domain_from_host():
     # derived apps domain: apps.mycluster.example.com; per-host redirect -> public
     assert (
         "proxy_redirect ~^https://console-openshift-console\\.apps\\.mycluster\\.example\\.com"
-        "(?<troshka_rest>.*)$ https://tpf-$troshka_pid-con-$troshka_ns$troshka_rest;"
+        "(?<troshka_rest>.*)$ https://tpf-$troshka_pid-con-mycluster-$troshka_ns$troshka_rest;"
         in conf
     )
     assert "proxy_cookie_domain .apps.mycluster.example.com $host;" in conf
@@ -884,24 +884,49 @@ def test_regenerate_showroom_containers_noop_without_disk():
     assert node["data"]["podContainers"] is before  # unchanged
 
 
+def test_build_app_proxy_config_server_name_no_prefix_collision():
+    """Shorter route codes (con-ocp) must not match longer siblings (con-ocp-2)."""
+    from app.services.showroom_scaffold import build_app_proxy_config
+
+    conf = build_app_proxy_config(
+        [
+            "console-openshift-console.apps.ocp.local",
+            "console-openshift-console.apps.ocp-2.local",
+        ]
+    )
+    assert (
+        'server_name "~^tpf-(?<troshka_pid>[0-9a-f]{8})-con-ocp-(?!2-)(?<troshka_ns>.+)$";'
+        in conf
+    )
+    assert (
+        'server_name "~^tpf-(?<troshka_pid>[0-9a-f]{8})-con-ocp-2-(?<troshka_ns>.+)$";'
+        in conf
+    )
+
+
 def test_app_proxy_route_code_and_name():
     from app.services.showroom_scaffold import (
         app_proxy_route_code,
         app_proxy_route_name,
     )
 
-    # Known console/oauth hosts get short readable codes.
-    assert app_proxy_route_code("console-openshift-console.apps.ocp.local") == "con"
-    assert app_proxy_route_code("oauth-openshift.apps.ocp.local") == "oauth"
+    # Known console/oauth hosts get short readable codes + cluster slug.
+    assert app_proxy_route_code("console-openshift-console.apps.ocp.local") == "con-ocp"
+    assert app_proxy_route_code("oauth-openshift.apps.ocp.local") == "oauth-ocp"
     assert (
         app_proxy_route_name(
             "d0cc03f4-1111", "console-openshift-console.apps.ocp.local"
         )
-        == "tpf-d0cc03f4-con"
+        == "tpf-d0cc03f4-con-ocp"
     )
-    # Unknown host -> slug + hash (stable, DNS-safe, short).
+    # Multi-cluster: same service label, different cluster -> distinct codes.
+    h1 = "console-openshift-console.apps.ocp.local"
+    h2 = "console-openshift-console.apps.ocp-2.local"
+    assert app_proxy_route_code(h1) != app_proxy_route_code(h2)
+    assert app_proxy_route_code(h2) == "con-ocp-2"
+    # Unknown host -> slug + hash + cluster (stable, DNS-safe, short).
     code = app_proxy_route_code("grafana.apps.ocp.local")
-    assert code.startswith("grafana-") and len(code) <= 15
+    assert code.startswith("grafana-") and code.endswith("-ocp")
     assert app_proxy_route_code("grafana.apps.ocp.local") == code  # deterministic
 
 

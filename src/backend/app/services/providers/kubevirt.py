@@ -2069,7 +2069,7 @@ def _vnc_login(
     send_keys_fn, send_text_fn, screenshot_ocr_fn, detect_state_fn, username, password
 ):
     """Handle the VNC login loop. Returns True if shell prompt is reached."""
-    for _ in range(4):
+    for _ in range(6):
         ocr = screenshot_ocr_fn()
         state = detect_state_fn(ocr)
 
@@ -2083,9 +2083,15 @@ def _vnc_login(
             send_text_fn(username + "\n")
             time.sleep(2)
             continue
+        if state == "login_submit":
+            send_keys_fn("KEY_ENTER")
+            time.sleep(2)
+            continue
         if state == "password":
             send_text_fn(password + "\n")
             time.sleep(3)
+            if detect_state_fn(screenshot_ocr_fn()) == "shell":
+                return True
     return False
 
 
@@ -2155,12 +2161,15 @@ def _detect_vnc_state(ocr_text):
     if not text or len(text) < 3:
         return "unknown"
     last_lines = "\n".join(text.split("\n")[-5:])
-    if re.search(r"login\s*:?\s*$", last_lines, re.IGNORECASE | re.MULTILINE):
-        return "login"
     if re.search(r"[Pp]ass[wvu]ord\s*:?\s*$", last_lines, re.MULTILINE):
         return "password"
     if re.search(r"[\]$#~]\s*$", last_lines, re.MULTILINE):
         return "shell"
+    _login = r"(?:\blogin\s*:?|\S+\s+login\s*:?)"
+    if re.search(_login + r"\s+[\w.-]+\s*$", last_lines, re.IGNORECASE | re.MULTILINE):
+        return "login_submit"
+    if re.search(_login, last_lines, re.IGNORECASE | re.MULTILINE):
+        return "login"
     return "unknown"
 
 

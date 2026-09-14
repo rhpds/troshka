@@ -1204,8 +1204,10 @@ def _build_nbd_vm_tasks(vm_to_disks, vm_nodes, project_id, pattern_id, pool, cre
             )
         if not disks_params:
             continue
+        from app.services.deploy_topology import _vm_domain_name
+
         vm_name = vm_nodes.get(vm_id, {}).get("data", {}).get("label", vm_id[:8])
-        domain_name = f"troshka-{project_id[:8]}-{vm_id[:8]}"
+        domain_name = _vm_domain_name(project_id, vm_id)
         vm_tasks.append(
             {
                 "vm_id": vm_id,
@@ -1536,7 +1538,9 @@ def _capture_direct(
             continue
 
         try:
-            domain_name = f"troshka-{project_id[:8]}-{vm_id[:8]}"
+            from app.services.deploy_topology import _vm_domain_name
+
+            domain_name = _vm_domain_name(project_id, vm_id)
             job_id = start_job(
                 host,
                 "/patterns/capture-direct",

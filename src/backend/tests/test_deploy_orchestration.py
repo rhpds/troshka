@@ -5280,9 +5280,9 @@ class TestKubevirtPrebakeShowroom:
         assert "wetty-clusters" in names
         ui = self._ui_config(node)
         assert "__TROSHKA_APP_PROXY__" not in ui
-        # auto-host: tpf-<pid8>-con-<namespace>.<apps_domain>; ns = troshka-<pid8>
+        # auto-host: tpf-<pid8>-con-<cluster>-<namespace>.<apps_domain>
         assert (
-            f"tpf-{PROJECT_ID[:8]}-con-troshka-{PROJECT_ID[:8]}.apps.test.example.com"
+            f"tpf-{PROJECT_ID[:8]}-con-ocp-troshka-{PROJECT_ID[:8]}.apps.test.example.com"
             in ui
         )
 

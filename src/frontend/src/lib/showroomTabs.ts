@@ -506,6 +506,35 @@ export function clusterConsoleTabName(name: string): string {
   return `${name} Console`;
 }
 
+/** True when a tab is the cluster-managed console proxy for ``cluster``. */
+export function consoleProxyTabMatchesCluster(
+  tab: ShowroomTab,
+  cluster: { id: string; name?: string },
+): boolean {
+  const cid = tab.clusterId;
+  if (!cid) return false;
+  const name = (cluster.name || "").trim();
+  return cid === cluster.id || (name !== "" && cid === name);
+}
+
+/** True when ``tabs`` already includes a console proxy for ``cluster``. */
+export function clusterHasConsoleProxyTab(
+  tabs: ShowroomTab[],
+  cluster: { id: string; name?: string },
+): boolean {
+  return tabs.some((tab) => consoleProxyTabMatchesCluster(tab, cluster));
+}
+
+/** OCP clusters that do not yet have a managed console-proxy tab. */
+export function clustersAvailableForConsoleProxy(
+  tabs: ShowroomTab[],
+  clusters: Array<{ id: string; name?: string; baseDomain?: string }>,
+): Array<{ id: string; name?: string; baseDomain?: string }> {
+  return clusters.filter(
+    (c) => c.name && c.baseDomain && !clusterHasConsoleProxyTab(tabs, c),
+  );
+}
+
 /**
  * Keep cluster-managed console-proxy tabs (``tab.clusterId === cluster.id``) in
  * sync with the cluster: their proxyHosts (console + oauth) are DERIVED from the
@@ -524,7 +553,7 @@ export function syncClusterProxyTabs(
   const hosts = clusterConsoleHosts(name, baseDomain);
   let changed = false;
   const next = tabs.map((tab) => {
-    if (tab.clusterId !== cluster.id) return tab;
+    if (!consoleProxyTabMatchesCluster(tab, cluster)) return tab;
     const sameHosts =
       !!tab.proxyHosts &&
       tab.proxyHosts.length === hosts.length &&

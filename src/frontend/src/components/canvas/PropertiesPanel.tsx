@@ -24,7 +24,7 @@ import {
   MACHINE_TYPE_LABELS,
   VIDEO_MODEL_LABELS,
 } from "@/lib/kubevirtCapabilities";
-import { newShowroomTab, resolveShowroomTabs, syncClusterProxyTabs, clusterConsoleHosts, clusterConsoleTabName, type ShowroomTab } from "@/lib/showroomTabs";
+import { newShowroomTab, resolveShowroomTabs, syncClusterProxyTabs, clusterConsoleHosts, clusterConsoleTabName, clustersAvailableForConsoleProxy, type ShowroomTab } from "@/lib/showroomTabs";
 import {
   buildWettyCommand,
   formatCommandForInput,
@@ -3158,12 +3158,9 @@ export default function PropertiesPanel() {
                             Only clusters not already proxied are offered; the
                             control is hidden when there are none. */}
                         {(() => {
-                          // A cluster is already proxied if a tab is linked to it.
-                          const managedIds = new Set(
-                            showroomTabs.map((t) => t.clusterId).filter(Boolean),
-                          );
-                          const available = clusters.filter(
-                            (c) => c.name && c.baseDomain && !managedIds.has(c.id),
+                          const available = clustersAvailableForConsoleProxy(
+                            showroomTabs,
+                            clusters,
                           );
                           if (available.length === 0) return null;
                           return (

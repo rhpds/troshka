@@ -4,6 +4,8 @@ import {
   syncClusterProxyTabs,
   clusterConsoleHosts,
   clusterConsoleTabName,
+  clusterHasConsoleProxyTab,
+  clustersAvailableForConsoleProxy,
   type ShowroomTab,
 } from "./showroomTabs";
 
@@ -24,6 +26,24 @@ describe("clusterConsoleHosts / clusterConsoleTabName", () => {
       "oauth-openshift.apps.ocp.local",
     ]);
     expect(clusterConsoleTabName("ocp")).toBe("ocp Console");
+  });
+});
+
+describe("clustersAvailableForConsoleProxy", () => {
+  it("hides a cluster when a tab is linked by id", () => {
+    const tabs = [consoleTab("t1", "ocp-f2dd9f", "ocp Console", clusterConsoleHosts("ocp", "local"))];
+    const clusters = [
+      { id: "ocp-f2dd9f", name: "ocp", baseDomain: "local" },
+      { id: "ocp-2-k5zq4y", name: "ocp-2", baseDomain: "local" },
+    ];
+    expect(clustersAvailableForConsoleProxy(tabs, clusters)).toEqual([clusters[1]]);
+    expect(clusterHasConsoleProxyTab(tabs, clusters[0])).toBe(true);
+  });
+
+  it("hides a cluster when a legacy tab used the cluster name as clusterId", () => {
+    const tabs = [consoleTab("t1", "ocp", "ocp Console", clusterConsoleHosts("ocp", "local"))];
+    const clusters = [{ id: "ocp-f2dd9f", name: "ocp", baseDomain: "local" }];
+    expect(clustersAvailableForConsoleProxy(tabs, clusters)).toEqual([]);
   });
 });
 
@@ -58,6 +78,22 @@ describe("syncClusterProxyTabs", () => {
       consoleTab("t1", "c1", "ocp Console", clusterConsoleHosts("ocp", "local")),
     ];
     expect(syncClusterProxyTabs(tabs, { id: "c1", name: "ocp", baseDomain: "local" })).toBeNull();
+  });
+
+  it("syncs hosts for legacy tabs that stored the cluster name as clusterId", () => {
+    const tabs = [
+      consoleTab("t1", "ocp", "ocp Console", clusterConsoleHosts("ocp", "local")),
+    ];
+    const out = syncClusterProxyTabs(tabs, {
+      id: "ocp-f2dd9f",
+      name: "ocp",
+      baseDomain: "example.com",
+    });
+    expect(out).not.toBeNull();
+    expect(out![0].proxyHosts).toEqual([
+      "console-openshift-console.apps.ocp.example.com",
+      "oauth-openshift.apps.ocp.example.com",
+    ]);
   });
 
   it("returns null when the cluster lacks name/baseDomain", () => {
