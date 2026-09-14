@@ -67,6 +67,8 @@ def test_build_join_cmd_emits_node_image_and_redfish():
         "  ", "source", workers, "secret", 8080, serving_ip="10.0.0.5"
     )
     assert "oc adm node-image create" in script
+    assert "node-image create failed for source-worker-0" in script
+    assert "waiting for API before worker join" in script
     assert "52:54:00:aa:bb:02" in script
     assert "192.168.100.20" in script
     assert "control-plane-usable" not in script

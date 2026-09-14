@@ -1,0 +1,5 @@
+# Troshka cluster terminal — show multi-cluster MOTD once per interactive shell.
+if [[ $- == *i* ]] && [ -f /showroom/kube/motd ] && [ -z "${TROSHKA_MOTD_SHOWN:-}" ]; then
+  export TROSHKA_MOTD_SHOWN=1
+  cat /showroom/kube/motd
+fi

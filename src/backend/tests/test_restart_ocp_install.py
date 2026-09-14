@@ -15,6 +15,7 @@ from app.services.ocp.ops_pod_install import (
     PHASE_FAILED,
     PHASE_WAITING,
     _phase_from_input,
+    cluster_install_complete_in_log,
     cluster_install_post_boot,
     filter_install_log_noise,
 )
@@ -57,6 +58,23 @@ def test_phase_from_input_worker_join_stays_waiting_until_joined():
 
     joined = ready_poll + "\n[source] deferred workers joined"
     assert _phase_from_input(joined) == PHASE_COMPLETE
+
+
+def test_cluster_install_complete_in_log():
+    log = "[source] install complete\n[source] joining 2 deferred worker(s)"
+    assert cluster_install_complete_in_log(log, "source") is True
+    assert cluster_install_complete_in_log(log, "destination") is False
+
+
+def test_phase_from_input_worker_join_error_is_failed():
+    log = (
+        "[source] install complete\n"
+        "[source] joining 2 deferred worker(s)\n"
+        "[source] node-image create for source-worker-0\n"
+        "error: cannot create pod: Internal error occurred: admission plugin "
+        '"image.openshift.io/ImagePolicy" failed to complete mutation in 13s'
+    )
+    assert _phase_from_input(log) == PHASE_FAILED
 
 
 def test_ops_pod_cluster_complete_waits_for_deferred_workers():

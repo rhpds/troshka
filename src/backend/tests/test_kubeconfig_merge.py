@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import yaml
 
-from app.services.ocp.kubeconfig_merge import merge_kubeconfigs
+from app.services.ocp.kubeconfig_merge import (
+    cluster_terminal_motd_text,
+    merge_kubeconfigs,
+)
 
 
 def _kc(
@@ -91,3 +94,22 @@ def test_display_name_sanitized_for_context():
     merged = yaml.safe_load(merge_kubeconfigs([("My Cluster", _kc())]))
     # spaces are not shell/oc-friendly in a context name
     assert merged["current-context"] == "my-cluster"
+
+
+def test_cluster_terminal_motd_empty_for_single_cluster():
+    merged = merge_kubeconfigs([("ocp", _kc())])
+    assert cluster_terminal_motd_text(merged) == ""
+
+
+def test_cluster_terminal_motd_lists_context_switch_commands():
+    merged = merge_kubeconfigs(
+        [
+            ("source", _kc(server="https://api.source:6443")),
+            ("destination", _kc(server="https://api.destination:6443")),
+        ]
+    )
+    motd = cluster_terminal_motd_text(merged)
+    assert "oc config get-contexts" in motd
+    assert "oc config use-context <name>" in motd
+    assert "Current context: source" in motd
+    assert "Available: source, destination" in motd

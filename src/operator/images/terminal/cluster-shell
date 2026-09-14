@@ -77,6 +77,37 @@ _wait_for_cluster_api() {
 }
 _wait_for_cluster_api
 
+# When the merged kubeconfig has multiple clusters, write a MOTD with oc context
+# switching hints. Single-cluster projects get no banner. The labuser .bashrc
+# (baked into the image) prints /showroom/kube/motd once per interactive shell.
+_write_cluster_motd() {
+    local kc=/showroom/kube/config motd=/showroom/kube/motd
+    local -a contexts=() current="" available="" name
+    [ -f "$kc" ] || return 0
+    mapfile -t contexts < <(KUBECONFIG="$kc" oc config get-contexts -o name 2>/dev/null)
+    if [ "${#contexts[@]}" -le 1 ]; then
+        rm -f "$motd"
+        return 0
+    fi
+    current=$(KUBECONFIG="$kc" oc config current-context 2>/dev/null || echo "(none)")
+    available=$(printf '%s, ' "${contexts[@]}")
+    available=${available%, }
+    mkdir -p /showroom/kube
+    cat >"$motd" <<EOF
+
+Multiple OpenShift clusters are available in this terminal.
+
+  oc config get-contexts              # list clusters
+  oc config use-context <name>        # switch cluster
+
+  Current context: ${current}
+  Available: ${available}
+
+EOF
+    chmod 0644 "$motd"
+}
+_write_cluster_motd
+
 _can_drop=""
 if command -v setpriv >/dev/null 2>&1 \
     && setpriv --reuid=1000 --regid=1000 --init-groups true >/dev/null 2>&1; then

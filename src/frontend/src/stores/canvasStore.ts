@@ -555,6 +555,11 @@ const DEPLOY_TRANSIENT_NODE_KEYS = [
   "status", "redeployStep", "redeployDetail", "liveBootDevs",
   "resolvedS3Path", "presignedUrl", "ciGeneratedUserData",
   "externalEndpoints",
+  // Harvested at install into deployed_topology; the canvas topology never carries
+  // these (and must not Apply-Changes them away).
+  "ocpKubeconfig", "ocpKubeadminPassword",
+  // Stamped at deploy/normalize for SNO+deferred workers — not user-editable.
+  "deferOcpInstall",
   // Stamped at deploy from provider type (KubeVirt .2 vs troshkad .1) for palette
   // display only — the user-editable field is dnsServerIp.
   "effectiveDnsIp",
@@ -632,7 +637,9 @@ const DEPLOY_UI_ONLY_NODE_KEYS = ["minWidth", "minHeight"] as const;
 // older deployed_topology snapshots omit them. Treat absent == default in dirty compare.
 function normalizeOcpMemberInstallFields(stable: Record<string, unknown>): void {
   if (!stable.clusterId) return;
-  if (stable.powerOnAtDeploy === undefined) stable.powerOnAtDeploy = true;
+  if (stable.powerOnAtDeploy === undefined) {
+    stable.powerOnAtDeploy = stable.deferOcpInstall === true ? false : true;
+  }
   if (stable.bootMethod === undefined || stable.bootMethod === null || stable.bootMethod === "") {
     stable.bootMethod = "disk";
   }
@@ -654,6 +661,12 @@ export function stableNodeData(
     stable.dnsRecords = (stable.dnsRecords as Array<Record<string, unknown>>)
       .map((r) => ({ name: r?.name ?? "", ip: r?.ip ?? "" }))
       .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
+  // Cluster-managed DNS sets dnsDomain from the cluster baseDomain in the canvas,
+  // but deploy often persists only dnsRecords — comparing the domain string left
+  // the member network perpetually dirty.
+  if (stable.subtype === "network" && stable.dns === true) {
+    delete stable.dnsDomain;
   }
   // The gateway's showroom port-forward (443->showroom infra IP) is injected and
   // managed by deploy, not the user. It lives in deployed_topology but the canvas

@@ -3664,9 +3664,14 @@ def _store_ops_pod_creds(host, project_id: str, clusters: list, workdir: str) ->
                 p.deployed_topology = dt
             db.commit()
         # Feed the bastionless "cluster terminal" (a showroom container with oc):
-        # write the merged kubeconfig onto the shared showroom disk so the shell
-        # has cluster access. No-op unless a cluster-terminal tab is present.
-        _inject_cluster_kubeconfigs(host, project_id, topo, creds, clusters)
+        # merge EVERY harvested cluster into /showroom/kube/config (not just the
+        # cluster harvested this round — multi-cluster projects inject one at a
+        # time as each finishes).
+        all_creds = _stored_cluster_creds(topo)
+        if all_creds:
+            _inject_cluster_kubeconfigs(
+                host, project_id, topo, all_creds, _ocp_clusters(topo)
+            )
     except Exception:
         logger.exception("Failed to store ops-pod creds for %s", project_id[:8])
     finally:
@@ -3769,7 +3774,10 @@ def _inject_cluster_kubeconfigs(
     show_name = _showroom_with_cluster_terminal(topology)
     if not show_name:
         return
-    from app.services.ocp.kubeconfig_merge import merge_kubeconfigs
+    from app.services.ocp.kubeconfig_merge import (
+        cluster_terminal_motd_text,
+        merge_kubeconfigs,
+    )
     from app.services.ocp.ops_pod_install import _cluster_key as _ck
 
     name_by_key = {_ck(c): (c.get("name") or "cluster") for c in clusters}
@@ -3790,11 +3798,17 @@ def _inject_cluster_kubeconfigs(
     if not merged.strip():
         return
     b64 = base64.b64encode(merged.encode()).decode()
+    motd = cluster_terminal_motd_text(merged)
+    motd_b64 = base64.b64encode(motd.encode()).decode() if motd else ""
     script = (
         "mkdir -p /showroom/kube && "
         f"echo {b64} | base64 -d > /showroom/kube/config && "
         "chmod 0644 /showroom/kube/config"
     )
+    if motd:
+        script += f" && echo {motd_b64} | base64 -d > /showroom/kube/motd"
+    else:
+        script += " && rm -f /showroom/kube/motd"
     if getattr(host, "host_type", None) == "kubevirt-cluster":
         _inject_cluster_kubeconfigs_kubevirt(host, project_id, topology, script)
         return
@@ -4549,6 +4563,7 @@ def _monitor_ops_pod_install(
     from app.services.ocp.ops_pod_install import (
         PHASE_COMPLETE,
         PHASE_FAILED,
+        cluster_install_complete_in_log,
         inject_dead_pod_failures,
         ops_pod_install_progress,
     )
@@ -4568,6 +4583,7 @@ def _monitor_ops_pod_install(
     elapsed_base = _project_deploy_start_epoch(project_id) or start
     dead_count = 0
     finalized_clusters: set[str] = set()
+    harvested_creds: set[str] = set()
 
     while _t.time() < deadline:
         _refresh_ops_monitor_lock(
@@ -4607,21 +4623,23 @@ def _monitor_ops_pod_install(
 
         for cluster in clusters:
             key = _ops_cluster_key(cluster)
+            log = per_cluster.get(key, "")
+            if key not in harvested_creds and cluster_install_complete_in_log(log, key):
+                try:
+                    _store_ops_pod_creds(host, project_id, [cluster], workdir)
+                    harvested_creds.add(key)
+                except Exception:
+                    logger.exception(
+                        "Ops pod %s: cred harvest for %s failed",
+                        project_id[:8],
+                        key,
+                    )
             phase = progress["clusters"].get(key)
             if key not in finalized_clusters and phase in (
                 PHASE_COMPLETE,
                 PHASE_FAILED,
             ):
                 _finalize_cluster_ocp_status(project_id, key, phase, elapsed_now)
-                if phase == PHASE_COMPLETE:
-                    try:
-                        _store_ops_pod_creds(host, project_id, [cluster], workdir)
-                    except Exception:
-                        logger.exception(
-                            "Ops pod %s: cred harvest for %s failed",
-                            project_id[:8],
-                            key,
-                        )
                 finalized_clusters.add(key)
         # Detect control-plane-usable milestone: once per cluster, when the marker
         # first appears in the log, persist the timestamp + elapsed and publish a
@@ -8025,8 +8043,15 @@ def _deploy_init_context(s, project, project_id):
     # Project cluster-level OCP flags (monitor / bastion-browser) onto member VMs
     # so the per-VM deploy machinery works unchanged for all paths.
     from app.services.ocp_topology_flags import apply_cluster_ocp_flags
+    from app.services.template_loader import normalize_cluster_member_fields
 
     changed = apply_cluster_ocp_flags(topology)
+    import json as _json
+
+    _topo_before = _json.dumps(topology, sort_keys=True)
+    normalize_cluster_member_fields(topology)
+    if _json.dumps(topology, sort_keys=True) != _topo_before:
+        changed = True
     # Recert is an OCP-cluster property, not a per-VM toggle: any OCP PATTERN
     # deploy recerts, decided here (shared prep) so BOTH providers do the same
     # thing — guestfish wipes the kubelet PKI (the only cert that expires on a

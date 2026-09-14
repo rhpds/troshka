@@ -63,6 +63,50 @@ def _serve_node_iso_cmd(
     )
 
 
+def _wait_before_worker_join_cmd(indent: str, cluster_key: str) -> str:
+    """Wait for the API (and image-registry operator) before node-image create.
+
+    Fresh nested SNO clusters often report install-complete while admission
+    webhooks (ImagePolicy) are still settling; joining immediately flakes.
+    """
+    i = indent
+    return (
+        f'{i}echo "[{cluster_key}] waiting for API before worker join"\n'
+        f"{i}for _try in $(seq 1 60); do\n"
+        f"{i}  oc get --raw /healthz >/dev/null 2>&1 "
+        f"&& oc get co image-registry >/dev/null 2>&1 && break\n"
+        f"{i}  sleep 10\n"
+        f"{i}done\n"
+        f"{i}oc get --raw /healthz >/dev/null 2>&1 || "
+        f'{{ echo "[{cluster_key}] API not ready for worker join"; exit 1; }}\n'
+        f"{i}sleep 30\n"
+    )
+
+
+def _node_image_create_cmd(
+    indent: str, cluster_key: str, name: str, mac: str, node_dir: str
+) -> str:
+    """``oc adm node-image create`` with bounded retries for admission flakes."""
+    i = indent
+    return (
+        f'{i}echo "[{cluster_key}] node-image create for {name}"\n'
+        f"{i}mkdir -p {node_dir}\n"
+        f"{i}created=0\n"
+        f"{i}for _try in $(seq 1 8); do\n"
+        f"{i}  if (cd {node_dir} && oc adm node-image create "
+        f"--mac-address={shlex.quote(mac)} 2>&1 | tee create.log); then\n"
+        f"{i}    if find {node_dir} -maxdepth 2 -name '*.iso' | grep -q .; then "
+        f"created=1; break; fi\n"
+        f"{i}  fi\n"
+        f'{i}  echo "[{cluster_key}] node-image create failed for {name} '
+        f'(attempt $_try), retrying in 60s..."\n'
+        f"{i}  sleep 60\n"
+        f"{i}done\n"
+        f'{i}[ "$created" = 1 ] || {{ echo "[{cluster_key}] node-image create failed '
+        f'for {name}"; exit 1; }}\n'
+    )
+
+
 def _wait_for_worker_nodes_cmd(indent: str, cluster_key: str, expected: int) -> str:
     """Poll until ``expected`` worker nodes are Ready (approve CSRs along the way)."""
     i = indent
@@ -102,6 +146,7 @@ def build_join_deferred_workers_cmd(
         f'{i}  export KUBECONFIG="$(pwd)/auth/kubeconfig"',
         f"{i}  BMC_PASS={shlex.quote(bmc_password)}",
     ]
+    lines.append(_wait_before_worker_join_cmd(f"{i}  ", cluster_key).rstrip())
     for idx, worker in enumerate(workers):
         name = worker["name"]
         mac = worker["mac"]
@@ -109,12 +154,11 @@ def build_join_deferred_workers_cmd(
         node_dir = f"nodes/{name}"
         port = base_port + 100 + idx
         iso_name = "node.iso"
+        lines.append(
+            _node_image_create_cmd(f"{i}  ", cluster_key, name, mac, node_dir).rstrip()
+        )
         lines.extend(
             [
-                f'{i}  echo "[{cluster_key}] node-image create for {name}"',
-                f"{i}  mkdir -p {node_dir}",
-                f"{i}  (cd {node_dir} && oc adm node-image create "
-                f"--mac-address={shlex.quote(mac)} 2>&1 | tee create.log)",
                 f"{i}  ISO_SRC=$(find {node_dir} -maxdepth 2 -name '*.iso' | head -1)",
                 f'{i}  if [ -z "$ISO_SRC" ]; then echo "[{cluster_key}] no ISO for {name}"; exit 1; fi',
                 f'{i}  cp -f "$ISO_SRC" {node_dir}/{iso_name}',

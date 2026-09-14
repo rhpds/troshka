@@ -93,3 +93,38 @@ def merge_kubeconfigs(named_configs: list[tuple[str, str]]) -> str:
         if not merged["current-context"]:
             merged["current-context"] = name
     return yaml.safe_dump(merged, default_flow_style=False, sort_keys=False)
+
+
+def cluster_terminal_motd_text(merged_yaml: str) -> str:
+    """Banner for the showroom cluster terminal when multiple contexts exist.
+
+    Single-cluster projects return an empty string (no MOTD noise).
+    """
+    if not merged_yaml.strip():
+        return ""
+    try:
+        cfg = yaml.safe_load(merged_yaml)
+    except yaml.YAMLError:
+        return ""
+    if not isinstance(cfg, dict):
+        return ""
+    contexts = cfg.get("contexts") or []
+    if len(contexts) <= 1:
+        return ""
+    names = [str(c.get("name") or "").strip() for c in contexts]
+    names = [n for n in names if n]
+    if len(names) <= 1:
+        return ""
+    current = str(cfg.get("current-context") or "").strip() or "(none)"
+    available = ", ".join(names)
+    return (
+        "\n"
+        "Multiple OpenShift clusters are available in this terminal.\n"
+        "\n"
+        "  oc config get-contexts              # list clusters\n"
+        "  oc config use-context <name>        # switch cluster\n"
+        "\n"
+        f"  Current context: {current}\n"
+        f"  Available: {available}\n"
+        "\n"
+    )

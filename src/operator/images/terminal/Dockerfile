@@ -57,6 +57,11 @@ COPY --from=tmux-builder /usr/local/bin/tmux /usr/local/bin/tmux
 # the container runs as root and cluster-shell drops to this user via setpriv.
 RUN useradd -u 1000 -m -d /home/labuser -s /bin/bash labuser
 
+COPY labuser-bashrc-snippet /etc/profile.d/troshka-cluster-terminal.sh
+RUN chmod 0644 /etc/profile.d/troshka-cluster-terminal.sh \
+    && cat /etc/profile.d/troshka-cluster-terminal.sh >> /home/labuser/.bashrc \
+    && chown labuser:labuser /home/labuser/.bashrc
+
 COPY cluster-shell /usr/local/bin/cluster-shell
 RUN chmod 0755 /usr/local/bin/cluster-shell
 

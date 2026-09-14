@@ -104,6 +104,11 @@ _FAILURE_MARKERS = (
     "failed to wait for install",
     "recert failed",  # recert-mode block's fail-closed exit (kubeconfig/gate)
     "worker join timed out",
+    "node-image create failed",
+    "error: cannot create pod",
+    "imagepolicy",
+    "no iso for",
+    "api not ready for worker join",
 )
 
 
@@ -121,6 +126,8 @@ def _phase_from_input(value: str) -> str:
     lowered = text.lower()
     if "deferred workers joined" in lowered:
         return PHASE_COMPLETE
+    if any(marker in lowered for marker in _FAILURE_MARKERS):
+        return PHASE_FAILED
     if (
         ("joining" in lowered and "deferred worker" in lowered)
         or "node-image create for" in lowered
@@ -128,12 +135,11 @@ def _phase_from_input(value: str) -> str:
         or "net-booting worker" in lowered
         or "worker nodes ready:" in lowered
         or ("waiting for" in lowered and "worker node" in lowered)
+        or "waiting for api before worker join" in lowered
     ):
         return PHASE_WAITING
     if "install complete" in lowered:
         return PHASE_COMPLETE
-    if any(marker in lowered for marker in _FAILURE_MARKERS):
-        return PHASE_FAILED
     for marker, phase in _LOG_MARKERS:
         if marker.lower() in lowered:
             return phase
@@ -254,6 +260,17 @@ _POST_BOOT_MARKERS = (
     "waiting for bootkube",
     "bootstrap kube api initialized",
 )
+
+
+def cluster_install_complete_in_log(log_text: str | None, cluster_id: str) -> bool:
+    """True when the ops-pod log shows agent install finished for this cluster.
+
+    For SNO + deferred workers this fires before worker join — kubeconfig is
+    available and should be harvested for the cluster terminal immediately.
+    """
+    if not log_text:
+        return False
+    return f"[{cluster_id}] install complete" in log_text
 
 
 def cluster_install_post_boot(log_text: str | None) -> bool:

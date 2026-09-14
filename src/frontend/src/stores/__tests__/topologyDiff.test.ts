@@ -209,6 +209,58 @@ describe("computeTopologyDiff", () => {
     expect(computeTopologyDirty(state)).toBe(false);
   });
 
+  it("ignores harvested OCP creds on control-plane VMs", () => {
+    const vm = vmNode({
+      name: "dest-cp-0",
+      clusterId: "destination",
+      ocpKubeadminPassword: "",
+      ocpKubeconfig: "",
+    });
+    const state: TopologyDiffState = {
+      ...emptyBaseline,
+      nodes: [vm],
+      deployedNodeData: {
+        vm1: baseline({
+          name: "dest-cp-0",
+          clusterId: "destination",
+          ocpKubeadminPassword: "pw-abc",
+          ocpKubeconfig: "apiVersion: v1\nkind: Config\n",
+        }),
+      },
+    } as TopologyDiffState;
+    expect(computeTopologyDiff(state)).toEqual([]);
+  });
+
+  it("ignores cluster-derived dnsDomain on member networks", () => {
+    const net: Node = {
+      id: "net1",
+      type: "networkNode",
+      position: { x: 0, y: 0 },
+      data: {
+        name: "cluster",
+        subtype: "network",
+        cidr: "10.0.0.0/24",
+        dns: true,
+        dnsDomain: "source.cclm.local",
+        dnsRecords: [{ name: "api.source.source.cclm.local", ip: "10.0.0.10" }],
+      },
+    };
+    const state: TopologyDiffState = {
+      ...emptyBaseline,
+      nodes: [net],
+      deployedNodeData: {
+        net1: baseline({
+          name: "cluster",
+          subtype: "network",
+          cidr: "10.0.0.0/24",
+          dns: true,
+          dnsRecords: [{ name: "api.source.source.cclm.local", ip: "10.0.0.10" }],
+        }),
+      },
+    } as TopologyDiffState;
+    expect(computeTopologyDiff(state)).toEqual([]);
+  });
+
   it("ignores effectiveDnsIp display stamp (provider-derived)", () => {
     const net: Node = {
       id: "net1",
