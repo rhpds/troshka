@@ -325,12 +325,18 @@ def _generate_dns_manifests(topology, base_domain):
 
 
 def _cluster_is_sno(cluster, members):
-    """True when the cluster is single-node (explicit type or 1 CP / 0 workers)."""
-    if cluster.get("type") == "sno":
-        return True
+    """True when 1 control-plane and 0 workers (platform: none).
+
+    ``type: sno`` with workers > 0 is SNO+workers — multi-node baremetal, not
+    platform none.
+    """
     cp = cluster.get("controlPlane")
     workers = cluster.get("workers")
-    if cp is not None and workers is not None:
+    if workers is None:
+        workers = 0
+    if cp is None and cluster.get("type") == "sno":
+        cp = 1
+    if cp is not None:
         return cp == 1 and workers == 0
     return False
 
@@ -887,6 +893,82 @@ def _cluster_network_node(topology, members):
         if any(ipaddress.ip_address(ip) in net for ip in member_ips):
             return node
     return first
+
+
+def _network_node_by_id(topology, network_id):
+    for node in topology.get("nodes", []):
+        if node.get("id") == network_id and node.get("type") == "networkNode":
+            return node
+    return None
+
+
+def _is_machine_network_node(node):
+    if not node or node.get("type") != "networkNode":
+        return False
+    data = node.get("data", {})
+    if data.get("subtype") != "network":
+        return False
+    if data.get("networkType") == "bmc":
+        return False
+    return bool(data.get("cidr"))
+
+
+def _infer_machine_network_nodes_from_members(members, topology):
+    """Machine network nodes referenced by member NIC IPs (topology order)."""
+    member_ips = [
+        nic.get("ip")
+        for m in members
+        if m.get("type") == "vmNode"
+        for nic in m.get("data", {}).get("nics", [])
+        if nic.get("ip")
+    ]
+    if not member_ips:
+        return []
+    picked = []
+    for node in topology.get("nodes", []):
+        if not _is_machine_network_node(node):
+            continue
+        cidr = node["data"]["cidr"]
+        try:
+            net = ipaddress.ip_network(cidr, strict=False)
+        except ValueError:
+            continue
+        if any(ipaddress.ip_address(ip) in net for ip in member_ips):
+            picked.append(node)
+    return picked
+
+
+def _cluster_machine_network_nodes(cluster, members, topology):
+    """Ordered machine-network nodes for a cluster (``networkIds`` order)."""
+    nodes = []
+    for net_id in cluster.get("networkIds") or []:
+        node = _network_node_by_id(topology, net_id)
+        if _is_machine_network_node(node):
+            nodes.append(node)
+    if nodes:
+        return nodes
+    inferred = _infer_machine_network_nodes_from_members(members, topology)
+    if inferred:
+        return inferred
+    primary = _cluster_network_node(topology, members)
+    if primary and _is_machine_network_node(primary):
+        return [primary]
+    return []
+
+
+def _machine_network_cidrs_for_cluster(cluster, members, topology):
+    """CIDRs for install-config ``networking.machineNetwork``."""
+    cidrs = [
+        node["data"]["cidr"]
+        for node in _cluster_machine_network_nodes(cluster, members, topology)
+    ]
+    if cidrs:
+        return cidrs
+    return [_cidr_for_members(members, topology)]
+
+
+def _agent_nic_interface_name(index):
+    return "cluster-nic" if index == 0 else f"net{index}-nic"
 
 
 def _setup_dns_records(
@@ -1601,9 +1683,10 @@ def _build_install_config(
             "  serviceNetwork:",
             "    - 172.30.0.0/16",
             "  machineNetwork:",
-            f"    - cidr: {_cidr_for_members(members, topology)}",
         ]
     )
+    for cidr in _machine_network_cidrs_for_cluster(cluster, members, topology):
+        ic_lines.append(f"    - cidr: {cidr}")
     if _cluster_is_sno(cluster, members):
         ic_lines.extend(["platform:", "  none: {}"])
     else:
@@ -1675,47 +1758,89 @@ def _build_install_config_legacy(
     )
 
 
-def _build_agent_host_yaml(
-    vm_name, role, boot_mac, cluster_ip, prefix_len, gateway_ip, dns_ip
-):
+def _build_agent_host_yaml(vm_name, role, nic_configs, dns_ip):
     """Build a single host entry for agent-config.yaml.
 
-    ``dns_ip`` is the nameserver the node uses (may differ from ``gateway_ip``:
-    on KubeVirt the dnsmasq is a separate pod at ``<cidr>.2``, not the gateway).
-    ``gateway_ip`` remains the default route next-hop.
+    ``nic_configs`` is an ordered list of dicts with keys ``iface_name``, ``mac``,
+    ``ip``, ``prefix_len``, and optional ``gateway``/``default_route`` (primary
+    NIC only). ``dns_ip`` is the nameserver the node uses (may differ from the
+    primary gateway: on KubeVirt the dnsmasq is a separate pod at ``<cidr>.2``).
     """
-    return (
-        f"    - hostname: {vm_name}\n"
-        f"      role: {role}\n"
-        f"      interfaces:\n"
-        f"        - name: cluster-nic\n"
-        f"          macAddress: {boot_mac}\n"
-        f"      networkConfig:\n"
-        f"        interfaces:\n"
-        f"          - name: cluster-nic\n"
-        f"            type: ethernet\n"
-        f"            state: up\n"
-        f"            identifier: mac-address\n"
-        f"            mac-address: {boot_mac}\n"
-        f"            ipv4:\n"
-        f"              enabled: true\n"
-        f"              address:\n"
-        f"                - ip: {cluster_ip}\n"
-        f"                  prefix-length: {prefix_len}\n"
-        f"              dhcp: false\n"
-        f"        dns-resolver:\n"
-        f"          config:\n"
-        f"            server:\n"
-        f"              - {dns_ip}\n"
-        f"        routes:\n"
-        f"          config:\n"
-        f"            - destination: 0.0.0.0/0\n"
-        f"              next-hop-address: {gateway_ip}\n"
-        f"              next-hop-interface: cluster-nic\n"
+    lines = [
+        f"    - hostname: {vm_name}",
+        f"      role: {role}",
+        "      interfaces:",
+    ]
+    for cfg in nic_configs:
+        lines.append(f"        - name: {cfg['iface_name']}")
+        lines.append(f"          macAddress: {cfg['mac']}")
+    lines.append("      networkConfig:")
+    lines.append("        interfaces:")
+    for cfg in nic_configs:
+        lines.extend(
+            [
+                f"          - name: {cfg['iface_name']}",
+                "            type: ethernet",
+                "            state: up",
+                "            identifier: mac-address",
+                f"            mac-address: {cfg['mac']}",
+                "            ipv4:",
+                "              enabled: true",
+                "              address:",
+                f"                - ip: {cfg['ip']}",
+                f"                  prefix-length: {cfg['prefix_len']}",
+                "              dhcp: false",
+            ]
+        )
+    primary = next(c for c in nic_configs if c.get("default_route"))
+    lines.extend(
+        [
+            "        dns-resolver:",
+            "          config:",
+            "            server:",
+            f"              - {dns_ip}",
+            "        routes:",
+            "          config:",
+            "            - destination: 0.0.0.0/0",
+            f"              next-hop-address: {primary['gateway']}",
+            f"              next-hop-interface: {primary['iface_name']}",
+        ]
     )
+    return "\n".join(lines) + "\n"
 
 
-def _extract_agent_host(node, gateway_ip, prefix_len, dns_ip):
+def _agent_host_nic_configs(node, cluster, members, topology):
+    """Build per-NIC agent-config entries aligned with ``networkIds`` order."""
+    td = node.get("data", {})
+    nics = td.get("nics", [])
+    network_nodes = _cluster_machine_network_nodes(cluster, members, topology)
+    nic_configs = []
+    for idx, net_node in enumerate(network_nodes):
+        nic = nics[idx] if idx < len(nics) else {}
+        mac = nic.get("mac", "")
+        ip = nic.get("ip", "")
+        if not _MAC_RE.match(mac) or not ip:
+            continue
+        cidr = net_node["data"]["cidr"]
+        try:
+            net = ipaddress.ip_network(cidr, strict=False)
+        except ValueError:
+            continue
+        gateway = net_node["data"].get("gateway") or str(net.network_address + 1)
+        nic_configs.append(
+            {
+                "iface_name": _agent_nic_interface_name(idx),
+                "mac": mac,
+                "ip": ip,
+                "prefix_len": net.prefixlen,
+                "gateway": gateway,
+                "default_route": idx == 0,
+            }
+        )
+    return nic_configs
+
+
+def _extract_agent_host(node, cluster, members, topology, dns_ip):
     if node.get("type") != "vmNode":
         return None
     td = node.get("data", {})
@@ -1725,15 +1850,14 @@ def _extract_agent_host(node, gateway_ip, prefix_len, dns_ip):
     if group not in ("controllers", "workers"):
         return None
     vm_name = td.get("name", "")
-    cluster_ip = td.get("nics", [{}])[0].get("ip", "")
-    boot_mac = td.get("nics", [{}])[0].get("mac", "")
-    if not _NAME_RE.match(vm_name) or not _MAC_RE.match(boot_mac):
+    if not _NAME_RE.match(vm_name):
+        return None
+    nic_configs = _agent_host_nic_configs(node, cluster, members, topology)
+    if not nic_configs:
         return None
     role = "master" if group == "controllers" else "worker"
-    host_yaml = _build_agent_host_yaml(
-        vm_name, role, boot_mac, cluster_ip, prefix_len, gateway_ip, dns_ip
-    )
-    return host_yaml, cluster_ip
+    host_yaml = _build_agent_host_yaml(vm_name, role, nic_configs, dns_ip)
+    return host_yaml, nic_configs[0]["ip"]
 
 
 def _resolve_agent_dns_ip(topology, members, gateway_ip, dns_ip_override=None):
@@ -1769,12 +1893,11 @@ def _build_agent_config(cluster, members, topology, dns_ip_override=None):
     cluster_name = cluster.get("name", "ocp")
     net = ipaddress.ip_network(_cidr_for_members(members, topology), strict=False)
     gateway_ip = str(net.network_address + 1)
-    prefix_len = net.prefixlen
     dns_ip = _resolve_agent_dns_ip(topology, members, gateway_ip, dns_ip_override)
 
     hosts_yaml = ""
     for node in members:
-        result = _extract_agent_host(node, gateway_ip, prefix_len, dns_ip)
+        result = _extract_agent_host(node, cluster, members, topology, dns_ip)
         if result:
             hosts_yaml += result[0]
 

@@ -6,7 +6,7 @@ import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
-import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, ensureSnoNodeIp, effectiveDnsNetworkId, clusterPrereqIssues, suggestClusterVips, vipCollision, vipInMemberSubnet } from "./clusterMaterialize";
+import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, assignMissingClusterMemberNicIps, effectiveDnsNetworkId, clusterPrereqIssues, suggestClusterVips, vipCollision, vipInMemberSubnet } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
 import { collectUsedIps } from "@/lib/dhcpIpAssignment";
 import {
@@ -711,9 +711,9 @@ function ClusterEditor({
   );
   const showBastionBrowserOption =
     effectiveInstallVia !== "pod" && hasBastionVm;
-  // SNO has no VIPs (OpenShift forbids them for a single node) — api/*.apps use
-  // the node's own IP. Show the VIP fields as read-only N/A for SNO.
-  const isSno = cluster.type === "sno";
+  // Pure SNO (1 CP, 0 workers) has no VIPs — api/*.apps use the node's own IP.
+  // SNO+workers is a multi-node cluster and needs explicit VIPs like standard.
+  const isSno = cluster.type === "sno" && (cluster.workers ?? 0) === 0;
   const apiVipError = vipCollisionError(clusters, cluster.id, "apiVip", cluster.apiVip || "");
   const ingressVipError = vipCollisionError(clusters, cluster.id, "ingressVip", cluster.ingressVip || "");
 
@@ -766,9 +766,8 @@ function ClusterEditor({
   const networkIdsKey = (cluster.networkIds ?? []).join(",");
   useEffect(() => {
     const current = useCanvasStore.getState().nodes;
-    // SNO: give the single node a static IP first (no DHCP), then mirror DNS off
-    // it (api/*.apps → the node IP). No-op for multi-node.
-    const withIp = ensureSnoNodeIp(cluster, current);
+    // Static IPs on every cluster-attached NIC (eth0, eth1, …), then mirror DNS.
+    const withIp = assignMissingClusterMemberNicIps(cluster, current);
     const synced = applyClusterDns(cluster, withIp);
     if (synced !== current) useCanvasStore.setState({ nodes: synced });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -856,12 +855,12 @@ function ClusterEditor({
           label="Workers"
           value={cluster.workers}
           onCommit={onWorkersChange}
-          disabled={clusterDeployed || cluster.type !== "standard"}
+          disabled={clusterDeployed || cluster.type === "compact"}
           hint={
             clusterDeployed
               ? _CLUSTER_SHAPE_LOCK_HINT
-              : cluster.type !== "standard"
-                ? "Only standard clusters have separate workers — SNO is a single node and compact nodes are combined control-plane + worker."
+              : cluster.type === "compact"
+                ? "Compact clusters have no separate workers — each control-plane node also runs workloads."
                 : undefined
           }
         />
@@ -5212,8 +5211,8 @@ export default function PropertiesPanel() {
         };
         const handleTypeChange = (type: string) => {
           const controlPlane = type === "sno" ? 1 : 3;
-          // Only standard clusters have separate workers; SNO/compact force 0.
-          const workers = type === "standard" ? cluster.workers : 0;
+          // Compact has no separate workers; SNO and standard keep the count.
+          const workers = type === "compact" ? 0 : cluster.workers;
           editCluster({ type, controlPlane, workers });
           reconcile({ ...cluster, type, controlPlane, workers });
         };
@@ -5233,18 +5232,27 @@ export default function PropertiesPanel() {
           // cluster's existing anchor edges, then add one per selected network
           // (checking a network draws the line; unchecking removes it). Matches
           // the box-handle onConnect anchor edge (Task 11).
+          const canvasNodes = useCanvasStore.getState().nodes;
           const anchorEdges = networkIds.map(
-            (netId) =>
-              ({
+            (netId, idx) => {
+              const netNode = canvasNodes.find((n) => n.id === netId);
+              const netData = netNode?.data as Record<string, unknown> | undefined;
+              const isBmc = netData?.networkType === "bmc";
+              // Primary cluster network above; additional / BMC networks below.
+              const useBottom = idx > 0 || isBmc;
+              const targetHandle = useBottom ? "cluster-net-bottom" : "cluster-net-top";
+              const sourceHandle = useBottom ? "top" : "bottom";
+              return {
                 id: `edge-clusternet-${netId}-to-${cluster.nodeId}`,
                 source: netId,
                 target: cluster.nodeId,
-                sourceHandle: "bottom",
-                targetHandle: "cluster-net-top",
+                sourceHandle,
+                targetHandle,
                 type: "smoothstep",
                 animated: true,
                 style: { stroke: "rgba(34,211,238,0.7)", strokeWidth: 2 },
-              }) as Edge,
+              } as Edge;
+            },
           );
           const withoutOldAnchors = nextEdges.filter(
             (e) =>

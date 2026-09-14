@@ -8,6 +8,80 @@ export const BMC_EDGE_STYLE = {
 };
 
 const DEFAULT_BMC_CIDR = "192.168.100.0/24";
+/** Match auto_layout.py net_w / net_h and NetworkNode card size. */
+export const BMC_NET_W = 240;
+export const BMC_NET_H = 70;
+export const BMC_CLUSTER_GAP = 80;
+
+type Rect = { x: number; y: number; w: number; h: number };
+
+function clusterBounds(node: Node): Rect {
+  const w = Number((node.style as Record<string, unknown> | undefined)?.width) || 520;
+  const h = Number((node.style as Record<string, unknown> | undefined)?.height) || 320;
+  return { x: node.position.x, y: node.position.y, w, h };
+}
+
+function rectsOverlap(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+/** Place BMC to the right of a cluster boundary, vertically centered. */
+export function bmcNetworkPosition(
+  cluster: ClusterConfig,
+  nodes: Node[],
+): { x: number; y: number } {
+  const clusterNode = nodes.find((n) => n.id === cluster.nodeId);
+  if (clusterNode?.position) {
+    const bounds = clusterBounds(clusterNode);
+    return {
+      x: bounds.x + bounds.w + BMC_CLUSTER_GAP,
+      y: bounds.y + Math.max(0, (bounds.h - BMC_NET_H) / 2),
+    };
+  }
+  const members = nodes.filter(
+    (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === cluster.id,
+  );
+  const avgX = members.reduce((sum, n) => sum + (n.position?.x || 0), 0) / Math.max(members.length, 1);
+  const avgY = members.reduce((sum, n) => sum + (n.position?.y || 0), 0) / Math.max(members.length, 1);
+  return { x: avgX + 300, y: avgY };
+}
+
+/**
+ * Nudge the BMC network clear of every cluster boundary (e.g. after the box
+ * grows when workers are added and the old x+width+gap lands inside the box).
+ */
+export function repositionBmcNetworkClearOfClusters(
+  bmcNet: Node,
+  nodes: Node[],
+): Node {
+  const clusters = nodes.filter((n) => n.type === "clusterNode");
+  if (clusters.length === 0) return bmcNet;
+
+  const boxes = clusters.map(clusterBounds);
+  const pos = bmcNet.position ?? { x: 0, y: 0 };
+  const bmcRect: Rect = {
+    x: pos.x,
+    y: pos.y,
+    w: BMC_NET_W,
+    h: BMC_NET_H,
+  };
+  if (!boxes.some((b) => rectsOverlap(bmcRect, b))) return bmcNet;
+
+  const maxRight = Math.max(...boxes.map((b) => b.x + b.w));
+  const minTop = Math.min(...boxes.map((b) => b.y));
+  const maxBottom = Math.max(...boxes.map((b) => b.y + b.h));
+  let nx = maxRight + BMC_CLUSTER_GAP;
+  let ny = minTop + Math.max(0, (maxBottom - minTop - BMC_NET_H) / 2);
+
+  const candidate: Rect = { x: nx, y: ny, w: BMC_NET_W, h: BMC_NET_H };
+  if (boxes.some((b) => rectsOverlap(candidate, b))) {
+    nx = Math.min(...boxes.map((b) => b.x));
+    ny = maxBottom + BMC_CLUSTER_GAP;
+  }
+
+  if (nx === pos.x && ny === pos.y) return bmcNet;
+  return { ...bmcNet, position: { x: nx, y: ny } };
+}
 
 export function generateBmcPassword(): string {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -106,20 +180,6 @@ export function makeBmcEdge(bmcNetId: string, vmId: string): Edge {
   } as Edge;
 }
 
-function bmcNetworkPosition(cluster: ClusterConfig, nodes: Node[]): { x: number; y: number } {
-  const clusterNode = nodes.find((n) => n.id === cluster.nodeId);
-  if (clusterNode?.position) {
-    const w = Number((clusterNode.style as Record<string, unknown> | undefined)?.width) || 400;
-    return { x: clusterNode.position.x + w + 80, y: clusterNode.position.y };
-  }
-  const members = nodes.filter(
-    (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === cluster.id,
-  );
-  const avgX = members.reduce((sum, n) => sum + (n.position?.x || 0), 0) / Math.max(members.length, 1);
-  const avgY = members.reduce((sum, n) => sum + (n.position?.y || 0), 0) / Math.max(members.length, 1);
-  return { x: avgX + 300, y: avgY };
-}
-
 function clusterMemberIds(cluster: ClusterConfig, nodes: Node[]): string[] {
   return nodes
     .filter((n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === cluster.id)
@@ -145,6 +205,13 @@ export function applyClusterBmc(
     bmcNet = createBmcNetworkNode(bmcNetworkPosition(cluster, nextNodes));
     nextNodes.push(bmcNet);
     nodesChanged = true;
+  } else {
+    const repositioned = repositionBmcNetworkClearOfClusters(bmcNet, nextNodes);
+    if (repositioned !== bmcNet) {
+      bmcNet = repositioned;
+      nextNodes = nextNodes.map((n) => (n.id === bmcNet!.id ? bmcNet! : n));
+      nodesChanged = true;
+    }
   }
   const ensuredNet = ensureBmcNetworkCredentials(bmcNet);
   if (ensuredNet !== bmcNet) {

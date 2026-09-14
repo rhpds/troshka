@@ -970,6 +970,123 @@ def _rects_overlap(a: tuple, b: tuple) -> bool:
     return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
 
 
+def _cluster_anchor_side(target_handle: str) -> str | None:
+    """Map a cluster boundary handle to the side the anchored network belongs on."""
+    handle = (target_handle or "").lower()
+    if "cluster-net-top" in handle:
+        return "top"
+    if "cluster-net-bottom" in handle:
+        return "bottom"
+    return None
+
+
+def _collect_cluster_network_anchors(
+    edges: list[dict], nodes: list[dict]
+) -> dict[str, dict[str, str]]:
+    """network id -> {cluster_id, side} for visible cluster↔network anchor edges."""
+    anchors: dict[str, dict[str, str]] = {}
+    for e in edges:
+        tgt = _find(nodes, e.get("target", ""))
+        src = _find(nodes, e.get("source", ""))
+        if not tgt or not src:
+            continue
+        if tgt.get("type") != "clusterNode" or src.get("type") != "networkNode":
+            continue
+        side = _cluster_anchor_side(e.get("targetHandle", ""))
+        if not side:
+            continue
+        anchors[src["id"]] = {"cluster_id": tgt["id"], "side": side}
+    return anchors
+
+
+def _layout_cluster_anchored_networks(
+    nodes: list[dict],
+    edges: list[dict],
+    net_w: int,
+    net_h: int,
+    gap: int,
+) -> None:
+    """Place networks beside the cluster boundary they are anchored to (top/bottom).
+
+    Auto-layout's global network rows ignore cluster anchor handles; without this
+    pass every anchored network is pulled to the shared backbone row above VMs.
+    """
+    anchors = _collect_cluster_network_anchors(edges, nodes)
+    if not anchors:
+        return
+
+    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for net_id, info in anchors.items():
+        groups[(info["cluster_id"], info["side"])].append(net_id)
+
+    for (cluster_id, side), net_ids in groups.items():
+        cluster = _find(nodes, cluster_id)
+        if not cluster or not cluster.get("style"):
+            continue
+        cx = cluster["position"]["x"]
+        cy = cluster["position"]["y"]
+        cw = cluster["style"]["width"]
+        ch = cluster["style"]["height"]
+        for i, net_id in enumerate(net_ids):
+            net = _find(nodes, net_id)
+            if not net:
+                continue
+            nx = cx + max(0, (cw - net_w) / 2)
+            if side == "top":
+                ny = cy - net_h - gap - i * (net_h + gap)
+            else:
+                ny = cy + ch + gap + i * (net_h + gap)
+            net["position"] = {"x": nx, "y": ny}
+
+
+def _reposition_bmc_networks_clear_of_clusters(
+    nodes: list[dict],
+    net_w: int,
+    net_h: int,
+    gap: int,
+    skip_net_ids: set[str] | None = None,
+) -> None:
+    """Move BMC network nodes outside cluster boundaries (right, or below if needed).
+
+    BMC is laid out in the bottom network row before ``reflow_cluster_members``
+    sizes the cluster box; a multi-node cluster can grow over the BMC node.
+    """
+    box_rects = [
+        (
+            b["position"]["x"],
+            b["position"]["y"],
+            b["position"]["x"] + b["style"]["width"],
+            b["position"]["y"] + b["style"]["height"],
+        )
+        for b in nodes
+        if b.get("type") == "clusterNode" and b.get("style")
+    ]
+    if not box_rects:
+        return
+    max_right = max(r[2] for r in box_rects)
+    min_top = min(r[1] for r in box_rects)
+    max_bottom = max(r[3] for r in box_rects)
+    skip = skip_net_ids or set()
+    for n in nodes:
+        if n.get("type") != "networkNode":
+            continue
+        if n.get("id") in skip:
+            continue
+        if n.get("data", {}).get("networkType") != "bmc":
+            continue
+        px, py = n["position"]["x"], n["position"]["y"]
+        nr = (px, py, px + net_w, py + net_h)
+        if not any(_rects_overlap(nr, br) for br in box_rects):
+            continue
+        nx = max_right + gap
+        ny = min_top + max(0, (max_bottom - min_top - net_h) / 2)
+        candidate = (nx, ny, nx + net_w, ny + net_h)
+        if any(_rects_overlap(candidate, br) for br in box_rects):
+            nx = min(r[0] for r in box_rects)
+            ny = max_bottom + gap
+        n["position"] = {"x": nx, "y": ny}
+
+
 def _push_free_networks_below_clusters(
     nodes: list[dict], free_net_ids: set[str], net_w: int, net_h: int, gap_y: int
 ) -> None:
@@ -1157,6 +1274,11 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
     # Cluster-aware pass: pull OCP cluster members back inside their boundary
     # (they were laid out above as free workloads) and size the box.
     reflow_cluster_members(new_nodes)
+    cluster_anchored = set(_collect_cluster_network_anchors(edges, new_nodes))
+    _layout_cluster_anchored_networks(new_nodes, edges, net_w, net_h, gap_y)
+    _reposition_bmc_networks_clear_of_clusters(
+        new_nodes, net_w, net_h, gap_y, skip_net_ids=cluster_anchored
+    )
     # A cluster box sized just now can overlap an unconnected network (e.g. the
     # bastionless BMC network); nudge such free networks clear of every box.
     edged = {e.get("source") for e in edges} | {e.get("target") for e in edges}

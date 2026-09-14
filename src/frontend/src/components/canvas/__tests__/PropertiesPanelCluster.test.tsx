@@ -65,6 +65,37 @@ describe("PropertiesPanel cluster editor", () => {
     expect(useCanvasStore.getState().clusters[0].controlPlane).toBe(1);
   });
 
+  it("allows workers on an SNO cluster (SNO+workers)", async () => {
+    useCanvasStore.setState({
+      clusters: [
+        {
+          ...useCanvasStore.getState().clusters[0],
+          type: "sno",
+          controlPlane: 1,
+          workers: 0,
+        },
+      ],
+      nodes: [
+        {
+          ...useCanvasStore.getState().nodes[0],
+          data: {
+            ...useCanvasStore.getState().nodes[0].data,
+            type: "sno",
+            controlPlane: 1,
+            workers: 0,
+          },
+        },
+      ],
+    } as never);
+    render(<PropertiesPanel />);
+    const workers = screen.getByLabelText(/^workers$/i);
+    expect(workers).not.toBeDisabled();
+    await userEvent.clear(workers);
+    await userEvent.type(workers, "2");
+    (workers as HTMLInputElement).blur();
+    expect(useCanvasStore.getState().clusters[0].workers).toBe(2);
+  });
+
   it("mirrors summary fields onto the cluster node data", async () => {
     render(<PropertiesPanel />);
     const workers = screen.getByLabelText(/^workers$/i);

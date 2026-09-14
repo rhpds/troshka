@@ -7,6 +7,7 @@ import {
   materializeClusterInto,
   clusterNetworkIdsFromEdges,
   applyClusterNetworks,
+  assignMissingClusterMemberNicIps,
   applyClusterDisks,
   suggestClusterVips,
   vipCollision,
@@ -939,6 +940,50 @@ describe("cluster boundary auto-sizing + member grid reflow", () => {
     expect(minHeight).toBeLessThanOrEqual(actualHeight);
   });
 
+  it("SNO+workers places workers on a row below the control plane", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.type = "sno";
+    cluster.controlPlane = 1;
+    cluster.workers = 0;
+    let nodes = reconcileClusterVms(cluster, [node]).nodes;
+
+    cluster.workers = 2;
+    nodes = reconcileClusterVms(cluster, nodes).nodes;
+    const members = nodes.filter((n) => n.type === "vmNode");
+    expect(members).toHaveLength(3);
+
+    const cp = members.find((n) => memberRole(n) === "control-plane")!;
+    const workers = members.filter((n) => memberRole(n) === "worker");
+    expect(workers).toHaveLength(2);
+    expect(cp.position.y).toBeLessThan(workers[0].position.y);
+    expect(workers[0].position).not.toEqual(cp.position);
+    expect(workers[1].position.x).toBeGreaterThan(workers[0].position.x);
+  });
+
+  it("reflows members without clusterRole using cp/worker name suffixes", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.type = "sno";
+    cluster.controlPlane = 1;
+    cluster.workers = 1;
+    const cp = {
+      id: `${cluster.id}-cp-0`,
+      type: "vmNode",
+      parentId: cluster.nodeId,
+      position: { x: 0, y: 0 },
+      data: {
+        name: `${cluster.id}-cp-0`,
+        os: "rhcos",
+        clusterId: cluster.id,
+        generated: true,
+      },
+    };
+    const { nodes: materialized } = reconcileClusterVms(cluster, [node, cp as any]);
+    const members = materialized.filter((n) => n.type === "vmNode");
+    const cpNode = members.find((n) => n.id === cp.id)!;
+    const worker = members.find((n) => memberRole(n) === "worker")!;
+    expect(worker.position.y).toBeGreaterThan(cpNode.position.y);
+  });
+
   it("members do not overlap on grid layout (180×205 card rects)", () => {
     const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
     cluster.controlPlane = 4;
@@ -1068,6 +1113,61 @@ describe("Cluster Network Anchors", () => {
       expect(nics[0].name).toBe("eth0");
       expect(nics[1].name).toBe("eth1");
     }
+  });
+
+  it("assigns static IPs on every cluster network NIC when a second network is added", () => {
+    const clusterNet = {
+      id: "net-cluster",
+      type: "networkNode",
+      data: { subtype: "network", cidr: "192.168.101.0/24" },
+    } as any;
+    const bmcNet = {
+      id: "net-bmc",
+      type: "networkNode",
+      data: { subtype: "network", networkType: "bmc", cidr: "192.168.102.0/24" },
+    } as any;
+    const { node, cluster: snoCluster } = makeCluster("ocp", { x: 0, y: 0 });
+    snoCluster.type = "sno";
+    snoCluster.controlPlane = 1;
+    snoCluster.workers = 0;
+    snoCluster.networkIds = ["net-cluster", "net-bmc"];
+
+    const { nodes: members } = reconcileClusterVms(snoCluster, [node, clusterNet, bmcNet]);
+    const { nodes } = applyClusterNetworks(snoCluster, members, []);
+
+    const member = nodes.find((n) => n.type === "vmNode")!;
+    const nics = (member.data as any).nics as Array<{ ip?: string }>;
+    expect(nics[0].ip).toMatch(/^192\.168\.101\.\d+$/);
+    expect(nics[1].ip).toMatch(/^192\.168\.102\.\d+$/);
+    expect(nics[1].ip).not.toBe(nics[0].ip);
+  });
+
+  it("assignMissingClusterMemberNicIps gives each member a unique IP on shared networks", () => {
+    const clusterNet = {
+      id: "net-cluster",
+      type: "networkNode",
+      data: { subtype: "network", cidr: "10.0.0.0/24" },
+    } as any;
+    const { node: n1, cluster: c1 } = makeCluster("ocp", { x: 0, y: 0 });
+    const { node: n2, cluster: c2 } = makeCluster("ocp-2", { x: 300, y: 0 });
+    c1.type = "sno";
+    c1.controlPlane = 1;
+    c1.networkIds = ["net-cluster"];
+    c2.type = "sno";
+    c2.controlPlane = 1;
+    c2.networkIds = ["net-cluster"];
+
+    let nodes = reconcileClusterVms(c1, [n1, clusterNet]).nodes;
+    nodes = reconcileClusterVms(c2, [...nodes, n2]).nodes;
+    nodes = assignMissingClusterMemberNicIps(c1, nodes);
+    nodes = assignMissingClusterMemberNicIps(c2, nodes);
+
+    const ips = nodes
+      .filter((n) => n.type === "vmNode")
+      .map((n) => ((n.data as any).nics as Array<{ ip?: string }>)[0]?.ip)
+      .filter(Boolean);
+    expect(ips).toHaveLength(2);
+    expect(new Set(ips).size).toBe(2);
   });
 
   it("applyClusterNetworks with different network counts updates member NICs", () => {

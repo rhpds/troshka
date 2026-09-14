@@ -212,6 +212,64 @@ def _overlap(a, b):
     return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
 
 
+def test_auto_layout_honors_cluster_network_anchor_side():
+    """Networks anchored to cluster-net-top/bottom stay on that side of the box."""
+    nodes = [
+        {
+            "id": "cluster-ocp",
+            "type": "clusterNode",
+            "position": {"x": 200, "y": 300},
+            "style": {"width": 600, "height": 400},
+            "data": {"name": "ocp", "clusterId": "ocp-1"},
+        },
+        {
+            "id": "net-cluster",
+            "type": "networkNode",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "name": "network-00",
+                "subtype": "network",
+                "cidr": "192.168.101.0/24",
+            },
+        },
+        {
+            "id": "net-bmc",
+            "type": "networkNode",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "name": "BMC Network",
+                "subtype": "network",
+                "networkType": "bmc",
+                "cidr": "192.168.102.0/24",
+            },
+        },
+    ]
+    edges = [
+        {
+            "id": "a-top",
+            "source": "net-cluster",
+            "target": "cluster-ocp",
+            "sourceHandle": "bottom",
+            "targetHandle": "cluster-net-top",
+        },
+        {
+            "id": "a-bottom",
+            "source": "net-bmc",
+            "target": "cluster-ocp",
+            "sourceHandle": "top",
+            "targetHandle": "cluster-net-bottom",
+        },
+    ]
+    laid_out, _ = auto_layout(nodes, edges)
+    cluster = next(n for n in laid_out if n["id"] == "cluster-ocp")
+    top_net = next(n for n in laid_out if n["id"] == "net-cluster")
+    bottom_net = next(n for n in laid_out if n["id"] == "net-bmc")
+    cy = cluster["position"]["y"]
+    ch = cluster["style"]["height"]
+    assert top_net["position"]["y"] + 70 <= cy
+    assert bottom_net["position"]["y"] >= cy + ch
+
+
 def test_auto_layout_keeps_cluster_members_inside_boundary():
     """Auto-layout must not eject OCP cluster members from their boundary: it
     lays them out as free workloads, then the cluster-aware pass pulls them back

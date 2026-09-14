@@ -121,6 +121,45 @@ export function pickIpForNetwork(
   return pickAvailableIp(range, usedIps);
 }
 
+/** High host in a CIDR (SNO / cluster primary NIC — gateway reserved). */
+export function pickHighEndNicIp(cidr: string, usedIps: Set<string>): string | null {
+  const hosts = listCidrHosts(cidr);
+  if (hosts.length === 0) return null;
+  const reserved = new Set(usedIps);
+  reserved.add(hosts[0]); // gateway
+  for (let i = hosts.length - 1; i >= 0; i -= 1) {
+    if (!reserved.has(hosts[i])) return hosts[i];
+  }
+  return null;
+}
+
+/** BMC CIDR allocation from .11 upward (.1 gateway). */
+export function pickBmcNicIp(cidr: string, usedIps: Set<string>): string | null {
+  const base = cidr.split("/")[0].split(".").slice(0, 3).join(".");
+  if (!base || base.split(".").length !== 3) return null;
+  for (let i = 11; i < 250; i += 1) {
+    const candidate = `${base}.${i}`;
+    if (!usedIps.has(candidate)) return candidate;
+  }
+  return null;
+}
+
+/** Pick a static member NIC IP for a cluster-attached network. */
+export function pickClusterMemberNicIp(
+  netData: Record<string, unknown>,
+  usedIps: Set<string>,
+): string | null {
+  const cidr = String(netData.cidr || "");
+  if (!cidr) return null;
+  if (netData.networkType === "bmc") {
+    return pickBmcNicIp(cidr, usedIps);
+  }
+  // Cluster / machine networks: high address (matches SNO primary assignment).
+  const high = pickHighEndNicIp(cidr, usedIps);
+  if (high) return high;
+  return pickIpForNetwork(netData, usedIps);
+}
+
 function findNicNetwork(
   nodeId: string,
   nicId: string,

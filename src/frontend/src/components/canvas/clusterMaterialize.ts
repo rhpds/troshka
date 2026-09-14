@@ -1,7 +1,11 @@
 import type { Node, Edge } from "@xyflow/react";
 import type { ClusterConfig, VMDiskController, DiskSpec, VMNic } from "@/stores/canvasStore";
 import { generateDiskControllerId, generateNicId, generateMac } from "@/stores/canvasStore";
-import { collectUsedIps, listCidrHosts } from "@/lib/dhcpIpAssignment";
+import {
+  collectUsedIps,
+  listCidrHosts,
+  pickClusterMemberNicIp,
+} from "@/lib/dhcpIpAssignment";
 import { applyClusterBmc } from "@/components/canvas/clusterBmc";
 import { backfillClusterNetworkIds } from "@/components/canvas/clusterNetworkBackfill";
 
@@ -111,7 +115,32 @@ export function memberRole(
     if (group.includes("controllers")) return "control-plane";
     if (group.includes("workers")) return "worker";
   }
+  const label = String(d?.name || n.id || "");
+  if (/(?:^|-)cp-\d+$/.test(label)) return "control-plane";
+  if (/(?:^|-)worker-\d+$/.test(label)) return "worker";
   return null;
+}
+
+function memberIndex(n: Node): number {
+  const m = String((n.data as Record<string, unknown>).name || n.id || "").match(
+    /-(\d+)$/,
+  );
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+/** Split members into CP and worker rows; unclassified nodes slot with CPs (backend parity). */
+function partitionClusterMembers(members: Node[]): {
+  controlPlane: Node[];
+  workers: Node[];
+} {
+  const byIdx = (a: Node, b: Node) => memberIndex(a) - memberIndex(b);
+  const cps = members
+    .filter((n) => memberRole(n) === "control-plane")
+    .sort(byIdx);
+  const workers = members.filter((n) => memberRole(n) === "worker").sort(byIdx);
+  const placed = new Set([...cps, ...workers]);
+  const unclassified = members.filter((n) => !placed.has(n)).sort(byIdx);
+  return { controlPlane: [...cps, ...unclassified], workers };
 }
 
 /**
@@ -327,8 +356,12 @@ function addMembers(
       .filter(Boolean)
   );
   const usedNames = new Set([...nodeIds, ...memberNames]);
-  const allMembers = nodes.filter((n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === cluster.id);
-  const cpMembers = allMembers.filter((n) => memberRole(n) === "control-plane").length;
+  const allMembers = nodes.filter(
+    (n) =>
+      n.type === "vmNode" &&
+      (n.data as Record<string, unknown>).clusterId === cluster.id,
+  );
+  const cpMembers = partitionClusterMembers(allMembers).controlPlane.length;
   const addedNodes: Node[] = [];
   const addedEdges: Edge[] = [];
 
@@ -359,21 +392,17 @@ function addMembers(
  * which exceed the 180×260 card, so cards never overlap.
  */
 function reflowMembers(cluster: ClusterConfig, nodes: Node[]): Node[] {
-  const members = nodes.filter(
-    (n) =>
-      n.type === "vmNode" &&
-      (n.data as Record<string, unknown>).clusterId === cluster.id,
-  );
-  const idxOf = (n: Node): number => {
-    const m = String((n.data as Record<string, unknown>).name || "").match(/-(\d+)$/);
-    return m ? parseInt(m[1], 10) : 0;
-  };
+  const members = nodes.filter((n) => {
+    if (n.type !== "vmNode") return false;
+    const d = n.data as Record<string, unknown>;
+    if (d.clusterId === cluster.id) return true;
+    // Deployed/template members may only have parentId until heal runs.
+    return n.parentId === cluster.nodeId;
+  });
   // CPs and workers occupy SEPARATE rows: control-plane fills its own row(s)
   // first, then workers START on a fresh row below (never sharing a CP row).
-  const byIdx = (a: Node, b: Node) => idxOf(a) - idxOf(b);
-  const cps = members.filter((n) => memberRole(n) === "control-plane").sort(byIdx);
-  const workers = members.filter((n) => memberRole(n) === "worker").sort(byIdx);
-  const cpRows = Math.ceil(cps.length / COLS_MAX); // 0 when there are no CPs
+  const { controlPlane: cps, workers } = partitionClusterMembers(members);
+  const cpRows = cps.length > 0 ? Math.ceil(cps.length / COLS_MAX) : 0;
   const posById = new Map<string, { x: number; y: number }>();
   cps.forEach((n, i) => {
     posById.set(n.id, {
@@ -499,13 +528,24 @@ function computeContentBbox(
   if (visibleMembers.length === 0) {
     return { contentW: Math.max(280, CLUSTER_HEADER_MIN_W), contentH: 180 };
   }
-  // Match clusterBoxSize / backend auto_layout so canvas-added clusters get the
-  // same header clearance and cell padding as pattern-deployed ones.
-  const count = visibleMembers.length;
-  const cols = Math.max(1, Math.min(COLS_MAX, count));
-  const rows = Math.max(1, Math.ceil(count / cols));
+  // Match reflowMembers / backend auto_layout: CP row(s) first, then workers.
+  const { controlPlane: cps, workers } = partitionClusterMembers(visibleMembers);
+  const cpRows = cps.length > 0 ? Math.ceil(cps.length / COLS_MAX) : 0;
+  const workerRows =
+    workers.length > 0 ? Math.ceil(workers.length / COLS_MAX) : 0;
+  const rows = Math.max(1, cpRows + workerRows);
+  const cols = Math.max(
+    1,
+    Math.min(
+      COLS_MAX,
+      Math.max(
+        cps.length > 0 ? Math.min(cps.length, COLS_MAX) : 0,
+        workers.length > 0 ? Math.min(workers.length, COLS_MAX) : 1,
+      ),
+    ),
+  );
   return {
-    contentW: clusterContentWidth(count),
+    contentW: Math.max(2 * PAD + cols * CELL_W, CLUSTER_HEADER_MIN_W),
     contentH: HEADER_H + PAD + rows * CELL_H,
   };
 }
@@ -562,9 +602,59 @@ export function syncClusterCanvasState(
   edges: Edge[],
 ): { cluster: ClusterConfig; nodes: Node[] } {
   const [backfilled] = backfillClusterNetworkIds([cluster], nodes, edges);
-  const withIp = ensureSnoNodeIp(backfilled, nodes);
+  const withIp = assignMissingClusterMemberNicIps(backfilled, nodes);
   const withDns = applyClusterDns(backfilled, withIp);
   return { cluster: backfilled, nodes: withDns };
+}
+
+function isClusterMemberVm(node: Node, cluster: ClusterConfig): boolean {
+  if (node.type !== "vmNode") return false;
+  const d = node.data as Record<string, unknown>;
+  return d.clusterId === cluster.id || node.parentId === cluster.nodeId;
+}
+
+/**
+ * Assign static IPs to cluster member NICs that lack one — one address per
+ * entry in ``cluster.networkIds`` (eth0, eth1, …). Mirrors primary-network
+ * SNO assignment for every attached network (cluster high-end, BMC from .11).
+ */
+export function assignMissingClusterMemberNicIps(
+  cluster: ClusterConfig,
+  nodes: Node[],
+): Node[] {
+  const networkIds = cluster.networkIds ?? [];
+  if (networkIds.length === 0) return nodes;
+
+  const usedIps = collectUsedIps(nodes);
+  let changed = false;
+  const nextNodes = nodes.map((node) => {
+    if (!isClusterMemberVm(node, cluster)) return node;
+    const d = node.data as Record<string, unknown>;
+    const nics = ((d.nics as VMNic[]) || []).map((nic) => ({ ...nic }));
+    let nodeChanged = false;
+
+    for (let i = 0; i < networkIds.length && i < nics.length; i += 1) {
+      if ((nics[i].ip || "").trim()) continue;
+      const netNode = nodes.find(
+        (n) => n.id === networkIds[i] && n.type === "networkNode",
+      );
+      if (!netNode) continue;
+      const ip = pickClusterMemberNicIp(
+        netNode.data as Record<string, unknown>,
+        usedIps,
+      );
+      if (!ip) continue;
+      nics[i] = { ...nics[i], ip };
+      usedIps.add(ip);
+      nodeChanged = true;
+    }
+
+    if (!nodeChanged) return node;
+    changed = true;
+    return { ...node, data: { ...d, nics } };
+  });
+
+  return changed ? nextNodes : nodes;
 }
 
 /**
@@ -684,6 +774,7 @@ export function applyClusterNetworks(
     resultEdges = [...resultEdges, ...nicEdges];
   }
 
+  resultNodes = assignMissingClusterMemberNicIps(cluster, resultNodes);
   return { nodes: resultNodes, edges: resultEdges };
 }
 
@@ -1022,7 +1113,8 @@ export function vipCollision(
   // VIP legitimately equals that node's IP — not a collision for its own
   // cluster. Drop this cluster's member IPs from the used set (multi-node
   // clusters still flag VIP==member, which would be a real misconfiguration).
-  if (cluster.type === "sno") {
+  const pureSno = cluster.type === "sno" && (cluster.workers ?? 0) === 0;
+  if (pureSno) {
     for (const n of nodes) {
       const d = n.data as Record<string, unknown>;
       if (n.type !== "vmNode" || d.clusterId !== cluster.id) continue;
@@ -1035,7 +1127,7 @@ export function vipCollision(
   // A multi-node cluster's two VIPs must differ from each other (they are
   // separate keepalived VIPs); flag api==ingress even though our own boundary was
   // excluded from usedIps above.
-  if (cluster.type !== "sno") {
+  if (!pureSno) {
     const api = (cluster.apiVip || "").trim();
     const ing = (cluster.ingressVip || "").trim();
     if (api && api === ing && ip === api) return true;
@@ -1108,36 +1200,7 @@ function singleNodeClusterIp(cluster: ClusterConfig, nodes: Node[]): string {
  * same `nodes` ref when the member already has an IP (or it can't be resolved).
  */
 export function ensureSnoNodeIp(cluster: ClusterConfig, nodes: Node[]): Node[] {
-  const singleNode = (cluster.controlPlane ?? 0) + (cluster.workers ?? 0) <= 1;
-  if (!singleNode) return nodes;
-  const netId = (cluster.networkIds ?? [])[0];
-  if (!netId) return nodes;
-  const member = nodes.find(
-    (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === cluster.id,
-  );
-  if (!member) return nodes;
-  const nics = ((member.data as Record<string, unknown>).nics as VMNic[]) || [];
-  if (!nics.length || (nics[0].ip || "").trim()) return nodes; // already static
-
-  const netNode = nodes.find((n) => n.id === netId && n.type === "networkNode");
-  const cidr = (netNode?.data as Record<string, string | undefined> | undefined)?.cidr;
-  if (!cidr) return nodes;
-  const usedIps = collectUsedIps(nodes);
-  const hosts = listCidrHosts(cidr);
-  if (hosts.length > 0) usedIps.add(hosts[0]); // gateway
-  let ip = "";
-  for (let i = hosts.length - 1; i >= 0; i -= 1) {
-    if (!usedIps.has(hosts[i])) {
-      ip = hosts[i];
-      break;
-    }
-  }
-  if (!ip) return nodes;
-  return nodes.map((n) => {
-    if (n.id !== member.id) return n;
-    const newNics = nics.map((nic, i) => (i === 0 ? { ...nic, ip } : nic));
-    return { ...n, data: { ...n.data, nics: newNics } };
-  });
+  return assignMissingClusterMemberNicIps(cluster, nodes);
 }
 
 export function buildClusterDnsRecords(cluster: ClusterConfig, nodes?: Node[]): ClusterDnsRecord[] {

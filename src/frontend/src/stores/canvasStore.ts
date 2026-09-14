@@ -22,7 +22,12 @@ import {
   seedClustersFromDeployed,
 } from "@/components/canvas/clusterNetworkBackfill";
 import { healClusterTopology } from "@/components/canvas/clusterTopologyHeal";
-import { createBmcNetworkNode, findBmcNetwork, nextFreeBmcIp } from "@/components/canvas/clusterBmc";
+import {
+  createBmcNetworkNode,
+  findBmcNetwork,
+  nextFreeBmcIp,
+  repositionBmcNetworkClearOfClusters,
+} from "@/components/canvas/clusterBmc";
 import {
   type ShowroomConfig,
   DEFAULT_SHOWROOM_CONFIG,
@@ -2438,7 +2443,11 @@ export function syncBmcNetwork() {
     const vmNodes = nodes.filter((n) => n.type === "vmNode" && (n.data as Record<string, any>).bmcEnabled);
     const avgX = vmNodes.reduce((sum, n) => sum + (n.position?.x || 0), 0) / Math.max(vmNodes.length, 1);
     const avgY = vmNodes.reduce((sum, n) => sum + (n.position?.y || 0), 0) / Math.max(vmNodes.length, 1);
-    state.addNode(createBmcNetworkNode({ x: avgX + 300, y: avgY }));
+    const placed = repositionBmcNetworkClearOfClusters(
+      createBmcNetworkNode({ x: avgX + 300, y: avgY }),
+      nodes,
+    );
+    state.addNode(placed);
   } else if (!hasBmcVm && bmcNetNode) {
     state.deleteNode(bmcNetNode.id);
   }

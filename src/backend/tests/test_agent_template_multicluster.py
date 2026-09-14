@@ -129,6 +129,144 @@ def test_install_config_standard_and_sno():
     assert "baremetal" not in icd.get("platform", {})
 
 
+def _dual_network_member(name, cid, group, cluster_ip, data_ip, cluster_mac, data_mac):
+    return {
+        "type": "vmNode",
+        "data": {
+            "name": name,
+            "clusterId": cid,
+            "tags": {"AnsibleGroup": group},
+            "os": "rhcos",
+            "bmcEnabled": True,
+            "bmcIp": "192.168.50.10",
+            "nics": [
+                {"ip": cluster_ip, "mac": cluster_mac},
+                {"ip": data_ip, "mac": data_mac},
+            ],
+        },
+    }
+
+
+def test_install_config_multi_machine_network():
+    import yaml
+
+    from app.services.ocp.agent_template import (
+        _build_agent_config,
+        _build_install_config,
+        cluster_member_nodes,
+    )
+
+    topo = {
+        "nodes": [
+            {
+                "id": "net-cluster",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "network",
+                    "cidr": "10.0.0.0/24",
+                    "networkType": "cluster",
+                },
+            },
+            {
+                "id": "net-data",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "network",
+                    "cidr": "10.1.0.0/24",
+                    "networkType": "cluster",
+                },
+            },
+            _dual_network_member(
+                "p-cp-0",
+                "prod",
+                "controllers",
+                "10.0.0.20",
+                "10.1.0.20",
+                "52:54:00:aa:bb:01",
+                "52:54:00:aa:bb:11",
+            ),
+        ],
+        "edges": [],
+    }
+    prod = {
+        "id": "prod",
+        "name": "prod",
+        "type": "standard",
+        "controlPlane": 1,
+        "workers": 0,
+        "baseDomain": "ocp.local",
+        "apiVip": "10.0.0.10",
+        "ingressVip": "10.0.0.11",
+        "networkIds": ["net-cluster", "net-data"],
+    }
+    members = cluster_member_nodes(topo, "prod")
+    ic = yaml.safe_load(
+        _build_install_config(
+            prod,
+            members,
+            topo,
+            pull_secret="{}",
+            ssh_key="ssh-rsa x",
+            pull_through_registry=None,
+        )
+    )
+    machine_networks = ic["networking"]["machineNetwork"]
+    assert [entry["cidr"] for entry in machine_networks] == [
+        "10.0.0.0/24",
+        "10.1.0.0/24",
+    ]
+
+    ac = yaml.safe_load(_build_agent_config(prod, members, topo))
+    host = ac["hosts"][0]
+    assert [iface["name"] for iface in host["interfaces"]] == [
+        "cluster-nic",
+        "net1-nic",
+    ]
+    nm_ifaces = host["networkConfig"]["interfaces"]
+    assert nm_ifaces[0]["ipv4"]["address"][0]["ip"] == "10.0.0.20"
+    assert nm_ifaces[1]["ipv4"]["address"][0]["ip"] == "10.1.0.20"
+    assert (
+        host["networkConfig"]["routes"]["config"][0]["next-hop-interface"]
+        == "cluster-nic"
+    )
+
+
+def test_install_config_sno_with_workers_uses_baremetal():
+    import yaml
+
+    from app.services.ocp.agent_template import (
+        _build_install_config,
+        cluster_member_nodes,
+    )
+
+    topo = _two_cluster_topo()
+    sno_workers = {
+        "id": "edge",
+        "name": "edge",
+        "type": "sno",
+        "controlPlane": 1,
+        "workers": 2,
+        "baseDomain": "edge.local",
+        "apiVip": "10.0.1.10",
+        "ingressVip": "10.0.1.11",
+    }
+    ic = yaml.safe_load(
+        _build_install_config(
+            sno_workers,
+            cluster_member_nodes(topo, "dev"),
+            topo,
+            pull_secret="{}",
+            ssh_key="ssh-rsa x",
+            pull_through_registry=None,
+        )
+    )
+    assert ic["controlPlane"]["replicas"] == 1
+    assert ic["compute"][0]["replicas"] == 2
+    assert ic["platform"]["baremetal"]["apiVIPs"] == ["10.0.1.10"]
+    assert ic["platform"]["baremetal"]["ingressVIPs"] == ["10.0.1.11"]
+    assert "none" not in ic.get("platform", {})
+
+
 def test_agent_config_per_cluster():
     import yaml
 

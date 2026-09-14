@@ -4,6 +4,8 @@ import {
   collectUsedBmcIps,
   nextFreeBmcIp,
   findBmcNetwork,
+  BMC_CLUSTER_GAP,
+  repositionBmcNetworkClearOfClusters,
 } from "@/components/canvas/clusterBmc";
 import { makeCluster } from "@/components/canvas/clusterFactory";
 import { materializeClusterInto } from "@/components/canvas/clusterMaterialize";
@@ -97,6 +99,41 @@ describe("applyClusterBmc", () => {
     expect((cp!.data as Record<string, unknown>).bmcPassword).toBe("keep-me");
     expect(edges).toHaveLength(1);
     expect(edges[0].source).toBe("bmc-net-1");
+  });
+
+  it("repositions BMC outside the cluster when the boundary grows over it", () => {
+    const { node: clusterNode, cluster: cfg } = makeCluster("ocp", { x: 100, y: 50 });
+    const { nodes, edges } = materializeClusterInto(cfg, [clusterNode]);
+    const enlargedCluster = {
+      ...nodes.find((n) => n.id === cfg.nodeId)!,
+      style: { width: 900, height: 600 },
+    };
+    const enlarged = nodes.map((n) => (n.id === cfg.nodeId ? enlargedCluster : n));
+    const bmcInside = findBmcNetwork(enlarged)!;
+    expect(bmcInside.position.x).toBeLessThan(100 + 900);
+
+    const { nodes: after } = applyClusterBmc(cfg, enlarged, edges);
+    const bmcAfter = findBmcNetwork(after)!;
+    expect(bmcAfter.position.x).toBe(100 + 900 + BMC_CLUSTER_GAP);
+    expect(bmcAfter.position.x).toBeGreaterThanOrEqual(bmcInside.position.x);
+  });
+
+  it("repositionBmcNetworkClearOfClusters is a no-op when already clear", () => {
+    const bmc = {
+      id: "bmc",
+      type: "networkNode",
+      position: { x: 1200, y: 100 },
+      data: { networkType: "bmc" },
+    } as any;
+    const clusterNode = {
+      id: "cluster-ocp",
+      type: "clusterNode",
+      position: { x: 100, y: 50 },
+      style: { width: 520, height: 320 },
+      data: {},
+    } as any;
+    const out = repositionBmcNetworkClearOfClusters(bmc, [bmc, clusterNode]);
+    expect(out).toBe(bmc);
   });
 
   it("nextFreeBmcIp skips used addresses on the BMC CIDR", () => {
