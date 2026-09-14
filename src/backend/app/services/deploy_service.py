@@ -3198,7 +3198,9 @@ def cache_ops_pod_logs(project_id: str, logs: dict[str, str]) -> dict[str, str]:
             merged[ckey] = text
     if merged != cached:
         set_progress(key, merged, ttl=_OCP_LOG_CACHE_TTL)
-    return merged
+    from app.services.ocp.ops_pod_install import filter_install_log_noise
+
+    return {ckey: filter_install_log_noise(text) for ckey, text in merged.items()}
 
 
 def read_ops_pod_install_log(host, project_id: str, topology: dict) -> dict[str, str]:
@@ -4198,7 +4200,7 @@ def _clusters_for_ops_pod_restart(
 def _restart_cluster_post_boot_cleanup(
     s, host, project_id: str, topology: dict, cluster: dict
 ) -> None:
-    _eject_cluster_bmc_media(host, project_id, topology, cluster)
+    """Stop cluster VMs, wipe boot disks, then power VMs back on for ISO boot."""
     vms = _cluster_member_vm_entries(topology, cluster)
     if host.host_type == "kubevirt-cluster":
         _stop_kubevirt_vms(s, host, project_id, vms)
@@ -4209,6 +4211,7 @@ def _restart_cluster_post_boot_cleanup(
                 _wipe_vm_boot_disk_kubevirt(
                     s, host, project_id, vm["node_id"], boot_disk["node_id"]
                 )
+        _start_kubevirt_vms(s, host, project_id, vms)
         return
     if not host.ip_address:
         return
@@ -4216,6 +4219,7 @@ def _restart_cluster_post_boot_cleanup(
     pool = _get_host_pool(host, s)
     for vm in vms:
         _wipe_vm_boot_disk_troshkad(host, project_id, vm["node_id"], topology, pool)
+    _start_troshkad_vms(host, project_id, vms)
 
 
 def restart_ocp_cluster_install(project_id: str, cluster_key: str) -> None:
@@ -4247,6 +4251,8 @@ def restart_ocp_cluster_install(project_id: str, cluster_key: str) -> None:
         )
         delete_progress(f"ocp-restart-post-boot:{project_id}:{cluster_key}")
         _wait_ops_monitor_idle(project_id)
+        if post_boot:
+            _eject_cluster_bmc_media(host, project_id, topology, cluster)
         if host.host_type == "kubevirt-cluster":
             _cancel_ops_pod_install_kubevirt(host, project_id)
         else:
@@ -11012,6 +11018,22 @@ def _stop_troshkad_vms(host, project_id, vms):
         except TroshkadError as e:
             logger.warning(
                 "Stop %s: failed to stop %s: %s",
+                project_id[:8],
+                vm_name,
+                e,
+            )
+
+
+def _start_troshkad_vms(host, project_id, vms):
+    """Start VMs via troshkad (post-boot restart must re-power before ISO boot)."""
+    for vm in vms:
+        vm_name = _vm_domain_name(project_id, vm["node_id"])
+        try:
+            job_id = start_job(host, "/vms/start", {"domain_name": vm_name})
+            wait_for_job(host, job_id, timeout=120)
+        except TroshkadError as e:
+            logger.warning(
+                "Start %s: failed to start %s: %s",
                 project_id[:8],
                 vm_name,
                 e,

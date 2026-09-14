@@ -6,9 +6,15 @@ import pytest
 
 from app.services.deploy_service import (
     _clusters_for_ops_pod_restart,
+    restart_ocp_cluster_install,
     validate_restart_ocp_cluster_install,
 )
-from app.services.ocp.ops_pod_install import cluster_install_post_boot
+from app.services.ocp.ops_pod_install import (
+    PHASE_FAILED,
+    _phase_from_input,
+    cluster_install_post_boot,
+    filter_install_log_noise,
+)
 
 
 @pytest.mark.parametrize(
@@ -23,6 +29,25 @@ from app.services.ocp.ops_pod_install import cluster_install_post_boot
 )
 def test_cluster_install_post_boot(log, expected):
     assert cluster_install_post_boot(log) is expected
+
+
+def test_phase_from_input_treats_bootstrap_timeout_as_failed():
+    log = (
+        "level=error msg=Bootstrap failed to complete: "
+        "bootstrap process timed out: context deadline exceeded"
+    )
+    assert _phase_from_input(log) == PHASE_FAILED
+
+
+def test_filter_install_log_noise_drops_assisted_service_poll_spam():
+    raw = (
+        "progress line\n"
+        "Unable to retrieve cluster metadata from Agent Rest API v2GetClusterNotFound\n"
+        "Agent Rest API never initialized. Bootstrap Kube API never initialized\n"
+    )
+    filtered = filter_install_log_noise(raw)
+    assert "progress line" in filtered
+    assert "v2GetClusterNotFound" not in filtered
 
 
 def test_validate_restart_rejects_complete():
@@ -123,3 +148,93 @@ def test_clusters_for_ops_pod_restart_excludes_complete_siblings():
         expanded = _clusters_for_ops_pod_restart(topology, deployed, "ocp-a", "proj-1")
     keys = {c["id"] for c in expanded}
     assert keys == {"ocp-a"}
+
+
+def test_restart_post_boot_ejects_before_ops_pod_destroy():
+    call_order = []
+
+    project = MagicMock()
+    project.id = "proj-1"
+    project.host_id = "host-1"
+    project.vni_map = {}
+    project.deployed_topology = {"clusters": [{"id": "ocp-1", "installOnDeploy": True}]}
+    project.topology = project.deployed_topology
+
+    host = MagicMock()
+    host.host_type = "shared"  # ocpvirt hosts use troshkad, not kubevirt-cluster
+    host.ip_address = "10.0.0.1"
+
+    session = MagicMock()
+    session.query.return_value.filter_by.return_value.first.side_effect = [
+        project,
+        host,
+    ]
+
+    def _eject(*_a, **_k):
+        call_order.append("eject")
+
+    def _cancel(*_a, **_k):
+        call_order.append("cancel")
+
+    def _cleanup(*_a, **_k):
+        call_order.append("cleanup")
+
+    with patch("app.core.database.SessionLocal", return_value=session), patch(
+        "app.services.deploy_service.validate_restart_ocp_cluster_install",
+        return_value=None,
+    ), patch(
+        "app.services.deploy_service.get_progress", return_value={"post_boot": True}
+    ), patch(
+        "app.services.deploy_service.delete_progress"
+    ), patch(
+        "app.services.deploy_service._wait_ops_monitor_idle"
+    ), patch(
+        "app.services.deploy_service._eject_cluster_bmc_media", side_effect=_eject
+    ), patch(
+        "app.services.deploy_service._cancel_ops_pod_install_troshkad",
+        side_effect=_cancel,
+    ), patch(
+        "app.services.deploy_service._restart_cluster_post_boot_cleanup",
+        side_effect=_cleanup,
+    ), patch(
+        "app.services.deploy_service._cluster_for_key",
+        return_value={"id": "ocp-1"},
+    ), patch(
+        "app.services.deploy_service._clusters_for_ops_pod_restart",
+        return_value=[{"id": "ocp-1"}],
+    ), patch(
+        "app.services.deploy_service._deploy_ops_pod"
+    ), patch(
+        "app.services.deploy_service._clear_ocp_install_restart_marker"
+    ):
+        restart_ocp_cluster_install("proj-1", "ocp-1")
+
+    assert call_order.index("eject") < call_order.index("cancel")
+    assert call_order.index("cleanup") > call_order.index("cancel")
+
+
+def test_restart_post_boot_cleanup_starts_troshkad_vms():
+    from app.services.deploy_service import _restart_cluster_post_boot_cleanup
+
+    host = MagicMock()
+    host.host_type = "shared"
+    host.ip_address = "10.0.0.1"
+    session = MagicMock()
+    topology = {"nodes": []}
+    cluster = {"id": "ocp-1"}
+    vms = [{"node_id": "vm-1", "name": "cp-0"}]
+
+    with patch(
+        "app.services.deploy_service._cluster_member_vm_entries", return_value=vms
+    ), patch("app.services.deploy_service._stop_troshkad_vms") as stop, patch(
+        "app.services.deploy_service._get_host_pool", return_value="default"
+    ), patch(
+        "app.services.deploy_service._wipe_vm_boot_disk_troshkad"
+    ) as wipe, patch(
+        "app.services.deploy_service._start_troshkad_vms"
+    ) as start:
+        _restart_cluster_post_boot_cleanup(session, host, "proj-1", topology, cluster)
+
+    stop.assert_called_once_with(host, "proj-1", vms)
+    wipe.assert_called_once()
+    start.assert_called_once_with(host, "proj-1", vms)

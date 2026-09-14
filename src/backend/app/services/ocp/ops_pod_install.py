@@ -18,7 +18,26 @@ the produced script text; actual execution is a live-environment concern.
 from __future__ import annotations
 
 import ipaddress
+import re
 import shlex
+
+# Assisted-service poll noise from ``agent wait-for`` (every ~2s while API
+# state is missing). Harmless at info level but drowns real install progress.
+_INSTALL_LOG_NOISE_RE = re.compile(
+    r"v2GetClusterNotFound|"
+    r"Unable to retrieve cluster metadata from Agent Rest API|"
+    r"Agent Rest API never initialized\. Bootstrap Kube API never initialized"
+)
+
+
+def filter_install_log_noise(text: str) -> str:
+    """Drop repetitive assisted-service poll lines from install log text."""
+    if not text:
+        return text
+    return "\n".join(
+        line for line in text.splitlines() if not _INSTALL_LOG_NOISE_RE.search(line)
+    )
+
 
 from app.services.ocp.agent_template import (
     _agent_create_image_cmd,
@@ -77,6 +96,8 @@ _LOG_MARKERS = (
 # Fatal-failure markers (only consulted when the log has NOT reached "complete").
 _FAILURE_MARKERS = (
     "level=fatal",
+    "level=error msg=bootstrap failed",
+    "bootstrap process timed out",
     "install-complete command failed",
     "installation failed",
     "failed to wait for install",

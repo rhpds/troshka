@@ -1859,11 +1859,22 @@ from app.services.ocp.client_mirror import (
 )
 
 
+def _openshift_install_log_awk_pipe() -> str:
+    """Pipe awk stage: timestamp lines, drop assisted-service poll noise."""
+    return (
+        "awk '"
+        "/v2GetClusterNotFound/ { next } "
+        "/Unable to retrieve cluster metadata from Agent Rest API/ { next } "
+        "/Agent Rest API never initialized\\. Bootstrap Kube API never initialized/ { next } "
+        '{ print strftime("[%H:%M:%S]") " " $0; fflush() }\''
+    )
+
+
 def _agent_create_image_cmd(indent: str, oi_bin: str, log_path: str) -> str:
     """`openshift-install agent create image` with timestamped, tee'd output."""
     return (
         f"{indent}{oi_bin} agent create image --dir . --log-level debug 2>&1 | "
-        'awk \'{print strftime("[%H:%M:%S]") " " $0; fflush()}\' | '
+        f"{_openshift_install_log_awk_pipe()} | "
         f"tee {log_path}\n"
     )
 
@@ -1965,8 +1976,7 @@ def _wait_for_complete_cmd(indent: str, oi_bin: str, install_dir: str) -> str:
     """`openshift-install agent wait-for install-complete` with timestamped output."""
     return (
         f"{indent}{oi_bin} agent wait-for install-complete --dir {install_dir} "
-        "--log-level debug 2>&1 | "
-        'awk \'{print strftime("[%H:%M:%S]") " " $0; fflush()}\'\n'
+        f"--log-level debug 2>&1 | {_openshift_install_log_awk_pipe()}\n"
     )
 
 

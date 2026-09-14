@@ -65,7 +65,7 @@
     cp install-config.yaml install-config.yaml.bak
     cp agent-config.yaml agent-config.yaml.bak
     [ -d openshift ] && cp -a openshift openshift.bak
-    /home/cloud-user/openshift-install agent create image --dir . --log-level debug 2>&1 | awk '{print strftime("[%H:%M:%S]") " " $0; fflush()}' | tee /home/cloud-user/create-image.log
+    /home/cloud-user/openshift-install agent create image --dir . --log-level debug 2>&1 | awk '/v2GetClusterNotFound/ { next } /Unable to retrieve cluster metadata from Agent Rest API/ { next } /Agent Rest API never initialized\. Bootstrap Kube API never initialized/ { next } { print strftime("[%H:%M:%S]") " " $0; fflush() }' | tee /home/cloud-user/create-image.log
     
     echo 'Agent ISO created. Serving via HTTP and booting nodes...'
     # Open firewall for ISO serving (script runs as cloud-user)
@@ -109,7 +109,7 @@
     
     
     echo 'Waiting for cluster installation to complete...'
-    /home/cloud-user/openshift-install agent wait-for install-complete --dir /home/cloud-user/ocp-install --log-level debug 2>&1 | awk '{print strftime("[%H:%M:%S]") " " $0; fflush()}'
+    /home/cloud-user/openshift-install agent wait-for install-complete --dir /home/cloud-user/ocp-install --log-level debug 2>&1 | awk '/v2GetClusterNotFound/ { next } /Unable to retrieve cluster metadata from Agent Rest API/ { next } /Agent Rest API never initialized\. Bootstrap Kube API never initialized/ { next } { print strftime("[%H:%M:%S]") " " $0; fflush() }'
     OCP_EXIT=${PIPESTATUS[0]}
     INSTALL_END=$(date +%s)
     ELAPSED=$(( INSTALL_END - INSTALL_START ))

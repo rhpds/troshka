@@ -307,3 +307,21 @@ def test_build_install_script_golden():
     )
     golden = Path(__file__).parent / "golden" / "ocp_bastion_install_script.txt"
     assert script == golden.read_text()
+
+
+def test_filter_install_log_noise_drops_assisted_service_poll_spam():
+    from app.services.ocp.ops_pod_install import filter_install_log_noise
+
+    raw = (
+        "[13:29:57] level=info msg=Host: ocp-cp-0, reached installation stage Writing image to disk: 100%\n"
+        "[13:33:45] level=info msg=Unable to retrieve cluster metadata from Agent Rest API: "
+        "[GET /v2/clusters/{cluster_id}][404] v2GetClusterNotFound\n"
+        "[13:33:47] level=debug msg=Agent Rest API never initialized. Bootstrap Kube API never initialized\n"
+        "[13:33:49] level=info msg=Cluster installation in progress\n"
+    )
+    filtered = filter_install_log_noise(raw)
+    assert "v2GetClusterNotFound" not in filtered
+    assert "Unable to retrieve cluster metadata" not in filtered
+    assert "Agent Rest API never initialized" not in filtered
+    assert "Writing image to disk: 100%" in filtered
+    assert "Cluster installation in progress" in filtered
