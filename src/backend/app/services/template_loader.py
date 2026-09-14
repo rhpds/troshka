@@ -914,6 +914,9 @@ def _create_network_nodes(nets_def, bmc_password, net_row_y, vm_spacing):
         if net_cfg.get("domain"):
             net_data["dns"] = True
             net_data["dnsDomain"] = net_cfg["domain"]
+        elif net_cfg.get("dns") or net_cfg.get("dns_records"):
+            # Multi-domain / shared L2 templates may omit domain but still need dnsmasq.
+            net_data["dns"] = True
         if net_cfg.get("dns_records"):
             net_data["dnsRecords"] = net_cfg["dns_records"]
         if net_cfg.get("dns_upstream"):

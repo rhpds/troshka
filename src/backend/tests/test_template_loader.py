@@ -90,6 +90,23 @@ def test_resolve_rejects_unknown_override():
         )
 
 
+def test_cclm_cluster_network_dns_enabled_without_domain():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_template,
+    )
+
+    resolved = resolve_template("ocp-cclm", templates_dir=TEMPLATES_DIR)
+    topo = generate_topology_from_template(resolved)
+    cluster_net = next(
+        n
+        for n in topo["nodes"]
+        if n["type"] == "networkNode" and n["data"]["name"] == "cluster"
+    )
+    assert cluster_net["data"].get("dns") is True
+    assert cluster_net["data"].get("dnsRecords")
+
+
 def test_sno_topology_has_dns_records():
     from app.services.template_loader import (
         generate_topology_from_template,

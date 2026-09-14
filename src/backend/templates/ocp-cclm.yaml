@@ -60,6 +60,7 @@ networks:
   cluster:
     cidr: 10.0.0.0/24
     gateway: true
+    dns: true
     dns_records:
       - name: api.source.cclm.local
         ip: 10.0.0.10
