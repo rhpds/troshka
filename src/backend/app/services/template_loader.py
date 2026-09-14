@@ -204,6 +204,9 @@ def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[
         ctype = entry.get("type") or _infer_type(cp_count, wk_count)
         control_plane = 1 if ctype == "sno" else 3
         workers = _coerce_workers(entry.get("workers"), wk_count)
+        install_workers = entry.get("install_workers")
+        if install_workers is not None:
+            install_workers = _coerce_workers(install_workers, 0)
 
         # Normalize cluster to handle legacy single-disk format
         normalized = normalize_cluster_disks(entry)
@@ -238,6 +241,8 @@ def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[
                 entry.get("configure_bastion_browser", False)
             ),
         }
+        if install_workers is not None:
+            cluster_obj["installWorkers"] = install_workers
         # Preserve per-role disk lists and network IDs for member materialization.
         if normalized.get("controlPlaneDisks"):
             cluster_obj["controlPlaneDisks"] = normalized["controlPlaneDisks"]
@@ -507,7 +512,16 @@ def normalize_cluster_member_fields(topology: dict) -> dict:
     ``bootDevices`` (first data disk's storage node, else empty), and the role
     pair ``clusterRole``/``tags.AnsibleGroup`` — synced to each other, defaulting
     to worker when neither is set. Non-member VMs are left untouched.
+
+    SNO clusters with canvas workers > 0 defer worker install: those VMs are
+    marked ``deferOcpInstall`` and default to ``powerOnAtDeploy: false`` so the
+    agent ISO is not served to them until a post-install join step.
     """
+    from app.services.ocp.agent_template import member_defers_ocp_install
+
+    clusters_by_id = {
+        c["id"]: c for c in (topology.get("clusters") or []) if c.get("id")
+    }
     for node in topology.get("nodes", []):
         if node.get("type") != "vmNode":
             continue
@@ -517,6 +531,10 @@ def normalize_cluster_member_fields(topology: dict) -> dict:
         _normalize_member_install_fields(data)
         _normalize_member_role(data)
         _normalize_member_disks(node, topology)
+        cluster = clusters_by_id.get(data.get("clusterId"))
+        if cluster and member_defers_ocp_install(cluster, node, topology):
+            data["deferOcpInstall"] = True
+            data["powerOnAtDeploy"] = False
     return topology
 
 

@@ -231,26 +231,38 @@ def test_install_config_multi_machine_network():
     )
 
 
-def test_install_config_sno_with_workers_uses_baremetal_when_workers_field_missing():
-    """SNO+workers must not emit platform:none if workers omitted but members exist."""
+def test_install_config_sno_with_workers_installs_as_true_sno():
+    """SNO+workers installs as platform:none (workers join post-install)."""
     import yaml
 
     from app.services.ocp.agent_template import (
+        _build_agent_config,
         _build_install_config,
         cluster_member_nodes,
+        install_member_nodes,
     )
 
     source_members = [
-        _member("source-cp-0", "source", "controllers", "10.0.0.10", "52:54:00:01"),
-        _member("source-worker-0", "source", "workers", "10.0.0.20", "52:54:00:02"),
-        _member("source-worker-1", "source", "workers", "10.0.0.21", "52:54:00:03"),
+        _member(
+            "source-cp-0", "source", "controllers", "10.0.0.10", "52:54:00:aa:bb:01"
+        ),
+        _member(
+            "source-worker-0", "source", "workers", "10.0.0.20", "52:54:00:aa:bb:02"
+        ),
+        _member(
+            "source-worker-1", "source", "workers", "10.0.0.21", "52:54:00:aa:bb:03"
+        ),
     ]
     topo = {
         "nodes": [
             {
                 "id": "net-cluster",
                 "type": "networkNode",
-                "data": {"subtype": "network", "cidr": "10.0.0.0/24"},
+                "data": {
+                    "subtype": "network",
+                    "cidr": "10.0.0.0/24",
+                    "gateway": True,
+                },
             },
             *source_members,
         ],
@@ -261,31 +273,40 @@ def test_install_config_sno_with_workers_uses_baremetal_when_workers_field_missi
         "name": "source",
         "type": "sno",
         "controlPlane": 1,
+        "workers": 2,
+        "networkIds": ["net-cluster"],
         "baseDomain": "source.local",
         "apiVip": "10.0.0.10",
-        "ingressVip": "10.0.0.11",
+        "ingressVip": "10.0.0.10",
     }
+    members = cluster_member_nodes(topo, "source")
+    install_members = install_member_nodes(sno_workers, members, topo)
+    assert len(install_members) == 1
     ic = yaml.safe_load(
         _build_install_config(
             sno_workers,
-            cluster_member_nodes(topo, "source"),
+            install_members,
             topo,
             pull_secret="{}",
             ssh_key="ssh-rsa x",
             pull_through_registry=None,
         )
     )
-    assert ic["compute"][0]["replicas"] == 2
-    assert "baremetal" in ic.get("platform", {})
-    assert "none" not in ic.get("platform", {})
+    assert ic["controlPlane"]["replicas"] == 1
+    assert ic["compute"][0]["replicas"] == 0
+    assert ic["platform"] == {"none": {}}
+    ac = yaml.safe_load(_build_agent_config(sno_workers, install_members, topo))
+    assert len(ac["hosts"]) == 1
+    assert ac["hosts"][0]["hostname"] == "source-cp-0"
 
 
-def test_install_config_sno_with_workers_uses_baremetal():
+def test_install_config_sno_with_workers_respects_explicit_install_workers():
     import yaml
 
     from app.services.ocp.agent_template import (
         _build_install_config,
         cluster_member_nodes,
+        install_member_nodes,
     )
 
     topo = _two_cluster_topo()
@@ -295,14 +316,17 @@ def test_install_config_sno_with_workers_uses_baremetal():
         "type": "sno",
         "controlPlane": 1,
         "workers": 2,
+        "installWorkers": 0,
         "baseDomain": "edge.local",
         "apiVip": "10.0.1.10",
-        "ingressVip": "10.0.1.11",
+        "ingressVip": "10.0.1.10",
     }
+    members = cluster_member_nodes(topo, "dev")
+    install_members = install_member_nodes(sno_workers, members, topo)
     ic = yaml.safe_load(
         _build_install_config(
             sno_workers,
-            cluster_member_nodes(topo, "dev"),
+            install_members,
             topo,
             pull_secret="{}",
             ssh_key="ssh-rsa x",
@@ -310,10 +334,88 @@ def test_install_config_sno_with_workers_uses_baremetal():
         )
     )
     assert ic["controlPlane"]["replicas"] == 1
-    assert ic["compute"][0]["replicas"] == 2
-    assert ic["platform"]["baremetal"]["apiVIPs"] == ["10.0.1.10"]
-    assert ic["platform"]["baremetal"]["ingressVIPs"] == ["10.0.1.11"]
-    assert "none" not in ic.get("platform", {})
+    assert ic["compute"][0]["replicas"] == 0
+    assert ic["platform"] == {"none": {}}
+
+
+def test_bmc_for_cluster_sno_with_workers_excludes_deferred_workers():
+    from app.services.ocp.ops_pod_install import bmc_for_cluster
+
+    topo = {
+        "clusters": [
+            {
+                "id": "source",
+                "name": "source",
+                "type": "sno",
+                "controlPlane": 1,
+                "workers": 2,
+                "networkIds": ["net-cluster"],
+            }
+        ],
+        "nodes": [
+            {
+                "id": "net-bmc",
+                "type": "networkNode",
+                "data": {"networkType": "bmc", "bmcPassword": "secret"},
+            },
+            _member(
+                "source-cp-0",
+                "source",
+                "controllers",
+                "10.0.0.10",
+                "52:54:00:aa:bb:01",
+            ),
+            _member(
+                "source-worker-0",
+                "source",
+                "workers",
+                "10.0.0.20",
+                "52:54:00:aa:bb:02",
+            ),
+        ],
+    }
+    topo["nodes"][1]["data"]["bmcIp"] = "192.168.100.10"
+    topo["nodes"][2]["data"]["bmcIp"] = "192.168.100.20"
+    bmc_ips, _ = bmc_for_cluster(topo, topo["clusters"][0])
+    assert bmc_ips == ["192.168.100.10"]
+
+
+def test_normalize_cluster_member_fields_defers_sno_workers():
+    from app.services.template_loader import normalize_cluster_member_fields
+
+    topo = {
+        "clusters": [
+            {
+                "id": "source",
+                "name": "source",
+                "type": "sno",
+                "controlPlane": 1,
+                "workers": 2,
+            }
+        ],
+        "nodes": [
+            _member(
+                "source-cp-0",
+                "source",
+                "controllers",
+                "10.0.0.10",
+                "52:54:00:aa:bb:01",
+            ),
+            _member(
+                "source-worker-0",
+                "source",
+                "workers",
+                "10.0.0.20",
+                "52:54:00:aa:bb:02",
+            ),
+        ],
+    }
+    out = normalize_cluster_member_fields(topo)
+    cp = next(n for n in out["nodes"] if n["data"]["name"] == "source-cp-0")
+    wrk = next(n for n in out["nodes"] if n["data"]["name"] == "source-worker-0")
+    assert cp["data"].get("deferOcpInstall") is not True
+    assert wrk["data"]["deferOcpInstall"] is True
+    assert wrk["data"]["powerOnAtDeploy"] is False
 
 
 def test_agent_config_per_cluster():
@@ -457,6 +559,50 @@ def test_kubevirt_override_agent_dns_sets_dot2():
     assert _host_dns(ac_dev) == "10.1.0.2"
     # default route still points at each cluster's gateway
     assert _host_gateway(ac_prod) == "10.0.0.1"
+
+
+def test_kubevirt_override_agent_dns_sno_workers_omits_deferred_hosts():
+    import yaml
+
+    from app.services.deploy_service import _kubevirt_override_agent_dns
+
+    source_members = [
+        _member(
+            "source-cp-0", "source", "controllers", "10.0.0.10", "52:54:00:aa:bb:01"
+        ),
+        _member(
+            "source-worker-0", "source", "workers", "10.0.0.20", "52:54:00:aa:bb:02"
+        ),
+        _member(
+            "source-worker-1", "source", "workers", "10.0.0.21", "52:54:00:aa:bb:03"
+        ),
+    ]
+    topo = {
+        "nodes": [
+            {
+                "id": "net-cluster",
+                "type": "networkNode",
+                "data": {"subtype": "network", "cidr": "10.0.0.0/24", "gateway": True},
+            },
+            *source_members,
+        ],
+        "edges": [],
+    }
+    clusters = [
+        {
+            "id": "source",
+            "name": "source",
+            "type": "sno",
+            "controlPlane": 1,
+            "workers": 2,
+            "networkIds": ["net-cluster"],
+            "baseDomain": "source.local",
+        }
+    ]
+    _kubevirt_override_agent_dns(topo, clusters)
+    ac = yaml.safe_load(clusters[0]["_generatedAgentConfig"])
+    assert len(ac["hosts"]) == 1
+    assert ac["hosts"][0]["hostname"] == "source-cp-0"
 
 
 def test_stamp_effective_dns_ips():

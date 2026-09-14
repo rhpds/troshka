@@ -1909,6 +1909,11 @@ def _validate_ops_pod_config_files(install_clusters: list, files: dict) -> None:
         )
 
 
+def _cluster_has_deferred_workers(cluster: dict) -> bool:
+    """True when SNO install is followed by post-install worker join."""
+    return cluster.get("type") == "sno" and int(cluster.get("workers") or 0) > 0
+
+
 def _ops_pod_cluster_complete(project_id: str, cluster: dict) -> bool:
     """True when a cluster's ops-pod log shows a successful finish."""
     from app.core.redis import get_progress
@@ -1917,6 +1922,14 @@ def _ops_pod_cluster_complete(project_id: str, cluster: dict) -> bool:
     key = _ops_cluster_key(cluster)
     cached = get_progress(_ops_pod_log_cache_key(project_id)) or {}
     log = cached.get(key) or ""
+    if _cluster_has_deferred_workers(cluster):
+        return any(
+            marker in log
+            for marker in (
+                f"[{key}] deferred workers joined",
+                f"[{key}] deferred workers already joined",
+            )
+        )
     return f"[{key}] install complete" in log
 
 
@@ -2060,6 +2073,7 @@ def _build_ops_pod_runner_script(
     pull_through_registry: dict | None = None,
 ) -> str:
     """Ops-pod bash script: per-cluster recert and/or fresh agent install blocks."""
+    from app.services.ocp.join_deferred_workers import deferred_workers_for_cluster
     from app.services.ocp.ops_pod_install import (
         _BASE_ISO_PORT,
         _cluster_install_block,
@@ -2101,6 +2115,7 @@ def _build_ops_pod_runner_script(
                 _BASE_ISO_PORT + index,
                 workdir,
                 serving_ip=serving_ip,
+                deferred_workers=deferred_workers_for_cluster(topology, cluster),
             )
         )
     if recert_clusters:
@@ -2515,26 +2530,23 @@ def _kubevirt_override_agent_dns(topology, clusters):
     from app.services.ocp.agent_template import (
         _build_agent_config,
         _cidr_for_members,
-        cluster_member_nodes,
+        _cluster_members_for,
+        install_member_nodes,
     )
 
     for cluster in clusters:
-        cid = cluster.get("id")
-        members = (
-            cluster_member_nodes(topology, cid)
-            if cid
-            else [n for n in topology.get("nodes", []) if n.get("type") == "vmNode"]
-        )
+        members = _cluster_members_for(topology, cluster)
+        install_members = install_member_nodes(cluster, members, topology)
         try:
             net = ipaddress.ip_network(
-                _cidr_for_members(members, topology), strict=False
+                _cidr_for_members(install_members, topology), strict=False
             )
         except ValueError:
             continue
         # Match the operator's dnsmasq placement: first three octets + ".2".
         dns_ip = ".".join(str(net.network_address).split(".")[:3] + ["2"])
         cluster["_generatedAgentConfig"] = _build_agent_config(
-            cluster, members, topology, dns_ip_override=dns_ip
+            cluster, install_members, topology, dns_ip_override=dns_ip
         )
 
 

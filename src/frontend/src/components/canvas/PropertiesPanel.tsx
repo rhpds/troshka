@@ -864,6 +864,11 @@ function ClusterEditor({
                 : undefined
           }
         />
+        {cluster.type === "sno" && (cluster.workers ?? 0) > 0 && (
+          <div style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginTop: -4 }}>
+            Workers built after SNO installation.
+          </div>
+        )}
       </div>
       <div className="props-divider" />
 

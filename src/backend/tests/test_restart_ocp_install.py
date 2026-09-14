@@ -6,11 +6,14 @@ import pytest
 
 from app.services.deploy_service import (
     _clusters_for_ops_pod_restart,
+    _ops_pod_cluster_complete,
     restart_ocp_cluster_install,
     validate_restart_ocp_cluster_install,
 )
 from app.services.ocp.ops_pod_install import (
+    PHASE_COMPLETE,
     PHASE_FAILED,
+    PHASE_WAITING,
     _phase_from_input,
     cluster_install_post_boot,
     filter_install_log_noise,
@@ -37,6 +40,35 @@ def test_phase_from_input_treats_bootstrap_timeout_as_failed():
         "bootstrap process timed out: context deadline exceeded"
     )
     assert _phase_from_input(log) == PHASE_FAILED
+
+
+def test_phase_from_input_worker_join_stays_waiting_until_joined():
+    sno_done = "[source] install complete\n[source] control-plane-usable"
+    assert _phase_from_input(sno_done) == PHASE_COMPLETE
+
+    joining = sno_done + "\n[source] joining 2 deferred worker(s)"
+    assert _phase_from_input(joining) == PHASE_WAITING
+
+    building = joining + "\n[source] node-image create for worker-0"
+    assert _phase_from_input(building) == PHASE_WAITING
+
+    ready_poll = building + "\n[source] worker nodes Ready: 1/2"
+    assert _phase_from_input(ready_poll) == PHASE_WAITING
+
+    joined = ready_poll + "\n[source] deferred workers joined"
+    assert _phase_from_input(joined) == PHASE_COMPLETE
+
+
+def test_ops_pod_cluster_complete_waits_for_deferred_workers():
+    cluster = {"id": "source", "name": "source", "type": "sno", "workers": 2}
+    sno_log = "[source] install complete"
+    joined_log = "[source] install complete\n[source] deferred workers joined"
+
+    with patch("app.core.redis.get_progress", return_value={"source": sno_log}):
+        assert _ops_pod_cluster_complete("proj-1", cluster) is False
+
+    with patch("app.core.redis.get_progress", return_value={"source": joined_log}):
+        assert _ops_pod_cluster_complete("proj-1", cluster) is True
 
 
 def test_filter_install_log_noise_drops_assisted_service_poll_spam():

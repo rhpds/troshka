@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { useCanvasStore } from "@/stores/canvasStore";
+import { useCanvasStore, type ClusterConfig } from "@/stores/canvasStore";
 
 /**
  * Per-cluster OCP install log + status modal, opened from a cluster box's
@@ -25,6 +25,18 @@ const INSTALL_STAGES: { label: string; re: RegExp }[] = [
   { label: "Install complete", re: /install complete|Cluster is installed|Install is complete|installation completed/i },
 ];
 
+// SNO + deferred workers: control plane installs first; workers join after via
+// ``oc adm node-image create`` (see join_deferred_workers.py breadcrumbs).
+const WORKER_JOIN_STAGES: { label: string; re: RegExp }[] = [
+  { label: "Joining worker nodes", re: /joining \d+ deferred worker/i },
+  { label: "Building worker ISO", re: /node-image create for/i },
+  { label: "Booting worker nodes", re: /Node ISO URL|net-booting worker/i },
+  {
+    label: "Worker nodes ready",
+    re: /deferred workers joined|worker nodes Ready:/i,
+  },
+];
+
 // PATTERN (recert) deploys don't reinstall — the disks are already installed and
 // were recerted offline (kubelet-PKI wipe), then the ops pod recerts online. The
 // steps are completely different from a fresh agent install, matched against the
@@ -38,9 +50,27 @@ const RECERT_STAGES: { label: string; re: RegExp }[] = [
   { label: "Recert complete", re: /install complete/i },
 ];
 
+export function clusterHasDeferredWorkers(cluster?: ClusterConfig): boolean {
+  return cluster?.type === "sno" && (cluster?.workers ?? 0) > 0;
+}
+
+function deferredWorkersInLog(log: string): boolean {
+  return /joining \d+ deferred worker|node-image create for|deferred workers joined|worker nodes Ready:/i.test(
+    log,
+  );
+}
+
 /** Pattern deploys recert (never reinstall); the ops-pod log carries "(recert)". */
-function stagesFor(log: string): { label: string; re: RegExp }[] {
-  return /\(recert\)/i.test(log) ? RECERT_STAGES : INSTALL_STAGES;
+export function stagesFor(
+  log: string,
+  cluster?: ClusterConfig,
+): { label: string; re: RegExp }[] {
+  if (/\(recert\)/i.test(log)) return RECERT_STAGES;
+  if (clusterHasDeferredWorkers(cluster) || deferredWorkersInLog(log)) {
+    const snoComplete = INSTALL_STAGES[INSTALL_STAGES.length - 1];
+    return [...INSTALL_STAGES.slice(0, -1), snoComplete, ...WORKER_JOIN_STAGES];
+  }
+  return INSTALL_STAGES;
 }
 
 type StageState = "done" | "active" | "pending";
@@ -74,17 +104,40 @@ function parseOperators(log: string): { pending: string[] } {
   return { pending };
 }
 
-function deriveStages(log: string): { label: string; state: StageState }[] {
-  const stages = stagesFor(log);
+/** Latest worker Ready count from poll breadcrumbs (``worker nodes Ready: X/Y``). */
+export function parseWorkerReady(log: string): { ready: number; expected: number } | null {
+  let last: { ready: number; expected: number } | null = null;
+  for (const line of log.split("\n")) {
+    const m = line.match(/worker nodes Ready:\s*(\d+)\/(\d+)/i);
+    if (m) last = { ready: parseInt(m[1], 10), expected: parseInt(m[2], 10) };
+  }
+  return last;
+}
+
+export function deriveStages(
+  log: string,
+  cluster?: ClusterConfig,
+): { label: string; state: StageState }[] {
+  const stages = stagesFor(log, cluster);
   let last = -1;
   stages.forEach((s, i) => {
     if (s.re.test(log)) last = i;
   });
   const completeIdx = stages.length - 1;
+  const workersJoined = /deferred workers joined/i.test(log);
   return stages.map((s, i) => {
     let state: StageState = "pending";
-    if (i < last || (i === last && last === completeIdx)) state = "done";
-    else if (i === last) state = "active";
+    if (
+      s.label === "Worker nodes ready" &&
+      !workersJoined &&
+      s.re.test(log)
+    ) {
+      state = "active";
+    } else if (i < last || (i === last && last === completeIdx)) {
+      state = "done";
+    } else if (i === last) {
+      state = "active";
+    }
     return { label: s.label, state };
   });
 }
@@ -94,6 +147,7 @@ export default function ClusterInstallLogModal() {
   const close = useCanvasStore((s) => s.closeClusterLog);
   const projectId = useCanvasStore((s) => s.currentProjectId);
   const nodes = useCanvasStore((s) => s.nodes);
+  const clusters = useCanvasStore((s) => s.clusters);
   const [log, setLog] = useState("");
   const [clusterStatus, setClusterStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -207,13 +261,17 @@ export default function ClusterInstallLogModal() {
 
   if (!target) return null;
 
-  const stages = deriveStages(log);
+  const cluster = clusters.find(
+    (c) => c.id === target.clusterKey || c.name === target.clusterKey,
+  );
+  const stages = deriveStages(log, cluster);
   const ops = parseOperators(log);
+  const workerReady = parseWorkerReady(log);
   const installed = stages[stages.length - 1]?.state === "done";
   const failed =
     !restarting &&
     (clusterStatus === "error" ||
-      /level=fatal|\[.*\] install failed/i.test(log));
+      /level=fatal|\[.*\] install failed|worker join timed out/i.test(log));
   // Terminal = complete OR failed: stop advancing the timer either way.
   const terminal = installed || failed;
 
@@ -507,6 +565,20 @@ export default function ClusterInstallLogModal() {
                         {op}
                       </div>
                     ))}
+                  </div>
+                )}
+                {s.label === "Worker nodes ready" &&
+                  s.state === "active" &&
+                  workerReady &&
+                  workerReady.ready < workerReady.expected && (
+                  <div style={{ fontSize: 10, marginTop: 2, marginBottom: 2, lineHeight: 1.8, paddingLeft: 22 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#22d3ee" }}>
+                      <span
+                        className="project-btn-spinner"
+                        style={{ width: 8, height: 8, display: "inline-block", verticalAlign: "middle" }}
+                      />
+                      {workerReady.ready}/{workerReady.expected} Ready
+                    </div>
                   </div>
                 )}
                 </React.Fragment>

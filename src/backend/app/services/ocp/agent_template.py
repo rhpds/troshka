@@ -324,15 +324,57 @@ def _generate_dns_manifests(topology, base_domain):
     return lines
 
 
-def _cluster_is_sno(cluster, members, topology=None):
-    """True when 1 control-plane and 0 workers (platform: none).
+def _cluster_install_workers(cluster, topology):
+    """Worker replica count for openshift-install (may differ from canvas ``workers``).
 
-    ``type: sno`` with workers > 0 is SNO+workers — multi-node baremetal, not
-    platform none. Uses the same replica resolution as :func:`_cluster_replicas`
-    so a missing ``workers`` field still reflects materialized member VMs.
+    OpenShift agent install only supports 1 CP + 0 workers (true SNO) or 3+ CP
+    with workers.  ``type: sno`` with canvas ``workers`` > 0 installs as SNO
+    (``installWorkers`` 0) unless ``installWorkers`` is set explicitly.
     """
+    explicit = cluster.get("installWorkers")
+    if explicit is not None:
+        return int(explicit)
+    cp, workers = _cluster_replicas(cluster, topology)
+    if cluster.get("type") == "sno" and cp == 1 and workers > 0:
+        return 0
+    return workers
+
+
+def _cluster_install_replicas(cluster, topology):
+    """Resolve (control_plane, worker) counts for install-config/agent-config."""
+    cp, _ = _cluster_replicas(cluster, topology)
+    return cp, _cluster_install_workers(cluster, topology)
+
+
+def member_defers_ocp_install(cluster, node, topology) -> bool:
+    """True when a worker VM waits for post-install join (SNO + canvas workers)."""
+    if _node_role(node) != "worker":
+        return False
+    _, install_workers = _cluster_install_replicas(cluster, topology)
+    canvas_workers = _cluster_replicas(cluster, topology)[1]
+    return install_workers == 0 and canvas_workers > 0
+
+
+def install_member_nodes(cluster, members, topology):
+    """VM nodes that participate in the agent-based install for ``cluster``.
+
+    SNO clusters with canvas ``workers`` > 0 install as true SNO (CP only); worker
+    VMs are provisioned on the canvas but excluded until post-install join.
+    """
+    _, install_workers = _cluster_install_replicas(cluster, topology)
+    if install_workers > 0:
+        return members
+    return [n for n in members if _node_role(n) == "control-plane"]
+
+
+# Back-compat alias for in-repo callers during transition.
+_install_member_nodes = install_member_nodes
+
+
+def _cluster_is_sno(cluster, members, topology=None):
+    """True when install uses 1 control-plane and 0 workers (``platform: none``)."""
     topo = topology if topology is not None else {"nodes": members}
-    cp, workers = _cluster_replicas(cluster, topo)
+    cp, workers = _cluster_install_replicas(cluster, topo)
     return cp == 1 and workers == 0
 
 
@@ -693,7 +735,8 @@ def _customize_one_cluster(topology, cluster, config, include_extras):
     """
     resolved = config.get("resolved", {})
     members = _cluster_members_for(topology, cluster)
-    api_vip, ingress_vip = resolve_cluster_vips(cluster, members, topology)
+    install_members = install_member_nodes(cluster, members, topology)
+    api_vip, ingress_vip = resolve_cluster_vips(cluster, install_members, topology)
 
     # Store derived VIPs back on cluster so subsequent clusters can exclude them
     if not cluster.get("apiVip"):
@@ -704,13 +747,15 @@ def _customize_one_cluster(topology, cluster, config, include_extras):
     ptr = _cluster_pull_through_registry(cluster, resolved)
     cluster["_generatedInstallConfig"] = _build_install_config(
         cluster,
-        members,
+        install_members,
         topology,
         config.get("pull_secret_json", ""),
         config.get("ssh_pub_key", ""),
         pull_through_registry=ptr,
     )
-    cluster["_generatedAgentConfig"] = _build_agent_config(cluster, members, topology)
+    cluster["_generatedAgentConfig"] = _build_agent_config(
+        cluster, install_members, topology
+    )
     _setup_dns_records(
         topology,
         cluster.get("name", "ocp"),
@@ -1649,7 +1694,7 @@ def _build_install_config(
     """
     cluster_name = cluster.get("name", "ocp")
     base_domain = cluster.get("baseDomain", "ocp.local")
-    num_masters, num_workers = _cluster_replicas(cluster, topology)
+    num_masters, num_workers = _cluster_install_replicas(cluster, topology)
     api_vip, ingress_vip = resolve_cluster_vips(cluster, members, topology)
 
     ic_lines = [

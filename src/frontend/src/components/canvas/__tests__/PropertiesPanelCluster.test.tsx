@@ -94,6 +94,7 @@ describe("PropertiesPanel cluster editor", () => {
     await userEvent.type(workers, "2");
     (workers as HTMLInputElement).blur();
     expect(useCanvasStore.getState().clusters[0].workers).toBe(2);
+    expect(screen.getByText(/workers built after sno installation/i)).toBeInTheDocument();
   });
 
   it("mirrors summary fields onto the cluster node data", async () => {

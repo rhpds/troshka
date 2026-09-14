@@ -47,6 +47,7 @@ from app.services.ocp.agent_template import (
     _redfish_insert_media_cmd,
     _serve_iso_cmd,
     _wait_for_complete_cmd,
+    install_member_nodes,
 )
 
 # Base HTTP port for serving each cluster's agent ISO; incremented per cluster so
@@ -102,6 +103,7 @@ _FAILURE_MARKERS = (
     "installation failed",
     "failed to wait for install",
     "recert failed",  # recert-mode block's fail-closed exit (kubeconfig/gate)
+    "worker join timed out",
 )
 
 
@@ -117,6 +119,17 @@ def _phase_from_input(value: str) -> str:
     if text in _KNOWN_PHASES:
         return text
     lowered = text.lower()
+    if "deferred workers joined" in lowered:
+        return PHASE_COMPLETE
+    if (
+        ("joining" in lowered and "deferred worker" in lowered)
+        or "node-image create for" in lowered
+        or "node iso url:" in lowered
+        or "net-booting worker" in lowered
+        or "worker nodes ready:" in lowered
+        or ("waiting for" in lowered and "worker node" in lowered)
+    ):
+        return PHASE_WAITING
     if "install complete" in lowered:
         return PHASE_COMPLETE
     if any(marker in lowered for marker in _FAILURE_MARKERS):
@@ -287,7 +300,9 @@ def bmc_for_cluster(topology: dict, cluster: dict) -> tuple[list[str], str]:
     never leaks one cluster's BMCs into another's Redfish loop. The password is
     read from the topology's BMC network node (shared across clusters).
     """
-    members = _cluster_members_for(topology, cluster)
+    members = install_member_nodes(
+        cluster, _cluster_members_for(topology, cluster), topology
+    )
     bmc_ips: list[str] = []
     for node in members:
         td = node.get("data", {})
@@ -462,6 +477,7 @@ def _cluster_install_block(
     port: int,
     workdir: str,
     serving_ip: str | None = None,
+    deferred_workers: list[dict] | None = None,
 ) -> str:
     """One cluster's install steps, wrapped in a backgrounded subshell.
 
@@ -477,31 +493,14 @@ def _cluster_install_block(
     ``trap`` reaps the ISO HTTP server on any exit (success or failure). The
     trailing ``pids+=($!)`` records this cluster's PID for the top-level join.
     """
+    from app.services.ocp.join_deferred_workers import build_join_deferred_workers_cmd
+
     cluster_dir = f"{workdir}/{cluster_key}"
     bmc_ips_str = " ".join(bmc_ips)
-    return (
-        f"# ===== cluster {cluster_key} =====\n"
-        "(\n"
-        + _install_log_open_cmd(cluster_dir)
-        + "  set -e\n"
-        + "  set -o pipefail\n"
-        + f'  echo "[{cluster_key}] starting agent-based install"\n'
-        + f"  cd {cluster_dir}\n"
+    workers = deferred_workers or []
+    install_body = (
+        f'  echo "[{cluster_key}] starting agent-based install"\n'
         + _fresh_install_reset_cmd("  ", cluster_dir)
-        # Idempotency guard: a restarted pod (restart_policy=always) must not
-        # re-run the installer for a cluster whose install ACTUALLY completed.
-        # Key on the post-install sentinel (written only after `wait-for
-        # install-complete` succeeds), NOT auth/kubeconfig — `agent create image`
-        # writes auth/kubeconfig up front, before any node boots, so a failure
-        # after create-image (e.g. an unreachable BMC) would otherwise latch a
-        # permanent fake "already installed" skip and hang forever. `exit 0` here
-        # exits ONLY this cluster's subshell as success (the block is `( ... ) &`),
-        # so the top-level per-PID join sees it as a success.
-        + f"  if [ -f {cluster_dir}/.install-complete ]; then "
-        + f'echo "[{cluster_key}] already installed, skipping"; exit 0; fi\n'
-        + f"  BMC_PASS={shlex.quote(bmc_password)}\n"
-        # Initialise HTTP_PID before the trap: under `set -u` a failure before the
-        # ISO server starts would otherwise abort the trap with "unbound variable".
         + '  HTTP_PID=""\n'
         + "  trap 'kill $HTTP_PID 2>/dev/null || true' EXIT\n"
         + _agent_create_image_resume_cmd("  ")
@@ -510,10 +509,29 @@ def _cluster_install_block(
         + _wait_for_complete_cmd("  ", "openshift-install", ".")
         + "  echo 'Ejecting agent ISO from nodes...'\n"
         + _redfish_eject_media_cmd("  ", bmc_ips_str)
-        # Completion sentinel: only reached when wait-for succeeded (set -e), so a
-        # restarted pod skips ONLY a genuinely-installed cluster (see the guard).
         + f"  touch {cluster_dir}/.install-complete\n"
         + f'  echo "[{cluster_key}] install complete"\n'
+    )
+    post_install = (
+        f'  echo "[{cluster_key}] control-plane-usable"\n'
+        + build_join_deferred_workers_cmd(
+            "  ", cluster_key, workers, bmc_password, port, serving_ip
+        )
+    )
+    return (
+        f"# ===== cluster {cluster_key} =====\n"
+        "(\n"
+        + _install_log_open_cmd(cluster_dir)
+        + "  set -e\n"
+        + "  set -o pipefail\n"
+        + f"  cd {cluster_dir}\n"
+        + f"  BMC_PASS={shlex.quote(bmc_password)}\n"
+        + f"  if [ -f {cluster_dir}/.install-complete ]; then\n"
+        + f'    echo "[{cluster_key}] install already complete, skipping agent install"\n'
+        + "  else\n"
+        + install_body
+        + "  fi\n"
+        + post_install
         + ") &\n"
         + "pids+=($!)\n"
     )
@@ -802,6 +820,7 @@ def build_ops_pod_install_script(
     workdir: str,
     net_ip_assignments: list[tuple[str, str]] | None = None,
     serving_ip: str | None = None,
+    topology: dict | None = None,
 ) -> str:
     """Generate the ops-pod bash script that installs every cluster in parallel.
 
@@ -829,6 +848,9 @@ def build_ops_pod_install_script(
         "\n",
         "pids=()\n",
     ]
+    from app.services.ocp.join_deferred_workers import deferred_workers_for_cluster
+
+    topo = topology or {}
     for index, cluster in enumerate(clusters):
         key = _cluster_key(cluster)
         bmc_ips, bmc_password = bmc_by_cluster.get(key, ([], ""))
@@ -840,6 +862,7 @@ def build_ops_pod_install_script(
                 _BASE_ISO_PORT + index,
                 workdir,
                 serving_ip=serving_ip,
+                deferred_workers=deferred_workers_for_cluster(topo, cluster),
             )
         )
     parts.append(_ops_pod_join_and_hold_cmd())

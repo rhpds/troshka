@@ -16,7 +16,7 @@ This replaces a manually built `zf4ws` / `bqc4v` pair with a repeatable catalog 
 
 | | Production notes | Catalog item |
 |---|------------------|--------------|
-| Source | 3 CP + 3 workers | **SNO + 2 workers** (1 CP, 2 workers) |
+| Source | 3 CP + 3 workers | **SNO + 2 workers** (1 CP SNO install, 2 workers joined post-install) |
 | Destination | 3 CP + 3 workers | **SNO** (1 CP, 0 workers) |
 | Provider | Bare metal | **KubeVirt native** (Troshka `kubevirt` provider) |
 | Storage | External Ceph (shared) | Same — **pre-provisioned external Ceph** (not created by Troshka) |
@@ -29,7 +29,7 @@ This replaces a manually built `zf4ws` / `bqc4v` pair with a repeatable catalog 
 | `migration` | `172.16.100.0/24` | **both** clusters NIC1 | Shared L2 for node + lm-network traffic |
 | `bmc` | `192.168.100.0/24` | BMC (Troshka auto) | Redfish / agent install |
 
-Machine-network IPs: source API/CP `.10`, ingress `.11`, workers `.20`–`.21`; destination SNO `.110` (API + ingress on node IP). Both `base_domain`s share one L2; dnsmasq carries FQDN records for each. Source uses baremetal agent install (1 CP + 2 workers) — API and ingress VIPs must differ per OCP 4.22.
+Machine-network IPs: source API/CP/ingress `.10`, workers `.20`–`.21`; destination SNO `.110` (API + ingress on node IP). Both `base_domain`s share one L2; dnsmasq carries FQDN records for each. Source template uses `type: sno` + `workers: 2`; Troshka auto-translates to a true SNO install (CP-only agent config, `platform: none`), defers worker VMs (`deferOcpInstall`, `powerOnAtDeploy: false`), then the ops pod joins them post-install via `oc adm node-image create` + Redfish boot (`join_deferred_workers.py` — no external Ansible repo).
 
 ### Migration L2 address plan (explicit in template — no auto-assign)
 
@@ -75,9 +75,11 @@ ocp:
 - Every RHCOS member gets `nestedVirt: true` (host-passthrough CPU).
 - Placement must target `host_type=kubevirt-cluster` (new `requiresKubevirt` template flag).
 
-## 6. Post-install (demo_workloads — not Troshka core)
+## 6. Post-install
 
-Workloads run after both clusters reach control-plane-usable (recert gate). Chain:
+**Worker join (source SNO+2):** integrated in Troshka ops pod (`join_deferred_workers.py`) — runs automatically after the SNO install completes.
+
+**Operators/HCO/Forklift (demo_workloads):** workloads run after control-plane-usable. Chain:
 
 1. **Operators** — CNV, MTV, ODF (external), Submariner, nmstate, cert-manager, MetalLB (OLM subscriptions on both clusters).
 2. **HCO** — `decentralizedLiveMigration: true`, `liveMigrationConfig.network: lm-network`, timeouts from notes.
