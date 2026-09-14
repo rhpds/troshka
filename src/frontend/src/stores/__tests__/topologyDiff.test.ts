@@ -123,6 +123,75 @@ describe("computeTopologyDiff", () => {
     expect(diff.find((e) => e.resourceType === "External IP")).toMatchObject({ kind: "added", name: "web" });
   });
 
+  it("ignores deploy-regenerated showroom init containers (pattern deploy)", () => {
+    const backendNginxCommand =
+      "mkdir -p /showroom/nginx /showroom/repo /showroom/www && chown 1001 /showroom/www && " +
+      'echo "$NGINX_B64" | base64 -d > /showroom/nginx/nginx.conf';
+    const frontendNginxCommand =
+      'mkdir -p /showroom/nginx /showroom/repo && echo "$NGINX_B64" | base64 -d > /showroom/nginx/nginx.conf';
+    const deployedShowroom = {
+      name: "showroom",
+      isShowroom: true,
+      isPod: true,
+      buildContent: false,
+      initContainers: [
+        {
+          name: "git-cloner",
+          image: "quay.io/rhpds/git-cloner:v1.1.4",
+          mounts: [{ diskNodeId: "disk-1", mountPath: "/showroom" }],
+        },
+        {
+          name: "nginx-config",
+          image: "docker.io/library/busybox:1.36",
+          envVars: [{ key: "NGINX_B64", value: "abc" }],
+          command: backendNginxCommand,
+          mounts: [{ diskNodeId: "disk-1", mountPath: "/showroom" }],
+        },
+        {
+          name: "antora-builder",
+          image: "quay.io/rhpds/antora:v1.2.2",
+          mounts: [{ diskNodeId: "disk-1", mountPath: "/showroom" }],
+        },
+      ],
+    };
+    const canvasShowroom = {
+      ...deployedShowroom,
+      initContainers: [
+        { name: "nginx-config", image: "docker.io/library/busybox:1.36", command: frontendNginxCommand },
+      ],
+    };
+    const showroom: Node = {
+      id: "showroom-1",
+      type: "containerNode",
+      position: { x: 0, y: 0 },
+      data: canvasShowroom,
+    };
+    const state: TopologyDiffState = {
+      ...emptyBaseline,
+      nodes: [showroom],
+      deployedNodeData: { "showroom-1": baseline(deployedShowroom) },
+    } as TopologyDiffState;
+    expect(computeTopologyDiff(state)).toEqual([]);
+    expect(computeTopologyDirty(state)).toBe(false);
+  });
+
+  it("ignores effectiveDnsIp display stamp (provider-derived)", () => {
+    const net: Node = {
+      id: "net1",
+      type: "networkNode",
+      position: { x: 0, y: 0 },
+      data: { name: "cluster", subtype: "network", cidr: "10.0.0.0/24", effectiveDnsIp: "10.0.0.2" },
+    };
+    const state: TopologyDiffState = {
+      ...emptyBaseline,
+      nodes: [net],
+      deployedNodeData: {
+        net1: baseline({ name: "cluster", subtype: "network", cidr: "10.0.0.0/24", effectiveDnsIp: "10.0.0.1" }),
+      },
+    } as TopologyDiffState;
+    expect(computeTopologyDiff(state)).toEqual([]);
+  });
+
   it("reports an added connection with resolved endpoint names", () => {
     const net: Node = { id: "net1", type: "networkNode", position: { x: 0, y: 0 }, data: { name: "lab-net", subtype: "network" } };
     const vm = vmNode({ name: "bastion" });

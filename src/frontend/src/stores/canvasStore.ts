@@ -534,7 +534,17 @@ const DEPLOY_TRANSIENT_NODE_KEYS = [
   "status", "redeployStep", "redeployDetail", "liveBootDevs",
   "resolvedS3Path", "presignedUrl", "ciGeneratedUserData",
   "externalEndpoints",
+  // Stamped at deploy from provider type (KubeVirt .2 vs troshkad .1) for palette
+  // display only — the user-editable field is dnsServerIp.
+  "effectiveDnsIp",
 ] as const;
+
+const SHOWROOM_INIT_CONTAINER_NAMES = new Set([
+  "git-cloner",
+  "nginx-config",
+  "antora-builder",
+  "oc-fetch",
+]);
 
 // The showroom scaffold's containers are regenerated at deploy from
 // runtime-resolved values the frontend can't reproduce pre-deploy (VM IPs and
@@ -552,6 +562,13 @@ function normalizeShowroomContainer(c: unknown): unknown {
   }
   const name = String(out.name || "");
   const image = String(out.image || "");
+  if (SHOWROOM_INIT_CONTAINER_NAMES.has(name)) {
+    // Deploy regenerates these from showroomTabs and always attaches the
+    // showroom disk mount; the canvas materialization uses a shorter
+    // nginx-config command. Neither belongs in the dirty comparison.
+    delete out.mounts;
+    if (name === "nginx-config") delete out.command;
+  }
   if (name.startsWith("wetty-") || image.includes("wetty")) {
     delete out.memory;
     if (Array.isArray(out.command)) {
@@ -625,9 +642,15 @@ export function stableNodeData(
     // read perpetually dirty. showroomTabs IS compared, so a real tab change still
     // dirties; drop only the derived containers here.
     if (Array.isArray(stable.initContainers)) {
-      stable.initContainers = (stable.initContainers as Array<Record<string, unknown>>)
-        .filter((c) => c?.name !== "oc-fetch")
-        .map(normalizeShowroomContainer);
+      let inits = (stable.initContainers as Array<Record<string, unknown>>)
+        .filter((c) => c?.name !== "oc-fetch");
+      // Pattern/snapshot deploys skip git-cloner + antora at runtime
+      // (buildContent=false) but keep them in the persisted spec — drop them
+      // from dirty compare so only the regenerated nginx-config matters.
+      if (stable.buildContent === false) {
+        inits = inits.filter((c) => c?.name === "nginx-config");
+      }
+      stable.initContainers = inits.map(normalizeShowroomContainer);
     }
     if (Array.isArray(stable.podContainers)) {
       stable.podContainers = (stable.podContainers as Array<Record<string, unknown>>)
