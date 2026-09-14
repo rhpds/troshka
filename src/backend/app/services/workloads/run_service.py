@@ -110,16 +110,16 @@ def _run_limit(target_map: dict | None) -> str | None:
     return ",".join(vm_names)
 
 
-def _inventory_connection_mode(target_map: dict | None) -> str:
-    """Pick the troshka.cloud inventory connection mode.
+def _inventory_connection_mode(_target_map: dict | None) -> str:
+    """Always use the bastionless "troshka" inventory connection mode.
 
-    VM-targeted runs use "troshka" (commands proxied over the Troshka API's
-    /vms/{id}/exec — no bastion/ProxyJump needed). Everything else keeps the
-    default "ssh" mode (bastion ProxyJump), preserving prior behavior.
+    Workloads must NEVER require a bastion. The troshka.cloud connection plugin
+    proxies commands over the Troshka API (/vms/{id}/exec, server-side exec) so
+    no bastion/ProxyJump is ever needed — for VM-targeted, cluster, or
+    whole-project runs alike. (The alternative "ssh" mode hard-errors without a
+    bastion, which we avoid at all costs.)
     """
-    if (target_map or {}).get("mode") == "vms":
-        return "troshka"
-    return "ssh"
+    return "troshka"
 
 
 def run_workload_job(run_id: str) -> None:
@@ -144,7 +144,9 @@ def run_workload_job(run_id: str) -> None:
 
             validate_vm_names(topo, vm_names)
         elif _should_validate_inventory(run.target_map):
-            validate_ansible_groups(topo, require_bastion=(not _has_ocp(project)))
+            # Never require a bastion — the troshka connection mode execs via the
+            # Troshka API server-side, so no bastion/ProxyJump host is needed.
+            validate_ansible_groups(topo, require_bastion=False)
 
         from app.core.config import config
         from app.services.workloads import repo_cache
