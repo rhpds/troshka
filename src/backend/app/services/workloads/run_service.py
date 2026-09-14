@@ -47,6 +47,7 @@ def start_workload_run(
     target_map=None,
     requirements_content=None,
     ee_image=None,
+    extra_vars=None,
     owner_id=None,
 ) -> WorkloadRun:
     run = WorkloadRun(
@@ -57,6 +58,7 @@ def start_workload_run(
         target_map=target_map,
         requirements_content=requirements_content,
         ee_image=ee_image,
+        extra_vars=extra_vars,
         owner_id=owner_id,
         status="pending",
     )
@@ -86,6 +88,28 @@ def _has_ocp(project) -> bool:
     )
 
 
+def _resolve_kubeconfig(topology: dict, target_map: dict | None) -> str | None:
+    """Resolve the kubeconfig for a workload run.
+    If target_map has cluster_id, return that cluster's kubeconfig;
+    otherwise return the first cluster's kubeconfig (legacy behavior)."""
+    creds = _stored_cluster_creds(topology)
+    cluster_id = (target_map or {}).get("cluster_id")
+    if cluster_id:
+        # Targeted cluster run
+        pw_kc = creds.get(cluster_id)
+        return pw_kc[1] if pw_kc else None
+    # Default: first cluster
+    return next((kc for (_pw, kc) in creds.values() if kc), None)
+
+
+def _run_limit(target_map: dict | None) -> str | None:
+    """Build the --limit value from target_map.vm_names (comma-separated list)."""
+    vm_names = (target_map or {}).get("vm_names")
+    if not vm_names:
+        return None
+    return ",".join(vm_names)
+
+
 def run_workload_job(run_id: str) -> None:
     db = SessionLocal()
     try:
@@ -100,7 +124,14 @@ def run_workload_job(run_id: str) -> None:
         item = _resolve_item(db, run)
         key = mint_run_key(db, project)
         topo = project.deployed_topology or project.topology or {}
-        if _should_validate_inventory(run.target_map):
+
+        # Validate inventory: targeted VM runs validate vm_names instead of AnsibleGroups
+        vm_names = (run.target_map or {}).get("vm_names")
+        if vm_names:
+            from app.services.workloads.inventory import validate_vm_names
+
+            validate_vm_names(topo, vm_names)
+        elif _should_validate_inventory(run.target_map):
             validate_ansible_groups(topo, require_bastion=(not _has_ocp(project)))
 
         from app.core.config import config
@@ -115,10 +146,12 @@ def run_workload_job(run_id: str) -> None:
         if item.requirements_content:
             extra_vars["requirements_content"] = item.requirements_content
 
-        # Read stored kubeconfig from the first cluster's control-plane node (D12: no API calls)
-        kubeconfig = next(
-            (kc for (_pw, kc) in _stored_cluster_creds(topo).values() if kc), None
-        )
+        # Merge user-supplied extra_vars (user keys win)
+        if run.extra_vars:
+            extra_vars.update(run.extra_vars)
+
+        # Read stored kubeconfig (targeted by cluster_id if specified, else first)
+        kubeconfig = _resolve_kubeconfig(topo, run.target_map)
 
         if _has_ocp(project) and not kubeconfig:
             raise RuntimeError(
@@ -153,6 +186,7 @@ def run_workload_job(run_id: str) -> None:
             scm_ref=scm_ref,
             kubeconfig=kubeconfig,
             net_prelude=net_prelude,
+            limit=_run_limit(run.target_map),
         )
 
         launch_runner_pod(

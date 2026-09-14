@@ -91,3 +91,43 @@ def test_preview_inventory_empty():
     from app.services.workloads.inventory import preview_inventory
 
     assert preview_inventory({"nodes": []}) == {}
+
+
+def test_validate_vm_names_success():
+    """validate_vm_names accepts all VMs with first-NIC IPs."""
+    from app.services.workloads.inventory import validate_vm_names
+
+    topo = {
+        "nodes": [
+            _vm("vm1", "workers", ip="10.0.0.1", vm_id="v1"),
+            _vm("vm2", "masters", ip="10.0.0.2", vm_id="v2"),
+        ]
+    }
+    # No raise
+    validate_vm_names(topo, ["vm1", "vm2"])
+
+
+def test_validate_vm_names_missing_vm_raises():
+    """validate_vm_names raises InventoryError when a named VM is missing."""
+    from app.services.workloads.inventory import InventoryError, validate_vm_names
+
+    topo = {"nodes": [_vm("vm1", "workers", ip="10.0.0.1")]}
+    with pytest.raises(InventoryError, match="VM missing-vm not found"):
+        validate_vm_names(topo, ["vm1", "missing-vm"])
+
+
+def test_validate_vm_names_missing_ip_raises():
+    """validate_vm_names raises InventoryError when a VM has no first-NIC IP."""
+    from app.services.workloads.inventory import InventoryError, validate_vm_names
+
+    topo = {
+        "nodes": [
+            {
+                "id": "v1",
+                "type": "vmNode",
+                "data": {"name": "vm1", "tags": {}, "nics": []},
+            }
+        ]
+    }
+    with pytest.raises(InventoryError, match="VM vm1 has no first-NIC IP"):
+        validate_vm_names(topo, ["vm1"])

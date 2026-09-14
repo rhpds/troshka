@@ -77,3 +77,19 @@ def preview_inventory(topology: dict) -> dict[str, list[str]]:
         for group in _groups(node):
             groups.setdefault(group, []).append(name)
     return groups
+
+
+def validate_vm_names(topology: dict, vm_names: list[str]) -> None:
+    """Validate that all named VMs exist in the topology and have first-NIC IPs.
+    Raises InventoryError if any VM is missing or has no IP."""
+    nodes = _vm_nodes(topology)
+    vm_by_name = {(n.get("data") or {}).get("name"): n for n in nodes}
+
+    for vm_name in vm_names:
+        if vm_name not in vm_by_name:
+            raise InventoryError(f"VM {vm_name} not found in project")
+        node = vm_by_name[vm_name]
+        data = node.get("data") or {}
+        nics = data.get("nics") or []
+        if not nics or not nics[0].get("ip"):
+            raise InventoryError(f"VM {vm_name} has no first-NIC IP")

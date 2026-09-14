@@ -168,6 +168,7 @@ def build_run_command(
     scm_ref: str,
     kubeconfig: str | None = None,
     net_prelude: str = "",
+    limit: str | None = None,
 ) -> list[str]:
     """Build the runner pod command: clone agnosticd-v2, install collections, run playbook.
 
@@ -228,9 +229,10 @@ def build_run_command(
     )
     if has_kubeconfig:
         main_cmd += f" -e @'{_safe_sq(paths.clusters)}'"
-    main_cmd += (
-        " -e ACTION=provision" " -e cloud_provider=none" f" 2>&1 | tee '{safe_log}'"
-    )
+    main_cmd += " -e ACTION=provision" " -e cloud_provider=none"
+    if limit:
+        main_cmd += f" --limit '{_safe_sq(limit)}'"
+    main_cmd += f" 2>&1 | tee '{safe_log}'"
     script_parts.append(main_cmd)
 
     script = "; ".join(script_parts)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -41,6 +42,8 @@ class WorkloadRunRequest(BaseModel):
     # core_workloads.git", "type": "git", "version": "main"}]}.
     requirements_content: dict | None = None
     ee_image: str | None = None
+    # User-supplied extra_vars as YAML/JSON text (parsed and validated)
+    extra_vars_text: str | None = None
 
 
 class WorkloadRunResponse(BaseModel):
@@ -112,6 +115,23 @@ def trigger_workload_run(
     if _has_ocp(project) and project.ocp_control_plane_usable_at is None:
         raise HTTPException(status_code=409, detail=_CLUSTER_NOT_WORKLOAD_READY)
 
+    # Parse and validate extra_vars_text if provided
+    extra_vars = None
+    if body.extra_vars_text:
+        try:
+            parsed = yaml.safe_load(body.extra_vars_text)
+            if parsed is not None and not isinstance(parsed, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail="extra_vars must be a YAML/JSON key: value mapping",
+                )
+            extra_vars = parsed
+        except yaml.YAMLError:
+            raise HTTPException(
+                status_code=400,
+                detail="extra_vars must be a YAML/JSON key: value mapping",
+            )
+
     run = start_workload_run(
         db,
         project_id=project_id,
@@ -121,6 +141,7 @@ def trigger_workload_run(
         target_map=body.target_map,
         requirements_content=body.requirements_content,
         ee_image=body.ee_image,
+        extra_vars=extra_vars,
         owner_id=user.id,
     )
 

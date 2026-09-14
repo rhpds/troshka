@@ -520,3 +520,113 @@ def test_trigger_workload_run_with_custom_ee_image():
         assert run is not None, f"WorkloadRun {run_id} not found in DB"
         assert run.ee_image == "quay.io/example/custom-ee:latest"
         db.close()
+
+
+def test_trigger_workload_run_extra_vars_text_valid_yaml():
+    """POST with valid extra_vars_text parses and persists it as extra_vars."""
+    pid = _create_project(state="active")
+
+    with patch("app.services.workloads.run_service.enqueue_job"):
+        resp = client.post(
+            f"/api/v1/projects/{pid}/workloads",
+            json={
+                "kind": "ad_hoc",
+                "role_fqcn": "demo_workloads.test_role",
+                "extra_vars_text": "my_var: 42\nmy_string: hello",
+            },
+        )
+
+        assert resp.status_code == 202
+        data = resp.json()
+        run_id = data["id"]
+
+        # Verify extra_vars was persisted
+        db = TestSession()
+        run = db.get(WorkloadRun, run_id)
+        assert run is not None
+        assert run.extra_vars == {"my_var": 42, "my_string": "hello"}
+        db.close()
+
+
+def test_trigger_workload_run_extra_vars_text_valid_json():
+    """POST with JSON-formatted extra_vars_text also works."""
+    pid = _create_project(state="active")
+
+    with patch("app.services.workloads.run_service.enqueue_job"):
+        resp = client.post(
+            f"/api/v1/projects/{pid}/workloads",
+            json={
+                "kind": "ad_hoc",
+                "role_fqcn": "demo_workloads.test_role",
+                "extra_vars_text": '{"key": "value", "count": 10}',
+            },
+        )
+
+        assert resp.status_code == 202
+        data = resp.json()
+        run_id = data["id"]
+
+        db = TestSession()
+        run = db.get(WorkloadRun, run_id)
+        assert run is not None
+        assert run.extra_vars == {"key": "value", "count": 10}
+        db.close()
+
+
+def test_trigger_workload_run_extra_vars_text_invalid_yaml():
+    """POST with invalid YAML in extra_vars_text returns 400."""
+    pid = _create_project(state="active")
+
+    resp = client.post(
+        f"/api/v1/projects/{pid}/workloads",
+        json={
+            "kind": "ad_hoc",
+            "role_fqcn": "demo_workloads.test_role",
+            "extra_vars_text": "invalid: yaml: [unclosed",
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "extra_vars must be a YAML/JSON key: value mapping" in resp.json()["detail"]
+
+
+def test_trigger_workload_run_extra_vars_text_non_mapping():
+    """POST with non-mapping (list, string) extra_vars_text returns 400."""
+    pid = _create_project(state="active")
+
+    resp = client.post(
+        f"/api/v1/projects/{pid}/workloads",
+        json={
+            "kind": "ad_hoc",
+            "role_fqcn": "demo_workloads.test_role",
+            "extra_vars_text": "- item1\n- item2",  # Valid YAML list
+        },
+    )
+
+    assert resp.status_code == 400
+    assert "extra_vars must be a YAML/JSON key: value mapping" in resp.json()["detail"]
+
+
+def test_trigger_workload_run_extra_vars_text_empty():
+    """POST with empty extra_vars_text stores None/empty."""
+    pid = _create_project(state="active")
+
+    with patch("app.services.workloads.run_service.enqueue_job"):
+        resp = client.post(
+            f"/api/v1/projects/{pid}/workloads",
+            json={
+                "kind": "ad_hoc",
+                "role_fqcn": "demo_workloads.test_role",
+                "extra_vars_text": "",
+            },
+        )
+
+        assert resp.status_code == 202
+        data = resp.json()
+        run_id = data["id"]
+
+        db = TestSession()
+        run = db.get(WorkloadRun, run_id)
+        assert run is not None
+        assert run.extra_vars is None
+        db.close()

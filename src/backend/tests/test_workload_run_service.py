@@ -89,7 +89,14 @@ def test_run_workload_job_happy_path(monkeypatch):
     build_run_calls = []
 
     def mock_build_run_command(
-        item, paths, *, agnosticd_v2_url, scm_ref, kubeconfig=None, net_prelude=""
+        item,
+        paths,
+        *,
+        agnosticd_v2_url,
+        scm_ref,
+        kubeconfig=None,
+        net_prelude="",
+        limit=None,
     ):
         build_run_calls.append(
             {
@@ -97,6 +104,7 @@ def test_run_workload_job_happy_path(monkeypatch):
                 "scm_ref": scm_ref,
                 "kubeconfig": kubeconfig,
                 "net_prelude": net_prelude,
+                "limit": limit,
             }
         )
         return ["bash", "-lc", "echo test"]
@@ -483,3 +491,155 @@ def test_should_validate_inventory_modes():
     assert _should_validate_inventory({}) is True
     assert _should_validate_inventory({"mode": "vms"}) is True
     assert _should_validate_inventory({"mode": "cluster"}) is False
+
+
+# -------------------------------------------------------------------------
+# Tests for targeted-run features
+# -------------------------------------------------------------------------
+def test_resolve_kubeconfig_selects_by_cluster_id():
+    """_resolve_kubeconfig returns the kubeconfig for the specified cluster_id."""
+    from app.services.workloads.run_service import _resolve_kubeconfig
+
+    topo = {
+        "nodes": [
+            {
+                "type": "vmNode",
+                "data": {
+                    "clusterId": "cluster-1",
+                    "clusterRole": "control-plane",
+                    "ocpKubeconfig": "kubeconfig-1",
+                    "ocpKubeadminPassword": "pw-1",
+                },
+            },
+            {
+                "type": "vmNode",
+                "data": {
+                    "clusterId": "cluster-2",
+                    "clusterRole": "control-plane",
+                    "ocpKubeconfig": "kubeconfig-2",
+                    "ocpKubeadminPassword": "pw-2",
+                },
+            },
+        ]
+    }
+
+    target_map = {"cluster_id": "cluster-2"}
+    kc = _resolve_kubeconfig(topo, target_map)
+    assert kc == "kubeconfig-2"
+
+
+def test_resolve_kubeconfig_defaults_to_first_cluster():
+    """_resolve_kubeconfig returns the first cluster's kubeconfig when cluster_id is None."""
+    from app.services.workloads.run_service import _resolve_kubeconfig
+
+    topo = {
+        "nodes": [
+            {
+                "type": "vmNode",
+                "data": {
+                    "clusterId": "cluster-1",
+                    "clusterRole": "control-plane",
+                    "ocpKubeconfig": "kubeconfig-1",
+                },
+            },
+            {
+                "type": "vmNode",
+                "data": {
+                    "clusterId": "cluster-2",
+                    "clusterRole": "control-plane",
+                    "ocpKubeconfig": "kubeconfig-2",
+                },
+            },
+        ]
+    }
+
+    # No cluster_id in target_map → first cluster
+    kc = _resolve_kubeconfig(topo, None)
+    assert kc == "kubeconfig-1"
+
+
+def test_resolve_kubeconfig_returns_none_when_cluster_id_not_found():
+    """_resolve_kubeconfig returns None when the specified cluster_id doesn't exist."""
+    from app.services.workloads.run_service import _resolve_kubeconfig
+
+    topo = {
+        "nodes": [
+            {
+                "type": "vmNode",
+                "data": {
+                    "clusterId": "cluster-1",
+                    "clusterRole": "control-plane",
+                    "ocpKubeconfig": "kubeconfig-1",
+                },
+            }
+        ]
+    }
+
+    target_map = {"cluster_id": "cluster-missing"}
+    kc = _resolve_kubeconfig(topo, target_map)
+    assert kc is None
+
+
+def test_run_limit_builds_comma_separated_list():
+    """_run_limit returns comma-separated VM names when vm_names is provided."""
+    from app.services.workloads.run_service import _run_limit
+
+    target_map = {"vm_names": ["vm1", "vm2", "vm3"]}
+    result = _run_limit(target_map)
+    assert result == "vm1,vm2,vm3"
+
+
+def test_run_limit_returns_none_when_vm_names_empty():
+    """_run_limit returns None when vm_names is empty or missing."""
+    from app.services.workloads.run_service import _run_limit
+
+    assert _run_limit(None) is None
+    assert _run_limit({}) is None
+    assert _run_limit({"vm_names": []}) is None
+
+
+def test_build_run_command_includes_limit():
+    """build_run_command includes --limit when limit param is set."""
+    from types import SimpleNamespace
+
+    from app.services.workloads.pod_launch import RunPaths, build_run_command
+
+    item = SimpleNamespace(extra_vars={})
+    paths = RunPaths()
+
+    cmd = build_run_command(
+        item,
+        paths,
+        agnosticd_v2_url="https://github.com/redhat-cop/agnosticd-v2.git",
+        scm_ref="main",
+        kubeconfig=None,
+        net_prelude="",
+        limit="vm1,vm2",
+    )
+
+    # Join the command parts and check for --limit
+    full_cmd = " ".join(cmd)
+    assert "--limit 'vm1,vm2'" in full_cmd
+
+
+def test_build_run_command_no_limit_when_none():
+    """build_run_command does NOT include --limit when limit param is None."""
+    from types import SimpleNamespace
+
+    from app.services.workloads.pod_launch import RunPaths, build_run_command
+
+    item = SimpleNamespace(extra_vars={})
+    paths = RunPaths()
+
+    cmd = build_run_command(
+        item,
+        paths,
+        agnosticd_v2_url="https://github.com/redhat-cop/agnosticd-v2.git",
+        scm_ref="main",
+        kubeconfig=None,
+        net_prelude="",
+        limit=None,
+    )
+
+    full_cmd = " ".join(cmd)
+    assert "--limit" not in full_cmd
