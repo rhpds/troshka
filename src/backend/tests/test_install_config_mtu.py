@@ -16,8 +16,8 @@ def test_cluster_network_mtu_none_when_nonpositive():
     assert _cluster_network_mtu(0) is None
 
 
-def test_install_config_emits_cluster_network_mtu():
-    """Verify clusterNetworkMTU is emitted when machine network has resolved MTU."""
+def test_install_config_omits_cluster_network_mtu_on_baremetal():
+    """Baremetal/agent installs must not emit clusterNetworkMTU (AWS-only in installer)."""
     topology = {
         "nodes": [
             {
@@ -51,7 +51,7 @@ def test_install_config_emits_cluster_network_mtu():
     ic_yaml = _build_install_config(
         cluster, members, topology, "fake-pull-secret", "fake-ssh-key"
     )
-    assert "clusterNetworkMTU: 8750" in ic_yaml
+    assert "clusterNetworkMTU" not in ic_yaml
 
 
 def test_install_config_omits_cluster_network_mtu_when_none():

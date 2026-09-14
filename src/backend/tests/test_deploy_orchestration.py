@@ -5362,3 +5362,43 @@ class TestKubeconfigServerToIp:
 
         kc = self._kc("https://10.0.0.10:6443")
         assert "tls-server-name" not in _kubeconfig_server_to_ip(kc, "10.0.0.99")
+
+
+def test_resolve_ops_pod_ocp_version_skips_empty_string():
+    from app.services.deploy_service import _resolve_ops_pod_ocp_version
+
+    topo = {"clusters": [{"id": "c1", "ocpVersion": "4.22"}]}
+    assert (
+        _resolve_ops_pod_ocp_version([{"id": "c2", "ocpVersion": ""}], topo) == "4.22"
+    )
+
+
+def test_expand_ops_pod_clusters_keeps_inflight_recert():
+    from app.services.deploy_service import _expand_ops_pod_clusters_for_reconfigure
+
+    topology = {
+        "clusters": [
+            {"id": "ocp-1", "recert": True},
+            {"id": "ocp-2", "ocpVersion": "4.22"},
+        ],
+        "nodes": [
+            {
+                "id": "cp-1",
+                "type": "vmNode",
+                "data": {
+                    "clusterId": "ocp-1",
+                    "clusterRole": "control-plane",
+                    "ocpKubeconfig": "x",
+                },
+            }
+        ],
+    }
+    deployed = {"clusters": [{"id": "ocp-1"}, {"id": "ocp-2"}]}
+    expanded = _expand_ops_pod_clusters_for_reconfigure(
+        topology,
+        deployed,
+        [{"id": "ocp-2", "ocpVersion": "4.22"}],
+        "proj-1234",
+    )
+    ids = {c["id"] for c in expanded}
+    assert ids == {"ocp-1", "ocp-2"}

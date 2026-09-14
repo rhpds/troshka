@@ -1563,9 +1563,6 @@ def _build_install_config(
     num_masters, num_workers = _cluster_replicas(cluster, topology)
     api_vip, ingress_vip = resolve_cluster_vips(cluster, members, topology)
 
-    nic_mtu = _machine_network_mtu_for_members(members, topology)
-    cluster_mtu = _cluster_network_mtu(nic_mtu)
-
     ic_lines = [
         "apiVersion: v1",
         f"baseDomain: {base_domain}",
@@ -1582,8 +1579,8 @@ def _build_install_config(
         "networking:",
         "  networkType: OVNKubernetes",
     ]
-    if cluster_mtu is not None:
-        ic_lines.append(f"  clusterNetworkMTU: {cluster_mtu}")
+    # openshift-install only accepts clusterNetworkMTU on AWS; baremetal/agent
+    # installs on troshkad/kubevirt must omit it (OVN MTU is reconciled post-install).
     ic_lines.extend(
         [
             "  clusterNetwork:",

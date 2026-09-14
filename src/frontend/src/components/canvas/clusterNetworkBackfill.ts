@@ -86,6 +86,27 @@ export function seedClustersFromDeployed(
  * deployed (e.g. the OCP-version auto-default overwrote an empty-on-load value to
  * 4.20 while the cluster was really installed at 4.22); the deployed value wins.
  */
+/**
+ * When deployed_topology stamped a cluster with an empty ``ocpVersion`` (common for
+ * canvas-added clusters finalized before the UI auto-default ran), backfill the
+ * deployed baseline from the live topology so Apply Changes does not show a false
+ * ``(none) → 4.22`` diff.
+ */
+export function backfillDeployedClusterBaseline(
+  deployedClusters: ClusterConfig[],
+  topologyClusters: ClusterConfig[],
+): ClusterConfig[] {
+  const topoById = new Map(
+    topologyClusters.filter((c) => c.id).map((c) => [c.id as string, c]),
+  );
+  return deployedClusters.map((dc) => {
+    if (dc.ocpVersion) return dc;
+    const topo = topoById.get(dc.id);
+    if (topo?.ocpVersion) return { ...dc, ocpVersion: topo.ocpVersion };
+    return dc;
+  });
+}
+
 export function reconcileDeployedClusters(
   clusters: ClusterConfig[],
   deployedClusters: Array<{ id?: string; ocpVersion?: string; baseDomain?: string }>,

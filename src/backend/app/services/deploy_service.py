@@ -1817,6 +1817,52 @@ def _ocp_clusters(topology) -> list:
     return (topology or {}).get("clusters") or []
 
 
+def _resolve_ops_pod_ocp_version(install_clusters: list, topology: dict) -> str:
+    """Pick the OCP version for the ops-pod installer (empty string is not valid)."""
+    for source in (install_clusters, _ocp_clusters(topology)):
+        for cluster in source:
+            ver = str(cluster.get("ocpVersion") or "").strip()
+            if ver:
+                return ver
+    return "4.20"
+
+
+def _ops_pod_cluster_complete(project_id: str, cluster: dict) -> bool:
+    """True when a cluster's ops-pod log shows a successful finish."""
+    from app.core.redis import get_progress
+    from app.services.ocp.ops_pod_install import _cluster_key as _ops_cluster_key
+
+    key = _ops_cluster_key(cluster)
+    cached = get_progress(_ops_pod_log_cache_key(project_id)) or {}
+    log = cached.get(key) or ""
+    return f"[{key}] install complete" in log
+
+
+def _expand_ops_pod_clusters_for_reconfigure(
+    topology: dict,
+    deployed: dict,
+    clusters: list[dict],
+    project_id: str,
+) -> list[dict]:
+    """Retain in-flight recert/install clusters when reconfigure adds a new one.
+
+    Reconfigure passes only the newly-added cluster(s) to ``_deploy_ops_pod``, which
+    destroys and recreates the ops pod. Without merging in clusters whose install
+    or recert is still running, the in-flight work is silently dropped.
+    """
+    by_id = {c.get("id"): c for c in clusters if c.get("id")}
+    for cluster in _ocp_clusters(topology):
+        cid = cluster.get("id")
+        if not cid or cid in by_id:
+            continue
+        if not _cluster_install_on_deploy(cluster):
+            continue
+        if _ops_pod_cluster_complete(project_id, cluster):
+            continue
+        by_id[cid] = cluster
+    return list(by_id.values())
+
+
 def _cluster_install_on_deploy(cluster: dict) -> bool:
     """True unless the cluster explicitly opts out of the OpenShift install."""
     return cluster.get("installOnDeploy", True) is not False
@@ -2176,6 +2222,11 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map, clusters=No
     from app.services.ocp.ops_pod_auth import mint_ops_pod_key
 
     clusters = clusters if clusters is not None else _ocp_clusters(topology)
+    if clusters is not None and len(clusters) < len(_ocp_clusters(topology)):
+        deployed = getattr(project, "deployed_topology", None) or {}
+        clusters = _expand_ops_pod_clusters_for_reconfigure(
+            topology, deployed, clusters, project_id
+        )
     install_clusters = _clusters_for_ocp_install(clusters)
     if not install_clusters:
         logger.info(
@@ -2184,7 +2235,7 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map, clusters=No
         )
         return
     api_key = mint_ops_pod_key(s, project)
-    ocp_version = str(install_clusters[0].get("ocpVersion", "4.20"))
+    ocp_version = _resolve_ops_pod_ocp_version(install_clusters, topology)
     logger.info(
         "Deploy %s: creating ops pod for %d cluster(s)",
         project_id[:8],
@@ -2238,6 +2289,9 @@ def _deploy_ops_pod_troshkad(
     # the initial deploy. podman returns exit 125 on duplicate pod names — destroy
     # the stale pod first, then recreate with only the cluster(s) being installed.
     _cancel_ops_pod_install_troshkad(host, project_id)
+    from app.services.ocp.ops_pod_install import _cluster_key as _ops_cluster_key
+
+    clear_ops_pod_log_cache_keys(project_id, [_ops_cluster_key(c) for c in clusters])
     params = _ops_pod_create_params(
         project,
         clusters,
@@ -2426,6 +2480,11 @@ def _deploy_ops_pod_kubevirt(
     configs + pull secret ride in a k8s Secret mounted at the install script's
     workdir paths. The live pod run + NAD reachability are **[LIVE-ENV]**.
     """
+    # Reconfigure may add a cluster while the prior ops Pod is still running the
+    # original install/recert script. create_ops_pod replaces on AlreadyExists, but
+    # tearing down first avoids racing a terminating pod and guarantees the new
+    # Secret+command are what actually run (mirrors the troshkad pre-destroy).
+    _cancel_ops_pod_install_kubevirt(host, project_id)
     from app.services.ocp.ops_pod_scaffold import (
         OPS_POD_WORKDIR,
         build_ops_pod_kubevirt_manifests,
@@ -2477,6 +2536,9 @@ def _deploy_ops_pod_kubevirt(
         bmc_nad=bmc_nad,
         dns_nameserver=_kubevirt_ops_pod_dns(net_ip_assignments),
     )
+    from app.services.ocp.ops_pod_install import _cluster_key as _ops_cluster_key
+
+    clear_ops_pod_log_cache_keys(project_id, [_ops_cluster_key(c) for c in clusters])
     create_ops_pod(provider, project_id, pod, secret)
     _mark_ocp_install_started(s, project)
     _start_ops_pod_install_monitor(host, project_id, clusters)
@@ -2929,6 +2991,21 @@ _OCP_LOG_CACHE_TTL = 7 * 24 * 3600
 
 def _ops_pod_log_cache_key(project_id: str) -> str:
     return f"ocp-install-log:{project_id}"
+
+
+def clear_ops_pod_log_cache_keys(project_id: str, cluster_keys: list[str]) -> None:
+    """Drop cached install logs for specific clusters (e.g. before a re-install)."""
+    if not cluster_keys:
+        return
+    from app.core.redis import get_progress, set_progress
+
+    key = _ops_pod_log_cache_key(project_id)
+    cached = get_progress(key) or {}
+    if not cached:
+        return
+    for ckey in cluster_keys:
+        cached.pop(ckey, None)
+    set_progress(key, cached, ttl=_OCP_LOG_CACHE_TTL)
 
 
 def cache_ops_pod_logs(project_id: str, logs: dict[str, str]) -> dict[str, str]:
@@ -3954,9 +4031,26 @@ def redeploy_container_bg(project_id: str, container_id: str) -> None:
             )
             return
         name = ctr.get("name", "container")
+        set_progress(prog_key, {"step": "redeploy", "detail": f"Recreating {name}..."})
+        if host.host_type == "kubevirt-cluster":
+            from app.services.kubevirt_reconfigure import redeploy_container_kubevirt_bg
+
+            redeploy_container_kubevirt_bg(
+                db, host, project, project_id, container_id, topo
+            )
+            db.commit()
+            notify_project(
+                project_id,
+                {"type": "container-redeployed", "containerId": container_id},
+            )
+            logger.info(
+                "Redeploy container %s/%s: complete (kubevirt)",
+                project_id[:8],
+                container_id[:8],
+            )
+            return
         pool = _get_host_pool(host, db)
         vni_map = project.vni_map or {}
-        set_progress(prog_key, {"step": "redeploy", "detail": f"Recreating {name}..."})
         _destroy_container(host, project_id, ctr, topo, pool)
         if ctr.get("is_pod"):
             _create_and_start_pod(host, project_id, ctr, topo, vni_map, pool)

@@ -131,6 +131,29 @@ describe("PropertiesPanel cluster editor", () => {
     expect(useCanvasStore.getState().clusters[0].controlPlaneCpu).toBe(16);
   });
 
+  it("locks OCP version when the cluster is in the deployed baseline", () => {
+    useCanvasStore.setState({
+      clusters: [
+        {
+          ...useCanvasStore.getState().clusters[0],
+          ocpVersion: "4.22",
+        },
+      ],
+      deployedClusterRows: [
+        {
+          id: "prod",
+          name: "prod",
+          nodeId: "cluster-prod",
+          type: "standard",
+          ocpVersion: "4.22",
+        },
+      ],
+    } as never);
+    render(<PropertiesPanel />);
+    const version = screen.getByLabelText(/ocp version/i);
+    expect(version).toBeDisabled();
+  });
+
   it("flags a VIP that collides with another cluster", async () => {
     useCanvasStore.setState({
       clusters: [

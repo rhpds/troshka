@@ -14,7 +14,13 @@ import {
 import { appConfirm } from "@/lib/confirm";
 // Cycle-free module (type-only imports) — safe to import into the store, unlike
 // clusterMaterialize which imports store values.
-import { backfillClusterNetworkIds, reconcileDeployedClusters, reconcileManagedClusterDns, seedClustersFromDeployed } from "@/components/canvas/clusterNetworkBackfill";
+import {
+  backfillClusterNetworkIds,
+  backfillDeployedClusterBaseline,
+  reconcileDeployedClusters,
+  reconcileManagedClusterDns,
+  seedClustersFromDeployed,
+} from "@/components/canvas/clusterNetworkBackfill";
 import { healClusterTopology } from "@/components/canvas/clusterTopologyHeal";
 import { createBmcNetworkNode, findBmcNetwork, nextFreeBmcIp } from "@/components/canvas/clusterBmc";
 import {
@@ -697,7 +703,7 @@ function edgeCompareKey(e: {
 // ingressVip, normalized baseDomain, monitorHealth/recert/configureBastionBrowser
 // defaults). Comparing whole objects made every deployed OCP project perpetually
 // dirty. Compare just the fields the user can change (all immutable-after-deploy
-// ones like VIPs/baseDomain are excluded — they're locked once deployed).
+// ones like VIPs/baseDomain/ocpVersion are excluded — they're locked once deployed).
 const _CLUSTER_DIRTY_FIELDS = [
   "id",
   "nodeId",
@@ -711,7 +717,6 @@ const _CLUSTER_DIRTY_FIELDS = [
   "workerCpu",
   "workerMemory",
   "workerDisk",
-  "ocpVersion",
   "pullThroughRegistry",
   "networkIds",
 ] as const;
@@ -1936,6 +1941,10 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             }
             return c as unknown as ClusterConfig;
           });
+          const deployedClusterBaseline = backfillDeployedClusterBaseline(
+            deployedClusterRows,
+            Array.isArray(t.clusters) ? (t.clusters as ClusterConfig[]) : [],
+          );
           const preHealClusters = reconcileDeployedClusters(
             backfillClusterNetworkIds(
               // Seed from deployed_topology when the canvas clusters list drifted
@@ -1971,6 +1980,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             showroom: parseShowroomFromTopology(t.showroom, nodes, lbEdges),
             clusters: finalClusters,
             deployedClusterRows,
+            deployedClusters: stableClusterKey(deployedClusterBaseline),
             ocpInstallVia: (t.ocpInstallVia as string) || null,
             providerType: project.provider_type || null,
             clusterCapabilities: project.cluster_capabilities || null,

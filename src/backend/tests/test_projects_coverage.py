@@ -807,6 +807,7 @@ class TestFinalizeKubevirtReconfigure:
                 }
             ]
         }
+        proj.topology = current
         _finalize_kubevirt_reconfigure(proj, s, "p1", current, copy, mock_notify)
 
         assert proj.state == "active"
@@ -1309,6 +1310,66 @@ class TestDeployAddedVms:
 
 
 # ---------------------------------------------------------------------------
+# _deploy_added_vms_kubevirt
+# ---------------------------------------------------------------------------
+
+
+class TestDeployAddedVmsKubevirt:
+    @patch("app.api.projects._create_troshkavm_cr")
+    @patch(
+        "app.api.projects._build_kubevirt_troshkavm_cr",
+        return_value={"kind": "TroshkaVM"},
+    )
+    @patch("app.api.projects._build_kubevirt_vm_spec", return_value={"name": "cp"})
+    def test_creates_cr_per_added_vm(self, mock_spec, mock_build_cr, mock_create):
+        from app.api.projects import _deploy_added_vms_kubevirt
+
+        added = [{"id": "vm-newnode1", "data": {"name": "cp"}}]
+        current_vms = {
+            "vm-newnode1": {"name": "cp", "vcpus": 8, "ram_gb": 16},
+        }
+        project_cr = {
+            "apiVersion": "troshka.redhat.com/v1alpha1",
+            "kind": "TroshkaProject",
+            "metadata": {"name": "project-p1234567", "uid": "uid-1"},
+        }
+        errors: list[str] = []
+        cr_names = _deploy_added_vms_kubevirt(
+            MagicMock(),
+            "ns1",
+            "p1234567890",
+            {},
+            added,
+            current_vms,
+            project_cr,
+            errors,
+        )
+        assert cr_names == ["vm-vm-newno"]
+        mock_create.assert_called_once()
+        assert not errors
+
+    @patch("app.api.projects._create_troshkavm_cr", side_effect=RuntimeError("boom"))
+    @patch("app.api.projects._build_kubevirt_troshkavm_cr", return_value={})
+    @patch("app.api.projects._build_kubevirt_vm_spec", return_value={})
+    def test_create_failure_appends_error(self, mock_spec, mock_build_cr, mock_create):
+        from app.api.projects import _deploy_added_vms_kubevirt
+
+        added = [{"id": "vm-badone1", "data": {}}]
+        current_vms = {"vm-badone1": {"name": "x", "vcpus": 2, "ram_gb": 4}}
+        project_cr = {
+            "metadata": {"name": "project-p1", "uid": "u"},
+            "kind": "TroshkaProject",
+        }
+        errors: list[str] = []
+        cr_names = _deploy_added_vms_kubevirt(
+            MagicMock(), "ns", "p1", {}, added, current_vms, project_cr, errors
+        )
+        assert cr_names == []
+        assert len(errors) == 1
+        assert "vm-badon" in errors[0]
+
+
+# ---------------------------------------------------------------------------
 # _apply_kubevirt_vm_changes  (lines 2596-2636)
 # ---------------------------------------------------------------------------
 
@@ -1400,6 +1461,11 @@ class TestApplyKubevirtVmChanges:
 
 
 class TestDoReconfigureKubevirt:
+    @patch("app.services.kubevirt_reconfigure.reconfigure_showroom_kubevirt")
+    @patch(
+        "app.api.projects._get_kubevirt_project_cr",
+        return_value={"metadata": {"uid": "u1", "name": "project-p1"}},
+    )
     @patch("app.services.deploy_service._resolve_disk_s3_paths")
     @patch(
         "app.services.deploy_service._setup_kubevirt_s3_clients",
@@ -1419,6 +1485,8 @@ class TestDoReconfigureKubevirt:
         mock_finalize,
         mock_s3,
         mock_resolve,
+        mock_project_cr,
+        mock_showroom,
     ):
         from app.api.projects import _do_reconfigure_kubevirt
 
@@ -1429,6 +1497,7 @@ class TestDoReconfigureKubevirt:
         mock_host.id = "h1"
         mock_host.provider_id = "prov1"
         mock_provider = MagicMock()
+        mock_provider.type = "kubevirt"
 
         call_count = {"n": 0}
         results = [mock_proj, mock_host, mock_provider]
@@ -1539,50 +1608,54 @@ class TestDoReconfigureKubevirt:
 
         with patch("app.core.database.SessionLocal", return_value=mock_session):
             with patch(
-                "app.services.providers.kubevirt._get_k8s_clients",
-                return_value=(MagicMock(), MagicMock(), MagicMock()),
+                "app.api.projects._get_kubevirt_project_cr",
+                return_value={"metadata": {"uid": "u1", "name": "project-p1"}},
             ):
                 with patch(
-                    "app.services.providers.kubevirt._project_ns",
-                    return_value="ns",
+                    "app.services.providers.kubevirt._get_k8s_clients",
+                    return_value=(MagicMock(), MagicMock(), MagicMock()),
                 ):
                     with patch(
-                        "app.services.deploy_topology.diff_topologies",
-                        return_value={
-                            "added_vms": [],
-                            "removed_vms": [],
-                            "changed_vms": [],
-                            "has_changes": False,
-                        },
+                        "app.services.providers.kubevirt._project_ns",
+                        return_value="ns",
                     ):
                         with patch(
-                            "app.services.deploy_topology._extract_vms",
-                            return_value=[],
+                            "app.services.deploy_topology.diff_topologies",
+                            return_value={
+                                "added_vms": [],
+                                "removed_vms": [],
+                                "changed_vms": [],
+                                "has_changes": False,
+                            },
                         ):
                             with patch(
-                                "app.services.deploy_service._set_deploy_progress"
+                                "app.services.deploy_topology._extract_vms",
+                                return_value=[],
                             ):
                                 with patch(
-                                    "app.services.deploy_service._delete_deploy_progress"
+                                    "app.services.deploy_service._set_deploy_progress"
                                 ):
                                     with patch(
-                                        "app.api.projects._apply_kubevirt_vm_changes"
+                                        "app.services.deploy_service._delete_deploy_progress"
                                     ):
                                         with patch(
-                                            "app.api.projects._find_changed_kubevirt_vms",
-                                            return_value=[],
+                                            "app.api.projects._apply_kubevirt_vm_changes"
                                         ):
                                             with patch(
-                                                "app.api.projects._wait_kubevirt_vms_ready",
-                                                return_value="vm_error",
+                                                "app.api.projects._find_changed_kubevirt_vms",
+                                                return_value=[],
                                             ):
                                                 with patch(
-                                                    "app.api.projects._sync_eips_for_reconfigure"
-                                                ) as mock_eips:
-                                                    _do_reconfigure_kubevirt(
-                                                        "p1", "h1", {}, {}
-                                                    )
-                                                    mock_eips.assert_not_called()
+                                                    "app.api.projects._wait_kubevirt_vms_ready",
+                                                    return_value="vm_error",
+                                                ):
+                                                    with patch(
+                                                        "app.api.projects._sync_eips_for_reconfigure"
+                                                    ) as mock_eips:
+                                                        _do_reconfigure_kubevirt(
+                                                            "p1", "h1", {}, {}
+                                                        )
+                                                        mock_eips.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

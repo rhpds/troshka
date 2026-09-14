@@ -1256,6 +1256,7 @@ class TestFinalizeKubevirtReconfigure:
         import copy as real_copy
 
         proj = MagicMock()
+        proj.topology = None  # set below after current is built
         session = MagicMock()
         notify = MagicMock()
         current = {
@@ -1272,6 +1273,7 @@ class TestFinalizeKubevirtReconfigure:
                 {"type": "networkNode", "data": {"cidr": "10.0.0.0/24"}},
             ]
         }
+        proj.topology = current
         self._call(proj, session, "proj-1", current, real_copy, notify)
 
         # deployed_topology and topology should have s3/presigned/ci stripped
@@ -1284,7 +1286,8 @@ class TestFinalizeKubevirtReconfigure:
         assert proj.deploy_error is None
         session.commit.assert_called_once()
         notify.assert_called_once_with(
-            "proj-1", {"type": "project-state", "state": "active"}
+            "proj-1",
+            {"type": "project-state", "state": "active", "deploy_error": None},
         )
 
     def test_does_not_mutate_original_topology(self):
@@ -1298,6 +1301,7 @@ class TestFinalizeKubevirtReconfigure:
                 {"type": "vmNode", "data": {"resolvedS3Path": "keep-me"}},
             ]
         }
+        proj.topology = current
         self._call(proj, session, "proj-1", current, real_copy, notify)
         # Original should still have the field
         assert current["nodes"][0]["data"]["resolvedS3Path"] == "keep-me"
@@ -1306,6 +1310,7 @@ class TestFinalizeKubevirtReconfigure:
         import copy as real_copy
 
         proj = MagicMock()
+        proj.topology = {"nodes": []}
         session = MagicMock()
         notify = MagicMock()
         self._call(proj, session, "proj-1", {"nodes": []}, real_copy, notify)

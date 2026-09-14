@@ -709,12 +709,18 @@ function ClusterEditor({
   // install time, so it must not change under a live cluster — only a full
   // rebuild (all member VMs wiped) may alter it.
   const deployedVmIds = useCanvasStore.getState().deployedVmIds;
+  const deployedClusterRows = useCanvasStore((s) => s.deployedClusterRows);
   const clusterDeployed = nodes.some(
     (n) =>
       n.type === "vmNode" &&
       (n.data as Record<string, unknown>).clusterId === cluster.id &&
       deployedVmIds.has(n.id),
   );
+  // OCP version is fixed at install — lock once the cluster exists in the deployed
+  // baseline (Apply Changes has stamped it), even before member VMs show as deployed.
+  const ocpVersionLocked =
+    clusterDeployed ||
+    deployedClusterRows.some((c) => c.id === cluster.id);
 
   // Auto-fill blank VIPs with the first available unused IP so the user does
   // not have to pick one manually (still fully editable — clearing re-fills).
@@ -754,11 +760,11 @@ function ClusterEditor({
   // touch a DEPLOYED cluster — its version is fixed, and auto-defaulting an
   // empty-on-load value would silently change it (e.g. to 4.20).
   useEffect(() => {
-    if (clusterDeployed || cluster.ocpVersion || ocpVersions.length === 0) return;
+    if (ocpVersionLocked || cluster.ocpVersion || ocpVersions.length === 0) return;
     const latest = ocpVersions.find((v) => v.support === "Full Support") || ocpVersions[0];
     if (latest) onPatch({ ocpVersion: latest.name });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cluster.ocpVersion, ocpVersions, clusterDeployed]);
+  }, [cluster.ocpVersion, ocpVersions, ocpVersionLocked]);
 
   const prereqIssues = clusterPrereqIssues(cluster, nodes);
 
@@ -1054,15 +1060,15 @@ function ClusterEditor({
         <div className="props-field">
           <label
             className="props-label"
-            title={clusterDeployed ? "🔒 Locked while deployed — the OCP version is fixed at install." : undefined}
+            title={ocpVersionLocked ? "🔒 Locked after Apply Changes — the OCP version is fixed at install." : undefined}
           >
-            OCP Version {clusterDeployed && "🔒"}
+            OCP Version {ocpVersionLocked && "🔒"}
           </label>
           <select
             aria-label="OCP Version"
             className="props-select"
             value={cluster.ocpVersion || ""}
-            disabled={clusterDeployed}
+            disabled={ocpVersionLocked}
             onChange={(e) => onPatch({ ocpVersion: e.target.value })}
           >
             <option value="">Select version…</option>

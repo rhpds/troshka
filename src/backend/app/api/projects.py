@@ -1188,6 +1188,8 @@ def get_ocp_install_log(
         ),
     }
 
+    from app.services.ocp.ops_pod_install import has_control_plane_usable_marker
+
     logs = read_ops_pod_install_log(host, project_id, topology)
     keys = list(logs.keys())
     if cluster is not None:
@@ -1195,9 +1197,19 @@ def get_ocp_install_log(
         # plus the harvested kubeadmin password + kubeconfig availability so the
         # status modal can surface credentials LIVE (polled) without a reload.
         access = _cluster_access(project.deployed_topology or topology, cluster)
+        cluster_log = logs.get(cluster, "")
+        # Milestone fields are project-level in the DB (workload gate), but the
+        # status modal must only show them for the cluster whose log carries the
+        # marker — otherwise a second cluster inherits ocp-1's "control-plane-usable".
+        if not has_control_plane_usable_marker(cluster_log, cluster):
+            timing = {
+                **timing,
+                "ocp_control_plane_usable_elapsed": None,
+                "ocp_control_plane_usable_at": None,
+            }
         return {
             "install_via": "pod",
-            "output": logs.get(cluster, ""),
+            "output": cluster_log,
             "cluster": cluster,
             "clusters": keys,
             **timing,
@@ -3504,6 +3516,76 @@ def _build_kubevirt_vm_spec(vm_id: str, vm: dict, current: dict) -> dict:
     return build_troshkavm_vm_spec(vm_id, vm, current)
 
 
+def _get_kubevirt_project_cr(custom_api, ns: str, p_id: str) -> dict:
+    """Fetch the TroshkaProject CR for owner refs when creating child CRs."""
+    from app.services.providers.kubevirt import CRD_GROUP, CRD_VERSION
+
+    return custom_api.get_namespaced_custom_object(  # type: ignore[return-value]
+        group=CRD_GROUP,
+        version=CRD_VERSION,
+        namespace=ns,
+        plural="troshkaprojects",
+        name=f"project-{p_id[:8]}",
+    )
+
+
+def _kubevirt_project_owner_refs(project_cr: dict) -> list[dict]:
+    """Build ownerReferences pointing at the TroshkaProject CR."""
+    from app.services.providers.kubevirt import CRD_GROUP, CRD_VERSION
+
+    meta = project_cr.get("metadata") or {}
+    return [
+        {
+            "apiVersion": project_cr.get("apiVersion", f"{CRD_GROUP}/{CRD_VERSION}"),
+            "kind": project_cr.get("kind", "TroshkaProject"),
+            "name": meta.get("name", ""),
+            "uid": meta.get("uid", ""),
+            "controller": True,
+        }
+    ]
+
+
+def _deploy_added_vms_kubevirt(
+    custom_api,
+    ns: str,
+    p_id: str,
+    current: dict,
+    added_vms: list,
+    current_vms: dict,
+    project_cr: dict,
+    errors: list[str],
+) -> list[str]:
+    """Create TroshkaVM CRs for canvas-added VMs (mirrors troshkad _deploy_added_vms)."""
+    if not added_vms:
+        return []
+
+    owner_refs = _kubevirt_project_owner_refs(project_cr)
+    labels = {"troshka-project": p_id[:8]}
+    created_cr_names: list[str] = []
+
+    for vm_node in added_vms:
+        vm_id = vm_node["id"]
+        vm = current_vms.get(vm_id)
+        if not vm:
+            continue
+        cr_name = f"vm-{vm_id[:8]}"
+        vm_spec = _build_kubevirt_vm_spec(vm_id, vm, current)
+        vm_cr = _build_kubevirt_troshkavm_cr(
+            cr_name, ns, p_id, vm_spec, owner_refs, labels
+        )
+        try:
+            _create_troshkavm_cr(custom_api, ns, vm_cr)
+            logger.info("Reconfigure %s: created TroshkaVM %s", p_id[:8], cr_name)
+            created_cr_names.append(cr_name)
+        except Exception as e:
+            logger.warning(
+                "Reconfigure %s: failed to create %s: %s", p_id[:8], cr_name, e
+            )
+            errors.append(f"Failed to add VM {vm_id[:8]}: {e}")
+
+    return created_cr_names
+
+
 def _wait_kubevirt_vms_ready(
     custom_api,
     ns,
@@ -3707,7 +3789,17 @@ def _stamp_new_ocp_cluster_configs(
 
         config["pull_secret_json"] = decrypt(owner.ocp_pull_secret)
 
+    canvas_by_id = {
+        c.get("id"): c for c in (current.get("clusters") or []) if c.get("id")
+    }
     for cluster in new_clusters:
+        cid = cluster.get("id")
+        if cid and not str(cluster.get("ocpVersion") or "").strip():
+            canvas_ver = str(
+                (canvas_by_id.get(cid) or {}).get("ocpVersion") or ""
+            ).strip()
+            if canvas_ver:
+                cluster["ocpVersion"] = canvas_ver
         _customize_one_cluster(current, cluster, config, include_extras=False)
 
     proj.topology = current
@@ -3820,6 +3912,8 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
                 "added_vms": [],
                 "removed_vms": [],
                 "changed_vms": [],
+                "added_networks": [],
+                "removed_networks": [],
                 "has_changes": False,
             }
         )
@@ -3831,10 +3925,53 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             p_id, {"step": "reconfigure", "detail": "applying changes"}
         )
 
+        from app.services.kubevirt_reconfigure import (
+            _find_changed_kubevirt_networks,
+            apply_kubevirt_network_changes,
+            patch_kubevirt_gateway_networks,
+            reconfigure_showroom_kubevirt,
+        )
+
+        errors: list[str] = []
+        try:
+            project_cr = _get_kubevirt_project_cr(custom_api, ns, p_id)
+        except Exception as e:
+            proj.state = "error"
+            proj.deploy_error = f"TroshkaProject CR not found: {e}"
+            s.commit()
+            _delete_deploy_progress(p_id)
+            notify_project(
+                p_id,
+                {
+                    "type": "project-state",
+                    "state": "error",
+                    "deploy_error": proj.deploy_error,
+                },
+            )
+            return
+
+        gateway_net_changed = False
+        if (
+            diff.get("added_networks")
+            or diff.get("removed_networks")
+            or _find_changed_kubevirt_networks(current, deployed)
+        ):
+            gateway_net_changed = apply_kubevirt_network_changes(
+                custom_api,
+                ns,
+                p_id,
+                current,
+                deployed,
+                diff,
+                project_cr,
+                errors,
+            )
+
         from app.services.deploy_topology import _extract_vms
 
         current_vms = {v["node_id"]: v for v in _extract_vms(current)}
         changed_vm_ids = _find_changed_kubevirt_vms(current, deployed)
+        added_vm_ids = [n["id"] for n in diff.get("added_vms", [])]
 
         from app.services.deploy_topology import validate_kubevirt_vm_disk_buses
         from app.services.providers.kubevirt_capabilities import (
@@ -3843,7 +3980,9 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
 
         kv_caps = get_kubevirt_capabilities(provider)
         bus_err = validate_kubevirt_vm_disk_buses(
-            current, changed_vm_ids, capabilities=kv_caps
+            current,
+            changed_vm_ids + added_vm_ids,
+            capabilities=kv_caps,
         )
         if bus_err:
             proj.state = "error"
@@ -3860,8 +3999,6 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             )
             return
 
-        changed_cr_names = [f"vm-{vm_id[:8]}" for vm_id in changed_vm_ids]
-
         _apply_kubevirt_vm_changes(
             custom_api,
             ns,
@@ -3872,32 +4009,67 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
             current,
         )
 
-        # Wait for all VMs to settle
+        added_cr_names: list[str] = []
+        if diff.get("added_vms") and project_cr:
+            added_cr_names = _deploy_added_vms_kubevirt(
+                custom_api,
+                ns,
+                p_id,
+                current,
+                diff["added_vms"],
+                current_vms,
+                project_cr,
+                errors,
+            )
+
+        wait_cr_names = [f"vm-{vm_id[:8]}" for vm_id in changed_vm_ids] + added_cr_names
+
+        # Wait for changed and newly-created VMs to settle
         err = _wait_kubevirt_vms_ready(
             custom_api,
             ns,
             p_id,
             proj,
             s,
-            changed_cr_names=changed_cr_names,
+            changed_cr_names=wait_cr_names,
         )
         if err:
             return
 
+        from app.services.providers import get_provider_driver
+
+        driver = get_provider_driver(provider)
+        vni_map = dict(proj.vni_map or {})
+        reconfigure_showroom_kubevirt(
+            s,
+            h,
+            provider,
+            driver,
+            p_id,
+            current,
+            deployed,
+            vni_map,
+            project_cr,
+            errors,
+        )
+
         # Sync EIPs (allocate new, release removed)
-        errors: list[str] = []
         _sync_eips_for_reconfigure(s, proj, h, p_id, current, errors)
         if errors:
             logger.warning("Reconfigure %s: EIP errors: %s", p_id[:8], errors)
 
         from app.services.deploy_service import _patch_kubevirt_gateway_forwards
 
+        if gateway_net_changed:
+            patch_kubevirt_gateway_networks(provider, p_id, current)
         _patch_kubevirt_gateway_forwards(provider, p_id, current)
 
         new_ocp_clusters = _stamp_new_ocp_cluster_configs(s, proj, current, deployed)
 
         # Finalize before kicking off OCP install so the canvas unblocks immediately.
-        _finalize_kubevirt_reconfigure(proj, s, p_id, current, copy, notify_project)
+        _finalize_kubevirt_reconfigure(
+            proj, s, p_id, current, copy, notify_project, errors=errors
+        )
         _delete_deploy_progress(p_id)
         _start_new_ocp_cluster_installs(s, proj, h, p_id, current, new_ocp_clusters)
     except Exception as e:
@@ -3911,29 +4083,103 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
         except Exception:
             pass
         _delete_deploy_progress(p_id)
+        notify_project(
+            p_id,
+            {
+                "type": "project-state",
+                "state": "error",
+                "deploy_error": str(e)[:500],
+            },
+        )
     finally:
         s.close()
 
 
-def _finalize_kubevirt_reconfigure(proj, s, p_id, current, copy, notify_project):
+def _finalize_kubevirt_reconfigure(
+    proj, s, p_id, current, copy, notify_project, errors=None
+):
     """Commit the reconfigured topology and mark the project active."""
-    clean_topo = copy.deepcopy(current)
+    from app.services.deploy_service import (
+        _notify_client_topology_update,
+        _read_kubevirt_domain_uuids,
+        _stamp_effective_dns_ips,
+    )
+    from app.services.deploy_topology import (
+        _extract_bmc_config,
+        inject_showroom_gateway_port_forwards,
+    )
+
+    # Mirror troshkad _finalize_reconfigure: stamp_new_ocp_cluster_configs may have
+    # committed a fresher topology (e.g. ocpVersion auto-defaulted on the canvas)
+    # after the reconfigure thread captured ``current`` — refresh so deployed_topology
+    # does not freeze an empty ocpVersion and trip a false Apply Changes diff.
+    s.refresh(proj)
+    clean_topo = copy.deepcopy(proj.topology or current)
+    inject_showroom_gateway_port_forwards(clean_topo, proj.vni_map or {}, "kubevirt")
     for node in clean_topo.get("nodes", []):
         ndata = node.get("data", {})
         ndata.pop("resolvedS3Path", None)
         ndata.pop("presignedUrl", None)
         ndata.pop("ciGeneratedUserData", None)
+        if node.get("type") == "vmNode" and not ndata.get("bmcIp"):
+            ndata["bmcIp"] = ""
+
+    kv_domain_uuids = _read_kubevirt_domain_uuids(proj, s)
+    for node in clean_topo.get("nodes", []):
+        ndata = node.get("data", {})
+        if node.get("type") == "vmNode":
+            vm_id = ndata.get("id", node.get("id", ""))
+            if vm_id in kv_domain_uuids:
+                ndata["domainUuid"] = kv_domain_uuids[vm_id]
+
+    bmc_config = _extract_bmc_config(clean_topo, p_id)
+    if bmc_config:
+        clean_topo["bmc"] = {
+            "username": bmc_config["bmc_network"].get("bmcUsername", "admin"),
+            "password": bmc_config["bmc_network"].get("bmcPassword", "password"),
+            "vms": {
+                vm["node_id"]: {
+                    "ip": vm["bmc_ip"],
+                    "redfish_url": (
+                        f"redfish-virtualmedia://{vm['bmc_ip']}:8000/redfish/v1/Systems/"
+                        f"{kv_domain_uuids.get(vm['node_id'], 'troshka-vm-' + vm['node_id'][:8])}"
+                    ),
+                    "redfish_url_ssl": (
+                        f"redfish-virtualmedia+https://{vm['bmc_ip']}:8443/redfish/v1/Systems/"
+                        f"{kv_domain_uuids.get(vm['node_id'], 'troshka-vm-' + vm['node_id'][:8])}"
+                    ),
+                    "ipmi_address": f"{vm['bmc_ip']}:623",
+                }
+                for vm in bmc_config["vms"]
+            },
+        }
+
+    _stamp_effective_dns_ips(clean_topo, kubevirt=True)
+
     # Never let an empty canvas clusters[] wipe deployed cluster metadata.
     prior = (proj.deployed_topology or {}).get("clusters") or []
     if prior and not (clean_topo.get("clusters") or []):
         clean_topo["clusters"] = copy.deepcopy(prior)
+
     proj.deployed_topology = clean_topo
     proj.topology = clean_topo
     proj.state = "active"
-    proj.deploy_error = None
+    proj.deploy_error = "\n".join(errors) if errors else None
     s.commit()
-    notify_project(p_id, {"type": "project-state", "state": "active"})
-    logger.info("Reconfigure %s: kubevirt reconfigure complete", p_id[:8])
+    _notify_client_topology_update(p_id, proj, s)
+    notify_project(
+        p_id,
+        {
+            "type": "project-state",
+            "state": "active",
+            "deploy_error": proj.deploy_error,
+        },
+    )
+    logger.info(
+        "Reconfigure %s: kubevirt reconfigure complete%s",
+        p_id[:8],
+        f" with errors: {errors}" if errors else "",
+    )
 
 
 def _find_gateway_node(topology):
@@ -4804,6 +5050,11 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
 
         current = proj.topology or {}
         deployed = proj.deployed_topology or {}
+        from app.services.ocp.cluster_topology_heal import (
+            freeze_deployed_cluster_ocp_versions,
+        )
+
+        freeze_deployed_cluster_ocp_versions(current, deployed)
 
         if h.host_type == "kubevirt-cluster":
             s.close()

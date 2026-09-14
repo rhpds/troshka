@@ -42,6 +42,27 @@ def _clusters_are_legacy_ghost_only(clusters: list) -> bool:
     return bool(clusters) and all(_is_legacy_migration_ghost(c) for c in clusters)
 
 
+def freeze_deployed_cluster_ocp_versions(current: dict, deployed: dict) -> None:
+    """Revert ocpVersion on clusters already in deployed_topology.
+
+    OCP version is fixed at install; canvas edits must not survive reconfigure.
+    """
+    dep_versions = {
+        c["id"]: c.get("ocpVersion") or ""
+        for c in (deployed.get("clusters") or [])
+        if c.get("id")
+    }
+    if not dep_versions:
+        return
+    for cluster in current.get("clusters") or []:
+        cid = cluster.get("id")
+        if cid not in dep_versions:
+            continue
+        frozen = dep_versions[cid]
+        if frozen:
+            cluster["ocpVersion"] = frozen
+
+
 def _reconcile_canvas_clusters(
     canvas_clusters: list,
     deployed_clusters: list,

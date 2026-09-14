@@ -3,6 +3,7 @@
 from app.services.ocp.cluster_topology_heal import (
     LEGACY_GHOST_NODE_ID,
     _clusters_are_legacy_ghost_only,
+    freeze_deployed_cluster_ocp_versions,
     heal_cluster_topology,
     seed_topology_clusters_from_deployed,
 )
@@ -149,3 +150,21 @@ def test_seed_topology_clusters_from_deployed():
     out = seed_topology_clusters_from_deployed(topo, deployed)
     assert out["clusters"][0]["id"] == "ocp-68a740"
     assert "_generatedInstallConfig" not in out["clusters"][0]
+
+
+def test_freeze_deployed_cluster_ocp_versions_reverts_canvas_drift():
+    current = {
+        "clusters": [
+            {"id": "ocp", "ocpVersion": "4.23"},
+            {"id": "ocp-2", "ocpVersion": "4.22"},
+        ]
+    }
+    deployed = {
+        "clusters": [
+            {"id": "ocp", "ocpVersion": "4.21"},
+            {"id": "ocp-2", "ocpVersion": ""},
+        ]
+    }
+    freeze_deployed_cluster_ocp_versions(current, deployed)
+    assert current["clusters"][0]["ocpVersion"] == "4.21"
+    assert current["clusters"][1]["ocpVersion"] == "4.22"

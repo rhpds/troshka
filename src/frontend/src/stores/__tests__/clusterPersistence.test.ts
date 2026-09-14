@@ -177,7 +177,10 @@ describe("stableClusterKey — dirty compares user-editable fields only", () => 
     expect(stableClusterKey([canvas])).not.toBe(
       stableClusterKey([{ ...canvas, controlPlaneCpu: 16 }]),
     );
-    expect(stableClusterKey([canvas])).not.toBe(
+  });
+
+  it("ignores ocpVersion drift (immutable after Apply Changes)", () => {
+    expect(stableClusterKey([canvas])).toBe(
       stableClusterKey([{ ...canvas, ocpVersion: "4.21" }]),
     );
   });
@@ -206,6 +209,28 @@ describe("stableNodeData — dnsRecords normalization", () => {
     expect(stableStringify(a)).not.toBe(stableStringify(b));
   });
 })
+
+describe("backfillDeployedClusterBaseline — empty deployed ocpVersion", () => {
+  it("copies ocpVersion from topology when deployed stamped empty", async () => {
+    const { backfillDeployedClusterBaseline } = await import(
+      "@/components/canvas/clusterNetworkBackfill"
+    );
+    const deployed = [{ id: "ocp-2", name: "ocp-2", ocpVersion: "" }];
+    const topology = [{ id: "ocp-2", name: "ocp-2", ocpVersion: "4.22" }];
+    const out = backfillDeployedClusterBaseline(deployed as never, topology as never);
+    expect(out[0].ocpVersion).toBe("4.22");
+  });
+
+  it("leaves deployed ocpVersion when already set", async () => {
+    const { backfillDeployedClusterBaseline } = await import(
+      "@/components/canvas/clusterNetworkBackfill"
+    );
+    const deployed = [{ id: "ocp", ocpVersion: "4.21" }];
+    const topology = [{ id: "ocp", ocpVersion: "4.22" }];
+    const out = backfillDeployedClusterBaseline(deployed as never, topology as never);
+    expect(out[0].ocpVersion).toBe("4.21");
+  });
+});
 
 describe("seedClustersFromDeployed — rebuild empty canvas clusters", () => {
   it("seeds from deployed (stripping deploy-only fields) when canvas is empty", async () => {

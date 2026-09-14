@@ -332,7 +332,11 @@ export default function ClusterInstallLogModal() {
             </button>
           </div>
         </div>
-        {controlPlaneUsableElapsed != null && (
+        {controlPlaneUsableElapsed != null &&
+          new RegExp(
+            `\\[${target.clusterKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\] control-plane-usable`,
+            "i",
+          ).test(log) && (
           <div
             style={{
               fontSize: 11,
