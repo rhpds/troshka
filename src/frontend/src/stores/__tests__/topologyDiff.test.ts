@@ -77,6 +77,40 @@ describe("computeTopologyDiff", () => {
     expect(computeTopologyDiff(state)).toEqual([]);
   });
 
+  it("ignores cluster boundary minWidth/minHeight drift", () => {
+    const state: TopologyDiffState = {
+      ...emptyBaseline,
+      nodes: [vmNode({ name: "ocp", clusterId: "ocp-1", minWidth: 360, minHeight: 318 })],
+      deployedNodeData: {
+        vm1: baseline({ name: "ocp", clusterId: "ocp-1", minWidth: 270, minHeight: 318 }),
+      },
+    } as TopologyDiffState;
+    expect(computeTopologyDiff(state)).toEqual([]);
+  });
+
+  it("treats missing OCP member install defaults as equal to canvas defaults", () => {
+    const canvasMember = {
+      name: "ocp-54230q-cp-0",
+      clusterId: "ocp-54230q",
+      clusterRole: "control-plane",
+      bootMethod: "disk",
+      secureBoot: false,
+      powerOnAtDeploy: true,
+    };
+    const state: TopologyDiffState = {
+      ...emptyBaseline,
+      nodes: [vmNode(canvasMember)],
+      deployedNodeData: {
+        vm1: baseline({
+          name: "ocp-54230q-cp-0",
+          clusterId: "ocp-54230q",
+          clusterRole: "control-plane",
+        }),
+      },
+    } as TopologyDiffState;
+    expect(computeTopologyDiff(state)).toEqual([]);
+  });
+
   it("reports an added node", () => {
     const state: TopologyDiffState = {
       ...emptyBaseline,

@@ -23,7 +23,6 @@ import shlex
 from app.services.ocp.agent_template import (
     _agent_create_image_cmd,
     _cluster_members_for,
-    _installer_tarball_url,
     _node_role,
     _redfish_eject_media_cmd,
     _redfish_insert_media_cmd,
@@ -108,14 +107,21 @@ def _phase_from_input(value: str) -> str:
 
 
 def _aggregate_in_progress(clusters: dict[str, str]) -> str:
-    """Overall phase while still in progress: the least-advanced cluster.
+    """Overall phase while still in progress: the least-advanced *running* cluster.
 
-    One cluster ``complete`` + another ``waiting`` → overall ``waiting`` (the
-    aggregate can't be ahead of its slowest cluster).
+    Terminal siblings (``complete``/``failed``) are independent — they must not
+    pull the aggregate backward to ``creating-image`` (failed has no rank).
     """
     if not clusters:
         return PHASE_CREATING_IMAGE
-    min_rank = min(_PHASE_RANK.get(phase, 0) for phase in clusters.values())
+    in_flight = [
+        phase
+        for phase in clusters.values()
+        if phase not in (PHASE_COMPLETE, PHASE_FAILED)
+    ]
+    if not in_flight:
+        return PHASE_COMPLETE
+    min_rank = min(_PHASE_RANK.get(phase, 0) for phase in in_flight)
     return _RANK_TO_PHASE[min_rank]
 
 
@@ -137,17 +143,35 @@ def ops_pod_install_progress(
         for cid, value in per_cluster_log_or_status.items()
     }
     failed = sorted(cid for cid, phase in clusters.items() if phase == PHASE_FAILED)
+    terminal = {PHASE_COMPLETE, PHASE_FAILED}
 
     if cancelled:
         overall, done = PHASE_CANCELLED, True
-    elif failed:
-        overall, done = PHASE_FAILED, True
-    elif clusters and all(phase == PHASE_COMPLETE for phase in clusters.values()):
-        overall, done = PHASE_COMPLETE, True
+    elif clusters and all(phase in terminal for phase in clusters.values()):
+        # Each cluster is independent — wait until ALL are terminal, then
+        # aggregate without letting one failure poison a sibling that succeeded.
+        done = True
+        if all(phase == PHASE_COMPLETE for phase in clusters.values()):
+            overall = PHASE_COMPLETE
+        elif failed and not any(phase == PHASE_COMPLETE for phase in clusters.values()):
+            overall = PHASE_FAILED
+        else:
+            overall = PHASE_COMPLETE
     else:
         overall, done = _aggregate_in_progress(clusters), False
 
     return {"clusters": clusters, "overall": overall, "done": done, "failed": failed}
+
+
+def cluster_phase_to_ocp_status(phase: str) -> str | None:
+    """Map an ops-pod install phase to the per-cluster ``ocpInstallStatus`` vocab."""
+    if phase == PHASE_COMPLETE:
+        return "ready"
+    if phase in (PHASE_FAILED, PHASE_CANCELLED):
+        return "error"
+    if phase in _PHASE_RANK:
+        return "monitoring"
+    return None
 
 
 def inject_dead_pod_failures(
@@ -179,6 +203,31 @@ def ops_pod_progress_items(progress: dict) -> list[str]:
     (the item list the deploy-progress UI shows)."""
     clusters = progress.get("clusters", {})
     return [f"{cid}: {clusters[cid]}" for cid in sorted(clusters)]
+
+
+# Log markers that mean nodes have booted from the agent ISO — restart must eject
+# BMC media, stop VMs, and wipe boot disks before re-installing.
+_POST_BOOT_MARKERS = (
+    "serving via http",
+    "insertmedia",
+    "forcerestart",
+    "waiting for cluster install",
+    "reached installation stage",
+    "to installing",
+    "preparing-for-installation",
+    "preparing-successful",
+    "writing image to disk",
+    "waiting for bootkube",
+    "bootstrap kube api initialized",
+)
+
+
+def cluster_install_post_boot(log_text: str | None) -> bool:
+    """True when the install log shows agent ISO net-boot / node install started."""
+    if not log_text:
+        return False
+    lowered = log_text.lower()
+    return any(marker in lowered for marker in _POST_BOOT_MARKERS)
 
 
 def has_control_plane_usable_marker(log_text: str | None, cluster_id: str) -> bool:
@@ -230,26 +279,140 @@ def bmc_for_cluster(topology: dict, cluster: dict) -> tuple[list[str], str]:
     return bmc_ips, _bmc_password_from_topology(topology)
 
 
-def _ensure_installers_cmd() -> str:
+def _ensure_ptr_registries_cmd(pull_through_registry: dict | None) -> str:
+    """Write ``registries.conf.d`` so ``oc``/``openshift-install`` mirror quay.io.
+
+    The bastion path bakes this via cloud-init; the ops pod must do the same or
+    ``agent create image`` fails pulling release payload layers (unauthorized).
+    """
+    if not pull_through_registry or not pull_through_registry.get("enabled"):
+        return ""
+    ptr_url = pull_through_registry["url"]
+    lines = [
+        "# Pull-through registry mirrors for oc/openshift-install image pulls.\n",
+        "mkdir -p /etc/containers/registries.conf.d\n",
+        "cat > /etc/containers/registries.conf.d/rhdp-cache.conf << 'EOF'\n",
+    ]
+    for source, org in pull_through_registry.get("orgs", {}).items():
+        lines.append(
+            f'[[registry]]\n  prefix = "{source}"\n  location = "{ptr_url}/{org}"\n\n'
+        )
+    lines.append("EOF\n\n")
+    return "".join(lines)
+
+
+def _ensure_installers_cmd(ocp_version: str) -> str:
     """Ensure ``oc``/``openshift-install`` on PATH, downloading if absent.
 
     Uses the same OCP client mirror URL the bastion installer uses (shared via
-    :func:`agent_template._installer_tarball_url`); a no-op when the tools are
+    :func:`client_mirror.installer_tarball_url`); a no-op when the tools are
     already baked into the ops-pod execution environment image.
+
+    Dev-preview (5.x) always re-downloads: the EE image ships GA 4.x clients and
+    ``command -v openshift-install`` would skip the 5.0 dev-preview tarball.
     """
+    from app.services.ocp.client_mirror import (
+        installer_tarball_url,
+        uses_dev_preview_mirror,
+    )
+
+    oi_url = installer_tarball_url(ocp_version, "openshift-install-linux.tar.gz")
+    oc_url = installer_tarball_url(ocp_version, "openshift-client-linux.tar.gz")
+    if uses_dev_preview_mirror(ocp_version):
+        oi_guard = "true"
+        oc_guard = "true"
+        preview_note = (
+            "# Dev-preview: EE image ships GA 4.x clients — always replace.\n"
+        )
+    else:
+        oi_guard = "! command -v openshift-install >/dev/null 2>&1"
+        oc_guard = "! command -v oc >/dev/null 2>&1"
+        preview_note = ""
     return (
-        "# Ensure oc / openshift-install present (baked into the EE image, else\n"
-        "# download from the same OCP client mirror the bastion installer uses).\n"
-        "if ! command -v openshift-install >/dev/null 2>&1; then\n"
-        '  echo "Downloading openshift-install $OCP_VERSION..."\n'
-        f"  curl -L -o /tmp/openshift-install.tar.gz {_installer_tarball_url('openshift-install-linux.tar.gz')}\n"
+        preview_note
+        + "# Ensure oc / openshift-install present (baked into the EE image, else\n"
+        + "# download from the same OCP client mirror the bastion installer uses).\n"
+        + f"if {oi_guard}; then\n"
+        f'  echo "Downloading openshift-install {ocp_version}..."\n'
+        f"  curl -L -o /tmp/openshift-install.tar.gz {oi_url}\n"
         "  tar xzf /tmp/openshift-install.tar.gz -C /usr/local/bin openshift-install && rm -f /tmp/openshift-install.tar.gz\n"
         "fi\n"
-        "if ! command -v oc >/dev/null 2>&1; then\n"
+        f"if {oc_guard}; then\n"
         '  echo "Downloading oc client..."\n'
-        f"  curl -L -o /tmp/openshift-client.tar.gz {_installer_tarball_url('openshift-client-linux.tar.gz')}\n"
+        f"  curl -L -o /tmp/openshift-client.tar.gz {oc_url}\n"
         "  tar xzf /tmp/openshift-client.tar.gz -C /usr/local/bin oc kubectl && rm -f /tmp/openshift-client.tar.gz\n"
         "fi\n"
+    )
+
+
+def _install_log_open_cmd(cluster_dir: str, indent: str = "  ") -> str:
+    """Open install.log: truncate on first run, append a resume marker on restart."""
+    i = indent
+    return (
+        f"{i}# Preserve history across restart_policy=always pod restarts.\n"
+        f"{i}if [ -f {cluster_dir}/install.log ]; then\n"
+        f'{i}  echo "=== ops pod resume $(date -u +%Y-%m-%dT%H:%M:%SZ) ===" '
+        f">> {cluster_dir}/install.log\n"
+        f"{i}else\n"
+        f"{i}  : > {cluster_dir}/install.log\n"
+        f"{i}fi\n"
+        f"{i}exec >> {cluster_dir}/install.log 2>&1\n"
+    )
+
+
+def _agent_create_image_resume_cmd(indent: str) -> str:
+    """Run create-image only when the ISO and installer state are not already present."""
+    return (
+        f"{indent}if [ -f agent.x86_64.iso ] && [ -f .openshift_install_state.json ]; then\n"
+        f'{indent}  echo "Agent ISO and installer state present, skipping create-image"\n'
+        f"{indent}else\n"
+        f"{indent}  cp -f .src/install-config.yaml .src/agent-config.yaml ./\n"
+        + _agent_create_image_cmd(
+            indent + "  ", "openshift-install", "create-image.log"
+        )
+        + f"{indent}fi\n"
+    )
+
+
+def _boot_from_agent_iso_cmd(
+    indent: str,
+    cluster_dir: str,
+    port: int,
+    bmc_ips_str: str,
+    serving_ip: str | None,
+) -> str:
+    """Serve the ISO and Redfish-boot nodes once; skip on pod restart mid-install."""
+    return (
+        f"{indent}if [ -f .agent-iso-booted ]; then\n"
+        f'{indent}  echo "Nodes already booted from agent ISO, skipping serve/boot"\n'
+        f"{indent}else\n"
+        f'{indent}  echo "Agent ISO ready. Serving via HTTP and booting nodes..."\n'
+        + _serve_iso_cmd(indent + "  ", cluster_dir, port, serving_ip=serving_ip)
+        + _redfish_insert_media_cmd(indent + "  ", bmc_ips_str)
+        + f"{indent}  touch .agent-iso-booted\n"
+        f"{indent}fi\n"
+    )
+
+
+def _ops_pod_join_and_hold_cmd() -> str:
+    """Wait on per-cluster subshells, then hold the container (never exit 1).
+
+    ``restart_policy=always`` would restart on exit, truncate install.log, re-run
+    create-image, and ForceRestart nodes mid-install. Holding keeps logs intact
+    and lets the monitor detect failures from log markers.
+    """
+    return (
+        "\n"
+        "# Wait on each cluster individually so a failed install is detected.\n"
+        "fail=0\n"
+        'for p in "${pids[@]}"; do wait "$p" || fail=1; done\n'
+        "# Hold on success OR failure — avoid restart_policy=always loops.\n"
+        'if [ "$fail" = 0 ]; then\n'
+        '  echo "All clusters installed. Holding for credential harvest..."\n'
+        "else\n"
+        '  echo "One or more clusters failed; holding container (no restart loop)..."\n'
+        "fi\n"
+        "sleep infinity\n"
     )
 
 
@@ -280,15 +443,11 @@ def _cluster_install_block(
     return (
         f"# ===== cluster {cluster_key} =====\n"
         "(\n"
-        # Truncate once on (re)start, then reopen in APPEND mode: the kubeconfig
-        # delivery thread appends breadcrumbs with '>>' (O_APPEND) concurrently, and
-        # a non-append 'exec >' here would overwrite its bytes at our stale offset.
-        f"  : > {cluster_dir}/install.log\n"
-        f"  exec >> {cluster_dir}/install.log 2>&1\n"
-        "  set -e\n"
-        "  set -o pipefail\n"
-        f'  echo "[{cluster_key}] starting agent-based install"\n'
-        f"  cd {cluster_dir}\n"
+        + _install_log_open_cmd(cluster_dir)
+        + "  set -e\n"
+        + "  set -o pipefail\n"
+        + f'  echo "[{cluster_key}] starting agent-based install"\n'
+        + f"  cd {cluster_dir}\n"
         # Idempotency guard: a restarted pod (restart_policy=always) must not
         # re-run the installer for a cluster whose install ACTUALLY completed.
         # Key on the post-install sentinel (written only after `wait-for
@@ -298,22 +457,15 @@ def _cluster_install_block(
         # permanent fake "already installed" skip and hang forever. `exit 0` here
         # exits ONLY this cluster's subshell as success (the block is `( ... ) &`),
         # so the top-level per-PID join sees it as a success.
-        f"  if [ -f {cluster_dir}/.install-complete ]; then "
-        f'echo "[{cluster_key}] already installed, skipping"; exit 0; fi\n'
-        # `agent create image` (--dir .) CONSUMES install-config/agent-config, so
-        # they must be regular, deletable files. They are delivered read-only into
-        # `.src` (a bind mount cannot be removed -> EBUSY); copy them into the
-        # working dir each run so a restart restores them after a prior consume.
-        "  cp -f .src/install-config.yaml .src/agent-config.yaml ./\n"
-        f"  BMC_PASS={shlex.quote(bmc_password)}\n"
+        + f"  if [ -f {cluster_dir}/.install-complete ]; then "
+        + f'echo "[{cluster_key}] already installed, skipping"; exit 0; fi\n'
+        + f"  BMC_PASS={shlex.quote(bmc_password)}\n"
         # Initialise HTTP_PID before the trap: under `set -u` a failure before the
         # ISO server starts would otherwise abort the trap with "unbound variable".
-        '  HTTP_PID=""\n'
-        "  trap 'kill $HTTP_PID 2>/dev/null || true' EXIT\n"
-        + _agent_create_image_cmd("  ", "openshift-install", "create-image.log")
-        + "  echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"
-        + _serve_iso_cmd("  ", cluster_dir, port, serving_ip=serving_ip)
-        + _redfish_insert_media_cmd("  ", bmc_ips_str)
+        + '  HTTP_PID=""\n'
+        + "  trap 'kill $HTTP_PID 2>/dev/null || true' EXIT\n"
+        + _agent_create_image_resume_cmd("  ")
+        + _boot_from_agent_iso_cmd("  ", cluster_dir, port, bmc_ips_str, serving_ip)
         + "  echo 'Waiting for cluster installation to complete...'\n"
         + _wait_for_complete_cmd("  ", "openshift-install", ".")
         + "  echo 'Ejecting agent ISO from nodes...'\n"
@@ -563,7 +715,7 @@ def build_ops_pod_recert_script(
         "set -u\n",
         "\n",
         _self_assign_net_ips(net_ip_assignments),
-        _ensure_installers_cmd(),
+        _ensure_installers_cmd("4.22"),
         "\n",
         "pids=()\n",
     ]
@@ -633,7 +785,7 @@ def build_ops_pod_install_script(
         f"OCP_VERSION={ocp_version}\n",
         "\n",
         _self_assign_net_ips(net_ip_assignments),
-        _ensure_installers_cmd(),
+        _ensure_installers_cmd(ocp_version),
         "\n",
         "pids=()\n",
     ]
@@ -650,22 +802,5 @@ def build_ops_pod_install_script(
                 serving_ip=serving_ip,
             )
         )
-    parts.append("\n")
-    parts.append(
-        "# Wait on each cluster individually so a failed install exits non-zero.\n"
-    )
-    parts.append("fail=0\n")
-    parts.append('for p in "${pids[@]}"; do wait "$p" || fail=1; done\n')
-    # On success, HOLD the container running instead of exiting. The pod is
-    # restart_policy=always; if we exited 0 it would restart, hit the per-cluster
-    # skip-guard, exit again — a restart loop that makes `podman exec` (the
-    # monitor's credential harvest of auth/kubeconfig + auth/kubeadmin-password)
-    # race and intermittently fail. Holding keeps the container exec-able until
-    # the monitor harvests creds and reaps the pod. On failure we still exit 1 so
-    # dead-pod detection works and the pod is left for debugging.
-    parts.append('if [ "$fail" = 0 ]; then\n')
-    parts.append('  echo "All clusters installed. Holding for credential harvest..."\n')
-    parts.append("  sleep infinity\n")
-    parts.append("fi\n")
-    parts.append("exit 1\n")
+    parts.append(_ops_pod_join_and_hold_cmd())
     return "".join(parts)

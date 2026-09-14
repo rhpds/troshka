@@ -2491,6 +2491,14 @@ class TestDiskPath:
         # vm_node_id[:8] - disk_node_id[:8] . format
         assert parts == f"{'v' * 8}-{'d' * 8}.qcow2"
 
+    def test_cluster_member_disk_id(self):
+        from app.services.deploy_topology import _disk_path
+
+        result = _disk_path(
+            "proj-1234", "ocp-54230q-cp-0", "ocp-54230q-cp-0-disk-0", "qcow2"
+        )
+        assert result == "/var/lib/troshka/vms/proj-1234/ocp-5423-d0.qcow2"
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # _seed_path

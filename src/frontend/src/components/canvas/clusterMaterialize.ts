@@ -30,6 +30,8 @@ const CELL_W = 210;
 const CELL_H = 240;
 const PAD = 30;
 const HEADER_H = 48;
+/** Min cluster width so header badges + Status button fit with padding (SNO grid is narrower). */
+export const CLUSTER_HEADER_MIN_W = 360;
 const COLS_MAX = 4;
 const CARD_W = 180; // VM card width (from .vm-node-card)
 const CARD_H = 205; // VM card height (approximate with all content)
@@ -44,10 +46,15 @@ const MB_PER_GB = 1024;
  * Returns width and height (in pixels) to fit members in a capped grid layout.
  * CPs placed first, then workers, wrapping at COLS_MAX per row.
  */
+function clusterContentWidth(memberCount: number): number {
+  const cols = Math.max(1, Math.min(COLS_MAX, memberCount));
+  return Math.max(2 * PAD + cols * CELL_W, CLUSTER_HEADER_MIN_W);
+}
+
 export function clusterBoxSize(count: number): { width: number; height: number } {
   const cols = Math.max(1, Math.min(COLS_MAX, count));
   const rows = Math.max(1, Math.ceil(count / cols));
-  return { width: 2 * PAD + cols * CELL_W, height: HEADER_H + PAD + rows * CELL_H };
+  return { width: clusterContentWidth(count), height: HEADER_H + PAD + rows * CELL_H };
 }
 
 interface RoleSpec {
@@ -269,7 +276,7 @@ function makeMemberNode(
 ): { node: Node; extraNodes: Node[]; extraEdges: Edge[] } {
   // Position member on grid within cluster boundary
   const x = PAD + gridCol * CELL_W;
-  const y = HEADER_H + gridRow * CELL_H;
+  const y = HEADER_H + PAD + gridRow * CELL_H;
   const { diskNodes, diskControllers, diskEdges, bootDevices } = buildMemberDisks(spec.role, cluster, name, x, y);
   const { nics, nicEdges } = buildMemberNics(cluster, name);
 
@@ -371,13 +378,13 @@ function reflowMembers(cluster: ClusterConfig, nodes: Node[]): Node[] {
   cps.forEach((n, i) => {
     posById.set(n.id, {
       x: PAD + (i % COLS_MAX) * CELL_W,
-      y: HEADER_H + Math.floor(i / COLS_MAX) * CELL_H,
+      y: HEADER_H + PAD + Math.floor(i / COLS_MAX) * CELL_H,
     });
   });
   workers.forEach((n, j) => {
     posById.set(n.id, {
       x: PAD + (j % COLS_MAX) * CELL_W,
-      y: HEADER_H + (cpRows + Math.floor(j / COLS_MAX)) * CELL_H,
+      y: HEADER_H + PAD + (cpRows + Math.floor(j / COLS_MAX)) * CELL_H,
     });
   });
   return nodes.map((n) => {
@@ -490,7 +497,7 @@ function computeContentBbox(
   visibleMembers: Node[],
 ): { contentW: number; contentH: number } {
   if (visibleMembers.length === 0) {
-    return { contentW: 280, contentH: 180 };
+    return { contentW: Math.max(280, CLUSTER_HEADER_MIN_W), contentH: 180 };
   }
   // Match clusterBoxSize / backend auto_layout so canvas-added clusters get the
   // same header clearance and cell padding as pattern-deployed ones.
@@ -498,9 +505,50 @@ function computeContentBbox(
   const cols = Math.max(1, Math.min(COLS_MAX, count));
   const rows = Math.max(1, Math.ceil(count / cols));
   return {
-    contentW: 2 * PAD + cols * CELL_W,
+    contentW: clusterContentWidth(count),
     contentH: HEADER_H + PAD + rows * CELL_H,
   };
+}
+
+/** Grow cluster boundary nodes that are too narrow for the header chrome. */
+export function healClusterBoundaryWidths(nodes: Node[]): Node[] {
+  return nodes.map((n) => {
+    if (n.type !== "clusterNode") return n;
+    const clusterId =
+      ((n.data as Record<string, unknown>).clusterId as string) ||
+      n.id.replace(/^cluster-/, "");
+    const visibleMembers = nodes.filter(
+      (m) =>
+        m.type === "vmNode" &&
+        (m.data as Record<string, unknown>).clusterId === clusterId,
+    );
+    const { contentW, contentH } = computeContentBbox(
+      { id: clusterId } as ClusterConfig,
+      visibleMembers,
+    );
+    const currentW = Number(n.style?.width) || 0;
+    const currentH = Number(n.style?.height) || 0;
+    const data = n.data as Record<string, unknown>;
+    const minW = data.minWidth as number | undefined;
+    const minH = data.minHeight as number | undefined;
+    if (
+      currentW >= contentW &&
+      currentH >= contentH &&
+      (minW === undefined || minW >= contentW) &&
+      (minH === undefined || minH >= contentH)
+    ) {
+      return n;
+    }
+    return {
+      ...n,
+      style: {
+        ...n.style,
+        width: Math.max(currentW, contentW),
+        height: Math.max(currentH, contentH),
+      },
+      data: { ...data, minWidth: contentW, minHeight: contentH },
+    };
+  });
 }
 
 /**

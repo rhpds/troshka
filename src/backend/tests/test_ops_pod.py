@@ -337,8 +337,10 @@ def test_install_script_propagates_cluster_failure():
     assert "set -o pipefail" in script
     # Top-level: wait per-PID, record failure, exit non-zero if any failed.
     assert 'for p in "${pids[@]}"; do wait "$p" || fail=1; done' in script
-    # Failure still exits non-zero (dead-pod detection + leave pod for debugging).
-    assert script.rstrip().endswith("exit 1")
+    # Failure holds the container; monitor reads log markers instead of exit 1.
+    assert "holding container (no restart loop)" in script
+    assert script.rstrip().endswith("sleep infinity")
+    assert not script.rstrip().endswith("exit 1")
     # A bare unconditional `wait` must NOT be the terminal join (it returns 0).
     assert not script.rstrip().endswith("wait")
 
@@ -555,9 +557,16 @@ def test_progress_all_complete_is_done():
     assert p["failed"] == []
 
 
-def test_progress_any_failed_overall_failed_and_done():
+def test_progress_any_failed_still_in_progress_while_sibling_waiting():
     p = ops_pod_install_progress({"c1": "complete", "c2": "failed", "c3": "waiting"})
-    assert p["overall"] == "failed"
+    assert p["overall"] == "waiting"
+    assert p["done"] is False
+    assert p["failed"] == ["c2"]
+
+
+def test_progress_mixed_terminal_overall_complete_not_failed():
+    p = ops_pod_install_progress({"c1": "complete", "c2": "failed"})
+    assert p["overall"] == "complete"
     assert p["done"] is True
     assert p["failed"] == ["c2"]
 
@@ -565,8 +574,8 @@ def test_progress_any_failed_overall_failed_and_done():
 def test_progress_multiple_failed_sorted():
     p = ops_pod_install_progress({"z": "failed", "a": "failed", "m": "waiting"})
     assert p["failed"] == ["a", "z"]
-    assert p["overall"] == "failed"
-    assert p["done"] is True
+    assert p["overall"] == "waiting"
+    assert p["done"] is False
 
 
 def test_progress_parses_log_markers():

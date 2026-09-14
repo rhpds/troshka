@@ -681,9 +681,36 @@ function ClusterEditor({
   nodes: Node[];
   ocpVersions: Array<{ name: string; support: string }>;
 }) {
+  const [userPullThroughRegistry, setUserPullThroughRegistry] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/v1/auth/ocp-pull-secret")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled && data) {
+          setUserPullThroughRegistry(!!data.pull_through_registry);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   // Bastionless (pod-install) OCP has no bastion, so the bastion-browser option
-  // is hidden for pod projects.
+  // is hidden for pod projects and when no bastion VM exists on the canvas.
   const ocpInstallVia = useCanvasStore((s) => s.ocpInstallVia);
+  const effectiveInstallVia = ocpInstallVia ?? "pod";
+  const hasBastionVm = nodes.some(
+    (n) =>
+      n.type === "vmNode" &&
+      String(
+        (n.data as Record<string, unknown>).label ??
+          (n.data as Record<string, unknown>).name ??
+          "",
+      ).toLowerCase() === "bastion",
+  );
+  const showBastionBrowserOption =
+    effectiveInstallVia !== "pod" && hasBastionVm;
   // SNO has no VIPs (OpenShift forbids them for a single node) — api/*.apps use
   // the node's own IP. Show the VIP fields as read-only N/A for SNO.
   const isSno = cluster.type === "sno";
@@ -1096,7 +1123,7 @@ function ClusterEditor({
             gap: 6,
             fontSize: 12,
             cursor: clusterDeployed ? "not-allowed" : "pointer",
-            marginBottom: ocpInstallVia !== "pod" ? 8 : 0,
+            marginBottom: showBastionBrowserOption ? 8 : 0,
             opacity: clusterDeployed ? 0.6 : 1,
           }}
         >
@@ -1109,7 +1136,29 @@ function ClusterEditor({
           />
           Install OpenShift on deploy
         </label>
-        {ocpInstallVia !== "pod" && (
+        {userPullThroughRegistry && (
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 12,
+              cursor: clusterDeployed ? "not-allowed" : "pointer",
+              marginBottom: showBastionBrowserOption ? 8 : 0,
+              opacity: clusterDeployed ? 0.6 : 1,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={cluster.usePullThroughRegistry !== false}
+              disabled={clusterDeployed}
+              title={clusterDeployed ? "🔒 Locked while deployed." : undefined}
+              onChange={(e) => onPatch({ usePullThroughRegistry: e.target.checked })}
+            />
+            Use pull-through registry
+          </label>
+        )}
+        {showBastionBrowserOption && (
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
             <input
               type="checkbox"

@@ -93,15 +93,16 @@ export default function ClusterInstallLogModal() {
   const target = useCanvasStore((s) => s.clusterLogTarget);
   const close = useCanvasStore((s) => s.closeClusterLog);
   const projectId = useCanvasStore((s) => s.currentProjectId);
-  const ocpHealth = useCanvasStore((s) => s.ocpHealth);
   const nodes = useCanvasStore((s) => s.nodes);
   const [log, setLog] = useState("");
+  const [clusterStatus, setClusterStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [revealPw, setRevealPw] = useState(false);
   // Timer basis: deployment START (epoch seconds), frozen at the backend's total
   // once terminal. Elapse from deploy start — NOT from log timestamps (recert
   // breadcrumbs have none, and installs should match).
   const [deployStartedAt, setDeployStartedAt] = useState<number | null>(null);
+  const [installStartedAt, setInstallStartedAt] = useState<number | null>(null);
   const [installElapsed, setInstallElapsed] = useState<number | null>(null);
   const [controlPlaneUsableElapsed, setControlPlaneUsableElapsed] = useState<number | null>(null);
   // kubeadmin password + kubeconfig availability, polled live from the backend
@@ -112,8 +113,10 @@ export default function ClusterInstallLogModal() {
     kubeconfig_available: boolean;
     vm_name: string;
   } | null>(null);
+  const [restarting, setRestarting] = useState(false);
   const [, setTick] = useState(0);
   const preRef = useRef<HTMLPreElement>(null);
+  const restartGuardRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!target || !projectId) return;
@@ -121,8 +124,10 @@ export default function ClusterInstallLogModal() {
     setLog("");
     setAccess(null);
     setDeployStartedAt(null);
+    setInstallStartedAt(null);
     setInstallElapsed(null);
     setControlPlaneUsableElapsed(null);
+    setClusterStatus(null);
     setLoading(true);
     const fetchLog = async () => {
       try {
@@ -132,9 +137,21 @@ export default function ClusterInstallLogModal() {
         if (!r.ok || cancelled) return;
         const data = await r.json();
         if (!cancelled) {
+          // Ignore stale cached failure logs briefly after a restart click.
+          if (
+            restartGuardRef.current &&
+            data.cluster_status === "error" &&
+            /level=fatal/i.test(data.output || "")
+          ) {
+            if (Date.now() - restartGuardRef.current < 30000) return;
+            restartGuardRef.current = null;
+          }
           setLog(data.output || "");
           setDeployStartedAt(
             typeof data.deploy_started_at === "number" ? data.deploy_started_at : null,
+          );
+          setInstallStartedAt(
+            typeof data.install_started_at === "number" ? data.install_started_at : null,
           );
           setInstallElapsed(
             typeof data.ocp_install_elapsed === "number" ? data.ocp_install_elapsed : null,
@@ -144,6 +161,9 @@ export default function ClusterInstallLogModal() {
               ? data.ocp_control_plane_usable_elapsed
               : null,
           );
+          if (typeof data.cluster_status === "string") {
+            setClusterStatus(data.cluster_status);
+          }
           if (data.kubeadmin_password || data.kubeconfig_available) {
             setAccess({
               kubeadmin_password: data.kubeadmin_password || "",
@@ -184,9 +204,9 @@ export default function ClusterInstallLogModal() {
   const ops = parseOperators(log);
   const installed = stages[stages.length - 1]?.state === "done";
   const failed =
-    ocpHealth?.phase === "error" ||
-    ocpHealth?.phase === "timeout" ||
-    /level=fatal|cluster\(s\) failed/i.test(log);
+    !restarting &&
+    (clusterStatus === "error" ||
+      /level=fatal|\[.*\] install failed/i.test(log));
   // Terminal = complete OR failed: stop advancing the timer either way.
   const terminal = installed || failed;
 
@@ -203,14 +223,13 @@ export default function ClusterInstallLogModal() {
         ? { label: "Re-Certing", fg: "#c084fc", bg: "rgba(192,132,252,0.14)", bd: "rgba(192,132,252,0.45)" }
         : { label: "Installing", fg: "#60a5fa", bg: "rgba(96,165,250,0.14)", bd: "rgba(96,165,250,0.45)" };
 
-  // Elapsed always counts from deployment START (deploy_started_at), ticking live
-  // via the 1s tick; once terminal the backend's frozen total (ocp_install_elapsed)
-  // takes over so it stays correct even after the modal is closed and reopened.
+  // Prefer per-attempt install_started_at (reset on restart) over project deploy start.
+  const timerBase = installStartedAt ?? deployStartedAt;
   const elapsedSecs =
     installElapsed != null
       ? installElapsed
-      : deployStartedAt != null
-        ? Math.max(0, Math.floor(Date.now() / 1000 - deployStartedAt))
+      : timerBase != null
+        ? Math.max(0, Math.floor(Date.now() / 1000 - timerBase))
         : null;
   const elapsed = elapsedSecs == null ? null : fmtElapsed(elapsedSecs);
 
@@ -227,6 +246,58 @@ export default function ClusterInstallLogModal() {
   // (populated on project load) so an already-deployed cluster still shows them.
   const kubeadminPw = access?.kubeadmin_password || storePw;
   const hasKubeconfig = access?.kubeconfig_available || !!storeKubeconfigVm;
+
+  const handleRestartInstall = async () => {
+    if (!projectId || !target || restarting) return;
+    setRestarting(true);
+    setLoading(true);
+    try {
+      const r = await fetch(
+        `/api/v1/projects/${projectId}/ocp/restart-install?cluster=${encodeURIComponent(target.clusterKey)}`,
+        { method: "POST" },
+      );
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        alert(typeof data.detail === "string" ? data.detail : "Failed to restart install");
+        return;
+      }
+      const data = await r.json();
+      const startedAt =
+        typeof data.install_started_at === "number"
+          ? data.install_started_at
+          : Math.floor(Date.now() / 1000);
+      restartGuardRef.current = Date.now();
+      setLog("");
+      setAccess(null);
+      setClusterStatus("monitoring");
+      setInstallStartedAt(startedAt);
+      setInstallElapsed(null);
+      setControlPlaneUsableElapsed(null);
+      // Pull fresh (empty) log + timing immediately instead of waiting for the poll interval.
+      try {
+        const lr = await fetch(
+          `/api/v1/projects/${projectId}/ocp/install-log?cluster=${encodeURIComponent(target.clusterKey)}`,
+        );
+        if (lr.ok) {
+          const fresh = await lr.json();
+          setLog(fresh.output || "");
+          if (typeof fresh.install_started_at === "number") {
+            setInstallStartedAt(fresh.install_started_at);
+          }
+          if (typeof fresh.cluster_status === "string") {
+            setClusterStatus(fresh.cluster_status);
+          }
+        }
+      } catch {
+        /* poll will catch up */
+      }
+    } catch {
+      alert("Failed to restart install");
+    } finally {
+      setRestarting(false);
+      setLoading(false);
+    }
+  };
 
   return (
     <div
@@ -288,13 +359,31 @@ export default function ClusterInstallLogModal() {
               )}
               {statusBadge.label}
             </span>
-            {elapsed && (
+            {elapsed != null && (
               <span style={{ fontSize: 12, fontWeight: 400, color: "var(--troshka-text-dim, #94a3b8)" }}>
                 · {elapsed}
               </span>
             )}
           </h3>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {failed && !isRecert && (
+              <button
+                onClick={handleRestartInstall}
+                disabled={restarting}
+                style={{
+                  background: "rgba(248,113,113,0.14)",
+                  border: "1px solid rgba(248,113,113,0.45)",
+                  color: "#f87171",
+                  cursor: restarting ? "wait" : "pointer",
+                  fontSize: 11,
+                  padding: "4px 10px",
+                  borderRadius: 4,
+                  fontWeight: 600,
+                }}
+              >
+                {restarting ? "Restarting…" : "Restart install"}
+              </button>
+            )}
             {log && (
               <button
                 onClick={(e) => {
@@ -486,7 +575,11 @@ export default function ClusterInstallLogModal() {
                   className="project-btn-spinner"
                   style={{ width: 12, height: 12, display: "inline-block", verticalAlign: "middle", marginRight: 6 }}
                 />
-                {loading ? "Loading install log…" : "No install log yet."}
+                {restarting
+                  ? "Restarting install…"
+                  : loading
+                    ? "Loading install log…"
+                    : "No install log yet."}
               </span>
             )}
           </pre>

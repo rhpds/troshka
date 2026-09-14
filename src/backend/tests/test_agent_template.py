@@ -82,6 +82,32 @@ def test_build_install_config_without_pull_through():
     assert "imageDigestSources" not in ic
 
 
+def test_customize_cluster_opt_out_of_pull_through_registry():
+    from app.services.ocp.agent_template import _customize_one_cluster
+
+    topology = {
+        "nodes": [],
+        "clusters": [
+            {
+                "id": "ocp-a",
+                "name": "ocp-a",
+                "type": "sno",
+                "usePullThroughRegistry": False,
+            }
+        ],
+    }
+    cluster = topology["clusters"][0]
+    ptr = {
+        "enabled": True,
+        "url": "registry-quay.apps.example.com",
+        "orgs": {"quay.io": "quay_io"},
+    }
+    config = {"resolved": {"pull_through_registry": ptr}, "pull_secret_json": "{}"}
+    _customize_one_cluster(topology, cluster, config, include_extras=False)
+    parsed = yaml.safe_load(cluster["_generatedInstallConfig"])
+    assert "imageDigestSources" not in parsed
+
+
 def test_bastion_cloud_init_pull_through_registry():
     """When pull_through_registry is enabled, bastion cloud-init should contain registries.conf.d config."""
     from app.services.ocp.agent_template import customize_topology

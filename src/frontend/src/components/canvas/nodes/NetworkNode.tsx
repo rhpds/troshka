@@ -104,7 +104,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
       <div className="network-node-info">
         <div className="network-node-name">{d.name}{isDirty && <span title="Unsaved changes" style={{ fontSize: 9, marginLeft: 4 }}>💾</span>}</div>
         {d.subtype === "network" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
             <span className="network-node-cidr">{d.cidr}</span>
             {isBmc ? (
               <span style={{ background: "rgba(168,85,247,0.2)", color: "rgba(168,85,247,1)", padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 600 }}>

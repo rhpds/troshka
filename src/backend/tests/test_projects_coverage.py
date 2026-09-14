@@ -1223,10 +1223,10 @@ class TestReconfigureProcessVms:
 
 
 class TestDeployAddedVms:
-    @patch("app.api.projects.wait_for_job")
+    @patch("app.api.projects.wait_for_job", return_value={"status": "completed"})
     @patch("app.api.projects.start_job", return_value="j1")
-    @patch("app.api.projects._create_vm_via_troshkad")
-    @patch("app.api.projects._create_vm_disks_via_troshkad")
+    @patch("app.api.projects._create_vm_via_troshkad", return_value="create-j1")
+    @patch("app.api.projects._create_vm_disks_via_troshkad", return_value=["disk-j1"])
     @patch("app.api.projects._create_seed_isos_via_troshkad")
     @patch("app.api.projects.cache_library_images")
     @patch("app.api.projects._find_vm_disks", return_value=[])
@@ -1264,16 +1264,26 @@ class TestDeployAddedVms:
         mock_disks.assert_called_once()
         mock_create.assert_called_once()
         mock_start.assert_called_once()
+        # disk create, VM define (virt-install), then virsh start
+        assert mock_wait.call_count == 3
         assert len(errors) == 0
 
-    @patch("app.api.projects._create_vm_via_troshkad")
-    @patch("app.api.projects._create_vm_disks_via_troshkad")
+    @patch("app.api.projects.wait_for_job", return_value={"status": "completed"})
+    @patch("app.api.projects._create_vm_via_troshkad", return_value="create-j1")
+    @patch("app.api.projects._create_vm_disks_via_troshkad", return_value=["disk-j1"])
     @patch("app.api.projects._create_seed_isos_via_troshkad")
     @patch("app.api.projects.cache_library_images")
     @patch("app.api.projects._find_vm_disks", return_value=[])
     @patch("app.services.deploy_service._set_deploy_progress")
     def test_auto_start_disabled_skips_start(
-        self, mock_set, mock_find, mock_cache, mock_seed, mock_disks, mock_create
+        self,
+        mock_set,
+        mock_find,
+        mock_cache,
+        mock_seed,
+        mock_disks,
+        mock_create,
+        mock_wait,
     ):
         from app.api.projects import _deploy_added_vms
 
@@ -1286,7 +1296,7 @@ class TestDeployAddedVms:
             )
             mock_start.assert_not_called()
 
-    @patch("app.api.projects._create_vm_via_troshkad")
+    @patch("app.api.projects._create_vm_via_troshkad", return_value="create-j1")
     @patch(
         "app.api.projects._create_vm_disks_via_troshkad",
         side_effect=RuntimeError("disk fail"),
@@ -1307,6 +1317,43 @@ class TestDeployAddedVms:
         )
         assert len(errors) == 1
         assert "vm-fail" in errors[0]
+
+
+# ---------------------------------------------------------------------------
+# _wait_added_troshkad_vms_ready
+# ---------------------------------------------------------------------------
+
+
+class TestWaitAddedTroshkadVmsReady:
+    @patch("app.services.troshkad_client.get_all_vm_states")
+    @patch("app.services.deploy_service._set_deploy_progress")
+    def test_returns_none_when_all_running(self, mock_progress, mock_states):
+        from app.api.projects import _wait_added_troshkad_vms_ready
+        from app.services.deploy_topology import _vm_domain_name
+
+        p_id = "4dbbe9d5-ca1a-4d36-8caa-4e850f8596e6"
+        vm_id = "8068f348-0000-0000-0000-000000000001"
+        dom = _vm_domain_name(p_id, vm_id)
+        mock_states.return_value = {dom: "running"}
+        added = [{"id": vm_id}]
+        err = _wait_added_troshkad_vms_ready(MagicMock(), p_id, added, {})
+        assert err is None
+
+    @patch("app.services.troshkad_client.get_all_vm_states", return_value={})
+    @patch("app.services.deploy_service._set_deploy_progress")
+    @patch("time.sleep")
+    def test_times_out_when_domain_missing(
+        self, mock_sleep, mock_progress, mock_states
+    ):
+        from app.api.projects import _wait_added_troshkad_vms_ready
+
+        p_id = "4dbbe9d5-ca1a-4d36-8caa-4e850f8596e6"
+        added = [{"id": "8068f348-0000-0000-0000-000000000001"}]
+        err = _wait_added_troshkad_vms_ready(
+            MagicMock(), p_id, added, {}, deadline_secs=0
+        )
+        assert err is not None
+        assert "Timed out" in err
 
 
 # ---------------------------------------------------------------------------

@@ -53,6 +53,7 @@ from app.services.deploy_topology import (
     _snapshot_cache_path,
     _vm_dir,
     _vm_domain_name,
+    is_valid_smbios_uuid,
 )
 from app.services.mesh_service import (
     create_mesh_peers,
@@ -1462,7 +1463,6 @@ def _create_vm_via_troshkad(
 
     params = {
         "domain_name": vm_name,
-        "uuid": vm.get("uuid") or vm["node_id"],
         "vcpus": vm["vcpus"],
         "ram_mb": vm["ram_gb"] * 1024,
         "disks": disks,
@@ -1474,6 +1474,8 @@ def _create_vm_via_troshkad(
         "input_model": vm.get("input_model", "virtio"),
         "serial_exec_type": vm.get("serial_exec_type", ""),
     }
+    if is_valid_smbios_uuid(vm.get("uuid")):
+        params["uuid"] = str(vm["uuid"])
     if headless:
         params["headless"] = True
     if vm.get("machine_type"):
@@ -1827,6 +1829,85 @@ def _resolve_ops_pod_ocp_version(install_clusters: list, topology: dict) -> str:
     return "4.20"
 
 
+def _resolve_ops_pod_pull_secret(s, project) -> str:
+    """Decrypt the project owner's pull secret for ops-pod install-config."""
+    from app.core.encryption import decrypt
+    from app.models.user import User
+
+    owner = s.query(User).filter_by(id=project.owner_id).first()
+    if owner and owner.ocp_pull_secret:
+        return decrypt(owner.ocp_pull_secret)
+    return ""
+
+
+def _resolve_ops_pod_pull_through_registry(s, project, topology=None) -> dict | None:
+    """Pull-through mirror config for ops-pod install-config + registries.conf."""
+    if s is None:
+        return None
+    from app.api.projects import _build_pull_through_config
+    from app.models.user import User
+
+    owner = s.query(User).filter_by(id=project.owner_id).first()
+    if not (owner and owner.pull_through_registry and owner.pull_through_registry_url):
+        return None
+
+    if topology is not None:
+        from app.services.ocp.agent_template import _cluster_use_pull_through_registry
+
+        clusters = _ocp_clusters(topology)
+        install_clusters = [c for c in clusters if _cluster_install_on_deploy(c)]
+        if install_clusters and not any(
+            _cluster_use_pull_through_registry(c) for c in install_clusters
+        ):
+            return None
+
+    return _build_pull_through_config(owner.pull_through_registry_url)
+
+
+def _ensure_ocp_generated_configs(s, project, topology) -> None:
+    """Refresh per-cluster install/agent configs before ops-pod deploy.
+
+    Canvas auto-save drops deploy-only ``_generated*`` fields from ``topology``;
+    the ops pod bind-mounts those at create time and the install script copies
+    them from ``.src/`` before ``openshift-install agent create image``.
+    """
+    from app.services.ocp.agent_template import _customize_one_cluster
+    from app.services.template_loader import normalize_cluster_member_fields
+
+    clusters = _ocp_clusters(topology)
+    if not clusters:
+        return
+    normalize_cluster_member_fields(topology)
+    ptr = _resolve_ops_pod_pull_through_registry(s, project, topology)
+    config = {
+        "resolved": {"pull_through_registry": ptr} if ptr else {},
+        "pull_secret_json": _resolve_ops_pod_pull_secret(s, project),
+        "ssh_pub_key": "",
+    }
+    for i, cluster in enumerate(clusters):
+        if not _cluster_install_on_deploy(cluster):
+            continue
+        _customize_one_cluster(topology, cluster, config, include_extras=(i == 0))
+
+
+def _validate_ops_pod_config_files(install_clusters: list, files: dict) -> None:
+    """Fail fast when the ops pod would start without install configs mounted."""
+    if not install_clusters:
+        return
+    missing = []
+    for cluster in install_clusters:
+        key = str(cluster.get("id") or cluster.get("name") or "cluster")
+        path = f"/workdir/{key}/.src/install-config.yaml"
+        if path not in files:
+            missing.append(key)
+    if missing:
+        raise RuntimeError(
+            "OpenShift install configs missing for ops pod "
+            f"(clusters: {', '.join(missing)}). "
+            "Save the canvas and redeploy, or check cluster VIPs/network wiring."
+        )
+
+
 def _ops_pod_cluster_complete(project_id: str, cluster: dict) -> bool:
     """True when a cluster's ops-pod log shows a successful finish."""
     from app.core.redis import get_progress
@@ -1975,12 +2056,14 @@ def _build_ops_pod_runner_script(
     workdir: str,
     net_ip_assignments=None,
     serving_ip=None,
+    pull_through_registry: dict | None = None,
 ) -> str:
     """Ops-pod bash script: per-cluster recert and/or fresh agent install blocks."""
     from app.services.ocp.ops_pod_install import (
         _BASE_ISO_PORT,
         _cluster_install_block,
         _ensure_installers_cmd,
+        _ensure_ptr_registries_cmd,
         _recert_cluster_block,
         _self_assign_net_ips,
         bmc_for_cluster,
@@ -2001,7 +2084,8 @@ def _build_ops_pod_runner_script(
         f"OCP_VERSION={ocp_version}\n",
         "\n",
         _self_assign_net_ips(net_ip_assignments),
-        _ensure_installers_cmd(),
+        _ensure_installers_cmd(ocp_version),
+        _ensure_ptr_registries_cmd(pull_through_registry),
         "\n",
         "pids=()\n",
     ]
@@ -2025,16 +2109,9 @@ def _build_ops_pod_runner_script(
             parts.append(
                 _recert_cluster_block(key, workdir, modes.get(key, "multinode"))
             )
-    parts.append("\n")
-    parts.append("fail=0\n")
-    parts.append('for p in "${pids[@]}"; do wait "$p" || fail=1; done\n')
-    parts.append('if [ "$fail" = 0 ]; then\n')
-    parts.append(
-        '  echo "All cluster operations complete. Holding for credential harvest..."\n'
-    )
-    parts.append("  sleep infinity\n")
-    parts.append("fi\n")
-    parts.append("exit 1\n")
+    from app.services.ocp.ops_pod_install import _ops_pod_join_and_hold_cmd
+
+    parts.append(_ops_pod_join_and_hold_cmd())
     return "".join(parts)
 
 
@@ -2045,6 +2122,7 @@ def _ops_pod_command(
     workdir,
     net_ip_assignments=None,
     serving_ip=None,
+    pull_through_registry=None,
 ):
     """Full ``bash -c`` argv: ensure workdirs exist, then run the installer.
 
@@ -2062,6 +2140,7 @@ def _ops_pod_command(
         workdir,
         net_ip_assignments=net_ip_assignments,
         serving_ip=serving_ip,
+        pull_through_registry=pull_through_registry,
     )
     preamble = "\n".join(_ops_pod_workdir_lines(clusters, workdir))
     return ["bash", "-c", preamble + "\n" + script]
@@ -2132,6 +2211,7 @@ def _ops_pod_recert_kubeadmin_files(topology, clusters, workdir) -> dict[str, st
 
 
 def _ops_pod_create_params(
+    s,
     project,
     clusters,
     topology,
@@ -2168,7 +2248,14 @@ def _ops_pod_create_params(
     project_id = str(getattr(project, "id", ""))
     dns = _gateway_connected_dns_nameserver(topology)
     networks = ops_pod_infra_network(vni_map, dns_nameserver=dns)
-    command = _ops_pod_command(clusters, topology, ocp_version, OPS_POD_WORKDIR)
+    ptr = _resolve_ops_pod_pull_through_registry(s, project, topology)
+    command = _ops_pod_command(
+        clusters,
+        topology,
+        ocp_version,
+        OPS_POD_WORKDIR,
+        pull_through_registry=ptr,
+    )
     recert_clusters, install_clusters = _partition_ops_pod_clusters(topology, clusters)
     files = ops_pod_config_files(install_clusters, OPS_POD_WORKDIR, pull_secret_json)
     if recert_clusters:
@@ -2206,7 +2293,16 @@ def _ops_pod_create_params(
     }
 
 
-def _deploy_ops_pod(s, host, project_id, project, topology, vni_map, clusters=None):
+def _deploy_ops_pod(
+    s,
+    host,
+    project_id,
+    project,
+    topology,
+    vni_map,
+    clusters=None,
+    log_cache_keys_to_clear=None,
+):
     """Mint a scoped key and create+start the in-cluster OCP install ops pod.
 
     Bastionless / multi-cluster path: instead of a bastion VM, an in-cluster ops
@@ -2234,6 +2330,8 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map, clusters=No
             project_id[:8],
         )
         return
+    _ensure_ocp_generated_configs(s, project, topology)
+    pull_secret_json = _resolve_ops_pod_pull_secret(s, project)
     api_key = mint_ops_pod_key(s, project)
     ocp_version = _resolve_ops_pod_ocp_version(install_clusters, topology)
     logger.info(
@@ -2251,6 +2349,7 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map, clusters=No
             install_clusters,
             api_key,
             ocp_version,
+            log_cache_keys_to_clear=log_cache_keys_to_clear,
         )
     else:
         _deploy_ops_pod_troshkad(
@@ -2263,6 +2362,8 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map, clusters=No
             install_clusters,
             api_key,
             ocp_version,
+            pull_secret_json,
+            log_cache_keys_to_clear=log_cache_keys_to_clear,
         )
 
 
@@ -2282,7 +2383,17 @@ def _maybe_deploy_ops_pod(s, host, project_id, project, topology, vni_map) -> No
 
 
 def _deploy_ops_pod_troshkad(
-    s, host, project_id, project, topology, vni_map, clusters, api_key, ocp_version
+    s,
+    host,
+    project_id,
+    project,
+    topology,
+    vni_map,
+    clusters,
+    api_key,
+    ocp_version,
+    pull_secret_json,
+    log_cache_keys_to_clear=None,
 ):
     """troshkad (podman) ops-pod path: shape ``/pods/create`` params, create+start."""
     # Reconfigure may add a cluster to a project whose ops pod still exists from
@@ -2291,8 +2402,12 @@ def _deploy_ops_pod_troshkad(
     _cancel_ops_pod_install_troshkad(host, project_id)
     from app.services.ocp.ops_pod_install import _cluster_key as _ops_cluster_key
 
-    clear_ops_pod_log_cache_keys(project_id, [_ops_cluster_key(c) for c in clusters])
+    keys_to_clear = log_cache_keys_to_clear
+    if keys_to_clear is None:
+        keys_to_clear = [_ops_cluster_key(c) for c in clusters]
+    clear_ops_pod_log_cache_keys(project_id, keys_to_clear)
     params = _ops_pod_create_params(
+        s,
         project,
         clusters,
         topology,
@@ -2300,8 +2415,9 @@ def _deploy_ops_pod_troshkad(
         api_url=_ops_pod_api_url(),
         api_key=api_key,
         ocp_version=ocp_version,
-        pull_secret_json="",
+        pull_secret_json=pull_secret_json,
     )
+    _validate_ops_pod_config_files(clusters, params.get("files") or {})
     job_id = start_job(host, "/pods/create", params)
     try:
         _wait_troshkad_job(host, job_id, 300, "Ops pod create")
@@ -2470,7 +2586,15 @@ def _stamp_effective_dns_ips(topology, kubevirt):
 
 
 def _deploy_ops_pod_kubevirt(
-    s, host, project_id, project, topology, clusters, api_key, ocp_version
+    s,
+    host,
+    project_id,
+    project,
+    topology,
+    clusters,
+    api_key,
+    ocp_version,
+    log_cache_keys_to_clear=None,
 ):
     """KubeVirt ops-pod path: build Pod+Secret manifests and create them via k8s.
 
@@ -2503,6 +2627,7 @@ def _deploy_ops_pod_kubevirt(
     # DNS via the dnsmasq pod; an explicit dnsServerIp still wins (see
     # _resolve_agent_dns_ip). troshkad keeps .1 (host dnsmasq) and is untouched.
     _kubevirt_override_agent_dns(topology, clusters)
+    ptr = _resolve_ops_pod_pull_through_registry(s, project, topology)
     command = _ops_pod_command(
         clusters,
         topology,
@@ -2510,9 +2635,14 @@ def _deploy_ops_pod_kubevirt(
         OPS_POD_WORKDIR,
         net_ip_assignments=net_ip_assignments,
         serving_ip=serving_ip,
+        pull_through_registry=ptr,
     )
     recert_clusters, install_clusters = _partition_ops_pod_clusters(topology, clusters)
-    config_files = ops_pod_config_files(install_clusters, OPS_POD_WORKDIR, "")
+    pull_secret_json = _resolve_ops_pod_pull_secret(s, project)
+    config_files = ops_pod_config_files(
+        install_clusters, OPS_POD_WORKDIR, pull_secret_json
+    )
+    _validate_ops_pod_config_files(install_clusters, config_files)
     if recert_clusters:
         config_files.update(
             _ops_pod_recert_kubeconfig_files(topology, recert_clusters, OPS_POD_WORKDIR)
@@ -2538,7 +2668,10 @@ def _deploy_ops_pod_kubevirt(
     )
     from app.services.ocp.ops_pod_install import _cluster_key as _ops_cluster_key
 
-    clear_ops_pod_log_cache_keys(project_id, [_ops_cluster_key(c) for c in clusters])
+    keys_to_clear = log_cache_keys_to_clear
+    if keys_to_clear is None:
+        keys_to_clear = [_ops_cluster_key(c) for c in clusters]
+    clear_ops_pod_log_cache_keys(project_id, keys_to_clear)
     create_ops_pod(provider, project_id, pod, secret)
     _mark_ocp_install_started(s, project)
     _start_ops_pod_install_monitor(host, project_id, clusters)
@@ -2650,6 +2783,41 @@ def _release_ops_monitor_lock(project_id: str) -> None:
         get_redis().delete(_ops_monitor_lock_key(project_id))
     except Exception:
         pass
+
+
+def _ops_monitor_exit_key(project_id: str) -> str:
+    return f"ops-monitor-exit:{project_id}"
+
+
+def _request_ops_monitor_exit(project_id: str) -> None:
+    """Ask a running ops-pod install monitor to stop without failing clusters."""
+    set_progress(_ops_monitor_exit_key(project_id), {"v": 1}, ttl=600)
+
+
+def _ops_monitor_exit_requested(project_id: str) -> bool:
+    return bool(get_progress(_ops_monitor_exit_key(project_id)))
+
+
+def _clear_ops_monitor_exit_request(project_id: str) -> None:
+    delete_progress(_ops_monitor_exit_key(project_id))
+
+
+def _wait_ops_monitor_idle(project_id: str, timeout: int = 90) -> None:
+    """Wait for the per-project ops-pod monitor to release its lock."""
+    from app.core.redis import get_redis, is_redis_available
+
+    _request_ops_monitor_exit(project_id)
+    if not is_redis_available():
+        _time.sleep(2)
+        return
+    deadline = _time.time() + timeout
+    while _time.time() < deadline:
+        try:
+            if not get_redis().exists(_ops_monitor_lock_key(project_id)):
+                return
+        except Exception:
+            return
+        _time.sleep(1)
 
 
 def _start_ops_pod_install_monitor(host, project_id: str, clusters: list) -> None:
@@ -2787,6 +2955,7 @@ def _publish_ops_pod_progress(project_id: str, progress: dict) -> None:
                 "overall": overall,
                 "detail": detail,
                 "items": items,
+                "clusters": progress.get("clusters") or {},
             },
         )
 
@@ -3729,6 +3898,396 @@ def _cancel_ops_pod_install(host, project_id: str, cluster_keys) -> None:
     _publish_ops_pod_progress(project_id, progress)
 
 
+def _cluster_for_key(topology: dict, cluster_key: str) -> dict | None:
+    for cluster in topology.get("clusters") or []:
+        key = str(cluster.get("id") or cluster.get("name") or "")
+        if key == cluster_key:
+            return cluster
+    return None
+
+
+def _cluster_ocp_install_status(topology: dict, cluster_key: str) -> str | None:
+    cluster = _cluster_for_key(topology, cluster_key)
+    return cluster.get("ocpInstallStatus") if cluster else None
+
+
+def _cluster_member_vm_entries(topology: dict, cluster: dict) -> list[dict]:
+    from app.services.ocp.agent_template import _cluster_members_for
+
+    return [{"node_id": m["id"]} for m in _cluster_members_for(topology, cluster)]
+
+
+def _cluster_install_log_text(
+    host, project_id: str, topology: dict, cluster_key: str
+) -> str:
+    from app.core.redis import get_progress
+
+    cached = get_progress(_ops_pod_log_cache_key(project_id)) or {}
+    log = cached.get(cluster_key) or ""
+    if host:
+        try:
+            live = read_ops_pod_install_log(host, project_id, topology)
+            log = live.get(cluster_key, log)
+        except Exception:
+            pass
+    return log
+
+
+def validate_restart_ocp_cluster_install(
+    project, host, topology: dict, cluster_key: str
+) -> str | None:
+    """Return an error message when restart is not allowed, else None."""
+    import re
+
+    from app.services.ocp.ops_pod_install import PHASE_FAILED, _phase_from_input
+    from app.services.template_loader import ocp_install_via
+
+    restart_key = f"ocp-restart:{project.id}:{cluster_key}"
+    if get_progress(restart_key):
+        return None
+
+    if project.state != "active":
+        return f"Project is {project.state}, cannot restart install"
+    if ocp_install_via(topology) != "pod":
+        return "Restart install is only supported for pod-based installs"
+    if not host:
+        return "Project has no host"
+    cluster = _cluster_for_key(topology, cluster_key)
+    if not cluster:
+        return f"Cluster {cluster_key} not found"
+    if not _cluster_install_on_deploy(cluster):
+        return "Cluster is not configured for install on deploy"
+    if _ops_pod_cluster_complete(project.id, cluster):
+        return "Cluster install already completed"
+    deployed = project.deployed_topology or topology
+    if _cluster_ocp_install_status(deployed, cluster_key) == "ready":
+        return "Cluster install already completed"
+    log = _cluster_install_log_text(host, project.id, topology, cluster_key)
+    if re.search(r"\(recert\)", log, re.IGNORECASE):
+        return "Cannot restart a recert install"
+    status = _cluster_ocp_install_status(deployed, cluster_key)
+    if status != "error" and _phase_from_input(log) != PHASE_FAILED:
+        return "Cluster install has not failed"
+    return None
+
+
+def _eject_cluster_bmc_media(
+    host, project_id: str, topology: dict, cluster: dict
+) -> None:
+    from app.services.ocp.agent_template import _redfish_eject_media_cmd
+    from app.services.ocp.ops_pod_install import bmc_for_cluster
+
+    bmc_ips, bmc_pass = bmc_for_cluster(topology, cluster)
+    if not bmc_ips:
+        return
+    bmc_ips_str = " ".join(bmc_ips)
+    script = (
+        "set +e\n"
+        f"BMC_PASS={shlex.quote(bmc_pass)}\n"
+        + _redfish_eject_media_cmd("", bmc_ips_str)
+    )
+    container_name = _ops_pod_container_name(project_id)
+    if not _ops_pod_running(host, container_name, project_id):
+        logger.warning(
+            "Restart %s: ops pod not running; skipping BMC eject for %s",
+            project_id[:8],
+            _cluster_key(cluster),
+        )
+        return
+    _ops_pod_exec(
+        host,
+        project_id,
+        container_name,
+        ["bash", "-c", script],
+        timeout=180,
+    )
+
+
+def _cluster_key(cluster: dict) -> str:
+    from app.services.ocp.ops_pod_install import _cluster_key as ops_cluster_key
+
+    return ops_cluster_key(cluster)
+
+
+def _wipe_vm_boot_disk_troshkad(
+    host, project_id: str, vm_node_id: str, topology, pool
+) -> None:
+    vm_disks = _find_vm_disks(vm_node_id, topology)
+    boot_disk = next((d for d in vm_disks if d.get("format") == "qcow2"), None)
+    if not boot_disk:
+        return
+    disk_path = _disk_path(
+        project_id,
+        vm_node_id,
+        boot_disk["node_id"],
+        boot_disk["format"],
+        pool,
+    )
+    dom = _vm_domain_name(project_id, vm_node_id)
+    try:
+        job_id = start_job(host, "/vms/stop", {"domain_name": dom})
+        wait_for_job(host, job_id, timeout=120)
+    except TroshkadError:
+        pass
+    try:
+        job_id = start_job(host, "/disks/wipe", {"path": disk_path})
+        wait_for_job(host, job_id, timeout=120)
+    except TroshkadError as e:
+        logger.warning(
+            "Restart %s: failed to wipe boot disk for %s: %s",
+            project_id[:8],
+            dom,
+            e,
+        )
+
+
+def _wipe_vm_boot_disk_kubevirt(
+    s, host, project_id: str, vm_node_id: str, disk_node_id: str
+) -> None:
+    from kubernetes import stream
+
+    from app.models.provider import Provider
+    from app.services.providers.kubevirt import (
+        _get_k8s_clients,
+        _project_ns,
+        patch_kubevirt_run_strategy,
+    )
+
+    provider = s.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        return
+    namespace = _project_ns(provider, project_id)
+    kv_name = f"troshka-vm-{vm_node_id[:8]}"
+    vol_name = f"disk-{disk_node_id[:8]}"
+    disk_path = f"/var/run/kubevirt-private/vmi-disks/{vol_name}/disk.img"
+    custom_api, core_api, _ = _get_k8s_clients(provider)
+    try:
+        patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Always")
+    except Exception:
+        pass
+    deadline = _time.time() + 120
+    pod_name = None
+    while _time.time() < deadline:
+        pods = core_api.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=f"vm.kubevirt.io/name={kv_name}",
+        )
+        if pods.items and pods.items[0].status.phase == "Running":  # type: ignore[union-attr]
+            pod_name = pods.items[0].metadata.name  # type: ignore[union-attr]
+            break
+        _time.sleep(3)
+    if not pod_name:
+        logger.warning(
+            "Restart %s: timed out waiting for %s pod to wipe boot disk",
+            project_id[:8],
+            kv_name,
+        )
+        return
+    try:
+        stream.stream(
+            core_api.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            command=[
+                "dd",
+                "if=/dev/zero",
+                f"of={disk_path}",
+                "bs=1M",
+                "count=1",
+                "conv=notrunc",
+            ],
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False,
+        )
+    except Exception:
+        logger.exception(
+            "Restart %s: kubevirt boot disk wipe failed for %s",
+            project_id[:8],
+            kv_name,
+        )
+        return
+    try:
+        patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Halted")
+    except Exception:
+        pass
+
+
+def _reset_cluster_member_install_creds(topology: dict, cluster_key: str) -> None:
+    for node in topology.get("nodes") or []:
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data") or {}
+        if data.get("clusterId") != cluster_key:
+            continue
+        data.pop("ocpKubeadminPassword", None)
+        data.pop("ocpKubeconfig", None)
+        node["data"] = data
+
+
+def _reset_cluster_install_state_in_topology(topology: dict, cluster_key: str) -> None:
+    for cluster in topology.get("clusters") or []:
+        key = str(cluster.get("id") or cluster.get("name") or "")
+        if key != cluster_key:
+            continue
+        cluster["ocpInstallStatus"] = "monitoring"
+        cluster.pop("ocpInstallElapsed", None)
+        cluster["ocpInstallStartedAt"] = int(_time.time())
+        break
+    _reset_cluster_member_install_creds(topology, cluster_key)
+
+
+def _prepare_ocp_install_restart(s, project, cluster_key: str) -> int:
+    """Sync prep so the UI resets immediately: clear cached log, stamp cluster state."""
+    restart_key = f"ocp-restart:{project.id}:{cluster_key}"
+    set_progress(restart_key, {"at": int(_time.time())}, ttl=3600)
+    clear_ops_pod_log_cache_keys(project.id, [cluster_key])
+    _persist_cluster_install_restart(s, project, cluster_key)
+    for cluster in (project.deployed_topology or project.topology or {}).get(
+        "clusters"
+    ) or []:
+        key = str(cluster.get("id") or cluster.get("name") or "")
+        if key == cluster_key:
+            return int(cluster.get("ocpInstallStartedAt") or _time.time())
+    return int(_time.time())
+
+
+def _clear_ocp_install_restart_marker(project_id: str, cluster_key: str) -> None:
+    delete_progress(f"ocp-restart:{project_id}:{cluster_key}")
+
+
+def _persist_cluster_install_restart(s, project, cluster_key: str) -> None:
+    from sqlalchemy.orm.attributes import flag_modified
+
+    topo = copy.deepcopy(project.topology or {})
+    deployed = copy.deepcopy(project.deployed_topology or project.topology or {})
+    _reset_cluster_install_state_in_topology(topo, cluster_key)
+    _reset_cluster_install_state_in_topology(deployed, cluster_key)
+    project.topology = topo
+    project.deployed_topology = deployed
+    flag_modified(project, "topology")
+    flag_modified(project, "deployed_topology")
+    project.ocp_status = "monitoring"
+    project.ocp_status_detail = None
+    project.ocp_install_elapsed = None
+    s.commit()
+
+
+def _clusters_for_ops_pod_restart(
+    topology: dict, deployed: dict, cluster_key: str, project_id: str
+) -> list[dict]:
+    target = _cluster_for_key(topology, cluster_key)
+    if not target:
+        return []
+    by_id = {cluster_key: target}
+    for cluster in _ocp_clusters(topology):
+        cid = str(cluster.get("id") or cluster.get("name") or "")
+        if cid in by_id:
+            continue
+        if not _cluster_install_on_deploy(cluster):
+            continue
+        if _ops_pod_cluster_complete(project_id, cluster):
+            continue
+        if _cluster_ocp_install_status(deployed, cid) == "ready":
+            continue
+        by_id[cid] = cluster
+    return list(by_id.values())
+
+
+def _restart_cluster_post_boot_cleanup(
+    s, host, project_id: str, topology: dict, cluster: dict
+) -> None:
+    _eject_cluster_bmc_media(host, project_id, topology, cluster)
+    vms = _cluster_member_vm_entries(topology, cluster)
+    if host.host_type == "kubevirt-cluster":
+        _stop_kubevirt_vms(s, host, project_id, vms)
+        for vm in vms:
+            vm_disks = _find_vm_disks(vm["node_id"], topology)
+            boot_disk = next((d for d in vm_disks if d.get("format") == "qcow2"), None)
+            if boot_disk:
+                _wipe_vm_boot_disk_kubevirt(
+                    s, host, project_id, vm["node_id"], boot_disk["node_id"]
+                )
+        return
+    if not host.ip_address:
+        return
+    _stop_troshkad_vms(host, project_id, vms)
+    pool = _get_host_pool(host, s)
+    for vm in vms:
+        _wipe_vm_boot_disk_troshkad(host, project_id, vm["node_id"], topology, pool)
+
+
+def restart_ocp_cluster_install(project_id: str, cluster_key: str) -> None:
+    """Restart a failed ops-pod OCP install for one cluster."""
+    from app.core.database import SessionLocal
+    from app.models.host import Host
+    from app.models.project import Project
+
+    s = SessionLocal()
+    try:
+        project = s.query(Project).filter_by(id=project_id).first()
+        if not project:
+            raise RuntimeError("Project not found")
+        host = s.query(Host).filter_by(id=project.host_id).first()
+        topology = project.deployed_topology or project.topology or {}
+        err = validate_restart_ocp_cluster_install(project, host, topology, cluster_key)
+        if err:
+            raise RuntimeError(err)
+        cluster = _cluster_for_key(topology, cluster_key)
+        if not cluster:
+            raise RuntimeError(f"Cluster {cluster_key} not found")
+        if not host:
+            raise RuntimeError("Project has no host")
+
+        post_boot = bool(
+            (
+                get_progress(f"ocp-restart-post-boot:{project_id}:{cluster_key}") or {}
+            ).get("post_boot")
+        )
+        delete_progress(f"ocp-restart-post-boot:{project_id}:{cluster_key}")
+        _wait_ops_monitor_idle(project_id)
+        if host.host_type == "kubevirt-cluster":
+            _cancel_ops_pod_install_kubevirt(host, project_id)
+        else:
+            _cancel_ops_pod_install_troshkad(host, project_id)
+        if post_boot:
+            _restart_cluster_post_boot_cleanup(s, host, project_id, topology, cluster)
+        pod_clusters = _clusters_for_ops_pod_restart(
+            topology,
+            project.deployed_topology or topology,
+            cluster_key,
+            project_id,
+        )
+        if not pod_clusters:
+            raise RuntimeError(f"No installable clusters for restart of {cluster_key}")
+        vni_map = dict(project.vni_map or {})
+        _deploy_ops_pod(
+            s,
+            host,
+            project_id,
+            project,
+            topology,
+            vni_map,
+            clusters=pod_clusters,
+            log_cache_keys_to_clear=[cluster_key],
+        )
+        logger.info(
+            "Restart %s: relaunched ops pod install for cluster %s (post_boot=%s)",
+            project_id[:8],
+            cluster_key,
+            post_boot,
+        )
+    finally:
+        _clear_ocp_install_restart_marker(project_id, cluster_key)
+        s.close()
+
+
+def restart_ocp_cluster_install_async(project_id: str, cluster_key: str) -> None:
+    """RQ entrypoint for :func:`restart_ocp_cluster_install`."""
+    restart_ocp_cluster_install(project_id, cluster_key)
+
+
 def _ops_pod_overall_to_ocp_status(overall: str) -> str | None:
     """Map a terminal ops-pod install phase to the project ``ocp_status`` vocab.
 
@@ -3765,13 +4324,117 @@ def _project_deploy_start_epoch(project_id: str) -> float | None:
         return None
 
 
+def _apply_cluster_ocp_install_status(
+    topology: dict, cluster_key: str, status: str, elapsed_secs: int | None = None
+) -> bool:
+    """Stamp ``ocpInstallStatus`` (and optional elapsed) on one cluster entry."""
+    changed = False
+    for cluster in topology.get("clusters") or []:
+        key = str(cluster.get("id") or cluster.get("name") or "")
+        if key != cluster_key:
+            continue
+        if cluster.get("ocpInstallStatus") != status:
+            cluster["ocpInstallStatus"] = status
+            changed = True
+        if elapsed_secs is not None and status == "ready":
+            if cluster.get("ocpInstallElapsed") != elapsed_secs:
+                cluster["ocpInstallElapsed"] = elapsed_secs
+                changed = True
+        break
+    return changed
+
+
+def _sync_project_ocp_status_from_clusters(project_id: str, elapsed_secs: int) -> None:
+    """Derive project ``ocp_status`` from per-cluster ``ocpInstallStatus`` values.
+
+    Clusters are independent: a sibling failure must not mark the whole project
+    ``error`` when another cluster already reached ``ready``.
+    """
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+
+    db = SessionLocal()
+    try:
+        project = db.query(Project).filter_by(id=project_id).first()
+        if not project:
+            return
+        statuses = [
+            c.get("ocpInstallStatus")
+            for c in (project.deployed_topology or project.topology or {}).get(
+                "clusters"
+            )
+            or []
+            if c.get("ocpInstallStatus")
+        ]
+        if not statuses:
+            return
+        if any(s == "monitoring" for s in statuses):
+            project.ocp_status = "monitoring"
+        elif any(s == "ready" for s in statuses):
+            project.ocp_status = "ready"
+            project.ocp_install_elapsed = elapsed_secs
+        else:
+            project.ocp_status = "error"
+            project.ocp_install_elapsed = elapsed_secs
+        db.commit()
+    except Exception:
+        logger.exception(
+            "Failed to sync project ocp_status from clusters for %s", project_id[:8]
+        )
+    finally:
+        db.close()
+
+
+def _finalize_cluster_ocp_status(
+    project_id: str, cluster_key: str, phase: str, elapsed_secs: int
+) -> None:
+    """Persist per-cluster install outcome on deployed_topology."""
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+    from app.services.ocp.ops_pod_install import cluster_phase_to_ocp_status
+
+    status = cluster_phase_to_ocp_status(phase)
+    if not status:
+        return
+    db = SessionLocal()
+    try:
+        project = db.query(Project).filter_by(id=project_id).first()
+        if not project:
+            return
+        changed = False
+        for topo_attr in ("topology", "deployed_topology"):
+            topo = getattr(project, topo_attr)
+            if not topo:
+                continue
+            topo_copy = copy.deepcopy(topo)
+            elapsed = elapsed_secs if status == "ready" else None
+            if _apply_cluster_ocp_install_status(
+                topo_copy, cluster_key, status, elapsed
+            ):
+                setattr(project, topo_attr, topo_copy)
+                changed = True
+        if changed:
+            db.commit()
+            _sync_project_ocp_status_from_clusters(project_id, elapsed_secs)
+    except Exception:
+        logger.exception(
+            "Failed to finalize cluster %s ocp status for %s",
+            cluster_key,
+            project_id[:8],
+        )
+    finally:
+        db.close()
+
+
 def _finalize_ops_pod_ocp_status(
     project_id: str, overall: str, elapsed_secs: int
 ) -> None:
     """Persist ``ocp_status``/``ocp_install_elapsed`` for a terminal pod install.
 
     So the existing OCP-status UI reflects a bastionless install's outcome; a
-    non-outcome phase (e.g. ``cancelled``) is a no-op.
+    non-outcome phase (e.g. ``cancelled``) is a no-op. Prefer
+    :func:`_finalize_cluster_ocp_status` for per-cluster updates; this remains
+    for timeout/cancel fallbacks.
     """
     status = _ops_pod_overall_to_ocp_status(overall)
     if status:
@@ -3800,11 +4463,13 @@ def _monitor_ops_pod_install(
     import time as _t
 
     from app.services.ocp.ops_pod_install import (
-        _cluster_key as _ops_cluster_key,
-    )
-    from app.services.ocp.ops_pod_install import (
+        PHASE_COMPLETE,
+        PHASE_FAILED,
         inject_dead_pod_failures,
         ops_pod_install_progress,
+    )
+    from app.services.ocp.ops_pod_install import (
+        _cluster_key as _ops_cluster_key,
     )
     from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
 
@@ -3818,22 +4483,23 @@ def _monitor_ops_pod_install(
     # start, which is minutes later (after VM boot) and made the timer jump back.
     elapsed_base = _project_deploy_start_epoch(project_id) or start
     dead_count = 0
+    finalized_clusters: set[str] = set()
 
     while _t.time() < deadline:
         _refresh_ops_monitor_lock(
             project_id
         )  # heartbeat: keep the per-project lock alive
+        if _ops_monitor_exit_requested(project_id):
+            _clear_ops_monitor_exit_request(project_id)
+            _release_ops_monitor_lock(project_id)
+            return "superseded"
         if _is_deploy_cancelled(project_id):
             _cancel_ops_pod_install(host, project_id, cluster_keys)
             _release_ops_monitor_lock(project_id)
             return "cancelled"
         # Persist the raw per-cluster logs (keep-longest) AND use the merged
-        # result for phase detection. The ops pod truncates install.log on every
-        # restart (restart_policy=always), so a poll that lands just after the
-        # post-completion restart would otherwise read a truncated log missing
-        # "Install complete!" — the state machine would regress and dead-pod
-        # detection would then FALSE-fail a cluster that actually succeeded.
-        # Keeping the longest log makes "complete" sticky.
+        # result for phase detection. Restarts append a resume marker instead of
+        # truncating, but keep-longest still guards any transient read races.
         per_cluster = cache_ops_pod_logs(
             project_id,
             _read_ops_pod_cluster_logs(
@@ -3853,29 +4519,36 @@ def _monitor_ops_pod_install(
         )
         progress = ops_pod_install_progress(per_cluster)
         _publish_ops_pod_progress(project_id, progress)
+        elapsed_now = int(_t.time() - elapsed_base)
+
+        for cluster in clusters:
+            key = _ops_cluster_key(cluster)
+            phase = progress["clusters"].get(key)
+            if key not in finalized_clusters and phase in (
+                PHASE_COMPLETE,
+                PHASE_FAILED,
+            ):
+                _finalize_cluster_ocp_status(project_id, key, phase, elapsed_now)
+                if phase == PHASE_COMPLETE:
+                    try:
+                        _store_ops_pod_creds(host, project_id, [cluster], workdir)
+                    except Exception:
+                        logger.exception(
+                            "Ops pod %s: cred harvest for %s failed",
+                            project_id[:8],
+                            key,
+                        )
+                finalized_clusters.add(key)
         # Detect control-plane-usable milestone: once per cluster, when the marker
         # first appears in the log, persist the timestamp + elapsed and publish a
         # one-time progress notification.
         _check_control_plane_usable_milestone(
-            project_id, per_cluster, cluster_keys, int(_t.time() - elapsed_base)
+            project_id, per_cluster, cluster_keys, elapsed_now
         )
         if progress["done"]:
-            _finalize_ops_pod_ocp_status(
-                project_id, progress["overall"], int(_t.time() - elapsed_base)
-            )
-            # On success: harvest kubeadmin password + kubeconfig from the ops
-            # pod onto the control-plane node (bastionless has no bastion monitor
-            # to do it), THEN reap the pod so it doesn't idle-restart-loop
-            # (restart_policy=always). The install log is already cached, so
-            # destroying it loses nothing. A FAILED pod is left for debugging.
+            _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
+            # Reap the pod only when every cluster finished successfully.
             if progress["overall"] == "complete":
-                try:
-                    _store_ops_pod_creds(host, project_id, clusters, workdir)
-                except Exception:
-                    logger.exception(
-                        "Ops pod %s: cred harvest after install failed",
-                        project_id[:8],
-                    )
                 try:
                     _cancel_ops_pod_install(host, project_id, cluster_keys)
                     logger.info(
@@ -3890,7 +4563,13 @@ def _monitor_ops_pod_install(
         _t.sleep(poll_interval)
 
     logger.warning("Ops pod %s: install monitor timed out", project_id[:8])
-    _finalize_ops_pod_ocp_status(project_id, "timeout", int(_t.time() - elapsed_base))
+    elapsed_now = int(_t.time() - elapsed_base)
+    for cluster in clusters:
+        key = _ops_cluster_key(cluster)
+        if key in finalized_clusters:
+            continue
+        _finalize_cluster_ocp_status(project_id, key, PHASE_FAILED, elapsed_now)
+    _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
     _release_ops_monitor_lock(project_id)
     return "timeout"
 

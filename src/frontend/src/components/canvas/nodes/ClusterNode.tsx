@@ -3,9 +3,15 @@
 import React, { memo } from "react";
 import { Handle, NodeResizer, Position, type NodeProps } from "@xyflow/react";
 import type { ClusterNodeData } from "@/stores/canvasStore";
-import { useCanvasStore } from "@/stores/canvasStore";
+import { resolveClusterOcpInstallStatus, useCanvasStore } from "@/stores/canvasStore";
 import { clusterPrereqIssues } from "../clusterMaterialize";
 import { backfillClusterNetworkIds } from "../clusterNetworkBackfill";
+
+function formatOcpVersionLabel(version?: string): string | null {
+  const trimmed = version?.trim();
+  if (!trimmed) return null;
+  return trimmed.startsWith("v") ? trimmed : `v${trimmed}`;
+}
 
 function ClusterNodeComponent({ id, data, selected }: NodeProps) {
   const d = data as unknown as ClusterNodeData;
@@ -17,19 +23,20 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
   const edges = useCanvasStore((s) => s.edges);
   const projectState = useCanvasStore((s) => s.projectState);
   const openClusterLog = useCanvasStore((s) => s.openClusterLog);
-  const ocpHealth = useCanvasStore((s) => s.ocpHealth);
+  const clusterOcpPhases = useCanvasStore((s) => s.clusterOcpPhases);
   const clusterId = ((data as Record<string, unknown>).clusterId as string) || id.replace(/^cluster-/, "");
   const cluster = clusters.find((c) => c.id === clusterId);
+  const ocpVersionLabel = formatOcpVersionLabel(cluster?.ocpVersion);
   // The install log/status is available once the cluster is being (or has been)
   // built. clusterKey mirrors the backend _cluster_key (id, falling back to name).
   const clusterKey = clusterId || d.name;
   const showInstallLog = projectState === "active" || projectState === "stopped";
-  // Status button color reflects the cluster outcome: green complete, red
-  // failed, else the "installing" cyan.
+  // Status button color reflects this cluster's outcome only — siblings don't bleed.
+  const installStatus = resolveClusterOcpInstallStatus(cluster, clusterKey, clusterOcpPhases);
   const statusColor =
-    ocpHealth?.phase === "ready"
+    installStatus === "ready"
       ? { bg: "rgba(34,197,94,0.18)", border: "rgba(34,197,94,0.55)" }
-      : ocpHealth?.phase === "error" || ocpHealth?.phase === "timeout"
+      : installStatus === "error"
         ? { bg: "rgba(239,68,68,0.18)", border: "rgba(239,68,68,0.55)" }
         : { bg: "rgba(34,211,238,0.18)", border: "rgba(34,211,238,0.4)" };
   const clusterForPrereq = cluster
@@ -97,7 +104,9 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
           display: "flex",
           alignItems: "center",
           gap: 8,
-          padding: "6px 10px",
+          width: "100%",
+          boxSizing: "border-box",
+          padding: "6px 12px 6px 10px",
           fontSize: 12,
           fontWeight: 600,
           color: "var(--troshka-text, #e5e7eb)",
@@ -108,55 +117,89 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
           pointerEvents: "all",
         }}
       >
-        <span style={{ fontSize: 13 }}>☸</span>
-        <span>{d.baseDomain ? `${d.name}.${d.baseDomain}` : d.name}</span>
-        {issues.length > 0 && (
-          <span
-            title={issues.map((i) => `${i.level === "error" ? "⛔" : "⚠"} ${i.message}`).join("\n")}
-            style={{ marginLeft: "auto", fontSize: 13, color: issueColor, lineHeight: 1 }}
-          >
-            {hasError ? "⛔" : "⚠"}
-          </span>
-        )}
+        <span style={{ fontSize: 13, flexShrink: 0 }}>☸</span>
         <span
           style={{
-            marginLeft: issues.length > 0 ? 6 : "auto",
-            fontSize: 10,
-            fontWeight: 500,
-            padding: "1px 6px",
-            borderRadius: 6,
-            background: "rgba(59,130,246,0.25)",
-            color: "var(--troshka-text-dim, #cbd5e1)",
+            flex: "1 1 0",
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
             whiteSpace: "nowrap",
           }}
         >
-          {d.type} · {d.controlPlane}cp/{d.workers}wrk
+          {d.baseDomain ? `${d.name}.${d.baseDomain}` : d.name}
         </span>
-        {showInstallLog && (
-          <button
-            type="button"
-            title="View this cluster's install status & log"
-            className="nodrag"
-            onClick={(e) => {
-              e.stopPropagation();
-              openClusterLog(clusterKey, d.name);
-            }}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            flexShrink: 0,
+            marginLeft: "auto",
+          }}
+        >
+          {issues.length > 0 && (
+            <span
+              title={issues.map((i) => `${i.level === "error" ? "⛔" : "⚠"} ${i.message}`).join("\n")}
+              style={{ fontSize: 13, color: issueColor, lineHeight: 1 }}
+            >
+              {hasError ? "⛔" : "⚠"}
+            </span>
+          )}
+          <span
             style={{
-              marginLeft: 6,
               fontSize: 10,
               fontWeight: 500,
               padding: "1px 6px",
               borderRadius: 6,
-              cursor: "pointer",
-              background: statusColor.bg,
-              border: `1px solid ${statusColor.border}`,
-              color: "var(--troshka-text, #e5e7eb)",
+              background: "rgba(59,130,246,0.25)",
+              color: "var(--troshka-text-dim, #cbd5e1)",
               whiteSpace: "nowrap",
             }}
           >
-            📋 Status
-          </button>
-        )}
+            {d.type} · {d.controlPlane}cp/{d.workers}wrk
+          </span>
+          {ocpVersionLabel && (
+            <span
+              title={`OpenShift ${ocpVersionLabel}`}
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                padding: "1px 6px",
+                borderRadius: 6,
+                background: "rgba(168,85,247,0.22)",
+                color: "rgb(216, 180, 254)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {ocpVersionLabel}
+            </span>
+          )}
+          {showInstallLog && (
+            <button
+              type="button"
+              title="View this cluster's install status & log"
+              className="nodrag"
+              onClick={(e) => {
+                e.stopPropagation();
+                openClusterLog(clusterKey, d.name);
+              }}
+              style={{
+                fontSize: 10,
+                fontWeight: 500,
+                padding: "2px 8px",
+                borderRadius: 6,
+                cursor: "pointer",
+                background: statusColor.bg,
+                border: `1px solid ${statusColor.border}`,
+                color: "var(--troshka-text, #e5e7eb)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              📋 Status
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Network anchor handles (top + bottom, like VMs) — target handles for network connections */}

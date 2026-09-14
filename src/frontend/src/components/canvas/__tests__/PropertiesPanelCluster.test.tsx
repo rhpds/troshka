@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Node } from "@xyflow/react";
@@ -152,6 +152,70 @@ describe("PropertiesPanel cluster editor", () => {
     render(<PropertiesPanel />);
     const version = screen.getByLabelText(/ocp version/i);
     expect(version).toBeDisabled();
+  });
+
+  it("hides Configure bastion browser for pod installs without a bastion VM", () => {
+    useCanvasStore.setState({ ocpInstallVia: "pod" } as never);
+    render(<PropertiesPanel />);
+    expect(screen.queryByText(/configure bastion browser/i)).not.toBeInTheDocument();
+  });
+
+  it("hides Configure bastion browser when install_via is unset (defaults to pod)", () => {
+    useCanvasStore.setState({ ocpInstallVia: null } as never);
+    render(<PropertiesPanel />);
+    expect(screen.queryByText(/configure bastion browser/i)).not.toBeInTheDocument();
+  });
+
+  it("shows pull-through registry checkbox when user has PTR configured", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              pull_through_registry: true,
+              pull_through_registry_url: "registry.example.com",
+            }),
+        }),
+      ) as unknown as typeof fetch,
+    );
+    render(<PropertiesPanel />);
+    expect(await screen.findByText(/use pull-through registry/i)).toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
+
+  it("hides pull-through registry checkbox when user has no PTR configured", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ pull_through_registry: false }),
+        }),
+      ) as unknown as typeof fetch,
+    );
+    render(<PropertiesPanel />);
+    await screen.findByText(/install openshift on deploy/i);
+    expect(screen.queryByText(/use pull-through registry/i)).not.toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
+
+  it("shows Configure bastion browser for bastion installs with a bastion VM", () => {
+    useCanvasStore.setState({
+      ocpInstallVia: "bastion",
+      nodes: [
+        ...useCanvasStore.getState().nodes,
+        {
+          id: "bastion",
+          type: "vmNode",
+          position: { x: 0, y: 0 },
+          data: { label: "bastion", name: "bastion" },
+        },
+      ],
+    } as never);
+    render(<PropertiesPanel />);
+    expect(screen.getByText(/configure bastion browser/i)).toBeInTheDocument();
   });
 
   it("flags a VIP that collides with another cluster", async () => {

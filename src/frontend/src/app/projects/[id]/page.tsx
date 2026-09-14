@@ -324,11 +324,30 @@ export default function ProjectCanvasPage() {
     return ws.ocpHealth;
   }, [ws.ocpHealth, ocpStatus, ocpInstallElapsed]);
 
-  // Mirror OCP health into the canvas store so the per-cluster log modal can
-  // show the status checklist beside the log.
+  // Mirror OCP health + per-cluster phases into the canvas store.
   useEffect(() => {
     useCanvasStore.setState({ ocpHealth: resolvedOcpHealth });
   }, [resolvedOcpHealth]);
+
+  useEffect(() => {
+    if (!Object.keys(ws.clusterOcpPhases).length) return;
+    const phases = ws.clusterOcpPhases;
+    const store = useCanvasStore.getState();
+    const clusters = store.clusters.map((c) => {
+      const key = c.id || c.name;
+      const phase = phases[key];
+      if (!phase) return c;
+      const status =
+        phase === "complete"
+          ? "ready"
+          : phase === "failed" || phase === "cancelled" || phase === "timeout"
+            ? "error"
+            : "monitoring";
+      if (c.ocpInstallStatus === status) return c;
+      return { ...c, ocpInstallStatus: status };
+    });
+    useCanvasStore.setState({ clusterOcpPhases: phases, clusters });
+  }, [ws.clusterOcpPhases]);
 
   // Timer countdown ticker
   useEffect(() => {

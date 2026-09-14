@@ -1207,11 +1207,40 @@ def get_ocp_install_log(
                 "ocp_control_plane_usable_elapsed": None,
                 "ocp_control_plane_usable_at": None,
             }
+        cluster_status = None
+        cluster_elapsed = None
+        cluster_install_started_at = None
+        for c in (project.deployed_topology or topology).get("clusters") or []:
+            key = str(c.get("id") or c.get("name") or "")
+            if key == cluster:
+                cluster_status = c.get("ocpInstallStatus")
+                cluster_elapsed = c.get("ocpInstallElapsed")
+                raw_started = c.get("ocpInstallStartedAt")
+                if isinstance(raw_started, (int, float)):
+                    cluster_install_started_at = int(raw_started)
+                break
+        if not cluster_status:
+            from app.services.ocp.ops_pod_install import (
+                _phase_from_input,
+                cluster_phase_to_ocp_status,
+            )
+
+            cluster_status = (
+                cluster_phase_to_ocp_status(_phase_from_input(cluster_log))
+                or "monitoring"
+            )
+        if cluster_elapsed is not None:
+            timing = {**timing, "ocp_install_elapsed": cluster_elapsed}
+        install_started_at = cluster_install_started_at
+        if install_started_at is None and timing.get("deploy_started_at") is not None:
+            install_started_at = timing["deploy_started_at"]
         return {
             "install_via": "pod",
             "output": cluster_log,
             "cluster": cluster,
             "clusters": keys,
+            "cluster_status": cluster_status,
+            "install_started_at": install_started_at,
             **timing,
             **access,
         }
@@ -1222,6 +1251,72 @@ def get_ocp_install_log(
     else:
         output = "\n\n".join(f"=== {key} ===\n{text}" for key, text in logs.items())
     return {"install_via": "pod", "output": output, "clusters": keys, **timing}
+
+
+@router.post(
+    "/{project_id}/ocp/restart-install",
+    responses={400: {}, 403: {}, 404: {}, 409: {}},
+)
+def restart_ocp_install(
+    project_id: str,
+    user: CurrentUser,
+    db: DbSession,
+    cluster: str,
+):
+    """Restart a failed ops-pod OCP install for one cluster (async via RQ)."""
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+    if project.state != "active":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Project is {project.state}, cannot restart install",
+        )
+
+    topology = project.deployed_topology or project.topology or {}
+    host = (
+        db.query(Host).filter_by(id=project.host_id).first()
+        if project.host_id
+        else None
+    )
+    from app.services.deploy_service import validate_restart_ocp_cluster_install
+
+    err = validate_restart_ocp_cluster_install(project, host, topology, cluster)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+
+    from app.core.redis import enqueue_job, set_progress
+    from app.services.deploy_service import (
+        _cluster_install_log_text,
+        _prepare_ocp_install_restart,
+    )
+    from app.services.ocp.ops_pod_install import cluster_install_post_boot
+
+    log = _cluster_install_log_text(host, project.id, topology, cluster)
+    post_boot = cluster_install_post_boot(log)
+    set_progress(
+        f"ocp-restart-post-boot:{project_id}:{cluster}",
+        {"post_boot": post_boot},
+        ttl=3600,
+    )
+    install_started_at = _prepare_ocp_install_restart(db, project, cluster)
+
+    from app.workers.jobs import job_restart_ocp_install_bg
+
+    enqueue_job(
+        job_restart_ocp_install_bg,
+        project_id,
+        cluster,
+        project_id=project_id,
+        job_timeout=3600,
+    )
+    return {
+        "status": "restarting",
+        "cluster": cluster,
+        "install_started_at": install_started_at,
+    }
 
 
 @router.get("/{project_id}/kubeconfigs", responses={403: {}, 404: {}})
@@ -3586,6 +3681,67 @@ def _deploy_added_vms_kubevirt(
     return created_cr_names
 
 
+def _added_vm_auto_start(vm_node: dict, current: dict) -> bool:
+    """True unless startOrder explicitly disables auto-start for this VM."""
+    for entry in current.get("startOrder", []):
+        if entry.get("vmId") == vm_node.get("id") and entry.get("autoStart") is False:
+            return False
+    return True
+
+
+def _wait_added_troshkad_vms_ready(
+    host,
+    p_id: str,
+    added_vms: list,
+    current: dict,
+    deadline_secs: int = 300,
+) -> str | None:
+    """Poll troshkad until canvas-added VMs settle (parity with KubeVirt wait).
+
+    KubeVirt reconfigure waits on TroshkaVM CR status before OCP install; troshkad
+    must not launch the ops pod while added domains are still undefined or failed
+    to start.
+    """
+    import time
+
+    from app.services.deploy_service import _set_deploy_progress
+    from app.services.deploy_topology import _vm_domain_name
+    from app.services.troshkad_client import get_all_vm_states
+
+    if not added_vms:
+        return None
+
+    targets: list[tuple[str, bool]] = []
+    for vm_node in added_vms:
+        targets.append(
+            (
+                _vm_domain_name(p_id, vm_node["id"]),
+                _added_vm_auto_start(vm_node, current),
+            )
+        )
+
+    _set_deploy_progress(p_id, {"step": "reconfigure", "detail": "waiting for VMs"})
+    deadline = time.time() + deadline_secs
+    while time.time() < deadline:
+        batch = get_all_vm_states(host) or {}
+        all_ready = True
+        for dom, want_running in targets:
+            state = batch.get(dom)
+            if state is None:
+                all_ready = False
+                continue
+            if want_running:
+                if state != "running":
+                    all_ready = False
+            elif state not in ("running", "shut off"):
+                all_ready = False
+        if all_ready:
+            return None
+        time.sleep(5)
+    names = ", ".join(dom for dom, _ in targets)
+    return f"Timed out waiting for added VMs to become ready: {names}"
+
+
 def _wait_kubevirt_vms_ready(
     custom_api,
     ns,
@@ -4386,7 +4542,12 @@ def _reconfigure_bmc(h, p_id, deployed, bmc_config, errors):
 
 
 def _deploy_added_vms(h, p_id, s, current, vni_map, added_vms, errors):
-    """Create and start newly added VMs during reconfigure."""
+    """Create and start newly added VMs during reconfigure.
+
+    Mirrors :func:`_deploy_added_vms_kubevirt` + :func:`_wait_kubevirt_vms_ready`:
+    wait for disk jobs, wait for virt-install to define the domain, then start.
+    Caller should invoke :func:`_wait_added_troshkad_vms_ready` before OCP install.
+    """
     from app.services.deploy_service import _set_deploy_progress
     from app.services.deploy_topology import _vm_domain_name
 
@@ -4413,8 +4574,24 @@ def _deploy_added_vms(h, p_id, s, current, vni_map, added_vms, errors):
         }
         vm_disks_add = _find_vm_disks(vm_node["id"], current)
         try:
-            _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks_add)
-            _create_vm_via_troshkad(h, p_id, vm_data, current, vni_map)
+            disk_jobs = _create_vm_disks_via_troshkad(h, p_id, vm_data, vm_disks_add)
+            for jid in disk_jobs:
+                job = wait_for_job(h, jid, timeout=900)
+                if job.get("status") == "failed":
+                    raise RuntimeError(
+                        job.get("error") or f"disk create job {jid} failed"
+                    )
+            create_job_id = _create_vm_via_troshkad(h, p_id, vm_data, current, vni_map)
+            if not create_job_id:
+                raise RuntimeError(
+                    f"VM create job was not started for {vm_node['id'][:8]}"
+                )
+            create_job = wait_for_job(h, create_job_id, timeout=300)
+            if create_job.get("status") == "failed":
+                err = (create_job.get("result") or {}).get("error") or create_job.get(
+                    "error"
+                )
+                raise RuntimeError(err or f"VM create job {create_job_id} failed")
             # Start if auto-start not disabled
             no_auto_start = {
                 e["vmId"]
@@ -5111,12 +5288,23 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
             errors,
         )
 
+        skip_new_ocp_install = False
+        if diff.get("added_vms"):
+            wait_err = _wait_added_troshkad_vms_ready(
+                h, p_id, diff["added_vms"], current
+            )
+            if wait_err:
+                errors.append(wait_err)
+                skip_new_ocp_install = True
+
         # Showroom is a container node, invisible to the VM/network diff. If its
         # config changed (e.g. an added OpenShift Cluster Terminal tab), redeploy
         # it and (re)inject the cluster terminal's kubeconfig from stored creds.
         _reconfigure_showroom(h, p_id, current, deployed, vni_map, s, errors)
 
         new_ocp_clusters = _stamp_new_ocp_cluster_configs(s, proj, current, deployed)
+        if skip_new_ocp_install:
+            new_ocp_clusters = []
 
         _finalize_reconfigure(s, proj, h, p_id, current, deployed, errors)
         _start_new_ocp_cluster_installs(s, proj, h, p_id, current, new_ocp_clusters)

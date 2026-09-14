@@ -35,6 +35,8 @@ interface VmStateSocket {
   deployProgress: DeployProgress | null;
   workloadProgress: WorkloadProgress | null;
   ocpHealth: OcpHealth | null;
+  /** Ops-pod per-cluster install phases (cluster key → phase). */
+  clusterOcpPhases: Record<string, string>;
   topologyUpdate: any | null;
   externalIpsUpdate: Array<{ id: string; name: string; ip?: string; _private_ip?: string; state?: string }> | null;
   deleted: boolean;
@@ -58,6 +60,7 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
   const [deployProgress, setDeployProgress] = useState<DeployProgress | null>(null);
   const [workloadProgress, setWorkloadProgress] = useState<WorkloadProgress | null>(null);
   const [ocpHealth, setOcpHealth] = useState<OcpHealth | null>(null);
+  const [clusterOcpPhases, setClusterOcpPhases] = useState<Record<string, string>>({});
   const [topologyUpdate, setTopologyUpdate] = useState<any | null>(null);
   const [externalIpsUpdate, setExternalIpsUpdate] = useState<VmStateSocket["externalIpsUpdate"]>(null);
   const [deleted, setDeleted] = useState(false);
@@ -140,6 +143,25 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
           case "ocp-health":
             setOcpHealth({ phase: msg.phase, detail: msg.detail, items: msg.items });
             break;
+          case "ocp-install-progress": {
+            const clusters = (msg.clusters as Record<string, string>) || {};
+            setClusterOcpPhases(clusters);
+            const overall = String(msg.overall || "");
+            const phase =
+              overall === "complete"
+                ? "ready"
+                : overall === "failed" || overall === "cancelled"
+                  ? "error"
+                  : overall === "timeout"
+                    ? "timeout"
+                    : "ssh";
+            setOcpHealth({
+              phase,
+              detail: String(msg.detail || ""),
+              items: msg.items as string[] | undefined,
+            });
+            break;
+          }
           case "topology-update":
             setTopologyUpdate(msg.topology || null);
             break;
@@ -190,5 +212,5 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
     };
   }, [connect]);
 
-  return { connected, vmStates, vmProgress, vmBootDevs, projectState, deployError, deployProgress, workloadProgress, ocpHealth, topologyUpdate, externalIpsUpdate, deleted, timerWarning, timerFired, autoStopExpiresAt, lifetimeExpiresAt, autoStopped };
+  return { connected, vmStates, vmProgress, vmBootDevs, projectState, deployError, deployProgress, workloadProgress, ocpHealth, clusterOcpPhases, topologyUpdate, externalIpsUpdate, deleted, timerWarning, timerFired, autoStopExpiresAt, lifetimeExpiresAt, autoStopped };
 }

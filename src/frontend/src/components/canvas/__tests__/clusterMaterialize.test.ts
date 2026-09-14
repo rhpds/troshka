@@ -11,6 +11,8 @@ import {
   suggestClusterVips,
   vipCollision,
   clusterBoxSize,
+  CLUSTER_HEADER_MIN_W,
+  healClusterBoundaryWidths,
   buildClusterDnsRecords,
   applyClusterDns,
   effectiveDnsNetworkId,
@@ -767,11 +769,34 @@ describe("clusterBoxSize", () => {
     const size4 = clusterBoxSize(4);
     const size5 = clusterBoxSize(5);
 
-    // 1 col: 60 + 130 = 190
-    // 4 cols: 60 + 130*4 = 580
-    // 5 cols capped at 4: 60 + 130*4 = 580
+    // 1 col grid is narrower than header chrome — floor at CLUSTER_HEADER_MIN_W.
+    expect(size1.width).toBe(CLUSTER_HEADER_MIN_W);
     expect(size1.width).toBeLessThan(size4.width);
     expect(size4.width).toBe(size5.width); // Both cap at 4 cols
+  });
+});
+
+describe("healClusterBoundaryWidths", () => {
+  it("widens narrow SNO cluster boxes so the header fits", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.type = "sno";
+    cluster.controlPlane = 1;
+    cluster.workers = 0;
+    const narrow = {
+      ...node,
+      style: { ...node.style, width: 270, height: 318 },
+      data: { ...node.data, clusterId: cluster.id, minWidth: 270, minHeight: 318 },
+    };
+    const member = {
+      id: `${cluster.id}-cp-0`,
+      type: "vmNode",
+      position: { x: 30, y: 78 },
+      parentId: cluster.nodeId,
+      data: { clusterId: cluster.id, clusterRole: "control-plane", generated: true },
+    } as const;
+    const healed = healClusterBoundaryWidths([narrow, member]);
+    const boundary = healed.find((n) => n.id === cluster.nodeId)!;
+    expect(boundary.style?.width).toBeGreaterThanOrEqual(CLUSTER_HEADER_MIN_W);
   });
 });
 
@@ -810,6 +835,17 @@ describe("cluster boundary auto-sizing + member grid reflow", () => {
       const memberMaxY = member.position.y + 130; // CELL_H = 130
       expect(memberMaxY).toBeLessThanOrEqual(boundaryHeight);
     }
+  });
+
+  it("leaves PAD clearance below the cluster header for the first member row", () => {
+    const { node, cluster } = makeCluster("ocp-2", { x: 0, y: 0 });
+    cluster.type = "sno";
+    cluster.controlPlane = 1;
+    cluster.workers = 0;
+    const { nodes: materialized } = reconcileClusterVms(cluster, [node]);
+    const member = materialized.find((n) => n.type === "vmNode")!;
+    // HEADER_H (48) + PAD (30) — must match computeContentBbox / clusterBoxSize.
+    expect(member.position.y).toBe(78);
   });
 
   it("member vmNodes have extent: 'parent' to constrain drag within cluster boundary", () => {

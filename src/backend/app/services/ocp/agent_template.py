@@ -700,7 +700,7 @@ def _customize_one_cluster(topology, cluster, config, include_extras):
     if not cluster.get("ingressVip"):
         cluster["ingressVip"] = ingress_vip
 
-    ptr = cluster.get("pullThroughRegistry") or resolved.get("pull_through_registry")
+    ptr = _cluster_pull_through_registry(cluster, resolved)
     cluster["_generatedInstallConfig"] = _build_install_config(
         cluster,
         members,
@@ -1525,6 +1525,18 @@ def _cluster_replicas(cluster, topology):
     return cp, workers
 
 
+def _cluster_use_pull_through_registry(cluster) -> bool:
+    """True when this cluster should mirror pulls through the user's PTR."""
+    return cluster.get("usePullThroughRegistry", True) is not False
+
+
+def _cluster_pull_through_registry(cluster, resolved):
+    """Resolve pull-through config for one cluster (explicit override or user default)."""
+    if not _cluster_use_pull_through_registry(cluster):
+        return None
+    return cluster.get("pullThroughRegistry") or resolved.get("pull_through_registry")
+
+
 def _append_pull_through_digest_sources(ic_lines, pull_through_registry):
     """Append imageDigestSources entries for a pull-through registry (if enabled)."""
     if not pull_through_registry or not pull_through_registry.get("enabled"):
@@ -1842,14 +1854,9 @@ def _build_bastion_autologin_steps(cluster_name: str, base_domain: str) -> str:
 # strings. Both the bastion cloud-init installer (:func:`_build_install_script`)
 # and the ops-pod install runner (`ops_pod_install`) build their steps from these
 # helpers, so the Redfish/serve/wait-for/create-image behavior stays identical.
-_MIRROR_CLIENTS_BASE = (
-    "https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp"
+from app.services.ocp.client_mirror import (
+    installer_tarball_url as _installer_tarball_url,
 )
-
-
-def _installer_tarball_url(tarball: str) -> str:
-    """Mirror URL for an OCP client tarball at ``stable-$OCP_VERSION`` (shell var)."""
-    return f"{_MIRROR_CLIENTS_BASE}/stable-$OCP_VERSION/{tarball}"
 
 
 def _agent_create_image_cmd(indent: str, oi_bin: str, log_path: str) -> str:
@@ -2005,10 +2012,10 @@ def _build_install_script(
         "    # Download openshift-install and oc if not present\n"
         "    if [ ! -f openshift-install ]; then\n"
         '      echo "Downloading openshift-install $OCP_VERSION..."\n'
-        f"      curl -L -o /tmp/openshift-install.tar.gz {_installer_tarball_url('openshift-install-linux.tar.gz')}\n"
+        f"      curl -L -o /tmp/openshift-install.tar.gz {_installer_tarball_url(ocp_version, 'openshift-install-linux.tar.gz')}\n"
         "      tar xzf /tmp/openshift-install.tar.gz && rm -f /tmp/openshift-install.tar.gz\n"
         '      echo "Downloading oc client..."\n'
-        f"      curl -L -o /tmp/openshift-client.tar.gz {_installer_tarball_url('openshift-client-linux.tar.gz')}\n"
+        f"      curl -L -o /tmp/openshift-client.tar.gz {_installer_tarball_url(ocp_version, 'openshift-client-linux.tar.gz')}\n"
         "      tar xzf /tmp/openshift-client.tar.gz && rm -f /tmp/openshift-client.tar.gz\n"
         "      sudo mv oc kubectl /usr/bin/\n"
         '      echo "Downloaded openshift-install and oc"\n'

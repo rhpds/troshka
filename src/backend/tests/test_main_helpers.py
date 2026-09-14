@@ -1261,9 +1261,13 @@ class TestOcpVersionsEndpoint:
 
     def test_ocp_versions_handles_errors(self):
         with patch("urllib.request.urlopen", side_effect=Exception("timeout")):
-            resp = client.get("/api/v1/ocp/versions")
-            assert resp.status_code == 200
-            assert resp.json() == []
+            with patch(
+                "app.services.ocp.client_mirror.preview_version_entries",
+                return_value=[],
+            ):
+                resp = client.get("/api/v1/ocp/versions")
+                assert resp.status_code == 200
+                assert resp.json() == []
 
 
 # ── _startup_resume_storage_pools tests ──

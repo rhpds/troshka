@@ -32,6 +32,7 @@ _CL_CELL_W = 210
 _CL_CELL_H = 240
 _CL_PAD = 30
 _CL_HEADER_H = 48
+_CL_HEADER_MIN_W = 360  # min cluster width for header badges + Status button
 _CL_COLS = 4
 _CL_GAP = 60  # horizontal gap between packed cluster boxes
 
@@ -937,18 +938,18 @@ def reflow_cluster_members(nodes: list[dict]) -> None:
         for i, m in enumerate(cps):
             m["position"] = {
                 "x": _CL_PAD + (i % _CL_COLS) * _CL_CELL_W,
-                "y": _CL_HEADER_H + (i // _CL_COLS) * _CL_CELL_H,
+                "y": _CL_HEADER_H + _CL_PAD + (i // _CL_COLS) * _CL_CELL_H,
             }
         for j, m in enumerate(workers):
             m["position"] = {
                 "x": _CL_PAD + (j % _CL_COLS) * _CL_CELL_W,
-                "y": _CL_HEADER_H + (cp_rows + j // _CL_COLS) * _CL_CELL_H,
+                "y": _CL_HEADER_H + _CL_PAD + (cp_rows + j // _CL_COLS) * _CL_CELL_H,
             }
         cols = max(1, min(_CL_COLS, len(members)))
         worker_rows = (len(workers) + _CL_COLS - 1) // _CL_COLS if workers else 0
         rows = max(1, cp_rows + worker_rows)
         boundary["style"] = {
-            "width": 2 * _CL_PAD + cols * _CL_CELL_W,
+            "width": max(2 * _CL_PAD + cols * _CL_CELL_W, _CL_HEADER_MIN_W),
             "height": _CL_HEADER_H + _CL_PAD + rows * _CL_CELL_H,
         }
 

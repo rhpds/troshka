@@ -36,6 +36,7 @@ const CLUSTER_DEFAULTS = {
   ingressVip: "",
   ocpVersion: "", // auto-set to latest Full Support once the version list loads
   pullThroughRegistry: null as string | null,
+  usePullThroughRegistry: true,
   controlPlaneDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }],
   workerDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }],
   // OCP control-plane options (projected onto member VMs at deploy).
@@ -114,6 +115,7 @@ export function makeCluster(
     ingressVip: CLUSTER_DEFAULTS.ingressVip,
     ocpVersion: CLUSTER_DEFAULTS.ocpVersion,
     pullThroughRegistry: CLUSTER_DEFAULTS.pullThroughRegistry ?? undefined,
+    usePullThroughRegistry: CLUSTER_DEFAULTS.usePullThroughRegistry,
     networkIds: [],
     controlPlaneDisks: [...CLUSTER_DEFAULTS.controlPlaneDisks],
     workerDisks: [...CLUSTER_DEFAULTS.workerDisks],

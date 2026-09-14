@@ -109,7 +109,13 @@ export function backfillDeployedClusterBaseline(
 
 export function reconcileDeployedClusters(
   clusters: ClusterConfig[],
-  deployedClusters: Array<{ id?: string; ocpVersion?: string; baseDomain?: string }>,
+  deployedClusters: Array<{
+    id?: string;
+    ocpVersion?: string;
+    baseDomain?: string;
+    ocpInstallStatus?: string;
+    ocpInstallElapsed?: number;
+  }>,
 ): ClusterConfig[] {
   const deployedById = new Map(
     deployedClusters.filter((c) => c.id).map((c) => [c.id as string, c]),
@@ -127,6 +133,15 @@ export function reconcileDeployedClusters(
     // leaves the network node perpetually dirty. Deployed value wins.
     if (dep.baseDomain && dep.baseDomain !== out.baseDomain) {
       out = { ...out, baseDomain: dep.baseDomain };
+    }
+    if (dep.ocpInstallStatus && dep.ocpInstallStatus !== out.ocpInstallStatus) {
+      out = { ...out, ocpInstallStatus: dep.ocpInstallStatus };
+    }
+    if (
+      dep.ocpInstallElapsed != null &&
+      dep.ocpInstallElapsed !== out.ocpInstallElapsed
+    ) {
+      out = { ...out, ocpInstallElapsed: dep.ocpInstallElapsed };
     }
     return out;
   });

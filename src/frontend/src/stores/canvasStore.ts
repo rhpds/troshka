@@ -219,6 +219,8 @@ export interface ClusterConfig {
   ingressVip?: string;
   ocpVersion?: string;
   pullThroughRegistry?: string;
+  /** When false, skip the user's pull-through registry for this cluster. Default on. */
+  usePullThroughRegistry?: boolean;
   networkIds?: string[];
   /** Which member network hosts the cluster's DNS records (api/api-int/apps).
    *  Must be one of networkIds; defaults to the first member network. Keeps
@@ -230,6 +232,9 @@ export interface ClusterConfig {
   recert?: boolean;
   monitorHealth?: boolean;
   configureBastionBrowser?: boolean;
+  /** Per-cluster install outcome (independent of siblings). */
+  ocpInstallStatus?: "ready" | "error" | "monitoring" | string;
+  ocpInstallElapsed?: number;
   /** When false, deploy provisions VMs/BMC but skips the OpenShift install. */
   installOnDeploy?: boolean;
 }
@@ -328,6 +333,9 @@ interface CanvasState {
    *  mirrored here so the cluster log modal can show status beside the log. */
   ocpHealth: { phase: string; detail: string; items?: string[] } | null;
   setOcpHealth: (h: { phase: string; detail: string; items?: string[] } | null) => void;
+  /** Per-cluster install phases from ops-pod progress (cluster key → phase/status). */
+  clusterOcpPhases: Record<string, string>;
+  setClusterOcpPhases: (phases: Record<string, string>) => void;
   setClusters: (clusters: ClusterConfig[]) => void;
   addCluster: (cluster: ClusterConfig) => void;
   updateCluster: (id: string, patch: Partial<ClusterConfig>) => void;
@@ -610,11 +618,27 @@ export function stableStringify(v: unknown): string {
   );
 }
 
+// Cosmetic / layout-only node.data fields — excluded from dirty comparison.
+const DEPLOY_UI_ONLY_NODE_KEYS = ["minWidth", "minHeight"] as const;
+
+// OCP cluster members get these install defaults at materialize/deploy-normalize time;
+// older deployed_topology snapshots omit them. Treat absent == default in dirty compare.
+function normalizeOcpMemberInstallFields(stable: Record<string, unknown>): void {
+  if (!stable.clusterId) return;
+  if (stable.powerOnAtDeploy === undefined) stable.powerOnAtDeploy = true;
+  if (stable.bootMethod === undefined || stable.bootMethod === null || stable.bootMethod === "") {
+    stable.bootMethod = "disk";
+  }
+  if (stable.secureBoot === undefined) stable.secureBoot = false;
+}
+
 export function stableNodeData(
   data: Record<string, unknown>,
 ): Record<string, unknown> {
   const stable = { ...data };
   for (const k of DEPLOY_TRANSIENT_NODE_KEYS) delete stable[k];
+  for (const k of DEPLOY_UI_ONLY_NODE_KEYS) delete stable[k];
+  normalizeOcpMemberInstallFields(stable);
   // dnsRecords carry frontend-only metadata (type/managed/clusterId) that deploy
   // strips to {name, ip} in deployed_topology — comparing the rich objects made a
   // cluster-managed network perpetually dirty. Normalize to what deploy stores,
@@ -718,6 +742,7 @@ const _CLUSTER_DIRTY_FIELDS = [
   "workerMemory",
   "workerDisk",
   "pullThroughRegistry",
+  "usePullThroughRegistry",
   "networkIds",
 ] as const;
 
@@ -732,6 +757,23 @@ export function stableClusterKey(clusters: ClusterConfig[] | undefined): string 
       ),
     ),
   );
+}
+
+/** Per-cluster install status — never infer from a sibling or project-wide OCP health. */
+export function resolveClusterOcpInstallStatus(
+  cluster: ClusterConfig | undefined,
+  clusterKey: string,
+  livePhases: Record<string, string>,
+): "ready" | "error" | "monitoring" | null {
+  const stored = cluster?.ocpInstallStatus;
+  if (stored === "ready" || stored === "error" || stored === "monitoring") {
+    return stored;
+  }
+  const phase = livePhases[clusterKey];
+  if (!phase) return null;
+  if (phase === "complete") return "ready";
+  if (phase === "failed" || phase === "cancelled" || phase === "timeout") return "error";
+  return "monitoring";
 }
 
 function buildDeployedBaseline(deployed: DeployedTopologySnapshot | null | undefined) {
@@ -1110,6 +1152,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   ocpInstallVia: null as string | null,
   clusterLogTarget: null as { clusterKey: string; name: string } | null,
   ocpHealth: null as { phase: string; detail: string; items?: string[] } | null,
+  clusterOcpPhases: {} as Record<string, string>,
 
   onNodesChange: (changes) => {
     const removals = changes.filter((c) => c.type === "remove");
@@ -1789,6 +1832,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
         externalIps: [],
         vniMap: {},
         clusters: [],
+        clusterOcpPhases: {},
         deployedClusterRows: [],
         selectedNodeId: null,
       });
@@ -1966,6 +2010,12 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             deployedClusters: deployedClusterRows,
           });
           const finalClusters = healed.clusters;
+          const clusterOcpPhases: Record<string, string> = {};
+          for (const c of finalClusters) {
+            const key = c.id || c.name;
+            if (c.ocpInstallStatus === "ready") clusterOcpPhases[key] = "complete";
+            else if (c.ocpInstallStatus === "error") clusterOcpPhases[key] = "failed";
+          }
           set({
             // Tag cluster-managed DNS records (api/api-int/*.apps) so they render
             // in the read-only ☸ group instead of the editable list (deploy stores
@@ -1979,6 +2029,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             vniMap,
             showroom: parseShowroomFromTopology(t.showroom, nodes, lbEdges),
             clusters: finalClusters,
+            clusterOcpPhases,
             deployedClusterRows,
             deployedClusters: stableClusterKey(deployedClusterBaseline),
             ocpInstallVia: (t.ocpInstallVia as string) || null,
@@ -2017,6 +2068,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   openClusterLog: (clusterKey, name) => set({ clusterLogTarget: { clusterKey, name } }),
   closeClusterLog: () => set({ clusterLogTarget: null }),
   setOcpHealth: (h) => set({ ocpHealth: h }),
+  setClusterOcpPhases: (phases) => set({ clusterOcpPhases: phases }),
 
   addCluster: (cluster) => {
     get().pushHistory();

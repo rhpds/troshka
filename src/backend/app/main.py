@@ -719,9 +719,13 @@ def ocp_versions():
     """Fetch available OCP stable versions from the OpenShift Update Service."""
     import urllib.request
 
+    from app.services.ocp.client_mirror import preview_version_entries
+
     channels = []
-    for minor in range(18, 25):
-        channel = f"stable-4.{minor}"
+    channel_specs = [(f"stable-4.{minor}", f"4.{minor}") for minor in range(18, 25)]
+    if preview_version_entries():
+        channel_specs.append(("stable-5.0", "5.0"))
+    for channel, minor_label in channel_specs:
         try:
             req = urllib.request.Request(
                 f"https://api.openshift.com/api/upgrades_info/v1/graph?channel={channel}&arch=amd64",
@@ -736,13 +740,24 @@ def ocp_versions():
                     channels.append(
                         {
                             "channel": channel,
-                            "minor": f"4.{minor}",
+                            "minor": minor_label,
                             "latest": versions[-1],
                             "count": len(versions),
                         }
                     )
         except Exception:
             continue
+    for preview in preview_version_entries():
+        if not any(ch["minor"] == preview["name"] for ch in channels):
+            channels.append(
+                {
+                    "channel": "dev-preview",
+                    "minor": preview["name"],
+                    "latest": preview["name"],
+                    "count": 1,
+                }
+            )
+    channels.sort(key=lambda ch: tuple(int(p) for p in ch["minor"].split(".")))
     return channels
 
 

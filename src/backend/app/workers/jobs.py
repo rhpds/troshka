@@ -223,6 +223,13 @@ def job_container_redeploy_bg(project_id: str, container_id: str):
     redeploy_container_bg(project_id, container_id)
 
 
+def job_restart_ocp_install_bg(project_id: str, cluster_key: str):
+    """Restart a failed ops-pod OCP install for one cluster."""
+    from app.services.deploy_service import restart_ocp_cluster_install
+
+    restart_ocp_cluster_install(project_id, cluster_key)
+
+
 def job_bulk_deploy_projects(project_ids: list[str]):
     """Place and deploy multiple projects — each deploy enqueued as a separate job."""
     from app.api.patterns import _bulk_deploy_projects

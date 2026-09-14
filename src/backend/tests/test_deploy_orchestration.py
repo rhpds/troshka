@@ -722,8 +722,36 @@ class TestCreateVmViaTroshkad:
         assert len(params["networks"]) == 1
         assert params["networks"][0]["bridge"] == "br-100"
         assert params["networks"][0]["mac"] == "52:54:00:aa:bb:cc"
-        # uuid falls back to node_id when None
-        assert params["uuid"] == VM_NODE_ID
+        # node_id is not a valid SMBIOS UUID — omit uuid and let libvirt generate one
+        assert "uuid" not in params
+
+    @patch(f"{SVC}.start_job", return_value="job-create-3b")
+    @patch(f"{SVC}._find_vm_networks", return_value=[])
+    @patch(f"{SVC}._find_vm_disks", return_value=[])
+    def test_valid_smbios_uuid_forwarded(self, mock_disks, mock_nets, mock_start):
+        from app.services.deploy_service import _create_vm_via_troshkad
+
+        host = _make_host()
+        smbios_uuid = "856d587c-dfb5-46ae-aab4-15d53676a3ab"
+        vm = {
+            "node_id": VM_NODE_ID,
+            "name": "uuid-vm",
+            "vcpus": 2,
+            "ram_gb": 4,
+            "cloud_init": False,
+            "boot_devices": [],
+            "uuid": smbios_uuid,
+            "firmware": "bios",
+            "secure_boot": False,
+            "video_model": "virtio",
+            "input_model": "virtio",
+        }
+        topo = _minimal_topology()
+
+        _create_vm_via_troshkad(host, PROJECT_ID, vm, topo, {})
+
+        params = mock_start.call_args[0][2]
+        assert params["uuid"] == smbios_uuid
 
     @patch(f"{SVC}.start_job", return_value="job-create-4")
     @patch(f"{SVC}._find_vm_networks", return_value=[])
@@ -4338,6 +4366,22 @@ class TestOpsPodRecertHelpers:
         cmd = _ops_pod_command(topo["clusters"], topo, "4.20", "/workdir")
         assert "agent create image" in cmd[-1]
 
+    def test_ops_pod_command_writes_ptr_registries_conf_when_enabled(self):
+        from app.services.deploy_service import _ops_pod_command
+
+        topo = _ocp_topology(1)
+        ptr = {
+            "enabled": True,
+            "url": "cache.example.com",
+            "orgs": {"quay.io": "quay_io", "registry.redhat.io": "registry_redhat_io"},
+        }
+        script = _ops_pod_command(
+            topo["clusters"], topo, "4.20", "/workdir", pull_through_registry=ptr
+        )[-1]
+        assert "registries.conf.d/rhdp-cache.conf" in script
+        assert 'prefix = "quay.io"' in script
+        assert "cache.example.com/quay_io" in script
+
     def test_canvas_added_cluster_on_pattern_project_gets_full_install(self):
         from app.services.deploy_service import _ops_pod_command
 
@@ -4427,6 +4471,20 @@ class TestOpsPodCommand:
         assert "[ -f /workdir/cl-0/.install-complete ]" in script
         assert "[ -f /workdir/cl-1/.install-complete ]" in script
 
+    def test_command_resumes_install_without_restart_loop(self):
+        from app.services.deploy_service import _ops_pod_command
+
+        topo = _ocp_topology(1)
+        script = _ops_pod_command(topo["clusters"], topo, "4.22", "/workdir")[2]
+        assert "ops pod resume" in script
+        assert "skipping create-image" in script
+        assert "agent.x86_64.iso ] && [ -f .openshift_install_state.json" in script
+        assert "[ -f .agent-iso-booted ]" in script
+        assert "skipping serve/boot" in script
+        assert "holding container (no restart loop)" in script
+        assert script.rstrip().endswith("sleep infinity")
+        assert not script.rstrip().endswith("exit 1")
+
     def test_command_embeds_no_secret_content(self):
         from app.services.deploy_service import _ops_pod_command
 
@@ -4449,6 +4507,7 @@ class TestOpsPodCreateParams:
         project = _make_project()
         topo = _ocp_topology(2)
         params = _ops_pod_create_params(
+            None,
             project,
             topo["clusters"],
             topo,

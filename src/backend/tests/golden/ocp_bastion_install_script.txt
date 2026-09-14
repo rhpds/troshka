@@ -30,10 +30,10 @@
     # Download openshift-install and oc if not present
     if [ ! -f openshift-install ]; then
       echo "Downloading openshift-install $OCP_VERSION..."
-      curl -L -o /tmp/openshift-install.tar.gz https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION/openshift-install-linux.tar.gz
+      curl -L -o /tmp/openshift-install.tar.gz https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-4.20/openshift-install-linux.tar.gz
       tar xzf /tmp/openshift-install.tar.gz && rm -f /tmp/openshift-install.tar.gz
       echo "Downloading oc client..."
-      curl -L -o /tmp/openshift-client.tar.gz https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION/openshift-client-linux.tar.gz
+      curl -L -o /tmp/openshift-client.tar.gz https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-4.20/openshift-client-linux.tar.gz
       tar xzf /tmp/openshift-client.tar.gz && rm -f /tmp/openshift-client.tar.gz
       sudo mv oc kubectl /usr/bin/
       echo "Downloaded openshift-install and oc"

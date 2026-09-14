@@ -1030,6 +1030,17 @@ def _validate_mac(mac):
     return mac
 
 
+def _validate_smbios_uuid(value):
+    """Return value when it is a valid SMBIOS UUID, else None."""
+    if not value:
+        return None
+    try:
+        uuid.UUID(str(value))
+        return str(value)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
 def _validate_bus(bus):
     if bus not in _BUS_TYPES:
         raise ValueError(f"Invalid bus type: {bus}")
@@ -1290,7 +1301,7 @@ def _handle_vm_create(job, params):
     if machine_type:
         cmd.extend(["--machine", machine_type])
 
-    _hwuuid = domain_uuid
+    _hwuuid = _validate_smbios_uuid(domain_uuid)
 
     boot_parts = _build_boot_parts(firmware, secure_boot, boot_devs)
     cmd.extend(["--boot", ",".join(boot_parts)])

@@ -19,6 +19,17 @@ logger = logging.getLogger(__name__)
 _ROUTE_PROVIDERS = frozenset({"ocpvirt", "kubevirt"})
 
 
+def is_valid_smbios_uuid(value) -> bool:
+    """True when ``value`` is a UUID string suitable for libvirt ``<hwuuid>``."""
+    if not value:
+        return False
+    try:
+        uuid.UUID(str(value))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 def validate_topology_names(topology: dict) -> list[str]:
     """Check for duplicate node names within a topology. Returns list of errors."""
     errors = []
@@ -1341,7 +1352,21 @@ def _vm_dir(project_id: str, pool=None) -> str:
 def _disk_path(
     project_id: str, vm_node_id: str, disk_node_id: str, fmt: str, pool=None
 ) -> str:
-    return f"{_vm_dir(project_id, pool)}/{vm_node_id[:8]}-{disk_node_id[:8]}.{fmt}"
+    """Build a unique on-disk path for a VM disk image.
+
+    Canvas disk nodes use ids like ``{memberId}-disk-{i}``, which share the
+    same 8-char prefix as the member VM id — ``vm[:8]-disk[:8]`` would collide
+    (e.g. ``ocp-5423-ocp-5423.qcow2``). Prefer the ``-disk-N`` suffix when present.
+    """
+    vm_part = vm_node_id[:8]
+    disk_match = re.search(r"-disk-(\d+)$", disk_node_id)
+    if disk_match:
+        disk_part = f"d{disk_match.group(1)}"
+    else:
+        disk_part = disk_node_id[:8]
+        if disk_part == vm_part:
+            disk_part = disk_node_id[-8:]
+    return f"{_vm_dir(project_id, pool)}/{vm_part}-{disk_part}.{fmt}"
 
 
 def _seed_path(project_id: str, vm_node_id: str, pool=None) -> str:

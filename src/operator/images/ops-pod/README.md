@@ -49,7 +49,8 @@ Build args:
   builds the `:latest` image tracking `stable`, but you can pass an exact
   `x.y.z` for a pinned, reproducible image). The install runner may still
   re-download a per-project version at runtime, so this is a self-sufficiency
-  default, not a hard pin.
+  default, not a hard pin. For OCP **5.0 dev-preview**, runtime download uses
+  `openshift-v4/clients/ocp-dev-preview/latest/` (see `client_mirror.py`).
 - `OCP_MIRROR` — mirror base URL (default `mirror.openshift.com`).
 - `TROSHKA_COLLECTION_GIT` — source for the `troshka.cloud` collection (default
   the git repo). Replace with a Galaxy/Automation-Hub ref once published there.

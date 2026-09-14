@@ -134,6 +134,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
         baseDomain: srcCluster.baseDomain,
         ocpVersion: srcCluster.ocpVersion,
         pullThroughRegistry: srcCluster.pullThroughRegistry,
+        usePullThroughRegistry: srcCluster.usePullThroughRegistry,
         controlPlaneDisks: srcCluster.controlPlaneDisks
           ? [...srcCluster.controlPlaneDisks]
           : cluster.controlPlaneDisks,

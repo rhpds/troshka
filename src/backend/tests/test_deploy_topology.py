@@ -5,7 +5,15 @@ import pytest
 from app.services.deploy_topology import (
     _filter_topology_for_host,
     _find_vm_disks,
+    is_valid_smbios_uuid,
 )
+
+
+def test_is_valid_smbios_uuid():
+    assert is_valid_smbios_uuid("856d587c-dfb5-46ae-aab4-15d53676a3ab") is True
+    assert is_valid_smbios_uuid("ocp-54230q-cp-0") is False
+    assert is_valid_smbios_uuid(None) is False
+    assert is_valid_smbios_uuid("") is False
 
 
 def test_filter_topology_for_host():

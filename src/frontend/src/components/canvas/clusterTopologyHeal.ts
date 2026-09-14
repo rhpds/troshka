@@ -1,6 +1,7 @@
 import type { Node, Edge } from "@xyflow/react";
 import type { ClusterConfig } from "@/stores/canvasStore";
 import { orderChildAfterParent } from "@/components/canvas/clusterMembership";
+import { healClusterBoundaryWidths } from "@/components/canvas/clusterMaterialize";
 
 /** Legacy lazy-migration artifact — must not coexist with modern multi-cluster boxes. */
 export const LEGACY_GHOST_CLUSTER_ID = "ocp";
@@ -60,6 +61,7 @@ function clusterConfigFromBoundaryNode(
     ingressVip: (d.ingressVip as string) || deployed?.ingressVip || "",
     ocpVersion: deployed?.ocpVersion || "",
     pullThroughRegistry: deployed?.pullThroughRegistry,
+    usePullThroughRegistry: deployed?.usePullThroughRegistry,
     networkIds: deployed?.networkIds || (d.networkIds as string[]) || [],
     recert: deployed?.recert,
     monitorHealth: deployed?.monitorHealth,
@@ -251,6 +253,7 @@ export function healClusterTopology(
   let nodes = dedupeNodeIds(input.nodes);
   nodes = removeLegacyGhostBoundary(nodes, clusters);
   nodes = healClusterMembership(nodes, clusters, input.deployedClusters);
+  nodes = healClusterBoundaryWidths(nodes);
   nodes = orderClusterParentsBeforeChildren(nodes);
   return { nodes, edges: input.edges, clusters };
 }
