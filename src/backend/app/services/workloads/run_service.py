@@ -110,6 +110,18 @@ def _run_limit(target_map: dict | None) -> str | None:
     return ",".join(vm_names)
 
 
+def _inventory_connection_mode(target_map: dict | None) -> str:
+    """Pick the troshka.cloud inventory connection mode.
+
+    VM-targeted runs use "troshka" (commands proxied over the Troshka API's
+    /vms/{id}/exec — no bastion/ProxyJump needed). Everything else keeps the
+    default "ssh" mode (bastion ProxyJump), preserving prior behavior.
+    """
+    if (target_map or {}).get("mode") == "vms":
+        return "troshka"
+    return "ssh"
+
+
 def run_workload_job(run_id: str) -> None:
     db = SessionLocal()
     try:
@@ -137,7 +149,12 @@ def run_workload_job(run_id: str) -> None:
         from app.core.config import config
         from app.services.workloads import repo_cache
 
-        inv = build_inventory_yaml(config.app.external_url, key, project.id)
+        inv = build_inventory_yaml(
+            config.app.external_url,
+            key,
+            project.id,
+            connection_mode=_inventory_connection_mode(run.target_map),
+        )
 
         paths = RunPaths()
         extra_vars = dict(item.extra_vars)

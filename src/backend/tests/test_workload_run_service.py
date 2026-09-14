@@ -493,6 +493,21 @@ def test_should_validate_inventory_modes():
     assert _should_validate_inventory({"mode": "cluster"}) is False
 
 
+def test_inventory_connection_mode_vms_uses_troshka():
+    """VM-targeted runs use the bastionless troshka connection; others use ssh."""
+    from app.services.workloads.run_service import _inventory_connection_mode
+
+    assert _inventory_connection_mode({"mode": "vms"}) == "troshka"
+    assert (
+        _inventory_connection_mode({"mode": "vms", "vm_names": ["web1"]}) == "troshka"
+    )
+    assert _inventory_connection_mode({"mode": "cluster"}) == "ssh"
+    assert (
+        _inventory_connection_mode(None) == "ssh"
+    )  # legacy whole-project → bastion ssh
+    assert _inventory_connection_mode({}) == "ssh"
+
+
 # -------------------------------------------------------------------------
 # Tests for targeted-run features
 # -------------------------------------------------------------------------
