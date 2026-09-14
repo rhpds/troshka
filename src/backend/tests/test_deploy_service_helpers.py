@@ -4,6 +4,7 @@ Focuses on pure-logic helpers and mocked DB/infra helpers to improve
 SonarQube coverage on the newly refactored code.
 """
 
+import re
 import time
 from unittest.mock import MagicMock, patch
 
@@ -3242,21 +3243,45 @@ class TestShouldSkip:
 
 
 class TestVmDomainName:
-    def test_basic(self):
+    _DOMAIN_RE = re.compile(r"^troshka-[a-f0-9]{8}-[a-f0-9]{8}$")
+
+    def test_uuid_ids_preserve_legacy_prefix(self):
         from app.services.deploy_topology import _vm_domain_name
 
-        assert _vm_domain_name("proj-1234", "node-5678") == "troshka-proj-123-node-567"
+        pid = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"
+        nid = "cccccccc-dddd-eeee-ffff-000000000000"
+        assert _vm_domain_name(pid, nid) == "troshka-aaaaaaaa-cccccccc"
 
-    def test_truncation(self):
+    def test_hex_prefix_truncation(self):
         from app.services.deploy_topology import _vm_domain_name
 
         result = _vm_domain_name("a" * 36, "b" * 36)
         assert result == f"troshka-{'a' * 8}-{'b' * 8}"
 
-    def test_short_ids(self):
+    def test_human_readable_node_id_hashes_to_valid_domain(self):
+        import hashlib
+
         from app.services.deploy_topology import _vm_domain_name
 
-        assert _vm_domain_name("abc", "xyz") == "troshka-abc-xyz"
+        pid = "c55f962c-2450-479b-9be3-f173f58b91ab"
+        nid = "ocp-2-hbf8w5-cp-0"
+        name = _vm_domain_name(pid, nid)
+        assert self._DOMAIN_RE.match(name)
+        suffix = hashlib.sha256(nid.encode()).hexdigest()[:8]
+        assert name == f"troshka-c55f962c-{suffix}"
+
+    def test_non_hex_ids_are_stable(self):
+        import hashlib
+
+        from app.services.deploy_topology import _vm_domain_name
+
+        name = _vm_domain_name("proj-1234", "node-5678")
+        assert self._DOMAIN_RE.match(name)
+        assert name == (
+            "troshka-"
+            f"{hashlib.sha256(b'proj-1234').hexdigest()[:8]}-"
+            f"{hashlib.sha256(b'node-5678').hexdigest()[:8]}"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -5558,17 +5583,26 @@ class TestFindVmNameByIpV2:
 
 
 class TestVmDomainNameV2:
-    def test_basic(self):
+    def test_node_with_hex_prefix_uses_prefix(self):
         from app.services.deploy_topology import _vm_domain_name
 
-        result = _vm_domain_name("proj-12345678-abcd", "node-abcdef12-9999")
-        assert result == "troshka-proj-123-node-abc"
+        result = _vm_domain_name(
+            "12345678-abcd-ef01-2345-6789abcdef01",
+            "abcdef12-9999-0000-1111-222233334444",
+        )
+        assert result == "troshka-12345678-abcdef12"
 
-    def test_short_ids(self):
+    def test_short_non_hex_ids_hash(self):
+        import hashlib
+
         from app.services.deploy_topology import _vm_domain_name
 
         result = _vm_domain_name("abc", "xyz")
-        assert result == "troshka-abc-xyz"
+        assert result == (
+            "troshka-"
+            f"{hashlib.sha256(b'abc').hexdigest()[:8]}-"
+            f"{hashlib.sha256(b'xyz').hexdigest()[:8]}"
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -6729,17 +6763,23 @@ class TestExtractBmcConfigDhcpHosts:
 
 
 class TestVmDomainNameV2Extra:
-    def test_basic(self):
+    def test_mixed_hex_and_non_hex_segments(self):
+        import hashlib
+
         from app.services.deploy_topology import _vm_domain_name
 
         result = _vm_domain_name("proj-1234-5678-abcd", "vm-aaaa-bbbb-cccc")
-        assert result == "troshka-proj-123-vm-aaaa-"
+        assert result == (
+            "troshka-"
+            f"{hashlib.sha256(b'proj-1234-5678-abcd').hexdigest()[:8]}-"
+            f"{hashlib.sha256(b'vm-aaaa-bbbb-cccc').hexdigest()[:8]}"
+        )
 
-    def test_short_ids(self):
+    def test_all_hex_short_ids(self):
         from app.services.deploy_topology import _vm_domain_name
 
-        result = _vm_domain_name("abcd", "efgh")
-        assert result == "troshka-abcd-efgh"
+        result = _vm_domain_name("abcd1234", "efab5678")
+        assert result == "troshka-abcd1234-efab5678"
 
 
 # ═══════════════════════════════════════════════════════════════════════

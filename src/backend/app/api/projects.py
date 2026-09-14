@@ -3668,6 +3668,81 @@ def _find_changed_kubevirt_vms(current: dict, deployed: dict) -> list[str]:
     ]
 
 
+def _new_ocp_clusters(current: dict, deployed: dict) -> list[dict]:
+    """Clusters present on the canvas but not yet in ``deployed_topology``."""
+    clusters = current.get("clusters") or []
+    if not clusters:
+        return []
+    deployed_ids = {
+        c.get("id") for c in (deployed.get("clusters") or []) if c.get("id")
+    }
+    return [c for c in clusters if c.get("id") not in deployed_ids]
+
+
+def _stamp_new_ocp_cluster_configs(
+    s, proj, current: dict, deployed: dict
+) -> list[dict]:
+    """Write DNS + agent/install configs for canvas-added OCP clusters.
+
+    Returns the list of newly-added cluster dicts (empty when none / not pod install).
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.deploy_service import _should_use_ops_pod
+    from app.services.ocp.agent_template import _customize_one_cluster
+    from app.services.template_loader import normalize_cluster_member_fields
+
+    if not _should_use_ops_pod(current):
+        return []
+
+    new_clusters = _new_ocp_clusters(current, deployed)
+    if not new_clusters:
+        return []
+
+    normalize_cluster_member_fields(current)
+    config = {"resolved": {}, "pull_secret_json": "", "ssh_pub_key": ""}
+    owner = s.query(User).filter_by(id=proj.owner_id).first()
+    if owner and owner.ocp_pull_secret:
+        from app.core.encryption import decrypt
+
+        config["pull_secret_json"] = decrypt(owner.ocp_pull_secret)
+
+    for cluster in new_clusters:
+        _customize_one_cluster(current, cluster, config, include_extras=False)
+
+    proj.topology = current
+    flag_modified(proj, "topology")
+    s.commit()
+    return new_clusters
+
+
+def _start_new_ocp_cluster_installs(
+    s, proj, h, p_id: str, current: dict, new_clusters: list[dict]
+) -> None:
+    """Launch the ops pod for newly-added clusters (background OCP install)."""
+    from app.services.deploy_service import (
+        _cluster_install_on_deploy,
+        _deploy_ops_pod,
+        _should_use_ops_pod,
+    )
+
+    if not new_clusters or not _should_use_ops_pod(current):
+        return
+    install_new = [c for c in new_clusters if _cluster_install_on_deploy(c)]
+    if not install_new:
+        return
+    vni_map = dict(proj.vni_map or {})
+    _deploy_ops_pod(s, h, p_id, proj, current, vni_map, clusters=install_new)
+
+
+def _reconfigure_new_ocp_clusters(
+    s, proj, h, p_id: str, current: dict, deployed: dict
+) -> None:
+    """Stamp configs for new clusters and start their install (legacy single call)."""
+    new_clusters = _stamp_new_ocp_cluster_configs(s, proj, current, deployed)
+    _start_new_ocp_cluster_installs(s, proj, h, p_id, current, new_clusters)
+
+
 def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict):
     """Reconfigure a KubeVirt project by patching CRs."""
     import copy
@@ -3819,9 +3894,12 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
 
         _patch_kubevirt_gateway_forwards(provider, p_id, current)
 
-        # Finalize
+        new_ocp_clusters = _stamp_new_ocp_cluster_configs(s, proj, current, deployed)
+
+        # Finalize before kicking off OCP install so the canvas unblocks immediately.
         _finalize_kubevirt_reconfigure(proj, s, p_id, current, copy, notify_project)
         _delete_deploy_progress(p_id)
+        _start_new_ocp_cluster_installs(s, proj, h, p_id, current, new_ocp_clusters)
     except Exception as e:
         logger.exception("Reconfigure %s: kubevirt error: %s", p_id[:8], e)
         try:
@@ -3845,6 +3923,10 @@ def _finalize_kubevirt_reconfigure(proj, s, p_id, current, copy, notify_project)
         ndata.pop("resolvedS3Path", None)
         ndata.pop("presignedUrl", None)
         ndata.pop("ciGeneratedUserData", None)
+    # Never let an empty canvas clusters[] wipe deployed cluster metadata.
+    prior = (proj.deployed_topology or {}).get("clusters") or []
+    if prior and not (clean_topo.get("clusters") or []):
+        clean_topo["clusters"] = copy.deepcopy(prior)
     proj.deployed_topology = clean_topo
     proj.topology = clean_topo
     proj.state = "active"
@@ -4783,13 +4865,25 @@ def _do_reconfigure_bg(p_id: str, h_id: str, restart_vm_ids: list | set):
         # it and (re)inject the cluster terminal's kubeconfig from stored creds.
         _reconfigure_showroom(h, p_id, current, deployed, vni_map, s, errors)
 
+        new_ocp_clusters = _stamp_new_ocp_cluster_configs(s, proj, current, deployed)
+
         _finalize_reconfigure(s, proj, h, p_id, current, deployed, errors)
-    except Exception:
+        _start_new_ocp_cluster_installs(s, proj, h, p_id, current, new_ocp_clusters)
+    except Exception as exc:
         logger.exception("Reconfigure %s failed", p_id[:8])
         proj = s.query(Project).filter_by(id=p_id).first()
         if proj:
             proj.state = "error"
+            proj.deploy_error = str(exc)[:500] or "Reconfigure failed"
             s.commit()
+            notify_project(
+                p_id,
+                {
+                    "type": "project-state",
+                    "state": "error",
+                    "deploy_error": proj.deploy_error,
+                },
+            )
         _delete_deploy_progress(p_id)
     finally:
         s.close()

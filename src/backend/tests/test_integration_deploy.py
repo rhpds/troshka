@@ -1029,12 +1029,15 @@ class TestDeployHelpers:
         assert containers == []
 
     def test_vm_domain_name_format(self):
-        """_vm_domain_name should produce correct format."""
+        """_vm_domain_name should produce troshkad-valid domain names."""
+        import re
+
         from app.services.deploy_topology import _vm_domain_name
 
         pid = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"
-        nid = "vm-12345678-abcd"
+        nid = "cccccccc-dddd-eeee-ffff-000000000000"
         name = _vm_domain_name(pid, nid)
+        assert re.match(r"^troshka-[a-f0-9]{8}-[a-f0-9]{8}$", name)
         assert name == f"troshka-{pid[:8]}-{nid[:8]}"
 
     def test_find_vm_disks_with_storage(self):

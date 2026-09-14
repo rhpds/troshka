@@ -8,7 +8,7 @@ import Palette from "@/components/canvas/Palette";
 import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
-import { useCanvasStore, computeTopologyDirty, computeTopologyDiff, setLatestVmStates, setLatestContainerStates, type ExternalIp, type TopologyDiffEntry } from "@/stores/canvasStore";
+import { useCanvasStore, computeTopologyDirty, computeTopologyDiff, setLatestVmStates, setLatestContainerStates, _saveTopologyToApi, type ExternalIp, type TopologyDiffEntry } from "@/stores/canvasStore";
 import { healClusterTopology } from "@/components/canvas/clusterTopologyHeal";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
@@ -437,12 +437,7 @@ export default function ProjectCanvasPage() {
   const [reconfigDiff, setReconfigDiff] = useState<TopologyDiffEntry[]>([]);
 
   const saveTopology = async () => {
-    const s = useCanvasStore.getState();
-    await fetch(`/api/v1/projects/${projectId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ topology: { nodes: s.nodes, edges: s.edges, hiddenNodeIds: s.hiddenNodeIds, startOrder: s.startOrder, externalIps: s.externalIps } }),
-    });
+    await _saveTopologyToApi(projectId, useCanvasStore.getState());
   };
 
   const doReconfigure = async (restartVmIds?: string[]) => {

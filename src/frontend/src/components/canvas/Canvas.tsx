@@ -28,7 +28,7 @@ import ClusterInstallLogModal from "./ClusterInstallLogModal";
 import { useCanvasStore, generateNodeId, generateNicId, generateDiskControllerId, generateMac, onRequestDuplicateVM, onRequestDuplicateCluster, type ClusterConfig } from "@/stores/canvasStore";
 import { makeCluster } from "@/components/canvas/clusterFactory";
 import { resolveMembership, absolutePosition, relativePosition, orderChildAfterParent } from "@/components/canvas/clusterMembership";
-import { assignmentDataPatch, materializeClusterInto, applyClusterNetworks } from "@/components/canvas/clusterMaterialize";
+import { assignmentDataPatch, materializeClusterInto, applyClusterNetworks, syncClusterCanvasState } from "@/components/canvas/clusterMaterialize";
 import { hasShowroomNode } from "@/lib/showroomScaffold";
 import {
   GATEWAY_NETWORK_SOURCE_HANDLE,
@@ -292,16 +292,17 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
         // Update cluster and apply networks to members
         const updated = { ...cluster, networkIds: newNetworkIds };
         useCanvasStore.getState().pushHistory();
-        updateCluster(cluster.id, { networkIds: newNetworkIds });
         const { nodes: nextNodes, edges: nextEdges } = applyClusterNetworks(
           updated,
           useCanvasStore.getState().nodes,
           useCanvasStore.getState().edges,
         );
-        // Dedupe anchor edge by id and add it
         const edgeMap = new Map(nextEdges.map((e) => [e.id, e]));
         edgeMap.set(anchorEdge.id, anchorEdge);
-        useCanvasStore.setState({ nodes: nextNodes, edges: Array.from(edgeMap.values()) });
+        const edgesWithAnchor = Array.from(edgeMap.values());
+        const synced = syncClusterCanvasState(updated, nextNodes, edgesWithAnchor);
+        updateCluster(synced.cluster.id, synced.cluster);
+        useCanvasStore.setState({ nodes: synced.nodes, edges: edgesWithAnchor });
         return;
       }
 
@@ -726,11 +727,13 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
           useCanvasStore.getState().nodes,
         );
         const currentEdges = useCanvasStore.getState().edges;
-        // Merge new edges: add/replace by id, dedupe
         const edgeMap = new Map(currentEdges.map((e) => [e.id, e]));
         diskEdges.forEach((e) => edgeMap.set(e.id, e));
+        const mergedEdges = Array.from(edgeMap.values());
+        const synced = syncClusterCanvasState(cluster, withMembers, mergedEdges);
+        updateCluster(synced.cluster.id, synced.cluster);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (useCanvasStore as any).setState({ nodes: withMembers, edges: Array.from(edgeMap.values()) });
+        (useCanvasStore as any).setState({ nodes: synced.nodes, edges: mergedEdges });
         return; // node + cluster added together; skip the trailing addNode
       } else {
         return;
@@ -738,7 +741,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
 
       addNode(newNode);
     },
-    [addNode, addCluster, addShowroomScaffold],
+    [addNode, addCluster, updateCluster, addShowroomScaffold],
   );
 
   const stableNodeTypes = useMemo(() => nodeTypes, []);

@@ -4338,6 +4338,32 @@ class TestOpsPodRecertHelpers:
         cmd = _ops_pod_command(topo["clusters"], topo, "4.20", "/workdir")
         assert "agent create image" in cmd[-1]
 
+    def test_canvas_added_cluster_on_pattern_project_gets_full_install(self):
+        from app.services.deploy_service import _ops_pod_command
+
+        topo = _ocp_pattern_topology([1])
+        topo["clusters"].append(
+            {"id": "ocp-2-new", "name": "ocp-2", "type": "sno", "installOnDeploy": True}
+        )
+        topo["nodes"].append(
+            {
+                "type": "vmNode",
+                "id": "ocp-2-new-cp-0",
+                "data": {
+                    "os": "rhcos",
+                    "clusterId": "ocp-2-new",
+                    "clusterRole": "control-plane",
+                    "generated": True,
+                },
+            }
+        )
+        new_cluster = topo["clusters"][-1]
+        cmd = _ops_pod_command([new_cluster], topo, "4.20", "/workdir")
+        script = cmd[-1]
+        assert "agent create image" in script
+        assert "wait-for install-complete" in script
+        assert "(recert)" not in script
+
     def test_unset_defaults_to_pod(self):
         from app.services.deploy_service import _should_use_ops_pod
 

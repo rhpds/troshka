@@ -3,10 +3,12 @@
 Extracted from deploy_service.py for testability. No DB, no troshkad, no Redis dependencies.
 """
 
+import hashlib
 import ipaddress
 import logging
 import os
 import random
+import re
 import uuid
 
 logger = logging.getLogger(__name__)
@@ -1235,8 +1237,19 @@ def _resolve_mount_edge(edge: dict, container_node_id: str) -> str | None:
     return None
 
 
+_DOMAIN_SEGMENT_RE = re.compile(r"^[0-9a-f]{8}$", re.I)
+
+
+def _domain_id_segment(identifier: str) -> str:
+    """Map an arbitrary id to 8 lowercase hex chars for troshkad domain names."""
+    prefix = identifier[:8].lower()
+    if _DOMAIN_SEGMENT_RE.match(prefix):
+        return prefix
+    return hashlib.sha256(identifier.encode()).hexdigest()[:8]
+
+
 def _vm_domain_name(project_id: str, node_id: str) -> str:
-    return f"troshka-{project_id[:8]}-{node_id[:8]}"
+    return f"troshka-{_domain_id_segment(project_id)}-{_domain_id_segment(node_id)}"
 
 
 def _extract_bmc_config(topology: dict, project_id: str) -> dict | None:

@@ -5,6 +5,7 @@ import { Handle, NodeResizer, Position, type NodeProps } from "@xyflow/react";
 import type { ClusterNodeData } from "@/stores/canvasStore";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { clusterPrereqIssues } from "../clusterMaterialize";
+import { backfillClusterNetworkIds } from "../clusterNetworkBackfill";
 
 function ClusterNodeComponent({ id, data, selected }: NodeProps) {
   const d = data as unknown as ClusterNodeData;
@@ -13,6 +14,7 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
   // box itself so problems are visible without opening the properties panel.
   const clusters = useCanvasStore((s) => s.clusters);
   const nodes = useCanvasStore((s) => s.nodes);
+  const edges = useCanvasStore((s) => s.edges);
   const projectState = useCanvasStore((s) => s.projectState);
   const openClusterLog = useCanvasStore((s) => s.openClusterLog);
   const ocpHealth = useCanvasStore((s) => s.ocpHealth);
@@ -30,7 +32,10 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
       : ocpHealth?.phase === "error" || ocpHealth?.phase === "timeout"
         ? { bg: "rgba(239,68,68,0.18)", border: "rgba(239,68,68,0.55)" }
         : { bg: "rgba(34,211,238,0.18)", border: "rgba(34,211,238,0.4)" };
-  const issues = cluster ? clusterPrereqIssues(cluster, nodes) : [];
+  const clusterForPrereq = cluster
+    ? backfillClusterNetworkIds([cluster], nodes, edges)[0]
+    : undefined;
+  const issues = clusterForPrereq ? clusterPrereqIssues(clusterForPrereq, nodes) : [];
   // A duplicate cluster name is an error (the name is the DNS subdomain and must
   // be unique) — surface it on the box, not just in the properties panel.
   if (

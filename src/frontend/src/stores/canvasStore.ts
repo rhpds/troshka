@@ -559,6 +559,7 @@ function normalizeShowroomContainer(c: unknown): unknown {
     out.envVars = (out.envVars as Array<Record<string, unknown>>).filter(
       (e) => e?.key !== "NGINX_B64" && e?.key !== "UI_CONFIG_B64",
     );
+    if ((out.envVars as unknown[]).length === 0) delete out.envVars;
   }
   const name = String(out.name || "");
   const image = String(out.image || "");
@@ -567,6 +568,9 @@ function normalizeShowroomContainer(c: unknown): unknown {
     // showroom disk mount; the canvas materialization uses a shorter
     // nginx-config command. Neither belongs in the dirty comparison.
     delete out.mounts;
+    delete out.cpus;
+    delete out.memory;
+    delete out.ports;
     if (name === "nginx-config") delete out.command;
   }
   if (name.startsWith("wetty-") || image.includes("wetty")) {

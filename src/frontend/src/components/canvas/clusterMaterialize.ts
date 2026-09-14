@@ -3,6 +3,7 @@ import type { ClusterConfig, VMDiskController, DiskSpec, VMNic } from "@/stores/
 import { generateDiskControllerId, generateNicId, generateMac } from "@/stores/canvasStore";
 import { collectUsedIps, listCidrHosts } from "@/lib/dhcpIpAssignment";
 import { applyClusterBmc } from "@/components/canvas/clusterBmc";
+import { backfillClusterNetworkIds } from "@/components/canvas/clusterNetworkBackfill";
 
 /**
  * Count-driven, existence-aware materialization of a cluster's member VMs on
@@ -491,21 +492,31 @@ function computeContentBbox(
   if (visibleMembers.length === 0) {
     return { contentW: 280, contentH: 180 };
   }
-
-  let maxX = 0;
-  let maxY = 0;
-
-  for (const member of visibleMembers) {
-    const x = member.position.x;
-    const y = member.position.y;
-    maxX = Math.max(maxX, x + CARD_W);
-    maxY = Math.max(maxY, y + CARD_H);
-  }
-
+  // Match clusterBoxSize / backend auto_layout so canvas-added clusters get the
+  // same header clearance and cell padding as pattern-deployed ones.
+  const count = visibleMembers.length;
+  const cols = Math.max(1, Math.min(COLS_MAX, count));
+  const rows = Math.max(1, Math.ceil(count / cols));
   return {
-    contentW: maxX + PAD,
-    contentH: maxY + PAD,
+    contentW: 2 * PAD + cols * CELL_W,
+    contentH: HEADER_H + PAD + rows * CELL_H,
   };
+}
+
+/**
+ * Backfill member networkIds from edges, assign SNO node IP, and mirror DNS
+ * records — the same work the cluster editor effect does, but callable when a
+ * cluster is first materialized or wired to a network without opening the panel.
+ */
+export function syncClusterCanvasState(
+  cluster: ClusterConfig,
+  nodes: Node[],
+  edges: Edge[],
+): { cluster: ClusterConfig; nodes: Node[] } {
+  const [backfilled] = backfillClusterNetworkIds([cluster], nodes, edges);
+  const withIp = ensureSnoNodeIp(backfilled, nodes);
+  const withDns = applyClusterDns(backfilled, withIp);
+  return { cluster: backfilled, nodes: withDns };
 }
 
 /**

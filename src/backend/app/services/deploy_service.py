@@ -1893,6 +1893,105 @@ def _ops_pod_workdir_lines(clusters, workdir) -> list[str]:
     return lines
 
 
+def _cluster_uses_recert(topology: dict, cluster: dict) -> bool:
+    """True when this cluster's disks already have OCP installed (pattern capture).
+
+    Canvas-added clusters have fresh qcow2 disks and no ``ocpKubeconfig`` on their
+    control-plane member — they need a full agent-based install even when the
+    project also contains pattern-backed clusters.
+    """
+    from app.services.ocp.agent_template import _cluster_members_for
+
+    for member in _cluster_members_for(topology, cluster):
+        if member.get("data", {}).get("ocpKubeconfig"):
+            return True
+    return False
+
+
+def _partition_ops_pod_clusters(
+    topology: dict, clusters: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """Split clusters into (recert, fresh-install) lists for the ops-pod runner."""
+    recert: list[dict] = []
+    install: list[dict] = []
+    for cluster in clusters:
+        if _cluster_uses_recert(topology, cluster):
+            recert.append(cluster)
+        else:
+            install.append(cluster)
+    return recert, install
+
+
+def _build_ops_pod_runner_script(
+    topology: dict,
+    clusters: list[dict],
+    ocp_version: str,
+    workdir: str,
+    net_ip_assignments=None,
+    serving_ip=None,
+) -> str:
+    """Ops-pod bash script: per-cluster recert and/or fresh agent install blocks."""
+    from app.services.ocp.ops_pod_install import (
+        _BASE_ISO_PORT,
+        _cluster_install_block,
+        _ensure_installers_cmd,
+        _recert_cluster_block,
+        _self_assign_net_ips,
+        bmc_for_cluster,
+    )
+    from app.services.ocp.ops_pod_install import (
+        _cluster_key as _ops_cluster_key,
+    )
+
+    recert_clusters, install_clusters = _partition_ops_pod_clusters(topology, clusters)
+    if not recert_clusters and not install_clusters:
+        return "#!/bin/bash\necho 'No clusters to install'\nexit 1\n"
+
+    parts: list[str] = [
+        "#!/bin/bash\n",
+        "# Per-cluster OCP ops-pod runner (recert and/or agent install).\n",
+        "set -u\n",
+        "set -o pipefail\n",
+        f"OCP_VERSION={ocp_version}\n",
+        "\n",
+        _self_assign_net_ips(net_ip_assignments),
+        _ensure_installers_cmd(),
+        "\n",
+        "pids=()\n",
+    ]
+    for index, cluster in enumerate(install_clusters):
+        key = _ops_cluster_key(cluster)
+        bmc_ips, bmc_password = bmc_for_cluster(topology, cluster)
+        parts.append(
+            _cluster_install_block(
+                key,
+                bmc_ips,
+                bmc_password,
+                _BASE_ISO_PORT + index,
+                workdir,
+                serving_ip=serving_ip,
+            )
+        )
+    if recert_clusters:
+        modes = _ops_pod_recert_mode_by_cluster(topology, recert_clusters)
+        for cluster in recert_clusters:
+            key = _ops_cluster_key(cluster)
+            parts.append(
+                _recert_cluster_block(key, workdir, modes.get(key, "multinode"))
+            )
+    parts.append("\n")
+    parts.append("fail=0\n")
+    parts.append('for p in "${pids[@]}"; do wait "$p" || fail=1; done\n')
+    parts.append('if [ "$fail" = 0 ]; then\n')
+    parts.append(
+        '  echo "All cluster operations complete. Holding for credential harvest..."\n'
+    )
+    parts.append("  sleep infinity\n")
+    parts.append("fi\n")
+    parts.append("exit 1\n")
+    return "".join(parts)
+
+
 def _ops_pod_command(
     clusters,
     topology,
@@ -1910,31 +2009,14 @@ def _ops_pod_command(
     ops pod's self-assigned lab-net IPs (None on troshkad, whose ops pod already
     has bridge IPs).
     """
-    from app.services.ocp.ops_pod_install import (
-        bmc_for_cluster,
-        build_ops_pod_install_script,
-        build_ops_pod_recert_script,
+    script = _build_ops_pod_runner_script(
+        topology,
+        clusters,
+        ocp_version,
+        workdir,
+        net_ip_assignments=net_ip_assignments,
+        serving_ip=serving_ip,
     )
-
-    if _is_pattern_deploy(topology):
-        # Pattern deploy: recert the already-installed disks, never reinstall.
-        modes = _ops_pod_recert_mode_by_cluster(topology, clusters)
-        script = build_ops_pod_recert_script(
-            clusters, workdir, modes, net_ip_assignments=net_ip_assignments
-        )
-    else:
-        bmc_by_cluster = {}
-        for cluster in clusters:
-            key = str(cluster.get("id") or cluster.get("name") or "cluster")
-            bmc_by_cluster[key] = bmc_for_cluster(topology, cluster)
-        script = build_ops_pod_install_script(
-            clusters,
-            bmc_by_cluster,
-            ocp_version,
-            workdir,
-            net_ip_assignments=net_ip_assignments,
-            serving_ip=serving_ip,
-        )
     preamble = "\n".join(_ops_pod_workdir_lines(clusters, workdir))
     return ["bash", "-c", preamble + "\n" + script]
 
@@ -2041,15 +2123,14 @@ def _ops_pod_create_params(
     dns = _gateway_connected_dns_nameserver(topology)
     networks = ops_pod_infra_network(vni_map, dns_nameserver=dns)
     command = _ops_pod_command(clusters, topology, ocp_version, OPS_POD_WORKDIR)
-    files = ops_pod_config_files(clusters, OPS_POD_WORKDIR, pull_secret_json)
-    if _is_pattern_deploy(topology):
-        # Recert mode: inject each cluster's admin kubeconfig so the pod can run
-        # `oc` (CSR approval / apiserver redeploy) — no fresh install configs.
+    recert_clusters, install_clusters = _partition_ops_pod_clusters(topology, clusters)
+    files = ops_pod_config_files(install_clusters, OPS_POD_WORKDIR, pull_secret_json)
+    if recert_clusters:
         files.update(
-            _ops_pod_recert_kubeconfig_files(topology, clusters, OPS_POD_WORKDIR)
+            _ops_pod_recert_kubeconfig_files(topology, recert_clusters, OPS_POD_WORKDIR)
         )
         files.update(
-            _ops_pod_recert_kubeadmin_files(topology, clusters, OPS_POD_WORKDIR)
+            _ops_pod_recert_kubeadmin_files(topology, recert_clusters, OPS_POD_WORKDIR)
         )
     container = {
         "name": "ops",
@@ -2079,7 +2160,7 @@ def _ops_pod_create_params(
     }
 
 
-def _deploy_ops_pod(s, host, project_id, project, topology, vni_map):
+def _deploy_ops_pod(s, host, project_id, project, topology, vni_map, clusters=None):
     """Mint a scoped key and create+start the in-cluster OCP install ops pod.
 
     Bastionless / multi-cluster path: instead of a bastion VM, an in-cluster ops
@@ -2088,10 +2169,13 @@ def _deploy_ops_pod(s, host, project_id, project, topology, vni_map):
     a live-environment concern; here we mint the project-scoped API key and, per
     host type, create the pod: troshkad ``/pods/create`` (podman) or a native k8s
     Pod on a ``kubevirt-cluster`` host.
+
+    ``clusters`` optionally limits the install to a subset (e.g. a newly-added
+    cluster during reconfigure) instead of every cluster in the topology.
     """
     from app.services.ocp.ops_pod_auth import mint_ops_pod_key
 
-    clusters = _ocp_clusters(topology)
+    clusters = clusters if clusters is not None else _ocp_clusters(topology)
     install_clusters = _clusters_for_ocp_install(clusters)
     if not install_clusters:
         logger.info(
@@ -2150,6 +2234,10 @@ def _deploy_ops_pod_troshkad(
     s, host, project_id, project, topology, vni_map, clusters, api_key, ocp_version
 ):
     """troshkad (podman) ops-pod path: shape ``/pods/create`` params, create+start."""
+    # Reconfigure may add a cluster to a project whose ops pod still exists from
+    # the initial deploy. podman returns exit 125 on duplicate pod names — destroy
+    # the stale pod first, then recreate with only the cluster(s) being installed.
+    _cancel_ops_pod_install_troshkad(host, project_id)
     params = _ops_pod_create_params(
         project,
         clusters,
@@ -2364,14 +2452,14 @@ def _deploy_ops_pod_kubevirt(
         net_ip_assignments=net_ip_assignments,
         serving_ip=serving_ip,
     )
-    config_files = ops_pod_config_files(clusters, OPS_POD_WORKDIR, "")
-    if _is_pattern_deploy(topology):
-        # Recert mode: inject each cluster's admin kubeconfig (no install configs).
+    recert_clusters, install_clusters = _partition_ops_pod_clusters(topology, clusters)
+    config_files = ops_pod_config_files(install_clusters, OPS_POD_WORKDIR, "")
+    if recert_clusters:
         config_files.update(
-            _ops_pod_recert_kubeconfig_files(topology, clusters, OPS_POD_WORKDIR)
+            _ops_pod_recert_kubeconfig_files(topology, recert_clusters, OPS_POD_WORKDIR)
         )
         config_files.update(
-            _ops_pod_recert_kubeadmin_files(topology, clusters, OPS_POD_WORKDIR)
+            _ops_pod_recert_kubeadmin_files(topology, recert_clusters, OPS_POD_WORKDIR)
         )
     cluster_nads, bmc_nad = ops_pod_network_nads(topology)
     pod, secret = build_ops_pod_kubevirt_manifests(
@@ -2592,8 +2680,26 @@ def _ops_pod_container_name(project_id: str) -> str:
     return f"troshka-{project_id[:8]}-ops-ops"
 
 
+def _project_infra_in_progress(project_id: str) -> bool:
+    """True while deploy/reconfigure is blocking the canvas overlay."""
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+
+    db = SessionLocal()
+    try:
+        p = db.query(Project).filter_by(id=project_id).first()
+        return bool(p and p.state in ("deploying", "reconfiguring"))
+    finally:
+        db.close()
+
+
 def _publish_ops_pod_progress(project_id: str, progress: dict) -> None:
-    """Stream aggregate + per-cluster ops-pod install progress to the deploy UI."""
+    """Stream ops-pod install progress.
+
+    OCP install runs in the background once VM/BMC work is done. Only write
+    ``deploy_progress`` (the blocking Apply Changes overlay) while infra is still
+    in flight; after that, rely on ``ocp_status`` + per-cluster install logs.
+    """
     from app.services.ocp.ops_pod_install import ops_pod_progress_items
 
     overall = progress["overall"]
@@ -2603,12 +2709,24 @@ def _publish_ops_pod_progress(project_id: str, progress: dict) -> None:
         if failed
         else f"install: {overall}"
     )
-    _update_deploy_progress(
-        project_id,
-        f"ocp-install:{overall}",
-        detail,
-        items=ops_pod_progress_items(progress),
-    )
+    items = ops_pod_progress_items(progress)
+    if _project_infra_in_progress(project_id):
+        _update_deploy_progress(
+            project_id,
+            f"ocp-install:{overall}",
+            detail,
+            items=items,
+        )
+    else:
+        notify_project(
+            project_id,
+            {
+                "type": "ocp-install-progress",
+                "overall": overall,
+                "detail": detail,
+                "items": items,
+            },
+        )
 
 
 def _exec_ops_pod_cat(host, container_name: str, path: str) -> str | None:
@@ -3177,12 +3295,15 @@ def _maybe_start_recert_delivery(host, project_id: str, clusters: list) -> None:
         topo = (p.deployed_topology or p.topology) if p else None
     finally:
         db.close()
-    if not topo or not _is_pattern_deploy(topo):
+    if not topo:
+        return
+    recert_clusters, _install_clusters = _partition_ops_pod_clusters(topo, clusters)
+    if not recert_clusters:
         return
     deadline = _t.time() + 1800  # matches the recert block's ~30-min wait
     threading.Thread(
         target=_deliver_recert_kubeconfigs,
-        args=(host, project_id, topo, clusters, deadline),
+        args=(host, project_id, topo, recert_clusters, deadline),
         daemon=True,
     ).start()
     logger.info(
