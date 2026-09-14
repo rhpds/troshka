@@ -205,6 +205,14 @@ def _host_has_pattern_storage(
     return pattern_disks_ready_on_provider(db, pattern_disk_ids, host.provider_id)
 
 
+def topology_requires_kubevirt(topology: dict | None) -> bool:
+    """True when topology placement restricts deploy to kubevirt-cluster hosts."""
+    if not topology:
+        return False
+    placement = topology.get("placement") or {}
+    return bool(placement.get("requires_kubevirt") or placement.get("requiresKubevirt"))
+
+
 def find_available_host(
     db: Session,
     required_vcpus: int,
@@ -214,6 +222,7 @@ def find_available_host(
     provider_id: str | None = None,
     pattern_disk_ids: list[str] | None = None,
     required_mtu: int | None = None,
+    requires_kubevirt: bool = False,
 ) -> Host | None:
     """Find the least-loaded active host with enough free capacity (with overcommit).
 
@@ -230,6 +239,8 @@ def find_available_host(
         query = query.filter(Host.storage_pool_id == storage_pool_id)
     if provider_id:
         query = query.filter(Host.provider_id == provider_id)
+    if requires_kubevirt:
+        query = query.filter(Host.host_type == "kubevirt-cluster")
 
     hosts = query.all()
 
@@ -311,6 +322,7 @@ def diagnose_placement_failure(
     storage_pool_id: str | None = None,
     provider_id: str | None = None,
     pattern_disk_ids: list[str] | None = None,
+    requires_kubevirt: bool = False,
 ) -> str:
     """Human-readable reason find_available_host found no host.
 
@@ -327,9 +339,16 @@ def diagnose_placement_failure(
         query = query.filter(Host.storage_pool_id == storage_pool_id)
     if provider_id:
         query = query.filter(Host.provider_id == provider_id)
+    if requires_kubevirt:
+        query = query.filter(Host.host_type == "kubevirt-cluster")
     hosts = query.all()
 
     if not hosts:
+        if requires_kubevirt:
+            return (
+                "No active KubeVirt cluster hosts are available. "
+                "This template requires a kubevirt-cluster host."
+            )
         return "No active, connected hosts are available. Add a host."
 
     for host in hosts:
@@ -632,12 +651,24 @@ def _select_host(
     host_id: str | None,
     pattern_disk_ids: list[str] | None = None,
     required_mtu: int | None = None,
+    requires_kubevirt: bool = False,
 ) -> tuple[Host | None, str | None, dict | None]:
     """Select a host for the project. Returns (host, storage_pool_id, error_dict)."""
     if host_id:
         host, err = _resolve_specified_host(db, host_id)
         if err or not host:
             return None, storage_pool_id, {"error": err or "Host not found"}
+        if requires_kubevirt and host.host_type != "kubevirt-cluster":
+            return (
+                None,
+                storage_pool_id,
+                {
+                    "error": (
+                        f"Host {host.id[:8]} is not a KubeVirt cluster — "
+                        "this template requires kubevirt-cluster placement"
+                    )
+                },
+            )
         if not _host_mtu_ok(host, required_mtu):
             return (
                 None,
@@ -664,6 +695,7 @@ def _select_host(
             provider_id=project.provider_id,
             pattern_disk_ids=pattern_disk_ids,
             required_mtu=required_mtu,
+            requires_kubevirt=requires_kubevirt,
         )
     if not host and not has_anti_affinity and storage_pool_id:
         host = find_available_host(
@@ -674,6 +706,7 @@ def _select_host(
             provider_id=project.provider_id,
             pattern_disk_ids=pattern_disk_ids,
             required_mtu=required_mtu,
+            requires_kubevirt=requires_kubevirt,
         )
     return host, storage_pool_id, None
 
@@ -859,6 +892,7 @@ def place_project(
 
     has_anti_affinity = _has_anti_affinity(project.topology)
     required_mtu = required_network_mtu(project.topology)
+    requires_kubevirt = topology_requires_kubevirt(project.topology)
 
     host, storage_pool_id, error = _select_host(
         db,
@@ -869,6 +903,7 @@ def place_project(
         host_id,
         pattern_disk_ids,
         required_mtu,
+        requires_kubevirt,
     )
     if error:
         return error

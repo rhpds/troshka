@@ -586,12 +586,20 @@ def _add_cluster_boundary_network_edges(clusters, nodes, edges):
             linked.add((net_id, boundary_id))
 
 
+def _template_requires_kubevirt(tmpl: dict) -> bool:
+    """True when template placement restricts deploy to kubevirt-cluster hosts."""
+    placement = tmpl.get("placement") or {}
+    return bool(placement.get("requires_kubevirt") or placement.get("requiresKubevirt"))
+
+
 def _copy_template_content_sections(tmpl: dict, resolved: dict) -> None:
     """Copy vms/containers and all topology content sections from tmpl."""
     if tmpl.get("vms"):
         resolved["vms"] = tmpl["vms"]
     if tmpl.get("containers"):
         resolved["containers"] = tmpl["containers"]
+    if tmpl.get("placement"):
+        resolved["placement"] = tmpl["placement"]
     for section in _TEMPLATE_CONTENT_SECTIONS:
         if tmpl.get(section):
             if section == "ocp":
@@ -1152,6 +1160,9 @@ def _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip):
     if vm_cfg.get("separate_host"):
         vm_data["separateHost"] = vm_cfg["separate_host"]
 
+    if vm_cfg.get("nested_virt") or vm_cfg.get("nestedVirt"):
+        vm_data["nestedVirt"] = True
+
 
 def _build_vm_iso_nodes(
     vm_cfg, vm_name, vm_node_id, disk_controllers, disks_cfg, vm_x, vm_row_y
@@ -1253,7 +1264,16 @@ def _build_disk_node_and_edge(vm_name, disk_cfg, di, vm_x, vm_row_y):
     return dc, disk_id, disk_node, disk_edge
 
 
-def _build_vm_data(vm_name, vm_cfg, _vms_def, nets_def, net_ids, vm_x, vm_row_y):
+def _build_vm_data(
+    vm_name,
+    vm_cfg,
+    _vms_def,
+    nets_def,
+    net_ids,
+    vm_x,
+    vm_row_y,
+    force_nested_virt=False,
+):
     """Build VM node and associated disk/iso/edge nodes from VM config."""
     role = vm_cfg.get("role", "")
     os_type = vm_cfg.get("os", "rhcos")
@@ -1325,6 +1345,9 @@ def _build_vm_data(vm_name, vm_cfg, _vms_def, nets_def, net_ids, vm_x, vm_row_y)
         vm_data["clusterRole"] = role
 
     _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip)
+
+    if force_nested_virt and os_type == "rhcos" and not vm_data.get("nestedVirt"):
+        vm_data["nestedVirt"] = True
 
     # Propagate the auto-generated marker (Ruling B) so a template-materialized
     # cluster loaded on the canvas exposes data.generated for count-driven reaping.
@@ -1788,11 +1811,20 @@ def _generate_topology_from_vms(
     nodes.extend(_build_cluster_boundary_nodes(clusters))
     _add_cluster_boundary_network_edges(clusters, nodes, edges)
 
+    requires_kubevirt = _template_requires_kubevirt(tmpl)
+
     vm_name_to_id = {}
     vm_x = 150
     for vm_name, vm_cfg in vms_def.items():
         vm_node, disk_nodes, disk_edges, iso_nodes_edges, nic_edges = _build_vm_data(
-            vm_name, vm_cfg, vms_def, nets_def, net_ids, vm_x, VM_ROW_Y
+            vm_name,
+            vm_cfg,
+            vms_def,
+            nets_def,
+            net_ids,
+            vm_x,
+            VM_ROW_Y,
+            force_nested_virt=requires_kubevirt,
         )
         _stamp_cluster_membership(vm_node, vm_cluster_map, vm_name)
         nodes.append(vm_node)
@@ -1899,6 +1931,8 @@ def _generate_topology_from_vms(
         result["showroom"] = showroom_meta
     elif tmpl.get("showroom"):
         result["showroom"] = tmpl["showroom"]
+    if tmpl.get("placement"):
+        result["placement"] = tmpl["placement"]
     return result
 
 

@@ -7986,15 +7986,18 @@ def _deploy_host_error_msg(s, project, host):
         from app.services.placement import (
             calculate_project_requirements,
             diagnose_placement_failure,
+            topology_requires_kubevirt,
         )
 
-        reqs = calculate_project_requirements(project.topology or {})
-        pattern_disk_ids = pattern_disk_ids_from_topology(project.topology or {})
+        topology = project.topology or {}
+        reqs = calculate_project_requirements(topology)
+        pattern_disk_ids = pattern_disk_ids_from_topology(topology)
         return diagnose_placement_failure(
             s,
             reqs["total_vcpus"],
             reqs["total_ram_mb"],
             pattern_disk_ids=pattern_disk_ids,
+            requires_kubevirt=topology_requires_kubevirt(topology),
         )
     if not host:
         return "Assigned host no longer exists"

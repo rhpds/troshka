@@ -1,0 +1,187 @@
+name: ocp-cclm
+display_name: "CCLM — Cross-Cluster Live Migration"
+description: "Two nested OCP 4.22 clusters (source SNO+2 workers, destination SNO) for CNV decentralized live migration and MTV"
+category: openshift
+install_method: agent
+install_via: pod
+deploy_time: "~60 min"
+versions: ["4.22"]
+
+placement:
+  requires_kubevirt: true
+
+ocp:
+  - name: source
+    type: sno
+    workers: 2
+    ocp_version: "4.22"
+    base_domain: source.cclm.local
+    api_vip: 10.1.0.10
+    ingress_vip: 10.1.0.10
+    networks: [source-cluster, migration]
+    control_plane_cpu: 8
+    control_plane_memory: 32768
+    worker_cpu: 8
+    worker_memory: 32768
+    control_plane_disks:
+      - size_gb: 120
+        bootable: true
+      - size_gb: 250
+        ocp_mount: /var/lib/containers
+    worker_disks:
+      - size_gb: 120
+        bootable: true
+      - size_gb: 250
+        ocp_mount: /var/lib/containers
+  - name: destination
+    type: sno
+    workers: 0
+    ocp_version: "4.22"
+    base_domain: dest.cclm.local
+    api_vip: 10.2.0.10
+    ingress_vip: 10.2.0.10
+    networks: [dest-cluster, migration]
+    control_plane_cpu: 8
+    control_plane_memory: 32768
+    control_plane_disks:
+      - size_gb: 120
+        bootable: true
+      - size_gb: 250
+        ocp_mount: /var/lib/containers
+
+gateway:
+  outbound_ports:
+    - 53
+    - 80/tcp
+    - 443/tcp
+    - 123/udp
+
+networks:
+  source-cluster:
+    cidr: 10.1.0.0/24
+    gateway: true
+    domain: source.cclm.local
+    dns_records:
+      - name: api.source.cclm.local
+        ip: 10.1.0.10
+      - name: api-int.source.cclm.local
+        ip: 10.1.0.10
+      - name: .apps.source.cclm.local
+        ip: 10.1.0.10
+  dest-cluster:
+    cidr: 10.2.0.0/24
+    gateway: true
+    domain: dest.cclm.local
+    dns_records:
+      - name: api.dest.cclm.local
+        ip: 10.2.0.10
+      - name: api-int.dest.cclm.local
+        ip: 10.2.0.10
+      - name: .apps.dest.cclm.local
+        ip: 10.2.0.10
+  migration:
+    cidr: 172.16.100.0/24
+    gateway: true
+    dhcp: true
+    dhcpRangeStart: 172.16.100.10
+    dhcpRangeEnd: 172.16.100.99
+  bmc:
+    type: bmc
+    cidr: 192.168.100.0/24
+
+vms:
+  source-cp-0:
+    cluster: source
+    role: control-plane
+    vcpus: 8
+    ram_gb: 32
+    os: rhcos
+    firmware: uefi
+    bmc: true
+    nested_virt: true
+    recert: true
+    disks:
+      - size_gb: 120
+        bootable: true
+      - size_gb: 250
+    nics:
+      - network: source-cluster
+        ip: 10.1.0.10
+      - network: migration
+        ip: 172.16.100.10
+  source-worker-0:
+    cluster: source
+    role: worker
+    vcpus: 8
+    ram_gb: 32
+    os: rhcos
+    firmware: uefi
+    bmc: true
+    nested_virt: true
+    disks:
+      - size_gb: 120
+        bootable: true
+      - size_gb: 250
+    nics:
+      - network: source-cluster
+        ip: 10.1.0.20
+      - network: migration
+        ip: 172.16.100.20
+  source-worker-1:
+    cluster: source
+    role: worker
+    vcpus: 8
+    ram_gb: 32
+    os: rhcos
+    firmware: uefi
+    bmc: true
+    nested_virt: true
+    disks:
+      - size_gb: 120
+        bootable: true
+      - size_gb: 250
+    nics:
+      - network: source-cluster
+        ip: 10.1.0.21
+      - network: migration
+        ip: 172.16.100.21
+  dest-cp-0:
+    cluster: destination
+    role: control-plane
+    vcpus: 8
+    ram_gb: 32
+    os: rhcos
+    firmware: uefi
+    bmc: true
+    nested_virt: true
+    recert: true
+    disks:
+      - size_gb: 120
+        bootable: true
+      - size_gb: 250
+    nics:
+      - network: dest-cluster
+        ip: 10.2.0.10
+      - network: migration
+        ip: 172.16.100.110
+
+showroom:
+  enabled: true
+  dns_network: source-cluster
+  content_repo: https://github.com/rhpds/showroom-troshka-ocp-base.git
+  content_ref: main
+  build_content: true
+  disk_gb: 5
+  tabs:
+    - type: proxy
+      cluster: source
+      proxy_port: 443
+      proxy_tls: true
+    - type: proxy
+      cluster: destination
+      proxy_port: 443
+      proxy_tls: true
+      name: Destination Console
+    - type: terminal
+      target: clusters
+      name: OpenShift Cluster Terminal
