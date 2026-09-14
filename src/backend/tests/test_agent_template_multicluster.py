@@ -231,6 +231,86 @@ def test_install_config_multi_machine_network():
     )
 
 
+def test_install_config_excludes_migration_network_from_ocp_install():
+    """CCLM migration L2 is post-install only — not in machineNetwork/agent-config."""
+    import yaml
+
+    from app.services.ocp.agent_template import (
+        _build_agent_config,
+        _build_install_config,
+        cluster_member_nodes,
+        install_member_nodes,
+    )
+
+    topo = {
+        "nodes": [
+            {
+                "id": "net-cluster",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "network",
+                    "cidr": "10.0.0.0/24",
+                    "gateway": True,
+                },
+            },
+            {
+                "id": "net-migration",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "network",
+                    "cidr": "172.16.100.0/24",
+                    "networkType": "migration",
+                },
+            },
+            {
+                "type": "vmNode",
+                "data": {
+                    "name": "source-cp-0",
+                    "clusterId": "source",
+                    "tags": {"AnsibleGroup": "controllers"},
+                    "os": "rhcos",
+                    "bmcEnabled": True,
+                    "bmcIp": "192.168.50.10",
+                    "nics": [
+                        {"ip": "10.0.0.10", "mac": "52:54:00:aa:bb:01"},
+                        {"ip": "172.16.100.10", "mac": "52:54:00:aa:bb:02"},
+                    ],
+                },
+            },
+        ],
+        "edges": [],
+    }
+    source = {
+        "id": "source",
+        "name": "source",
+        "type": "sno",
+        "controlPlane": 1,
+        "workers": 2,
+        "networkIds": ["net-cluster", "net-migration"],
+        "baseDomain": "source.local",
+        "apiVip": "10.0.0.10",
+        "ingressVip": "10.0.0.10",
+    }
+    members = cluster_member_nodes(topo, "source")
+    install_members = install_member_nodes(source, members, topo)
+    ic = yaml.safe_load(
+        _build_install_config(
+            source,
+            install_members,
+            topo,
+            pull_secret="{}",
+            ssh_key="ssh-rsa x",
+            pull_through_registry=None,
+        )
+    )
+    ac = yaml.safe_load(_build_agent_config(source, install_members, topo))
+    assert [entry["cidr"] for entry in ic["networking"]["machineNetwork"]] == [
+        "10.0.0.0/24"
+    ]
+    assert len(ac["hosts"]) == 1
+    assert len(ac["hosts"][0]["interfaces"]) == 1
+
+
 def test_install_config_sno_with_workers_installs_as_true_sno():
     """SNO+workers installs as platform:none (workers join post-install)."""
     import yaml

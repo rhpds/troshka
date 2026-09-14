@@ -953,6 +953,21 @@ def _is_machine_network_node(node):
     return bool(data.get("cidr"))
 
 
+def _is_ocp_install_machine_network(node):
+    """Machine networks included in install-config/agent-config.
+
+    Migration/auxiliary L2 segments stay on the VM for post-install NNCP but
+    must not appear in openshift-install machineNetwork (breaks SNO registration).
+    """
+    if not _is_machine_network_node(node):
+        return False
+    data = node.get("data") or {}
+    if data.get("networkType") == "migration":
+        return False
+    # Legacy CCLM templates named the segment ``migration`` before networkType existed.
+    return str(data.get("name") or "").lower() != "migration"
+
+
 def _infer_machine_network_nodes_from_members(members, topology):
     """Machine network nodes referenced by member NIC IPs (topology order)."""
     member_ips = [
@@ -966,7 +981,7 @@ def _infer_machine_network_nodes_from_members(members, topology):
         return []
     picked = []
     for node in topology.get("nodes", []):
-        if not _is_machine_network_node(node):
+        if not _is_ocp_install_machine_network(node):
             continue
         cidr = node["data"]["cidr"]
         try:
@@ -979,11 +994,15 @@ def _infer_machine_network_nodes_from_members(members, topology):
 
 
 def _cluster_machine_network_nodes(cluster, members, topology):
-    """Ordered machine-network nodes for a cluster (``networkIds`` order)."""
+    """Ordered OCP install machine-network nodes (``networkIds`` order).
+
+    Excludes migration/auxiliary networks — those NICs are configured after
+    install (e.g. CCLM lm-network NNCPs), not in agent-config.
+    """
     nodes = []
     for net_id in cluster.get("networkIds") or []:
         node = _network_node_by_id(topology, net_id)
-        if _is_machine_network_node(node):
+        if _is_ocp_install_machine_network(node):
             nodes.append(node)
     if nodes:
         return nodes
@@ -991,7 +1010,7 @@ def _cluster_machine_network_nodes(cluster, members, topology):
     if inferred:
         return inferred
     primary = _cluster_network_node(topology, members)
-    if primary and _is_machine_network_node(primary):
+    if primary and _is_ocp_install_machine_network(primary):
         return [primary]
     return []
 

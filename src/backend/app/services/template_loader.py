@@ -921,6 +921,7 @@ def _create_network_nodes(nets_def, bmc_password, net_row_y, vm_spacing):
     net_x = 150
     for net_name, net_cfg in nets_def.items():
         is_bmc = net_cfg.get("type") == "bmc"
+        is_migration = net_cfg.get("type") == "migration"
         net_data = {
             "name": net_name,
             "label": net_name,
@@ -943,6 +944,8 @@ def _create_network_nodes(nets_def, bmc_password, net_row_y, vm_spacing):
             net_data["networkType"] = "bmc"
             net_data["bmcUsername"] = net_cfg.get("bmc_username", "admin")
             net_data["bmcPassword"] = net_cfg.get("bmc_password", bmc_password)
+        elif is_migration:
+            net_data["networkType"] = "migration"
         net_node = {
             "id": _id(),
             "type": "networkNode",
