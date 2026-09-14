@@ -2317,13 +2317,13 @@ def _deploy_ops_pod(
     """
     from app.services.ocp.ops_pod_auth import mint_ops_pod_key
 
-    clusters = clusters if clusters is not None else _ocp_clusters(topology)
-    if clusters is not None and len(clusters) < len(_ocp_clusters(topology)):
+    cluster_list: list = clusters if clusters is not None else _ocp_clusters(topology)
+    if len(cluster_list) < len(_ocp_clusters(topology)):
         deployed = getattr(project, "deployed_topology", None) or {}
-        clusters = _expand_ops_pod_clusters_for_reconfigure(
-            topology, deployed, clusters, project_id
+        cluster_list = _expand_ops_pod_clusters_for_reconfigure(
+            topology, deployed, cluster_list, project_id
         )
-    install_clusters = _clusters_for_ocp_install(clusters)
+    install_clusters = _clusters_for_ocp_install(cluster_list)
     if not install_clusters:
         logger.info(
             "Deploy %s: no clusters marked for OpenShift install, skipping ops pod",
