@@ -25,10 +25,11 @@ This replaces a manually built `zf4ws` / `bqc4v` pair with a repeatable catalog 
 
 | Network | CIDR | Attached to | Purpose |
 |---------|------|-------------|---------|
-| `source-cluster` | `10.1.0.0/24` | source members NIC0 | Machine network, API/Ingress VIPs, DNS |
-| `dest-cluster` | `10.2.0.0/24` | dest members NIC0 | Machine network, API/Ingress VIPs, DNS |
+| `cluster` | `10.0.0.0/24` | **both** clusters NIC0 | Shared machine network; per-cluster API/Ingress VIPs + DNS |
 | `migration` | `172.16.100.0/24` | **both** clusters NIC1 | Shared L2 for node + lm-network traffic |
 | `bmc` | `192.168.100.0/24` | BMC (Troshka auto) | Redfish / agent install |
+
+Machine-network IPs: source SNO `.10`, workers `.20`–`.21`; destination SNO `.110`. Both `base_domain`s share one L2; dnsmasq carries FQDN records for each.
 
 ### Migration L2 address plan (explicit in template — no auto-assign)
 

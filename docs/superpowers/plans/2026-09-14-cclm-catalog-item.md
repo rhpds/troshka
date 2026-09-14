@@ -53,15 +53,13 @@
 **Files:**
 - Create: `src/backend/templates/ocp-cclm.yaml`
 - Create: `example_templates/ocp-cclm.yaml` (symlink or copy)
-- Test: `src/backend/tests/test_ocp_clusters.py` or new `test_ocp_cclm_template.py`
-
 **Interfaces:** `template_loader.generate_topology_from_template()` materializes two clusters, three networks, explicit IPs.
 
-- [ ] **Step 1: Write failing test** — load `ocp-cclm` template; assert 2 clusters (`source` SNO+2 workers, `destination` SNO), 4 networks, source `cp-0` has 2 NICs (cluster + migration) with explicit IPs from spec §3.
-- [ ] **Step 2: Run test → fail**
-- [ ] **Step 3: Implement template** — see skeleton below.
-- [ ] **Step 4: Run test → pass**
-- [ ] **Step 5: Commit** on `main` in troshka (restart backend after Python changes).
+No per-catalog-item unit tests in troshka — validate via manual import + E2E (Task 14). Generic template/placement/layout behavior is covered by existing `test_ocp_clusters.py`, `test_auto_layout.py`, `test_placement_kubevirt.py`.
+
+- [ ] **Step 1: Implement template** — see skeleton below.
+- [ ] **Step 2: Manual smoke** — import `ocp-cclm` on canvas, confirm layout and cluster/network wiring.
+- [ ] **Step 3: Commit** on `main` in troshka (restart backend after Python changes).
 
 **Template skeleton** (`src/backend/templates/ocp-cclm.yaml`):
 
@@ -414,7 +412,6 @@ Prerequisites: kubevirt provider registered, external Ceph secret available, `TR
 - [ ] Verify: `virt-synchronization-controller` pods on migration IPs; Forklift providers connected; MTV UI loads.
 - [ ] Live-migrate one VM source → destination via MTV.
 - [ ] Document results in spec or `docs/dev/cclm-lab.md`.
-
 ---
 
 ## Sequencing summary

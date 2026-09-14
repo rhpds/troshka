@@ -5248,7 +5248,7 @@ export default function PropertiesPanel() {
                 target: cluster.nodeId,
                 sourceHandle,
                 targetHandle,
-                type: "smoothstep",
+                type: "clusterAnchor",
                 animated: true,
                 style: { stroke: "rgba(34,211,238,0.7)", strokeWidth: 2 },
               } as Edge;

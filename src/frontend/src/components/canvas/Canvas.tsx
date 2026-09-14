@@ -20,7 +20,12 @@ import NetworkNode from "./nodes/NetworkNode";
 import StorageNode from "./nodes/StorageNode";
 import { ContainerNode } from "./nodes/ContainerNode";
 import ClusterNode from "./nodes/ClusterNode";
+import ClusterAnchorEdge from "./edges/ClusterAnchorEdge";
 import CanvasToolbar from "./CanvasToolbar";
+import {
+  CLUSTER_ANCHOR_EDGE_TYPE,
+  isClusterAnchorEdge,
+} from "@/lib/clusterAnchorEdge";
 import NodeContextMenu from "./NodeContextMenu";
 import EdgeContextMenu from "./EdgeContextMenu";
 import DuplicateVMModal from "./DuplicateVMModal";
@@ -60,6 +65,10 @@ const nodeTypes = {
   storageNode: StorageNode,
   containerNode: ContainerNode,
   clusterNode: ClusterNode,
+};
+
+const edgeTypes = {
+  [CLUSTER_ANCHOR_EDGE_TYPE]: ClusterAnchorEdge,
 };
 
 interface ContextMenuState {
@@ -221,15 +230,21 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
   );
   const visibleEdges = useMemo(
     () =>
-      allEdges.filter(
-        (e) =>
-          !hiddenNodeIds.includes(e.source) &&
-          !hiddenNodeIds.includes(e.target) &&
-          !(
-            clusterMemberIds.has(e.target) &&
-            (e.targetHandle || "").startsWith("nic-")
-          ),
-      ),
+      allEdges
+        .filter(
+          (e) =>
+            !hiddenNodeIds.includes(e.source) &&
+            !hiddenNodeIds.includes(e.target) &&
+            !(
+              clusterMemberIds.has(e.target) &&
+              (e.targetHandle || "").startsWith("nic-")
+            ),
+        )
+        .map((e) =>
+          isClusterAnchorEdge(e)
+            ? { ...e, type: CLUSTER_ANCHOR_EDGE_TYPE, zIndex: -1 }
+            : e,
+        ),
     [allEdges, hiddenNodeIds, clusterMemberIds],
   );
   const onNodesChange = useCanvasStore((s) => s.onNodesChange);
@@ -286,7 +301,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
           target: clusterId,
           sourceHandle: connection.sourceHandle,
           targetHandle: connection.targetHandle,
-          type: "smoothstep" as const,
+          type: CLUSTER_ANCHOR_EDGE_TYPE,
           animated: true,
           style: { stroke: "rgba(34,211,238,0.7)", strokeWidth: 2 },
         };
@@ -901,6 +916,7 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
         onDragOver={canvasLocked ? undefined : onDragOver}
         onDrop={canvasLocked ? undefined : onDrop}
         nodeTypes={stableNodeTypes}
+        edgeTypes={edgeTypes}
         onSelectionChange={onSelectionChange}
         selectionMode={SelectionMode.Partial}
         nodesDraggable={!canvasLocked}

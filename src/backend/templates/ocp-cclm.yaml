@@ -16,9 +16,9 @@ ocp:
     workers: 2
     ocp_version: "4.22"
     base_domain: source.cclm.local
-    api_vip: 10.1.0.10
-    ingress_vip: 10.1.0.10
-    networks: [source-cluster, migration]
+    api_vip: 10.0.0.10
+    ingress_vip: 10.0.0.10
+    networks: [cluster, migration]
     control_plane_cpu: 8
     control_plane_memory: 32768
     worker_cpu: 8
@@ -38,9 +38,9 @@ ocp:
     workers: 0
     ocp_version: "4.22"
     base_domain: dest.cclm.local
-    api_vip: 10.2.0.10
-    ingress_vip: 10.2.0.10
-    networks: [dest-cluster, migration]
+    api_vip: 10.0.0.110
+    ingress_vip: 10.0.0.110
+    networks: [cluster, migration]
     control_plane_cpu: 8
     control_plane_memory: 32768
     control_plane_disks:
@@ -57,28 +57,22 @@ gateway:
     - 123/udp
 
 networks:
-  source-cluster:
-    cidr: 10.1.0.0/24
+  cluster:
+    cidr: 10.0.0.0/24
     gateway: true
-    domain: source.cclm.local
     dns_records:
       - name: api.source.cclm.local
-        ip: 10.1.0.10
+        ip: 10.0.0.10
       - name: api-int.source.cclm.local
-        ip: 10.1.0.10
+        ip: 10.0.0.10
       - name: .apps.source.cclm.local
-        ip: 10.1.0.10
-  dest-cluster:
-    cidr: 10.2.0.0/24
-    gateway: true
-    domain: dest.cclm.local
-    dns_records:
+        ip: 10.0.0.10
       - name: api.dest.cclm.local
-        ip: 10.2.0.10
+        ip: 10.0.0.110
       - name: api-int.dest.cclm.local
-        ip: 10.2.0.10
+        ip: 10.0.0.110
       - name: .apps.dest.cclm.local
-        ip: 10.2.0.10
+        ip: 10.0.0.110
   migration:
     cidr: 172.16.100.0/24
     gateway: true
@@ -105,8 +99,8 @@ vms:
         bootable: true
       - size_gb: 250
     nics:
-      - network: source-cluster
-        ip: 10.1.0.10
+      - network: cluster
+        ip: 10.0.0.10
       - network: migration
         ip: 172.16.100.10
   source-worker-0:
@@ -123,8 +117,8 @@ vms:
         bootable: true
       - size_gb: 250
     nics:
-      - network: source-cluster
-        ip: 10.1.0.20
+      - network: cluster
+        ip: 10.0.0.20
       - network: migration
         ip: 172.16.100.20
   source-worker-1:
@@ -141,8 +135,8 @@ vms:
         bootable: true
       - size_gb: 250
     nics:
-      - network: source-cluster
-        ip: 10.1.0.21
+      - network: cluster
+        ip: 10.0.0.21
       - network: migration
         ip: 172.16.100.21
   dest-cp-0:
@@ -160,14 +154,14 @@ vms:
         bootable: true
       - size_gb: 250
     nics:
-      - network: dest-cluster
-        ip: 10.2.0.10
+      - network: cluster
+        ip: 10.0.0.110
       - network: migration
         ip: 172.16.100.110
 
 showroom:
   enabled: true
-  dns_network: source-cluster
+  dns_network: cluster
   content_repo: https://github.com/rhpds/showroom-troshka-ocp-base.git
   content_ref: main
   build_content: true

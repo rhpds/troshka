@@ -587,6 +587,34 @@ def test_shipped_templates_use_ocp_list_and_generate_clusters():
         assert topo["clusters"][0]["type"] == expect_type
 
 
+def test_template_loader_assigns_bmc_ip_when_missing():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "name": "t",
+        "install_method": "agent",
+        "category": "openshift",
+        "networks": {
+            "cluster": {"cidr": "10.0.0.0/24"},
+            "bmc": {"type": "bmc", "cidr": "192.168.100.0/24"},
+        },
+        "vms": {
+            "cp-0": {
+                "role": "control-plane",
+                "os": "rhcos",
+                "bmc": True,
+                "nics": [{"network": "cluster", "ip": "10.0.0.10"}],
+            },
+        },
+    }
+    topo = generate_topology_from_template(resolve_inline_template(tmpl))
+    vm = next(n for n in topo["nodes"] if n["type"] == "vmNode")
+    assert vm["data"]["bmcIp"] == "192.168.100.11"
+
+
 def test_ocp_port_forwards_single_cluster_canonical():
     """One cluster keeps the canonical 6443/443/80 external ports (back-compat)."""
     from app.services.template_loader import _generate_ocp_port_forwards

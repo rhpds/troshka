@@ -549,32 +549,40 @@ def _build_cluster_boundary_nodes(clusters):
 
 
 def _add_cluster_boundary_network_edges(clusters, nodes, edges):
-    """Add a visual network→boundary edge (``cluster-net-top``) per cluster net.
+    """Add a visual network→boundary anchor edge per cluster network.
 
     A cluster member VM's NIC handles are intentionally NOT rendered (wiring is
     managed via the OCP box, not per-VM), so the ``network→member-NIC`` edges —
     which stay because deploy's nic→network map is built from them — don't draw.
-    Add a display edge to the boundary's ``cluster-net-top`` target handle so the
-    box visibly connects to its network(s). Deploy ignores it (its handle is not
-    a ``nic-`` handle). Only cluster networks are in ``networkIds`` (BMC excluded).
+    Add a display edge to the boundary's ``cluster-net-top`` / ``cluster-net-bottom``
+    handle so the box visibly connects to its network(s). Deploy ignores it (its
+    handle is not a ``nic-`` handle). Only cluster networks are in ``networkIds``
+    (BMC excluded). Matches the canvas UI: primary network above, additional nets
+    (and BMC) below the cluster box.
     """
-    node_ids = {n["id"] for n in nodes}
+    node_by_id = {n["id"]: n for n in nodes}
+    node_ids = set(node_by_id)
     linked = {(e.get("source"), e.get("target")) for e in edges}
     for c in clusters:
         boundary_id = f"cluster-{c['id']}"
         if boundary_id not in node_ids:
             continue
-        for net_id in c.get("networkIds") or []:
+        for idx, net_id in enumerate(c.get("networkIds") or []):
             if net_id not in node_ids or (net_id, boundary_id) in linked:
                 continue
+            net_data = node_by_id.get(net_id, {}).get("data", {})
+            is_bmc = net_data.get("networkType") == "bmc"
+            use_bottom = idx > 0 or is_bmc
             edges.append(
                 {
                     "id": _id(),
                     "source": net_id,
                     "target": boundary_id,
-                    "sourceHandle": "bottom",
-                    "targetHandle": "cluster-net-top",
-                    "type": "smoothstep",
+                    "sourceHandle": "top" if use_bottom else "bottom",
+                    "targetHandle": (
+                        "cluster-net-bottom" if use_bottom else "cluster-net-top"
+                    ),
+                    "type": "clusterAnchor",
                     "style": {
                         "stroke": "rgba(34,211,238,0.5)",
                         "strokeWidth": 2,
@@ -845,6 +853,47 @@ def _gw_net_edge(gw_id, net_id):
         },
         "animated": True,
     }
+
+
+def _bmc_cidr_from_nets(nets_def: dict) -> str:
+    for net_cfg in nets_def.values():
+        if net_cfg.get("type") == "bmc":
+            return str(net_cfg.get("cidr") or "192.168.100.0/24")
+    return "192.168.100.0/24"
+
+
+def _next_free_bmc_ip(used: set[str], cidr: str) -> str:
+    """Next host in the BMC CIDR from .11 upward (.1 is typically gateway)."""
+    base = cidr.split("/")[0].split(".")[:3]
+    prefix = ".".join(base) if len(base) == 3 else "192.168.100"
+    for host in range(11, 250):
+        candidate = f"{prefix}.{host}"
+        if candidate not in used:
+            return candidate
+    return f"{prefix}.11"
+
+
+def _assign_bmc_ips(nodes: list[dict], nets_def: dict) -> None:
+    """Fill bmcIp on BMC-enabled VMs that lack an explicit address."""
+    cidr = _bmc_cidr_from_nets(nets_def)
+    used: set[str] = set()
+    for node in nodes:
+        if node.get("type") != "vmNode":
+            continue
+        ip = node.get("data", {}).get("bmcIp")
+        if ip:
+            used.add(str(ip))
+    for node in nodes:
+        if node.get("type") != "vmNode":
+            continue
+        data = node.setdefault("data", {})
+        if not data.get("bmcEnabled"):
+            continue
+        if data.get("bmcIp"):
+            continue
+        ip = _next_free_bmc_ip(used, cidr)
+        used.add(ip)
+        data["bmcIp"] = ip
 
 
 def _create_network_nodes(nets_def, bmc_password, net_row_y, vm_spacing):
@@ -1911,6 +1960,7 @@ def _generate_topology_from_vms(
     _apply_dns_records(tmpl, nodes)
     _resolve_dns_records_on_networks(nodes)
     _validate_uuid_uniqueness(nodes)
+    _assign_bmc_ips(nodes, nets_def)
 
     hidden_ids = []
     all_name_to_id = {**vm_name_to_id, **container_name_to_id, **net_ids}

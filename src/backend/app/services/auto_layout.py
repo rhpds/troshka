@@ -242,12 +242,15 @@ def _classify_network_placements(
     votes: dict[str, dict[str, int]],
     network_to_vms: dict[str, list[str]],
     cluster_member_ids: set[str] | None = None,
+    cluster_anchor_by_net: dict[str, list[dict[str, str]]] | None = None,
 ) -> dict[str, dict[str, str]]:
     """Classify each network's vertical side and tier (link/backbone/wide)."""
     cluster_member_ids = cluster_member_ids or set()
+    cluster_anchor_by_net = cluster_anchor_by_net or {}
     placements: dict[str, dict[str, str]] = {}
     for net in networks:
         conn_count = len(network_to_vms.get(net["id"], []))
+        anchor_sides = {a["side"] for a in cluster_anchor_by_net.get(net["id"], [])}
         side = _preferred_network_side(net, votes, conn_count)
         # A network wired to OCP cluster members belongs ABOVE the cluster box
         # (top backbone), never in the wide-bottom row where it would land inside
@@ -258,7 +261,10 @@ def _classify_network_placements(
         )
         if _is_link_network(net):
             tier = "link"
-        elif connects_cluster:
+        elif "bottom" in anchor_sides:
+            side = "bottom"
+            tier = "backbone"
+        elif "top" in anchor_sides or connects_cluster:
             side = "top"
             tier = "backbone"
         elif _is_wide_bottom_network(net, conn_count):
@@ -982,9 +988,9 @@ def _cluster_anchor_side(target_handle: str) -> str | None:
 
 def _collect_cluster_network_anchors(
     edges: list[dict], nodes: list[dict]
-) -> dict[str, dict[str, str]]:
-    """network id -> {cluster_id, side} for visible cluster↔network anchor edges."""
-    anchors: dict[str, dict[str, str]] = {}
+) -> dict[str, list[dict[str, str]]]:
+    """network id -> [{cluster_id, side}, ...] for cluster↔network anchor edges."""
+    anchors: dict[str, list[dict[str, str]]] = defaultdict(list)
     for e in edges:
         tgt = _find(nodes, e.get("target", ""))
         src = _find(nodes, e.get("source", ""))
@@ -995,8 +1001,11 @@ def _collect_cluster_network_anchors(
         side = _cluster_anchor_side(e.get("targetHandle", ""))
         if not side:
             continue
-        anchors[src["id"]] = {"cluster_id": tgt["id"], "side": side}
-    return anchors
+        entry = {"cluster_id": tgt["id"], "side": side}
+        existing = anchors[src["id"]]
+        if entry not in existing:
+            existing.append(entry)
+    return dict(anchors)
 
 
 def _layout_cluster_anchored_networks(
@@ -1015,28 +1024,53 @@ def _layout_cluster_anchored_networks(
     if not anchors:
         return
 
-    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for net_id, info in anchors.items():
-        groups[(info["cluster_id"], info["side"])].append(net_id)
+    # Invert: one network may anchor to multiple clusters (e.g. shared migration L2).
+    net_to_clusters: dict[str, dict[str, list[str]]] = defaultdict(
+        lambda: {"top": [], "bottom": []}
+    )
+    for net_id, anchor_list in anchors.items():
+        for info in anchor_list:
+            net_to_clusters[net_id][info["side"]].append(info["cluster_id"])
 
-    for (cluster_id, side), net_ids in groups.items():
-        cluster = _find(nodes, cluster_id)
-        if not cluster or not cluster.get("style"):
+    for net_id, sides in net_to_clusters.items():
+        net = _find(nodes, net_id)
+        if not net:
             continue
-        cx = cluster["position"]["x"]
-        cy = cluster["position"]["y"]
-        cw = cluster["style"]["width"]
-        ch = cluster["style"]["height"]
-        for i, net_id in enumerate(net_ids):
-            net = _find(nodes, net_id)
-            if not net:
+
+        for side in ("top", "bottom"):
+            cluster_ids = sides.get(side) or []
+            if not cluster_ids:
                 continue
-            nx = cx + max(0, (cw - net_w) / 2)
-            if side == "top":
-                ny = cy - net_h - gap - i * (net_h + gap)
+
+            boxes = []
+            for cluster_id in cluster_ids:
+                cluster = _find(nodes, cluster_id)
+                if not cluster or not cluster.get("style"):
+                    continue
+                cx = cluster["position"]["x"]
+                cy = cluster["position"]["y"]
+                cw = cluster["style"]["width"]
+                ch = cluster["style"]["height"]
+                boxes.append((cx, cy, cx + cw, cy + ch))
+
+            if not boxes:
+                continue
+
+            min_x = min(b[0] for b in boxes)
+            max_x = max(b[2] for b in boxes)
+            min_y = min(b[1] for b in boxes)
+            max_y = max(b[3] for b in boxes)
+            if len(boxes) == 1:
+                nx = boxes[0][0] + max(0, (boxes[0][2] - boxes[0][0] - net_w) / 2)
             else:
-                ny = cy + ch + gap + i * (net_h + gap)
+                span_w = max_x - min_x
+                nx = min_x + max(0, (span_w - net_w) / 2)
+            if side == "top":
+                ny = min_y - net_h - gap
+            else:
+                ny = max_y + gap
             net["position"] = {"x": nx, "y": ny}
+            break
 
 
 def _reposition_bmc_networks_clear_of_clusters(
@@ -1138,8 +1172,13 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
         if n.get("type") == "vmNode"
         and (n.get("parentId") in boundary_ids or n.get("data", {}).get("clusterId"))
     }
+    cluster_anchor_by_net = _collect_cluster_network_anchors(edges, nodes)
     placements = _classify_network_placements(
-        classified["networks"], side_votes, network_to_vms, cluster_member_ids
+        classified["networks"],
+        side_votes,
+        network_to_vms,
+        cluster_member_ids,
+        cluster_anchor_by_net,
     )
 
     # Sizing constants (match frontend)
@@ -1274,7 +1313,7 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
     # Cluster-aware pass: pull OCP cluster members back inside their boundary
     # (they were laid out above as free workloads) and size the box.
     reflow_cluster_members(new_nodes)
-    cluster_anchored = set(_collect_cluster_network_anchors(edges, new_nodes))
+    cluster_anchored = set(_collect_cluster_network_anchors(edges, new_nodes).keys())
     _layout_cluster_anchored_networks(new_nodes, edges, net_w, net_h, gap_y)
     _reposition_bmc_networks_clear_of_clusters(
         new_nodes, net_w, net_h, gap_y, skip_net_ids=cluster_anchored
