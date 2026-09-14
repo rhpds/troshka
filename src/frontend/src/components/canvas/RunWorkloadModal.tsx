@@ -1,84 +1,162 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { useCanvasStore } from "@/stores/canvasStore";
 
 interface ReqRow {
   name: string;
   type: string;
   version: string;
 }
+
 interface Props {
   projectId: string;
   onClose: () => void;
-  onLaunched: (runId: string) => void;
+  onLaunched: (runIds: string[]) => void;
+  initialMode?: "cluster" | "vms";
+  initialClusterIds?: string[];
+  initialVmNames?: string[];
 }
 
-export default function RunWorkloadModal({ projectId, onClose, onLaunched }: Props) {
+export default function RunWorkloadModal({
+  projectId,
+  onClose,
+  onLaunched,
+  initialMode,
+  initialClusterIds,
+  initialVmNames,
+}: Props) {
   const [roleFqcn, setRoleFqcn] = useState("");
   const [eeImage, setEeImage] = useState("");
   const [rows, setRows] = useState<ReqRow[]>([]);
-  const [mode, setMode] = useState<"cluster" | "vms">("cluster");
-  const [groups, setGroups] = useState<Record<string, string[]>>({});
-  const [previewErrors, setPreviewErrors] = useState<string[]>([]);
+  const [mode, setMode] = useState<"cluster" | "vms">(initialMode || "cluster");
+  const [selectedClusterIds, setSelectedClusterIds] = useState<string[]>(() => {
+    // Initialize with props if provided
+    if (initialClusterIds && initialClusterIds.length > 0) {
+      return initialClusterIds;
+    }
+    return [];
+  });
+  const [selectedVmNames, setSelectedVmNames] = useState<string[]>(() => {
+    if (initialVmNames && initialVmNames.length > 0) {
+      return initialVmNames;
+    }
+    return [];
+  });
+  const [extraVarsText, setExtraVarsText] = useState("");
+  const [showExtraVars, setShowExtraVars] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState("");
 
+  const clusters = useCanvasStore((s) => s.clusters);
+  const nodes = useCanvasStore((s) => s.nodes);
+  const vmNodes = nodes.filter((n) => n.type === "vmNode");
+
+  // Auto-select single cluster if no initial selection and only one exists
   useEffect(() => {
-    if (mode !== "vms") return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const r = await fetch(`/api/v1/projects/${projectId}/workloads/inventory-preview`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ target_map: { mode: "vms" } }),
-        });
-        const data = await r.json();
-        if (!cancelled) {
-          setGroups(data.groups || {});
-          setPreviewErrors(data.errors || []);
-        }
-      } catch {
-        if (!cancelled) setPreviewErrors(["Failed to load inventory preview"]);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [mode, projectId]);
+    if (initialClusterIds === undefined && clusters.length === 1) {
+      setSelectedClusterIds((prev) => (prev.length === 0 ? [clusters[0].id] : prev));
+    }
+  }, [clusters, initialClusterIds]);
 
   const launchDisabled =
-    launching || !roleFqcn.trim() || (mode === "vms" && previewErrors.length > 0);
+    launching ||
+    !roleFqcn.trim() ||
+    (mode === "cluster" && selectedClusterIds.length === 0) ||
+    (mode === "vms" && selectedVmNames.length === 0);
+
+  const toggleCluster = (id: string) => {
+    setSelectedClusterIds((prev) =>
+      prev.includes(id) ? prev.filter((cid) => cid !== id) : [...prev, id],
+    );
+  };
+
+  const toggleVm = (name: string) => {
+    setSelectedVmNames((prev) =>
+      prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
+    );
+  };
+
+  const toggleAllClusters = () => {
+    if (selectedClusterIds.length === clusters.length) {
+      setSelectedClusterIds([]);
+    } else {
+      setSelectedClusterIds(clusters.map((c) => c.id));
+    }
+  };
+
+  const toggleAllVms = () => {
+    const allNames = vmNodes.map((n) => (n.data as any).name);
+    if (selectedVmNames.length === allNames.length) {
+      setSelectedVmNames([]);
+    } else {
+      setSelectedVmNames(allNames);
+    }
+  };
 
   const launch = async () => {
     setLaunching(true);
     setError("");
+
     const collections = rows
       .filter((r) => r.name.trim())
       .map((r) => ({ name: r.name.trim(), type: r.type || "git", version: r.version || "main" }));
-    const body: Record<string, unknown> = {
+
+    const baseBody: Record<string, unknown> = {
       kind: "ad_hoc",
       role_fqcn: roleFqcn.trim(),
-      target_map: { mode, ...(mode === "vms" ? { vm_groups: Object.keys(groups) } : {}) },
     };
-    if (collections.length) body.requirements_content = { collections };
-    if (eeImage.trim()) body.ee_image = eeImage.trim();
+
+    if (collections.length) baseBody.requirements_content = { collections };
+    if (eeImage.trim()) baseBody.ee_image = eeImage.trim();
+    if (extraVarsText.trim()) baseBody.extra_vars_text = extraVarsText;
+
     try {
-      const r = await fetch(`/api/v1/projects/${projectId}/workloads`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (r.status === 202) {
+      if (mode === "cluster") {
+        // Fan-out: one POST per cluster
+        const runIds: string[] = [];
+        for (const clusterId of selectedClusterIds) {
+          const body = {
+            ...baseBody,
+            target_map: { mode: "cluster", cluster_id: clusterId },
+          };
+          const r = await fetch(`/api/v1/projects/${projectId}/workloads`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          if (r.status !== 202) {
+            const data = await r.json().catch(() => ({}));
+            setError(data.detail || `Launch failed (${r.status})`);
+            setLaunching(false);
+            return;
+          }
+          const data = await r.json();
+          runIds.push(data.id);
+        }
+        onLaunched(runIds);
+      } else {
+        // VMs mode: one POST with vm_names
+        const body = {
+          ...baseBody,
+          target_map: { mode: "vms", vm_names: selectedVmNames },
+        };
+        const r = await fetch(`/api/v1/projects/${projectId}/workloads`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (r.status !== 202) {
+          const data = await r.json().catch(() => ({}));
+          setError(data.detail || `Launch failed (${r.status})`);
+          setLaunching(false);
+          return;
+        }
         const data = await r.json();
-        onLaunched(data.id);
-        return;
+        onLaunched([data.id]);
       }
-      const data = await r.json().catch(() => ({}));
-      setError(data.detail || `Launch failed (${r.status})`);
     } catch {
       setError("Launch failed");
-    } finally {
       setLaunching(false);
     }
   };
@@ -185,24 +263,80 @@ export default function RunWorkloadModal({ projectId, onClose, onLaunched }: Pro
           </label>
         </div>
 
-        {mode === "vms" && (
-          <div style={{ marginBottom: 12, fontSize: 12 }}>
-            {previewErrors.length > 0 ? (
-              previewErrors.map((e, i) => (
-                <div key={i} style={{ color: "var(--pf-t--global--color--status--danger--default)" }}>
-                  {e}
-                </div>
-              ))
-            ) : (
-              <div style={{ opacity: 0.8 }}>
-                {Object.entries(groups).map(([g, hosts]) => (
-                  <div key={g}>
-                    <strong>{g}</strong>: {hosts.join(", ")}
-                  </div>
-                ))}
-              </div>
+        {mode === "cluster" && clusters.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>Select clusters:</div>
+            {clusters.length > 1 && (
+              <label style={{ display: "block", marginBottom: 4 }}>
+                <input
+                  type="checkbox"
+                  checked={selectedClusterIds.length === clusters.length}
+                  onChange={toggleAllClusters}
+                />{" "}
+                All
+              </label>
             )}
+            {clusters.map((c) => (
+              <label key={c.id} style={{ display: "block", marginBottom: 4 }}>
+                <input
+                  type="checkbox"
+                  checked={selectedClusterIds.includes(c.id)}
+                  onChange={() => toggleCluster(c.id)}
+                  aria-label={c.name}
+                />{" "}
+                {c.name}
+              </label>
+            ))}
           </div>
+        )}
+
+        {mode === "vms" && vmNodes.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 4 }}>Select VMs:</div>
+            {vmNodes.length > 1 && (
+              <label style={{ display: "block", marginBottom: 4 }}>
+                <input
+                  type="checkbox"
+                  checked={selectedVmNames.length === vmNodes.length}
+                  onChange={toggleAllVms}
+                />{" "}
+                All
+              </label>
+            )}
+            {vmNodes.map((n) => {
+              const vmName = (n.data as any).name;
+              return (
+                <label key={n.id} style={{ display: "block", marginBottom: 4 }}>
+                  <input
+                    type="checkbox"
+                    checked={selectedVmNames.includes(vmName)}
+                    onChange={() => toggleVm(vmName)}
+                    aria-label={vmName}
+                  />{" "}
+                  {vmName}
+                </label>
+              );
+            })}
+          </div>
+        )}
+
+        <button
+          className="props-library-btn"
+          onClick={() => setShowExtraVars((v) => !v)}
+          style={{ padding: "4px 8px", fontSize: 11, marginBottom: 12 }}
+        >
+          {showExtraVars ? "− Hide extra variables" : "+ Extra variables"}
+        </button>
+
+        {showExtraVars && (
+          <textarea
+            className="props-input"
+            placeholder="key: value  (YAML or JSON)"
+            value={extraVarsText}
+            onChange={(e) => setExtraVarsText(e.target.value)}
+            rows={6}
+            style={{ width: "100%", marginBottom: 12, fontFamily: "monospace", fontSize: 12 }}
+          />
         )}
 
         {error && (

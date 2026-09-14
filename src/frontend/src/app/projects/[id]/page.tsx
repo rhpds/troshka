@@ -1111,9 +1111,13 @@ export default function ProjectCanvasPage() {
         <RunWorkloadModal
           projectId={projectId}
           onClose={() => setShowWorkloadModal(false)}
-          onLaunched={(runId) => {
+          onLaunched={(runIds) => {
             setShowWorkloadModal(false);
-            setOpenRunId(runId);
+            if (runIds.length === 1) {
+              setOpenRunId(runIds[0]);
+            } else if (runIds.length > 1) {
+              setShowWorkloadRuns(true);
+            }
           }}
         />
       )}
