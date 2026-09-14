@@ -17,7 +17,7 @@ ocp:
     ocp_version: "4.22"
     base_domain: source.cclm.local
     api_vip: 10.0.0.10
-    ingress_vip: 10.0.0.10
+    ingress_vip: 10.0.0.11
     networks: [cluster, migration]
     control_plane_cpu: 8
     control_plane_memory: 32768
@@ -66,7 +66,7 @@ networks:
       - name: api-int.source.cclm.local
         ip: 10.0.0.10
       - name: .apps.source.cclm.local
-        ip: 10.0.0.10
+        ip: 10.0.0.11
       - name: api.dest.cclm.local
         ip: 10.0.0.110
       - name: api-int.dest.cclm.local

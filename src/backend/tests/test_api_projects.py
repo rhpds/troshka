@@ -189,6 +189,32 @@ def test_update_project_topology():
     assert resp.json()["topology"]["nodes"][0]["id"] == "n1"
 
 
+def test_update_project_topology_preserves_placement_metadata():
+    topo = {
+        "nodes": [{"id": "n1", "type": "vmNode", "data": {"name": "vm1"}}],
+        "edges": [],
+        "placement": {"requires_kubevirt": True},
+        "ocpInstallVia": "pod",
+    }
+    pid = _create_project(name="topo-placement", topology=topo)
+    canvas_save = {
+        "nodes": topo["nodes"],
+        "edges": [],
+        "hiddenNodeIds": [],
+        "startOrder": [],
+        "externalIps": [],
+        "clusters": [],
+    }
+    resp = client.patch(
+        f"/api/v1/projects/{pid}",
+        json={"topology": canvas_save},
+    )
+    assert resp.status_code == 200
+    saved = resp.json()["topology"]
+    assert saved["placement"] == {"requires_kubevirt": True}
+    assert saved["ocpInstallVia"] == "pod"
+
+
 def test_update_project_topology_showroom_injects_port_forwards():
     net_id = str(uuid.uuid4())
     gw_id = str(uuid.uuid4())

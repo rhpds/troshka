@@ -226,6 +226,16 @@ def _client_topology_snapshot(project, db=None) -> dict:
     return topo
 
 
+_TOPOLOGY_METADATA_KEYS = ("placement", "ocpInstallVia")
+
+
+def _preserve_topology_import_metadata(previous: dict, topo: dict) -> None:
+    """Keep template-import metadata the canvas auto-save does not round-trip."""
+    for key in _TOPOLOGY_METADATA_KEYS:
+        if previous.get(key) and not topo.get(key):
+            topo[key] = previous[key]
+
+
 def _strip_topology_runtime_node_fields(topology: dict) -> None:
     """Remove deploy-runtime gateway fields from editable topology saves."""
     for node in topology.get("nodes", []):
@@ -1451,6 +1461,9 @@ def update_project(
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
     fields = body.model_dump(exclude_unset=True)
+    previous_topology = (
+        copy.deepcopy(project.topology or {}) if "topology" in fields else {}
+    )
     for field, value in fields.items():
         setattr(project, field, value)
 
@@ -1466,14 +1479,13 @@ def update_project(
         adjust_clocks_async(project_id)
 
     if "topology" in fields:
-        import copy
-
         from app.services.ocp.cluster_topology_heal import heal_cluster_topology
 
         topo = heal_cluster_topology(
             copy.deepcopy(project.topology or {}),
             deployed_clusters=(project.deployed_topology or {}).get("clusters") or [],
         )
+        _preserve_topology_import_metadata(previous_topology, topo)
         _enforce_single_bastion_browser(topo)
         for ext_ip in topo.get("externalIps", []):
             ext_ip.pop("ip", None)

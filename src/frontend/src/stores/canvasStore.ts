@@ -330,6 +330,8 @@ interface CanvasState {
   clusters: ClusterConfig[];
   /** Project-level OCP install method ("pod" | "bastion"); null when non-OCP. */
   ocpInstallVia: string | null;
+  /** Template placement constraints (e.g. requires_kubevirt); null when unset. */
+  topologyPlacement: Record<string, unknown> | null;
   /** Cluster whose install log/status modal is open (set from its box); null = closed. */
   clusterLogTarget: { clusterKey: string; name: string } | null;
   openClusterLog: (clusterKey: string, name: string) => void;
@@ -1155,6 +1157,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   showroom: null as ShowroomConfig | null,
   clusters: [] as ClusterConfig[],
   ocpInstallVia: null as string | null,
+  topologyPlacement: null as Record<string, unknown> | null,
   clusterLogTarget: null as { clusterKey: string; name: string } | null,
   ocpHealth: null as { phase: string; detail: string; items?: string[] } | null,
   clusterOcpPhases: {} as Record<string, string>,
@@ -2038,6 +2041,10 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             deployedClusterRows,
             deployedClusters: stableClusterKey(deployedClusterBaseline),
             ocpInstallVia: (t.ocpInstallVia as string) || null,
+            topologyPlacement:
+              t.placement && typeof t.placement === "object"
+                ? (t.placement as Record<string, unknown>)
+                : null,
             providerType: project.provider_type || null,
             clusterCapabilities: project.cluster_capabilities || null,
           });
@@ -2474,6 +2481,7 @@ export function _saveTopologyToApi(
     clusters?: ClusterConfig[];
     deployedClusterRows?: ClusterConfig[];
     ocpInstallVia?: string | null;
+    topologyPlacement?: Record<string, unknown> | null;
   },
 ): Promise<Record<string, unknown> | null> {
   const healed = healClusterTopology({
@@ -2499,6 +2507,7 @@ export function _saveTopologyToApi(
   // which reverted pod projects (the palette gate / bastion-browser read it) and
   // could mislead the backend default.
   if (state.ocpInstallVia) topology.ocpInstallVia = state.ocpInstallVia;
+  if (state.topologyPlacement) topology.placement = state.topologyPlacement;
   const showroomMeta = showroomConfigForSave(state.showroom, state.nodes, state.edges);
   if (showroomMeta) topology.showroom = showroomMeta;
   return fetch(`/api/v1/projects/${projectId}`, {

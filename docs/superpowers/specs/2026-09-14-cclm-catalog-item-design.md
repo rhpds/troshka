@@ -29,7 +29,7 @@ This replaces a manually built `zf4ws` / `bqc4v` pair with a repeatable catalog 
 | `migration` | `172.16.100.0/24` | **both** clusters NIC1 | Shared L2 for node + lm-network traffic |
 | `bmc` | `192.168.100.0/24` | BMC (Troshka auto) | Redfish / agent install |
 
-Machine-network IPs: source SNO `.10`, workers `.20`–`.21`; destination SNO `.110`. Both `base_domain`s share one L2; dnsmasq carries FQDN records for each.
+Machine-network IPs: source API/CP `.10`, ingress `.11`, workers `.20`–`.21`; destination SNO `.110` (API + ingress on node IP). Both `base_domain`s share one L2; dnsmasq carries FQDN records for each. Source uses baremetal agent install (1 CP + 2 workers) — API and ingress VIPs must differ per OCP 4.22.
 
 ### Migration L2 address plan (explicit in template — no auto-assign)
 
