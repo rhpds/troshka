@@ -231,6 +231,55 @@ def test_install_config_multi_machine_network():
     )
 
 
+def test_install_config_sno_with_workers_uses_baremetal_when_workers_field_missing():
+    """SNO+workers must not emit platform:none if workers omitted but members exist."""
+    import yaml
+
+    from app.services.ocp.agent_template import (
+        _build_install_config,
+        cluster_member_nodes,
+    )
+
+    source_members = [
+        _member("source-cp-0", "source", "controllers", "10.0.0.10", "52:54:00:01"),
+        _member("source-worker-0", "source", "workers", "10.0.0.20", "52:54:00:02"),
+        _member("source-worker-1", "source", "workers", "10.0.0.21", "52:54:00:03"),
+    ]
+    topo = {
+        "nodes": [
+            {
+                "id": "net-cluster",
+                "type": "networkNode",
+                "data": {"subtype": "network", "cidr": "10.0.0.0/24"},
+            },
+            *source_members,
+        ],
+        "edges": [],
+    }
+    sno_workers = {
+        "id": "source",
+        "name": "source",
+        "type": "sno",
+        "controlPlane": 1,
+        "baseDomain": "source.local",
+        "apiVip": "10.0.0.10",
+        "ingressVip": "10.0.0.11",
+    }
+    ic = yaml.safe_load(
+        _build_install_config(
+            sno_workers,
+            cluster_member_nodes(topo, "source"),
+            topo,
+            pull_secret="{}",
+            ssh_key="ssh-rsa x",
+            pull_through_registry=None,
+        )
+    )
+    assert ic["compute"][0]["replicas"] == 2
+    assert "baremetal" in ic.get("platform", {})
+    assert "none" not in ic.get("platform", {})
+
+
 def test_install_config_sno_with_workers_uses_baremetal():
     import yaml
 

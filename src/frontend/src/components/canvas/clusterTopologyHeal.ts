@@ -116,7 +116,20 @@ export function reconcileCanvasClusters(
     return canvasClusters;
   }
 
-  return base.filter((c) => !isLegacyMigrationGhost(c));
+  const filtered = base.filter((c) => !isLegacyMigrationGhost(c));
+  for (const boundary of realBoundaryNodes) {
+    const d = boundary.data as Record<string, unknown>;
+    const cid = d.clusterId as string;
+    const cluster = filtered.find((c) => c.id === cid);
+    if (!cluster) continue;
+    if (d.controlPlane !== undefined && d.controlPlane !== null) {
+      cluster.controlPlane = d.controlPlane as number;
+    }
+    if (d.workers !== undefined && d.workers !== null) {
+      cluster.workers = d.workers as number;
+    }
+  }
+  return filtered;
 }
 
 function resolveMemberClusterId(

@@ -118,6 +118,21 @@ def _reconcile_canvas_clusters(
         }
         base.append(entry)
 
+    for node in nodes:
+        if node.get("type") != "clusterNode":
+            continue
+        data = node.get("data") or {}
+        cid = data.get("clusterId")
+        if not cid:
+            continue
+        cluster = next((c for c in base if c.get("id") == cid), None)
+        if not cluster:
+            continue
+        if data.get("controlPlane") is not None:
+            cluster["controlPlane"] = data["controlPlane"]
+        if data.get("workers") is not None:
+            cluster["workers"] = data["workers"]
+
     return [c for c in base if not _is_legacy_migration_ghost(c)]
 
 

@@ -168,3 +168,33 @@ def test_freeze_deployed_cluster_ocp_versions_reverts_canvas_drift():
     freeze_deployed_cluster_ocp_versions(current, deployed)
     assert current["clusters"][0]["ocpVersion"] == "4.21"
     assert current["clusters"][1]["ocpVersion"] == "4.22"
+
+
+def test_heal_syncs_workers_from_cluster_boundary_node():
+    topo = {
+        "clusters": [
+            {
+                "id": "source",
+                "nodeId": "cluster-source",
+                "type": "sno",
+                "controlPlane": 1,
+                "workers": 0,
+            }
+        ],
+        "nodes": [
+            {
+                "id": "cluster-source",
+                "type": "clusterNode",
+                "data": {
+                    "clusterId": "source",
+                    "type": "sno",
+                    "controlPlane": 1,
+                    "workers": 2,
+                },
+            }
+        ],
+        "edges": [],
+    }
+    out = heal_cluster_topology(topo)
+    source = next(c for c in out["clusters"] if c["id"] == "source")
+    assert source["workers"] == 2

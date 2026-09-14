@@ -324,21 +324,16 @@ def _generate_dns_manifests(topology, base_domain):
     return lines
 
 
-def _cluster_is_sno(cluster, members):
+def _cluster_is_sno(cluster, members, topology=None):
     """True when 1 control-plane and 0 workers (platform: none).
 
     ``type: sno`` with workers > 0 is SNO+workers — multi-node baremetal, not
-    platform none.
+    platform none. Uses the same replica resolution as :func:`_cluster_replicas`
+    so a missing ``workers`` field still reflects materialized member VMs.
     """
-    cp = cluster.get("controlPlane")
-    workers = cluster.get("workers")
-    if workers is None:
-        workers = 0
-    if cp is None and cluster.get("type") == "sno":
-        cp = 1
-    if cp is not None:
-        return cp == 1 and workers == 0
-    return False
+    topo = topology if topology is not None else {"nodes": members}
+    cp, workers = _cluster_replicas(cluster, topo)
+    return cp == 1 and workers == 0
 
 
 def _cluster_control_plane_ip(members):
@@ -593,7 +588,7 @@ def _derive_cluster_vips(cluster, members, topology):
     machine network, excluding gateway, DHCP range, member IPs, and other
     clusters' VIPs.
     """
-    if _cluster_is_sno(cluster, members):
+    if _cluster_is_sno(cluster, members, topology):
         cp_ip = _cluster_control_plane_ip(members)
         if cp_ip:
             return cp_ip, cp_ip
@@ -1687,7 +1682,7 @@ def _build_install_config(
     )
     for cidr in _machine_network_cidrs_for_cluster(cluster, members, topology):
         ic_lines.append(f"    - cidr: {cidr}")
-    if _cluster_is_sno(cluster, members):
+    if _cluster_is_sno(cluster, members, topology):
         ic_lines.extend(["platform:", "  none: {}"])
     else:
         ic_lines.extend(
