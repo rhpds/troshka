@@ -156,6 +156,7 @@ describe("create-project OCP form", () => {
     expect(lastFromTemplateBody).toMatchObject({
       template_id: "ocp-sno",
       auto_install_ocp: true,
+      external_access: true,
       ocp_version: "4.20",
       // Back-compat: from-template still seeds the legacy single cluster with
       // its default name/domain so existing single-cluster deploys keep working.

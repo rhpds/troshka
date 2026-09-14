@@ -112,7 +112,6 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
   const [ocpVersions, setOcpVersions] = useState<{minor: string; latest: string}[]>([]);
   const [autoInstallOcp, setAutoInstallOcp] = useState(true);
   const [installVia, setInstallVia] = useState<"pod" | "bastion">("pod");
-  const [externalAccess, setExternalAccess] = useState(false);
   const [blockOutbound, setBlockOutbound] = useState(true);
   const [deployHostId, setDeployHostId] = useState("");
   const [customVersion, setCustomVersion] = useState(false);
@@ -218,10 +217,11 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
         if (baseDomain) templateBody.base_domain = baseDomain;
         if (ocpVersion) templateBody.ocp_version = ocpVersion;
         templateBody.auto_install_ocp = autoInstallOcp;
-        templateBody.external_access = externalAccess;
         templateBody.block_outbound = blockOutbound;
         if (templates.find((t) => t.id === selectedTemplate)?.category === "openshift") {
           templateBody.install_via = installVia;
+          // OpenShift quickstarts always need a gateway EIP (API/ingress/showroom).
+          templateBody.external_access = true;
         }
         const resp = await fetch(`${API_BASE}/api/v1/projects/from-template`, {
           method: "POST",
@@ -655,10 +655,6 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                     <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
                       <input type="checkbox" checked={autoDeploy} onChange={(e) => setAutoDeploy(e.target.checked)} />
                       Deploy immediately after creation
-                    </label>
-                    <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 4 }}>
-                      <input type="checkbox" checked={externalAccess} onChange={(e) => setExternalAccess(e.target.checked)} />
-                      External access (allocate EIP)
                     </label>
                     {_isOcp && <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 4 }}>
                       <input type="checkbox" checked={blockOutbound} onChange={(e) => setBlockOutbound(e.target.checked)} />
