@@ -35,6 +35,11 @@ export default function ProjectCanvasPage() {
   const [showWorkloadModal, setShowWorkloadModal] = useState(false);
   const [showWorkloadRuns, setShowWorkloadRuns] = useState(false);
   const [openRunId, setOpenRunId] = useState<string | null>(null);
+  const [runWorkloadTarget, setRunWorkloadTarget] = useState<{
+    mode: "cluster" | "vms";
+    clusterIds?: string[];
+    vmNames?: string[];
+  } | null>(null);
   const [snapshotTarget, setSnapshotTarget] = useState<{ vmId: string; vmName: string; isRunning: boolean } | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
@@ -1057,6 +1062,10 @@ export default function ProjectCanvasPage() {
         >{showPalette ? "◂" : "▸"}</button>
         <Canvas
           onSnapshotVM={(vmId, vmName, isRunning) => setSnapshotTarget({ vmId, vmName, isRunning })}
+          onRunWorkload={(target) => {
+            setRunWorkloadTarget(target);
+            setShowWorkloadModal(true);
+          }}
         />
         <button
           onClick={() => setShowProperties(!showProperties)}
@@ -1110,9 +1119,16 @@ export default function ProjectCanvasPage() {
       {showWorkloadModal && (
         <RunWorkloadModal
           projectId={projectId}
-          onClose={() => setShowWorkloadModal(false)}
+          initialMode={runWorkloadTarget?.mode}
+          initialClusterIds={runWorkloadTarget?.clusterIds}
+          initialVmNames={runWorkloadTarget?.vmNames}
+          onClose={() => {
+            setShowWorkloadModal(false);
+            setRunWorkloadTarget(null);
+          }}
           onLaunched={(runIds) => {
             setShowWorkloadModal(false);
+            setRunWorkloadTarget(null);
             if (runIds.length === 1) {
               setOpenRunId(runIds[0]);
             } else if (runIds.length > 1) {

@@ -67,6 +67,7 @@ class WorkloadRunListItem(BaseModel):
     status: str
     error: str | None
     created_at: str
+    target_map: dict | None = None
 
 
 class InventoryPreviewRequest(BaseModel):
@@ -192,6 +193,7 @@ def list_workload_runs(
                 status=r.status,
                 error=r.error,
                 created_at=created_at_str,
+                target_map=r.target_map,
             )
         )
     return items

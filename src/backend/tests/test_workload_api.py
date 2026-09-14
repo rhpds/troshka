@@ -280,8 +280,25 @@ def test_list_workload_runs_empty():
 
 
 def test_list_workload_runs_returns_runs():
-    """GET returns runs for the project, most recent first."""
+    """GET returns runs for the project, most recent first, including target_map."""
     pid = _create_project(state="active")
+
+    # Create a run with target_map
+    db = TestSession()
+    target_run = WorkloadRun(
+        id=str(uuid.uuid4()),
+        project_id=pid,
+        kind="ad_hoc",
+        role_fqcn="demo_workloads.test",
+        status="pending",
+        owner_id=_ensure_dev_user(),
+        target_map={"mode": "cluster", "cluster_id": "c1"},
+    )
+    db.add(target_run)
+    db.commit()
+    target_run_id = target_run.id
+    db.close()
+
     run1 = _create_workload_run(pid, status="completed")
     run2 = _create_workload_run(pid, status="pending")
 
@@ -289,13 +306,18 @@ def test_list_workload_runs_returns_runs():
 
     assert resp.status_code == 200
     data = resp.json()
-    assert len(data) >= 2
+    assert len(data) >= 3
     run_ids = [r["id"] for r in data]
     assert run1 in run_ids
     assert run2 in run_ids
+    assert target_run_id in run_ids
     # Most recent first (by created_at desc) - run2 was created after run1
     first_run_id = data[0]["id"]
-    assert first_run_id in [run1, run2]
+    assert first_run_id in [run1, run2, target_run_id]
+    # Verify target_map is returned for the targeted run
+    target_item = next((r for r in data if r["id"] == target_run_id), None)
+    assert target_item is not None
+    assert target_item["target_map"] == {"mode": "cluster", "cluster_id": "c1"}
 
 
 def test_list_workload_runs_project_not_found_404():

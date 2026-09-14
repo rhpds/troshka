@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { useCanvasStore } from "@/stores/canvasStore";
 
 interface RunItem {
   id: string;
@@ -10,6 +11,7 @@ interface RunItem {
   status: string;
   error: string | null;
   created_at: string;
+  target_map: { mode?: string; cluster_id?: string; vm_names?: string[] } | null;
 }
 interface Props {
   projectId: string;
@@ -20,6 +22,7 @@ interface Props {
 export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Props) {
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const clusters = useCanvasStore((s) => s.clusters);
 
   useEffect(() => {
     let cancelled = false;
@@ -79,6 +82,7 @@ export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Pro
           <table style={{ width: "100%", fontSize: 13, borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
+                <th style={{ textAlign: "left", padding: "4px 8px", fontSize: 11, opacity: 0.6 }}>WORKLOAD</th>
                 <th style={{ textAlign: "left", padding: "4px 8px", fontSize: 11, opacity: 0.6 }}>TARGET</th>
                 <th style={{ textAlign: "left", padding: "4px 8px", fontSize: 11, opacity: 0.6 }}>KIND</th>
                 <th style={{ textAlign: "left", padding: "4px 8px", fontSize: 11, opacity: 0.6 }}>STATUS</th>
@@ -87,19 +91,31 @@ export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Pro
               </tr>
             </thead>
             <tbody>
-              {runs.map((run) => (
-                <tr key={run.id} style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
-                  <td style={{ padding: "6px 8px" }}>{run.role_fqcn || run.catalog_item || "—"}</td>
-                  <td style={{ padding: "6px 8px" }}>{run.kind}</td>
-                  <td style={{ padding: "6px 8px" }}>{run.status}</td>
-                  <td style={{ padding: "6px 8px" }}>{run.created_at?.slice(0, 19).replace("T", " ")}</td>
-                  <td style={{ padding: "6px 8px", textAlign: "right" }}>
-                    <button className="props-library-btn" onClick={() => onOpenRun(run.id)}>
-                      View
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {runs.map((run) => {
+                // Derive target label from target_map
+                let targetLabel = "—";
+                if (run.target_map?.mode === "cluster" && run.target_map.cluster_id) {
+                  const cluster = clusters.find((c) => c.id === run.target_map!.cluster_id);
+                  targetLabel = cluster?.name ?? run.target_map.cluster_id;
+                } else if (run.target_map?.mode === "vms" && run.target_map.vm_names) {
+                  targetLabel = run.target_map.vm_names.join(", ");
+                }
+
+                return (
+                  <tr key={run.id} style={{ borderBottom: "1px solid var(--pf-t--global--border--color--default)" }}>
+                    <td style={{ padding: "6px 8px" }}>{run.role_fqcn || run.catalog_item || "—"}</td>
+                    <td style={{ padding: "6px 8px" }}>{targetLabel}</td>
+                    <td style={{ padding: "6px 8px" }}>{run.kind}</td>
+                    <td style={{ padding: "6px 8px" }}>{run.status}</td>
+                    <td style={{ padding: "6px 8px" }}>{run.created_at?.slice(0, 19).replace("T", " ")}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                      <button className="props-library-btn" onClick={() => onOpenRun(run.id)}>
+                        View
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}

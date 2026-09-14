@@ -76,9 +76,14 @@ interface EdgeContextMenuState {
 
 interface CanvasProps {
   onSnapshotVM?: (nodeId: string, nodeName: string, isRunning: boolean) => void;
+  onRunWorkload?: (target: {
+    mode: "cluster" | "vms";
+    clusterIds?: string[];
+    vmNames?: string[];
+  }) => void;
 }
 
-export default function Canvas({ onSnapshotVM }: CanvasProps) {
+export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition } = useReactFlow();
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
@@ -995,6 +1000,7 @@ export default function Canvas({ onSnapshotVM }: CanvasProps) {
           onClose={() => setContextMenu(null)}
           onSnapshotVM={onSnapshotVM}
           onDuplicateVM={(id) => setDuplicateVmId(id)}
+          onRunWorkload={onRunWorkload}
         />
       )}
       {duplicateVmId && (() => {

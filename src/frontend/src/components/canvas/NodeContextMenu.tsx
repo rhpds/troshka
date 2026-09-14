@@ -12,20 +12,36 @@ interface NodeContextMenuProps {
   onClose: () => void;
   onSnapshotVM?: (nodeId: string, nodeName: string, isRunning: boolean) => void;
   onDuplicateVM?: (nodeId: string) => void;
+  onRunWorkload?: (target: {
+    mode: "cluster" | "vms";
+    clusterIds?: string[];
+    vmNames?: string[];
+  }) => void;
 }
 
-export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM, onDuplicateVM }: NodeContextMenuProps) {
+export default function NodeContextMenu({
+  nodeId,
+  x,
+  y,
+  onClose,
+  onSnapshotVM,
+  onDuplicateVM,
+  onRunWorkload,
+}: NodeContextMenuProps) {
   const duplicateNode = useCanvasStore((s) => s.duplicateNode);
   const deleteNode = useCanvasStore((s) => s.deleteNode);
   const hideNode = useCanvasStore((s) => s.hideNode);
   const nodes = useCanvasStore((s) => s.nodes);
   const deployedVmIds = useCanvasStore((s) => s.deployedVmIds);
   const projectId = useCanvasStore((s) => s.currentProjectId);
+  const projectState = useCanvasStore((s) => s.projectState);
+  const clusters = useCanvasStore((s) => s.clusters);
   const ref = useRef<HTMLDivElement>(null);
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
 
   const node = nodes.find((n) => n.id === nodeId);
   const isVm = node?.type === "vmNode";
+  const isClusterNode = node?.type === "clusterNode";
   // Cluster-member VMs are managed by the OCP box (count/editor) — no per-VM
   // Duplicate/Hide.
   const isClusterMember =
@@ -80,6 +96,35 @@ export default function NodeContextMenu({ nodeId, x, y, onClose, onSnapshotVM, o
       {isVm && isDeployed && !isNotFound && onSnapshotVM && (
         <button onClick={() => { onSnapshotVM(nodeId, vmName, isRunning); onClose(); }}>
           📸 Save VM Snapshot
+        </button>
+      )}
+      {projectState === "active" && onRunWorkload && (
+        <button
+          onClick={() => {
+            if (isClusterNode) {
+              // clusterNode: find cluster id
+              const cid =
+                clusters.find((c) => c.nodeId === nodeId)?.id ??
+                (node?.data as any)?.clusterId;
+              onRunWorkload({
+                mode: "cluster",
+                clusterIds: cid ? [cid] : [],
+              });
+            } else if (isVm) {
+              const vmData = node?.data as Record<string, any>;
+              const clusterId = vmData?.clusterId;
+              if (clusterId) {
+                // cluster-member VM
+                onRunWorkload({ mode: "cluster", clusterIds: [clusterId] });
+              } else {
+                // standalone VM
+                onRunWorkload({ mode: "vms", vmNames: [vmName] });
+              }
+            }
+            onClose();
+          }}
+        >
+          ⚙ Run Workload…
         </button>
       )}
       {!isClusterMember && (

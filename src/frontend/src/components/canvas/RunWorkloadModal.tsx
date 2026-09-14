@@ -52,7 +52,9 @@ export default function RunWorkloadModal({
   const nodes = useCanvasStore((s) => s.nodes);
   const vmNodes = nodes.filter((n) => n.type === "vmNode");
 
-  // Auto-select single cluster if no initial selection and only one exists
+  // Auto-select a single cluster ONLY when initialClusterIds === undefined.
+  // An explicit [] disables auto-select (e.g., right-click on a clusterNode with
+  // no resolvable id).
   useEffect(() => {
     if (initialClusterIds === undefined && clusters.length === 1) {
       setSelectedClusterIds((prev) => (prev.length === 0 ? [clusters[0].id] : prev));
