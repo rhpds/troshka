@@ -11,11 +11,13 @@ from __future__ import annotations
 import re
 import shlex
 
+import yaml
+
 from app.services.ocp.agent_template import (
     _cluster_members_for,
     _redfish_eject_media_cmd,
     _redfish_insert_media_cmd,
-    member_defers_ocp_install,
+    deferred_worker_cluster_nic,
 )
 
 _MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
@@ -29,20 +31,71 @@ _APPROVE_PENDING_CSRS = (
 
 
 def deferred_workers_for_cluster(topology: dict, cluster: dict) -> list[dict]:
-    """Return join targets: ``{name, mac, bmc_ip}`` for deferred worker VMs."""
+    """Return join targets for deferred worker VMs.
+
+    Each entry includes cluster-network addressing for ``oc adm node-image
+    create --network-config-path`` so workers default-route via the cluster
+    gateway (not the post-install migration L2).
+    """
     entries: list[dict] = []
     for node in _cluster_members_for(topology, cluster):
-        if not member_defers_ocp_install(cluster, node, topology):
+        nic = deferred_worker_cluster_nic(node, cluster, topology)
+        if not nic:
             continue
         data = node.get("data") or {}
-        nics = data.get("nics") or []
-        mac = (nics[0].get("mac") if nics else "") or ""
         bmc_ip = str(data.get("bmcIp") or "").strip()
         name = str(data.get("name") or "").strip()
-        if not name or not _MAC_RE.match(mac) or not bmc_ip:
+        if not name or not bmc_ip:
             continue
-        entries.append({"name": name, "mac": mac, "bmc_ip": bmc_ip})
+        entries.append({"name": name, "bmc_ip": bmc_ip, **nic})
     return entries
+
+
+def _nmstate_interface(entry: dict) -> dict:
+    return {
+        "name": entry["iface_name"],
+        "type": "ethernet",
+        "state": "up",
+        "identifier": "mac-address",
+        "mac-address": entry["mac"],
+        "ipv4": {
+            "enabled": True,
+            "address": [
+                {
+                    "ip": entry["ip"],
+                    "prefix-length": entry["prefix_len"],
+                }
+            ],
+            "dhcp": False,
+        },
+    }
+
+
+def build_deferred_worker_nmstate(worker: dict) -> str:
+    """NMState YAML for ``oc adm node-image create --network-config-path``.
+
+    Configures every worker NIC (cluster + migration, etc.). Only the cluster
+    egress interface receives the default route and DNS; auxiliary segments are
+    addressed statically so CCLM live migration works without stealing egress.
+    """
+    egress_iface = worker["iface_name"]
+    interfaces = [_nmstate_interface(worker)]
+    for aux in worker.get("aux_nics") or []:
+        interfaces.append(_nmstate_interface(aux))
+    cfg = {
+        "interfaces": interfaces,
+        "dns-resolver": {"config": {"server": [worker["dns_ip"]]}},
+        "routes": {
+            "config": [
+                {
+                    "destination": "0.0.0.0/0",
+                    "next-hop-address": worker["gateway"],
+                    "next-hop-interface": egress_iface,
+                }
+            ]
+        },
+    }
+    return yaml.dump(cfg, default_flow_style=False, sort_keys=False)
 
 
 def _serve_node_iso_cmd(
@@ -139,17 +192,23 @@ def _wait_before_worker_join_cmd(indent: str, cluster_key: str) -> str:
 
 
 def _node_image_create_cmd(
-    indent: str, cluster_key: str, name: str, mac: str, node_dir: str
+    indent: str, cluster_key: str, worker: dict, node_dir: str
 ) -> str:
     """``oc adm node-image create`` with bounded retries for admission flakes."""
     i = indent
+    name = worker["name"]
+    mac = worker["mac"]
+    nmstate = build_deferred_worker_nmstate(worker)
+    net_cfg = f"{node_dir}/network-config.yaml"
     return (
         f'{i}echo "[{cluster_key}] node-image create for {name}"\n'
         f"{i}mkdir -p {node_dir}\n"
+        f"{i}cat > {net_cfg} <<'NMEOF'\n{nmstate}NMEOF\n"
         f"{i}created=0\n"
         f"{i}for _try in $(seq 1 8); do\n"
         f"{i}  if (cd {node_dir} && oc adm node-image create "
-        f"--mac-address={shlex.quote(mac)} 2>&1 | tee create.log); then\n"
+        f"--mac-address={shlex.quote(mac)} "
+        f"--network-config-path=network-config.yaml 2>&1 | tee create.log); then\n"
         f"{i}    if find {node_dir} -maxdepth 2 -name '*.iso' | grep -q .; then "
         f"created=1; break; fi\n"
         f"{i}  fi\n"
@@ -186,9 +245,7 @@ def _wait_for_worker_node_cmd(indent: str, cluster_key: str, name: str) -> str:
 def _worker_join_and_boot_block(
     indent: str,
     cluster_key: str,
-    name: str,
-    mac: str,
-    bmc_ip: str,
+    worker: dict,
     node_dir: str,
     port: int,
     serving_ip: str | None,
@@ -197,11 +254,13 @@ def _worker_join_and_boot_block(
     i = indent
     inner = indent + "  "
     iso_name = "node.iso"
+    name = worker["name"]
+    bmc_ip = worker["bmc_ip"]
     return (
         f"{i}(\n"
         f"{inner}set -e\n"
         f"{inner}set -o pipefail\n"
-        + _node_image_create_cmd(inner, cluster_key, name, mac, node_dir)
+        + _node_image_create_cmd(inner, cluster_key, worker, node_dir)
         + f"{inner}ISO_SRC=$(find {node_dir} -maxdepth 2 -name '*.iso' | head -1)\n"
         + f'{inner}if [ -z "$ISO_SRC" ]; then echo "[{cluster_key}] no ISO for {name}"; exit 1; fi\n'
         + f'{inner}cp -f "$ISO_SRC" {node_dir}/{iso_name}\n'
@@ -321,9 +380,7 @@ def build_join_deferred_workers_cmd(
             _worker_join_and_boot_block(
                 f"{i}  ",
                 cluster_key,
-                worker["name"],
-                worker["mac"],
-                worker["bmc_ip"],
+                worker,
                 f"nodes/{worker['name']}",
                 base_port + 100 + idx,
                 serving_ip,

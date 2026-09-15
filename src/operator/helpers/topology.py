@@ -105,6 +105,8 @@ def extract_vms(topology):
                 "smbiosUuid": data.get("domainUuid", ""),
                 "os": data.get("os", ""),
                 "powerOnAtDeploy": data.get("powerOnAtDeploy", True),
+                "deferOcpInstall": data.get("deferOcpInstall", False),
+                "clusterId": data.get("clusterId", ""),
                 "disks": data.get("disks", []),
                 "nics": data.get("nics", []),
                 "cloudInit": {
@@ -401,6 +403,108 @@ def _extract_nic_id(handle):
     if handle.startswith("nic-"):
         return handle
     return f"nic-{handle}" if handle else ""
+
+
+def _network_node_for_ref(topology, net_ref):
+    """Resolve a short NAD ref (``net-<id[:8]>``) to a networkNode dict."""
+    if not net_ref or not str(net_ref).startswith("net-"):
+        return None
+    prefix = str(net_ref)[4:]
+    for node in topology.get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        data = node.get("data", {})
+        node_id = str(data.get("id", node.get("id", "")))
+        if node_id.startswith(prefix):
+            return node
+    return None
+
+
+def _is_post_install_network_node(node):
+    """Auxiliary L2 segments (migration) are configured post-install, not at join."""
+    if not node:
+        return False
+    data = node.get("data", {})
+    if data.get("networkType") == "migration":
+        return True
+    return str(data.get("name") or "").lower() == "migration"
+
+
+def gateway_connected_network_ids(topology):
+    """Network node IDs with a canvas edge to the project gateway node."""
+    gateway_nodes = _find_gateway_nodes(topology.get("nodes", []))
+    return _find_networks_with_gateway(topology.get("edges", []), gateway_nodes)
+
+
+def _network_id_for_ref(topology, net_ref):
+    node = _network_node_for_ref(topology, net_ref)
+    if not node:
+        return ""
+    return node.get("id", (node.get("data") or {}).get("id", ""))
+
+
+def _cluster_for_vm(vm, topology):
+    cluster_id = vm.get("clusterId", "")
+    if not cluster_id:
+        return None
+    for cluster in topology.get("clusters") or []:
+        if cluster.get("id") == cluster_id:
+            return cluster
+    return None
+
+
+def _network_dns_enabled(data):
+    return bool((data or {}).get("dns") or (data or {}).get("subtype") == "dns")
+
+
+def cluster_egress_network_id(cluster, topology):
+    """Pick one egress network when multiple are gateway-connected (mirrors backend)."""
+    if not cluster:
+        return ""
+    nodes_by_id = {n["id"]: n for n in topology.get("nodes", [])}
+    gw_ids = gateway_connected_network_ids(topology)
+
+    def eligible(net_id):
+        node = nodes_by_id.get(net_id)
+        if not node or _is_post_install_network_node(node):
+            return None
+        if node.get("type") != "networkNode":
+            return None
+        if (node.get("data") or {}).get("subtype") == "gateway":
+            return None
+        return net_id
+
+    for net_id in cluster.get("networkIds") or []:
+        if net_id not in gw_ids:
+            continue
+        if not eligible(net_id):
+            continue
+        if _network_dns_enabled((nodes_by_id[net_id].get("data") or {})):
+            return net_id
+
+    for net_id in cluster.get("networkIds") or []:
+        if net_id in gw_ids and eligible(net_id):
+            return net_id
+
+    for net_id in sorted(gw_ids):
+        if not eligible(net_id):
+            continue
+        if _network_dns_enabled((nodes_by_id[net_id].get("data") or {})):
+            return net_id
+
+    for net_id in sorted(gw_ids):
+        if eligible(net_id):
+            return net_id
+    return ""
+
+
+def install_nics_for_vm(vm, nic_network_map, topology):
+    """NICs to attach at VM deploy time.
+
+    Deferred workers need every canvas NIC (cluster + migration for CCLM).
+    Join-time NMState sets the default route on the cluster egress network only.
+    """
+    return vm.get("nics", [])
 
 
 def resolve_nic_networks(topology):

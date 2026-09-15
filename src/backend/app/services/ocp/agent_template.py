@@ -355,6 +355,113 @@ def member_defers_ocp_install(cluster, node, topology) -> bool:
     return install_workers == 0 and canvas_workers > 0
 
 
+def _deferred_worker_nic_on_network(
+    node: dict,
+    net_node: dict,
+    cluster: dict,
+    topology: dict,
+    nic_idx: int,
+    nic: dict,
+) -> dict | None:
+    cidr = (net_node.get("data") or {}).get("cidr", "")
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return None
+    mac = str(nic.get("mac") or "").strip()
+    ip = str(nic.get("ip") or "").strip()
+    if not _MAC_RE.match(mac) or not ip:
+        return None
+    return {
+        "mac": mac,
+        "ip": ip,
+        "prefix_len": net.prefixlen,
+        "iface_name": _agent_nic_interface_name(nic_idx),
+    }
+
+
+def _deferred_worker_aux_nics(
+    node: dict, cluster: dict, topology: dict, egress_network_id: str
+) -> list[dict]:
+    """Auxiliary L2 NICs (migration, etc.) — addressed at join, no default route."""
+    from app.services.deploy_topology import (
+        _is_post_install_auxiliary_network,
+        _topology_nodes_by_id,
+        vm_nic_for_network,
+    )
+
+    nodes_by_id = _topology_nodes_by_id(topology)
+    aux: list[dict] = []
+    for net_id in cluster.get("networkIds") or []:
+        if net_id == egress_network_id:
+            continue
+        net_node = nodes_by_id.get(net_id)
+        if not net_node or not _is_post_install_auxiliary_network(net_node):
+            continue
+        nic_match = vm_nic_for_network(node, net_id, cluster, topology)
+        if not nic_match:
+            continue
+        nic_idx, nic = nic_match
+        entry = _deferred_worker_nic_on_network(
+            node, net_node, cluster, topology, nic_idx, nic
+        )
+        if entry:
+            aux.append(entry)
+    return aux
+
+
+def deferred_worker_cluster_nic(
+    node: dict, cluster: dict, topology: dict, dns_ip_override: str | None = None
+) -> dict | None:
+    """Join-time NIC settings for a deferred worker (cluster egress + auxiliary L2).
+
+    Workers keep every canvas NIC (cluster + migration for CCLM). NMState sets the
+    default route and DNS on the gateway-connected cluster network only; auxiliary
+    segments get static addresses without a default route.
+    """
+    from app.services.deploy_topology import (
+        cluster_egress_network_id,
+        cluster_egress_network_node,
+        vm_nic_for_network,
+    )
+
+    if not member_defers_ocp_install(cluster, node, topology):
+        return None
+    members = _cluster_members_for(topology, cluster)
+    net_node = cluster_egress_network_node(cluster, topology)
+    if not net_node:
+        net_nodes = _cluster_machine_network_nodes(cluster, members, topology)
+        net_node = net_nodes[0] if net_nodes else None
+    if not net_node:
+        return None
+    network_id = net_node.get("id", (net_node.get("data") or {}).get("id", ""))
+    nic_match = vm_nic_for_network(node, network_id, cluster, topology)
+    if not nic_match:
+        return None
+    nic_idx, nic = nic_match
+    cidr = net_node["data"]["cidr"]
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return None
+    mac = str(nic.get("mac") or "").strip()
+    ip = str(nic.get("ip") or "").strip()
+    if not _MAC_RE.match(mac) or not ip:
+        return None
+    gateway = net_node["data"].get("gateway") or str(net.network_address + 1)
+    dns_ip = _resolve_agent_dns_ip(topology, members, gateway, dns_ip_override)
+    egress_id = cluster_egress_network_id(cluster, topology) or network_id
+    return {
+        "mac": mac,
+        "ip": ip,
+        "prefix_len": net.prefixlen,
+        "gateway": gateway,
+        "dns_ip": dns_ip,
+        "iface_name": _agent_nic_interface_name(nic_idx),
+        "aux_nics": _deferred_worker_aux_nics(node, cluster, topology, egress_id),
+    }
+
+
 def install_member_nodes(cluster, members, topology):
     """VM nodes that participate in the agent-based install for ``cluster``.
 
@@ -756,6 +863,11 @@ def _customize_one_cluster(topology, cluster, config, include_extras):
     cluster["_generatedAgentConfig"] = _build_agent_config(
         cluster, install_members, topology
     )
+    itms_yaml = build_pull_through_itms_yaml(ptr)
+    if itms_yaml:
+        cluster["_generatedPullThroughItms"] = itms_yaml
+    else:
+        cluster.pop("_generatedPullThroughItms", None)
     _setup_dns_records(
         topology,
         cluster.get("name", "ocp"),
@@ -1252,10 +1364,14 @@ def _write_ocp_config_files(node, guard, install_config, agent_config):
         )
 
 
-def _write_itms_manifest(node, guard, pull_through_registry):
-    """Write ImageTagMirrorSet extra manifest for pull-through registry."""
+def build_pull_through_itms_yaml(pull_through_registry) -> str | None:
+    """ImageTagMirrorSet extra manifest for pull-through registry (tag-based pulls).
+
+    OLM catalog index images (e.g. ``redhat-operator-index:v4.22``) are pulled by
+    tag; ``imageDigestSources`` alone is not enough — clusters also need ITMS.
+    """
     if not pull_through_registry or not pull_through_registry.get("enabled"):
-        return
+        return None
     ptr_url = pull_through_registry["url"]
     itms_yaml = (
         "apiVersion: config.openshift.io/v1\n"
@@ -1271,6 +1387,14 @@ def _write_itms_manifest(node, guard, pull_through_registry):
             f"      mirrors:\n"
             f"        - {ptr_url}/{org}\n"
         )
+    return itms_yaml
+
+
+def _write_itms_manifest(node, guard, pull_through_registry):
+    """Write ImageTagMirrorSet extra manifest for pull-through registry."""
+    itms_yaml = build_pull_through_itms_yaml(pull_through_registry)
+    if not itms_yaml:
+        return
     indented_itms = "\n".join("    " + line for line in itms_yaml.split("\n"))
     node["data"]["ciUserData"] += (
         _YAML_BLOCK_SCALAR

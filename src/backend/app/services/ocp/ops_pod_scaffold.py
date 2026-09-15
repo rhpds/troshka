@@ -130,6 +130,9 @@ def ops_pod_config_files(
             files[f"{src_dir}/install-config.yaml"] = str(install_cfg)
         if agent_cfg is not None:
             files[f"{src_dir}/agent-config.yaml"] = str(agent_cfg)
+        itms_cfg = cluster.get("_generatedPullThroughItms")
+        if itms_cfg:
+            files[f"{src_dir}/openshift/itms-pull-through.yaml"] = str(itms_cfg)
     if pull_secret_json:
         files[f"{workdir}/pull-secret.json"] = pull_secret_json
     return files

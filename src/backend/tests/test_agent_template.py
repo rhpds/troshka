@@ -82,6 +82,46 @@ def test_build_install_config_without_pull_through():
     assert "imageDigestSources" not in ic
 
 
+def test_customize_cluster_stores_pull_through_itms_for_ops_pod():
+    from app.services.ocp.agent_template import _customize_one_cluster
+
+    topology = {
+        "nodes": [],
+        "clusters": [{"id": "source", "name": "source", "type": "sno"}],
+    }
+    cluster = topology["clusters"][0]
+    ptr = {
+        "enabled": True,
+        "url": "registry-quay.apps.example.com",
+        "orgs": {
+            "registry.redhat.io": "registry_redhat_io",
+            "quay.io": "quay_io",
+        },
+    }
+    config = {"resolved": {"pull_through_registry": ptr}, "pull_secret_json": "{}"}
+    _customize_one_cluster(topology, cluster, config, include_extras=False)
+    itms = cluster["_generatedPullThroughItms"]
+    assert "kind: ImageTagMirrorSet" in itms
+    assert "registry-quay.apps.example.com/registry_redhat_io" in itms
+
+
+def test_ops_pod_config_files_includes_pull_through_itms():
+    from app.services.ocp.ops_pod_scaffold import ops_pod_config_files
+
+    clusters = [
+        {
+            "id": "source",
+            "_generatedInstallConfig": "apiVersion: v1\n",
+            "_generatedAgentConfig": "apiVersion: v1\n",
+            "_generatedPullThroughItms": (
+                "apiVersion: config.openshift.io/v1\n" "kind: ImageTagMirrorSet\n"
+            ),
+        }
+    ]
+    files = ops_pod_config_files(clusters, "/workdir", "{}")
+    assert "/workdir/source/.src/openshift/itms-pull-through.yaml" in files
+
+
 def test_customize_cluster_opt_out_of_pull_through_registry():
     from app.services.ocp.agent_template import _customize_one_cluster
 
@@ -106,6 +146,7 @@ def test_customize_cluster_opt_out_of_pull_through_registry():
     _customize_one_cluster(topology, cluster, config, include_extras=False)
     parsed = yaml.safe_load(cluster["_generatedInstallConfig"])
     assert "imageDigestSources" not in parsed
+    assert "_generatedPullThroughItms" not in cluster
 
 
 def test_bastion_cloud_init_pull_through_registry():

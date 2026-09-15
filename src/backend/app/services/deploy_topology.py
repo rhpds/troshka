@@ -619,19 +619,185 @@ def _gateway_connected_dns_network_name(topology: dict) -> str:
 
 
 def _is_network_gateway_connected(topology: dict, network_id: str) -> bool:
+    return network_id in gateway_connected_network_ids(topology)
+
+
+def _topology_nodes_by_id(topology: dict) -> dict[str, dict]:
+    nodes_by_id: dict[str, dict] = {}
+    for node in topology.get("nodes", []):
+        nid = node.get("id") or (node.get("data") or {}).get("id")
+        if nid:
+            nodes_by_id[str(nid)] = node
+    return nodes_by_id
+
+
+def gateway_connected_network_ids(topology: dict) -> set[str]:
+    """Network node IDs with a canvas edge to the project gateway node."""
     gateway = next(
         (n for n in topology.get("nodes", []) if _is_gateway_node(n)),
         None,
     )
     if not gateway:
-        return False
-    nodes_by_id = {n["id"]: n for n in topology.get("nodes", [])}
+        return set()
+    nodes_by_id = _topology_nodes_by_id(topology)
     gateway_id = gateway["id"]
+    connected: set[str] = set()
     for edge in topology.get("edges", []):
         peer = _peer_lab_network_on_gateway_edge(edge, gateway_id, nodes_by_id)
-        if peer and peer.get("id") == network_id:
-            return True
-    return False
+        if peer:
+            connected.add(peer["id"])
+    return connected
+
+
+def _is_post_install_auxiliary_network(node: dict | None) -> bool:
+    """L2 segments configured after OCP install (CCLM migration, etc.)."""
+    if not node or node.get("type") != "networkNode":
+        return False
+    data = node.get("data") or {}
+    if data.get("networkType") == "migration":
+        return True
+    return str(data.get("name") or "").lower() == "migration"
+
+
+def _eligible_egress_network_node(
+    nodes_by_id: dict[str, dict], net_id: str
+) -> dict | None:
+    node = nodes_by_id.get(net_id)
+    if not node or _is_post_install_auxiliary_network(node):
+        return None
+    if not _is_plain_network(node):
+        return None
+    return node
+
+
+def _control_plane_network_for_cluster(
+    cluster: dict, topology: dict, gw_ids: set[str], nodes_by_id: dict[str, dict]
+) -> dict | None:
+    """Gateway-connected network whose CIDR contains the cluster CP primary IP."""
+    import ipaddress
+
+    cluster_id = cluster.get("id")
+    cp_node = None
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data") or {}
+        if data.get("clusterId") != cluster_id:
+            continue
+        if data.get("clusterRole") == "control-plane":
+            cp_node = node
+            break
+        tags = data.get("tags") or {}
+        if tags.get("AnsibleGroup") == "controllers":
+            cp_node = node
+            break
+    if not cp_node:
+        return None
+    nics = (cp_node.get("data") or {}).get("nics") or []
+    cp_ip = str((nics[0] or {}).get("ip") or "").strip()
+    if not cp_ip:
+        return None
+    try:
+        addr = ipaddress.ip_address(cp_ip)
+    except ValueError:
+        return None
+    for net_id in gw_ids:
+        node = _eligible_egress_network_node(nodes_by_id, net_id)
+        if not node:
+            continue
+        cidr = (node.get("data") or {}).get("cidr", "")
+        try:
+            if addr in ipaddress.ip_network(cidr, strict=False):
+                return node
+        except ValueError:
+            continue
+    return None
+
+
+def rank_cluster_egress_network_nodes(cluster: dict, topology: dict) -> list[dict]:
+    """Rank gateway-connected lab networks for a cluster's default route.
+
+    Precedence when multiple networks are wired to the canvas gateway:
+
+    1. Gateway-connected lab network with DNS enabled (``cluster.networkIds``
+       order among DNS-enabled candidates).
+    2. ``cluster.networkIds`` order — remaining gateway-connected, non-auxiliary.
+    3. Gateway-connected network whose CIDR contains the control-plane primary IP.
+    4. Remaining gateway-connected non-auxiliary networks, stable sort by id.
+    """
+    gw_ids = gateway_connected_network_ids(topology)
+    if not gw_ids:
+        return []
+
+    nodes_by_id = _topology_nodes_by_id(topology)
+    ranked: list[dict] = []
+    seen: set[str] = set()
+
+    def _append(node: dict | None) -> None:
+        if not node:
+            return
+        net_id = node.get("id", "")
+        if net_id and net_id not in seen:
+            seen.add(net_id)
+            ranked.append(node)
+
+    for net_id in cluster.get("networkIds") or []:
+        if net_id not in gw_ids:
+            continue
+        node = _eligible_egress_network_node(nodes_by_id, net_id)
+        if node and _network_dns_enabled(node.get("data") or {}):
+            _append(node)
+
+    for net_id in cluster.get("networkIds") or []:
+        if net_id not in gw_ids:
+            continue
+        _append(_eligible_egress_network_node(nodes_by_id, net_id))
+
+    _append(_control_plane_network_for_cluster(cluster, topology, gw_ids, nodes_by_id))
+
+    remaining = []
+    for net_id in sorted(gw_ids):
+        node = _eligible_egress_network_node(nodes_by_id, net_id)
+        if node and node.get("id") not in seen:
+            remaining.append(node)
+    remaining.sort(key=lambda n: str(n.get("id", "")))
+    ranked.extend(remaining)
+    return ranked
+
+
+def cluster_egress_network_node(cluster: dict, topology: dict) -> dict | None:
+    """The cluster's default-route network (see :func:`rank_cluster_egress_network_nodes`)."""
+    ranked = rank_cluster_egress_network_nodes(cluster, topology)
+    return ranked[0] if ranked else None
+
+
+def cluster_egress_network_id(cluster: dict, topology: dict) -> str:
+    node = cluster_egress_network_node(cluster, topology)
+    if not node:
+        return ""
+    return str(node.get("id", (node.get("data") or {}).get("id", "")))
+
+
+def vm_nic_for_network(
+    vm_node: dict, network_id: str, cluster: dict, topology: dict
+) -> tuple[int, dict] | None:
+    """Return ``(nic_index, nic_dict)`` for the VM NIC on ``network_id``."""
+    data = vm_node.get("data") or {}
+    nics = data.get("nics") or []
+    if not nics or not network_id:
+        return None
+    nodes_by_id = _topology_nodes_by_id(topology)
+    nic_map = _build_nic_to_network_map(topology, nodes_by_id)
+    for idx, nic in enumerate(nics):
+        nic_id = nic.get("id", "")
+        if nic_id and nic_map.get(nic_id) == network_id:
+            return idx, nic
+    net_ids = cluster.get("networkIds") or []
+    if network_id in net_ids:
+        idx = net_ids.index(network_id)
+        if idx < len(nics):
+            return idx, nics[idx]
+    return None
 
 
 def _first_dns_enabled_network_name(topology: dict) -> str:

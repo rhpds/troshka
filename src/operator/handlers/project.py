@@ -19,6 +19,7 @@ from helpers.topology import (
     extract_vms,
     build_static_leases,
     resolve_vm_disks,
+    install_nics_for_vm,
     resolve_nic_networks,
     extract_containers,
     collect_container_disk_mounts,
@@ -1458,13 +1459,19 @@ def _build_vm_cr(
     namespace,
     name,
     body,
+    topology=None,
 ):
     """Build a TroshkaVM CR dict for a single VM."""
     vm_name = f"vm-{vm['id'][:8]}"
     disk_specs = vm_disks_map.get(vm["id"], [])
 
     nic_specs = []
-    for nic in vm.get("nics", []):
+    deploy_nics = (
+        install_nics_for_vm(vm, nic_network_map, topology or {})
+        if topology is not None
+        else vm.get("nics", [])
+    )
+    for nic in deploy_nics:
         nic_id = nic.get("id", "")
         nic_specs.append(
             {
@@ -1700,6 +1707,7 @@ def _create_vm_crs(
     name,
     body,
     patch,
+    topology=None,
 ):
     """Create TroshkaVM CRs for each VM in the topology."""
     for i, vm in enumerate(vms):
@@ -1712,6 +1720,7 @@ def _create_vm_crs(
             namespace,
             name,
             body,
+            topology=topology,
         )
         try:
             custom_api.create_namespaced_custom_object(
@@ -1813,6 +1822,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
         name,
         body,
         patch,
+        topology=topology,
     )
 
     _setup_vnc_proxy(custom_api, core_api, namespace, name, body, patch)

@@ -4967,8 +4967,12 @@ def _monitor_ops_pod_install(
         )
         if progress["done"]:
             _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
-            # Reap the pod only when every cluster finished successfully.
-            if progress["overall"] == "complete":
+            # Reap only when every cluster succeeded — never because a sibling
+            # finished while another is still terminal-failed or converging.
+            all_complete = all(
+                progress["clusters"].get(key) == PHASE_COMPLETE for key in cluster_keys
+            )
+            if all_complete:
                 try:
                     _cancel_ops_pod_install(host, project_id, cluster_keys)
                     logger.info(

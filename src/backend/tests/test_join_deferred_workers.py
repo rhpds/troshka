@@ -1,11 +1,13 @@
 from app.services.ocp.join_deferred_workers import (
+    build_deferred_worker_nmstate,
     build_join_deferred_workers_cmd,
     deferred_workers_for_cluster,
 )
 
 
-def _worker_node(name, cid, mac, bmc_ip):
+def _worker_node(name, cid, mac, bmc_ip, cluster_ip="10.0.0.20"):
     return {
+        "id": name,
         "type": "vmNode",
         "data": {
             "name": name,
@@ -13,13 +15,16 @@ def _worker_node(name, cid, mac, bmc_ip):
             "tags": {"AnsibleGroup": "workers"},
             "bmcEnabled": True,
             "bmcIp": bmc_ip,
-            "nics": [{"ip": "10.0.0.20", "mac": mac}],
+            "nics": [
+                {"ip": cluster_ip, "mac": mac},
+                {"ip": "172.16.100.20", "mac": "52:54:00:aa:bb:99"},
+            ],
         },
     }
 
 
-def test_deferred_workers_for_cluster_filters_deferred_only():
-    topo = {
+def _cclm_topology():
+    return {
         "clusters": [
             {
                 "id": "source",
@@ -27,16 +32,55 @@ def test_deferred_workers_for_cluster_filters_deferred_only():
                 "type": "sno",
                 "controlPlane": 1,
                 "workers": 2,
+                "networkIds": ["net-cluster", "net-migration"],
             }
         ],
         "nodes": [
+            {
+                "id": "gw-1",
+                "type": "networkNode",
+                "data": {"name": "gateway", "subtype": "gateway"},
+            },
+            {
+                "id": "net-cluster",
+                "type": "networkNode",
+                "data": {
+                    "id": "net-cluster",
+                    "subtype": "network",
+                    "cidr": "10.0.0.0/24",
+                    "dns": True,
+                },
+            },
+            {
+                "id": "net-migration",
+                "type": "networkNode",
+                "data": {
+                    "id": "net-migration",
+                    "subtype": "network",
+                    "cidr": "172.16.100.0/24",
+                    "networkType": "migration",
+                },
+            },
             _worker_node(
                 "source-worker-0", "source", "52:54:00:aa:bb:02", "192.168.100.20"
             ),
-            _worker_node(
-                "source-worker-1", "source", "52:54:00:aa:bb:03", "192.168.100.21"
-            ),
             {
+                "id": "source-worker-1",
+                "type": "vmNode",
+                "data": {
+                    "name": "source-worker-1",
+                    "clusterId": "source",
+                    "tags": {"AnsibleGroup": "workers"},
+                    "bmcEnabled": True,
+                    "bmcIp": "192.168.100.21",
+                    "nics": [
+                        {"ip": "10.0.0.21", "mac": "52:54:00:aa:bb:03"},
+                        {"ip": "172.16.100.21", "mac": "52:54:00:aa:bb:99"},
+                    ],
+                },
+            },
+            {
+                "id": "source-cp-0",
                 "type": "vmNode",
                 "data": {
                     "name": "source-cp-0",
@@ -48,11 +92,48 @@ def test_deferred_workers_for_cluster_filters_deferred_only():
                 },
             },
         ],
+        "edges": [
+            {"source": "gw-1", "target": "net-cluster"},
+            {"source": "gw-1", "target": "net-migration"},
+        ],
     }
+
+
+def test_deferred_workers_for_cluster_filters_deferred_only():
+    topo = _cclm_topology()
     workers = deferred_workers_for_cluster(topo, topo["clusters"][0])
     assert len(workers) == 2
     assert workers[0]["name"] == "source-worker-0"
     assert workers[0]["mac"] == "52:54:00:aa:bb:02"
+    assert workers[0]["ip"] == "10.0.0.20"
+    assert workers[0]["gateway"] == "10.0.0.1"
+    assert workers[0]["aux_nics"][0]["ip"] == "172.16.100.20"
+    assert workers[0]["aux_nics"][0]["mac"] == "52:54:00:aa:bb:99"
+
+
+def test_build_deferred_worker_nmstate_configures_both_nics():
+    worker = {
+        "mac": "52:54:00:aa:bb:02",
+        "ip": "10.0.0.20",
+        "prefix_len": 24,
+        "gateway": "10.0.0.1",
+        "dns_ip": "10.0.0.2",
+        "iface_name": "cluster-nic",
+        "aux_nics": [
+            {
+                "mac": "52:54:00:aa:bb:99",
+                "ip": "172.16.100.20",
+                "prefix_len": 24,
+                "iface_name": "net1-nic",
+            }
+        ],
+    }
+    nmstate = build_deferred_worker_nmstate(worker)
+    assert "mac-address: 52:54:00:aa:bb:02" in nmstate
+    assert "mac-address: 52:54:00:aa:bb:99" in nmstate
+    assert "ip: 172.16.100.20" in nmstate
+    assert "next-hop-interface: cluster-nic" in nmstate
+    assert "next-hop-interface: net1-nic" not in nmstate
 
 
 def test_build_join_cmd_emits_node_image_and_redfish():
@@ -61,12 +142,21 @@ def test_build_join_cmd_emits_node_image_and_redfish():
             "name": "source-worker-0",
             "mac": "52:54:00:aa:bb:02",
             "bmc_ip": "192.168.100.20",
+            "ip": "10.0.0.20",
+            "prefix_len": 24,
+            "gateway": "10.0.0.1",
+            "dns_ip": "10.0.0.2",
+            "iface_name": "cluster-nic",
         },
     ]
     script = build_join_deferred_workers_cmd(
         "  ", "source", workers, "secret", 8080, serving_ip="10.0.0.5"
     )
     assert "oc adm node-image create" in script
+    assert "--network-config-path=" in script
+    assert "network-config.yaml" in script
+    assert "next-hop-address: 10.0.0.1" in script
+    assert "cluster-nic" in script
     assert "node-image create failed for source-worker-0" in script
     assert "waiting for API before worker join" in script
     assert "preflight: checking SCC UID allocation" in script
@@ -101,11 +191,21 @@ def test_build_join_cmd_parallelizes_multiple_workers():
             "name": "source-worker-0",
             "mac": "52:54:00:aa:bb:02",
             "bmc_ip": "192.168.100.20",
+            "ip": "10.0.0.20",
+            "prefix_len": 24,
+            "gateway": "10.0.0.1",
+            "dns_ip": "10.0.0.2",
+            "iface_name": "cluster-nic",
         },
         {
             "name": "source-worker-1",
             "mac": "52:54:00:aa:bb:03",
             "bmc_ip": "192.168.100.21",
+            "ip": "10.0.0.21",
+            "prefix_len": 24,
+            "gateway": "10.0.0.1",
+            "dns_ip": "10.0.0.2",
+            "iface_name": "cluster-nic",
         },
     ]
     script = build_join_deferred_workers_cmd(

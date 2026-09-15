@@ -4758,6 +4758,39 @@ class TestOpsPodDeadDetection:
     @patch(f"{SVC}._ops_pod_running")
     @patch(f"{SVC}._read_ops_pod_cluster_logs")
     @patch(f"{SVC}._is_deploy_cancelled", return_value=False)
+    def test_monitor_multi_cluster_does_not_reap_while_sibling_waiting(
+        self, _mock_cancel, mock_logs, mock_running, _mock_pub, _mock_store, mock_reap
+    ):
+        """Destination finishing must not reap the ops pod while source is still
+        converging — parallel cluster installs are independent."""
+        from app.services.deploy_service import _monitor_ops_pod_install
+
+        host = _make_host()
+        waiting = "Waiting for cluster installation to complete"
+        dest_done = "[destination] install complete"
+        mock_logs.side_effect = [
+            {"destination": dest_done, "source": waiting},
+            {"destination": dest_done, "source": waiting},
+            {"destination": dest_done, "source": "[source] install complete"},
+        ]
+        mock_running.return_value = True
+
+        result = _monitor_ops_pod_install(
+            PROJECT_ID,
+            host,
+            [{"id": "destination"}, {"id": "source"}],
+            poll_interval=0,
+        )
+
+        assert result == "complete"
+        mock_reap.assert_called_once()
+
+    @patch(f"{SVC}._cancel_ops_pod_install")
+    @patch(f"{SVC}._store_ops_pod_creds")
+    @patch(f"{SVC}._publish_ops_pod_progress")
+    @patch(f"{SVC}._ops_pod_running")
+    @patch(f"{SVC}._read_ops_pod_cluster_logs")
+    @patch(f"{SVC}._is_deploy_cancelled", return_value=False)
     def test_monitor_single_not_running_then_recovers(
         self, _mock_cancel, mock_logs, mock_running, _mock_pub, _mock_store, _mock_reap
     ):

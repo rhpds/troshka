@@ -136,6 +136,7 @@ if len(matches) > 1:
     sys.exit(1)
 print(matches[0]["id"])
 PY
+    fi
 }
 
 build_payload() {

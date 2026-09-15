@@ -7,6 +7,11 @@ def test_cluster_install_block_includes_cp_usable_and_worker_join():
             "name": "source-worker-0",
             "mac": "52:54:00:aa:bb:02",
             "bmc_ip": "192.168.100.20",
+            "ip": "10.0.0.20",
+            "prefix_len": 24,
+            "gateway": "10.0.0.1",
+            "dns_ip": "10.0.0.2",
+            "iface_name": "cluster-nic",
         },
     ]
     script = _cluster_install_block(

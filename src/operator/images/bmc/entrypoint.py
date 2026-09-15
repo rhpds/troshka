@@ -365,6 +365,48 @@ def _post_vmedia_insert(handler, identity, body):
 
 
 class RedfishHandler(BaseHTTPRequestHandler):
+    def do_HEAD(self):
+        """CDI's HTTP datasource probes with HEAD before GET; default 501 breaks imports."""
+        if not _require_auth(self):
+            return
+
+        path = self.path.rstrip("/")
+        if path.startswith("/vmedia/download/"):
+            identity = path.split("/vmedia/download/")[1]
+            state = driver.get_vmedia_state(identity)
+            url = state.get("url", "") if state else ""
+            if not url:
+                self.send_response(404)
+                self.end_headers()
+                return
+            try:
+                req = urllib.request.Request(url, method="HEAD")
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    length = resp.headers.get("Content-Length")
+                    if length:
+                        self.send_header("Content-Length", length)
+                    self.end_headers()
+            except Exception:
+                try:
+                    req = urllib.request.Request(url)
+                    req.add_header("Range", "bytes=0-0")
+                    with urllib.request.urlopen(req, timeout=60) as resp:
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/octet-stream")
+                        cl = resp.headers.get("Content-Range", "").split("/")[-1]
+                        if cl.isdigit():
+                            self.send_header("Content-Length", cl)
+                        self.end_headers()
+                except Exception:
+                    self.send_response(502)
+                    self.end_headers()
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
     def do_GET(self):
         if not _require_auth(self):
             return

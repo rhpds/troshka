@@ -12,6 +12,7 @@ _DEPLOY_ONLY_CLUSTER_FIELDS = frozenset(
     {
         "_generatedInstallConfig",
         "_generatedAgentConfig",
+        "_generatedPullThroughItms",
         "controlPlaneDisks",
         "workerDisks",
     }

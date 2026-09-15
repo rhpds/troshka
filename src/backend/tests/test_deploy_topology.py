@@ -1397,3 +1397,61 @@ def test_infra_ip_overlap_warnings_clean_topology_is_empty():
         ]
     }
     assert infra_ip_overlap_warnings(topo) == []
+
+
+def _dual_gateway_cluster_topology():
+    return {
+        "clusters": [
+            {
+                "id": "source",
+                "networkIds": ["net-data", "net-cluster"],
+            }
+        ],
+        "nodes": [
+            {
+                "id": "gw-1",
+                "type": "networkNode",
+                "data": {"name": "gateway", "subtype": "gateway"},
+            },
+            {
+                "id": "net-data",
+                "type": "networkNode",
+                "data": {
+                    "id": "net-data",
+                    "name": "data",
+                    "subtype": "network",
+                    "cidr": "192.168.1.0/24",
+                },
+            },
+            {
+                "id": "net-cluster",
+                "type": "networkNode",
+                "data": {
+                    "id": "net-cluster",
+                    "name": "cluster",
+                    "subtype": "network",
+                    "cidr": "10.0.0.0/24",
+                    "dns": True,
+                },
+            },
+        ],
+        "edges": [
+            {"source": "gw-1", "target": "net-data"},
+            {"source": "gw-1", "target": "net-cluster"},
+        ],
+    }
+
+
+def test_cluster_egress_prefers_dns_enabled_gateway_network():
+    from app.services.deploy_topology import cluster_egress_network_id
+
+    topo = _dual_gateway_cluster_topology()
+    assert cluster_egress_network_id(topo["clusters"][0], topo) == "net-cluster"
+
+
+def test_cluster_egress_rank_dns_before_network_ids_order():
+    from app.services.deploy_topology import rank_cluster_egress_network_nodes
+
+    topo = _dual_gateway_cluster_topology()
+    ranked = rank_cluster_egress_network_nodes(topo["clusters"][0], topo)
+    assert [n["id"] for n in ranked] == ["net-cluster", "net-data"]

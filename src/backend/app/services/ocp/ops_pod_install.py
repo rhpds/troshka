@@ -210,10 +210,10 @@ def ops_pod_install_progress(
         done = True
         if all(phase == PHASE_COMPLETE for phase in clusters.values()):
             overall = PHASE_COMPLETE
-        elif failed and not any(phase == PHASE_COMPLETE for phase in clusters.values()):
-            overall = PHASE_FAILED
         else:
-            overall = PHASE_COMPLETE
+            # Mixed complete+failed is NOT overall success — the monitor must not
+            # reap the ops pod (which would strand a sibling still converging).
+            overall = PHASE_FAILED
     else:
         overall, done = _aggregate_in_progress(clusters), False
 
@@ -243,12 +243,21 @@ def inject_dead_pod_failures(
     ``failed`` immediately instead of spinning to the install timeout. When the
     pod is still running the mapping is returned unchanged; terminal clusters are
     always preserved (a cluster that already completed is never clobbered).
+
+    Multi-cluster installs are independent: once a cluster reaches ``waiting``
+    (openshift-install wait-for / operator convergence), progress continues on the
+    nodes even if the ops pod restarts or is briefly absent. Do not false-fail a
+    waiting sibling while another cluster may still be installing.
     """
     if pod_running:
         return per_cluster_log_or_status
+    multi_cluster = len(per_cluster_log_or_status) > 1
     result: dict[str, str] = {}
     for cid, value in per_cluster_log_or_status.items():
-        if _phase_from_input(value) in (PHASE_COMPLETE, PHASE_FAILED):
+        phase = _phase_from_input(value)
+        if phase in (PHASE_COMPLETE, PHASE_FAILED):
+            result[cid] = value
+        elif multi_cluster and phase == PHASE_WAITING:
             result[cid] = value
         else:
             result[cid] = PHASE_FAILED
@@ -496,6 +505,8 @@ def _agent_create_image_resume_cmd(indent: str) -> str:
         f'{indent}  echo "Agent ISO and installer state present, skipping create-image"\n'
         f"{indent}else\n"
         f"{indent}  cp -f .src/install-config.yaml .src/agent-config.yaml ./\n"
+        f"{indent}  if [ -d .src/openshift ]; then "
+        f"mkdir -p openshift && cp -f .src/openshift/*.yaml openshift/; fi\n"
         + _agent_create_image_cmd(
             indent + "  ", "openshift-install", "create-image.log"
         )
