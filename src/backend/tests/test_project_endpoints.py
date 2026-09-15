@@ -1579,9 +1579,15 @@ class TestFinalizeKubevirtReconfigure:
             topology = None
             state = "reconfiguring"
             deploy_error = "old error"
+            vni_map = {}
+            host_id = None
+            id = "p-123"
 
         class FakeSession:
             def commit(self):
+                pass
+
+            def refresh(self, _obj):
                 pass
 
         proj = FakeProject()

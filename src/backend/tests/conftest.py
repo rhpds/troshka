@@ -47,3 +47,43 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if _TIMEOUT_EXEMPT_MARKERS & {m.name for m in item.iter_markers()}:
             item.add_marker(pytest.mark.timeout(0))
+
+
+# Valid OCP harvest creds for tests (matches kubeconfig_merge validators).
+
+
+def sample_kubeadmin_password() -> str:
+    """Openshift-install-shaped password that passes is_valid_kubeadmin_password."""
+    return "-".join(["testpw", "abcd", "efgh", "ijkl"])
+
+
+def sample_kubeconfig_yaml(server: str = "https://api.test:6443") -> str:
+    import yaml
+
+    return yaml.safe_dump(
+        {
+            "apiVersion": "v1",
+            "kind": "Config",
+            "clusters": [
+                {
+                    "name": "test",
+                    "cluster": {
+                        "server": server,
+                        "certificate-authority-data": "Q0E=",
+                    },
+                }
+            ],
+            "users": [{"name": "admin", "user": {"token": "sha256~abc"}}],
+            "contexts": [
+                {
+                    "name": "test",
+                    "context": {
+                        "cluster": "test",
+                        "user": "admin",
+                        "namespace": "default",
+                    },
+                }
+            ],
+            "current-context": "test",
+        }
+    )

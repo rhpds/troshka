@@ -6,6 +6,7 @@ import copy
 from unittest.mock import MagicMock, patch
 
 from app.services.deploy_service import _monitor_ops_pod_install, _store_ops_pod_creds
+from tests.conftest import sample_kubeadmin_password, sample_kubeconfig_yaml
 
 PROJECT_ID = "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb"
 SVC = "app.services.deploy_service"
@@ -79,8 +80,8 @@ def test_store_ops_pod_creds_injects_all_harvested_clusters(
                 "data": {
                     "clusterId": "destination",
                     "clusterRole": "control-plane",
-                    "ocpKubeconfig": "dest-kc",
-                    "ocpKubeadminPassword": "dest-pw",
+                    "ocpKubeconfig": sample_kubeconfig_yaml(),
+                    "ocpKubeadminPassword": sample_kubeadmin_password(),
                 },
             },
             {
@@ -97,8 +98,10 @@ def test_store_ops_pod_creds_injects_all_harvested_clusters(
     session.query.return_value.filter_by.return_value.first.return_value = project
     mock_session_local.return_value = session
     mock_cat.side_effect = lambda _h, _pid, _ctr, path: {
-        "/workdir/source/auth/kubeadmin-password": "src-pw",
-        "/workdir/source/auth/kubeconfig": "src-kc",
+        "/workdir/source/auth/kubeadmin-password": sample_kubeadmin_password(),
+        "/workdir/source/auth/kubeconfig": sample_kubeconfig_yaml(
+            "https://api.source:6443"
+        ),
     }.get(path, "")
 
     _store_ops_pod_creds(_make_host(), PROJECT_ID, [{"id": "source"}], "/workdir")
@@ -106,5 +109,7 @@ def test_store_ops_pod_creds_injects_all_harvested_clusters(
     mock_inject.assert_called_once()
     injected_creds = mock_inject.call_args[0][3]
     assert set(injected_creds) == {"destination", "source"}
-    assert injected_creds["destination"][1] == "dest-kc"
-    assert injected_creds["source"][1] == "src-kc"
+    assert injected_creds["destination"][1] == sample_kubeconfig_yaml()
+    assert injected_creds["source"][1] == sample_kubeconfig_yaml(
+        "https://api.source:6443"
+    )

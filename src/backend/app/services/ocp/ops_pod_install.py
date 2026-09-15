@@ -130,18 +130,7 @@ def _phase_from_input(value: str) -> str:
         return PHASE_COMPLETE
     if "deferred workers joined" in lowered:
         return PHASE_WAITING
-    if any(marker in lowered for marker in _FAILURE_MARKERS):
-        # Retry breadcrumbs are not terminal — only the final exit-1 line is.
-        if (
-            "node-image create failed" in lowered
-            and "retrying in" in lowered
-            and "error: cannot create pod" not in lowered
-            and "worker join timed out" not in lowered
-        ):
-            pass
-        else:
-            return PHASE_FAILED
-    if (
+    worker_join_active = (
         ("joining" in lowered and "deferred worker" in lowered)
         or "node-image create for" in lowered
         or "node iso url:" in lowered
@@ -153,10 +142,27 @@ def _phase_from_input(value: str) -> str:
         or "worker nodes ready:" in lowered
         or ("waiting for" in lowered and "worker node" in lowered)
         or "waiting for api before worker join" in lowered
-    ):
+        or "deferred workers ready:" in lowered
+    )
+    if worker_join_active:
+        if "error: cannot create pod" in lowered or "worker join timed out" in lowered:
+            return PHASE_FAILED
+        if "node-image create failed" in lowered and "retrying in" in lowered:
+            return PHASE_WAITING
         return PHASE_WAITING
     if "install complete" in lowered:
         return PHASE_COMPLETE
+    if any(marker in lowered for marker in _FAILURE_MARKERS):
+        # Retry breadcrumbs are not terminal — only the final exit-1 line is.
+        if (
+            "node-image create failed" in lowered
+            and "retrying in" in lowered
+            and "error: cannot create pod" not in lowered
+            and "worker join timed out" not in lowered
+        ):
+            pass
+        else:
+            return PHASE_FAILED
     for marker, phase in _LOG_MARKERS:
         if marker.lower() in lowered:
             return phase

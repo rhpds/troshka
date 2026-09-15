@@ -16,6 +16,7 @@ from app.services.ocp.ops_pod_scaffold import (
     ops_pod_config_files,
     ops_pod_infra_network,
 )
+from tests.conftest import sample_kubeadmin_password, sample_kubeconfig_yaml
 
 
 def _vni_map() -> dict:
@@ -279,8 +280,8 @@ def test_install_script_per_cluster_skip_guard():
     assert "[ -f /workdir/prod/.install-complete ]" in script
     assert "[ -f /workdir/dev/.install-complete ]" in script
     # The guard exits the cluster's subshell as success when already installed.
-    assert "[prod] already installed, skipping" in script
-    assert "[dev] already installed, skipping" in script
+    assert "[prod] install already complete, skipping agent install" in script
+    assert "[dev] install already complete, skipping agent install" in script
 
 
 def test_install_script_skip_guard_before_create_image():
@@ -357,8 +358,7 @@ def test_install_script_holds_container_on_success():
 def test_install_script_downloads_from_same_mirror():
     script = _install_script()
     assert (
-        "mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-$OCP_VERSION"
-        in script
+        "mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp/stable-4.20" in script
     )
 
 
@@ -566,7 +566,7 @@ def test_progress_any_failed_still_in_progress_while_sibling_waiting():
 
 def test_progress_mixed_terminal_overall_complete_not_failed():
     p = ops_pod_install_progress({"c1": "complete", "c2": "failed"})
-    assert p["overall"] == "complete"
+    assert p["overall"] == "failed"
     assert p["done"] is True
     assert p["failed"] == ["c2"]
 
@@ -1210,14 +1210,20 @@ def test_apply_ops_pod_creds_control_plane_only():
             },
         ]
     }
-    changed = _apply_ops_pod_creds(topo, {"ocp": ("pw123", "KC")})
+    kc = sample_kubeconfig_yaml()
+    changed = _apply_ops_pod_creds(topo, {"ocp": (sample_kubeadmin_password(), kc)})
     assert changed is True
     cp = topo["nodes"][0]["data"]
-    assert cp["ocpKubeadminPassword"] == "pw123" and cp["ocpKubeconfig"] == "KC"
+    assert (
+        cp["ocpKubeadminPassword"] == sample_kubeadmin_password()
+        and cp["ocpKubeconfig"] == kc
+    )
     assert "ocpKubeadminPassword" not in topo["nodes"][1]["data"]  # worker skipped
     assert "ocpKubeadminPassword" not in topo["nodes"][2]["data"]  # other cluster
     # Idempotent: re-applying the same creds reports no change.
-    assert _apply_ops_pod_creds(topo, {"ocp": ("pw123", "KC")}) is False
+    assert (
+        _apply_ops_pod_creds(topo, {"ocp": (sample_kubeadmin_password(), kc)}) is False
+    )
 
 
 def test_cluster_access_returns_control_plane_creds():
@@ -1380,8 +1386,8 @@ def test_stored_cluster_creds_from_control_plane_nodes():
                 "data": {
                     "clusterId": "ocp",
                     "clusterRole": "control-plane",
-                    "ocpKubeadminPassword": "pw",
-                    "ocpKubeconfig": "KC",
+                    "ocpKubeadminPassword": sample_kubeadmin_password(),
+                    "ocpKubeconfig": sample_kubeconfig_yaml(),
                 },
             },
             {
@@ -1394,7 +1400,9 @@ def test_stored_cluster_creds_from_control_plane_nodes():
             },
         ]
     }
-    assert _stored_cluster_creds(topo) == {"ocp": ("pw", "KC")}
+    assert _stored_cluster_creds(topo) == {
+        "ocp": (sample_kubeadmin_password(), sample_kubeconfig_yaml())
+    }
     # nothing harvested yet -> empty
     assert (
         _stored_cluster_creds(

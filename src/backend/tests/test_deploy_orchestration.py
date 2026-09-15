@@ -4563,6 +4563,15 @@ class TestOpsPodCreateParams:
 class TestDeployOpsPod:
     """End-to-end (mocked troshkad) ops-pod create+start sequence."""
 
+    @pytest.fixture(autouse=True)
+    def _skip_ops_pod_config_gen(self):
+        with (
+            patch(f"{SVC}._ensure_ocp_generated_configs"),
+            patch(f"{SVC}._resolve_ops_pod_pull_secret", return_value=""),
+            patch(f"{SVC}._cancel_ops_pod_install_troshkad"),
+        ):
+            yield
+
     @patch(f"{SVC}._start_ops_pod_install_monitor")
     @patch("app.services.ocp.ops_pod_auth.mint_ops_pod_key", return_value="trk_test")
     @patch(f"{SVC}.wait_for_job", return_value={"status": "completed"})
@@ -4898,6 +4907,15 @@ class TestOpsPodOcpStatus:
     (monitoring -> ready / error)."""
 
     @pytest.fixture(autouse=True)
+    def _skip_ops_pod_config_gen(self):
+        with (
+            patch(f"{SVC}._ensure_ocp_generated_configs"),
+            patch(f"{SVC}._resolve_ops_pod_pull_secret", return_value=""),
+            patch(f"{SVC}._cancel_ops_pod_install_troshkad"),
+        ):
+            yield
+
+    @pytest.fixture(autouse=True)
     def _passthrough_log_cache(self):
         """Passthrough the keep-longest log cache so a prior test's cached log
         can't leak via the shared PROJECT_ID (see TestOpsPodDeadDetection)."""
@@ -4942,13 +4960,22 @@ class TestOpsPodOcpStatus:
 
     @patch(f"{SVC}._cancel_ops_pod_install")
     @patch(f"{SVC}._store_ops_pod_creds")
-    @patch(f"{SVC}._ocp_update_status")
+    @patch(f"{SVC}._sync_project_ocp_status_from_clusters")
+    @patch(f"{SVC}._finalize_cluster_ocp_status")
     @patch(f"{SVC}._publish_ops_pod_progress")
     @patch(f"{SVC}._ops_pod_running", return_value=True)
     @patch(f"{SVC}._read_ops_pod_cluster_logs")
     @patch(f"{SVC}._is_deploy_cancelled", return_value=False)
     def test_monitor_complete_persists_ready(
-        self, _cancel, mock_logs, _running, _pub, mock_status, _mock_store, _mock_reap
+        self,
+        _cancel,
+        mock_logs,
+        _running,
+        _pub,
+        mock_finalize,
+        mock_sync,
+        _mock_store,
+        _mock_reap,
     ):
         from app.services.deploy_service import _monitor_ops_pod_install
 
@@ -4959,19 +4986,22 @@ class TestOpsPodOcpStatus:
         )
 
         assert result == "complete"
-        mock_status.assert_called_once()
-        call = mock_status.call_args[0]
+        mock_finalize.assert_called_once()
+        call = mock_finalize.call_args[0]
         assert call[0] == PROJECT_ID
-        assert call[1] == "ready"
-        assert isinstance(call[2], int)  # elapsed seconds persisted
+        assert call[1] == "c1"
+        assert call[2] == "complete"
+        assert isinstance(call[3], int)  # elapsed seconds persisted
+        mock_sync.assert_called_once()
 
-    @patch(f"{SVC}._ocp_update_status")
+    @patch(f"{SVC}._sync_project_ocp_status_from_clusters")
+    @patch(f"{SVC}._finalize_cluster_ocp_status")
     @patch(f"{SVC}._publish_ops_pod_progress")
     @patch(f"{SVC}._ops_pod_running", return_value=True)
     @patch(f"{SVC}._read_ops_pod_cluster_logs")
     @patch(f"{SVC}._is_deploy_cancelled", return_value=False)
     def test_monitor_failed_persists_error(
-        self, _cancel, mock_logs, _running, _pub, mock_status
+        self, _cancel, mock_logs, _running, _pub, mock_finalize, mock_sync
     ):
         from app.services.deploy_service import _monitor_ops_pod_install
 
@@ -4982,13 +5012,17 @@ class TestOpsPodOcpStatus:
         )
 
         assert result == "failed"
-        mock_status.assert_called_once()
-        assert mock_status.call_args[0][1] == "error"
+        mock_finalize.assert_called_once()
+        assert mock_finalize.call_args[0][2] == "failed"
+        mock_sync.assert_called_once()
 
-    @patch(f"{SVC}._ocp_update_status")
+    @patch(f"{SVC}._sync_project_ocp_status_from_clusters")
+    @patch(f"{SVC}._finalize_cluster_ocp_status")
     @patch(f"{SVC}._publish_ops_pod_progress")
     @patch(f"{SVC}._is_deploy_cancelled", return_value=False)
-    def test_monitor_timeout_persists_error(self, _cancel, _pub, mock_status):
+    def test_monitor_timeout_persists_error(
+        self, _cancel, _pub, mock_finalize, mock_sync
+    ):
         from app.services.deploy_service import _monitor_ops_pod_install
 
         # timeout=0 -> the poll loop never runs; monitor falls through to timeout.
@@ -4997,8 +5031,9 @@ class TestOpsPodOcpStatus:
         )
 
         assert result == "timeout"
-        mock_status.assert_called_once()
-        assert mock_status.call_args[0][1] == "error"
+        mock_finalize.assert_called_once()
+        assert mock_finalize.call_args[0][2] == "failed"
+        mock_sync.assert_called_once()
 
     @patch(f"{SVC}._ocp_update_status")
     @patch(f"{SVC}._cancel_ops_pod_install")
@@ -5053,6 +5088,16 @@ def _ops_pod_topology():
 
 class TestDeployOpsPodBranch:
     """`_deploy_ops_pod` dispatches on host_type: troshkad vs kubevirt."""
+
+    @pytest.fixture(autouse=True)
+    def _skip_ops_pod_config_gen(self):
+        with (
+            patch(f"{SVC}._ensure_ocp_generated_configs"),
+            patch(f"{SVC}._resolve_ops_pod_pull_secret", return_value=""),
+            patch(f"{SVC}._validate_ops_pod_config_files"),
+            patch(f"{SVC}._cancel_ops_pod_install_troshkad"),
+        ):
+            yield
 
     @patch(f"{SVC}._start_ops_pod_install_monitor")
     @patch(f"{SVC}._mark_ocp_install_started")
@@ -5379,9 +5424,10 @@ class TestInjectClusterKubeconfigsKubevirt:
             deploy_service._inject_cluster_kubeconfigs_kubevirt(
                 host, "81d2898e-x", self._topo(), "mkdir -p /showroom/kube && ..."
             )
-        assert mock_stream.called
-        kwargs = mock_stream.call_args.kwargs
-        args = mock_stream.call_args.args
+        assert mock_stream.call_count >= 1
+        kubeconfig_call = mock_stream.call_args_list[0]
+        kwargs = kubeconfig_call.kwargs
+        args = kubeconfig_call.args
         assert "pod-d00ddc6c" in args  # pod-<showroom_node_id[:8]>
         assert kwargs["container"] == "proxy"
         assert kwargs["command"][:2] == ["sh", "-c"]

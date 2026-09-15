@@ -3515,7 +3515,7 @@ class TestExtractBmcConfig:
         assert _extract_bmc_config(topo, "proj-123") is None
 
     def test_bmc_with_vms(self):
-        from app.services.deploy_topology import _extract_bmc_config
+        from app.services.deploy_topology import _extract_bmc_config, _vm_domain_name
 
         topo = {
             "nodes": [
@@ -3540,7 +3540,9 @@ class TestExtractBmcConfig:
         assert config is not None
         assert len(config["vms"]) == 1
         assert config["vms"][0]["bmc_ip"] == "192.168.100.10"
-        assert config["vms"][0]["domain_name"] == "troshka-proj-123-vm1"
+        assert config["vms"][0]["domain_name"] == _vm_domain_name(
+            "proj-12345678", "vm1"
+        )
 
     def test_bmc_with_dhcp_hosts(self):
         from app.services.deploy_topology import _extract_bmc_config

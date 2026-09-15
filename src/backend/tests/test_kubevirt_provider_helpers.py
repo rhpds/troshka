@@ -654,6 +654,10 @@ class TestFindVirtLauncher:
         pod = MagicMock()
         pod.metadata.name = "virt-launcher-troshka-vm-abcdef12-xyz"
         pod.status.phase = "Running"
+        compute = MagicMock()
+        compute.name = "compute"
+        compute.ready = True
+        pod.status.container_statuses = [compute]
         result_obj = MagicMock()
         result_obj.items = [pod]
         core_v1.list_namespaced_pod.return_value = result_obj
@@ -937,10 +941,10 @@ class TestVncLogin:
         )
 
         assert result is False
-        # Should have tried 4 times (the loop range)
-        assert screenshot_ocr_fn.call_count == 4
+        # Should have tried 6 times (the loop range)
+        assert screenshot_ocr_fn.call_count == 6
         # Each unknown state sends KEY_ENTER
-        assert send_keys_fn.call_count == 4
+        assert send_keys_fn.call_count == 6
 
 
 # ---------------------------------------------------------------------------

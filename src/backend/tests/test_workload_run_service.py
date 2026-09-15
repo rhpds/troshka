@@ -512,7 +512,10 @@ def test_inventory_connection_mode_always_troshka():
 def test_resolve_kubeconfig_selects_by_cluster_id():
     """_resolve_kubeconfig returns the kubeconfig for the specified cluster_id."""
     from app.services.workloads.run_service import _resolve_kubeconfig
+    from tests.conftest import sample_kubeadmin_password, sample_kubeconfig_yaml
 
+    kc1 = sample_kubeconfig_yaml("https://api.cluster-1:6443")
+    kc2 = sample_kubeconfig_yaml("https://api.cluster-2:6443")
     topo = {
         "nodes": [
             {
@@ -520,8 +523,8 @@ def test_resolve_kubeconfig_selects_by_cluster_id():
                 "data": {
                     "clusterId": "cluster-1",
                     "clusterRole": "control-plane",
-                    "ocpKubeconfig": "kubeconfig-1",
-                    "ocpKubeadminPassword": "pw-1",
+                    "ocpKubeconfig": kc1,
+                    "ocpKubeadminPassword": sample_kubeadmin_password(),
                 },
             },
             {
@@ -529,8 +532,8 @@ def test_resolve_kubeconfig_selects_by_cluster_id():
                 "data": {
                     "clusterId": "cluster-2",
                     "clusterRole": "control-plane",
-                    "ocpKubeconfig": "kubeconfig-2",
-                    "ocpKubeadminPassword": "pw-2",
+                    "ocpKubeconfig": kc2,
+                    "ocpKubeadminPassword": sample_kubeadmin_password(),
                 },
             },
         ]
@@ -538,13 +541,16 @@ def test_resolve_kubeconfig_selects_by_cluster_id():
 
     target_map = {"cluster_id": "cluster-2"}
     kc = _resolve_kubeconfig(topo, target_map)
-    assert kc == "kubeconfig-2"
+    assert kc == kc2
 
 
 def test_resolve_kubeconfig_defaults_to_first_cluster():
     """_resolve_kubeconfig returns the first cluster's kubeconfig when cluster_id is None."""
     from app.services.workloads.run_service import _resolve_kubeconfig
+    from tests.conftest import sample_kubeconfig_yaml
 
+    kc1 = sample_kubeconfig_yaml("https://api.cluster-1:6443")
+    kc2 = sample_kubeconfig_yaml("https://api.cluster-2:6443")
     topo = {
         "nodes": [
             {
@@ -552,7 +558,7 @@ def test_resolve_kubeconfig_defaults_to_first_cluster():
                 "data": {
                     "clusterId": "cluster-1",
                     "clusterRole": "control-plane",
-                    "ocpKubeconfig": "kubeconfig-1",
+                    "ocpKubeconfig": kc1,
                 },
             },
             {
@@ -560,7 +566,7 @@ def test_resolve_kubeconfig_defaults_to_first_cluster():
                 "data": {
                     "clusterId": "cluster-2",
                     "clusterRole": "control-plane",
-                    "ocpKubeconfig": "kubeconfig-2",
+                    "ocpKubeconfig": kc2,
                 },
             },
         ]
@@ -568,7 +574,7 @@ def test_resolve_kubeconfig_defaults_to_first_cluster():
 
     # No cluster_id in target_map → first cluster
     kc = _resolve_kubeconfig(topo, None)
-    assert kc == "kubeconfig-1"
+    assert kc == kc1
 
 
 def test_resolve_kubeconfig_returns_none_when_cluster_id_not_found():
