@@ -8,6 +8,8 @@ import yaml
 
 from app.services.ocp.kubeconfig_merge import (
     cluster_terminal_motd_text,
+    is_valid_kubeadmin_password,
+    is_valid_kubeconfig,
     merge_kubeconfigs,
 )
 
@@ -39,6 +41,21 @@ def _kc(
             "current-context": ctx,
         }
     )
+
+
+def test_is_valid_kubeadmin_password_rejects_cat_errors():
+    assert not is_valid_kubeadmin_password(
+        "cat: /workdir/destination/auth/kubeadmin-password: No such file"
+    )
+    assert is_valid_kubeadmin_password("raYLB-kf6JY-6naZk-XyCLH")
+
+
+def test_is_valid_kubeconfig_rejects_cat_errors_and_accepts_real_config():
+    assert not is_valid_kubeconfig(
+        "cat: /workdir/destination/auth/kubeconfig: No such file or directory\n"
+    )
+    assert not is_valid_kubeconfig("")
+    assert is_valid_kubeconfig(_kc())
 
 
 def test_single_cluster_becomes_default_context():
@@ -96,20 +113,48 @@ def test_display_name_sanitized_for_context():
     assert merged["current-context"] == "my-cluster"
 
 
-def test_cluster_terminal_motd_empty_for_single_cluster():
-    merged = merge_kubeconfigs([("ocp", _kc())])
-    assert cluster_terminal_motd_text(merged) == ""
+def test_cluster_terminal_motd_includes_single_cluster_access_info():
+    merged = merge_kubeconfigs([("source", _kc(server="https://10.0.0.10:6443"))])
+    motd = cluster_terminal_motd_text(
+        merged,
+        clusters=[{"id": "source", "name": "source", "baseDomain": "source.lab.local"}],
+        creds={"source": ("s3cr3t", _kc())},
+    )
+    assert "* source  (current)" in motd
+    assert "API:       https://10.0.0.10:6443" in motd
+    assert (
+        "Console:   https://console-openshift-console.apps.source.source.lab.local"
+        in motd
+    )
+    assert "Kubeadmin: s3cr3t" in motd
 
 
-def test_cluster_terminal_motd_lists_context_switch_commands():
+def test_cluster_terminal_motd_lists_per_context_details_for_multi_cluster():
     merged = merge_kubeconfigs(
         [
-            ("source", _kc(server="https://api.source:6443")),
-            ("destination", _kc(server="https://api.destination:6443")),
+            ("source", _kc(server="https://10.0.0.10:6443")),
+            ("destination", _kc(server="https://10.0.0.110:6443")),
         ]
     )
-    motd = cluster_terminal_motd_text(merged)
+    motd = cluster_terminal_motd_text(
+        merged,
+        clusters=[
+            {"id": "source", "name": "source", "baseDomain": "source.lab.local"},
+            {
+                "id": "destination",
+                "name": "destination",
+                "baseDomain": "dest.lab.local",
+            },
+        ],
+        creds={
+            "source": ("pw-source", _kc()),
+            "destination": ("pw-dest", _kc()),
+        },
+    )
     assert "oc config get-contexts" in motd
     assert "oc config use-context <name>" in motd
-    assert "Current context: source" in motd
-    assert "Available: source, destination" in motd
+    assert "* source  (current)" in motd
+    assert "destination" in motd
+    assert "Kubeadmin: pw-source" in motd
+    assert "Kubeadmin: pw-dest" in motd
+    assert "console-openshift-console.apps.destination.dest.lab.local" in motd

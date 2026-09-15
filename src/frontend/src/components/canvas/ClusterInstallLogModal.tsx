@@ -32,8 +32,12 @@ const WORKER_JOIN_STAGES: { label: string; re: RegExp }[] = [
   { label: "Building worker ISO", re: /node-image create for/i },
   { label: "Booting worker nodes", re: /Node ISO URL|net-booting worker/i },
   {
-    label: "Worker nodes ready",
-    re: /deferred workers joined|worker nodes Ready:/i,
+    label: "Worker nodes joined",
+    re: /deferred workers joined/i,
+  },
+  {
+    label: "Worker nodes converged",
+    re: /deferred workers converged/i,
   },
 ];
 
@@ -55,7 +59,7 @@ export function clusterHasDeferredWorkers(cluster?: ClusterConfig): boolean {
 }
 
 function deferredWorkersInLog(log: string): boolean {
-  return /joining \d+ deferred worker|node-image create for|deferred workers joined|worker nodes Ready:/i.test(
+  return /joining \d+ deferred worker|node-image create for|deferred workers joined|deferred workers converged|deferred workers Ready:|waiting for worker/i.test(
     log,
   );
 }
@@ -73,7 +77,33 @@ export function stagesFor(
   return INSTALL_STAGES;
 }
 
-type StageState = "done" | "active" | "pending";
+type StageState = "done" | "active" | "pending" | "failed";
+
+/** True when the install log (or backend status) indicates a terminal failure. */
+export function installLogIndicatesFailure(
+  log: string,
+  clusterStatus?: string | null,
+): boolean {
+  if (clusterStatus === "error") return true;
+  if (/level=fatal|\[.*\] install failed|worker join timed out/i.test(log)) {
+    return true;
+  }
+  if (/error: cannot create pod/i.test(log)) return true;
+  if (/\[.*\] restart failed:/i.test(log)) return true;
+  // Terminal worker-join failure (not a retry breadcrumb).
+  return /\[[^\]]+\] node-image create failed for /i.test(log) && !/retrying in \d+s/i.test(log);
+}
+
+/** True when openshift-install wait-for is looping without making install progress. */
+export function installLogIndicatesStuck(log: string): boolean {
+  // Only after ISO net-boot + wait-for starts — not during create-image or node boot.
+  if (!/Waiting for cluster installation to complete/i.test(log)) {
+    return false;
+  }
+  const initWaits = log.match(/Waiting for cluster install to initialize/gi);
+  // 15 × 30s ≈ 7.5 min in the init loop; early lines are normal while the node installs.
+  return (initWaits?.length ?? 0) >= 15;
+}
 
 function fmtElapsed(total: number): string {
   return `${Math.floor(total / 60)}m ${(total % 60).toString().padStart(2, "0")}s`;
@@ -104,11 +134,13 @@ function parseOperators(log: string): { pending: string[] } {
   return { pending };
 }
 
-/** Latest worker Ready count from poll breadcrumbs (``worker nodes Ready: X/Y``). */
+/** Latest worker Ready count from poll breadcrumbs. */
 export function parseWorkerReady(log: string): { ready: number; expected: number } | null {
   let last: { ready: number; expected: number } | null = null;
   for (const line of log.split("\n")) {
-    const m = line.match(/worker nodes Ready:\s*(\d+)\/(\d+)/i);
+    const m =
+      line.match(/deferred workers Ready:\s*(\d+)\/(\d+)/i) ||
+      line.match(/worker nodes Ready:\s*(\d+)\/(\d+)/i);
     if (m) last = { ready: parseInt(m[1], 10), expected: parseInt(m[2], 10) };
   }
   return last;
@@ -117,6 +149,8 @@ export function parseWorkerReady(log: string): { ready: number; expected: number
 export function deriveStages(
   log: string,
   cluster?: ClusterConfig,
+  failed = false,
+  clusterStatus?: string | null,
 ): { label: string; state: StageState }[] {
   const stages = stagesFor(log, cluster);
   let last = -1;
@@ -125,18 +159,48 @@ export function deriveStages(
   });
   const completeIdx = stages.length - 1;
   const workersJoined = /deferred workers joined/i.test(log);
+  const workersConverged = /deferred workers converged/i.test(log);
+  const workersReadyPoll = /deferred workers Ready:/i.test(log);
+  const clusterReady = clusterStatus === "ready";
   return stages.map((s, i) => {
     let state: StageState = "pending";
     if (
-      s.label === "Worker nodes ready" &&
-      !workersJoined &&
-      s.re.test(log)
+      clusterReady &&
+      workersJoined &&
+      (s.label === "Worker nodes joined" || s.label === "Worker nodes converged")
+    ) {
+      state = "done";
+    } else if (
+      s.label === "Worker nodes joined" &&
+      workersJoined &&
+      !workersConverged
+    ) {
+      state = "done";
+    } else if (
+      s.label === "Worker nodes converged" &&
+      workersJoined &&
+      !workersConverged
     ) {
       state = "active";
+    } else if (
+      s.label === "Worker nodes joined" &&
+      workersReadyPoll &&
+      !workersJoined
+    ) {
+      state = "active";
+    } else if (
+      s.label === "Booting worker nodes" &&
+      workersReadyPoll &&
+      !workersJoined
+    ) {
+      state = "done";
     } else if (i < last || (i === last && last === completeIdx)) {
       state = "done";
     } else if (i === last) {
       state = "active";
+    }
+    if (failed && state === "active") {
+      state = "failed";
     }
     return { label: s.label, state };
   });
@@ -168,9 +232,11 @@ export default function ClusterInstallLogModal() {
     vm_name: string;
   } | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [, setTick] = useState(0);
   const preRef = useRef<HTMLPreElement>(null);
   const restartGuardRef = useRef<number | null>(null);
+  const cancellingRef = useRef(false);
 
   useEffect(() => {
     if (!target || !projectId) return;
@@ -191,6 +257,16 @@ export default function ClusterInstallLogModal() {
         if (!r.ok || cancelled) return;
         const data = await r.json();
         if (!cancelled) {
+          // Freeze the log while cancel is in flight — the ops pod may still append
+          // for up to ~20s until the worker tears it down.
+          if (cancellingRef.current) {
+            if (data.cluster_status === "error") {
+              cancellingRef.current = false;
+              setCancelling(false);
+              setClusterStatus("error");
+            }
+            return;
+          }
           // Ignore stale logs briefly after restart — the dying ops pod can still
           // serve the old install.log until the worker recycles it.
           if (restartGuardRef.current) {
@@ -224,6 +300,10 @@ export default function ClusterInstallLogModal() {
           );
           if (typeof data.cluster_status === "string") {
             setClusterStatus(data.cluster_status);
+            if (data.cluster_status === "error") {
+              cancellingRef.current = false;
+              setCancelling(false);
+            }
           }
           if (data.kubeadmin_password || data.kubeconfig_available) {
             setAccess({
@@ -264,24 +344,28 @@ export default function ClusterInstallLogModal() {
   const cluster = clusters.find(
     (c) => c.id === target.clusterKey || c.name === target.clusterKey,
   );
-  const stages = deriveStages(log, cluster);
+  const failed =
+    !restarting && !cancelling && installLogIndicatesFailure(log, clusterStatus);
+  const stuck =
+    !restarting && !cancelling && !failed && installLogIndicatesStuck(log);
+  const stages = deriveStages(log, cluster, failed || cancelling, clusterStatus);
   const ops = parseOperators(log);
   const workerReady = parseWorkerReady(log);
   const installed = stages[stages.length - 1]?.state === "done";
-  const failed =
-    !restarting &&
-    (clusterStatus === "error" ||
-      /level=fatal|\[.*\] install failed|worker join timed out/i.test(log));
-  // Terminal = complete OR failed: stop advancing the timer either way.
-  const terminal = installed || failed;
+  // Terminal = complete, failed, or cancelling: stop advancing the timer.
+  const terminal = installed || failed || cancelling;
 
   // Prominent header status badge — mirrors the canvas/project-list OCP status
   // so the outcome is obvious from the log view itself, not just the palette.
   // Pattern deploys recert (never reinstall) — surface that distinctly (violet)
   // so it's not mistaken for a fresh install.
   const isRecert = /\(recert\)/i.test(log);
-  const statusBadge = failed
+  const statusBadge = cancelling
+    ? { label: "Cancelling", fg: "#fbbf24", bg: "rgba(251,191,36,0.14)", bd: "rgba(251,191,36,0.45)" }
+    : failed
     ? { label: "Error", fg: "#f87171", bg: "rgba(248,113,113,0.14)", bd: "rgba(248,113,113,0.45)" }
+    : stuck
+      ? { label: "Stuck", fg: "#fb923c", bg: "rgba(251,146,60,0.14)", bd: "rgba(251,146,60,0.45)" }
     : installed
       ? { label: isRecert ? "Re-Certified" : "Complete", fg: "#4ade80", bg: "rgba(74,222,128,0.14)", bd: "rgba(74,222,128,0.45)" }
       : isRecert
@@ -311,6 +395,40 @@ export default function ClusterInstallLogModal() {
   // (populated on project load) so an already-deployed cluster still shows them.
   const kubeadminPw = access?.kubeadmin_password || storePw;
   const hasKubeconfig = access?.kubeconfig_available || !!storeKubeconfigVm;
+
+  const handleCancelInstall = async () => {
+    if (!projectId || !target || cancelling || terminal) return;
+    if (!confirm(`Cancel the ${target.name} cluster install? This cannot be undone.`)) {
+      return;
+    }
+    setCancelling(true);
+    cancellingRef.current = true;
+    setLog(
+      (prev) =>
+        `${prev}${prev.endsWith("\n") || !prev ? "" : "\n"}[${target.clusterKey}] install cancel requested — log frozen pending teardown\n`,
+    );
+    try {
+      const r = await fetch(
+        `/api/v1/projects/${projectId}/ocp/cancel-install?cluster=${encodeURIComponent(target.clusterKey)}`,
+        { method: "POST" },
+      );
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}));
+        alert(typeof data.detail === "string" ? data.detail : "Failed to cancel install");
+        cancellingRef.current = false;
+        setCancelling(false);
+        return;
+      }
+      setClusterStatus("error");
+      if (installElapsed == null && timerBase != null) {
+        setInstallElapsed(Math.max(0, Math.floor(Date.now() / 1000 - timerBase)));
+      }
+    } catch {
+      alert("Failed to cancel install");
+      cancellingRef.current = false;
+      setCancelling(false);
+    }
+  };
 
   const handleRestartInstall = async () => {
     if (!projectId || !target || restarting) return;
@@ -431,10 +549,28 @@ export default function ClusterInstallLogModal() {
             )}
           </h3>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            {failed && !isRecert && (
+            {!terminal && !isRecert && (
+              <button
+                onClick={handleCancelInstall}
+                disabled={cancelling || restarting}
+                style={{
+                  background: "rgba(248,113,113,0.14)",
+                  border: "1px solid rgba(248,113,113,0.45)",
+                  color: "#f87171",
+                  cursor: cancelling || restarting ? "wait" : "pointer",
+                  fontSize: 11,
+                  padding: "4px 10px",
+                  borderRadius: 4,
+                  fontWeight: 600,
+                }}
+              >
+                {cancelling ? "Cancelling…" : "Cancel build"}
+              </button>
+            )}
+            {(failed || stuck) && !isRecert && (
               <button
                 onClick={handleRestartInstall}
-                disabled={restarting}
+                disabled={restarting || cancelling}
                 style={{
                   background: "rgba(248,113,113,0.14)",
                   border: "1px solid rgba(248,113,113,0.45)",
@@ -520,7 +656,7 @@ export default function ClusterInstallLogModal() {
               Install progress
             </div>
             {/* Install stages derived from the log — no bastion/cluster access
-                needed. Each stage: ✓ done, ⟳ active, ○ pending. */}
+                needed. Each stage: ✓ done, ⟳ active, ✗ failed, ○ pending. */}
             <div style={{ fontSize: 11, lineHeight: 1.9 }}>
               {stages.map((s) => (
                 <React.Fragment key={s.label}>
@@ -528,6 +664,8 @@ export default function ClusterInstallLogModal() {
                   <span style={{ width: 14, flexShrink: 0, textAlign: "center" }}>
                     {s.state === "done" ? (
                       <span style={{ color: "#4ade80" }}>✓</span>
+                    ) : s.state === "failed" ? (
+                      <span style={{ color: "#f87171" }}>✗</span>
                     ) : s.state === "active" ? (
                       <span
                         className="project-btn-spinner"
@@ -542,6 +680,8 @@ export default function ClusterInstallLogModal() {
                       color:
                         s.state === "done"
                           ? "var(--pf-t--global--text--color--regular)"
+                          : s.state === "failed"
+                            ? "#f87171"
                           : s.state === "active"
                             ? "#22d3ee"
                             : "var(--pf-t--global--text--color--subtle)",
@@ -567,7 +707,8 @@ export default function ClusterInstallLogModal() {
                     ))}
                   </div>
                 )}
-                {s.label === "Worker nodes ready" &&
+                {(s.label === "Worker nodes joined" ||
+                  s.label === "Worker nodes converged") &&
                   s.state === "active" &&
                   workerReady &&
                   workerReady.ready < workerReady.expected && (

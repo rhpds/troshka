@@ -83,6 +83,9 @@ _wait_for_cluster_api
 _write_cluster_motd() {
     local kc=/showroom/kube/config motd=/showroom/kube/motd
     local -a contexts=() current="" available="" name
+    # Backend injects a rich MOTD (API, console, kubeadmin per context) at cred
+    # harvest time — do not overwrite it with this lightweight fallback.
+    [ -s "$motd" ] && return 0
     [ -f "$kc" ] || return 0
     mapfile -t contexts < <(KUBECONFIG="$kc" oc config get-contexts -o name 2>/dev/null)
     if [ "${#contexts[@]}" -le 1 ]; then

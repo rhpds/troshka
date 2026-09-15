@@ -104,11 +104,13 @@ _FAILURE_MARKERS = (
     "failed to wait for install",
     "recert failed",  # recert-mode block's fail-closed exit (kubeconfig/gate)
     "worker join timed out",
+    "worker convergence timed out",
     "node-image create failed",
     "error: cannot create pod",
     "imagepolicy",
     "no iso for",
     "api not ready for worker join",
+    "scc uid range not available for worker join",
 )
 
 
@@ -124,15 +126,30 @@ def _phase_from_input(value: str) -> str:
     if text in _KNOWN_PHASES:
         return text
     lowered = text.lower()
-    if "deferred workers joined" in lowered:
+    if "deferred workers converged" in lowered:
         return PHASE_COMPLETE
+    if "deferred workers joined" in lowered:
+        return PHASE_WAITING
     if any(marker in lowered for marker in _FAILURE_MARKERS):
-        return PHASE_FAILED
+        # Retry breadcrumbs are not terminal — only the final exit-1 line is.
+        if (
+            "node-image create failed" in lowered
+            and "retrying in" in lowered
+            and "error: cannot create pod" not in lowered
+            and "worker join timed out" not in lowered
+        ):
+            pass
+        else:
+            return PHASE_FAILED
     if (
         ("joining" in lowered and "deferred worker" in lowered)
         or "node-image create for" in lowered
         or "node iso url:" in lowered
         or "net-booting worker" in lowered
+        or "net-booted worker" in lowered
+        or "worker joined (iso ejected)" in lowered
+        or "waiting for worker" in lowered
+        or "joining workers in parallel" in lowered
         or "worker nodes ready:" in lowered
         or ("waiting for" in lowered and "worker node" in lowered)
         or "waiting for api before worker join" in lowered
@@ -279,6 +296,47 @@ def cluster_install_post_boot(log_text: str | None) -> bool:
         return False
     lowered = log_text.lower()
     return any(marker in lowered for marker in _POST_BOOT_MARKERS)
+
+
+def install_stuck_reinitializing(log_text: str | None) -> bool:
+    """True when openshift-install wait-for is looping without making install progress."""
+    if not log_text:
+        return False
+    lowered = log_text.lower()
+    if "waiting for cluster installation to complete" not in lowered:
+        return False
+    # Match the UI stuck heuristic: early init-wait lines are normal during node install.
+    return lowered.count("waiting for cluster install to initialize") >= 15
+
+
+def cluster_needs_post_boot_restart(
+    project, topology: dict, cluster_key: str, log_text: str | None
+) -> bool:
+    """True when a restart must wipe boot disks before re-installing.
+
+    The install log alone is unreliable after cache clears or failed restarts;
+    harvested creds or a prior install-complete marker also imply post-boot.
+    """
+    if log_text:
+        lowered = log_text.lower()
+        if "post-boot restart" in lowered or "wiped boot disk" in lowered:
+            return True
+    if cluster_install_post_boot(log_text):
+        return True
+    if cluster_install_complete_in_log(log_text, cluster_key):
+        return True
+    if has_control_plane_usable_marker(log_text, cluster_key):
+        return True
+    deployed = project.deployed_topology or topology or {}
+    for node in deployed.get("nodes") or []:
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data") or {}
+        if data.get("clusterId") != cluster_key:
+            continue
+        if data.get("ocpKubeconfig") or data.get("ocpKubeadminPassword"):
+            return True
+    return False
 
 
 def has_control_plane_usable_marker(log_text: str | None, cluster_id: str) -> bool:

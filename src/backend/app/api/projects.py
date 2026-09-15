@@ -1302,10 +1302,10 @@ def restart_ocp_install(
         _cluster_install_log_text,
         _prepare_ocp_install_restart,
     )
-    from app.services.ocp.ops_pod_install import cluster_install_post_boot
+    from app.services.ocp.ops_pod_install import cluster_needs_post_boot_restart
 
     log = _cluster_install_log_text(host, project.id, topology, cluster)
-    post_boot = cluster_install_post_boot(log)
+    post_boot = cluster_needs_post_boot_restart(project, topology, cluster, log)
     set_progress(
         f"ocp-restart-post-boot:{project_id}:{cluster}",
         {"post_boot": post_boot},
@@ -1327,6 +1327,58 @@ def restart_ocp_install(
         "cluster": cluster,
         "install_started_at": install_started_at,
     }
+
+
+@router.post(
+    "/{project_id}/ocp/cancel-install",
+    responses={400: {}, 403: {}, 404: {}, 409: {}},
+)
+def cancel_ocp_install(
+    project_id: str,
+    user: CurrentUser,
+    db: DbSession,
+    cluster: str,
+):
+    """Cancel an in-flight ops-pod OCP install for one cluster (async via RQ)."""
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
+    if project.owner_id != user.id and user.role != "admin":
+        raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
+    if project.state != "active":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Project is {project.state}, cannot cancel install",
+        )
+
+    topology = project.deployed_topology or project.topology or {}
+    host = (
+        db.query(Host).filter_by(id=project.host_id).first()
+        if project.host_id
+        else None
+    )
+    from app.services.deploy_service import (
+        _mark_ocp_install_cancel_pending,
+        validate_cancel_ocp_cluster_install,
+    )
+
+    err = validate_cancel_ocp_cluster_install(project, host, topology, cluster)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+
+    _mark_ocp_install_cancel_pending(project_id, cluster)
+
+    from app.core.redis import enqueue_job
+    from app.workers.jobs import job_cancel_ocp_install_bg
+
+    enqueue_job(
+        job_cancel_ocp_install_bg,
+        project_id,
+        cluster,
+        project_id=project_id,
+        job_timeout=300,
+    )
+    return {"status": "cancelling", "cluster": cluster}
 
 
 @router.get("/{project_id}/kubeconfigs", responses={403: {}, 404: {}})
@@ -1794,24 +1846,21 @@ _wipe_status: dict[str, dict] = {}
 
 def _ensure_kubevirt_vm_pod(core_api, custom_api, namespace, kv_name):
     """Start a KubeVirt VM if needed and return its pod name, or None on timeout."""
+    from app.services.providers.kubevirt import wait_virt_launcher_compute_ready
+
     pods = core_api.list_namespaced_pod(
         namespace=namespace,
         label_selector=f"vm.kubevirt.io/name={kv_name}",
     )
     if pods.items:  # type: ignore[union-attr]
-        return pods.items[0].metadata.name  # type: ignore[union-attr]
+        pod_name = wait_virt_launcher_compute_ready(
+            core_api, namespace, kv_name, timeout=30
+        )
+        if pod_name:
+            return pod_name
 
     _patch_kv_run_strategy(custom_api, namespace, kv_name, "Always")
-    deadline = time.monotonic() + 120
-    while time.monotonic() < deadline:
-        pods = core_api.list_namespaced_pod(
-            namespace=namespace,
-            label_selector=f"vm.kubevirt.io/name={kv_name}",
-        )
-        if pods.items and pods.items[0].status.phase == "Running":  # type: ignore[union-attr]
-            return pods.items[0].metadata.name  # type: ignore[union-attr]
-        time.sleep(5)
-    return None
+    return wait_virt_launcher_compute_ready(core_api, namespace, kv_name, timeout=120)
 
 
 def _stop_kubevirt_vm_and_wait(custom_api, core_api, namespace, kv_name, pod_name):
@@ -1843,7 +1892,8 @@ def _do_kubevirt_wipe(
     creds, namespace, kv_name, vol_name, disk_path, project_id, vm_id, wipe_key, restart
 ):
     from kubernetes import client as k8s_client
-    from kubernetes import stream
+
+    from app.services.providers.kubevirt import wipe_boot_disk_in_virt_launcher
 
     config = k8s_client.Configuration()
     config.host = creds["api_url"]
@@ -1860,24 +1910,7 @@ def _do_kubevirt_wipe(
         return
 
     try:
-        resp = stream.stream(
-            core_api.connect_get_namespaced_pod_exec,
-            pod_name,
-            namespace,
-            command=[
-                "dd",
-                "if=/dev/zero",
-                f"of={disk_path}",
-                "bs=1M",
-                "count=1",
-                "conv=notrunc",
-            ],
-            stderr=True,
-            stdin=False,
-            stdout=True,
-            tty=False,
-        )
-        logger.info("Wiped disk %s on %s: %s", vol_name, kv_name, resp)
+        wipe_boot_disk_in_virt_launcher(core_api, namespace, pod_name, disk_path)
     except Exception:
         logger.exception("Failed to wipe disk %s on %s", vol_name, kv_name)
         _wipe_status[wipe_key] = {"status": "error", "detail": "dd failed"}
@@ -2336,23 +2369,13 @@ def forcestop_vm(
 
         provider = db.query(Provider).filter_by(id=host.provider_id).first()
         if provider:
-            custom_api, _, _ = _get_k8s_clients_for_kubevirt(provider)
+            custom_api, core_api, _ = _get_k8s_clients_for_kubevirt(provider)
             kv_name = f"troshka-vm-{vm_id[:8]}"
             namespace = _kubevirt_project_ns(provider, project_id)
             try:
-                _patch_kv_run_strategy(custom_api, namespace, kv_name, "Halted")
-                # Delete VMI for immediate effect (gracePeriodSeconds=0)
-                try:
-                    custom_api.delete_namespaced_custom_object(
-                        group=_KUBEVIRT_API,
-                        version="v1",
-                        namespace=namespace,
-                        plural="virtualmachineinstances",
-                        name=kv_name,
-                        grace_period_seconds=0,
-                    )
-                except Exception:
-                    pass
+                from app.services.providers.kubevirt import force_stop_kubevirt_vm
+
+                force_stop_kubevirt_vm(custom_api, core_api, namespace, kv_name)
                 notify_project(
                     project_id,
                     {"type": "vm-state", "states": {vm_id: "stopped"}, "progress": {}},

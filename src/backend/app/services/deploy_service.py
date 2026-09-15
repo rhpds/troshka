@@ -1926,7 +1926,7 @@ def _ops_pod_cluster_complete(project_id: str, cluster: dict) -> bool:
         return any(
             marker in log
             for marker in (
-                f"[{key}] deferred workers joined",
+                f"[{key}] deferred workers converged",
                 f"[{key}] deferred workers already joined",
             )
         )
@@ -3057,7 +3057,17 @@ def _exec_ops_pod_cat_kubevirt(core_v1, namespace, pod_name, path) -> str | None
             _preload_content=True,
             _request_timeout=35,
         )
-        return result if isinstance(result, str) else ""
+        if not isinstance(result, str) or not result:
+            return None
+        from app.services.ocp.kubeconfig_merge import is_valid_kubeconfig
+
+        # cat missing-file errors are merged into stdout by k8s exec.
+        if result.lstrip().startswith("cat:"):
+            return None
+        # For kubeconfig paths, reject non-YAML noise; other paths pass through.
+        if path.endswith("kubeconfig") and not is_valid_kubeconfig(result):
+            return None
+        return result
     except Exception:  # noqa: BLE001 - missing log / transient exec error -> None
         return None
 
@@ -3198,6 +3208,32 @@ def _ocp_install_restart_in_progress(project_id: str, cluster_key: str) -> bool:
     return bool(get_progress(f"ocp-restart:{project_id}:{cluster_key}"))
 
 
+def _ocp_install_cancel_in_progress(project_id: str, cluster_key: str) -> bool:
+    """True while cancel was requested and the async cancel job is running."""
+    from app.core.redis import get_progress
+
+    return bool(get_progress(f"ocp-cancel:{project_id}:{cluster_key}"))
+
+
+def _mark_ocp_install_cancel_pending(project_id: str, cluster_key: str) -> None:
+    """Freeze install-log updates and ask the monitor to exit ASAP."""
+    set_progress(
+        f"ocp-cancel:{project_id}:{cluster_key}",
+        {"at": int(_time.time())},
+        ttl=3600,
+    )
+    _request_ops_monitor_exit(project_id)
+    _append_restart_install_log_breadcrumb(
+        project_id,
+        cluster_key,
+        "install cancel requested — log frozen pending teardown",
+    )
+
+
+def _clear_ocp_install_cancel_marker(project_id: str, cluster_key: str) -> None:
+    delete_progress(f"ocp-cancel:{project_id}:{cluster_key}")
+
+
 def clear_ops_pod_log_cache_keys(project_id: str, cluster_keys: list[str]) -> None:
     """Drop cached install logs for specific clusters (e.g. before a re-install)."""
     if not cluster_keys:
@@ -3211,6 +3247,36 @@ def clear_ops_pod_log_cache_keys(project_id: str, cluster_keys: list[str]) -> No
     for ckey in cluster_keys:
         cached.pop(ckey, None)
     set_progress(key, cached, ttl=_OCP_LOG_CACHE_TTL)
+
+
+def _append_restart_install_log_breadcrumb(
+    project_id: str, cluster_key: str, msg: str
+) -> None:
+    """Append a restart breadcrumb to the cached install log (visible in the UI).
+
+    Written while the ops pod is down during post-boot disk wipe, before the
+    fresh install.log is created on relaunch.
+    """
+    from app.core.redis import get_progress, set_progress
+
+    line = f"[{cluster_key}] {msg}\n"
+    key = _ops_pod_log_cache_key(project_id)
+    cached = get_progress(key) or {}
+    cached[cluster_key] = (cached.get(cluster_key) or "") + line
+    set_progress(key, cached, ttl=_OCP_LOG_CACHE_TTL)
+
+
+def _merge_ops_pod_log_with_preamble(cached: str, live: str) -> str:
+    """Keep restart wipe breadcrumbs when the ops pod starts a fresh install.log."""
+    if not cached:
+        return live
+    if not live:
+        return cached
+    if "wiped boot disk" in cached or "post-boot restart" in cached:
+        if live.startswith(cached) or cached in live:
+            return live
+        return cached + live
+    return live if len(live) >= len(cached) else cached
 
 
 def cache_ops_pod_logs(project_id: str, logs: dict[str, str]) -> dict[str, str]:
@@ -3232,8 +3298,11 @@ def cache_ops_pod_logs(project_id: str, logs: dict[str, str]) -> dict[str, str]:
     for ckey, text in (logs or {}).items():
         if _ocp_install_restart_in_progress(project_id, ckey):
             continue
-        if len(text or "") >= len(merged.get(ckey, "")):
-            merged[ckey] = text
+        if _ocp_install_cancel_in_progress(project_id, ckey):
+            continue
+        merged[ckey] = _merge_ops_pod_log_with_preamble(
+            merged.get(ckey, ""), text or ""
+        )
     if merged != cached:
         set_progress(key, merged, ttl=_OCP_LOG_CACHE_TTL)
     from app.services.ocp.ops_pod_install import filter_install_log_noise
@@ -3249,6 +3318,7 @@ def read_ops_pod_install_log(host, project_id: str, topology: dict) -> dict[str,
     still yields the full completed log. The install-log viewer uses this for the
     pod path; the bastion path reads the bastion VM's ``install.log`` instead.
     """
+    from app.core.redis import get_progress
     from app.services.ocp.ops_pod_install import _cluster_key as _ops_cluster_key
     from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
 
@@ -3264,8 +3334,12 @@ def read_ops_pod_install_log(host, project_id: str, topology: dict) -> dict[str,
     # still returns the full log.
     merged = cache_ops_pod_logs(project_id, live)
     for ckey in cluster_keys:
-        if _ocp_install_restart_in_progress(project_id, ckey):
-            merged[ckey] = ""
+        if _ocp_install_restart_in_progress(
+            project_id, ckey
+        ) or _ocp_install_cancel_in_progress(project_id, ckey):
+            merged[ckey] = (get_progress(_ops_pod_log_cache_key(project_id)) or {}).get(
+                ckey, ""
+            )
     return merged
 
 
@@ -3618,12 +3692,32 @@ def _apply_ops_pod_creds(topology: dict, creds: dict) -> bool:
         if role == "worker" or (not role and "workers" in group):
             continue  # control-plane members only
         pw, kc = creds[cid]
-        if pw and d.get("ocpKubeadminPassword") != pw:
-            d["ocpKubeadminPassword"] = pw
-            changed = True
-        if kc and d.get("ocpKubeconfig") != kc:
-            d["ocpKubeconfig"] = kc
-            changed = True
+        if pw:
+            from app.services.ocp.kubeconfig_merge import is_valid_kubeadmin_password
+
+            if is_valid_kubeadmin_password(pw):
+                if d.get("ocpKubeadminPassword") != pw:
+                    d["ocpKubeadminPassword"] = pw
+                    changed = True
+            else:
+                logger.warning(
+                    "Skipping invalid kubeadmin password for cluster %s",
+                    cid,
+                )
+        if kc:
+            from app.services.ocp.kubeconfig_merge import is_valid_kubeconfig
+
+            if isinstance(kc, bytes):
+                kc = kc.decode("utf-8", errors="replace")
+            if is_valid_kubeconfig(kc):
+                if d.get("ocpKubeconfig") != kc:
+                    d["ocpKubeconfig"] = kc
+                    changed = True
+            else:
+                logger.warning(
+                    "Skipping invalid kubeconfig for cluster %s (not updating stored creds)",
+                    cid,
+                )
     return changed
 
 
@@ -3695,8 +3789,17 @@ def _stored_cluster_creds(topology: dict) -> dict:
         group = (d.get("tags") or {}).get("AnsibleGroup", "")
         if role == "worker" or (not role and "workers" in group):
             continue  # control-plane members only
+        from app.services.ocp.kubeconfig_merge import (
+            is_valid_kubeadmin_password,
+            is_valid_kubeconfig,
+        )
+
         pw = d.get("ocpKubeadminPassword") or ""
+        if not is_valid_kubeadmin_password(pw):
+            pw = ""
         kc = d.get("ocpKubeconfig") or ""
+        if not kc or not is_valid_kubeconfig(kc):
+            kc = ""
         if pw or kc:
             creds[cid] = (pw, kc)
     return creds
@@ -3798,7 +3901,7 @@ def _inject_cluster_kubeconfigs(
     if not merged.strip():
         return
     b64 = base64.b64encode(merged.encode()).decode()
-    motd = cluster_terminal_motd_text(merged)
+    motd = cluster_terminal_motd_text(merged, clusters=clusters, creds=creds)
     motd_b64 = base64.b64encode(motd.encode()).decode() if motd else ""
     script = (
         "mkdir -p /showroom/kube && "
@@ -3824,6 +3927,69 @@ def _inject_cluster_kubeconfigs(
     except TroshkadError as e:
         logger.warning(
             "Cluster-terminal kubeconfig injection failed for %s: %s",
+            project_id[:8],
+            e,
+        )
+
+
+_CLUSTER_TERMINAL_BASHRC_SNIPPET = """\
+# Troshka cluster terminal — show multi-cluster MOTD once per interactive shell.
+if [[ $- == *i* ]] && [ -f /showroom/kube/motd ] && [ -z "${TROSHKA_MOTD_SHOWN:-}" ]; then
+  export TROSHKA_MOTD_SHOWN=1
+  cat /showroom/kube/motd
+fi
+"""
+
+
+def _cluster_terminal_bashrc_install_script() -> str:
+    """Idempotently install the MOTD hook into labuser's .bashrc (old terminal images)."""
+    import base64
+
+    b64 = base64.b64encode(_CLUSTER_TERMINAL_BASHRC_SNIPPET.encode()).decode()
+    marker = "Troshka cluster terminal"
+    return (
+        "mkdir -p /home/labuser && "
+        f"grep -q '{marker}' /home/labuser/.bashrc 2>/dev/null || "
+        f"(echo {b64} | base64 -d >> /home/labuser/.bashrc && "
+        "chown labuser:labuser /home/labuser/.bashrc)"
+    )
+
+
+def _inject_cluster_terminal_bashrc_kubevirt(
+    host, project_id: str, topology: dict
+) -> None:
+    """Install the MOTD .bashrc hook in the wetty-clusters container."""
+    from kubernetes.stream import stream as k8s_stream
+
+    from app.services.showroom_scaffold import _find_showroom_container
+
+    ctx = _kubevirt_ops_pod_ctx(host, project_id)
+    node = _find_showroom_container(topology)
+    if not ctx or not node:
+        return
+    core_v1, namespace, _ = ctx
+    pod_name = f"pod-{node['id'][:8]}"
+    script = _cluster_terminal_bashrc_install_script()
+    try:
+        k8s_stream(
+            core_v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            container="wetty-clusters",
+            command=["sh", "-c", script],
+            stderr=True,
+            stdout=True,
+            stdin=False,
+            tty=False,
+            _preload_content=True,
+            _request_timeout=35,
+        )
+        logger.info(
+            "Installed cluster-terminal MOTD hook in %s/wetty-clusters", pod_name
+        )
+    except Exception as e:  # noqa: BLE001 - best-effort
+        logger.warning(
+            "Cluster-terminal bashrc install (kubevirt) failed for %s: %s",
             project_id[:8],
             e,
         )
@@ -3860,6 +4026,7 @@ def _inject_cluster_kubeconfigs_kubevirt(
             _request_timeout=35,
         )
         logger.info("Injected merged kubeconfig into showroom pod %s", pod_name)
+        _inject_cluster_terminal_bashrc_kubevirt(host, project_id, topology)
     except Exception as e:  # noqa: BLE001 - best-effort injection
         logger.warning(
             "Cluster-terminal kubeconfig injection (kubevirt) failed for %s: %s",
@@ -3997,7 +4164,11 @@ def validate_restart_ocp_cluster_install(
     """Return an error message when restart is not allowed, else None."""
     import re
 
-    from app.services.ocp.ops_pod_install import PHASE_FAILED, _phase_from_input
+    from app.services.ocp.ops_pod_install import (
+        PHASE_FAILED,
+        _phase_from_input,
+        install_stuck_reinitializing,
+    )
     from app.services.template_loader import ocp_install_via
 
     restart_key = f"ocp-restart:{project.id}:{cluster_key}"
@@ -4025,7 +4196,8 @@ def validate_restart_ocp_cluster_install(
         return "Cannot restart a recert install"
     status = _cluster_ocp_install_status(deployed, cluster_key)
     if status != "error" and _phase_from_input(log) != PHASE_FAILED:
-        return "Cluster install has not failed"
+        if not install_stuck_reinitializing(log):
+            return "Cluster install has not failed"
     return None
 
 
@@ -4105,77 +4277,68 @@ def _wipe_vm_boot_disk_troshkad(
             ) from e
 
 
-def _wipe_vm_boot_disk_kubevirt(
-    s, host, project_id: str, vm_node_id: str, disk_node_id: str
-) -> None:
-    from kubernetes import stream
+def _ocp_boot_disks(vm_disks: list[dict]) -> list[dict]:
+    """Return the OCP OS boot disk(s) to wipe on post-boot restart.
 
+    OCP installs to the first/smallest qcow2 disk (disk0); secondary data volumes
+    must not be wiped — restarting the virt-launcher between disks races KubeVirt.
+    """
+    qcow2 = [d for d in vm_disks if d.get("format") == "qcow2"]
+    if not qcow2:
+        return []
+    for disk in qcow2:
+        name = str(disk.get("name") or "")
+        if name.endswith("-disk0") or name.endswith("disk0"):
+            return [disk]
+    return [min(qcow2, key=lambda d: d.get("size_gb") or d.get("size") or 9999)]
+
+
+def _wipe_vm_boot_disk_kubevirt(
+    s, host, project_id: str, vm_node_id: str, disk_node_ids: list[str]
+) -> None:
     from app.models.provider import Provider
     from app.services.providers.kubevirt import (
         _get_k8s_clients,
         _project_ns,
+        force_stop_kubevirt_vm,
         patch_kubevirt_run_strategy,
+        wait_virt_launcher_compute_ready,
+        wipe_boot_disk_in_virt_launcher,
     )
 
+    if not disk_node_ids:
+        return
     provider = s.query(Provider).filter_by(id=host.provider_id).first()
     if not provider:
-        return
+        raise RuntimeError("KubeVirt provider not found for host")
     namespace = _project_ns(provider, project_id)
     kv_name = f"troshka-vm-{vm_node_id[:8]}"
-    vol_name = f"disk-{disk_node_id[:8]}"
-    disk_path = f"/var/run/kubevirt-private/vmi-disks/{vol_name}/disk.img"
+    disk_paths = [
+        f"/var/run/kubevirt-private/vmi-disks/disk-{did[:8]}/disk.img"
+        for did in disk_node_ids
+    ]
     custom_api, core_api, _ = _get_k8s_clients(provider)
     try:
         patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Always")
     except Exception:
         pass
-    deadline = _time.time() + 120
-    pod_name = None
-    while _time.time() < deadline:
-        pods = core_api.list_namespaced_pod(
-            namespace=namespace,
-            label_selector=f"vm.kubevirt.io/name={kv_name}",
-        )
-        if pods.items and pods.items[0].status.phase == "Running":  # type: ignore[union-attr]
-            pod_name = pods.items[0].metadata.name  # type: ignore[union-attr]
-            break
-        _time.sleep(3)
+    pod_name = wait_virt_launcher_compute_ready(core_api, namespace, kv_name)
     if not pod_name:
-        logger.warning(
-            "Restart %s: timed out waiting for %s pod to wipe boot disk",
-            project_id[:8],
-            kv_name,
+        raise RuntimeError(
+            f"Timed out waiting for {kv_name} virt-launcher compute container"
         )
-        return
     try:
-        stream.stream(
-            core_api.connect_get_namespaced_pod_exec,
-            pod_name,
-            namespace,
-            command=[
-                "dd",
-                "if=/dev/zero",
-                f"of={disk_path}",
-                "bs=1M",
-                "count=1",
-                "conv=notrunc",
-            ],
-            stderr=True,
-            stdin=False,
-            stdout=True,
-            tty=False,
-        )
-    except Exception:
-        logger.exception(
-            "Restart %s: kubevirt boot disk wipe failed for %s",
-            project_id[:8],
-            kv_name,
-        )
-        return
-    try:
-        patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Halted")
-    except Exception:
-        pass
+        for disk_path in disk_paths:
+            wipe_boot_disk_in_virt_launcher(core_api, namespace, pod_name, disk_path)
+    except Exception as e:
+        raise RuntimeError(
+            f"Boot disk wipe failed for {kv_name} ({disk_paths}): {e}"
+        ) from e
+    finally:
+        try:
+            force_stop_kubevirt_vm(custom_api, core_api, namespace, kv_name)
+        except Exception:
+            pass
 
 
 def _reset_cluster_member_install_creds(topology: dict, cluster_key: str) -> None:
@@ -4290,26 +4453,72 @@ def _clusters_for_ops_pod_restart(
     return list(by_id.values())
 
 
+def _topology_vm_name(topology: dict, vm_node_id: str) -> str:
+    for node in topology.get("nodes") or []:
+        if node.get("id") == vm_node_id and node.get("type") == "vmNode":
+            return str((node.get("data") or {}).get("name") or vm_node_id)
+    return vm_node_id
+
+
 def _restart_cluster_post_boot_cleanup(
     s, host, project_id: str, topology: dict, cluster: dict
 ) -> None:
     """Stop cluster VMs and wipe boot disks; BMC ISO boot powers nodes back on."""
+    cluster_key = str(cluster.get("id") or cluster.get("name") or "")
     vms = _cluster_member_vm_entries(topology, cluster)
+    _append_restart_install_log_breadcrumb(
+        project_id,
+        cluster_key,
+        "post-boot restart: wiping boot disks before re-install",
+    )
+    wipe_count = 0
     if host.host_type == "kubevirt-cluster":
-        _stop_kubevirt_vms(s, host, project_id, vms)
+        _stop_kubevirt_vms(s, host, project_id, vms, force=True)
         for vm in vms:
-            vm_disks = _find_vm_disks(vm["node_id"], topology)
-            for boot_disk in (d for d in vm_disks if d.get("format") == "qcow2"):
-                _wipe_vm_boot_disk_kubevirt(
-                    s, host, project_id, vm["node_id"], boot_disk["node_id"]
-                )
+            vm_name = _topology_vm_name(topology, vm["node_id"])
+            kv_name = f"troshka-vm-{vm['node_id'][:8]}"
+            boot_disks = _ocp_boot_disks(_find_vm_disks(vm["node_id"], topology))
+            if not boot_disks:
+                continue
+            disk_ids = [d["node_id"] for d in boot_disks]
+            _wipe_vm_boot_disk_kubevirt(s, host, project_id, vm["node_id"], disk_ids)
+            wipe_count += len(boot_disks)
+            vol_names = ", ".join(f"disk-{d['node_id'][:8]}" for d in boot_disks)
+            _append_restart_install_log_breadcrumb(
+                project_id,
+                cluster_key,
+                f"wiped boot disk on {kv_name} ({vm_name}, {vol_names})",
+            )
+        _append_restart_install_log_breadcrumb(
+            project_id,
+            cluster_key,
+            f"boot disk wipe complete ({wipe_count} disk(s))",
+        )
         return
     if not host.ip_address:
         return
     _force_off_troshkad_vms(host, project_id, vms)
     pool = _get_host_pool(host, s)
     for vm in vms:
+        vm_name = _topology_vm_name(topology, vm["node_id"])
+        dom = _vm_domain_name(project_id, vm["node_id"])
+        qcow2_count = sum(
+            1
+            for d in _find_vm_disks(vm["node_id"], topology)
+            if d.get("format") == "qcow2"
+        )
         _wipe_vm_boot_disk_troshkad(host, project_id, vm["node_id"], topology, pool)
+        wipe_count += qcow2_count
+        _append_restart_install_log_breadcrumb(
+            project_id,
+            cluster_key,
+            f"wiped boot disk on {dom} ({vm_name}, {qcow2_count} qcow2 disk(s))",
+        )
+    _append_restart_install_log_breadcrumb(
+        project_id,
+        cluster_key,
+        f"boot disk wipe complete ({wipe_count} disk(s))",
+    )
 
 
 def restart_ocp_cluster_install(project_id: str, cluster_key: str) -> None:
@@ -4317,6 +4526,7 @@ def restart_ocp_cluster_install(project_id: str, cluster_key: str) -> None:
     from app.core.database import SessionLocal
     from app.models.host import Host
     from app.models.project import Project
+    from app.services.ocp.ops_pod_install import PHASE_FAILED
 
     s = SessionLocal()
     try:
@@ -4376,6 +4586,15 @@ def restart_ocp_cluster_install(project_id: str, cluster_key: str) -> None:
             cluster_key,
             post_boot,
         )
+    except Exception as exc:
+        elapsed_base = _project_deploy_start_epoch(project_id) or _time.time()
+        elapsed_now = int(_time.time() - elapsed_base)
+        _append_restart_install_log_breadcrumb(
+            project_id, cluster_key, f"restart failed: {exc}"
+        )
+        _finalize_cluster_ocp_status(project_id, cluster_key, PHASE_FAILED, elapsed_now)
+        _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
+        raise
     finally:
         _clear_ocp_install_restart_marker(project_id, cluster_key)
         s.close()
@@ -4384,6 +4603,105 @@ def restart_ocp_cluster_install(project_id: str, cluster_key: str) -> None:
 def restart_ocp_cluster_install_async(project_id: str, cluster_key: str) -> None:
     """RQ entrypoint for :func:`restart_ocp_cluster_install`."""
     restart_ocp_cluster_install(project_id, cluster_key)
+
+
+def validate_cancel_ocp_cluster_install(
+    project, host, topology: dict, cluster_key: str
+) -> str | None:
+    """Return an error message when cancel is not allowed, else None."""
+    import re
+
+    from app.services.template_loader import ocp_install_via
+
+    if project.state != "active":
+        return f"Project is {project.state}, cannot cancel install"
+    if ocp_install_via(topology) != "pod":
+        return "Cancel install is only supported for pod-based installs"
+    if not host:
+        return "Project has no host"
+    cluster = _cluster_for_key(topology, cluster_key)
+    if not cluster:
+        return f"Cluster {cluster_key} not found"
+    if not _cluster_install_on_deploy(cluster):
+        return "Cluster is not configured for install on deploy"
+    if _ops_pod_cluster_complete(project.id, cluster):
+        return "Cluster install already completed"
+    deployed = project.deployed_topology or topology
+    if _cluster_ocp_install_status(deployed, cluster_key) == "ready":
+        return "Cluster install already completed"
+    log = _cluster_install_log_text(host, project.id, topology, cluster_key)
+    if re.search(r"\(recert\)", log, re.IGNORECASE):
+        return "Cannot cancel a recert install"
+    status = _cluster_ocp_install_status(deployed, cluster_key)
+    if status == "error":
+        return "Cluster install is not running"
+    return None
+
+
+def cancel_ocp_cluster_install(project_id: str, cluster_key: str) -> None:
+    """Stop an in-flight ops-pod OCP install and mark the cluster as failed."""
+    from app.core.database import SessionLocal
+    from app.models.host import Host
+    from app.models.project import Project
+    from app.services.ocp.ops_pod_install import PHASE_FAILED, ops_pod_install_progress
+
+    s = SessionLocal()
+    try:
+        project = s.query(Project).filter_by(id=project_id).first()
+        if not project:
+            raise RuntimeError("Project not found")
+        host = s.query(Host).filter_by(id=project.host_id).first()
+        topology = project.deployed_topology or project.topology or {}
+        err = validate_cancel_ocp_cluster_install(project, host, topology, cluster_key)
+        if err:
+            raise RuntimeError(err)
+
+        # Delete the ops pod first so openshift-install stops appending to
+        # install.log immediately; waiting on the monitor lock first allowed
+        # ~90s of live log growth while cancel appeared stuck.
+        if host and host.host_type == "kubevirt-cluster":
+            _cancel_ops_pod_install_kubevirt(host, project_id)
+        elif host:
+            _cancel_ops_pod_install_troshkad(host, project_id)
+        _wait_ops_monitor_idle(project_id, timeout=5)
+        _release_ops_monitor_lock(project_id)
+
+        elapsed_base = _project_deploy_start_epoch(project_id) or _time.time()
+        elapsed_now = int(_time.time() - elapsed_base)
+        deployed = project.deployed_topology or topology
+        affected_keys: list[str] = []
+        for cluster in deployed.get("clusters") or []:
+            key = str(cluster.get("id") or cluster.get("name") or "")
+            status = cluster.get("ocpInstallStatus")
+            if key == cluster_key or status == "monitoring":
+                if status != "ready":
+                    affected_keys.append(key)
+                    _finalize_cluster_ocp_status(
+                        project_id, key, PHASE_FAILED, elapsed_now
+                    )
+        if cluster_key not in affected_keys:
+            _finalize_cluster_ocp_status(
+                project_id, cluster_key, PHASE_FAILED, elapsed_now
+            )
+            affected_keys.append(cluster_key)
+        _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
+        progress = ops_pod_install_progress(
+            {key: PHASE_FAILED for key in affected_keys}
+        )
+        _publish_ops_pod_progress(project_id, progress)
+        logger.info(
+            "Cancel %s: stopped ops pod install for cluster %s",
+            project_id[:8],
+            cluster_key,
+        )
+    finally:
+        _clear_ocp_install_cancel_marker(project_id, cluster_key)
+        s.close()
+
+
+def cancel_ocp_cluster_install_async(project_id: str, cluster_key: str) -> None:
+    """RQ entrypoint for :func:`cancel_ocp_cluster_install`."""
+    cancel_ocp_cluster_install(project_id, cluster_key)
 
 
 def _ops_pod_overall_to_ocp_status(overall: str) -> str | None:
@@ -4662,7 +4980,12 @@ def _monitor_ops_pod_install(
                     )
             _release_ops_monitor_lock(project_id)
             return progress["overall"]
-        _t.sleep(poll_interval)
+        for _ in range(poll_interval):
+            if _ops_monitor_exit_requested(project_id):
+                _clear_ops_monitor_exit_request(project_id)
+                _release_ops_monitor_lock(project_id)
+                return "superseded"
+            _t.sleep(1)
 
     logger.warning("Ops pod %s: install monitor timed out", project_id[:8])
     elapsed_now = int(_t.time() - elapsed_base)
@@ -11087,24 +11410,28 @@ def _ocp_health_inner(project_id, host_id, topology, deploy_start, _mon_db):
     )
 
 
-def _stop_kubevirt_vms(s, host, project_id, vms):
-    """Patch KubeVirt VMs to Halted via K8s API."""
+def _stop_kubevirt_vms(s, host, project_id, vms, force: bool = False):
+    """Stop KubeVirt VMs via K8s API (graceful Halted, or immediate power-off)."""
     from app.models.provider import Provider
     from app.services.providers.kubevirt import (
         _get_k8s_clients,
         _project_ns,
+        force_stop_kubevirt_vm,
         patch_kubevirt_run_strategy,
     )
 
     provider = s.query(Provider).filter_by(id=host.provider_id).first()
     if not provider:
         return
-    custom_api, _, _ = _get_k8s_clients(provider)
+    custom_api, core_api, _ = _get_k8s_clients(provider)
     namespace = _project_ns(provider, project_id)
     for vm in vms:
         kv_name = f"troshka-vm-{vm['node_id'][:8]}"
         try:
-            patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Halted")
+            if force:
+                force_stop_kubevirt_vm(custom_api, core_api, namespace, kv_name)
+            else:
+                patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Halted")
         except Exception as e:
             logger.warning(
                 "Stop %s: failed to stop KubeVirt VM %s: %s",

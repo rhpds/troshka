@@ -1667,6 +1667,145 @@ def kubevirt_vm_is_headless(provider, project_id, vm_id, vm_node_data=None) -> b
     )
 
 
+def _virt_launcher_compute_ready(pod) -> bool:
+    """True when the virt-launcher ``compute`` container is running."""
+    for cs in pod.status.container_statuses or []:
+        if cs.name == "compute" and cs.ready:
+            return True
+    return False
+
+
+def wait_virt_launcher_gone(
+    core_v1, namespace: str, kv_name: str, timeout: int = 60
+) -> bool:
+    """Wait until no virt-launcher pod exists for the VM."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        pods = core_v1.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=f"vm.kubevirt.io/name={kv_name}",
+        )
+        running = [
+            p
+            for p in pods.items or []
+            if (p.metadata.name or "").startswith("virt-launcher-")
+        ]
+        if not running:
+            return True
+        time.sleep(2)
+    return False
+
+
+def force_stop_kubevirt_vm(custom_api, core_api, namespace: str, kv_name: str) -> None:
+    """Power off a VM immediately (no ACPI graceful shutdown).
+
+    Do NOT patch runStrategy=Halted while a VMI is still running — that sends
+    ACPI shutdown to the guest. Kill the VMI/launcher first, then set Halted so
+    the VM does not immediately respawn.
+    """
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group=_KUBEVIRT_API_GROUP,
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachineinstances",
+            name=kv_name,
+            grace_period_seconds=0,
+        )
+    except Exception:
+        pass
+    try:
+        pods = core_api.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=f"vm.kubevirt.io/name={kv_name}",
+        )
+        for pod in pods.items or []:
+            name = pod.metadata.name or ""
+            if not name.startswith("virt-launcher-"):
+                continue
+            try:
+                core_api.delete_namespaced_pod(
+                    name=name,
+                    namespace=namespace,
+                    grace_period_seconds=0,
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+    if not wait_virt_launcher_gone(core_api, namespace, kv_name, timeout=30):
+        logger.warning("Timed out waiting for %s virt-launcher to terminate", kv_name)
+    try:
+        patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Halted")
+    except Exception:
+        pass
+    logger.info("Force-stopped KubeVirt VM %s in %s", kv_name, namespace)
+
+
+def wait_virt_launcher_compute_ready(
+    core_v1, namespace: str, kv_name: str, timeout: int = 180
+) -> str | None:
+    """Wait for a virt-launcher pod with a ready ``compute`` container.
+
+    Pod phase ``Running`` alone is insufficient — exec without ``container=compute``
+    fails with "container not found" until the compute container is ready.
+    Returns the pod name, or None on timeout.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        pods = core_v1.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=f"vm.kubevirt.io/name={kv_name}",
+        )
+        for pod in pods.items or []:
+            name = pod.metadata.name or ""
+            if not name.startswith("virt-launcher-"):
+                continue
+            if pod.status.phase == "Running" and _virt_launcher_compute_ready(pod):
+                return name
+        time.sleep(2)
+    return None
+
+
+def wipe_boot_disk_in_virt_launcher(
+    core_v1, namespace: str, pod_name: str, disk_path: str
+) -> None:
+    """Zero the first 1 MiB of a disk image inside the virt-launcher compute container."""
+    from kubernetes import stream
+    from kubernetes.client.exceptions import ApiException
+
+    cmd = [
+        "dd",
+        "if=/dev/zero",
+        f"of={disk_path}",
+        "bs=1M",
+        "count=1",
+        "conv=notrunc",
+    ]
+    try:
+        resp = stream.stream(
+            core_v1.connect_get_namespaced_pod_exec,
+            pod_name,
+            namespace,
+            container="compute",
+            command=cmd,
+            stderr=True,
+            stdin=False,
+            stdout=True,
+            tty=False,
+        )
+    except ApiException as e:
+        reason = getattr(e, "reason", None) or str(e)
+        raise RuntimeError(
+            f"exec dd in {pod_name} failed for {disk_path}: {reason}"
+        ) from e
+    except Exception as e:
+        raise RuntimeError(f"exec dd in {pod_name} failed for {disk_path}: {e}") from e
+    logger.info(
+        "Wiped boot disk %s in %s: %s", disk_path, pod_name, (resp or "").strip()
+    )
+
+
 def _find_virt_launcher(core_v1, namespace, vm_name):
     """Find the running virt-launcher pod for a VM, or raise RuntimeError."""
     pod_list: list = getattr(
@@ -1677,7 +1816,11 @@ def _find_virt_launcher(core_v1, namespace, vm_name):
         [],
     )
     for p in pod_list:
-        if p.metadata.name.startswith("virt-launcher-") and p.status.phase == "Running":
+        if (
+            p.metadata.name.startswith("virt-launcher-")
+            and p.status.phase == "Running"
+            and _virt_launcher_compute_ready(p)
+        ):
             return p
     raise RuntimeError(f"No running virt-launcher pod for {vm_name}")
 

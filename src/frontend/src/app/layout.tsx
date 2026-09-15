@@ -3,6 +3,7 @@
 import "@patternfly/react-core/dist/styles/base.css";
 import "./globals.css";
 import React, { useState, useEffect } from "react";
+import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
   Button,
@@ -412,10 +413,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               return (
                 <NavItem
                   key={item.path}
+                  itemId={item.path}
+                  to={item.path}
+                  component={Link}
                   isActive={pathname === item.path || pathname?.startsWith(item.path + "/")}
                   onClick={() => {
                     if (shine) dismissGettingStartedShine();
-                    router.push(item.path);
                   }}
                   className={shine ? "nav-shine" : undefined}
                 >
@@ -444,8 +447,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 return (
                 <NavItem
                   key={item.path}
-                  isActive={pathname === item.path}
-                  onClick={() => router.push(item.path)}
+                  itemId={item.path}
+                  to={item.path}
+                  component={Link}
+                  isActive={pathname === item.path || pathname?.startsWith(item.path + "/")}
                 >
                   {item.label}
                   {warn && <span title={warnTitle} style={{ color: "#facc15", marginLeft: 6, fontSize: 10 }}>&#9888;</span>}
