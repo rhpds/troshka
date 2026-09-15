@@ -206,12 +206,42 @@ export function deriveStages(
   });
 }
 
-export default function ClusterInstallLogModal() {
-  const target = useCanvasStore((s) => s.clusterLogTarget);
-  const close = useCanvasStore((s) => s.closeClusterLog);
-  const projectId = useCanvasStore((s) => s.currentProjectId);
-  const nodes = useCanvasStore((s) => s.nodes);
-  const clusters = useCanvasStore((s) => s.clusters);
+export function openClusterInstallLogWindow(
+  projectId: string,
+  clusterKey: string,
+  name: string,
+): void {
+  const winName = `installlog_${projectId.replace(/-/g, "")}_${clusterKey.replace(/[^a-zA-Z0-9]/g, "")}`;
+  window.open(
+    `/console/install-log?project=${encodeURIComponent(projectId)}&cluster=${encodeURIComponent(clusterKey)}&name=${encodeURIComponent(name)}`,
+    winName,
+    "width=1100,height=800,menubar=no,toolbar=no,location=no",
+  );
+}
+
+export type ClusterInstallLogPanelProps = {
+  projectId: string;
+  clusterKey: string;
+  clusterName: string;
+  cluster?: ClusterConfig;
+  nodes?: ReturnType<typeof useCanvasStore.getState>["nodes"];
+  standalone?: boolean;
+  onClose?: () => void;
+  onPopOut?: () => void;
+};
+
+export function ClusterInstallLogPanel({
+  projectId,
+  clusterKey,
+  clusterName,
+  cluster: clusterProp,
+  nodes: nodesProp,
+  standalone = false,
+  onClose,
+  onPopOut,
+}: ClusterInstallLogPanelProps) {
+  const [resolvedCluster, setResolvedCluster] = useState<ClusterConfig | undefined>(clusterProp);
+  const [resolvedNodes, setResolvedNodes] = useState(nodesProp);
   const [log, setLog] = useState("");
   const [clusterStatus, setClusterStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -239,7 +269,39 @@ export default function ClusterInstallLogModal() {
   const cancellingRef = useRef(false);
 
   useEffect(() => {
-    if (!target || !projectId) return;
+    setResolvedCluster(clusterProp);
+  }, [clusterProp]);
+
+  useEffect(() => {
+    setResolvedNodes(nodesProp);
+  }, [nodesProp]);
+
+  useEffect(() => {
+    if (!standalone || !projectId) return;
+    let cancelled = false;
+    fetch(`/api/v1/projects/${projectId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.topology) return;
+        if (!clusterProp) {
+          const clusters = Array.isArray(data.topology.clusters) ? data.topology.clusters : [];
+          const found = clusters.find(
+            (c: ClusterConfig) => c.id === clusterKey || c.name === clusterKey,
+          );
+          if (found) setResolvedCluster(found);
+        }
+        if (!nodesProp && Array.isArray(data.topology.nodes)) {
+          setResolvedNodes(data.topology.nodes);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [standalone, projectId, clusterKey, clusterProp, nodesProp]);
+
+  useEffect(() => {
+    if (!projectId || !clusterKey) return;
     let cancelled = false;
     setLog("");
     setAccess(null);
@@ -252,7 +314,7 @@ export default function ClusterInstallLogModal() {
     const fetchLog = async () => {
       try {
         const r = await fetch(
-          `/api/v1/projects/${projectId}/ocp/install-log?cluster=${encodeURIComponent(target.clusterKey)}`,
+          `/api/v1/projects/${projectId}/ocp/install-log?cluster=${encodeURIComponent(clusterKey)}`,
         );
         if (!r.ok || cancelled) return;
         const data = await r.json();
@@ -325,25 +387,21 @@ export default function ClusterInstallLogModal() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [target, projectId]);
+  }, [projectId, clusterKey]);
 
   // Tick every second so the elapsed timer advances live between log polls.
   useEffect(() => {
-    if (!target) return;
     const t = setInterval(() => setTick((x) => x + 1), 1000);
     return () => clearInterval(t);
-  }, [target]);
+  }, []);
 
   // Auto-scroll to the newest line as the log grows.
   useEffect(() => {
     if (preRef.current) preRef.current.scrollTop = preRef.current.scrollHeight;
   }, [log]);
 
-  if (!target) return null;
-
-  const cluster = clusters.find(
-    (c) => c.id === target.clusterKey || c.name === target.clusterKey,
-  );
+  const cluster = resolvedCluster;
+  const nodes = resolvedNodes ?? [];
   const failed =
     !restarting && !cancelling && installLogIndicatesFailure(log, clusterStatus);
   const stuck =
@@ -385,7 +443,7 @@ export default function ClusterInstallLogModal() {
   // kubeadmin password + kubeconfig live on the cluster's member VM nodes; show
   // them here (the palette OCP panel is gone for pod installs) once present.
   const members = nodes.filter(
-    (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === target.clusterKey,
+    (n) => n.type === "vmNode" && (n.data as Record<string, unknown>).clusterId === clusterKey,
   );
   const storePw = members
     .map((n) => (n.data as Record<string, unknown>).ocpKubeadminPassword as string | undefined)
@@ -397,19 +455,19 @@ export default function ClusterInstallLogModal() {
   const hasKubeconfig = access?.kubeconfig_available || !!storeKubeconfigVm;
 
   const handleCancelInstall = async () => {
-    if (!projectId || !target || cancelling || terminal) return;
-    if (!confirm(`Cancel the ${target.name} cluster install? This cannot be undone.`)) {
+    if (!projectId || cancelling || terminal) return;
+    if (!confirm(`Cancel the ${clusterName} cluster install? This cannot be undone.`)) {
       return;
     }
     setCancelling(true);
     cancellingRef.current = true;
     setLog(
       (prev) =>
-        `${prev}${prev.endsWith("\n") || !prev ? "" : "\n"}[${target.clusterKey}] install cancel requested — log frozen pending teardown\n`,
+        `${prev}${prev.endsWith("\n") || !prev ? "" : "\n"}[${clusterKey}] install cancel requested — log frozen pending teardown\n`,
     );
     try {
       const r = await fetch(
-        `/api/v1/projects/${projectId}/ocp/cancel-install?cluster=${encodeURIComponent(target.clusterKey)}`,
+        `/api/v1/projects/${projectId}/ocp/cancel-install?cluster=${encodeURIComponent(clusterKey)}`,
         { method: "POST" },
       );
       if (!r.ok) {
@@ -431,12 +489,12 @@ export default function ClusterInstallLogModal() {
   };
 
   const handleRestartInstall = async () => {
-    if (!projectId || !target || restarting) return;
+    if (!projectId || restarting) return;
     setRestarting(true);
     setLoading(true);
     try {
       const r = await fetch(
-        `/api/v1/projects/${projectId}/ocp/restart-install?cluster=${encodeURIComponent(target.clusterKey)}`,
+        `/api/v1/projects/${projectId}/ocp/restart-install?cluster=${encodeURIComponent(clusterKey)}`,
         { method: "POST" },
       );
       if (!r.ok) {
@@ -459,7 +517,7 @@ export default function ClusterInstallLogModal() {
       // Pull fresh (empty) log + timing immediately instead of waiting for the poll interval.
       try {
         const lr = await fetch(
-          `/api/v1/projects/${projectId}/ocp/install-log?cluster=${encodeURIComponent(target.clusterKey)}`,
+          `/api/v1/projects/${projectId}/ocp/install-log?cluster=${encodeURIComponent(clusterKey)}`,
         );
         if (lr.ok) {
           const fresh = await lr.json();
@@ -482,37 +540,41 @@ export default function ClusterInstallLogModal() {
     }
   };
 
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 10000,
+  const handleClose = () => {
+    if (standalone) {
+      window.close();
+    }
+    onClose?.();
+  };
+
+  const panelStyle: React.CSSProperties = standalone
+    ? {
+        background: "var(--pf-t--global--background--color--primary--default)",
+        height: "100vh",
+        width: "100vw",
+        padding: 16,
         display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "rgba(0,0,0,0.6)",
-      }}
-      onClick={close}
-    >
-      <div
-        style={{
-          background: "var(--pf-t--global--background--color--primary--default)",
-          borderRadius: 12,
-          padding: 24,
-          width: "80vw",
-          maxWidth: 900,
-          maxHeight: "80vh",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-          border: "1px solid var(--pf-t--global--border--color--default)",
-          display: "flex",
-          flexDirection: "column",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
+        flexDirection: "column",
+        boxSizing: "border-box",
+      }
+    : {
+        background: "var(--pf-t--global--background--color--primary--default)",
+        borderRadius: 12,
+        padding: 24,
+        width: "80vw",
+        maxWidth: 900,
+        maxHeight: "80vh",
+        boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+        border: "1px solid var(--pf-t--global--border--color--default)",
+        display: "flex",
+        flexDirection: "column",
+      };
+
+  return (
+      <div style={panelStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
           <h3 style={{ margin: 0, display: "flex", alignItems: "center", gap: 10 }}>
-            <span>☸ {target.name} — Status &amp; Log</span>
+            <span>☸ {clusterName} — Status &amp; Log</span>
             <span
               style={{
                 fontSize: 12,
@@ -585,6 +647,23 @@ export default function ClusterInstallLogModal() {
                 {restarting ? "Restarting…" : "Restart install"}
               </button>
             )}
+            {onPopOut && (
+              <button
+                onClick={onPopOut}
+                title="Open in a separate window"
+                style={{
+                  background: "rgba(255,255,255,0.08)",
+                  border: "1px solid rgba(255,255,255,0.15)",
+                  color: "var(--pf-t--global--text--color--regular)",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  padding: "4px 10px",
+                  borderRadius: 4,
+                }}
+              >
+                Pop out
+              </button>
+            )}
             {log && (
               <button
                 onClick={(e) => {
@@ -609,7 +688,7 @@ export default function ClusterInstallLogModal() {
               </button>
             )}
             <button
-              onClick={close}
+              onClick={handleClose}
               style={{
                 background: "transparent",
                 border: "none",
@@ -624,7 +703,7 @@ export default function ClusterInstallLogModal() {
         </div>
         {controlPlaneUsableElapsed != null &&
           new RegExp(
-            `\\[${target.clusterKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\] control-plane-usable`,
+            `\\[${clusterKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\] control-plane-usable`,
             "i",
           ).test(log) && (
           <div
@@ -763,7 +842,7 @@ export default function ClusterInstallLogModal() {
                       const url = URL.createObjectURL(blob);
                       const a = document.createElement("a");
                       a.href = url;
-                      a.download = `kubeconfig-${target.name}.yaml`;
+                      a.download = `kubeconfig-${clusterName}.yaml`;
                       a.click();
                       URL.revokeObjectURL(url);
                     }}
@@ -804,6 +883,51 @@ export default function ClusterInstallLogModal() {
             )}
           </pre>
         </div>
+      </div>
+  );
+}
+
+export default function ClusterInstallLogModal() {
+  const target = useCanvasStore((s) => s.clusterLogTarget);
+  const close = useCanvasStore((s) => s.closeClusterLog);
+  const projectId = useCanvasStore((s) => s.currentProjectId);
+  const nodes = useCanvasStore((s) => s.nodes);
+  const clusters = useCanvasStore((s) => s.clusters);
+
+  if (!target || !projectId) return null;
+
+  const cluster = clusters.find(
+    (c) => c.id === target.clusterKey || c.name === target.clusterKey,
+  );
+
+  const handlePopOut = () => {
+    openClusterInstallLogWindow(projectId, target.clusterKey, target.name);
+    close();
+  };
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 10000,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "rgba(0,0,0,0.6)",
+      }}
+      onClick={close}
+    >
+      <div onClick={(e) => e.stopPropagation()}>
+        <ClusterInstallLogPanel
+          projectId={projectId}
+          clusterKey={target.clusterKey}
+          clusterName={target.name}
+          cluster={cluster}
+          nodes={nodes}
+          onClose={close}
+          onPopOut={handlePopOut}
+        />
       </div>
     </div>
   );
