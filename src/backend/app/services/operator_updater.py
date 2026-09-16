@@ -175,13 +175,17 @@ def update_operator(provider) -> dict:
     """Apply operator CRDs and restart the deployment. Returns status dict."""
     from kubernetes import client
 
-    from app.services.providers.kubevirt import _ensure_operator_crds
+    from app.services.providers.kubevirt import (
+        _ensure_operator_crds,
+        _ensure_provider_rbac,
+    )
 
     # NOTE: _ensure_operator_crds applies the operator CRDs BUNDLED in THIS
     # (backend) image (src/operator/crds/*). A CRD schema change therefore only
     # takes effect once the backend image is rebuilt — CI's backend build filter
     # includes src/operator/crds/ so CRD edits trigger a backend rebuild.
     try:
+        _ensure_provider_rbac(provider)
         _ensure_operator_crds(provider)
     except Exception as e:
         logger.exception("Failed to apply operator CRDs on %s: %s", provider.name, e)

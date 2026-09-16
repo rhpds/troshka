@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Apply infra/ocpvirt-rbac.yaml to every KubeVirt/OCP Virt provider cluster.
-# Run after changing troshka-provider ClusterRole (e.g. troshkavms update verb).
+# Run after changing troshka-provider ClusterRole (e.g. troshkavms/troshkancephs rules).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -28,12 +28,12 @@ for kc in "${KUBECONFIGS[@]}"; do
   cluster=$(basename "$kc" .kubeconfig | cut -d. -f1)
   printf "  %s: " "$cluster"
   if oc apply -f "$MANIFEST" --kubeconfig="$kc" >/dev/null 2>&1; then
-    # Verify troshkavms has update (rule may move — grep the live object)
-    if oc get clusterrole troshka-provider --kubeconfig="$kc" -o yaml 2>/dev/null \
-      | grep -A6 'troshkavms' | grep -q 'update'; then
-      echo "ok (troshkavms update present)"
+    cr_yaml=$(oc get clusterrole troshka-provider --kubeconfig="$kc" -o yaml 2>/dev/null || true)
+    if echo "$cr_yaml" | grep -q troshkancephs \
+      && echo "$cr_yaml" | grep -A6 'troshkavms' | grep -q 'update'; then
+      echo "ok (troshkancephs + troshkavms update present)"
     else
-      echo "applied (verify troshkavms update manually)"
+      echo "applied (verify troshkancephs/troshkavms rules manually)"
     fi
   else
     echo "FAILED"

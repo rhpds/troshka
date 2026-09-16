@@ -188,9 +188,14 @@ class TestEnsureCacheS3Secrets:
 class TestTryExistingClusterResource:
     def test_existing_cluster_role_returns_true(self):
         rbac = MagicMock()
-        result = _try_existing_cluster_resource("ClusterRole", "my-role", {}, rbac)
+        existing = MagicMock()
+        existing.metadata.resource_version = "1"
+        rbac.read_cluster_role.return_value = existing
+        body = {"metadata": {"name": "my-role"}, "rules": []}
+        result = _try_existing_cluster_resource("ClusterRole", "my-role", body, rbac)
         assert result is True
         rbac.read_cluster_role.assert_called_once_with(name="my-role")
+        rbac.replace_cluster_role.assert_called_once_with(name="my-role", body=body)
 
     def test_existing_cluster_role_binding_patches_and_returns_true(self):
         rbac = MagicMock()
@@ -203,19 +208,31 @@ class TestTryExistingClusterResource:
             name="my-binding", body=body
         )
 
-    def test_not_found_returns_false(self):
+    def test_missing_cluster_role_is_created(self):
         rbac = MagicMock()
         exc = _make_api_exception(404, "Not Found")
         rbac.read_cluster_role.side_effect = exc
-        result = _try_existing_cluster_resource("ClusterRole", "missing", {}, rbac)
+        body = {"metadata": {"name": "missing"}, "rules": []}
+        result = _try_existing_cluster_resource("ClusterRole", "missing", body, rbac)
+        assert result is True
+        rbac.create_cluster_role.assert_called_once_with(body=body)
+
+    def test_not_found_binding_returns_false(self):
+        rbac = MagicMock()
+        exc = _make_api_exception(404, "Not Found")
+        rbac.patch_cluster_role_binding.side_effect = exc
+        result = _try_existing_cluster_resource(
+            "ClusterRoleBinding", "missing", {"metadata": {"name": "missing"}}, rbac
+        )
         assert result is False
 
     def test_other_api_error_raises(self):
         rbac = MagicMock()
         exc = _make_api_exception(403, "Forbidden")
         rbac.read_cluster_role.side_effect = exc
+        body = {"metadata": {"name": "my-role"}, "rules": []}
         with pytest.raises(Exception):
-            _try_existing_cluster_resource("ClusterRole", "my-role", {}, rbac)
+            _try_existing_cluster_resource("ClusterRole", "my-role", body, rbac)
 
 
 # ===========================================================================

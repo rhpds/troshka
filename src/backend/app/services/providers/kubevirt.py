@@ -46,6 +46,9 @@ def patch_kubevirt_run_strategy(custom_api, namespace, kv_name, strategy: str):
 OPERATOR_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "..", "..", "operator"
 )
+PROVIDER_RBAC_PATH = os.path.normpath(
+    os.path.join(OPERATOR_DIR, "..", "..", "infra", "ocpvirt-rbac.yaml")
+)
 
 
 def _operator_ns(provider):
@@ -323,14 +326,59 @@ def _ensure_cache_s3_secrets(provider, s3_config, central_s3=None, obc_s3=None):
         _ensure_s3_secret(provider, CACHE_NAMESPACE, obc_s3, "s3-obc-credentials")
 
 
+def _upsert_cluster_role(rbac_api, body: dict) -> None:
+    """Create or replace a ClusterRole so new rules reach already-onboarded clusters."""
+    from kubernetes.client.exceptions import ApiException
+
+    name = body["metadata"]["name"]
+    try:
+        existing = rbac_api.read_cluster_role(name=name)
+        body["metadata"]["resourceVersion"] = existing.metadata.resource_version
+        rbac_api.replace_cluster_role(name=name, body=body)
+        logger.info("ClusterRole %s updated", name)
+    except ApiException as e:
+        if e.status != 404:
+            raise
+        rbac_api.create_cluster_role(body=body)
+        logger.info("ClusterRole %s created", name)
+
+
+def _load_provider_rbac_docs() -> list[dict]:
+    """Parse infra/ocpvirt-rbac.yaml (provider SA + troshka-provider ClusterRole)."""
+    with open(PROVIDER_RBAC_PATH) as f:
+        return [yaml.safe_load(doc) for doc in f.read().split("\n---\n") if doc.strip()]
+
+
+def _ensure_provider_rbac(provider) -> None:
+    """Re-apply provider RBAC so rule additions (e.g. troshkancephs) reach live clusters.
+
+    Skips SecurityContextConstraints — the operator manages SCC user lists per project.
+    """
+    from kubernetes import client
+
+    _, core_api, api_client = _get_k8s_clients(provider)
+    rbac_api = client.RbacAuthorizationV1Api(api_client)
+    apps_api = client.AppsV1Api(api_client)
+
+    for doc in _load_provider_rbac_docs():
+        kind = doc.get("kind")
+        if kind == "SecurityContextConstraints":
+            continue
+        name = doc["metadata"]["name"]
+        ns = doc["metadata"].get("namespace")
+        if kind == "ClusterRole":
+            _upsert_cluster_role(rbac_api, doc)
+            continue
+        _apply_manifest(kind, name, ns, doc, core_api, rbac_api, apps_api)
+
+
 def _try_existing_cluster_resource(kind, name, body, rbac_api):
     """Try to read/patch an existing cluster-scoped resource. Returns True if handled."""
     from kubernetes.client.exceptions import ApiException
 
     try:
         if kind == "ClusterRole":
-            rbac_api.read_cluster_role(name=name)
-            logger.info(f"ClusterRole {name} already exists, skipping")
+            _upsert_cluster_role(rbac_api, body)
             return True
         rbac_api.patch_cluster_role_binding(name=name, body=body)
         logger.info(f"ClusterRoleBinding {name} patched")
@@ -377,6 +425,8 @@ def _apply_manifest(kind, name, ns, body, core_api, rbac_api, apps_api):
 
 def _deploy_operator(provider):
     from kubernetes import client
+
+    _ensure_provider_rbac(provider)
 
     _custom_api, core_api, api_client = _get_k8s_clients(provider)
     apps_api = client.AppsV1Api(api_client)

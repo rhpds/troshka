@@ -95,6 +95,9 @@ rules:
   - apiGroups: ["troshka.redhat.com"]
     resources: ["troshkaprojects/status", "troshkanetworks/status", "troshkavms/status", "troshkancephs/status"]
     verbs: ["get", "patch"]
+  - apiGroups: ["troshka.redhat.com"]
+    resources: ["troshkaprojects/finalizers", "troshkanetworks/finalizers", "troshkavms/finalizers", "troshkancephs/finalizers"]
+    verbs: ["update"]
   # Deployments — operator install
   - apiGroups: ["apps"]
     resources: ["deployments"]

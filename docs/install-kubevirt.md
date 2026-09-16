@@ -213,7 +213,7 @@ oc get deployment troshka-operator -n troshka
 
 # CRDs installed
 oc get crd | grep troshka
-# Expected: troshkaprojects, troshkanetworks, troshkavms
+# Expected: troshkaprojects, troshkanetworks, troshkavms, troshkancephs
 
 # SCCs exist
 oc get scc | grep troshka
