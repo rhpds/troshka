@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 from helpers.rook_ceph import (
     TROSHKA_ROOK_SA_CLUSTER_ROLES,
     build_ceph_cluster,
+    build_ceph_rbac,
+    build_export_job,
     build_rook_operator_config,
     build_rook_operator_deployment,
     data_dir_host_path,
@@ -167,3 +169,26 @@ def test_build_rook_operator_has_pod_name_env():
         ][0]["env"]
     }
     assert {"POD_NAME", "POD_NAMESPACE", "NODE_NAME"} <= env_names
+
+
+def test_build_export_job_writes_odf_external_cluster_details():
+    cr = {
+        "kind": "TroshkaCeph",
+        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
+        "spec": {"labIp": "10.0.0.3"},
+    }
+    script = build_export_job(cr)["spec"]["template"]["spec"]["containers"][0]["command"][-1]
+    assert "external_cluster_details" in script
+    assert "rook-ceph-mon-endpoints" in script
+
+
+def test_build_ceph_rbac_allows_export_job_exec():
+    cr = {
+        "kind": "TroshkaCeph",
+        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
+        "spec": {"labIp": "10.0.0.3"},
+    }
+    role, _binding = build_ceph_rbac(cr)
+    rules = {tuple(rule["resources"]): rule["verbs"] for rule in role["rules"]}
+    assert rules[("pods",)] == ["get", "list"]
+    assert rules[("pods/exec",)] == ["create"]

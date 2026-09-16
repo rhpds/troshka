@@ -63,6 +63,7 @@ def merge_project_ceph_extra_vars(topology: dict, extra_vars: dict | None) -> di
         "monEndpoint",
         "secretName",
         "secretNamespace",
+        "poolName",
         "osdCount",
         "replicateSize",
     ):

@@ -61,9 +61,11 @@ def test_merge_project_ceph_extra_vars():
             "troshka_ceph_mon_host": "10.0.0.3",
             "secretName": "troshka-ceph-external",
             "secretNamespace": "troshka-abc",
+            "poolName": "troshka-ceph-pool",
         }
     }
     out = merge_project_ceph_extra_vars(topo, {"foo": "bar"})
     assert out["foo"] == "bar"
     assert out["troshka_ceph_mon_host"] == "10.0.0.3"
     assert out["troshka_project_ceph_secret"] == "troshka-ceph-external"
+    assert out["poolName"] == "troshka-ceph-pool"

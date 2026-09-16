@@ -640,30 +640,201 @@ def rook_service_account_ref(namespace: str, sa_name: str) -> str:
     return f"system:serviceaccount:{namespace}:{sa_name}"
 
 
-def build_export_job(ceph_cr: dict) -> dict:
-    """Enrich troshka-ceph-external from the project-scoped rook CephCluster status."""
-    namespace = ceph_cr["metadata"]["namespace"]
-    script = r"""
-set -e
+def ceph_external_details_exported(core_api, namespace: str) -> bool:
+    """True when troshka-ceph-external carries ODF external_cluster_details."""
+    try:
+        secret = core_api.read_namespaced_secret(
+            name=CEPH_EXTERNAL_SECRET, namespace=namespace
+        )
+    except ApiException:
+        return False
+    data = secret.data or {}
+    return bool(data.get("external_cluster_details"))
+
+
+def _ceph_export_job_script() -> str:
+    """Shell wrapper that builds ODF external_cluster_details via in-cluster Python."""
+    return r"""
+set -euo pipefail
 NS=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
 SECRET=troshka-ceph-external
-if ! kubectl -n "$NS" get secret "$SECRET" >/dev/null 2>&1; then
-  echo "external secret missing"; exit 1
-fi
-FSID=$(kubectl -n "$NS" get cephcluster troshka-ceph \
-  -o jsonpath='{.status.ceph.fsid}{.status.cephFSID}{.status.fsid}' 2>/dev/null || true)
-if [ -z "$FSID" ]; then
-  TOOLBOX=$(kubectl -n "$NS" get pod -l app=rook-ceph-tools -o name 2>/dev/null | head -1)
-  if [ -n "$TOOLBOX" ]; then
-    FSID=$(kubectl -n "$NS" exec "$TOOLBOX" -- ceph fsid 2>/dev/null || true)
-  fi
-fi
-if [ -n "$FSID" ]; then
-  kubectl -n "$NS" patch secret "$SECRET" --type merge \
-    -p "{\"stringData\":{\"fsid\":\"$FSID\"}}"
-fi
-echo "export job complete"
+POOL=troshka-ceph-pool
+python3 <<'PY'
+import base64
+import json
+import subprocess
+import sys
+
+ns = open("/var/run/secrets/kubernetes.io/serviceaccount/namespace").read().strip()
+secret_name = "troshka-ceph-external"  # pragma: allowlist secret
+pool_name = "troshka-ceph-pool"
+
+
+def kubectl(args: list[str]) -> str:
+    return subprocess.check_output(
+        ["kubectl", "-n", ns, *args], text=True, stderr=subprocess.STDOUT
+    ).strip()
+
+
+def kubectl_json(args: list[str]):
+    return json.loads(kubectl(args))
+
+
+def ceph_exec(mon_pod: str, ceph_args: list[str]) -> str:
+    cmd = ["kubectl", "exec", "-n", ns, mon_pod, "-c", "mon", "--", *ceph_args]
+    return subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT).strip()
+
+
+def ceph_key(mon_pod: str, entity: str, caps: list[str]) -> str:
+    args = ["ceph", "auth", "get-or-create", entity, *caps, "-o", "json"]
+    payload = json.loads(ceph_exec(mon_pod, args))
+    return payload[0]["key"]
+
+
+def b64_secret_field(value: str) -> str:
+    secret = kubectl_json(
+        ["get", "secret", secret_name, "-o", "json"]
+    )
+    raw = (secret.get("data") or {}).get(value)
+    if raw:
+        return base64.b64decode(raw).decode()
+    raw = (secret.get("stringData") or {}).get(value)
+    if raw:
+        return raw
+    return ""
+
+
+mon_pod = kubectl(["get", "pod", "-l", "app=rook-ceph-mon", "-o", "jsonpath={.items[0].metadata.name}"])
+if not mon_pod:
+    print("no rook mon pod found", file=sys.stderr)
+    sys.exit(1)
+
+mon_host = b64_secret_field("mon-host")
+if not mon_host:
+    print("troshka-ceph-external missing mon-host", file=sys.stderr)
+    sys.exit(1)
+
+fsid = kubectl(
+    [
+        "get",
+        "cephcluster",
+        "troshka-ceph",
+        "-o",
+        "jsonpath={.status.ceph.fsid}{.status.cephFSID}{.status.fsid}",
+    ]
+)
+if not fsid:
+    fsid = ceph_exec(mon_pod, ["ceph", "fsid"])
+
+admin_key = ceph_exec(mon_pod, ["ceph", "auth", "get-key", "client.admin"])
+auth_list = json.loads(ceph_exec(mon_pod, ["ceph", "auth", "list", "-f", "json"]))
+mon_key = next(
+    entry["key"] for entry in auth_list if entry["entity"].startswith("mon.")
+)
+csi_node_key = ceph_key(
+    mon_pod,
+    "client.csi-rbd-node",
+    ["mgr", "allow", "rw", "mon", "allow", "r", "osd", "profile", "rbd"],
+)
+csi_prov_key = ceph_key(
+    mon_pod,
+    "client.csi-rbd-provisioner",
+    ["mgr", "allow", "rw", "mon", "allow", "r", "osd", "profile", "rbd"],
+)
+
+mon_ip = mon_host.split(":", 1)[0]
+resources = [
+    {
+        "name": "rook-ceph-mon-endpoints",
+        "kind": "ConfigMap",
+        "data": {"data": mon_host, "maxMonId": "0", "mapping": "{}"},
+    },
+    {
+        "name": "rook-ceph-mon",
+        "kind": "Secret",
+        "data": {
+            "admin-secret": admin_key,
+            "fsid": fsid,
+            "mon-secret": mon_key,
+        },
+    },
+    {
+        "name": "rook-ceph-operator-creds",
+        "kind": "Secret",
+        "data": {"userID": "client.admin", "userKey": admin_key},
+    },
+    {
+        "name": "rook-csi-rbd-node",
+        "kind": "Secret",
+        "data": {"userID": "csi-rbd-node", "userKey": csi_node_key},
+    },
+    {
+        "name": "rook-csi-rbd-provisioner",
+        "kind": "Secret",
+        "data": {"userID": "csi-rbd-provisioner", "userKey": csi_prov_key},
+    },
+    {
+        "name": "ceph-rbd",
+        "kind": "StorageClass",
+        "data": {"pool": pool_name},
+    },
+    {
+        "name": "monitoring-endpoint",
+        "kind": "CephCluster",
+        "data": {"MonitoringEndpoint": mon_ip, "MonitoringPort": "9283"},
+    },
+]
+blob = json.dumps(resources)
+patch = json.dumps(
+    {
+        "stringData": {
+            "fsid": fsid,
+            "mon-host": mon_host,
+            "external_cluster_details": blob,
+        }
+    }
+)
+subprocess.check_call(
+    ["kubectl", "-n", ns, "patch", "secret", secret_name, "--type", "merge", "-p", patch]
+)
+print("export job complete")
+PY
 """
+
+
+def ensure_ceph_export_job(batch_api, ceph_cr: dict, namespace: str) -> None:
+    """Launch (or relaunch) the export job when ODF details are not yet stamped."""
+    core_api = client.CoreV1Api()
+    if ceph_external_details_exported(core_api, namespace):
+        return
+
+    try:
+        job = batch_api.read_namespaced_job(name=EXPORT_JOB_NAME, namespace=namespace)
+    except ApiException as e:
+        if e.status != 404:
+            raise
+        job = None
+
+    if job is not None:
+        status = job.status or client.V1JobStatus()
+        if (status.succeeded or 0) >= 1:
+            return
+        if (status.failed or 0) >= 1:
+            batch_api.delete_namespaced_job(
+                name=EXPORT_JOB_NAME,
+                namespace=namespace,
+                body=client.V1DeleteOptions(propagation_policy="Foreground"),
+            )
+        else:
+            return
+
+    batch_api.create_namespaced_job(namespace=namespace, body=build_export_job(ceph_cr))
+
+
+def build_export_job(ceph_cr: dict) -> dict:
+    """Build ODF external_cluster_details in troshka-ceph-external."""
+    namespace = ceph_cr["metadata"]["namespace"]
+    script = _ceph_export_job_script()
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
@@ -709,7 +880,22 @@ def build_ceph_rbac(ceph_cr: dict) -> tuple[dict, dict]:
                 "apiGroups": [""],
                 "resources": ["secrets"],
                 "verbs": ["get", "patch", "create", "update"],
-            }
+            },
+            {
+                "apiGroups": [""],
+                "resources": ["pods"],
+                "verbs": ["get", "list"],
+            },
+            {
+                "apiGroups": [""],
+                "resources": ["pods/exec"],
+                "verbs": ["create"],
+            },
+            {
+                "apiGroups": ["ceph.rook.io"],
+                "resources": ["cephclusters"],
+                "verbs": ["get"],
+            },
         ],
     }
     binding = {

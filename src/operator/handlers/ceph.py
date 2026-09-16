@@ -19,8 +19,10 @@ from helpers.rook_ceph import (
     build_mon_bridge_deployment,
     build_ceph_rbac,
     ceph_cluster_phase,
+    ceph_external_details_exported,
     delete_rook_operator,
     discover_ceph_image,
+    ensure_ceph_export_job,
     ensure_rook_operator,
     is_ceph_ready,
     rook_service_account_ref,
@@ -165,9 +167,15 @@ async def _reconcile_ceph(body, patch, namespace: str) -> None:
     patch.status["replicateSize"] = replicate_size
 
     if is_ceph_ready(phase):
-        patch.status["phase"] = "Ready"
-        patch.status["message"] = "Ceph cluster ready"
-        logger.info("TroshkaCeph ready in %s (mon=%s)", namespace, mon_endpoint)
+        batch_api = client.BatchV1Api()
+        ensure_ceph_export_job(batch_api, body, namespace)
+        if ceph_external_details_exported(core_api, namespace):
+            patch.status["phase"] = "Ready"
+            patch.status["message"] = "Ceph cluster ready"
+            logger.info("TroshkaCeph ready in %s (mon=%s)", namespace, mon_endpoint)
+            return
+        patch.status["phase"] = "Progressing"
+        patch.status["message"] = "Exporting ODF external cluster details"
         return
 
     patch.status["phase"] = "Progressing"
