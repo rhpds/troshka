@@ -33,6 +33,7 @@ ROOK_SYSTEM_SA = "rook-ceph-system"
 ROOK_OSD_SA = "rook-ceph-osd"
 ROOK_MGR_SA = "rook-ceph-mgr"
 ROOK_CMD_REPORTER_SA = "rook-ceph-cmd-reporter"
+ROOK_DEFAULT_SA = "rook-ceph-default"
 
 # Troshka-owned ClusterRoles (deploy/rook-clusterroles.yaml). cmd-reporter uses a
 # namespace Role per upstream Rook — not a ClusterRoleBinding.
@@ -42,11 +43,12 @@ TROSHKA_ROOK_SA_CLUSTER_ROLES: dict[str, tuple[str, ...]] = {
         "troshka-rook-global",
         "troshka-rook-cluster-mgmt",
     ),
-    ROOK_OSD_SA: ("troshka-rook-osd",),
+    ROOK_OSD_SA: ("troshka-rook-osd", "troshka-rook-cluster-mgmt"),
     ROOK_MGR_SA: ("troshka-rook-mgr",),
 }
 ROOK_CLUSTER_SAS = tuple(TROSHKA_ROOK_SA_CLUSTER_ROLES.keys())
-ROOK_SCC_SAS = ROOK_CLUSTER_SAS + (ROOK_CMD_REPORTER_SA,)
+ROOK_SCC_SAS = ROOK_CLUSTER_SAS + (ROOK_CMD_REPORTER_SA, ROOK_DEFAULT_SA)
+ROOK_OPERAND_SAS = ROOK_SCC_SAS
 ROOK_CMD_REPORTER_ROLE = "rook-ceph-cmd-reporter"
 ROOK_SCC_NAME = "rook-ceph"
 ODF_ROOK_OPERATOR_NS = "openshift-storage"
@@ -60,6 +62,8 @@ DEFAULT_OSD_COUNT = 3
 MIN_OSD_COUNT = 1
 MAX_OSD_COUNT = 6
 MIN_OSD_SIZE_GI = 50
+DEFAULT_MON_STORAGE_GI = 10
+MIN_MON_STORAGE_GI = 10
 DEFAULT_OSD_STORAGE_CLASS = os.environ.get(
     "TROSHKA_CEPH_OSD_STORAGE_CLASS",
     "ocs-storagecluster-ceph-rbd-virtualization",
@@ -81,9 +85,28 @@ def normalize_ceph_counts(spec: dict) -> tuple[int, int, int]:
 
 
 def data_dir_host_path(namespace: str) -> str:
-    """Unique mon metadata path per project — must not share ODF's /var/lib/rook."""
+    """Isolated host path for Rook daemon logs/crash only (not mon data — see mon PVC).
+
+    Mon database storage uses spec.mon.volumeClaimTemplate. Rook still mounts this
+    path for ancillary daemon files; it must not overlap ODF's /var/lib/rook.
+    """
     suffix = namespace.removeprefix("troshka-")
     return f"/var/lib/rook-troshka-{suffix}"
+
+
+def mon_storage_gi(spec: dict) -> int:
+    return max(MIN_MON_STORAGE_GI, int(spec.get("monStorageGi") or DEFAULT_MON_STORAGE_GI))
+
+
+def build_mon_volume_claim_template(storage_class: str, size_gi: int) -> dict:
+    """PVC template for monitor database — keeps mon data off the host."""
+    return {
+        "spec": {
+            "storageClassName": storage_class,
+            "accessModes": ["ReadWriteOnce"],
+            "resources": {"requests": {"storage": f"{size_gi}Gi"}},
+        }
+    }
 
 
 def _ceph_node_affinity() -> dict:
@@ -159,6 +182,24 @@ def discover_rook_operator_image(apps_api) -> str:
         return DEFAULT_ROOK_OPERATOR_IMAGE
 
 
+def discover_ceph_image(custom_api) -> str:
+    """Match the cluster ODF Ceph image so operator CLI and mons share cephx/msgr."""
+    try:
+        clusters = custom_api.list_namespaced_custom_object(
+            group="ceph.rook.io",
+            version="v1",
+            namespace=ODF_ROOK_OPERATOR_NS,
+            plural="cephclusters",
+        )
+        items = clusters.get("items") or []
+        if items:
+            return items[0]["spec"]["cephVersion"]["image"]
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Could not read ODF ceph image: %s", e)
+    return "quay.io/ceph/ceph:v19"
+
+
 def default_lab_ip_from_cidr(cidr: str) -> str:
     if not cidr or "/" not in cidr:
         return ""
@@ -199,11 +240,13 @@ def build_osd_pvcs(ceph_cr: dict) -> list[dict]:
     return pvcs
 
 
-def build_ceph_cluster(ceph_cr: dict) -> dict:
+def build_ceph_cluster(ceph_cr: dict, ceph_image: str | None = None) -> dict:
     spec = ceph_cr["spec"]
     namespace = ceph_cr["metadata"]["namespace"]
     osd_count, _, per_osd_gi = normalize_ceph_counts(spec)
     storage_class = spec.get("osdStorageClass") or DEFAULT_OSD_STORAGE_CLASS
+    mon_gi = mon_storage_gi(spec)
+    image = ceph_image or spec.get("cephImage") or "quay.io/ceph/ceph:v19"
     return {
         "apiVersion": _ROOK_API,
         "kind": "CephCluster",
@@ -213,11 +256,17 @@ def build_ceph_cluster(ceph_cr: dict) -> dict:
             "ownerReferences": [owner_ref(ceph_cr)],
         },
         "spec": {
-            "cephVersion": {"image": "quay.io/ceph/ceph:v19"},
+            "cephVersion": {"image": image},
             "dataDirHostPath": data_dir_host_path(namespace),
             "skipUpgradeChecks": True,
             "continueUpgradeAfterChecksEvenIfNotHealthy": True,
-            "mon": {"count": 1, "allowMultiplePerNode": True},
+            "mon": {
+                "count": 1,
+                "allowMultiplePerNode": True,
+                "volumeClaimTemplate": build_mon_volume_claim_template(
+                    storage_class, mon_gi
+                ),
+            },
             "mgr": {"count": 1},
             "dashboard": {"enabled": False},
             "network": {"provider": "host"},
@@ -390,6 +439,8 @@ def build_rook_operator_config(ceph_cr: dict) -> dict:
             "ROOK_CURRENT_NAMESPACE_ONLY": "true",
             "ROOK_CSI_DISABLE_DRIVER": "true",
             "ROOK_DISABLE_DEVICE_HOTPLUG": "true",
+            "ROOK_HOSTPATH_REQUIRES_PRIVILEGED": "true",
+            "ROOK_CEPH_MON_RUN_AS_ROOT": "true",
             "ROOK_LOG_LEVEL": "INFO",
         },
     }
@@ -528,6 +579,14 @@ def build_rook_operator_deployment(ceph_cr: dict, image: str | None = None) -> d
                                 },
                                 {
                                     "name": "ROOK_DISABLE_DEVICE_HOTPLUG",
+                                    "value": "true",
+                                },
+                                {
+                                    "name": "ROOK_HOSTPATH_REQUIRES_PRIVILEGED",
+                                    "value": "true",
+                                },
+                                {
+                                    "name": "ROOK_CEPH_MON_RUN_AS_ROOT",
                                     "value": "true",
                                 },
                                 {
@@ -822,7 +881,7 @@ def ensure_rook_operator(ceph_cr: dict) -> None:
 
     _create_or_patch_configmap(core_api, namespace, build_rook_operator_config(ceph_cr))
 
-    for sa_name in ROOK_SCC_SAS:
+    for sa_name in ROOK_OPERAND_SAS:
         _ensure_service_account(core_api, namespace, sa_name, ceph_cr)
 
     for sa_name, cluster_roles in TROSHKA_ROOK_SA_CLUSTER_ROLES.items():
@@ -874,7 +933,7 @@ def delete_rook_operator(ceph_cr: dict | None, namespace: str) -> None:
             if e.status != 404:
                 logger.warning("Failed to delete rook %s %s: %s", kind, obj_name, e)
 
-    for sa_name in ROOK_SCC_SAS:
+    for sa_name in ROOK_OPERAND_SAS:
         if sa_name == ROOK_SYSTEM_SA:
             continue
         try:

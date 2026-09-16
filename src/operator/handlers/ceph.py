@@ -20,6 +20,7 @@ from helpers.rook_ceph import (
     build_ceph_rbac,
     ceph_cluster_phase,
     delete_rook_operator,
+    discover_ceph_image,
     ensure_rook_operator,
     is_ceph_ready,
     rook_service_account_ref,
@@ -115,8 +116,12 @@ async def _reconcile_ceph(body, patch, namespace: str) -> None:
     role, binding = build_ceph_rbac(body)
     _apply_rbac(rbac_api, namespace, role, binding)
 
+    ceph_image = discover_ceph_image(custom_api)
     _apply_rook_cr(
-        custom_api, build_ceph_cluster(body), namespace, "cephclusters"
+        custom_api,
+        build_ceph_cluster(body, ceph_image=ceph_image),
+        namespace,
+        "cephclusters",
     )
     _apply_rook_cr(
         custom_api, build_ceph_block_pool(body), namespace, "cephblockpools"

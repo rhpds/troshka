@@ -52,9 +52,28 @@ rules:
       - endpoints
       - services
     verbs: ["get", "list", "watch", "patch", "create", "update", "delete"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices", "endpointslices/restricted"]
+    verbs: ["get", "list", "watch", "create", "update", "delete", "patch"]
   - apiGroups: ["storage.k8s.io"]
-    resources: ["storageclasses"]
-    verbs: ["get", "list", "watch"]
+    resources: ["storageclasses", "csidrivers"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps"]
+    verbs: ["get", "create", "update", "delete"]
+  - apiGroups: ["objectbucket.io"]
+    resources: ["objectbucketclaims", "objectbuckets"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["objectbucket.io"]
+    resources:
+      - objectbucketclaims/status
+      - objectbuckets/status
+      - objectbucketclaims/finalizers
+      - objectbuckets/finalizers
+    verbs: ["update"]
+  - apiGroups: ["csi.ceph.io"]
+    resources: ["drivers", "operatorconfigs", "clientprofiles", "cephconnections"]
+    verbs: ["create", "delete", "get", "list", "update", "watch"]
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
     verbs: ["get", "list", "watch", "create", "update", "delete", "deletecollection"]
@@ -115,8 +134,11 @@ metadata:
     app: troshka-ceph
 rules:
   - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["get", "list"]
+    resources: ["nodes", "configmaps", "secrets", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
