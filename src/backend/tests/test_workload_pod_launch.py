@@ -103,6 +103,7 @@ def test_launch_runner_pod_kubevirt(monkeypatch):
         "app.services.ocp.ops_pod_scaffold.build_ops_pod_kubevirt_manifests",
         fake_build_manifests,
     ):
+        aliases = [{"ip": "10.0.0.10", "hostnames": ["api.source.source.cclm.local"]}]
         job = pod_launch.launch_runner_pod(
             host,
             project,
@@ -110,6 +111,7 @@ def test_launch_runner_pod_kubevirt(monkeypatch):
             command=["bash", "-lc", "y"],
             files={"/run/a": "b"},
             networks=[],
+            host_aliases=aliases,
         )
     assert job == "workload-runner-p1234567"
     # Namespace resolved from the HOST-resolved provider (not project.provider_id).
@@ -121,6 +123,7 @@ def test_launch_runner_pod_kubevirt(monkeypatch):
     assert fake_build_manifests.call_args.kwargs["image"] == "ee:2"
     # Assert runner Pod gets restart_policy="Never" (not "Always" like OCP ops pod)
     assert fake_build_manifests.call_args.kwargs["restart_policy"] == "Never"
+    assert fake_build_manifests.call_args.kwargs["host_aliases"] == aliases
 
 
 def test_build_artifact_files_with_kubeconfig():

@@ -2,6 +2,14 @@
 
 import logging
 
+from helpers.rook_ceph import (
+    DEFAULT_OSD_COUNT,
+    MAX_OSD_COUNT,
+    MIN_OSD_COUNT,
+    MIN_OSD_SIZE_GI,
+    default_lab_ip_from_cidr,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -863,3 +871,84 @@ def build_static_leases(topology):
     _add_cluster_vip_leases(nodes, edges, network_leases)
 
     return network_leases
+
+
+def _network_nad_for_ref(nodes, network_ref: str) -> tuple[str, str]:
+    """Resolve a network node id to (nad_name, cidr)."""
+    for node in nodes:
+        if node.get("type") != "networkNode":
+            continue
+        data = node.get("data", {})
+        if data.get("subtype") == "gateway":
+            continue
+        node_id = data.get("id", node.get("id", ""))
+        if node_id != network_ref and node.get("id") != network_ref:
+            continue
+        nad = f"net-{node_id[:8]}-nad"
+        return nad, data.get("cidr", "")
+    return "", ""
+
+
+def _linked_cluster_ids(nodes, edges, ceph_node_id: str) -> list[str]:
+    linked: list[str] = []
+    for edge in edges:
+        src, tgt = edge.get("source", ""), edge.get("target", "")
+        other = tgt if src == ceph_node_id else src if tgt == ceph_node_id else ""
+        if not other:
+            continue
+        for node in nodes:
+            if node.get("id") != other or node.get("type") != "clusterNode":
+                continue
+            data = node.get("data", {})
+            name = data.get("name") or data.get("clusterName") or ""
+            if name:
+                linked.append(name)
+    return linked
+
+
+def extract_ceph_cluster(topology: dict) -> dict | None:
+    """Return TroshkaCeph spec fields from a cephClusterNode, or None."""
+    nodes = topology.get("nodes", [])
+    edges = topology.get("edges", [])
+    ceph_node = None
+    for node in nodes:
+        if node.get("type") == "cephClusterNode":
+            ceph_node = node
+            break
+    if not ceph_node:
+        return None
+
+    data = ceph_node.get("data", {})
+    ceph_id = data.get("id", ceph_node.get("id", ""))
+    network_ref = data.get("networkRef", "")
+    network_nad, cidr = _network_nad_for_ref(nodes, network_ref)
+
+    lab_ip = str(data.get("labIp") or "").strip()
+    if not lab_ip:
+        lab_ip = default_lab_ip_from_cidr(cidr)
+
+    osd_count = int(data.get("osdCount") or DEFAULT_OSD_COUNT)
+    osd_count = max(MIN_OSD_COUNT, min(MAX_OSD_COUNT, osd_count))
+    capacity_gi = int(data.get("capacityGi") or osd_count * MIN_OSD_SIZE_GI)
+    capacity_gi = max(capacity_gi, osd_count * MIN_OSD_SIZE_GI)
+
+    prefix = 24
+    if cidr and "/" in cidr:
+        prefix = int(cidr.split("/")[1])
+
+    linked = list(data.get("linkedClusters") or [])
+    if not linked:
+        linked = _linked_cluster_ids(nodes, edges, ceph_node.get("id", ceph_id))
+
+    return {
+        "cephId": ceph_id,
+        "networkNad": network_nad,
+        "labIp": lab_ip,
+        "labPrefixLength": prefix,
+        "capacityGi": capacity_gi,
+        "osdCount": osd_count,
+        "replicateSize": min(osd_count, 3),
+        "linkedClusterIds": linked,
+        "storageClassName": data.get("storageClassName") or "troshka-ceph-rbd",
+        "osdStorageClass": data.get("osdStorageClass") or "",
+    }

@@ -131,7 +131,9 @@ def test_build_deferred_worker_nmstate_configures_both_nics():
     nmstate = build_deferred_worker_nmstate(worker)
     assert "mac-address: 52:54:00:aa:bb:02" in nmstate
     assert "mac-address: 52:54:00:aa:bb:99" in nmstate
-    assert "ip: 172.16.100.20" in nmstate
+    assert "name: net1-nic" in nmstate
+    assert "state: down" in nmstate
+    assert "ip: 172.16.100.20" not in nmstate
     assert "next-hop-interface: cluster-nic" in nmstate
     assert "next-hop-interface: net1-nic" not in nmstate
 

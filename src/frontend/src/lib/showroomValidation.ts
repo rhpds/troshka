@@ -43,6 +43,13 @@ export function isLabNetworkNode(node: Node | undefined): boolean {
   return sub !== "router" && sub !== "gateway" && sub !== "loadbalancer";
 }
 
+/** Lab network eligible for Ceph Storage (excludes BMC). */
+export function isCephStorageNetworkNode(node: Node | undefined): boolean {
+  if (!isLabNetworkNode(node)) return false;
+  const networkType = (node!.data as Record<string, unknown>).networkType;
+  return networkType !== "bmc";
+}
+
 export function isShowroomLabNetworkEdge(edge: Edge, nodes: Node[]): boolean {
   const source = nodes.find((n) => n.id === edge.source);
   const target = nodes.find((n) => n.id === edge.target);

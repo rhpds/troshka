@@ -165,6 +165,33 @@ def run_workload_job(run_id: str) -> None:
         if run.extra_vars:
             extra_vars.update(run.extra_vars)
 
+        if getattr(host, "host_type", None) == "kubevirt-cluster":
+            from app.models.provider import Provider
+            from app.services.project_ceph import (
+                build_project_ceph_stamp,
+                fetch_troshka_ceph_cr,
+                merge_project_ceph_extra_vars,
+            )
+            from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+            provider = db.get(Provider, host.provider_id)
+            if provider:
+                _, _, api_client = _get_k8s_clients(provider)
+                from kubernetes import client as k8s_client
+
+                custom_api = k8s_client.CustomObjectsApi(api_client)
+                ns = _project_ns(provider, project.id)
+                ceph_cr = fetch_troshka_ceph_cr(custom_api, ns)
+                if ceph_cr:
+                    stamp = build_project_ceph_stamp(
+                        namespace=ns,
+                        status=ceph_cr.get("status") or {},
+                        spec=ceph_cr.get("spec") or {},
+                    )
+                    topo = dict(topo)
+                    topo["projectCeph"] = stamp
+            extra_vars = merge_project_ceph_extra_vars(topo, extra_vars)
+
         # Thread requirements_content to the pod AFTER user vars (HARD REQUIREMENT A)
         # so user cannot clobber the real collections
         if item.requirements_content:
@@ -209,6 +236,8 @@ def run_workload_job(run_id: str) -> None:
             limit=_run_limit(run.target_map),
         )
 
+        from app.services.ocp.ops_pod_scaffold import kubevirt_cluster_api_host_aliases
+
         launch_runner_pod(
             host,
             project,
@@ -220,6 +249,8 @@ def run_workload_job(run_id: str) -> None:
             files=files,
             networks=networks,
             dns_nameserver=dns_nameserver,
+            host_aliases=kubevirt_cluster_api_host_aliases(topo),
+            topology=topo,
         )
         run.status = "running"
         run.started_at = _now()
@@ -830,8 +861,8 @@ def resume_workload_monitors() -> None:
         )
         for row in result:
             try:
-                run_id: str = row[0]
-                host_id: str = row[1]
+                run_id = str(row[0])
+                host_id = str(row[1])
                 logger.info("Resuming workload monitor for %s", run_id[:8])
                 _enqueue_monitor_by_ids(run_id, host_id)
             except Exception as exc:

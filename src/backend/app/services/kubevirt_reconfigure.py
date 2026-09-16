@@ -813,8 +813,10 @@ def _create_showroom_pod(
     }
     dns_ns = str(ctr.get("dnsNameserver") or "").strip()
     if dns_ns:
+        from app.services.ocp.ops_pod_scaffold import lab_pod_dns_config
+
         pod_body["spec"]["dnsPolicy"] = "None"
-        pod_body["spec"]["dnsConfig"] = {"nameservers": [dns_ns]}
+        pod_body["spec"]["dnsConfig"] = lab_pod_dns_config(dns_ns)
     if volumes:
         pod_body["spec"]["volumes"] = volumes
     if net_annotations:

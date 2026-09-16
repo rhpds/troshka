@@ -2238,6 +2238,7 @@ class TestCreateSingleContainer:
         body = core_api.create_namespaced_pod.call_args[1]["body"]
         assert body["spec"]["dnsPolicy"] == "None"
         assert body["spec"]["dnsConfig"]["nameservers"] == ["10.0.0.2"]
+        assert body["spec"]["dnsConfig"]["options"] == [{"name": "use-vc"}]
 
     def test_single_container_no_dns_when_unset(self):
         from handlers.container import _create_single_container
@@ -2306,6 +2307,7 @@ class TestCreatePodGroup:
         body = core_api.create_namespaced_pod.call_args[1]["body"]
         assert body["spec"]["dnsPolicy"] == "None"
         assert body["spec"]["dnsConfig"]["nameservers"] == ["10.0.0.2"]
+        assert body["spec"]["dnsConfig"]["options"] == [{"name": "use-vc"}]
 
     def test_pod_group_disables_sa_token_automount(self):
         """The showroom pod shouldn't mount the host SA token — otherwise the
@@ -2610,8 +2612,9 @@ class TestBuildExecDeployment:
 
         cr = self._make_project_cr()
         dep = build_exec_deployment(cr, "cluster-nad", cidr="10.0.0.0/24")
-        dns = dep["spec"]["template"]["spec"]["dnsConfig"]["nameservers"]
-        assert dns == ["10.0.0.2"]
+        dns_cfg = dep["spec"]["template"]["spec"]["dnsConfig"]
+        assert dns_cfg["nameservers"] == ["10.0.0.2"]
+        assert dns_cfg["options"] == [{"name": "use-vc"}]
 
     def test_ssh_key_secret_mount(self):
         from helpers.k8s import build_exec_deployment

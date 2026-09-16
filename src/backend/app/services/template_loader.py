@@ -1884,6 +1884,23 @@ def _generate_topology_from_vms(
     nodes.extend(_build_cluster_boundary_nodes(clusters))
     _add_cluster_boundary_network_edges(clusters, nodes, edges)
 
+    ceph_cfg = tmpl.get("cephCluster") or tmpl.get("ceph_cluster")
+    if ceph_cfg and _template_requires_kubevirt(tmpl):
+        from app.services.ceph_scaffold import build_ceph_from_config
+
+        cluster_name_to_id = {
+            c["name"]: f"cluster-{c['id']}" for c in clusters if c.get("name")
+        }
+        ceph_node, ceph_edges = build_ceph_from_config(
+            ceph_cfg,
+            net_ids=net_ids,
+            nets_def=nets_def,
+            cluster_name_to_id=cluster_name_to_id,
+            y=NET_ROW_Y + 120,
+        )
+        nodes.append(ceph_node)
+        edges.extend(ceph_edges)
+
     requires_kubevirt = _template_requires_kubevirt(tmpl)
 
     vm_name_to_id = {}
@@ -2832,6 +2849,12 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
     )
     if showroom_export:
         result["showroom"] = showroom_export
+
+    from app.services.ceph_scaffold import export_ceph_section
+
+    ceph_export = export_ceph_section(topology, net_id_to_name)
+    if ceph_export:
+        result["cephCluster"] = ceph_export
 
     return result
 

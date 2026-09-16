@@ -248,6 +248,8 @@ def launch_runner_pod(
     files: dict[str, str],
     networks: list,
     dns_nameserver: str = "",
+    host_aliases: list[dict] | None = None,
+    topology: dict | None = None,
 ) -> str:
     """Launch the workload runner pod on the host, returning a job/pod identifier.
 
@@ -264,6 +266,8 @@ def launch_runner_pod(
             files=files,
             cluster_nads=networks,
             dns_nameserver=dns_nameserver,
+            host_aliases=host_aliases,
+            topology=topology,
         )
     return _launch_troshkad(
         host,
@@ -328,6 +332,8 @@ def _launch_kubevirt(
     files: dict[str, str],
     cluster_nads: list,
     dns_nameserver: str = "",
+    host_aliases: list[dict] | None = None,
+    topology: dict | None = None,
 ) -> str:
     """KubeVirt runner-pod path: build Pod+Secret manifests and create via k8s."""
     from app.services.ocp.ops_pod_scaffold import build_ops_pod_kubevirt_manifests
@@ -337,6 +343,8 @@ def _launch_kubevirt(
     # the KubeVirt provider lives on the host). Reuse it for the namespace too.
     provider = _provider_for_host(host)
     namespace = _project_ns(provider, project.id)
+    from app.services.project_ceph import topology_has_ceph
+
     pod, secret = build_ops_pod_kubevirt_manifests(
         namespace=namespace,
         project_id=project.id,
@@ -346,9 +354,11 @@ def _launch_kubevirt(
         cluster_nads=cluster_nads,
         bmc_nad=None,
         dns_nameserver=dns_nameserver,
+        host_aliases=host_aliases,
         image=ee_image,
         pod_name="workload-runner",
         restart_policy="Never",
+        mount_project_ceph_secret=topology_has_ceph(topology or {}),
     )
     create_ops_pod(provider, project.id, pod, secret)
     return f"workload-runner-{project.id[:8]}"

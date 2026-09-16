@@ -1,6 +1,6 @@
 import logging
 from kubernetes import client
-from helpers.k8s import GATEWAY_IMAGE
+from helpers.k8s import GATEWAY_IMAGE, lab_pod_dns_config
 
 logger = logging.getLogger(__name__)
 
@@ -246,7 +246,7 @@ def _apply_managed_dns(pod_spec, ctr):
     ns = str(ctr.get("dnsNameserver") or "").strip()
     if ns:
         pod_spec["dnsPolicy"] = "None"
-        pod_spec["dnsConfig"] = {"nameservers": [ns]}
+        pod_spec["dnsConfig"] = lab_pod_dns_config(ns)
 
 
 def _build_network_annotations(ctr, nad_refs):

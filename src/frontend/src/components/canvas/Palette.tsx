@@ -36,6 +36,7 @@ interface PaletteItemDef {
   icon: string;
   iconClass: string;
   defaults?: Record<string, unknown>;
+  kubevirtOnly?: boolean;
 }
 
 interface PaletteSection {
@@ -143,6 +144,14 @@ const sections: PaletteSection[] = [
         desc: "CD/DVD image",
         icon: "💿",
         iconClass: "palette-icon-storage",
+      },
+      {
+        type: "project-ceph",
+        label: "Ceph Storage",
+        desc: "Shared block storage (KubeVirt)",
+        icon: "🐙",
+        iconClass: "palette-icon-storage",
+        kubevirtOnly: true,
       },
     ],
   },
@@ -264,7 +273,11 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   const [customDeleteH, setCustomDeleteH] = useState(0);
   const [customDeleteM, setCustomDeleteM] = useState(0);
   const nodes = useCanvasStore((s) => s.nodes);
+  const providerType = useCanvasStore((s) => s.providerType);
+  const cephExists = nodes.some((n) => n.type === "cephClusterNode");
   const showroomExists = hasShowroomNode(nodes);
+  const isKubevirt =
+    providerType === "kubevirt" || hostInfo?.provider_type === "kubevirt";
   // Pod (bastionless) installs surface OCP status + log per-cluster on each
   // cluster box, so the palette OCP STATUS panel is redundant and hidden.
   const ocpInstallVia = useCanvasStore((s) => s.ocpInstallVia);
@@ -610,7 +623,10 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
             </div>
             {!collapsedSections.has(section.title) && (<>
               {section.items.map((item) => {
-                const disabled = item.type === "showroom" && showroomExists;
+                if (item.kubevirtOnly && !isKubevirt) return null;
+                const disabled =
+                  (item.type === "showroom" && showroomExists) ||
+                  (item.type === "project-ceph" && cephExists);
                 return (
                 <div
                   key={item.type}
@@ -624,7 +640,13 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
                     onDragStart(e, item);
                   }}
                   style={disabled ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
-                  title={disabled ? "One showroom per project" : undefined}
+                  title={
+                    disabled
+                      ? item.type === "project-ceph"
+                        ? "One Ceph Storage per project"
+                        : "One showroom per project"
+                      : undefined
+                  }
                 >
                   <PaletteIcon icon={item.icon} iconClass={item.iconClass} />
                   <div>

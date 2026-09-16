@@ -8,9 +8,11 @@ import LibraryPicker from "./LibraryPicker";
 import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
 import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, assignMissingClusterMemberNicIps, effectiveDnsNetworkId, clusterPrereqIssues, suggestClusterVips, vipCollision, vipInMemberSubnet } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
+import { validateCephLabIp } from "@/lib/cephLabIpValidation";
 import { collectUsedIps } from "@/lib/dhcpIpAssignment";
 import {
   getShowroomReadiness,
+  isCephStorageNetworkNode,
   isDnsEnabledLabNetwork,
 } from "@/lib/showroomValidation";
 import { effectiveShowroomDnsNetwork } from "@/lib/showroomScaffold";
@@ -32,6 +34,7 @@ import {
   parseWettyCommand,
   type WettyAttrs,
 } from "@/lib/wettyContainer";
+import { cephClusterDisplayName } from "./nodes/CephClusterNode";
 import type {
   VMNodeData,
   NetworkNodeData,
@@ -1286,7 +1289,9 @@ export default function PropertiesPanel() {
                   ? "props-icon-network"
                   : nodeType === "clusterNode"
                     ? "props-icon-network"
-                    : "props-icon-storage"
+                    : nodeType === "cephClusterNode"
+                      ? "props-icon-storage"
+                      : "props-icon-storage"
           }`}
         >
           {nodeType === "vmNode"
@@ -1307,10 +1312,16 @@ export default function PropertiesPanel() {
                   })()
                 : nodeType === "clusterNode"
                   ? "☸"
-                  : ((data as unknown as StorageNodeData).format === "iso" ? "💿" : "🛢")}
+                  : nodeType === "cephClusterNode"
+                    ? "🐙"
+                    : ((data as unknown as StorageNodeData).format === "iso" ? "💿" : "🛢")}
         </div>
         <div>
-          <div className="props-title">{data.name as string}</div>
+          <div className="props-title">
+            {nodeType === "cephClusterNode"
+              ? cephClusterDisplayName(data as { name?: string; label?: string })
+              : (data.name as string)}
+          </div>
           <div className="props-subtitle">
             {nodeType === "vmNode"
               ? `VM -- ${(data as unknown as VMNodeData).status === "running" ? "Running" : "Stopped"}`
@@ -1320,7 +1331,9 @@ export default function PropertiesPanel() {
                   ? "Network"
                   : nodeType === "clusterNode"
                     ? `OpenShift Cluster -- ${(data.type as string) || "standard"}`
-                    : "Storage"}
+                    : nodeType === "cephClusterNode"
+                      ? "Ceph Storage"
+                      : "Storage"}
           </div>
         </div>
       </div>
@@ -5164,6 +5177,87 @@ export default function PropertiesPanel() {
         );
       })()}
 
+      {nodeType === "cephClusterNode" && (() => {
+        const osdCount = Math.max(1, Math.min(6, Number(data.osdCount) || 3));
+        const replicateSize = Math.min(osdCount, 3);
+        const minCapacity = osdCount * 50;
+        const labNetworks = nodes.filter((n) => isCephStorageNetworkNode(n));
+        const linkedIds = (data.linkedClusters as string[]) || [];
+        const linkedNames = linkedIds
+          .map((id) => clusters.find((c) => c.id === id || c.nodeId === id)?.name || id)
+          .filter(Boolean);
+        const labIpIssues = validateCephLabIp(nodes, edges, clusters, {
+          networkRef: data.networkRef as string,
+          labIp: data.labIp as string,
+          name: data.name as string,
+          label: data.label as string,
+        });
+        return (
+          <>
+            <div className="props-section">
+              <div className="props-section-title">Storage</div>
+              <label className="props-label">Network</label>
+              <select
+                className="props-input"
+                value={(data.networkRef as string) || ""}
+                onChange={(e) => update("networkRef", e.target.value)}
+              >
+                <option value="">Select network…</option>
+                {labNetworks.map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {(n.data as Record<string, unknown>).name as string}
+                  </option>
+                ))}
+              </select>
+              <label className="props-label">Lab IP (mon)</label>
+              <input
+                className="props-input"
+                value={(data.labIp as string) || ""}
+                placeholder="auto .3 on CIDR"
+                onChange={(e) => update("labIp", e.target.value)}
+              />
+              {labIpIssues.length > 0 && (
+                <div style={{ fontSize: 11, color: "var(--troshka-red, #ef4444)", marginTop: 4 }}>
+                  {labIpIssues.join(" · ")}
+                </div>
+              )}
+              <label className="props-label">Capacity (Gi)</label>
+              <input
+                className="props-input"
+                type="number"
+                min={minCapacity}
+                value={Number(data.capacityGi) || minCapacity}
+                onChange={(e) =>
+                  update("capacityGi", Math.max(minCapacity, Number(e.target.value) || minCapacity))
+                }
+              />
+              <label className="props-label">OSD count (1–6)</label>
+              <input
+                className="props-input"
+                type="number"
+                min={1}
+                max={6}
+                value={osdCount}
+                onChange={(e) =>
+                  update("osdCount", Math.max(1, Math.min(6, Number(e.target.value) || 3)))
+                }
+              />
+              <div style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginTop: 4 }}>
+                Replication: {replicateSize}x · min {minCapacity} Gi total
+              </div>
+              {linkedNames.length > 0 && (
+                <div style={{ fontSize: 11, marginTop: 8 }}>
+                  Linked clusters: {linkedNames.join(", ")}
+                </div>
+              )}
+              <div style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 8 }}>
+                Pick the lab network above. Wire ceph right → cluster left, or ceph left → cluster right.
+              </div>
+            </div>
+          </>
+        );
+      })()}
+
       {nodeType === "clusterNode" && (() => {
         const clusterId = (data.clusterId as string) || node.id.replace(/^cluster-/, "");
         const cluster = clusters.find((c) => c.id === clusterId);
@@ -5414,7 +5508,7 @@ export default function PropertiesPanel() {
                 if (!isMemberVm) deleteNode(node.id);
               }}
             >
-              Delete {nodeType === "vmNode" ? "VM" : nodeType === "clusterNode" ? "Cluster" : nodeType === "networkNode" ? (
+              Delete {nodeType === "vmNode" ? "VM" : nodeType === "clusterNode" ? "Cluster" : nodeType === "cephClusterNode" ? "Ceph Storage" : nodeType === "networkNode" ? (
                 (data as unknown as NetworkNodeData).subtype === "router" ? "Router" :
                 (data as unknown as NetworkNodeData).subtype === "gateway" ? "Gateway" : "Network"
               ) : "Storage"}

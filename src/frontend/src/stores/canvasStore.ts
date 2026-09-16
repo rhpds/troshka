@@ -1322,6 +1322,55 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     const tIsShowroom = isShowroomContainer(targetNode);
     const sIsPod = isPodContainer(sourceNode);
     const tIsPod = isPodContainer(targetNode);
+    const sIsCeph = sType === "cephClusterNode";
+    const tIsCeph = tType === "cephClusterNode";
+
+    if (sIsCeph || tIsCeph) {
+      const cephNode = sIsCeph ? sourceNode : targetNode;
+      const clusterNode = sIsCeph ? targetNode : sourceNode;
+      if (clusterNode.type !== "clusterNode") return;
+
+      const cephHandle = sIsCeph ? connection.sourceHandle : connection.targetHandle;
+      const clusterHandle = sIsCeph ? connection.targetHandle : connection.sourceHandle;
+      const valid =
+        (cephHandle === "right" && clusterHandle === "ceph-left") ||
+        (cephHandle === "left" && clusterHandle === "ceph-right");
+      if (!valid) return;
+
+      const clusterId =
+        ((clusterNode.data as Record<string, unknown>).clusterId as string) ||
+        clusterNode.id.replace(/^cluster-/, "");
+      const linked = new Set(
+        ((cephNode.data as Record<string, unknown>).linkedClusters as string[]) || [],
+      );
+      linked.add(clusterId);
+      get().pushHistory();
+      set({
+        nodes: get().nodes.map((n) =>
+          n.id === cephNode.id
+            ? { ...n, data: { ...n.data, linkedClusters: Array.from(linked) } }
+            : n,
+        ),
+        edges: addEdge(
+          {
+            ...connection,
+            source: cephNode.id,
+            target: clusterNode.id,
+            sourceHandle: cephHandle,
+            targetHandle: clusterHandle,
+            type: "smoothstep",
+            style: {
+              stroke: "rgba(255,255,255,0.55)",
+              strokeWidth: 2,
+            },
+            animated: true,
+          },
+          get().edges,
+        ),
+      });
+      set({ topologyDirty: computeTopologyDirty(get()) });
+      return;
+    }
 
     // Cosmetic showroom ↔ gateway (infra networking — not used for deploy wiring)
     if ((sIsShowroom && tIsGateway) || (tIsShowroom && sIsGateway)) {

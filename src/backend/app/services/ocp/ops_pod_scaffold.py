@@ -43,6 +43,18 @@ OPS_POD_IMAGE: str = _resolve_ops_pod_image()
 OPS_POD_WORKDIR = "/workdir"
 
 
+def lab_pod_dns_config(nameserver: str) -> dict:
+    """dnsConfig for pods that resolve via the project lab dnsmasq.
+
+    ``use-vc`` forces TCP to the nameserver (glibc + Go resolvers), avoiding UDP
+    DNS timeouts over Geneve/OVN when conntrack drops resolver replies.
+    """
+    return {
+        "nameservers": [nameserver],
+        "options": [{"name": "use-vc"}],
+    }
+
+
 def ops_pod_infra_network(
     vni_map: dict, mac: str = "", dns_nameserver: str = ""
 ) -> list[dict]:
@@ -196,6 +208,33 @@ def ops_pod_network_nads(topology: dict) -> tuple[list[str], str | None]:
     return cluster_nads, bmc_nad
 
 
+def kubevirt_cluster_api_host_aliases(topology: dict) -> list[dict]:
+    """``hostAliases`` for nested OCP API names → VIPs (bypass lab dnsmasq UDP).
+
+    Every ``oc``/client call resolves ``api.<cluster>.<domain>``; pointing the
+    ops/runner pod at a single lab dnsmasq over Multus L2 can flake on UDP loss.
+    Static hosts entries keep TLS hostname validation working without DNS.
+    """
+    aliases_by_ip: dict[str, set[str]] = {}
+    for cluster in (topology or {}).get("clusters") or []:
+        api_vip = str(cluster.get("apiVip") or cluster.get("api_vip") or "").strip()
+        if not api_vip:
+            continue
+        name = str(cluster.get("name") or cluster.get("id") or "").strip()
+        base = str(
+            cluster.get("base_domain") or cluster.get("baseDomain") or ""
+        ).strip()
+        if not name or not base:
+            continue
+        hosts = aliases_by_ip.setdefault(api_vip, set())
+        hosts.add(f"api.{name}.{base}")
+        hosts.add(f"api-int.{name}.{base}")
+    return [
+        {"ip": ip, "hostnames": sorted(hosts)}
+        for ip, hosts in sorted(aliases_by_ip.items())
+    ]
+
+
 def _ops_pod_secret_key(path: str) -> str:
     """k8s Secret keys can't contain ``/``; flatten an absolute file path.
 
@@ -217,8 +256,10 @@ def build_ops_pod_kubevirt_manifests(
     bmc_nad: str | None,
     image: str = OPS_POD_IMAGE,
     dns_nameserver: str = "",
+    host_aliases: list[dict] | None = None,
     pod_name: str | None = None,
     restart_policy: str = "Always",
+    mount_project_ceph_secret: bool = False,
 ) -> tuple[dict, dict]:
     """Build the ``(Pod, Secret)`` manifests for the KubeVirt ops pod.
 
@@ -294,14 +335,32 @@ def build_ops_pod_kubevirt_manifests(
         },
     }
 
+    volumes: list[dict] = [
+        {"name": "ops-workdir", "emptyDir": {}},
+        {"name": "ops-config", "secret": {"secretName": secret_name}},
+    ]
+    if mount_project_ceph_secret:
+        volume_mounts.append(
+            {
+                "name": "project-ceph",
+                "mountPath": f"{OPS_POD_WORKDIR}/project-ceph",
+                "readOnly": True,
+            }
+        )
+        volumes.append(
+            {
+                "name": "project-ceph",
+                "secret": {
+                    "secretName": "troshka-ceph-external"  # pragma: allowlist secret
+                },
+            }
+        )
+
     spec = {
         "serviceAccountName": _OPS_POD_SERVICE_ACCOUNT,
         "restartPolicy": restart_policy,
         "containers": [container],
-        "volumes": [
-            {"name": "ops-workdir", "emptyDir": {}},
-            {"name": "ops-config", "secret": {"secretName": secret_name}},
-        ],
+        "volumes": volumes,
     }
     # Resolve via the project's lab dnsmasq (which knows api.<cluster>.<domain> and
     # forwards upstream) instead of the KubeVirt cluster DNS, so
@@ -312,7 +371,9 @@ def build_ops_pod_kubevirt_manifests(
     # the dnsmasq is reachable by the time the script resolves anything.
     if dns_nameserver:
         spec["dnsPolicy"] = "None"
-        spec["dnsConfig"] = {"nameservers": [dns_nameserver]}
+        spec["dnsConfig"] = lab_pod_dns_config(dns_nameserver)
+    if host_aliases:
+        spec["hostAliases"] = host_aliases
 
     pod = {
         "apiVersion": "v1",

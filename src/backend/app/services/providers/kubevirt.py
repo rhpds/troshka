@@ -269,6 +269,7 @@ def _apply_crds(ext_api, operator_dir):
         os.path.join(operator_dir, "crds", "troshkaproject.yaml"),
         os.path.join(operator_dir, "crds", "troshkanetwork.yaml"),
         os.path.join(operator_dir, "crds", "troshkavm.yaml"),
+        os.path.join(operator_dir, "crds", "troshkanceph.yaml"),
     ]
     for crd_path in crd_files:
         with open(crd_path) as f:

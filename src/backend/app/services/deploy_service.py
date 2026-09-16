@@ -2635,6 +2635,7 @@ def _deploy_ops_pod_kubevirt(
     from app.services.ocp.ops_pod_scaffold import (
         OPS_POD_WORKDIR,
         build_ops_pod_kubevirt_manifests,
+        kubevirt_cluster_api_host_aliases,
         ops_pod_config_files,
         ops_pod_network_nads,
     )
@@ -2682,6 +2683,8 @@ def _deploy_ops_pod_kubevirt(
     }
     if fresh_install_log:
         kv_env["TROSHKA_FRESH_INSTALL_LOG"] = "1"
+    from app.services.project_ceph import topology_has_ceph
+
     pod, secret = build_ops_pod_kubevirt_manifests(
         namespace=_kubevirt_project_ns(provider, project_id),
         project_id=project_id,
@@ -2691,6 +2694,8 @@ def _deploy_ops_pod_kubevirt(
         cluster_nads=cluster_nads,
         bmc_nad=bmc_nad,
         dns_nameserver=_kubevirt_ops_pod_dns(net_ip_assignments),
+        host_aliases=kubevirt_cluster_api_host_aliases(topology),
+        mount_project_ceph_secret=topology_has_ceph(topology),
     )
     from app.services.ocp.ops_pod_install import _cluster_key as _ops_cluster_key
 

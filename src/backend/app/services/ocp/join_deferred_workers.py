@@ -51,24 +51,33 @@ def deferred_workers_for_cluster(topology: dict, cluster: dict) -> list[dict]:
     return entries
 
 
-def _nmstate_interface(entry: dict) -> dict:
-    return {
+def _nmstate_interface(entry: dict, *, down: bool = False) -> dict:
+    """Build one NMState interface stanza.
+
+    Auxiliary segments (migration) stay ``state: down`` during join so kubelet
+    registers the cluster NIC as InternalIP and egress uses the gateway network.
+    CCLM post-install NNCPs bring migration interfaces up later.
+    """
+    iface: dict = {
         "name": entry["iface_name"],
         "type": "ethernet",
-        "state": "up",
+        "state": "down" if down else "up",
         "identifier": "mac-address",
         "mac-address": entry["mac"],
-        "ipv4": {
-            "enabled": True,
-            "address": [
-                {
-                    "ip": entry["ip"],
-                    "prefix-length": entry["prefix_len"],
-                }
-            ],
-            "dhcp": False,
-        },
     }
+    if down:
+        return iface
+    iface["ipv4"] = {
+        "enabled": True,
+        "address": [
+            {
+                "ip": entry["ip"],
+                "prefix-length": entry["prefix_len"],
+            }
+        ],
+        "dhcp": False,
+    }
+    return iface
 
 
 def build_deferred_worker_nmstate(worker: dict) -> str:
@@ -81,7 +90,7 @@ def build_deferred_worker_nmstate(worker: dict) -> str:
     egress_iface = worker["iface_name"]
     interfaces = [_nmstate_interface(worker)]
     for aux in worker.get("aux_nics") or []:
-        interfaces.append(_nmstate_interface(aux))
+        interfaces.append(_nmstate_interface(aux, down=True))
     cfg = {
         "interfaces": interfaces,
         "dns-resolver": {"config": {"server": [worker["dns_ip"]]}},

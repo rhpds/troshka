@@ -27,6 +27,7 @@ from helpers.topology import (
     container_start_delay,
     enrich_container_nics,
     enrich_showroom_infra_networks,
+    extract_ceph_cluster,
 )
 from helpers.kubevirt import build_blank_pvc
 from helpers.bmc import (
@@ -1101,6 +1102,46 @@ def _create_network_crs(
         }
 
 
+def _create_ceph_cr(custom_api, topology, namespace, name, body, patch):
+    """Create TroshkaCeph CR when topology includes a cephClusterNode."""
+    ceph_spec = extract_ceph_cluster(topology)
+    if not ceph_spec:
+        return
+    if not ceph_spec.get("networkNad"):
+        logger.warning("Project Ceph skipped: networkRef not resolved")
+        return
+
+    cr_name = "project-ceph"
+    ceph_cr = {
+        "apiVersion": f"{CRD_GROUP}/{CRD_VERSION}",
+        "kind": "TroshkaCeph",
+        "metadata": {
+            "name": cr_name,
+            "namespace": namespace,
+            "ownerReferences": [owner_ref(body)],
+            "labels": {"troshka-project": name},
+        },
+        "spec": ceph_spec,
+    }
+    try:
+        custom_api.create_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkancephs",
+            body=ceph_cr,
+        )
+        logger.info("Created TroshkaCeph %s", cr_name)
+    except ApiException as e:
+        if e.status != 409:
+            raise
+    patch.status["deployProgress"] = {
+        "percent": 15,
+        "stage": "Creating project Ceph",
+        "detail": ceph_spec.get("labIp", ""),
+    }
+
+
 async def _setup_gateway(core_api, apps_api, networks, namespace, name, body):
     """Create gateway deployment for externalAccess networks."""
     gateway_nads = []
@@ -1788,6 +1829,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     _create_network_crs(
         custom_api, networks, static_leases, namespace, name, body, patch
     )
+    _create_ceph_cr(custom_api, topology, namespace, name, body, patch)
 
     apps_api = client.AppsV1Api()
     await _setup_gateway(core_api, apps_api, networks, namespace, name, body)

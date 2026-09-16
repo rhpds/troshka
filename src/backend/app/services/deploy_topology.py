@@ -55,11 +55,175 @@ def validate_topology_names(topology: dict) -> list[str]:
     return errors
 
 
+def _default_ceph_lab_ip(cidr: str) -> str:
+    if not cidr or "/" not in cidr:
+        return ""
+    octets = cidr.split("/")[0].split(".")
+    if len(octets) != 4:
+        return ""
+    octets[3] = "3"
+    return ".".join(octets)
+
+
+def _network_node_by_id(topology: dict, network_id: str) -> dict | None:
+    for node in topology.get("nodes", []):
+        if node.get("id") == network_id and node.get("type") == "networkNode":
+            return node
+    return None
+
+
+def _collect_ips_on_network(
+    topology: dict,
+    network_id: str,
+    *,
+    nodes_by_id: dict[str, dict] | None = None,
+    nic_to_network: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Map IP -> label for addresses already claimed on one lab network."""
+    net_node = _network_node_by_id(topology, network_id)
+    if not net_node:
+        return {}
+
+    net_data = net_node.get("data", {})
+    cidr = str(net_data.get("cidr") or "")
+    claimed: dict[str, str] = {}
+
+    if cidr:
+        try:
+            network = ipaddress.ip_network(cidr, strict=False)
+            claimed[str(network.network_address + 1)] = "gateway"
+            claimed[str(network.network_address + 2)] = "dnsmasq"
+        except ValueError:
+            pass
+
+    for rec in net_data.get("dnsRecords") or []:
+        ip = str(rec.get("ip") or "").strip()
+        name = str(rec.get("name") or "dns record")
+        if ip:
+            claimed[ip] = f"DNS record '{name}'"
+
+    lb_ip = str(net_data.get("lbIp") or "").strip()
+    if lb_ip:
+        claimed[lb_ip] = "load balancer"
+
+    nodes_by_id = nodes_by_id or {n["id"]: n for n in topology.get("nodes", [])}
+    nic_to_network = nic_to_network or _build_nic_to_network_map(topology, nodes_by_id)
+    for node in topology.get("nodes", []):
+        if node.get("type") not in ("vmNode", "containerNode"):
+            continue
+        name = node.get("data", {}).get("name", "?")
+        for nic in node.get("data", {}).get("nics", []):
+            if nic_to_network.get(nic.get("id", "")) != network_id:
+                continue
+            ip = str(nic.get("ip") or "").strip()
+            if ip:
+                claimed[ip] = f"VM/container '{name}'"
+
+    for cluster in topology.get("clusters") or []:
+        net_ids = set(cluster.get("networkIds") or [])
+        if network_id not in net_ids:
+            continue
+        cname = cluster.get("name") or "cluster"
+        for key, label in (("apiVip", "API VIP"), ("ingressVip", "ingress VIP")):
+            ip = str(
+                cluster.get(key) or cluster.get(key.replace("Vip", "_vip")) or ""
+            ).strip()
+            if ip:
+                claimed[ip] = f"cluster '{cname}' {label}"
+
+    for node in topology.get("nodes", []):
+        if node.get("type") != "clusterNode":
+            continue
+        data = node.get("data", {})
+        cname = data.get("name") or "cluster"
+        for key, label in (("apiVip", "API VIP"), ("ingressVip", "ingress VIP")):
+            ip = str(data.get(key) or "").strip()
+            if ip:
+                claimed[ip] = f"cluster '{cname}' {label}"
+
+    return claimed
+
+
+def _lab_ip_in_dhcp_pool(lab_ip: str, net_data: dict) -> bool:
+    if not net_data.get("dhcp"):
+        return False
+    dhcp_range = _get_dhcp_range(net_data)
+    if not dhcp_range:
+        return False
+    try:
+        ip_int = int(ipaddress.ip_address(lab_ip))
+    except ValueError:
+        return False
+    start, end = dhcp_range
+    return start <= ip_int <= end
+
+
+def validate_ceph_lab_ips(topology: dict) -> list[str]:
+    """Validate cephClusterNode labIp against reserved infra, static leases, and DHCP."""
+    errors: list[str] = []
+    nodes_by_id = {n["id"]: n for n in topology.get("nodes", [])}
+    nic_to_network = _build_nic_to_network_map(topology, nodes_by_id)
+
+    for node in topology.get("nodes", []):
+        if node.get("type") != "cephClusterNode":
+            continue
+        data = node.get("data", {})
+        ceph_name = data.get("name") or data.get("label") or "Ceph Storage"
+        network_ref = str(data.get("networkRef") or "").strip()
+        net_node = _network_node_by_id(topology, network_ref)
+        if not network_ref or not net_node:
+            errors.append(f"Ceph Storage '{ceph_name}' has no lab network selected")
+            continue
+
+        net_data = net_node.get("data", {})
+        net_label = net_data.get("name") or network_ref
+        cidr = str(net_data.get("cidr") or "")
+        lab_ip = str(data.get("labIp") or "").strip() or _default_ceph_lab_ip(cidr)
+        if not lab_ip:
+            errors.append(f"Ceph Storage '{ceph_name}' has no lab IP configured")
+            continue
+
+        try:
+            ip_addr = ipaddress.ip_address(lab_ip)
+            if cidr:
+                network = ipaddress.ip_network(cidr, strict=False)
+                if ip_addr not in network:
+                    errors.append(
+                        f"Ceph Storage '{ceph_name}' lab IP {lab_ip} is outside "
+                        f"network '{net_label}' ({cidr})"
+                    )
+                    continue
+        except ValueError:
+            errors.append(f"Ceph Storage '{ceph_name}' lab IP {lab_ip!r} is invalid")
+            continue
+
+        claimed = _collect_ips_on_network(
+            topology,
+            network_ref,
+            nodes_by_id=nodes_by_id,
+            nic_to_network=nic_to_network,
+        )
+        if lab_ip in claimed:
+            errors.append(
+                f"Ceph Storage '{ceph_name}' lab IP {lab_ip} conflicts with "
+                f"{claimed[lab_ip]} on network '{net_label}'"
+            )
+        elif _lab_ip_in_dhcp_pool(lab_ip, net_data):
+            errors.append(
+                f"Ceph Storage '{ceph_name}' lab IP {lab_ip} falls in the DHCP pool "
+                f"on network '{net_label}'"
+            )
+
+    return errors
+
+
 def validate_topology_ips(topology: dict) -> list[str]:
     """Check for duplicate IP addresses on the same network. Returns list of errors."""
     nodes_by_id: dict[str, dict] = {n["id"]: n for n in topology.get("nodes", [])}
     nic_to_network = _build_nic_to_network_map(topology, nodes_by_id)
-    return _check_duplicate_ips(topology, nodes_by_id, nic_to_network)
+    return _check_duplicate_ips(
+        topology, nodes_by_id, nic_to_network
+    ) + validate_ceph_lab_ips(topology)
 
 
 def _network_infra_ips(topology: dict) -> dict[str, str]:

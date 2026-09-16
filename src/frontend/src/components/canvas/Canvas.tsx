@@ -20,6 +20,7 @@ import NetworkNode from "./nodes/NetworkNode";
 import StorageNode from "./nodes/StorageNode";
 import { ContainerNode } from "./nodes/ContainerNode";
 import ClusterNode from "./nodes/ClusterNode";
+import CephClusterNode from "./nodes/CephClusterNode";
 import ClusterAnchorEdge from "./edges/ClusterAnchorEdge";
 import CanvasToolbar from "./CanvasToolbar";
 import {
@@ -53,6 +54,7 @@ import {
 } from "@/lib/storageEdgeStyle";
 import {
   isGatewayNode,
+  isCephStorageNetworkNode,
   isLabNetworkNode,
   isShowroomContainer,
   SHOWROOM_GATEWAY_SOURCE_HANDLE,
@@ -65,6 +67,7 @@ const nodeTypes = {
   storageNode: StorageNode,
   containerNode: ContainerNode,
   clusterNode: ClusterNode,
+  cephClusterNode: CephClusterNode,
 };
 
 const edgeTypes = {
@@ -705,6 +708,34 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
             ],
           },
         };
+      } else if (item.type === "project-ceph") {
+        const state = useCanvasStore.getState();
+        if (state.nodes.some((n) => n.type === "cephClusterNode")) return;
+        const name = "Ceph Storage";
+        const networks = state.nodes.filter((n) => isCephStorageNetworkNode(n));
+        const net = networks[0];
+        const cidr = (net?.data as Record<string, unknown>)?.cidr as string | undefined;
+        let labIp = "";
+        if (cidr && cidr.includes("/")) {
+          const octets = cidr.split("/")[0].split(".");
+          octets[3] = "3";
+          labIp = octets.join(".");
+        }
+        newNode = {
+          id,
+          type: "cephClusterNode",
+          position,
+          data: {
+            label: name,
+            name,
+            networkRef: net?.id || "",
+            labIp,
+            capacityGi: 300,
+            osdCount: 3,
+            linkedClusters: [] as string[],
+            storageClassName: "troshka-ceph-rbd",
+          },
+        };
       } else if (item.type === "showroom") {
         if (hasShowroomNode(useCanvasStore.getState().nodes)) return;
         addShowroomScaffold(position);
@@ -884,6 +915,20 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
       // Network top/bottom handles only for VMs
       if (sIsNetwork && targetNode.type === "vmNode" && !isVmNetHandle(sHandle)) return false;
       if (tIsNetwork && sourceNode.type === "vmNode" && !isVmNetHandle(tHandle)) return false;
+
+      const sIsCeph = sourceNode.type === "cephClusterNode";
+      const tIsCeph = targetNode.type === "cephClusterNode";
+
+      if (sIsCeph || tIsCeph) {
+        const cluster = sIsCeph ? targetNode : sourceNode;
+        if (cluster.type !== "clusterNode") return false;
+        const cephHandle = sIsCeph ? sHandle : tHandle;
+        const clusterHandle = sIsCeph ? tHandle : sHandle;
+        return (
+          (cephHandle === "right" && clusterHandle === "ceph-left") ||
+          (cephHandle === "left" && clusterHandle === "ceph-right")
+        );
+      }
 
       // Cluster network anchor handles: source must be network, target must be clusterNode with cluster-net handle
       if (sourceNode.type === "clusterNode" && tHandle?.startsWith("cluster-net-")) {

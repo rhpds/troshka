@@ -25,6 +25,15 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
   const openClusterLog = useCanvasStore((s) => s.openClusterLog);
   const clusterOcpPhases = useCanvasStore((s) => s.clusterOcpPhases);
   const clusterId = ((data as Record<string, unknown>).clusterId as string) || id.replace(/^cluster-/, "");
+  const cephHandleStyle = {
+    pointerEvents: "all" as const,
+    background: "rgba(255, 255, 255, 0.9)",
+    border: "1px solid rgba(255, 255, 255, 1)",
+    width: 10,
+    height: 10,
+    borderRadius: "50%",
+    zIndex: 20,
+  };
   const cluster = clusters.find((c) => c.id === clusterId);
   const ocpVersionLabel = formatOcpVersionLabel(cluster?.ocpVersion);
   // The install log/status is available once the cluster is being (or has been)
@@ -216,6 +225,20 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
           height: 10,
           borderRadius: "50%",
         }}
+      />
+      <Handle
+        type="target"
+        position={Position.Left}
+        id="ceph-left"
+        className="canvas-handle"
+        style={cephHandleStyle}
+      />
+      <Handle
+        type="target"
+        position={Position.Right}
+        id="ceph-right"
+        className="canvas-handle"
+        style={cephHandleStyle}
       />
       <Handle
         type="target"

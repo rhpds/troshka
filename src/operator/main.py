@@ -12,6 +12,7 @@ import handlers.project  # noqa: F401,E402
 import handlers.vm  # noqa: F401,E402
 import handlers.container  # noqa: F401,E402
 import handlers.capabilities  # noqa: F401,E402
+import handlers.ceph  # noqa: F401,E402
 
 
 @kopf.on.startup()

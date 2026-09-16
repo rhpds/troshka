@@ -22,6 +22,14 @@ DNSMASQ_IMAGE = f"quay.io/redhat-gpte/troshka-dnsmasq:{_IMAGE_TAG}"
 GATEWAY_IMAGE = f"quay.io/redhat-gpte/troshka-gateway:{_IMAGE_TAG}"
 
 
+def lab_pod_dns_config(nameserver: str) -> dict:
+    """dnsConfig for pods that resolve via the project lab dnsmasq (TCP via use-vc)."""
+    return {
+        "nameservers": [nameserver],
+        "options": [{"name": "use-vc"}],
+    }
+
+
 def owner_ref(cr):
     return {
         "apiVersion": f"{CRD_GROUP}/{CRD_VERSION}",
@@ -291,9 +299,7 @@ def build_exec_deployment(
                 },
                 "spec": {
                     "dnsPolicy": "None",
-                    "dnsConfig": {
-                        "nameservers": [dns_ip] if dns_ip else ["8.8.8.8"],
-                    },
+                    "dnsConfig": lab_pod_dns_config(dns_ip or "8.8.8.8"),
                     "serviceAccountName": "troshka-network",
                     "initContainers": [
                         {

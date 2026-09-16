@@ -1,0 +1,69 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: troshkancephs.troshka.redhat.com
+spec:
+  group: troshka.redhat.com
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [cephId, networkNad, labIp, capacityGi]
+              properties:
+                cephId:
+                  type: string
+                networkNad:
+                  type: string
+                labIp:
+                  type: string
+                labPrefixLength:
+                  type: integer
+                  default: 24
+                capacityGi:
+                  type: integer
+                  minimum: 50
+                osdCount:
+                  type: integer
+                  minimum: 1
+                  maximum: 6
+                  default: 3
+                replicateSize:
+                  type: integer
+                  minimum: 1
+                  maximum: 3
+                linkedClusterIds:
+                  type: array
+                  items:
+                    type: string
+                storageClassName:
+                  type: string
+                  default: troshka-ceph-rbd
+                osdStorageClass:
+                  type: string
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: OSDs
+          type: integer
+          jsonPath: .spec.osdCount
+        - name: Mon
+          type: string
+          jsonPath: .status.monEndpoint
+  scope: Namespaced
+  names:
+    plural: troshkancephs
+    singular: troshkanceph
+    kind: TroshkaCeph
+    shortNames: [tc]
