@@ -270,7 +270,7 @@ def test_auto_layout_honors_cluster_network_anchor_side():
     assert bottom_net["position"]["y"] >= cy + ch
 
 
-def test_auto_layout_places_ceph_below_packed_clusters():
+def test_auto_layout_places_ceph_between_clusters_with_widened_gap():
     nodes = [
         {
             "id": "cluster-destination",
@@ -295,9 +295,12 @@ def test_auto_layout_places_ceph_below_packed_clusters():
     ]
     laid_out, _ = auto_layout(nodes, [])
     ceph = next(n for n in laid_out if n["id"] == "ceph-1")
-    clusters = [n for n in laid_out if n["type"] == "clusterNode"]
-    max_bottom = max(n["position"]["y"] + n["style"]["height"] for n in clusters)
-    assert ceph["position"]["y"] >= max_bottom
+    dest = next(n for n in laid_out if n["id"] == "cluster-destination")
+    src = next(n for n in laid_out if n["id"] == "cluster-source")
+    dest_right = dest["position"]["x"] + dest["style"]["width"]
+    assert ceph["position"]["x"] > dest_right
+    assert ceph["position"]["x"] + 200 < src["position"]["x"]
+    assert ceph["position"]["y"] < dest["position"]["y"] + dest["style"]["height"]
 
 
 def test_auto_layout_keeps_cluster_members_inside_boundary():

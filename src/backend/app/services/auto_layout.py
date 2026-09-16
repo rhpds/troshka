@@ -969,9 +969,13 @@ def reflow_cluster_members(nodes: list[dict]) -> None:
     entries.sort(key=lambda e: e[2])
     common_y = _VM_ROW_Y
     x = min(orig_x for _, _, orig_x in entries)
+    has_ceph = any(n.get("type") == "cephClusterNode" for n in nodes)
+    pack_gap = _CL_GAP
+    if has_ceph and len(entries) >= 2:
+        pack_gap = _CEPH_W + 2 * _CEPH_CLUSTER_GAP
     for boundary, _members, _orig_x in entries:
         boundary["position"] = {"x": x, "y": common_y}
-        x += boundary["style"]["width"] + _CL_GAP
+        x += boundary["style"]["width"] + pack_gap
 
 
 def _cluster_bounds(node: dict) -> tuple[float, float, float, float]:
@@ -984,6 +988,31 @@ def _cluster_bounds(node: dict) -> tuple[float, float, float, float]:
     return x, y, x + w, y + h
 
 
+def _spread_clusters_for_ceph(nodes: list[dict]) -> None:
+    """Shift the rightmost cluster rightward when the gap is too narrow for ceph."""
+    clusters = sorted(
+        [n for n in nodes if n.get("type") == "clusterNode"],
+        key=lambda c: float((c.get("position") or {}).get("x", 0)),
+    )
+    if len(clusters) < 2:
+        return
+    if not any(n.get("type") == "cephClusterNode" for n in nodes):
+        return
+    left_b = _cluster_bounds(clusters[0])
+    right_b = _cluster_bounds(clusters[-1])
+    gap = right_b[0] - left_b[2]
+    needed = _CEPH_W + 2 * _CEPH_CLUSTER_GAP
+    if gap >= needed:
+        return
+    shift = needed - gap
+    right = clusters[-1]
+    pos = right.get("position") or {}
+    right["position"] = {
+        "x": float(pos.get("x", 0)) + shift,
+        "y": float(pos.get("y", 0)),
+    }
+
+
 def _layout_ceph_between_clusters(nodes: list[dict]) -> None:
     """Place cephClusterNode clear of OCP cluster boxes after cluster reflow."""
     ceph_nodes = [n for n in nodes if n.get("type") == "cephClusterNode"]
@@ -991,10 +1020,7 @@ def _layout_ceph_between_clusters(nodes: list[dict]) -> None:
     if not ceph_nodes or not clusters:
         return
 
-    bounds = [_cluster_bounds(c) for c in clusters]
-    min_left = min(b[0] for b in bounds)
-    max_right = max(b[2] for b in bounds)
-    max_bottom = max(b[3] for b in bounds)
+    _spread_clusters_for_ceph(nodes)
 
     if len(clusters) >= 2:
         clusters_sorted = sorted(
@@ -1003,14 +1029,10 @@ def _layout_ceph_between_clusters(nodes: list[dict]) -> None:
         left_b = _cluster_bounds(clusters_sorted[0])
         right_b = _cluster_bounds(clusters_sorted[-1])
         gap = right_b[0] - left_b[2]
-        if gap >= _CEPH_W + _CEPH_CLUSTER_GAP:
-            pos_x = left_b[2] + (gap - _CEPH_W) / 2
-            pos_y = left_b[1] + max(0, (left_b[3] - left_b[1] - _CEPH_H) / 2)
-        else:
-            pos_x = min_left + max(0, (max_right - min_left - _CEPH_W) / 2)
-            pos_y = max_bottom + _CEPH_CLUSTER_GAP
+        pos_x = left_b[2] + max(_CEPH_CLUSTER_GAP, (gap - _CEPH_W) / 2)
+        pos_y = left_b[1] + max(0, (left_b[3] - left_b[1] - _CEPH_H) / 2)
     else:
-        b = bounds[0]
+        b = _cluster_bounds(clusters[0])
         pos_x = b[2] + _CEPH_CLUSTER_GAP
         pos_y = b[1] + max(0, (b[3] - b[1] - _CEPH_H) / 2)
 

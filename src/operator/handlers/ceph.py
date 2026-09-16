@@ -7,16 +7,22 @@ from kubernetes import client
 from kubernetes.client.exceptions import ApiException
 
 from helpers.k8s import CRD_GROUP, CRD_VERSION
+from handlers.network import _modify_scc_users
 from helpers.rook_ceph import (
     CEPH_EXTERNAL_SECRET,
     MON_BRIDGE_NAME,
+    ROOK_CLUSTER_ROLES,
+    ROOK_SCC_NAME,
     build_ceph_block_pool,
     build_ceph_cluster,
     build_external_secret,
     build_mon_bridge_deployment,
     build_ceph_rbac,
     ceph_cluster_phase,
+    delete_rook_operator,
+    ensure_rook_operator,
     is_ceph_ready,
+    rook_service_account_ref,
     validate_lab_ip,
 )
 
@@ -92,6 +98,18 @@ async def _reconcile_ceph(body, patch, namespace: str) -> None:
     apps_api = client.AppsV1Api()
     custom_api = client.CustomObjectsApi()
     rbac_api = client.RbacAuthorizationV1Api()
+
+    ensure_rook_operator(body)
+    for sa_name in ROOK_CLUSTER_ROLES:
+        try:
+            _modify_scc_users(
+                custom_api,
+                ROOK_SCC_NAME,
+                rook_service_account_ref(namespace, sa_name),
+                "add",
+            )
+        except Exception as e:
+            logger.warning("Could not add %s to %s SCC: %s", sa_name, ROOK_SCC_NAME, e)
 
     _ensure_service_account(core_api, namespace)
     role, binding = build_ceph_rbac(body)
@@ -191,12 +209,25 @@ def _delete_ceph_pvcs(core_api, namespace: str) -> None:
 
 
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkancephs")
-async def ceph_delete(namespace, name, **_):
+async def ceph_delete(namespace, name, body=None, **_):
     logger.info("Deleting TroshkaCeph %s in %s", name, namespace)
     apps_api = client.AppsV1Api()
     custom_api = client.CustomObjectsApi()
     core_api = client.CoreV1Api()
     rbac_api = client.RbacAuthorizationV1Api()
+
+    for sa_name in ROOK_CLUSTER_ROLES:
+        try:
+            _modify_scc_users(
+                custom_api,
+                ROOK_SCC_NAME,
+                rook_service_account_ref(namespace, sa_name),
+                "remove",
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not remove %s from %s SCC: %s", sa_name, ROOK_SCC_NAME, e
+            )
 
     for dep_name in (MON_BRIDGE_NAME,):
         try:
@@ -251,3 +282,5 @@ async def ceph_delete(namespace, name, **_):
     except ApiException as e:
         if e.status != 404:
             logger.warning("Failed to delete ceph service account: %s", e)
+
+    delete_rook_operator(body, namespace)

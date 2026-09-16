@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Node } from "@xyflow/react";
 import {
   cephClusterPosition,
+  layoutCephBetweenClusters,
   repositionCephClearOfClusters,
 } from "../cephClusterLayout";
 
@@ -43,13 +44,18 @@ describe("cephClusterLayout", () => {
     expect(moved?.position?.x).toBeGreaterThan(620);
   });
 
-  it("places ceph below packed clusters when the gap is too narrow", () => {
+  it("spreads tight clusters and places ceph between them", () => {
     const nodes = [
       clusterNode("cluster-destination", 40),
       clusterNode("cluster-source", 40 + 520 + 60),
       cephNode(200, 360),
     ];
-    const pos = cephClusterPosition(nodes);
-    expect(pos.y).toBeGreaterThanOrEqual(40 + 320 + 40);
+    const out = layoutCephBetweenClusters(nodes);
+    const source = out.find((n) => n.id === "cluster-source");
+    const ceph = out.find((n) => n.id === "ceph-1");
+    expect(source?.position?.x).toBeGreaterThan(40 + 520 + 60);
+    expect(ceph?.position?.x).toBeGreaterThan(40 + 520);
+    expect(ceph?.position?.x).toBeLessThan(source?.position?.x ?? 0);
+    expect(ceph?.position?.y).toBe(250 + (320 - 80) / 2);
   });
 });

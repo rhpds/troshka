@@ -21,7 +21,7 @@ import StorageNode from "./nodes/StorageNode";
 import { ContainerNode } from "./nodes/ContainerNode";
 import ClusterNode from "./nodes/ClusterNode";
 import CephClusterNode from "./nodes/CephClusterNode";
-import { cephClusterPosition } from "./cephClusterLayout";
+import { layoutCephBetweenClusters } from "./cephClusterLayout";
 import ClusterAnchorEdge from "./edges/ClusterAnchorEdge";
 import CanvasToolbar from "./CanvasToolbar";
 import {
@@ -722,14 +722,10 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
           octets[3] = "3";
           labIp = octets.join(".");
         }
-        const cephPosition =
-          state.nodes.some((n) => n.type === "clusterNode")
-            ? cephClusterPosition(state.nodes)
-            : position;
         newNode = {
           id,
           type: "cephClusterNode",
-          position: cephPosition,
+          position,
           data: {
             label: name,
             name,
@@ -741,6 +737,10 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
             storageClassName: "troshka-ceph-rbd",
           },
         };
+        const laidOut = layoutCephBetweenClusters([...state.nodes, newNode]);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (useCanvasStore as any).setState({ nodes: laidOut });
+        return;
       } else if (item.type === "showroom") {
         if (hasShowroomNode(useCanvasStore.getState().nodes)) return;
         addShowroomScaffold(position);

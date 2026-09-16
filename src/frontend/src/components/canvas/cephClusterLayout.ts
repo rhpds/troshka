@@ -1,71 +1,89 @@
 import type { Node } from "@xyflow/react";
-import { BMC_CLUSTER_GAP, clusterBounds } from "./clusterBmc";
+import { clusterBounds } from "./clusterBmc";
 
 export const CEPH_NODE_W = 200;
 export const CEPH_NODE_H = 80;
+export const CEPH_CLUSTER_GAP = 40;
 
-function rectsOverlap(
-  a: { x: number; y: number; w: number; h: number },
-  b: { x: number; y: number; w: number; h: number },
-): boolean {
-  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+export function cephGapWidth(): number {
+  return CEPH_NODE_W + CEPH_CLUSTER_GAP * 2;
 }
 
-/**
- * Place Ceph between cluster boxes when the gap is wide enough (template import),
- * otherwise centered below the cluster row (auto-layout packs boxes tight).
- */
-export function cephClusterPosition(nodes: Node[]): { x: number; y: number } {
-  const clusters = nodes.filter((n) => n.type === "clusterNode");
-  if (clusters.length === 0) return { x: 500, y: 400 };
+function sortedClusterNodes(nodes: Node[]): Node[] {
+  return [...nodes]
+    .filter((n) => n.type === "clusterNode")
+    .sort((a, b) => (a.position?.x ?? 0) - (b.position?.x ?? 0));
+}
 
-  const bounds = clusters.map(clusterBounds);
-  const minLeft = Math.min(...bounds.map((b) => b.x));
-  const maxRight = Math.max(...bounds.map((b) => b.x + b.w));
-  const maxBottom = Math.max(...bounds.map((b) => b.y + b.h));
+/** Shift the rightmost cluster rightward when the inter-cluster gap is too narrow for ceph. */
+export function spreadClustersForCeph(nodes: Node[]): Node[] {
+  const clusters = sortedClusterNodes(nodes);
+  const hasCeph = nodes.some((n) => n.type === "cephClusterNode");
+  if (!hasCeph || clusters.length < 2) return nodes;
 
-  if (clusters.length >= 2) {
-    const sorted = [...clusters].sort(
-      (a, b) => (a.position?.x ?? 0) - (b.position?.x ?? 0),
-    );
-    const left = clusterBounds(sorted[0]);
-    const right = clusterBounds(sorted[sorted.length - 1]);
-    const gap = right.x - (left.x + left.w);
-    if (gap >= CEPH_NODE_W + BMC_CLUSTER_GAP) {
+  const left = clusterBounds(clusters[0]);
+  const right = clusterBounds(clusters[clusters.length - 1]);
+  const gap = right.x - (left.x + left.w);
+  const needed = cephGapWidth();
+  if (gap >= needed) return nodes;
+
+  const shift = needed - gap;
+  const rightId = clusters[clusters.length - 1].id;
+  return nodes.map((n) => {
+    if (n.id === rightId) {
       return {
-        x: left.x + left.w + (gap - CEPH_NODE_W) / 2,
-        y: left.y + Math.max(0, (left.h - CEPH_NODE_H) / 2),
+        ...n,
+        position: {
+          x: (n.position?.x ?? 0) + shift,
+          y: n.position?.y ?? 0,
+        },
       };
     }
+    return n;
+  });
+}
+
+/** Center ceph in the gap between cluster boxes (after spreading if needed). */
+export function cephClusterPosition(nodes: Node[]): { x: number; y: number } {
+  const spread = spreadClustersForCeph(nodes);
+  const clusters = sortedClusterNodes(spread);
+  if (clusters.length === 0) return { x: 500, y: 400 };
+
+  if (clusters.length >= 2) {
+    const left = clusterBounds(clusters[0]);
+    const right = clusterBounds(clusters[clusters.length - 1]);
+    const gap = right.x - (left.x + left.w);
     return {
-      x: minLeft + Math.max(0, (maxRight - minLeft - CEPH_NODE_W) / 2),
-      y: maxBottom + BMC_CLUSTER_GAP,
+      x: left.x + left.w + Math.max(CEPH_CLUSTER_GAP, (gap - CEPH_NODE_W) / 2),
+      y: left.y + Math.max(0, (left.h - CEPH_NODE_H) / 2),
     };
   }
 
-  const b = bounds[0];
+  const b = clusterBounds(clusters[0]);
   return {
-    x: b.x + b.w + BMC_CLUSTER_GAP,
+    x: b.x + b.w + CEPH_CLUSTER_GAP,
     y: b.y + Math.max(0, (b.h - CEPH_NODE_H) / 2),
   };
 }
 
-/** Nudge ceph clear of cluster boundaries when overlapping (e.g. after auto-layout). */
-export function repositionCephClearOfClusters(nodes: Node[]): Node[] {
+/** Widen cluster gap (if needed) and place ceph centered between the boxes. */
+export function layoutCephBetweenClusters(nodes: Node[]): Node[] {
   const ceph = nodes.find((n) => n.type === "cephClusterNode");
   if (!ceph) return nodes;
+  if (!nodes.some((n) => n.type === "clusterNode")) return nodes;
 
-  const clusters = nodes.filter((n) => n.type === "clusterNode");
-  if (clusters.length === 0) return nodes;
+  const next = spreadClustersForCeph(nodes);
+  const pos = cephClusterPosition(next);
+  return next.map((n) => (n.id === ceph.id ? { ...n, position: pos } : n));
+}
 
-  const pos = ceph.position ?? { x: 0, y: 0 };
-  const cephRect = { x: pos.x, y: pos.y, w: CEPH_NODE_W, h: CEPH_NODE_H };
-  const overlaps = clusters.some((c) => rectsOverlap(cephRect, clusterBounds(c)));
-  if (!overlaps) return nodes;
-
-  const next = cephClusterPosition(nodes);
-  if (next.x === pos.x && next.y === pos.y) return nodes;
-  return nodes.map((n) =>
-    n.id === ceph.id ? { ...n, position: next } : n,
-  );
+/** Spread clusters and center ceph in the gap (auto-layout, load, drop). */
+export function repositionCephClearOfClusters(nodes: Node[]): Node[] {
+  if (
+    nodes.some((n) => n.type === "cephClusterNode") &&
+    nodes.some((n) => n.type === "clusterNode")
+  ) {
+    return layoutCephBetweenClusters(nodes);
+  }
+  return nodes;
 }

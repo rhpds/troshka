@@ -2,8 +2,11 @@
 
 from helpers.rook_ceph import (
     build_ceph_cluster,
+    build_rook_operator_deployment,
+    data_dir_host_path,
     default_lab_ip_from_cidr,
     normalize_ceph_counts,
+    rook_crb_name,
     validate_lab_ip,
 )
 
@@ -49,3 +52,44 @@ def test_build_ceph_cluster_device_sets():
 def test_validate_lab_ip():
     assert validate_lab_ip("10.0.0.3")
     assert not validate_lab_ip("not-an-ip")
+
+
+def test_data_dir_host_path_is_unique_per_project():
+    assert data_dir_host_path("troshka-abc") == "/var/lib/rook-troshka-abc"
+    assert data_dir_host_path("troshka-abc") != "/var/lib/rook"
+
+
+def test_build_ceph_cluster_avoids_odf_storage_nodes():
+    cr = {
+        "kind": "TroshkaCeph",
+        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
+        "spec": {"labIp": "10.0.0.3", "capacityGi": 300, "osdCount": 3},
+    }
+    cluster = build_ceph_cluster(cr)
+    affinity = cluster["spec"]["placement"]["all"]["nodeAffinity"]
+    expr = affinity["requiredDuringSchedulingIgnoredDuringExecution"][
+        "nodeSelectorTerms"
+    ][0]["matchExpressions"][0]
+    assert expr["key"] == "cluster.ocs.openshift.io/openshift-storage"
+    assert expr["operator"] == "DoesNotExist"
+
+
+def test_build_rook_operator_scoped_to_namespace():
+    cr = {
+        "kind": "TroshkaCeph",
+        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
+        "spec": {"labIp": "10.0.0.3"},
+    }
+    dep = build_rook_operator_deployment(cr)
+    env = {
+        e["name"]: e.get("value")
+        for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert env["ROOK_CURRENT_NAMESPACE_ONLY"] == "true"
+    assert env["ROOK_CSI_DISABLE_DRIVER"] == "true"
+    assert dep["spec"]["template"]["spec"]["serviceAccountName"] == "rook-ceph-system"
+
+
+def test_rook_crb_name_fits_k8s_limit():
+    name = rook_crb_name("troshka-b57b2bab-3773-4086-b33b-ebe2ecf46676", "rook-ceph-system")
+    assert len(name) <= 63

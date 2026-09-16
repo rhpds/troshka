@@ -27,6 +27,22 @@ CEPH_BLOCK_POOL_NAME = "troshka-ceph-pool"
 CEPH_EXTERNAL_SECRET = "troshka-ceph-external"  # pragma: allowlist secret
 MON_BRIDGE_NAME = "troshka-ceph-mon-bridge"
 EXPORT_JOB_NAME = "troshka-ceph-export"
+ROOK_OPERATOR_DEPLOYMENT = "rook-ceph-operator"
+ROOK_OPERATOR_CONFIG = "rook-ceph-operator-config"
+ROOK_SYSTEM_SA = "rook-ceph-system"
+
+ROOK_CLUSTER_ROLES = (
+    "rook-ceph-system",
+    "rook-ceph-osd",
+    "rook-ceph-mgr",
+    "rook-ceph-cmd-reporter",
+)
+ROOK_SCC_NAME = "rook-ceph"
+
+DEFAULT_ROOK_OPERATOR_IMAGE = os.environ.get(
+    "TROSHKA_ROOK_OPERATOR_IMAGE",
+    "quay.io/openshift-storage/rook-ceph-operator:v4.20.18",
+)
 
 DEFAULT_OSD_COUNT = 3
 MIN_OSD_COUNT = 1
@@ -50,6 +66,71 @@ def normalize_ceph_counts(spec: dict) -> tuple[int, int, int]:
     total_gi = max(total_gi, min_total)
     per_osd = max(MIN_OSD_SIZE_GI, total_gi // osd_count)
     return osd_count, replicate_size, per_osd
+
+
+def data_dir_host_path(namespace: str) -> str:
+    """Unique mon metadata path per project — must not share ODF's /var/lib/rook."""
+    suffix = namespace.removeprefix("troshka-")
+    return f"/var/lib/rook-troshka-{suffix}"
+
+
+def _ceph_node_affinity() -> dict:
+    """Keep project Ceph pods off dedicated ODF storage nodes when labeled."""
+    return {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+            "nodeSelectorTerms": [
+                {
+                    "matchExpressions": [
+                        {
+                            "key": "cluster.ocs.openshift.io/openshift-storage",
+                            "operator": "DoesNotExist",
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+
+
+def _osd_pod_anti_affinity() -> dict:
+    return {
+        "preferredDuringSchedulingIgnoredDuringExecution": [
+            {
+                "weight": 100,
+                "podAffinityTerm": {
+                    "labelSelector": {
+                        "matchExpressions": [
+                            {
+                                "key": "app",
+                                "operator": "In",
+                                "values": ["rook-ceph-osd"],
+                            }
+                        ]
+                    },
+                    "topologyKey": "kubernetes.io/hostname",
+                },
+            }
+        ]
+    }
+
+
+def _ceph_placement() -> dict:
+    affinity = _ceph_node_affinity()
+    return {
+        "all": {"nodeAffinity": affinity},
+        "mon": {"nodeAffinity": affinity},
+        "mgr": {"nodeAffinity": affinity},
+        "osd": {
+            "nodeAffinity": affinity,
+            "podAntiAffinity": _osd_pod_anti_affinity(),
+        },
+    }
+
+
+def rook_crb_name(namespace: str, role: str) -> str:
+    """ClusterRoleBinding name for a project-scoped rook SA (max 63 chars)."""
+    base = f"troshka-rook-{role}-{namespace}"
+    return base[:63].rstrip("-")
 
 
 def default_lab_ip_from_cidr(cidr: str) -> str:
@@ -107,7 +188,7 @@ def build_ceph_cluster(ceph_cr: dict) -> dict:
         },
         "spec": {
             "cephVersion": {"image": "quay.io/ceph/ceph:v19"},
-            "dataDirHostPath": "/var/lib/rook",
+            "dataDirHostPath": data_dir_host_path(namespace),
             "skipUpgradeChecks": True,
             "continueUpgradeAfterChecksEvenIfNotHealthy": True,
             "mon": {"count": 1, "allowMultiplePerNode": True},
@@ -115,6 +196,7 @@ def build_ceph_cluster(ceph_cr: dict) -> dict:
             "dashboard": {"enabled": False},
             "network": {"provider": "host"},
             "crashCollector": {"disable": True},
+            "placement": _ceph_placement(),
             "storage": {
                 "useAllNodes": False,
                 "useAllDevices": False,
@@ -125,27 +207,7 @@ def build_ceph_cluster(ceph_cr: dict) -> dict:
                         "portable": True,
                         "tuneDeviceClass": False,
                         "tuneFastDeviceClass": False,
-                        "placement": {
-                            "podAntiAffinity": {
-                                "preferredDuringSchedulingIgnoredDuringExecution": [
-                                    {
-                                        "weight": 100,
-                                        "podAffinityTerm": {
-                                            "labelSelector": {
-                                                "matchExpressions": [
-                                                    {
-                                                        "key": "app",
-                                                        "operator": "In",
-                                                        "values": ["rook-ceph-osd"],
-                                                    }
-                                                ]
-                                            },
-                                            "topologyKey": "kubernetes.io/hostname",
-                                        },
-                                    }
-                                ]
-                            }
-                        },
+                        "placement": _ceph_placement()["osd"],
                         "volumeClaimTemplates": [
                             {
                                 "metadata": {"name": "data"},
@@ -286,8 +348,150 @@ def build_external_secret(ceph_cr: dict, fsid: str = "") -> dict:
     }
 
 
+def build_rook_operator_config(ceph_cr: dict) -> dict:
+    """Operator config — namespace-scoped reconcile, no CSI (ODF owns cluster CSI)."""
+    namespace = ceph_cr["metadata"]["namespace"]
+    return {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": ROOK_OPERATOR_CONFIG,
+            "namespace": namespace,
+            "ownerReferences": [owner_ref(ceph_cr)],
+            "labels": {"app": "rook-ceph-operator"},
+        },
+        "data": {
+            "ROOK_CURRENT_NAMESPACE_ONLY": "true",
+            "ROOK_CSI_DISABLE_DRIVER": "true",
+            "ROOK_DISABLE_DEVICE_HOTPLUG": "true",
+            "ROOK_LOG_LEVEL": "INFO",
+        },
+    }
+
+
+def build_rook_operator_service_account(ceph_cr: dict) -> dict:
+    namespace = ceph_cr["metadata"]["namespace"]
+    return {
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {
+            "name": ROOK_SYSTEM_SA,
+            "namespace": namespace,
+            "ownerReferences": [owner_ref(ceph_cr)],
+            "labels": {"app": "rook-ceph-operator"},
+        },
+    }
+
+
+def build_rook_cluster_role_binding(ceph_cr: dict, role_name: str) -> dict:
+    """Bind a project rook SA to an existing cluster-scoped rook ClusterRole."""
+    namespace = ceph_cr["metadata"]["namespace"]
+    sa_name = role_name if role_name != "rook-ceph-cluster-mgmt" else ROOK_SYSTEM_SA
+    # rook ClusterRoles map 1:1 to same-named ServiceAccounts in the cluster ns.
+    return {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "ClusterRoleBinding",
+        "metadata": {
+            "name": rook_crb_name(namespace, role_name),
+            "ownerReferences": [owner_ref(ceph_cr)],
+            "labels": {"app": "troshka-ceph", "troshka-project-ns": namespace},
+        },
+        "roleRef": {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": role_name,
+        },
+        "subjects": [
+            {
+                "kind": "ServiceAccount",
+                "name": sa_name,
+                "namespace": namespace,
+            }
+        ],
+    }
+
+
+def build_rook_operator_deployment(ceph_cr: dict) -> dict:
+    """Per-project rook operator — watches only its own namespace."""
+    namespace = ceph_cr["metadata"]["namespace"]
+    labels = {"app": "rook-ceph-operator", "troshka-role": "rook-operator"}
+    return {
+        "apiVersion": _APPS_API_VERSION,
+        "kind": "Deployment",
+        "metadata": {
+            "name": ROOK_OPERATOR_DEPLOYMENT,
+            "namespace": namespace,
+            "ownerReferences": [owner_ref(ceph_cr)],
+            "labels": labels,
+        },
+        "spec": {
+            "replicas": 1,
+            "selector": {"matchLabels": labels},
+            "strategy": {"type": "Recreate"},
+            "template": {
+                "metadata": {"labels": labels},
+                "spec": {
+                    "serviceAccountName": ROOK_SYSTEM_SA,
+                    "containers": [
+                        {
+                            "name": "rook-ceph-operator",
+                            "image": DEFAULT_ROOK_OPERATOR_IMAGE,
+                            "imagePullPolicy": "IfNotPresent",
+                            "args": ["ceph", "operator"],
+                            "env": [
+                                {
+                                    "name": "ROOK_CURRENT_NAMESPACE_ONLY",
+                                    "value": "true",
+                                },
+                                {
+                                    "name": "ROOK_CSI_DISABLE_DRIVER",
+                                    "value": "true",
+                                },
+                                {
+                                    "name": "ROOK_DISABLE_DEVICE_HOTPLUG",
+                                    "value": "true",
+                                },
+                                {
+                                    "name": "POD_NAMESPACE",
+                                    "valueFrom": {
+                                        "fieldRef": {"fieldPath": "metadata.namespace"}
+                                    },
+                                },
+                            ],
+                            "volumeMounts": [
+                                {
+                                    "mountPath": "/var/lib/rook",
+                                    "name": "rook-config",
+                                },
+                                {
+                                    "mountPath": "/etc/ceph",
+                                    "name": "default-config-dir",
+                                },
+                            ],
+                            "securityContext": {
+                                "runAsNonRoot": True,
+                                "runAsUser": 2016,
+                                "runAsGroup": 2016,
+                                "capabilities": {"drop": ["ALL"]},
+                            },
+                        }
+                    ],
+                    "volumes": [
+                        {"name": "rook-config", "emptyDir": {}},
+                        {"name": "default-config-dir", "emptyDir": {}},
+                    ],
+                },
+            },
+        },
+    }
+
+
+def rook_service_account_ref(namespace: str, sa_name: str) -> str:
+    return f"system:serviceaccount:{namespace}:{sa_name}"
+
+
 def build_export_job(ceph_cr: dict) -> dict:
-    """Job that attempts to enrich troshka-ceph-external from the live rook cluster."""
+    """Enrich troshka-ceph-external from the project-scoped rook CephCluster status."""
     namespace = ceph_cr["metadata"]["namespace"]
     script = r"""
 set -e
@@ -296,14 +500,17 @@ SECRET=troshka-ceph-external
 if ! kubectl -n "$NS" get secret "$SECRET" >/dev/null 2>&1; then
   echo "external secret missing"; exit 1
 fi
-TOOLBOX=$(kubectl -n openshift-storage get pod -l app=rook-ceph-tools -o name 2>/dev/null | head -1)
-if [ -z "$TOOLBOX" ]; then
-  echo "host rook toolbox not found; keeping stub secret"
-  exit 0
+FSID=$(kubectl -n "$NS" get cephcluster troshka-ceph \
+  -o jsonpath='{.status.ceph.fsid}{.status.cephFSID}{.status.fsid}' 2>/dev/null || true)
+if [ -z "$FSID" ]; then
+  TOOLBOX=$(kubectl -n "$NS" get pod -l app=rook-ceph-tools -o name 2>/dev/null | head -1)
+  if [ -n "$TOOLBOX" ]; then
+    FSID=$(kubectl -n "$NS" exec "$TOOLBOX" -- ceph fsid 2>/dev/null || true)
+  fi
 fi
-FSID=$(kubectl -n openshift-storage exec "$TOOLBOX" -- ceph fsid 2>/dev/null || true)
 if [ -n "$FSID" ]; then
-  kubectl -n "$NS" patch secret "$SECRET" --type merge -p "{\"stringData\":{\"fsid\":\"$FSID\"}}"
+  kubectl -n "$NS" patch secret "$SECRET" --type merge \
+    -p "{\"stringData\":{\"fsid\":\"$FSID\"}}"
 fi
 echo "export job complete"
 """
@@ -446,3 +653,100 @@ def delete_ceph_storage_pvcs(core_api, namespace: str) -> None:
 
 def validate_lab_ip(lab_ip: str) -> bool:
     return bool(lab_ip and _IPV4_RE.match(lab_ip))
+
+
+def _create_or_patch_configmap(core_api, namespace: str, body: dict) -> None:
+    name = body["metadata"]["name"]
+    try:
+        core_api.create_namespaced_config_map(namespace=namespace, body=body)
+    except ApiException as e:
+        if e.status != 409:
+            raise
+        core_api.patch_namespaced_config_map(
+            name=name, namespace=namespace, body=body
+        )
+
+
+def _create_or_patch_deployment(apps_api, namespace: str, body: dict) -> None:
+    name = body["metadata"]["name"]
+    try:
+        apps_api.create_namespaced_deployment(namespace=namespace, body=body)
+    except ApiException as e:
+        if e.status != 409:
+            raise
+        apps_api.patch_namespaced_deployment(
+            name=name, namespace=namespace, body=body
+        )
+
+
+def _create_cluster_role_binding(rbac_api, body: dict) -> None:
+    name = body["metadata"]["name"]
+    try:
+        rbac_api.create_cluster_role_binding(body=body)
+    except ApiException as e:
+        if e.status != 409:
+            raise
+        logger.info("ClusterRoleBinding %s already exists", name)
+
+
+def ensure_rook_operator(ceph_cr: dict) -> None:
+    """Deploy a namespace-scoped rook operator before creating CephCluster CRs."""
+    namespace = ceph_cr["metadata"]["namespace"]
+    core_api = client.CoreV1Api()
+    apps_api = client.AppsV1Api()
+    rbac_api = client.RbacAuthorizationV1Api()
+
+    _create_or_patch_configmap(core_api, namespace, build_rook_operator_config(ceph_cr))
+
+    sa_body = build_rook_operator_service_account(ceph_cr)
+    try:
+        core_api.create_namespaced_service_account(namespace=namespace, body=sa_body)
+    except ApiException as e:
+        if e.status != 409:
+            raise
+
+    for role_name in ROOK_CLUSTER_ROLES:
+        _create_cluster_role_binding(
+            rbac_api, build_rook_cluster_role_binding(ceph_cr, role_name)
+        )
+
+    _create_or_patch_deployment(
+        apps_api, namespace, build_rook_operator_deployment(ceph_cr)
+    )
+
+
+def delete_rook_operator(ceph_cr: dict | None, namespace: str) -> None:
+    """Tear down per-project rook operator resources."""
+    apps_api = client.AppsV1Api()
+    rbac_api = client.RbacAuthorizationV1Api()
+    core_api = client.CoreV1Api()
+
+    for dep_name in (ROOK_OPERATOR_DEPLOYMENT,):
+        try:
+            apps_api.delete_namespaced_deployment(name=dep_name, namespace=namespace)
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Failed to delete %s: %s", dep_name, e)
+
+    for role_name in ROOK_CLUSTER_ROLES:
+        crb_name = rook_crb_name(namespace, role_name)
+        try:
+            rbac_api.delete_cluster_role_binding(name=crb_name)
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Failed to delete CRB %s: %s", crb_name, e)
+
+    for cm_name in (ROOK_OPERATOR_CONFIG,):
+        try:
+            core_api.delete_namespaced_config_map(name=cm_name, namespace=namespace)
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Failed to delete configmap %s: %s", cm_name, e)
+
+    try:
+        core_api.delete_namespaced_service_account(
+            name=ROOK_SYSTEM_SA, namespace=namespace
+        )
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Failed to delete rook SA: %s", e)
