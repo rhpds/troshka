@@ -579,21 +579,32 @@ from app.services.providers.kubevirt import _apply_crds
 
 
 class TestApplyCrds:
-    def test_create_succeeds(self, tmp_path):
-        """When create succeeds, no patch is called."""
-        ext_api = MagicMock()
+    _CRD_FILES = (
+        "troshkaproject.yaml",
+        "troshkanetwork.yaml",
+        "troshkavm.yaml",
+        "troshkanceph.yaml",
+    )
 
-        # Write a minimal CRD YAML for each expected file
-        crds_dir = tmp_path / "crds"
-        crds_dir.mkdir()
-        for name in ("troshkaproject.yaml", "troshkanetwork.yaml", "troshkavm.yaml"):
+    def _write_crds(self, crds_dir):
+        for name in self._CRD_FILES:
+            crds_dir.mkdir(parents=True, exist_ok=True)
             (crds_dir / name).write_text(
                 f"kind: CustomResourceDefinition\nmetadata:\n  name: {name.replace('.yaml', '')}\n"
             )
 
+    def test_create_succeeds(self, tmp_path):
+        """When create succeeds, no patch is called."""
+        ext_api = MagicMock()
+
+        crds_dir = tmp_path / "crds"
+        self._write_crds(crds_dir)
+
         _apply_crds(ext_api, str(tmp_path))
 
-        assert ext_api.create_custom_resource_definition.call_count == 3
+        assert ext_api.create_custom_resource_definition.call_count == len(
+            self._CRD_FILES
+        )
         ext_api.patch_custom_resource_definition.assert_not_called()
 
     def test_create_409_triggers_patch(self, tmp_path):
@@ -605,16 +616,16 @@ class TestApplyCrds:
         ext_api.create_custom_resource_definition.side_effect = err
 
         crds_dir = tmp_path / "crds"
-        crds_dir.mkdir()
-        for name in ("troshkaproject.yaml", "troshkanetwork.yaml", "troshkavm.yaml"):
-            (crds_dir / name).write_text(
-                f"kind: CustomResourceDefinition\nmetadata:\n  name: {name.replace('.yaml', '')}\n"
-            )
+        self._write_crds(crds_dir)
 
         _apply_crds(ext_api, str(tmp_path))
 
-        assert ext_api.create_custom_resource_definition.call_count == 3
-        assert ext_api.patch_custom_resource_definition.call_count == 3
+        assert ext_api.create_custom_resource_definition.call_count == len(
+            self._CRD_FILES
+        )
+        assert ext_api.patch_custom_resource_definition.call_count == len(
+            self._CRD_FILES
+        )
 
     def test_create_non_409_raises(self, tmp_path):
         """Non-conflict ApiException is propagated."""
@@ -626,16 +637,7 @@ class TestApplyCrds:
         )
 
         crds_dir = tmp_path / "crds"
-        crds_dir.mkdir()
-        (crds_dir / "troshkaproject.yaml").write_text(
-            "kind: CustomResourceDefinition\nmetadata:\n  name: troshkaproject\n"
-        )
-        (crds_dir / "troshkanetwork.yaml").write_text(
-            "kind: CustomResourceDefinition\nmetadata:\n  name: troshkanetwork\n"
-        )
-        (crds_dir / "troshkavm.yaml").write_text(
-            "kind: CustomResourceDefinition\nmetadata:\n  name: troshkavm\n"
-        )
+        self._write_crds(crds_dir)
 
         with pytest.raises(ApiException):
             _apply_crds(ext_api, str(tmp_path))
