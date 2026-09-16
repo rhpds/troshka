@@ -88,6 +88,49 @@ class TestKubevirtNetworkHelpers:
         custom_api.create_namespaced_custom_object.assert_called_once()
         assert not errors
 
+    def test_apply_kubevirt_ceph_changes_creates_cr(self):
+        from app.services.kubevirt_reconfigure import apply_kubevirt_ceph_changes
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.side_effect = Exception("404")
+        project_cr = {
+            "apiVersion": "troshka.redhat.com/v1alpha1",
+            "kind": "TroshkaProject",
+            "metadata": {"name": "project-p1", "uid": "uid-1"},
+        }
+        current = {
+            "nodes": [
+                {
+                    "id": "net-1",
+                    "type": "networkNode",
+                    "data": {"id": "net-1", "cidr": "10.0.0.0/24"},
+                },
+                {
+                    "id": "ceph-1",
+                    "type": "cephClusterNode",
+                    "data": {
+                        "networkRef": "net-1",
+                        "labIp": "10.0.0.3",
+                        "capacityGi": 300,
+                        "osdCount": 3,
+                    },
+                },
+            ],
+            "edges": [],
+        }
+        errors: list[str] = []
+        apply_kubevirt_ceph_changes(
+            custom_api,
+            "ns1",
+            "p12345678",
+            current,
+            {"ceph_added": True},
+            project_cr,
+            errors,
+        )
+        custom_api.create_namespaced_custom_object.assert_called_once()
+        assert not errors
+
 
 class TestKubevirtShowroomReconfigure:
     @patch("app.services.kubevirt_reconfigure.redeploy_showroom_pod_kubevirt")

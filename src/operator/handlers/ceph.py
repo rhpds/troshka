@@ -172,12 +172,31 @@ async def ceph_poll(body, patch, namespace, name, status, **_):
     await _reconcile_ceph(body, patch, namespace)
 
 
+def _delete_ceph_pvcs(core_api, namespace: str) -> None:
+    """Remove Rook OSD and Troshka ceph backing PVCs after cluster teardown."""
+    from helpers.rook_ceph import EXPORT_JOB_NAME, delete_ceph_storage_pvcs
+
+    delete_ceph_storage_pvcs(core_api, namespace)
+
+    batch_api = client.BatchV1Api()
+    try:
+        batch_api.delete_namespaced_job(
+            name=EXPORT_JOB_NAME,
+            namespace=namespace,
+            body=client.V1DeleteOptions(propagation_policy="Foreground"),
+        )
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Failed to delete ceph export job: %s", e)
+
+
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkancephs")
 async def ceph_delete(namespace, name, **_):
     logger.info("Deleting TroshkaCeph %s in %s", name, namespace)
     apps_api = client.AppsV1Api()
     custom_api = client.CustomObjectsApi()
     core_api = client.CoreV1Api()
+    rbac_api = client.RbacAuthorizationV1Api()
 
     for dep_name in (MON_BRIDGE_NAME,):
         try:
@@ -204,10 +223,31 @@ async def ceph_delete(namespace, name, **_):
             if e.status != 404:
                 logger.warning("Failed to delete %s/%s: %s", plural, cr_name, e)
 
+    _delete_ceph_pvcs(core_api, namespace)
+
+    for secret_name in (CEPH_EXTERNAL_SECRET,):
+        try:
+            core_api.delete_namespaced_secret(
+                name=secret_name, namespace=namespace
+            )
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Failed to delete ceph secret: %s", e)
+
+    for kind, delete_fn, obj_name in (
+        ("RoleBinding", rbac_api.delete_namespaced_role_binding, "troshka-ceph"),
+        ("Role", rbac_api.delete_namespaced_role, "troshka-ceph"),
+    ):
+        try:
+            delete_fn(name=obj_name, namespace=namespace)
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Failed to delete ceph %s: %s", kind, e)
+
     try:
-        core_api.delete_namespaced_secret(
-            name=CEPH_EXTERNAL_SECRET, namespace=namespace
+        core_api.delete_namespaced_service_account(
+            name="troshka-ceph", namespace=namespace
         )
     except ApiException as e:
         if e.status != 404:
-            logger.warning("Failed to delete ceph secret: %s", e)
+            logger.warning("Failed to delete ceph service account: %s", e)

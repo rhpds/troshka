@@ -1791,6 +1791,27 @@ def _map_boot_dev_entries(
     return boot_devs or ["hd"]
 
 
+def _find_ceph_node(topology: dict) -> dict | None:
+    for node in topology.get("nodes") or []:
+        if node.get("type") == "cephClusterNode":
+            return node
+    return None
+
+
+def _ceph_data_changed(current: dict, deployed: dict) -> bool:
+    import json
+
+    cur = _find_ceph_node(current)
+    dep = _find_ceph_node(deployed)
+    if not cur and not dep:
+        return False
+    if not cur or not dep:
+        return True
+    return json.dumps(cur.get("data") or {}, sort_keys=True, default=str) != json.dumps(
+        dep.get("data") or {}, sort_keys=True, default=str
+    )
+
+
 def diff_topologies(current: dict, deployed: dict) -> dict:
     """Diff current topology against what was deployed. Returns changes."""
     cur_nodes = {n["id"]: n for n in current.get("nodes", [])}
@@ -1799,6 +1820,9 @@ def diff_topologies(current: dict, deployed: dict) -> dict:
     added_vms, added_networks = _categorize_new_nodes(cur_nodes, dep_nodes)
     removed_vms, removed_networks = _categorize_new_nodes(dep_nodes, cur_nodes)
     changed_vms = _find_changed_vms(cur_nodes, dep_nodes)
+    ceph_added = _find_ceph_node(current) and not _find_ceph_node(deployed)
+    ceph_removed = _find_ceph_node(deployed) and not _find_ceph_node(current)
+    ceph_changed = _ceph_data_changed(current, deployed)
 
     return {
         "added_vms": added_vms,
@@ -1806,12 +1830,18 @@ def diff_topologies(current: dict, deployed: dict) -> dict:
         "changed_vms": changed_vms,
         "added_networks": added_networks,
         "removed_networks": removed_networks,
+        "ceph_added": ceph_added,
+        "ceph_removed": ceph_removed,
+        "ceph_changed": ceph_changed,
         "has_changes": bool(
             added_vms
             or removed_vms
             or changed_vms
             or added_networks
             or removed_networks
+            or ceph_added
+            or ceph_removed
+            or ceph_changed
         ),
     }
 

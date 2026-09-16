@@ -18,14 +18,44 @@ def _default_ceph_lab_ip(cidr: str) -> str:
     return ".".join(octets)
 
 
+_CLUSTER_NODE_W = 520
+_CLUSTER_NODE_H = 320
+_CLUSTER_X_STEP = 900
+_CLUSTER_BASE_X = 100
+_CLUSTER_BASE_Y = 250
+_CEPH_NODE_W = 200
+_CEPH_NODE_H = 80
+_CEPH_CLUSTER_GAP = 40
+
+
+def ceph_position_for_cluster_count(count: int) -> tuple[int, int]:
+    """Match template_loader cluster layout; place ceph in the gap between boxes."""
+    if count >= 2:
+        left_x = _CLUSTER_BASE_X
+        right_x = _CLUSTER_BASE_X + (count - 1) * _CLUSTER_X_STEP
+        gap_left = left_x + _CLUSTER_NODE_W
+        gap_right = right_x
+        x = gap_left + max(
+            _CEPH_CLUSTER_GAP, (gap_right - gap_left - _CEPH_NODE_W) // 2
+        )
+        y = _CLUSTER_BASE_Y + max(0, (_CLUSTER_NODE_H - _CEPH_NODE_H) // 2)
+        return x, y
+    if count == 1:
+        return (
+            _CLUSTER_BASE_X + _CLUSTER_NODE_W + _CEPH_CLUSTER_GAP,
+            _CLUSTER_BASE_Y + max(0, (_CLUSTER_NODE_H - _CEPH_NODE_H) // 2),
+        )
+    return 50, _CLUSTER_BASE_Y + 120
+
+
 def build_ceph_from_config(
     ceph_cfg: dict,
     *,
     net_ids: dict[str, str],
     nets_def: dict,
     cluster_name_to_id: dict[str, str],
-    y: int = 250,
-    x: int = 50,
+    y: int | None = None,
+    x: int | None = None,
 ) -> tuple[dict, list[dict]]:
     """Return (cephClusterNode, edges) from template ``cephCluster`` section."""
     network_name = str(ceph_cfg.get("network") or "cluster").strip()
@@ -40,11 +70,15 @@ def build_ceph_from_config(
     lab_ip = str(ceph_cfg.get("labIp") or "").strip() or _default_ceph_lab_ip(cidr)
     node_id = f"ceph-{uuid.uuid4().hex[:8]}"
     name = str(ceph_cfg.get("name") or "Ceph Storage")
+    linked = list(ceph_cfg.get("clusters") or [])
+    default_x, default_y = ceph_position_for_cluster_count(len(linked))
+    pos_x = x if x is not None else default_x
+    pos_y = y if y is not None else default_y
 
     node = {
         "id": node_id,
         "type": "cephClusterNode",
-        "position": {"x": x, "y": y},
+        "position": {"x": pos_x, "y": pos_y},
         "data": {
             "id": node_id,
             "label": name,

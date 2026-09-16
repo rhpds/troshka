@@ -20,6 +20,17 @@ def test_normalize_ceph_counts_clamps():
     assert per >= 50
 
 
+def test_build_ceph_cluster_omits_removed_rook_fields():
+    cr = {
+        "kind": "TroshkaCeph",
+        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
+        "spec": {"labIp": "10.0.0.3", "capacityGi": 300, "osdCount": 3},
+    }
+    cluster = build_ceph_cluster(cr)
+    assert "removeOSDsIfOutOfSafeRange" not in cluster["spec"]
+    assert "cleanupPolicy" not in cluster["spec"]
+
+
 def test_build_ceph_cluster_device_sets():
     cr = {
         "kind": "TroshkaCeph",

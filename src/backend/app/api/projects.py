@@ -4124,6 +4124,7 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
 
         from app.services.kubevirt_reconfigure import (
             _find_changed_kubevirt_networks,
+            apply_kubevirt_ceph_changes,
             apply_kubevirt_network_changes,
             patch_kubevirt_gateway_networks,
             reconfigure_showroom_kubevirt,
@@ -4163,6 +4164,16 @@ def _do_reconfigure_kubevirt(p_id: str, h_id: str, current: dict, deployed: dict
                 project_cr,
                 errors,
             )
+
+        apply_kubevirt_ceph_changes(
+            custom_api,
+            ns,
+            p_id,
+            current,
+            diff,
+            project_cr,
+            errors,
+        )
 
         from app.services.deploy_topology import _extract_vms
 

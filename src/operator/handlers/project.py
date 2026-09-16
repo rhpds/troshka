@@ -2728,6 +2728,14 @@ async def project_delete(namespace, name, **_):
         namespace,
         "Route",
     )
+    _delete_custom_resources(
+        custom_api,
+        CRD_GROUP,
+        CRD_VERSION,
+        "troshkancephs",
+        namespace,
+        "TroshkaCeph",
+    )
 
     _remove_sa_from_sccs(
         custom_api,

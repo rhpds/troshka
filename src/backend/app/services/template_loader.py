@@ -1896,7 +1896,6 @@ def _generate_topology_from_vms(
             net_ids=net_ids,
             nets_def=nets_def,
             cluster_name_to_id=cluster_name_to_id,
-            y=NET_ROW_Y + 120,
         )
         nodes.append(ceph_node)
         edges.extend(ceph_edges)

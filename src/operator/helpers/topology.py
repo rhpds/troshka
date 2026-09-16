@@ -900,9 +900,9 @@ def _linked_cluster_ids(nodes, edges, ceph_node_id: str) -> list[str]:
             if node.get("id") != other or node.get("type") != "clusterNode":
                 continue
             data = node.get("data", {})
-            name = data.get("name") or data.get("clusterName") or ""
-            if name:
-                linked.append(name)
+            cluster_id = data.get("clusterId") or data.get("name") or data.get("clusterName") or ""
+            if cluster_id:
+                linked.append(str(cluster_id))
     return linked
 
 

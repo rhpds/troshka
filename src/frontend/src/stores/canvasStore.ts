@@ -28,6 +28,7 @@ import {
   nextFreeBmcIp,
   repositionBmcNetworkClearOfClusters,
 } from "@/components/canvas/clusterBmc";
+import { repositionCephClearOfClusters } from "@/components/canvas/cephClusterLayout";
 import {
   type ShowroomConfig,
   DEFAULT_SHOWROOM_CONFIG,
@@ -2091,7 +2092,9 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             // in the read-only ☸ group instead of the editable list (deploy stores
             // them as plain {name,ip}). The gateway's nat-portforward mode for the
             // managed showroom forward is handled by syncShowroomGatewayAccess.
-            nodes: reconcileManagedClusterDns(healed.nodes, finalClusters),
+            nodes: repositionCephClearOfClusters(
+              reconcileManagedClusterDns(healed.nodes, finalClusters),
+            ),
             edges: healed.edges,
             hiddenNodeIds: t.hiddenNodeIds || [],
             startOrder: t.startOrder || [],

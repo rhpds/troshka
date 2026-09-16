@@ -409,6 +409,98 @@ def apply_kubevirt_network_changes(
     return gateway_changed
 
 
+def apply_kubevirt_ceph_changes(
+    custom_api,
+    ns: str,
+    p_id: str,
+    current: dict,
+    diff: dict,
+    project_cr: dict,
+    errors: list[str],
+) -> None:
+    """Create, update, or delete TroshkaCeph when cephClusterNode changes."""
+    from app.services.project_ceph import (
+        TROSHKA_CEPH_CR_NAME,
+        build_troshka_ceph_cr,
+        extract_ceph_cluster_spec,
+    )
+
+    owner_refs = _kubevirt_project_owner_refs(project_cr)
+
+    if diff.get("ceph_removed"):
+        try:
+            custom_api.delete_namespaced_custom_object(
+                group=_TROSHKA_DOMAIN,
+                version=CRD_VERSION,
+                namespace=ns,
+                plural="troshkancephs",
+                name=TROSHKA_CEPH_CR_NAME,
+            )
+            logger.info("Reconfigure %s: deleted TroshkaCeph", p_id[:8])
+        except Exception as e:
+            if "404" not in str(e) and getattr(e, "status", None) != 404:
+                logger.warning(
+                    "Reconfigure %s: failed to delete TroshkaCeph: %s", p_id[:8], e
+                )
+                errors.append(f"Failed to remove Ceph: {e}")
+        return
+
+    if not (diff.get("ceph_added") or diff.get("ceph_changed")):
+        return
+
+    spec = extract_ceph_cluster_spec(current)
+    if not spec:
+        errors.append("Ceph Storage node present but spec could not be resolved")
+        return
+    if not spec.get("networkNad"):
+        errors.append("Ceph Storage network is not resolved to a Troshka network")
+        return
+
+    body = build_troshka_ceph_cr(
+        namespace=ns, project_id=p_id, spec=spec, owner_refs=owner_refs
+    )
+    try:
+        custom_api.get_namespaced_custom_object(
+            group=_TROSHKA_DOMAIN,
+            version=CRD_VERSION,
+            namespace=ns,
+            plural="troshkancephs",
+            name=TROSHKA_CEPH_CR_NAME,
+        )
+        custom_api.patch_namespaced_custom_object(
+            group=_TROSHKA_DOMAIN,
+            version=CRD_VERSION,
+            namespace=ns,
+            plural="troshkancephs",
+            name=TROSHKA_CEPH_CR_NAME,
+            body={"spec": spec},
+        )
+        logger.info("Reconfigure %s: updated TroshkaCeph", p_id[:8])
+    except Exception as e:
+        if "404" not in str(e) and getattr(e, "status", None) != 404:
+            logger.warning(
+                "Reconfigure %s: failed to update TroshkaCeph: %s", p_id[:8], e
+            )
+            errors.append(f"Failed to update Ceph: {e}")
+            return
+        try:
+            custom_api.create_namespaced_custom_object(
+                group=_TROSHKA_DOMAIN,
+                version=CRD_VERSION,
+                namespace=ns,
+                plural="troshkancephs",
+                body=body,
+            )
+            logger.info("Reconfigure %s: created TroshkaCeph", p_id[:8])
+        except Exception as create_err:
+            logger.warning(
+                "Reconfigure %s: failed to create TroshkaCeph: %s",
+                p_id[:8],
+                create_err,
+            )
+            errors.append(f"Failed to add Ceph: {create_err}")
+
+
 def patch_kubevirt_gateway_networks(provider, project_id: str, topology: dict) -> None:
     """Refresh gateway Multus attachments + GATEWAY_ADDRS after network changes."""
     from app.services.providers.kubevirt import _get_k8s_clients, _project_ns

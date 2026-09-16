@@ -6,6 +6,9 @@ import json
 import logging
 import os
 
+from kubernetes import client
+from kubernetes.client.exceptions import ApiException
+
 from helpers.k8s import (
     CRD_GROUP,
     CRD_VERSION,
@@ -107,16 +110,11 @@ def build_ceph_cluster(ceph_cr: dict) -> dict:
             "dataDirHostPath": "/var/lib/rook",
             "skipUpgradeChecks": True,
             "continueUpgradeAfterChecksEvenIfNotHealthy": True,
-            "removeOSDsIfOutOfSafeRange": False,
             "mon": {"count": 1, "allowMultiplePerNode": True},
             "mgr": {"count": 1},
             "dashboard": {"enabled": False},
             "network": {"provider": "host"},
             "crashCollector": {"disable": True},
-            "cleanupPolicy": {
-                "confirmation": "",
-                "sanitizeDisks": False,
-            },
             "storage": {
                 "useAllNodes": False,
                 "useAllDevices": False,
@@ -401,6 +399,49 @@ def ceph_cluster_phase(custom_api, namespace: str) -> tuple[str, str]:
 
 def is_ceph_ready(phase: str) -> bool:
     return phase.lower() in ("ready", "connected")
+
+
+def delete_ceph_storage_pvcs(core_api, namespace: str) -> None:
+    """Delete OSD/backing PVCs left after a TroshkaCeph teardown."""
+    delete_opts = client.V1DeleteOptions(propagation_policy="Background")
+    seen: set[str] = set()
+
+    def _delete_pvc(name: str) -> None:
+        if not name or name in seen:
+            return
+        seen.add(name)
+        try:
+            core_api.delete_namespaced_persistent_volume_claim(
+                name=name,
+                namespace=namespace,
+                body=delete_opts,
+            )
+            logger.info("Deleted ceph PVC %s in %s", name, namespace)
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Failed to delete ceph PVC %s: %s", name, e)
+
+    for selector in ("app=rook-ceph-osd", "app=troshka-ceph"):
+        try:
+            pvcs = core_api.list_namespaced_persistent_volume_claim(
+                namespace=namespace,
+                label_selector=selector,
+            )
+            for pvc in pvcs.items:
+                _delete_pvc(pvc.metadata.name)
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Failed to list ceph PVCs (%s): %s", selector, e)
+
+    try:
+        pvcs = core_api.list_namespaced_persistent_volume_claim(namespace=namespace)
+        for pvc in pvcs.items:
+            name = pvc.metadata.name or ""
+            if name.startswith("troshka-ceph-osd-") or name.startswith("osd-set-"):
+                _delete_pvc(name)
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Failed to list namespace PVCs for ceph cleanup: %s", e)
 
 
 def validate_lab_ip(lab_ip: str) -> bool:

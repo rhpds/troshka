@@ -21,6 +21,7 @@ import StorageNode from "./nodes/StorageNode";
 import { ContainerNode } from "./nodes/ContainerNode";
 import ClusterNode from "./nodes/ClusterNode";
 import CephClusterNode from "./nodes/CephClusterNode";
+import { cephClusterPosition } from "./cephClusterLayout";
 import ClusterAnchorEdge from "./edges/ClusterAnchorEdge";
 import CanvasToolbar from "./CanvasToolbar";
 import {
@@ -721,10 +722,14 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
           octets[3] = "3";
           labIp = octets.join(".");
         }
+        const cephPosition =
+          state.nodes.some((n) => n.type === "clusterNode")
+            ? cephClusterPosition(state.nodes)
+            : position;
         newNode = {
           id,
           type: "cephClusterNode",
-          position,
+          position: cephPosition,
           data: {
             label: name,
             name,

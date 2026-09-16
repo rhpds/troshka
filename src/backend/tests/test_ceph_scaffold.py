@@ -1,6 +1,10 @@
 """Tests for cephCluster template scaffold."""
 
-from app.services.ceph_scaffold import build_ceph_from_config, export_ceph_section
+from app.services.ceph_scaffold import (
+    build_ceph_from_config,
+    ceph_position_for_cluster_count,
+    export_ceph_section,
+)
 
 
 def test_build_ceph_from_config_edges():
@@ -25,6 +29,13 @@ def test_build_ceph_from_config_edges():
     cluster_edge = next(e for e in edges if e["target"] == cluster_id)
     assert cluster_edge["sourceHandle"] == "right"
     assert cluster_edge["targetHandle"] == "ceph-left"
+
+
+def test_ceph_position_between_two_clusters():
+    x, y = ceph_position_for_cluster_count(2)
+    # destination box ends at 620; source starts at 1000 — ceph sits in the gap.
+    assert 620 < x < 1000
+    assert y >= 250
 
 
 def test_export_ceph_section_roundtrip():

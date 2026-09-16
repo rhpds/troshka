@@ -15,7 +15,7 @@ export const BMC_CLUSTER_GAP = 80;
 
 type Rect = { x: number; y: number; w: number; h: number };
 
-function clusterBounds(node: Node): Rect {
+export function clusterBounds(node: Node): Rect {
   const w = Number((node.style as Record<string, unknown> | undefined)?.width) || 520;
   const h = Number((node.style as Record<string, unknown> | undefined)?.height) || 320;
   return { x: node.position.x, y: node.position.y, w, h };
