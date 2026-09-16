@@ -5,6 +5,7 @@ resources:
   - namespace.yaml
   - serviceaccount.yaml
   - clusterrole.yaml
+  - rook-clusterroles.yaml
   - clusterrolebinding.yaml
   - deployment.yaml
   - ../crds/troshkaproject.yaml

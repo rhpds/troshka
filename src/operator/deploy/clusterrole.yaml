@@ -72,7 +72,13 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles"]
     verbs: ["bind"]
-    resourceNames: ["system:openshift:scc:kubevirt-controller"]
+    resourceNames:
+      - system:openshift:scc:kubevirt-controller
+      - troshka-rook-system
+      - troshka-rook-cluster-mgmt
+      - troshka-rook-global
+      - troshka-rook-osd
+      - troshka-rook-mgr
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]

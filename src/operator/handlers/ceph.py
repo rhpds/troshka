@@ -11,8 +11,8 @@ from handlers.network import _modify_scc_users
 from helpers.rook_ceph import (
     CEPH_EXTERNAL_SECRET,
     MON_BRIDGE_NAME,
-    ROOK_CLUSTER_ROLES,
     ROOK_SCC_NAME,
+    ROOK_SCC_SAS,
     build_ceph_block_pool,
     build_ceph_cluster,
     build_external_secret,
@@ -100,7 +100,7 @@ async def _reconcile_ceph(body, patch, namespace: str) -> None:
     rbac_api = client.RbacAuthorizationV1Api()
 
     ensure_rook_operator(body)
-    for sa_name in ROOK_CLUSTER_ROLES:
+    for sa_name in ROOK_SCC_SAS:
         try:
             _modify_scc_users(
                 custom_api,
@@ -216,7 +216,7 @@ async def ceph_delete(namespace, name, body=None, **_):
     core_api = client.CoreV1Api()
     rbac_api = client.RbacAuthorizationV1Api()
 
-    for sa_name in ROOK_CLUSTER_ROLES:
+    for sa_name in ROOK_SCC_SAS:
         try:
             _modify_scc_users(
                 custom_api,

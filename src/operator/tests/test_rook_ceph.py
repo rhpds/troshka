@@ -91,5 +91,24 @@ def test_build_rook_operator_scoped_to_namespace():
 
 
 def test_rook_crb_name_fits_k8s_limit():
-    name = rook_crb_name("troshka-b57b2bab-3773-4086-b33b-ebe2ecf46676", "rook-ceph-system")
+    name = rook_crb_name(
+        "troshka-b57b2bab-3773-4086-b33b-ebe2ecf46676",
+        "rook-ceph-system",
+        "troshka-rook-global",
+    )
     assert len(name) <= 63
+
+
+def test_build_rook_operator_has_pod_name_env():
+    cr = {
+        "kind": "TroshkaCeph",
+        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
+        "spec": {"labIp": "10.0.0.3"},
+    }
+    env_names = {
+        e["name"]
+        for e in build_rook_operator_deployment(cr)["spec"]["template"]["spec"][
+            "containers"
+        ][0]["env"]
+    }
+    assert {"POD_NAME", "POD_NAMESPACE", "NODE_NAME"} <= env_names

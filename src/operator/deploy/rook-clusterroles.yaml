@@ -1,0 +1,136 @@
+# Minimal Rook RBAC for Troshka project Ceph (namespace-scoped operator, no CSI).
+# Install once per cluster with the Troshka operator. troshka-operator binds project
+# service accounts to these roles via ClusterRoleBindings at reconcile time.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: troshka-rook-system
+  labels:
+    app: troshka-ceph
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: troshka-rook-cluster-mgmt
+  labels:
+    app: troshka-ceph
+rules:
+  - apiGroups: ["", "apps", "extensions"]
+    resources:
+      - secrets
+      - pods
+      - pods/log
+      - services
+      - configmaps
+      - deployments
+      - daemonsets
+    verbs: ["get", "list", "watch", "patch", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: troshka-rook-global
+  labels:
+    app: troshka-ceph
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "nodes/proxy", "secrets", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources:
+      - events
+      - persistentvolumes
+      - persistentvolumeclaims
+      - endpoints
+      - services
+    verbs: ["get", "list", "watch", "patch", "create", "update", "delete"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "delete", "deletecollection"]
+  - apiGroups: ["ceph.rook.io"]
+    resources:
+      - cephclusters
+      - cephblockpools
+      - cephfilesystems
+      - cephobjectstores
+      - cephobjectstoreusers
+      - cephbuckettopics
+      - cephbucketnotifications
+      - cephrbdmirrors
+      - cephfilesystemmirrors
+      - cephfilesystemsubvolumegroups
+      - cephblockpoolradosnamespaces
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["ceph.rook.io"]
+    resources:
+      - cephclusters/status
+      - cephblockpools/status
+      - cephfilesystems/status
+      - cephobjectstores/status
+      - cephobjectstoreusers/status
+      - cephbuckettopics/status
+      - cephbucketnotifications/status
+      - cephrbdmirrors/status
+      - cephfilesystemmirrors/status
+      - cephfilesystemsubvolumegroups/status
+      - cephblockpoolradosnamespaces/status
+    verbs: ["update"]
+  - apiGroups: ["ceph.rook.io"]
+    resources:
+      - cephclusters/finalizers
+      - cephblockpools/finalizers
+      - cephfilesystems/finalizers
+      - cephobjectstores/finalizers
+      - cephobjectstoreusers/finalizers
+      - cephbuckettopics/finalizers
+      - cephbucketnotifications/finalizers
+      - cephrbdmirrors/finalizers
+      - cephfilesystemmirrors/finalizers
+      - cephfilesystemsubvolumegroups/finalizers
+      - cephblockpoolradosnamespaces/finalizers
+    verbs: ["update"]
+  - apiGroups: ["policy", "apps", "extensions"]
+    resources: ["poddisruptionbudgets", "deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "delete", "deletecollection"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/finalizers"]
+    verbs: ["update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: troshka-rook-osd
+  labels:
+    app: troshka-ceph
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: troshka-rook-mgr
+  labels:
+    app: troshka-ceph
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "nodes", "nodes/proxy", "persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch", "list", "get", "watch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]

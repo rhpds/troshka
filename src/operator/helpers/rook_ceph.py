@@ -30,18 +30,30 @@ EXPORT_JOB_NAME = "troshka-ceph-export"
 ROOK_OPERATOR_DEPLOYMENT = "rook-ceph-operator"
 ROOK_OPERATOR_CONFIG = "rook-ceph-operator-config"
 ROOK_SYSTEM_SA = "rook-ceph-system"
+ROOK_OSD_SA = "rook-ceph-osd"
+ROOK_MGR_SA = "rook-ceph-mgr"
+ROOK_CMD_REPORTER_SA = "rook-ceph-cmd-reporter"
 
-ROOK_CLUSTER_ROLES = (
-    "rook-ceph-system",
-    "rook-ceph-osd",
-    "rook-ceph-mgr",
-    "rook-ceph-cmd-reporter",
-)
+# Troshka-owned ClusterRoles (deploy/rook-clusterroles.yaml). cmd-reporter uses a
+# namespace Role per upstream Rook — not a ClusterRoleBinding.
+TROSHKA_ROOK_SA_CLUSTER_ROLES: dict[str, tuple[str, ...]] = {
+    ROOK_SYSTEM_SA: (
+        "troshka-rook-system",
+        "troshka-rook-global",
+        "troshka-rook-cluster-mgmt",
+    ),
+    ROOK_OSD_SA: ("troshka-rook-osd",),
+    ROOK_MGR_SA: ("troshka-rook-mgr",),
+}
+ROOK_CLUSTER_SAS = tuple(TROSHKA_ROOK_SA_CLUSTER_ROLES.keys())
+ROOK_SCC_SAS = ROOK_CLUSTER_SAS + (ROOK_CMD_REPORTER_SA,)
+ROOK_CMD_REPORTER_ROLE = "rook-ceph-cmd-reporter"
 ROOK_SCC_NAME = "rook-ceph"
+ODF_ROOK_OPERATOR_NS = "openshift-storage"
 
 DEFAULT_ROOK_OPERATOR_IMAGE = os.environ.get(
     "TROSHKA_ROOK_OPERATOR_IMAGE",
-    "quay.io/openshift-storage/rook-ceph-operator:v4.20.18",
+    "registry.redhat.io/odf4/rook-ceph-rhel9-operator:latest",
 )
 
 DEFAULT_OSD_COUNT = 3
@@ -127,10 +139,24 @@ def _ceph_placement() -> dict:
     }
 
 
-def rook_crb_name(namespace: str, role: str) -> str:
+def rook_crb_name(namespace: str, sa_name: str, cluster_role: str) -> str:
     """ClusterRoleBinding name for a project-scoped rook SA (max 63 chars)."""
-    base = f"troshka-rook-{role}-{namespace}"
+    base = f"troshka-rook-{sa_name}-{cluster_role}-{namespace}"
     return base[:63].rstrip("-")
+
+
+def discover_rook_operator_image(apps_api) -> str:
+    """Prefer the cluster's ODF Rook image when openshift-storage is present."""
+    try:
+        dep = apps_api.read_namespaced_deployment(
+            name=ROOK_OPERATOR_DEPLOYMENT,
+            namespace=ODF_ROOK_OPERATOR_NS,
+        )
+        return dep.spec.template.spec.containers[0].image
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Could not read ODF rook operator image: %s", e)
+        return DEFAULT_ROOK_OPERATOR_IMAGE
 
 
 def default_lab_ip_from_cidr(cidr: str) -> str:
@@ -383,23 +409,22 @@ def build_rook_operator_service_account(ceph_cr: dict) -> dict:
     }
 
 
-def build_rook_cluster_role_binding(ceph_cr: dict, role_name: str) -> dict:
-    """Bind a project rook SA to an existing cluster-scoped rook ClusterRole."""
+def build_rook_cluster_role_binding(
+    ceph_cr: dict, sa_name: str, cluster_role: str
+) -> dict:
+    """Bind a project rook SA to a Troshka-owned cluster-scoped Rook ClusterRole."""
     namespace = ceph_cr["metadata"]["namespace"]
-    sa_name = role_name if role_name != "rook-ceph-cluster-mgmt" else ROOK_SYSTEM_SA
-    # rook ClusterRoles map 1:1 to same-named ServiceAccounts in the cluster ns.
     return {
         "apiVersion": "rbac.authorization.k8s.io/v1",
         "kind": "ClusterRoleBinding",
         "metadata": {
-            "name": rook_crb_name(namespace, role_name),
-            "ownerReferences": [owner_ref(ceph_cr)],
+            "name": rook_crb_name(namespace, sa_name, cluster_role),
             "labels": {"app": "troshka-ceph", "troshka-project-ns": namespace},
         },
         "roleRef": {
             "apiGroup": "rbac.authorization.k8s.io",
             "kind": "ClusterRole",
-            "name": role_name,
+            "name": cluster_role,
         },
         "subjects": [
             {
@@ -411,10 +436,64 @@ def build_rook_cluster_role_binding(ceph_cr: dict, role_name: str) -> dict:
     }
 
 
-def build_rook_operator_deployment(ceph_cr: dict) -> dict:
+def build_rook_cmd_reporter_rbac(ceph_cr: dict) -> tuple[dict, dict]:
+    """Namespace Role + RoleBinding for rook-ceph-cmd-reporter jobs."""
+    namespace = ceph_cr["metadata"]["namespace"]
+    labels = {"app": "troshka-ceph", "troshka-role": "rook-cmd-reporter"}
+    role = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "Role",
+        "metadata": {
+            "name": ROOK_CMD_REPORTER_ROLE,
+            "namespace": namespace,
+            "ownerReferences": [owner_ref(ceph_cr)],
+            "labels": labels,
+        },
+        "rules": [
+            {
+                "apiGroups": [""],
+                "resources": ["pods", "configmaps"],
+                "verbs": [
+                    "get",
+                    "list",
+                    "watch",
+                    "create",
+                    "update",
+                    "delete",
+                ],
+            }
+        ],
+    }
+    binding = {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "RoleBinding",
+        "metadata": {
+            "name": ROOK_CMD_REPORTER_ROLE,
+            "namespace": namespace,
+            "ownerReferences": [owner_ref(ceph_cr)],
+            "labels": labels,
+        },
+        "roleRef": {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "Role",
+            "name": ROOK_CMD_REPORTER_ROLE,
+        },
+        "subjects": [
+            {
+                "kind": "ServiceAccount",
+                "name": ROOK_CMD_REPORTER_SA,
+                "namespace": namespace,
+            }
+        ],
+    }
+    return role, binding
+
+
+def build_rook_operator_deployment(ceph_cr: dict, image: str | None = None) -> dict:
     """Per-project rook operator — watches only its own namespace."""
     namespace = ceph_cr["metadata"]["namespace"]
     labels = {"app": "rook-ceph-operator", "troshka-role": "rook-operator"}
+    operator_image = image or DEFAULT_ROOK_OPERATOR_IMAGE
     return {
         "apiVersion": _APPS_API_VERSION,
         "kind": "Deployment",
@@ -435,7 +514,7 @@ def build_rook_operator_deployment(ceph_cr: dict) -> dict:
                     "containers": [
                         {
                             "name": "rook-ceph-operator",
-                            "image": DEFAULT_ROOK_OPERATOR_IMAGE,
+                            "image": operator_image,
                             "imagePullPolicy": "IfNotPresent",
                             "args": ["ceph", "operator"],
                             "env": [
@@ -455,6 +534,18 @@ def build_rook_operator_deployment(ceph_cr: dict) -> dict:
                                     "name": "POD_NAMESPACE",
                                     "valueFrom": {
                                         "fieldRef": {"fieldPath": "metadata.namespace"}
+                                    },
+                                },
+                                {
+                                    "name": "POD_NAME",
+                                    "valueFrom": {
+                                        "fieldRef": {"fieldPath": "metadata.name"}
+                                    },
+                                },
+                                {
+                                    "name": "NODE_NAME",
+                                    "valueFrom": {
+                                        "fieldRef": {"fieldPath": "spec.nodeName"}
                                     },
                                 },
                             ],
@@ -689,6 +780,39 @@ def _create_cluster_role_binding(rbac_api, body: dict) -> None:
         logger.info("ClusterRoleBinding %s already exists", name)
 
 
+def _ensure_service_account(core_api, namespace: str, name: str, ceph_cr: dict) -> None:
+    body = {
+        "apiVersion": "v1",
+        "kind": "ServiceAccount",
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "ownerReferences": [owner_ref(ceph_cr)],
+            "labels": {"app": "troshka-ceph"},
+        },
+    }
+    try:
+        core_api.create_namespaced_service_account(namespace=namespace, body=body)
+    except ApiException as e:
+        if e.status != 409:
+            raise
+
+
+def _ensure_rook_namespace_rbac(rbac_api, namespace: str, ceph_cr: dict) -> None:
+    role, binding = build_rook_cmd_reporter_rbac(ceph_cr)
+    for body in (role, binding):
+        try:
+            if body["kind"] == "Role":
+                rbac_api.create_namespaced_role(namespace=namespace, body=body)
+            else:
+                rbac_api.create_namespaced_role_binding(
+                    namespace=namespace, body=body
+                )
+        except ApiException as e:
+            if e.status != 409:
+                raise
+
+
 def ensure_rook_operator(ceph_cr: dict) -> None:
     """Deploy a namespace-scoped rook operator before creating CephCluster CRs."""
     namespace = ceph_cr["metadata"]["namespace"]
@@ -698,20 +822,23 @@ def ensure_rook_operator(ceph_cr: dict) -> None:
 
     _create_or_patch_configmap(core_api, namespace, build_rook_operator_config(ceph_cr))
 
-    sa_body = build_rook_operator_service_account(ceph_cr)
-    try:
-        core_api.create_namespaced_service_account(namespace=namespace, body=sa_body)
-    except ApiException as e:
-        if e.status != 409:
-            raise
+    for sa_name in ROOK_SCC_SAS:
+        _ensure_service_account(core_api, namespace, sa_name, ceph_cr)
 
-    for role_name in ROOK_CLUSTER_ROLES:
-        _create_cluster_role_binding(
-            rbac_api, build_rook_cluster_role_binding(ceph_cr, role_name)
-        )
+    for sa_name, cluster_roles in TROSHKA_ROOK_SA_CLUSTER_ROLES.items():
+        for cluster_role in cluster_roles:
+            _create_cluster_role_binding(
+                rbac_api,
+                build_rook_cluster_role_binding(ceph_cr, sa_name, cluster_role),
+            )
 
+    _ensure_rook_namespace_rbac(rbac_api, namespace, ceph_cr)
+
+    operator_image = discover_rook_operator_image(apps_api)
     _create_or_patch_deployment(
-        apps_api, namespace, build_rook_operator_deployment(ceph_cr)
+        apps_api,
+        namespace,
+        build_rook_operator_deployment(ceph_cr, image=operator_image),
     )
 
 
@@ -728,13 +855,35 @@ def delete_rook_operator(ceph_cr: dict | None, namespace: str) -> None:
             if e.status != 404:
                 logger.warning("Failed to delete %s: %s", dep_name, e)
 
-    for role_name in ROOK_CLUSTER_ROLES:
-        crb_name = rook_crb_name(namespace, role_name)
+    for sa_name, cluster_roles in TROSHKA_ROOK_SA_CLUSTER_ROLES.items():
+        for cluster_role in cluster_roles:
+            crb_name = rook_crb_name(namespace, sa_name, cluster_role)
+            try:
+                rbac_api.delete_cluster_role_binding(name=crb_name)
+            except ApiException as e:
+                if e.status != 404:
+                    logger.warning("Failed to delete CRB %s: %s", crb_name, e)
+
+    for kind, delete_fn, obj_name in (
+        ("RoleBinding", rbac_api.delete_namespaced_role_binding, ROOK_CMD_REPORTER_ROLE),
+        ("Role", rbac_api.delete_namespaced_role, ROOK_CMD_REPORTER_ROLE),
+    ):
         try:
-            rbac_api.delete_cluster_role_binding(name=crb_name)
+            delete_fn(name=obj_name, namespace=namespace)
         except ApiException as e:
             if e.status != 404:
-                logger.warning("Failed to delete CRB %s: %s", crb_name, e)
+                logger.warning("Failed to delete rook %s %s: %s", kind, obj_name, e)
+
+    for sa_name in ROOK_SCC_SAS:
+        if sa_name == ROOK_SYSTEM_SA:
+            continue
+        try:
+            core_api.delete_namespaced_service_account(
+                name=sa_name, namespace=namespace
+            )
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Failed to delete rook SA %s: %s", sa_name, e)
 
     for cm_name in (ROOK_OPERATOR_CONFIG,):
         try:
