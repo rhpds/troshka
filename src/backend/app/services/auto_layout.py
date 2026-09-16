@@ -35,6 +35,9 @@ _CL_HEADER_H = 48
 _CL_HEADER_MIN_W = 360  # min cluster width for header badges + Status button
 _CL_COLS = 4
 _CL_GAP = 60  # horizontal gap between packed cluster boxes
+_CEPH_W = 200
+_CEPH_H = 80
+_CEPH_CLUSTER_GAP = 40
 
 
 def _is_showroom_node(node: dict) -> bool:
@@ -971,6 +974,50 @@ def reflow_cluster_members(nodes: list[dict]) -> None:
         x += boundary["style"]["width"] + _CL_GAP
 
 
+def _cluster_bounds(node: dict) -> tuple[float, float, float, float]:
+    style = node.get("style") or {}
+    w = float(style.get("width", 520))
+    h = float(style.get("height", 320))
+    pos = node.get("position") or {}
+    x = float(pos.get("x", 0))
+    y = float(pos.get("y", 0))
+    return x, y, x + w, y + h
+
+
+def _layout_ceph_between_clusters(nodes: list[dict]) -> None:
+    """Place cephClusterNode clear of OCP cluster boxes after cluster reflow."""
+    ceph_nodes = [n for n in nodes if n.get("type") == "cephClusterNode"]
+    clusters = [n for n in nodes if n.get("type") == "clusterNode"]
+    if not ceph_nodes or not clusters:
+        return
+
+    bounds = [_cluster_bounds(c) for c in clusters]
+    min_left = min(b[0] for b in bounds)
+    max_right = max(b[2] for b in bounds)
+    max_bottom = max(b[3] for b in bounds)
+
+    if len(clusters) >= 2:
+        clusters_sorted = sorted(
+            clusters, key=lambda c: float((c.get("position") or {}).get("x", 0))
+        )
+        left_b = _cluster_bounds(clusters_sorted[0])
+        right_b = _cluster_bounds(clusters_sorted[-1])
+        gap = right_b[0] - left_b[2]
+        if gap >= _CEPH_W + _CEPH_CLUSTER_GAP:
+            pos_x = left_b[2] + (gap - _CEPH_W) / 2
+            pos_y = left_b[1] + max(0, (left_b[3] - left_b[1] - _CEPH_H) / 2)
+        else:
+            pos_x = min_left + max(0, (max_right - min_left - _CEPH_W) / 2)
+            pos_y = max_bottom + _CEPH_CLUSTER_GAP
+    else:
+        b = bounds[0]
+        pos_x = b[2] + _CEPH_CLUSTER_GAP
+        pos_y = b[1] + max(0, (b[3] - b[1] - _CEPH_H) / 2)
+
+    for ceph in ceph_nodes:
+        ceph["position"] = {"x": pos_x, "y": pos_y}
+
+
 def _rects_overlap(a: tuple, b: tuple) -> bool:
     """True if two (x1, y1, x2, y2) rectangles overlap."""
     return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
@@ -1313,6 +1360,7 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
     # Cluster-aware pass: pull OCP cluster members back inside their boundary
     # (they were laid out above as free workloads) and size the box.
     reflow_cluster_members(new_nodes)
+    _layout_ceph_between_clusters(new_nodes)
     cluster_anchored = set(_collect_cluster_network_anchors(edges, new_nodes).keys())
     _layout_cluster_anchored_networks(new_nodes, edges, net_w, net_h, gap_y)
     _reposition_bmc_networks_clear_of_clusters(

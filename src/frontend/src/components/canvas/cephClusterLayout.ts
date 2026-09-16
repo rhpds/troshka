@@ -11,33 +11,46 @@ function rectsOverlap(
   return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
-/** Place Ceph between cluster boxes (CCLM) or to the right of a single cluster. */
+/**
+ * Place Ceph between cluster boxes when the gap is wide enough (template import),
+ * otherwise centered below the cluster row (auto-layout packs boxes tight).
+ */
 export function cephClusterPosition(nodes: Node[]): { x: number; y: number } {
   const clusters = nodes.filter((n) => n.type === "clusterNode");
+  if (clusters.length === 0) return { x: 500, y: 400 };
+
+  const bounds = clusters.map(clusterBounds);
+  const minLeft = Math.min(...bounds.map((b) => b.x));
+  const maxRight = Math.max(...bounds.map((b) => b.x + b.w));
+  const maxBottom = Math.max(...bounds.map((b) => b.y + b.h));
+
   if (clusters.length >= 2) {
     const sorted = [...clusters].sort(
       (a, b) => (a.position?.x ?? 0) - (b.position?.x ?? 0),
     );
     const left = clusterBounds(sorted[0]);
     const right = clusterBounds(sorted[sorted.length - 1]);
-    const gapLeft = left.x + left.w;
-    const gapRight = right.x;
-    const x =
-      gapLeft + Math.max(BMC_CLUSTER_GAP, (gapRight - gapLeft - CEPH_NODE_W) / 2);
-    const y = left.y + Math.max(0, (left.h - CEPH_NODE_H) / 2);
-    return { x, y };
-  }
-  if (clusters.length === 1) {
-    const bounds = clusterBounds(clusters[0]);
+    const gap = right.x - (left.x + left.w);
+    if (gap >= CEPH_NODE_W + BMC_CLUSTER_GAP) {
+      return {
+        x: left.x + left.w + (gap - CEPH_NODE_W) / 2,
+        y: left.y + Math.max(0, (left.h - CEPH_NODE_H) / 2),
+      };
+    }
     return {
-      x: bounds.x + bounds.w + BMC_CLUSTER_GAP,
-      y: bounds.y + Math.max(0, (bounds.h - CEPH_NODE_H) / 2),
+      x: minLeft + Math.max(0, (maxRight - minLeft - CEPH_NODE_W) / 2),
+      y: maxBottom + BMC_CLUSTER_GAP,
     };
   }
-  return { x: 500, y: 400 };
+
+  const b = bounds[0];
+  return {
+    x: b.x + b.w + BMC_CLUSTER_GAP,
+    y: b.y + Math.max(0, (b.h - CEPH_NODE_H) / 2),
+  };
 }
 
-/** Nudge ceph clear of cluster boundaries when overlapping (e.g. after template import). */
+/** Nudge ceph clear of cluster boundaries when overlapping (e.g. after auto-layout). */
 export function repositionCephClearOfClusters(nodes: Node[]): Node[] {
   const ceph = nodes.find((n) => n.type === "cephClusterNode");
   if (!ceph) return nodes;

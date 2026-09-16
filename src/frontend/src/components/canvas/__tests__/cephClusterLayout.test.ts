@@ -42,4 +42,14 @@ describe("cephClusterLayout", () => {
     const moved = out.find((n) => n.id === "ceph-1");
     expect(moved?.position?.x).toBeGreaterThan(620);
   });
+
+  it("places ceph below packed clusters when the gap is too narrow", () => {
+    const nodes = [
+      clusterNode("cluster-destination", 40),
+      clusterNode("cluster-source", 40 + 520 + 60),
+      cephNode(200, 360),
+    ];
+    const pos = cephClusterPosition(nodes);
+    expect(pos.y).toBeGreaterThanOrEqual(40 + 320 + 40);
+  });
 });

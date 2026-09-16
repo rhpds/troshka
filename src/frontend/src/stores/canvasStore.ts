@@ -2485,7 +2485,10 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
       });
       if (!resp.ok) return;
       const result = await resp.json();
-      set({ nodes: result.nodes, edges: result.edges });
+      set({
+        nodes: repositionCephClearOfClusters(result.nodes as Node[]),
+        edges: result.edges,
+      });
     } catch {
       // Layout is best-effort — don't break the UI if the backend is down
     }
