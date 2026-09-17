@@ -344,9 +344,13 @@ def build_mon_bridge_deployment(ceph_cr: dict) -> dict:
         )
 
     mon_target = f"rook-ceph-mon-a.{namespace}.svc.cluster.local"
+    mgr_target = f"rook-ceph-mgr.{namespace}.svc.cluster.local"
+    # ODF external StorageCluster health-checks MonitoringPort (9283) on labIp.
     proxy_cmd = (
-        f"exec socat TCP-LISTEN:6789,bind={lab_ip},fork,reuseaddr "
-        f"TCP:{mon_target}:6789"
+        f"socat TCP-LISTEN:6789,bind={lab_ip},fork,reuseaddr "
+        f"TCP:{mon_target}:6789 & "
+        f"exec socat TCP-LISTEN:9283,bind={lab_ip},fork,reuseaddr "
+        f"TCP:{mgr_target}:9283"
     )
 
     return {
