@@ -13,6 +13,7 @@ from helpers.k8s import (
     CRD_GROUP,
     CRD_VERSION,
     GATEWAY_IMAGE,
+    TOOLS_IMAGE,
     _APPS_API_VERSION,
     _IPV4_RE,
     _NET_ANNOTATION_KEY,
@@ -662,6 +663,7 @@ POOL=troshka-ceph-pool
 python3 <<'PY'
 import base64
 import json
+import re
 import subprocess
 import sys
 
@@ -680,36 +682,22 @@ def kubectl_json(args: list[str]):
     return json.loads(kubectl(args))
 
 
-def ceph_exec(mon_pod: str, ceph_args: list[str]) -> str:
-    cmd = ["kubectl", "exec", "-n", ns, mon_pod, "-c", "mon", "--", *ceph_args]
-    return subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT).strip()
-
-
-def ceph_key(mon_pod: str, entity: str, caps: list[str]) -> str:
-    args = ["ceph", "auth", "get-or-create", entity, *caps, "-o", "json"]
-    payload = json.loads(ceph_exec(mon_pod, args))
-    return payload[0]["key"]
-
-
-def b64_secret_field(value: str) -> str:
-    secret = kubectl_json(
-        ["get", "secret", secret_name, "-o", "json"]
-    )
-    raw = (secret.get("data") or {}).get(value)
+def secret_field(name: str, field: str) -> str:
+    secret = kubectl_json(["get", "secret", name, "-o", "json"])
+    raw = (secret.get("data") or {}).get(field)
     if raw:
         return base64.b64decode(raw).decode()
-    raw = (secret.get("stringData") or {}).get(value)
-    if raw:
-        return raw
-    return ""
+    return (secret.get("stringData") or {}).get(field, "")
 
 
-mon_pod = kubectl(["get", "pod", "-l", "app=rook-ceph-mon", "-o", "jsonpath={.items[0].metadata.name}"])
-if not mon_pod:
-    print("no rook mon pod found", file=sys.stderr)
-    sys.exit(1)
+def parse_keyring(keyring: str) -> str:
+    match = re.search(r"key\s*=\s*(\S+)", keyring)
+    if not match:
+        raise RuntimeError("no key found in rook admin keyring")
+    return match.group(1)
 
-mon_host = b64_secret_field("mon-host")
+
+mon_host = secret_field(secret_name, "mon-host")
 if not mon_host:
     print("troshka-ceph-external missing mon-host", file=sys.stderr)
     sys.exit(1)
@@ -724,23 +712,21 @@ fsid = kubectl(
     ]
 )
 if not fsid:
-    fsid = ceph_exec(mon_pod, ["ceph", "fsid"])
+    fsid = secret_field("rook-ceph-mon", "fsid")
 
-admin_key = ceph_exec(mon_pod, ["ceph", "auth", "get-key", "client.admin"])
-auth_list = json.loads(ceph_exec(mon_pod, ["ceph", "auth", "list", "-f", "json"]))
-mon_key = next(
-    entry["key"] for entry in auth_list if entry["entity"].startswith("mon.")
-)
-csi_node_key = ceph_key(
-    mon_pod,
-    "client.csi-rbd-node",
-    ["mgr", "allow", "rw", "mon", "allow", "r", "osd", "profile", "rbd"],
-)
-csi_prov_key = ceph_key(
-    mon_pod,
-    "client.csi-rbd-provisioner",
-    ["mgr", "allow", "rw", "mon", "allow", "r", "osd", "profile", "rbd"],
-)
+admin_key = parse_keyring(secret_field("rook-ceph-admin-keyring", "keyring"))
+mon_key = secret_field("rook-ceph-mon", "mon-secret")
+csi_node_key = secret_field("rook-csi-rbd-node", "userKey")
+csi_prov_key = secret_field("rook-csi-rbd-provisioner", "userKey")
+for label, value in (
+    ("admin", admin_key),
+    ("mon", mon_key),
+    ("csi-node", csi_node_key),
+    ("csi-provisioner", csi_prov_key),
+):
+    if not value:
+        print(f"missing {label} key in rook secrets", file=sys.stderr)
+        sys.exit(1)
 
 mon_ip = mon_host.split(":", 1)[0]
 resources = [
@@ -854,7 +840,7 @@ def build_export_job(ceph_cr: dict) -> dict:
                     "containers": [
                         {
                             "name": "export",
-                            "image": "quay.io/openshift/origin-cli:4.14",
+                            "image": TOOLS_IMAGE,
                             "command": ["sh", "-c", script],
                         }
                     ],
@@ -880,16 +866,6 @@ def build_ceph_rbac(ceph_cr: dict) -> tuple[dict, dict]:
                 "apiGroups": [""],
                 "resources": ["secrets"],
                 "verbs": ["get", "patch", "create", "update"],
-            },
-            {
-                "apiGroups": [""],
-                "resources": ["pods"],
-                "verbs": ["get", "list"],
-            },
-            {
-                "apiGroups": [""],
-                "resources": ["pods/exec"],
-                "verbs": ["create"],
             },
             {
                 "apiGroups": ["ceph.rook.io"],

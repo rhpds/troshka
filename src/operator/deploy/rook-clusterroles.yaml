@@ -84,6 +84,12 @@ rules:
       - cephfilesystems
       - cephobjectstores
       - cephobjectstoreusers
+      - cephobjectzones
+      - cephobjectzonegroups
+      - cephobjectrealms
+      - cephclients
+      - cephcosidrivers
+      - cephnfses
       - cephbuckettopics
       - cephbucketnotifications
       - cephrbdmirrors
@@ -98,6 +104,12 @@ rules:
       - cephfilesystems/status
       - cephobjectstores/status
       - cephobjectstoreusers/status
+      - cephobjectzones/status
+      - cephobjectzonegroups/status
+      - cephobjectrealms/status
+      - cephclients/status
+      - cephcosidrivers/status
+      - cephnfses/status
       - cephbuckettopics/status
       - cephbucketnotifications/status
       - cephrbdmirrors/status
@@ -112,6 +124,12 @@ rules:
       - cephfilesystems/finalizers
       - cephobjectstores/finalizers
       - cephobjectstoreusers/finalizers
+      - cephobjectzones/finalizers
+      - cephobjectzonegroups/finalizers
+      - cephobjectrealms/finalizers
+      - cephclients/finalizers
+      - cephcosidrivers/finalizers
+      - cephnfses/finalizers
       - cephbuckettopics/finalizers
       - cephbucketnotifications/finalizers
       - cephrbdmirrors/finalizers

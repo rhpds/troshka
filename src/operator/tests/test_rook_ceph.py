@@ -172,17 +172,24 @@ def test_build_rook_operator_has_pod_name_env():
 
 
 def test_build_export_job_writes_odf_external_cluster_details():
+    from helpers.k8s import TOOLS_IMAGE
+
     cr = {
         "kind": "TroshkaCeph",
         "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
         "spec": {"labIp": "10.0.0.3"},
     }
-    script = build_export_job(cr)["spec"]["template"]["spec"]["containers"][0]["command"][-1]
+    job = build_export_job(cr)
+    container = job["spec"]["template"]["spec"]["containers"][0]
+    assert container["image"] == TOOLS_IMAGE
+    script = container["command"][-1]
     assert "external_cluster_details" in script
     assert "rook-ceph-mon-endpoints" in script
+    assert "rook-ceph-admin-keyring" in script
+    assert "ceph_exec" not in script
 
 
-def test_build_ceph_rbac_allows_export_job_exec():
+def test_build_ceph_rbac_allows_export_job_secret_access():
     cr = {
         "kind": "TroshkaCeph",
         "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
@@ -190,5 +197,5 @@ def test_build_ceph_rbac_allows_export_job_exec():
     }
     role, _binding = build_ceph_rbac(cr)
     rules = {tuple(rule["resources"]): rule["verbs"] for rule in role["rules"]}
-    assert rules[("pods",)] == ["get", "list"]
-    assert rules[("pods/exec",)] == ["create"]
+    assert rules[("secrets",)] == ["get", "patch", "create", "update"]
+    assert rules[("cephclusters",)] == ["get"]
