@@ -202,10 +202,15 @@ def discover_ceph_image(custom_api) -> str:
 
 
 def default_lab_ip_from_cidr(cidr: str) -> str:
+    """Pick a stable lab IP for the Ceph mon bridge.
+
+    Reserved on the project subnet: .1 gateway, .2 dnsmasq, .3 exec.
+    Ceph uses .4 so it does not collide with the exec pod.
+    """
     if not cidr or "/" not in cidr:
         return ""
     octets = cidr.split("/")[0].split(".")
-    octets[3] = "3"
+    octets[3] = "4"
     return ".".join(octets)
 
 

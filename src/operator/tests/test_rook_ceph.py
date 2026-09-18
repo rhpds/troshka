@@ -19,7 +19,7 @@ from helpers.rook_ceph import (
 
 
 def test_default_lab_ip_from_cidr():
-    assert default_lab_ip_from_cidr("10.0.0.0/24") == "10.0.0.3"
+    assert default_lab_ip_from_cidr("10.0.0.0/24") == "10.0.0.4"
     assert default_lab_ip_from_cidr("") == ""
 
 
