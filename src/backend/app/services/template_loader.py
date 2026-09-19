@@ -28,6 +28,8 @@ _TEMPLATE_CONTENT_SECTIONS = (
     "pull_through_registry",
     "clock_target",
     "showroom",
+    "workloads",
+    "requirements_content",
 )
 
 
@@ -2023,6 +2025,10 @@ def _generate_topology_from_vms(
         result["showroom"] = tmpl["showroom"]
     if tmpl.get("placement"):
         result["placement"] = tmpl["placement"]
+    if tmpl.get("workloads"):
+        result["workloads"] = tmpl["workloads"]
+    if tmpl.get("requirements_content"):
+        result["requirements_content"] = tmpl["requirements_content"]
     return result
 
 
@@ -2854,6 +2860,11 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
     ceph_export = export_ceph_section(topology, net_id_to_name)
     if ceph_export:
         result["cephCluster"] = ceph_export
+
+    if topology.get("workloads"):
+        result["workloads"] = topology["workloads"]
+    if topology.get("requirements_content"):
+        result["requirements_content"] = topology["requirements_content"]
 
     return result
 

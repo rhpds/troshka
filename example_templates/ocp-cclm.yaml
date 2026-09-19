@@ -189,3 +189,18 @@ showroom:
     - type: terminal
       target: clusters
       name: OpenShift Cluster Terminal
+
+# Post-install CCLM chain (demo_workloads). Pinned to feat/cclm-workloads until
+# the lab is validated on main. Auto-enqueued when all OCP clusters are ready.
+requirements_content:
+  collections:
+    - name: https://github.com/rhpds/demo_workloads.git
+      type: git
+      version: feat/cclm-workloads
+
+workloads:
+  - rhpds.demo_workloads.troshka_workload_cclm_operators
+  - rhpds.demo_workloads.troshka_workload_cclm_network
+  - rhpds.demo_workloads.troshka_workload_cclm_hco
+  - rhpds.demo_workloads.troshka_workload_cclm_forklift
+  - rhpds.demo_workloads.troshka_workload_cclm_seed_vms

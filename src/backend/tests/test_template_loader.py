@@ -107,6 +107,23 @@ def test_cclm_cluster_network_dns_enabled_without_domain():
     assert cluster_net["data"].get("dnsRecords")
 
 
+def test_cclm_template_carries_workloads_chain():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_template,
+    )
+
+    resolved = resolve_template("ocp-cclm", templates_dir=TEMPLATES_DIR)
+    assert "workloads" in resolved
+    assert "requirements_content" in resolved
+    assert any("cclm_operators" in r for r in resolved["workloads"])
+    topo = generate_topology_from_template(resolved)
+    assert topo["workloads"][0].endswith("troshka_workload_cclm_operators")
+    assert topo["workloads"][1].endswith("troshka_workload_cclm_network")
+    collections = topo["requirements_content"]["collections"]
+    assert collections[0]["version"] == "feat/cclm-workloads"
+
+
 def test_sno_topology_has_dns_records():
     from app.services.template_loader import (
         generate_topology_from_template,

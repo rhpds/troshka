@@ -720,7 +720,13 @@ def test_requirements_content_wins_over_user_extra_vars(monkeypatch):
         captured_files = []
 
         def mock_build_artifact_files(
-            *, extra_vars, inventory_yaml, cloud_creds, kubeconfig, paths
+            *,
+            extra_vars,
+            inventory_yaml,
+            cloud_creds,
+            kubeconfig,
+            paths,
+            cluster_kubeconfigs=None,
         ):
             captured_files.append(extra_vars.copy())
             return {}

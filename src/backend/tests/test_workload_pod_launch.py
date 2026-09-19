@@ -270,3 +270,20 @@ def test_build_artifact_files_omits_mint_playbook_without_kubeconfig():
         paths=paths,
     )
     assert paths.mint_playbook not in files
+
+
+def test_build_artifact_files_multi_cluster_mint():
+    paths = pod_launch.RunPaths()
+    files = pod_launch.build_artifact_files(
+        extra_vars={"a": 1},
+        inventory_yaml="plugin: troshka.cloud.troshka\n",
+        cloud_creds=None,
+        kubeconfig="KC-SOURCE",
+        cluster_kubeconfigs={"source": "KC-SOURCE", "destination": "KC-DEST"},
+        paths=paths,
+    )
+    assert files["/workdir/kubeconfigs/source/kubeconfig"] == "KC-SOURCE"
+    assert files["/workdir/kubeconfigs/destination/kubeconfig"] == "KC-DEST"
+    mint = files[paths.mint_playbook]
+    assert "source" in mint and "destination" in mint
+    assert "default" in mint

@@ -206,11 +206,14 @@ def run_workload_job(run_id: str) -> None:
                 "resolvable from stored topology; cannot run workloads"
             )
 
+        from app.services.workloads.template_workloads import named_cluster_kubeconfigs
+
         files = build_artifact_files(
             extra_vars=extra_vars,
             inventory_yaml=inv,
             cloud_creds=None,
             kubeconfig=kubeconfig,
+            cluster_kubeconfigs=named_cluster_kubeconfigs(topo),
             paths=paths,
         )
 
@@ -787,6 +790,7 @@ def _infer_status_from_logs(logs: str) -> str:
 def _finalize_workload_run(run_id: str, status: str, error_or_logs: str) -> None:
     """Set terminal status on WorkloadRun."""
     db = SessionLocal()
+    project_id = None
     try:
         run = db.get(WorkloadRun, run_id)
         if run is not None:
@@ -795,10 +799,24 @@ def _finalize_workload_run(run_id: str, status: str, error_or_logs: str) -> None
             run.log_ref = (error_or_logs or "")[-_LOG_TAIL_BYTES:]
             if status == "error" or status == "timeout":
                 run.error = error_or_logs[:2000]
+            project_id = run.project_id
             db.commit()
             logger.info("Workload run %s finalized: %s", run_id[:8], status)
     finally:
         db.close()
+
+    # Continue ordered template workloads: after success of role N, start N+1.
+    if status == "succeeded" and project_id:
+        try:
+            from app.services.workloads.template_workloads import (
+                maybe_enqueue_template_workloads,
+            )
+
+            maybe_enqueue_template_workloads(project_id)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Template workload chain continue failed for %s", project_id[:8]
+            )
 
 
 def get_workload_log(db, run) -> str:

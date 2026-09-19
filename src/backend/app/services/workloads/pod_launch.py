@@ -26,17 +26,95 @@ class RunPaths:
     clusters: str = f"{_WORKDIR}/clusters.yml"
 
 
-def _mint_prelude_playbook(paths: RunPaths) -> str:
-    """Static prelude playbook: mint a cluster-admin SA token in-pod and write the
-    `clusters` extra-var that the openshift-workloads config consumes.
+def _mint_prelude_playbook(
+    paths: RunPaths, cluster_kubeconfigs: dict[str, str] | None = None
+) -> str:
+    """Mint cluster-admin SA token(s) in-pod and write the ``clusters`` extra-var.
 
-    Runs the agnosticd role ``openshift_cluster_admin_service_account`` (which sets
-    the role-internal fact ``_openshift_cluster_admin_token``, b64-decoded), derives
-    the in-cluster API server URL from the delivered KUBECONFIG, and writes
-    ``clusters: {default: {api_url, api_token}}`` to ``paths.clusters``. The backend
-    makes NO cluster calls (D12); everything here executes in-pod at runtime. The
-    token is written to a 0600 file, never placed in argv/env (D7).
+    Single-cluster (legacy): mints into ``clusters.default``.
+    Multi-cluster: one block per name under ``/workdir/kubeconfigs/<name>/``,
+    writing ``clusters: {<name>: {api_url, api_token}, ..., default: <first>}``.
     """
+    names = [n for n in (cluster_kubeconfigs or {}) if n]
+    if len(names) <= 1:
+        return _mint_prelude_single(paths)
+
+    tasks: list[dict] = [
+        {
+            "name": "Init clusters accumulator",
+            "ansible.builtin.set_fact": {"_troshka_clusters": {}},
+        }
+    ]
+    for name in names:
+        kc_path = f"{_WORKDIR}/kubeconfigs/{name}/kubeconfig"
+        tasks.append(
+            {
+                "name": f"Mint and record cluster {name}",
+                "block": [
+                    {
+                        "name": f"Create cluster-admin SA on {name}",
+                        "ansible.builtin.include_role": {
+                            "name": "openshift_cluster_admin_service_account"
+                        },
+                    },
+                    {
+                        "name": f"Read API server for {name}",
+                        "ansible.builtin.command": {
+                            "cmd": (
+                                "oc config view --minify "
+                                "-o jsonpath={.clusters[0].cluster.server}"
+                            )
+                        },
+                        "register": "_troshka_api_server",
+                        "changed_when": False,
+                    },
+                    {
+                        "name": f"Accumulate {name}",
+                        "ansible.builtin.set_fact": {
+                            "_troshka_clusters": (
+                                "{{ _troshka_clusters | combine({"
+                                f"'{name}': {{"
+                                "'api_url': _troshka_api_server.stdout, "
+                                "'api_token': _openshift_cluster_admin_token}}"
+                                "}) }}"
+                            )
+                        },
+                        "no_log": True,
+                    },
+                ],
+                "environment": {"KUBECONFIG": kc_path},
+            }
+        )
+    first = names[0]
+    tasks.append(
+        {
+            "name": "Write multi-cluster clusters dict",
+            "ansible.builtin.copy": {
+                "dest": paths.clusters,
+                "mode": "0600",
+                "content": (
+                    "{{ {'clusters': _troshka_clusters | combine({"
+                    f"'default': _troshka_clusters['{first}']"
+                    "})} | to_nice_yaml }}"
+                ),
+            },
+            "no_log": True,
+        }
+    )
+    playbook = [
+        {
+            "name": "Mint cluster-admin tokens for all OCP clusters",
+            "hosts": "localhost",
+            "connection": "local",
+            "gather_facts": False,
+            "tasks": tasks,
+        }
+    ]
+    return yaml.safe_dump(playbook, sort_keys=False, default_flow_style=False)
+
+
+def _mint_prelude_single(paths: RunPaths) -> str:
+    """Single-kubeconfig mint → ``clusters.default``."""
     clusters_expr = (
         "{{ {'clusters': {'default': {"
         "'api_url': _troshka_api_server.stdout, "
@@ -85,12 +163,18 @@ def build_artifact_files(
     inventory_yaml: str,
     cloud_creds: dict | None,
     kubeconfig: str | None = None,
+    cluster_kubeconfigs: dict[str, str] | None = None,
     paths: RunPaths,
 ) -> dict[str, str]:
     """Map container paths to artifact contents for 0600 read-only mounts.
 
     All sensitive data (cluster tokens, cloud credentials) rides in these files,
     not in the pod command argv.
+
+    ``cluster_kubeconfigs`` (optional) maps cluster name → kubeconfig YAML for
+    multi-cluster mint. When provided (2+ entries), each is written under
+    ``/workdir/kubeconfigs/<name>/kubeconfig`` and the mint prelude stamps a
+    named ``clusters`` dict. ``kubeconfig`` remains the primary KUBECONFIG export.
     """
     files = {
         paths.extra_vars: yaml.safe_dump(extra_vars, sort_keys=False),
@@ -98,10 +182,15 @@ def build_artifact_files(
     }
     if cloud_creds:
         files[paths.cloud_creds] = "\n".join(f"{k}={v}" for k, v in cloud_creds.items())
-    if kubeconfig:
-        files[paths.kubeconfig] = kubeconfig
-        # OCP run: deliver the in-pod mint prelude that produces `clusters`.
-        files[paths.mint_playbook] = _mint_prelude_playbook(paths)
+    named = {k: v for k, v in (cluster_kubeconfigs or {}).items() if k and v}
+    primary = kubeconfig or next(iter(named.values()), None)
+    if primary:
+        files[paths.kubeconfig] = primary
+        for name, kc in named.items():
+            files[f"{_WORKDIR}/kubeconfigs/{name}/kubeconfig"] = kc
+        files[paths.mint_playbook] = _mint_prelude_playbook(
+            paths, named if len(named) > 1 else None
+        )
     return files
 
 

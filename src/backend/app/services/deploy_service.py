@@ -4987,6 +4987,17 @@ def _monitor_ops_pod_install(
                     logger.exception(
                         "Ops pod %s: reap after install failed", project_id[:8]
                     )
+                try:
+                    from app.services.workloads.template_workloads import (
+                        maybe_enqueue_template_workloads,
+                    )
+
+                    maybe_enqueue_template_workloads(project_id)
+                except Exception:
+                    logger.exception(
+                        "Ops pod %s: template workload enqueue failed",
+                        project_id[:8],
+                    )
             _release_ops_monitor_lock(project_id)
             return progress["overall"]
         for _ in range(poll_interval):
