@@ -1,7 +1,7 @@
 alembic==1.18.4
 annotated-doc==0.0.4
 annotated-types==0.7.0
-anyio==4.13.0
+anyio==4.14.2
 ast_serialize==0.5.0
 bcrypt==5.0.0
 boto3==1.43.23
