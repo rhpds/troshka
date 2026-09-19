@@ -172,7 +172,7 @@ vms:
 showroom:
   enabled: true
   dns_network: cluster
-  content_repo: https://github.com/rhpds/showroom-troshka-ocp-base.git
+  content_repo: https://github.com/rhpds/showroom-troshka-cclm.git
   content_ref: main
   build_content: true
   disk_gb: 5
