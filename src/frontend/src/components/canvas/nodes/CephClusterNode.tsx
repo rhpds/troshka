@@ -64,7 +64,7 @@ function CephClusterNodeComponent({ id, data, selected }: NodeProps) {
         <div className="storage-node-name">{cephClusterDisplayName(d)}</div>
         <div className="storage-node-size">{d.capacityGi} Gi · {d.osdCount} OSD</div>
         <div style={{ fontSize: 10, color: "var(--troshka-text-dim)", marginTop: 2 }}>
-          {d.labIp || "auto .3"} · {replicateSize}x repl
+          {d.labIp || "auto .4"} · {replicateSize}x repl
         </div>
       </div>
 

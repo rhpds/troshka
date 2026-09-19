@@ -6,7 +6,7 @@ export function defaultCephLabIp(cidr: string): string {
   if (!cidr || !cidr.includes("/")) return "";
   const octets = cidr.split("/")[0].split(".");
   if (octets.length !== 4) return "";
-  octets[3] = "3";
+  octets[3] = "4";
   return octets.join(".");
 }
 

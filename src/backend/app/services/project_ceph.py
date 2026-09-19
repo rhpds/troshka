@@ -78,7 +78,7 @@ def _default_ceph_lab_ip(cidr: str) -> str:
     if not cidr or "/" not in cidr:
         return ""
     octets = cidr.split("/")[0].split(".")
-    octets[3] = "3"
+    octets[3] = "4"
     return ".".join(octets)
 
 

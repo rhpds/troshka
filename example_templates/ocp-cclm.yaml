@@ -85,6 +85,14 @@ networks:
     type: bmc
     cidr: 192.168.100.0/24
 
+cephCluster:
+  name: Ceph Storage
+  network: cluster
+  labIp: 10.0.0.4
+  capacityGi: 300
+  osdCount: 3
+  clusters: [source, destination]
+
 vms:
   source-cp-0:
     cluster: source

@@ -5213,7 +5213,7 @@ export default function PropertiesPanel() {
               <input
                 className="props-input"
                 value={(data.labIp as string) || ""}
-                placeholder="auto .3 on CIDR"
+                placeholder="auto .4 on CIDR"
                 onChange={(e) => update("labIp", e.target.value)}
               />
               {labIpIssues.length > 0 && (

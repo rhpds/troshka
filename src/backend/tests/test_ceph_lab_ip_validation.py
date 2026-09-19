@@ -32,12 +32,12 @@ def _ceph_node(network_ref="net-cluster", lab_ip=""):
     }
 
 
-def test_ceph_default_dot3_ok_when_network_clear():
+def test_ceph_default_dot4_ok_when_network_clear():
     topo = {"nodes": [_net_node(), _ceph_node()], "edges": [], "clusters": []}
     assert validate_ceph_lab_ips(topo) == []
 
 
-def test_ceph_dot3_conflicts_with_vm_nic():
+def test_ceph_dot4_conflicts_with_vm_nic():
     topo = {
         "nodes": [
             _net_node(),
@@ -47,7 +47,7 @@ def test_ceph_dot3_conflicts_with_vm_nic():
                 "type": "vmNode",
                 "data": {
                     "name": "busy",
-                    "nics": [{"id": "nic-1", "ip": "10.0.0.3"}],
+                    "nics": [{"id": "nic-1", "ip": "10.0.0.4"}],
                 },
             },
         ],
@@ -64,7 +64,7 @@ def test_ceph_dot3_conflicts_with_vm_nic():
     }
     errors = validate_ceph_lab_ips(topo)
     assert len(errors) == 1
-    assert "10.0.0.3" in errors[0]
+    assert "10.0.0.4" in errors[0]
     assert "busy" in errors[0]
 
 
@@ -86,7 +86,7 @@ def test_validate_topology_ips_includes_ceph_checks():
             {
                 "id": "vm-1",
                 "type": "vmNode",
-                "data": {"name": "x", "nics": [{"id": "nic-1", "ip": "10.0.0.3"}]},
+                "data": {"name": "x", "nics": [{"id": "nic-1", "ip": "10.0.0.4"}]},
             },
         ],
         "edges": [
@@ -101,4 +101,4 @@ def test_validate_topology_ips_includes_ceph_checks():
         "clusters": [],
     }
     errors = validate_topology_ips(topo)
-    assert any("Ceph Storage" in e and "10.0.0.3" in e for e in errors)
+    assert any("Ceph Storage" in e and "10.0.0.4" in e for e in errors)

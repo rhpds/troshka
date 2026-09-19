@@ -88,7 +88,7 @@ networks:
 cephCluster:
   name: Ceph Storage
   network: cluster
-  labIp: 10.0.0.3
+  labIp: 10.0.0.4
   capacityGi: 300
   osdCount: 3
   clusters: [source, destination]

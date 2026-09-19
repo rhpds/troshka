@@ -38,7 +38,7 @@ FROM_ROLE=""
 ONLY_ROLE=""
 DRY_RUN=0
 
-ROLE_ORDER=(operators hco network forklift seed_vms)
+ROLE_ORDER=(operators network hco forklift seed_vms)
 
 role_short_to_fqcn() {
     case "$1" in
