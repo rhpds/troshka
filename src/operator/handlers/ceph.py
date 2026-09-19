@@ -17,6 +17,7 @@ from helpers.rook_ceph import (
     build_ceph_cluster,
     build_external_secret,
     build_mon_bridge_deployment,
+    build_mon_backend_service,
     build_ceph_rbac,
     ceph_cluster_phase,
     ceph_external_details_exported,
@@ -25,6 +26,7 @@ from helpers.rook_ceph import (
     ensure_ceph_export_job,
     ensure_rook_operator,
     is_ceph_ready,
+    nested_mon_host_from_secret,
     rook_service_account_ref,
     validate_lab_ip,
 )
@@ -67,9 +69,7 @@ def _apply_rbac(rbac_api, namespace: str, role: dict, binding: dict) -> None:
             if body["kind"] == "Role":
                 rbac_api.create_namespaced_role(namespace=namespace, body=body)
             else:
-                rbac_api.create_namespaced_role_binding(
-                    namespace=namespace, body=body
-                )
+                rbac_api.create_namespaced_role_binding(namespace=namespace, body=body)
         except ApiException as e:
             if e.status != 409:
                 raise
@@ -125,12 +125,19 @@ async def _reconcile_ceph(body, patch, namespace: str) -> None:
         namespace,
         "cephclusters",
     )
-    _apply_rook_cr(
-        custom_api, build_ceph_block_pool(body), namespace, "cephblockpools"
-    )
+    _apply_rook_cr(custom_api, build_ceph_block_pool(body), namespace, "cephblockpools")
 
     dep = build_mon_bridge_deployment(body)
     dep_name = dep["metadata"]["name"]
+    mon_svc = build_mon_backend_service(body)
+    try:
+        core_api.create_namespaced_service(namespace=namespace, body=mon_svc)
+    except ApiException as e:
+        if e.status != 409:
+            raise
+        core_api.patch_namespaced_service(
+            name=mon_svc["metadata"]["name"], namespace=namespace, body=mon_svc
+        )
     try:
         apps_api.create_namespaced_deployment(namespace=namespace, body=dep)
     except ApiException as e:
@@ -155,13 +162,15 @@ async def _reconcile_ceph(body, patch, namespace: str) -> None:
 
     osd_count = spec.get("osdCount", 3)
     replicate_size = spec.get("replicateSize", min(int(osd_count), 3))
-    mon_endpoint = f"{lab_ip}:6789"
+    # Multus bridge (lab tools). Nested CSI uses exported hostNetwork mon after Ready.
+    lab_mon_endpoint = f"{lab_ip}:3300"
+    nested_mon = nested_mon_host_from_secret(core_api, namespace)
+    mon_endpoint = nested_mon or lab_mon_endpoint
 
     patch.status["monEndpoint"] = mon_endpoint
+    patch.status["labMonEndpoint"] = lab_mon_endpoint
     patch.status["secretName"] = CEPH_EXTERNAL_SECRET
-    patch.status["storageClassName"] = spec.get(
-        "storageClassName", "troshka-ceph-rbd"
-    )
+    patch.status["storageClassName"] = spec.get("storageClassName", "troshka-ceph-rbd")
     patch.status["poolName"] = "troshka-ceph-pool"
     patch.status["osdCount"] = osd_count
     patch.status["replicateSize"] = replicate_size
@@ -170,16 +179,26 @@ async def _reconcile_ceph(body, patch, namespace: str) -> None:
         batch_api = client.BatchV1Api()
         ensure_ceph_export_job(batch_api, body, namespace)
         if ceph_external_details_exported(core_api, namespace):
+            nested_mon = nested_mon_host_from_secret(core_api, namespace)
+            if nested_mon:
+                patch.status["monEndpoint"] = nested_mon
             patch.status["phase"] = "Ready"
             patch.status["message"] = "Ceph cluster ready"
-            logger.info("TroshkaCeph ready in %s (mon=%s)", namespace, mon_endpoint)
+            logger.info(
+                "TroshkaCeph ready in %s (nested mon=%s lab bridge=%s)",
+                namespace,
+                patch.status["monEndpoint"],
+                lab_mon_endpoint,
+            )
             return
         patch.status["phase"] = "Progressing"
         patch.status["message"] = "Exporting ODF external cluster details"
         return
 
     patch.status["phase"] = "Progressing"
-    patch.status["message"] = f"Waiting for rook CephCluster (phase={phase or 'unknown'})"
+    patch.status["message"] = (
+        f"Waiting for rook CephCluster (phase={phase or 'unknown'})"
+    )
 
 
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkancephs")
@@ -244,9 +263,7 @@ async def ceph_delete(namespace, name, body=None, **_):
 
     for dep_name in (MON_BRIDGE_NAME,):
         try:
-            apps_api.delete_namespaced_deployment(
-                name=dep_name, namespace=namespace
-            )
+            apps_api.delete_namespaced_deployment(name=dep_name, namespace=namespace)
         except ApiException as e:
             if e.status != 404:
                 logger.warning("Failed to delete deployment %s: %s", dep_name, e)
@@ -271,9 +288,7 @@ async def ceph_delete(namespace, name, body=None, **_):
 
     for secret_name in (CEPH_EXTERNAL_SECRET,):
         try:
-            core_api.delete_namespaced_secret(
-                name=secret_name, namespace=namespace
-            )
+            core_api.delete_namespaced_secret(name=secret_name, namespace=namespace)
         except ApiException as e:
             if e.status != 404:
                 logger.warning("Failed to delete ceph secret: %s", e)

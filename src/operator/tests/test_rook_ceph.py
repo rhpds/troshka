@@ -3,12 +3,15 @@
 from unittest.mock import MagicMock
 
 from helpers.rook_ceph import (
+    CEPH_EXTERNAL_SECRET,
     TROSHKA_ROOK_SA_CLUSTER_ROLES,
     build_ceph_cluster,
     build_ceph_rbac,
     build_export_job,
+    build_external_secret,
     build_rook_operator_config,
     build_rook_operator_deployment,
+    ceph_export_needs_nested_mon_refresh,
     data_dir_host_path,
     default_lab_ip_from_cidr,
     discover_ceph_image,
@@ -33,7 +36,11 @@ def test_normalize_ceph_counts_clamps():
 def test_build_ceph_cluster_omits_removed_rook_fields():
     cr = {
         "kind": "TroshkaCeph",
-        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
         "spec": {"labIp": "10.0.0.3", "capacityGi": 300, "osdCount": 3},
     }
     cluster = build_ceph_cluster(cr)
@@ -44,7 +51,11 @@ def test_build_ceph_cluster_omits_removed_rook_fields():
 def test_build_ceph_cluster_mons_use_pvcs_not_shared_odf_path():
     cr = {
         "kind": "TroshkaCeph",
-        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
         "spec": {"labIp": "10.0.0.3", "capacityGi": 300, "osdCount": 3},
     }
     cluster = build_ceph_cluster(cr)
@@ -59,7 +70,11 @@ def test_build_ceph_cluster_mons_use_pvcs_not_shared_odf_path():
 def test_build_ceph_cluster_device_sets():
     cr = {
         "kind": "TroshkaCeph",
-        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
         "spec": {
             "labIp": "10.0.0.3",
             "capacityGi": 300,
@@ -84,7 +99,11 @@ def test_data_dir_host_path_is_unique_per_project():
 def test_build_ceph_cluster_avoids_odf_storage_nodes():
     cr = {
         "kind": "TroshkaCeph",
-        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
         "spec": {"labIp": "10.0.0.3", "capacityGi": 300, "osdCount": 3},
     }
     cluster = build_ceph_cluster(cr)
@@ -99,7 +118,11 @@ def test_build_ceph_cluster_avoids_odf_storage_nodes():
 def test_build_rook_operator_scoped_to_namespace():
     cr = {
         "kind": "TroshkaCeph",
-        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
         "spec": {"labIp": "10.0.0.3"},
     }
     dep = build_rook_operator_deployment(cr)
@@ -117,7 +140,11 @@ def test_build_rook_operator_scoped_to_namespace():
 def test_build_rook_operator_config_openshift_privileged_mons():
     cr = {
         "kind": "TroshkaCeph",
-        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
         "spec": {"labIp": "10.0.0.3"},
     }
     data = build_rook_operator_config(cr)["data"]
@@ -128,7 +155,9 @@ def test_build_rook_operator_config_openshift_privileged_mons():
 def test_discover_ceph_image_from_odf():
     api = MagicMock()
     api.list_namespaced_custom_object.return_value = {
-        "items": [{"spec": {"cephVersion": {"image": "registry.example/ceph@sha256:abc"}}}]
+        "items": [
+            {"spec": {"cephVersion": {"image": "registry.example/ceph@sha256:abc"}}}
+        ]
     }
     assert discover_ceph_image(api) == "registry.example/ceph@sha256:abc"
 
@@ -136,7 +165,11 @@ def test_discover_ceph_image_from_odf():
 def test_build_ceph_cluster_uses_discovered_image():
     cr = {
         "kind": "TroshkaCeph",
-        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
         "spec": {"labIp": "10.0.0.3", "capacityGi": 300, "osdCount": 3},
     }
     cluster = build_ceph_cluster(cr, ceph_image="registry.example/ceph@sha256:abc")
@@ -159,7 +192,11 @@ def test_rook_crb_name_fits_k8s_limit():
 def test_build_rook_operator_has_pod_name_env():
     cr = {
         "kind": "TroshkaCeph",
-        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
         "spec": {"labIp": "10.0.0.3"},
     }
     env_names = {
@@ -176,8 +213,12 @@ def test_build_export_job_writes_odf_external_cluster_details():
 
     cr = {
         "kind": "TroshkaCeph",
-        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
-        "spec": {"labIp": "10.0.0.3"},
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
+        "spec": {"labIp": "10.0.0.4"},
     }
     job = build_export_job(cr)
     container = job["spec"]["template"]["spec"]["containers"][0]
@@ -185,15 +226,67 @@ def test_build_export_job_writes_odf_external_cluster_details():
     script = container["command"][-1]
     assert "external_cluster_details" in script
     assert "rook-ceph-mon-endpoints" in script
+    assert "a=" in script  # rook expects id=host:port mon endpoint format
     assert "rook-ceph-admin-keyring" in script
     assert "ceph_exec" not in script
+    # Nested CSI path: hostNetwork mon on msgr2, single monmap (not dual labIp).
+    assert "discover_hostnetwork_mon_ip" in script
+    assert "collapse_monmap_to_host" in script
+    assert "mon set-addrs" in script
+    assert ":3300" in script
+    assert "mon-host-lab" in script
+
+
+def test_build_external_secret_placeholder_uses_msgr2():
+    cr = {
+        "kind": "TroshkaCeph",
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
+        "spec": {"labIp": "10.0.0.4"},
+    }
+    secret = build_external_secret(cr, fsid="fsid-1")
+    assert secret["metadata"]["name"] == CEPH_EXTERNAL_SECRET
+    assert secret["stringData"]["mon-host"] == "10.0.0.4:3300"
+
+
+def test_ceph_export_needs_refresh_when_mon_is_lab_bridge():
+    import base64
+
+    api = MagicMock()
+    secret = MagicMock()
+    secret.data = {
+        "external_cluster_details": base64.b64encode(b"[]").decode(),
+        "mon-host": base64.b64encode(b"10.0.0.4:3300").decode(),
+    }
+    api.read_namespaced_secret.return_value = secret
+    assert ceph_export_needs_nested_mon_refresh(api, "troshka-abc", "10.0.0.4")
+
+
+def test_ceph_export_ok_when_hostnetwork_msgr2():
+    import base64
+
+    api = MagicMock()
+    secret = MagicMock()
+    secret.data = {
+        "external_cluster_details": base64.b64encode(b"[]").decode(),
+        "mon-host": base64.b64encode(b"192.168.50.10:3300").decode(),
+    }
+    api.read_namespaced_secret.return_value = secret
+    assert not ceph_export_needs_nested_mon_refresh(api, "troshka-abc", "10.0.0.4")
 
 
 def test_build_ceph_rbac_allows_export_job_secret_access():
     cr = {
         "kind": "TroshkaCeph",
-        "metadata": {"namespace": "troshka-abc", "name": "project-ceph", "uid": "uid-1"},
-        "spec": {"labIp": "10.0.0.3"},
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
+        "spec": {"labIp": "10.0.0.4"},
     }
     role, _binding = build_ceph_rbac(cr)
     rules = {tuple(rule["resources"]): rule["verbs"] for rule in role["rules"]}

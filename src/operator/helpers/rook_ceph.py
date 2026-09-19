@@ -27,6 +27,7 @@ CEPH_CLUSTER_NAME = "troshka-ceph"
 CEPH_BLOCK_POOL_NAME = "troshka-ceph-pool"
 CEPH_EXTERNAL_SECRET = "troshka-ceph-external"  # pragma: allowlist secret
 MON_BRIDGE_NAME = "troshka-ceph-mon-bridge"
+MON_BRIDGE_BACKEND_SVC = "troshka-ceph-mon"
 EXPORT_JOB_NAME = "troshka-ceph-export"
 ROOK_OPERATOR_DEPLOYMENT = "rook-ceph-operator"
 ROOK_OPERATOR_CONFIG = "rook-ceph-operator-config"
@@ -96,7 +97,9 @@ def data_dir_host_path(namespace: str) -> str:
 
 
 def mon_storage_gi(spec: dict) -> int:
-    return max(MIN_MON_STORAGE_GI, int(spec.get("monStorageGi") or DEFAULT_MON_STORAGE_GI))
+    return max(
+        MIN_MON_STORAGE_GI, int(spec.get("monStorageGi") or DEFAULT_MON_STORAGE_GI)
+    )
 
 
 def build_mon_volume_claim_template(storage_class: str, size_gi: int) -> dict:
@@ -327,8 +330,34 @@ def build_ceph_block_pool(ceph_cr: dict) -> dict:
     }
 
 
+def build_mon_backend_service(ceph_cr: dict) -> dict:
+    """ClusterIP for hostNetwork mon daemons (v1:6789 + msgr2:3300)."""
+    namespace = ceph_cr["metadata"]["namespace"]
+    return {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {
+            "name": MON_BRIDGE_BACKEND_SVC,
+            "namespace": namespace,
+            "ownerReferences": [owner_ref(ceph_cr)],
+            "labels": {"app": "troshka-ceph", "troshka-role": "ceph-mon-backend"},
+        },
+        "spec": {
+            "selector": {"app": "rook-ceph-mon", "rook_cluster": namespace},
+            "ports": [
+                {"name": "msgr1", "port": 6789, "targetPort": 6789, "protocol": "TCP"},
+                {"name": "msgr2", "port": 3300, "targetPort": 3300, "protocol": "TCP"},
+            ],
+        },
+    }
+
+
 def build_mon_bridge_deployment(ceph_cr: dict) -> dict:
-    """TCP bridge on lab L2 (labIp:6789) → rook mon service in the project ns."""
+    """TCP bridge on lab L2 → rook mon (6789/3300) + mgr metrics (9283).
+
+    Nested ODF CSI must NOT use this endpoint for krbd: export stamps the
+    hostNetwork mon IP instead. Bridge remains for Multus-local tools/metrics.
+    """
     spec = ceph_cr["spec"]
     namespace = ceph_cr["metadata"]["namespace"]
     nad = spec.get("networkNad", "")
@@ -339,21 +368,17 @@ def build_mon_bridge_deployment(ceph_cr: dict) -> dict:
     labels = {"app": "troshka-ceph-mon-bridge", "troshka-role": "ceph-mon-bridge"}
 
     setup_cmd = "true"
-    if (
-        lab_ip
-        and _IPV4_RE.match(lab_ip)
-        and _PREFIX_RE.match(prefix)
-    ):
-        setup_cmd = (
-            f"ip addr add {lab_ip}/{prefix} dev net1 && ip link set net1 up"
-        )
+    if lab_ip and _IPV4_RE.match(lab_ip) and _PREFIX_RE.match(prefix):
+        setup_cmd = f"ip addr add {lab_ip}/{prefix} dev net1 && ip link set net1 up"
 
-    mon_target = f"rook-ceph-mon-a.{namespace}.svc.cluster.local"
+    mon_target = f"{MON_BRIDGE_BACKEND_SVC}.{namespace}.svc.cluster.local"
     mgr_target = f"rook-ceph-mgr.{namespace}.svc.cluster.local"
-    # ODF external StorageCluster health-checks MonitoringPort (9283) on labIp.
+    # ODF external mode uses msgr2 (3300) + health-checks MonitoringPort 9283.
     proxy_cmd = (
         f"socat TCP-LISTEN:6789,bind={lab_ip},fork,reuseaddr "
         f"TCP:{mon_target}:6789 & "
+        f"socat TCP-LISTEN:3300,bind={lab_ip},fork,reuseaddr "
+        f"TCP:{mon_target}:3300 & "
         f"exec socat TCP-LISTEN:9283,bind={lab_ip},fork,reuseaddr "
         f"TCP:{mgr_target}:9283"
     )
@@ -383,9 +408,7 @@ def build_mon_bridge_deployment(ceph_cr: dict) -> dict:
                             "image": GATEWAY_IMAGE,
                             "imagePullPolicy": "Always",
                             "command": ["sh", "-c", setup_cmd],
-                            "securityContext": {
-                                "capabilities": {"add": ["NET_ADMIN"]}
-                            },
+                            "securityContext": {"capabilities": {"add": ["NET_ADMIN"]}},
                         }
                     ],
                     "containers": [
@@ -394,9 +417,7 @@ def build_mon_bridge_deployment(ceph_cr: dict) -> dict:
                             "image": GATEWAY_IMAGE,
                             "imagePullPolicy": "Always",
                             "command": ["sh", "-c", proxy_cmd],
-                            "securityContext": {
-                                "capabilities": {"add": ["NET_ADMIN"]}
-                            },
+                            "securityContext": {"capabilities": {"add": ["NET_ADMIN"]}},
                         }
                     ],
                 },
@@ -406,11 +427,16 @@ def build_mon_bridge_deployment(ceph_cr: dict) -> dict:
 
 
 def build_external_secret(ceph_cr: dict, fsid: str = "") -> dict:
-    """ODF-oriented external details stub; full keyring filled by export job when possible."""
+    """ODF-oriented external details stub; full keyring filled by export job when possible.
+
+    Placeholder mon-host uses labIp (Multus bridge). Export job overwrites with the
+    hostNetwork mon IP on :3300 for nested CSI/krbd.
+    """
     spec = ceph_cr["spec"]
     namespace = ceph_cr["metadata"]["namespace"]
     lab_ip = spec.get("labIp", "")
-    mon_endpoint = f"{lab_ip}:6789" if lab_ip else ""
+    # Placeholder until export discovers hostNetwork mon; prefer msgr2 port.
+    mon_endpoint = f"{lab_ip}:3300" if lab_ip else ""
     config_entry = {
         "cluster_id": fsid or CEPH_CLUSTER_NAME,
         "mon_host": mon_endpoint,
@@ -662,6 +688,59 @@ def ceph_external_details_exported(core_api, namespace: str) -> bool:
     return bool(data.get("external_cluster_details"))
 
 
+def _decode_secret_field(secret, field: str) -> str:
+    import base64
+
+    data = secret.data or {}
+    raw = data.get(field)
+    if not raw:
+        return ""
+    return base64.b64decode(raw).decode()
+
+
+def nested_mon_host_from_secret(core_api, namespace: str) -> str:
+    """Return exported mon-host (hostNetwork IP:3300) for nested CSI, if present."""
+    try:
+        secret = core_api.read_namespaced_secret(
+            name=CEPH_EXTERNAL_SECRET, namespace=namespace
+        )
+    except ApiException:
+        return ""
+    return _decode_secret_field(secret, "mon-host")
+
+
+def ceph_export_needs_nested_mon_refresh(core_api, namespace: str, lab_ip: str) -> bool:
+    """True when export still points nested CSI at the Multus labIp bridge.
+
+    Kernel RBD (krbd) fails when monmap/CSI advertise labIp while the mon peer
+    identity is the hostNetwork IP (or a dual addrvec). Nested clusters reach the
+    hostNetwork mon directly; export must use that IP on msgr2 :3300.
+    """
+    if not ceph_external_details_exported(core_api, namespace):
+        return True
+    mon_host = nested_mon_host_from_secret(core_api, namespace)
+    if not mon_host:
+        return True
+    if lab_ip and mon_host.startswith(f"{lab_ip}:"):
+        return True
+    if not mon_host.endswith(":3300"):
+        return True
+    return False
+
+
+def clear_ceph_external_details(core_api, namespace: str) -> None:
+    """Drop ODF blob so ensure_ceph_export_job will relaunch."""
+    try:
+        core_api.patch_namespaced_secret(
+            name=CEPH_EXTERNAL_SECRET,
+            namespace=namespace,
+            body={"data": {"external_cluster_details": None}},
+        )
+    except ApiException as e:
+        if e.status != 404:
+            raise
+
+
 def _ceph_export_job_script() -> str:
     """Shell wrapper that builds ODF external_cluster_details via in-cluster Python."""
     return r"""
@@ -706,10 +785,68 @@ def parse_keyring(keyring: str) -> str:
     return match.group(1)
 
 
-mon_host = secret_field(secret_name, "mon-host")
-if not mon_host:
-    print("troshka-ceph-external missing mon-host", file=sys.stderr)
-    sys.exit(1)
+def discover_hostnetwork_mon_ip() -> str:
+    # hostNetwork mon hostIP; nested CSI reaches this without Multus socat.
+    pods = kubectl_json(
+        ["get", "pods", "-l", "app=rook-ceph-mon", "-o", "json"]
+    )
+    for pod in pods.get("items") or []:
+        status = pod.get("status") or {}
+        if status.get("phase") != "Running":
+            continue
+        host_ip = status.get("hostIP") or status.get("podIP") or ""
+        if host_ip:
+            return host_ip
+    raise RuntimeError("no running rook-ceph-mon pod with hostIP")
+
+
+def collapse_monmap_to_host(mon_ip: str, admin_key: str) -> None:
+    # Single mon addrvec - dual labIp+host breaks kernel libceph/krbd.
+    mon_pods = kubectl_json(["get", "pods", "-l", "app=rook-ceph-mon", "-o", "json"])
+    mon_name = ""
+    for pod in mon_pods.get("items") or []:
+        if (pod.get("status") or {}).get("phase") == "Running":
+            mon_name = pod["metadata"]["name"]
+            break
+    if not mon_name:
+        print("skip mon set-addrs: no running mon pod", file=sys.stderr)
+        return
+    keyring = f"[client.admin]\n\tkey = {admin_key}\n"
+    addrs = f"[v2:{mon_ip}:3300/0,v1:{mon_ip}:6789/0]"
+    script = (
+        "cat >/tmp/admin.keyring <<'KEY'\n"
+        f"{keyring}"
+        "KEY\n"
+        "ceph --conf /dev/null --mon-host=127.0.0.1:3300 "
+        "--keyring=/tmp/admin.keyring -n client.admin "
+        f"mon set-addrs a '{addrs}' || "
+        "ceph --conf /dev/null --mon-host=$ROOK_CEPH_MON_HOST "
+        "--keyring=/tmp/admin.keyring -n client.admin "
+        f"mon set-addrs a '{addrs}'\n"
+    )
+    try:
+        subprocess.check_call(
+            [
+                "kubectl",
+                "-n",
+                ns,
+                "exec",
+                mon_name,
+                "-c",
+                "mon",
+                "--",
+                "bash",
+                "-c",
+                script,
+            ]
+        )
+        print(f"monmap collapsed to {addrs}")
+    except subprocess.CalledProcessError as exc:
+        print(f"mon set-addrs warning: {exc}", file=sys.stderr)
+
+
+lab_mon_host = secret_field(secret_name, "mon-host")
+lab_ip = lab_mon_host.split(":", 1)[0] if lab_mon_host else ""
 
 fsid = kubectl(
     [
@@ -737,12 +874,19 @@ for label, value in (
         print(f"missing {label} key in rook secrets", file=sys.stderr)
         sys.exit(1)
 
-mon_ip = mon_host.split(":", 1)[0]
+# Nested ODF/CSI: hostNetwork mon on msgr2. Multus labIp bridge remains for
+# in-lab tools/metrics only (see mon-bridge); do not dual-advertise both.
+mon_ip = discover_hostnetwork_mon_ip()
+mon_host = f"{mon_ip}:3300"
+collapse_monmap_to_host(mon_ip, admin_key)
+mon_endpoints = f"a={mon_host}"
+# Monitoring scrape via Multus bridge when labIp known; else host mon IP.
+monitor_ip = lab_ip or mon_ip
 resources = [
     {
         "name": "rook-ceph-mon-endpoints",
         "kind": "ConfigMap",
-        "data": {"data": mon_host, "maxMonId": "0", "mapping": "{}"},
+        "data": {"data": mon_endpoints, "maxMonId": "0", "mapping": "{}"},
     },
     {
         "name": "rook-ceph-mon",
@@ -776,23 +920,22 @@ resources = [
     {
         "name": "monitoring-endpoint",
         "kind": "CephCluster",
-        "data": {"MonitoringEndpoint": mon_ip, "MonitoringPort": "9283"},
+        "data": {"MonitoringEndpoint": monitor_ip, "MonitoringPort": "9283"},
     },
 ]
 blob = json.dumps(resources)
-patch = json.dumps(
-    {
-        "stringData": {
-            "fsid": fsid,
-            "mon-host": mon_host,
-            "external_cluster_details": blob,
-        }
-    }
-)
+string_data = {
+    "fsid": fsid,
+    "mon-host": mon_host,
+    "mon-host-lab": lab_mon_host or (f"{lab_ip}:3300" if lab_ip else ""),
+    "external_cluster_details": blob,
+}
+string_data = {k: v for k, v in string_data.items() if v}
+patch = json.dumps({"stringData": string_data})
 subprocess.check_call(
     ["kubectl", "-n", ns, "patch", "secret", secret_name, "--type", "merge", "-p", patch]
 )
-print("export job complete")
+print(f"export job complete mon-host={mon_host}")
 PY
 """
 
@@ -800,7 +943,25 @@ PY
 def ensure_ceph_export_job(batch_api, ceph_cr: dict, namespace: str) -> None:
     """Launch (or relaunch) the export job when ODF details are not yet stamped."""
     core_api = client.CoreV1Api()
-    if ceph_external_details_exported(core_api, namespace):
+    lab_ip = (ceph_cr.get("spec") or {}).get("labIp", "")
+    if ceph_export_needs_nested_mon_refresh(core_api, namespace, lab_ip):
+        if ceph_external_details_exported(core_api, namespace):
+            logger.info(
+                "Refreshing Ceph export in %s (nested mon must be hostNetwork:3300)",
+                namespace,
+            )
+            clear_ceph_external_details(core_api, namespace)
+            try:
+                batch_api.delete_namespaced_job(
+                    name=EXPORT_JOB_NAME,
+                    namespace=namespace,
+                    body=client.V1DeleteOptions(propagation_policy="Foreground"),
+                )
+            except ApiException as e:
+                if e.status != 404:
+                    raise
+        # fall through to create
+    elif ceph_external_details_exported(core_api, namespace):
         return
 
     try:
@@ -813,8 +974,16 @@ def ensure_ceph_export_job(batch_api, ceph_cr: dict, namespace: str) -> None:
     if job is not None:
         status = job.status or client.V1JobStatus()
         if (status.succeeded or 0) >= 1:
-            return
-        if (status.failed or 0) >= 1:
+            # Stale success while details cleared — delete and recreate below
+            if not ceph_external_details_exported(core_api, namespace):
+                batch_api.delete_namespaced_job(
+                    name=EXPORT_JOB_NAME,
+                    namespace=namespace,
+                    body=client.V1DeleteOptions(propagation_policy="Foreground"),
+                )
+            else:
+                return
+        elif (status.failed or 0) >= 1:
             batch_api.delete_namespaced_job(
                 name=EXPORT_JOB_NAME,
                 namespace=namespace,
@@ -983,9 +1152,7 @@ def _create_or_patch_configmap(core_api, namespace: str, body: dict) -> None:
     except ApiException as e:
         if e.status != 409:
             raise
-        core_api.patch_namespaced_config_map(
-            name=name, namespace=namespace, body=body
-        )
+        core_api.patch_namespaced_config_map(name=name, namespace=namespace, body=body)
 
 
 def _create_or_patch_deployment(apps_api, namespace: str, body: dict) -> None:
@@ -995,9 +1162,7 @@ def _create_or_patch_deployment(apps_api, namespace: str, body: dict) -> None:
     except ApiException as e:
         if e.status != 409:
             raise
-        apps_api.patch_namespaced_deployment(
-            name=name, namespace=namespace, body=body
-        )
+        apps_api.patch_namespaced_deployment(name=name, namespace=namespace, body=body)
 
 
 def _create_cluster_role_binding(rbac_api, body: dict) -> None:
@@ -1035,9 +1200,7 @@ def _ensure_rook_namespace_rbac(rbac_api, namespace: str, ceph_cr: dict) -> None
             if body["kind"] == "Role":
                 rbac_api.create_namespaced_role(namespace=namespace, body=body)
             else:
-                rbac_api.create_namespaced_role_binding(
-                    namespace=namespace, body=body
-                )
+                rbac_api.create_namespaced_role_binding(namespace=namespace, body=body)
         except ApiException as e:
             if e.status != 409:
                 raise
@@ -1095,7 +1258,11 @@ def delete_rook_operator(ceph_cr: dict | None, namespace: str) -> None:
                     logger.warning("Failed to delete CRB %s: %s", crb_name, e)
 
     for kind, delete_fn, obj_name in (
-        ("RoleBinding", rbac_api.delete_namespaced_role_binding, ROOK_CMD_REPORTER_ROLE),
+        (
+            "RoleBinding",
+            rbac_api.delete_namespaced_role_binding,
+            ROOK_CMD_REPORTER_ROLE,
+        ),
         ("Role", rbac_api.delete_namespaced_role, ROOK_CMD_REPORTER_ROLE),
     ):
         try:
