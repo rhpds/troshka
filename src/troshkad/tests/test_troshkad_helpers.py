@@ -2757,14 +2757,33 @@ class TestHandleVmDestroy(unittest.TestCase):
 
 
 class TestHandleVmForceOff(unittest.TestCase):
+    @patch("troshkad.time.sleep")
+    @patch("troshkad.subprocess.run")
     @patch("troshkad._run_cmd")
-    def test_force_off(self, mock_run_cmd):
+    def test_force_off(self, mock_run_cmd, mock_subproc, _mock_sleep):
+        # domstate: "running" first (so destroy runs), then "shut off" (so the
+        # loop confirms the VM is down and returns).
+        running = MagicMock(returncode=0, stdout="running")
+        shutoff = MagicMock(returncode=0, stdout="shut off")
+        mock_subproc.side_effect = [running, shutoff]
         job = {"job_id": "force-off-0000", "output": []}
         result = troshkad._handle_vm_force_off(
             job, {"domain_name": "troshka-abcdef01-12345678"}
         )
         self.assertEqual(result["status"], "off")
         mock_run_cmd.assert_called_once()
+
+    @patch("troshkad.subprocess.run")
+    @patch("troshkad._run_cmd")
+    def test_force_off_already_off(self, mock_run_cmd, mock_subproc):
+        # Already shut off — no destroy issued.
+        mock_subproc.return_value = MagicMock(returncode=0, stdout="shut off")
+        job = {"job_id": "force-off-0000", "output": []}
+        result = troshkad._handle_vm_force_off(
+            job, {"domain_name": "troshka-abcdef01-12345678"}
+        )
+        self.assertEqual(result["status"], "off")
+        mock_run_cmd.assert_not_called()
 
 
 # ── _handle_vm_reboot ──
@@ -10439,3 +10458,48 @@ class TestNetToken(unittest.TestCase):
         # vp<tok><idx>h must stay <= 15 chars (IFNAMSIZ).
         tok = troshkad._net_token("troshka-d80817d5-showroom")
         self.assertLessEqual(len(f"vp{tok}9h"), 15)
+
+
+class TestVmStateReconcile(unittest.TestCase):
+    """_reconcile_vm_state_cache self-heals the event cache from live libvirt."""
+
+    def setUp(self):
+        troshkad._vm_state_cache.clear()
+
+    def tearDown(self):
+        troshkad._vm_state_cache.clear()
+
+    def test_adds_running_domain_missing_from_cache(self):
+        # Cache holds only a stale (destroyed) domain; a different domain is
+        # actually running. Reconcile must surface the running one.
+        troshkad._vm_state_cache["troshka-old00000-da1cbd01"] = {
+            "state": "shut_off",
+            "since": 1.0,
+        }
+        live = {"troshka-28211910-6ce74d3e": {"state": "running"}}
+        with patch.object(troshkad, "_get_domains_via_virsh", return_value=live):
+            troshkad._reconcile_vm_state_cache()
+        self.assertEqual(
+            troshkad._vm_state_cache["troshka-28211910-6ce74d3e"]["state"], "running"
+        )
+
+    def test_evicts_domain_no_longer_present(self):
+        troshkad._vm_state_cache["troshka-old00000-da1cbd01"] = {
+            "state": "shut_off",
+            "since": 1.0,
+        }
+        with patch.object(troshkad, "_get_domains_via_virsh", return_value={}):
+            troshkad._reconcile_vm_state_cache()
+        self.assertNotIn("troshka-old00000-da1cbd01", troshkad._vm_state_cache)
+
+    def test_updates_changed_state(self):
+        troshkad._vm_state_cache["troshka-28211910-6ce74d3e"] = {
+            "state": "shut_off",
+            "since": 1.0,
+        }
+        live = {"troshka-28211910-6ce74d3e": {"state": "running"}}
+        with patch.object(troshkad, "_get_domains_via_virsh", return_value=live):
+            troshkad._reconcile_vm_state_cache()
+        self.assertEqual(
+            troshkad._vm_state_cache["troshka-28211910-6ce74d3e"]["state"], "running"
+        )

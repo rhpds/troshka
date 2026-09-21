@@ -264,7 +264,7 @@ def _check_nfs_health():
         _nfs_last_check = time.time()
         return False
 
-    result = [None]
+    result: list = [None]
 
     def _probe():
         try:
@@ -666,7 +666,7 @@ def _run_job_worker(job, handler):
         _complete_job(job, "failed", {"error": str(e)})
 
 
-def _dispatch_job(command, params):
+def _dispatch_job(command, params) -> tuple[int, dict]:
     """Dispatch a job: checks limits, creates job, spawns worker thread.
 
     Returns (status_code, response_body).
@@ -1344,6 +1344,8 @@ def _handle_vm_create(job, params):
         )
         root = ET.fromstring(xml_str)
         uuid_elem = root.find("uuid")
+        if uuid_elem is None:
+            raise RuntimeError(f"No <uuid> element in domain XML for {domain}")
         hwuuid_elem = ET.Element("hwuuid")
         hwuuid_elem.text = _hwuuid
         root.insert(list(root).index(uuid_elem) + 1, hwuuid_elem)
@@ -8190,6 +8192,43 @@ def _get_domains_via_virsh():
     return domains
 
 
+# How often the reconcile loop re-syncs the event cache with live libvirt.
+_STATE_RECONCILE_INTERVAL = 20
+
+
+def _reconcile_vm_state_cache():
+    """Re-sync the event cache with live libvirt state (self-heals the cache).
+
+    The event cache is normally kept current by libvirt lifecycle events, but a
+    missed event (agent restart racing a domain start, a dropped connection, a
+    domain undefined without a stop event) leaves it stale: a running VM never
+    appears, or a destroyed VM lingers. Because ``/vms/states`` only falls back
+    to ``virsh`` when the cache is *empty*, a stale-but-non-empty cache is served
+    indefinitely. This reconcile — driven by live ``virsh`` output, so it does
+    not depend on the possibly-dead event connection — adds/updates present
+    domains and evicts ones that no longer exist.
+    """
+    live = _get_domains_via_virsh()
+    now = time.time()
+    with _vm_state_cache_lock:
+        for name, info in live.items():
+            cur = _vm_state_cache.get(name)
+            if not cur or cur.get("state") != info["state"]:
+                _vm_state_cache[name] = {"state": info["state"], "since": now}
+        for name in [n for n in _vm_state_cache if n not in live]:
+            del _vm_state_cache[name]
+
+
+def _reconcile_loop():
+    """Periodically reconcile the VM state cache against live libvirt."""
+    while True:
+        time.sleep(_STATE_RECONCILE_INTERVAL)
+        try:
+            _reconcile_vm_state_cache()
+        except Exception:
+            logger.debug("VM state reconcile failed", exc_info=True)
+
+
 @route("GET", "/vms/states")
 def handle_vm_states(handler, params):
     """Return all troshka-* domain states in one call."""
@@ -8334,6 +8373,12 @@ def _start_libvirt_event_loop():
         conn.setKeepAlive(5, 3)
         _seed_libvirt_cache(conn, _lv)
         threading.Thread(target=_event_loop, daemon=True, name="libvirt-events").start()
+        # Periodic reconcile self-heals the cache when a lifecycle event is
+        # missed (e.g. the agent restarts while a domain is starting), so
+        # ``/vms/states`` never serves a stale non-empty cache indefinitely.
+        threading.Thread(
+            target=_reconcile_loop, daemon=True, name="vm-state-reconcile"
+        ).start()
         _libvirt_events_available = True
         logger.info(
             "Libvirt event loop started (%d domains cached)", len(_vm_state_cache)
@@ -8356,6 +8401,7 @@ def _wait_for_block_device_growth(job, sys_size, dev_name, fs_bytes):
     """Poll sysfs until block device is larger than filesystem (max 60s)."""
     import time as _time
 
+    blk_bytes = 0
     for _ in range(60):
         with open(sys_size) as f:
             blk_bytes = int(f.read().strip()) * 512
@@ -8806,7 +8852,7 @@ def main():
 
     # Install signal handler EARLY — before any restore code that might
     # accidentally SIGTERM us (stale PID file with recycled PID).
-    _server_ref = [None]
+    _server_ref: list = [None]
 
     def shutdown(signum, frame):
         global _draining
@@ -10553,6 +10599,11 @@ def _console_detect_state(ocr_text):
         return "login_submit"
     if re.search(_login + r"\s*_?\s*$", last_lines, re.IGNORECASE | re.MULTILINE):
         return "login"
+    # A login prompt with trailing boot text (multi-word, so not a typed
+    # username — that case is "login_submit" above) is still a login prompt:
+    # type the username rather than treating it as "unknown" and cycling TTYs.
+    if re.search(_login + r"\s+\S", last_lines, re.IGNORECASE | re.MULTILINE):
+        return "login"
     return "unknown"
 
 
@@ -11426,7 +11477,7 @@ def _handle_upload_and_cache(job, params):
 
     file_size = os.path.getsize(local_path)
 
-    cache_error = [None]
+    cache_error: list = [None]
 
     def _do_cache():
         try:

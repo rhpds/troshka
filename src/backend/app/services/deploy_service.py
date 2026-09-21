@@ -10283,8 +10283,12 @@ def _ocp_vm_health_inner(
     _bastion, bastion_ip, password = _extract_bastion_info(nodes)
 
     if not bastion_ip:
-        logger.warning(
-            "OCP VM monitor %s/%s: no bastion — cannot monitor",
+        # Bastionless is a first-class deploy path, not an error: the ops-pod
+        # install monitor owns ocp_status (it runs the recert/install, approves
+        # CSRs, and finalizes ready/failed). This per-VM monitor only adds
+        # bastion-side extras (browser config), so it cleanly stands down here.
+        logger.info(
+            "OCP VM monitor %s/%s: bastionless — ops-pod monitor owns status",
             project_id[:8],
             vm_name,
         )

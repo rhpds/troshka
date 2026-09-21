@@ -28,7 +28,7 @@ SNAPSHOT_ITEM_ID = "snap-item-0001"
 
 
 def _make_host(
-    ip="10.0.0.1",
+    ip: str | None = "10.0.0.1",
     host_type="ec2",
     provider_id="prov-1",
     storage_pool_id=None,
@@ -46,7 +46,7 @@ def _make_host(
 
 def _make_project(
     state="active",
-    host_id=HOST_ID,
+    host_id: str | None = HOST_ID,
     topology=None,
     vni_map=None,
     provider_id="prov-1",
@@ -2780,8 +2780,14 @@ class TestOcpVmHealthInner:
         mock_sweep.assert_called_once()
 
     @patch(f"{SVC}.notify_project")
-    def test_no_bastion_returns(self, mock_notify):
-        """No bastion IP returns immediately."""
+    def test_no_bastion_returns(self, mock_notify, caplog):
+        """Bastionless returns cleanly (no error, no warning).
+
+        Bastionless is a first-class deploy path — the ops-pod install monitor
+        owns ocp_status — so the per-VM monitor stands down at INFO level, not
+        with a "cannot monitor" warning.
+        """
+        import logging
         import time
 
         from app.services.deploy_service import _ocp_vm_health_inner
@@ -2800,10 +2806,22 @@ class TestOcpVmHealthInner:
         db = MagicMock()
         db.query.return_value.filter_by.return_value.first.side_effect = [host, project]
 
-        _ocp_vm_health_inner(PROJECT_ID, HOST_ID, "vm-1", "sno-1", "", time.time(), db)
+        with caplog.at_level(logging.INFO, logger="app.services.deploy_service"):
+            _ocp_vm_health_inner(
+                PROJECT_ID, HOST_ID, "vm-1", "sno-1", "", time.time(), db
+            )
 
         # No notify about phases because no bastion
         assert not any("nodes" in str(c) for c in mock_notify.call_args_list)
+        # Bastionless is expected: logged at INFO, never WARNING.
+        mon_records = [
+            r for r in caplog.records if r.name == "app.services.deploy_service"
+        ]
+        assert any(
+            r.levelno == logging.INFO and "bastionless" in r.getMessage()
+            for r in mon_records
+        )
+        assert not any(r.levelno >= logging.WARNING for r in mon_records)
 
     @patch(f"{SVC}._exec_on_bastion")
     @patch(f"{SVC}._ocp_vm_wait_for_api", return_value=False)
