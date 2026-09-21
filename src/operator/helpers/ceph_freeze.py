@@ -30,9 +30,18 @@ _POD_POLL_INTERVAL_S = 2
 _POD_POLL_TIMEOUT_S = 300
 
 
-def freeze_ceph_for_capture(namespace: str) -> None:
-    """Set Ceph safety flags, flush OSDs, and stop mon/OSD pods for capture."""
-    core_api, apps_api = _k8s_clients()
+def freeze_ceph_for_capture(namespace: str, core_api=None, apps_api=None) -> None:
+    """Set Ceph safety flags, flush OSDs, and stop mon/OSD pods for capture.
+
+    ``core_api``/``apps_api`` let callers outside the operator process (e.g.
+    Troshka's backend, talking to a remote provider cluster via an explicit
+    ``ApiClient``) pass their own clients instead of relying on the SDK's
+    process-global default, which the in-process operator uses implicitly.
+    """
+    if core_api is None or apps_api is None:
+        default_core, default_apps = _k8s_clients()
+        core_api = core_api or default_core
+        apps_api = apps_api or default_apps
     for flag in OSD_FREEZE_FLAGS:
         _ceph_exec(core_api, namespace, ["osd", "set", flag])
     _ceph_exec(core_api, namespace, ["tell", "osd.*", "flush"])
@@ -46,9 +55,15 @@ def freeze_ceph_for_capture(namespace: str) -> None:
     logger.info("Ceph frozen for capture in %s", namespace)
 
 
-def unfreeze_ceph_after_capture(namespace: str) -> None:
-    """Restart mon/OSD pods and clear freeze flags so the source cluster recovers."""
-    core_api, apps_api = _k8s_clients()
+def unfreeze_ceph_after_capture(namespace: str, core_api=None, apps_api=None) -> None:
+    """Restart mon/OSD pods and clear freeze flags so the source cluster recovers.
+
+    See ``freeze_ceph_for_capture`` for the ``core_api``/``apps_api`` params.
+    """
+    if core_api is None or apps_api is None:
+        default_core, default_apps = _k8s_clients()
+        core_api = core_api or default_core
+        apps_api = apps_api or default_apps
     saved = _load_freeze_state(core_api, namespace)
     if saved:
         _restore_deployments(apps_api, namespace, saved)

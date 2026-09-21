@@ -883,6 +883,250 @@ def _enqueue_pattern_sync(pattern_id: str, source_provider_id: str | None) -> No
     enqueue_job(sync_pattern_to_central, pattern_id, queue_name="default")
 
 
+def _import_operator_ceph_helpers():
+    """Import operator Ceph helpers (Rook PVC discovery + freeze/unfreeze).
+
+    These live under ``src/operator`` (shared with the kopf operator, not a
+    backend package), so add that directory to ``sys.path`` before importing —
+    same pattern already used for ``troshka_serial`` elsewhere in this service.
+    """
+    import sys
+    from pathlib import Path
+
+    src_root = Path(__file__).resolve().parents[3]
+    operator_dir = str(src_root / "operator")
+    if operator_dir not in sys.path:
+        sys.path.insert(0, operator_dir)
+
+    from helpers.ceph_freeze import freeze_ceph_for_capture, unfreeze_ceph_after_capture
+    from helpers.rook_ceph import (
+        ceph_cluster_phase,
+        discover_ceph_device_pvcs,
+        is_ceph_ready,
+    )
+
+    return (
+        freeze_ceph_for_capture,
+        unfreeze_ceph_after_capture,
+        ceph_cluster_phase,
+        discover_ceph_device_pvcs,
+        is_ceph_ready,
+    )
+
+
+def _ceph_device_ext(kind: str) -> str:
+    """S3 object extension for a captured Ceph device — matches the operator's
+    export job (tar.gz for the mon data dir, qcow2 for OSD block devices)."""
+    from app.services.project_ceph_pattern import CEPH_SOURCE_MON
+
+    return "tar.gz" if kind == CEPH_SOURCE_MON else PATTERN_STORED_FORMAT
+
+
+def _prepare_ceph_capture(custom_api, core_api, namespace, pattern_id):
+    """Validate project Ceph is Ready, discover mon/OSD PVCs, and freeze them.
+
+    Returns the ``cephDevices`` manifest list (with pre-assigned
+    ``patternDiskId`` per device) to embed in the capture request. Raises
+    ``ValueError``/``RuntimeError`` on any preflight failure (not Ready, PVC
+    count mismatch, or freeze failure) — callers must fail the capture rather
+    than proceed.
+    """
+    import uuid as _uuid
+
+    from kubernetes import client as k8s_client
+
+    (
+        freeze_ceph_for_capture,
+        _unfreeze,
+        ceph_cluster_phase,
+        discover_ceph_device_pvcs,
+        is_ceph_ready,
+    ) = _import_operator_ceph_helpers()
+
+    phase, _fsid = ceph_cluster_phase(custom_api, namespace)
+    if not is_ceph_ready(phase):
+        raise RuntimeError(f"project Ceph not Ready (phase={phase or 'unknown'})")
+
+    # discover_ceph_device_pvcs raises ValueError on any mon/OSD PVC mismatch.
+    devices = discover_ceph_device_pvcs(core_api, namespace, custom_api=custom_api)
+
+    ceph_devices = []
+    for d in devices:
+        kind = d["kind"]
+        index = d["index"]
+        size_gb = max(1, -(-int(d.get("size_bytes") or 0) // 1073741824))
+        ceph_devices.append(
+            {
+                "pvcName": d["name"],
+                "kind": kind,
+                "index": index,
+                "patternDiskId": str(_uuid.uuid4()),
+                "s3Key": (
+                    f"patterns/{pattern_id}/ceph-{kind}-{index}."
+                    f"{_ceph_device_ext(kind)}"
+                ),
+                "sizeGb": size_gb,
+            }
+        )
+
+    apps_api = k8s_client.AppsV1Api(core_api.api_client)
+    freeze_ceph_for_capture(namespace, core_api=core_api, apps_api=apps_api)
+
+    return ceph_devices
+
+
+def _unfreeze_ceph_best_effort(core_api, namespace, pattern_id):
+    """Unfreeze project Ceph, logging (not raising) on failure.
+
+    A failed unfreeze leaves the source lab's Ceph cluster degraded, which is
+    an operational problem worth a loud log, but must not itself fail a
+    capture whose disks (Ceph or VM) already uploaded successfully.
+    """
+    from kubernetes import client as k8s_client
+
+    try:
+        _freeze, unfreeze_ceph_after_capture, *_rest = _import_operator_ceph_helpers()
+        apps_api = k8s_client.AppsV1Api(core_api.api_client)
+        unfreeze_ceph_after_capture(namespace, core_api=core_api, apps_api=apps_api)
+    except Exception:
+        log.exception(
+            "Pattern %s: failed to unfreeze project Ceph in %s — manual recovery needed",
+            pattern_id[:8],
+            namespace,
+        )
+
+
+def _poll_ceph_capture_phase(
+    custom_api, namespace, cr_name, pattern_id, crd_group, crd_version, max_wait_seconds
+):
+    """Poll CR status for the Ceph mon/OSD capture sub-phase.
+
+    The operator runs Ceph device capture before the VM disk export loop and
+    patches ``capturedCephDisks`` into CR status as soon as it finishes — well
+    before the overall ``phase`` reaches ``CaptureComplete`` — so we can
+    unfreeze Ceph promptly instead of waiting on VM disk export too.
+    Returns the ``capturedCephDisks`` list on success, or None on error/timeout.
+    """
+    import time as _time
+
+    iterations = max(1, max_wait_seconds // 5)
+    for _attempt in range(iterations):
+        _time.sleep(5)
+        try:
+            cr_obj = custom_api.get_namespaced_custom_object(
+                group=crd_group,
+                version=crd_version,
+                namespace=namespace,
+                plural="troshkaprojects",
+                name=cr_name,
+            )
+            cr: dict = cr_obj if isinstance(cr_obj, dict) else {}
+            cr_status: dict = cr.get("status") or {}
+
+            if cr_status.get("phase") == "CaptureError":
+                log.error(
+                    "Pattern %s: Ceph capture failed: %s",
+                    pattern_id[:8],
+                    cr_status.get("captureError", "Unknown error"),
+                )
+                return None
+
+            captured = cr_status.get("capturedCephDisks")
+            if captured is not None:
+                return captured
+
+        except Exception as e:
+            log.warning(
+                "Error polling Ceph capture status for %s: %s", pattern_id[:8], e
+            )
+
+    log.error("Pattern %s: Ceph capture phase timed out", pattern_id[:8])
+    return None
+
+
+def _finalize_ceph_capture_disks(db, pattern, ceph_devices, captured_ceph_disks):
+    """Create PatternDisk/PatternLocation rows for captured Ceph mon/OSD disks
+    and stamp the pattern topology with ``projectCephCapture``.
+
+    ``ceph_devices`` is the manifest we sent (pvcName/kind/index keyed by the
+    ``patternDiskId`` we pre-assigned); ``captured_ceph_disks`` is the
+    operator's result (s3Key/format/sizeBytes/virtualSizeBytes for the same
+    ids). Returns total captured size in bytes.
+    """
+    from app.models.pattern_location import PatternLocation
+    from app.services.project_ceph_pattern import (
+        CEPH_SOURCE_MON,
+        set_project_ceph_capture,
+        strip_runtime_project_ceph,
+    )
+
+    devices_by_id = {d["patternDiskId"]: d for d in ceph_devices}
+
+    total_size = 0
+    mon_disk_id = None
+    osd_disk_ids: dict[int, str] = {}
+    for cd in captured_ceph_disks:
+        pd_id = cd.get("patternDiskId", "")
+        device = devices_by_id.get(pd_id, {})
+        kind = cd.get("kind", device.get("kind", ""))
+        index = cd.get("index", device.get("index", 0))
+
+        pd = PatternDisk(
+            id=pd_id or None,
+            pattern_id=pattern.id,
+            source_disk_id=f"ceph-{kind}-{index}",
+            source_vm_id=None,
+            source_kind=kind,
+            source_index=index,
+            source_pvc_name=device.get("pvcName", ""),
+            s3_key=cd.get("s3Key", ""),
+            format=cd.get("format", _ceph_device_ext(kind)),
+            size_bytes=cd.get("sizeBytes", 0),
+            virtual_size_bytes=cd.get("virtualSizeBytes", 0),
+            state="available",
+        )
+        db.add(pd)
+        db.flush()
+        total_size += cd.get("sizeBytes", 0)
+
+        if kind == CEPH_SOURCE_MON:
+            mon_disk_id = pd.id
+        else:
+            osd_disk_ids[int(index)] = pd.id
+
+        if pattern.source_provider_id:
+            db.add(
+                PatternLocation(
+                    pattern_disk_id=pd.id,
+                    provider_id=pattern.source_provider_id,
+                    s3_key=cd.get("s3Key", ""),
+                    state="synced",
+                    size_bytes=cd.get("sizeBytes", 0),
+                )
+            )
+
+    topo = pattern.topology or {}
+    set_project_ceph_capture(
+        topo,
+        mon_disk_id=mon_disk_id or "",
+        osd_disk_ids=[osd_disk_ids[i] for i in sorted(osd_disk_ids)],
+    )
+    strip_runtime_project_ceph(topo)
+    pattern.topology = topo
+
+    import json as _json
+
+    from sqlalchemy import text
+
+    db.execute(
+        text("UPDATE patterns SET topology = :topo WHERE id = :pid"),
+        {"topo": _json.dumps(topo), "pid": pattern.id},
+    )
+    db.commit()
+
+    return total_size
+
+
 def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     """Capture pattern disks via KubeVirt VolumeSnapshot + S3 export Jobs."""
     import json as _json
@@ -946,11 +1190,32 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     disk_manifest = _build_capture_disk_manifest(
         disk_nodes, disk_to_vm, pattern_id, vm_nodes
     )
-    if not disk_manifest:
+
+    from app.services.project_ceph import topology_has_ceph
+
+    has_ceph = topology_has_ceph(topology)
+    if not disk_manifest and not has_ceph:
         pattern.state = "error"
         db.commit()
         log.error("Pattern %s: no disks to capture", pattern_id[:8])
         return
+
+    ceph_devices = []
+    if has_ceph:
+        try:
+            ceph_devices = _prepare_ceph_capture(
+                custom_api, _core_api, namespace, pattern_id
+            )
+        except (ValueError, RuntimeError) as e:
+            pattern.state = "error"
+            db.commit()
+            log.error(
+                "Pattern %s: Ceph capture preflight failed: %s", pattern_id[:8], e
+            )
+            # freeze_ceph_for_capture may have partially applied safety flags /
+            # scaled deployments before failing — best-effort restore.
+            _unfreeze_ceph_best_effort(_core_api, namespace, pattern_id)
+            return
 
     capture_config = {
         "patternId": pattern_id,
@@ -958,6 +1223,8 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         "disks": disk_manifest,
         "restartAfter": restart_after,
     }
+    if ceph_devices:
+        capture_config["cephDevices"] = ceph_devices
 
     _set_capture_progress(
         pattern_id,
@@ -991,6 +1258,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
                     "captureError": None,
                     "captureDisks": None,
                     "capturedDisks": None,
+                    "capturedCephDisks": None,
                 }
             },
         )
@@ -1012,6 +1280,8 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         log.exception("Failed to trigger capture on %s: %s", cr_name, e)
         pattern.state = "error"
         db.commit()
+        if ceph_devices:
+            _unfreeze_ceph_best_effort(_core_api, namespace, pattern_id)
         return
 
     total_disk_gb = sum(d.get("sizeGb", 50) for d in disk_manifest)
@@ -1021,6 +1291,42 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     # can modify the pattern row without blocking on our lock.
     db.commit()
     db.expire_all()
+
+    ceph_total_size = 0
+    if ceph_devices:
+        ceph_total_gb = sum(d.get("sizeGb", 1) for d in ceph_devices)
+        ceph_poll_timeout = max(900, ceph_total_gb * 20)
+        captured_ceph_disks = _poll_ceph_capture_phase(
+            custom_api,
+            namespace,
+            cr_name,
+            pattern_id,
+            CRD_GROUP,
+            CRD_VERSION,
+            ceph_poll_timeout,
+        )
+
+        # Re-query pattern — it may have been deleted by cancel during the poll.
+        pattern = db.query(Pattern).filter_by(id=pattern_id).first()
+        if not pattern:
+            log.info("Pattern %s deleted during Ceph capture", pattern_id[:8])
+            _clear_capture_progress(pattern_id)
+            _unfreeze_ceph_best_effort(_core_api, namespace, pattern_id)
+            return
+
+        if captured_ceph_disks is None:
+            pattern.state = "error"
+            db.commit()
+            log.error("Pattern %s: Ceph capture failed or timed out", pattern_id[:8])
+            _clear_capture_progress(pattern_id)
+            _unfreeze_ceph_best_effort(_core_api, namespace, pattern_id)
+            return
+
+        ceph_total_size = _finalize_ceph_capture_disks(
+            db, pattern, ceph_devices, captured_ceph_disks
+        )
+        _unfreeze_ceph_best_effort(_core_api, namespace, pattern_id)
+        db.expire_all()
 
     captured_disks = _poll_capture_completion(
         custom_api,
@@ -1090,7 +1396,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     )
 
     pattern.state = "available"
-    pattern.total_size_bytes = total_size
+    pattern.total_size_bytes = total_size + ceph_total_size
     db.commit()
 
     _clear_capture_progress(pattern_id)

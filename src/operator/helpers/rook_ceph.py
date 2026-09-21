@@ -1194,9 +1194,15 @@ def _pvc_size_bytes(pvc) -> int:
     return _storage_request_bytes(str(storage) if storage is not None else None)
 
 
-def _expected_osd_count(namespace: str) -> int:
-    """Return osdCount from TroshkaCeph, falling back to the CephCluster device set."""
-    custom_api = client.CustomObjectsApi()
+def _expected_osd_count(namespace: str, custom_api=None) -> int:
+    """Return osdCount from TroshkaCeph, falling back to the CephCluster device set.
+
+    ``custom_api`` lets callers outside the operator process (e.g. Troshka's
+    backend, which talks to a remote provider cluster via an explicit
+    ``ApiClient``) pass their own client instead of relying on the SDK's
+    process-global default.
+    """
+    custom_api = custom_api or client.CustomObjectsApi()
     try:
         ceph_cr = custom_api.get_namespaced_custom_object(
             group=CRD_GROUP,
@@ -1259,13 +1265,17 @@ def _osd_index_from_pvc(pvc) -> int:
     )
 
 
-def discover_ceph_device_pvcs(core_api, namespace: str) -> list[dict]:
+def discover_ceph_device_pvcs(
+    core_api, namespace: str, custom_api=None
+) -> list[dict]:
     """Discover mon and OSD PVCs for project Ceph capture.
 
     Mon PVCs are matched by fixed Rook name (``rook-ceph-mon-a``). OSD PVCs are
     matched by ``ceph.rook.io/DeviceSet=osd-set`` labels, not random suffixes.
+
+    ``custom_api`` is forwarded to ``_expected_osd_count`` — see its docstring.
     """
-    expected_osds = _expected_osd_count(namespace)
+    expected_osds = _expected_osd_count(namespace, custom_api=custom_api)
 
     try:
         mon_pvc = core_api.read_namespaced_persistent_volume_claim(
