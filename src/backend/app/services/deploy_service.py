@@ -48,6 +48,7 @@ from app.services.deploy_topology import (
     _find_vm_name_by_ip,
     _find_vm_networks,
     _image_cache_path,
+    _order_vm_disks_by_boot,
     _pattern_cache_path,
     _seed_path,
     _snapshot_cache_path,
@@ -1437,6 +1438,7 @@ def _create_vm_via_troshkad(
     """Create a VM definition via troshkad vms/create."""
     vm_name = _vm_domain_name(project_id, vm["node_id"])
     vm_disks = _find_vm_disks(vm["node_id"], topology)
+    vm_disks = _order_vm_disks_by_boot(vm_disks, vm.get("boot_devices") or [])
     vm_networks = _find_vm_networks(
         vm["node_id"], topology, vni_map, project_id, mtu_map
     )

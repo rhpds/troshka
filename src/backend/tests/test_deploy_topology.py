@@ -178,6 +178,61 @@ def test_build_troshkavm_disk_spec_uses_controller_bus():
     assert spec["nics"][0]["model"] == "e1000"
 
 
+def test_build_troshkavm_vm_spec_orders_disks_by_boot():
+    """KubeVirt spec lists the bootDevices disk first, regardless of edge order,
+    so KubeVirt boots the right disk (mirrors the troshkad path)."""
+    from app.services.deploy_topology import build_troshkavm_vm_spec
+
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "id": "vm1",
+                    "name": "cp",
+                    "bootDevices": ["os-disk"],
+                    "diskControllers": [
+                        {"id": "dp-c0", "bus": "virtio", "name": "disk0"},
+                        {"id": "dp-c1", "bus": "virtio", "name": "disk1"},
+                    ],
+                    "nics": [],
+                },
+            },
+            {
+                "id": "empty-disk",
+                "type": "storageNode",
+                "data": {
+                    "id": "empty-disk",
+                    "source": "blank",
+                    "format": "qcow2",
+                    "size": 120,
+                },
+            },
+            {
+                "id": "os-disk",
+                "type": "storageNode",
+                "data": {
+                    "id": "os-disk",
+                    "source": "blank",
+                    "format": "qcow2",
+                    "size": 100,
+                },
+            },
+        ],
+        # Edge order lists the empty disk first; boot order must override it.
+        "edges": [
+            {"source": "vm1", "target": "empty-disk", "sourceHandle": "dp-dp-c0-left"},
+            {"source": "vm1", "target": "os-disk", "sourceHandle": "dp-dp-c1-left"},
+        ],
+    }
+    spec = build_troshkavm_vm_spec(
+        "vm1", {"name": "cp", "vcpus": 2, "ram_gb": 4, "firmware": "uefi"}, topo
+    )
+    assert [d["id"] for d in spec["disks"]] == ["os-disk", "empty-disk"]
+    assert spec["bootOrder"] == ["os-disk"]
+
+
 def _disk_spec_topology(source_size_gb=None):
     data = {
         "id": "stor1",

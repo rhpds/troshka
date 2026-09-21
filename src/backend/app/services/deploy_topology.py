@@ -1452,6 +1452,37 @@ def _find_vm_disks(vm_node_id: str, topology: dict) -> list[dict]:
     return disks
 
 
+def _order_vm_disks_by_boot(vm_disks: list[dict], boot_devices: list) -> list[dict]:
+    """Order disks so the Boot Order (``bootDevices``) decides the boot disk.
+
+    Both deploy paths make the first disk the boot disk: troshkad hands disks to
+    ``virt-install`` in order (first ``--disk`` = bootindex 1), and a KubeVirt VM
+    with no per-disk bootOrder boots disks in listed order. Disk order otherwise
+    comes from topology edge order, which ignores the canvas/template Boot Order
+    and can boot the wrong disk (e.g. an empty data disk wired first, leaving
+    OVMF stuck in "Boot Option Restoration"). Honor ``bootDevices``: referenced
+    disks come first, in that order; the rest keep their original (edge) order.
+    Non-disk entries (e.g. ``"network"``) and unknown ids are ignored.
+    """
+    if not boot_devices:
+        return vm_disks
+    by_id: dict = {}
+    for d in vm_disks:
+        by_id.setdefault(d["node_id"], d)
+    ordered: list[dict] = []
+    seen: set = set()
+    for dev in boot_devices:
+        d = by_id.get(dev)
+        if d is not None and d["node_id"] not in seen:
+            ordered.append(d)
+            seen.add(d["node_id"])
+    for d in vm_disks:
+        if d["node_id"] not in seen:
+            ordered.append(d)
+            seen.add(d["node_id"])
+    return ordered
+
+
 def _normalize_disk_port_id(handle: str) -> str | None:
     """Map a React Flow disk port handle to diskControllers[].id."""
     if not handle or not handle.startswith("dp-"):
@@ -1980,9 +2011,12 @@ def build_troshkavm_vm_spec(vm_id: str, vm: dict, topology: dict) -> dict:
             vm_data = node.get("data", {})
             break
 
-    disk_specs = [
-        build_troshkavm_disk_spec(d, topology) for d in _find_vm_disks(vm_id, topology)
-    ]
+    # Honor the Boot Order so the boot disk is listed first (KubeVirt boots disks
+    # in listed order absent per-disk bootOrder) — mirrors the troshkad path.
+    _vm_disks = _order_vm_disks_by_boot(
+        _find_vm_disks(vm_id, topology), vm_data.get("bootDevices", [])
+    )
+    disk_specs = [build_troshkavm_disk_spec(d, topology) for d in _vm_disks]
 
     spec: dict = {
         "vmId": vm_data.get("id", vm_id),
