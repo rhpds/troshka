@@ -71,7 +71,19 @@ def _reconcile_canvas_clusters(
 ) -> list:
     stripped_deployed = [_strip_deploy_only(c) for c in deployed_clusters]
     has_ghost = any(_is_legacy_migration_ghost(c) for c in canvas_clusters)
-    base = [c for c in canvas_clusters if not _is_legacy_migration_ghost(c)]
+    has_real_canvas = any(not _is_legacy_migration_ghost(c) for c in canvas_clusters)
+    # The legacy ghost (cluster-ocp) is only a synthetic migration artifact worth
+    # dropping when a REAL cluster exists to replace it (another canvas cluster or
+    # a deployed cluster). When "ocp"/cluster-ocp is the SOLE cluster it is a
+    # legitimate single-cluster OCP project (every fresh sno/compact/standard
+    # template makes exactly this id) — dropping it deletes the real box + member
+    # VM. Only drop the ghost when there is something to replace it.
+    drop_ghost = has_ghost and (has_real_canvas or bool(stripped_deployed))
+    base = (
+        [c for c in canvas_clusters if not _is_legacy_migration_ghost(c)]
+        if drop_ghost
+        else list(canvas_clusters)
+    )
 
     if (has_ghost or not base) and stripped_deployed:
         seen = {c.get("id") for c in base}
@@ -103,12 +115,16 @@ def _reconcile_canvas_clusters(
             "name": data.get("name") or (dep or {}).get("name") or cid,
             "nodeId": node.get("id"),
             "type": data.get("type") or (dep or {}).get("type") or "sno",
-            "controlPlane": data.get("controlPlane")
-            if data.get("controlPlane") is not None
-            else (dep or {}).get("controlPlane", 1),
-            "workers": data.get("workers")
-            if data.get("workers") is not None
-            else (dep or {}).get("workers", 0),
+            "controlPlane": (
+                data.get("controlPlane")
+                if data.get("controlPlane") is not None
+                else (dep or {}).get("controlPlane", 1)
+            ),
+            "workers": (
+                data.get("workers")
+                if data.get("workers") is not None
+                else (dep or {}).get("workers", 0)
+            ),
             "baseDomain": data.get("baseDomain")
             or (dep or {}).get("baseDomain")
             or "local",
@@ -134,6 +150,8 @@ def _reconcile_canvas_clusters(
         if data.get("workers") is not None:
             cluster["workers"] = data["workers"]
 
+    if not drop_ghost:
+        return base
     return [c for c in base if not _is_legacy_migration_ghost(c)]
 
 
