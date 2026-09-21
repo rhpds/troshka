@@ -378,3 +378,184 @@ gates VM power-on on the restored `TroshkaCeph` reaching Ready:
   doesn't cheaply distinguish Ceph-backed VMs from others at this call site
   and getting it wrong in the unsafe direction risks booting against an
   unready/empty pool.
+
+## Dev E2E checklist (manual)
+
+**Purpose:** End-to-end validation of identity-preserving project Ceph pattern
+capture and restore on a real KubeVirt cluster. This is **not** automated in
+CI — it is the operator gate before trusting the capture/restore path in
+production-like labs. Run on **`ocpvdev01`** (or any KubeVirt host with project
+Ceph enabled) with backend + worker + operator on the code under test.
+
+**Spec:** `docs/superpowers/specs/2026-09-21-project-ceph-pattern-capture-design.md`
+§6 (success criteria, thinness) and §8 (integration test).
+
+### Thinness warning
+
+Pattern Ceph disks are stored as **sparse/compressed qcow** sized to
+**used/allocated bytes** on the mon and OSD block devices — **not** to
+topology `capacityGi`. Expect:
+
+| Pool usage at capture | Pattern artifact size (rough) |
+|---|---|
+| Empty / metadata only | Small (GiB-scale), ≪ `capacityGi` |
+| Lightly used (demo RBD + a few objects) | Still ≪ `capacityGi` — this checklist |
+| Pool near full | Pattern can be **very large** — close to actual allocated OSD data |
+
+Identity preservation captures whole mon+OSD devices (not per-image `rbd export`),
+so a heavily written pool produces a heavy pattern even when `capacityGi` is
+small. **Warn catalog authors:** lightly used pools stay small; a full pool yields
+a large pattern. UI surfacing of this trade-off is optional/future — operators
+should set expectations when authoring or reviewing patterns with project Ceph.
+
+### Pre-flight
+
+- [ ] KubeVirt host connected (`providerType: kubevirt`); project Ceph palette
+  item available.
+- [ ] Backend + worker + operator restarted on the code under test
+  (`./dev-services.sh restart backend` / `restart worker`; operator image or
+  local reconcile on target cluster).
+- [ ] Lab capacity: on shared dev clusters only one hostNetwork mon may run
+  cluster-wide (see spike "Lab-specific scheduling wrinkle" above). Use a
+  **disposable namespace** or confirm no mon port conflict with live projects.
+- [ ] S3/RGW pattern storage reachable from the source cluster (Capture v2 OBC
+  path).
+
+### A. Source project — small Ceph, known RBD, VM client keyring
+
+Create a minimal KubeVirt project with project Ceph and at least one VM that
+will act as a Ceph client after restore.
+
+- [ ] Deploy a project with a **`cephClusterNode`** — prefer tiny sizing for
+  fast iteration: `capacityGi: 150`, `osdCount: 1` (or `3` if policy requires
+  minimum replica size). Record project id / namespace `troshka-<pid8>`.
+- [ ] Wait for `TroshkaCeph` / Rook `CephCluster` **`Ready`** / `HEALTH_OK`.
+- [ ] Record baseline identity **before capture**:
+
+```bash
+NS=troshka-<pid8>
+oc -n "$NS" get troshkaceph troshka-ceph -o jsonpath='{.status.phase}{"\n"}'
+oc -n "$NS" exec deploy/rook-ceph-tools -- ceph fsid
+oc -n "$NS" get pvc | rg 'rook-ceph-mon|osd-set-data'
+```
+
+- [ ] Write **known data** into `troshka-ceph-pool` (marker object + RBD image):
+
+```bash
+# From rook-ceph-tools (or mon pod with ceph/rbd CLIs)
+MARKER="e2e-$(date -u +%Y%m%dT%H%M%SZ)"
+echo -n "$MARKER" | rados put troshka-ceph-pool/e2e-marker-object -
+rbd create troshka-ceph-pool/e2e-test-image --size 64M
+rbd info troshka-ceph-pool/e2e-test-image   # record image id + create_timestamp
+```
+
+- [ ] On a **lab VM** in the same project, install a Ceph client keyring +
+  `ceph.conf` using the **capture-time** topology credentials (stamped
+  `labIp`, fsid, admin or dedicated client key from project topology / external
+  secret — **do not hand-edit for restore**). Confirm the VM can:
+
+```bash
+ceph -s                          # reaches mon at topology labIp
+rados get troshka-ceph-pool/e2e-marker-object - | cmp - <(echo -n "$MARKER")
+rbd map troshka-ceph-pool/e2e-test-image && rbd unmap ...
+```
+
+- [ ] Leave the VM powered on (or note `restart_after` intent) so restore can
+  prove the **same keyring** works without Troshka rewriting secrets.
+
+### B. Capture pattern
+
+- [ ] From the Troshka UI (or API), **Save as Pattern** on the source project.
+  Wait until capture completes and pattern status is **`available`**.
+- [ ] Confirm pattern topology has **`projectCephCapture`** with `monDiskId` +
+  `osdDiskIds` matching captured `PatternDisk` rows (and runtime `projectCeph`
+  block stripped — no live namespace refs on the pattern).
+- [ ] Confirm **sparse thinness**: for each Ceph `PatternDisk`, stored object
+  size ≪ topology `capacityGi` (and ≪ raw PVC `status.capacity`):
+
+```bash
+# Example: list pattern disks + S3/OBC sizes via host-db or API
+./scripts/host-db.sh "
+from app.models.pattern import PatternDisk
+disks = session.query(PatternDisk).filter_by(pattern_id='<pattern-id>').all()
+for d in disks:
+    if d.source_kind in ('ceph-mon', 'ceph-osd'):
+        print(d.name, d.source_kind, d.size_bytes, d.source_pvc_name)
+"
+```
+
+  **Pass:** lightly used pool → Ceph disk artifacts are GiB-scale while
+  `capacityGi` is 150+ (orders of magnitude smaller unless the pool was filled).
+- [ ] Capture job logs show freeze → parallel mon/OSD export → unfreeze; no
+  partial Ceph capture (`available` with missing OSD disk = fail).
+
+### C. Deploy pattern to new project
+
+- [ ] Create a **new** project from the captured pattern (new namespace, remapped
+  node ids — `labIp` on `cephClusterNode` should match capture intent).
+- [ ] Deploy. Confirm restore path activates:
+  - `TroshkaCeph.spec.restore.enabled` (materialized from pattern)
+  - `TroshkaProject.status.cephRestoreActive` set during deploy
+  - VM start **deferred** with progress stage **"Waiting for restored Ceph"**
+    until `TroshkaCeph` reaches **`Ready`** (boot gate, Task 10).
+- [ ] Confirm mon + OSD PVCs pre-created from pattern disks (labels on OSD PVCs
+  per spike — `ceph.rook.io/DeviceSet`, `DeviceSetPVCId`, `setIndex`) before
+  `CephCluster` reconciles.
+
+### D. Verify restore — identity, content, client without rewrite
+
+- [ ] **`fsid` unchanged** vs step A baseline:
+
+```bash
+NS=troshka-<new-pid8>
+oc -n "$NS" exec deploy/rook-ceph-tools -- ceph fsid
+```
+
+- [ ] **RBD pool contents present** — same marker bytes and RBD identity:
+
+```bash
+rados get troshka-ceph-pool/e2e-marker-object - | cmp - <(echo -n "$MARKER")
+rbd info troshka-ceph-pool/e2e-test-image   # same id, create_timestamp as capture
+```
+
+- [ ] **VM client works without secret rewrite** — power on the restored VM
+  (after Ceph Ready gate clears); **without** changing keyring, fsid, or mon
+  address in cloud-init or manual edits:
+
+```bash
+# On the restored VM (same keyring files as before capture)
+ceph -s
+rados get troshka-ceph-pool/e2e-marker-object -
+rbd map troshka-ceph-pool/e2e-test-image
+```
+
+  **Pass:** client connects using capture-time credentials; data readable. This
+  is the consumer-agnostic success criterion — Troshka did not regenerate cephx
+  entities that would mismatch the restored mon auth db.
+
+### E. Source project Ceph healthy after capture
+
+Return to the **source** project (still deployed after pattern save):
+
+- [ ] `TroshkaCeph` / `CephCluster` back to **`Ready`** / `HEALTH_OK` (capture
+  unfreezes source Ceph after exports complete).
+- [ ] Source **`fsid` unchanged** from pre-capture baseline.
+- [ ] Source marker object + RBD image still present (`rados get` / `rbd info`).
+- [ ] Source VM Ceph client still works (optional but recommended — proves
+  capture quiesce/unfreeze did not brick the live lab).
+
+### Results (ocpvdev01)
+
+| Step | Date | Result | Notes |
+|---|---|---|---|
+| Pre-flight | — | **Pending** | Checklist documented; not executed in Task 12 |
+| A — Source setup | — | **Pending** | |
+| B — Capture | — | **Pending** | |
+| C — Deploy | — | **Pending** | |
+| D — Restore verify | — | **Pending** | |
+| E — Source health | — | **Pending** | |
+
+**Sign-off:** Production trust for project Ceph pattern capture/restore requires
+sections A–E above to pass on a real KubeVirt cluster. Task 0 spike (Rook PVC
+adopt) is prerequisite evidence; this checklist validates the full Troshka
+capture → pattern → deploy → consumer path.
