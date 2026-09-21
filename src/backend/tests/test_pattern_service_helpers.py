@@ -1640,3 +1640,75 @@ def test_apply_showroom_pattern_flags():
     apply_showroom_pattern_flags(topo)
     assert topo["showroom"]["build_content"] is False
     assert topo["nodes"][0]["data"]["buildContent"] is False
+
+
+class TestCorrectBootDevicesFromCaptures:
+    """_correct_boot_devices_from_captures repoints Boot Order off an empty disk."""
+
+    def _topo(self, boot_devices):
+        return {
+            "nodes": [
+                {
+                    "id": "vm1",
+                    "type": "vmNode",
+                    "data": {
+                        "name": "cp0",
+                        "bootDevices": list(boot_devices),
+                        "diskControllers": [
+                            {"id": "dp-c0", "bus": "virtio", "name": "d0"},
+                            {"id": "dp-c1", "bus": "virtio", "name": "d1"},
+                        ],
+                    },
+                },
+                {
+                    "id": "disk0",
+                    "type": "storageNode",
+                    "data": {"id": "disk0", "format": "qcow2", "size": 120},
+                },
+                {
+                    "id": "disk1",
+                    "type": "storageNode",
+                    "data": {"id": "disk1", "format": "qcow2", "size": 100},
+                },
+            ],
+            "edges": [
+                {"source": "vm1", "target": "disk0", "sourceHandle": "dp-dp-c0-left"},
+                {"source": "vm1", "target": "disk1", "sourceHandle": "dp-dp-c1-left"},
+            ],
+        }
+
+    def test_repoints_from_empty_boot_disk_to_content_disk(self):
+        from app.services.pattern_service import _correct_boot_devices_from_captures
+
+        topo = self._topo(["disk0"])
+        # disk0 captured empty (~200 KB), disk1 has the OS (12 GB).
+        _correct_boot_devices_from_captures(
+            topo, {"disk0": 198_656, "disk1": 12_000_000_000}
+        )
+        vm = topo["nodes"][0]
+        assert vm["data"]["bootDevices"] == ["disk1"]
+
+    def test_leaves_correct_boot_order_untouched(self):
+        from app.services.pattern_service import _correct_boot_devices_from_captures
+
+        topo = self._topo(["disk1"])  # already points at the OS disk
+        _correct_boot_devices_from_captures(
+            topo, {"disk0": 198_656, "disk1": 12_000_000_000}
+        )
+        assert topo["nodes"][0]["data"]["bootDevices"] == ["disk1"]
+
+    def test_no_change_when_boot_disk_has_content(self):
+        from app.services.pattern_service import _correct_boot_devices_from_captures
+
+        topo = self._topo(["disk0"])  # disk0 has content — don't override
+        _correct_boot_devices_from_captures(
+            topo, {"disk0": 9_000_000_000, "disk1": 100_000}
+        )
+        assert topo["nodes"][0]["data"]["bootDevices"] == ["disk0"]
+
+    def test_no_change_when_no_content_disk(self):
+        from app.services.pattern_service import _correct_boot_devices_from_captures
+
+        topo = self._topo(["disk0"])  # both empty — nothing to switch to
+        _correct_boot_devices_from_captures(topo, {"disk0": 100, "disk1": 200})
+        assert topo["nodes"][0]["data"]["bootDevices"] == ["disk0"]

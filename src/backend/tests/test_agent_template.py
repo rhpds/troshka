@@ -366,3 +366,64 @@ def test_filter_install_log_noise_drops_assisted_service_poll_spam():
     assert "Agent Rest API never initialized" not in filtered
     assert "Writing image to disk: 100%" in filtered
     assert "Cluster installation in progress" in filtered
+
+
+def test_agent_config_pins_root_device_to_boot_disk():
+    """agent-config rootDeviceHints targets the boot disk so RHCOS installs
+    there (not a non-boot disk the installer might otherwise pick)."""
+    from app.services.ocp.agent_template import _build_agent_config
+
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "name": "cp0",
+                    "tags": {"AnsibleGroup": "controllers"},
+                    "bmcEnabled": True,
+                    "bmcIp": "192.168.50.10",
+                    "bootDevices": ["os-disk"],
+                    "nics": [
+                        {"id": "nic1", "mac": "52:54:00:aa:bb:cc", "ip": "10.0.0.10"}
+                    ],
+                    "diskControllers": [
+                        {"id": "dp-c0", "bus": "virtio", "name": "disk0"},
+                        {"id": "dp-c1", "bus": "virtio", "name": "disk1"},
+                    ],
+                },
+                "position": {"x": 0, "y": 0},
+            },
+            {
+                "id": "empty-disk",
+                "type": "storageNode",
+                "data": {"id": "empty-disk", "format": "qcow2", "size": 120},
+                "position": {"x": 0, "y": 0},
+            },
+            {
+                "id": "os-disk",
+                "type": "storageNode",
+                "data": {"id": "os-disk", "format": "qcow2", "size": 100},
+                "position": {"x": 0, "y": 0},
+            },
+            {
+                "id": "net1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "network",
+                    "cidr": "10.0.0.0/24",
+                    "networkType": "cluster",
+                },
+                "position": {"x": 0, "y": 0},
+            },
+        ],
+        # Edge order lists the empty disk first; boot order picks os-disk.
+        "edges": [
+            {"source": "vm1", "target": "empty-disk", "sourceHandle": "dp-dp-c0-left"},
+            {"source": "vm1", "target": "os-disk", "sourceHandle": "dp-dp-c1-left"},
+        ],
+    }
+    cluster = {"name": "ocp", "baseDomain": "ocp.local"}
+    members = [n for n in topo["nodes"] if n.get("type") == "vmNode"]
+    ac = yaml.safe_load(_build_agent_config(cluster, members, topo))
+    assert ac["hosts"][0]["rootDeviceHints"]["deviceName"] == "/dev/vda"

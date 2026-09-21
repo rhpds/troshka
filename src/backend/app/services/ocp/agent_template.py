@@ -1941,19 +1941,58 @@ def _build_install_config_legacy(
     )
 
 
-def _build_agent_host_yaml(vm_name, role, nic_configs, dns_ip):
+_DISK_BUS_DEV_PREFIX = {
+    "virtio": "vd",
+    "sata": "sd",
+    "scsi": "sd",
+    "usb": "sd",
+    "ide": "hd",
+}
+
+
+def _boot_disk_device_name(node, topology):
+    """Linux device name (e.g. ``/dev/vda``) of a VM's boot disk.
+
+    Used for the agent-config ``rootDeviceHints`` so OpenShift installs RHCOS on
+    the boot disk instead of picking a disk itself (which, on multi-disk nodes,
+    can land the OS on a non-boot disk and leave the boot disk empty -> OVMF
+    "Boot Option Restoration" loop). The boot disk is the first disk after the
+    Boot Order is honored; the first disk of its bus is letter ``a``.
+    """
+    from app.services.deploy_topology import _find_vm_disks, _order_vm_disks_by_boot
+
+    data = node.get("data", {})
+    node_id = node.get("id") or data.get("id")
+    if not node_id:
+        return None
+    disks = _order_vm_disks_by_boot(
+        _find_vm_disks(node_id, topology), data.get("bootDevices", [])
+    )
+    boot = next((d for d in disks if d.get("format") != "iso"), None)
+    if not boot:
+        return None
+    prefix = _DISK_BUS_DEV_PREFIX.get(boot.get("bus", "virtio"), "vd")
+    return f"/dev/{prefix}a"
+
+
+def _build_agent_host_yaml(vm_name, role, nic_configs, dns_ip, root_device=None):
     """Build a single host entry for agent-config.yaml.
 
     ``nic_configs`` is an ordered list of dicts with keys ``iface_name``, ``mac``,
     ``ip``, ``prefix_len``, and optional ``gateway``/``default_route`` (primary
     NIC only). ``dns_ip`` is the nameserver the node uses (may differ from the
     primary gateway: on KubeVirt the dnsmasq is a separate pod at ``<cidr>.2``).
+    ``root_device`` (e.g. ``/dev/vda``), when set, pins the RHCOS install disk via
+    ``rootDeviceHints`` so the OS lands on the boot disk.
     """
     lines = [
         f"    - hostname: {vm_name}",
         f"      role: {role}",
-        "      interfaces:",
     ]
+    if root_device:
+        lines.append("      rootDeviceHints:")
+        lines.append(f"        deviceName: {root_device}")
+    lines.append("      interfaces:")
     for cfg in nic_configs:
         lines.append(f"        - name: {cfg['iface_name']}")
         lines.append(f"          macAddress: {cfg['mac']}")
@@ -2039,7 +2078,8 @@ def _extract_agent_host(node, cluster, members, topology, dns_ip):
     if not nic_configs:
         return None
     role = "master" if group == "controllers" else "worker"
-    host_yaml = _build_agent_host_yaml(vm_name, role, nic_configs, dns_ip)
+    root_device = _boot_disk_device_name(node, topology)
+    host_yaml = _build_agent_host_yaml(vm_name, role, nic_configs, dns_ip, root_device)
     return host_yaml, nic_configs[0]["ip"]
 
 

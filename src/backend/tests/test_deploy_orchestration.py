@@ -540,6 +540,42 @@ class TestCreateVmDisksViaTroshkad:
 # ---------------------------------------------------------------------------
 
 
+class TestOrderVmDisksByBoot:
+    """_order_vm_disks_by_boot honors the Boot Order (bootDevices) for disk order.
+
+    troshkad boots the first disk it is handed, so the disk referenced by
+    bootDevices[0] must be first — regardless of topology edge order.
+    """
+
+    def test_boot_device_moved_first(self):
+        from app.services.deploy_service import _order_vm_disks_by_boot
+
+        # Edge order put the empty disk first; boot order says the OS disk boots.
+        disks = [{"node_id": "empty-disk"}, {"node_id": "os-disk"}]
+        out = _order_vm_disks_by_boot(disks, ["os-disk"])
+        assert [d["node_id"] for d in out] == ["os-disk", "empty-disk"]
+
+    def test_no_boot_devices_keeps_edge_order(self):
+        from app.services.deploy_service import _order_vm_disks_by_boot
+
+        disks = [{"node_id": "d0"}, {"node_id": "d1"}]
+        assert _order_vm_disks_by_boot(disks, []) == disks
+
+    def test_non_disk_boot_entries_ignored(self):
+        from app.services.deploy_service import _order_vm_disks_by_boot
+
+        disks = [{"node_id": "d0"}, {"node_id": "d1"}]
+        out = _order_vm_disks_by_boot(disks, ["network", "d1"])
+        assert [d["node_id"] for d in out] == ["d1", "d0"]
+
+    def test_boot_device_not_in_disks_ignored(self):
+        from app.services.deploy_service import _order_vm_disks_by_boot
+
+        disks = [{"node_id": "d0"}]
+        out = _order_vm_disks_by_boot(disks, ["missing", "d0"])
+        assert [d["node_id"] for d in out] == ["d0"]
+
+
 class TestCreateVmViaTroshkad:
     """Tests for _create_vm_via_troshkad."""
 
@@ -724,6 +760,43 @@ class TestCreateVmViaTroshkad:
         assert params["networks"][0]["mac"] == "52:54:00:aa:bb:cc"
         # node_id is not a valid SMBIOS UUID — omit uuid and let libvirt generate one
         assert "uuid" not in params
+
+    @patch(f"{SVC}.start_job", return_value="job-create-boot")
+    @patch(f"{SVC}._find_vm_networks", return_value=[])
+    @patch(
+        f"{SVC}._find_vm_disks",
+        return_value=[
+            # Edge order: empty disk first (sata), OS disk second (virtio).
+            {"node_id": "empty-disk", "format": "qcow2", "size_gb": 120, "bus": "sata"},
+            {"node_id": "os-disk", "format": "qcow2", "size_gb": 100, "bus": "virtio"},
+        ],
+    )
+    def test_boot_device_ordered_first(self, mock_disks, mock_nets, mock_start):
+        """The bootDevices disk is passed to troshkad first (becomes the boot disk),
+        even when edge order lists another disk first."""
+        from app.services.deploy_service import _create_vm_via_troshkad
+
+        host = _make_host()
+        vm = {
+            "node_id": VM_NODE_ID,
+            "name": "boot-order-vm",
+            "vcpus": 2,
+            "ram_gb": 4,
+            "cloud_init": False,
+            "boot_devices": ["os-disk"],
+            "uuid": None,
+            "firmware": "uefi",
+            "secure_boot": False,
+            "video_model": "virtio",
+            "input_model": "virtio",
+        }
+
+        _create_vm_via_troshkad(host, PROJECT_ID, vm, _minimal_topology(), {})
+
+        params = mock_start.call_args[0][2]
+        # OS disk (virtio) must be first so virt-install boots it.
+        assert params["disks"][0]["bus"] == "virtio"
+        assert params["disks"][1]["bus"] == "sata"
 
     @patch(f"{SVC}.start_job", return_value="job-create-3b")
     @patch(f"{SVC}._find_vm_networks", return_value=[])
