@@ -441,6 +441,30 @@ AmbientCapabilities=CAP_NET_BIND_SERVICE
 WantedBy=multi-user.target
 SYSTEMDEOF
 
+# BMC tools venv (sushy-tools for Redfish, virtualbmc for IPMI)
+# Uses --system-site-packages to access the system python3-libvirt RPM
+# (libvirt-devel is not available on RHEL 10 so libvirt-python can't compile from source)
+# Must run BEFORE the console-TLS block below: that block installs certbot into
+# this venv and references $PIP_ARGS, so the venv and variable must already exist.
+echo "=== Setting up BMC tools venv ==="
+rm -rf /opt/troshka/venv
+python3 -m venv --system-site-packages /opt/troshka/venv
+PIP_ARGS="--quiet"
+# Check if libvirt is available from system site-packages; if so, skip libvirt-python
+# (libvirt-devel is not available on RHEL 10 so it can't compile from source)
+if /opt/troshka/venv/bin/python3 -c "import libvirt" 2>/dev/null; then
+    echo "System libvirt module available, installing without libvirt-python"
+    /opt/troshka/venv/bin/pip install $PIP_ARGS --no-deps 'https://github.com/rhpds/sushy-tools/releases/download/troshka-v2.2.1.dev20/sushy_tools-2.2.1.dev20.tar.gz'
+    # Install sushy-tools runtime deps (except libvirt-python which comes from system RPM)
+    /opt/troshka/venv/bin/pip install $PIP_ARGS flask requests tenacity bcrypt webob pbr
+    /opt/troshka/venv/bin/pip install $PIP_ARGS virtualbmc
+else
+    echo "No system libvirt, attempting full install"
+    /opt/troshka/venv/bin/pip install $PIP_ARGS 'https://github.com/rhpds/sushy-tools/releases/download/troshka-v2.2.1.dev20/sushy_tools-2.2.1.dev20.tar.gz' virtualbmc
+fi
+/opt/troshka/venv/bin/pip install $PIP_ARGS pexpect awscli websockets
+echo "BMC venv ready at /opt/troshka/venv"
+
 # Console TLS via Let's Encrypt (only if console_domain is set)
 CONSOLE_DOMAIN="{console_domain}"
 VNCD_NO_TLS="{vncd_no_tls}"
@@ -484,28 +508,6 @@ json.dump(conf, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
 else
     echo "vncd: no console_domain, skipping TLS setup"
 fi
-
-# BMC tools venv (sushy-tools for Redfish, virtualbmc for IPMI)
-# Uses --system-site-packages to access the system python3-libvirt RPM
-# (libvirt-devel is not available on RHEL 10 so libvirt-python can't compile from source)
-echo "=== Setting up BMC tools venv ==="
-rm -rf /opt/troshka/venv
-python3 -m venv --system-site-packages /opt/troshka/venv
-PIP_ARGS="--quiet"
-# Check if libvirt is available from system site-packages; if so, skip libvirt-python
-# (libvirt-devel is not available on RHEL 10 so it can't compile from source)
-if /opt/troshka/venv/bin/python3 -c "import libvirt" 2>/dev/null; then
-    echo "System libvirt module available, installing without libvirt-python"
-    /opt/troshka/venv/bin/pip install $PIP_ARGS --no-deps 'https://github.com/rhpds/sushy-tools/releases/download/troshka-v2.2.1.dev20/sushy_tools-2.2.1.dev20.tar.gz'
-    # Install sushy-tools runtime deps (except libvirt-python which comes from system RPM)
-    /opt/troshka/venv/bin/pip install $PIP_ARGS flask requests tenacity bcrypt webob pbr
-    /opt/troshka/venv/bin/pip install $PIP_ARGS virtualbmc
-else
-    echo "No system libvirt, attempting full install"
-    /opt/troshka/venv/bin/pip install $PIP_ARGS 'https://github.com/rhpds/sushy-tools/releases/download/troshka-v2.2.1.dev20/sushy_tools-2.2.1.dev20.tar.gz' virtualbmc
-fi
-/opt/troshka/venv/bin/pip install $PIP_ARGS pexpect awscli websockets
-echo "BMC venv ready at /opt/troshka/venv"
 
 # Install oc CLI for direct OCP access (bastion-optional)
 if ! command -v oc &>/dev/null; then
@@ -1007,21 +1009,27 @@ def deploy_agent(
         .replace("{nfs_port}", str(config.nfs_port))
         .replace(
             "{ca_cert_b64}",
-            base64.b64encode(config.ca_cert.encode()).decode()
-            if config.ca_cert
-            else "",
+            (
+                base64.b64encode(config.ca_cert.encode()).decode()
+                if config.ca_cert
+                else ""
+            ),
         )
         .replace(
             "{host_cert_b64}",
-            base64.b64encode(config.host_cert.encode()).decode()
-            if config.host_cert
-            else "",
+            (
+                base64.b64encode(config.host_cert.encode()).decode()
+                if config.host_cert
+                else ""
+            ),
         )
         .replace(
             "{host_key_b64}",
-            base64.b64encode(config.host_key.encode()).decode()
-            if config.host_key
-            else "",
+            (
+                base64.b64encode(config.host_key.encode()).decode()
+                if config.host_key
+                else ""
+            ),
         )
         .replace("{console_domain}", config.console_domain)
         .replace("{vncd_no_tls}", "1" if config.vncd_no_tls else "")
@@ -1029,9 +1037,11 @@ def deploy_agent(
         .replace("{data_disk_device}", config.data_disk_device)
         .replace(
             "{agent_ca_cert_b64}",
-            base64.b64encode(config.agent_ca_cert.encode()).decode()
-            if config.agent_ca_cert
-            else "",
+            (
+                base64.b64encode(config.agent_ca_cert.encode()).decode()
+                if config.agent_ca_cert
+                else ""
+            ),
         )
     )
 
