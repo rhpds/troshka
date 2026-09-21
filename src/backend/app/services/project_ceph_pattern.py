@@ -38,6 +38,29 @@ def get_project_ceph_capture(topology: dict) -> dict | None:
     }
 
 
+def set_ceph_restore_devices(
+    topology: dict, *, mon: dict | None, osds: list[dict]
+) -> None:
+    """Stamp resolved S3 restore devices onto ``projectCephCapture.restore``.
+
+    Deploy-time-only mutation of the in-memory project topology sent to the
+    operator (never persisted back to ``Pattern.topology`` — mirrors how
+    ``resolvedS3Path`` is stamped onto storageNode data for VM disks). The
+    operator has no DB access to turn ``monDiskId``/``osdDiskIds`` (PatternDisk
+    row ids) into S3 paths itself, so the backend resolves them here before
+    the ``TroshkaProject`` CR is created (see Task 9 brief /
+    ``docs/dev/project-ceph-pattern-restore.md``).
+
+    ``mon``/each item of ``osds`` carries ``index``/``s3Path``/``format``/
+    ``sizeBytes``/``virtualSizeBytes``/``source`` (``"obc"`` or ``"central"``).
+    No-ops when ``projectCephCapture`` itself is absent.
+    """
+    capture = topology.get(_PROJECT_CEPH_CAPTURE_KEY)
+    if capture is None:
+        return
+    capture["restore"] = {"mon": mon, "osds": osds}
+
+
 def validate_ceph_capture_disk_set(osd_count: int, devices: list[dict]) -> None:
     """Ensure discovered devices match expected mon + OSD counts."""
     mon_count = sum(1 for d in devices if d.get("kind") == CEPH_SOURCE_MON)

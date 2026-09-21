@@ -1383,14 +1383,72 @@ def _create_network_crs(
         }
 
 
-def _create_ceph_cr(custom_api, topology, namespace, name, body, patch):
-    """Create TroshkaCeph CR when topology includes a cephClusterNode."""
+async def _materialize_ceph_restore(custom_api, namespace, ceph_spec, restore_capture, body):
+    """Pre-create + wait for the mon/OSD restore DataVolumes before the
+    restore-mode TroshkaCeph CR is created (Task 9). Stamps ``ceph_spec["restore"]``
+    with the materialized PVC names so ``build_ceph_cluster()`` (Task 5) caps the
+    OSD device-set count instead of minting new empty claims on top of them.
+    """
+    from helpers.ceph_restore import (
+        materialize_ceph_restore_pvcs,
+        wait_for_ceph_restore_datavolumes,
+    )
+    from helpers.rook_ceph import DEFAULT_OSD_STORAGE_CLASS
+
+    project_spec = body.get("spec", {})
+    s3_config = project_spec.get("s3Config", {})
+    central_s3_config = project_spec.get("centralS3Config", {})
+    storage_class = ceph_spec.get("osdStorageClass") or DEFAULT_OSD_STORAGE_CLASS
+
+    mon_name, osd_names = materialize_ceph_restore_pvcs(
+        custom_api,
+        namespace,
+        restore_capture,
+        s3_config,
+        central_s3_config,
+        storage_class,
+    )
+    if not mon_name and not osd_names:
+        return
+
+    await wait_for_ceph_restore_datavolumes(
+        custom_api, namespace, [mon_name] + osd_names if mon_name else osd_names
+    )
+    ceph_spec["restore"] = {
+        "enabled": True,
+        "monPvc": mon_name,
+        "osdPvcs": osd_names,
+    }
+    logger.info(
+        "Project Ceph restore in %s: materialized mon PVC %s + %d OSD PVC(s)",
+        namespace,
+        mon_name or "<none>",
+        len(osd_names),
+    )
+
+
+async def _create_ceph_cr(custom_api, topology, namespace, name, body, patch):
+    """Create TroshkaCeph CR when topology includes a cephClusterNode.
+
+    When the topology carries a resolved ``projectCephCapture.restore`` block
+    (a pattern deploy whose source project's Ceph was captured — see Task 9
+    brief / docs/dev/project-ceph-pattern-restore.md), the mon/OSD PVCs are
+    materialized from S3 and awaited Succeeded before the TroshkaCeph CR is
+    created, so Rook adopts the pre-filled claims instead of provisioning
+    empty new ones.
+    """
     ceph_spec = extract_ceph_cluster(topology)
     if not ceph_spec:
         return
     if not ceph_spec.get("networkNad"):
         logger.warning("Project Ceph skipped: networkRef not resolved")
         return
+
+    restore_capture = (topology.get("projectCephCapture") or {}).get("restore")
+    if restore_capture:
+        await _materialize_ceph_restore(
+            custom_api, namespace, ceph_spec, restore_capture, body
+        )
 
     cr_name = "project-ceph"
     ceph_cr = {
@@ -2111,7 +2169,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     _create_network_crs(
         custom_api, networks, static_leases, namespace, name, body, patch
     )
-    _create_ceph_cr(custom_api, topology, namespace, name, body, patch)
+    await _create_ceph_cr(custom_api, topology, namespace, name, body, patch)
 
     apps_api = client.AppsV1Api()
     await _setup_gateway(core_api, apps_api, networks, namespace, name, body)
