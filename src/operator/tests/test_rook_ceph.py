@@ -1,6 +1,10 @@
 """Tests for Project Ceph rook manifest helpers."""
 
-from unittest.mock import MagicMock
+from typing import Optional
+from unittest.mock import MagicMock, patch
+
+import pytest
+from kubernetes.client.exceptions import ApiException
 
 from helpers.rook_ceph import (
     CEPH_EXTERNAL_SECRET,
@@ -14,11 +18,28 @@ from helpers.rook_ceph import (
     ceph_export_needs_nested_mon_refresh,
     data_dir_host_path,
     default_lab_ip_from_cidr,
+    discover_ceph_device_pvcs,
     discover_ceph_image,
     normalize_ceph_counts,
     rook_crb_name,
     validate_lab_ip,
 )
+
+
+def _mock_pvc(name: str, storage: str, labels: Optional[dict] = None):
+    pvc = MagicMock()
+    pvc.metadata.name = name
+    pvc.metadata.labels = labels or {}
+    pvc.spec.resources.requests = {"storage": storage}
+    return pvc
+
+
+def _mock_troshka_ceph_osd_count(osd_count: int):
+    custom_api = MagicMock()
+    custom_api.get_namespaced_custom_object.return_value = {
+        "spec": {"osdCount": osd_count, "capacityGi": osd_count * 50}
+    }
+    return custom_api
 
 
 def test_default_lab_ip_from_cidr():
@@ -292,3 +313,124 @@ def test_build_ceph_rbac_allows_export_job_secret_access():
     rules = {tuple(rule["resources"]): rule["verbs"] for rule in role["rules"]}
     assert rules[("secrets",)] == ["get", "patch", "create", "update"]
     assert rules[("cephclusters",)] == ["get"]
+
+
+def test_discover_ceph_device_pvcs_spike_names():
+    namespace = "troshka-spike-rookadopt"
+    mon = _mock_pvc("rook-ceph-mon-a", "10Gi")
+    osd = _mock_pvc(
+        "osd-set-data-06p6rg",
+        "150Gi",
+        labels={
+            "ceph.rook.io/DeviceSet": "osd-set",
+            "ceph.rook.io/DeviceSetPVCId": "osd-set-data-0",
+            "ceph.rook.io/setIndex": "0",
+        },
+    )
+    core_api = MagicMock()
+    core_api.read_namespaced_persistent_volume_claim.return_value = mon
+    core_api.list_namespaced_persistent_volume_claim.return_value = MagicMock(items=[osd])
+
+    with patch(
+        "helpers.rook_ceph.client.CustomObjectsApi",
+        return_value=_mock_troshka_ceph_osd_count(1),
+    ):
+        devices = discover_ceph_device_pvcs(core_api, namespace)
+
+    assert devices == [
+        {
+            "name": "rook-ceph-mon-a",
+            "kind": "ceph-mon",
+            "index": 0,
+            "size_bytes": 10 * 1073741824,
+        },
+        {
+            "name": "osd-set-data-06p6rg",
+            "kind": "ceph-osd",
+            "index": 0,
+            "size_bytes": 150 * 1073741824,
+        },
+    ]
+
+
+def test_discover_ceph_device_pvcs_three_osds():
+    namespace = "troshka-abc"
+    mon = _mock_pvc("rook-ceph-mon-a", "10Gi")
+    osds = [
+        _mock_pvc(
+            "osd-set-data-07ln8j",
+            "100Gi",
+            labels={
+                "ceph.rook.io/DeviceSet": "osd-set",
+                "ceph.rook.io/DeviceSetPVCId": "osd-set-data-0",
+                "ceph.rook.io/setIndex": "0",
+            },
+        ),
+        _mock_pvc(
+            "osd-set-data-184c79",
+            "100Gi",
+            labels={
+                "ceph.rook.io/DeviceSet": "osd-set",
+                "ceph.rook.io/DeviceSetPVCId": "osd-set-data-1",
+                "ceph.rook.io/setIndex": "1",
+            },
+        ),
+        _mock_pvc(
+            "osd-set-data-24m8n7",
+            "100Gi",
+            labels={
+                "ceph.rook.io/DeviceSet": "osd-set",
+                "ceph.rook.io/DeviceSetPVCId": "osd-set-data-2",
+                "ceph.rook.io/setIndex": "2",
+            },
+        ),
+    ]
+    core_api = MagicMock()
+    core_api.read_namespaced_persistent_volume_claim.return_value = mon
+    core_api.list_namespaced_persistent_volume_claim.return_value = MagicMock(items=osds)
+
+    with patch(
+        "helpers.rook_ceph.client.CustomObjectsApi",
+        return_value=_mock_troshka_ceph_osd_count(3),
+    ):
+        devices = discover_ceph_device_pvcs(core_api, namespace)
+
+    assert [d["kind"] for d in devices] == ["ceph-mon", "ceph-osd", "ceph-osd", "ceph-osd"]
+    assert [d["index"] for d in devices] == [0, 0, 1, 2]
+    assert all(d["size_bytes"] == 100 * 1073741824 for d in devices[1:])
+
+
+def test_discover_ceph_device_pvcs_fails_on_osd_count_mismatch():
+    namespace = "troshka-abc"
+    mon = _mock_pvc("rook-ceph-mon-a", "10Gi")
+    osd = _mock_pvc(
+        "osd-set-data-06p6rg",
+        "150Gi",
+        labels={
+            "ceph.rook.io/DeviceSet": "osd-set",
+            "ceph.rook.io/DeviceSetPVCId": "osd-set-data-0",
+            "ceph.rook.io/setIndex": "0",
+        },
+    )
+    core_api = MagicMock()
+    core_api.read_namespaced_persistent_volume_claim.return_value = mon
+    core_api.list_namespaced_persistent_volume_claim.return_value = MagicMock(items=[osd])
+
+    with patch(
+        "helpers.rook_ceph.client.CustomObjectsApi",
+        return_value=_mock_troshka_ceph_osd_count(3),
+    ):
+        with pytest.raises(ValueError, match="expected 3 ceph-osd PVC"):
+            discover_ceph_device_pvcs(core_api, namespace)
+
+
+def test_discover_ceph_device_pvcs_fails_when_mon_missing():
+    core_api = MagicMock()
+    core_api.read_namespaced_persistent_volume_claim.side_effect = ApiException(status=404)
+
+    with patch(
+        "helpers.rook_ceph.client.CustomObjectsApi",
+        return_value=_mock_troshka_ceph_osd_count(1),
+    ):
+        with pytest.raises(ValueError, match="expected mon PVC rook-ceph-mon-a"):
+            discover_ceph_device_pvcs(core_api, "troshka-abc")

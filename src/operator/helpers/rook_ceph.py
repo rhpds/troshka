@@ -25,6 +25,14 @@ logger = logging.getLogger(__name__)
 
 CEPH_CLUSTER_NAME = "troshka-ceph"
 CEPH_BLOCK_POOL_NAME = "troshka-ceph-pool"
+TROSHKA_CEPH_CR_NAME = "project-ceph"
+CEPH_MON_PVC_NAME = "rook-ceph-mon-a"
+CEPH_DEVICE_SET_NAME = "osd-set"
+CEPH_OSD_TEMPLATE_NAME = "data"
+ROOK_LABEL_DEVICE_SET = "ceph.rook.io/DeviceSet"
+ROOK_LABEL_DEVICE_SET_PVC_ID = "ceph.rook.io/DeviceSetPVCId"
+ROOK_LABEL_SET_INDEX = "ceph.rook.io/setIndex"
+_GIB = 1073741824
 CEPH_EXTERNAL_SECRET = "troshka-ceph-external"  # pragma: allowlist secret
 MON_BRIDGE_NAME = "troshka-ceph-mon-bridge"
 MON_BRIDGE_BACKEND_SVC = "troshka-ceph-mon"
@@ -1096,6 +1104,173 @@ def ceph_cluster_phase(custom_api, namespace: str) -> tuple[str, str]:
 
 def is_ceph_ready(phase: str) -> bool:
     return phase.lower() in ("ready", "connected")
+
+
+def _storage_request_bytes(quantity: str | None) -> int:
+    """Parse a Kubernetes storage quantity into bytes."""
+    if not quantity:
+        return 0
+    q = str(quantity).strip()
+    if q.endswith("Gi"):
+        return int(q[:-2]) * _GIB
+    if q.endswith("Ti"):
+        return int(q[:-2]) * 1024 * _GIB
+    if q.endswith("Mi"):
+        return int(q[:-2]) * 1024 * 1024
+    if q.endswith("G"):
+        return max(1, round(float(q[:-1]) * 1_000_000_000))
+    if q.isdigit():
+        return int(q)
+    return 0
+
+
+def _pvc_size_bytes(pvc) -> int:
+    spec = pvc.spec
+    requests = (spec.resources.requests if spec and spec.resources else None) or {}
+    storage = requests.get("storage")
+    return _storage_request_bytes(str(storage) if storage is not None else None)
+
+
+def _expected_osd_count(namespace: str) -> int:
+    """Return osdCount from TroshkaCeph, falling back to the CephCluster device set."""
+    custom_api = client.CustomObjectsApi()
+    try:
+        ceph_cr = custom_api.get_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkancephs",
+            name=TROSHKA_CEPH_CR_NAME,
+        )
+        osd_count, _, _ = normalize_ceph_counts(ceph_cr.get("spec") or {})
+        return osd_count
+    except ApiException as e:
+        if e.status != 404:
+            raise
+
+    try:
+        cluster = custom_api.get_namespaced_custom_object(
+            group="ceph.rook.io",
+            version="v1",
+            namespace=namespace,
+            plural="cephclusters",
+            name=CEPH_CLUSTER_NAME,
+        )
+    except ApiException as e:
+        if e.status == 404:
+            raise ValueError(
+                f"cannot determine osdCount for namespace {namespace}: "
+                "TroshkaCeph and CephCluster not found"
+            ) from e
+        raise
+
+    device_sets = (
+        (cluster.get("spec") or {})
+        .get("storage", {})
+        .get("storageClassDeviceSets")
+        or []
+    )
+    if not device_sets:
+        raise ValueError(
+            f"cannot determine osdCount for namespace {namespace}: "
+            "CephCluster has no storageClassDeviceSets"
+        )
+    return int(device_sets[0].get("count") or 0)
+
+
+def _osd_index_from_pvc(pvc) -> int:
+    labels = pvc.metadata.labels or {}
+    set_index = labels.get(ROOK_LABEL_SET_INDEX)
+    if set_index is not None and str(set_index) != "":
+        return int(set_index)
+
+    pvc_id = labels.get(ROOK_LABEL_DEVICE_SET_PVC_ID, "")
+    prefix = f"{CEPH_DEVICE_SET_NAME}-{CEPH_OSD_TEMPLATE_NAME}-"
+    if pvc_id.startswith(prefix):
+        return int(pvc_id[len(prefix) :])
+
+    name = pvc.metadata.name or "<unknown>"
+    raise ValueError(
+        f"OSD PVC {name} missing {ROOK_LABEL_SET_INDEX} or "
+        f"{ROOK_LABEL_DEVICE_SET_PVC_ID} label"
+    )
+
+
+def discover_ceph_device_pvcs(core_api, namespace: str) -> list[dict]:
+    """Discover mon and OSD PVCs for project Ceph capture.
+
+    Mon PVCs are matched by fixed Rook name (``rook-ceph-mon-a``). OSD PVCs are
+    matched by ``ceph.rook.io/DeviceSet=osd-set`` labels, not random suffixes.
+    """
+    expected_osds = _expected_osd_count(namespace)
+
+    try:
+        mon_pvc = core_api.read_namespaced_persistent_volume_claim(
+            name=CEPH_MON_PVC_NAME,
+            namespace=namespace,
+        )
+    except ApiException as e:
+        if e.status == 404:
+            raise ValueError(
+                f"expected mon PVC {CEPH_MON_PVC_NAME}, not found in {namespace}"
+            ) from e
+        raise
+
+    label_selector = f"{ROOK_LABEL_DEVICE_SET}={CEPH_DEVICE_SET_NAME}"
+    osd_pvcs = core_api.list_namespaced_persistent_volume_claim(
+        namespace=namespace,
+        label_selector=label_selector,
+    ).items
+
+    if len(osd_pvcs) != expected_osds:
+        raise ValueError(
+            f"expected {expected_osds} ceph-osd PVC(s), found {len(osd_pvcs)}"
+        )
+
+    devices: list[dict] = [
+        {
+            "name": CEPH_MON_PVC_NAME,
+            "kind": "ceph-mon",
+            "index": 0,
+            "size_bytes": _pvc_size_bytes(mon_pvc),
+        }
+    ]
+
+    seen_indices: set[int] = set()
+    for pvc in osd_pvcs:
+        index = _osd_index_from_pvc(pvc)
+        if index in seen_indices:
+            raise ValueError(f"duplicate ceph-osd index {index}")
+        seen_indices.add(index)
+        expected_pvc_id = f"{CEPH_DEVICE_SET_NAME}-{CEPH_OSD_TEMPLATE_NAME}-{index}"
+        labels = pvc.metadata.labels or {}
+        device_set = labels.get(ROOK_LABEL_DEVICE_SET)
+        if device_set != CEPH_DEVICE_SET_NAME:
+            raise ValueError(
+                f"OSD PVC {pvc.metadata.name} has unexpected "
+                f"{ROOK_LABEL_DEVICE_SET}={device_set!r}"
+            )
+        pvc_id = labels.get(ROOK_LABEL_DEVICE_SET_PVC_ID)
+        if pvc_id and pvc_id != expected_pvc_id:
+            raise ValueError(
+                f"OSD PVC {pvc.metadata.name} has "
+                f"{ROOK_LABEL_DEVICE_SET_PVC_ID}={pvc_id!r}, expected {expected_pvc_id!r}"
+            )
+        devices.append(
+            {
+                "name": pvc.metadata.name,
+                "kind": "ceph-osd",
+                "index": index,
+                "size_bytes": _pvc_size_bytes(pvc),
+            }
+        )
+
+    if seen_indices != set(range(expected_osds)):
+        missing = sorted(set(range(expected_osds)) - seen_indices)
+        raise ValueError(f"missing ceph-osd index(es): {missing}")
+
+    devices.sort(key=lambda d: (0 if d["kind"] == "ceph-mon" else 1, d["index"]))
+    return devices
 
 
 def delete_ceph_storage_pvcs(core_api, namespace: str) -> None:
