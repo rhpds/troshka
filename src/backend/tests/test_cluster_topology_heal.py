@@ -126,6 +126,51 @@ def test_heal_kv_pattern_corruption():
     assert parent_idx < child_idx
 
 
+def test_heal_keeps_sole_single_cluster_ocp():
+    # A fresh sno/compact/standard template makes a single cluster with the exact
+    # ghost fingerprint (id=ocp / cluster-ocp / ocp.local). When it is the ONLY
+    # cluster and nothing is deployed, it is the REAL cluster — heal must keep it
+    # (dropping it deleted the box + member VM and left the canvas empty).
+    topo = {
+        "clusters": [
+            {
+                "id": "ocp",
+                "name": "ocp",
+                "nodeId": "cluster-ocp",
+                "type": "sno",
+                "controlPlane": 1,
+                "workers": 0,
+                "baseDomain": "ocp.local",
+            }
+        ],
+        "nodes": [
+            {
+                "id": LEGACY_GHOST_NODE_ID,
+                "type": "clusterNode",
+                "data": {
+                    "name": "ocp",
+                    "clusterId": "ocp",
+                    "type": "sno",
+                    "controlPlane": 1,
+                    "workers": 0,
+                    "baseDomain": "ocp.local",
+                },
+            },
+            {
+                "id": "cp-0-uuid",
+                "type": "vmNode",
+                "data": {"name": "cp-0", "os": "rhcos", "clusterId": "ocp"},
+            },
+        ],
+        "edges": [],
+    }
+    out = heal_cluster_topology(topo, deployed_clusters=[])
+    assert [c["id"] for c in out["clusters"]] == ["ocp"]
+    assert LEGACY_GHOST_NODE_ID in {n["id"] for n in out["nodes"]}
+    cp0 = next(n for n in out["nodes"] if n["id"] == "cp-0-uuid")
+    assert cp0["parentId"] == "cluster-ocp"
+
+
 def test_seed_topology_clusters_from_deployed():
     topo = {
         "nodes": [

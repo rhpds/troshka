@@ -131,4 +131,46 @@ describe("clusterTopologyHeal", () => {
     const childIdx = out.nodes.findIndex((n) => n.id === cp0.id);
     expect(parentIdx).toBeLessThan(childIdx);
   });
+
+  it("keeps a sole single-cluster OCP (cluster-ocp is the real, only cluster)", () => {
+    // A fresh sno/compact/standard template makes exactly id=ocp / cluster-ocp /
+    // ocp.local — identical to the ghost fingerprint. With no other real cluster
+    // and no deployed cluster, it is the REAL cluster; heal must NOT drop it
+    // (that deleted the box + member VM and left the canvas empty).
+    const nodes: Node[] = [
+      {
+        id: LEGACY_GHOST_NODE_ID,
+        type: "clusterNode",
+        position: { x: 100, y: 250 },
+        data: {
+          name: "ocp",
+          clusterId: "ocp",
+          type: "sno",
+          controlPlane: 1,
+          workers: 0,
+          baseDomain: "ocp.local",
+        },
+      },
+      {
+        id: "9a1b2c3d-0000-4000-8000-000000000001",
+        type: "vmNode",
+        position: { x: 30, y: 78 },
+        data: { name: "cp-0", os: "rhcos", clusterId: "ocp", clusterRole: "control-plane" },
+      },
+    ];
+
+    const out = healClusterTopology({
+      nodes,
+      edges: [],
+      clusters: [ghostCluster],
+      deployedClusters: [],
+    });
+
+    // The sole cluster, its box, and its member VM all survive.
+    expect(out.clusters.map((c) => c.id)).toEqual(["ocp"]);
+    expect(out.nodes.some((n) => n.id === LEGACY_GHOST_NODE_ID)).toBe(true);
+    const cp0 = out.nodes.find((n) => n.type === "vmNode")!;
+    expect(cp0).toBeDefined();
+    expect(cp0.parentId).toBe("cluster-ocp");
+  });
 });

@@ -83,7 +83,17 @@ export function reconcileCanvasClusters(
   const hasGhost = canvasClusters.some(isLegacyMigrationGhost);
   const hasRealCanvas = canvasClusters.some((c) => !isLegacyMigrationGhost(c));
 
-  let base: ClusterConfig[] = hasGhost
+  // The legacy ghost (cluster-ocp) is a synthetic migration artifact only when a
+  // REAL cluster exists to replace it (another canvas cluster or a deployed
+  // cluster) — that is the case it was created to heal (it "stole" members from
+  // real boxes). When "ocp"/cluster-ocp is the SOLE cluster it is a legitimate
+  // single-cluster OCP project (every fresh sno/compact/standard template makes
+  // exactly this id), not a ghost — dropping it deletes the real cluster box and
+  // its member VM. Only drop the ghost when there is something to replace it.
+  const hasReplacement = hasRealCanvas || strippedDeployed.length > 0;
+  const dropGhost = hasGhost && hasReplacement;
+
+  let base: ClusterConfig[] = dropGhost
     ? canvasClusters.filter((c) => !isLegacyMigrationGhost(c))
     : [...canvasClusters];
 
@@ -116,7 +126,9 @@ export function reconcileCanvasClusters(
     return canvasClusters;
   }
 
-  const filtered = base.filter((c) => !isLegacyMigrationGhost(c));
+  const filtered = dropGhost
+    ? base.filter((c) => !isLegacyMigrationGhost(c))
+    : base;
   for (const boundary of realBoundaryNodes) {
     const d = boundary.data as Record<string, unknown>;
     const cid = d.clusterId as string;
