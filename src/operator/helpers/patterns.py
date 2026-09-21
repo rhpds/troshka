@@ -4,6 +4,10 @@ SNAPSHOT_CLASS = "ocs-storagecluster-rbdplugin-snapclass"
 _EXPORT_MULTIPART_CHUNK = "256M"
 _EXPORT_CONCURRENT_REQUESTS = "7"
 
+# Bound on simultaneous in-flight Ceph mon/OSD snapshot->export pipelines
+# during a project Ceph pattern capture (see handlers/project.py).
+CEPH_CAPTURE_CONCURRENCY = 4
+
 
 def build_volume_snapshot(name, namespace, pvc_name):
     return {
@@ -20,7 +24,21 @@ def build_volume_snapshot(name, namespace, pvc_name):
     }
 
 
-def build_temp_pvc_from_snapshot(name, namespace, snapshot_name, size_gb):
+def build_temp_pvc_from_snapshot(name, namespace, snapshot_name, size_gb, volume_mode=None):
+    spec = {
+        "accessModes": ["ReadWriteOnce"],
+        "resources": {"requests": {"storage": f"{size_gb}Gi"}},
+        "dataSource": {
+            "name": snapshot_name,
+            "kind": "VolumeSnapshot",
+            "apiGroup": "snapshot.storage.k8s.io",
+        },
+    }
+    if volume_mode:
+        # Ceph OSD PVCs are raw Block volumes (bluestore) — the restored temp
+        # PVC must stay Block too, or the CSI restore would format it as a
+        # filesystem and destroy the OSD data before export ever reads it.
+        spec["volumeMode"] = volume_mode
     return {
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
@@ -28,15 +46,7 @@ def build_temp_pvc_from_snapshot(name, namespace, snapshot_name, size_gb):
             "name": name,
             "namespace": namespace,
         },
-        "spec": {
-            "accessModes": ["ReadWriteOnce"],
-            "resources": {"requests": {"storage": f"{size_gb}Gi"}},
-            "dataSource": {
-                "name": snapshot_name,
-                "kind": "VolumeSnapshot",
-                "apiGroup": "snapshot.storage.k8s.io",
-            },
-        },
+        "spec": spec,
     }
 
 
@@ -192,6 +202,130 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
                             },
                         }
                     ],
+                    "volumes": [
+                        {
+                            "name": "disk",
+                            "persistentVolumeClaim": {
+                                "claimName": temp_pvc_name,
+                            },
+                        },
+                        {
+                            "name": "scratch",
+                            "persistentVolumeClaim": {
+                                "claimName": scratch_pvc_name,
+                            },
+                        },
+                    ],
+                    "restartPolicy": "Never",
+                },
+            },
+        },
+        "_deadline": deadline,
+        "_scratchPvcName": scratch_pvc_name,
+    }
+
+
+def _ceph_device_export_cmd(block_device: bool) -> tuple[str, dict]:
+    """Return (convert_cmd, container_volume_kwargs) for a Ceph device export.
+
+    OSD PVCs are raw Block volumes (bluestore) — convert straight off the
+    block device with qemu-img (``-S 4k`` sparse detection, ``-c`` qcow2
+    compression). The mon PVC is Filesystem-mode (Rook stores the mon store
+    as a directory tree, not a single disk image) — tar+gzip it instead.
+    Both write a single ``/scratch/export.bin`` blob for the shared rclone
+    upload tail below.
+    """
+    if block_device:
+        convert_cmd = (
+            "qemu-img convert -f raw -O qcow2 -S 4k -c "
+            "/dev/cephdisk /scratch/export.bin; "
+        )
+        volume_kwargs = {
+            "volumeDevices": [{"name": "disk", "devicePath": "/dev/cephdisk"}]
+        }
+    else:
+        convert_cmd = "tar -C /disk -czf /scratch/export.bin . ; "
+        volume_kwargs = {"volumeMounts": [{"name": "disk", "mountPath": "/disk"}]}
+    return convert_cmd, volume_kwargs
+
+
+def build_ceph_device_export_job(
+    name, namespace, temp_pvc_name, s3_path, s3_config, size_gb, *, block_device
+):
+    """Export a Ceph mon/OSD temp PVC to S3 (parallel per-device pipeline —
+    see ``handlers.project._capture_ceph_devices``)."""
+    deadline = max(3600, size_gb * 90)
+    scratch_pvc_name = f"scratch-{name}"
+
+    s3_bucket = s3_config.get("bucket", "")
+    s3_endpoint = s3_config.get("endpoint", "https://s3.amazonaws.com")
+
+    convert_cmd, volume_kwargs = _ceph_device_export_cmd(block_device)
+
+    export_cmd = (
+        "set -e; export HOME=/scratch; "
+        f"{convert_cmd}"
+        "SIZE=$(stat -c%s /scratch/export.bin); "
+        'echo "DISK_SIZE_BYTES=$SIZE"; '
+        "export RCLONE_CONFIG=/scratch/rclone.conf; "
+        "cat > $RCLONE_CONFIG <<REOF\n"
+        "[target]\n"
+        "type = s3\n"
+        "provider = Ceph\n"
+        "access_key_id = $AWS_ACCESS_KEY_ID\n"
+        "secret_access_key = $AWS_SECRET_ACCESS_KEY\n"
+        f"endpoint = {s3_endpoint}\n"
+        "no_check_bucket = true\n"
+        "no_verify_ssl = true\n"
+        "REOF\n"
+        f"rclone copyto /scratch/export.bin target:{s3_bucket}/{s3_path} "
+        f"--s3-chunk-size {_EXPORT_MULTIPART_CHUNK} "
+        f"--s3-upload-concurrency {_EXPORT_CONCURRENT_REQUESTS}; "
+        '_p() { echo "$1"; }; '
+        '_p \'PROGRESS:{"phase":"done"}\''
+    )
+
+    container = {
+        "name": "export",
+        "image": TOOLS_IMAGE,
+        "imagePullPolicy": "Always",
+        "command": ["sh", "-c", export_cmd],
+        "envFrom": [
+            {
+                "secretRef": {
+                    "name": s3_config.get(
+                        "credentialsSecret", "s3-credentials"
+                    )
+                }
+            }
+        ],
+        "resources": {
+            "requests": {"cpu": "1", "memory": "1Gi"},
+            "limits": {"cpu": "4", "memory": "4Gi"},
+        },
+        **volume_kwargs,
+    }
+
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": f"export-{name}",
+            "namespace": namespace,
+            "labels": {"troshka-role": "pattern-export"},
+        },
+        "spec": {
+            "backoffLimit": 6,
+            "activeDeadlineSeconds": deadline,
+            "template": {
+                "spec": {
+                    "serviceAccountName": "troshka-export",
+                    "securityContext": {
+                        "runAsUser": 107,
+                        "runAsGroup": 107,
+                        "fsGroup": 107,
+                    },
+                    "containers": [container],
                     "volumes": [
                         {
                             "name": "disk",
