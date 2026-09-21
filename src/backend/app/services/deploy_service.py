@@ -2442,7 +2442,12 @@ def _deploy_ops_pod_troshkad(
         pull_secret_json=pull_secret_json,
         fresh_install_log=fresh_install_log,
     )
-    _validate_ops_pod_config_files(clusters, params.get("files") or {})
+    # Validate only the fresh-install subset: recert (pattern-captured,
+    # already-installed) clusters legitimately have no install-config.yaml — they
+    # are restored from a delivered kubeconfig. Mirrors the KubeVirt path, which
+    # partitions before validating.
+    _, fresh_install_clusters = _partition_ops_pod_clusters(topology, clusters)
+    _validate_ops_pod_config_files(fresh_install_clusters, params.get("files") or {})
     job_id = start_job(host, "/pods/create", params)
     try:
         _wait_troshkad_job(host, job_id, 300, "Ops pod create")
