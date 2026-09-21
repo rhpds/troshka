@@ -117,6 +117,20 @@ def test_phase_from_input_worker_join_error_is_failed():
     assert _phase_from_input(log) == PHASE_FAILED
 
 
+def test_phase_from_input_benign_clusterimagepolicy_not_failed():
+    # The installer routinely emits transient "Could not update clusterimagepolicy"
+    # lines while the API server is coming up during bootstrap. "clusterimagepolicy"
+    # contains the substring "imagepolicy" — an over-broad failure marker must not
+    # false-fail an install that is still healthily converging.
+    log = (
+        "[ocp] level=debug msg=Still waiting for the cluster to initialize: "
+        "Multiple errors are preventing progress:\n"
+        '[ocp] level=debug msg=* Could not update clusterimagepolicy "openshift" '
+        "(1011 of 1023): the server is down or not responding"
+    )
+    assert _phase_from_input(log) != PHASE_FAILED
+
+
 def test_phase_from_input_worker_join_retry_stays_waiting():
     log = (
         "[source] install complete\n"

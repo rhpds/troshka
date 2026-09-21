@@ -107,7 +107,10 @@ _FAILURE_MARKERS = (
     "worker convergence timed out",
     "node-image create failed",
     "error: cannot create pod",
-    "imagepolicy",
+    # Worker-join ImagePolicy admission failure. Must stay specific: a bare
+    # "imagepolicy" substring-matches the benign installer bootstrap line
+    # "Could not update clusterimagepolicy ..." and false-fails healthy installs.
+    'imagepolicy" failed to complete mutation',
     "no iso for",
     "api not ready for worker join",
     "scc uid range not available for worker join",
