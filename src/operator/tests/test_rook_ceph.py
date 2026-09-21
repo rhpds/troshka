@@ -550,3 +550,55 @@ def test_build_ceph_cluster_restore_without_osd_pvcs_falls_back_to_spec_count():
     cluster = build_ceph_cluster(cr)
     sets = cluster["spec"]["storage"]["storageClassDeviceSets"]
     assert sets[0]["count"] == 3
+
+
+def test_legacy_ceph_cluster_without_capture_uses_fresh_bootstrap():
+    """cephClusterNode deploy with no projectCephCapture.restore → empty bootstrap.
+
+    TroshkaCeph spec has no restore block; Rook provisions fresh OSD PVCs from
+    spec.osdCount rather than adopting pre-filled claims."""
+    cr = {
+        "kind": "TroshkaCeph",
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
+        "spec": {"labIp": "10.0.0.3", "capacityGi": 300, "osdCount": 3},
+    }
+    assert normalize_restore_spec(cr["spec"])["enabled"] is False
+
+    cluster = build_ceph_cluster(cr)
+    sets = cluster["spec"]["storage"]["storageClassDeviceSets"]
+    assert sets[0]["count"] == 3
+    assert "annotations" not in cluster["metadata"]
+
+
+def test_discover_ceph_device_pvcs_fails_on_partial_osd_list():
+    """Partial OSD PVC list (2 of 3 expected) must raise before capture/export."""
+    namespace = "troshka-abc"
+    mon = _mock_pvc("rook-ceph-mon-a", "10Gi")
+    partial_osds = [
+        _mock_pvc(
+            f"osd-set-data-{suffix}",
+            "100Gi",
+            labels={
+                "ceph.rook.io/DeviceSet": "osd-set",
+                "ceph.rook.io/DeviceSetPVCId": f"osd-set-data-{idx}",
+                "ceph.rook.io/setIndex": str(idx),
+            },
+        )
+        for idx, suffix in enumerate(["07ln8j", "184c79"])
+    ]
+    core_api = MagicMock()
+    core_api.read_namespaced_persistent_volume_claim.return_value = mon
+    core_api.list_namespaced_persistent_volume_claim.return_value = MagicMock(
+        items=partial_osds
+    )
+
+    with patch(
+        "helpers.rook_ceph.client.CustomObjectsApi",
+        return_value=_mock_troshka_ceph_osd_count(3),
+    ):
+        with pytest.raises(ValueError, match="expected 3 ceph-osd PVC"):
+            discover_ceph_device_pvcs(core_api, namespace)

@@ -58,3 +58,34 @@ def test_remap_topology_remaps_ceph_node_refs():
     capture = out["projectCephCapture"]
     assert capture["monDiskId"] == "pd-mon-abc123"
     assert capture["osdDiskIds"] == ["pd-osd-111", "pd-osd-222", "pd-osd-333"]
+
+
+def test_remap_topology_preserves_lab_ip_without_capture():
+    """Legacy topology (cephClusterNode only) keeps labIp through id remapping."""
+    topo = {
+        "nodes": [
+            {
+                "id": "net-cluster",
+                "type": "networkNode",
+                "data": {"name": "cluster", "cidr": "10.0.0.0/24"},
+            },
+            {
+                "id": "ceph-1",
+                "type": "cephClusterNode",
+                "data": {
+                    "name": "Ceph Storage",
+                    "networkRef": "net-cluster",
+                    "labIp": "10.0.0.5",
+                    "capacityGi": 150,
+                    "osdCount": 2,
+                },
+            },
+        ],
+        "edges": [],
+    }
+
+    out = _remap_topology(topo)
+
+    ceph = next(n for n in out["nodes"] if n["type"] == "cephClusterNode")
+    assert ceph["data"]["labIp"] == "10.0.0.5"
+    assert "projectCephCapture" not in out

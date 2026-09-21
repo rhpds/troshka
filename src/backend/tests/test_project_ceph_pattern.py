@@ -42,6 +42,23 @@ def test_validate_ceph_capture_disk_set_rejects_partial():
         validate_ceph_capture_disk_set(3, [{"kind": "ceph-mon"}, {"kind": "ceph-osd"}])
 
 
+def test_validate_ceph_capture_disk_set_rejects_missing_mon():
+    with pytest.raises(ValueError, match="ceph-mon"):
+        validate_ceph_capture_disk_set(1, [{"kind": "ceph-osd"}])
+
+
+def test_validate_ceph_capture_disk_set_rejects_zero_osds():
+    with pytest.raises(ValueError, match="ceph-osd"):
+        validate_ceph_capture_disk_set(2, [{"kind": "ceph-mon"}])
+
+
+def test_capture_disk_ids_alone_do_not_enable_restore():
+    """Legacy / pre-deploy topology: disk ids without a resolved restore block."""
+    topo = {"nodes": []}
+    set_project_ceph_capture(topo, mon_disk_id="m1", osd_disk_ids=["o0", "o1"])
+    assert "restore" not in topo["projectCephCapture"]
+
+
 def test_set_ceph_restore_devices_stamps_restore_block():
     topo = {"nodes": []}
     set_project_ceph_capture(topo, mon_disk_id="m1", osd_disk_ids=["o0", "o1"])
