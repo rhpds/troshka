@@ -246,6 +246,10 @@ function removeLegacyGhostBoundary(
   nodes: Node[],
   clusters: ClusterConfig[],
 ): Node[] {
+  // Keep cluster-ocp when it is the real box of a live cluster: a single-cluster
+  // OCP project legitimately uses cluster id "ocp" -> nodeId "cluster-ocp", so
+  // deleting it erased the real box and orphaned its member VM (empty canvas).
+  if (clusters.some((c) => c.nodeId === LEGACY_GHOST_NODE_ID)) return nodes;
   if (!clusters.some((c) => !isLegacyMigrationGhost(c))) return nodes;
   return nodes.filter((n) => n.id !== LEGACY_GHOST_NODE_ID);
 }

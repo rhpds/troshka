@@ -140,7 +140,9 @@ def test_heal_keeps_sole_single_cluster_ocp():
                 "type": "sno",
                 "controlPlane": 1,
                 "workers": 0,
-                "baseDomain": "ocp.local",
+                # Real templates use "local" (not the ghost's "ocp.local"), so the
+                # cluster is NOT classified a ghost — yet its box is cluster-ocp.
+                "baseDomain": "local",
             }
         ],
         "nodes": [
@@ -153,7 +155,7 @@ def test_heal_keeps_sole_single_cluster_ocp():
                     "type": "sno",
                     "controlPlane": 1,
                     "workers": 0,
-                    "baseDomain": "ocp.local",
+                    "baseDomain": "local",
                 },
             },
             {

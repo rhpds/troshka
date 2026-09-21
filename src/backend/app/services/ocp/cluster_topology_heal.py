@@ -264,7 +264,20 @@ def heal_cluster_topology(
     if clusters:
         topo["clusters"] = clusters
 
-    if clusters and any(not _is_legacy_migration_ghost(c) for c in clusters):
+    # Drop the synthetic ghost box (cluster-ocp) only when it is NOT the real box
+    # of a live cluster. A single-cluster OCP project legitimately uses
+    # cluster-ocp as its cluster box (cluster id "ocp" -> nodeId "cluster-ocp"),
+    # so deleting it here erased the real box and orphaned its member VM (empty
+    # canvas). Only remove it when a real cluster exists AND none of them own
+    # cluster-ocp as their box (the true migration-ghost case).
+    cluster_ocp_is_real_box = any(
+        c.get("nodeId") == LEGACY_GHOST_NODE_ID for c in clusters
+    )
+    if (
+        clusters
+        and any(not _is_legacy_migration_ghost(c) for c in clusters)
+        and not cluster_ocp_is_real_box
+    ):
         nodes = [n for n in nodes if n.get("id") != LEGACY_GHOST_NODE_ID]
 
     _heal_membership(nodes, clusters, deployed)

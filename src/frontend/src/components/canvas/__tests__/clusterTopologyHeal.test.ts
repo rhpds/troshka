@@ -133,10 +133,19 @@ describe("clusterTopologyHeal", () => {
   });
 
   it("keeps a sole single-cluster OCP (cluster-ocp is the real, only cluster)", () => {
-    // A fresh sno/compact/standard template makes exactly id=ocp / cluster-ocp /
-    // ocp.local — identical to the ghost fingerprint. With no other real cluster
-    // and no deployed cluster, it is the REAL cluster; heal must NOT drop it
-    // (that deleted the box + member VM and left the canvas empty).
+    // A fresh sno/compact/standard template makes cluster id=ocp / nodeId=
+    // cluster-ocp with baseDomain "local" (NOT the ghost's "ocp.local"), so it is
+    // not a ghost — but its box is still cluster-ocp. With no other cluster, heal
+    // must NOT drop the box (that deleted the box + member VM -> empty canvas).
+    const soleCluster: ClusterConfig = {
+      id: "ocp",
+      name: "ocp",
+      nodeId: "cluster-ocp",
+      type: "sno",
+      controlPlane: 1,
+      workers: 0,
+      baseDomain: "local",
+    };
     const nodes: Node[] = [
       {
         id: LEGACY_GHOST_NODE_ID,
@@ -148,7 +157,7 @@ describe("clusterTopologyHeal", () => {
           type: "sno",
           controlPlane: 1,
           workers: 0,
-          baseDomain: "ocp.local",
+          baseDomain: "local",
         },
       },
       {
@@ -162,7 +171,7 @@ describe("clusterTopologyHeal", () => {
     const out = healClusterTopology({
       nodes,
       edges: [],
-      clusters: [ghostCluster],
+      clusters: [soleCluster],
       deployedClusters: [],
     });
 
