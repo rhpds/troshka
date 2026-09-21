@@ -24,7 +24,9 @@ def build_volume_snapshot(name, namespace, pvc_name):
     }
 
 
-def build_temp_pvc_from_snapshot(name, namespace, snapshot_name, size_gb, volume_mode=None):
+def build_temp_pvc_from_snapshot(
+    name, namespace, snapshot_name, size_gb, volume_mode=None
+):
     spec = {
         "accessModes": ["ReadWriteOnce"],
         "resources": {"requests": {"storage": f"{size_gb}Gi"}},
@@ -97,10 +99,13 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
         "SIZE=$(stat -c%s /scratch/disk.qcow2); "
         'echo "DISK_SIZE_BYTES=$SIZE"; '
         # Fail-closed rootfs validation (parity with troshkad vms/fscheck): mount
-        # each journaling filesystem via guestfish (--ro overlay → log recovery,
-        # like boot, image untouched). A captured OS disk whose rootfs won't mount
-        # (torn XFS 'Structure needs cleaning' from an unfrozen snapshot) fails the
-        # Job so it is never uploaded. Data disks (no journaling fs) are skipped.
+        # each journaling filesystem READ-WRITE on a throwaway qcow2 overlay so
+        # the journal is REPLAYED exactly like boot. A --ro guestfish mount uses
+        # norecovery and silently passes a torn XFS log (metadata ahead of log)
+        # that then fails the real read-write recovery mount on the deployed VM
+        # (OVMF/RHCOS "probably corrupted filesystem"). The overlay keeps the
+        # uploaded image byte-identical. A rootfs that won't mount fails the Job
+        # so it is never uploaded. Data disks (no journaling fs) are skipped.
         '_p \'{"phase":"validating","percent":0}\'; '
         "export LIBGUESTFS_BACKEND=direct; "
         "FS=$(guestfish --ro -a /scratch/disk.qcow2 run : list-filesystems "
@@ -108,11 +113,14 @@ def build_export_job(name, namespace, temp_pvc_name, s3_path, s3_config, size_gb
         '$(cat /scratch/.gf.err)"; exit 1; }; '
         "JOURN=$(echo \"$FS\" | awk -F': ' '$2 ~ /^(xfs|ext[234])$/{print $1}'); "
         'if [ -n "$JOURN" ]; then '
+        "qemu-img create -f qcow2 -b /scratch/disk.qcow2 -F qcow2 "
+        "/scratch/fscheck.qcow2 >/dev/null 2>/scratch/.gf.err || { echo "
+        '"FSCHECK_FAIL: overlay create: $(cat /scratch/.gf.err)"; exit 1; }; '
         "for dev in $JOURN; do "
-        "guestfish --ro -a /scratch/disk.qcow2 run : mount $dev / : ll / "
+        "guestfish --rw -a /scratch/fscheck.qcow2 run : mount $dev / : ll / "
         '>/dev/null 2>/scratch/.gf.err || { echo "FSCHECK_FAIL: $dev unmountable: '
-        '$(tail -1 /scratch/.gf.err)"; exit 1; }; '
-        'done; echo "FSCHECK: rootfs OK ($JOURN)"; '
+        '$(tail -1 /scratch/.gf.err)"; rm -f /scratch/fscheck.qcow2; exit 1; }; '
+        'done; rm -f /scratch/fscheck.qcow2; echo "FSCHECK: rootfs OK ($JOURN)"; '
         'else echo "FSCHECK: no journaling fs (data disk), skip"; fi; '
         '_p \'{"phase":"uploading","size":\'$SIZE\',"uploaded":0}\'; '
         # rclone config
@@ -293,9 +301,7 @@ def build_ceph_device_export_job(
         "envFrom": [
             {
                 "secretRef": {
-                    "name": s3_config.get(
-                        "credentialsSecret", "s3-credentials"
-                    )
+                    "name": s3_config.get("credentialsSecret", "s3-credentials")
                 }
             }
         ],

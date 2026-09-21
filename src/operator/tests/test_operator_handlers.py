@@ -7020,6 +7020,19 @@ class TestBuildExportJobValidation:
         cmd = self._cmd()
         assert "no journaling" in cmd.lower() or "data disk" in cmd.lower()
 
+    def test_mount_check_uses_rw_recovery_on_overlay(self):
+        # The rootfs mount check must be READ-WRITE (journal replay, like boot)
+        # on a throwaway overlay — a --ro/norecovery mount passes a torn XFS log
+        # that then fails the real recovery mount on the deployed VM.
+        cmd = self._cmd()
+        assert "fscheck.qcow2" in cmd  # throwaway overlay
+        assert "qemu-img create -f qcow2 -b /scratch/disk.qcow2" in cmd
+        # the mount runs against the overlay, read-write
+        assert "guestfish --rw -a /scratch/fscheck.qcow2 run : mount" in cmd
+        # list-filesystems may stay --ro (read-only listing), but the mount check
+        # must NOT be a --ro mount of the disk image.
+        assert "--ro -a /scratch/disk.qcow2 run : mount" not in cmd
+
 
 # ---------------------------------------------------------------------------
 # handlers/vm.py — vm_delete handler
