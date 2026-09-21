@@ -602,3 +602,28 @@ def test_discover_ceph_device_pvcs_fails_on_partial_osd_list():
     ):
         with pytest.raises(ValueError, match="expected 3 ceph-osd PVC"):
             discover_ceph_device_pvcs(core_api, namespace)
+
+
+def test_ceph_cluster_phase_prefers_troshka_ceph():
+    from helpers.rook_ceph import ceph_cluster_phase
+
+    custom_api = MagicMock()
+    custom_api.get_namespaced_custom_object.return_value = {
+        "status": {"phase": "Ready"}
+    }
+    phase, fsid = ceph_cluster_phase(custom_api, "troshka-abc")
+    assert phase == "Ready"
+    # TroshkaCeph has no fsid; best-effort Rook lookup is attempted second
+    assert custom_api.get_namespaced_custom_object.call_count >= 1
+    first = custom_api.get_namespaced_custom_object.call_args_list[0]
+    assert first.kwargs["plural"] == "troshkancephs"
+
+
+def test_ceph_cluster_phase_raises_on_forbidden():
+    from helpers.rook_ceph import ceph_cluster_phase
+
+    custom_api = MagicMock()
+    custom_api.get_namespaced_custom_object.side_effect = ApiException(status=403)
+    with pytest.raises(ApiException) as ei:
+        ceph_cluster_phase(custom_api, "troshka-abc")
+    assert ei.value.status == 403

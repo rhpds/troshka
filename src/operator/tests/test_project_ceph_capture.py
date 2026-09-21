@@ -44,7 +44,9 @@ class TestBuildCephDeviceExportJob:
         assert container["volumeDevices"] == [
             {"name": "disk", "devicePath": "/dev/cephdisk"}
         ]
-        assert "volumeMounts" not in container
+        assert container["volumeMounts"] == [
+            {"name": "scratch", "mountPath": "/scratch"}
+        ]
         assert "qemu-img convert" in container["command"][2]
         assert "-S 4k" in container["command"][2]
         assert job["metadata"]["name"] == "export-ceph-ceph-osd-0"
@@ -59,7 +61,8 @@ class TestBuildCephDeviceExportJob:
         )
         container = job["spec"]["template"]["spec"]["containers"][0]
         assert container["volumeMounts"] == [
-            {"name": "disk", "mountPath": "/disk"}
+            {"name": "disk", "mountPath": "/disk"},
+            {"name": "scratch", "mountPath": "/scratch"},
         ]
         assert "volumeDevices" not in container
         assert "tar -C /disk -czf" in container["command"][2]

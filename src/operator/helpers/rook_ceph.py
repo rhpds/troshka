@@ -1157,7 +1157,35 @@ def build_ceph_rbac(ceph_cr: dict) -> tuple[dict, dict]:
 
 
 def ceph_cluster_phase(custom_api, namespace: str) -> tuple[str, str]:
-    """Return (phase, fsid) from the rook CephCluster status, if present."""
+    """Return (phase, fsid) for project Ceph readiness checks.
+
+    Prefers ``TroshkaCeph`` (readable by the provider SA used for pattern
+    capture). Falls back to the Rook ``CephCluster`` when the Troshka CR is
+    missing. Non-404 API errors are re-raised so callers see RBAC failures
+    instead of a silent empty phase.
+    """
+    try:
+        ceph_cr = custom_api.get_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkancephs",
+            name=TROSHKA_CEPH_CR_NAME,
+        )
+    except ApiException as e:
+        if e.status != 404:
+            raise
+        ceph_cr = None
+
+    if ceph_cr is not None:
+        status = ceph_cr.get("status") or {}
+        phase = str(status.get("phase") or "")
+        fsid = str(status.get("fsid") or status.get("cephFSID") or "")
+        if phase:
+            if not fsid:
+                fsid = _rook_ceph_fsid(custom_api, namespace)
+            return phase, fsid
+
     try:
         cluster = custom_api.get_namespaced_custom_object(
             group="ceph.rook.io",
@@ -1166,12 +1194,31 @@ def ceph_cluster_phase(custom_api, namespace: str) -> tuple[str, str]:
             plural="cephclusters",
             name=CEPH_CLUSTER_NAME,
         )
-    except Exception:
-        return "", ""
+    except ApiException as e:
+        if e.status == 404:
+            return "", ""
+        raise
+
     status = cluster.get("status") or {}
     phase = str(status.get("phase") or "")
     fsid = str(status.get("cephFSID") or status.get("fsid") or "")
     return phase, fsid
+
+
+def _rook_ceph_fsid(custom_api, namespace: str) -> str:
+    """Best-effort fsid from Rook CephCluster (may 403 for provider SA)."""
+    try:
+        cluster = custom_api.get_namespaced_custom_object(
+            group="ceph.rook.io",
+            version="v1",
+            namespace=namespace,
+            plural="cephclusters",
+            name=CEPH_CLUSTER_NAME,
+        )
+    except ApiException:
+        return ""
+    status = cluster.get("status") or {}
+    return str(status.get("cephFSID") or status.get("fsid") or "")
 
 
 def is_ceph_ready(phase: str) -> bool:

@@ -305,6 +305,11 @@ def build_ceph_device_export_job(
         },
         **volume_kwargs,
     }
+    # volume_kwargs only wires the source disk (block device or FS mount).
+    # Scratch must always be mounted — convert/upload write /scratch/export.bin.
+    mounts = list(container.get("volumeMounts") or [])
+    mounts.append({"name": "scratch", "mountPath": "/scratch"})
+    container["volumeMounts"] = mounts
 
     return {
         "apiVersion": "batch/v1",

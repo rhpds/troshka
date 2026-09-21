@@ -6,9 +6,22 @@ import pytest
 
 from helpers.ceph_freeze import (
     OSD_FREEZE_FLAGS,
+    _ceph_cli_command,
     freeze_ceph_for_capture,
     unfreeze_ceph_after_capture,
 )
+
+
+def test_ceph_cli_command_uses_rook_mon_host_and_keyring():
+    cmd = _ceph_cli_command(["osd", "set", "noout"])
+    assert cmd[0] == "sh"
+    assert cmd[1] == "-c"
+    script = cmd[2]
+    assert "--conf /dev/null" in script
+    assert '--mon-host="$ROOK_CEPH_MON_HOST"' in script
+    assert "/etc/ceph/keyring-store/keyring" in script
+    assert "client.admin" in script
+    assert "osd set noout" in script
 
 
 @pytest.fixture
@@ -50,7 +63,7 @@ class TestFreezeCephForCapture:
         assert calls[flush_idx] == (
             "ceph",
             "troshka-abc123",
-            ["tell", "osd.*", "flush"],
+            ["tell", "osd.*", "flush_store_cache"],
         )
         assert calls[flush_idx + 1] == (
             "scale",

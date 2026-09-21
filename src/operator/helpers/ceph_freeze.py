@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 import time
 
 from kubernetes import client
@@ -26,6 +27,9 @@ OSD_DEPLOY_LABEL = "app=rook-ceph-osd"
 MON_DEPLOY_LABEL = "app=rook-ceph-mon"
 FREEZE_STATE_CONFIGMAP = "troshka-ceph-capture-freeze"
 _MON_CONTAINER = "mon"
+# Rook mon pods often ship an empty/stub ceph.conf; the daemon advertises
+# ROOK_CEPH_MON_HOST and the admin keyring lives under keyring-store.
+_CEPH_KEYRING = "/etc/ceph/keyring-store/keyring"
 _POD_POLL_INTERVAL_S = 2
 _POD_POLL_TIMEOUT_S = 300
 
@@ -44,7 +48,9 @@ def freeze_ceph_for_capture(namespace: str, core_api=None, apps_api=None) -> Non
         apps_api = apps_api or default_apps
     for flag in OSD_FREEZE_FLAGS:
         _ceph_exec(core_api, namespace, ["osd", "set", flag])
-    _ceph_exec(core_api, namespace, ["tell", "osd.*", "flush"])
+    # Squid/BlueStore: bare ``flush`` is gone; flush_store_cache pushes dirty
+    # BlueStore cache to the OSD block device before we snapshot the PVC.
+    _ceph_exec(core_api, namespace, ["tell", "osd.*", "flush_store_cache"])
 
     osd_replicas = _scale_deployments(apps_api, namespace, OSD_DEPLOY_LABEL, 0)
     _wait_for_pods(core_api, namespace, OSD_DEPLOY_LABEL, running=False)
@@ -90,11 +96,29 @@ def _k8s_clients() -> tuple[client.CoreV1Api, client.AppsV1Api]:
     return client.CoreV1Api(), client.AppsV1Api()
 
 
+def _ceph_cli_command(args: list[str]) -> list[str]:
+    """Build a ``ceph`` argv that works inside Rook mon pods.
+
+    Bare ``ceph …`` fails with ``unable to get monitor info from DNS SRV``
+    when ``/etc/ceph/ceph.conf`` is empty. Pass ``ROOK_CEPH_MON_HOST`` and the
+    admin keyring explicitly (same approach as the Strategy A spike).
+    """
+    quoted = " ".join(shlex.quote(a) for a in args)
+    return [
+        "sh",
+        "-c",
+        "exec ceph --conf /dev/null"
+        ' --mon-host="$ROOK_CEPH_MON_HOST"'
+        f" --keyring={shlex.quote(_CEPH_KEYRING)}"
+        f" -n client.admin {quoted}",
+    ]
+
+
 def _ceph_exec(core_api: client.CoreV1Api, namespace: str, args: list[str]) -> str:
     from kubernetes.stream import stream
 
     mon_pod = _running_mon_pod_name(core_api, namespace)
-    command = ["ceph", *args]
+    command = _ceph_cli_command(args)
     logger.debug("Ceph exec in %s/%s: %s", namespace, mon_pod, " ".join(command))
     resp = stream(
         core_api.connect_get_namespaced_pod_exec,

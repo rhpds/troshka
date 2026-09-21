@@ -440,8 +440,11 @@ async def _snapshot_and_export_ceph_device(
 
     snap_name = f"ceph-snap-{kind}-{index}"
     temp_pvc_name = f"ceph-export-{kind}-{index}"
-    scratch_pvc_name = f"ceph-scratch-{kind}-{index}"
     job_name = f"ceph-{kind}-{index}"
+    # Must match helpers.patterns.build_ceph_device_export_job scratch naming
+    # (``scratch-{job_name}``). A prior ``ceph-scratch-…`` prefix left Jobs
+    # Pending on missing PVCs.
+    scratch_pvc_name = f"scratch-{job_name}"
 
     _patch_cr_status(
         custom_api,
