@@ -30,6 +30,30 @@ def test_set_and_get_project_ceph_capture():
     assert get_project_ceph_capture(topo) == {
         "monDiskId": "m1",
         "osdDiskIds": ["o0", "o1"],
+        "identityObjects": [],
+    }
+
+
+def test_set_and_get_project_ceph_capture_with_identity_objects():
+    topo = {"nodes": []}
+    identity_objects = [
+        {"kind": "Secret", "name": "rook-ceph-mon", "data": {"fsid": "ZnNpZA=="}},
+        {
+            "kind": "ConfigMap",
+            "name": "rook-ceph-mon-endpoints",
+            "data": {"data": "YT0xLjIuMy40OjMzMDA="},
+        },
+    ]
+    set_project_ceph_capture(
+        topo,
+        mon_disk_id="m1",
+        osd_disk_ids=["o0", "o1"],
+        identity_objects=identity_objects,
+    )
+    assert get_project_ceph_capture(topo) == {
+        "monDiskId": "m1",
+        "osdDiskIds": ["o0", "o1"],
+        "identityObjects": identity_objects,
     }
 
 
@@ -74,6 +98,7 @@ def test_set_ceph_restore_devices_stamps_restore_block():
     assert get_project_ceph_capture(topo) == {
         "monDiskId": "m1",
         "osdDiskIds": ["o0", "o1"],
+        "identityObjects": [],
     }
 
 

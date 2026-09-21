@@ -1427,15 +1427,33 @@ async def _materialize_ceph_restore(custom_api, namespace, ceph_spec, restore_ca
     )
 
 
+def _restore_ceph_identity_objects(namespace, identity_objects):
+    """Pre-create the captured identity Secrets/ConfigMap (fsid, mon/admin/
+    csi cephx keys, mon-endpoints) in the project namespace before the
+    restore-mode TroshkaCeph CR is created — see the identity-object capture
+    matrix in docs/dev/project-ceph-pattern-restore.md and the C1 fix that
+    added identity capture/restore alongside the mon/OSD PVCs. No-op (no API
+    calls at all) when nothing was captured.
+    """
+    if not identity_objects:
+        return
+    from helpers.ceph_restore import restore_identity_objects
+
+    core_api = client.CoreV1Api()
+    restore_identity_objects(core_api, namespace, identity_objects)
+
+
 async def _create_ceph_cr(custom_api, topology, namespace, name, body, patch):
     """Create TroshkaCeph CR when topology includes a cephClusterNode.
 
     When the topology carries a resolved ``projectCephCapture.restore`` block
     (a pattern deploy whose source project's Ceph was captured — see Task 9
     brief / docs/dev/project-ceph-pattern-restore.md), the mon/OSD PVCs are
-    materialized from S3 and awaited Succeeded before the TroshkaCeph CR is
-    created, so Rook adopts the pre-filled claims instead of provisioning
-    empty new ones.
+    materialized from S3 and awaited Succeeded, and the captured identity
+    Secrets/ConfigMap (C1 fix) are re-created unowned, before the
+    TroshkaCeph CR is created — so Rook adopts the pre-filled claims and
+    matches the existing mon auth db instead of provisioning empty new ones
+    and minting a fresh fsid.
     """
     ceph_spec = extract_ceph_cluster(topology)
     if not ceph_spec:
@@ -1444,8 +1462,10 @@ async def _create_ceph_cr(custom_api, topology, namespace, name, body, patch):
         logger.warning("Project Ceph skipped: networkRef not resolved")
         return
 
-    restore_capture = (topology.get("projectCephCapture") or {}).get("restore")
+    capture = topology.get("projectCephCapture") or {}
+    restore_capture = capture.get("restore")
     if restore_capture:
+        _restore_ceph_identity_objects(namespace, capture.get("identityObjects"))
         await _materialize_ceph_restore(
             custom_api, namespace, ceph_spec, restore_capture, body
         )

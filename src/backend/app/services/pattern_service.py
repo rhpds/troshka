@@ -922,6 +922,88 @@ def _ceph_device_ext(kind: str) -> str:
     return "tar.gz" if kind == CEPH_SOURCE_MON else PATTERN_STORED_FORMAT
 
 
+# MUST/Should-capture rows from the identity-object capture matrix in
+# docs/dev/project-ceph-pattern-restore.md (Task 0 spike). These are small
+# string-only Secrets/ConfigMap, read directly via the k8s API — no export
+# Job/S3 round-trip needed like the mon/OSD block devices go through.
+# must_capture=True rows abort the capture if missing (Rook would mint a new
+# fsid on restore and any baked-in Ceph client keyring would stop matching);
+# must_capture=False rows are captured for completeness but only logged if
+# absent (low-risk per the matrix's own confidence notes).
+_CEPH_IDENTITY_OBJECTS: list[tuple[str, str, bool]] = [
+    ("Secret", "rook-ceph-mon", True),
+    ("ConfigMap", "rook-ceph-mon-endpoints", True),
+    ("Secret", "rook-ceph-admin-keyring", True),
+    ("Secret", "rook-ceph-mons-keyring", True),
+    ("Secret", "rook-ceph-config", True),
+    ("Secret", "rook-csi-rbd-node", True),
+    ("Secret", "rook-csi-rbd-provisioner", True),
+    ("Secret", "rook-csi-cephfs-node", False),
+    ("Secret", "rook-csi-cephfs-provisioner", False),
+    ("Secret", "rook-ceph-mgr-a-keyring", False),
+]
+
+
+def _read_ceph_identity_object(core_api, kind, name, namespace):
+    """Read one identity Secret/ConfigMap.
+
+    ConfigMap string data is base64-encoded here so both kinds serialize
+    identically in topology JSON — decoded back to plain strings on restore
+    (see ``helpers/ceph_restore.py`` on the operator side). Secret ``data``
+    is already base64 on the wire, so it is stored as-is. Returns ``None``
+    when the object does not exist; any other API error propagates.
+    """
+    import base64
+
+    from kubernetes.client.exceptions import ApiException
+
+    try:
+        if kind == "Secret":
+            obj = core_api.read_namespaced_secret(name, namespace)
+            return dict(obj.data or {})
+        obj = core_api.read_namespaced_config_map(name, namespace)
+        return {
+            k: base64.b64encode(v.encode()).decode()
+            for k, v in (obj.data or {}).items()
+        }
+    except ApiException as e:
+        if e.status == 404:
+            return None
+        raise
+
+
+def _capture_ceph_identity_objects(core_api, namespace):
+    """Read the identity-object capture matrix (Strategy A restore
+    prerequisites — see docs/dev/project-ceph-pattern-restore.md) directly
+    from the live cluster and return manifests to embed in the pattern's
+    ``projectCephCapture.identityObjects``.
+
+    Raises ``RuntimeError`` if any MUST-capture row is missing — callers
+    must fail the capture rather than produce a pattern whose restore would
+    mint a new fsid and break baked-in Ceph clients.
+    """
+    objects = []
+    for kind, name, must_capture in _CEPH_IDENTITY_OBJECTS:
+        data = _read_ceph_identity_object(core_api, kind, name, namespace)
+        if data is None:
+            if must_capture:
+                raise RuntimeError(
+                    f"MUST-capture identity object {kind}/{name} not found "
+                    f"in {namespace} — cannot capture identity-preserving "
+                    "project Ceph"
+                )
+            log.warning(
+                "Pattern capture in %s: optional identity object %s/%s not "
+                "found, skipping",
+                namespace,
+                kind,
+                name,
+            )
+            continue
+        objects.append({"kind": kind, "name": name, "data": data})
+    return objects
+
+
 def _prepare_ceph_capture(custom_api, core_api, namespace, pattern_id):
     """Validate project Ceph is Ready, discover mon/OSD PVCs, and freeze them.
 
@@ -1044,14 +1126,20 @@ def _poll_ceph_capture_phase(
     return None
 
 
-def _finalize_ceph_capture_disks(db, pattern, ceph_devices, captured_ceph_disks):
+def _finalize_ceph_capture_disks(
+    db, pattern, ceph_devices, captured_ceph_disks, identity_objects=None
+):
     """Create PatternDisk/PatternLocation rows for captured Ceph mon/OSD disks
     and stamp the pattern topology with ``projectCephCapture``.
 
     ``ceph_devices`` is the manifest we sent (pvcName/kind/index keyed by the
     ``patternDiskId`` we pre-assigned); ``captured_ceph_disks`` is the
     operator's result (s3Key/format/sizeBytes/virtualSizeBytes for the same
-    ids). Returns total captured size in bytes.
+    ids). ``identity_objects`` is the identity Secret/ConfigMap manifest list
+    from ``_capture_ceph_identity_objects`` (Strategy A restore prerequisites
+    — see docs/dev/project-ceph-pattern-restore.md), stamped alongside the
+    disk ids so restore can re-create them before the restore-mode
+    TroshkaCeph CR. Returns total captured size in bytes.
     """
     from app.models.pattern_location import PatternLocation
     from app.services.project_ceph_pattern import (
@@ -1110,6 +1198,7 @@ def _finalize_ceph_capture_disks(db, pattern, ceph_devices, captured_ceph_disks)
         topo,
         mon_disk_id=mon_disk_id or "",
         osd_disk_ids=[osd_disk_ids[i] for i in sorted(osd_disk_ids)],
+        identity_objects=identity_objects,
     )
     strip_runtime_project_ceph(topo)
     pattern.topology = topo
@@ -1201,11 +1290,13 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         return
 
     ceph_devices = []
+    identity_objects = []
     if has_ceph:
         try:
             ceph_devices = _prepare_ceph_capture(
                 custom_api, _core_api, namespace, pattern_id
             )
+            identity_objects = _capture_ceph_identity_objects(_core_api, namespace)
         except (ValueError, RuntimeError) as e:
             pattern.state = "error"
             db.commit()
@@ -1323,7 +1414,7 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
             return
 
         ceph_total_size = _finalize_ceph_capture_disks(
-            db, pattern, ceph_devices, captured_ceph_disks
+            db, pattern, ceph_devices, captured_ceph_disks, identity_objects
         )
         _unfreeze_ceph_best_effort(_core_api, namespace, pattern_id)
         db.expire_all()

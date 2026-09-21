@@ -8,11 +8,13 @@ from kubernetes.client.exceptions import ApiException
 
 from helpers.ceph_restore import (
     build_ceph_restore_datavolumes,
+    build_identity_object_manifests,
     build_mon_restore_datavolume,
     build_osd_restore_datavolume,
     device_s3_config,
     materialize_ceph_restore_pvcs,
     osd_restore_pvc_name,
+    restore_identity_objects,
     wait_for_ceph_restore_datavolumes,
 )
 from helpers.rook_ceph import CEPH_MON_PVC_NAME
@@ -284,3 +286,95 @@ class TestWaitForCephRestoreDatavolumes:
                     sleep_seconds=1,
                 )
             )
+
+
+_IDENTITY_OBJECTS = [
+    {
+        "kind": "Secret",
+        "name": "rook-ceph-mon",
+        "data": {
+            "fsid": "ZnNpZC0xMjM=",
+            "mon-secret": "bW9uLXNlY3JldA==",  # pragma: allowlist secret  # gitleaks:allow
+        },
+    },
+    {
+        "kind": "ConfigMap",
+        "name": "rook-ceph-mon-endpoints",
+        # base64("a=1.2.3.4:3300")
+        "data": {"data": "YT0xLjIuMy40OjMzMDA="},
+    },
+    {
+        "kind": "Secret",
+        "name": "rook-ceph-admin-keyring",
+        "data": {"keyring": "W2NsaWVudC5hZG1pbl0="},  # pragma: allowlist secret  # gitleaks:allow
+    },
+]
+
+
+class TestBuildIdentityObjectManifests:
+    def test_none_when_no_identity_objects(self):
+        assert build_identity_object_manifests("ns", None) == []
+        assert build_identity_object_manifests("ns", []) == []
+
+    def test_secret_data_passed_through_as_is(self):
+        manifests = build_identity_object_manifests("troshka-abc", _IDENTITY_OBJECTS)
+        mon_secret = next(m for m in manifests if m["metadata"]["name"] == "rook-ceph-mon")
+        assert mon_secret["kind"] == "Secret"
+        assert mon_secret["metadata"]["namespace"] == "troshka-abc"
+        assert mon_secret["data"] == {
+            "fsid": "ZnNpZC0xMjM=",
+            "mon-secret": "bW9uLXNlY3JldA==",  # pragma: allowlist secret  # gitleaks:allow
+        }
+
+    def test_configmap_data_decoded_from_base64(self):
+        manifests = build_identity_object_manifests("troshka-abc", _IDENTITY_OBJECTS)
+        endpoints = next(
+            m for m in manifests if m["metadata"]["name"] == "rook-ceph-mon-endpoints"
+        )
+        assert endpoints["kind"] == "ConfigMap"
+        assert endpoints["data"] == {"data": "a=1.2.3.4:3300"}
+
+    def test_no_owner_references(self):
+        """Orphan-safe: the CephCluster does not exist yet at restore time."""
+        manifests = build_identity_object_manifests("ns", _IDENTITY_OBJECTS)
+        assert all("ownerReferences" not in m["metadata"] for m in manifests)
+
+    def test_skips_malformed_entries(self):
+        malformed = [{"kind": "Secret"}, {"name": "x"}, {"kind": "Bogus", "name": "y"}]
+        assert build_identity_object_manifests("ns", malformed) == []
+
+
+class TestRestoreIdentityObjects:
+    def test_creates_secrets_and_configmaps(self):
+        core_api = MagicMock()
+        restore_identity_objects(core_api, "troshka-abc", _IDENTITY_OBJECTS)
+
+        assert core_api.create_namespaced_secret.call_count == 2
+        assert core_api.create_namespaced_config_map.call_count == 1
+        created_secret_names = {
+            call.kwargs["body"]["metadata"]["name"]
+            for call in core_api.create_namespaced_secret.call_args_list
+        }
+        assert created_secret_names == {"rook-ceph-mon", "rook-ceph-admin-keyring"}
+        cm_call = core_api.create_namespaced_config_map.call_args
+        assert cm_call.kwargs["body"]["metadata"]["name"] == "rook-ceph-mon-endpoints"
+        assert cm_call.kwargs["namespace"] == "troshka-abc"
+
+    def test_noop_when_no_identity_objects(self):
+        core_api = MagicMock()
+        restore_identity_objects(core_api, "ns", None)
+        core_api.create_namespaced_secret.assert_not_called()
+        core_api.create_namespaced_config_map.assert_not_called()
+
+    def test_idempotent_on_409(self):
+        core_api = MagicMock()
+        core_api.create_namespaced_secret.side_effect = ApiException(status=409)
+        core_api.create_namespaced_config_map.side_effect = ApiException(status=409)
+        # Must not raise.
+        restore_identity_objects(core_api, "ns", _IDENTITY_OBJECTS)
+
+    def test_reraises_non_409_api_exception(self):
+        core_api = MagicMock()
+        core_api.create_namespaced_secret.side_effect = ApiException(status=500)
+        with pytest.raises(ApiException):
+            restore_identity_objects(core_api, "ns", _IDENTITY_OBJECTS)

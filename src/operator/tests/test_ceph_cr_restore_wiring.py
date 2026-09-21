@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-def _base_topology(restore_capture=None):
+def _base_topology(restore_capture=None, identity_objects=None):
     topology = {
         "nodes": [
             {
@@ -32,6 +32,7 @@ def _base_topology(restore_capture=None):
             "monDiskId": "d-mon",
             "osdDiskIds": ["d-osd-0", "d-osd-1"],
             "restore": restore_capture,
+            "identityObjects": identity_objects or [],
         }
     return topology
 
@@ -203,3 +204,104 @@ class TestCreateCephCrRestoreWiring:
 
         assert call_order == ["materialize", "create_cr"]
         assert patch_obj.status["cephRestoreActive"] is True
+
+    def test_identity_objects_restored_before_pvc_materialize_and_cr_create(self):
+        """C1 fix: captured identity Secrets/ConfigMap must be re-created
+        before both the PVC materialize step and the TroshkaCeph CR body is
+        submitted — see docs/dev/project-ceph-pattern-restore.md."""
+        from handlers.project import _create_ceph_cr
+
+        custom_api = MagicMock()
+        patch_obj = MagicMock()
+        patch_obj.status = {}
+        body = {
+            "kind": "TroshkaProject",
+            "spec": {"s3Config": {}},
+            "metadata": {"uid": "u1", "name": "proj1"},
+        }
+        identity_objects = [
+            {"kind": "Secret", "name": "rook-ceph-mon", "data": {"fsid": "ZnNpZA=="}}
+        ]
+
+        call_order = []
+
+        def fake_restore_identity(_ns, objs):
+            call_order.append(("identity", objs))
+
+        async def fake_materialize(_custom_api, _ns, ceph_spec, _restore_capture, _body):
+            call_order.append(("materialize", None))
+            ceph_spec["restore"] = {"enabled": True, "monPvc": "rook-ceph-mon-a", "osdPvcs": []}
+
+        def fake_create(*_args, **kwargs):
+            call_order.append(("create_cr", None))
+
+        custom_api.create_namespaced_custom_object.side_effect = fake_create
+
+        with (
+            patch(
+                "handlers.project._restore_ceph_identity_objects",
+                side_effect=fake_restore_identity,
+            ) as mock_identity,
+            patch(
+                "handlers.project._materialize_ceph_restore", side_effect=fake_materialize
+            ),
+        ):
+            asyncio.run(
+                _create_ceph_cr(
+                    custom_api,
+                    _base_topology(_RESTORE_CAPTURE, identity_objects),
+                    "ns1",
+                    "proj1",
+                    body,
+                    patch_obj,
+                )
+            )
+
+        assert [c[0] for c in call_order] == ["identity", "materialize", "create_cr"]
+        mock_identity.assert_called_once_with("ns1", identity_objects)
+
+    def test_no_identity_restore_call_without_capture(self):
+        """Fresh-bootstrap deploy: no projectCephCapture at all -> identity
+        restore helper is never invoked."""
+        from handlers.project import _create_ceph_cr
+
+        custom_api = MagicMock()
+        patch_obj = MagicMock()
+        patch_obj.status = {}
+        body = {
+            "kind": "TroshkaProject",
+            "spec": {"s3Config": {}},
+            "metadata": {"uid": "u1", "name": "proj1"},
+        }
+
+        with patch("handlers.project._restore_ceph_identity_objects") as mock_identity:
+            asyncio.run(
+                _create_ceph_cr(
+                    custom_api, _base_topology(), "ns1", "proj1", body, patch_obj
+                )
+            )
+
+        mock_identity.assert_not_called()
+
+
+class TestRestoreCephIdentityObjects:
+    def test_noop_without_identity_objects(self):
+        from handlers.project import _restore_ceph_identity_objects
+
+        with patch("helpers.ceph_restore.restore_identity_objects") as mock_restore:
+            _restore_ceph_identity_objects("ns1", None)
+            _restore_ceph_identity_objects("ns1", [])
+
+        mock_restore.assert_not_called()
+
+    def test_delegates_to_ceph_restore_helper(self):
+        from handlers.project import _restore_ceph_identity_objects
+
+        identity_objects = [{"kind": "Secret", "name": "rook-ceph-mon", "data": {}}]
+        with patch("helpers.ceph_restore.restore_identity_objects") as mock_restore:
+            _restore_ceph_identity_objects("ns1", identity_objects)
+
+        mock_restore.assert_called_once()
+        args = mock_restore.call_args.args
+        assert args[1] == "ns1"
+        assert args[2] == identity_objects

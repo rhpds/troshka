@@ -19,11 +19,19 @@ def set_project_ceph_capture(
     *,
     mon_disk_id: str,
     osd_disk_ids: list[str],
+    identity_objects: list[dict] | None = None,
 ) -> None:
-    """Stamp pattern topology with captured mon/OSD PatternDisk ids."""
+    """Stamp pattern topology with captured mon/OSD PatternDisk ids plus the
+    identity Secrets/ConfigMap Strategy A restore requires (fsid, mon/admin/
+    csi cephx keys, mon-endpoints — see the identity-object capture matrix in
+    ``docs/dev/project-ceph-pattern-restore.md``). Without these, restoring
+    the mon/OSD PVCs alone still makes Rook mint a *new* fsid on CephCluster
+    create, and any baked-in Ceph client keyring stops matching.
+    """
     topology[_PROJECT_CEPH_CAPTURE_KEY] = {
         "monDiskId": mon_disk_id,
         "osdDiskIds": list(osd_disk_ids),
+        "identityObjects": list(identity_objects or []),
     }
 
 
@@ -35,6 +43,7 @@ def get_project_ceph_capture(topology: dict) -> dict | None:
     return {
         "monDiskId": capture["monDiskId"],
         "osdDiskIds": list(capture["osdDiskIds"]),
+        "identityObjects": list(capture.get("identityObjects") or []),
     }
 
 

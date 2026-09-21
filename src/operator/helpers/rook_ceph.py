@@ -322,6 +322,15 @@ def build_ceph_cluster(
     annotations: dict = {}
     if restore.get("enabled"):
         annotations, osd_count = _restore_cluster_annotations(restore, osd_count)
+        # mon_gi/per_osd_gi below still come from spec-configured capacityGi,
+        # not the captured PatternDisk's virtual_size_bytes — that's fine for
+        # restore: Rook adopts the mon PVC by fixed name and OSD PVCs by
+        # ceph.rook.io/DeviceSet* labels (see
+        # docs/dev/project-ceph-pattern-restore.md), never by resizing an
+        # already-bound claim to match this template's storage request. The
+        # claims' real capacity was already set correctly by
+        # helpers/ceph_restore.py's `_request_gi()` (sized off
+        # virtualSizeBytes) when the restore DataVolumes were materialized.
 
     metadata = {
         "name": CEPH_CLUSTER_NAME,

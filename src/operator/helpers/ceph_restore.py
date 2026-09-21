@@ -196,6 +196,78 @@ def build_ceph_restore_datavolumes(
     return mon_dv, osd_dvs, mon_name, osd_names
 
 
+def build_identity_object_manifests(
+    namespace: str, identity_objects: list[dict] | None
+) -> list[dict]:
+    """Build orphan-safe Secret/ConfigMap manifests for the captured identity
+    objects (fsid, mon/admin/csi cephx keys, mon-endpoints — see the
+    identity-object capture matrix in
+    ``docs/dev/project-ceph-pattern-restore.md``).
+
+    Deliberately **no** ``ownerReferences`` — the restore-mode
+    ``TroshkaCeph``/``CephCluster`` does not exist yet when these are
+    created, matching the spike's orphan-then-recreate pattern. Secret
+    ``data`` is used as-is (already base64, captured straight off the wire);
+    ConfigMap values were base64-encoded at capture time for uniform JSON
+    storage and are decoded back to plain strings here. Returns ``[]`` when
+    there is nothing captured (a fresh-bootstrap deploy with no prior Ceph
+    capture).
+    """
+    import base64
+
+    manifests = []
+    for obj in identity_objects or []:
+        kind = obj.get("kind")
+        name = obj.get("name")
+        data = obj.get("data") or {}
+        if kind not in ("Secret", "ConfigMap") or not name:
+            continue
+        manifest = {
+            "apiVersion": "v1",
+            "kind": kind,
+            "metadata": {
+                "name": name,
+                "namespace": namespace,
+                "labels": {"app": "troshka-ceph", "troshka-role": "ceph-restore-identity"},
+            },
+        }
+        if kind == "Secret":
+            manifest["data"] = dict(data)
+        else:
+            manifest["data"] = {
+                k: base64.b64decode(v).decode() for k, v in data.items()
+            }
+        manifests.append(manifest)
+    return manifests
+
+
+def restore_identity_objects(
+    core_api, namespace: str, identity_objects: list[dict] | None
+) -> None:
+    """Idempotently (re)create the captured identity Secrets/ConfigMap in
+    the project namespace, before the restore-mode ``TroshkaCeph`` CR is
+    created (Strategy A — see docs/dev/project-ceph-pattern-restore.md).
+    No-op when ``identity_objects`` is empty (fresh-bootstrap deploy).
+    """
+    for manifest in build_identity_object_manifests(namespace, identity_objects):
+        kind = manifest["kind"]
+        name = manifest["metadata"]["name"]
+        try:
+            if kind == "Secret":
+                core_api.create_namespaced_secret(namespace=namespace, body=manifest)
+            else:
+                core_api.create_namespaced_config_map(
+                    namespace=namespace, body=manifest
+                )
+            logger.info("Restored ceph identity %s %s in %s", kind, name, namespace)
+        except ApiException as e:
+            if e.status != 409:
+                raise
+            logger.info(
+                "ceph identity %s %s already exists in %s", kind, name, namespace
+            )
+
+
 def _create_datavolume(custom_api, namespace: str, dv: dict) -> None:
     name = dv["metadata"]["name"]
     try:

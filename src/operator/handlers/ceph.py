@@ -91,9 +91,14 @@ def _apply_rook_cr(custom_api, body: dict, namespace: str, plural: str) -> None:
 
 
 def _log_restore_mode(restore: dict, spec: dict, patch, namespace: str) -> None:
-    """Restore mode: mon/OSD PVCs (+ identity secrets) were pre-created by the
-    pattern-restore path from a capture. Rook operator setup is unchanged —
-    only build_ceph_cluster()'s device-set count differs, so it never mints
+    """Restore mode: the mon/OSD PVCs and the identity Secrets/ConfigMap
+    (fsid, mon/admin/csi cephx keys, mon-endpoints — see the identity-object
+    capture matrix in docs/dev/project-ceph-pattern-restore.md) were already
+    pre-created by ``handlers/project.py``'s ``_create_ceph_cr`` (PVCs via
+    ``_materialize_ceph_restore``, identity objects via
+    ``_restore_ceph_identity_objects``) before this TroshkaCeph CR was
+    created. Rook operator setup here is otherwise unchanged — only
+    ``build_ceph_cluster()``'s device-set count differs, so it never mints
     new empty claims on top of the adopted ones.
     """
     logger.info(

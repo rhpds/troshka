@@ -137,6 +137,114 @@ class TestPrepareCephCapture:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# _capture_ceph_identity_objects / _read_ceph_identity_object
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestCaptureCephIdentityObjects:
+    def _secret(self, data):
+        secret = MagicMock()
+        secret.data = data
+        return secret
+
+    def _configmap(self, data):
+        cm = MagicMock()
+        cm.data = data
+        return cm
+
+    def test_reads_must_and_should_capture_rows(self):
+        from app.services.pattern_service import _capture_ceph_identity_objects
+
+        core_api = MagicMock()
+
+        def _read_secret(name, _ns):
+            return self._secret({"key": "dmFsdWU="})
+
+        def _read_cm(name, _ns):
+            if name == "rook-ceph-mon-endpoints":
+                return self._configmap({"data": "a=1.2.3.4:3300", "maxMonId": "0"})
+            raise AssertionError(f"unexpected configmap read: {name}")
+
+        core_api.read_namespaced_secret.side_effect = _read_secret
+        core_api.read_namespaced_config_map.side_effect = _read_cm
+
+        objects = _capture_ceph_identity_objects(core_api, "ns-1")
+
+        names = {(o["kind"], o["name"]) for o in objects}
+        assert ("Secret", "rook-ceph-mon") in names
+        assert ("ConfigMap", "rook-ceph-mon-endpoints") in names
+        assert ("Secret", "rook-ceph-admin-keyring") in names
+        assert ("Secret", "rook-ceph-mons-keyring") in names
+
+        mon_endpoints = next(
+            o for o in objects if o["name"] == "rook-ceph-mon-endpoints"
+        )
+        # ConfigMap plain strings are base64-encoded for uniform storage.
+        import base64
+
+        assert (
+            base64.b64decode(mon_endpoints["data"]["data"]).decode() == "a=1.2.3.4:3300"
+        )
+
+        mon_secret = next(o for o in objects if o["name"] == "rook-ceph-mon")
+        # Secret data is stored as-is (already base64 on the wire).
+        assert mon_secret["data"]["key"] == "dmFsdWU="
+
+    def test_missing_must_capture_row_raises(self):
+        from kubernetes.client.exceptions import ApiException
+
+        from app.services.pattern_service import _capture_ceph_identity_objects
+
+        core_api = MagicMock()
+        core_api.read_namespaced_secret.side_effect = ApiException(status=404)
+        core_api.read_namespaced_config_map.side_effect = ApiException(status=404)
+
+        with pytest.raises(RuntimeError, match="rook-ceph-mon"):
+            _capture_ceph_identity_objects(core_api, "ns-1")
+
+    def test_missing_should_capture_row_only_logs(self):
+        from kubernetes.client.exceptions import ApiException
+
+        from app.services.pattern_service import _capture_ceph_identity_objects
+
+        core_api = MagicMock()
+
+        def _read_secret(name, _ns):
+            if name in (
+                "rook-csi-cephfs-node",
+                "rook-csi-cephfs-provisioner",
+                "rook-ceph-mgr-a-keyring",
+            ):
+                raise ApiException(status=404)
+            return self._secret({"key": "dmFsdWU="})
+
+        core_api.read_namespaced_secret.side_effect = _read_secret
+        core_api.read_namespaced_config_map.return_value = self._configmap(
+            {"data": "a=1.2.3.4:3300"}
+        )
+
+        objects = _capture_ceph_identity_objects(core_api, "ns-1")
+
+        names = {o["name"] for o in objects}
+        assert "rook-csi-cephfs-node" not in names
+        assert "rook-ceph-mgr-a-keyring" not in names
+        # MUST-capture rows still present.
+        assert "rook-ceph-mon" in names
+        assert "rook-ceph-admin-keyring" in names
+
+    def test_non_404_api_error_propagates(self):
+        from kubernetes.client.exceptions import ApiException
+
+        from app.services.pattern_service import _capture_ceph_identity_objects
+
+        core_api = MagicMock()
+        core_api.read_namespaced_secret.side_effect = ApiException(status=500)
+
+        with pytest.raises(ApiException):
+            _capture_ceph_identity_objects(core_api, "ns-1")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # _poll_ceph_capture_phase
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -262,8 +370,17 @@ class TestFinalizeCephCaptureDisks:
         pattern.source_provider_id = "prov-1"
         pattern.topology = {"projectCeph": {"phase": "Ready"}, "nodes": []}
 
+        identity_objects = [
+            {"kind": "Secret", "name": "rook-ceph-mon", "data": {"fsid": "ZnNpZA=="}},
+            {
+                "kind": "ConfigMap",
+                "name": "rook-ceph-mon-endpoints",
+                "data": {"data": "YT0xLjIuMy40OjMzMDA="},
+            },
+        ]
+
         total_size = _finalize_ceph_capture_disks(
-            db, pattern, ceph_devices, captured_ceph_disks
+            db, pattern, ceph_devices, captured_ceph_disks, identity_objects
         )
 
         assert total_size == 1_000_000 + 5_000_000 + 6_000_000
@@ -298,9 +415,25 @@ class TestFinalizeCephCaptureDisks:
         capture_stamp = pattern.topology["projectCephCapture"]
         assert capture_stamp["monDiskId"] == "pd-mon"
         assert capture_stamp["osdDiskIds"] == ["pd-osd0", "pd-osd1"]
+        assert capture_stamp["identityObjects"] == identity_objects
 
         db.execute.assert_called_once()
         db.commit.assert_called_once()
+
+    def test_defaults_identity_objects_to_empty_list(self):
+        """Backward-compatible call site (no identity_objects arg) stamps an
+        empty list rather than omitting the key."""
+        from app.services.pattern_service import _finalize_ceph_capture_disks
+
+        db = MagicMock()
+        pattern = MagicMock()
+        pattern.id = "pat-1"
+        pattern.source_provider_id = None
+        pattern.topology = {"nodes": []}
+
+        _finalize_ceph_capture_disks(db, pattern, [], [])
+
+        assert pattern.topology["projectCephCapture"]["identityObjects"] == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -413,6 +546,10 @@ class TestCaptureKubevirtNativeCephWiring:
             order.append("prepare_ceph")
             return ceph_devices
 
+        def _identity(*_a, **_k):
+            order.append("identity_ceph")
+            return [{"kind": "Secret", "name": "rook-ceph-mon", "data": {}}]
+
         def _poll_ceph(*_a, **_k):
             order.append("poll_ceph")
             return [
@@ -449,6 +586,10 @@ class TestCaptureKubevirtNativeCephWiring:
                 side_effect=_prepare,
             ),
             patch(
+                "app.services.pattern_service._capture_ceph_identity_objects",
+                side_effect=_identity,
+            ),
+            patch(
                 "app.services.pattern_service._poll_ceph_capture_phase",
                 side_effect=_poll_ceph,
             ),
@@ -469,6 +610,7 @@ class TestCaptureKubevirtNativeCephWiring:
 
         assert order == [
             "prepare_ceph",
+            "identity_ceph",
             "poll_ceph",
             "finalize_ceph",
             "unfreeze",
@@ -553,6 +695,10 @@ class TestCaptureKubevirtNativeCephWiring:
             patch(
                 "app.services.pattern_service._prepare_ceph_capture",
                 return_value=ceph_devices,
+            ),
+            patch(
+                "app.services.pattern_service._capture_ceph_identity_objects",
+                return_value=[],
             ),
             patch(
                 "app.services.pattern_service._poll_ceph_capture_phase",
