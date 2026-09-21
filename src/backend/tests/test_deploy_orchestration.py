@@ -5165,6 +5165,85 @@ class TestDeployOpsPodBranch:
         assert env["TROSHKA_API_KEY"] == "trk_key"  # pragma: allowlist secret
 
 
+def _recert_ops_pod_topology():
+    """Ops-pod topology whose sole cluster is a pattern-captured (recert) SNO.
+
+    Its RHCOS control-plane member carries ``ocpKubeconfig`` (OCP already
+    installed), so it is a recert cluster: it legitimately has NO
+    install-config.yaml — the ops pod restores it from the delivered kubeconfig.
+    """
+    topo = _ops_pod_topology()
+    topo["nodes"].append(
+        {
+            "id": "cp-node-0001",
+            "type": "vmNode",
+            "data": {
+                "clusterId": "c1",
+                "os": "rhcos",
+                "ocpKubeconfig": "apiVersion: v1\nkind: Config\n",
+                "ocpKubeadminPassword": "kubeadmin-pw",  # pragma: allowlist secret
+            },
+        }
+    )
+    return topo
+
+
+class TestOpsPodRecertValidation:
+    """Regression: the troshkad ops-pod path must not demand install-config for
+    recert (pattern-captured, already-installed) clusters.
+
+    A recert cluster produces a kubeconfig file, not an install-config, so
+    validating the full cluster list against install-config presence wrongly
+    fails a pattern deploy at the ops-pod step. The KubeVirt path already
+    validates only the fresh-install subset; the troshkad path must match.
+    """
+
+    @patch(f"{SVC}._start_ops_pod_install_monitor")
+    @patch(f"{SVC}._mark_ocp_install_started")
+    @patch(f"{SVC}._start_pod")
+    @patch(f"{SVC}._wait_troshkad_job")
+    @patch(f"{SVC}.start_job", return_value="ops-job")
+    @patch(f"{SVC}.clear_ops_pod_log_cache_keys")
+    @patch(f"{SVC}._cancel_ops_pod_install_troshkad")
+    @patch(f"{SVC}._resolve_ops_pod_pull_through_registry", return_value=None)
+    def test_troshkad_recert_only_cluster_does_not_raise(
+        self,
+        _ptr,
+        _cancel,
+        _clear,
+        mock_start_job,
+        _wait,
+        _start_pod,
+        _mark,
+        _monitor,
+    ):
+        from app.services.deploy_service import _deploy_ops_pod_troshkad
+
+        topology = _recert_ops_pod_topology()
+        clusters = topology["clusters"]
+
+        # Must not raise "install configs missing" — the cluster is recert.
+        _deploy_ops_pod_troshkad(
+            MagicMock(),
+            _make_host(host_type="ec2"),
+            PROJECT_ID,
+            _make_project(),
+            topology,
+            {},
+            clusters,
+            api_key="trk_key",  # pragma: allowlist secret
+            ocp_version="4.20",
+            pull_secret_json="",
+        )
+
+        # The pod was still created (validation did not abort the deploy) and the
+        # delivered files include the recert kubeconfig but NO install-config.
+        assert mock_start_job.call_args[0][1] == "/pods/create"
+        files = mock_start_job.call_args[0][2]["files"]
+        assert "/workdir/c1/kubeconfig" in files
+        assert "/workdir/c1/.src/install-config.yaml" not in files
+
+
 class TestShowroomRouteTarget:
     """Tests for _showroom_route_target() — reconstructs the showroom Route identity
     (vm_name, ext_port) so a container redeploy resolves the same Route deploy made."""
