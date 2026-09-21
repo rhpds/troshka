@@ -73,6 +73,9 @@ ansible/vars/*-host.yml
 # Superpowers brainstorming artifacts
 .superpowers/
 
+# Git worktrees (local isolation)
+.worktrees/
+
 # ArgoCD cluster-specific manifests (use .example files as templates)
 deploy/argocd/*.yaml
 !deploy/argocd/*.example
