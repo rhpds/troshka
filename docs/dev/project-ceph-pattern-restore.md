@@ -354,3 +354,27 @@ count and sets `status.restoreMode: true` before doing the ordinary Rook
 operator + `CephCluster`/`CephBlockPool` apply (unchanged reconcile path
 otherwise — pre-creating the actual PVCs + identity secrets is Task 9/10, not
 this builder).
+
+## Boot gate (Task 10 implementation)
+
+Restore-mode PVCs are adopted (Task 9) but Rook still needs real reconcile
+time to bring OSDs/mon up before RBD is actually usable. `handlers/project.py`
+gates VM power-on on the restored `TroshkaCeph` reaching Ready:
+
+- `_create_ceph_cr` stamps `patch.status["cephRestoreActive"] = True` on the
+  `TroshkaProject` the moment `_materialize_ceph_restore` reports a non-empty
+  `ceph_spec["restore"]` — i.e. only for actual restore-mode deploys. Fresh
+  bootstrap (no `projectCephCapture`) and legacy no-Ceph projects never set
+  this key, so their VM-start path is byte-for-byte unchanged.
+- `_handle_vm_start` (called every 10s from the existing
+  `project_status_check` timer, not a new blocking wait) checks
+  `status["cephRestoreActive"]`; if set, it calls `_ceph_cr_ready()` — a
+  direct read of the `TroshkaCeph` CR's own `status.phase` (set by
+  `handlers/ceph.py`'s `_reconcile_ceph`, not the raw Rook `CephCluster`) —
+  and defers (`deployProgress.stage = "Waiting for restored Ceph"`) until it
+  reports `"Ready"`.
+- The gate applies to **every** VM in the project, not just ones with Ceph-
+  backed disks — the plan's "safest general-purpose rule," since topology
+  doesn't cheaply distinguish Ceph-backed VMs from others at this call site
+  and getting it wrong in the unsafe direction risks booting against an
+  unready/empty pool.

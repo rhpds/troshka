@@ -1450,6 +1450,13 @@ async def _create_ceph_cr(custom_api, topology, namespace, name, body, patch):
             custom_api, namespace, ceph_spec, restore_capture, body
         )
 
+    if ceph_spec.get("restore", {}).get("enabled"):
+        # Boot gate (Task 10): persisted so the deploy-phase VM-start check
+        # (`_handle_vm_start`, driven by the `project_status_check` timer)
+        # knows — without re-reading topology — that it must hold every VM
+        # power-on until this project's TroshkaCeph reports Ready.
+        patch.status["cephRestoreActive"] = True
+
     cr_name = "project-ceph"
     ceph_cr = {
         "apiVersion": f"{CRD_GROUP}/{CRD_VERSION}",
@@ -2609,12 +2616,48 @@ def _cleanup_stale_volumes(namespace, name, patch):
     return False
 
 
+def _ceph_cr_ready(custom_api, namespace, cr_name="project-ceph") -> bool:
+    """Return True once TroshkaCeph's own status.phase reports "Ready".
+
+    Boot gate (Task 10): a restore-mode TroshkaCeph adopts pre-filled mon/OSD
+    PVCs (Task 9) but Rook still needs real reconcile time before RBD is
+    usable — a VM consumer powering on against a not-yet-Ready cluster would
+    fail its initial RBD attach or race the restored identity/data. A missing
+    CR (not yet created, or deleted) is treated as not-ready.
+    """
+    try:
+        ceph_cr = custom_api.get_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkancephs",
+            name=cr_name,
+        )
+    except ApiException as e:
+        if e.status == 404:
+            return False
+        raise
+    return (ceph_cr.get("status") or {}).get("phase") == "Ready"
+
+
 def _handle_vm_start(status, namespace, name, patch, custom_api, vm_items):
     """Handle VM start phase during deploy. Returns True if caller should return."""
     if status.get("recertConfig") and not status.get("recertCleaned"):
         return True
     if status.get("vmsStarted"):
         return False
+
+    if status.get("cephRestoreActive") and not _ceph_cr_ready(custom_api, namespace):
+        # Safest general-purpose rule (Task 10 brief): hold *every* VM's
+        # power-on for this project, not just Ceph consumers, until the
+        # restored TroshkaCeph is Ready. project_status_check re-runs this
+        # every 10s, so we just defer rather than blocking the handler.
+        patch.status["deployProgress"] = {
+            "percent": 85,
+            "stage": "Waiting for restored Ceph",
+            "detail": "TroshkaCeph not yet Ready",
+        }
+        return True
 
     if _cleanup_stale_volumes(namespace, name, patch):
         return True

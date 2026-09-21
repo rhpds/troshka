@@ -158,6 +158,7 @@ class TestCreateCephCrRestoreWiring:
         custom_api.create_namespaced_custom_object.assert_called_once()
         created_spec = custom_api.create_namespaced_custom_object.call_args.kwargs["body"]["spec"]
         assert "restore" not in created_spec
+        assert "cephRestoreActive" not in patch_obj.status
 
     def test_restore_deploy_materializes_before_creating_cr(self):
         """projectCephCapture.restore present -> PVCs must be materialized
@@ -201,3 +202,4 @@ class TestCreateCephCrRestoreWiring:
             )
 
         assert call_order == ["materialize", "create_cr"]
+        assert patch_obj.status["cephRestoreActive"] is True
