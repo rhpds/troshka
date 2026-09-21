@@ -55,44 +55,85 @@ the exact fixed name `rook-ceph-mon-<id>`.
 
 Every Rook-managed object for a `CephCluster` — **not just the mon/OSD
 PVCs** — carries `ownerReferences: [{kind: CephCluster, controller: true,
-blockOwnerDeletion: true}]`. Confirmed on both the live namespace and the
-spike:
+blockOwnerDeletion: true}]`. **A plain `oc delete cephcluster` (or `kopf`'s
+existing `ceph_delete` handler, which additionally force-deletes PVCs)
+cascades through Kubernetes garbage collection and deletes all of it**,
+including the `rook-ceph-mon` secret holding the fsid.
 
-- `rook-ceph-mon-a` (mon PVC), `osd-set-data-*` (OSD PVCs)
-- `rook-ceph-mon` Secret (**contains `fsid`, `mon-secret`, `admin-secret`**)
-- `rook-ceph-admin-keyring`, `rook-ceph-mons-keyring`, `rook-ceph-config` Secrets
-- `rook-csi-rbd-node`, `rook-csi-rbd-provisioner` (and cephfs equivalents) Secrets
-- `rook-ceph-mon-endpoints` ConfigMap
-- per-daemon keyrings (`rook-ceph-mgr-a-keyring`, exporter, crash-collector)
-- `cluster-peer-token-troshka-ceph`
+The spike's Step 2 experiment orphaned (stripped `ownerReferences` from) the
+**entire** set below **together, all at once**, before deleting
+`CephCluster` — it did **not** test any object individually, so "survives
+when orphaned" is confirmed for the whole set as a group, not per-object.
+The MUST-capture / may-regenerate column below is a mix of that group
+evidence and reasoning from what each object actually stores; low-confidence
+rows are called out explicitly rather than asserted as tested.
 
-**A plain `oc delete cephcluster` (or `kopf`'s existing `ceph_delete` handler,
-which additionally force-deletes PVCs) cascades through Kubernetes garbage
-collection and deletes all of the above**, including the `rook-ceph-mon`
-secret holding the fsid. If only the PVCs were preserved and the identity
-secrets were lost, Rook would have no record of the previous fsid/keys and
-would very likely bootstrap a **new** mon identity against a PVC that
-already has an initialized (now orphaned-looking) mon store — undermining
-identity preservation. This was not independently re-tested to failure (to
-avoid burning a second live Ceph bring-up in the shared dev cluster), but it
-follows directly from the ownerReference evidence: the fsid lives in the
-`rook-ceph-mon` Secret, not on the PVC's block device in a place Rook's
-control plane reads before deciding to `mkfs`.
+### Identity-object capture matrix
 
-**Restore mode must therefore orphan-recreate this entire set, not just
-PVCs:**
+| Object | Kind | Orphaned+preserved together in spike? | What it carries | Capture requirement |
+|---|---|---|---|---|
+| `rook-ceph-mon-a` (mon PVC) | PVC | ✅ yes | Mon rocksdb store (monmap, osdmap, auth db) | **MUST capture** — this is the `PatternDisk` itself |
+| `osd-set-data-*` (OSD PVCs) | PVC | ✅ yes | OSD bluestore data | **MUST capture** — this is the `PatternDisk` itself |
+| `rook-ceph-mon` | Secret | ✅ yes | `fsid`, `mon-secret`, `admin-secret` | **MUST capture** — this *is* the cluster identity; confirmed fsid survived only because this secret survived |
+| `rook-ceph-mon-endpoints` | ConfigMap | ✅ yes | mon addr mapping, `maxMonId` | **MUST capture** — op-mon reads this before deciding whether a mon is "new" |
+| `rook-ceph-admin-keyring` | Secret | ✅ yes | `client.admin` cephx key | **MUST capture** — used by export job / any admin-level access; matches the key already recorded in the mon's persisted auth db, so a regenerated one would mismatch |
+| `rook-ceph-mons-keyring` | Secret | ✅ yes | mon cephx key | **MUST capture** — same reasoning as admin keyring |
+| `rook-ceph-config` | Secret | ✅ yes | rendered `ceph.conf` | **MUST capture** — cheap, avoids Rook re-deriving it from a possibly-incomplete CR state mid-restore |
+| `rook-csi-rbd-node` / `rook-csi-rbd-provisioner` | Secret | ✅ yes | `client.csi-rbd-*` cephx keys | **MUST capture** — baked into nested consumers' CSI config; a fresh key would not match the entity already registered in the mon auth db, breaking nested mounts |
+| `rook-csi-cephfs-node` / `rook-csi-cephfs-provisioner` | Secret | ✅ yes | `client.csi-cephfs-*` cephx keys | **Capture for completeness**, but Troshka's project Ceph does not expose CephFS today — low risk if skipped, **not independently verified** |
+| `rook-ceph-mgr-a-keyring` | Secret | ✅ yes | `client.mgr.a` cephx key | **Should capture** — same mon-auth-db-mismatch risk as admin/mon keyrings if regenerated fresh, but only the mgr daemon itself would be affected (not external consumers); **not independently tested in isolation** |
+| `rook-ceph-crash-collector-keyring` | Secret | ✅ yes | `client.crash` cephx key | **Low priority** — crash-collector is disabled in Troshka's `CephCluster` spec (`crashCollector.disable: true`); safe to omit, **not independently tested** |
+| `rook-ceph-exporter-keyring` | Secret | ✅ yes | `client.ceph-exporter` cephx key | **Low priority** — metrics-only sidecar; a regenerated key would at worst break metrics scraping, not data/identity; **not independently tested** |
+| `cluster-peer-token-troshka-ceph` | Secret | ✅ yes | RBD-mirroring peer bootstrap token | **Skip / let Rook regenerate** — Troshka does not use RBD mirroring between clusters; this token has no consumer outside Rook's own (unused) mirroring feature |
 
-1. Mon + OSD PVCs (by name / by device-set label)
-2. `rook-ceph-mon` Secret (fsid + mon-secret + admin-secret)
-3. `rook-ceph-mon-endpoints` ConfigMap
-4. `rook-ceph-admin-keyring`, `rook-ceph-mons-keyring`, `rook-ceph-config` Secrets
-5. `rook-csi-rbd-node`, `rook-csi-rbd-provisioner` Secrets (client keys baked
-   consumers rely on)
+**Practical recommendation:** capture the full "MUST capture" + "Should
+capture" rows (everything except the bottom three low-priority rows) as
+part of `projectCephCapture` metadata — it's a handful of small Secrets plus
+one ConfigMap, cheap to snapshot as plain string data (no VolumeSnapshot
+needed), and capturing the whole group matches exactly what the spike
+proved works. Treating any row as "safe to skip" beyond the bottom three
+is an *optimization* for a later task, not something this spike validated —
+if Phase 1 wants to trim the list further, it must re-run the orphan
+experiment with that specific object *excluded* to confirm Rook truly
+regenerates it cleanly against the existing mon auth db.
 
 For pattern restore this maps to: capture these Secrets/ConfigMap alongside
 the mon/OSD `PatternDisk`s (small — no VolumeSnapshot needed, just their
 `data`), and pre-create them (without an owning `CephCluster`, since it
 doesn't exist yet) before creating the restore-mode `TroshkaCeph`/`CephCluster`.
+
+## Do not reuse standard teardown for capture or restore-preservation paths
+
+`kopf`'s existing `ceph_delete` handler
+(`src/operator/handlers/ceph.py`) is **intentionally destructive**: on
+`TroshkaCeph` CR delete it deletes the `CephCluster`/`CephBlockPool` CRs and
+then explicitly calls `delete_ceph_storage_pvcs()`
+(`src/operator/helpers/rook_ceph.py`), which force-deletes mon/OSD PVCs by
+label and name-prefix regardless of ownership state. That is correct and
+wanted for a real project teardown — it is **not** the mechanism used
+anywhere in this spike, and must never be invoked on artifacts that a
+capture or restore flow needs to survive:
+
+- **Capture** never touches the source project's `CephCluster`/`TroshkaCeph`
+  CR at all — it only quiesces, snapshots PVCs, and unfreezes. There is no
+  code path in the capture design that should call `ceph_delete` or
+  `delete_ceph_storage_pvcs()`; if any future capture code does, that's a bug.
+- **Restore** creates a brand-new `TroshkaCeph`/`CephCluster` in a project
+  that has no prior Ceph — again, `ceph_delete` is simply never in the
+  restore path under normal operation.
+- The **only** place this spike deliberately produced a delete+recreate
+  cycle was the Step 2 experiment itself, and it explicitly did **not** use
+  `ceph_delete` / `delete_ceph_storage_pvcs()` — it used the
+  orphan-ownerReferences-then-`oc delete cephcluster` pattern documented
+  above and in "Spike procedure" step 5–7. If a future task needs an
+  in-place "reset and reattach" repair flow (e.g. recovering from a failed
+  restore, or re-running restore against already-materialized PVCs), it
+  **must** follow that same orphan-first pattern — strip `ownerReferences`
+  from every object in the capture matrix above before deleting the
+  `CephCluster`/`CephBlockPool` CRs, and must not call the standard
+  `ceph_delete` handler or `delete_ceph_storage_pvcs()` against artifacts
+  that need to survive. Calling the standard teardown on a restore-in-progress
+  project will permanently delete the mon/OSD PVCs and their data.
 
 ## Spike procedure (what was actually run)
 
@@ -194,10 +235,67 @@ Restore-mode preconditions (before creating this `CephCluster`):
    required — Rook matches by label, so pre-created OSD PVCs just need the
    `ceph.rook.io/DeviceSet` / `ceph.rook.io/DeviceSetPVCId` / `ceph.rook.io/setIndex`
    labels set correctly per captured `source_index`.
-3. Pre-create the identity Secrets/ConfigMap listed above from captured
-   values (fsid, mon-secret, admin-secret, csi user keys) — **without** an
-   owning `CephCluster` (none exists yet).
-4. Only then create the `TroshkaCeph`/`CephCluster` CR.
+3. Pre-create the identity Secrets/ConfigMap from captured values (fsid,
+   mon-secret, admin-secret, csi user keys, ...) — see the **identity-object
+   capture matrix** above for the full "MUST capture" / "Should capture"
+   list — **without** an owning `CephCluster` (none exists yet).
+4. Pre-create (or let Rook create fresh) the `CephBlockPool` CR — see
+   "CephBlockPool restore semantics" below; this is a declarative wrapper,
+   not a data-carrying object, so it has looser requirements than steps 1–3.
+5. Only then create the `TroshkaCeph`/`CephCluster` CR.
+
+## CephBlockPool restore semantics
+
+Unlike the mon/OSD PVCs and identity Secrets, the `CephBlockPool` CR
+(`troshka-ceph-pool`) is **not** where pool data or identity lives — it is a
+declarative instruction telling Rook "ensure a pool with this name/shape
+exists." The pool's actual data (RBD images, objects, PG layout) lives
+inside the already-adopted OSDs, keyed by the fsid/OSDMap that came back
+with them.
+
+Confirmed in the spike:
+
+- Deleting the `CephBlockPool` **CR** does **not** delete the underlying
+  Ceph pool or its data, *if* the CR is removed by stripping its finalizer
+  instead of letting Rook's own reconcile run the delete to completion.
+  Rook's finalizer logic actively **refuses** to run `ceph osd pool rm`
+  while the pool "contains images or snapshots" — the spike hit this refusal
+  directly (`pool "troshka-ceph-pool" cannot be deleted because it is not
+  empty or has dependents`) and worked around it by force-clearing the CR's
+  finalizer (`oc patch cephblockpool ... --type=json -p '[{"op":"remove",
+  "path":"/metadata/finalizers"}]'`), which removes the Kubernetes object
+  without ever invoking Rook's pool-delete logic.
+- A **freshly-created** `CephBlockPool` CR (new UID, no relationship to the
+  old one) reconciled cleanly to `Ready` against the already-existing pool.
+  The spike's marker `rados` object and `rbd` image — written before the
+  delete/recreate cycle — were still present afterward, confirming Rook
+  detected the pool already existed at the Ceph level and did not recreate
+  it from scratch.
+
+**Metadata expectations for the recreated `CephBlockPool` CR:**
+
+- `metadata.name` — fixed by Troshka's convention
+  (`CEPH_BLOCK_POOL_NAME = "troshka-ceph-pool"` in
+  `src/operator/helpers/rook_ceph.py`). No capture needed; restore mode
+  reuses the same constant.
+- `spec.failureDomain` — fixed (`"host"`) by the same constant builder. No
+  capture needed.
+- `spec.replicated.size` — **must match** the pool's actual replication
+  size at capture time, not just default to `TroshkaCeph.spec.replicateSize`
+  blindly. This value is already part of existing topology capture
+  (`cephClusterNode` → `replicateSize`, per the design doc's Topology
+  section), so no *new* capture work is needed — restore mode just has to
+  thread that already-captured value into the recreated `CephBlockPool`
+  CR's `spec.replicated.size` rather than recomputing it from a possibly
+  different current `osdCount`. **Why it matters:** if the recreated CR's
+  `replicated.size` does not match what the pool already has, Rook will
+  issue a live `ceph osd pool set ... size` reconcile against the just-
+  recovered pool — not destructive, but an unwanted operational side effect
+  (and a real risk of an under/oversized-PG health warning) that a correct
+  restore should avoid by matching the captured value exactly.
+- No other pool-level settings (`replicated.size` aside) were exercised by
+  this spike — `troshka-ceph-pool` only ever uses `failureDomain: host` +
+  `replicated.size`, matching `build_ceph_block_pool()`.
 
 ## Recommendation
 
@@ -205,11 +303,16 @@ Restore-mode preconditions (before creating this `CephCluster`):
 `troshka-ceph-osd-*` PVCs via `build_osd_pvcs`) or Strategy C (abort) needed.
 Downstream tasks should:
 - Capture the OSD/mon `PatternDisk`s exactly as designed (§5 of the design doc).
-- Additionally capture the small identity Secrets/ConfigMap listed above
-  (not full VolumeSnapshots — just their string data) as part of the
-  `projectCephCapture` metadata, since fsid/keys live there, not just in the
-  raw block devices.
+- Additionally capture the identity Secrets/ConfigMap in the **identity-object
+  capture matrix** above (not full VolumeSnapshots — just their string
+  data) as part of the `projectCephCapture` metadata, since fsid/keys live
+  there, not just in the raw block devices.
+- Thread the already-captured `replicateSize` topology value into the
+  restore-mode `CephBlockPool` CR's `spec.replicated.size` (see
+  "CephBlockPool restore semantics") to avoid an unwanted live pool resize.
 - Recreate PVCs + those Secrets/ConfigMap (unowned) before creating the
-  restore-mode `TroshkaCeph`, matching the label scheme above for OSDs.
+  restore-mode `TroshkaCeph`, matching the label scheme above for OSDs —
+  and never via the standard `ceph_delete` / `delete_ceph_storage_pvcs()`
+  teardown path (see "Do not reuse standard teardown" above).
 - `build_osd_pvcs()` in `rook_ceph.py` remains dead code; do not wire it in
   for restore — Rook's own device-set PVC discovery already does the job.
