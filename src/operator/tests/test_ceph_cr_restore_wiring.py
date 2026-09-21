@@ -63,6 +63,9 @@ class TestMaterializeCephRestore:
                 "helpers.ceph_restore.wait_for_ceph_restore_datavolumes",
                 new_callable=AsyncMock,
             ) as mock_wait,
+            patch("handlers.project.client.CoreV1Api"),
+            patch("handlers.project.client.BatchV1Api"),
+            patch("handlers.project._setup_export_sa"),
         ):
             asyncio.run(
                 _materialize_ceph_restore(
@@ -70,14 +73,22 @@ class TestMaterializeCephRestore:
                 )
             )
 
-        mock_materialize.assert_called_once_with(
-            custom_api, "ns1", _RESTORE_CAPTURE, {"bucket": "b"}, {"bucket": "c"}, "ocs-storage"
+        assert mock_materialize.call_count == 1
+        mat_kwargs = mock_materialize.call_args
+        assert mat_kwargs.args[1:6] == (
+            "ns1",
+            _RESTORE_CAPTURE,
+            {"bucket": "b"},
+            {"bucket": "c"},
+            "ocs-storage",
         )
-        mock_wait.assert_awaited_once_with(
-            custom_api,
+        mock_wait.assert_awaited_once()
+        wait_kwargs = mock_wait.await_args
+        assert wait_kwargs.args[1:3] == (
             "ns1",
             ["rook-ceph-mon-a", "osd-restore-data-0", "osd-restore-data-1"],
         )
+        assert wait_kwargs.kwargs.get("batch_api") is not None
         assert ceph_spec["restore"] == {
             "enabled": True,
             "monPvc": "rook-ceph-mon-a",
@@ -102,6 +113,9 @@ class TestMaterializeCephRestore:
                 "helpers.ceph_restore.wait_for_ceph_restore_datavolumes",
                 new_callable=AsyncMock,
             ) as mock_wait,
+            patch("handlers.project._setup_export_sa"),
+            patch("handlers.project.client.CoreV1Api"),
+            patch("handlers.project.client.BatchV1Api"),
         ):
             asyncio.run(
                 _materialize_ceph_restore(custom_api, "ns1", ceph_spec, {}, body)
@@ -129,6 +143,9 @@ class TestMaterializeCephRestore:
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("ceph-restore DataVolume rook-ceph-mon-a failed to import"),
             ),
+            patch("handlers.project._setup_export_sa"),
+            patch("handlers.project.client.CoreV1Api"),
+            patch("handlers.project.client.BatchV1Api"),
         ):
             with pytest.raises(RuntimeError, match="failed to import"):
                 asyncio.run(
@@ -174,7 +191,7 @@ class TestCreateCephCrRestoreWiring:
 
         call_order = []
 
-        async def fake_materialize(_custom_api, _ns, ceph_spec, _restore_capture, _body):
+        async def fake_materialize(_custom_api, _ns, ceph_spec, _restore_capture, _body, **_kwargs):
             call_order.append("materialize")
             ceph_spec["restore"] = {
                 "enabled": True,
@@ -228,7 +245,7 @@ class TestCreateCephCrRestoreWiring:
         def fake_restore_identity(_ns, objs):
             call_order.append(("identity", objs))
 
-        async def fake_materialize(_custom_api, _ns, ceph_spec, _restore_capture, _body):
+        async def fake_materialize(_custom_api, _ns, ceph_spec, _restore_capture, _body, **_kwargs):
             call_order.append(("materialize", None))
             ceph_spec["restore"] = {"enabled": True, "monPvc": "rook-ceph-mon-a", "osdPvcs": []}
 

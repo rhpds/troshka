@@ -9090,6 +9090,46 @@ class TestResolveDeployStepAdditional:
         assert step == "deploying"
 
 
+class TestResolveDeployStepCephRestore:
+    def test_ceph_stage_outranks_image_waiting_lines(self):
+        step, detail = _resolve_deploy_step(
+            all_disks_done=False,
+            op_stage="Restoring Ceph",
+            op_detail="ceph-mon: restoring",
+            dv_detail="disk-1: waiting",
+            dv_lines=["ceph-mon: restoring", "disk-1: waiting"],
+            status={},
+            last={},
+        )
+        assert step == "restoring ceph"
+        assert "ceph-mon" in detail
+
+    def test_ceph_lines_without_op_stage(self):
+        step, detail = _resolve_deploy_step(
+            False,
+            "",
+            "",
+            "ceph-mon: restoring\ndisk-1: waiting",
+            ["ceph-mon: restoring", "disk-1: waiting"],
+            {},
+            {},
+        )
+        assert step == "restoring ceph"
+        assert "ceph-mon: restoring" in detail
+
+    def test_ceph_done_falls_through_to_images(self):
+        step, detail = _resolve_deploy_step(
+            False,
+            "",
+            "",
+            "ceph-mon: done\ndisk-1: waiting",
+            ["ceph-mon: done", "disk-1: waiting"],
+            {},
+            {},
+        )
+        assert step == "images"
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Coverage gap tests — uncovered branches in helper functions
 # ═══════════════════════════════════════════════════════════════════════

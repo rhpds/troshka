@@ -314,6 +314,7 @@ def test_build_ceph_rbac_allows_export_job_secret_access():
     role, _binding = build_ceph_rbac(cr)
     rules = {tuple(rule["resources"]): rule["verbs"] for rule in role["rules"]}
     assert rules[("secrets",)] == ["get", "patch", "create", "update"]
+    assert rules[("pods", "pods/exec")] == ["get", "list", "create"]
     assert rules[("cephclusters",)] == ["get"]
 
 
@@ -617,6 +618,21 @@ def test_ceph_cluster_phase_prefers_troshka_ceph():
     assert custom_api.get_namespaced_custom_object.call_count >= 1
     first = custom_api.get_namespaced_custom_object.call_args_list[0]
     assert first.kwargs["plural"] == "troshkancephs"
+
+
+def test_rook_ceph_cluster_phase_reads_rook_only():
+    from helpers.rook_ceph import rook_ceph_cluster_phase
+
+    custom_api = MagicMock()
+    custom_api.get_namespaced_custom_object.return_value = {
+        "status": {"phase": "Ready", "cephFSID": "abc-123"}
+    }
+    phase, fsid = rook_ceph_cluster_phase(custom_api, "troshka-abc")
+    assert phase == "Ready"
+    assert fsid == "abc-123"
+    call = custom_api.get_namespaced_custom_object.call_args
+    assert call.kwargs["plural"] == "cephclusters"
+    assert call.kwargs["name"] == "troshka-ceph"
 
 
 def test_ceph_cluster_phase_raises_on_forbidden():

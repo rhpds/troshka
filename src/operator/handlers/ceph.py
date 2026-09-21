@@ -19,7 +19,6 @@ from helpers.rook_ceph import (
     build_mon_bridge_deployment,
     build_mon_backend_service,
     build_ceph_rbac,
-    ceph_cluster_phase,
     ceph_external_details_exported,
     delete_rook_operator,
     discover_ceph_image,
@@ -28,6 +27,7 @@ from helpers.rook_ceph import (
     is_ceph_ready,
     nested_mon_host_from_secret,
     normalize_restore_spec,
+    rook_ceph_cluster_phase,
     rook_service_account_ref,
     validate_lab_ip,
 )
@@ -173,18 +173,34 @@ async def _reconcile_ceph(body, patch, namespace: str) -> None:
             name=dep_name, namespace=namespace, body=dep
         )
 
-    phase, fsid = ceph_cluster_phase(custom_api, namespace)
+    # Rook phase — not TroshkaCeph status (would circular-wait on Progressing).
+    phase, fsid = rook_ceph_cluster_phase(custom_api, namespace)
     secret_body = build_external_secret(body, fsid=fsid)
     try:
         core_api.create_namespaced_secret(namespace=namespace, body=secret_body)
     except ApiException as e:
         if e.status != 409:
             raise
-        core_api.patch_namespaced_secret(
-            name=CEPH_EXTERNAL_SECRET,
-            namespace=namespace,
-            body={"stringData": secret_body.get("stringData", {})},
-        )
+        # Never rewrite mon-host/config on an existing secret — the export job
+        # stamps hostNetwork mon:3300; clobbering it with labIp makes
+        # ensure_ceph_export_job clear external_cluster_details in a loop.
+        if not ceph_external_details_exported(core_api, namespace):
+            # Only fill empty fsid before export completes.
+            if fsid:
+                try:
+                    existing = core_api.read_namespaced_secret(
+                        name=CEPH_EXTERNAL_SECRET, namespace=namespace
+                    )
+                    data = existing.data or {}
+                    if not data.get("fsid"):
+                        core_api.patch_namespaced_secret(
+                            name=CEPH_EXTERNAL_SECRET,
+                            namespace=namespace,
+                            body={"stringData": {"fsid": fsid}},
+                        )
+                except ApiException:
+                    pass
+
 
     osd_count = spec.get("osdCount", 3)
     replicate_size = spec.get("replicateSize", min(int(osd_count), 3))

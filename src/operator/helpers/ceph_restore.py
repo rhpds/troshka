@@ -8,12 +8,14 @@ rocksdb store) and OSD PVC(s) (Block, qcow2 disk image) from their captured S3
 objects *before* the restore-mode ``TroshkaCeph`` CR is created, so Rook
 adopts the pre-filled claims instead of provisioning empty new ones.
 
-This reuses the existing CDI S3-import DataVolume mechanism (the same one
-that pre-creates golden VM-disk PVCs in ``handlers/project.py``): the mon
-device uses CDI's ``contentType: archive`` (untar onto a Filesystem claim)
-and the OSD device(s) use the default ``contentType: kubevirt`` import onto a
-``volumeMode: Block`` claim, labeled so Rook's ``ceph.rook.io/DeviceSet*``
-discovery (``discover_ceph_device_pvcs`` in ``rook_ceph.py``) finds them.
+OSD devices reuse CDI S3-import DataVolumes onto ``volumeMode: Block`` claims,
+labeled so Rook's ``ceph.rook.io/DeviceSet*`` discovery finds them.
+
+The mon device is restored via an empty Filesystem PVC + rclone/tar Job
+instead of CDI ``contentType: archive``. CDI's archive importer runs as
+non-root and fails with ``unlinkat //data: permission denied`` when clearing
+the RBD mount root (OpenShift CDI / ODF). The Job mirrors the capture-side
+export path (``helpers/patterns.build_ceph_device_export_job``).
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ import math
 
 from kubernetes.client.exceptions import ApiException
 
+from helpers.k8s import TOOLS_IMAGE
 from helpers.kubevirt import s3_import_url
 from helpers.rook_ceph import (
     CEPH_DEVICE_SET_NAME,
@@ -42,6 +45,9 @@ _DV_PLURAL = "datavolumes"
 _GIB = 1073741824
 _MIN_MON_RESTORE_GI = 10
 _MIN_OSD_RESTORE_GI = 50
+# Filesystem SC for mon rocksdb (OSD virtualization SC is Block-oriented).
+DEFAULT_MON_RESTORE_STORAGE_CLASS = "ocs-storagecluster-ceph-rbd"
+MON_RESTORE_JOB_NAME = f"restore-{CEPH_MON_PVC_NAME}"
 
 
 def osd_restore_pvc_name(index: int) -> str:
@@ -81,28 +87,107 @@ def device_s3_config(device: dict, s3_config: dict, central_s3_config: dict | No
     return s3_config or {}, "s3-credentials"  # pragma: allowlist secret
 
 
-def build_mon_restore_datavolume(
-    namespace: str, device: dict, s3_config: dict, secret_name: str
+def build_mon_restore_pvc(
+    namespace: str, device: dict, storage_class: str = ""
 ) -> dict:
-    """CDI DataVolume that untars the captured mon rocksdb archive onto the
-    fixed ``rook-ceph-mon-a`` claim (Filesystem, ``contentType: archive``)."""
-    s3_url = s3_import_url(device["s3Path"], s3_config)
+    """Empty Filesystem PVC that the mon restore Job will populate."""
     size_bytes = device.get("virtualSizeBytes") or device.get("sizeBytes") or 0
     request_gi = _request_gi(size_bytes, _MIN_MON_RESTORE_GI)
+    sc = storage_class or DEFAULT_MON_RESTORE_STORAGE_CLASS
     return {
-        "apiVersion": f"{_DV_GROUP}/{_DV_VERSION}",
-        "kind": "DataVolume",
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
         "metadata": {
             "name": CEPH_MON_PVC_NAME,
             "namespace": namespace,
             "labels": {"app": "troshka-ceph", "troshka-role": "ceph-restore-mon"},
         },
         "spec": {
-            "source": {"s3": {"url": s3_url, "secretRef": secret_name}},
-            "contentType": "archive",
-            "pvc": {
-                "accessModes": ["ReadWriteOnce"],
-                "resources": {"requests": {"storage": f"{request_gi}Gi"}},
+            "accessModes": ["ReadWriteOnce"],
+            "storageClassName": sc,
+            "resources": {"requests": {"storage": f"{request_gi}Gi"}},
+        },
+    }
+
+
+def build_mon_restore_job(
+    namespace: str, device: dict, s3_config: dict, secret_name: str
+) -> dict:
+    """Job that rclone-downloads the mon tar.gz and untars onto ``rook-ceph-mon-a``.
+
+    Excludes ``lost+found`` (root-owned on a fresh ext4; present in the capture
+    tarball but irrelevant to Rook's mon store).
+    """
+    s3_path = device["s3Path"]
+    s3_bucket = s3_config.get("bucket", "")
+    s3_endpoint = s3_config.get("endpoint") or "https://s3.amazonaws.com"
+    restore_cmd = (
+        "set -e; export HOME=/scratch; "
+        "export RCLONE_CONFIG=/scratch/rclone.conf; "
+        "cat > $RCLONE_CONFIG <<REOF\n"
+        "[target]\n"
+        "type = s3\n"
+        "provider = Ceph\n"
+        "access_key_id = $AWS_ACCESS_KEY_ID\n"
+        "secret_access_key = $AWS_SECRET_ACCESS_KEY\n"
+        f"endpoint = {s3_endpoint}\n"
+        "no_check_bucket = true\n"
+        "no_verify_ssl = true\n"
+        "REOF\n"
+        f"rclone copyto target:{s3_bucket}/{s3_path} /scratch/mon.tar.gz; "
+        # Non-root cannot chmod/utime the PVC mount root (`.`); GNU tar still
+        # exits non-zero after a successful extract. Accept success when the
+        # mon store directory is present.
+        "tar -C /disk -xzf /scratch/mon.tar.gz --exclude=lost+found "
+        "--no-same-owner --no-same-permissions -m "
+        "|| test -d /disk/data/store.db; "
+        'echo "mon restore complete"'
+    )
+    return {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": MON_RESTORE_JOB_NAME,
+            "namespace": namespace,
+            "labels": {"app": "troshka-ceph", "troshka-role": "ceph-restore-mon"},
+        },
+        "spec": {
+            "backoffLimit": 3,
+            "activeDeadlineSeconds": 1800,
+            "template": {
+                "spec": {
+                    "serviceAccountName": "troshka-export",
+                    "securityContext": {
+                        "runAsUser": 107,
+                        "runAsGroup": 107,
+                        "fsGroup": 107,
+                    },
+                    "containers": [
+                        {
+                            "name": "restore",
+                            "image": TOOLS_IMAGE,
+                            "imagePullPolicy": "Always",
+                            "command": ["sh", "-c", restore_cmd],
+                            "envFrom": [{"secretRef": {"name": secret_name}}],
+                            "resources": {
+                                "requests": {"cpu": "100m", "memory": "256Mi"},
+                                "limits": {"cpu": "1", "memory": "1Gi"},
+                            },
+                            "volumeMounts": [
+                                {"name": "disk", "mountPath": "/disk"},
+                                {"name": "scratch", "mountPath": "/scratch"},
+                            ],
+                        }
+                    ],
+                    "volumes": [
+                        {
+                            "name": "disk",
+                            "persistentVolumeClaim": {"claimName": CEPH_MON_PVC_NAME},
+                        },
+                        {"name": "scratch", "emptyDir": {}},
+                    ],
+                    "restartPolicy": "Never",
+                }
             },
         },
     }
@@ -150,37 +235,32 @@ def build_osd_restore_datavolume(
     }
 
 
-def build_ceph_restore_datavolumes(
+def build_ceph_restore_resources(
     namespace: str,
     restore_capture: dict | None,
     s3_config: dict,
     central_s3_config: dict | None = None,
     storage_class: str = "",
-) -> tuple[dict | None, list[dict], str, list[str]]:
-    """Build the mon + OSD restore DataVolume manifests for a resolved
-    ``projectCephCapture.restore`` block.
+    mon_storage_class: str = "",
+) -> tuple[dict | None, dict | None, list[dict], str, list[str]]:
+    """Build mon PVC+Job and OSD restore DataVolume manifests.
 
-    ``restore_capture`` is ``{"mon": {...} | None, "osds": [{...}, ...]}``
-    (device dicts carrying ``s3Path``/``format``/``sizeBytes``/
-    ``virtualSizeBytes``/``source``/``index``), stamped onto the deploy-time
-    topology by the backend (PatternDisk ids resolved to S3 paths — the
-    operator has no DB access to do this itself).
-
-    Returns ``(mon_dv, osd_dvs, mon_pvc_name, osd_pvc_names)``. All four are
-    empty/``None``/``""`` when ``restore_capture`` has no usable devices
-    (a fresh-bootstrap deploy with no prior Ceph capture).
+    Returns ``(mon_pvc, mon_job, osd_dvs, mon_pvc_name, osd_pvc_names)``.
+    All empty when ``restore_capture`` has no usable devices.
     """
     if not restore_capture:
-        return None, [], "", []
+        return None, None, [], "", []
 
     mon_device = restore_capture.get("mon")
     osd_devices = restore_capture.get("osds") or []
 
-    mon_dv = None
+    mon_pvc = None
+    mon_job = None
     mon_name = ""
     if mon_device and mon_device.get("s3Path"):
         cfg, secret = device_s3_config(mon_device, s3_config, central_s3_config)
-        mon_dv = build_mon_restore_datavolume(namespace, mon_device, cfg, secret)
+        mon_pvc = build_mon_restore_pvc(namespace, mon_device, mon_storage_class)
+        mon_job = build_mon_restore_job(namespace, mon_device, cfg, secret)
         mon_name = CEPH_MON_PVC_NAME
 
     osd_dvs: list[dict] = []
@@ -193,7 +273,26 @@ def build_ceph_restore_datavolumes(
         osd_dvs.append(dv)
         osd_names.append(dv["metadata"]["name"])
 
-    return mon_dv, osd_dvs, mon_name, osd_names
+    return mon_pvc, mon_job, osd_dvs, mon_name, osd_names
+
+
+# Back-compat alias used by older tests / call sites expecting DV-shaped mon.
+def build_ceph_restore_datavolumes(
+    namespace: str,
+    restore_capture: dict | None,
+    s3_config: dict,
+    central_s3_config: dict | None = None,
+    storage_class: str = "",
+) -> tuple[dict | None, list[dict], str, list[str]]:
+    """Deprecated shape: returns ``(mon_job_or_none, osd_dvs, mon_name, osd_names)``.
+
+    Prefer ``build_ceph_restore_resources``. The first element is the mon Job
+    (not a DataVolume) when a mon device is present.
+    """
+    _mon_pvc, mon_job, osd_dvs, mon_name, osd_names = build_ceph_restore_resources(
+        namespace, restore_capture, s3_config, central_s3_config, storage_class
+    )
+    return mon_job, osd_dvs, mon_name, osd_names
 
 
 def build_identity_object_manifests(
@@ -233,6 +332,9 @@ def build_identity_object_manifests(
         }
         if kind == "Secret":
             manifest["data"] = dict(data)
+            # Rook Secrets use type kubernetes.io/rook; restoring as Opaque
+            # makes later Rook updates fail with "type: field is immutable".
+            manifest["type"] = obj.get("type") or "kubernetes.io/rook"
         else:
             manifest["data"] = {
                 k: base64.b64decode(v).decode() for k, v in data.items()
@@ -248,13 +350,17 @@ def restore_identity_objects(
     the project namespace, before the restore-mode ``TroshkaCeph`` CR is
     created (Strategy A — see docs/dev/project-ceph-pattern-restore.md).
     No-op when ``identity_objects`` is empty (fresh-bootstrap deploy).
+
+    If a Secret already exists with the wrong type (e.g. Opaque from an
+    earlier restore bug), delete and recreate so Rook can own
+    ``kubernetes.io/rook`` Secrets.
     """
     for manifest in build_identity_object_manifests(namespace, identity_objects):
         kind = manifest["kind"]
         name = manifest["metadata"]["name"]
         try:
             if kind == "Secret":
-                core_api.create_namespaced_secret(namespace=namespace, body=manifest)
+                _ensure_identity_secret(core_api, namespace, manifest)
             else:
                 core_api.create_namespaced_config_map(
                     namespace=namespace, body=manifest
@@ -266,6 +372,30 @@ def restore_identity_objects(
             logger.info(
                 "ceph identity %s %s already exists in %s", kind, name, namespace
             )
+
+
+def _ensure_identity_secret(core_api, namespace: str, manifest: dict) -> None:
+    """Create identity Secret; replace if present with wrong type."""
+    name = manifest["metadata"]["name"]
+    want_type = manifest.get("type") or "kubernetes.io/rook"
+    try:
+        existing = core_api.read_namespaced_secret(name=name, namespace=namespace)
+    except ApiException as e:
+        if e.status != 404:
+            raise
+        core_api.create_namespaced_secret(namespace=namespace, body=manifest)
+        return
+    if existing.type == want_type:
+        return
+    logger.info(
+        "Replacing ceph identity Secret %s in %s (type %s -> %s)",
+        name,
+        namespace,
+        existing.type,
+        want_type,
+    )
+    core_api.delete_namespaced_secret(name=name, namespace=namespace)
+    core_api.create_namespaced_secret(namespace=namespace, body=manifest)
 
 
 def _create_datavolume(custom_api, namespace: str, dv: dict) -> None:
@@ -285,6 +415,117 @@ def _create_datavolume(custom_api, namespace: str, dv: dict) -> None:
         logger.info("ceph-restore DataVolume %s already exists in %s", name, namespace)
 
 
+def _delete_stale_mon_datavolume(custom_api, core_api, namespace: str) -> None:
+    """Remove a prior CDI archive DV for the mon claim (pre-Job migration).
+
+    Only deletes the PVC when it still looks like a CDI-managed claim (has a
+    DataVolume annotation). A Job-populated Bound PVC must be left alone so
+    retries do not wipe a finished mon restore.
+    """
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group=_DV_GROUP,
+            version=_DV_VERSION,
+            namespace=namespace,
+            plural=_DV_PLURAL,
+            name=CEPH_MON_PVC_NAME,
+        )
+        logger.info(
+            "Deleted stale ceph-restore mon DataVolume %s in %s",
+            CEPH_MON_PVC_NAME,
+            namespace,
+        )
+    except ApiException as e:
+        if e.status != 404:
+            raise
+
+    try:
+        pvc = core_api.read_namespaced_persistent_volume_claim(
+            name=CEPH_MON_PVC_NAME, namespace=namespace
+        )
+    except ApiException as e:
+        if e.status == 404:
+            return
+        raise
+    annotations = (pvc.metadata.annotations or {}) if pvc.metadata else {}
+    # CDI-created claims carry this annotation; Job-populated empties do not.
+    if "cdi.kubevirt.io/storage.contentType" not in annotations and (
+        "cdi.kubevirt.io/createdForDataVolume" not in annotations
+    ):
+        return
+    try:
+        core_api.delete_namespaced_persistent_volume_claim(
+            name=CEPH_MON_PVC_NAME, namespace=namespace
+        )
+        logger.info(
+            "Deleted stale CDI mon PVC %s in %s",
+            CEPH_MON_PVC_NAME,
+            namespace,
+        )
+    except ApiException as e:
+        if e.status != 404:
+            raise
+
+
+def _create_namespaced_pvc(core_api, namespace: str, pvc: dict) -> None:
+    name = pvc["metadata"]["name"]
+    try:
+        core_api.create_namespaced_persistent_volume_claim(
+            namespace=namespace, body=pvc
+        )
+        logger.info("Created ceph-restore mon PVC %s in %s", name, namespace)
+    except ApiException as e:
+        if e.status != 409:
+            raise
+        logger.info("ceph-restore mon PVC %s already exists in %s", name, namespace)
+
+
+def _create_namespaced_job(batch_api, namespace: str, job: dict) -> None:
+    name = job["metadata"]["name"]
+    try:
+        batch_api.create_namespaced_job(namespace=namespace, body=job)
+        logger.info("Created ceph-restore mon Job %s in %s", name, namespace)
+        return
+    except ApiException as e:
+        if e.status != 409:
+            raise
+    # Existing Job: leave succeeded Jobs alone; recreate failed/incomplete ones
+    # so command fixes (tar soft-fail, endpoint) take effect on retry.
+    try:
+        existing = batch_api.read_namespaced_job(name=name, namespace=namespace)
+    except ApiException as e:
+        if e.status == 404:
+            batch_api.create_namespaced_job(namespace=namespace, body=job)
+            return
+        raise
+    if existing.status.succeeded and existing.status.succeeded >= 1:  # type: ignore[union-attr]
+        logger.info("ceph-restore mon Job %s already succeeded in %s", name, namespace)
+        return
+    logger.info("Recreating incomplete ceph-restore mon Job %s in %s", name, namespace)
+    try:
+        batch_api.delete_namespaced_job(
+            name=name,
+            namespace=namespace,
+            body={"propagationPolicy": "Background"},
+        )
+    except ApiException as del_err:
+        if del_err.status != 404:
+            raise
+    # Brief settle so the name can be reused (Jobs are immutable).
+    import time
+
+    for _ in range(20):
+        try:
+            batch_api.read_namespaced_job(name=name, namespace=namespace)
+            time.sleep(0.5)
+        except ApiException as e:
+            if e.status == 404:
+                break
+            raise
+    batch_api.create_namespaced_job(namespace=namespace, body=job)
+    logger.info("Recreated ceph-restore mon Job %s in %s", name, namespace)
+
+
 def materialize_ceph_restore_pvcs(
     custom_api,
     namespace: str,
@@ -292,19 +533,38 @@ def materialize_ceph_restore_pvcs(
     s3_config: dict,
     central_s3_config: dict | None = None,
     storage_class: str = "",
+    core_api=None,
+    batch_api=None,
+    mon_storage_class: str = "",
 ) -> tuple[str, list[str]]:
-    """Create (idempotently) the mon + OSD restore DataVolumes.
+    """Create (idempotently) the mon PVC+Job and OSD restore DataVolumes.
 
     Returns ``(monPvcName, osdPvcNames)`` — ``("", [])`` when
-    ``restore_capture`` has no usable devices. Does not wait for CDI to
-    finish importing — call ``wait_for_ceph_restore_datavolumes`` for that
-    before creating the restore-mode ``TroshkaCeph`` CR.
+    ``restore_capture`` has no usable devices. Does not wait for completion —
+    call ``wait_for_ceph_restore`` before creating the restore-mode
+    ``TroshkaCeph`` CR.
+
+    ``core_api`` / ``batch_api`` are required when a mon device is present
+    (PVC + Job path). OSD-only restores only need ``custom_api``.
     """
-    mon_dv, osd_dvs, mon_name, osd_names = build_ceph_restore_datavolumes(
-        namespace, restore_capture, s3_config, central_s3_config, storage_class
+    mon_pvc, mon_job, osd_dvs, mon_name, osd_names = build_ceph_restore_resources(
+        namespace,
+        restore_capture,
+        s3_config,
+        central_s3_config,
+        storage_class,
+        mon_storage_class,
     )
-    if mon_dv:
-        _create_datavolume(custom_api, namespace, mon_dv)
+    if mon_pvc and mon_job:
+        if core_api is None or batch_api is None:
+            raise ValueError(
+                "core_api and batch_api required to materialize mon restore PVC+Job"
+            )
+        # Drop the pre-migration CDI archive DV if still present so the empty
+        # PVC can bind and the Job can populate it.
+        _delete_stale_mon_datavolume(custom_api, core_api, namespace)
+        _create_namespaced_pvc(core_api, namespace, mon_pvc)
+        _create_namespaced_job(batch_api, namespace, mon_job)
     for dv in osd_dvs:
         _create_datavolume(custom_api, namespace, dv)
     return mon_name, osd_names
@@ -326,36 +586,161 @@ def _dv_phase(custom_api, namespace: str, name: str) -> str:
     return str((dv.get("status") or {}).get("phase") or "")
 
 
-async def wait_for_ceph_restore_datavolumes(
+def _dv_progress_line(custom_api, namespace: str, name: str) -> str:
+    try:
+        dv = custom_api.get_namespaced_custom_object(
+            group=_DV_GROUP,
+            version=_DV_VERSION,
+            namespace=namespace,
+            plural=_DV_PLURAL,
+            name=name,
+        )
+    except ApiException as e:
+        if e.status == 404:
+            return f"{name}: waiting"
+        raise
+    status = dv.get("status") or {}
+    phase = str(status.get("phase") or "Pending")
+    if phase == "Succeeded":
+        return f"{name}: done"
+    if phase == "Failed":
+        return f"{name}: failed"
+    progress = status.get("progress") or ""
+    if progress and progress != "N/A":
+        return f"{name}: {progress}"
+    return f"{name}: {phase}"
+
+
+def _mon_job_status(batch_api, namespace: str) -> str:
+    """Return done / failed / pending for the mon restore Job."""
+    try:
+        job = batch_api.read_namespaced_job(
+            name=MON_RESTORE_JOB_NAME, namespace=namespace
+        )
+    except ApiException as e:
+        if e.status == 404:
+            return "pending"
+        raise
+    if job.status.succeeded and job.status.succeeded >= 1:  # type: ignore[union-attr]
+        return "done"
+    conditions = getattr(job.status, "conditions", None) or []
+    for c in conditions:
+        if c.type == "Failed" and c.status == "True":
+            return "failed"
+    failed = getattr(job.status, "failed", None)
+    if failed is not None and failed >= 3:
+        return "failed"
+    return "pending"
+
+
+def _ceph_restore_progress_detail(
+    custom_api, batch_api, namespace: str, mon_name: str, osd_names: list[str]
+) -> str:
+    lines: list[str] = []
+    if mon_name and batch_api is not None:
+        st = _mon_job_status(batch_api, namespace)
+        lines.append(f"ceph-mon: {st}")
+    for name in osd_names:
+        lines.append(_dv_progress_line(custom_api, namespace, name))
+    return "\n".join(lines)
+
+
+async def wait_for_ceph_restore(
     custom_api,
     namespace: str,
-    names: list[str],
+    mon_name: str,
+    osd_names: list[str],
+    batch_api=None,
     max_wait_seconds: int = 1800,
     sleep_seconds: int = 5,
+    on_progress=None,
 ) -> None:
-    """Poll each restore DataVolume until CDI reports ``Succeeded``.
+    """Poll mon Job + OSD DataVolumes until all succeed.
 
-    Raises ``RuntimeError`` on a terminal ``Failed`` phase or on timeout —
-    callers must not create the restore-mode ``TroshkaCeph`` CR against an
-    unfinished or failed import (Rook would adopt a not-yet-populated PVC).
+    Raises ``RuntimeError`` on a terminal failure or timeout — callers must
+    not create the restore-mode ``TroshkaCeph`` CR against unfinished imports.
     """
-    pending = [n for n in names if n]
-    if not pending:
+    pending_osds = [n for n in osd_names if n]
+    need_mon = bool(mon_name)
+    if not pending_osds and not need_mon:
         return
+    if need_mon and batch_api is None:
+        raise ValueError("batch_api required to wait for mon restore Job")
+
     iterations = max(1, max_wait_seconds // sleep_seconds)
     for _ in range(iterations):
+        if on_progress:
+            try:
+                on_progress(
+                    _ceph_restore_progress_detail(
+                        custom_api, batch_api, namespace, mon_name, osd_names
+                    )
+                )
+            except Exception as e:
+                logger.warning("ceph restore progress callback failed: %s", e)
+
+        mon_done = True
+        if need_mon:
+            mon_st = _mon_job_status(batch_api, namespace)
+            if mon_st == "failed":
+                raise RuntimeError(
+                    f"ceph-restore mon Job {MON_RESTORE_JOB_NAME} failed"
+                )
+            mon_done = mon_st == "done"
+
         still_pending = []
-        for name in pending:
+        for name in pending_osds:
             phase = _dv_phase(custom_api, namespace, name)
             if phase == "Succeeded":
                 continue
             if phase == "Failed":
                 raise RuntimeError(f"ceph-restore DataVolume {name} failed to import")
             still_pending.append(name)
-        pending = still_pending
-        if not pending:
+        pending_osds = still_pending
+
+        if mon_done and not pending_osds:
             return
         await asyncio.sleep(sleep_seconds)
+
+    pending_desc = list(pending_osds)
+    if need_mon and _mon_job_status(batch_api, namespace) != "done":
+        pending_desc.insert(0, MON_RESTORE_JOB_NAME)
     raise RuntimeError(
-        f"ceph-restore DataVolume(s) not Succeeded after {max_wait_seconds}s: {pending}"
+        f"ceph-restore not complete after {max_wait_seconds}s: {pending_desc}"
+    )
+
+
+# Back-compat name used by existing tests / wiring.
+async def wait_for_ceph_restore_datavolumes(
+    custom_api,
+    namespace: str,
+    names: list[str],
+    max_wait_seconds: int = 1800,
+    sleep_seconds: int = 5,
+    batch_api=None,
+    on_progress=None,
+) -> None:
+    """Wait for restore resources. ``names`` may include the mon PVC name.
+
+    When the mon PVC name is present, ``batch_api`` must be provided so the
+    mon Job can be polled; remaining names are treated as OSD DataVolumes.
+    """
+    mon_name = ""
+    osd_names: list[str] = []
+    for n in names:
+        if not n:
+            continue
+        if n == CEPH_MON_PVC_NAME:
+            mon_name = n
+        else:
+            osd_names.append(n)
+    await wait_for_ceph_restore(
+        custom_api,
+        namespace,
+        mon_name,
+        osd_names,
+        batch_api=batch_api,
+        max_wait_seconds=max_wait_seconds,
+        sleep_seconds=sleep_seconds,
+        on_progress=on_progress,
     )

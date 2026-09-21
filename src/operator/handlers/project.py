@@ -1499,11 +1499,16 @@ def _create_network_crs(
         }
 
 
-async def _materialize_ceph_restore(custom_api, namespace, ceph_spec, restore_capture, body):
-    """Pre-create + wait for the mon/OSD restore DataVolumes before the
+async def _materialize_ceph_restore(
+    custom_api, namespace, ceph_spec, restore_capture, body, patch=None, cr_name=None
+):
+    """Pre-create + wait for mon PVC/Job + OSD DataVolumes before the
     restore-mode TroshkaCeph CR is created (Task 9). Stamps ``ceph_spec["restore"]``
     with the materialized PVC names so ``build_ceph_cluster()`` (Task 5) caps the
     OSD device-set count instead of minting new empty claims on top of them.
+
+    While waiting, patches TroshkaProject ``deployProgress`` to
+    ``Restoring Ceph`` so the UI shows that stage before VM image lines.
     """
     from helpers.ceph_restore import (
         materialize_ceph_restore_pvcs,
@@ -1515,6 +1520,10 @@ async def _materialize_ceph_restore(custom_api, namespace, ceph_spec, restore_ca
     s3_config = project_spec.get("s3Config", {})
     central_s3_config = project_spec.get("centralS3Config", {})
     storage_class = ceph_spec.get("osdStorageClass") or DEFAULT_OSD_STORAGE_CLASS
+    core_api = client.CoreV1Api()
+    batch_api = client.BatchV1Api()
+    # Restore Job uses troshka-export SA (same as pattern capture export).
+    _setup_export_sa(core_api, custom_api, namespace)
 
     mon_name, osd_names = materialize_ceph_restore_pvcs(
         custom_api,
@@ -1523,12 +1532,35 @@ async def _materialize_ceph_restore(custom_api, namespace, ceph_spec, restore_ca
         s3_config,
         central_s3_config,
         storage_class,
+        core_api=core_api,
+        batch_api=batch_api,
     )
     if not mon_name and not osd_names:
         return
 
+    progress = {
+        "percent": 12,
+        "stage": "Restoring Ceph",
+        "detail": "importing mon/OSD devices",
+    }
+    if patch is not None:
+        patch.status["deployProgress"] = progress
+    if cr_name:
+        _patch_cr_status(custom_api, namespace, cr_name, {"deployProgress": progress})
+
+    def _on_progress(detail: str) -> None:
+        upd = {"percent": 12, "stage": "Restoring Ceph", "detail": detail}
+        if patch is not None:
+            patch.status["deployProgress"] = upd
+        if cr_name:
+            _patch_cr_status(custom_api, namespace, cr_name, {"deployProgress": upd})
+
     await wait_for_ceph_restore_datavolumes(
-        custom_api, namespace, [mon_name] + osd_names if mon_name else osd_names
+        custom_api,
+        namespace,
+        [mon_name] + osd_names if mon_name else osd_names,
+        batch_api=batch_api,
+        on_progress=_on_progress,
     )
     ceph_spec["restore"] = {
         "enabled": True,
@@ -1583,7 +1615,13 @@ async def _create_ceph_cr(custom_api, topology, namespace, name, body, patch):
     if restore_capture:
         _restore_ceph_identity_objects(namespace, capture.get("identityObjects"))
         await _materialize_ceph_restore(
-            custom_api, namespace, ceph_spec, restore_capture, body
+            custom_api,
+            namespace,
+            ceph_spec,
+            restore_capture,
+            body,
+            patch=patch,
+            cr_name=name,
         )
 
     if ceph_spec.get("restore", {}).get("enabled"):

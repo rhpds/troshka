@@ -5891,7 +5891,7 @@ def _collect_dv_progress(project_id, provider, topology):
                     "label", ndata.get("name", "")
                 )
 
-        custom_api, _, _ = _get_k8s_clients(provider)
+        custom_api, _, api_client = _get_k8s_clients(provider)
         proj_ns = _project_ns(provider, project_id)
         all_dvs: list = []
         for ns in ["troshka-cache", proj_ns]:
@@ -5943,14 +5943,83 @@ def _collect_dv_progress(project_id, provider, topology):
         }
         _fill_missing_disk_labels(topology, best_status)
         dv_lines = [f"{k}: {v}" for k, v in best_status.items()]
+        ceph_lines = _collect_ceph_restore_progress(custom_api, api_client, proj_ns)
+        if ceph_lines:
+            # Prepend so Ceph restore is visible even if step stays on images.
+            dv_lines = ceph_lines + dv_lines
     except Exception:
         pass
     return dv_lines
 
 
+def _collect_ceph_restore_progress(custom_api, api_client, namespace: str) -> list[str]:
+    """Progress lines for project-Ceph mon Job / OSD restore DataVolumes."""
+    from kubernetes import client as k8s_client
+
+    lines: list[str] = []
+    try:
+        dvs = custom_api.list_namespaced_custom_object(
+            group="cdi.kubevirt.io",
+            version="v1beta1",
+            namespace=namespace,
+            plural="datavolumes",
+            label_selector="troshka-role=ceph-restore-osd",
+        )
+        for dv in dvs.get("items", []):  # type: ignore[union-attr]
+            name = dv["metadata"]["name"]
+            status = dv.get("status") or {}
+            phase = status.get("phase") or "Pending"
+            if phase == "Succeeded":
+                lines.append(f"ceph-{name}: done")
+            elif phase == "Failed":
+                lines.append(f"ceph-{name}: failed")
+            else:
+                progress = status.get("progress") or phase
+                lines.append(f"ceph-{name}: {progress}")
+    except Exception:
+        pass
+    try:
+        batch = k8s_client.BatchV1Api(api_client)
+        job = batch.read_namespaced_job(
+            name="restore-rook-ceph-mon-a", namespace=namespace
+        )
+        if job.status.succeeded and job.status.succeeded >= 1:  # type: ignore[union-attr]
+            lines.insert(0, "ceph-mon: done")
+        else:
+            lines.insert(0, "ceph-mon: restoring")
+    except Exception:
+        # No mon Job yet — may still be on the legacy CDI mon DV path.
+        try:
+            dv = custom_api.get_namespaced_custom_object(
+                group="cdi.kubevirt.io",
+                version="v1beta1",
+                namespace=namespace,
+                plural="datavolumes",
+                name="rook-ceph-mon-a",
+            )
+            status = dv.get("status") or {}
+            phase = status.get("phase") or "Pending"
+            msg = ""
+            for cond in status.get("conditions") or []:
+                if cond.get("type") == "Running" and cond.get("message"):
+                    msg = cond["message"][:80]
+                    break
+            if phase == "Succeeded":
+                lines.insert(0, "ceph-mon: done")
+            elif msg:
+                lines.insert(0, f"ceph-mon: {msg}")
+            else:
+                lines.insert(0, f"ceph-mon: {phase}")
+        except Exception:
+            pass
+    return lines
+
+
 def _compute_deploy_step(project_id, status, dv_lines, progress):
     """Compute the current deploy step, detail text, and percent."""
-    all_disks_done = dv_lines and all(": done" in line for line in dv_lines)
+    # Ignore ceph-* lines when deciding whether VM disk imports are finished.
+    disk_lines = [ln for ln in (dv_lines or []) if not ln.startswith("ceph-")]
+    all_disks_done = bool(disk_lines) and all(": done" in line for line in disk_lines)
     op_stage = progress.get("stage", "") if progress else ""
     op_detail = progress.get("detail", "") if progress else ""
     dv_detail = "\n".join(dv_lines) if dv_lines else ""
@@ -5964,10 +6033,38 @@ def _compute_deploy_step(project_id, status, dv_lines, progress):
     return step, detail, percent
 
 
+def _is_ceph_restore_stage(op_stage: str) -> bool:
+    """True when operator stage is Ceph restore (must outrank VM image lines)."""
+    if not op_stage:
+        return False
+    lower = op_stage.lower()
+    return "ceph" in lower and (
+        "restore" in lower or "waiting" in lower or "creating project" in lower
+    )
+
+
 def _resolve_deploy_step(
     all_disks_done, op_stage, op_detail, dv_detail, dv_lines, status, last
 ):
     """Determine step and detail from deploy state signals."""
+    # Ceph restore gates VM boot and runs before/alongside image DVs — show it
+    # first so the modal does not look stuck on "images: … waiting".
+    ceph_lines = [ln for ln in (dv_lines or []) if ln.startswith("ceph-")]
+    if _is_ceph_restore_stage(op_stage) or (
+        ceph_lines and not all(ln.endswith(": done") for ln in ceph_lines)
+    ):
+        detail = op_detail or "\n".join(ceph_lines) or op_stage.lower()
+        if not op_detail and ceph_lines:
+            detail = "\n".join(ceph_lines)
+        elif op_detail and ceph_lines and op_detail not in "\n".join(ceph_lines):
+            detail = f"{op_detail}\n" + "\n".join(ceph_lines)
+        step = (
+            op_stage.lower() if _is_ceph_restore_stage(op_stage) else "restoring ceph"
+        )
+        return step, detail
+    if status.get("cephRestoreActive") and not all_disks_done:
+        detail = op_detail or "importing mon/OSD devices"
+        return "restoring ceph", detail
     if all_disks_done and op_stage:
         step = op_stage.lower()
         if "certificate" in op_stage.lower():

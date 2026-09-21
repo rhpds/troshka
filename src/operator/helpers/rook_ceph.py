@@ -918,9 +918,12 @@ def collapse_monmap_to_host(mon_ip: str, admin_key: str) -> None:
                 "bash",
                 "-c",
                 script,
-            ]
+            ],
+            timeout=60,
         )
         print(f"monmap collapsed to {addrs}")
+    except subprocess.TimeoutExpired:
+        print("mon set-addrs timed out; continuing with hostNetwork mon-host", file=sys.stderr)
     except subprocess.CalledProcessError as exc:
         print(f"mon set-addrs warning: {exc}", file=sys.stderr)
 
@@ -1126,6 +1129,12 @@ def build_ceph_rbac(ceph_cr: dict) -> tuple[dict, dict]:
                 "verbs": ["get", "patch", "create", "update"],
             },
             {
+                # Export discovers hostNetwork mon IP and may exec mon set-addrs.
+                "apiGroups": [""],
+                "resources": ["pods", "pods/exec"],
+                "verbs": ["get", "list", "create"],
+            },
+            {
                 "apiGroups": ["ceph.rook.io"],
                 "resources": ["cephclusters"],
                 "verbs": ["get"],
@@ -1156,6 +1165,31 @@ def build_ceph_rbac(ceph_cr: dict) -> tuple[dict, dict]:
     return role, binding
 
 
+def rook_ceph_cluster_phase(custom_api, namespace: str) -> tuple[str, str]:
+    """Return (phase, fsid) from the Rook ``CephCluster`` in ``namespace``.
+
+    Used by TroshkaCeph reconcile so readiness tracks Rook, not the
+    TroshkaCeph status itself (which would circular-wait on Progressing).
+    """
+    try:
+        cluster = custom_api.get_namespaced_custom_object(
+            group="ceph.rook.io",
+            version="v1",
+            namespace=namespace,
+            plural="cephclusters",
+            name=CEPH_CLUSTER_NAME,
+        )
+    except ApiException as e:
+        if e.status == 404:
+            return "", ""
+        raise
+
+    status = cluster.get("status") or {}
+    phase = str(status.get("phase") or "")
+    fsid = str(status.get("cephFSID") or status.get("fsid") or "")
+    return phase, fsid
+
+
 def ceph_cluster_phase(custom_api, namespace: str) -> tuple[str, str]:
     """Return (phase, fsid) for project Ceph readiness checks.
 
@@ -1163,6 +1197,9 @@ def ceph_cluster_phase(custom_api, namespace: str) -> tuple[str, str]:
     capture). Falls back to the Rook ``CephCluster`` when the Troshka CR is
     missing. Non-404 API errors are re-raised so callers see RBAC failures
     instead of a silent empty phase.
+
+    Do not use from TroshkaCeph reconcile — that must call
+    ``rook_ceph_cluster_phase`` so Progressing does not self-block.
     """
     try:
         ceph_cr = custom_api.get_namespaced_custom_object(
@@ -1186,23 +1223,7 @@ def ceph_cluster_phase(custom_api, namespace: str) -> tuple[str, str]:
                 fsid = _rook_ceph_fsid(custom_api, namespace)
             return phase, fsid
 
-    try:
-        cluster = custom_api.get_namespaced_custom_object(
-            group="ceph.rook.io",
-            version="v1",
-            namespace=namespace,
-            plural="cephclusters",
-            name=CEPH_CLUSTER_NAME,
-        )
-    except ApiException as e:
-        if e.status == 404:
-            return "", ""
-        raise
-
-    status = cluster.get("status") or {}
-    phase = str(status.get("phase") or "")
-    fsid = str(status.get("cephFSID") or status.get("fsid") or "")
-    return phase, fsid
+    return rook_ceph_cluster_phase(custom_api, namespace)
 
 
 def _rook_ceph_fsid(custom_api, namespace: str) -> str:
