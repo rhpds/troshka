@@ -853,6 +853,58 @@ def _update_topology_with_captures(topo, captured_disks, pattern_id, pd_id_by_di
             node["data"].pop("libraryItemName", None)
 
 
+# A disk captured smaller than this is treated as empty (no OS installed). The
+# OCP agent installer leaves the non-install disk blank (~200 KB captured), and
+# an empty disk as the boot target causes the OVMF "Boot Option Restoration"
+# reset loop on deploy.
+_EMPTY_DISK_MAX_BYTES = 8 * 1024 * 1024  # 8 MiB
+
+
+def _correct_boot_devices_from_captures(topo, size_by_disk_id):
+    """Repoint each VM's Boot Order to a captured disk that actually has content.
+
+    Capture preserves the source project's ``bootDevices``, but the OCP agent
+    installer can install RHCOS to a non-boot disk, leaving the designated boot
+    disk empty. Deploying then boots the empty disk (OVMF "Boot Option
+    Restoration" loop). When a VM's current boot disk was captured empty while
+    another attached disk has real content, switch the Boot Order to a content
+    disk (preferring edge order among content disks). Provider-agnostic: both
+    capture paths supply ``size_by_disk_id`` (storage-node id -> captured bytes).
+    """
+    from app.services.deploy_topology import _find_vm_disks
+
+    for vm in topo.get("nodes", []):
+        if vm.get("type") != "vmNode":
+            continue
+        disks = [d for d in _find_vm_disks(vm["id"], topo) if d.get("format") != "iso"]
+        if not disks:
+            continue
+        data = vm.setdefault("data", {})
+        boot = data.get("bootDevices") or []
+        current = boot[0] if boot else disks[0]["node_id"]
+        cur_size = size_by_disk_id.get(current)
+        # Only correct when the current boot disk is known to have been captured
+        # empty — never override a boot order that points at a real disk.
+        if cur_size is None or cur_size > _EMPTY_DISK_MAX_BYTES:
+            continue
+        content = next(
+            (
+                d["node_id"]
+                for d in disks
+                if size_by_disk_id.get(d["node_id"], 0) > _EMPTY_DISK_MAX_BYTES
+            ),
+            None,
+        )
+        if content and content != current:
+            data["bootDevices"] = [content]
+            log.info(
+                "Capture: repointed %s Boot Order from empty disk %s to %s",
+                (data.get("name") or vm.get("id", ""))[:20],
+                current[:8],
+                content[:8],
+            )
+
+
 def _restart_kubevirt_vms(custom_api, namespace):
     """Restart all KubeVirt VMs in the given namespace."""
     try:
@@ -1081,6 +1133,9 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     # Update topology nodes to reference pattern (by PatternDisk.id)
     topo = pattern.topology or {}
     _update_topology_with_captures(topo, captured_disks, pattern_id, pd_id_by_disk_id)
+    _correct_boot_devices_from_captures(
+        topo, {cd.get("diskId", ""): cd.get("sizeBytes", 0) for cd in captured_disks}
+    )
 
     from sqlalchemy import text
 
@@ -1802,6 +1857,10 @@ def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
             node["data"]["patternId"] = pattern_id
             node["data"]["patternDiskId"] = pd.id
             node["data"].pop("libraryItemId", None)
+
+    _correct_boot_devices_from_captures(
+        topo, {d.source_disk_id: d.size_bytes for d in pattern.disks}
+    )
 
     if pattern.recert:
         from app.services.ocp_topology_flags import apply_sno_ocp_vm_flags
