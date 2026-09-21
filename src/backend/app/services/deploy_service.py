@@ -5566,6 +5566,95 @@ def _resolve_disk_s3_paths(
             )
 
 
+def _resolve_ceph_capture_device(pattern_disk_id, db, target_provider_id):
+    """Resolve one captured project-Ceph mon/OSD PatternDisk into a restore
+    device dict for the operator, or None if the id itself is empty.
+
+    Raises DeployError (same contract as ``_resolve_pattern_disk``) when the
+    disk is not synced anywhere reachable from the target cluster — the
+    operator must never materialize a restore PVC from an unreachable S3
+    object.
+    """
+    from app.models.pattern import PatternDisk as PatternDiskModel
+    from app.services.pattern_locations import pattern_disk_source_for_cluster
+
+    if not pattern_disk_id:
+        return None
+    pd = db.get(PatternDiskModel, pattern_disk_id)
+    if not pd:
+        raise DeployError(f"project Ceph pattern disk {pattern_disk_id[:8]} not found")
+
+    source = pattern_disk_source_for_cluster(db, pattern_disk_id, target_provider_id)
+    if source is None:
+        raise DeployError(
+            f"project Ceph disk {pattern_disk_id[:8]} is not available on the "
+            "target cluster — storage not ready"
+        )
+    return {
+        "index": pd.source_index if pd.source_index is not None else 0,
+        "s3Path": pd.s3_key,
+        "format": pd.format,
+        "sizeBytes": pd.size_bytes,
+        "virtualSizeBytes": pd.virtual_size_bytes,
+        "source": source,
+    }
+
+
+def _resolve_ceph_capture_s3_paths(topology, db, target_provider_id):
+    """Resolve projectCephCapture mon/OSD PatternDisk ids into S3 restore
+    devices and stamp them onto the deploy-time topology (Task 9) so the
+    operator can materialize the mon/OSD PVCs before creating the
+    restore-mode TroshkaCeph CR. No-op when the pattern this project was
+    deployed from never captured project Ceph.
+    """
+    from app.services.project_ceph_pattern import (
+        get_project_ceph_capture,
+        set_ceph_restore_devices,
+    )
+
+    capture = get_project_ceph_capture(topology)
+    if not capture:
+        return
+
+    mon = _resolve_ceph_capture_device(capture["monDiskId"], db, target_provider_id)
+    osds = [
+        device
+        for device in (
+            _resolve_ceph_capture_device(disk_id, db, target_provider_id)
+            for disk_id in capture["osdDiskIds"]
+        )
+        if device is not None
+    ]
+    set_ceph_restore_devices(topology, mon=mon, osds=osds)
+
+
+def _preflight_verify_ceph_capture(topology, s3_client, bucket, s3_op):
+    """HEAD every central-source project-Ceph restore device against central
+    S4 before deploy — same trust model as ``_preflight_verify_pattern_disks``
+    (OBC-sourced devices are trusted; their synced PatternLocation was only
+    written after a verified capture)."""
+    if not s3_client:
+        return
+    from app.services.project_ceph_pattern import get_project_ceph_capture
+
+    if not get_project_ceph_capture(topology):
+        return
+    restore = topology.get("projectCephCapture", {}).get("restore") or {}
+    devices = [restore.get("mon")] + list(restore.get("osds") or [])
+    for device in devices:
+        if not device or device.get("source") != "central":
+            continue
+        key = device.get("s3Path", "")
+        if not key:
+            continue
+        try:
+            s3_client.head_object(Bucket=bucket, Key=key, **s3_op)
+        except Exception as exc:
+            raise DeployError(
+                f"project Ceph restore disk not found in central S4 ({key})"
+            ) from exc
+
+
 def _preflight_verify_library_disks(
     topology,
     s3_client,
@@ -6503,7 +6592,9 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db, mtu_map):
             central_bucket,
             central_op,
         )
+        _resolve_ceph_capture_s3_paths(topology, db, host.provider_id)
         _preflight_verify_pattern_disks(topology, s3_client, bucket, s3_op)
+        _preflight_verify_ceph_capture(topology, s3_client, bucket, s3_op)
         _preflight_verify_library_disks(
             topology,
             s3_client,

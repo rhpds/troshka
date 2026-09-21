@@ -201,7 +201,28 @@ def _clear_external_endpoints(nodes: list) -> None:
             node["data"]["externalEndpoints"] = []
 
 
-def _remap_clusters(topo: dict, id_map: dict) -> None:
+def _remap_ceph_node(nodes: list, id_map: dict, cluster_id_map: dict[str, str]) -> None:
+    """Remap cephClusterNode networkRef and linkedClusters in-place.
+
+    ``networkRef`` points at a network node id (``id_map``). ``linkedClusters``
+    stores ``clusters[].id`` values (``cluster_id_map`` from ``_remap_clusters``),
+    not canvas node UUIDs. ``labIp`` is preserved. ``projectCephCapture`` PatternDisk
+    ids live at topology root and are not node refs — leave them alone.
+    """
+    for node in nodes:
+        if node.get("type") != "cephClusterNode":
+            continue
+        data = node.get("data", {})
+        network_ref = data.get("networkRef")
+        if network_ref in id_map:
+            data["networkRef"] = id_map[network_ref]
+        if data.get("linkedClusters"):
+            data["linkedClusters"] = [
+                cluster_id_map.get(cid, cid) for cid in data["linkedClusters"]
+            ]
+
+
+def _remap_clusters(topo: dict, id_map: dict) -> dict[str, str]:
     """Remap clusters[] ids/nodeIds and member clusterId/parentId refs.
 
     ``_remap_node_ids`` has already assigned a fresh bare UUID to every node
@@ -250,6 +271,8 @@ def _remap_clusters(topo: dict, id_map: dict) -> None:
         if cn is not None and cn.get("type") == "clusterNode":
             cn.setdefault("data", {})["clusterId"] = cluster["id"]
 
+    return old_to_new
+
 
 def _remap_topology(topology: dict) -> dict:
     """Clone a topology dict with all-new UUIDs, MACs, and controller IDs.
@@ -283,7 +306,8 @@ def _remap_topology(topology: dict) -> dict:
 
     _clear_external_endpoints(nodes)
 
-    _remap_clusters(topo, id_map)
+    cluster_id_map = _remap_clusters(topo, id_map)
+    _remap_ceph_node(nodes, id_map, cluster_id_map)
 
     return topo
 

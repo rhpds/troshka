@@ -411,6 +411,274 @@ async def _snapshot_and_export_disk(
     }
 
 
+async def _snapshot_and_export_ceph_device(
+    device_info, s3_config, custom_api, core_api, batch_api, namespace, name
+):
+    """Snapshot a single Ceph mon/OSD PVC, restore to a temp PVC, and launch an
+    export Job to S3.
+
+    Unlike ``_snapshot_and_export_disk`` there is no KubeVirt guest-FS freeze
+    here — Ceph-level consistency (osd flags, flush, mon/OSD scale-down) is
+    ``helpers.ceph_freeze``'s job, orchestrated by the caller of this capture
+    request (see module docstring note on Task 6/8 handoff) — this function
+    only owns the snapshot -> temp PVC -> convert -> upload pipeline.
+    """
+    from helpers.patterns import (
+        build_volume_snapshot,
+        build_temp_pvc_from_snapshot,
+        build_scratch_pvc,
+        build_ceph_device_export_job,
+    )
+
+    pvc_name = device_info["pvcName"]
+    kind = device_info["kind"]
+    index = int(device_info.get("index", 0))
+    pattern_disk_id = device_info.get("patternDiskId") or f"ceph-{kind}-{index}"
+    s3_key = device_info["s3Key"]
+    size_gb = int(device_info.get("sizeGb") or 1) or 1
+    block_device = kind == "ceph-osd"
+
+    snap_name = f"ceph-snap-{kind}-{index}"
+    temp_pvc_name = f"ceph-export-{kind}-{index}"
+    scratch_pvc_name = f"ceph-scratch-{kind}-{index}"
+    job_name = f"ceph-{kind}-{index}"
+
+    _patch_cr_status(
+        custom_api,
+        namespace,
+        name,
+        {"captureProgress": f"Snapshotting ceph {kind} {index}"},
+    )
+    logger.info(f"Capture {name}: snapshotting ceph PVC {pvc_name} ({kind} {index})")
+
+    snapshot = build_volume_snapshot(snap_name, namespace, pvc_name)
+    try:
+        custom_api.create_namespaced_custom_object(
+            group=_SNAPSHOT_GROUP,
+            version="v1",
+            namespace=namespace,
+            plural="volumesnapshots",
+            body=snapshot,
+        )
+    except ApiException as e:
+        if e.status != 409:
+            raise
+
+    restore_size_gi = await _wait_volume_snapshot_ready(
+        custom_api, namespace, snap_name, size_gb
+    )
+
+    temp_pvc = build_temp_pvc_from_snapshot(
+        temp_pvc_name,
+        namespace,
+        snap_name,
+        restore_size_gi,
+        volume_mode="Block" if block_device else None,
+    )
+    _create_namespaced_pvc(core_api, namespace, temp_pvc)
+
+    scratch = build_scratch_pvc(
+        scratch_pvc_name, namespace, max(size_gb + 10, int(size_gb * 1.2), 5)
+    )
+    _create_namespaced_pvc(core_api, namespace, scratch)
+
+    export_job = build_ceph_device_export_job(
+        job_name,
+        namespace,
+        temp_pvc_name,
+        s3_key,
+        s3_config,
+        size_gb,
+        block_device=block_device,
+    )
+    deadline = export_job.pop("_deadline", 3600)
+    export_job.pop("_scratchPvcName", None)
+    try:
+        batch_api.create_namespaced_job(namespace=namespace, body=export_job)
+    except ApiException as e:
+        if e.status != 409:
+            raise
+
+    return {
+        "jobName": f"export-{job_name}",
+        "snapName": snap_name,
+        "tempPvcName": temp_pvc_name,
+        "scratchPvcName": scratch_pvc_name,
+        "diskId": pattern_disk_id,
+        "vmId": "",
+        "s3Key": s3_key,
+        "format": "qcow2" if block_device else "tar.gz",
+        "virtualSizeBytes": size_gb * 1073741824,
+        "deadline": deadline,
+        "displayName": f"ceph-{kind}-{index}",
+        "cephKind": kind,
+        "cephIndex": index,
+    }
+
+
+async def _await_ceph_export_job(batch_api, ej, namespace, custom_api, cr_name, core_api, disk_statuses):
+    """Poll a single Ceph device export Job to completion.
+
+    Mirrors ``_poll_export_jobs`` but scoped to one job, so the concurrency
+    semaphore in ``_capture_ceph_devices`` can guard the *entire* per-device
+    snapshot->export pipeline (not just the launch step). Returns None on
+    success, or an error string on failure/timeout.
+    """
+    max_wait = ej.get("deadline", 3600) + 120
+    iterations = max_wait // 10
+    for _ in range(iterations):
+        done, err = _export_job_poll_result(
+            batch_api, ej, namespace, custom_api, cr_name, core_api, disk_statuses
+        )
+        if err:
+            return err
+        if done:
+            return None
+        await asyncio.sleep(10)
+    return f"Ceph export {ej['jobName']} timed out after {max_wait}s"
+
+
+async def _run_ceph_device_pipeline(
+    device_info,
+    s3_config,
+    custom_api,
+    core_api,
+    batch_api,
+    namespace,
+    name,
+    semaphore,
+    disk_statuses,
+    created_jobs,
+):
+    """Run one Ceph device's full snapshot->export pipeline under the
+    concurrency semaphore. The job descriptor is appended to ``created_jobs``
+    as soon as the export Job launches, so cleanup can find (and remove) it
+    even if the job later fails or times out."""
+    async with semaphore:
+        ej = await _snapshot_and_export_ceph_device(
+            device_info, s3_config, custom_api, core_api, batch_api, namespace, name
+        )
+        created_jobs.append(ej)
+        disk_statuses[ej["jobName"]] = "starting"
+        err = await _await_ceph_export_job(
+            batch_api, ej, namespace, custom_api, name, core_api, disk_statuses
+        )
+        if err:
+            raise RuntimeError(err)
+        return ej
+
+
+async def _capture_ceph_devices(
+    ceph_devices, s3_config, custom_api, core_api, batch_api, namespace, name
+):
+    """Snapshot+export all Ceph mon/OSD devices in parallel, bounded by
+    ``CEPH_CAPTURE_CONCURRENCY`` (min(len(devices), 4)).
+
+    Any device failure fails the whole Ceph capture: on error every device's
+    snapshot/temp PVC/scratch PVC/export Job created so far (successful or
+    not) is cleaned up and no Ceph disks are returned — no partial commit.
+    """
+    from helpers.patterns import CEPH_CAPTURE_CONCURRENCY
+
+    if not ceph_devices:
+        return []
+
+    concurrency = min(len(ceph_devices), CEPH_CAPTURE_CONCURRENCY)
+    semaphore = asyncio.Semaphore(concurrency)
+    disk_statuses: dict[str, str] = {}
+    created_jobs: list[dict] = []
+
+    _patch_cr_status(
+        custom_api,
+        namespace,
+        name,
+        {"captureProgress": f"Capturing project Ceph (0/{len(ceph_devices)})"},
+    )
+
+    tasks = [
+        asyncio.create_task(
+            _run_ceph_device_pipeline(
+                device,
+                s3_config,
+                custom_api,
+                core_api,
+                batch_api,
+                namespace,
+                name,
+                semaphore,
+                disk_statuses,
+                created_jobs,
+            )
+        )
+        for device in ceph_devices
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    errors = [r for r in results if isinstance(r, Exception)]
+
+    if errors:
+        logger.error(f"Ceph device capture failed for {name}: {errors[0]}")
+        _cleanup_capture_resources(
+            core_api, custom_api, batch_api, created_jobs, namespace
+        )
+        _patch_cr_status(
+            custom_api,
+            namespace,
+            name,
+            {
+                "phase": "CaptureError",
+                "captureError": f"Ceph device capture failed: {errors[0]}",
+            },
+        )
+        raise RuntimeError(str(errors[0]))
+
+    _read_export_sizes(core_api, created_jobs, namespace)
+
+    captured = [
+        {
+            "patternDiskId": ej["diskId"],
+            "kind": ej["cephKind"],
+            "index": ej["cephIndex"],
+            "s3Key": ej["s3Key"],
+            "format": ej["format"],
+            "sizeBytes": ej.get("sizeBytes", 0),
+            "virtualSizeBytes": ej["virtualSizeBytes"],
+        }
+        for ej in created_jobs
+    ]
+
+    _cleanup_capture_resources(core_api, custom_api, batch_api, created_jobs, namespace)
+    logger.info(
+        f"Ceph device capture complete for {name}: {len(captured)} device(s)"
+    )
+    return captured
+
+
+async def _run_ceph_capture_phase(
+    ceph_devices, s3_config, custom_api, core_api, batch_api, namespace, name, patch
+):
+    """Run the Ceph mon/OSD capture phase, if any devices were requested.
+
+    Returns True if the caller should continue on to VM disk capture, or
+    False if the whole capture request should abort (annotation already
+    cleared and CR status already marked CaptureError).
+    """
+    if not ceph_devices:
+        return True
+    try:
+        captured_ceph_disks = await _capture_ceph_devices(
+            ceph_devices, s3_config, custom_api, core_api, batch_api, namespace, name
+        )
+    except Exception as e:
+        logger.error(f"Ceph capture phase aborted for {name}: {e}")
+        _clear_capture_annotation(custom_api, namespace, name)
+        return False
+    patch.status["capturedCephDisks"] = captured_ceph_disks
+    _patch_cr_status(
+        custom_api, namespace, name, {"capturedCephDisks": captured_ceph_disks}
+    )
+    return True
+
+
 def _check_export_job(batch_api, ej, namespace):
     """Check a single export Job status.
 
@@ -862,6 +1130,7 @@ async def _handle_capture(capture_config, namespace, name, patch):
     """Handle pattern capture: snapshot disks and export to S3."""
     s3_config = capture_config.get("s3Config", {})
     disk_manifest = capture_config.get("disks", [])
+    ceph_devices = capture_config.get("cephDevices", [])
     restart_after = capture_config.get("restartAfter", False)
 
     custom_api = client.CustomObjectsApi()
@@ -881,6 +1150,10 @@ async def _handle_capture(capture_config, namespace, name, patch):
                     "status": "pending",
                 }
                 for d in disk_manifest
+            ]
+            + [
+                {"name": f"ceph-{d['kind']}-{d['index']}", "status": "pending"}
+                for d in ceph_devices
             ],
         },
     )
@@ -914,6 +1187,14 @@ async def _handle_capture(capture_config, namespace, name, patch):
                 pass
     except Exception:
         pass
+
+    # Ceph device capture (mon/OSD) runs first and, per plan, must fully
+    # succeed before any VM disk export starts — a failed device fails the
+    # whole capture request rather than partially committing Ceph disks.
+    if not await _run_ceph_capture_phase(
+        ceph_devices, s3_config, custom_api, core_api, batch_api, namespace, name, patch
+    ):
+        return
 
     # Snapshot and export each disk
     export_jobs = []
@@ -1102,14 +1383,99 @@ def _create_network_crs(
         }
 
 
-def _create_ceph_cr(custom_api, topology, namespace, name, body, patch):
-    """Create TroshkaCeph CR when topology includes a cephClusterNode."""
+async def _materialize_ceph_restore(custom_api, namespace, ceph_spec, restore_capture, body):
+    """Pre-create + wait for the mon/OSD restore DataVolumes before the
+    restore-mode TroshkaCeph CR is created (Task 9). Stamps ``ceph_spec["restore"]``
+    with the materialized PVC names so ``build_ceph_cluster()`` (Task 5) caps the
+    OSD device-set count instead of minting new empty claims on top of them.
+    """
+    from helpers.ceph_restore import (
+        materialize_ceph_restore_pvcs,
+        wait_for_ceph_restore_datavolumes,
+    )
+    from helpers.rook_ceph import DEFAULT_OSD_STORAGE_CLASS
+
+    project_spec = body.get("spec", {})
+    s3_config = project_spec.get("s3Config", {})
+    central_s3_config = project_spec.get("centralS3Config", {})
+    storage_class = ceph_spec.get("osdStorageClass") or DEFAULT_OSD_STORAGE_CLASS
+
+    mon_name, osd_names = materialize_ceph_restore_pvcs(
+        custom_api,
+        namespace,
+        restore_capture,
+        s3_config,
+        central_s3_config,
+        storage_class,
+    )
+    if not mon_name and not osd_names:
+        return
+
+    await wait_for_ceph_restore_datavolumes(
+        custom_api, namespace, [mon_name] + osd_names if mon_name else osd_names
+    )
+    ceph_spec["restore"] = {
+        "enabled": True,
+        "monPvc": mon_name,
+        "osdPvcs": osd_names,
+    }
+    logger.info(
+        "Project Ceph restore in %s: materialized mon PVC %s + %d OSD PVC(s)",
+        namespace,
+        mon_name or "<none>",
+        len(osd_names),
+    )
+
+
+def _restore_ceph_identity_objects(namespace, identity_objects):
+    """Pre-create the captured identity Secrets/ConfigMap (fsid, mon/admin/
+    csi cephx keys, mon-endpoints) in the project namespace before the
+    restore-mode TroshkaCeph CR is created — see the identity-object capture
+    matrix in docs/dev/project-ceph-pattern-restore.md and the C1 fix that
+    added identity capture/restore alongside the mon/OSD PVCs. No-op (no API
+    calls at all) when nothing was captured.
+    """
+    if not identity_objects:
+        return
+    from helpers.ceph_restore import restore_identity_objects
+
+    core_api = client.CoreV1Api()
+    restore_identity_objects(core_api, namespace, identity_objects)
+
+
+async def _create_ceph_cr(custom_api, topology, namespace, name, body, patch):
+    """Create TroshkaCeph CR when topology includes a cephClusterNode.
+
+    When the topology carries a resolved ``projectCephCapture.restore`` block
+    (a pattern deploy whose source project's Ceph was captured — see Task 9
+    brief / docs/dev/project-ceph-pattern-restore.md), the mon/OSD PVCs are
+    materialized from S3 and awaited Succeeded, and the captured identity
+    Secrets/ConfigMap (C1 fix) are re-created unowned, before the
+    TroshkaCeph CR is created — so Rook adopts the pre-filled claims and
+    matches the existing mon auth db instead of provisioning empty new ones
+    and minting a fresh fsid.
+    """
     ceph_spec = extract_ceph_cluster(topology)
     if not ceph_spec:
         return
     if not ceph_spec.get("networkNad"):
         logger.warning("Project Ceph skipped: networkRef not resolved")
         return
+
+    capture = topology.get("projectCephCapture") or {}
+    restore_capture = capture.get("restore")
+    if restore_capture:
+        _restore_ceph_identity_objects(namespace, capture.get("identityObjects"))
+        await _materialize_ceph_restore(
+            custom_api, namespace, ceph_spec, restore_capture, body
+        )
+
+    if ceph_spec.get("restore", {}).get("enabled"):
+        # Boot gate (Task 10): persisted so the deploy-phase VM-start check
+        # (`_handle_vm_start`, driven by the `project_status_check` timer)
+        # knows — without re-reading topology — that it must hold every VM
+        # power-on until this project's TroshkaCeph reports Ready.
+        patch.status["cephRestoreActive"] = True
 
     cr_name = "project-ceph"
     ceph_cr = {
@@ -1793,6 +2159,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
             "patternId": spec.get("patternId", name),
             "s3Config": spec.get("s3Config", {}),
             "disks": spec.get("captureDisks", []),
+            "cephDevices": spec.get("cephDevices", []),
         }
         await _handle_capture(capture_config, namespace, name, patch)
         return
@@ -1829,7 +2196,7 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     _create_network_crs(
         custom_api, networks, static_leases, namespace, name, body, patch
     )
-    _create_ceph_cr(custom_api, topology, namespace, name, body, patch)
+    await _create_ceph_cr(custom_api, topology, namespace, name, body, patch)
 
     apps_api = client.AppsV1Api()
     await _setup_gateway(core_api, apps_api, networks, namespace, name, body)
@@ -2269,12 +2636,48 @@ def _cleanup_stale_volumes(namespace, name, patch):
     return False
 
 
+def _ceph_cr_ready(custom_api, namespace, cr_name="project-ceph") -> bool:
+    """Return True once TroshkaCeph's own status.phase reports "Ready".
+
+    Boot gate (Task 10): a restore-mode TroshkaCeph adopts pre-filled mon/OSD
+    PVCs (Task 9) but Rook still needs real reconcile time before RBD is
+    usable — a VM consumer powering on against a not-yet-Ready cluster would
+    fail its initial RBD attach or race the restored identity/data. A missing
+    CR (not yet created, or deleted) is treated as not-ready.
+    """
+    try:
+        ceph_cr = custom_api.get_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkancephs",
+            name=cr_name,
+        )
+    except ApiException as e:
+        if e.status == 404:
+            return False
+        raise
+    return (ceph_cr.get("status") or {}).get("phase") == "Ready"
+
+
 def _handle_vm_start(status, namespace, name, patch, custom_api, vm_items):
     """Handle VM start phase during deploy. Returns True if caller should return."""
     if status.get("recertConfig") and not status.get("recertCleaned"):
         return True
     if status.get("vmsStarted"):
         return False
+
+    if status.get("cephRestoreActive") and not _ceph_cr_ready(custom_api, namespace):
+        # Safest general-purpose rule (Task 10 brief): hold *every* VM's
+        # power-on for this project, not just Ceph consumers, until the
+        # restored TroshkaCeph is Ready. project_status_check re-runs this
+        # every 10s, so we just defer rather than blocking the handler.
+        patch.status["deployProgress"] = {
+            "percent": 85,
+            "stage": "Waiting for restored Ceph",
+            "detail": "TroshkaCeph not yet Ready",
+        }
+        return True
 
     if _cleanup_stale_volumes(namespace, name, patch):
         return True

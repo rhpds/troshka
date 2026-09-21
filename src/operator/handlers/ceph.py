@@ -27,6 +27,7 @@ from helpers.rook_ceph import (
     ensure_rook_operator,
     is_ceph_ready,
     nested_mon_host_from_secret,
+    normalize_restore_spec,
     rook_service_account_ref,
     validate_lab_ip,
 )
@@ -89,6 +90,27 @@ def _apply_rook_cr(custom_api, body: dict, namespace: str, plural: str) -> None:
             raise
 
 
+def _log_restore_mode(restore: dict, spec: dict, patch, namespace: str) -> None:
+    """Restore mode: the mon/OSD PVCs and the identity Secrets/ConfigMap
+    (fsid, mon/admin/csi cephx keys, mon-endpoints — see the identity-object
+    capture matrix in docs/dev/project-ceph-pattern-restore.md) were already
+    pre-created by ``handlers/project.py``'s ``_create_ceph_cr`` (PVCs via
+    ``_materialize_ceph_restore``, identity objects via
+    ``_restore_ceph_identity_objects``) before this TroshkaCeph CR was
+    created. Rook operator setup here is otherwise unchanged — only
+    ``build_ceph_cluster()``'s device-set count differs, so it never mints
+    new empty claims on top of the adopted ones.
+    """
+    logger.info(
+        "TroshkaCeph %s restoring in %s: mon PVC %s + %d OSD PVC(s)",
+        spec.get("cephId", ""),
+        namespace,
+        restore["monPvc"],
+        len(restore["osdPvcs"]),
+    )
+    patch.status["restoreMode"] = True
+
+
 async def _reconcile_ceph(body, patch, namespace: str) -> None:
     spec = body.get("spec", {})
     lab_ip = spec.get("labIp", "")
@@ -96,6 +118,10 @@ async def _reconcile_ceph(body, patch, namespace: str) -> None:
         patch.status["phase"] = "Failed"
         patch.status["message"] = f"Invalid labIp: {lab_ip!r}"
         return
+
+    restore = normalize_restore_spec(spec)
+    if restore["enabled"]:
+        _log_restore_mode(restore, spec, patch, namespace)
 
     core_api = client.CoreV1Api()
     apps_api = client.AppsV1Api()
@@ -121,7 +147,7 @@ async def _reconcile_ceph(body, patch, namespace: str) -> None:
     ceph_image = discover_ceph_image(custom_api)
     _apply_rook_cr(
         custom_api,
-        build_ceph_cluster(body, ceph_image=ceph_image),
+        build_ceph_cluster(body, ceph_image=ceph_image, restore=restore),
         namespace,
         "cephclusters",
     )

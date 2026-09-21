@@ -502,6 +502,99 @@ class TestHandleVmStart:
         )
         assert result is False
 
+    @patch("handlers.project._start_kubevirt_vms")
+    @patch("handlers.project._ceph_cr_ready", return_value=False)
+    def test_restore_mode_holds_vm_start_until_ceph_ready(
+        self, mock_ready, mock_start
+    ):
+        """Task 10 boot gate: cephRestoreActive + not-yet-Ready TroshkaCeph
+        must defer VM start entirely — _start_kubevirt_vms must not run."""
+        from handlers.project import _handle_vm_start
+
+        vm_items = [{"metadata": {"name": "vm-1"}}]
+        p = MockPatch()
+        custom_api = MagicMock()
+        status = {"cephRestoreActive": True}
+        result = _handle_vm_start(status, "ns", "proj", p, custom_api, vm_items)
+        assert result is True
+        mock_start.assert_not_called()
+        assert p.status["deployProgress"]["stage"] == "Waiting for restored Ceph"
+
+    @patch("handlers.project._start_kubevirt_vms", return_value=1)
+    @patch("handlers.project._cleanup_stale_volumes", return_value=False)
+    @patch("handlers.project._ceph_cr_ready", return_value=True)
+    def test_restore_mode_starts_vms_once_ceph_ready(
+        self, mock_ready, mock_cleanup, mock_start
+    ):
+        """Once TroshkaCeph reports Ready, restore-mode VM start proceeds
+        exactly like the fresh-bootstrap path."""
+        from handlers.project import _handle_vm_start
+
+        vm_items = [{"metadata": {"name": "vm-1"}}]
+        p = MockPatch()
+        custom_api = MagicMock()
+        status = {"cephRestoreActive": True}
+        result = _handle_vm_start(status, "ns", "proj", p, custom_api, vm_items)
+        assert result is False
+        assert p.status["vmsStarted"] is True
+
+    @patch("handlers.project._start_kubevirt_vms")
+    @patch("handlers.project._cleanup_stale_volumes", return_value=False)
+    @patch("handlers.project._ceph_cr_ready")
+    def test_fresh_bootstrap_skips_ceph_ready_check(
+        self, mock_ready, mock_cleanup, mock_start
+    ):
+        """No cephRestoreActive on status -> _ceph_cr_ready must not even be
+        called (fresh-bootstrap / no-Ceph deploys are unaffected)."""
+        from handlers.project import _handle_vm_start
+
+        mock_start.return_value = 1
+        p = MockPatch()
+        custom_api = MagicMock()
+        result = _handle_vm_start({}, "ns", "proj", p, custom_api, [{"a": 1}])
+        assert result is False
+        mock_ready.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# handlers/project.py — _ceph_cr_ready
+# ---------------------------------------------------------------------------
+
+
+class TestCephCrReady:
+    def test_true_when_phase_ready(self):
+        from handlers.project import _ceph_cr_ready
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "status": {"phase": "Ready"}
+        }
+        assert _ceph_cr_ready(custom_api, "ns") is True
+
+    def test_false_when_phase_progressing(self):
+        from handlers.project import _ceph_cr_ready
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.return_value = {
+            "status": {"phase": "Progressing"}
+        }
+        assert _ceph_cr_ready(custom_api, "ns") is False
+
+    def test_false_when_cr_missing(self):
+        from handlers.project import _ceph_cr_ready
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
+        assert _ceph_cr_ready(custom_api, "ns") is False
+
+    def test_reraises_non_404(self):
+        from handlers.project import _ceph_cr_ready
+
+        custom_api = MagicMock()
+        custom_api.get_namespaced_custom_object.side_effect = ApiException(status=500)
+        with pytest.raises(ApiException):
+            _ceph_cr_ready(custom_api, "ns")
+
 
 # ---------------------------------------------------------------------------
 # handlers/project.py — _handle_deploying_phase

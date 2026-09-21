@@ -1,9 +1,14 @@
 """Tests for Project Ceph rook manifest helpers."""
 
-from unittest.mock import MagicMock
+from typing import Optional
+from unittest.mock import MagicMock, patch
+
+import pytest
+from kubernetes.client.exceptions import ApiException
 
 from helpers.rook_ceph import (
     CEPH_EXTERNAL_SECRET,
+    CEPH_MON_PVC_NAME,
     TROSHKA_ROOK_SA_CLUSTER_ROLES,
     build_ceph_cluster,
     build_ceph_rbac,
@@ -14,11 +19,29 @@ from helpers.rook_ceph import (
     ceph_export_needs_nested_mon_refresh,
     data_dir_host_path,
     default_lab_ip_from_cidr,
+    discover_ceph_device_pvcs,
     discover_ceph_image,
     normalize_ceph_counts,
+    normalize_restore_spec,
     rook_crb_name,
     validate_lab_ip,
 )
+
+
+def _mock_pvc(name: str, storage: str, labels: Optional[dict] = None):
+    pvc = MagicMock()
+    pvc.metadata.name = name
+    pvc.metadata.labels = labels or {}
+    pvc.spec.resources.requests = {"storage": storage}
+    return pvc
+
+
+def _mock_troshka_ceph_osd_count(osd_count: int):
+    custom_api = MagicMock()
+    custom_api.get_namespaced_custom_object.return_value = {
+        "spec": {"osdCount": osd_count, "capacityGi": osd_count * 50}
+    }
+    return custom_api
 
 
 def test_default_lab_ip_from_cidr():
@@ -292,3 +315,290 @@ def test_build_ceph_rbac_allows_export_job_secret_access():
     rules = {tuple(rule["resources"]): rule["verbs"] for rule in role["rules"]}
     assert rules[("secrets",)] == ["get", "patch", "create", "update"]
     assert rules[("cephclusters",)] == ["get"]
+
+
+def test_discover_ceph_device_pvcs_spike_names():
+    namespace = "troshka-spike-rookadopt"
+    mon = _mock_pvc("rook-ceph-mon-a", "10Gi")
+    osd = _mock_pvc(
+        "osd-set-data-06p6rg",
+        "150Gi",
+        labels={
+            "ceph.rook.io/DeviceSet": "osd-set",
+            "ceph.rook.io/DeviceSetPVCId": "osd-set-data-0",
+            "ceph.rook.io/setIndex": "0",
+        },
+    )
+    core_api = MagicMock()
+    core_api.read_namespaced_persistent_volume_claim.return_value = mon
+    core_api.list_namespaced_persistent_volume_claim.return_value = MagicMock(items=[osd])
+
+    with patch(
+        "helpers.rook_ceph.client.CustomObjectsApi",
+        return_value=_mock_troshka_ceph_osd_count(1),
+    ):
+        devices = discover_ceph_device_pvcs(core_api, namespace)
+
+    assert devices == [
+        {
+            "name": "rook-ceph-mon-a",
+            "kind": "ceph-mon",
+            "index": 0,
+            "size_bytes": 10 * 1073741824,
+        },
+        {
+            "name": "osd-set-data-06p6rg",
+            "kind": "ceph-osd",
+            "index": 0,
+            "size_bytes": 150 * 1073741824,
+        },
+    ]
+
+
+def test_discover_ceph_device_pvcs_three_osds():
+    namespace = "troshka-abc"
+    mon = _mock_pvc("rook-ceph-mon-a", "10Gi")
+    osds = [
+        _mock_pvc(
+            "osd-set-data-07ln8j",
+            "100Gi",
+            labels={
+                "ceph.rook.io/DeviceSet": "osd-set",
+                "ceph.rook.io/DeviceSetPVCId": "osd-set-data-0",
+                "ceph.rook.io/setIndex": "0",
+            },
+        ),
+        _mock_pvc(
+            "osd-set-data-184c79",
+            "100Gi",
+            labels={
+                "ceph.rook.io/DeviceSet": "osd-set",
+                "ceph.rook.io/DeviceSetPVCId": "osd-set-data-1",
+                "ceph.rook.io/setIndex": "1",
+            },
+        ),
+        _mock_pvc(
+            "osd-set-data-24m8n7",
+            "100Gi",
+            labels={
+                "ceph.rook.io/DeviceSet": "osd-set",
+                "ceph.rook.io/DeviceSetPVCId": "osd-set-data-2",
+                "ceph.rook.io/setIndex": "2",
+            },
+        ),
+    ]
+    core_api = MagicMock()
+    core_api.read_namespaced_persistent_volume_claim.return_value = mon
+    core_api.list_namespaced_persistent_volume_claim.return_value = MagicMock(items=osds)
+
+    with patch(
+        "helpers.rook_ceph.client.CustomObjectsApi",
+        return_value=_mock_troshka_ceph_osd_count(3),
+    ):
+        devices = discover_ceph_device_pvcs(core_api, namespace)
+
+    assert [d["kind"] for d in devices] == ["ceph-mon", "ceph-osd", "ceph-osd", "ceph-osd"]
+    assert [d["index"] for d in devices] == [0, 0, 1, 2]
+    assert all(d["size_bytes"] == 100 * 1073741824 for d in devices[1:])
+
+
+def test_discover_ceph_device_pvcs_fails_on_osd_count_mismatch():
+    namespace = "troshka-abc"
+    mon = _mock_pvc("rook-ceph-mon-a", "10Gi")
+    osd = _mock_pvc(
+        "osd-set-data-06p6rg",
+        "150Gi",
+        labels={
+            "ceph.rook.io/DeviceSet": "osd-set",
+            "ceph.rook.io/DeviceSetPVCId": "osd-set-data-0",
+            "ceph.rook.io/setIndex": "0",
+        },
+    )
+    core_api = MagicMock()
+    core_api.read_namespaced_persistent_volume_claim.return_value = mon
+    core_api.list_namespaced_persistent_volume_claim.return_value = MagicMock(items=[osd])
+
+    with patch(
+        "helpers.rook_ceph.client.CustomObjectsApi",
+        return_value=_mock_troshka_ceph_osd_count(3),
+    ):
+        with pytest.raises(ValueError, match="expected 3 ceph-osd PVC"):
+            discover_ceph_device_pvcs(core_api, namespace)
+
+
+def test_discover_ceph_device_pvcs_fails_when_mon_missing():
+    core_api = MagicMock()
+    core_api.read_namespaced_persistent_volume_claim.side_effect = ApiException(status=404)
+
+    with patch(
+        "helpers.rook_ceph.client.CustomObjectsApi",
+        return_value=_mock_troshka_ceph_osd_count(1),
+    ):
+        with pytest.raises(ValueError, match="expected mon PVC rook-ceph-mon-a"):
+            discover_ceph_device_pvcs(core_api, "troshka-abc")
+
+
+# ---------------------------------------------------------------------------
+# Restore mode (Task 5) — spec.restore / build_ceph_cluster(restore=...)
+# ---------------------------------------------------------------------------
+
+
+def _restore_cr(
+    restore: Optional[dict] = None, osd_count: int = 3, capacity_gi: int = 300
+):
+    spec = {"labIp": "10.0.0.3", "capacityGi": capacity_gi, "osdCount": osd_count}
+    if restore is not None:
+        spec["restore"] = restore
+    return {
+        "kind": "TroshkaCeph",
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
+        "spec": spec,
+    }
+
+
+def test_normalize_restore_spec_disabled_by_default():
+    assert normalize_restore_spec({}) == {"enabled": False, "monPvc": "", "osdPvcs": []}
+    assert normalize_restore_spec({"restore": {"enabled": False}}) == {
+        "enabled": False,
+        "monPvc": "",
+        "osdPvcs": [],
+    }
+
+
+def test_normalize_restore_spec_defaults_mon_pvc_name():
+    restore = normalize_restore_spec(
+        {"restore": {"enabled": True, "osdPvcs": ["osd-set-data-0-abcdef"]}}
+    )
+    assert restore == {
+        "enabled": True,
+        "monPvc": CEPH_MON_PVC_NAME,
+        "osdPvcs": ["osd-set-data-0-abcdef"],
+    }
+
+
+def test_build_ceph_cluster_restore_caps_device_set_to_adopted_pvcs():
+    """Restoring only 1 captured OSD PVC must not ask Rook to top up to
+    spec.osdCount (3) by minting 2 new empty claims."""
+    cr = _restore_cr(
+        restore={
+            "enabled": True,
+            "monPvc": CEPH_MON_PVC_NAME,
+            "osdPvcs": ["osd-set-data-06p6rg"],
+        },
+        osd_count=3,
+    )
+    cluster = build_ceph_cluster(cr)
+    sets = cluster["spec"]["storage"]["storageClassDeviceSets"]
+    assert sets[0]["count"] == 1
+
+
+def test_build_ceph_cluster_restore_stamps_traceability_annotations():
+    cr = _restore_cr(
+        restore={
+            "enabled": True,
+            "monPvc": CEPH_MON_PVC_NAME,
+            "osdPvcs": ["osd-set-data-06p6rg", "osd-set-data-184c79"],
+        },
+        osd_count=3,
+    )
+    cluster = build_ceph_cluster(cr)
+    annotations = cluster["metadata"]["annotations"]
+    assert annotations["troshka.redhat.com/ceph-restore-mon-pvc"] == CEPH_MON_PVC_NAME
+    assert (
+        annotations["troshka.redhat.com/ceph-restore-osd-pvcs"]
+        == "osd-set-data-06p6rg,osd-set-data-184c79"
+    )
+
+
+def test_build_ceph_cluster_restore_rejects_mismatched_mon_pvc_name():
+    """Rook matches the mon PVC by its fixed name only (spike finding) — a
+    restore.monPvc that does not match that fixed name can never be adopted."""
+    cr = _restore_cr(
+        restore={"enabled": True, "monPvc": "some-other-name", "osdPvcs": []}
+    )
+    with pytest.raises(ValueError, match="rook-ceph-mon-a"):
+        build_ceph_cluster(cr)
+
+
+def test_build_ceph_cluster_restore_disabled_keeps_normal_provisioning():
+    """No restore block (or enabled=False) is the ordinary fresh-bootstrap
+    path — device-set count still comes from spec.osdCount, no annotations."""
+    cr = _restore_cr(restore=None, osd_count=3)
+    cluster = build_ceph_cluster(cr)
+    sets = cluster["spec"]["storage"]["storageClassDeviceSets"]
+    assert sets[0]["count"] == 3
+    assert "annotations" not in cluster["metadata"]
+
+    cr_disabled = _restore_cr(restore={"enabled": False}, osd_count=3)
+    cluster_disabled = build_ceph_cluster(cr_disabled)
+    disabled_sets = cluster_disabled["spec"]["storage"]["storageClassDeviceSets"]
+    assert disabled_sets[0]["count"] == 3
+    assert "annotations" not in cluster_disabled["metadata"]
+
+
+def test_build_ceph_cluster_restore_without_osd_pvcs_falls_back_to_spec_count():
+    """Malformed restore block (enabled but no osdPvcs) must not crash — falls
+    back to the spec-computed count rather than requesting 0 OSDs."""
+    cr = _restore_cr(
+        restore={"enabled": True, "monPvc": CEPH_MON_PVC_NAME, "osdPvcs": []},
+        osd_count=3,
+    )
+    cluster = build_ceph_cluster(cr)
+    sets = cluster["spec"]["storage"]["storageClassDeviceSets"]
+    assert sets[0]["count"] == 3
+
+
+def test_legacy_ceph_cluster_without_capture_uses_fresh_bootstrap():
+    """cephClusterNode deploy with no projectCephCapture.restore → empty bootstrap.
+
+    TroshkaCeph spec has no restore block; Rook provisions fresh OSD PVCs from
+    spec.osdCount rather than adopting pre-filled claims."""
+    cr = {
+        "kind": "TroshkaCeph",
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
+        "spec": {"labIp": "10.0.0.3", "capacityGi": 300, "osdCount": 3},
+    }
+    assert normalize_restore_spec(cr["spec"])["enabled"] is False
+
+    cluster = build_ceph_cluster(cr)
+    sets = cluster["spec"]["storage"]["storageClassDeviceSets"]
+    assert sets[0]["count"] == 3
+    assert "annotations" not in cluster["metadata"]
+
+
+def test_discover_ceph_device_pvcs_fails_on_partial_osd_list():
+    """Partial OSD PVC list (2 of 3 expected) must raise before capture/export."""
+    namespace = "troshka-abc"
+    mon = _mock_pvc("rook-ceph-mon-a", "10Gi")
+    partial_osds = [
+        _mock_pvc(
+            f"osd-set-data-{suffix}",
+            "100Gi",
+            labels={
+                "ceph.rook.io/DeviceSet": "osd-set",
+                "ceph.rook.io/DeviceSetPVCId": f"osd-set-data-{idx}",
+                "ceph.rook.io/setIndex": str(idx),
+            },
+        )
+        for idx, suffix in enumerate(["07ln8j", "184c79"])
+    ]
+    core_api = MagicMock()
+    core_api.read_namespaced_persistent_volume_claim.return_value = mon
+    core_api.list_namespaced_persistent_volume_claim.return_value = MagicMock(
+        items=partial_osds
+    )
+
+    with patch(
+        "helpers.rook_ceph.client.CustomObjectsApi",
+        return_value=_mock_troshka_ceph_osd_count(3),
+    ):
+        with pytest.raises(ValueError, match="expected 3 ceph-osd PVC"):
+            discover_ceph_device_pvcs(core_api, namespace)
