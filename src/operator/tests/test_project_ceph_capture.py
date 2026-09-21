@@ -256,6 +256,51 @@ def _fake_export_job(device_info):
     }
 
 
+class TestCephCaptureDiskRows:
+    def test_pending_snapshotting_and_job_progress(self):
+        from handlers.project import _ceph_capture_disk_rows
+
+        devices = [_mon_device(), _osd_device(0), _osd_device(1)]
+        created = [
+            {
+                "jobName": "export-ceph-ceph-osd-0",
+                "cephKind": "ceph-osd",
+                "cephIndex": 0,
+                "displayName": "ceph-osd-0",
+            }
+        ]
+        disk_statuses = {"export-ceph-ceph-osd-0": "converting 40%"}
+        device_phase = {
+            ("ceph-mon", 0): "snapshotting",
+            ("ceph-osd", 1): "pending",
+        }
+        rows = _ceph_capture_disk_rows(
+            devices, created, disk_statuses, device_phase
+        )
+        assert rows == [
+            {"name": "ceph-mon-0", "status": "snapshotting"},
+            {"name": "ceph-osd-0", "status": "converting 40%"},
+            {"name": "ceph-osd-1", "status": "pending"},
+        ]
+
+    def test_patch_publishes_capture_disks(self):
+        from handlers.project import _patch_ceph_capture_progress
+
+        custom_api = MagicMock()
+        devices = [_osd_device(0), _osd_device(1)]
+        with patch("handlers.project._patch_cr_status") as mock_patch:
+            _patch_ceph_capture_progress(
+                custom_api, "ns1", "proj1", devices, [], {},
+                {("ceph-osd", 0): "pending", ("ceph-osd", 1): "pending"},
+            )
+        body = mock_patch.call_args[0][3]
+        assert body["captureProgress"] == "Capturing project Ceph (0/2)"
+        assert body["captureDisks"] == [
+            {"name": "ceph-osd-0", "status": "pending"},
+            {"name": "ceph-osd-1", "status": "pending"},
+        ]
+
+
 class TestCaptureCephDevicesConcurrency:
     def test_snapshots_issued_without_waiting_for_export_completion(self):
         """3 devices, concurrency cap min(3,4)=3: all 3 snapshot creates must be

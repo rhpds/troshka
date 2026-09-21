@@ -513,13 +513,69 @@ async def _snapshot_and_export_ceph_device(
         "format": "qcow2" if block_device else "tar.gz",
         "virtualSizeBytes": size_gb * 1073741824,
         "deadline": deadline,
-        "displayName": f"ceph-{kind}-{index}",
+        "displayName": f"{kind}-{index}",
         "cephKind": kind,
         "cephIndex": index,
     }
 
 
-async def _await_ceph_export_job(batch_api, ej, namespace, custom_api, cr_name, core_api, disk_statuses):
+def _ceph_device_progress_key(kind: str, index: int) -> tuple[str, int]:
+    return (kind, int(index))
+
+
+def _ceph_capture_disk_rows(
+    ceph_devices: list, created_jobs: list, disk_statuses: dict, device_phase: dict
+) -> list[dict]:
+    """Build patterns-page ``captureDisks`` rows for the Ceph capture phase."""
+    job_by_key = {
+        _ceph_device_progress_key(ej["cephKind"], ej["cephIndex"]): ej
+        for ej in created_jobs
+    }
+    rows: list[dict] = []
+    for device in ceph_devices:
+        kind = device["kind"]
+        index = int(device.get("index", 0))
+        key = _ceph_device_progress_key(kind, index)
+        ej = job_by_key.get(key)
+        if ej:
+            status = disk_statuses.get(ej["jobName"], "starting")
+        else:
+            status = device_phase.get(key, "pending")
+        rows.append({"name": f"{kind}-{index}", "status": status})
+    return rows
+
+
+def _patch_ceph_capture_progress(
+    custom_api, namespace, name, ceph_devices, created_jobs, disk_statuses, device_phase
+):
+    rows = _ceph_capture_disk_rows(
+        ceph_devices, created_jobs, disk_statuses, device_phase
+    )
+    done = sum(1 for row in rows if row["status"] == "done")
+    _patch_cr_status(
+        custom_api,
+        namespace,
+        name,
+        {
+            "captureProgress": f"Capturing project Ceph ({done}/{len(rows)})",
+            "captureDisks": rows,
+        },
+    )
+
+
+async def _await_ceph_export_job(
+    batch_api,
+    ej,
+    namespace,
+    custom_api,
+    cr_name,
+    core_api,
+    disk_statuses,
+    *,
+    ceph_devices=None,
+    created_jobs=None,
+    device_phase=None,
+):
     """Poll a single Ceph device export Job to completion.
 
     Mirrors ``_poll_export_jobs`` but scoped to one job, so the concurrency
@@ -535,6 +591,20 @@ async def _await_ceph_export_job(batch_api, ej, namespace, custom_api, cr_name, 
         )
         if err:
             return err
+        if (
+            ceph_devices is not None
+            and created_jobs is not None
+            and device_phase is not None
+        ):
+            _patch_ceph_capture_progress(
+                custom_api,
+                namespace,
+                cr_name,
+                ceph_devices,
+                created_jobs,
+                disk_statuses,
+                device_phase,
+            )
         if done:
             return None
         await asyncio.sleep(10)
@@ -552,19 +622,53 @@ async def _run_ceph_device_pipeline(
     semaphore,
     disk_statuses,
     created_jobs,
+    ceph_devices,
+    device_phase,
 ):
     """Run one Ceph device's full snapshot->export pipeline under the
     concurrency semaphore. The job descriptor is appended to ``created_jobs``
     as soon as the export Job launches, so cleanup can find (and remove) it
     even if the job later fails or times out."""
+    kind = device_info["kind"]
+    index = int(device_info.get("index", 0))
+    key = _ceph_device_progress_key(kind, index)
     async with semaphore:
+        device_phase[key] = "snapshotting"
+        _patch_ceph_capture_progress(
+            custom_api,
+            namespace,
+            name,
+            ceph_devices,
+            created_jobs,
+            disk_statuses,
+            device_phase,
+        )
         ej = await _snapshot_and_export_ceph_device(
             device_info, s3_config, custom_api, core_api, batch_api, namespace, name
         )
         created_jobs.append(ej)
         disk_statuses[ej["jobName"]] = "starting"
+        device_phase.pop(key, None)
+        _patch_ceph_capture_progress(
+            custom_api,
+            namespace,
+            name,
+            ceph_devices,
+            created_jobs,
+            disk_statuses,
+            device_phase,
+        )
         err = await _await_ceph_export_job(
-            batch_api, ej, namespace, custom_api, name, core_api, disk_statuses
+            batch_api,
+            ej,
+            namespace,
+            custom_api,
+            name,
+            core_api,
+            disk_statuses,
+            ceph_devices=ceph_devices,
+            created_jobs=created_jobs,
+            device_phase=device_phase,
         )
         if err:
             raise RuntimeError(err)
@@ -590,12 +694,19 @@ async def _capture_ceph_devices(
     semaphore = asyncio.Semaphore(concurrency)
     disk_statuses: dict[str, str] = {}
     created_jobs: list[dict] = []
+    device_phase = {
+        _ceph_device_progress_key(d["kind"], int(d.get("index", 0))): "pending"
+        for d in ceph_devices
+    }
 
-    _patch_cr_status(
+    _patch_ceph_capture_progress(
         custom_api,
         namespace,
         name,
-        {"captureProgress": f"Capturing project Ceph (0/{len(ceph_devices)})"},
+        ceph_devices,
+        created_jobs,
+        disk_statuses,
+        device_phase,
     )
 
     tasks = [
@@ -611,6 +722,8 @@ async def _capture_ceph_devices(
                 semaphore,
                 disk_statuses,
                 created_jobs,
+                ceph_devices,
+                device_phase,
             )
         )
         for device in ceph_devices
