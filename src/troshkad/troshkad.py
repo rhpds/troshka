@@ -264,7 +264,7 @@ def _check_nfs_health():
         _nfs_last_check = time.time()
         return False
 
-    result = [None]
+    result: list = [None]
 
     def _probe():
         try:
@@ -666,7 +666,7 @@ def _run_job_worker(job, handler):
         _complete_job(job, "failed", {"error": str(e)})
 
 
-def _dispatch_job(command, params):
+def _dispatch_job(command, params) -> tuple[int, dict]:
     """Dispatch a job: checks limits, creates job, spawns worker thread.
 
     Returns (status_code, response_body).
@@ -1344,6 +1344,8 @@ def _handle_vm_create(job, params):
         )
         root = ET.fromstring(xml_str)
         uuid_elem = root.find("uuid")
+        if uuid_elem is None:
+            raise RuntimeError(f"No <uuid> element in domain XML for {domain}")
         hwuuid_elem = ET.Element("hwuuid")
         hwuuid_elem.text = _hwuuid
         root.insert(list(root).index(uuid_elem) + 1, hwuuid_elem)
@@ -8399,6 +8401,7 @@ def _wait_for_block_device_growth(job, sys_size, dev_name, fs_bytes):
     """Poll sysfs until block device is larger than filesystem (max 60s)."""
     import time as _time
 
+    blk_bytes = 0
     for _ in range(60):
         with open(sys_size) as f:
             blk_bytes = int(f.read().strip()) * 512
@@ -8849,7 +8852,7 @@ def main():
 
     # Install signal handler EARLY — before any restore code that might
     # accidentally SIGTERM us (stale PID file with recycled PID).
-    _server_ref = [None]
+    _server_ref: list = [None]
 
     def shutdown(signum, frame):
         global _draining
@@ -11474,7 +11477,7 @@ def _handle_upload_and_cache(job, params):
 
     file_size = os.path.getsize(local_path)
 
-    cache_error = [None]
+    cache_error: list = [None]
 
     def _do_cache():
         try:
