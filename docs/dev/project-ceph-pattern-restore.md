@@ -316,3 +316,41 @@ Downstream tasks should:
   teardown path (see "Do not reuse standard teardown" above).
 - `build_osd_pvcs()` in `rook_ceph.py` remains dead code; do not wire it in
   for restore — Rook's own device-set PVC discovery already does the job.
+
+## `spec.restore` (Task 5 implementation)
+
+`TroshkaCeph.spec.restore` is a real CRD field (`troshkanceph.yaml`), not an
+annotation fallback:
+
+```yaml
+spec:
+  restore:
+    enabled: true
+    monPvc: rook-ceph-mon-a         # must equal Rook's fixed mon PVC name
+    osdPvcs: [osd-set-data-06p6rg, osd-set-data-184c79]
+```
+
+As established above, **Rook has no CephCluster field that means "attach PVC
+X"** — this block cannot make Rook literally reference those PVC names. What
+it carries:
+
+- `monPvc` / `osdPvcs` — traceability metadata (which PVCs this restore
+  expects Rook to adopt); validated (`monPvc` must equal the fixed
+  `rook-ceph-mon-a` name — Rook can never adopt a differently-named mon PVC)
+  and stamped onto the `CephCluster`'s `metadata.annotations` for audit, not
+  consumed by Rook itself.
+- `len(osdPvcs)` — the one value that changes manifest *shape*:
+  `build_ceph_cluster(..., restore=...)` sets
+  `storage.storageClassDeviceSets[0].count` to `len(osdPvcs)` instead of the
+  spec-computed `osdCount`, so Rook's reconcile never mints new empty OSD
+  claims to top up to a configured count that doesn't match how many PVCs
+  were actually pre-created by the restore-materialize step (Task 9). If
+  `osdPvcs` is empty (malformed restore block), it falls back to the
+  spec-computed count rather than requesting zero OSDs.
+
+`normalize_restore_spec(spec)` and `handlers/ceph.py`'s `_reconcile_ceph` read
+this field; when `restore.enabled`, the handler logs the adopted PVC names/
+count and sets `status.restoreMode: true` before doing the ordinary Rook
+operator + `CephCluster`/`CephBlockPool` apply (unchanged reconcile path
+otherwise — pre-creating the actual PVCs + identity secrets is Task 9/10, not
+this builder).

@@ -8,6 +8,7 @@ from kubernetes.client.exceptions import ApiException
 
 from helpers.rook_ceph import (
     CEPH_EXTERNAL_SECRET,
+    CEPH_MON_PVC_NAME,
     TROSHKA_ROOK_SA_CLUSTER_ROLES,
     build_ceph_cluster,
     build_ceph_rbac,
@@ -21,6 +22,7 @@ from helpers.rook_ceph import (
     discover_ceph_device_pvcs,
     discover_ceph_image,
     normalize_ceph_counts,
+    normalize_restore_spec,
     rook_crb_name,
     validate_lab_ip,
 )
@@ -434,3 +436,117 @@ def test_discover_ceph_device_pvcs_fails_when_mon_missing():
     ):
         with pytest.raises(ValueError, match="expected mon PVC rook-ceph-mon-a"):
             discover_ceph_device_pvcs(core_api, "troshka-abc")
+
+
+# ---------------------------------------------------------------------------
+# Restore mode (Task 5) — spec.restore / build_ceph_cluster(restore=...)
+# ---------------------------------------------------------------------------
+
+
+def _restore_cr(
+    restore: Optional[dict] = None, osd_count: int = 3, capacity_gi: int = 300
+):
+    spec = {"labIp": "10.0.0.3", "capacityGi": capacity_gi, "osdCount": osd_count}
+    if restore is not None:
+        spec["restore"] = restore
+    return {
+        "kind": "TroshkaCeph",
+        "metadata": {
+            "namespace": "troshka-abc",
+            "name": "project-ceph",
+            "uid": "uid-1",
+        },
+        "spec": spec,
+    }
+
+
+def test_normalize_restore_spec_disabled_by_default():
+    assert normalize_restore_spec({}) == {"enabled": False, "monPvc": "", "osdPvcs": []}
+    assert normalize_restore_spec({"restore": {"enabled": False}}) == {
+        "enabled": False,
+        "monPvc": "",
+        "osdPvcs": [],
+    }
+
+
+def test_normalize_restore_spec_defaults_mon_pvc_name():
+    restore = normalize_restore_spec(
+        {"restore": {"enabled": True, "osdPvcs": ["osd-set-data-0-abcdef"]}}
+    )
+    assert restore == {
+        "enabled": True,
+        "monPvc": CEPH_MON_PVC_NAME,
+        "osdPvcs": ["osd-set-data-0-abcdef"],
+    }
+
+
+def test_build_ceph_cluster_restore_caps_device_set_to_adopted_pvcs():
+    """Restoring only 1 captured OSD PVC must not ask Rook to top up to
+    spec.osdCount (3) by minting 2 new empty claims."""
+    cr = _restore_cr(
+        restore={
+            "enabled": True,
+            "monPvc": CEPH_MON_PVC_NAME,
+            "osdPvcs": ["osd-set-data-06p6rg"],
+        },
+        osd_count=3,
+    )
+    cluster = build_ceph_cluster(cr)
+    sets = cluster["spec"]["storage"]["storageClassDeviceSets"]
+    assert sets[0]["count"] == 1
+
+
+def test_build_ceph_cluster_restore_stamps_traceability_annotations():
+    cr = _restore_cr(
+        restore={
+            "enabled": True,
+            "monPvc": CEPH_MON_PVC_NAME,
+            "osdPvcs": ["osd-set-data-06p6rg", "osd-set-data-184c79"],
+        },
+        osd_count=3,
+    )
+    cluster = build_ceph_cluster(cr)
+    annotations = cluster["metadata"]["annotations"]
+    assert annotations["troshka.redhat.com/ceph-restore-mon-pvc"] == CEPH_MON_PVC_NAME
+    assert (
+        annotations["troshka.redhat.com/ceph-restore-osd-pvcs"]
+        == "osd-set-data-06p6rg,osd-set-data-184c79"
+    )
+
+
+def test_build_ceph_cluster_restore_rejects_mismatched_mon_pvc_name():
+    """Rook matches the mon PVC by its fixed name only (spike finding) — a
+    restore.monPvc that does not match that fixed name can never be adopted."""
+    cr = _restore_cr(
+        restore={"enabled": True, "monPvc": "some-other-name", "osdPvcs": []}
+    )
+    with pytest.raises(ValueError, match="rook-ceph-mon-a"):
+        build_ceph_cluster(cr)
+
+
+def test_build_ceph_cluster_restore_disabled_keeps_normal_provisioning():
+    """No restore block (or enabled=False) is the ordinary fresh-bootstrap
+    path — device-set count still comes from spec.osdCount, no annotations."""
+    cr = _restore_cr(restore=None, osd_count=3)
+    cluster = build_ceph_cluster(cr)
+    sets = cluster["spec"]["storage"]["storageClassDeviceSets"]
+    assert sets[0]["count"] == 3
+    assert "annotations" not in cluster["metadata"]
+
+    cr_disabled = _restore_cr(restore={"enabled": False}, osd_count=3)
+    cluster_disabled = build_ceph_cluster(cr_disabled)
+    disabled_sets = cluster_disabled["spec"]["storage"]["storageClassDeviceSets"]
+    assert disabled_sets[0]["count"] == 3
+    assert "annotations" not in cluster_disabled["metadata"]
+
+
+def test_build_ceph_cluster_restore_without_osd_pvcs_falls_back_to_spec_count():
+    """Malformed restore block (enabled but no osdPvcs) must not crash — falls
+    back to the spec-computed count rather than requesting 0 OSDs."""
+    cr = _restore_cr(
+        restore={"enabled": True, "monPvc": CEPH_MON_PVC_NAME, "osdPvcs": []},
+        osd_count=3,
+    )
+    cluster = build_ceph_cluster(cr)
+    sets = cluster["spec"]["storage"]["storageClassDeviceSets"]
+    assert sets[0]["count"] == 3

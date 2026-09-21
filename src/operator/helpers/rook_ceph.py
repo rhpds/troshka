@@ -34,6 +34,8 @@ ROOK_LABEL_DEVICE_SET_PVC_ID = "ceph.rook.io/DeviceSetPVCId"
 ROOK_LABEL_SET_INDEX = "ceph.rook.io/setIndex"
 _GIB = 1073741824
 CEPH_EXTERNAL_SECRET = "troshka-ceph-external"  # pragma: allowlist secret
+RESTORE_ANNOTATION_MON_PVC = "troshka.redhat.com/ceph-restore-mon-pvc"
+RESTORE_ANNOTATION_OSD_PVCS = "troshka.redhat.com/ceph-restore-osd-pvcs"
 MON_BRIDGE_NAME = "troshka-ceph-mon-bridge"
 MON_BRIDGE_BACKEND_SVC = "troshka-ceph-mon"
 EXPORT_JOB_NAME = "troshka-ceph-export"
@@ -257,21 +259,82 @@ def build_osd_pvcs(ceph_cr: dict) -> list[dict]:
     return pvcs
 
 
-def build_ceph_cluster(ceph_cr: dict, ceph_image: str | None = None) -> dict:
+def normalize_restore_spec(spec: dict) -> dict:
+    """Normalize TroshkaCeph ``spec.restore`` into ``{enabled, monPvc, osdPvcs}``.
+
+    Per the Rook PVC-adopt spike (``docs/dev/project-ceph-pattern-restore.md``),
+    Rook's ``CephCluster`` CR has no field meaning "attach PVC X" — it adopts
+    the mon PVC by its fixed name and OSD PVCs by the ``ceph.rook.io/DeviceSet*``
+    labels that a prior capture/restore step stamps on the pre-created claims
+    before this CR exists. ``spec.restore`` therefore carries mostly
+    traceability metadata; the one value ``build_ceph_cluster()`` must act on
+    is the *count* of already-adopted OSD PVCs, so it never asks Rook to
+    provision extra "empty" ones to top up to the configured ``osdCount``.
+    """
+    restore = spec.get("restore") or {}
+    if not restore.get("enabled"):
+        return {"enabled": False, "monPvc": "", "osdPvcs": []}
+    return {
+        "enabled": True,
+        "monPvc": str(restore.get("monPvc") or CEPH_MON_PVC_NAME),
+        "osdPvcs": list(restore.get("osdPvcs") or []),
+    }
+
+
+def _restore_cluster_annotations(restore: dict, osd_count: int) -> tuple[dict, int]:
+    """Return (annotations, effective_osd_count) for a restore-mode CephCluster.
+
+    Raises if ``monPvc`` cannot match Rook's fixed mon PVC name — restore can
+    never adopt under a different name (see ``normalize_restore_spec``).
+    """
+    mon_pvc = restore.get("monPvc") or CEPH_MON_PVC_NAME
+    if mon_pvc != CEPH_MON_PVC_NAME:
+        raise ValueError(
+            f"restore.monPvc must be {CEPH_MON_PVC_NAME!r} (Rook's fixed mon "
+            f"PVC name), got {mon_pvc!r}"
+        )
+    osd_pvcs = restore.get("osdPvcs") or []
+    if osd_pvcs:
+        # Cap the device-set count at the number of already-adopted OSD PVCs
+        # instead of the spec-computed osdCount, so Rook's reconcile does not
+        # mint new empty claims to fill the gap. If osdPvcs is empty (a
+        # malformed restore block), fall back to the spec count below rather
+        # than requesting zero OSDs.
+        osd_count = len(osd_pvcs)
+    annotations = {
+        RESTORE_ANNOTATION_MON_PVC: mon_pvc,
+        RESTORE_ANNOTATION_OSD_PVCS: ",".join(osd_pvcs),
+    }
+    return annotations, osd_count
+
+
+def build_ceph_cluster(
+    ceph_cr: dict, ceph_image: str | None = None, restore: dict | None = None
+) -> dict:
     spec = ceph_cr["spec"]
     namespace = ceph_cr["metadata"]["namespace"]
     osd_count, _, per_osd_gi = normalize_ceph_counts(spec)
     storage_class = spec.get("osdStorageClass") or DEFAULT_OSD_STORAGE_CLASS
     mon_gi = mon_storage_gi(spec)
     image = ceph_image or spec.get("cephImage") or "quay.io/ceph/ceph:v19"
+
+    restore = restore if restore is not None else normalize_restore_spec(spec)
+    annotations: dict = {}
+    if restore.get("enabled"):
+        annotations, osd_count = _restore_cluster_annotations(restore, osd_count)
+
+    metadata = {
+        "name": CEPH_CLUSTER_NAME,
+        "namespace": namespace,
+        "ownerReferences": [owner_ref(ceph_cr)],
+    }
+    if annotations:
+        metadata["annotations"] = annotations
+
     return {
         "apiVersion": _ROOK_API,
         "kind": "CephCluster",
-        "metadata": {
-            "name": CEPH_CLUSTER_NAME,
-            "namespace": namespace,
-            "ownerReferences": [owner_ref(ceph_cr)],
-        },
+        "metadata": metadata,
         "spec": {
             "cephVersion": {"image": image},
             "dataDirHostPath": data_dir_host_path(namespace),

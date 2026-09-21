@@ -46,6 +46,28 @@ spec:
                   default: troshka-ceph-rbd
                 osdStorageClass:
                   type: string
+                restore:
+                  type: object
+                  description: >-
+                    Restore-mode adoption of pre-created mon/OSD PVCs from a
+                    captured pattern (see docs/dev/project-ceph-pattern-restore.md).
+                    Rook has no CephCluster field to "attach" a PVC by name; it
+                    adopts the mon PVC by its fixed name and OSD PVCs by
+                    ceph.rook.io/DeviceSet* labels stamped on the claims before
+                    this CR is created. This block is consumed by
+                    build_ceph_cluster() to cap the OSD device-set count at the
+                    number of already-adopted PVCs (monPvc/osdPvcs values are
+                    otherwise traceability metadata, not literal attach refs).
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    monPvc:
+                      type: string
+                    osdPvcs:
+                      type: array
+                      items:
+                        type: string
             status:
               type: object
               x-kubernetes-preserve-unknown-fields: true
