@@ -1,7 +1,7 @@
 # Project Ceph in Pattern — Identity-Preserving Thin Capture
 
 **Date:** 2026-09-21  
-**Status:** Draft (design)  
+**Status:** Approved (design)  
 **Scope:** Troshka pattern capture/restore for `TroshkaCeph` / `cephClusterNode`. General-purpose (any Ceph consumer in the pattern — nested ODF, VM ceph-clients, etc.). KubeVirt-native projects only (same constraint as project Ceph v1).
 
 ---
