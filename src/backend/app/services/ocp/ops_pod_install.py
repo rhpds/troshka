@@ -9,6 +9,11 @@ install-complete``, then eject — but once *per cluster*, in parallel, each blo
 consuming the per-cluster ``install-config``/``agent-config`` already materialised
 into ``<workdir>/<clusterId>/`` by the pod-create runner (Task 4).
 
+``agent create image`` is serialized across clusters with ``flock``: the installer
+cache under ``~/.cache/agent/files_cache`` is not concurrent-safe (parallel runs
+race and fail with missing ``agent-tui``). Boot / wait-for / eject still run in
+parallel after each cluster's ISO is ready.
+
 The Redfish/serve/wait-for/create-image command strings are shared with the
 bastion installer (:mod:`app.services.ocp.agent_template`) so behavior stays one
 source of truth. Everything here is pure string generation and unit-testable via
@@ -506,20 +511,32 @@ def _install_log_open_cmd(cluster_dir: str, indent: str = "  ") -> str:
     )
 
 
-def _agent_create_image_resume_cmd(indent: str) -> str:
-    """Run create-image only when the ISO and installer state are not already present."""
+def _agent_create_image_resume_cmd(indent: str, lock_path: str) -> str:
+    """Run create-image only when the ISO and installer state are not already present.
+
+    Concurrent cluster installs share the installer agent files_cache; wrap the
+    create-image invocation in ``flock`` so only one runs at a time.
+    """
+    i = indent
+    locked_create = (
+        f"{i}  # Serialize create-image — shared agent files_cache is not concurrent-safe.\n"
+        f"{i}  (\n"
+        f"{i}    flock 200\n"
+        f'{i}    echo "create-image: acquired lock"\n'
+        f"{i}    set -o pipefail\n"
+        + _agent_create_image_cmd(i + "    ", "openshift-install", "create-image.log")
+        + f"{i}  ) 200>{shlex.quote(lock_path)}\n"
+    )
     return (
-        f'{indent}if [ -z "${{TROSHKA_FRESH_INSTALL_LOG:-}}" ] '
+        f'{i}if [ -z "${{TROSHKA_FRESH_INSTALL_LOG:-}}" ] '
         f"&& [ -f agent.x86_64.iso ] && [ -f .openshift_install_state.json ]; then\n"
-        f'{indent}  echo "Agent ISO and installer state present, skipping create-image"\n'
-        f"{indent}else\n"
-        f"{indent}  cp -f .src/install-config.yaml .src/agent-config.yaml ./\n"
-        f"{indent}  if [ -d .src/openshift ]; then "
+        f'{i}  echo "Agent ISO and installer state present, skipping create-image"\n'
+        f"{i}else\n"
+        f"{i}  cp -f .src/install-config.yaml .src/agent-config.yaml ./\n"
+        f"{i}  if [ -d .src/openshift ]; then "
         f"mkdir -p openshift && cp -f .src/openshift/*.yaml openshift/; fi\n"
-        + _agent_create_image_cmd(
-            indent + "  ", "openshift-install", "create-image.log"
-        )
-        + f"{indent}fi\n"
+        + locked_create
+        + f"{i}fi\n"
     )
 
 
@@ -598,7 +615,7 @@ def _cluster_install_block(
         + _fresh_install_reset_cmd("  ", cluster_dir)
         + '  HTTP_PID=""\n'
         + "  trap 'kill $HTTP_PID 2>/dev/null || true' EXIT\n"
-        + _agent_create_image_resume_cmd("  ")
+        + _agent_create_image_resume_cmd("  ", f"{workdir}/.agent-create-image.lock")
         + _boot_from_agent_iso_cmd("  ", cluster_dir, port, bmc_ips_str, serving_ip)
         + "  echo 'Waiting for cluster installation to complete...'\n"
         + _wait_for_complete_cmd("  ", "openshift-install", ".")
