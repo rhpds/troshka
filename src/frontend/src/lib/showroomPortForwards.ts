@@ -57,6 +57,26 @@ export function isShowroomManagedForward(
   return pf.managedByShowroom === true || isShowroomInfraForward(pf);
 }
 
+// External ports served by OpenShift Routes on ingress providers: ingress
+// (80/443) AND the API (6443). Mirror backend deploy_service._ROUTE_ACCESS_PORTS.
+const ROUTE_ACCESS_PORTS = new Set(["80", "443", "6443"]);
+
+// On OpenShift-ingress providers, these ports are served by an OpenShift Route,
+// never EIP-bound — the deploy skips/releases the EIP (see _should_skip_route_eip)
+// and the frontend sync strips extIpId for web forwards. So such a forward with
+// no external IP is expected, not "incomplete", and callers render it read-only
+// "auto" instead of an editable IP dropdown. Cloud providers have no ingress, so
+// their 80/443 stay EIP-bound and a missing external IP there IS a real error.
+export function isRouteManagedForward(
+  pf: PortForward,
+  providerType?: string | null,
+): boolean {
+  return (
+    ROUTE_PROVIDERS.has(providerType || "") &&
+    ROUTE_ACCESS_PORTS.has((pf.extPort || "").trim())
+  );
+}
+
 /** Mirror backend _inject_showroom_port_forward (vxlan.py). */
 export function injectShowroomPortForwards(
   portForwards: PortForward[],
@@ -175,7 +195,16 @@ function ensureShowroomGatewayPortForwardsOnNodes(
   const existing = ((gwData.portForwards as PortForward[]) || []).map((pf) => ({
     ...pf,
   }));
-  const merged = injectShowroomPortForwards(existing, firstVni);
+  const injected = injectShowroomPortForwards(existing, firstVni);
+  // A showroom owns external 443/80 (console/ingress via its proxy). Drop any
+  // non-showroom 443/80 forward so it doesn't collide with the showroom on the
+  // gateway (mirror backend inject_showroom_gateway_port_forwards). 6443 kept.
+  const merged = injected.filter(
+    (pf) =>
+      isShowroomInfraForward(pf) ||
+      pf.managedByShowroom === true ||
+      !isWebForward(pf),
+  );
   const eipId = externalIps[0]?.id || "";
   const routeWeb = ROUTE_PROVIDERS.has(providerType || "");
   const withEip = merged.map((pf) => {

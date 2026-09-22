@@ -17,7 +17,7 @@ import {
 } from "@/lib/showroomValidation";
 import { effectiveShowroomDnsNetwork } from "@/lib/showroomScaffold";
 import { isGatewayConnectedLabNetwork } from "@/lib/gatewayValidation";
-import { isShowroomManagedForward } from "@/lib/showroomPortForwards";
+import { isRouteManagedForward, isShowroomManagedForward } from "@/lib/showroomPortForwards";
 import {
   allowedDiskBuses,
   allowedMachineTypes,
@@ -4738,8 +4738,10 @@ export default function PropertiesPanel() {
                       )}
                       {(() => {
                         const externalIps = useCanvasStore.getState().externalIps;
+                        const providerType = useCanvasStore.getState().providerType;
                         return portForwards.map((pf, i) => {
                           const showroomManaged = isShowroomManagedForward(pf);
+                          const routeManaged = !showroomManaged && isRouteManagedForward(pf, providerType);
                           const roFieldStyle: React.CSSProperties = {
                             fontFamily: "monospace",
                             fontSize: 11,
@@ -4801,6 +4803,66 @@ export default function PropertiesPanel() {
                                   <div className="props-field" style={{ flex: "0 0 64px" }}>
                                     <label className="props-label">Int Port</label>
                                     <div style={roFieldStyle}>auto</div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          }
+                          if (routeManaged) {
+                            // 80/443/6443 on OpenShift-ingress providers are served by an
+                            // OpenShift Route (no EIP) — render read-only "auto", matching
+                            // the showroom card, so it doesn't look like it needs an IP.
+                            return (
+                              <div
+                                key={i}
+                                style={{
+                                  background: "var(--troshka-surface2)",
+                                  borderRadius: 6,
+                                  padding: 8,
+                                  marginBottom: 6,
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    fontSize: 10,
+                                    color: "var(--troshka-text-dim)",
+                                    marginBottom: 6,
+                                  }}
+                                >
+                                  Route access (auto-managed)
+                                </div>
+                                <div
+                                  className="props-row"
+                                  style={{ marginBottom: 4, alignItems: "end" }}
+                                >
+                                  <div className="props-field" style={{ flex: 1 }}>
+                                    <label className="props-label">External IP</label>
+                                    <div style={roFieldStyle}>auto (Route)</div>
+                                  </div>
+                                  <div className="props-field" style={{ flex: "0 0 64px" }}>
+                                    <label className="props-label">Ext Port</label>
+                                    <div style={roFieldStyle}>{pf.extPort}</div>
+                                  </div>
+                                </div>
+                                <div
+                                  style={{
+                                    textAlign: "center",
+                                    color: "var(--troshka-text-dim)",
+                                    fontSize: 10,
+                                    lineHeight: 1,
+                                    margin: "0",
+                                  }}
+                                >
+                                  ↓
+                                </div>
+                                <div className="props-row" style={{ alignItems: "end" }}>
+                                  <div className="props-field" style={{ flex: 1 }}>
+                                    <label className="props-label">Internal IP</label>
+                                    <div style={roFieldStyle}>{pf.intIp}</div>
+                                  </div>
+                                  <div className="props-field" style={{ flex: "0 0 64px" }}>
+                                    <label className="props-label">Int Port</label>
+                                    <div style={roFieldStyle}>{pf.intPort}</div>
                                   </div>
                                 </div>
                               </div>
@@ -4953,7 +5015,13 @@ export default function PropertiesPanel() {
                             </div>
                             {(() => {
                               const errors: string[] = [];
-                              if (!(pf as Record<string, string>).extIpId) errors.push("External IP required");
+                              // Route-served 443/80 (OpenShift-ingress providers) are not
+                              // EIP-bound by design, so don't demand an external IP for them.
+                              if (
+                                !(pf as Record<string, string>).extIpId &&
+                                !isRouteManagedForward(pf, useCanvasStore.getState().providerType)
+                              )
+                                errors.push("External IP required");
                               if (!pf.extPort) errors.push("External port required");
                               if (!pf.intIp) errors.push("Internal IP required");
                               if (!pf.intPort) errors.push("Internal port required");

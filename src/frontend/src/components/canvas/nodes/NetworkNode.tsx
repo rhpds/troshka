@@ -5,9 +5,9 @@ import { createPortal } from "react-dom";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NetworkNodeData } from "@/stores/canvasStore";
 import { useCanvasStore, stableNodeData, stableStringify } from "@/stores/canvasStore";
-import { formatOcpRouteUrl, isDeployInProgress, isOcpRoutablePort } from "@/lib/routeUrl";
+import { findRouteForForward, formatOcpRouteUrl, isDeployInProgress, isOcpRoutablePort } from "@/lib/routeUrl";
 import { isShowroomContainer, SHOWROOM_GATEWAY_TARGET_HANDLE } from "@/lib/showroomValidation";
-import { isShowroomManagedForward } from "@/lib/showroomPortForwards";
+import { isRouteManagedForward, isShowroomManagedForward } from "@/lib/showroomPortForwards";
 import { GATEWAY_NETWORK_SOURCE_HANDLE } from "@/lib/gatewayValidation";
 
 function RJ45Icon() {
@@ -135,20 +135,36 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
               </span>
               {(() => {
                 const projectIps = useCanvasStore.getState().externalIps;
-                const withIps = projectIps.filter((eip) => eip.ip);
-                const endpoints = (gw.externalEndpoints as Array<{hostname?: string; vmName?: string; port?: number; type?: string}>) || [];
-                const routeHostnames = endpoints.filter((ep) => ep.type === "route" && ep.hostname);
-                return (withIps.length > 0 || routeHostnames.length > 0) ? (
+                const endpoints = (gw.externalEndpoints as Array<{hostname?: string; vmName?: string; vmIp?: string; port?: number; type?: string}>) || [];
+                const badgePfs = (gw.portForwards as Array<{extPort: string; intIp: string; extIpId?: string}>) || [];
+                // Mirror the External Access panel: a forward is shown as a Route
+                // when a matching route endpoint exists (by port + internal IP),
+                // otherwise as an EIP. Count distinct routes and distinct EIPs that
+                // are actually used, so the badge doesn't over-report a stale IP
+                // (route-served forwards keep an extIpId but use no IP access).
+                const routeFor = (pf: {extPort: string; intIp: string}) =>
+                  endpoints.find((ep) => ep.type === "route" && ep.hostname &&
+                    String(ep.port) === String(pf.extPort) && (ep.vmIp || "") === (pf.intIp || ""));
+                const routeCount = new Set(
+                  badgePfs.map((pf) => routeFor(pf)?.hostname).filter(Boolean),
+                ).size;
+                const ipCount = new Set(
+                  badgePfs
+                    .filter((pf) => !routeFor(pf) && projectIps.find((e) => e.id === pf.extIpId)?.ip)
+                    .map((pf) => pf.extIpId),
+                ).size;
+                return (ipCount > 0 || routeCount > 0) ? (
                   <div style={{ fontSize: 9, fontFamily: "monospace", color: "var(--troshka-green)", lineHeight: 1.3, cursor: "pointer", textDecoration: "underline", opacity: 0.8 }}
                     onClick={(e) => { e.stopPropagation(); setRoutesOpen(true); }}>
-                    {withIps.length > 0 && <span>{withIps.length} IP{withIps.length !== 1 ? "s" : ""}</span>}
-                    {withIps.length > 0 && routeHostnames.length > 0 && " + "}
-                    {routeHostnames.length > 0 && <span>{routeHostnames.length} route{routeHostnames.length !== 1 ? "s" : ""}</span>}
+                    {ipCount > 0 && <span>{ipCount} IP{ipCount !== 1 ? "s" : ""}</span>}
+                    {ipCount > 0 && routeCount > 0 && " + "}
+                    {routeCount > 0 && <span>{routeCount} route{routeCount !== 1 ? "s" : ""}</span>}
                   </div>
                 ) : null;
               })()}
               {isPortFwd && (() => {
                 const externalIps = useCanvasStore.getState().externalIps;
+                const providerType = useCanvasStore.getState().providerType;
                 const hasIncomplete = portForwards.some((pf) => {
                   if (
                     isShowroomManagedForward(
@@ -162,8 +178,14 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                   ) {
                     return false;
                   }
+                  // Route-served 443/80 (OpenShift-ingress providers) are not
+                  // EIP-bound by design, so a missing external IP is not an error.
+                  const routeManaged = isRouteManagedForward(
+                    pf as { extPort: string; intIp: string; intPort: string; proto: string },
+                    providerType,
+                  );
                   return (
-                    !(pf as Record<string, string>).extIpId ||
+                    (!routeManaged && !(pf as Record<string, string>).extIpId) ||
                     !pf.extPort ||
                     !pf.intIp ||
                     !pf.intPort
@@ -278,7 +300,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
 
       {routesOpen && (() => {
         const gw = d as Record<string, any>;
-        const endpoints = (gw.externalEndpoints as Array<{hostname?: string; vmName?: string; port?: number; type?: string}>) || [];
+        const endpoints = (gw.externalEndpoints as Array<{hostname?: string; vmName?: string; vmIp?: string; port?: number; type?: string}>) || [];
         const routes = endpoints.filter((ep) => ep.type === "route" && ep.hostname);
         const pfs = (gw.portForwards as Array<{extPort: string; intIp: string; intPort: string; proto: string; extIpId?: string}>) || [];
         const eips = useCanvasStore.getState().externalIps.filter((eip) => {
@@ -341,7 +363,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                     </thead>
                     <tbody>
                       {pfs.map((pf, i) => {
-                        const routeMatch = routes.find((ep) => String(ep.port) === String(pf.extPort));
+                        const routeMatch = findRouteForForward(routes, pf);
                         const eip = allEips.find((e) => e.id === pf.extIpId);
                         return (
                           <tr key={i} style={{ borderBottom: "1px solid var(--troshka-border)" }}>
