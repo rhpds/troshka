@@ -950,8 +950,14 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
         _legacy_cluster_from_config(topology, template_id, config)
     ]
     install_on_deploy = config.get("auto_install_ocp", True)
+    # Apply the wizard's selected OCP version to every cluster. Without this the
+    # value only reached the bastion bake, so pod-install clusters silently kept
+    # the template's baked-in version (e.g. 4.22 even when the user picked 5.0).
+    ocp_version = str(config.get("ocp_version") or "").strip()
     for cluster in clusters:
         cluster["installOnDeploy"] = install_on_deploy
+        if ocp_version:
+            cluster["ocpVersion"] = ocp_version
     if not topology.get("clusters"):
         topology["clusters"] = clusters
 

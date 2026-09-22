@@ -1170,6 +1170,21 @@ def test_customize_pod_single_cluster_no_bake_but_generated():
     assert cluster["installOnDeploy"] is True
 
 
+def test_customize_applies_wizard_ocp_version_to_clusters():
+    """The wizard's selected OCP version must land on each cluster (pod install),
+    overriding the template's baked-in default. Regression: the version was only
+    applied on the bastion bake path, so pod-install clusters silently kept the
+    template version (e.g. 4.22 even when the user picked 5.0)."""
+    from app.services.ocp.agent_template import customize_topology
+
+    topo = _single_cluster_topo_with_bastion()
+    topo["clusters"][0]["ocpVersion"] = "4.22"  # template default
+    config = {**_install_via_config("pod"), "ocp_version": "5.0"}
+    customize_topology(topo, "ocp-sno", config)
+
+    assert topo["clusters"][0]["ocpVersion"] == "5.0"
+
+
 def test_customize_auto_install_false_stamps_install_on_deploy():
     """Quickstart auto_install_ocp=false maps to cluster installOnDeploy=false."""
     from app.services.ocp.agent_template import customize_topology
