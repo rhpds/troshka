@@ -535,6 +535,7 @@ class TestHandleVmStart:
         result = _handle_vm_start(status, "ns", "proj", p, custom_api, vm_items)
         assert result is False
         assert p.status["vmsStarted"] is True
+        assert p.status.get("cephRestoreActive") is False
 
     @patch("handlers.project._start_kubevirt_vms")
     @patch("handlers.project._cleanup_stale_volumes", return_value=False)

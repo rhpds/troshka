@@ -225,7 +225,7 @@ def _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns) -> s
             host,
             project.id,
             netns,
-            f"172.30.{octet3}.1:443",
+            f"172.30.{octet3}.2:443",
             f"172.30.{octet3}.3:80",
             cert["cert_path"],
             cert["key_path"],
@@ -6282,6 +6282,23 @@ def _is_ceph_restore_stage(op_stage: str) -> bool:
     )
 
 
+def _is_vm_lifecycle_stage(op_stage: str) -> bool:
+    """True when operator has moved past disk import into VM start/wait/done."""
+    if not op_stage:
+        return False
+    lower = op_stage.lower()
+    return any(
+        key in lower
+        for key in (
+            "starting vm",
+            "waiting for vm",
+            "vms ready",
+            "certificate",
+            "done",
+        )
+    )
+
+
 def _resolve_deploy_step(
     all_disks_done, op_stage, op_detail, dv_detail, dv_lines, status, last
 ):
@@ -6301,7 +6318,14 @@ def _resolve_deploy_step(
             op_stage.lower() if _is_ceph_restore_stage(op_stage) else "restoring ceph"
         )
         return step, detail
-    if status.get("cephRestoreActive") and not all_disks_done:
+    # cephRestoreActive stays True after TroshkaCeph is Ready (boot-gate flag).
+    # Only claim "restoring ceph" while the operator is still on a Ceph stage —
+    # otherwise fall through so Starting VMs / images win.
+    if (
+        status.get("cephRestoreActive")
+        and not all_disks_done
+        and (not op_stage or _is_ceph_restore_stage(op_stage))
+    ):
         detail = op_detail or "importing mon/OSD devices"
         return "restoring ceph", detail
     if all_disks_done and op_stage:
@@ -6313,6 +6337,10 @@ def _resolve_deploy_step(
             ready = sum(1 for s in vm_states.values() if s in ("Running", "Stopped"))
             return step, f"{ready}/{len(vm_states)} VMs ready"
         return step, op_detail or step
+    # Operator may start ready VMs while one disk is still cloning — prefer the
+    # VM lifecycle stage over a lingering "images" line for the stuck DV.
+    if _is_vm_lifecycle_stage(op_stage):
+        return op_stage.lower(), op_detail or op_stage.lower()
     if dv_lines:
         return "images", dv_detail
     if op_stage:

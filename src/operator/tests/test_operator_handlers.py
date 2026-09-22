@@ -6381,6 +6381,50 @@ class TestProvisionDiskPvcs:
         assert "disk-aaa" in result
         custom_api.create_namespaced_custom_object.assert_called_once()
 
+    @patch("handlers.vm._ensure_golden_pvc", return_value="golden-abc123")
+    @patch("handlers.vm._wait_for_datavolume", return_value=False)
+    def test_clone_not_ready_raises_temporary_error(self, mock_wait, mock_golden):
+        """Clone waits on golden binding — TemporaryError so kopf retries."""
+        import handlers.vm as vm_mod
+        from handlers.vm import _provision_disk_pvcs
+
+        custom_api = MagicMock()
+        core_api = MagicMock()
+        spec = {
+            "disks": [
+                {
+                    "id": "disk-aaa",
+                    "sizeGb": 40,
+                    "libraryImage": {"s3Path": "library/rhel.qcow2"},
+                }
+            ]
+        }
+        body = {
+            "kind": "TroshkaVM",
+            "metadata": {"name": "vm-1", "uid": "uid-1"},
+        }
+        patch_obj = MagicMock()
+        patch_obj.status = {}
+
+        # conftest mocks kopf as MagicMock — TemporaryError isn't a real Exception.
+        with pytest.raises((Exception, TypeError)):
+            asyncio.run(
+                _provision_disk_pvcs(
+                    spec,
+                    "vm-1",
+                    "ns1",
+                    body,
+                    core_api,
+                    custom_api,
+                    {"bucket": "b"},
+                    {},
+                    patch_obj,
+                )
+            )
+        assert "retry" in patch_obj.status.get("message", "").lower()
+        vm_mod.kopf.TemporaryError.assert_called()
+        assert "not ready" in str(vm_mod.kopf.TemporaryError.call_args)
+
     def test_provisions_blank_disk(self):
         from handlers.vm import _provision_disk_pvcs
 

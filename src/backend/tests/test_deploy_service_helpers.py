@@ -9134,6 +9134,33 @@ class TestResolveDeployStepCephRestore:
         )
         assert step == "images"
 
+    def test_ceph_restore_active_does_not_mask_starting_vms(self):
+        """cephRestoreActive stays True after Ceph is Ready; real stage must win."""
+        step, detail = _resolve_deploy_step(
+            all_disks_done=False,
+            op_stage="Starting VMs",
+            op_detail="3/4 started",
+            dv_detail="disk-stuck: waiting",
+            dv_lines=["ceph-mon: done", "disk-stuck: waiting"],
+            status={"cephRestoreActive": True},
+            last={},
+        )
+        assert step == "starting vms"
+        assert "3/4" in detail
+
+    def test_ceph_restore_active_still_shows_while_waiting_for_ceph(self):
+        step, detail = _resolve_deploy_step(
+            all_disks_done=False,
+            op_stage="Waiting for restored Ceph",
+            op_detail="TroshkaCeph not yet Ready",
+            dv_detail="",
+            dv_lines=["ceph-mon: done"],
+            status={"cephRestoreActive": True},
+            last={},
+        )
+        assert "ceph" in step
+        assert "TroshkaCeph" in detail or "not yet Ready" in detail
+
 
 # ═══════════════════════════════════════════════════════════════════════
 # Coverage gap tests — uncovered branches in helper functions

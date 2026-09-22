@@ -473,9 +473,10 @@ async def _provision_disk_pvcs(
                 owner_name=name,
                 owner_namespace=namespace,
             ):
-                patch.status["state"] = "Error"
-                patch.status["message"] = f"Disk clone failed for {disk_id}"
-                raise kopf.PermanentError(f"Disk clone {pvc_name} failed")
+                # Match golden-import: retry — CloneScheduled often waits on a
+                # golden PVC that is still importing/binding.
+                patch.status["message"] = f"Disk clone retry for {disk_id}"
+                raise kopf.TemporaryError(f"Disk clone {pvc_name} not ready", delay=60)
         elif disk.get("blank"):
             size_gb = disk.get("sizeGb", 20)
             pvc = build_blank_pvc(pvc_name, namespace, size_gb)
@@ -1204,9 +1205,8 @@ async def _clone_s3_disk(
         owner_name=name,
         owner_namespace=namespace,
     ):
-        patch.status["state"] = "Error"
-        patch.status["message"] = f"Disk clone failed for {disk_id[:8]}"
-        raise kopf.PermanentError(f"Disk clone {pvc_name} failed")
+        patch.status["message"] = f"Disk clone retry for {disk_id[:8]}"
+        raise kopf.TemporaryError(f"Disk clone {pvc_name} not ready", delay=60)
     return True
 
 

@@ -763,9 +763,7 @@ async def _capture_ceph_devices(
     ]
 
     _cleanup_capture_resources(core_api, custom_api, batch_api, created_jobs, namespace)
-    logger.info(
-        f"Ceph device capture complete for {name}: {len(captured)} device(s)"
-    )
+    logger.info(f"Ceph device capture complete for {name}: {len(captured)} device(s)")
     return captured
 
 
@@ -2832,6 +2830,11 @@ def _handle_vm_start(status, namespace, name, patch, custom_api, vm_items):
             "detail": "TroshkaCeph not yet Ready",
         }
         return True
+
+    if status.get("cephRestoreActive"):
+        # Ceph is Ready — clear the sticky flag so progress UIs stop claiming
+        # "restoring ceph" while later stages (Starting VMs) are active.
+        patch.status["cephRestoreActive"] = False
 
     if _cleanup_stale_volumes(namespace, name, patch):
         return True
