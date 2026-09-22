@@ -1113,7 +1113,11 @@ export function vipCollision(
   // VIP legitimately equals that node's IP — not a collision for its own
   // cluster. Drop this cluster's member IPs from the used set (multi-node
   // clusters still flag VIP==member, which would be a real misconfiguration).
-  const pureSno = cluster.type === "sno" && (cluster.workers ?? 0) === 0;
+  // SNO is defined by a SINGLE control plane, not zero workers. Deferred
+  // workers join day-2 but never introduce keepalived VIPs — api/api-int/*.apps
+  // still resolve to the one control-plane node's IP, so a VIP == that node IP
+  // is legitimate. Gating on workers === 0 wrongly flagged SNO-with-workers.
+  const pureSno = cluster.type === "sno";
   if (pureSno) {
     for (const n of nodes) {
       const d = n.data as Record<string, unknown>;

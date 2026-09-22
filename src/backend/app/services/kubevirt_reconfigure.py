@@ -175,7 +175,35 @@ def _static_leases_for_network(net_id: str, topology: dict) -> list[dict]:
                 "hostname": infra.get("name", infra.get("hostname", "")),
             }
         )
+
+    leases.extend(_ceph_reservations(net_id, nodes, reserved_ips))
     return leases
+
+
+def _ceph_reservations(
+    net_id: str, nodes: list[dict], reserved_ips: set[str]
+) -> list[dict]:
+    """Bogus-MAC dhcp-host reservations for a Ceph appliance's mon labIp + OSD
+    IPs on this network. The mon and OSD pods self-assign these statics on the
+    Multus interface, so dnsmasq must reserve them (like infra IPs) or a VM
+    lease / self-assigning pod would collide."""
+    from app.services.vxlan import _bogus_mac_for_ip
+
+    out: list[dict] = []
+    for node in nodes:
+        if node.get("type") != "cephClusterNode":
+            continue
+        data = node.get("data") or {}
+        if str(data.get("networkRef") or "") != net_id:
+            continue
+        ceph_ips = [str(data.get("labIp") or "").strip(), *(data.get("osdIps") or [])]
+        for idx, ip in enumerate(ceph_ips):
+            if not ip or ip in reserved_ips:
+                continue
+            reserved_ips.add(ip)
+            label = "ceph-mon" if idx == 0 else f"ceph-osd-{idx - 1}"
+            out.append({"mac": _bogus_mac_for_ip(ip), "ip": ip, "hostname": label})
+    return out
 
 
 def build_troshkanetwork_spec(net_entry: dict, topology: dict) -> dict:

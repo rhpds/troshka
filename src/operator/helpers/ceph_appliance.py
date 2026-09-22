@@ -60,12 +60,40 @@ def osd_pvc_name(index: int) -> str:
 
 
 def osd_lab_ip(lab_ip: str, index: int) -> str:
-    """Stable Multus IP for OSD i (.20 + i) on the same /24 as labIp."""
+    """Fallback Multus IP for OSD ``index`` when ``spec.osdIps`` is absent: the
+    ``index``-th highest host in labIp's /24, skipping the gateway (``.1``),
+    dnsmasq (``.2``), and the mon (``labIp``).
+
+    The backend normally stamps collision-*checked* ``spec.osdIps``; this
+    top-down fallback keeps a CR without them clear of the low/mid node band
+    (unlike the old ``.20 + i`` offset, which collided with worker IPs). The
+    operator has only the CR spec, so it cannot see VM NICs — top-down just
+    minimizes the odds of a clash.
+    """
     if not lab_ip or not _IPV4_RE.match(lab_ip):
         return ""
-    octets = lab_ip.split(".")
-    octets[3] = str(20 + index)
-    return ".".join(octets)
+    base = ".".join(lab_ip.split(".")[:3])
+    skip = {f"{base}.1", f"{base}.2", lab_ip}
+    picked = 0
+    for last in range(254, 2, -1):  # .254 down to .3
+        candidate = f"{base}.{last}"
+        if candidate in skip:
+            continue
+        if picked == index:
+            return candidate
+        picked += 1
+    return ""
+
+
+def osd_ip_for(spec: dict, index: int) -> str:
+    """Resolve OSD ``index``'s Multus IP: the backend-allocated
+    ``spec.osdIps[index]`` when present, else the legacy ``.20 + i`` offset."""
+    osd_ips = spec.get("osdIps") or []
+    if index < len(osd_ips):
+        ip = str(osd_ips[index] or "").strip()
+        if ip and _IPV4_RE.match(ip):
+            return ip
+    return osd_lab_ip(spec.get("labIp", ""), index)
 
 
 def lab_cidr(lab_ip: str, prefix: str) -> str:
@@ -681,7 +709,7 @@ def build_osd_deployment(ceph_cr: dict, ceph_image: str, index: int) -> dict:
     lab_ip = spec.get("labIp", "")
     prefix = str(spec.get("labPrefixLength") or 24)
     nad = spec.get("networkNad", "")
-    osd_ip = osd_lab_ip(lab_ip, index)
+    osd_ip = osd_ip_for(spec, index)
     name = osd_pvc_name(index)
     labels = {
         "app": OSD_APP,

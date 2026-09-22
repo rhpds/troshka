@@ -96,8 +96,104 @@ export function collectUsedIps(nodes: Node[]): Set<string> {
       if (apiVip) used.add(apiVip);
       if (ingressVip) used.add(ingressVip);
     }
+    // Ceph mon + OSD statics are self-assigned on the Multus interface, so they
+    // must be treated as used or a VM NIC / container could be allocated on top.
+    if (node.type === "cephClusterNode") {
+      const labIp = String(data.labIp || "").trim();
+      if (labIp) used.add(labIp);
+      for (const ip of (data.osdIps as string[]) || []) {
+        if (ip) used.add(ip);
+      }
+    }
   }
   return used;
+}
+
+/** If `ip` is a Ceph mon or OSD static, return a human label, else null. */
+export function cephIpConflict(nodes: Node[], ip: string): string | null {
+  if (!ip) return null;
+  for (const node of nodes) {
+    if (node.type !== "cephClusterNode") continue;
+    const data = node.data as Record<string, unknown>;
+    if (String(data.labIp || "") === ip) return "Ceph mon";
+    if (((data.osdIps as string[]) || []).includes(ip)) return "Ceph OSD";
+  }
+  return null;
+}
+
+/** Highest `count` free hosts in `cidr`, top-down, skipping gateway + used. */
+export function pickHighFreeIps(
+  cidr: string,
+  count: number,
+  usedIps: Set<string>,
+): string[] {
+  if (count <= 0) return [];
+  const hosts = listCidrHosts(cidr);
+  if (hosts.length === 0) return [];
+  const gateway = hosts[0];
+  const picked: string[] = [];
+  for (let i = hosts.length - 1; i >= 0; i -= 1) {
+    const ip = hosts[i];
+    if (ip === gateway || usedIps.has(ip)) continue;
+    picked.push(ip);
+    if (picked.length >= count) break;
+  }
+  return picked;
+}
+
+/**
+ * Allocate stable, collision-free static OSD IPs for a cephClusterNode,
+ * persisting them on `data.osdIps`. Mirrors backend
+ * deploy_topology._auto_assign_ceph_osd_ips: OSD IPs are drawn from the top of
+ * the Ceph network's range downward so they never land on node/VM NICs, VIPs,
+ * or the mon. Existing valid entries are preserved (a running OSD keeps its
+ * address); the list is grown or trimmed to match osdCount. Returns the same
+ * array reference when nothing changes.
+ */
+export function assignCephOsdIps(nodes: Node[]): Node[] {
+  const ceph = nodes.find((n) => n.type === "cephClusterNode");
+  if (!ceph) return nodes;
+  const data = ceph.data as Record<string, unknown>;
+  const networkRef = String(data.networkRef || "");
+  const netNode = nodes.find(
+    (n) =>
+      n.type === "networkNode" &&
+      (String((n.data as Record<string, unknown>)?.id || "") === networkRef ||
+        n.id === networkRef),
+  );
+  const cidr = String((netNode?.data as Record<string, unknown>)?.cidr || "");
+  if (!cidr) return nodes;
+  const hosts = new Set(listCidrHosts(cidr));
+  if (hosts.size === 0) return nodes;
+  const osdCount = Math.max(1, Math.min(6, Number(data.osdCount) || 3));
+
+  const existing = ((data.osdIps as string[]) || []).filter(Boolean);
+  // Everything an OSD IP must avoid — collectUsedIps already covers NICs,
+  // gateway, VIPs, the mon, and other ceph nodes' OSD IPs. Drop THIS node's own
+  // OSD IPs so we can preserve them below; add the dnsmasq address (.2).
+  const reserved = collectUsedIps(nodes);
+  for (const ip of existing) reserved.delete(ip);
+  const dnsmasq = listCidrHosts(cidr)[1];
+  if (dnsmasq) reserved.add(dnsmasq);
+
+  const kept: string[] = [];
+  for (const ip of existing) {
+    if (hosts.has(ip) && !reserved.has(ip) && !kept.includes(ip)) kept.push(ip);
+    if (kept.length >= osdCount) break;
+  }
+  const need = osdCount - kept.length;
+  if (need > 0) {
+    const excl = new Set(reserved);
+    for (const ip of kept) excl.add(ip);
+    kept.push(...pickHighFreeIps(cidr, need, excl));
+  }
+
+  const unchanged =
+    existing.length === kept.length && existing.every((v, i) => v === kept[i]);
+  if (unchanged) return nodes;
+  return nodes.map((n) =>
+    n.id === ceph.id ? { ...n, data: { ...data, osdIps: kept } } : n,
+  );
 }
 
 export function pickAvailableIp(

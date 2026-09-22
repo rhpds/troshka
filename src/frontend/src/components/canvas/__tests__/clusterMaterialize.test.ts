@@ -738,6 +738,27 @@ describe("vipCollision", () => {
     const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24" } } as any;
     expect(vipCollision("10.0.0.2", cluster, [node, net])).toBe(true);
   });
+
+  it("does not flag an SNO-with-workers VIP on its control-plane node IP", () => {
+    // CCLM 'source' is type sno + deferred workers; api/api-int/*.apps still
+    // resolve to the single control-plane node's IP (no keepalived VIP), so
+    // apiVip==ingressVip==cp-0 IP must NOT read as a collision just because
+    // workers > 0.
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.type = "sno";
+    cluster.controlPlane = 1;
+    cluster.workers = 2;
+    cluster.apiVip = "10.0.0.10";
+    cluster.ingressVip = "10.0.0.10";
+    cluster.networkIds = ["net1"];
+    const net = { id: "net1", type: "networkNode", data: { subtype: "network", cidr: "10.0.0.0/24" } } as any;
+    const cp = {
+      id: "src-cp-0",
+      type: "vmNode",
+      data: { clusterId: cluster.id, nics: [{ ip: "10.0.0.10" }] },
+    } as any;
+    expect(vipCollision("10.0.0.10", cluster, [node, net, cp])).toBe(false);
+  });
 });
 
 describe("clusterBoxSize", () => {

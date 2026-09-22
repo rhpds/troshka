@@ -63,6 +63,7 @@ import {
   STORAGE_SOURCE_HANDLE,
 } from "@/lib/storageEdgeStyle";
 import {
+  assignCephOsdIps,
   assignMissingContainerNicIps,
   collectUsedIps,
   pickIpForNetwork,
@@ -1692,6 +1693,13 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
     });
     if (!isStatusOnly) set({ topologyDirty: computeTopologyDirty(get()) });
 
+    // (Re)allocate Ceph OSD statics when a ceph node's network / osdCount / mon
+    // changes so data.osdIps stays populated and shown in the panel.
+    if (!isStatusOnly) {
+      const withOsd = assignCephOsdIps(get().nodes);
+      if (withOsd !== get().nodes) set({ nodes: withOsd });
+    }
+
     if (!isStatusOnly && ("nics" in data || "isShowroom" in data)) {
       const showroom = getShowroomNode(get().nodes);
       if (showroom) {
@@ -2001,13 +2009,16 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
               n.id === showroomNode.id ? { ...n, data: updatedData } : n,
             );
           })();
+          // Populate Ceph OSD statics on load so existing projects show them and
+          // never leave them unallocated for deploy.
+          const withCephOsd = assignCephOsdIps(loadedNodes);
           // Guard against duplicate node ids: React Flow requires unique ids, and
           // a clusterNode-duplication bug accumulated copies of the same node
           // across saves, which broke rendering (member VMs detached from the box,
           // overlapping cluster boxes). Keep the first occurrence of each id;
           // saving the deduped set also heals the persisted topology.
           const _seenNodeIds = new Set<string>();
-          const dedupedNodes = loadedNodes.filter((n: Node) => {
+          const dedupedNodes = withCephOsd.filter((n: Node) => {
             if (_seenNodeIds.has(n.id)) return false;
             _seenNodeIds.add(n.id);
             return true;

@@ -33,6 +33,15 @@ spec:
                   minimum: 1
                   maximum: 6
                   default: 3
+                osdIps:
+                  type: array
+                  description: >-
+                    Backend-allocated, collision-free static Multus IPs for each
+                    OSD (index-aligned). Reserved as dnsmasq dhcp-host entries so
+                    no VM lease collides. When absent/short the operator falls
+                    back to the legacy .20+i offset (osd_ip_for).
+                  items:
+                    type: string
                 replicateSize:
                   type: integer
                   minimum: 1

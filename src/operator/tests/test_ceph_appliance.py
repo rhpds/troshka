@@ -36,9 +36,16 @@ def _cr(**spec_extra):
     }
 
 
-def test_osd_lab_ip_offsets():
-    assert osd_lab_ip("10.0.0.4", 0) == "10.0.0.20"
-    assert osd_lab_ip("10.0.0.4", 2) == "10.0.0.22"
+def test_osd_lab_ip_fallback_is_top_down():
+    # No spec.osdIps -> grab the highest-numbered addresses, not the .20+i offset
+    # that collides with worker node IPs.
+    assert osd_lab_ip("10.0.0.4", 0) == "10.0.0.254"
+    assert osd_lab_ip("10.0.0.4", 1) == "10.0.0.253"
+
+
+def test_osd_lab_ip_fallback_skips_mon_gateway_dnsmasq():
+    # mon at .254 must be skipped so an OSD never lands on it.
+    assert osd_lab_ip("10.0.0.254", 0) == "10.0.0.253"
 
 
 def test_lab_cidr():
@@ -83,15 +90,42 @@ def test_mon_deployment_multus_and_lab_ip():
     assert any(c["name"] == "mgr" for c in pod["spec"]["containers"])
 
 
-def test_osd_deployment_uses_offset_ip():
+def test_osd_deployment_fallback_top_down_when_no_spec_ips():
     cr = _cr()
     dep = build_osd_deployment(cr, "quay.io/ceph/ceph:v19", 0)
     env = {
         e["name"]: e.get("value")
         for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]
     }
-    assert env["OSD_IP"] == "10.0.0.20"
+    assert env["OSD_IP"] == "10.0.0.254"
     assert dep["metadata"]["name"] == "troshka-ceph-osd-0"
+
+
+def _osd_env_ip(cr, index):
+    dep = build_osd_deployment(cr, "quay.io/ceph/ceph:v19", index)
+    env = {
+        e["name"]: e.get("value")
+        for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    # the setup-net init container must self-assign the SAME resolved IP
+    setup_cmd = dep["spec"]["template"]["spec"]["initContainers"][0]["command"][2]
+    assert env["OSD_IP"] in setup_cmd
+    return env["OSD_IP"]
+
+
+def test_osd_deployment_prefers_spec_osd_ips():
+    """Backend-allocated collision-free statics win over the legacy .20+i offset."""
+    cr = _cr(osdCount=2, osdIps=["10.0.0.254", "10.0.0.253"])
+    assert _osd_env_ip(cr, 0) == "10.0.0.254"
+    assert _osd_env_ip(cr, 1) == "10.0.0.253"
+
+
+def test_osd_deployment_falls_back_top_down_when_spec_ips_short():
+    """Short osdIps falls back to top-down (collision-avoidant), never .20+i."""
+    cr = _cr(osdCount=2, osdIps=["10.0.0.100"])
+    assert _osd_env_ip(cr, 0) == "10.0.0.100"
+    # index 1 falls back to the 1-th highest host (.253); never .21
+    assert _osd_env_ip(cr, 1) == "10.0.0.253"
 
 
 def test_external_secret_mon_host_is_lab_ip():

@@ -3,10 +3,99 @@
 import pytest
 
 from app.services.deploy_topology import (
+    _auto_assign_ceph_osd_ips,
     _filter_topology_for_host,
     _find_vm_disks,
+    _pick_high_free_ips,
     is_valid_smbios_uuid,
 )
+
+
+def _ceph_node(topo):
+    return next(n for n in topo["nodes"] if n["type"] == "cephClusterNode")["data"]
+
+
+def _ceph_topology(osd_ips=None, osd_count=3, extra_nodes=None):
+    ceph_data = {
+        "id": "ceph1",
+        "networkRef": "net1",
+        "labIp": "10.0.0.4",
+        "osdCount": osd_count,
+    }
+    if osd_ips is not None:
+        ceph_data["osdIps"] = osd_ips
+    nodes = [
+        {
+            "id": "net1",
+            "type": "networkNode",
+            "data": {"id": "net1", "cidr": "10.0.0.0/24"},
+        },
+        {"id": "cp0", "type": "vmNode", "data": {"nics": [{"ip": "10.0.0.10"}]}},
+        {"id": "w0", "type": "vmNode", "data": {"nics": [{"ip": "10.0.0.20"}]}},
+        {"id": "ceph1", "type": "cephClusterNode", "data": ceph_data},
+    ]
+    if extra_nodes:
+        nodes.extend(extra_nodes)
+    return {"nodes": nodes, "edges": []}
+
+
+def test_collect_used_ips_includes_ceph_osd_ips():
+    from app.services.deploy_topology import _collect_used_ips
+
+    topo = _ceph_topology(osd_ips=["10.0.0.254", "10.0.0.253"], osd_count=2)
+    used = _collect_used_ips(topo)
+    assert "10.0.0.254" in used and "10.0.0.253" in used
+
+
+def test_pick_high_free_ips_top_down_skips_used():
+    ips = _pick_high_free_ips("10.0.0.0/24", 3, {"10.0.0.254", "10.0.0.20"})
+    assert ips == ["10.0.0.253", "10.0.0.252", "10.0.0.251"]
+
+
+def test_pick_high_free_ips_excludes_gateway_and_runs_out():
+    # /30 host range is .1,.2; gateway .1 excluded -> only .2 available
+    assert _pick_high_free_ips("10.9.9.0/30", 5, set()) == ["10.9.9.2"]
+
+
+def test_pick_high_free_ips_zero_or_bad_cidr():
+    assert _pick_high_free_ips("10.0.0.0/24", 0, set()) == []
+    assert _pick_high_free_ips("not-a-cidr", 3, set()) == []
+
+
+def test_auto_assign_ceph_osd_ips_allocates_top_down():
+    topo = _ceph_topology(osd_count=3)
+    _auto_assign_ceph_osd_ips(topo)
+    assert _ceph_node(topo)["osdIps"] == ["10.0.0.254", "10.0.0.253", "10.0.0.252"]
+
+
+def test_auto_assign_ceph_osd_ips_preserves_existing_and_grows():
+    topo = _ceph_topology(osd_ips=["10.0.0.254", "10.0.0.253"], osd_count=3)
+    _auto_assign_ceph_osd_ips(topo)
+    assert _ceph_node(topo)["osdIps"] == [
+        "10.0.0.254",
+        "10.0.0.253",
+        "10.0.0.252",
+    ]
+
+
+def test_auto_assign_ceph_osd_ips_trims_when_count_lowered():
+    topo = _ceph_topology(
+        osd_ips=["10.0.0.254", "10.0.0.253", "10.0.0.252"], osd_count=2
+    )
+    _auto_assign_ceph_osd_ips(topo)
+    assert _ceph_node(topo)["osdIps"] == ["10.0.0.254", "10.0.0.253"]
+
+
+def test_auto_assign_ceph_osd_ips_avoids_mon_and_vips():
+    vip_node = {
+        "id": "clu1",
+        "type": "clusterNode",
+        "data": {"apiVip": "10.0.0.254", "ingressVip": "10.0.0.4"},
+    }
+    topo = _ceph_topology(osd_count=1, extra_nodes=[vip_node])
+    _auto_assign_ceph_osd_ips(topo)
+    # .254 is a VIP, .4 is the mon -> highest free is .253
+    assert _ceph_node(topo)["osdIps"] == ["10.0.0.253"]
 
 
 def test_is_valid_smbios_uuid():

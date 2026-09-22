@@ -9,7 +9,7 @@ import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, s
 import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, assignMissingClusterMemberNicIps, effectiveDnsNetworkId, clusterPrereqIssues, suggestClusterVips, vipCollision, vipInMemberSubnet } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
 import { validateCephLabIp } from "@/lib/cephLabIpValidation";
-import { collectUsedIps } from "@/lib/dhcpIpAssignment";
+import { cephIpConflict, collectUsedIps } from "@/lib/dhcpIpAssignment";
 import {
   getShowroomReadiness,
   isCephStorageNetworkNode,
@@ -716,7 +716,9 @@ function ClusterEditor({
     effectiveInstallVia !== "pod" && hasBastionVm;
   // Pure SNO (1 CP, 0 workers) has no VIPs — api/*.apps use the node's own IP.
   // SNO+workers is a multi-node cluster and needs explicit VIPs like standard.
-  const isSno = cluster.type === "sno" && (cluster.workers ?? 0) === 0;
+  // SNO = single control plane (deferred workers don't add VIPs); api/ingress
+  // resolve to the one node's IP, so the VIP fields stay N/A even with workers.
+  const isSno = cluster.type === "sno";
   const apiVipError = vipCollisionError(clusters, cluster.id, "apiVip", cluster.apiVip || "");
   const ingressVipError = vipCollisionError(clusters, cluster.id, "ingressVip", cluster.ingressVip || "");
 
@@ -1049,7 +1051,9 @@ function ClusterEditor({
           )}
           {!isSno && apiVipError && <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>{apiVipError}</div>}
           {!isSno && vipCollision(cluster.apiVip || "", cluster, nodes) && !apiVipError && (
-            <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>IP in use</div>
+            <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>
+              {cephIpConflict(nodes, cluster.apiVip || "") ? `In use by ${cephIpConflict(nodes, cluster.apiVip || "")}` : "IP in use"}
+            </div>
           )}
           {!isSno && !!cluster.apiVip && !vipInMemberSubnet(cluster.apiVip, cluster, nodes) && (
             <div style={{ color: "var(--troshka-red, #ef4444)", fontSize: 11, marginTop: 2 }}>
@@ -1083,7 +1087,9 @@ function ClusterEditor({
           )}
           {!isSno && ingressVipError && <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>{ingressVipError}</div>}
           {!isSno && vipCollision(cluster.ingressVip || "", cluster, nodes) && !ingressVipError && (
-            <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>IP in use</div>
+            <div style={{ color: "var(--pf-t--global--color--status--warning--default)", fontSize: 11, marginTop: 2 }}>
+              {cephIpConflict(nodes, cluster.ingressVip || "") ? `In use by ${cephIpConflict(nodes, cluster.ingressVip || "")}` : "IP in use"}
+            </div>
           )}
           {!isSno && !!cluster.ingressVip && !vipInMemberSubnet(cluster.ingressVip, cluster, nodes) && (
             <div style={{ color: "var(--troshka-red, #ef4444)", fontSize: 11, marginTop: 2 }}>
@@ -2099,6 +2105,8 @@ export default function PropertiesPanel() {
                           const gwIp = (and.dhcpGateway as string) || (netCidr ? netCidr.replace(/\.\d+\/\d+$/, ".1") : "");
                           if (gwIp && gwIp === nicIp) return "gateway IP";
                           if (and.dnsServerIp === nicIp) return "DNS server IP";
+                          const ceph = cephIpConflict(nodes, nicIp);
+                          if (ceph) return ceph;
                           for (const n of nodes) {
                             if (n.type !== "vmNode") continue;
                             const vmNics = ((n.data as Record<string, any>).nics || []) as Array<Record<string, unknown>>;
@@ -5313,6 +5321,16 @@ export default function PropertiesPanel() {
               <div style={{ fontSize: 11, color: "var(--troshka-text-dim)", marginTop: 4 }}>
                 Replication: {replicateSize}x · min {minCapacity} Gi total
               </div>
+              {((data.osdIps as string[]) || []).length > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <label className="props-label">OSD IPs (auto-reserved)</label>
+                  <div style={{ fontFamily: "monospace", fontSize: 11, color: "var(--troshka-text-dim)" }}>
+                    {((data.osdIps as string[]) || []).map((ip, i) => (
+                      <div key={ip}>osd-{i}: {ip}</div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {linkedNames.length > 0 && (
                 <div style={{ fontSize: 11, marginTop: 8 }}>
                   Linked clusters: {linkedNames.join(", ")}

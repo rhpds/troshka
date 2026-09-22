@@ -3,6 +3,41 @@
 from unittest.mock import MagicMock, patch
 
 
+def test_static_leases_reserve_ceph_mon_and_osd_ips():
+    """The Ceph mon labIp + OSD IPs must be reserved (bogus-MAC dhcp-host) so
+    dnsmasq never leases them to a VM and no self-assigning appliance pod
+    collides with them."""
+    from app.services.kubevirt_reconfigure import _static_leases_for_network
+
+    topology = {
+        "nodes": [
+            {
+                "id": "net-cluster",
+                "type": "networkNode",
+                "data": {"id": "net-cluster", "cidr": "10.0.0.0/24"},
+            },
+            {
+                "id": "ceph-1",
+                "type": "cephClusterNode",
+                "data": {
+                    "networkRef": "net-cluster",
+                    "labIp": "10.0.0.4",
+                    "osdCount": 2,
+                    "osdIps": ["10.0.0.254", "10.0.0.253"],
+                },
+            },
+        ],
+        "edges": [],
+    }
+    leases = _static_leases_for_network("net-cluster", topology)
+    reserved = {lease["ip"] for lease in leases}
+    assert {"10.0.0.4", "10.0.0.254", "10.0.0.253"} <= reserved
+    # every ceph reservation carries a MAC so dnsmasq accepts the dhcp-host line
+    for lease in leases:
+        if lease["ip"] in {"10.0.0.4", "10.0.0.254", "10.0.0.253"}:
+            assert lease["mac"]
+
+
 class TestKubevirtReconfigureImageAndPvc:
     def test_setup_ip_init_uses_configured_image_not_stable(self):
         """The setup-ip init container must use the configured deploy tag, not a

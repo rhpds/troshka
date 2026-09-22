@@ -2275,6 +2275,10 @@ def _collect_used_ips(topology: dict) -> set[str]:
             ip = nic.get("ip", "")
             if ip:
                 used.add(ip)
+        if node.get("type") == "cephClusterNode":
+            for ip in data.get("osdIps") or []:
+                if ip:
+                    used.add(ip)
         if node.get("type") == "networkNode":
             cidr = data.get("cidr", "")
             if cidr:
@@ -2284,6 +2288,111 @@ def _collect_used_ips(topology: dict) -> set[str]:
                 except ValueError:
                     pass
     return used
+
+
+_CEPH_OSD_MIN = 1
+_CEPH_OSD_MAX = 6
+
+
+def _pick_high_free_ips(cidr: str, count: int, used: set[str]) -> list[str]:
+    """Return up to ``count`` free host IPs from the top of ``cidr`` downward.
+
+    Skips network/broadcast, the gateway (``<cidr>.1``), and any address in
+    ``used``. Ceph OSD statics allocate from the top so they stay clear of
+    template/canvas node IPs, which cluster in the low/mid range.
+    """
+    if count <= 0 or not cidr:
+        return []
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return []
+    gateway = str(net.network_address + 1)
+    picked: list[str] = []
+    for host in reversed(list(net.hosts())):
+        ip = str(host)
+        if ip == gateway or ip in used:
+            continue
+        picked.append(ip)
+        if len(picked) >= count:
+            break
+    return picked
+
+
+def _ceph_reserved_ips(topology: dict, cidr: str) -> set[str]:
+    """Every address an OSD IP must avoid: all NIC/gateway IPs, the dnsmasq
+    address (``.2``), cluster VIPs, and the Ceph mon labIp."""
+    used = _collect_used_ips(topology)
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+        used.add(str(net.network_address + 2))  # dnsmasq
+        default_mon = str(net.network_address + 4)
+    except ValueError:
+        default_mon = ""
+    for node in topology.get("nodes", []):
+        data = node.get("data", {})
+        if node.get("type") == "clusterNode":
+            for key in ("apiVip", "ingressVip"):
+                vip = str(data.get(key) or "").strip()
+                if vip:
+                    used.add(vip)
+        elif node.get("type") == "cephClusterNode":
+            used.add(str(data.get("labIp") or "").strip() or default_mon)
+    used.discard("")
+    return used
+
+
+def _cidr_for_network_ref(nodes: list, network_ref: str) -> str:
+    for node in nodes:
+        if node.get("type") != "networkNode":
+            continue
+        data = node.get("data", {})
+        if data.get("subtype") == "gateway":
+            continue
+        node_id = data.get("id", node.get("id", ""))
+        if node_id == network_ref or node.get("id") == network_ref:
+            return str(data.get("cidr") or "")
+    return ""
+
+
+def _auto_assign_ceph_osd_ips(topology: dict) -> None:
+    """Allocate stable static Multus IPs for each Ceph OSD, persisting them on
+    the cephClusterNode's ``data.osdIps``.
+
+    Mutates topology in-place. OSD IPs are drawn from the top of the Ceph
+    network's range downward (see :func:`_pick_high_free_ips`) so they never
+    collide with node/VM NICs, cluster VIPs, or the mon. Existing valid entries
+    are preserved for stability (a running OSD keeps its address); the list is
+    grown or trimmed to match ``osdCount``.
+    """
+    nodes = topology.get("nodes", [])
+    ceph = next((n for n in nodes if n.get("type") == "cephClusterNode"), None)
+    if not ceph:
+        return
+    data = ceph.setdefault("data", {})
+    cidr = _cidr_for_network_ref(nodes, str(data.get("networkRef") or ""))
+    if not cidr:
+        return
+    try:
+        valid_hosts = {str(h) for h in ipaddress.ip_network(cidr, strict=False).hosts()}
+    except ValueError:
+        return
+    osd_count = max(_CEPH_OSD_MIN, min(_CEPH_OSD_MAX, int(data.get("osdCount") or 3)))
+    # This node's own OSD IPs are excluded from the reserved set — we are
+    # re-deriving them here and preserve valid ones below.
+    reserved = _ceph_reserved_ips(topology, cidr) - set(data.get("osdIps") or [])
+    # Keep existing OSD IPs still valid + not colliding, in order, capped at
+    # osd_count (trim extras from the tail).
+    kept: list[str] = []
+    for ip in data.get("osdIps") or []:
+        if ip in valid_hosts and ip not in reserved and ip not in kept:
+            kept.append(ip)
+        if len(kept) >= osd_count:
+            break
+    need = osd_count - len(kept)
+    if need > 0:
+        kept.extend(_pick_high_free_ips(cidr, need, reserved | set(kept)))
+    data["osdIps"] = kept
 
 
 def _get_dhcp_range(net_data: dict) -> tuple[int, int] | None:

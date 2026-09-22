@@ -141,6 +141,15 @@ def extract_ceph_cluster_spec(topology: dict) -> dict | None:
     if not linked:
         linked = _linked_cluster_ids(nodes, edges, ceph_node.get("id", ceph_id))
 
+    # Ensure the ceph node carries stable, collision-free static OSD IPs. This
+    # stamps data["osdIps"] in place (preserving any already allocated) so the
+    # operator gets explicit addresses instead of self-assigning a fixed offset
+    # that collides with node/VM NICs. See deploy_topology._auto_assign_ceph_osd_ips.
+    from app.services.deploy_topology import _auto_assign_ceph_osd_ips
+
+    _auto_assign_ceph_osd_ips(topology)
+    osd_ips = list(data.get("osdIps") or [])
+
     return {
         "cephId": ceph_id,
         "networkNad": network_nad,
@@ -148,6 +157,7 @@ def extract_ceph_cluster_spec(topology: dict) -> dict | None:
         "labPrefixLength": prefix,
         "capacityGi": capacity_gi,
         "osdCount": osd_count,
+        "osdIps": osd_ips,
         "replicateSize": min(osd_count, 3),
         "linkedClusterIds": linked,
         "storageClassName": data.get("storageClassName") or "troshka-ceph-rbd",
