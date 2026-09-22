@@ -2053,15 +2053,22 @@ def _ops_pod_workdir_lines(clusters, workdir) -> list[str]:
 def _cluster_uses_recert(topology: dict, cluster: dict) -> bool:
     """True when this cluster's disks already have OCP installed (pattern capture).
 
-    Canvas-added clusters have fresh qcow2 disks and no ``ocpKubeconfig`` on their
-    control-plane member — they need a full agent-based install even when the
-    project also contains pattern-backed clusters.
+    Canvas-added clusters have fresh qcow2 disks — they need a full agent-based
+    install even when the project also contains pattern-backed clusters. A
+    pattern-captured cluster is a recert (its disks boot a pre-installed cluster),
+    detected by either a persisted ``ocpKubeconfig`` on a member OR a
+    pattern-sourced boot disk — capture does not reliably persist ocpKubeconfig,
+    so the disk source is the authoritative signal.
     """
     from app.services.ocp.agent_template import _cluster_members_for
 
     for member in _cluster_members_for(topology, cluster):
         if member.get("data", {}).get("ocpKubeconfig"):
             return True
+        member_id = member.get("id", "")
+        for disk in _find_vm_disks(member_id, topology):
+            if disk.get("source") == "pattern" and disk.get("patternId"):
+                return True
     return False
 
 
