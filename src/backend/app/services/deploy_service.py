@@ -3483,18 +3483,31 @@ def _ops_pod_log_line(host, project_id, container_name, key, workdir, msg) -> No
 
 
 def _wait_nested_apiserver_up(
-    host, project_id, container_name, key, workdir, deadline
+    host, project_id, container_name, key, workdir, deadline, api_url=""
 ) -> bool:
-    """Poll the nested apiserver /healthz (unauth, TLS-skip) via the ops pod."""
+    """Poll the nested apiserver /healthz (unauth, TLS-skip) via the ops pod.
+
+    Prefer a direct curl to the cluster's apiVip: a pattern capture never
+    persists ocpKubeconfig, so the captured kubeconfig may be absent — probing
+    through it would falsely report a healthy API as never up. Fall back to the
+    captured-kubeconfig probe only when no api_url is available.
+    """
     import time as _t
 
-    captured = f"{workdir}/{key}/kubeconfig"
-    probe = [
-        "bash",
-        "-c",
-        f"oc --kubeconfig={captured} --insecure-skip-tls-verify "
-        "get --raw /healthz 2>/dev/null",
-    ]
+    # argv lists (no `bash -c`) so neither api_url nor the cluster-name-derived
+    # key can inject shell — both are interpolated into the command, never a shell.
+    if api_url:
+        probe = ["curl", "-sk", "--max-time", "10", f"https://{api_url}/healthz"]
+    else:
+        captured = f"{workdir}/{key}/kubeconfig"
+        probe = [
+            "oc",
+            f"--kubeconfig={captured}",
+            "--insecure-skip-tls-verify",
+            "get",
+            "--raw",
+            "/healthz",
+        ]
     while _t.time() < deadline:
         if (
             "ok"
@@ -3598,8 +3611,21 @@ def _deliver_one_recert_kubeconfig(
         return
 
     _log("waiting for the control-plane API to come up")
+    # apiVip is topology data (user-influenceable). Only trust it as a probe
+    # target if it's a well-formed IP; otherwise fall back to the captured-
+    # kubeconfig probe. Guards against SSRF/injection via a crafted apiVip.
+    import ipaddress
+
+    api_ip = str(cluster.get("apiVip") or "")
+    api_url = ""
+    if api_ip:
+        try:
+            ipaddress.ip_address(api_ip)
+            api_url = f"{api_ip}:6443"
+        except ValueError:
+            api_url = ""
     if not _wait_nested_apiserver_up(
-        host, project_id, container_name, key, workdir, deadline
+        host, project_id, container_name, key, workdir, deadline, api_url
     ):
         logger.error(
             "recert delivery %s/%s: apiserver never came up", project_id[:8], key

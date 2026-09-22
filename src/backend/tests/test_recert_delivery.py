@@ -180,3 +180,47 @@ def test_delivery_pulls_when_captured_kubeconfig_fails():
         )
         pull.assert_called_once()  # still pulls when captured fails
         write.assert_called_once()
+
+
+def test_wait_apiserver_probes_apivip_without_captured_kubeconfig():
+    # A pattern capture never persists ocpKubeconfig, so the healthz probe must
+    # hit the cluster's apiVip directly (curl) instead of an absent captured
+    # kubeconfig — otherwise a healthy API is falsely reported as never up.
+    from unittest.mock import patch
+
+    import app.services.deploy_service as ds
+
+    seen = {}
+
+    def _fake_exec(host, project_id, container, cmd, timeout=20):
+        seen["cmd"] = cmd
+        return "ok\n"
+
+    with patch.object(ds, "_ops_pod_exec", side_effect=_fake_exec):
+        up = ds._wait_nested_apiserver_up(
+            None, "proj", "ctr", "c1", "/workdir", _future_deadline(), "10.0.0.10:6443"
+        )
+    assert up is True
+    joined = " ".join(seen["cmd"])
+    assert "10.0.0.10:6443/healthz" in joined
+    assert "curl" in joined
+    assert "/workdir/c1/kubeconfig" not in joined
+
+
+def test_wait_apiserver_false_past_deadline():
+    import time
+    from unittest.mock import patch
+
+    import app.services.deploy_service as ds
+
+    with patch.object(ds, "_ops_pod_exec", return_value=""):
+        up = ds._wait_nested_apiserver_up(
+            None, "proj", "ctr", "c1", "/workdir", time.time() - 1, "10.0.0.10:6443"
+        )
+    assert up is False
+
+
+def _future_deadline():
+    import time
+
+    return time.time() + 100
