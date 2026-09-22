@@ -51,4 +51,6 @@ data:
     overcommit:
       cpu_ratio: {{ .Values.overcommit.cpuRatio }}
       ram_ratio: {{ .Values.overcommit.ramRatio }}
+    ocp:
+      preview_versions_enabled: {{ .Values.ocp.previewVersionsEnabled | default false }}
 {{- end }}

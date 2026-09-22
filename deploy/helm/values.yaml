@@ -45,6 +45,10 @@ auth:
   adminGroups: ""
   operatorGroups: ""
 
+# Offer OCP 5.x (dev-preview) in the New Project / cluster version dropdown.
+ocp:
+  previewVersionsEnabled: true
+
 secrets:
   databaseUrl: ""
   jwtSecret: ""
