@@ -107,6 +107,27 @@ def build_deferred_worker_nmstate(worker: dict) -> str:
     return yaml.dump(cfg, default_flow_style=False, sort_keys=False)
 
 
+def build_deferred_worker_nodes_config(worker: dict) -> str:
+    """``nodes-config.yaml`` for ``oc adm node-image create`` (read from the asset
+    dir). Wraps the full per-host ``networkConfig`` (like the agent-config hosts)
+    so the default route/gateway is applied — the standalone
+    ``--network-config-path`` flag silently drops the nmstate ``routes:`` section,
+    leaving the joined worker with an IP/DNS but no gateway."""
+    nmstate = yaml.safe_load(build_deferred_worker_nmstate(worker))
+    cfg = {
+        "hosts": [
+            {
+                "hostname": worker["name"],
+                "interfaces": [
+                    {"name": worker["iface_name"], "macAddress": worker["mac"]}
+                ],
+                "networkConfig": nmstate,
+            }
+        ]
+    }
+    return yaml.dump(cfg, default_flow_style=False, sort_keys=False)
+
+
 def _serve_node_iso_cmd(
     indent: str,
     serve_dir: str,
@@ -206,18 +227,17 @@ def _node_image_create_cmd(
     """``oc adm node-image create`` with bounded retries for admission flakes."""
     i = indent
     name = worker["name"]
-    mac = worker["mac"]
-    nmstate = build_deferred_worker_nmstate(worker)
-    net_cfg = f"{node_dir}/network-config.yaml"
+    nodes_config = build_deferred_worker_nodes_config(worker)
+    cfg_path = f"{node_dir}/nodes-config.yaml"
     return (
         f'{i}echo "[{cluster_key}] node-image create for {name}"\n'
         f"{i}mkdir -p {node_dir}\n"
-        f"{i}cat > {net_cfg} <<'NMEOF'\n{nmstate}NMEOF\n"
+        f"{i}cat > {cfg_path} <<'NCEOF'\n{nodes_config}NCEOF\n"
         f"{i}created=0\n"
         f"{i}for _try in $(seq 1 8); do\n"
-        f"{i}  if (cd {node_dir} && oc adm node-image create "
-        f"--mac-address={shlex.quote(mac)} "
-        f"--network-config-path=network-config.yaml 2>&1 | tee create.log); then\n"
+        # Read nodes-config.yaml from the asset dir (full per-host networkConfig,
+        # incl. routes) instead of --mac-address/--network-config-path.
+        f"{i}  if (cd {node_dir} && oc adm node-image create 2>&1 | tee create.log); then\n"
         f"{i}    if find {node_dir} -maxdepth 2 -name '*.iso' | grep -q .; then "
         f"created=1; break; fi\n"
         f"{i}  fi\n"

@@ -2097,15 +2097,21 @@ def _resolve_agent_dns_ip(topology, members, gateway_ip, dns_ip_override=None):
          every provider (a user override always wins);
       2. ``dns_ip_override`` — the provider default when nothing is hardcoded
          (e.g. the KubeVirt dnsmasq pod at ``<cidr>.2``, passed at deploy time);
-      3. ``gateway_ip`` — the troshkad/host dnsmasq at ``.1`` (default).
+      3. ``effectiveDnsIp`` — deploy-stamped provider default on the network node
+         (KubeVirt dnsmasq ``.2``); this is what carries the ``.2`` to callers
+         that pass no override, e.g. the deferred-worker join.
+      4. ``gateway_ip`` — the troshkad/host dnsmasq at ``.1`` (default).
     """
-    net_node = _cluster_network_node(topology, members)
-    explicit = str(
-        ((net_node or {}).get("data") or {}).get("dnsServerIp") or ""
-    ).strip()
+    data = (_cluster_network_node(topology, members) or {}).get("data") or {}
+    explicit = str(data.get("dnsServerIp") or "").strip()
     if explicit:
         return explicit
-    return dns_ip_override or gateway_ip
+    if dns_ip_override:
+        return dns_ip_override
+    effective = str(data.get("effectiveDnsIp") or "").strip()
+    if effective:
+        return effective
+    return gateway_ip
 
 
 def _build_agent_config(cluster, members, topology, dns_ip_override=None):

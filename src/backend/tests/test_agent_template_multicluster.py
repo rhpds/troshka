@@ -599,6 +599,29 @@ def test_agent_dns_override_used_when_not_hardcoded():
     assert _host_gateway(ac) == "10.0.0.1"  # default route untouched
 
 
+def test_agent_dns_uses_effective_dns_ip_fallback():
+    """When the deploy has stamped effectiveDnsIp on the network node (e.g.
+    KubeVirt dnsmasq .2) and no explicit dnsServerIp/override is passed — the
+    deferred-worker path — DNS resolves to effectiveDnsIp, not the gateway."""
+    import yaml
+
+    from app.services.ocp.agent_template import (
+        _build_agent_config,
+        cluster_member_nodes,
+    )
+
+    topo = _two_cluster_topo()
+    for n in topo["nodes"]:
+        if n.get("id") == "net-prod":
+            n.setdefault("data", {})["effectiveDnsIp"] = "10.0.0.2"
+    prod = {"id": "prod", "name": "prod", "type": "standard", "baseDomain": "ocp.local"}
+    ac = yaml.safe_load(
+        _build_agent_config(prod, cluster_member_nodes(topo, "prod"), topo)
+    )
+    assert _host_dns(ac) == "10.0.0.2"  # stamped effective DNS, not gateway .1
+    assert _host_gateway(ac) == "10.0.0.1"
+
+
 def test_agent_dns_explicit_wins_over_override():
     """An explicit dnsServerIp on the network node beats the provider override."""
     import yaml

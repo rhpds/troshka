@@ -138,6 +138,34 @@ def test_build_deferred_worker_nmstate_configures_both_nics():
     assert "next-hop-interface: net1-nic" not in nmstate
 
 
+def test_build_deferred_worker_nodes_config_includes_routes():
+    """nodes-config.yaml must carry the full per-host networkConfig including the
+    default route — the standalone --network-config-path flag dropped routes, so
+    the joined worker had no gateway."""
+    import yaml
+
+    from app.services.ocp.join_deferred_workers import (
+        build_deferred_worker_nodes_config,
+    )
+
+    worker = {
+        "name": "source-worker-0",
+        "mac": "52:54:00:aa:bb:02",
+        "ip": "10.0.0.20",
+        "prefix_len": 24,
+        "gateway": "10.0.0.1",
+        "dns_ip": "10.0.0.2",
+        "iface_name": "cluster-nic",
+    }
+    cfg = yaml.safe_load(build_deferred_worker_nodes_config(worker))
+    host = cfg["hosts"][0]
+    assert host["hostname"] == "source-worker-0"
+    assert host["interfaces"][0]["macAddress"] == "52:54:00:aa:bb:02"
+    nc = host["networkConfig"]
+    assert nc["routes"]["config"][0]["next-hop-address"] == "10.0.0.1"
+    assert nc["dns-resolver"]["config"]["server"] == ["10.0.0.2"]
+
+
 def test_build_join_cmd_emits_node_image_and_redfish():
     workers = [
         {
@@ -155,8 +183,8 @@ def test_build_join_cmd_emits_node_image_and_redfish():
         "  ", "source", workers, "secret", 8080, serving_ip="10.0.0.5"
     )
     assert "oc adm node-image create" in script
-    assert "--network-config-path=" in script
-    assert "network-config.yaml" in script
+    assert "nodes-config.yaml" in script
+    assert "--network-config-path=" not in script
     assert "next-hop-address: 10.0.0.1" in script
     assert "cluster-nic" in script
     assert "node-image create failed for source-worker-0" in script
