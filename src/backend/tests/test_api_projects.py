@@ -262,7 +262,7 @@ def test_update_project_topology_showroom_injects_port_forwards():
     assert ext_ports == {"443"}
     vni = data["vni_map"][net_id]
     octet3 = vni & 0xFF
-    assert all(pf["intIp"] == f"172.30.{octet3}.3" for pf in pfs)
+    assert all(pf["intIp"] == f"172.30.{octet3}.1" for pf in pfs)
 
 
 def test_update_project_topology_showroom_allocates_external_ip():

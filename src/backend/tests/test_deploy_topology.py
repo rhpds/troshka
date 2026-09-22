@@ -1043,7 +1043,7 @@ def test_showroom_infra_network_dns_nameserver():
     out = _inject_showroom_port_forward(stale, topo, 1000)
     ext_ports = {pf["extPort"] for pf in out}
     assert ext_ports == {"443"}
-    assert all(pf["intIp"] == "172.30.232.3" for pf in out)
+    assert all(pf["intIp"] == "172.30.232.1" for pf in out)
     assert not any(pf["intIp"] == "10.0.0.5" for pf in out)
 
 
@@ -1134,7 +1134,7 @@ def test_inject_showroom_gateway_port_forwards_on_topology():
     gw = topo["nodes"][0]["data"]
     ext_ports = {pf["extPort"] for pf in gw["portForwards"]}
     assert ext_ports == {"443"}
-    assert all(pf["intIp"] == "172.30.232.3" for pf in gw["portForwards"])
+    assert all(pf["intIp"] == "172.30.232.1" for pf in gw["portForwards"])
     # On kubevirt/ocpvirt, 443 is served by an OpenShift Route, never bound to the
     # EIP LoadBalancer — so the showroom forward must NOT carry an extIpId.
     showroom_pf = next(pf for pf in gw["portForwards"] if pf["extPort"] == "443")

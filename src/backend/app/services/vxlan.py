@@ -442,41 +442,52 @@ def _topology_has_showroom(topology: dict) -> bool:
 
 
 def _is_showroom_infra_forward(pf: dict) -> bool:
-    """Gateway PF 443→172.30.{vni}.1:443 auto-managed for showroom TLS terminator."""
+    """Gateway PF 443→showroom auto-managed (current: .1:443, legacy: .3:80)."""
     int_ip = (pf.get("intIp") or "").strip()
-    if not int_ip.startswith("172.30.") or not int_ip.endswith(".1"):
+    ext_port = str(pf.get("extPort"))
+    int_port = str(pf.get("intPort"))
+
+    if ext_port != "443":
         return False
-    return str(pf.get("extPort")) == "443" and str(pf.get("intPort")) == "443"
+
+    # Current: terminator at .1:443
+    if int_ip.startswith("172.30.") and int_ip.endswith(".1") and int_port == "443":
+        return True
+
+    # Legacy: showroom container at .3:80
+    if int_ip.startswith("172.30.") and int_ip.endswith(".3") and int_port == "80":
+        return True
+
+    return False
 
 
 def _inject_showroom_port_forward(
     port_forwards: list, topology: dict, first_vni: int | None
 ) -> list:
-    """Auto-add gateway PF 443→TLS terminator on gateway (transit netns)."""
+    """Auto-add gateway PF 443→TLS terminator on gateway (transit netns).
+
+    Removes all existing :443 forwards (stale managed or otherwise) and injects
+    the terminator forward.
+    """
     if not first_vni or not _topology_has_showroom(topology):
         return port_forwards
     octet3 = int(first_vni) & 0xFF
     term_ip = f"172.30.{octet3}.1"  # terminator listens here (see showroom TLS edge)
 
-    out = [
-        pf
-        for pf in port_forwards
-        if not (str(pf.get("extPort")) == "443" and pf.get("managedByShowroom"))
-    ]
+    # Remove all :443 forwards (stale or otherwise — showroom manages this port)
+    out = [pf for pf in port_forwards if str(pf.get("extPort")) != "443"]
 
-    if not any(
-        str(pf.get("extPort")) == "443" and pf.get("managedByShowroom") for pf in out
-    ):
-        out.append(
-            {
-                "extPort": "443",
-                "intIp": term_ip,
-                "intPort": "443",
-                "proto": "tcp",
-                "extIpId": "",
-                "managedByShowroom": True,
-            }
-        )
+    # Add the managed terminator forward
+    out.append(
+        {
+            "extPort": "443",
+            "intIp": term_ip,
+            "intPort": "443",
+            "proto": "tcp",
+            "extIpId": "",
+            "managedByShowroom": True,
+        }
+    )
     return out
 
 
