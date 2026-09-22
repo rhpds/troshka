@@ -1052,6 +1052,97 @@ def test_inject_showroom_gateway_port_forwards_on_topology():
     assert not showroom_pf.get("extIpId")
 
 
+def test_inject_showroom_forces_nat_portforward_on_route_provider():
+    """A showroom must force nat-portforward even on route providers, where its
+    443 forward is Route-served (no extIpId). Otherwise the gateway stays
+    "NAT outbound only" with no inbound route to the showroom, and the deployed
+    topology drifts from the frontend (which sets nat-portforward for a
+    showroom-managed forward)."""
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    topo = {
+        "externalIps": [],
+        "nodes": [
+            {
+                "id": "gw-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "gateway",
+                    "gatewayMode": "nat",
+                    "portForwards": [],
+                },
+            },
+            {
+                "id": "showroom-1",
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True, "nics": []},
+            },
+        ],
+    }
+    inject_showroom_gateway_port_forwards(topo, {"net-1": 1000}, "kubevirt")
+    gw = topo["nodes"][0]["data"]
+    showroom_pf = next(pf for pf in gw["portForwards"] if pf["extPort"] == "443")
+    assert not showroom_pf.get("extIpId")  # Route-served, no EIP
+    assert gw["gatewayMode"] == "nat-portforward"
+
+
+def test_inject_showroom_drops_cluster_ingress_443_80():
+    """When a showroom is present, its proxy owns external 443/80, so the direct
+    cluster-ingress 443/80 forwards must be dropped. Otherwise two forwards share
+    one external port and collide on the gateway pod-listen-port (both 502). The
+    API forward (6443, a distinct port) is kept."""
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    topo = {
+        "externalIps": [],
+        "nodes": [
+            {
+                "id": "gw-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "gateway",
+                    "gatewayMode": "nat-portforward",
+                    "portForwards": [
+                        {
+                            "extPort": "6443",
+                            "intIp": "10.0.0.10",
+                            "intPort": "6443",
+                            "proto": "tcp",
+                        },
+                        {
+                            "extPort": "443",
+                            "intIp": "10.0.0.10",
+                            "intPort": "443",
+                            "proto": "tcp",
+                        },
+                        {
+                            "extPort": "80",
+                            "intIp": "10.0.0.10",
+                            "intPort": "80",
+                            "proto": "tcp",
+                        },
+                    ],
+                },
+            },
+            {
+                "id": "showroom-1",
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True, "nics": []},
+            },
+        ],
+    }
+    inject_showroom_gateway_port_forwards(topo, {"net-1": 1000}, "kubevirt")
+    pfs = topo["nodes"][0]["data"]["portForwards"]
+    # API (6443, distinct port) kept
+    assert any(pf["extPort"] == "6443" for pf in pfs)
+    # Direct cluster-ingress 443/80 (intIp 10.0.0.10) dropped
+    assert not any(
+        pf["extPort"] in ("443", "80") and pf["intIp"] == "10.0.0.10" for pf in pfs
+    )
+    # Showroom 443 (managed) remains
+    assert any(pf["extPort"] == "443" and pf.get("managedByShowroom") for pf in pfs)
+
+
 def test_inject_showroom_443_binds_eip_on_cloud_providers():
     from app.services.deploy_topology import inject_showroom_gateway_port_forwards
 
@@ -1144,9 +1235,10 @@ def test_inject_showroom_no_eip_for_web_only_route_provider():
     assert topo["externalIps"] == []
     gw = topo["nodes"][0]["data"]
     pfs = {pf["extPort"]: pf for pf in gw["portForwards"]}
-    # Route-served: no extIpId key at all (not ""), and plain NAT (no EIP forward)
+    # Route-served: no extIpId key at all (not ""), so no EIP is allocated...
     assert "extIpId" not in pfs["443"]
-    assert gw["gatewayMode"] == "nat"
+    # ...but the showroom still forces nat-portforward so it has an inbound route.
+    assert gw["gatewayMode"] == "nat-portforward"
 
 
 def test_inject_showroom_strips_stale_auto_eip_web_only_route_provider():

@@ -634,6 +634,19 @@ def inject_showroom_gateway_port_forwards(
     existing = list(data.get("portForwards") or [])
     merged = _inject_showroom_port_forward(existing, topology, first_vni)
 
+    # A showroom owns external 443/80: console/ingress is reached through its
+    # proxy (app-proxy routes). The gateway can't serve two forwards on one
+    # external port — they collapse onto a single pod-listen-port and 502 both —
+    # so drop any non-showroom 443/80 forward (e.g. the direct cluster ingress).
+    # The API forward (6443, a distinct port) is untouched.
+    merged = [
+        pf
+        for pf in merged
+        if is_showroom_infra_ip(pf.get("intIp", ""))
+        or pf.get("managedByShowroom")
+        or str(pf.get("extPort")) not in ("443", "80")
+    ]
+
     ext_ips = topology.get("externalIps") or []
     eip_id = str(ext_ips[0].get("id", "")) if ext_ips else ""
     # Run whenever there's an EIP to bind OR a route provider that must strip
@@ -664,11 +677,14 @@ def inject_showroom_gateway_port_forwards(
         data["portForwards"] = merged
         changed = True
 
-    # gatewayMode is nat-portforward only when a forward is actually EIP-bound;
-    # route-served (no extIpId) forwards need only plain NAT. Keeps the deployed
-    # topology in step with the frontend so it doesn't read dirty.
+    # A showroom needs an inbound route, so its presence forces nat-portforward
+    # even on route providers where the 443 forward is Route-served (no extIpId).
+    # Mirror the frontend (extIpId OR managedByShowroom) so the deployed topology
+    # doesn't drift/read dirty and the gateway isn't left "NAT outbound only".
     desired_mode = (
-        "nat-portforward" if any(pf.get("extIpId") for pf in merged) else "nat"
+        "nat-portforward"
+        if any(pf.get("extIpId") or pf.get("managedByShowroom") for pf in merged)
+        else "nat"
     )
     if data.get("gatewayMode") != desired_mode:
         data["gatewayMode"] = desired_mode
