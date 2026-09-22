@@ -261,6 +261,7 @@ _REQUIRED_HOST_PACKAGES = [
     "wireguard-tools",
     "nvme-cli",
     "libguestfs-tools-c",
+    "socat",
 ]
 
 # ── NFS health tracking ──

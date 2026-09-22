@@ -10579,3 +10579,6 @@ class TestEnsureHostPackages(unittest.TestCase):
     def test_required_packages_includes_guestfish(self):
         # The one place the host-op package list is defined.
         assert "libguestfs-tools-c" in troshkad._REQUIRED_HOST_PACKAGES
+
+    def test_required_packages_includes_socat(self):
+        assert "socat" in troshkad._REQUIRED_HOST_PACKAGES
