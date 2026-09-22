@@ -5452,13 +5452,32 @@ class TestShowroomRouteTarget:
     def test_ignores_non_showroom_infra_ip(self):
         from app.services.deploy_service import _showroom_route_target
 
-        # 172.30.X.4 is the ops infra IP, not the showroom (.3)
+        # 172.30.X.4 is the ops infra IP, not the showroom container (.3)
         assert _showroom_route_target(self._topo(int_ip="172.30.5.4")) is None
 
     def test_no_gateway(self):
         from app.services.deploy_service import _showroom_route_target
 
         assert _showroom_route_target({"nodes": []}) is None
+
+    def test_stray_terminator_pf_without_showroom_node(self):
+        from app.services.deploy_service import _showroom_route_target
+
+        # Showroom PF present but no showroom node (stray from old topology)
+        topo = {
+            "nodes": [
+                {
+                    "id": "gw",
+                    "type": "networkNode",
+                    "data": {
+                        "subtype": "gateway",
+                        "portForwards": [{"intIp": "172.30.5.3", "extPort": 443}],
+                    },
+                }
+            ]
+        }
+        # Must return None, not (None, 443)
+        assert _showroom_route_target(topo) is None
 
 
 class TestRecreateShowroomAppProxy:

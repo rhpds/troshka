@@ -632,7 +632,7 @@ def inject_showroom_gateway_port_forwards(
     first_vni = min(vni_map.values()) if vni_map else None
     data = gateway.setdefault("data", {})
     existing = list(data.get("portForwards") or [])
-    merged = _inject_showroom_port_forward(existing, topology, first_vni)
+    merged = _inject_showroom_port_forward(existing, topology, first_vni, route_web)
 
     # A showroom owns external 443/80: console/ingress is reached through its
     # proxy (app-proxy routes). The gateway can't serve two forwards on one
@@ -725,6 +725,14 @@ def showroom_infra_ip(vni_map: dict) -> str:
     if octet3 is None:
         return ""
     return f"172.30.{octet3}.3"
+
+
+def is_terminator_ip(ip: str) -> bool:
+    """Transit gateway address (172.30.{vni}.1) where TLS terminator runs."""
+    parts = (ip or "").split(".")
+    return (
+        len(parts) == 4 and parts[0] == "172" and parts[1] == "30" and parts[3] == "1"
+    )
 
 
 def is_ops_infra_ip(ip: str) -> bool:

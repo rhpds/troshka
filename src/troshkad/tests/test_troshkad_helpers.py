@@ -10579,3 +10579,58 @@ class TestEnsureHostPackages(unittest.TestCase):
     def test_required_packages_includes_guestfish(self):
         # The one place the host-op package list is defined.
         assert "libguestfs-tools-c" in troshkad._REQUIRED_HOST_PACKAGES
+
+    def test_required_packages_includes_socat(self):
+        assert "socat" in troshkad._REQUIRED_HOST_PACKAGES
+
+
+class TestSelfSignedCert(unittest.TestCase):
+    @patch("troshkad.os.chmod")
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.run")
+    def test_builds_openssl_argv_and_returns_paths(self, mock_run, _mk, _ch):
+        mock_run.return_value = MagicMock(returncode=0)
+        full, key = troshkad._gen_self_signed_cert("/gw/tls", "1.2.3.4", "1.2.3.4")
+        assert full.endswith("/fullchain.pem")
+        assert key.endswith("/privkey.pem")
+        argv = mock_run.call_args[0][0]
+        assert argv[0] == "openssl"
+        assert "req" in argv and "-x509" in argv
+        # user-influenceable values are argv items, never a shell string
+        assert "subjectAltName=IP:1.2.3.4" in " ".join(argv)
+        assert "bash" not in argv
+
+
+class TestLetsEncryptCert(unittest.TestCase):
+    @patch("troshkad.subprocess.run")
+    def test_certbot_success_returns_live_paths(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        full, key, mode = troshkad._obtain_letsencrypt_cert(
+            "showroom.g.example.com", {"access_key_id": "AK", "secret_access_key": "SK"}
+        )
+        assert mode == "letsencrypt"
+        assert full == "/etc/letsencrypt/live/showroom.g.example.com/fullchain.pem"
+        argv = mock_run.call_args[0][0]
+        assert argv[-1] != "bash"
+        assert "certonly" in argv and "--dns-route53" in argv
+        assert "showroom.g.example.com" in argv
+
+    @patch("troshkad.subprocess.run")
+    def test_certbot_failure_signals_self_signed(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1)
+        full, key, mode = troshkad._obtain_letsencrypt_cert("x.example.com", {})
+        assert mode == "self-signed"
+        assert full is None
+
+
+class TestRestoreTlsProxies(unittest.TestCase):
+    @patch("troshkad._start_tls_proxy")
+    @patch("troshkad.glob.glob", return_value=["/var/lib/troshka/gateway/abcdef12/tls/proxy.json"])
+    @patch("builtins.open", new_callable=mock_open,
+           read_data='{"netns":"troshka-abcdef12","listen":"172.30.5.1:443",'
+                     '"upstream":"172.30.5.3:80","cert_path":"/f","key_path":"/k"}')
+    def test_relaunches_from_descriptor(self, _open, _glob, mock_start):
+        troshkad._restore_tls_proxies()
+        mock_start.assert_called_once()
+        args = mock_start.call_args[0]
+        assert "troshka-abcdef12" in args

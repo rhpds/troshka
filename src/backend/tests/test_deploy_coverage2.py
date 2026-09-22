@@ -537,6 +537,8 @@ class TestCreateRoutesForGatewayShowroom:
                 },
             ],
         }
+        # Route providers edge-terminate the showroom at the OCP Route → the
+        # gateway forward targets the showroom container directly at .3:80.
         node_data = {
             "portForwards": [
                 {"extPort": 443, "intIp": "172.30.10.3", "intPort": 80},

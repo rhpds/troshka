@@ -442,48 +442,68 @@ def _topology_has_showroom(topology: dict) -> bool:
 
 
 def _is_showroom_infra_forward(pf: dict) -> bool:
-    """Gateway PF 443→172.30.{vni}.3:80 auto-managed for showroom."""
+    """Gateway PF 443→showroom auto-managed (current: .1:443, legacy: .3:80)."""
     int_ip = (pf.get("intIp") or "").strip()
-    if not int_ip.startswith("172.30.") or not int_ip.endswith(".3"):
+    ext_port = str(pf.get("extPort"))
+    int_port = str(pf.get("intPort"))
+
+    if ext_port != "443":
         return False
-    return str(pf.get("extPort")) == "443" and str(pf.get("intPort")) == "80"
+
+    # Current: terminator at .1:443
+    if int_ip.startswith("172.30.") and int_ip.endswith(".1") and int_port == "443":
+        return True
+
+    # Legacy: showroom container at .3:80
+    if int_ip.startswith("172.30.") and int_ip.endswith(".3") and int_port == "80":
+        return True
+
+    return False
 
 
 def _inject_showroom_port_forward(
-    port_forwards: list, topology: dict, first_vni: int | None
+    port_forwards: list,
+    topology: dict,
+    first_vni: int | None,
+    route_web: bool = False,
 ) -> list:
-    """Auto-add gateway PF 443→showroom infra:80 (transit netns, not lab DHCP)."""
+    """Auto-add the managed gateway PF for external 443→showroom.
+
+    Cloud (troshkad) providers run a per-project socat TLS terminator on the
+    gateway transit IP, so the forward targets ``172.30.<vni>.1:443``. Route
+    providers (ocpvirt/kubevirt, ``route_web=True``) edge-terminate the showroom
+    at the OCP Route, so the forward must target the showroom container directly
+    at ``172.30.<vni>.3:80`` (unchanged pre-TLS-edge behavior) — no terminator.
+
+    Removes all existing :443 forwards (stale managed or otherwise) and injects
+    the managed forward.
+    """
     if not first_vni or not _topology_has_showroom(topology):
         return port_forwards
     octet3 = int(first_vni) & 0xFF
-    infra_ip = f"172.30.{octet3}.3"
+    if route_web:
+        # Route providers: showroom served by edge-terminated OCP Route → .3:80.
+        int_ip = f"172.30.{octet3}.3"
+        int_port = "80"
+    else:
+        # Cloud providers: socat TLS terminator listens on the gateway (.1:443).
+        int_ip = f"172.30.{octet3}.1"
+        int_port = "443"
 
-    out = [
-        pf
-        for pf in port_forwards
-        if not (
-            str(pf.get("extPort")) == "443"
-            and str(pf.get("intPort")) == "80"
-            and (pf.get("intIp") or "").strip() != infra_ip
-        )
-    ]
+    # Remove all :443 forwards (stale or otherwise — showroom manages this port)
+    out = [pf for pf in port_forwards if str(pf.get("extPort")) != "443"]
 
-    if not any(
-        str(pf.get("extPort")) == "443"
-        and (pf.get("intIp") or "").strip() == infra_ip
-        and str(pf.get("intPort")) == "80"
-        for pf in out
-    ):
-        out.append(
-            {
-                "extPort": "443",
-                "intIp": infra_ip,
-                "intPort": "80",
-                "proto": "tcp",
-                "extIpId": "",
-                "managedByShowroom": True,
-            }
-        )
+    # Add the managed showroom forward
+    out.append(
+        {
+            "extPort": "443",
+            "intIp": int_ip,
+            "intPort": int_port,
+            "proto": "tcp",
+            "extIpId": "",
+            "managedByShowroom": True,
+        }
+    )
     return out
 
 

@@ -261,6 +261,7 @@ _REQUIRED_HOST_PACKAGES = [
     "wireguard-tools",
     "nvme-cli",
     "libguestfs-tools-c",
+    "socat",
 ]
 
 # ── NFS health tracking ──
@@ -1127,6 +1128,157 @@ def _validate_project_id(pid):
     if not _UUID_RE.match(pid):
         raise ValueError(f"Invalid project ID: {pid}")
     return pid
+
+
+def _gen_self_signed_cert(out_dir, cn, eip):
+    """Generate a self-signed cert (argv, no shell). Returns (fullchain, key)."""
+    os.makedirs(out_dir, exist_ok=True)
+    os.chmod(out_dir, 0o700)
+    full = os.path.join(out_dir, "fullchain.pem")
+    key = os.path.join(out_dir, "privkey.pem")
+    subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", key, "-out", full, "-days", "825",
+            "-subj", f"/CN={cn}",
+            "-addext", f"subjectAltName=IP:{eip}",
+        ],
+        check=True, timeout=60,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    os.chmod(key, 0o600)
+    return full, key
+
+
+_CERTBOT = "/opt/troshka/venv/bin/certbot"
+
+
+def _obtain_letsencrypt_cert(fqdn, route53):
+    """Request an LE cert via Route53 DNS-01 (argv, no shell). Returns
+    (fullchain, key, mode); mode 'self-signed' with None paths on failure so the
+    caller falls back."""
+    env = os.environ.copy()
+    if route53.get("access_key_id"):
+        env["AWS_ACCESS_KEY_ID"] = route53["access_key_id"]
+        env["AWS_SECRET_ACCESS_KEY"] = route53.get("secret_access_key", "")
+        env["AWS_DEFAULT_REGION"] = route53.get("region", "us-east-1")
+    certbot = _CERTBOT if os.path.exists(_CERTBOT) else "certbot"
+    try:
+        proc = subprocess.run(
+            [
+                certbot, "certonly", "--dns-route53", "-d", fqdn,
+                "--non-interactive", "--agree-tos", "-m", "noreply@redhat.com",
+                "--preferred-challenges", "dns-01",
+            ],
+            env=env, timeout=300,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None, None, "self-signed"
+    if proc.returncode != 0:
+        return None, None, "self-signed"
+    live = f"/etc/letsencrypt/live/{fqdn}"
+    return f"{live}/fullchain.pem", f"{live}/privkey.pem", "letsencrypt"
+
+
+_FQDN_RE = re.compile(r"^[a-zA-Z0-9.-]{1,253}$")
+
+
+def _gateway_tls_dir(project_id):
+    return f"/var/lib/troshka/gateway/{project_id[:8]}/tls"
+
+
+def _handle_gateway_tls_cert(job, params):
+    import ipaddress
+    project_id = _validate_project_id(params["project_id"])
+    fqdn = (params.get("fqdn") or "").strip()
+    eip = (params.get("eip") or "").strip()
+    out_dir = _gateway_tls_dir(project_id)
+    use_le = bool(fqdn) and bool(_FQDN_RE.match(fqdn))
+    if use_le:
+        full, key, mode = _obtain_letsencrypt_cert(fqdn, params.get("route53") or {})
+        if mode == "letsencrypt":
+            return {"cert_path": full, "key_path": key, "mode": mode}
+    # self-signed fallback (empty/invalid fqdn, or certbot failed)
+    try:
+        ipaddress.ip_address(eip)
+    except ValueError:
+        eip = "127.0.0.1"
+    cn = fqdn if use_le else eip
+    full, key = _gen_self_signed_cert(out_dir, cn or eip, eip)
+    return {"cert_path": full, "key_path": key, "mode": "self-signed"}
+
+
+COMMAND_HANDLERS["gateway/tls-cert"] = _handle_gateway_tls_cert
+
+
+def _write_combined_pem(tls_dir, cert_path, key_path):
+    os.makedirs(tls_dir, exist_ok=True)
+    os.chmod(tls_dir, 0o700)
+    combined = os.path.join(tls_dir, "combined.pem")
+    with open(cert_path) as c, open(key_path) as k:
+        data = c.read() + "\n" + k.read()
+    with open(combined, "w") as f:
+        f.write(data)
+    os.chmod(combined, 0o600)
+    return combined
+
+
+def _start_tls_proxy(project_id, netns, listen, upstream, cert_path, key_path):
+    import ipaddress, json as _json
+    bind_ip, _, port = listen.partition(":")
+    ipaddress.ip_address(bind_ip)
+    up_ip, _, up_port = upstream.partition(":")
+    ipaddress.ip_address(up_ip)   # raises on malformed upstream
+    port = port or "443"
+    tls_dir = _gateway_tls_dir(project_id)
+    combined = _write_combined_pem(tls_dir, cert_path, key_path)
+    argv = [
+        "ip", "netns", "exec", netns, "socat",
+        f"OPENSSL-LISTEN:{port},bind={bind_ip},reuseaddr,fork,cert={combined},verify=0",
+        f"TCP:{upstream}",
+    ]
+    proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(os.path.join(tls_dir, "proxy.pid"), "w") as f:
+        f.write(str(proc.pid))
+    with open(os.path.join(tls_dir, "proxy.json"), "w") as f:
+        _json.dump({"netns": netns, "listen": listen, "upstream": upstream,
+                    "cert_path": cert_path, "key_path": key_path}, f)
+    return proc.pid
+
+
+def _stop_tls_proxy(project_id):
+    tls_dir = _gateway_tls_dir(project_id)
+    pidfile = os.path.join(tls_dir, "proxy.pid")
+    try:
+        with open(pidfile) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, signal.SIGTERM)
+    except (OSError, ValueError):
+        pass
+    for name in ("proxy.pid", "proxy.json"):
+        try:
+            os.remove(os.path.join(tls_dir, name))
+        except OSError:
+            pass
+
+
+def _handle_gateway_tls_proxy(job, params):
+    pid = _start_tls_proxy(
+        _validate_project_id(params["project_id"]),
+        params["netns"], params["listen"], params["upstream"],
+        params["cert_path"], params["key_path"],
+    )
+    return {"pid": pid}
+
+
+def _handle_gateway_tls_proxy_stop(job, params):
+    _stop_tls_proxy(_validate_project_id(params["project_id"]))
+    return {"stopped": True}
+
+
+COMMAND_HANDLERS["gateway/tls-proxy"] = _handle_gateway_tls_proxy
+COMMAND_HANDLERS["gateway/tls-proxy-stop"] = _handle_gateway_tls_proxy_stop
 
 
 def _job_log(job, msg):
@@ -8953,6 +9105,7 @@ def main():
     # Restore services from previous deploy
     _restore_bmc_services()
     _restore_dnsmasq()
+    _restore_tls_proxies()
 
     # Watchdog: check dnsmasq + system services every 30s, restart if dead
     watchdog = threading.Thread(target=_watchdog_loop, daemon=True)
@@ -9164,6 +9317,20 @@ def _restore_dnsmasq():
     restarted = _check_and_restart_dnsmasq()
     if restarted:
         logger.info("dnsmasq restore: restarted %d instance(s)", restarted)
+
+
+def _restore_tls_proxies():
+    """Relaunch showroom TLS terminators from stored descriptors on startup."""
+    import json as _json
+    for desc in glob.glob("/var/lib/troshka/gateway/*/tls/proxy.json"):
+        try:
+            with open(desc) as f:
+                d = _json.load(f)
+            project_id = desc.split("/gateway/")[1].split("/")[0]
+            _start_tls_proxy(project_id, d["netns"], d["listen"], d["upstream"],
+                             d["cert_path"], d["key_path"])
+        except Exception:
+            logger.warning("failed to restore TLS proxy from %s", desc, exc_info=True)
 
 
 # Services that must be running for troshkad to function.

@@ -178,6 +178,173 @@ def _update_deploy_progress(
         pass
 
 
+def _showroom_fqdn(project) -> str:
+    """Showroom FQDN for LE, or '' when the project has no DNS zone (=> self-signed)."""
+    if project.dns_provider_id and project.guid and project.domain:
+        return f"showroom.{project.guid}.{project.domain}"
+    return ""
+
+
+def _resolve_showroom_dns_provider(s, project):
+    """Return (type, config) for the project's DnsProvider, or (None, {})."""
+    if not project.dns_provider_id:
+        return None, {}
+    from app.models.dns_provider import DnsProvider
+
+    dp = s.query(DnsProvider).filter_by(id=project.dns_provider_id).first()
+    return (dp.type, dp.config) if dp else (None, {})
+
+
+def _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns) -> str:
+    """Create DNS + cert + TLS terminator for the troshkad showroom. Non-fatal.
+    Returns the showroom URL."""
+    from app.services.dns_service import create_dns_records
+
+    octet3 = int(first_vni) & 0xFF
+    fqdn = _showroom_fqdn(project)
+    dp_type, dp_config = _resolve_showroom_dns_provider(s, project)
+    # Let's Encrypt (DNS-01) is route53-only here; nsupdate zones have no LE
+    # creds and fall back to a self-signed cert (see _tls_cert_via_job).
+    route53 = dp_config if dp_type == "route53" else {}
+    try:
+        if fqdn and dp_type:
+            dns_errors = create_dns_records(
+                dp_type, dp_config, [{"name": fqdn, "type": "A", "value": eip}], ttl=30
+            )
+            if dns_errors:
+                logger.warning(
+                    "Deploy %s: showroom DNS record errors: %s",
+                    project.id[:8],
+                    dns_errors,
+                )
+        cert = _tls_cert_via_job(host, project.id, fqdn, eip, route53)
+        if not cert:
+            logger.warning("Deploy %s: showroom cert job failed", project.id[:8])
+            return f"https://{fqdn or eip}"
+        _tls_proxy_via_job(
+            host,
+            project.id,
+            netns,
+            f"172.30.{octet3}.1:443",
+            f"172.30.{octet3}.3:80",
+            cert["cert_path"],
+            cert["key_path"],
+        )
+        return f"https://{fqdn}" if cert["mode"] == "letsencrypt" else f"https://{eip}"
+    except Exception:
+        logger.warning(
+            "Deploy %s: showroom TLS setup failed", project.id[:8], exc_info=True
+        )
+        return f"https://{fqdn or eip}"
+
+
+def _tls_cert_via_job(host, project_id, fqdn, eip, route53):
+    jid = start_job(
+        host,
+        "/gateway/tls-cert",
+        {"project_id": project_id, "fqdn": fqdn, "eip": eip, "route53": route53},
+        request_timeout=60,
+    )
+    job = wait_for_job(host, jid, timeout=360)
+    return job.get("result") if job.get("status") == "completed" else None
+
+
+def _tls_proxy_via_job(host, project_id, netns, listen, upstream, cert_path, key_path):
+    jid = start_job(
+        host,
+        "/gateway/tls-proxy",
+        {
+            "project_id": project_id,
+            "netns": netns,
+            "listen": listen,
+            "upstream": upstream,
+            "cert_path": cert_path,
+            "key_path": key_path,
+        },
+        request_timeout=60,
+    )
+    return wait_for_job(host, jid, timeout=60)
+
+
+def _teardown_showroom_tls(s, host, project, eip):
+    """Stop the showroom terminator and delete its DNS record. Non-fatal."""
+    from app.services.dns_service import delete_dns_records
+
+    if project is None:
+        return
+
+    try:
+        jid = start_job(
+            host,
+            "/gateway/tls-proxy-stop",
+            {"project_id": project.id},
+            request_timeout=30,
+        )
+        wait_for_job(host, jid, timeout=30)
+    except Exception:
+        logger.warning(
+            "Deploy %s: showroom TLS stop failed", project.id[:8], exc_info=True
+        )
+    fqdn = _showroom_fqdn(project)
+    dp_type, dp_config = _resolve_showroom_dns_provider(s, project)
+    if fqdn and dp_type:
+        try:
+            delete_dns_records(
+                dp_type, dp_config, [{"name": fqdn, "type": "A", "value": eip}]
+            )
+        except Exception:
+            logger.warning(
+                "Deploy %s: showroom DNS delete failed", project.id[:8], exc_info=True
+            )
+
+
+def _maybe_setup_showroom_tls(s, host, topology, project, external_ips, vni_map):
+    """Cloud (non-route) providers only: stand up the showroom TLS edge and
+    persist the resulting URL.
+
+    Fully non-fatal: this runs on the deploy-completion/notify path *before* the
+    client is notified, so any failure here must never abort that path. The whole
+    body is guarded — on error we log a warning and return.
+    """
+    try:
+        from app.models.provider import Provider
+        from app.services.deploy_topology import _ROUTE_PROVIDERS
+        from app.services.vxlan import _topology_has_showroom
+
+        prov = s.get(Provider, host.provider_id)
+        provider_type = prov.type if prov else None
+        if provider_type in _ROUTE_PROVIDERS or not _topology_has_showroom(topology):
+            return
+        eip = next(
+            (
+                e.get("ip") or e.get("_public_ip")
+                for e in (external_ips or [])
+                if e.get("ip") or e.get("_public_ip")
+            ),
+            None,
+        )
+        first_vni = next(iter((vni_map or {}).values()), None)
+        if not eip or not first_vni:
+            return
+        netns = f"troshka-{project.id[:8]}"
+        url = _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns)
+        logger.info("Deploy %s: showroom TLS URL %s", project.id[:8], url)
+        # deployed_topology may be the SAME dict object as project.topology
+        # (aliased in _deploy_complete_and_notify). Deep-copy before writing the
+        # URL so the editable topology never gains _showroom_url (canvas drift).
+        deployed_topo = copy.deepcopy(project.deployed_topology or {})
+        deployed_topo["_showroom_url"] = url
+        project.deployed_topology = deployed_topo
+        s.commit()
+    except Exception:
+        logger.warning(
+            "Deploy %s: showroom TLS setup skipped (non-fatal)",
+            project.id[:8],
+            exc_info=True,
+        )
+        return
+
+
 def get_deploy_progress(project_id: str) -> dict | None:
     """Get deploy progress — Redis first, fall back to DB."""
     cached = _get_deploy_progress_data(project_id)
@@ -7500,7 +7667,7 @@ def _create_routes_for_gateway(
         try:
             if provider.type == "ocpvirt":
                 transit_port = _lookup_transit_port(topology, pf)
-                # Infra transit pods (showroom .3, ops .4) always need their own
+                # Infra transit targets (showroom .3, ops .4) always need their own
                 # DNAT target.
                 setup_dnat = (
                     transit_port is None
@@ -7690,10 +7857,22 @@ def _deploy_create_ocpvirt_routes(s, host, project_id, topology):
 
 
 def _showroom_route_target(topology):
-    """Return (vm_name, ext_port) that named the showroom's OCP Route at deploy, or
+    """Return (node_name, ext_port) that named the showroom's OCP Route at deploy, or
     None. Mirrors _create_routes_for_gateway so redeploy resolves the same Route."""
-    from app.services.deploy_topology import is_showroom_infra_ip
+    from app.services.deploy_topology import _is_showroom_node, is_showroom_infra_ip
 
+    # Find showroom node name
+    showroom_name = None
+    for node in topology.get("nodes", []):
+        if _is_showroom_node(node):
+            showroom_name = node.get("data", {}).get("name", "showroom")
+            break
+
+    # Guard: no showroom node = no route (prevents (None, port) tuple on stray PF)
+    if showroom_name is None:
+        return None
+
+    # Find gateway PF targeting terminator
     for node in topology.get("nodes", []):
         if node.get("data", {}).get("subtype") != "gateway":
             continue
@@ -7701,7 +7880,7 @@ def _showroom_route_target(topology):
             int_ip = pf.get("intIp", "")
             ext_port = int(pf.get("extPort", 0))
             if is_showroom_infra_ip(int_ip) and ext_port in _ROUTE_ACCESS_PORTS:
-                return _find_vm_name_by_ip(topology, int_ip), ext_port
+                return showroom_name, ext_port
     return None
 
 
@@ -8966,6 +9145,8 @@ def _deploy_single_host_execute(
         external_ips,
         auto_start,
         bmc_config,
+        host=host,
+        vni_map=vni_map,
     )
 
 
@@ -8979,6 +9160,8 @@ def _deploy_complete_and_notify(
     external_ips,
     auto_start,
     bmc_config,
+    host=None,
+    vni_map=None,
 ):
     """Set final project state and send success notifications."""
     project.state = "active" if auto_start else "stopped"
@@ -8993,6 +9176,9 @@ def _deploy_complete_and_notify(
         s, project_id, project, topology, lb_config, external_ips
     )
     _deploy_store_bmc_topology(project, topology, bmc_config)
+
+    if host and vni_map:
+        _maybe_setup_showroom_tls(s, host, topology, project, external_ips, vni_map)
 
     s.commit()
     _notify_client_topology_update(project_id, project, s)
@@ -12757,6 +12943,16 @@ def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
 
             # Clean up Route-based external access (OCP Virt only)
             _destroy_cleanup_route_access(host, project_id, s)
+
+            # Tear down showroom TLS edge (terminator + DNS)
+            from app.models.elastic_ip import ElasticIp
+            from app.services.vxlan import _topology_has_showroom
+
+            if _topology_has_showroom(topo):
+                project_eips = s.query(ElasticIp).filter_by(project_id=project_id).all()
+                if project_eips:
+                    eip = project_eips[0].public_ip
+                    _teardown_showroom_tls(s, host, project, eip)
 
         # Common cleanup for both single-host and multi-host projects
         _destroy_cleanup_dns(s, ctx, project_id)
