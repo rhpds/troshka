@@ -5460,6 +5460,25 @@ class TestShowroomRouteTarget:
 
         assert _showroom_route_target({"nodes": []}) is None
 
+    def test_stray_terminator_pf_without_showroom_node(self):
+        from app.services.deploy_service import _showroom_route_target
+
+        # Terminator PF present but no showroom node (stray from old topology)
+        topo = {
+            "nodes": [
+                {
+                    "id": "gw",
+                    "type": "networkNode",
+                    "data": {
+                        "subtype": "gateway",
+                        "portForwards": [{"intIp": "172.30.5.1", "extPort": 443}],
+                    },
+                }
+            ]
+        }
+        # Must return None, not (None, 443)
+        assert _showroom_route_target(topo) is None
+
 
 class TestRecreateShowroomAppProxy:
     """Tests for _recreate_showroom_app_proxy() — showroom redeploy re-creates the

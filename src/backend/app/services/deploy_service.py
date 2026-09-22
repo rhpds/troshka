@@ -7697,7 +7697,7 @@ def _deploy_create_ocpvirt_routes(s, host, project_id, topology):
 
 
 def _showroom_route_target(topology):
-    """Return (vm_name, ext_port) that named the showroom's OCP Route at deploy, or
+    """Return (node_name, ext_port) that named the showroom's OCP Route at deploy, or
     None. Mirrors _create_routes_for_gateway so redeploy resolves the same Route."""
     from app.services.deploy_topology import _is_showroom_node, is_terminator_ip
 
@@ -7707,6 +7707,10 @@ def _showroom_route_target(topology):
         if _is_showroom_node(node):
             showroom_name = node.get("data", {}).get("name", "showroom")
             break
+
+    # Guard: no showroom node = no route (prevents (None, port) tuple on stray PF)
+    if showroom_name is None:
+        return None
 
     # Find gateway PF targeting terminator
     for node in topology.get("nodes", []):
