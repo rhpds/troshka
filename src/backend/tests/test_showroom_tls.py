@@ -96,3 +96,33 @@ def test_teardown_skips_dns_when_none():
     ):
         ds._teardown_showroom_tls(MagicMock(), host, _proj(dns=False), "1.2.3.4")
     mk_del.assert_not_called()
+
+
+def test_maybe_setup_skips_route_providers():
+    host = SimpleNamespace(provider_id="p")
+    prov = SimpleNamespace(type="kubevirt")
+    sess = MagicMock()
+    sess.get.return_value = prov
+    with patch.object(ds, "_ensure_showroom_tls") as mk:
+        ds._maybe_setup_showroom_tls(
+            sess, host, {"nodes": []}, _proj(), [{"ip": "1.2.3.4"}], {"net": 5}
+        )
+    mk.assert_not_called()
+
+
+def test_maybe_setup_runs_for_cloud_with_showroom():
+    host = SimpleNamespace(provider_id="p")
+    prov = SimpleNamespace(type="ec2")
+    proj = _proj()
+    proj.deployed_topology = None
+    sess = MagicMock()
+    sess.get.return_value = prov
+    topo = {"nodes": [{"type": "containerNode", "data": {"name": "showroom"}}]}
+    with patch(
+        "app.services.vxlan._topology_has_showroom", return_value=True
+    ), patch.object(ds, "_ensure_showroom_tls", return_value="https://x") as mk:
+        ds._maybe_setup_showroom_tls(
+            sess, host, topo, proj, [{"ip": "1.2.3.4"}], {"net": 5}
+        )
+    mk.assert_called_once()
+    assert proj.deployed_topology["_showroom_url"] == "https://x"

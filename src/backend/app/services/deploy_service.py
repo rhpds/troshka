@@ -284,6 +284,37 @@ def _teardown_showroom_tls(s, host, project, eip):
             )
 
 
+def _maybe_setup_showroom_tls(s, host, topology, project, external_ips, vni_map):
+    """Cloud (non-route) providers only: stand up the showroom TLS edge and
+    persist the resulting URL. Non-fatal."""
+    from app.models.provider import Provider
+    from app.services.deploy_topology import _ROUTE_PROVIDERS
+    from app.services.vxlan import _topology_has_showroom
+
+    prov = s.get(Provider, host.provider_id)
+    provider_type = prov.type if prov else None
+    if provider_type in _ROUTE_PROVIDERS or not _topology_has_showroom(topology):
+        return
+    eip = next(
+        (
+            e.get("ip") or e.get("_public_ip")
+            for e in (external_ips or [])
+            if e.get("ip") or e.get("_public_ip")
+        ),
+        None,
+    )
+    first_vni = next(iter((vni_map or {}).values()), None)
+    if not eip or not first_vni:
+        return
+    netns = f"troshka-{project.id[:8]}"
+    url = _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns)
+    logger.info("Deploy %s: showroom TLS URL %s", project.id[:8], url)
+    deployed_topo = project.deployed_topology or {}
+    deployed_topo["_showroom_url"] = url
+    project.deployed_topology = deployed_topo
+    s.commit()
+
+
 def get_deploy_progress(project_id: str) -> dict | None:
     """Get deploy progress — Redis first, fall back to DB."""
     cached = _get_deploy_progress_data(project_id)
@@ -9084,6 +9115,8 @@ def _deploy_single_host_execute(
         external_ips,
         auto_start,
         bmc_config,
+        host=host,
+        vni_map=vni_map,
     )
 
 
@@ -9097,6 +9130,8 @@ def _deploy_complete_and_notify(
     external_ips,
     auto_start,
     bmc_config,
+    host=None,
+    vni_map=None,
 ):
     """Set final project state and send success notifications."""
     project.state = "active" if auto_start else "stopped"
@@ -9111,6 +9146,9 @@ def _deploy_complete_and_notify(
         s, project_id, project, topology, lb_config, external_ips
     )
     _deploy_store_bmc_topology(project, topology, bmc_config)
+
+    if host and vni_map:
+        _maybe_setup_showroom_tls(s, host, topology, project, external_ips, vni_map)
 
     s.commit()
     _notify_client_topology_update(project_id, project, s)
@@ -12874,6 +12912,16 @@ def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
 
             # Clean up Route-based external access (OCP Virt only)
             _destroy_cleanup_route_access(host, project_id, s)
+
+            # Tear down showroom TLS edge (terminator + DNS)
+            from app.models.elastic_ip import ElasticIp
+            from app.services.vxlan import _topology_has_showroom
+
+            if _topology_has_showroom(topo):
+                project_eips = s.query(ElasticIp).filter_by(project_id=project_id).all()
+                if project_eips:
+                    eip = project_eips[0].public_ip
+                    _teardown_showroom_tls(s, host, project, eip)
 
         # Common cleanup for both single-host and multi-host projects
         _destroy_cleanup_dns(s, ctx, project_id)
