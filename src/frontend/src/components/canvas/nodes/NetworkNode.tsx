@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NetworkNodeData } from "@/stores/canvasStore";
 import { useCanvasStore, stableNodeData, stableStringify } from "@/stores/canvasStore";
-import { findRouteForForward, formatOcpRouteUrl, isDeployInProgress, isOcpRoutablePort } from "@/lib/routeUrl";
+import { findRouteForForward, formatOcpRouteUrl, isDeployInProgress, isOcpRoutableForward } from "@/lib/routeUrl";
 import { isShowroomContainer, SHOWROOM_GATEWAY_TARGET_HANDLE } from "@/lib/showroomValidation";
 import { isRouteManagedForward, isShowroomManagedForward } from "@/lib/showroomPortForwards";
 import { GATEWAY_NETWORK_SOURCE_HANDLE } from "@/lib/gatewayValidation";
@@ -391,7 +391,7 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                                 }
                                 if (
                                   isDeployInProgress(projectState) &&
-                                  isOcpRoutablePort(pf.extPort)
+                                  isOcpRoutableForward(pf)
                                 ) {
                                   return (
                                     <span style={{ color: "var(--troshka-text-dim)", fontStyle: "italic" }}>

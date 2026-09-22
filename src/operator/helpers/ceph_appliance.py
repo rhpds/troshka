@@ -49,8 +49,9 @@ IDENTITY_ADMIN = "troshka-ceph-admin-keyring"
 IDENTITY_MON = "troshka-ceph-mon-keyring"
 IDENTITY_BOOTSTRAP_OSD = "troshka-ceph-bootstrap-osd-keyring"
 CONF_CONFIGMAP = "troshka-ceph-conf"
-# Prefer OpenShift privileged SCC for raw block + Multus NET_ADMIN.
-APPLIANCE_SCC_NAME = "privileged"
+# Must be an SCC the operator SA can patch (clusterrole resourceNames).
+# troshka-privileged-jobs: privileged + NET_ADMIN/SYS_ADMIN for Multus + block.
+APPLIANCE_SCC_NAME = "troshka-privileged-jobs"
 APPLIANCE_SCC_SAS = (CEPH_SA,)
 
 
@@ -96,6 +97,20 @@ def _setup_multus_ip_cmd(ip: str, prefix: str) -> str:
     return (
         f"ip addr add {ip}/{prefix} dev net1 2>/dev/null || true; "
         f"ip link set net1 up"
+    )
+
+
+def _ensure_lab_iface_snippet(ip_env: str = "LAB_IP") -> str:
+    """Best-effort Multus IP bring-up for ceph containers that lack ``ip``.
+
+    Primary setup is the gateway-image ``setup-net`` init; this is a no-op when
+    ``ip`` is missing (rhceph images) so ``set -e`` scripts do not crash.
+    """
+    return (
+        f"if command -v ip >/dev/null 2>&1; then "
+        f'ip addr add "${{{ip_env}}}/${{PREFIX}}" dev net1 2>/dev/null || true; '
+        f"ip link set net1 up 2>/dev/null || true; "
+        f"fi"
     )
 
 
@@ -274,20 +289,19 @@ def build_external_secret(ceph_cr: dict, fsid: str = "") -> dict:
 
 
 def _mon_bootstrap_script() -> str:
-    return r"""
+    return rf"""
 set -euo pipefail
-LAB_IP="${LAB_IP:?}"
-FSID="${FSID:?}"
-PREFIX="${LAB_PREFIX:-24}"
+LAB_IP="${{LAB_IP:?}}"
+FSID="${{FSID:?}}"
+PREFIX="${{LAB_PREFIX:-24}}"
 MON_DIR=/var/lib/ceph/mon/ceph-a
 CONF=/etc/ceph/ceph.conf
 
-ip addr add "${LAB_IP}/${PREFIX}" dev net1 2>/dev/null || true
-ip link set net1 up
+{_ensure_lab_iface_snippet("LAB_IP")}
 
 mkdir -p /etc/ceph /var/lib/ceph/mon /var/lib/ceph/bootstrap-osd /var/lib/ceph/mgr
 
-if [ -f "${MON_DIR}/kv_backend" ] || [ -f "${MON_DIR}/keyring" ]; then
+if [ -f "${{MON_DIR}}/kv_backend" ] || [ -f "${{MON_DIR}}/keyring" ]; then
   echo "mon data present — skip mkfs"
   exit 0
 fi
@@ -312,26 +326,25 @@ else
     --cap mon 'profile bootstrap-osd' --cap mgr 'allow r'
 fi
 
-monmaptool --create --addv a "[v2:${LAB_IP}:3300/0]" --fsid "${FSID}" /tmp/monmap
-mkdir -p "${MON_DIR}"
+monmaptool --create --addv a "[v2:${{LAB_IP}}:3300/0]" --fsid "${{FSID}}" /tmp/monmap
+mkdir -p "${{MON_DIR}}"
 ceph-mon --mkfs -i a --monmap /tmp/monmap --keyring /tmp/ceph.mon.keyring
 
 # Persist keyrings into seed secrets via shared emptyDir exported by sidecar later.
 cp /tmp/ceph.mon.keyring /shared/mon.keyring
 cp /etc/ceph/ceph.client.admin.keyring /shared/admin.keyring
 cp /var/lib/ceph/bootstrap-osd/ceph.keyring /shared/bootstrap-osd.keyring
-echo "${FSID}" > /shared/fsid
+echo "${{FSID}}" > /shared/fsid
 echo "mon mkfs complete"
 """
 
 
 def _mon_run_script() -> str:
-    return r"""
+    return rf"""
 set -euo pipefail
-LAB_IP="${LAB_IP:?}"
-PREFIX="${LAB_PREFIX:-24}"
-ip addr add "${LAB_IP}/${PREFIX}" dev net1 2>/dev/null || true
-ip link set net1 up
+LAB_IP="${{LAB_IP:?}}"
+PREFIX="${{LAB_PREFIX:-24}}"
+{_ensure_lab_iface_snippet("LAB_IP")}
 mkdir -p /var/lib/ceph/bootstrap-osd
 # Prefer freshly generated shared keyrings, else seeded secrets (restarts/restore).
 if [ -s /shared/admin.keyring ]; then
@@ -344,17 +357,16 @@ if [ -s /shared/bootstrap-osd.keyring ]; then
 elif [ -s /seed/bootstrap-osd.keyring ]; then
   cp /seed/bootstrap-osd.keyring /var/lib/ceph/bootstrap-osd/ceph.keyring
 fi
-exec ceph-mon -f -i a --public-addr "${LAB_IP}:3300"
+exec ceph-mon -f -i a --public-addr "${{LAB_IP}}:3300"
 """
 
 
 def _mgr_run_script() -> str:
-    return r"""
+    return rf"""
 set -euo pipefail
-LAB_IP="${LAB_IP:?}"
-PREFIX="${LAB_PREFIX:-24}"
-ip addr add "${LAB_IP}/${PREFIX}" dev net1 2>/dev/null || true
-ip link set net1 up
+LAB_IP="${{LAB_IP:?}}"
+PREFIX="${{LAB_PREFIX:-24}}"
+{_ensure_lab_iface_snippet("LAB_IP")}
 if [ -s /shared/admin.keyring ]; then
   cp /shared/admin.keyring /etc/ceph/ceph.client.admin.keyring
 elif [ -s /seed/admin.keyring ]; then
@@ -579,15 +591,14 @@ def build_mon_deployment(ceph_cr: dict, ceph_image: str) -> dict:
 
 
 def _osd_bootstrap_script() -> str:
-    return r"""
+    return rf"""
 set -euo pipefail
-OSD_IP="${OSD_IP:?}"
-LAB_IP="${LAB_IP:?}"
-PREFIX="${LAB_PREFIX:-24}"
+OSD_IP="${{OSD_IP:?}}"
+LAB_IP="${{LAB_IP:?}}"
+PREFIX="${{LAB_PREFIX:-24}}"
 BLOCK=/dev/osd-block
 
-ip addr add "${OSD_IP}/${PREFIX}" dev net1 2>/dev/null || true
-ip link set net1 up
+{_ensure_lab_iface_snippet("OSD_IP")}
 
 mkdir -p /etc/ceph /var/lib/ceph/osd /var/lib/ceph/bootstrap-osd
 if [ -f /seed/admin.keyring ]; then
@@ -612,30 +623,29 @@ if ls /var/lib/ceph/osd/ceph-* >/dev/null 2>&1; then
 fi
 
 # Block device may already have BlueStore — activate only.
-if ceph-volume raw list 2>/dev/null | grep -q "${BLOCK}"; then
-  ceph-volume raw activate --device "${BLOCK}" --no-systemd || true
+if ceph-volume raw list 2>/dev/null | grep -q "${{BLOCK}}"; then
+  ceph-volume raw activate --device "${{BLOCK}}" --no-systemd || true
   exit 0
 fi
 
-ceph-volume raw prepare --bluestore --data "${BLOCK}"
-ceph-volume raw activate --device "${BLOCK}" --no-systemd
+ceph-volume raw prepare --bluestore --data "${{BLOCK}}"
+ceph-volume raw activate --device "${{BLOCK}}" --no-systemd
 echo "osd prepare complete"
 """
 
 
 def _osd_run_script() -> str:
-    return r"""
+    return rf"""
 set -euo pipefail
-OSD_IP="${OSD_IP:?}"
-PREFIX="${LAB_PREFIX:-24}"
-ip addr add "${OSD_IP}/${PREFIX}" dev net1 2>/dev/null || true
-ip link set net1 up
+OSD_IP="${{OSD_IP:?}}"
+PREFIX="${{LAB_PREFIX:-24}}"
+{_ensure_lab_iface_snippet("OSD_IP")}
 OSD_ID=$(ls /var/lib/ceph/osd 2>/dev/null | sed -n 's/^ceph-//p' | head -1)
-if [ -z "${OSD_ID}" ]; then
+if [ -z "${{OSD_ID}}" ]; then
   echo "no osd id under /var/lib/ceph/osd" >&2
   exit 1
 fi
-exec ceph-osd -f -i "${OSD_ID}"
+exec ceph-osd -f -i "${{OSD_ID}}"
 """
 
 
@@ -700,10 +710,6 @@ def build_osd_deployment(ceph_cr: dict, ceph_image: str, index: int) -> dict:
                                     "subPath": "ceph.conf",
                                 },
                                 {
-                                    "name": "osd-block",
-                                    "mountPath": "/dev/osd-block",
-                                },
-                                {
                                     "name": "osd-data",
                                     "mountPath": "/var/lib/ceph/osd",
                                 },
@@ -716,6 +722,12 @@ def build_osd_deployment(ceph_cr: dict, ceph_image: str, index: int) -> dict:
                                     "name": "seed-boot-osd",
                                     "mountPath": "/seed/bootstrap-osd.keyring",
                                     "subPath": "keyring",
+                                },
+                            ],
+                            "volumeDevices": [
+                                {
+                                    "name": "osd-block",
+                                    "devicePath": "/dev/osd-block",
                                 },
                             ],
                             "securityContext": _security_context_privileged(),
@@ -734,12 +746,14 @@ def build_osd_deployment(ceph_cr: dict, ceph_image: str, index: int) -> dict:
                                     "subPath": "ceph.conf",
                                 },
                                 {
-                                    "name": "osd-block",
-                                    "mountPath": "/dev/osd-block",
-                                },
-                                {
                                     "name": "osd-data",
                                     "mountPath": "/var/lib/ceph/osd",
+                                },
+                            ],
+                            "volumeDevices": [
+                                {
+                                    "name": "osd-block",
+                                    "devicePath": "/dev/osd-block",
                                 },
                             ],
                             "securityContext": _security_context_privileged(),

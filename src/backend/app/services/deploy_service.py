@@ -6170,9 +6170,8 @@ def _find_gateway_port_forwards(topology, canvas_id, provider_type=None):
                 pf
                 for pf in node_data.get("portForwards", [])
                 if pf.get("extIpId") == canvas_id
-                # On OpenShift-ingress providers 443/80 are served by Routes, never
-                # the EIP LB. Cloud providers keep them on the EIP.
-                and not (route_web and str(pf.get("extPort")) in ("443", "80"))
+                # Route-managed forwards (web + API listen keys) never go on the EIP.
+                and not (route_web and _is_route_access_forward(pf))
             ]
     return []
 
@@ -7091,24 +7090,38 @@ def _deploy_multihost(project_id: str, project, db, mtu_map: dict | None = None)
 _ROUTE_ACCESS_PORTS = frozenset({80, 443, 6443})
 
 
+def _is_route_access_forward(pf: dict) -> bool:
+    """True when this gateway forward is served by an OpenShift Route.
+
+    Web (80/443) and kube-apiserver (intPort 6443, any gateway listen key
+    including 6444+) are Route-managed on ocpvirt/kubevirt.
+    """
+    ext = str(pf.get("extPort") or "").strip()
+    if ext in ("80", "443", "6443"):
+        return True
+    return str(pf.get("intPort") or "").strip() == "6443"
+
+
 def _should_skip_route_eip(provider, topology, canvas_id, project_id):
     """Skip MetalLB/EIP allocation when all forwards use OCP Routes (ocpvirt/kubevirt)."""
     if provider.type not in ("ocpvirt", "kubevirt"):
         return False
-    pf_ports = set()
+    bound = []
     for node in topology.get("nodes", []):
         node_data = node.get("data", {})
         if node_data.get("subtype") == "gateway":
             for pf in node_data.get("portForwards", []):
                 if pf.get("extIpId") == canvas_id:
-                    pf_ports.add(int(pf.get("extPort", 0)))
+                    bound.append(pf)
             break
-    if pf_ports and pf_ports.issubset(_ROUTE_ACCESS_PORTS):
+    # Skip when nothing needs the EIP: either no forward binds it (all OCP access
+    # is route-served) or every bound forward is route-served. all([]) is True, so
+    # an unbound EIP on a route provider is released instead of stranded.
+    if all(_is_route_access_forward(pf) for pf in bound):
         logger.info(
-            "Deploy %s: skipping EIP for %s — all ports (%s) handled by Routes",
+            "Deploy %s: skipping EIP for %s — all ports handled by Routes",
             project_id[:8],
             canvas_id[:8],
-            pf_ports,
         )
         return True
     return False
@@ -7390,9 +7403,9 @@ def _create_routes_for_gateway(
     lb_used: set[int] | None = None
     allocated_this_pass: set[int] = set()
     for pf in node_data.get("portForwards", []):
-        ext_port = int(pf.get("extPort", 0))
-        if ext_port not in _ROUTE_ACCESS_PORTS:
+        if not _is_route_access_forward(pf):
             continue
+        ext_port = int(pf.get("extPort", 0))
         int_ip = pf.get("intIp", "")
         int_port = int(pf.get("intPort", ext_port))
         vm_name = _find_vm_name_by_ip(topology, int_ip)
@@ -7432,6 +7445,7 @@ def _create_routes_for_gateway(
                     vm_name,
                     int_ip,
                     ext_port,
+                    int_port,
                 )
             external_endpoints.append(
                 {

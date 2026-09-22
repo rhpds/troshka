@@ -333,6 +333,73 @@ class TestShouldSkipOcpvirtEip:
             _should_skip_route_eip(provider, topology, "eip-1", "proj-12345678") is True
         )
 
+    def test_kubevirt_no_forward_binds_eip_skips(self):
+        """When every OCP forward is route-served (none binds the EIP), the EIP is
+        unused and must be skipped — otherwise a stray Elastic IP is allocated."""
+        provider = MagicMock()
+        provider.type = "kubevirt"
+        topology = {
+            "nodes": [
+                {
+                    "type": "networkNode",
+                    "data": {
+                        "subtype": "gateway",
+                        "portForwards": [
+                            {"extIpId": None, "extPort": "6443", "intPort": "6443"},
+                            {
+                                "extIpId": None,
+                                "extPort": "443",
+                                "intPort": "80",
+                                "managedByShowroom": True,
+                            },
+                        ],
+                    },
+                }
+            ]
+        }
+        assert (
+            _should_skip_route_eip(provider, topology, "eip-1", "proj-12345678") is True
+        )
+
+    def test_secondary_api_listen_key_is_route_access(self):
+        from app.services.deploy_service import _is_route_access_forward
+
+        assert _is_route_access_forward(
+            {"extPort": "6444", "intPort": "6443", "intIp": "10.1.0.10"}
+        )
+        assert not _is_route_access_forward(
+            {"extPort": "6444", "intPort": "8443", "intIp": "10.1.0.10"}
+        )
+
+    def test_kubevirt_secondary_api_listen_skips_eip(self):
+        provider = MagicMock()
+        provider.type = "kubevirt"
+        topology = {
+            "nodes": [
+                {
+                    "type": "networkNode",
+                    "data": {
+                        "subtype": "gateway",
+                        "portForwards": [
+                            {
+                                "extIpId": "eip-1",
+                                "extPort": "6443",
+                                "intPort": "6443",
+                            },
+                            {
+                                "extIpId": "eip-1",
+                                "extPort": "6444",
+                                "intPort": "6443",
+                            },
+                        ],
+                    },
+                }
+            ]
+        }
+        assert (
+            _should_skip_route_eip(provider, topology, "eip-1", "proj-12345678") is True
+        )
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # _regenerate_kubevirt_cloud_init

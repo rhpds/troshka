@@ -1,6 +1,6 @@
 name: ocp-cclm
 display_name: "CCLM — Cross-Cluster Live Migration"
-description: "Two nested OCP 4.22 clusters (source SNO+2 workers, destination SNO) for CNV decentralized live migration and MTV"
+description: "Two nested OCP clusters (source SNO+2 workers, destination SNO) for CNV decentralized live migration and MTV"
 category: openshift
 install_method: agent
 install_via: pod
@@ -50,6 +50,8 @@ ocp:
         ocp_mount: /var/lib/containers
 
 gateway:
+  # Consoles via showroom proxy tabs only — no per-cluster HTTP(S) EIP forwards.
+  # API access is OpenShift Routes on 6443 (one Route per cluster VIP).
   outbound_ports:
     - 53
     - 80/tcp

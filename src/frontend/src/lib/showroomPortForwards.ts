@@ -57,9 +57,12 @@ export function isShowroomManagedForward(
   return pf.managedByShowroom === true || isShowroomInfraForward(pf);
 }
 
-// External ports served by OpenShift Routes on ingress providers: ingress
-// (80/443) AND the API (6443). Mirror backend deploy_service._ROUTE_ACCESS_PORTS.
-const ROUTE_ACCESS_PORTS = new Set(["80", "443", "6443"]);
+/** Mirror backend deploy_service._is_route_access_forward. */
+export function isRouteAccessForward(pf: PortForward): boolean {
+  const ext = (pf.extPort || "").trim();
+  if (ext === "80" || ext === "443" || ext === "6443") return true;
+  return (pf.intPort || "").trim() === "6443";
+}
 
 // On OpenShift-ingress providers, these ports are served by an OpenShift Route,
 // never EIP-bound — the deploy skips/releases the EIP (see _should_skip_route_eip)
@@ -71,10 +74,7 @@ export function isRouteManagedForward(
   pf: PortForward,
   providerType?: string | null,
 ): boolean {
-  return (
-    ROUTE_PROVIDERS.has(providerType || "") &&
-    ROUTE_ACCESS_PORTS.has((pf.extPort || "").trim())
-  );
+  return ROUTE_PROVIDERS.has(providerType || "") && isRouteAccessForward(pf);
 }
 
 /** Mirror backend _inject_showroom_port_forward (vxlan.py). */
@@ -209,10 +209,11 @@ function ensureShowroomGatewayPortForwardsOnNodes(
   const routeWeb = ROUTE_PROVIDERS.has(providerType || "");
   const withEip = merged.map((pf) => {
     const entry: PortForward = { ...pf };
-    if (routeWeb && isWebForward(pf)) {
-      // On OpenShift-ingress providers, 443/80 are served by a Route — never
-      // bind them to the EIP. Remove the key entirely (not "") to match the
-      // backend's entry.pop("extIpId") so the topology doesn't read dirty.
+    if (routeWeb && isRouteAccessForward(pf)) {
+      // On OpenShift-ingress providers, web + API (intPort 6443) are served by
+      // a Route — never bind them to the EIP. Remove the key entirely (not "")
+      // to match the backend's entry.pop("extIpId") so the topology doesn't
+      // read dirty.
       delete entry.extIpId;
     } else {
       entry.extIpId = pf.extIpId || eipId;

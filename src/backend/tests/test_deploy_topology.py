@@ -1143,6 +1143,57 @@ def test_inject_showroom_drops_cluster_ingress_443_80():
     assert any(pf["extPort"] == "443" and pf.get("managedByShowroom") for pf in pfs)
 
 
+def test_inject_showroom_strips_extipid_from_secondary_api_listen():
+    """Secondary cluster API (6444→6443) is Route-served — no EIP binding."""
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    topo = {
+        "externalIps": [{"id": "eip-1", "name": "IP-1"}],
+        "nodes": [
+            {
+                "id": "gw-1",
+                "type": "networkNode",
+                "data": {
+                    "subtype": "gateway",
+                    "gatewayMode": "nat-portforward",
+                    "portForwards": [
+                        {
+                            "extPort": "6443",
+                            "intPort": "6443",
+                            "intIp": "10.0.0.10",
+                            "proto": "tcp",
+                            "extIpId": "eip-1",
+                        },
+                        {
+                            "extPort": "6444",
+                            "intPort": "6443",
+                            "intIp": "10.1.0.10",
+                            "proto": "tcp",
+                            "extIpId": "eip-1",
+                        },
+                        {
+                            "extPort": "2222",
+                            "intPort": "22",
+                            "intIp": "10.0.0.5",
+                            "proto": "tcp",
+                        },
+                    ],
+                },
+            },
+            {
+                "id": "showroom-1",
+                "type": "containerNode",
+                "data": {"name": "showroom", "isShowroom": True, "nics": []},
+            },
+        ],
+    }
+    inject_showroom_gateway_port_forwards(topo, {"net-1": 1000}, "kubevirt")
+    pfs = {pf["extPort"]: pf for pf in topo["nodes"][0]["data"]["portForwards"]}
+    assert "extIpId" not in pfs["6443"]
+    assert "extIpId" not in pfs["6444"]
+    assert pfs["2222"]["extIpId"] == "eip-1"
+
+
 def test_inject_showroom_443_binds_eip_on_cloud_providers():
     from app.services.deploy_topology import inject_showroom_gateway_port_forwards
 

@@ -1251,9 +1251,11 @@ class KubeVirtDriver(ProviderDriver):
         custom_api, core_api, _ = _get_k8s_clients(provider)
         namespace = _project_ns(provider, project_id)
         ext_port = int(port)
+        # Service always targets the gateway pod listen port for this external
+        # key. ``target_port`` is the guest/VIP destination (socat target) and
+        # only drives TLS termination — never the Service→pod port.
         pod_port = gateway_pod_listen_port(ext_port)
-        if target_port is not None:
-            pod_port = int(target_port)
+        guest_port = int(target_port) if target_port is not None else ext_port
 
         svc_name = f"rt-{vm_name}-{port}"[:63]
         route_name = svc_name
@@ -1283,9 +1285,10 @@ class KubeVirtDriver(ProviderDriver):
             if "AlreadyExists" not in str(e):
                 raise
 
-        # Edge termination uses the cluster wildcard cert on the router. Only the
-        # API server (6443) needs passthrough to preserve client TLS.
-        passthrough = ext_port == 6443
+        # Edge termination uses the cluster wildcard cert on the router. Kube
+        # API (guest 6443) needs passthrough — including secondary listen keys
+        # like ext 6444 → VIP:6443.
+        passthrough = guest_port == 6443
         route_body = {
             "apiVersion": "route.openshift.io/v1",
             "kind": "Route",

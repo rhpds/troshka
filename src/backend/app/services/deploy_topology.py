@@ -663,16 +663,17 @@ def inject_showroom_gateway_port_forwards(
             entry = {**pf}
             if is_showroom:
                 entry["managedByShowroom"] = True
-            # On OpenShift-ingress providers, 443/80 are served by a Route — strip
-            # any extIpId (removing the key, not setting "") so they stay
-            # Route-only and match the frontend. Otherwise bind to the EIP.
-            if route_web and str(pf.get("extPort")) in ("443", "80"):
+            # On OpenShift-ingress providers, web + API (intPort 6443) are served
+            # by a Route — strip extIpId so they stay Route-only.
+            if route_web and (
+                str(pf.get("extPort")) in ("443", "80", "6443")
+                or str(pf.get("intPort") or "").strip() == "6443"
+            ):
                 entry.pop("extIpId", None)
             elif eip_id:
                 entry["extIpId"] = pf.get("extIpId") or eip_id
             new_merged.append(entry)
         merged = new_merged
-
     if merged != existing:
         data["portForwards"] = merged
         changed = True

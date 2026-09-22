@@ -1068,10 +1068,10 @@ class OCPVirtDriver(ProviderDriver):
             else:
                 raise
 
-        # Passthrough only when the guest actually speaks TLS on the target port
-        # (e.g. API 6443, or 443→443). Showroom-style 443→80 HTTP needs edge
-        # termination so the router presents the cluster wildcard cert.
-        passthrough = port == 6443 or (port == 443 and vm_port == 443)
+        # Passthrough when the guest speaks TLS on the target (kube-apiserver
+        # 6443, including secondary listen keys like ext 6444 → VIP:6443).
+        # Showroom-style 443→80 HTTP needs edge termination.
+        passthrough = int(vm_port) == 6443 or (port == 443 and int(vm_port) == 443)
         route = {
             "apiVersion": "route.openshift.io/v1",
             "kind": "Route",

@@ -4809,9 +4809,9 @@ export default function PropertiesPanel() {
                             );
                           }
                           if (routeManaged) {
-                            // 80/443/6443 on OpenShift-ingress providers are served by an
-                            // OpenShift Route (no EIP) — render read-only "auto", matching
-                            // the showroom card, so it doesn't look like it needs an IP.
+                            // Web + API (intPort 6443, any listen key) on OpenShift-ingress
+                            // providers are served by an OpenShift Route (no EIP) — render
+                            // read-only "auto", matching the showroom card.
                             return (
                               <div
                                 key={i}

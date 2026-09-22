@@ -15,13 +15,18 @@ const pf = (extPort: string, extIpId?: string): PortForward => ({
 });
 
 describe("isRouteManagedForward", () => {
-  it("treats 80/443/6443 as route-managed on OpenShift-ingress providers", () => {
-    // On kubevirt/ocpvirt, ingress (80/443) AND the API (6443) are served by
-    // OpenShift Routes (no EIP — the deploy skips it, see _ROUTE_ACCESS_PORTS),
-    // so none may read as "incomplete / External IP required".
+  it("treats 80/443/6443 and secondary API listen keys as route-managed", () => {
+    // On kubevirt/ocpvirt, ingress (80/443) AND the API (intPort 6443, any
+    // gateway listen key including 6444+) are served by OpenShift Routes.
     expect(isRouteManagedForward(pf("80"), "ocpvirt")).toBe(true);
     expect(isRouteManagedForward(pf("443"), "kubevirt")).toBe(true);
     expect(isRouteManagedForward(pf("6443"), "kubevirt")).toBe(true);
+    expect(
+      isRouteManagedForward(
+        { extPort: "6444", intIp: "10.0.0.10", intPort: "6443", proto: "tcp" },
+        "kubevirt",
+      ),
+    ).toBe(true);
   });
 
   it("does not route-manage arbitrary ports (e.g. 8080)", () => {

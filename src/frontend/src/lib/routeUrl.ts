@@ -1,8 +1,19 @@
-/** OCP Route ports created automatically at deploy time. */
+/** Ports that may appear as Route keys on OpenShift-ingress providers.
+ *  Secondary cluster APIs use 6444+ listen keys (intPort still 6443). */
 export const OCP_ROUTE_PORTS = new Set(["80", "443", "6443"]);
 
 export function isDeployInProgress(projectState: string): boolean {
   return ["deploying", "reconfiguring", "starting"].includes(projectState);
+}
+
+/** True when this forward is served by an OpenShift Route (mirror backend). */
+export function isOcpRoutableForward(pf: {
+  extPort?: string | number;
+  intPort?: string | number;
+}): boolean {
+  const ext = String(pf.extPort ?? "").trim();
+  if (ext === "80" || ext === "443" || ext === "6443") return true;
+  return String(pf.intPort ?? "").trim() === "6443";
 }
 
 export function isOcpRoutablePort(port: string | number): boolean {
@@ -37,11 +48,11 @@ export function findRouteForForward<T extends RouteEndpoint>(
   );
 }
 
-/** Build a browser URL for an OCP Route hostname + external port. */
+/** Build a browser URL for an OCP Route hostname + external port key.
+ *  OpenShift Routes are always reached via the router on 80/443 — the
+ *  gateway listen key (6443, 6444, …) is not part of the public URL. */
 export function formatOcpRouteUrl(hostname: string, port: string | number): string {
   const p = String(port);
-  if (p === "443") return `https://${hostname}`;
   if (p === "80") return `http://${hostname}`;
-  const scheme = p === "8443" || p === "6443" ? "https" : "http";
-  return `${scheme}://${hostname}:${p}`;
+  return `https://${hostname}`;
 }

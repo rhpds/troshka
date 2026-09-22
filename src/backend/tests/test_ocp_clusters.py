@@ -615,8 +615,8 @@ def test_template_loader_assigns_bmc_ip_when_missing():
     assert vm["data"]["bmcIp"] == "192.168.100.11"
 
 
-def test_ocp_port_forwards_single_cluster_canonical():
-    """One cluster keeps the canonical 6443/443/80 external ports (back-compat)."""
+def test_ocp_port_forwards_single_cluster_api_only():
+    """One cluster gets bastion SSH + API 6443 — consoles are showroom/Route."""
     from app.services.template_loader import _generate_ocp_port_forwards
 
     vms = {"bastion": {"role": "bastion", "nics": [{"ip": "10.0.0.5"}]}}
@@ -624,22 +624,16 @@ def test_ocp_port_forwards_single_cluster_canonical():
     pfs = _generate_ocp_port_forwards("eip-1", vms, clusters)
     by_port = {pf["extPort"]: pf for pf in pfs}
 
-    # Exactly the canonical set: bastion SSH + api + ingress https/http.
-    assert set(by_port) == {"2222", "6443", "443", "80"}
+    assert set(by_port) == {"2222", "6443"}
     assert by_port["2222"]["intIp"] == "10.0.0.5"
     assert by_port["2222"]["intPort"] == "22"
     assert by_port["6443"]["intIp"] == "10.0.0.10"
     assert by_port["6443"]["intPort"] == "6443"
-    assert by_port["443"]["intIp"] == "10.0.0.11"
-    assert by_port["443"]["intPort"] == "443"
-    assert by_port["80"]["intIp"] == "10.0.0.11"
-    assert by_port["80"]["intPort"] == "80"
-    # Every forward references the single EIP.
     assert all(pf["extIpId"] == "eip-1" for pf in pfs)
 
 
-def test_ocp_port_forwards_two_clusters_no_collision():
-    """Two clusters coexist on one EIP with distinct external ports."""
+def test_ocp_port_forwards_two_clusters_api_distinct_listen_ports():
+    """Two clusters get 6443 + 6444 listen keys (both target VIP:6443); no ingress."""
     from app.services.template_loader import _generate_ocp_port_forwards
 
     vms = {"bastion": {"role": "bastion", "nics": [{"ip": "10.0.0.5"}]}}
@@ -649,26 +643,15 @@ def test_ocp_port_forwards_two_clusters_no_collision():
     ]
     pfs = _generate_ocp_port_forwards("eip-1", vms, clusters)
 
-    # No external-port collision across the whole set.
-    ext_ports = [pf["extPort"] for pf in pfs]
-    assert len(ext_ports) == len(set(ext_ports))
-
-    by_port = {pf["extPort"]: pf for pf in pfs}
-    # Cluster 0 stays canonical, mapped to cluster 0's VIPs.
-    assert by_port["6443"]["intIp"] == "10.0.0.10"
-    assert by_port["443"]["intIp"] == "10.0.0.11"
-    assert by_port["80"]["intIp"] == "10.0.0.11"
-    # Cluster 1 on distinct external ports, mapped to cluster 1's VIPs.
-    assert by_port["6444"]["intIp"] == "10.1.0.10"
-    assert by_port["6444"]["intPort"] == "6443"
-    assert by_port["8444"]["intIp"] == "10.1.0.11"
-    assert by_port["8444"]["intPort"] == "443"
-    assert by_port["8081"]["intIp"] == "10.1.0.11"
-    assert by_port["8081"]["intPort"] == "80"
+    assert {pf["extPort"] for pf in pfs} == {"2222", "6443", "6444"}
+    api_pfs = [pf for pf in pfs if pf["intPort"] == "6443"]
+    assert {pf["extPort"] for pf in api_pfs} == {"6443", "6444"}
+    assert {pf["intIp"] for pf in api_pfs} == {"10.0.0.10", "10.1.0.10"}
+    assert not any(pf["extPort"] in ("443", "80", "8444", "8081") for pf in pfs)
 
 
 def test_ocp_port_forwards_skips_novip_cluster():
-    """A cluster without VIPs (SNO) is skipped gracefully, matching old behavior."""
+    """A cluster without VIPs is skipped gracefully."""
     from app.services.template_loader import _generate_ocp_port_forwards
 
     vms = {"bastion": {"role": "bastion", "nics": [{"ip": "10.0.0.5"}]}}
@@ -678,7 +661,7 @@ def test_ocp_port_forwards_skips_novip_cluster():
     ]
     pfs = _generate_ocp_port_forwards("eip-1", vms, clusters)
     by_port = {pf["extPort"]: pf for pf in pfs}
-    assert set(by_port) == {"2222", "6443", "443", "80"}
+    assert set(by_port) == {"2222", "6443"}
 
 
 # ---------------------------------------------------------------------------
