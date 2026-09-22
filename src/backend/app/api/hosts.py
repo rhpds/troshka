@@ -245,7 +245,11 @@ def _get_troshkad_storage(host: Host) -> dict[str, Any] | None:
     """Query disk usage for a regular (troshkad-managed) host."""
     from app.services.troshkad_client import check_disk_usage
 
-    disk: dict[str, Any] = check_disk_usage(host)  # type: ignore[assignment]
+    # Status view: fail fast on an unreachable host. The default (retries=3 with
+    # 2s sleeps) would block ~34s per dead host, hanging the endpoint (and tests).
+    disk: dict[str, Any] = check_disk_usage(  # type: ignore[assignment]
+        host, timeout=5, retries=1
+    )
     if not disk or disk.get("error"):
         return None
     partitions = disk.get("partitions")

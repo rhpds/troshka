@@ -153,7 +153,12 @@ def test_host_summary_with_host():
 
 def test_host_storage_no_connected_hosts():
     _ensure_dev_user()
-    resp = client.get("/api/v1/hosts/storage")
+    # Mock both storage helpers so a "connected" host left in the shared test DB
+    # by another test can't cause real troshkad/k8s I/O (which would hang here).
+    with patch("app.api.hosts._get_troshkad_storage", return_value=None), patch(
+        "app.api.hosts._get_ceph_storage", return_value=None
+    ):
+        resp = client.get("/api/v1/hosts/storage")
     assert resp.status_code == 200
     assert isinstance(resp.json(), dict)
 
@@ -208,10 +213,12 @@ def test_storage_kubevirt_host():
     _ensure_dev_user()
     hid = _create_host(host_type="kubevirt-cluster")
     try:
+        # Mock troshkad storage too so a leaked connected troshkad host in the
+        # shared DB can't trigger real I/O (and a timeout) in this test.
         with patch(
             "app.api.hosts._get_ceph_storage",
             return_value={"used_pct": 30, "free_gb": 700, "total_gb": 1000},
-        ):
+        ), patch("app.api.hosts._get_troshkad_storage", return_value=None):
             resp = client.get("/api/v1/hosts/storage")
         assert resp.status_code == 200
         data = resp.json()

@@ -662,6 +662,19 @@ class TestGetTroshkadStorage(unittest.TestCase):
     """Tests for _get_troshkad_storage."""
 
     @patch("app.services.troshkad_client.check_disk_usage")
+    def test_fast_fails_for_status_view(self, mock_check):
+        """The storage status view must not retry a dead host (which would hang
+        the endpoint ~34s/host and trip the test timeout) — call check_disk_usage
+        with retries=1 and a short timeout."""
+        from app.api.hosts import _get_troshkad_storage
+
+        mock_check.return_value = None
+        _get_troshkad_storage(MagicMock())
+        _args, kwargs = mock_check.call_args
+        self.assertEqual(kwargs.get("retries"), 1)
+        self.assertLessEqual(kwargs.get("timeout", 999), 10)
+
+    @patch("app.services.troshkad_client.check_disk_usage")
     def test_returns_none_when_no_disk(self, mock_check):
         """check_disk_usage returns None -> returns None."""
         from app.api.hosts import _get_troshkad_storage
