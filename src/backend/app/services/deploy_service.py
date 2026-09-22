@@ -5904,7 +5904,9 @@ def _collect_dv_progress(project_id, provider, topology):
                     namespace=ns,
                     plural="datavolumes",
                 )
-                all_dvs.extend(dvs.get("items", []))  # type: ignore[union-attr]
+                items = dvs.get("items", []) if isinstance(dvs, dict) else []
+                if isinstance(items, list):
+                    all_dvs.extend(items)
             except Exception:
                 pass
 
@@ -5985,7 +5987,8 @@ def _collect_ceph_restore_progress(custom_api, api_client, namespace: str) -> li
         job = batch.read_namespaced_job(
             name="restore-troshka-ceph-mon", namespace=namespace
         )
-        if job.status.succeeded and job.status.succeeded >= 1:  # type: ignore[union-attr]
+        succeeded = getattr(getattr(job, "status", None), "succeeded", None)
+        if succeeded and succeeded >= 1:
             lines.insert(0, "ceph-mon: done")
         else:
             lines.insert(0, "ceph-mon: restoring")
@@ -7108,18 +7111,21 @@ def _should_skip_route_eip(provider, topology, canvas_id, project_id):
     """Skip MetalLB/EIP allocation when all forwards use OCP Routes (ocpvirt/kubevirt)."""
     if provider.type not in ("ocpvirt", "kubevirt"):
         return False
-    bound = []
+    forwards: list = []
     for node in topology.get("nodes", []):
         node_data = node.get("data", {})
         if node_data.get("subtype") == "gateway":
-            for pf in node_data.get("portForwards", []):
-                if pf.get("extIpId") == canvas_id:
-                    bound.append(pf)
+            forwards = node_data.get("portForwards", []) or []
             break
-    # Skip when nothing needs the EIP: either no forward binds it (all OCP access
-    # is route-served) or every bound forward is route-served. all([]) is True, so
-    # an unbound EIP on a route provider is released instead of stranded.
-    if all(_is_route_access_forward(pf) for pf in bound):
+    bound = [pf for pf in forwards if pf.get("extIpId") == canvas_id]
+    # A bound forward that isn't route-served genuinely needs the EIP.
+    if any(not _is_route_access_forward(pf) for pf in bound):
+        return False
+    # Skip when the EIP is unused because OCP Routes handle everything: either a
+    # bound forward is route-served, or nothing binds it yet the gateway still has
+    # route-access forwards (all extIpId-stripped → the stray-EIP case). An empty
+    # gateway (no route-access forwards) is NOT our call to skip.
+    if bound or any(_is_route_access_forward(pf) for pf in forwards):
         logger.info(
             "Deploy %s: skipping EIP for %s — all ports handled by Routes",
             project_id[:8],
