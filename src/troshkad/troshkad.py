@@ -1212,6 +1212,55 @@ def _handle_gateway_tls_cert(job, params):
 COMMAND_HANDLERS["gateway/tls-cert"] = _handle_gateway_tls_cert
 
 
+def _write_combined_pem(tls_dir, cert_path, key_path):
+    os.makedirs(tls_dir, exist_ok=True)
+    os.chmod(tls_dir, 0o700)
+    combined = os.path.join(tls_dir, "combined.pem")
+    with open(cert_path) as c, open(key_path) as k:
+        data = c.read() + "\n" + k.read()
+    with open(combined, "w") as f:
+        f.write(data)
+    os.chmod(combined, 0o600)
+    return combined
+
+
+def _start_tls_proxy(project_id, netns, listen, upstream, cert_path, key_path):
+    import ipaddress, json as _json
+    bind_ip, _, port = listen.partition(":")
+    ipaddress.ip_address(bind_ip)
+    port = port or "443"
+    tls_dir = _gateway_tls_dir(project_id)
+    combined = _write_combined_pem(tls_dir, cert_path, key_path)
+    argv = [
+        "ip", "netns", "exec", netns, "socat",
+        f"OPENSSL-LISTEN:{port},bind={bind_ip},reuseaddr,fork,cert={combined},verify=0",
+        f"TCP:{upstream}",
+    ]
+    proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(os.path.join(tls_dir, "proxy.pid"), "w") as f:
+        f.write(str(proc.pid))
+    with open(os.path.join(tls_dir, "proxy.json"), "w") as f:
+        _json.dump({"netns": netns, "listen": listen, "upstream": upstream,
+                    "cert_path": cert_path, "key_path": key_path}, f)
+    return proc.pid
+
+
+def _stop_tls_proxy(project_id):
+    tls_dir = _gateway_tls_dir(project_id)
+    pidfile = os.path.join(tls_dir, "proxy.pid")
+    try:
+        with open(pidfile) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, signal.SIGTERM)
+    except (OSError, ValueError):
+        pass
+    for name in ("proxy.pid", "proxy.json"):
+        try:
+            os.remove(os.path.join(tls_dir, name))
+        except OSError:
+            pass
+
+
 def _job_log(job, msg):
     """Append a line to job output and log to systemd."""
     job["output"].append(msg)

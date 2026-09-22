@@ -286,7 +286,7 @@ class TestTroshkadServer(unittest.TestCase):
             self.assertLessEqual(p["used_pct"], 100)
 
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, mock_open
 
 
 def _mock_popen(returncode=0, stdout="", stderr=""):
@@ -3016,6 +3016,27 @@ class TestGatewayTlsCert(unittest.TestCase):
         args = mock_ss.call_args[0]
         assert args[1] == "127.0.0.1"  # CN = validated eip
         assert args[2] == "127.0.0.1"  # SAN = validated eip
+
+
+class TestTlsProxy(unittest.TestCase):
+    @patch("troshkad.subprocess.Popen")
+    @patch("troshkad.os.chmod")
+    @patch("troshkad.os.makedirs")
+    @patch("builtins.open", new_callable=mock_open,
+           read_data="CERT")  # fullchain/key reads for combined.pem
+    def test_start_builds_netns_socat_argv(self, _open, _mk, _ch, mock_popen):
+        proc = MagicMock(); proc.pid = 4321; mock_popen.return_value = proc
+        pid = troshkad._start_tls_proxy(
+            "abcdef12-0000", "troshka-abcdef12", "172.30.5.1:443",
+            "172.30.5.3:80", "/gw/full.pem", "/gw/key.pem")
+        assert pid == 4321
+        argv = mock_popen.call_args[0][0]
+        assert argv[:4] == ["ip", "netns", "exec", "troshka-abcdef12"]
+        assert argv[4] == "socat"
+        joined = " ".join(argv)
+        assert "OPENSSL-LISTEN:443" in joined and "bind=172.30.5.1" in joined
+        assert "TCP:172.30.5.3:80" in joined
+        assert "bash" not in argv
 
 
 if __name__ == "__main__":
