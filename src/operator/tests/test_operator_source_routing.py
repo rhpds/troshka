@@ -54,6 +54,16 @@ def test_resolve_central_source_uses_primary():
     assert secret == "s3-credentials"  # pragma: allowlist secret
 
 
+def test_resolve_gold_source_uses_central():
+    # Admin gold patterns live in the read-only central store, not the shared
+    # read/write bucket — they must fetch via the central (readonly) config.
+    s3_config = {"bucket": "troshka-images", "endpoint": "https://s4"}
+    disk = {"patternImage": {"s3Path": "patterns/p/d.qcow2", "source": "gold"}}
+    path, cfg, secret = _resolve_disk_s3(disk, s3_config, {"bucket": "gold"})
+    assert cfg["bucket"] == "gold"
+    assert secret == "s3-central-credentials"  # pragma: allowlist secret
+
+
 def test_resolve_obc_source_falls_back_when_no_obc_config():
     s3_config = {"bucket": "troshka-images", "endpoint": "https://s4"}
     disk = {"patternImage": {"s3Path": "patterns/p/d.qcow2", "source": "obc"}}

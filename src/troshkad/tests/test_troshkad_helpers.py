@@ -10503,3 +10503,25 @@ class TestVmStateReconcile(unittest.TestCase):
         self.assertEqual(
             troshkad._vm_state_cache["troshka-28211910-6ce74d3e"]["state"], "running"
         )
+
+
+class TestS3DownloadStderr(unittest.TestCase):
+    """_s3_download must surface the aws cli stderr, not just the exit code."""
+
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.Popen")
+    def test_surfaces_stderr_on_failure(self, mock_popen, _mkdirs):
+        def fake_popen(cmd, stdout=None, stderr=None, env=None):
+            stderr.write(
+                b"fatal error: An error occurred (404) when calling HeadObject"
+            )
+            stderr.flush()
+            proc = MagicMock()
+            proc.poll.return_value = 1
+            proc.returncode = 1
+            return proc
+
+        mock_popen.side_effect = fake_popen
+        with self.assertRaises(RuntimeError) as ctx:
+            troshkad._s3_download({}, "s3://b/k", "/tmp/x.qcow2", "AK", "SK")
+        self.assertIn("404", str(ctx.exception))

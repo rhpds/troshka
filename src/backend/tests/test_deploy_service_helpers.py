@@ -1788,7 +1788,12 @@ class TestPickDiskDvStatus:
 
         with patch(
             "app.services.providers.kubevirt._get_k8s_clients"
-        ) as mock_k8s, patch("app.services.providers.kubevirt._project_ns") as mock_ns:
+        ) as mock_k8s, patch(
+            "app.services.providers.kubevirt._project_ns"
+        ) as mock_ns, patch(
+            "app.services.deploy_service._collect_ceph_restore_progress",
+            return_value=[],
+        ):
             mock_custom = MagicMock()
             mock_k8s.return_value = (mock_custom, MagicMock(), MagicMock())
             mock_ns.return_value = "troshka-proj-1"

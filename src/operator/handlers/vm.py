@@ -2,6 +2,7 @@ import asyncio
 import kopf
 import logging
 import time
+from typing import cast
 from kubernetes import client
 from helpers.k8s import CRD_GROUP, CRD_VERSION, golden_pvc_name, owner_ref, TOOLS_IMAGE
 from helpers.kubevirt import (
@@ -315,6 +316,15 @@ def _resolve_disk_s3(disk, s3_config, central_s3_config):
                     "credentialsSecret", "s3-obc-credentials"
                 ),  # pragma: allowlist secret  # NOSONAR
             )
+    # gold: admin patterns in the read-only central store (not the shared
+    # read/write bucket). "central" pattern disks fall through to the primary
+    # config below — they live in the instance's own read/write bucket.
+    if pattern_source == "gold" and central_s3_config:
+        return (
+            s3_path,
+            central_s3_config,
+            "s3-central-credentials",
+        )  # pragma: allowlist secret  # NOSONAR
     if use_central and central_s3_config:
         return (
             s3_path,
@@ -1113,12 +1123,15 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
     # Read back the KubeVirt VM's UID as the domain UUID (same pattern as
     # troshkad reading domain_uuid from virsh define)
     try:
-        created_vm = custom_api.get_namespaced_custom_object(
-            group=_KUBEVIRT_API,
-            version="v1",
-            namespace=namespace,
-            plural="virtualmachines",
-            name=kv_vm_name,
+        created_vm = cast(
+            dict,
+            custom_api.get_namespaced_custom_object(
+                group=_KUBEVIRT_API,
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=kv_vm_name,
+            ),
         )
         domain_uuid = created_vm["metadata"]["uid"]
     except Exception:
@@ -1529,12 +1542,15 @@ async def vm_update(
             raise
 
     try:
-        recreated_vm = custom_api.get_namespaced_custom_object(
-            group=_KUBEVIRT_API,
-            version="v1",
-            namespace=namespace,
-            plural="virtualmachines",
-            name=kv_name,
+        recreated_vm = cast(
+            dict,
+            custom_api.get_namespaced_custom_object(
+                group=_KUBEVIRT_API,
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=kv_name,
+            ),
         )
         domain_uuid = recreated_vm["metadata"]["uid"]
     except Exception:

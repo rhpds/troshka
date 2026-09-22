@@ -570,7 +570,9 @@ def _collect_pattern_disks(nodes, db_session, pool, provider_id=None):
             obc_cfg = get_cluster_s3_config(db_session, source_provider_id)
             if obc_cfg:
                 item["download_creds"] = cluster_s3_to_upload_creds(obc_cfg)
-        # central: omit download_creds — _start_download_jobs uses s3_readonly provider
+        # central: omit download_creds — the shared read/write bucket is the
+        # instance's own S3 config. gold: omit too — _start_download_jobs routes
+        # gold-source items to the read-only admin store.
         items.append(item)
     return items
 
@@ -701,6 +703,21 @@ def _filter_locally_cached_items(items_to_cache, host):
     return items_to_download
 
 
+def _select_download_creds(ic, s3_creds, s3_bucket, readonly_creds):
+    """Pick (creds, bucket) for a cache item based on its source.
+
+    obc disks carry cluster ``download_creds``; gold disks come from the
+    read-only admin store; central/local (and anything else) come from the
+    instance's own read/write bucket — the store reachable from every provider.
+    """
+    if ic.get("download_creds"):
+        creds = ic["download_creds"]
+        return creds, creds.get("bucket", s3_bucket)
+    if ic.get("source") == "gold" and readonly_creds:
+        return readonly_creds, readonly_creds["bucket"]
+    return s3_creds, s3_bucket
+
+
 def _start_download_jobs(items_to_download, host):
     """Start S3 download jobs on the host for each item. Returns list of active jobs."""
     from app.services import s3_storage
@@ -708,18 +725,12 @@ def _start_download_jobs(items_to_download, host):
 
     s3_creds = _get_s3_config()
     s3_bucket = s3_storage._bucket()
-    central_creds = _get_readonly_s3_config()
+    readonly_creds = _get_readonly_s3_config()
     active_jobs = []
     for ic in items_to_download:
-        if ic.get("download_creds"):
-            dl_creds = ic["download_creds"]
-            dl_bucket = dl_creds.get("bucket", s3_bucket)
-        elif ic.get("source") == "central" and central_creds:
-            dl_creds = central_creds
-            dl_bucket = central_creds["bucket"]
-        else:
-            dl_creds = s3_creds
-            dl_bucket = s3_bucket
+        dl_creds, dl_bucket = _select_download_creds(
+            ic, s3_creds, s3_bucket, readonly_creds
+        )
         s3_url = f"s3://{dl_bucket}/{ic['s3_key']}"
         try:
             job_id = start_job(
@@ -905,7 +916,7 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
 
     logger.info("cache_library_images: %d items to cache", len(items_to_cache))
     if not items_to_cache:
-        return
+        return []
 
     # For shared pools: skip items already cached, coordinate downloads
     if pool and pool.mode.startswith("shared"):
@@ -920,12 +931,12 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
     items_to_download = _filter_locally_cached_items(items_to_cache, host)
     if not items_to_download:
         logger.info("  all items cached, no downloads needed")
-        return
+        return []
 
     # Start and poll download jobs
     active_jobs = _start_download_jobs(items_to_download, host)
     if not active_jobs:
-        return
+        return []
 
     failed = _poll_download_jobs(
         active_jobs,
@@ -934,12 +945,15 @@ def cache_library_images(topology: dict, host, db_session, progress_callback=Non
         pool,
         progress_callback,
     )
-    if failed:
+    failed_names = [aj["name"] for aj in active_jobs if aj["job_id"] in failed]
+    if failed_names:
         logger.error(
-            "cache_library_images: %d/%d downloads failed",
-            len(failed),
+            "cache_library_images: %d/%d downloads failed: %s",
+            len(failed_names),
             len(active_jobs),
+            ", ".join(failed_names),
         )
+    return failed_names
 
 
 # ── Async orchestrators ──
@@ -2540,6 +2554,11 @@ def _kubevirt_override_agent_dns(topology, clusters):
         _cluster_members_for,
         install_member_nodes,
     )
+
+    # Stamp effectiveDnsIp (.2) on the cluster networks so paths that pass no
+    # dns_ip_override — notably the deferred-worker join — also resolve DNS via
+    # the KubeVirt dnsmasq pod instead of falling back to the gateway (.1).
+    _stamp_effective_dns_ips(topology, kubevirt=True)
 
     for cluster in clusters:
         members = _cluster_members_for(topology, cluster)
@@ -5691,30 +5710,45 @@ def _preflight_verify_library_disks(
             ) from exc
 
 
-def _preflight_verify_pattern_disks(topology, s3_client, bucket, s3_op):
-    """HEAD every central-source pattern disk against central S4 before deploy.
+def _preflight_verify_pattern_disks(
+    topology,
+    s3_client,
+    bucket,
+    s3_op,
+    central_s3_client=None,
+    central_bucket="",
+    central_op=None,
+):
+    """HEAD every reachable pattern disk against its store before deploy.
 
+    ``central`` disks live in the shared read/write bucket (``s3_client``);
+    ``gold`` disks live in the read-only admin store (``central_s3_client``).
     OBC-source disks are trusted (their synced PatternLocation was written only
     after a verified capture, and the OBC endpoint is unreachable from here).
-    If s3_client is None (central S4 not configured), central-disk checks are skipped.
+    A check is skipped when the client for that store is not configured.
     """
-    if not s3_client:
-        return
+    # (client, bucket, op) keyed by the disk's resolved source.
+    verifiers = {
+        "central": (s3_client, bucket, s3_op or {}),
+        "gold": (central_s3_client, central_bucket, central_op or {}),
+    }
     for node in topology.get("nodes", []):
         data = node.get("data", {})
         if node.get("type") != "storageNode":
             continue
         if data.get("source") != "pattern":
             continue
-        if data.get("diskSource") != "central":
+        client, store_bucket, op = verifiers.get(data.get("diskSource"), (None, "", {}))
+        if not client:
             continue
         key = data.get("resolvedS3Path", "")
         try:
-            s3_client.head_object(Bucket=bucket, Key=key, **s3_op)
+            client.head_object(Bucket=store_bucket, Key=key, **op)
         except Exception as exc:
             label = data.get("label", key[:16])
             raise DeployError(
-                f"pattern disk {label} not found in central S4 — storage not ready"
+                f"pattern disk {label} not found in {data['diskSource']} store"
+                " — storage not ready"
             ) from exc
 
 
@@ -6696,7 +6730,15 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db, mtu_map):
             central_op,
         )
         _resolve_ceph_capture_s3_paths(topology, db, host.provider_id)
-        _preflight_verify_pattern_disks(topology, s3_client, bucket, s3_op)
+        _preflight_verify_pattern_disks(
+            topology,
+            s3_client,
+            bucket,
+            s3_op,
+            central_s3_client,
+            central_bucket,
+            central_op,
+        )
         _preflight_verify_ceph_capture(topology, s3_client, bucket, s3_op)
         _preflight_verify_library_disks(
             topology,
@@ -6847,7 +6889,12 @@ def _deploy_vms_on_host(
     _update_deploy_progress(project_id, "images", f"caching images on {host_label}")
     logger.info("Deploy %s: caching images on %s", project_id[:8], host_label)
     _prepare_topology_library_refs(topology, db, project)
-    cache_library_images(topology, host, db)
+    failed = cache_library_images(topology, host, db)
+    if failed:
+        return (
+            f"image caching failed on {host_label}: {', '.join(failed)} "
+            "— disk/pattern source not reachable"
+        )
 
     _update_deploy_progress(project_id, "seeds", f"creating seed ISOs on {host_label}")
     logger.info("Deploy %s: creating seeds on %s", project_id[:8], host_label)

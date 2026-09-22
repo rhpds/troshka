@@ -133,6 +133,33 @@ def test_preflight_raises_on_central_miss():
     assert "boot" in str(ei.value)
 
 
+def test_preflight_raises_on_gold_miss():
+    # Admin gold pattern disks must be verified against the read-only central
+    # store, not the shared read/write bucket.
+    central_client = MagicMock()
+    central_client.head_object.side_effect = Exception("404 NoSuchKey")
+    primary = MagicMock()
+    topology = {
+        "nodes": [
+            {
+                "type": "storageNode",
+                "data": {
+                    "source": "pattern",
+                    "diskSource": "gold",
+                    "resolvedS3Path": "patterns/p/d.qcow2",
+                    "label": "boot",
+                },
+            }
+        ]
+    }
+    with pytest.raises(deploy_service.DeployError) as ei:
+        deploy_service._preflight_verify_pattern_disks(
+            topology, primary, "troshka-images", {}, central_client, "gold", {}
+        )
+    assert "boot" in str(ei.value)
+    primary.head_object.assert_not_called()
+
+
 def test_preflight_skips_obc_disks():
     s3_client = MagicMock()
     topology = {
@@ -208,6 +235,41 @@ def test_preflight_skips_local_library_disks():
         {},
     )
     central_client.head_object.assert_not_called()
+
+
+def test_download_creds_central_uses_readwrite_bucket():
+    # A user pattern synced to the shared read/write bucket must download from
+    # the instance's own S3 config, NOT the read-only gold store.
+    s3_creds = {"access_key_id": "rw"}
+    readonly_creds = {"access_key_id": "ro", "bucket": "troshka-gold-images"}
+    creds, bucket = deploy_service._select_download_creds(
+        {"source": "central"}, s3_creds, "troshka-images", readonly_creds
+    )
+    assert creds is s3_creds
+    assert bucket == "troshka-images"
+
+
+def test_download_creds_gold_uses_readonly_store():
+    s3_creds = {"access_key_id": "rw"}
+    readonly_creds = {"access_key_id": "ro", "bucket": "troshka-gold-images"}
+    creds, bucket = deploy_service._select_download_creds(
+        {"source": "gold"}, s3_creds, "troshka-images", readonly_creds
+    )
+    assert creds is readonly_creds
+    assert bucket == "troshka-gold-images"
+
+
+def test_download_creds_obc_uses_attached_cluster_creds():
+    s3_creds = {"access_key_id": "rw"}
+    obc_creds = {"access_key_id": "obc", "bucket": "cluster-bucket"}
+    creds, bucket = deploy_service._select_download_creds(
+        {"source": "obc", "download_creds": obc_creds},
+        s3_creds,
+        "troshka-images",
+        None,
+    )
+    assert creds is obc_creds
+    assert bucket == "cluster-bucket"
 
 
 def _library_item(db, s3_key, fmt, source="local", item_type="snapshot"):

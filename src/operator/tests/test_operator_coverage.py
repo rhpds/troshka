@@ -504,9 +504,7 @@ class TestHandleVmStart:
 
     @patch("handlers.project._start_kubevirt_vms")
     @patch("handlers.project._ceph_cr_ready", return_value=False)
-    def test_restore_mode_holds_vm_start_until_ceph_ready(
-        self, mock_ready, mock_start
-    ):
+    def test_restore_mode_holds_vm_start_until_ceph_ready(self, mock_ready, mock_start):
         """Task 10 boot gate: cephRestoreActive + not-yet-Ready TroshkaCeph
         must defer VM start entirely — _start_kubevirt_vms must not run."""
         from handlers.project import _handle_vm_start
@@ -716,7 +714,10 @@ class TestEnsureBmcDeployment:
     @patch("handlers.project._enrich_bmc_ips")
     @patch(
         "handlers.project._get_bmc_credentials",
-        return_value={"username": "admin", "password": "pw"},  # pragma: allowlist secret
+        return_value={
+            "username": "admin",
+            "password": "pw",  # pragma: allowlist secret
+        },
     )
     @patch("handlers.project.client")
     @patch("handlers.project._collect_bmc_vms")
@@ -797,8 +798,9 @@ class TestProjectDelete:
         project_delete = self._get_project_delete_fn()
 
         asyncio.run(project_delete(namespace="troshka-abc", name="abc"))
-        # Should call _delete_custom_resources 5 times (VMIs, VMs, DVs, NADs, Routes)
-        assert mock_del.call_count == 5
+        # _delete_custom_resources 6 times:
+        # VMIs, VMs, DVs, NADs, Routes, TroshkaCeph
+        assert mock_del.call_count == 6
         # Should call _remove_sa_from_sccs 3 times
         assert mock_scc.call_count == 3
 

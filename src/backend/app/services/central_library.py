@@ -229,14 +229,15 @@ def _create_pattern_record(db, pid, meta, owner_id, provider_id):
                 state="available",
             )
         )
-        # The disk lives in the central S4 bucket — record a central location so
-        # pattern_disk_source_for_cluster() can resolve it on any cluster that
-        # has the central read-only provider configured.
+        # The disk lives in the read-only admin gold store — record a gold
+        # location so pattern_disk_source_for_cluster() can resolve it on any
+        # cluster that has the read-only provider configured. "central" is
+        # reserved for the shared read/write bucket (user patterns).
         db.add(
             PatternLocation(
                 pattern_disk_id=disk_id,
                 provider_id=None,
-                location_type="central",
+                location_type="gold",
                 s3_key=disk["s3_key"],
                 state="synced",
                 size_bytes=disk.get("size_bytes", 0),

@@ -177,6 +177,7 @@ def test_sync_marks_synced_on_job_success():
                 },
             ),
             patch.object(pattern_sync, "_run_rclone_job", return_value=True),
+            patch.object(pattern_sync, "_verify_central_readback", return_value=[]),
         ):
             pattern_sync.sync_pattern_to_central(pat.id)
 
@@ -188,6 +189,60 @@ def test_sync_marks_synced_on_job_success():
         assert central is not None
         assert central.state == "synced"
         assert central.provider_id is None
+    finally:
+        Session.close(db)
+
+
+def test_sync_marks_error_when_not_readable():
+    # rclone reports success, but the object is not readable from the shared
+    # read/write bucket that deploy sources "central" disks from → the row must
+    # go to error, never a false "synced".
+    db = _sync_session()
+    try:
+        provider_id = str(uuid.uuid4())
+        pat, pd = _pattern_with_disks(db, provider_id, total_bytes=500)
+
+        with (
+            patch.object(pattern_sync, "SessionLocal", return_value=db),
+            patch.object(pattern_sync, "_max_central_bytes", return_value=None),
+            patch.object(
+                pattern_sync,
+                "get_cluster_s3_config",
+                return_value={
+                    "access_key_id": "AK",
+                    "secret_access_key": "SK",
+                    "endpoint": "https://rgw.svc",
+                    "bucket": "obc",
+                },
+            ),
+            patch.object(
+                pattern_sync,
+                "_get_s3_config",
+                return_value={
+                    "access_key_id": "CK",
+                    "secret_access_key": "CS",
+                    "endpoint_url": "https://s4",
+                    "bucket": "troshka-images",
+                    "region": "us-east-1",
+                },
+            ),
+            patch.object(pattern_sync, "_run_rclone_job", return_value=True),
+            patch.object(
+                pattern_sync,
+                "_verify_central_readback",
+                return_value=[pd.s3_key],
+            ),
+        ):
+            pattern_sync.sync_pattern_to_central(pat.id)
+
+        central = (
+            db.query(PatternLocation)
+            .filter_by(pattern_disk_id=pd.id, location_type="central")
+            .first()
+        )
+        assert central is not None
+        assert central.state == "error"
+        assert "readable" in (central.error_message or "").lower()
     finally:
         Session.close(db)
 

@@ -31,9 +31,11 @@ def pattern_disk_source_for_cluster(
 ) -> str | None:
     """Where can this disk be sourced from on target_provider_id?
 
-    Returns "obc" (local RGW on that provider), "central" (S4 troshka-images),
-    or None if the disk is not synced anywhere reachable from that cluster.
-    OBC on the target provider is preferred over central.
+    Returns "obc" (local RGW on that provider), "central" (the shared
+    read/write bucket, reachable from every provider), "gold" (the read-only
+    admin-curated store), or None if the disk is not synced anywhere reachable
+    from that cluster. Preference: OBC on the target provider, then central,
+    then gold.
     """
     if target_provider_id:
         obc = db.scalars(
@@ -46,17 +48,18 @@ def pattern_disk_source_for_cluster(
         ).first()
         if obc:
             return "obc"
-    central = db.scalars(
-        select(PatternLocation)
-        .filter_by(
-            pattern_disk_id=pattern_disk_id,
-            location_type="central",
-            state="synced",
-        )
-        .where(PatternLocation.provider_id.is_(None))
-    ).first()
-    if central:
-        return "central"
+    for location_type in ("central", "gold"):
+        row = db.scalars(
+            select(PatternLocation)
+            .filter_by(
+                pattern_disk_id=pattern_disk_id,
+                location_type=location_type,
+                state="synced",
+            )
+            .where(PatternLocation.provider_id.is_(None))
+        ).first()
+        if row:
+            return location_type
     return None
 
 

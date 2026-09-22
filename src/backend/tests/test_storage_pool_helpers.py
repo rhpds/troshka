@@ -646,7 +646,8 @@ class TestCreatePatternRecord:
 
         loc_arg = mock_db.add.call_args_list[2][0][0]
         assert loc_arg.pattern_disk_id == "disk-1"
-        assert loc_arg.location_type == "central"
+        # central_library scans the read-only admin gold store → gold location.
+        assert loc_arg.location_type == "gold"
         assert loc_arg.state == "synced"
         assert loc_arg.provider_id is None
 

@@ -103,6 +103,54 @@ def test_central_visible_everywhere():
         db.close()
 
 
+def test_gold_visible_everywhere():
+    db = TestSession()
+    try:
+        pd = _disk(db)
+        db.add(
+            PatternLocation(
+                pattern_disk_id=pd.id,
+                provider_id=None,
+                location_type="gold",
+                s3_key=pd.s3_key,
+                state="synced",
+            )
+        )
+        db.flush()
+        assert pattern_disk_source_for_cluster(db, pd.id, PROV_A) == "gold"
+        assert pattern_disk_source_for_cluster(db, pd.id, PROV_B) == "gold"
+    finally:
+        db.close()
+
+
+def test_central_preferred_over_gold():
+    db = TestSession()
+    try:
+        pd = _disk(db)
+        db.add_all(
+            [
+                PatternLocation(
+                    pattern_disk_id=pd.id,
+                    provider_id=None,
+                    location_type="central",
+                    s3_key=pd.s3_key,
+                    state="synced",
+                ),
+                PatternLocation(
+                    pattern_disk_id=pd.id,
+                    provider_id=None,
+                    location_type="gold",
+                    s3_key=pd.s3_key,
+                    state="synced",
+                ),
+            ]
+        )
+        db.flush()
+        assert pattern_disk_source_for_cluster(db, pd.id, PROV_A) == "central"
+    finally:
+        db.close()
+
+
 def test_obc_preferred_over_central_on_source():
     db = TestSession()
     try:

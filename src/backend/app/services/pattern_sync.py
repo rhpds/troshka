@@ -213,6 +213,34 @@ def _fail_central_rows(db, rows, message: str) -> None:
     db.commit()
 
 
+def _verify_central_readback(dst_cfg: dict, keys: list[str]) -> list[str]:
+    """Return the keys NOT readable in the destination read/write bucket.
+
+    Deploy sources "central" disks from this same bucket, so a row must not be
+    marked synced unless the object is actually fetchable here. Guards against
+    a write bucket that differs from the read bucket, or a partial rclone copy.
+    """
+    import boto3
+
+    bucket = dst_cfg.get("bucket", "troshka-images")
+    kw = {
+        "aws_access_key_id": dst_cfg.get("access_key_id", ""),
+        "aws_secret_access_key": dst_cfg.get("secret_access_key", ""),
+        "region_name": dst_cfg.get("region", "us-east-1"),
+    }
+    endpoint = dst_cfg.get("endpoint_url") or dst_cfg.get("endpoint")
+    if endpoint:
+        kw["endpoint_url"] = endpoint
+    client = boto3.client("s3", **kw)
+    missing = []
+    for k in keys:
+        try:
+            client.head_object(Bucket=bucket, Key=k)
+        except Exception:  # noqa: BLE001 — any failure means "not readable here"
+            missing.append(k)
+    return missing
+
+
 def _collect_pending_rows(db, disks) -> list:
     """Return (PatternDisk, PatternLocation) pairs for disks not yet central-synced."""
     pending = []
@@ -292,20 +320,32 @@ def sync_pattern_to_central(pattern_id: str) -> None:
         keys = [pd.s3_key for pd, _ in pending]
         job_name = f"sync-{pattern_id[:8]}"
         ok = _run_rclone_job(provider, job_name, keys, src_cfg, dst_cfg)
-        if ok:
-            now = datetime.datetime.now(datetime.UTC)
-            for _pd, row in pending:
-                row.state = "synced"
-                row.synced_at = now
-            db.commit()
-            log.info(
-                "sync: pattern %s synced %d disks to central", pattern_id, len(keys)
-            )
-        else:
+        if not ok:
             _fail_central_rows(
                 db,
                 [row for _, row in pending],
                 "rclone sync job failed or timed out",
             )
+            return
+        missing = _verify_central_readback(dst_cfg, keys)
+        if missing:
+            _fail_central_rows(
+                db,
+                [row for _, row in pending],
+                "copied but not readable in the shared central bucket: "
+                + ", ".join(missing),
+            )
+            log.error(
+                "sync: pattern %s copied but %d disks not readable in central",
+                pattern_id,
+                len(missing),
+            )
+            return
+        now = datetime.datetime.now(datetime.UTC)
+        for _pd, row in pending:
+            row.state = "synced"
+            row.synced_at = now
+        db.commit()
+        log.info("sync: pattern %s synced %d disks to central", pattern_id, len(keys))
     finally:
         db.close()

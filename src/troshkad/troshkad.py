@@ -7388,6 +7388,8 @@ def _s3_download(
     aws_endpoint_url="",
 ):
     """Download a file from S3 using aws cli with file-size progress monitoring."""
+    import tempfile
+
     env = os.environ.copy()
     _s3_tmpdir = os.path.join(_config.get("local_mount", _LOCAL_DIR), "tmp")
     os.makedirs(_s3_tmpdir, exist_ok=True)
@@ -7401,23 +7403,30 @@ def _s3_download(
     aws_bin = _AWS_CLI
     if not os.path.exists(aws_bin):
         aws_bin = "aws"
-    proc = subprocess.Popen(
-        [aws_bin, "s3", "cp", s3_url, local_path],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=env,
-    )
-    while proc.poll() is None:
-        try:
-            cur = os.path.getsize(local_path) if os.path.exists(local_path) else 0
-            if cur > 0:
-                cur_gb = round(cur / (1024**3), 1)
-                _job_log(job, f"Downloading: {cur_gb} GB")
-        except OSError:
-            pass
-        time.sleep(5)
-    if proc.returncode != 0:
-        raise RuntimeError(f"S3 download failed (exit {proc.returncode})")
+    # Capture stderr to a temp file (not DEVNULL) so a failure surfaces the real
+    # aws cli message — 404/AccessDenied/endpoint — instead of a bare exit code.
+    # A file (vs PIPE) can't deadlock the progress loop on a full pipe buffer.
+    with tempfile.TemporaryFile() as err_f:
+        proc = subprocess.Popen(
+            [aws_bin, "s3", "cp", s3_url, local_path],
+            stdout=subprocess.DEVNULL,
+            stderr=err_f,
+            env=env,
+        )
+        while proc.poll() is None:
+            try:
+                cur = os.path.getsize(local_path) if os.path.exists(local_path) else 0
+                if cur > 0:
+                    cur_gb = round(cur / (1024**3), 1)
+                    _job_log(job, f"Downloading: {cur_gb} GB")
+            except OSError:
+                pass
+            time.sleep(5)
+        if proc.returncode != 0:
+            err_f.seek(0)
+            err_text = err_f.read().decode("utf-8", "replace").strip()
+            detail = f": {err_text[-500:]}" if err_text else ""
+            raise RuntimeError(f"S3 download failed (exit {proc.returncode}){detail}")
 
 
 def _handle_snapshot_capture(job, params):

@@ -3160,6 +3160,7 @@ class TestDeployVmsOnHost:
         mock_stale,
         mock_define,
     ):
+        mock_cache.return_value = []
         host = _make_host()
         project = MagicMock()
         project.clock_target = None
@@ -3184,6 +3185,7 @@ class TestDeployVmsOnHost:
     def test_disk_error(
         self, mock_prog, mock_pool, mock_cache, mock_filter, mock_seeds, mock_disks
     ):
+        mock_cache.return_value = []
         host = _make_host()
         project = MagicMock()
         project.clock_target = None
@@ -3213,6 +3215,7 @@ class TestDeployVmsOnHost:
         mock_stale,
         mock_define,
     ):
+        mock_cache.return_value = []
         host = _make_host()
         project = MagicMock()
         project.clock_target = "2025-01-01T00:00:00Z"

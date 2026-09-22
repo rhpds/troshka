@@ -12,7 +12,7 @@ import uuid
 from tests.conftest import TestSession
 
 
-def test_create_pattern_record_creates_central_locations():
+def test_create_pattern_record_creates_gold_locations():
     from app.models.pattern_location import PatternLocation
     from app.services.central_library import _create_pattern_record
 
@@ -43,10 +43,10 @@ def test_create_pattern_record_creates_central_locations():
         for did in (d1, d2):
             loc = (
                 db.query(PatternLocation)
-                .filter_by(pattern_disk_id=did, location_type="central", state="synced")
+                .filter_by(pattern_disk_id=did, location_type="gold", state="synced")
                 .first()
             )
-            assert loc is not None, f"no central PatternLocation for {did}"
+            assert loc is not None, f"no gold PatternLocation for {did}"
             assert loc.provider_id is None
             assert loc.s3_key == f"patterns/{pid}/{did}.qcow2"
     finally:

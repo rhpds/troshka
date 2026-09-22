@@ -1174,6 +1174,78 @@ class TestCacheLibraryImages:
         # Only 1 start_job for stat check, no download
         assert mock_start.call_count == 1
 
+    @patch(f"{SVC}._create_multihost_disks")
+    @patch(f"{SVC}._create_seed_isos_via_troshkad")
+    @patch(f"{SVC}._filter_topology_for_host", return_value=_minimal_topology())
+    @patch(f"{SVC}.cache_library_images", return_value=["cp-0-disk0"])
+    @patch(f"{SVC}._prepare_topology_library_refs")
+    @patch(f"{SVC}._get_host_pool", return_value=None)
+    def test_deploy_vms_on_host_aborts_when_caching_fails(
+        self,
+        mock_pool,
+        mock_prep,
+        mock_cache,
+        mock_filter,
+        mock_seeds,
+        mock_disks,
+    ):
+        """A failed image cache must abort before disk creation, not press on."""
+        from app.services.deploy_service import _deploy_vms_on_host
+
+        err = _deploy_vms_on_host(
+            _make_host(),
+            PROJECT_ID,
+            MagicMock(),
+            [{"node_id": "vm1"}],
+            _minimal_topology(),
+            {},
+            MagicMock(),
+        )
+
+        assert err and "cach" in err.lower()
+        mock_seeds.assert_not_called()
+        mock_disks.assert_not_called()
+
+    @patch(f"{SVC}._get_host_pool", return_value=None)
+    @patch(f"{SVC}._poll_download_jobs")
+    @patch(f"{SVC}._start_download_jobs")
+    @patch(f"{SVC}._filter_locally_cached_items")
+    @patch(f"{SVC}._collect_snapshot_disks", return_value=[])
+    @patch(f"{SVC}._collect_pattern_disks", return_value=[])
+    @patch(f"{SVC}._collect_pxe_boot_isos", return_value=[])
+    @patch(f"{SVC}._collect_library_items")
+    def test_returns_failed_item_names_on_download_failure(
+        self,
+        mock_lib,
+        mock_pxe,
+        mock_pat,
+        mock_snap,
+        mock_filter,
+        mock_start,
+        mock_poll,
+        mock_pool,
+    ):
+        """Failed downloads are surfaced to the caller (not silently swallowed)."""
+        from app.services.deploy_service import cache_library_images
+
+        item = {
+            "item_id": "i1",
+            "name": "cp-0-disk0",
+            "s3_key": "patterns/p/d.qcow2",
+            "cache_path": "/var/lib/troshka/local/cache/patterns/p/d.qcow2",
+            "expected_size": 10,
+        }
+        mock_lib.return_value = [item]
+        mock_filter.return_value = [item]
+        mock_start.return_value = [
+            {"job_id": "job-i1", "name": "cp-0-disk0", "item_id": "i1"}
+        ]
+        mock_poll.return_value = {"job-i1"}
+
+        result = cache_library_images(_minimal_topology(), _make_host(), MagicMock())
+
+        assert result == ["cp-0-disk0"]
+
     @patch(f"{SVC}._get_host_pool", return_value=None)
     def test_deduplication(self, mock_pool):
         """Duplicate library item IDs across nodes are deduped."""
