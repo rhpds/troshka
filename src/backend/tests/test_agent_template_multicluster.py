@@ -498,6 +498,46 @@ def test_normalize_cluster_member_fields_defers_sno_workers():
     assert wrk["data"]["powerOnAtDeploy"] is False
 
 
+def test_normalize_preserves_joined_worker_power_on():
+    """After join clears deferOcpInstall, normalize must not re-stamp Halted."""
+    from app.services.template_loader import normalize_cluster_member_fields
+
+    topo = {
+        "clusters": [
+            {
+                "id": "source",
+                "name": "source",
+                "type": "sno",
+                "controlPlane": 1,
+                "workers": 1,
+            }
+        ],
+        "nodes": [
+            _member(
+                "source-cp-0",
+                "source",
+                "controllers",
+                "10.0.0.10",
+                "52:54:00:aa:bb:01",
+            ),
+            _member(
+                "source-worker-0",
+                "source",
+                "workers",
+                "10.0.0.20",
+                "52:54:00:aa:bb:02",
+            ),
+        ],
+    }
+    wrk = next(n for n in topo["nodes"] if n["data"]["name"] == "source-worker-0")
+    wrk["data"]["deferOcpInstall"] = False
+    wrk["data"]["powerOnAtDeploy"] = True
+    out = normalize_cluster_member_fields(topo)
+    wrk_out = next(n for n in out["nodes"] if n["data"]["name"] == "source-worker-0")
+    assert wrk_out["data"]["deferOcpInstall"] is False
+    assert wrk_out["data"]["powerOnAtDeploy"] is True
+
+
 def test_agent_config_per_cluster():
     import yaml
 

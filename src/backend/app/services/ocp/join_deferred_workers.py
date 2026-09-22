@@ -36,19 +36,49 @@ def deferred_workers_for_cluster(topology: dict, cluster: dict) -> list[dict]:
     Each entry includes cluster-network addressing for ``oc adm node-image
     create --network-config-path`` so workers default-route via the cluster
     gateway (not the post-install migration L2).
+
+    Workers with ``deferOcpInstall: false`` (cleared after a successful join)
+    are skipped so pattern redeploys / restarts do not re-run node-image join.
     """
     entries: list[dict] = []
     for node in _cluster_members_for(topology, cluster):
+        data = node.get("data") or {}
+        if data.get("deferOcpInstall") is False:
+            continue
         nic = deferred_worker_cluster_nic(node, cluster, topology)
         if not nic:
             continue
-        data = node.get("data") or {}
         bmc_ip = str(data.get("bmcIp") or "").strip()
         name = str(data.get("name") or "").strip()
         if not name or not bmc_ip:
             continue
         entries.append({"name": name, "bmc_ip": bmc_ip, **nic})
     return entries
+
+
+def mark_deferred_workers_joined(topology: dict, cluster: dict) -> bool:
+    """Flip deferred workers to ``powerOnAtDeploy`` after a successful join.
+
+    Sets ``powerOnAtDeploy: true`` and ``deferOcpInstall: false`` on every
+    worker that ``member_defers_ocp_install`` would target for this cluster.
+    Pattern capture then persists those flags so a later pattern deploy boots
+    the workers (they are already converged — no Halted / join-ISO cycle).
+
+    Returns True when any node data changed (idempotent otherwise).
+    """
+    from app.services.ocp.agent_template import member_defers_ocp_install
+
+    changed = False
+    for node in _cluster_members_for(topology, cluster):
+        if not member_defers_ocp_install(cluster, node, topology):
+            continue
+        data = node.setdefault("data", {})
+        if data.get("powerOnAtDeploy") is True and data.get("deferOcpInstall") is False:
+            continue
+        data["powerOnAtDeploy"] = True
+        data["deferOcpInstall"] = False
+        changed = True
+    return changed
 
 
 def _nmstate_interface(entry: dict, *, down: bool = False) -> dict:

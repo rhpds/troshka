@@ -662,5 +662,101 @@ class TestControlPlaneUsableMilestone(unittest.TestCase):
         mock_update_progress.assert_not_called()
 
 
+class TestDeferredWorkersJoinedFlip(unittest.TestCase):
+    def test_has_deferred_workers_joined_marker(self):
+        from app.services.ocp.ops_pod_install import has_deferred_workers_joined_marker
+
+        assert has_deferred_workers_joined_marker(
+            "[source] deferred workers converged\n", "source"
+        )
+        assert has_deferred_workers_joined_marker(
+            "[source] deferred workers already joined, skipping\n", "source"
+        )
+        assert not has_deferred_workers_joined_marker(
+            "[source] control-plane-usable\n", "source"
+        )
+        assert not has_deferred_workers_joined_marker(
+            "[source] deferred workers converged\n", "other"
+        )
+
+    @patch("app.core.database.SessionLocal")
+    def test_check_deferred_workers_joined_flips_topology(self, mock_session_local):
+        from app.services.deploy_service import _check_deferred_workers_joined
+
+        cluster = {
+            "id": "source",
+            "name": "source",
+            "type": "sno",
+            "controlPlane": 1,
+            "workers": 1,
+        }
+        worker = {
+            "id": "w0",
+            "type": "vmNode",
+            "data": {
+                "name": "source-worker-0",
+                "clusterId": "source",
+                "tags": {"AnsibleGroup": "workers"},
+                "deferOcpInstall": True,
+                "powerOnAtDeploy": False,
+                "bmcEnabled": True,
+                "bmcIp": "192.168.0.20",
+                "nics": [{"ip": "10.0.0.20", "mac": "52:54:00:aa:bb:02"}],
+            },
+        }
+        topo = {"clusters": [cluster], "nodes": [worker]}
+        mock_project = MagicMock()
+        mock_project.topology = topo
+        mock_project.deployed_topology = {
+            "clusters": [cluster],
+            "nodes": [
+                {
+                    "id": "w0",
+                    "type": "vmNode",
+                    "data": {
+                        "name": "source-worker-0",
+                        "clusterId": "source",
+                        "tags": {"AnsibleGroup": "workers"},
+                        "deferOcpInstall": True,
+                        "powerOnAtDeploy": False,
+                        "bmcEnabled": True,
+                        "bmcIp": "192.168.0.20",
+                        "nics": [{"ip": "10.0.0.20", "mac": "52:54:00:aa:bb:02"}],
+                    },
+                }
+            ],
+        }
+        mock_db = MagicMock()
+        mock_db.query.return_value.filter_by.return_value.first.return_value = (
+            mock_project
+        )
+        mock_session_local.return_value = mock_db
+
+        _check_deferred_workers_joined(
+            "proj-1234",
+            {"source": "[source] deferred workers converged\n"},
+            [cluster],
+        )
+
+        assert worker["data"]["powerOnAtDeploy"] is True
+        assert worker["data"]["deferOcpInstall"] is False
+        assert (
+            mock_project.deployed_topology["nodes"][0]["data"]["powerOnAtDeploy"]
+            is True
+        )
+        mock_db.commit.assert_called_once()
+
+    @patch("app.core.database.SessionLocal")
+    def test_check_deferred_workers_joined_no_marker(self, mock_session_local):
+        from app.services.deploy_service import _check_deferred_workers_joined
+
+        _check_deferred_workers_joined(
+            "proj-1234",
+            {"source": "[source] control-plane-usable\n"},
+            [{"id": "source", "type": "sno", "workers": 2}],
+        )
+        mock_session_local.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5272,6 +5272,9 @@ def _monitor_ops_pod_install(
         _check_control_plane_usable_milestone(
             project_id, per_cluster, cluster_keys, elapsed_now
         )
+        # After deferred workers converge, flip powerOnAtDeploy so pattern
+        # capture boots them on the next deploy (they are already joined).
+        _check_deferred_workers_joined(project_id, per_cluster, clusters)
         if progress["done"]:
             _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
             # Reap only when every cluster succeeded — never because a sibling
@@ -11090,6 +11093,69 @@ def _check_control_plane_usable_milestone(
                 )
             # Once we've found the marker in any cluster, no need to check others.
             break
+
+
+def _persist_deferred_workers_joined(project_id: str, cluster: dict) -> bool:
+    """Flip deferred workers to powerOnAtDeploy after join (idempotent).
+
+    Updates both ``topology`` and ``deployed_topology`` so canvas save and
+    pattern capture see ``powerOnAtDeploy: true`` / ``deferOcpInstall: false``.
+    Returns True when any node was changed.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+    from app.services.ocp.join_deferred_workers import mark_deferred_workers_joined
+
+    try:
+        db = SessionLocal()
+        try:
+            p = db.query(Project).filter_by(id=project_id).first()
+            if not p:
+                return False
+            changed = False
+            for attr in ("topology", "deployed_topology"):
+                topo = getattr(p, attr, None)
+                if not topo:
+                    continue
+                if mark_deferred_workers_joined(topo, cluster):
+                    flag_modified(p, attr)
+                    changed = True
+            if changed:
+                db.commit()
+                logger.info(
+                    "Project %s: deferred workers joined — "
+                    "powerOnAtDeploy=true for cluster %s",
+                    project_id[:8],
+                    cluster.get("id") or cluster.get("name") or "?",
+                )
+            return changed
+        finally:
+            db.close()
+    except Exception:
+        logger.exception(
+            "Failed to persist deferred-workers-joined for %s", project_id[:8]
+        )
+        return False
+
+
+def _check_deferred_workers_joined(
+    project_id: str,
+    per_cluster_logs: dict[str, str],
+    clusters: list[dict],
+) -> None:
+    """When ops-pod logs show workers converged, flip powerOnAtDeploy (once)."""
+    from app.services.ocp.ops_pod_install import (
+        _cluster_key,
+        has_deferred_workers_joined_marker,
+    )
+
+    for cluster in clusters:
+        key = _cluster_key(cluster)
+        log_text = per_cluster_logs.get(key, "")
+        if has_deferred_workers_joined_marker(log_text, key):
+            _persist_deferred_workers_joined(project_id, cluster)
 
 
 def _extract_dns_domain(nodes):

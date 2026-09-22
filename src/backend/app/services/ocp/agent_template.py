@@ -435,6 +435,9 @@ def deferred_worker_cluster_nic(
 
     if not member_defers_ocp_install(cluster, node, topology):
         return None
+    # Cleared after a successful join — do not treat as a join target again.
+    if (node.get("data") or {}).get("deferOcpInstall") is False:
+        return None
     members = _cluster_members_for(topology, cluster)
     net_node = cluster_egress_network_node(cluster, topology)
     if not net_node:

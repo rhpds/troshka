@@ -519,6 +519,10 @@ def normalize_cluster_member_fields(topology: dict) -> dict:
     SNO clusters with canvas workers > 0 defer worker install: those VMs are
     marked ``deferOcpInstall`` and default to ``powerOnAtDeploy: false`` so the
     agent ISO is not served to them until a post-install join step.
+
+    After a successful join the install monitor clears ``deferOcpInstall`` to
+    ``false`` and sets ``powerOnAtDeploy: true`` so pattern capture boots
+    workers on redeploy — do not re-stamp those nodes.
     """
     from app.services.ocp.agent_template import member_defers_ocp_install
 
@@ -536,6 +540,9 @@ def normalize_cluster_member_fields(topology: dict) -> dict:
         _normalize_member_disks(node, topology)
         cluster = clusters_by_id.get(data.get("clusterId"))
         if cluster and member_defers_ocp_install(cluster, node, topology):
+            # Explicit False = already joined (monitor cleared the defer bit).
+            if data.get("deferOcpInstall") is False:
+                continue
             data["deferOcpInstall"] = True
             data["powerOnAtDeploy"] = False
     return topology

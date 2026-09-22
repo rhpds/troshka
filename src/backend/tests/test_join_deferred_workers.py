@@ -2,6 +2,7 @@ from app.services.ocp.join_deferred_workers import (
     build_deferred_worker_nmstate,
     build_join_deferred_workers_cmd,
     deferred_workers_for_cluster,
+    mark_deferred_workers_joined,
 )
 
 
@@ -109,6 +110,23 @@ def test_deferred_workers_for_cluster_filters_deferred_only():
     assert workers[0]["gateway"] == "10.0.0.1"
     assert workers[0]["aux_nics"][0]["ip"] == "172.16.100.20"
     assert workers[0]["aux_nics"][0]["mac"] == "52:54:00:aa:bb:99"
+
+
+def test_mark_deferred_workers_joined_flips_power_on():
+    topo = _cclm_topology()
+    for n in topo["nodes"]:
+        if n.get("data", {}).get("name", "").startswith("source-worker"):
+            n["data"]["deferOcpInstall"] = True
+            n["data"]["powerOnAtDeploy"] = False
+    assert mark_deferred_workers_joined(topo, topo["clusters"][0]) is True
+    for n in topo["nodes"]:
+        if n.get("data", {}).get("name", "").startswith("source-worker"):
+            assert n["data"]["powerOnAtDeploy"] is True
+            assert n["data"]["deferOcpInstall"] is False
+    # Idempotent
+    assert mark_deferred_workers_joined(topo, topo["clusters"][0]) is False
+    # Cleared workers are no longer join targets
+    assert deferred_workers_for_cluster(topo, topo["clusters"][0]) == []
 
 
 def test_build_deferred_worker_nmstate_configures_both_nics():

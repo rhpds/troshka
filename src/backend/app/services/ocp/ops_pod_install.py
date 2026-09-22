@@ -362,6 +362,21 @@ def cluster_needs_post_boot_restart(
     return False
 
 
+def has_deferred_workers_joined_marker(log_text: str | None, cluster_id: str) -> bool:
+    """True when deferred workers finished joining (or were already joined).
+
+    Matches the ops-pod breadcrumbs emitted by
+    :func:`build_join_deferred_workers_cmd` so the install monitor can flip
+    ``powerOnAtDeploy`` on those VMs for pattern capture.
+    """
+    if not log_text:
+        return False
+    return (
+        f"[{cluster_id}] deferred workers converged" in log_text
+        or f"[{cluster_id}] deferred workers already joined" in log_text
+    )
+
+
 def has_control_plane_usable_marker(log_text: str | None, cluster_id: str) -> bool:
     """Pure: True if the log contains the control-plane-usable marker for this cluster.
 
