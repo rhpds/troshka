@@ -30,6 +30,7 @@ _TEMPLATE_CONTENT_SECTIONS = (
     "showroom",
     "workloads",
     "requirements_content",
+    "cephCluster",
 )
 
 

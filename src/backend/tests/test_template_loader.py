@@ -90,6 +90,20 @@ def test_resolve_rejects_unknown_override():
         )
 
 
+def test_cclm_template_scaffolds_ceph_cluster_node():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_template,
+    )
+
+    resolved = resolve_template("ocp-cclm", templates_dir=TEMPLATES_DIR)
+    assert resolved.get("cephCluster", {}).get("labIp") == "10.0.0.4"
+    topo = generate_topology_from_template(resolved)
+    ceph = [n for n in topo["nodes"] if n.get("type") == "cephClusterNode"]
+    assert len(ceph) == 1
+    assert ceph[0]["data"]["labIp"] == "10.0.0.4"
+
+
 def test_cclm_cluster_network_dns_enabled_without_domain():
     from app.services.template_loader import (
         generate_topology_from_template,
