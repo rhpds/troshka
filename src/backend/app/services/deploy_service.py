@@ -257,6 +257,33 @@ def _tls_proxy_via_job(host, project_id, netns, listen, upstream, cert_path, key
     return wait_for_job(host, jid, timeout=60)
 
 
+def _teardown_showroom_tls(s, host, project, eip):
+    """Stop the showroom terminator and delete its DNS record. Non-fatal."""
+    try:
+        jid = start_job(
+            host,
+            "/gateway/tls-proxy-stop",
+            {"project_id": project.id},
+            request_timeout=30,
+        )
+        wait_for_job(host, jid, timeout=30)
+    except Exception:
+        logger.warning(
+            "Deploy %s: showroom TLS stop failed", project.id[:8], exc_info=True
+        )
+    fqdn = _showroom_fqdn(project)
+    dp_type, dp_config = _resolve_showroom_dns_provider(s, project)
+    if fqdn and dp_type:
+        try:
+            delete_dns_records(
+                dp_type, dp_config, [{"name": fqdn, "type": "A", "value": eip}]
+            )
+        except Exception:
+            logger.warning(
+                "Deploy %s: showroom DNS delete failed", project.id[:8], exc_info=True
+            )
+
+
 def get_deploy_progress(project_id: str) -> dict | None:
     """Get deploy progress — Redis first, fall back to DB."""
     cached = _get_deploy_progress_data(project_id)

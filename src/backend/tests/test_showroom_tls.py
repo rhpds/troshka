@@ -72,3 +72,27 @@ def test_ensure_tls_self_signed_when_no_dns():
         )
     assert url == "https://1.2.3.4"
     mk_dns.assert_not_called()
+
+
+def test_teardown_stops_proxy_and_deletes_dns():
+    host = MagicMock()
+    with patch.object(ds, "start_job", return_value="j"), patch.object(
+        ds,
+        "wait_for_job",
+        return_value={"status": "completed", "result": {"stopped": True}},
+    ), patch.object(ds, "delete_dns_records", return_value=[]) as mk_del, patch.object(
+        ds, "_resolve_showroom_dns_provider", return_value=("route53", {"x": 1})
+    ):
+        ds._teardown_showroom_tls(MagicMock(), host, _proj(), "1.2.3.4")
+    mk_del.assert_called_once()
+
+
+def test_teardown_skips_dns_when_none():
+    host = MagicMock()
+    with patch.object(ds, "start_job", return_value="j"), patch.object(
+        ds, "wait_for_job", return_value={"status": "completed", "result": {}}
+    ), patch.object(ds, "delete_dns_records") as mk_del, patch.object(
+        ds, "_resolve_showroom_dns_provider", return_value=(None, {})
+    ):
+        ds._teardown_showroom_tls(MagicMock(), host, _proj(dns=False), "1.2.3.4")
+    mk_del.assert_not_called()
