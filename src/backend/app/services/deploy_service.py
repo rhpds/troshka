@@ -56,6 +56,7 @@ from app.services.deploy_topology import (
     _vm_domain_name,
     is_valid_smbios_uuid,
 )
+from app.services.dns_service import create_dns_records, delete_dns_records
 from app.services.mesh_service import (
     create_mesh_peers,
     delete_mesh_peers,
@@ -183,6 +184,77 @@ def _showroom_fqdn(project) -> str:
     if project.dns_provider_id and project.guid and project.domain:
         return f"showroom.{project.guid}.{project.domain}"
     return ""
+
+
+def _resolve_showroom_dns_provider(s, project):
+    """Return (type, config) for the project's DnsProvider, or (None, {})."""
+    if not project.dns_provider_id:
+        return None, {}
+    from app.models.dns_provider import DnsProvider
+
+    dp = s.query(DnsProvider).filter_by(id=project.dns_provider_id).first()
+    return (dp.type, dp.config) if dp else (None, {})
+
+
+def _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns) -> str:
+    """Create DNS + cert + TLS terminator for the troshkad showroom. Non-fatal.
+    Returns the showroom URL."""
+    octet3 = int(first_vni) & 0xFF
+    fqdn = _showroom_fqdn(project)
+    dp_type, dp_config = _resolve_showroom_dns_provider(s, project)
+    route53 = dp_config if dp_type == "route53" else {}
+    try:
+        if fqdn and dp_type:
+            create_dns_records(
+                dp_type, dp_config, [{"name": fqdn, "type": "A", "value": eip}], ttl=30
+            )
+        cert = _tls_cert_via_job(host, project.id, fqdn, eip, route53)
+        if not cert:
+            logger.warning("Deploy %s: showroom cert job failed", project.id[:8])
+            return f"https://{fqdn or eip}"
+        _tls_proxy_via_job(
+            host,
+            project.id,
+            netns,
+            f"172.30.{octet3}.1:443",
+            f"172.30.{octet3}.3:80",
+            cert["cert_path"],
+            cert["key_path"],
+        )
+        return f"https://{fqdn}" if cert["mode"] == "letsencrypt" else f"https://{eip}"
+    except Exception:
+        logger.warning(
+            "Deploy %s: showroom TLS setup failed", project.id[:8], exc_info=True
+        )
+        return f"https://{fqdn or eip}"
+
+
+def _tls_cert_via_job(host, project_id, fqdn, eip, route53):
+    jid = start_job(
+        host,
+        "/gateway/tls-cert",
+        {"project_id": project_id, "fqdn": fqdn, "eip": eip, "route53": route53},
+        request_timeout=60,
+    )
+    job = wait_for_job(host, jid, timeout=360)
+    return job.get("result") if job.get("status") == "completed" else None
+
+
+def _tls_proxy_via_job(host, project_id, netns, listen, upstream, cert_path, key_path):
+    jid = start_job(
+        host,
+        "/gateway/tls-proxy",
+        {
+            "project_id": project_id,
+            "netns": netns,
+            "listen": listen,
+            "upstream": upstream,
+            "cert_path": cert_path,
+            "key_path": key_path,
+        },
+        request_timeout=60,
+    )
+    return wait_for_job(host, jid, timeout=60)
 
 
 def get_deploy_progress(project_id: str) -> dict | None:
@@ -12673,7 +12745,6 @@ def _destroy_cleanup_dns(s, ctx, project_id):
     if not ctx.get("dns_provider_id"):
         return
     from app.models.dns_provider import DnsProvider
-    from app.services.dns_service import delete_dns_records
 
     topo = ctx.get("topology", {})
     dns_provider = s.query(DnsProvider).filter_by(id=ctx["dns_provider_id"]).first()
