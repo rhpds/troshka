@@ -1181,6 +1181,37 @@ def _obtain_letsencrypt_cert(fqdn, route53):
     return f"{live}/fullchain.pem", f"{live}/privkey.pem", "letsencrypt"
 
 
+_FQDN_RE = re.compile(r"^[a-zA-Z0-9.-]{1,253}$")
+
+
+def _gateway_tls_dir(project_id):
+    return f"/var/lib/troshka/gateway/{project_id[:8]}/tls"
+
+
+def _handle_gateway_tls_cert(job, params):
+    import ipaddress
+    project_id = _validate_project_id(params["project_id"])
+    fqdn = (params.get("fqdn") or "").strip()
+    eip = (params.get("eip") or "").strip()
+    out_dir = _gateway_tls_dir(project_id)
+    use_le = bool(fqdn) and bool(_FQDN_RE.match(fqdn))
+    if use_le:
+        full, key, mode = _obtain_letsencrypt_cert(fqdn, params.get("route53") or {})
+        if mode == "letsencrypt":
+            return {"cert_path": full, "key_path": key, "mode": mode}
+    # self-signed fallback (empty/invalid fqdn, or certbot failed)
+    cn = fqdn if use_le else eip
+    try:
+        ipaddress.ip_address(eip)
+    except ValueError:
+        eip = "127.0.0.1"
+    full, key = _gen_self_signed_cert(out_dir, cn or eip, eip)
+    return {"cert_path": full, "key_path": key, "mode": "self-signed"}
+
+
+COMMAND_HANDLERS["gateway/tls-cert"] = _handle_gateway_tls_cert
+
+
 def _job_log(job, msg):
     """Append a line to job output and log to systemd."""
     job["output"].append(msg)

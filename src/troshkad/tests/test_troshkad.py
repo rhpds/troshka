@@ -2978,5 +2978,35 @@ class TestFreezeDomainFs(unittest.TestCase):
         self.assertEqual(mock_run.call_count, 3)
 
 
+class TestGatewayTlsCert(unittest.TestCase):
+    @patch("troshkad._gen_self_signed_cert", return_value=("/gw/full.pem", "/gw/key.pem"))
+    @patch("troshkad._obtain_letsencrypt_cert")
+    def test_valid_fqdn_uses_letsencrypt(self, mock_le, _ss):
+        mock_le.return_value = ("/etc/letsencrypt/live/x/fullchain.pem",
+                                "/etc/letsencrypt/live/x/privkey.pem", "letsencrypt")
+        out = troshkad._handle_gateway_tls_cert(
+            {}, {"project_id": "abcdef12-0000-0000-0000-000000000000", "fqdn": "showroom.g.example.com",
+                  "eip": "1.2.3.4", "route53": {}})
+        assert out["mode"] == "letsencrypt"
+        mock_le.assert_called_once()
+
+    @patch("troshkad._gen_self_signed_cert", return_value=("/gw/full.pem", "/gw/key.pem"))
+    @patch("troshkad._obtain_letsencrypt_cert")
+    def test_empty_fqdn_self_signs(self, mock_le, mock_ss):
+        out = troshkad._handle_gateway_tls_cert(
+            {}, {"project_id": "abcdef12-0000-0000-0000-000000000000", "fqdn": "", "eip": "1.2.3.4"})
+        assert out["mode"] == "self-signed"
+        mock_le.assert_not_called()
+        mock_ss.assert_called_once()
+
+    @patch("troshkad._gen_self_signed_cert", return_value=("/gw/full.pem", "/gw/key.pem"))
+    @patch("troshkad._obtain_letsencrypt_cert")
+    def test_injection_fqdn_rejected_to_self_signed(self, mock_le, mock_ss):
+        out = troshkad._handle_gateway_tls_cert(
+            {}, {"project_id": "abcdef12-0000-0000-0000-000000000000", "fqdn": "x;rm -rf /", "eip": "1.2.3.4"})
+        assert out["mode"] == "self-signed"
+        mock_le.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
