@@ -3007,6 +3007,16 @@ class TestGatewayTlsCert(unittest.TestCase):
         assert out["mode"] == "self-signed"
         mock_le.assert_not_called()
 
+    @patch("troshkad._gen_self_signed_cert", return_value=("/gw/full.pem", "/gw/key.pem"))
+    def test_invalid_eip_falls_back_to_localhost(self, mock_ss):
+        out = troshkad._handle_gateway_tls_cert(
+            {}, {"project_id": "abcdef12-0000-0000-0000-000000000000", "fqdn": "", "eip": "not-an-ip"})
+        assert out["mode"] == "self-signed"
+        mock_ss.assert_called_once()
+        args = mock_ss.call_args[0]
+        assert args[1] == "127.0.0.1"  # CN = validated eip
+        assert args[2] == "127.0.0.1"  # SAN = validated eip
+
 
 if __name__ == "__main__":
     unittest.main()

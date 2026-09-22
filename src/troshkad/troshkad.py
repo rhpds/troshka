@@ -1200,11 +1200,11 @@ def _handle_gateway_tls_cert(job, params):
         if mode == "letsencrypt":
             return {"cert_path": full, "key_path": key, "mode": mode}
     # self-signed fallback (empty/invalid fqdn, or certbot failed)
-    cn = fqdn if use_le else eip
     try:
         ipaddress.ip_address(eip)
     except ValueError:
         eip = "127.0.0.1"
+    cn = fqdn if use_le else eip
     full, key = _gen_self_signed_cert(out_dir, cn or eip, eip)
     return {"cert_path": full, "key_path": key, "mode": "self-signed"}
 
