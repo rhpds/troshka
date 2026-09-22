@@ -1150,6 +1150,37 @@ def _gen_self_signed_cert(out_dir, cn, eip):
     return full, key
 
 
+_CERTBOT = "/opt/troshka/venv/bin/certbot"
+
+
+def _obtain_letsencrypt_cert(fqdn, route53):
+    """Request an LE cert via Route53 DNS-01 (argv, no shell). Returns
+    (fullchain, key, mode); mode 'self-signed' with None paths on failure so the
+    caller falls back."""
+    env = os.environ.copy()
+    if route53.get("access_key_id"):
+        env["AWS_ACCESS_KEY_ID"] = route53["access_key_id"]
+        env["AWS_SECRET_ACCESS_KEY"] = route53.get("secret_access_key", "")
+        env["AWS_DEFAULT_REGION"] = route53.get("region", "us-east-1")
+    certbot = _CERTBOT if os.path.exists(_CERTBOT) else "certbot"
+    try:
+        proc = subprocess.run(
+            [
+                certbot, "certonly", "--dns-route53", "-d", fqdn,
+                "--non-interactive", "--agree-tos", "-m", "noreply@redhat.com",
+                "--preferred-challenges", "dns-01",
+            ],
+            env=env, timeout=300,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None, None, "self-signed"
+    if proc.returncode != 0:
+        return None, None, "self-signed"
+    live = f"/etc/letsencrypt/live/{fqdn}"
+    return f"{live}/fullchain.pem", f"{live}/privkey.pem", "letsencrypt"
+
+
 def _job_log(job, msg):
     """Append a line to job output and log to systemd."""
     job["output"].append(msg)

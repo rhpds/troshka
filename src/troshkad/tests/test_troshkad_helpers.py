@@ -10599,3 +10599,25 @@ class TestSelfSignedCert(unittest.TestCase):
         # user-influenceable values are argv items, never a shell string
         assert "subjectAltName=IP:1.2.3.4" in " ".join(argv)
         assert "bash" not in argv
+
+
+class TestLetsEncryptCert(unittest.TestCase):
+    @patch("troshkad.subprocess.run")
+    def test_certbot_success_returns_live_paths(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        full, key, mode = troshkad._obtain_letsencrypt_cert(
+            "showroom.g.example.com", {"access_key_id": "AK", "secret_access_key": "SK"}
+        )
+        assert mode == "letsencrypt"
+        assert full == "/etc/letsencrypt/live/showroom.g.example.com/fullchain.pem"
+        argv = mock_run.call_args[0][0]
+        assert argv[-1] != "bash"
+        assert "certonly" in argv and "--dns-route53" in argv
+        assert "showroom.g.example.com" in argv
+
+    @patch("troshkad.subprocess.run")
+    def test_certbot_failure_signals_self_signed(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1)
+        full, key, mode = troshkad._obtain_letsencrypt_cert("x.example.com", {})
+        assert mode == "self-signed"
+        assert full is None
