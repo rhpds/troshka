@@ -178,6 +178,13 @@ def _update_deploy_progress(
         pass
 
 
+def _showroom_fqdn(project) -> str:
+    """Showroom FQDN for LE, or '' when the project has no DNS zone (=> self-signed)."""
+    if project.dns_provider_id and project.guid and project.domain:
+        return f"showroom.{project.guid}.{project.domain}"
+    return ""
+
+
 def get_deploy_progress(project_id: str) -> dict | None:
     """Get deploy progress — Redis first, fall back to DB."""
     cached = _get_deploy_progress_data(project_id)
