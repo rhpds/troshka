@@ -5411,7 +5411,7 @@ class TestShowroomRouteTarget:
     """Tests for _showroom_route_target() — reconstructs the showroom Route identity
     (vm_name, ext_port) so a container redeploy resolves the same Route deploy made."""
 
-    def _topo(self, int_ip="172.30.5.1", ext_port=443, sr_name="showroom"):
+    def _topo(self, int_ip="172.30.5.3", ext_port=443, sr_name="showroom"):
         return {
             "nodes": [
                 {
@@ -5452,7 +5452,7 @@ class TestShowroomRouteTarget:
     def test_ignores_non_showroom_infra_ip(self):
         from app.services.deploy_service import _showroom_route_target
 
-        # 172.30.X.4 is the ops infra IP, not the showroom terminator (.1)
+        # 172.30.X.4 is the ops infra IP, not the showroom container (.3)
         assert _showroom_route_target(self._topo(int_ip="172.30.5.4")) is None
 
     def test_no_gateway(self):
@@ -5463,7 +5463,7 @@ class TestShowroomRouteTarget:
     def test_stray_terminator_pf_without_showroom_node(self):
         from app.services.deploy_service import _showroom_route_target
 
-        # Terminator PF present but no showroom node (stray from old topology)
+        # Showroom PF present but no showroom node (stray from old topology)
         topo = {
             "nodes": [
                 {
@@ -5471,7 +5471,7 @@ class TestShowroomRouteTarget:
                     "type": "networkNode",
                     "data": {
                         "subtype": "gateway",
-                        "portForwards": [{"intIp": "172.30.5.1", "extPort": 443}],
+                        "portForwards": [{"intIp": "172.30.5.3", "extPort": 443}],
                     },
                 }
             ]

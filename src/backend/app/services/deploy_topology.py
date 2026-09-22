@@ -632,7 +632,7 @@ def inject_showroom_gateway_port_forwards(
     first_vni = min(vni_map.values()) if vni_map else None
     data = gateway.setdefault("data", {})
     existing = list(data.get("portForwards") or [])
-    merged = _inject_showroom_port_forward(existing, topology, first_vni)
+    merged = _inject_showroom_port_forward(existing, topology, first_vni, route_web)
 
     # A showroom owns external 443/80: console/ingress is reached through its
     # proxy (app-proxy routes). The gateway can't serve two forwards on one

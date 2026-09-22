@@ -203,12 +203,20 @@ def _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns) -> s
     octet3 = int(first_vni) & 0xFF
     fqdn = _showroom_fqdn(project)
     dp_type, dp_config = _resolve_showroom_dns_provider(s, project)
+    # Let's Encrypt (DNS-01) is route53-only here; nsupdate zones have no LE
+    # creds and fall back to a self-signed cert (see _tls_cert_via_job).
     route53 = dp_config if dp_type == "route53" else {}
     try:
         if fqdn and dp_type:
-            create_dns_records(
+            dns_errors = create_dns_records(
                 dp_type, dp_config, [{"name": fqdn, "type": "A", "value": eip}], ttl=30
             )
+            if dns_errors:
+                logger.warning(
+                    "Deploy %s: showroom DNS record errors: %s",
+                    project.id[:8],
+                    dns_errors,
+                )
         cert = _tls_cert_via_job(host, project.id, fqdn, eip, route53)
         if not cert:
             logger.warning("Deploy %s: showroom cert job failed", project.id[:8])
@@ -262,6 +270,9 @@ def _teardown_showroom_tls(s, host, project, eip):
     """Stop the showroom terminator and delete its DNS record. Non-fatal."""
     from app.services.dns_service import delete_dns_records
 
+    if project is None:
+        return
+
     try:
         jid = start_job(
             host,
@@ -289,33 +300,49 @@ def _teardown_showroom_tls(s, host, project, eip):
 
 def _maybe_setup_showroom_tls(s, host, topology, project, external_ips, vni_map):
     """Cloud (non-route) providers only: stand up the showroom TLS edge and
-    persist the resulting URL. Non-fatal."""
-    from app.models.provider import Provider
-    from app.services.deploy_topology import _ROUTE_PROVIDERS
-    from app.services.vxlan import _topology_has_showroom
+    persist the resulting URL.
 
-    prov = s.get(Provider, host.provider_id)
-    provider_type = prov.type if prov else None
-    if provider_type in _ROUTE_PROVIDERS or not _topology_has_showroom(topology):
+    Fully non-fatal: this runs on the deploy-completion/notify path *before* the
+    client is notified, so any failure here must never abort that path. The whole
+    body is guarded — on error we log a warning and return.
+    """
+    try:
+        from app.models.provider import Provider
+        from app.services.deploy_topology import _ROUTE_PROVIDERS
+        from app.services.vxlan import _topology_has_showroom
+
+        prov = s.get(Provider, host.provider_id)
+        provider_type = prov.type if prov else None
+        if provider_type in _ROUTE_PROVIDERS or not _topology_has_showroom(topology):
+            return
+        eip = next(
+            (
+                e.get("ip") or e.get("_public_ip")
+                for e in (external_ips or [])
+                if e.get("ip") or e.get("_public_ip")
+            ),
+            None,
+        )
+        first_vni = next(iter((vni_map or {}).values()), None)
+        if not eip or not first_vni:
+            return
+        netns = f"troshka-{project.id[:8]}"
+        url = _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns)
+        logger.info("Deploy %s: showroom TLS URL %s", project.id[:8], url)
+        # deployed_topology may be the SAME dict object as project.topology
+        # (aliased in _deploy_complete_and_notify). Deep-copy before writing the
+        # URL so the editable topology never gains _showroom_url (canvas drift).
+        deployed_topo = copy.deepcopy(project.deployed_topology or {})
+        deployed_topo["_showroom_url"] = url
+        project.deployed_topology = deployed_topo
+        s.commit()
+    except Exception:
+        logger.warning(
+            "Deploy %s: showroom TLS setup skipped (non-fatal)",
+            project.id[:8],
+            exc_info=True,
+        )
         return
-    eip = next(
-        (
-            e.get("ip") or e.get("_public_ip")
-            for e in (external_ips or [])
-            if e.get("ip") or e.get("_public_ip")
-        ),
-        None,
-    )
-    first_vni = next(iter((vni_map or {}).values()), None)
-    if not eip or not first_vni:
-        return
-    netns = f"troshka-{project.id[:8]}"
-    url = _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns)
-    logger.info("Deploy %s: showroom TLS URL %s", project.id[:8], url)
-    deployed_topo = project.deployed_topology or {}
-    deployed_topo["_showroom_url"] = url
-    project.deployed_topology = deployed_topo
-    s.commit()
 
 
 def get_deploy_progress(project_id: str) -> dict | None:
@@ -7619,7 +7646,7 @@ def _create_routes_for_gateway(
     s, driver, provider, host, project_id, node_data, topology
 ):
     """Create OCP Routes for routable port forwards and return endpoint list."""
-    from app.services.deploy_topology import is_ops_infra_ip, is_terminator_ip
+    from app.services.deploy_topology import is_ops_infra_ip, is_showroom_infra_ip
     from app.services.eip_service import allocate_standalone_transit_port
     from app.services.providers.ocpvirt import used_transit_ports_on_host
 
@@ -7640,11 +7667,11 @@ def _create_routes_for_gateway(
         try:
             if provider.type == "ocpvirt":
                 transit_port = _lookup_transit_port(topology, pf)
-                # Infra transit targets (terminator .1, ops .4) always need their own
+                # Infra transit targets (showroom .3, ops .4) always need their own
                 # DNAT target.
                 setup_dnat = (
                     transit_port is None
-                    or is_terminator_ip(int_ip)
+                    or is_showroom_infra_ip(int_ip)
                     or is_ops_infra_ip(int_ip)
                 )
                 if transit_port is None:
@@ -7684,7 +7711,7 @@ def _create_routes_for_gateway(
                     "hostname": result["hostname"],
                 }
             )
-            if is_terminator_ip(int_ip):
+            if is_showroom_infra_ip(int_ip):
                 showroom_route = result
             logger.info(
                 "Deploy %s: created Route for %s:%d → %s",
@@ -7832,7 +7859,7 @@ def _deploy_create_ocpvirt_routes(s, host, project_id, topology):
 def _showroom_route_target(topology):
     """Return (node_name, ext_port) that named the showroom's OCP Route at deploy, or
     None. Mirrors _create_routes_for_gateway so redeploy resolves the same Route."""
-    from app.services.deploy_topology import _is_showroom_node, is_terminator_ip
+    from app.services.deploy_topology import _is_showroom_node, is_showroom_infra_ip
 
     # Find showroom node name
     showroom_name = None
@@ -7852,7 +7879,7 @@ def _showroom_route_target(topology):
         for pf in node["data"].get("portForwards", []):
             int_ip = pf.get("intIp", "")
             ext_port = int(pf.get("extPort", 0))
-            if is_terminator_ip(int_ip) and ext_port in _ROUTE_ACCESS_PORTS:
+            if is_showroom_infra_ip(int_ip) and ext_port in _ROUTE_ACCESS_PORTS:
                 return showroom_name, ext_port
     return None
 

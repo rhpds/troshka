@@ -462,27 +462,43 @@ def _is_showroom_infra_forward(pf: dict) -> bool:
 
 
 def _inject_showroom_port_forward(
-    port_forwards: list, topology: dict, first_vni: int | None
+    port_forwards: list,
+    topology: dict,
+    first_vni: int | None,
+    route_web: bool = False,
 ) -> list:
-    """Auto-add gateway PF 443→TLS terminator on gateway (transit netns).
+    """Auto-add the managed gateway PF for external 443→showroom.
+
+    Cloud (troshkad) providers run a per-project socat TLS terminator on the
+    gateway transit IP, so the forward targets ``172.30.<vni>.1:443``. Route
+    providers (ocpvirt/kubevirt, ``route_web=True``) edge-terminate the showroom
+    at the OCP Route, so the forward must target the showroom container directly
+    at ``172.30.<vni>.3:80`` (unchanged pre-TLS-edge behavior) — no terminator.
 
     Removes all existing :443 forwards (stale managed or otherwise) and injects
-    the terminator forward.
+    the managed forward.
     """
     if not first_vni or not _topology_has_showroom(topology):
         return port_forwards
     octet3 = int(first_vni) & 0xFF
-    term_ip = f"172.30.{octet3}.1"  # terminator listens here (see showroom TLS edge)
+    if route_web:
+        # Route providers: showroom served by edge-terminated OCP Route → .3:80.
+        int_ip = f"172.30.{octet3}.3"
+        int_port = "80"
+    else:
+        # Cloud providers: socat TLS terminator listens on the gateway (.1:443).
+        int_ip = f"172.30.{octet3}.1"
+        int_port = "443"
 
     # Remove all :443 forwards (stale or otherwise — showroom manages this port)
     out = [pf for pf in port_forwards if str(pf.get("extPort")) != "443"]
 
-    # Add the managed terminator forward
+    # Add the managed showroom forward
     out.append(
         {
             "extPort": "443",
-            "intIp": term_ip,
-            "intPort": "443",
+            "intIp": int_ip,
+            "intPort": int_port,
             "proto": "tcp",
             "extIpId": "",
             "managedByShowroom": True,

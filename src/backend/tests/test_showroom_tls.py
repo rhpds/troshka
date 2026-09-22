@@ -130,3 +130,57 @@ def test_maybe_setup_runs_for_cloud_with_showroom():
         )
     mk.assert_called_once()
     assert proj.deployed_topology["_showroom_url"] == "https://x"
+
+
+def test_maybe_setup_does_not_leak_url_into_editable_topology():
+    """deployed_topology may be the SAME dict object as topology (aliased in
+    _deploy_complete_and_notify). Writing _showroom_url must NOT mutate the
+    editable topology, or the canvas reads dirty."""
+    host = SimpleNamespace(provider_id="p")
+    prov = SimpleNamespace(type="ec2")
+    proj = _proj()
+    shared = {"nodes": [{"type": "containerNode", "data": {"name": "showroom"}}]}
+    proj.topology = shared
+    proj.deployed_topology = shared  # aliased to topology
+    sess = MagicMock()
+    sess.get.return_value = prov
+    with patch(
+        "app.services.vxlan._topology_has_showroom", return_value=True
+    ), patch.object(ds, "_ensure_showroom_tls", return_value="https://x"):
+        ds._maybe_setup_showroom_tls(
+            sess, host, shared, proj, [{"ip": "1.2.3.4"}], {"net": 5}
+        )
+    assert proj.deployed_topology["_showroom_url"] == "https://x"
+    # The editable topology must NOT have gained the URL.
+    assert "_showroom_url" not in proj.topology
+
+
+def test_maybe_setup_is_non_fatal_on_error():
+    """A failure anywhere in the body must never raise — it runs before the
+    client notification on the deploy-completion path."""
+    host = SimpleNamespace(provider_id="p")
+    prov = SimpleNamespace(type="ec2")
+    proj = _proj()
+    proj.deployed_topology = None
+    sess = MagicMock()
+    sess.get.return_value = prov
+    with patch(
+        "app.services.vxlan._topology_has_showroom", return_value=True
+    ), patch.object(ds, "_ensure_showroom_tls", side_effect=RuntimeError("boom")):
+        # Must not raise.
+        ds._maybe_setup_showroom_tls(
+            sess,
+            host,
+            {"nodes": []},
+            proj,
+            [{"ip": "1.2.3.4"}],
+            {"net": 5},
+        )
+
+
+def test_teardown_guards_none_project():
+    """A None project must return early, never raising in _showroom_fqdn(None)."""
+    host = MagicMock()
+    with patch.object(ds, "start_job") as mk_start:
+        ds._teardown_showroom_tls(MagicMock(), host, None, "1.2.3.4")
+    mk_start.assert_not_called()
