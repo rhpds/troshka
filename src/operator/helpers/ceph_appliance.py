@@ -591,45 +591,68 @@ def build_mon_deployment(ceph_cr: dict, ceph_image: str) -> dict:
 
 
 def _osd_bootstrap_script() -> str:
+    """Prepare an OSD without ceph-volume (no host udev in CSI RBD pods)."""
     return rf"""
 set -euo pipefail
 OSD_IP="${{OSD_IP:?}}"
+OSD_ID="${{OSD_INDEX:?}}"
 LAB_IP="${{LAB_IP:?}}"
 PREFIX="${{LAB_PREFIX:-24}}"
 BLOCK=/dev/osd-block
+OSD_DIR=/var/lib/ceph/osd/ceph-${{OSD_ID}}
 
 {_ensure_lab_iface_snippet("OSD_IP")}
 
 mkdir -p /etc/ceph /var/lib/ceph/osd /var/lib/ceph/bootstrap-osd
-if [ -f /seed/admin.keyring ]; then
-  cp /seed/admin.keyring /etc/ceph/ceph.client.admin.keyring
+
+# Wait for mon keyring sync. Directory mounts (no subPath) refresh in place.
+for i in $(seq 1 120); do
+  if [ -s /seed/admin/keyring ]; then
+    cp /seed/admin/keyring /etc/ceph/ceph.client.admin.keyring
+    break
+  fi
+  sleep 2
+done
+if [ ! -s /etc/ceph/ceph.client.admin.keyring ]; then
+  echo "admin keyring not ready" >&2
+  exit 1
 fi
-if [ -f /seed/bootstrap-osd.keyring ]; then
-  cp /seed/bootstrap-osd.keyring /var/lib/ceph/bootstrap-osd/ceph.keyring
+if [ -s /seed/bootstrap-osd/keyring ]; then
+  cp /seed/bootstrap-osd/keyring /var/lib/ceph/bootstrap-osd/ceph.keyring
 fi
 
-# Wait for mon
 for i in $(seq 1 90); do
   if ceph --conf /etc/ceph/ceph.conf -s >/dev/null 2>&1; then
     break
   fi
   sleep 2
 done
+if ! ceph --conf /etc/ceph/ceph.conf -s >/dev/null 2>&1; then
+  echo "mon not reachable" >&2
+  exit 1
+fi
 
-# Already prepared?
-if ls /var/lib/ceph/osd/ceph-* >/dev/null 2>&1; then
+if [ -f "${{OSD_DIR}}/whoami" ] || [ -f "${{OSD_DIR}}/keyring" ]; then
   echo "osd data present — skip prepare"
   exit 0
 fi
 
-# Block device may already have BlueStore — activate only.
-if ceph-volume raw list 2>/dev/null | grep -q "${{BLOCK}}"; then
-  ceph-volume raw activate --device "${{BLOCK}}" --no-systemd || true
-  exit 0
-fi
+UUID=$(uuidgen)
+# Claim a stable OSD id matching the Deployment index.
+ceph osd new "${{UUID}}" "${{OSD_ID}}" 2>/dev/null || \
+  ceph osd create "${{UUID}}" "${{OSD_ID}}"
 
-ceph-volume raw prepare --bluestore --data "${{BLOCK}}"
-ceph-volume raw activate --device "${{BLOCK}}" --no-systemd
+mkdir -p "${{OSD_DIR}}"
+ceph auth get-or-create "osd.${{OSD_ID}}" \
+  mon 'allow profile osd' \
+  mgr 'allow profile osd' \
+  osd 'allow *' \
+  -o "${{OSD_DIR}}/keyring"
+
+# BlueStore on the raw block PVC — avoid ceph-volume (needs host udev).
+ceph-osd -i "${{OSD_ID}}" --mkfs --osd-uuid "${{UUID}}" \
+  --osd_objectstore=bluestore \
+  --bluestore_block_path="${{BLOCK}}"
 echo "osd prepare complete"
 """
 
@@ -638,14 +661,17 @@ def _osd_run_script() -> str:
     return rf"""
 set -euo pipefail
 OSD_IP="${{OSD_IP:?}}"
+OSD_ID="${{OSD_INDEX:?}}"
 PREFIX="${{LAB_PREFIX:-24}}"
+BLOCK=/dev/osd-block
 {_ensure_lab_iface_snippet("OSD_IP")}
-OSD_ID=$(ls /var/lib/ceph/osd 2>/dev/null | sed -n 's/^ceph-//p' | head -1)
-if [ -z "${{OSD_ID}}" ]; then
-  echo "no osd id under /var/lib/ceph/osd" >&2
+if [ ! -f /var/lib/ceph/osd/ceph-${{OSD_ID}}/keyring ]; then
+  echo "osd ${{OSD_ID}} not prepared" >&2
   exit 1
 fi
-exec ceph-osd -f -i "${{OSD_ID}}"
+exec ceph-osd -f -i "${{OSD_ID}}" \
+  --osd_objectstore=bluestore \
+  --bluestore_block_path="${{BLOCK}}"
 """
 
 
@@ -665,6 +691,7 @@ def build_osd_deployment(ceph_cr: dict, ceph_image: str, index: int) -> dict:
     env = [
         {"name": "LAB_IP", "value": lab_ip},
         {"name": "OSD_IP", "value": osd_ip},
+        {"name": "OSD_INDEX", "value": str(index)},
         {"name": "LAB_PREFIX", "value": prefix},
     ]
     return {
@@ -713,15 +740,15 @@ def build_osd_deployment(ceph_cr: dict, ceph_image: str, index: int) -> dict:
                                     "name": "osd-data",
                                     "mountPath": "/var/lib/ceph/osd",
                                 },
+                                # Directory mounts (no subPath) so keyring-sync
+                                # updates are visible without restarting the pod.
                                 {
                                     "name": "seed-admin",
-                                    "mountPath": "/seed/admin.keyring",
-                                    "subPath": "keyring",
+                                    "mountPath": "/seed/admin",
                                 },
                                 {
                                     "name": "seed-boot-osd",
-                                    "mountPath": "/seed/bootstrap-osd.keyring",
-                                    "subPath": "keyring",
+                                    "mountPath": "/seed/bootstrap-osd",
                                 },
                             ],
                             "volumeDevices": [
