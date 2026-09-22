@@ -870,7 +870,34 @@ def build_static_leases(topology):
     # Cluster VIPs carry no real NIC, so reserve them explicitly (bogus MAC).
     _add_cluster_vip_leases(nodes, edges, network_leases)
 
+    # Ceph mon + OSD statics self-assign on the Multus interface, so reserve them
+    # too or a VM lease / self-assigning pod could collide.
+    _add_ceph_leases(nodes, network_leases)
+
     return network_leases
+
+
+def _add_ceph_leases(nodes, network_leases):
+    """Reserve a Ceph appliance's mon labIp + OSD IPs (bogus MAC) on its network
+    so dnsmasq keeps them out of the dynamic pool. Mirrors
+    kubevirt_reconfigure._ceph_reservations on the backend reconfigure path."""
+    for node in nodes:
+        if node.get("type") != "cephClusterNode":
+            continue
+        data = node.get("data", {})
+        net_id = str(data.get("networkRef") or "")
+        if not net_id:
+            continue
+        ceph_ips = [str(data.get("labIp") or "").strip(), *(data.get("osdIps") or [])]
+        existing = {lease["ip"] for lease in network_leases.get(net_id, [])}
+        for idx, ip in enumerate(ceph_ips):
+            if not ip or ip in existing:
+                continue
+            existing.add(ip)
+            label = "ceph-mon" if idx == 0 else f"ceph-osd-{idx - 1}"
+            network_leases.setdefault(net_id, []).append(
+                {"mac": _bogus_mac_for_ip(ip), "ip": ip, "hostname": label}
+            )
 
 
 def _network_nad_for_ref(nodes, network_ref: str) -> tuple[str, str]:
@@ -900,7 +927,12 @@ def _linked_cluster_ids(nodes, edges, ceph_node_id: str) -> list[str]:
             if node.get("id") != other or node.get("type") != "clusterNode":
                 continue
             data = node.get("data", {})
-            cluster_id = data.get("clusterId") or data.get("name") or data.get("clusterName") or ""
+            cluster_id = (
+                data.get("clusterId")
+                or data.get("name")
+                or data.get("clusterName")
+                or ""
+            )
             if cluster_id:
                 linked.append(str(cluster_id))
     return linked
@@ -947,6 +979,7 @@ def extract_ceph_cluster(topology: dict) -> dict | None:
         "labPrefixLength": prefix,
         "capacityGi": capacity_gi,
         "osdCount": osd_count,
+        "osdIps": list(data.get("osdIps") or []),
         "replicateSize": min(osd_count, 3),
         "linkedClusterIds": linked,
         "storageClassName": data.get("storageClassName") or "troshka-ceph-rbd",

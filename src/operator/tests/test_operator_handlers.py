@@ -11187,6 +11187,52 @@ class TestClusterVipLeases:
         )  # the real NIC, not a bogus VIP MAC
 
 
+class TestCephLeasesAndSpec:
+    """Initial deploy is operator-driven: build_static_leases must reserve the
+    Ceph mon + OSD statics (they self-assign on Multus, so dnsmasq must keep
+    them out of the pool) and extract_ceph_cluster must carry osdIps into the CR
+    (KubeVirt-native parity with the backend reconfigure path)."""
+
+    def _topo(self):
+        return {
+            "nodes": [
+                {
+                    "id": "net1",
+                    "type": "networkNode",
+                    "data": {"id": "net1", "cidr": "10.0.0.0/24"},
+                },
+                {
+                    "id": "ceph1",
+                    "type": "cephClusterNode",
+                    "data": {
+                        "networkRef": "net1",
+                        "labIp": "10.0.0.4",
+                        "osdCount": 3,
+                        "osdIps": ["10.0.0.254", "10.0.0.253", "10.0.0.252"],
+                    },
+                },
+            ],
+            "edges": [],
+        }
+
+    def test_ceph_mon_and_osd_ips_reserved(self):
+        from helpers.topology import build_static_leases
+
+        leases = build_static_leases(self._topo())["net1"]
+        by_ip = {l["ip"]: l for l in leases}
+        for ip in ("10.0.0.4", "10.0.0.254", "10.0.0.253", "10.0.0.252"):
+            assert ip in by_ip, f"{ip} not reserved"
+            assert by_ip[ip]["mac"]  # bogus MAC so dnsmasq accepts the dhcp-host
+        assert by_ip["10.0.0.4"]["hostname"] == "ceph-mon"
+        assert by_ip["10.0.0.254"]["hostname"] == "ceph-osd-0"
+
+    def test_extract_ceph_cluster_carries_osd_ips(self):
+        from helpers.topology import extract_ceph_cluster
+
+        spec = extract_ceph_cluster(self._topo())
+        assert spec["osdIps"] == ["10.0.0.254", "10.0.0.253", "10.0.0.252"]
+
+
 class TestProviderExecRbac:
     """The KubeVirt provider SA must be able to exec into virt-launcher pods.
     OpenShift only allows exec if the caller can USE an SCC covering the pod's
