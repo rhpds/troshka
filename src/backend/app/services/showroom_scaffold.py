@@ -341,6 +341,20 @@ def app_proxy_public_host(
     )
 
 
+def app_proxy_eip_public_host(
+    project_id: str, internal_host: str, eip: str, namespace: str = "lab"
+) -> str:
+    """Cloud (troshkad) public hostname when there is no OCP Route apps domain.
+
+    Uses sslip.io so ``Host`` matches the baked nginx ``tpf-<pid>-<code>-…``
+    server_name while resolving to the project EIP — no project DNS provider
+    required.
+    """
+    return (
+        f"{app_proxy_route_name(project_id, internal_host)}-{namespace}.{eip}.sslip.io"
+    )
+
+
 def derive_apps_domain(route_hostname: str) -> str:
     """Cluster apps wildcard domain from any admitted route hostname
     (<label>.apps.<cluster> -> apps.<cluster>)."""
@@ -359,6 +373,20 @@ def fill_app_proxy_tab_urls(
         internal = m.group(1)
         return "https://" + app_proxy_public_host(
             project_id, internal, apps_domain, namespace
+        )
+
+    return re.sub(r"__TROSHKA_APP_PROXY__([a-z0-9.-]+)__", _repl, ui_yaml)
+
+
+def fill_app_proxy_tab_urls_eip(
+    ui_yaml: str, project_id: str, eip: str, namespace: str = "lab"
+) -> str:
+    """Cloud fill: same placeholders → https://tpf-…-<ns>.<eip>.sslip.io."""
+
+    def _repl(m: re.Match[str]) -> str:
+        internal = m.group(1)
+        return "https://" + app_proxy_eip_public_host(
+            project_id, internal, eip, namespace
         )
 
     return re.sub(r"__TROSHKA_APP_PROXY__([a-z0-9.-]+)__", _repl, ui_yaml)

@@ -2980,38 +2980,78 @@ class TestFreezeDomainFs(unittest.TestCase):
 
 
 class TestGatewayTlsCert(unittest.TestCase):
-    @patch("troshkad._gen_self_signed_cert", return_value=("/gw/full.pem", "/gw/key.pem"))
+    @patch(
+        "troshkad._gen_self_signed_cert", return_value=("/gw/full.pem", "/gw/key.pem")
+    )
     @patch("troshkad._obtain_letsencrypt_cert")
     def test_valid_fqdn_uses_letsencrypt(self, mock_le, _ss):
-        mock_le.return_value = ("/etc/letsencrypt/live/x/fullchain.pem",
-                                "/etc/letsencrypt/live/x/privkey.pem", "letsencrypt")
+        mock_le.return_value = (
+            "/etc/letsencrypt/live/x/fullchain.pem",
+            "/etc/letsencrypt/live/x/privkey.pem",
+            "letsencrypt",
+        )
         out = troshkad._handle_gateway_tls_cert(
-            {}, {"project_id": "abcdef12-0000-0000-0000-000000000000", "fqdn": "showroom.g.example.com",
-                  "eip": "1.2.3.4", "route53": {}})
+            {},
+            {
+                "project_id": "abcdef12-0000-0000-0000-000000000000",
+                "fqdn": "showroom.g.example.com",
+                "eip": "1.2.3.4",
+                "route53": {},
+                "extra_dns": ["tpf-abcdef12-con-ocp-lab.1.2.3.4.sslip.io"],
+            },
+        )
         assert out["mode"] == "letsencrypt"
         mock_le.assert_called_once()
+        assert mock_le.call_args[0][0] == "showroom.g.example.com"
+        assert mock_le.call_args.kwargs.get("extra_dns") == [
+            "tpf-abcdef12-con-ocp-lab.1.2.3.4.sslip.io"
+        ]
 
-    @patch("troshkad._gen_self_signed_cert", return_value=("/gw/full.pem", "/gw/key.pem"))
+    @patch(
+        "troshkad._gen_self_signed_cert", return_value=("/gw/full.pem", "/gw/key.pem")
+    )
     @patch("troshkad._obtain_letsencrypt_cert")
     def test_empty_fqdn_self_signs(self, mock_le, mock_ss):
         out = troshkad._handle_gateway_tls_cert(
-            {}, {"project_id": "abcdef12-0000-0000-0000-000000000000", "fqdn": "", "eip": "1.2.3.4"})
+            {},
+            {
+                "project_id": "abcdef12-0000-0000-0000-000000000000",
+                "fqdn": "",
+                "eip": "1.2.3.4",
+            },
+        )
         assert out["mode"] == "self-signed"
         mock_le.assert_not_called()
         mock_ss.assert_called_once()
 
-    @patch("troshkad._gen_self_signed_cert", return_value=("/gw/full.pem", "/gw/key.pem"))
+    @patch(
+        "troshkad._gen_self_signed_cert", return_value=("/gw/full.pem", "/gw/key.pem")
+    )
     @patch("troshkad._obtain_letsencrypt_cert")
     def test_injection_fqdn_rejected_to_self_signed(self, mock_le, mock_ss):
         out = troshkad._handle_gateway_tls_cert(
-            {}, {"project_id": "abcdef12-0000-0000-0000-000000000000", "fqdn": "x;rm -rf /", "eip": "1.2.3.4"})
+            {},
+            {
+                "project_id": "abcdef12-0000-0000-0000-000000000000",
+                "fqdn": "x;rm -rf /",
+                "eip": "1.2.3.4",
+            },
+        )
         assert out["mode"] == "self-signed"
         mock_le.assert_not_called()
 
-    @patch("troshkad._gen_self_signed_cert", return_value=("/gw/full.pem", "/gw/key.pem"))
+    @patch(
+        "troshkad._gen_self_signed_cert", return_value=("/gw/full.pem", "/gw/key.pem")
+    )
     def test_invalid_eip_falls_back_to_localhost(self, mock_ss):
         out = troshkad._handle_gateway_tls_cert(
-            {}, {"project_id": "abcdef12-0000-0000-0000-000000000000", "fqdn": "", "eip": "not-an-ip"})
+            {},
+            {
+                "project_id": "abcdef12-0000-0000-0000-000000000000",
+                "fqdn": "",
+                "eip": "not-an-ip",
+            },
+        )
         assert out["mode"] == "self-signed"
         mock_ss.assert_called_once()
         args = mock_ss.call_args[0]
@@ -3023,19 +3063,28 @@ class TestTlsProxy(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
     @patch("troshkad.os.chmod")
     @patch("troshkad.os.makedirs")
-    @patch("builtins.open", new_callable=mock_open,
-           read_data="CERT")  # fullchain/key reads for combined.pem
-    def test_start_builds_netns_socat_argv(self, _open, _mk, _ch, mock_popen):
-        proc = MagicMock(); proc.pid = 4321; mock_popen.return_value = proc
+    @patch(
+        "builtins.open", new_callable=mock_open, read_data="CERT"
+    )  # fullchain/key reads for combined.pem
+    def test_start_runs_socat_in_netns(self, _open, _mk, _ch, mock_popen):
+        """Showroom is netns-only; terminator must listen in the project netns (.2)."""
+        proc = MagicMock()
+        proc.pid = 4321
+        mock_popen.return_value = proc
         pid = troshkad._start_tls_proxy(
-            "abcdef12-0000", "troshka-abcdef12", "172.30.5.1:443",
-            "172.30.5.3:80", "/gw/full.pem", "/gw/key.pem")
+            "abcdef12-0000",
+            "troshka-abcdef12",
+            "172.30.5.2:443",
+            "172.30.5.3:80",
+            "/gw/full.pem",
+            "/gw/key.pem",
+        )
         assert pid == 4321
         argv = mock_popen.call_args[0][0]
         assert argv[:4] == ["ip", "netns", "exec", "troshka-abcdef12"]
         assert argv[4] == "socat"
         joined = " ".join(argv)
-        assert "OPENSSL-LISTEN:443" in joined and "bind=172.30.5.1" in joined
+        assert "OPENSSL-LISTEN:443" in joined and "bind=172.30.5.2" in joined
         assert "TCP:172.30.5.3:80" in joined
         assert "bash" not in argv
 
@@ -3044,11 +3093,18 @@ class TestTlsProxy(unittest.TestCase):
     @patch("troshkad.os.makedirs")
     @patch("builtins.open", new_callable=mock_open, read_data="CERT")
     def test_rejects_malformed_upstream(self, _open, _mk, _ch, mock_popen):
-        proc = MagicMock(); proc.pid = 4321; mock_popen.return_value = proc
+        proc = MagicMock()
+        proc.pid = 4321
+        mock_popen.return_value = proc
         with self.assertRaises(ValueError):
             troshkad._start_tls_proxy(
-                "abcdef12-0000", "troshka-abcdef12", "172.30.5.1:443",
-                "not-an-ip:80", "/gw/full.pem", "/gw/key.pem")
+                "abcdef12-0000",
+                "troshka-abcdef12",
+                "172.30.5.2:443",
+                "not-an-ip:80",
+                "/gw/full.pem",
+                "/gw/key.pem",
+            )
 
     @patch("troshkad.os.kill")
     @patch("troshkad.os.remove")
@@ -3065,16 +3121,25 @@ class TestTlsProxy(unittest.TestCase):
 class TestGatewayTlsProxyHandlers(unittest.TestCase):
     @patch("troshkad._start_tls_proxy", return_value=999)
     def test_proxy_start_handler(self, mock_start):
-        out = troshkad._handle_gateway_tls_proxy({}, {
-            "project_id": "abcdef12-0000-0000-0000-000000000000", "netns": "troshka-abcdef12",
-            "listen": "172.30.5.1:443", "upstream": "172.30.5.3:80",
-            "cert_path": "/gw/full.pem", "key_path": "/gw/key.pem"})
+        out = troshkad._handle_gateway_tls_proxy(
+            {},
+            {
+                "project_id": "abcdef12-0000-0000-0000-000000000000",
+                "netns": "troshka-abcdef12",
+                "listen": "172.30.5.1:443",
+                "upstream": "172.30.5.3:80",
+                "cert_path": "/gw/full.pem",
+                "key_path": "/gw/key.pem",
+            },
+        )
         assert out["pid"] == 999
         mock_start.assert_called_once()
 
     @patch("troshkad._stop_tls_proxy")
     def test_proxy_stop_handler(self, mock_stop):
-        out = troshkad._handle_gateway_tls_proxy_stop({}, {"project_id": "abcdef12-0000-0000-0000-000000000000"})
+        out = troshkad._handle_gateway_tls_proxy_stop(
+            {}, {"project_id": "abcdef12-0000-0000-0000-000000000000"}
+        )
         assert out["stopped"] is True
         mock_stop.assert_called_once_with("abcdef12-0000-0000-0000-000000000000")
 

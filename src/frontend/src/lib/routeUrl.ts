@@ -56,3 +56,28 @@ export function formatOcpRouteUrl(hostname: string, port: string | number): stri
   if (p === "80") return `http://${hostname}`;
   return `https://${hostname}`;
 }
+
+/** Build a browser URL for an EIP-bound web forward (cloud showroom :443 etc.).
+ *  Returns null for non-browser ports (e.g. API 6443) so callers keep ip:port text.
+ *
+ *  Showroom forwards use ``showroom.<eip>.sslip.io`` (LE HTTP-01) so External
+ *  Access matches the trusted hostname; prefer ``showroomUrl`` from
+ *  ``deployed_topology._showroom_url`` when deploy already stamped one.
+ */
+export function formatEipAccessUrl(
+  ip: string,
+  port: string | number,
+  opts?: { showroom?: boolean; showroomUrl?: string | null },
+): string | null {
+  const p = String(port).trim();
+  if (opts?.showroom && (p === "443" || p === "80")) {
+    const stamped = (opts.showroomUrl || "").trim();
+    if (stamped) return stamped;
+    return p === "80"
+      ? `http://showroom.${ip}.sslip.io`
+      : `https://showroom.${ip}.sslip.io`;
+  }
+  if (p === "80") return `http://${ip}`;
+  if (p === "443") return `https://${ip}`;
+  return null;
+}

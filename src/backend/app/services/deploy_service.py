@@ -178,10 +178,18 @@ def _update_deploy_progress(
         pass
 
 
-def _showroom_fqdn(project) -> str:
-    """Showroom FQDN for LE, or '' when the project has no DNS zone (=> self-signed)."""
+def _showroom_fqdn(project, eip: str = "") -> str:
+    """Showroom FQDN for LE.
+
+    Prefer ``showroom.<guid>.<domain>`` when the project has a DNS zone; otherwise
+    ``showroom.<eip>.sslip.io`` (resolves to the EIP with no zone to manage).
+    Empty only when neither is available (=> self-signed on the bare EIP).
+    """
     if project.dns_provider_id and project.guid and project.domain:
         return f"showroom.{project.guid}.{project.domain}"
+    eip = (eip or "").strip()
+    if eip:
+        return f"showroom.{eip}.sslip.io"
     return ""
 
 
@@ -195,19 +203,69 @@ def _resolve_showroom_dns_provider(s, project):
     return (dp.type, dp.config) if dp else (None, {})
 
 
+def _ensure_acme_http01_sg(s, host, project) -> None:
+    """Open TCP/80 on the provider SG so certbot HTTP-01 can reach the host.
+
+    sslip.io certs renew via the host-wide ``certbot renew`` cron, so this rule
+    stays (description-tagged). No EIP DNAT for :80 — challenges terminate on
+    the host. Non-fatal / EC2-only.
+    """
+    try:
+        from app.models.provider import Provider
+        from app.services.eip_service import sync_security_group_rules
+
+        prov = s.get(Provider, host.provider_id) if host.provider_id else None
+        if not prov or prov.type != "ec2":
+            return
+        topo = project.deployed_topology or project.topology or {}
+        gateway = next(
+            (
+                n
+                for n in (topo.get("nodes") or [])
+                if n.get("type") == "networkNode"
+                and n.get("data", {}).get("subtype") == "gateway"
+            ),
+            None,
+        )
+        desired = _collect_gateway_sg_rules(gateway, project.id)
+        desired.append({"project_id": project.id, "ext_port": 80, "protocol": "tcp"})
+        sync_security_group_rules(s, prov, desired)
+    except Exception:
+        logger.warning(
+            "Deploy %s: ACME HTTP-01 SG :80 open failed",
+            project.id[:8],
+            exc_info=True,
+        )
+
+
 def _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns) -> str:
     """Create DNS + cert + TLS terminator for the troshkad showroom. Non-fatal.
     Returns the showroom URL."""
     from app.services.dns_service import create_dns_records
+    from app.services.showroom_scaffold import (
+        _find_showroom_container,
+        app_proxy_eip_public_host,
+        app_proxy_internal_hosts,
+    )
 
     octet3 = int(first_vni) & 0xFF
-    fqdn = _showroom_fqdn(project)
+    fqdn = _showroom_fqdn(project, eip=eip)
     dp_type, dp_config = _resolve_showroom_dns_provider(s, project)
-    # Let's Encrypt (DNS-01) is route53-only here; nsupdate zones have no LE
-    # creds and fall back to a self-signed cert (see _tls_cert_via_job).
+    # Route53 → DNS-01; otherwise HTTP-01 (sslip.io or nsupdate zone without LE
+    # creds). App-proxy sslip.io hosts are LE SANs so console/oauth iframes trust
+    # the same cert (see _tls_cert_via_job → troshkad HTTP-01 multi -d).
     route53 = dp_config if dp_type == "route53" else {}
+    showroom_node = _find_showroom_container(topology)
+    tabs = (showroom_node or {}).get("data", {}).get("showroomTabs") or []
+    if not tabs and topology.get("showroom", {}).get("tabs"):
+        tabs = topology["showroom"]["tabs"]
+    extra_dns = [
+        app_proxy_eip_public_host(project.id, h, eip)
+        for h in app_proxy_internal_hosts(tabs)
+    ]
     try:
-        if fqdn and dp_type:
+        # sslip.io needs no A-record create; only real DNS providers get writes.
+        if fqdn and dp_type and not fqdn.endswith(".sslip.io"):
             dns_errors = create_dns_records(
                 dp_type, dp_config, [{"name": fqdn, "type": "A", "value": eip}], ttl=30
             )
@@ -217,7 +275,9 @@ def _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns) -> s
                     project.id[:8],
                     dns_errors,
                 )
-        cert = _tls_cert_via_job(host, project.id, fqdn, eip, route53)
+        if fqdn and not route53.get("access_key_id"):
+            _ensure_acme_http01_sg(s, host, project)
+        cert = _tls_cert_via_job(host, project.id, fqdn, eip, route53, extra_dns)
         if not cert:
             logger.warning("Deploy %s: showroom cert job failed", project.id[:8])
             return f"https://{fqdn or eip}"
@@ -238,11 +298,17 @@ def _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns) -> s
         return f"https://{fqdn or eip}"
 
 
-def _tls_cert_via_job(host, project_id, fqdn, eip, route53):
+def _tls_cert_via_job(host, project_id, fqdn, eip, route53, extra_dns=None):
     jid = start_job(
         host,
         "/gateway/tls-cert",
-        {"project_id": project_id, "fqdn": fqdn, "eip": eip, "route53": route53},
+        {
+            "project_id": project_id,
+            "fqdn": fqdn,
+            "eip": eip,
+            "route53": route53,
+            "extra_dns": list(extra_dns or []),
+        },
         request_timeout=60,
     )
     job = wait_for_job(host, jid, timeout=360)
@@ -285,9 +351,9 @@ def _teardown_showroom_tls(s, host, project, eip):
         logger.warning(
             "Deploy %s: showroom TLS stop failed", project.id[:8], exc_info=True
         )
-    fqdn = _showroom_fqdn(project)
+    fqdn = _showroom_fqdn(project, eip=eip)
     dp_type, dp_config = _resolve_showroom_dns_provider(s, project)
-    if fqdn and dp_type:
+    if fqdn and dp_type and not fqdn.endswith(".sslip.io"):
         try:
             delete_dns_records(
                 dp_type, dp_config, [{"name": fqdn, "type": "A", "value": eip}]
@@ -329,6 +395,14 @@ def _maybe_setup_showroom_tls(s, host, topology, project, external_ips, vni_map)
         netns = f"troshka-{project.id[:8]}"
         url = _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns)
         logger.info("Deploy %s: showroom TLS URL %s", project.id[:8], url)
+        # Fill console/oauth iframe URLs (Host-based app-proxy via sslip.io → EIP).
+        from app.services.showroom_scaffold import _find_showroom_container
+
+        showroom_node = _find_showroom_container(topology)
+        if showroom_node:
+            filled = _fill_showroom_app_proxy_urls_eip(showroom_node, project.id, eip)
+            if filled:
+                _patch_live_showroom_ui_config(host, project.id, filled)
         # deployed_topology may be the SAME dict object as project.topology
         # (aliased in _deploy_complete_and_notify). Deep-copy before writing the
         # URL so the editable topology never gains _showroom_url (canvas drift).
@@ -7839,6 +7913,62 @@ def _fill_showroom_app_proxy_urls(showroom_node, project_id, apps_domain, namesp
             filled = fill_app_proxy_tab_urls(ui, project_id, apps_domain, namespace)
             if filled != ui:
                 ev["value"] = base64.b64encode(filled.encode()).decode()
+
+
+def _fill_showroom_app_proxy_urls_eip(showroom_node, project_id, eip) -> str | None:
+    """Cloud: fill app-proxy placeholders with sslip.io hosts aimed at the EIP.
+
+    Returns the filled ui-config yaml (or None if nothing to fill).
+    """
+    import base64
+
+    from app.services.showroom_scaffold import fill_app_proxy_tab_urls_eip
+
+    filled_out = None
+    for ic in showroom_node.get("data", {}).get("initContainers", []):
+        for ev in ic.get("envVars", []):
+            if ev.get("key") != "UI_CONFIG_B64":
+                continue
+            try:
+                ui = base64.b64decode(ev["value"]).decode()
+            except Exception:
+                continue
+            filled = fill_app_proxy_tab_urls_eip(ui, project_id, eip)
+            if filled != ui:
+                ev["value"] = base64.b64encode(filled.encode()).decode()
+                filled_out = filled
+    return filled_out
+
+
+def _patch_live_showroom_ui_config(host, project_id, filled_yaml: str):
+    """Write filled ui-config into the running showroom volume."""
+    import base64
+
+    from app.services.troshkad_client import start_job, wait_for_job
+
+    b64 = base64.b64encode(filled_yaml.encode()).decode()
+    cname = f"troshka-{project_id[:8]}-showroom-proxy"
+    try:
+        jid = start_job(
+            host,
+            "/container/exec",
+            {
+                "name": cname,
+                "command": [
+                    "sh",
+                    "-c",
+                    f"echo {b64} | base64 -d > /showroom/www/ui-config.yml && "
+                    "cp /showroom/www/ui-config.yml /showroom/repo/ui-config.yml "
+                    "2>/dev/null || true",
+                ],
+            },
+            request_timeout=30,
+        )
+        wait_for_job(host, jid, timeout=60)
+    except Exception:
+        logger.warning(
+            "Deploy %s: live ui-config write failed", project_id[:8], exc_info=True
+        )
 
 
 def _resolve_project_provider(s, host, project):

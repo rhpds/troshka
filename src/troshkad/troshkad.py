@@ -1130,21 +1130,45 @@ def _validate_project_id(pid):
     return pid
 
 
-def _gen_self_signed_cert(out_dir, cn, eip):
-    """Generate a self-signed cert (argv, no shell). Returns (fullchain, key)."""
+def _gen_self_signed_cert(out_dir, cn, eip, extra_dns=None):
+    """Generate a self-signed cert (argv, no shell). Returns (fullchain, key).
+
+    ``extra_dns`` — optional iterable of DNS names (e.g. sslip.io app-proxy
+    hosts) added alongside ``IP:{eip}`` in subjectAltName.
+    """
     os.makedirs(out_dir, exist_ok=True)
     os.chmod(out_dir, 0o700)
     full = os.path.join(out_dir, "fullchain.pem")
     key = os.path.join(out_dir, "privkey.pem")
+    san_parts = [f"IP:{eip}"]
+    for name in extra_dns or []:
+        name = (name or "").strip()
+        if name:
+            san_parts.append(f"DNS:{name}")
+    san = ",".join(san_parts)
     subprocess.run(
         [
-            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-            "-keyout", key, "-out", full, "-days", "825",
-            "-subj", f"/CN={cn}",
-            "-addext", f"subjectAltName=IP:{eip}",
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            key,
+            "-out",
+            full,
+            "-days",
+            "825",
+            "-subj",
+            f"/CN={cn}",
+            "-addext",
+            f"subjectAltName={san}",
         ],
-        check=True, timeout=60,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        check=True,
+        timeout=60,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     os.chmod(key, 0o600)
     return full, key
@@ -1153,31 +1177,56 @@ def _gen_self_signed_cert(out_dir, cn, eip):
 _CERTBOT = "/opt/troshka/venv/bin/certbot"
 
 
-def _obtain_letsencrypt_cert(fqdn, route53):
-    """Request an LE cert via Route53 DNS-01 (argv, no shell). Returns
-    (fullchain, key, mode); mode 'self-signed' with None paths on failure so the
-    caller falls back."""
+def _obtain_letsencrypt_cert(fqdn, route53, extra_dns=None):
+    """Request an LE cert (DNS-01 via Route53, else HTTP-01 standalone).
+
+    ``extra_dns`` — additional names (e.g. app-proxy sslip.io iframe hosts)
+    included as ``-d`` SANs on the same certificate. Returns
+    ``(fullchain, key, mode)``; mode ``self-signed`` with None paths on failure
+    so the caller falls back.
+    """
+    names = []
+    for n in [fqdn, *(extra_dns or [])]:
+        n = (n or "").strip()
+        if n and n not in names and _FQDN_RE.match(n):
+            names.append(n)
+    if not names:
+        return None, None, "self-signed"
+
     env = os.environ.copy()
-    if route53.get("access_key_id"):
+    certbot = _CERTBOT if os.path.exists(_CERTBOT) else "certbot"
+    argv = [
+        certbot,
+        "certonly",
+        "--non-interactive",
+        "--agree-tos",
+        "-m",
+        "noreply@redhat.com",
+    ]
+    use_dns01 = bool((route53 or {}).get("access_key_id"))
+    if use_dns01:
         env["AWS_ACCESS_KEY_ID"] = route53["access_key_id"]
         env["AWS_SECRET_ACCESS_KEY"] = route53.get("secret_access_key", "")
         env["AWS_DEFAULT_REGION"] = route53.get("region", "us-east-1")
-    certbot = _CERTBOT if os.path.exists(_CERTBOT) else "certbot"
+        argv.extend(["--dns-route53", "--preferred-challenges", "dns-01"])
+    else:
+        # sslip.io (and any FQDN without Route53): HTTP-01 on :80.
+        argv.extend(["--standalone", "--preferred-challenges", "http-01"])
+    for n in names:
+        argv.extend(["-d", n])
     try:
         proc = subprocess.run(
-            [
-                certbot, "certonly", "--dns-route53", "-d", fqdn,
-                "--non-interactive", "--agree-tos", "-m", "noreply@redhat.com",
-                "--preferred-challenges", "dns-01",
-            ],
-            env=env, timeout=300,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            argv,
+            env=env,
+            timeout=300,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except Exception:
         return None, None, "self-signed"
     if proc.returncode != 0:
         return None, None, "self-signed"
-    live = f"/etc/letsencrypt/live/{fqdn}"
+    live = f"/etc/letsencrypt/live/{names[0]}"
     return f"{live}/fullchain.pem", f"{live}/privkey.pem", "letsencrypt"
 
 
@@ -1190,13 +1239,19 @@ def _gateway_tls_dir(project_id):
 
 def _handle_gateway_tls_cert(job, params):
     import ipaddress
+
     project_id = _validate_project_id(params["project_id"])
     fqdn = (params.get("fqdn") or "").strip()
     eip = (params.get("eip") or "").strip()
+    extra_dns = [
+        str(n).strip() for n in (params.get("extra_dns") or []) if str(n).strip()
+    ]
     out_dir = _gateway_tls_dir(project_id)
     use_le = bool(fqdn) and bool(_FQDN_RE.match(fqdn))
     if use_le:
-        full, key, mode = _obtain_letsencrypt_cert(fqdn, params.get("route53") or {})
+        full, key, mode = _obtain_letsencrypt_cert(
+            fqdn, params.get("route53") or {}, extra_dns=extra_dns
+        )
         if mode == "letsencrypt":
             return {"cert_path": full, "key_path": key, "mode": mode}
     # self-signed fallback (empty/invalid fqdn, or certbot failed)
@@ -1205,7 +1260,7 @@ def _handle_gateway_tls_cert(job, params):
     except ValueError:
         eip = "127.0.0.1"
     cn = fqdn if use_le else eip
-    full, key = _gen_self_signed_cert(out_dir, cn or eip, eip)
+    full, key = _gen_self_signed_cert(out_dir, cn or eip, eip, extra_dns=extra_dns)
     return {"cert_path": full, "key_path": key, "mode": "self-signed"}
 
 
@@ -1225,16 +1280,32 @@ def _write_combined_pem(tls_dir, cert_path, key_path):
 
 
 def _start_tls_proxy(project_id, netns, listen, upstream, cert_path, key_path):
-    import ipaddress, json as _json
+    """Start socat TLS terminator inside the project netns.
+
+    Showroom (.3) is only reachable from the netns. Listen on transit ns IP
+    ``172.30.<vni>.2:443`` (not host-side ``.1``, which is on the host veth and
+    conflicts with / cannot reach the container network).
+    """
+    import ipaddress
+
+    # Replace any prior terminator so a cert rotate cannot leave a stale socat
+    # still serving the old combined.pem on the same listen address.
+    _stop_tls_proxy(project_id)
     bind_ip, _, port = listen.partition(":")
     ipaddress.ip_address(bind_ip)
     up_ip, _, up_port = upstream.partition(":")
-    ipaddress.ip_address(up_ip)   # raises on malformed upstream
+    ipaddress.ip_address(up_ip)  # raises on malformed upstream
     port = port or "443"
     tls_dir = _gateway_tls_dir(project_id)
     combined = _write_combined_pem(tls_dir, cert_path, key_path)
+    # verify=0: project-scoped terminator; clients validate via public LE/self-signed
+    # cert on the EIP/FQDN, not the socat↔nginx hop.
     argv = [
-        "ip", "netns", "exec", netns, "socat",
+        "ip",
+        "netns",
+        "exec",
+        netns,
+        "socat",
         f"OPENSSL-LISTEN:{port},bind={bind_ip},reuseaddr,fork,cert={combined},verify=0",
         f"TCP:{upstream}",
     ]
@@ -1242,20 +1313,45 @@ def _start_tls_proxy(project_id, netns, listen, upstream, cert_path, key_path):
     with open(os.path.join(tls_dir, "proxy.pid"), "w") as f:
         f.write(str(proc.pid))
     with open(os.path.join(tls_dir, "proxy.json"), "w") as f:
-        _json.dump({"netns": netns, "listen": listen, "upstream": upstream,
-                    "cert_path": cert_path, "key_path": key_path}, f)
+        json.dump(
+            {
+                "netns": netns,
+                "listen": listen,
+                "upstream": upstream,
+                "cert_path": cert_path,
+                "key_path": key_path,
+            },
+            f,
+        )
     return proc.pid
 
 
 def _stop_tls_proxy(project_id):
     tls_dir = _gateway_tls_dir(project_id)
     pidfile = os.path.join(tls_dir, "proxy.pid")
+    meta = os.path.join(tls_dir, "proxy.json")
+    netns = None
+    try:
+        with open(meta) as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            netns = data.get("netns")
+    except (OSError, ValueError, TypeError):
+        pass
     try:
         with open(pidfile) as f:
             pid = int(f.read().strip())
         os.kill(pid, signal.SIGTERM)
     except (OSError, ValueError):
         pass
+    # Orphan socat can survive if the pidfile was overwritten before SIGTERM.
+    if netns and re.match(r"^troshka-[0-9a-f]{8}$", netns):
+        subprocess.run(
+            ["ip", "netns", "exec", netns, "pkill", "-f", "OPENSSL-LISTEN:443"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
     for name in ("proxy.pid", "proxy.json"):
         try:
             os.remove(os.path.join(tls_dir, name))
@@ -1266,8 +1362,11 @@ def _stop_tls_proxy(project_id):
 def _handle_gateway_tls_proxy(job, params):
     pid = _start_tls_proxy(
         _validate_project_id(params["project_id"]),
-        params["netns"], params["listen"], params["upstream"],
-        params["cert_path"], params["key_path"],
+        params["netns"],
+        params["listen"],
+        params["upstream"],
+        params["cert_path"],
+        params["key_path"],
     )
     return {"pid": pid}
 
@@ -9322,13 +9421,20 @@ def _restore_dnsmasq():
 def _restore_tls_proxies():
     """Relaunch showroom TLS terminators from stored descriptors on startup."""
     import json as _json
+
     for desc in glob.glob("/var/lib/troshka/gateway/*/tls/proxy.json"):
         try:
             with open(desc) as f:
                 d = _json.load(f)
             project_id = desc.split("/gateway/")[1].split("/")[0]
-            _start_tls_proxy(project_id, d["netns"], d["listen"], d["upstream"],
-                             d["cert_path"], d["key_path"])
+            _start_tls_proxy(
+                project_id,
+                d["netns"],
+                d["listen"],
+                d["upstream"],
+                d["cert_path"],
+                d["key_path"],
+            )
         except Exception:
             logger.warning("failed to restore TLS proxy from %s", desc, exc_info=True)
 

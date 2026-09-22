@@ -442,7 +442,11 @@ def _topology_has_showroom(topology: dict) -> bool:
 
 
 def _is_showroom_infra_forward(pf: dict) -> bool:
-    """Gateway PF 443→showroom auto-managed (current: .1:443, legacy: .3:80)."""
+    """Gateway PF 443→showroom auto-managed.
+
+    Current cloud: netns terminator at .2:443. Legacy cloud: .1:443.
+    Route providers: showroom container at .3:80.
+    """
     int_ip = (pf.get("intIp") or "").strip()
     ext_port = str(pf.get("extPort"))
     int_port = str(pf.get("intPort"))
@@ -450,12 +454,19 @@ def _is_showroom_infra_forward(pf: dict) -> bool:
     if ext_port != "443":
         return False
 
-    # Current: terminator at .1:443
-    if int_ip.startswith("172.30.") and int_ip.endswith(".1") and int_port == "443":
+    if not int_ip.startswith("172.30."):
+        return False
+
+    # Current: socat in netns on transit ns IP (.2:443)
+    if int_ip.endswith(".2") and int_port == "443":
         return True
 
-    # Legacy: showroom container at .3:80
-    if int_ip.startswith("172.30.") and int_ip.endswith(".3") and int_port == "80":
+    # Legacy cloud: mistakenly targeted host veth .1:443
+    if int_ip.endswith(".1") and int_port == "443":
+        return True
+
+    # Route providers / legacy: showroom container at .3:80
+    if int_ip.endswith(".3") and int_port == "80":
         return True
 
     return False
@@ -469,11 +480,11 @@ def _inject_showroom_port_forward(
 ) -> list:
     """Auto-add the managed gateway PF for external 443→showroom.
 
-    Cloud (troshkad) providers run a per-project socat TLS terminator on the
-    gateway transit IP, so the forward targets ``172.30.<vni>.1:443``. Route
-    providers (ocpvirt/kubevirt, ``route_web=True``) edge-terminate the showroom
-    at the OCP Route, so the forward must target the showroom container directly
-    at ``172.30.<vni>.3:80`` (unchanged pre-TLS-edge behavior) — no terminator.
+    Cloud (troshkad) providers run a per-project socat TLS terminator inside
+    the project netns on ``172.30.<vni>.2:443`` (host-side ``.1`` cannot reach
+    the showroom container). Route providers (ocpvirt/kubevirt,
+    ``route_web=True``) edge-terminate at the OCP Route, so the forward targets
+    the showroom container at ``172.30.<vni>.3:80``.
 
     Removes all existing :443 forwards (stale managed or otherwise) and injects
     the managed forward.
@@ -486,8 +497,8 @@ def _inject_showroom_port_forward(
         int_ip = f"172.30.{octet3}.3"
         int_port = "80"
     else:
-        # Cloud providers: socat TLS terminator listens on the gateway (.1:443).
-        int_ip = f"172.30.{octet3}.1"
+        # Cloud: socat TLS terminator in netns on transit ns IP (.2:443).
+        int_ip = f"172.30.{octet3}.2"
         int_port = "443"
 
     # Remove all :443 forwards (stale or otherwise — showroom manages this port)
@@ -534,6 +545,20 @@ def _build_gateway_config(nodes: list, topology: dict, networks: list) -> dict |
         port_forwards = _inject_showroom_port_forward(
             port_forwards, topology, first_vni
         )
+        # Inject resets extIpId on the managed 443 forward. Host DNAT only
+        # installs when _private_ip is set — bind it to the first EIP.
+        first_priv = next(
+            (
+                eip.get("_private_ip") or ""
+                for eip in external_ips
+                if eip.get("_private_ip")
+            ),
+            "",
+        )
+        if first_priv:
+            for pf in port_forwards:
+                if pf.get("managedByShowroom") and not pf.get("_private_ip"):
+                    pf["_private_ip"] = first_priv
 
         gw_config = {
             "name": data.get("name"),

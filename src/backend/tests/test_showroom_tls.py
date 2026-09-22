@@ -19,7 +19,12 @@ def test_fqdn_when_dns_configured():
     assert _showroom_fqdn(p) == "showroom.abc.example.com"
 
 
-def test_fqdn_empty_when_no_dns():
+def test_fqdn_sslip_when_no_dns_and_eip():
+    p = SimpleNamespace(dns_provider_id=None, guid="abc", domain="example.com")
+    assert _showroom_fqdn(p, eip="1.2.3.4") == "showroom.1.2.3.4.sslip.io"
+
+
+def test_fqdn_empty_when_no_dns_and_no_eip():
     p = SimpleNamespace(dns_provider_id=None, guid="abc", domain="example.com")
     assert _showroom_fqdn(p) == ""
 
@@ -50,7 +55,88 @@ def test_ensure_tls_letsencrypt_path():
     mk_dns.assert_called_once()
 
 
-def test_ensure_tls_self_signed_when_no_dns():
+def test_ensure_tls_sslip_letsencrypt_when_no_dns():
+    """No project DNS zone → showroom.<eip>.sslip.io via HTTP-01 LE."""
+    host = MagicMock()
+    with patch.object(ds, "start_job", return_value="j") as mk_start, patch.object(
+        ds,
+        "wait_for_job",
+        side_effect=[
+            {
+                "status": "completed",
+                "result": {"cert_path": "/f", "key_path": "/k", "mode": "letsencrypt"},
+            },
+            {"status": "completed", "result": {"pid": 1}},
+        ],
+    ), patch("app.services.dns_service.create_dns_records") as mk_dns:
+        url = ds._ensure_showroom_tls(
+            MagicMock(),
+            host,
+            _proj(dns=False),
+            {"nodes": []},
+            "1.2.3.4",
+            5,
+            "troshka-abcdef12",
+        )
+    assert url == "https://showroom.1.2.3.4.sslip.io"
+    mk_dns.assert_not_called()
+    cert_params = mk_start.call_args_list[0][0][2]
+    assert cert_params["fqdn"] == "showroom.1.2.3.4.sslip.io"
+    assert cert_params["route53"] == {}
+
+
+def test_ensure_tls_passes_app_proxy_sans_for_iframes():
+    """Console/oauth sslip.io hosts must be LE SANs so iframes trust the cert."""
+    host = MagicMock()
+    topo = {
+        "nodes": [
+            {
+                "type": "containerNode",
+                "data": {
+                    "name": "showroom",
+                    "showroomTabs": [
+                        {
+                            "name": "Console",
+                            "iframe": True,
+                            "proxyHosts": [
+                                "console-openshift-console.apps.ocp.example.com"
+                            ],
+                        },
+                        {
+                            "name": "OAuth",
+                            "iframe": True,
+                            "proxyHosts": ["oauth-openshift.apps.ocp.example.com"],
+                        },
+                    ],
+                },
+            }
+        ]
+    }
+    with patch.object(ds, "start_job", return_value="j") as mk_start, patch.object(
+        ds,
+        "wait_for_job",
+        side_effect=[
+            {
+                "status": "completed",
+                "result": {"cert_path": "/f", "key_path": "/k", "mode": "letsencrypt"},
+            },
+            {"status": "completed", "result": {"pid": 1}},
+        ],
+    ), patch("app.services.dns_service.create_dns_records"), patch.object(
+        ds,
+        "_resolve_showroom_dns_provider",
+        return_value=(None, {}),
+    ):
+        ds._ensure_showroom_tls(
+            MagicMock(), host, _proj(dns=False), topo, "1.2.3.4", 5, "troshka-abcdef12"
+        )
+    cert_params = mk_start.call_args_list[0][0][2]
+    extra = cert_params["extra_dns"]
+    assert any(h.startswith("tpf-") and h.endswith(".1.2.3.4.sslip.io") for h in extra)
+    assert len(extra) >= 2
+
+
+def test_ensure_tls_self_signed_fallback_url_is_eip():
     host = MagicMock()
     with patch.object(ds, "start_job", return_value="j"), patch.object(
         ds,

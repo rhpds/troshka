@@ -10600,10 +10600,27 @@ class TestSelfSignedCert(unittest.TestCase):
         assert "subjectAltName=IP:1.2.3.4" in " ".join(argv)
         assert "bash" not in argv
 
+    @patch("troshkad.os.chmod")
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.run")
+    def test_includes_extra_dns_sans(self, mock_run, _mk, _ch):
+        mock_run.return_value = MagicMock(returncode=0)
+        troshkad._gen_self_signed_cert(
+            "/gw/tls",
+            "1.2.3.4",
+            "1.2.3.4",
+            extra_dns=["tpf-abcdef12-con-ocp-lab.1.2.3.4.sslip.io"],
+        )
+        joined = " ".join(mock_run.call_args[0][0])
+        assert (
+            "subjectAltName=IP:1.2.3.4,DNS:tpf-abcdef12-con-ocp-lab.1.2.3.4.sslip.io"
+            in joined
+        )
+
 
 class TestLetsEncryptCert(unittest.TestCase):
     @patch("troshkad.subprocess.run")
-    def test_certbot_success_returns_live_paths(self, mock_run):
+    def test_certbot_dns01_when_route53_creds(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
         full, key, mode = troshkad._obtain_letsencrypt_cert(
             "showroom.g.example.com", {"access_key_id": "AK", "secret_access_key": "SK"}
@@ -10616,6 +10633,29 @@ class TestLetsEncryptCert(unittest.TestCase):
         assert "showroom.g.example.com" in argv
 
     @patch("troshkad.subprocess.run")
+    def test_certbot_http01_standalone_without_route53(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=0)
+        full, key, mode = troshkad._obtain_letsencrypt_cert(
+            "showroom.1.2.3.4.sslip.io",
+            {},
+            extra_dns=[
+                "tpf-abcdef12-con-ocp-lab.1.2.3.4.sslip.io",
+                "tpf-abcdef12-oauth-ocp-lab.1.2.3.4.sslip.io",
+            ],
+        )
+        assert mode == "letsencrypt"
+        assert full == "/etc/letsencrypt/live/showroom.1.2.3.4.sslip.io/fullchain.pem"
+        argv = mock_run.call_args[0][0]
+        assert "--standalone" in argv
+        assert "--preferred-challenges" in argv and "http-01" in argv
+        assert "--dns-route53" not in argv
+        # Primary + iframe SANs as separate -d args (argv list, never shell)
+        assert argv.count("-d") == 3
+        assert "showroom.1.2.3.4.sslip.io" in argv
+        assert "tpf-abcdef12-con-ocp-lab.1.2.3.4.sslip.io" in argv
+        assert "tpf-abcdef12-oauth-ocp-lab.1.2.3.4.sslip.io" in argv
+
+    @patch("troshkad.subprocess.run")
     def test_certbot_failure_signals_self_signed(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1)
         full, key, mode = troshkad._obtain_letsencrypt_cert("x.example.com", {})
@@ -10625,10 +10665,16 @@ class TestLetsEncryptCert(unittest.TestCase):
 
 class TestRestoreTlsProxies(unittest.TestCase):
     @patch("troshkad._start_tls_proxy")
-    @patch("troshkad.glob.glob", return_value=["/var/lib/troshka/gateway/abcdef12/tls/proxy.json"])
-    @patch("builtins.open", new_callable=mock_open,
-           read_data='{"netns":"troshka-abcdef12","listen":"172.30.5.1:443",'
-                     '"upstream":"172.30.5.3:80","cert_path":"/f","key_path":"/k"}')
+    @patch(
+        "troshkad.glob.glob",
+        return_value=["/var/lib/troshka/gateway/abcdef12/tls/proxy.json"],
+    )
+    @patch(
+        "builtins.open",
+        new_callable=mock_open,
+        read_data='{"netns":"troshka-abcdef12","listen":"172.30.5.1:443",'
+        '"upstream":"172.30.5.3:80","cert_path":"/f","key_path":"/k"}',
+    )
     def test_relaunches_from_descriptor(self, _open, _glob, mock_start):
         troshkad._restore_tls_proxies()
         mock_start.assert_called_once()

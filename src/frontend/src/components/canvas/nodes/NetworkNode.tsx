@@ -5,7 +5,7 @@ import { createPortal } from "react-dom";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NetworkNodeData } from "@/stores/canvasStore";
 import { useCanvasStore, stableNodeData, stableStringify } from "@/stores/canvasStore";
-import { findRouteForForward, formatOcpRouteUrl, isDeployInProgress, isOcpRoutableForward } from "@/lib/routeUrl";
+import { findRouteForForward, formatEipAccessUrl, formatOcpRouteUrl, isDeployInProgress, isOcpRoutableForward } from "@/lib/routeUrl";
 import { isShowroomContainer, SHOWROOM_GATEWAY_TARGET_HANDLE } from "@/lib/showroomValidation";
 import { isRouteManagedForward, isShowroomManagedForward } from "@/lib/showroomPortForwards";
 import { GATEWAY_NETWORK_SOURCE_HANDLE } from "@/lib/gatewayValidation";
@@ -379,13 +379,39 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                                     </>
                                   );
                                 }
-                                if (eip?.ip) {
-                                  const addr = `${eip.ip}:${pf.extPort}`;
+                                const eipIp =
+                                  eip?.ip ||
+                                  (isShowroomManagedForward(pf)
+                                    ? allEips.find((e) => e.ip)?.ip
+                                    : undefined);
+                                if (eipIp) {
+                                  const showroom = isShowroomManagedForward(pf);
+                                  const stamped =
+                                    typeof window !== "undefined"
+                                      ? (
+                                          window as unknown as {
+                                            __deployedTopology?: {
+                                              _showroom_url?: string;
+                                            };
+                                          }
+                                        ).__deployedTopology?._showroom_url
+                                      : undefined;
+                                  const url = formatEipAccessUrl(eipIp, pf.extPort, {
+                                    showroom,
+                                    showroomUrl: stamped,
+                                  });
+                                  const addr = `${eipIp}:${pf.extPort}`;
+                                  const label = url || addr;
+                                  const copyText = url || addr;
                                   return (
                                     <>
-                                      <span>{addr}</span>
+                                      {url ? (
+                                        <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--troshka-green)", textDecoration: "none" }}>{label}</a>
+                                      ) : (
+                                        <span>{addr}</span>
+                                      )}
                                       <span style={{ cursor: "pointer", marginLeft: 8, opacity: 0.5, fontSize: 10 }}
-                                        onClick={() => navigator.clipboard.writeText(addr)} title="Copy">Copy</span>
+                                        onClick={() => navigator.clipboard.writeText(copyText)} title="Copy">Copy</span>
                                     </>
                                   );
                                 }

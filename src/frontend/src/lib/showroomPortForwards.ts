@@ -25,9 +25,16 @@ export type ShowroomExternalIp = {
   ip: string;
 };
 
+/** Showroom container IP on the infra VXLAN (always .3). Used for DNS targets. */
 export function showroomInfraIpFromVni(vni: number): string {
   const octet3 = vni & 0xff;
   return `172.30.${octet3}.3`;
+}
+
+/** Transit ns IP on the infra VXLAN (always .2). Cloud TLS terminator bind/target. */
+export function showroomTerminatorIpFromVni(vni: number): string {
+  const octet3 = vni & 0xff;
+  return `172.30.${octet3}.2`;
 }
 
 export function firstProjectVni(vniMap: Record<string, number>): number | null {
@@ -45,10 +52,14 @@ function isWebForward(pf: PortForward): boolean {
   return pf.extPort === "443" || pf.extPort === "80";
 }
 
+/** Mirror backend vxlan._is_showroom_infra_forward (.2:443 current, .1/.3 legacy). */
 export function isShowroomInfraForward(pf: PortForward): boolean {
   const intIp = (pf.intIp || "").trim();
-  if (!intIp.startsWith("172.30.") || !intIp.endsWith(".3")) return false;
-  return pf.extPort === "443" && pf.intPort === "80";
+  if (pf.extPort !== "443" || !intIp.startsWith("172.30.")) return false;
+  if (intIp.endsWith(".2") && pf.intPort === "443") return true;
+  if (intIp.endsWith(".1") && pf.intPort === "443") return true;
+  if (intIp.endsWith(".3") && pf.intPort === "80") return true;
+  return false;
 }
 
 export function isShowroomManagedForward(
@@ -77,39 +88,32 @@ export function isRouteManagedForward(
   return ROUTE_PROVIDERS.has(providerType || "") && isRouteAccessForward(pf);
 }
 
-/** Mirror backend _inject_showroom_port_forward (vxlan.py). */
+/**
+ * Mirror backend vxlan._inject_showroom_port_forward.
+ * Cloud (routeWeb=false): socat TLS terminator at .2:443 (in netns).
+ * Route providers (routeWeb=true): showroom container at .3:80.
+ * Always replaces every existing :443 forward with a single managed entry.
+ */
 export function injectShowroomPortForwards(
   portForwards: PortForward[],
   firstVni: number | null,
+  routeWeb = false,
 ): PortForward[] {
   if (!firstVni) return portForwards;
-  const infraIp = showroomInfraIpFromVni(firstVni);
+  const intIp = routeWeb
+    ? showroomInfraIpFromVni(firstVni)
+    : showroomTerminatorIpFromVni(firstVni);
+  const intPort = routeWeb ? "80" : "443";
 
-  const out = portForwards.filter(
-    (pf) =>
-      !(
-        pf.extPort === "443" &&
-        pf.intPort === "80" &&
-        (pf.intIp || "").trim() !== infraIp
-      ),
-  );
-
-  const has443 = out.some(
-    (pf) =>
-      pf.extPort === "443" &&
-      (pf.intIp || "").trim() === infraIp &&
-      pf.intPort === "80",
-  );
-  if (!has443) {
-    out.push({
-      extPort: "443",
-      intIp: infraIp,
-      intPort: "80",
-      proto: "tcp",
-      extIpId: "",
-      managedByShowroom: true,
-    });
-  }
+  const out = portForwards.filter((pf) => pf.extPort !== "443");
+  out.push({
+    extPort: "443",
+    intIp,
+    intPort,
+    proto: "tcp",
+    extIpId: "",
+    managedByShowroom: true,
+  });
   return out;
 }
 
@@ -195,7 +199,10 @@ function ensureShowroomGatewayPortForwardsOnNodes(
   const existing = ((gwData.portForwards as PortForward[]) || []).map((pf) => ({
     ...pf,
   }));
-  const injected = injectShowroomPortForwards(existing, firstVni);
+  const routeWeb = ROUTE_PROVIDERS.has(providerType || "");
+  // Inject replaces every :443 with the provider-correct managed target
+  // (cloud .2:443 / route .3:80) — mirror backend _inject_showroom_port_forward.
+  const injected = injectShowroomPortForwards(existing, firstVni, routeWeb);
   // A showroom owns external 443/80 (console/ingress via its proxy). Drop any
   // non-showroom 443/80 forward so it doesn't collide with the showroom on the
   // gateway (mirror backend inject_showroom_gateway_port_forwards). 6443 kept.
@@ -206,7 +213,6 @@ function ensureShowroomGatewayPortForwardsOnNodes(
       !isWebForward(pf),
   );
   const eipId = externalIps[0]?.id || "";
-  const routeWeb = ROUTE_PROVIDERS.has(providerType || "");
   const withEip = merged.map((pf) => {
     const entry: PortForward = { ...pf };
     if (routeWeb && isRouteAccessForward(pf)) {
@@ -265,7 +271,7 @@ function ensureShowroomGatewayPortForwardsOnNodes(
   });
 }
 
-/** Showroom + gateway: sync external IP, 443→infra:80 forward, cosmetic edge. */
+/** Showroom + gateway: sync external IP, managed 443 forward, cosmetic edge. */
 export function syncShowroomGatewayAccess(
   nodes: Node[],
   edges: Edge[],

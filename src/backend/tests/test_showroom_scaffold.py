@@ -586,6 +586,19 @@ def test_fill_app_proxy_tab_urls():
     assert "__TROSHKA_APP_PROXY__" not in out
 
 
+def test_fill_app_proxy_tab_urls_eip():
+    from app.services.showroom_scaffold import fill_app_proxy_tab_urls_eip
+
+    ui = (
+        "tabs:\n"
+        "  - name: ocp Console\n"
+        "    url: '__TROSHKA_APP_PROXY__console-openshift-console.apps.ocp.local__'\n"
+    )
+    out = fill_app_proxy_tab_urls_eip(ui, "e0b9ad55-ae28-477c", "184.194.236.17")
+    assert "url: 'https://tpf-e0b9ad55-con-ocp-lab.184.194.236.17.sslip.io'" in out
+    assert "__TROSHKA_APP_PROXY__" not in out
+
+
 def test_derive_apps_domain():
     from app.services.showroom_scaffold import derive_apps_domain
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   findRouteForForward,
+  formatEipAccessUrl,
   formatOcpRouteUrl,
   isOcpRoutableForward,
   type RouteEndpoint,
@@ -58,5 +59,31 @@ describe("formatOcpRouteUrl", () => {
     expect(formatOcpRouteUrl("rt.apps.example.com", "443")).toBe("https://rt.apps.example.com");
     expect(formatOcpRouteUrl("rt.apps.example.com", "6443")).toBe("https://rt.apps.example.com");
     expect(formatOcpRouteUrl("rt.apps.example.com", "6444")).toBe("https://rt.apps.example.com");
+  });
+});
+
+describe("formatEipAccessUrl", () => {
+  it("links web ports and leaves API ports as non-links", () => {
+    expect(formatEipAccessUrl("184.194.236.17", "443")).toBe("https://184.194.236.17");
+    expect(formatEipAccessUrl("184.194.236.17", "80")).toBe("http://184.194.236.17");
+    expect(formatEipAccessUrl("184.194.236.17", "6443")).toBeNull();
+  });
+
+  it("uses showroom.<eip>.sslip.io for cloud showroom forwards", () => {
+    expect(
+      formatEipAccessUrl("184.194.236.17", "443", { showroom: true }),
+    ).toBe("https://showroom.184.194.236.17.sslip.io");
+    expect(
+      formatEipAccessUrl("184.194.236.17", "80", { showroom: true }),
+    ).toBe("http://showroom.184.194.236.17.sslip.io");
+  });
+
+  it("prefers deployed _showroom_url when present", () => {
+    expect(
+      formatEipAccessUrl("184.194.236.17", "443", {
+        showroom: true,
+        showroomUrl: "https://showroom.guid.example.com",
+      }),
+    ).toBe("https://showroom.guid.example.com");
   });
 });

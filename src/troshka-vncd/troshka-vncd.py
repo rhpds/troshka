@@ -223,6 +223,30 @@ async def _prune_loop():
         _prune_consumed()
 
 
+def _primary_ipv4() -> str:
+    """Outbound-primary IPv4 (not 0.0.0.0) so we don't steal every local :443."""
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("1.1.1.1", 80))
+        return s.getsockname()[0]
+    except OSError:
+        return "0.0.0.0"
+    finally:
+        s.close()
+
+
+def _resolve_bind_ip(conf: dict, *, tls: bool) -> str:
+    if conf.get("bind_ip"):
+        return str(conf["bind_ip"])
+    # Plain (OCP router) may stay wildcard. TLS :443 must not — showroom
+    # terminators bind 172.30.<vni>.1:443 on the same host.
+    if not tls:
+        return "0.0.0.0"
+    return _primary_ipv4()
+
+
 async def main():
     import argparse
 
@@ -243,8 +267,8 @@ async def main():
     args = parser.parse_args()
 
     conf = _load_config()
-    bind_ip = conf.get("bind_ip", "0.0.0.0")
     no_tls = args.no_tls or conf.get("no_tls", False)
+    bind_ip = _resolve_bind_ip(conf, tls=not no_tls)
 
     if no_tls:
         port = args.plain_port
