@@ -9,11 +9,11 @@ install-complete``, then eject — but once *per cluster*, in parallel, each blo
 consuming the per-cluster ``install-config``/``agent-config`` already materialised
 into ``<workdir>/<clusterId>/`` by the pod-create runner (Task 4).
 
-``agent create image`` is serialized across clusters with ``flock``: the installer
-cache under ``~/.cache/agent/files_cache`` is not concurrent-safe (parallel runs
-race and fail with missing ``agent-tui``). While waiting, each cluster's
-``install.log`` prints periodic breadcrumbs so the UI does not look stuck.
-Boot / wait-for / eject still run in parallel after each cluster's ISO is ready.
+``agent create image`` runs **in parallel per cluster** with an isolated
+``XDG_CACHE_HOME`` under each cluster workdir (``<workdir>/<clusterId>/.cache``).
+A shared ``~/.cache/agent/files_cache`` is not concurrent-safe (parallel runs
+race and fail with missing ``agent-tui``); per-cluster caches avoid that without
+serializing ISO builds. Boot / wait-for / eject already run in parallel.
 
 The Redfish/serve/wait-for/create-image command strings are shared with the
 bastion installer (:mod:`app.services.ocp.agent_template`) so behavior stays one
@@ -527,37 +527,22 @@ def _install_log_open_cmd(cluster_dir: str, indent: str = "  ") -> str:
     )
 
 
-def _agent_create_image_resume_cmd(indent: str, lock_path: str) -> str:
+def _agent_create_image_resume_cmd(indent: str, cluster_dir: str) -> str:
     """Run create-image only when the ISO and installer state are not already present.
 
-    Concurrent cluster installs share the installer agent files_cache; wrap the
-    create-image invocation in ``flock`` so only one runs at a time. While
-    blocked, emit periodic ``install.log`` lines so multi-cluster UIs show why
-    this cluster has not started create-image yet.
+    Each cluster gets its own ``XDG_CACHE_HOME`` under ``<cluster_dir>/.cache`` so
+    parallel ``agent create image`` invocations do not share
+    ``~/.cache/agent/files_cache`` (which races and fails).
     """
     i = indent
-    locked_create = (
-        f"{i}  # Serialize create-image — shared agent files_cache is not concurrent-safe.\n"
-        f"{i}  (\n"
-        f"{i}    waited=0\n"
-        f"{i}    until flock -w 15 200; do\n"
-        f'{i}      if [ "$waited" = 0 ]; then\n'
-        f'{i}        echo "create-image: waiting — another cluster holds the '
-        f'shared agent cache lock (downloading/extracting installer layers)"\n'
-        f"{i}      else\n"
-        f'{i}        echo "create-image: still waiting on shared agent cache '
-        f'(${{waited}}s)..."\n'
-        f"{i}      fi\n"
-        f"{i}      waited=$((waited + 15))\n"
-        f"{i}    done\n"
-        f'{i}    if [ "$waited" = 0 ]; then\n'
-        f'{i}      echo "create-image: acquired lock"\n'
-        f"{i}    else\n"
-        f'{i}      echo "create-image: acquired lock after ${{waited}}s"\n'
-        f"{i}    fi\n"
-        f"{i}    set -o pipefail\n"
-        + _agent_create_image_cmd(i + "    ", "openshift-install", "create-image.log")
-        + f"{i}  ) 200>{shlex.quote(lock_path)}\n"
+    cache_home = f"{cluster_dir}/.cache"
+    create = (
+        f"{i}  # Per-cluster agent cache — shared ~/.cache/agent is not concurrent-safe.\n"
+        f"{i}  mkdir -p {shlex.quote(cache_home)}\n"
+        f"{i}  export XDG_CACHE_HOME={shlex.quote(cache_home)}\n"
+        f'{i}  echo "create-image: using isolated cache $XDG_CACHE_HOME"\n'
+        f"{i}  set -o pipefail\n"
+        + _agent_create_image_cmd(i + "  ", "openshift-install", "create-image.log")
     )
     return (
         f'{i}if [ -z "${{TROSHKA_FRESH_INSTALL_LOG:-}}" ] '
@@ -567,7 +552,7 @@ def _agent_create_image_resume_cmd(indent: str, lock_path: str) -> str:
         f"{i}  cp -f .src/install-config.yaml .src/agent-config.yaml ./\n"
         f"{i}  if [ -d .src/openshift ]; then "
         f"mkdir -p openshift && cp -f .src/openshift/*.yaml openshift/; fi\n"
-        + locked_create
+        + create
         + f"{i}fi\n"
     )
 
@@ -647,7 +632,7 @@ def _cluster_install_block(
         + _fresh_install_reset_cmd("  ", cluster_dir)
         + '  HTTP_PID=""\n'
         + "  trap 'kill $HTTP_PID 2>/dev/null || true' EXIT\n"
-        + _agent_create_image_resume_cmd("  ", f"{workdir}/.agent-create-image.lock")
+        + _agent_create_image_resume_cmd("  ", cluster_dir)
         + _boot_from_agent_iso_cmd("  ", cluster_dir, port, bmc_ips_str, serving_ip)
         + "  echo 'Waiting for cluster installation to complete...'\n"
         + _wait_for_complete_cmd("  ", "openshift-install", ".")

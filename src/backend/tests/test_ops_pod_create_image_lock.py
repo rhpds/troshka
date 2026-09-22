@@ -1,4 +1,4 @@
-"""Ops-pod create-image must serialize across parallel clusters (files_cache race)."""
+"""Ops-pod create-image isolates agent cache per cluster (no shared flock)."""
 
 from __future__ import annotations
 
@@ -19,13 +19,14 @@ def _two_cluster_script() -> str:
     )
 
 
-def test_create_image_uses_shared_flock():
+def test_create_image_uses_per_cluster_cache_not_flock():
     script = _two_cluster_script()
-    assert script.count("flock -w 15 200") == 2
-    assert script.count("/workdir/.agent-create-image.lock") == 2
-    assert 'echo "create-image: acquired lock"' in script
-    assert "another cluster holds the shared agent cache lock" in script
-    assert "still waiting on shared agent cache" in script
+    assert "flock" not in script
+    assert "/workdir/.agent-create-image.lock" not in script
+    assert script.count("export XDG_CACHE_HOME=") == 2
+    assert "/workdir/source/.cache" in script
+    assert "/workdir/destination/.cache" in script
+    assert "create-image: using isolated cache" in script
 
 
 def test_create_image_still_runs_per_cluster():
