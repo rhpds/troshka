@@ -1365,6 +1365,44 @@ class TestWaitForRunningInstance(unittest.TestCase):
         self.assertIsNone(ip)
         self.assertIsNone(st)
 
+    @patch("time.sleep")
+    @patch("time.time")
+    def test_waits_for_public_ip_after_running(self, mock_time, mock_sleep):
+        """Running but no public IP yet -> keep polling until the IP appears
+        (the association lags the running transition), then return it."""
+        from app.api.hosts import _wait_for_running_instance
+
+        drv = MagicMock()
+        prov = MagicMock()
+        drv.get_host_status.side_effect = [
+            {"state": "running", "public_ip": None},  # first stability loop breaks
+            {"state": "running", "public_ip": None},  # deadline iter 1: no IP yet
+            {"state": "running", "public_ip": "9.9.9.9"},  # deadline iter 2: IP present
+        ]
+        mock_time.side_effect = [0, 1, 2, 3, 4]
+
+        ip, st = _wait_for_running_instance(drv, prov, "host-12345678", "i-abc")
+
+        self.assertEqual(ip, "9.9.9.9")
+
+    @patch("time.sleep")
+    @patch("time.time")
+    def test_running_without_ip_returns_last_status(self, mock_time, mock_sleep):
+        """Deadline hit while running but never got a public IP -> return
+        (None, running_status) so the caller knows it IS running (not stopped)."""
+        from app.api.hosts import _wait_for_running_instance
+
+        drv = MagicMock()
+        prov = MagicMock()
+        drv.get_host_status.return_value = {"state": "running", "public_ip": None}
+        mock_time.side_effect = [0, 1, 400]  # deadline=300; one poll then time out
+
+        ip, st = _wait_for_running_instance(drv, prov, "host-12345678", "i-abc")
+
+        self.assertIsNone(ip)
+        self.assertIsNotNone(st)
+        self.assertEqual(st["state"], "running")
+
 
 class TestFinalizeTermination(unittest.TestCase):
     """Tests for _finalize_termination."""
@@ -1731,3 +1769,76 @@ class TestProvisionRequest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWaitAndReinstallEipOrchestration(unittest.TestCase):
+    """Power-on detaches EIPs before start, reattaches after, and never marks a
+    running-but-IP-less instance as stopped."""
+
+    def _seed(self):
+        import uuid as _uuid
+
+        from app.models.host import Host as _Host
+        from app.models.provider import Provider as _Provider
+        from tests.conftest import TestSession as _TS
+
+        db = _TS()
+        prov = _Provider(
+            name=f"p-{_uuid.uuid4().hex[:8]}", type="ec2", default_region="us-east-1"
+        )
+        prov.set_credentials({"access_key_id": "k", "secret_access_key": "s"})
+        db.add(prov)
+        db.commit()
+        db.refresh(prov)
+        host = _Host(
+            provider_id=prov.id,
+            instance_id=f"i-{_uuid.uuid4().hex[:8]}",
+            private_key="k",
+            state="starting",
+            max_eips=14,
+        )
+        db.add(host)
+        db.commit()
+        db.refresh(host)
+        hid, pid = host.id, prov.id
+        db.close()
+        return hid, pid
+
+    def test_detach_before_start_reattach_after_and_no_false_stopped(self):
+        from unittest.mock import patch as _p
+
+        import app.api.hosts as hosts_mod
+        from app.models.host import Host as _Host
+        from tests.conftest import TestSession as _TS
+
+        hid, pid = self._seed()
+        order = []
+
+        def _detach(db, host):
+            order.append("detach")
+
+        def _reattach(db, host):
+            order.append("reattach")
+
+        def _wait(drv, prov, host_id, instance_id):
+            order.append("wait")
+            return None, {"state": "running", "public_ip": None}  # running, no IP
+
+        with _p("app.core.database.SessionLocal", _TS), _p(
+            "app.services.providers.get_provider_driver", MagicMock()
+        ), _p("app.services.eip_service.detach_host_eips_preserve_ip", _detach), _p(
+            "app.services.eip_service.reattach_host_eips", _reattach
+        ), _p.object(
+            hosts_mod, "_wait_for_running_instance", _wait
+        ):
+            hosts_mod._wait_and_reinstall_bg(hid, "i-x", pid)
+
+        # detach happens before the start/wait; reattach after
+        self.assertEqual(order[:2], ["detach", "wait"])
+        self.assertIn("reattach", order)
+        # running-but-no-IP must NOT be marked stopped
+        db = _TS()
+        h = db.query(_Host).filter_by(id=hid).first()
+        self.assertEqual(h.state, "active")
+        self.assertEqual(h.agent_status, "disconnected")
+        db.close()

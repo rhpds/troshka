@@ -207,3 +207,116 @@ def test_sync_sg_rules_noop_for_ocpvirt(mock_get_driver):
     assert result == {"added": 0, "removed": 0}
     mock_get_driver.assert_not_called()
     db.close()
+
+
+@patch("app.services.provisioner._get_ec2_client")
+def test_detach_host_eips_preserve_ip(mock_ec2_client):
+    """Power-cycle detach: disassociate the EIP but KEEP its secondary private IP
+    on the ENI (do NOT unassign) so it can be re-attached to the same IP."""
+    ec2 = MagicMock()
+    mock_ec2_client.return_value = ec2
+
+    db = TestSession()
+    host = Host(
+        provider_id=_provider_id,
+        instance_id=f"i-detach-{uuid.uuid4().hex[:8]}",
+        ip_address="10.0.2.10",
+        private_key="k",
+        state="running",
+        max_eips=14,
+    )
+    db.add(host)
+    db.commit()
+    db.refresh(host)
+    eip = ElasticIp(
+        provider_id=_provider_id,
+        project_id=str(uuid.uuid4()),
+        canvas_eip_id=f"eip-{uuid.uuid4()}",
+        allocation_id="eipalloc-detach1",
+        public_ip="54.1.2.3",
+        private_ip="10.0.1.149",
+        association_id="eipassoc-detach1",
+        host_id=host.id,
+        state="associated",
+    )
+    db.add(eip)
+    db.commit()
+    db.refresh(eip)
+
+    result = eip_service.detach_host_eips_preserve_ip(db, host)
+
+    ec2.disassociate_address.assert_called_once_with(AssociationId="eipassoc-detach1")
+    ec2.unassign_private_ip_addresses.assert_not_called()  # private IP preserved
+    db.refresh(eip)
+    assert eip.state == "reattach_pending"
+    assert eip.association_id is None
+    assert eip.private_ip == "10.0.1.149"  # preserved for reattach
+    assert eip.host_id == host.id
+    assert [e.id for e in result] == [eip.id]
+    db.close()
+
+
+@patch("app.services.provisioner._get_ec2_client")
+def test_reattach_host_eips_to_same_private_ip(mock_ec2_client):
+    """Reattach after start: associate the EIP back to its SAME stored private IP
+    (not a freshly-assigned one), preserving the project mapping."""
+    ec2 = MagicMock()
+    ec2.describe_instances.return_value = {
+        "Reservations": [
+            {
+                "Instances": [
+                    {
+                        "NetworkInterfaces": [
+                            {
+                                "NetworkInterfaceId": "eni-primary",
+                                "Attachment": {"DeviceIndex": 0},
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+    ec2.associate_address.return_value = {"AssociationId": "eipassoc-new1"}
+    mock_ec2_client.return_value = ec2
+
+    db = TestSession()
+    host = Host(
+        provider_id=_provider_id,
+        instance_id=f"i-reattach-{uuid.uuid4().hex[:8]}",
+        ip_address="10.0.2.11",
+        private_key="k",
+        state="running",
+        max_eips=14,
+    )
+    db.add(host)
+    db.commit()
+    db.refresh(host)
+    eip = ElasticIp(
+        provider_id=_provider_id,
+        project_id=str(uuid.uuid4()),
+        canvas_eip_id=f"eip-{uuid.uuid4()}",
+        allocation_id="eipalloc-reattach1",
+        public_ip="54.4.5.6",
+        private_ip="10.0.1.149",
+        host_id=host.id,
+        association_id=None,
+        state="reattach_pending",
+    )
+    db.add(eip)
+    db.commit()
+    db.refresh(eip)
+
+    eip_service.reattach_host_eips(db, host)
+
+    ec2.assign_private_ip_addresses.assert_not_called()  # reuse stored IP, don't assign new
+    ec2.associate_address.assert_called_once_with(
+        AllocationId="eipalloc-reattach1",
+        NetworkInterfaceId="eni-primary",
+        PrivateIpAddress="10.0.1.149",
+    )
+    db.refresh(eip)
+    assert eip.state == "associated"
+    assert eip.association_id == "eipassoc-new1"
+    assert eip.private_ip == "10.0.1.149"
+    db.close()

@@ -142,6 +142,85 @@ def release_eip(db: Session, eip: ElasticIp) -> None:
     db.commit()
 
 
+def detach_host_eips_preserve_ip(db: Session, host) -> list[ElasticIp]:
+    """Disassociate all of a host's EIPs for a power-cycle, KEEPING each EIP's
+    secondary private IP on the ENI.
+
+    An EIP present on an ENI at start time suppresses the instance's
+    auto-assigned public IPv4 (the host's management IP). So before a power-on we
+    disassociate the EIPs — but we must NOT unassign their secondary private IPs,
+    because the project networking is keyed on those IPs. They persist across
+    stop/start, so :func:`reattach_host_eips` can re-associate each EIP to the
+    exact same private IP afterward, preserving the project mapping.
+
+    EC2 only; other providers terminate at their LB/router and are a no-op here.
+    Returns the EIPs marked for reattach.
+    """
+    eips = (
+        db.query(ElasticIp)
+        .filter(ElasticIp.host_id == host.id, ElasticIp.state == "associated")
+        .all()
+    )
+    for eip in eips:
+        provider = db.query(Provider).filter_by(id=eip.provider_id).first()
+        if provider and provider.type == "ec2" and eip.association_id:
+            from app.services.provisioner import _get_ec2_client
+
+            ec2 = _get_ec2_client(credentials=provider.get_credentials())
+            ec2.disassociate_address(AssociationId=eip.association_id)
+        # Keep private_ip + host_id so reattach targets the SAME secondary IP.
+        eip.association_id = None
+        eip.state = "reattach_pending"
+        db.commit()
+        logger.info(
+            "EIP %s detached for power-cycle (private IP %s preserved)",
+            eip.public_ip,
+            eip.private_ip,
+        )
+    return eips
+
+
+def reattach_host_eips(db: Session, host) -> None:
+    """Re-associate a host's ``reattach_pending`` EIPs to their SAME stored
+    private IP (see :func:`detach_host_eips_preserve_ip`).
+
+    Associating to the existing secondary private IP (rather than assigning a
+    fresh one) preserves the project's EIP↔private-IP↔gateway wiring, and
+    coexists with the primary's newly auto-assigned management public IP.
+    """
+    eips = (
+        db.query(ElasticIp)
+        .filter(ElasticIp.host_id == host.id, ElasticIp.state == "reattach_pending")
+        .all()
+    )
+    for eip in eips:
+        provider = db.query(Provider).filter_by(id=eip.provider_id).first()
+        if provider and provider.type == "ec2" and eip.private_ip:
+            from app.services.provisioner import _get_ec2_client
+
+            ec2 = _get_ec2_client(credentials=provider.get_credentials())
+            desc = ec2.describe_instances(InstanceIds=[host.instance_id])
+            eni_id = None
+            for eni in desc["Reservations"][0]["Instances"][0]["NetworkInterfaces"]:
+                if eni["Attachment"]["DeviceIndex"] == 0:
+                    eni_id = eni["NetworkInterfaceId"]
+                    break
+            if eni_id:
+                resp = ec2.associate_address(
+                    AllocationId=eip.allocation_id,
+                    NetworkInterfaceId=eni_id,
+                    PrivateIpAddress=eip.private_ip,
+                )
+                eip.association_id = resp["AssociationId"]
+        eip.state = "associated"
+        db.commit()
+        logger.info(
+            "EIP %s re-attached to %s after power-on",
+            eip.public_ip,
+            eip.private_ip,
+        )
+
+
 def migrate_eip(db: Session, eip: ElasticIp, from_host, to_host) -> None:
     """Migrate an EIP from one host to another."""
     logger.info(

@@ -655,12 +655,20 @@ def _wait_for_running_instance(
             logger.warning("start_host failed for %s: %s", host_id[:8], e)
 
     deadline = time.time() + 300
+    last_running_st = None
     while time.time() < deadline:
         st = drv.get_host_status(prov, instance_id)
         if st and st.get("state") == "running":
-            return st.get("public_ip"), st
+            last_running_st = st
+            # The public IP association lags the running transition — keep polling
+            # until it appears rather than giving up (and mislabeling the host) on
+            # the first running status.
+            if st.get("public_ip"):
+                return st.get("public_ip"), st
         time.sleep(10)
-    return None, None
+    # Deadline hit. Return the last running status (if any) so the caller can tell
+    # "running but no public IP" apart from "never started".
+    return None, last_running_st
 
 
 def _finalize_termination(s: Session, h: Host, prov, drv) -> bool:
@@ -1335,20 +1343,59 @@ def _wait_and_reinstall_bg(host_id: str, instance_id: str, provider_id: str):
             return
         _drv = _get_drv(_prov)
 
+        # An EIP present on the ENI at start time suppresses the instance's
+        # auto-assigned management public IP. Detach the host's EIPs (keeping their
+        # secondary private IPs) BEFORE the start so the ENI auto-assigns one; they
+        # are re-attached to the same private IPs once the host is running.
+        h = s.query(Host).filter_by(id=host_id).first()
+        if not h:
+            return
+        try:
+            from app.services.eip_service import detach_host_eips_preserve_ip
+
+            detach_host_eips_preserve_ip(s, h)
+        except Exception:
+            logger.warning(
+                "Host %s: EIP detach before power-on failed", host_id[:8], exc_info=True
+            )
+
         new_ip, st = _wait_for_running_instance(_drv, _prov, host_id, instance_id)
 
         h = s.query(Host).filter_by(id=host_id).first()
         if not h:
             return
 
+        def _reattach_eips():
+            try:
+                from app.services.eip_service import reattach_host_eips
+
+                reattach_host_eips(s, h)
+            except Exception:
+                logger.warning(
+                    "Host %s: EIP reattach after power-on failed",
+                    host_id[:8],
+                    exc_info=True,
+                )
+
         if not new_ip:
-            logger.warning(
-                "Host %s never reached running state after power-on",
-                host_id[:8],
-            )
-            h.state = "stopped"
+            # st truthy => the instance IS running, it just has no public IP (e.g.
+            # detach failed, or a host that only ever had an EIP). Do NOT mislabel a
+            # running instance as stopped.
+            if st:
+                logger.warning(
+                    "Host %s is running but has no public IP after power-on",
+                    host_id[:8],
+                )
+                h.state = "active"
+            else:
+                logger.warning(
+                    "Host %s never reached running state after power-on",
+                    host_id[:8],
+                )
+                h.state = "stopped"
             h.agent_status = "disconnected"
             s.commit()
+            _reattach_eips()  # restore project EIPs regardless
             return
 
         old_ip = h.ip_address
@@ -1357,6 +1404,10 @@ def _wait_and_reinstall_bg(host_id: str, instance_id: str, provider_id: str):
         h.private_ip = (st or {}).get("private_ip") or h.private_ip
         h.agent_status = "waiting_ssh"
         s.commit()
+
+        # Re-associate project EIPs to their preserved secondary private IPs; this
+        # coexists with the primary's freshly auto-assigned management IP.
+        _reattach_eips()
 
         _update_console_dns_for_new_ip(h, s, old_ip, new_ip)
 
