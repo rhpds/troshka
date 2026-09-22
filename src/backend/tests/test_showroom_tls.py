@@ -36,7 +36,9 @@ def test_ensure_tls_letsencrypt_path():
             },
             {"status": "completed", "result": {"pid": 1}},
         ],
-    ), patch.object(ds, "create_dns_records", return_value=[]) as mk_dns, patch.object(
+    ), patch(
+        "app.services.dns_service.create_dns_records", return_value=[]
+    ) as mk_dns, patch.object(
         ds,
         "_resolve_showroom_dns_provider",
         return_value=("route53", {"access_key_id": "AK"}),
@@ -60,7 +62,7 @@ def test_ensure_tls_self_signed_when_no_dns():
             },
             {"status": "completed", "result": {"pid": 1}},
         ],
-    ), patch.object(ds, "create_dns_records") as mk_dns:
+    ), patch("app.services.dns_service.create_dns_records") as mk_dns:
         url = ds._ensure_showroom_tls(
             MagicMock(),
             host,
@@ -80,7 +82,9 @@ def test_teardown_stops_proxy_and_deletes_dns():
         ds,
         "wait_for_job",
         return_value={"status": "completed", "result": {"stopped": True}},
-    ), patch.object(ds, "delete_dns_records", return_value=[]) as mk_del, patch.object(
+    ), patch(
+        "app.services.dns_service.delete_dns_records", return_value=[]
+    ) as mk_del, patch.object(
         ds, "_resolve_showroom_dns_provider", return_value=("route53", {"x": 1})
     ):
         ds._teardown_showroom_tls(MagicMock(), host, _proj(), "1.2.3.4")
@@ -91,7 +95,7 @@ def test_teardown_skips_dns_when_none():
     host = MagicMock()
     with patch.object(ds, "start_job", return_value="j"), patch.object(
         ds, "wait_for_job", return_value={"status": "completed", "result": {}}
-    ), patch.object(ds, "delete_dns_records") as mk_del, patch.object(
+    ), patch("app.services.dns_service.delete_dns_records") as mk_del, patch.object(
         ds, "_resolve_showroom_dns_provider", return_value=(None, {})
     ):
         ds._teardown_showroom_tls(MagicMock(), host, _proj(dns=False), "1.2.3.4")

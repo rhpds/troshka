@@ -56,7 +56,6 @@ from app.services.deploy_topology import (
     _vm_domain_name,
     is_valid_smbios_uuid,
 )
-from app.services.dns_service import create_dns_records, delete_dns_records
 from app.services.mesh_service import (
     create_mesh_peers,
     delete_mesh_peers,
@@ -199,6 +198,8 @@ def _resolve_showroom_dns_provider(s, project):
 def _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns) -> str:
     """Create DNS + cert + TLS terminator for the troshkad showroom. Non-fatal.
     Returns the showroom URL."""
+    from app.services.dns_service import create_dns_records
+
     octet3 = int(first_vni) & 0xFF
     fqdn = _showroom_fqdn(project)
     dp_type, dp_config = _resolve_showroom_dns_provider(s, project)
@@ -259,6 +260,8 @@ def _tls_proxy_via_job(host, project_id, netns, listen, upstream, cert_path, key
 
 def _teardown_showroom_tls(s, host, project, eip):
     """Stop the showroom terminator and delete its DNS record. Non-fatal."""
+    from app.services.dns_service import delete_dns_records
+
     try:
         jid = start_job(
             host,
@@ -12810,6 +12813,7 @@ def _destroy_cleanup_dns(s, ctx, project_id):
     if not ctx.get("dns_provider_id"):
         return
     from app.models.dns_provider import DnsProvider
+    from app.services.dns_service import delete_dns_records
 
     topo = ctx.get("topology", {})
     dns_provider = s.query(DnsProvider).filter_by(id=ctx["dns_provider_id"]).first()
