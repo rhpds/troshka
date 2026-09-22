@@ -21,9 +21,11 @@ def _two_cluster_script() -> str:
 
 def test_create_image_uses_shared_flock():
     script = _two_cluster_script()
-    assert script.count("flock 200") == 2
+    assert script.count("flock -w 15 200") == 2
     assert script.count("/workdir/.agent-create-image.lock") == 2
     assert 'echo "create-image: acquired lock"' in script
+    assert "another cluster holds the shared agent cache lock" in script
+    assert "still waiting on shared agent cache" in script
 
 
 def test_create_image_still_runs_per_cluster():

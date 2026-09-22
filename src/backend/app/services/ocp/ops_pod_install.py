@@ -11,8 +11,9 @@ into ``<workdir>/<clusterId>/`` by the pod-create runner (Task 4).
 
 ``agent create image`` is serialized across clusters with ``flock``: the installer
 cache under ``~/.cache/agent/files_cache`` is not concurrent-safe (parallel runs
-race and fail with missing ``agent-tui``). Boot / wait-for / eject still run in
-parallel after each cluster's ISO is ready.
+race and fail with missing ``agent-tui``). While waiting, each cluster's
+``install.log`` prints periodic breadcrumbs so the UI does not look stuck.
+Boot / wait-for / eject still run in parallel after each cluster's ISO is ready.
 
 The Redfish/serve/wait-for/create-image command strings are shared with the
 bastion installer (:mod:`app.services.ocp.agent_template`) so behavior stays one
@@ -530,14 +531,30 @@ def _agent_create_image_resume_cmd(indent: str, lock_path: str) -> str:
     """Run create-image only when the ISO and installer state are not already present.
 
     Concurrent cluster installs share the installer agent files_cache; wrap the
-    create-image invocation in ``flock`` so only one runs at a time.
+    create-image invocation in ``flock`` so only one runs at a time. While
+    blocked, emit periodic ``install.log`` lines so multi-cluster UIs show why
+    this cluster has not started create-image yet.
     """
     i = indent
     locked_create = (
         f"{i}  # Serialize create-image — shared agent files_cache is not concurrent-safe.\n"
         f"{i}  (\n"
-        f"{i}    flock 200\n"
-        f'{i}    echo "create-image: acquired lock"\n'
+        f"{i}    waited=0\n"
+        f"{i}    until flock -w 15 200; do\n"
+        f'{i}      if [ "$waited" = 0 ]; then\n'
+        f'{i}        echo "create-image: waiting — another cluster holds the '
+        f'shared agent cache lock (downloading/extracting installer layers)"\n'
+        f"{i}      else\n"
+        f'{i}        echo "create-image: still waiting on shared agent cache '
+        f'(${{waited}}s)..."\n'
+        f"{i}      fi\n"
+        f"{i}      waited=$((waited + 15))\n"
+        f"{i}    done\n"
+        f'{i}    if [ "$waited" = 0 ]; then\n'
+        f'{i}      echo "create-image: acquired lock"\n'
+        f"{i}    else\n"
+        f'{i}      echo "create-image: acquired lock after ${{waited}}s"\n'
+        f"{i}    fi\n"
         f"{i}    set -o pipefail\n"
         + _agent_create_image_cmd(i + "    ", "openshift-install", "create-image.log")
         + f"{i}  ) 200>{shlex.quote(lock_path)}\n"
