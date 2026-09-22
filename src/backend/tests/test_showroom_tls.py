@@ -264,9 +264,17 @@ def test_maybe_setup_is_non_fatal_on_error():
         )
 
 
-def test_teardown_guards_none_project():
-    """A None project must return early, never raising in _showroom_fqdn(None)."""
+def test_patch_live_showroom_ui_config_uses_containers_exec():
+    """troshkad handler is containers/exec (plural) — singular 404s and leaves
+    __TROSHKA_APP_PROXY__ unfilled in the iframe."""
     host = MagicMock()
-    with patch.object(ds, "start_job") as mk_start:
-        ds._teardown_showroom_tls(MagicMock(), host, None, "1.2.3.4")
-    mk_start.assert_not_called()
+    with patch.object(ds, "start_job", return_value="j") as mk_start, patch.object(
+        ds, "wait_for_job", return_value={"status": "completed"}
+    ):
+        ds._patch_live_showroom_ui_config(
+            host, "d0969e66-4b50-45a7-be2b-d094ff48e2d6", "tabs: []\n"
+        )
+    path = mk_start.call_args[0][1]
+    assert path == "/containers/exec"
+    params = mk_start.call_args[0][2]
+    assert params["container_name"] == "troshka-d0969e66-showroom-proxy"

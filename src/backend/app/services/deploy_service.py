@@ -7944,16 +7944,14 @@ def _patch_live_showroom_ui_config(host, project_id, filled_yaml: str):
     """Write filled ui-config into the running showroom volume."""
     import base64
 
-    from app.services.troshkad_client import start_job, wait_for_job
-
     b64 = base64.b64encode(filled_yaml.encode()).decode()
     cname = f"troshka-{project_id[:8]}-showroom-proxy"
     try:
         jid = start_job(
             host,
-            "/container/exec",
+            "/containers/exec",
             {
-                "name": cname,
+                "container_name": cname,
                 "command": [
                     "sh",
                     "-c",
