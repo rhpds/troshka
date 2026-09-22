@@ -10621,3 +10621,16 @@ class TestLetsEncryptCert(unittest.TestCase):
         full, key, mode = troshkad._obtain_letsencrypt_cert("x.example.com", {})
         assert mode == "self-signed"
         assert full is None
+
+
+class TestRestoreTlsProxies(unittest.TestCase):
+    @patch("troshkad._start_tls_proxy")
+    @patch("troshkad.glob.glob", return_value=["/var/lib/troshka/gateway/abcdef12/tls/proxy.json"])
+    @patch("builtins.open", new_callable=mock_open,
+           read_data='{"netns":"troshka-abcdef12","listen":"172.30.5.1:443",'
+                     '"upstream":"172.30.5.3:80","cert_path":"/f","key_path":"/k"}')
+    def test_relaunches_from_descriptor(self, _open, _glob, mock_start):
+        troshkad._restore_tls_proxies()
+        mock_start.assert_called_once()
+        _pid, kwargs = mock_start.call_args, mock_start.call_args.kwargs
+        assert "troshka-abcdef12" in mock_start.call_args[0]

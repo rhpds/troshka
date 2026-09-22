@@ -9103,6 +9103,7 @@ def main():
     # Restore services from previous deploy
     _restore_bmc_services()
     _restore_dnsmasq()
+    _restore_tls_proxies()
 
     # Watchdog: check dnsmasq + system services every 30s, restart if dead
     watchdog = threading.Thread(target=_watchdog_loop, daemon=True)
@@ -9314,6 +9315,20 @@ def _restore_dnsmasq():
     restarted = _check_and_restart_dnsmasq()
     if restarted:
         logger.info("dnsmasq restore: restarted %d instance(s)", restarted)
+
+
+def _restore_tls_proxies():
+    """Relaunch showroom TLS terminators from stored descriptors on startup."""
+    import json as _json
+    for desc in glob.glob("/var/lib/troshka/gateway/*/tls/proxy.json"):
+        try:
+            with open(desc) as f:
+                d = _json.load(f)
+            project_id = desc.split("/gateway/")[1].split("/")[0]
+            _start_tls_proxy(project_id, d["netns"], d["listen"], d["upstream"],
+                             d["cert_path"], d["key_path"])
+        except Exception:
+            logger.warning("failed to restore TLS proxy from %s", desc, exc_info=True)
 
 
 # Services that must be running for troshkad to function.
