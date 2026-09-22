@@ -1228,6 +1228,8 @@ def _start_tls_proxy(project_id, netns, listen, upstream, cert_path, key_path):
     import ipaddress, json as _json
     bind_ip, _, port = listen.partition(":")
     ipaddress.ip_address(bind_ip)
+    up_ip, _, up_port = upstream.partition(":")
+    ipaddress.ip_address(up_ip)   # raises on malformed upstream
     port = port or "443"
     tls_dir = _gateway_tls_dir(project_id)
     combined = _write_combined_pem(tls_dir, cert_path, key_path)

@@ -2,6 +2,7 @@
 """Tests for troshkad daemon — uses a real HTTPS server on localhost."""
 import json
 import os
+import signal
 import ssl
 import subprocess
 import sys
@@ -3037,6 +3038,28 @@ class TestTlsProxy(unittest.TestCase):
         assert "OPENSSL-LISTEN:443" in joined and "bind=172.30.5.1" in joined
         assert "TCP:172.30.5.3:80" in joined
         assert "bash" not in argv
+
+    @patch("troshkad.subprocess.Popen")
+    @patch("troshkad.os.chmod")
+    @patch("troshkad.os.makedirs")
+    @patch("builtins.open", new_callable=mock_open, read_data="CERT")
+    def test_rejects_malformed_upstream(self, _open, _mk, _ch, mock_popen):
+        proc = MagicMock(); proc.pid = 4321; mock_popen.return_value = proc
+        with self.assertRaises(ValueError):
+            troshkad._start_tls_proxy(
+                "abcdef12-0000", "troshka-abcdef12", "172.30.5.1:443",
+                "not-an-ip:80", "/gw/full.pem", "/gw/key.pem")
+
+    @patch("troshkad.os.kill")
+    @patch("troshkad.os.remove")
+    @patch("builtins.open", new_callable=mock_open, read_data="9999")
+    def test_stop_kills_and_removes_files(self, mock_open_file, mock_remove, mock_kill):
+        troshkad._stop_tls_proxy("abcdef12-0000")
+        mock_kill.assert_called_once_with(9999, signal.SIGTERM)
+        assert mock_remove.call_count == 2
+        removed = [c[0][0] for c in mock_remove.call_args_list]
+        assert any("proxy.pid" in p for p in removed)
+        assert any("proxy.json" in p for p in removed)
 
 
 class TestGatewayTlsProxyHandlers(unittest.TestCase):

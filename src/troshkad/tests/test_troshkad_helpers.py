@@ -10632,5 +10632,5 @@ class TestRestoreTlsProxies(unittest.TestCase):
     def test_relaunches_from_descriptor(self, _open, _glob, mock_start):
         troshkad._restore_tls_proxies()
         mock_start.assert_called_once()
-        _pid, kwargs = mock_start.call_args, mock_start.call_args.kwargs
-        assert "troshka-abcdef12" in mock_start.call_args[0]
+        args = mock_start.call_args[0]
+        assert "troshka-abcdef12" in args
