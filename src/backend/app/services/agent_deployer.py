@@ -86,10 +86,9 @@ else
     echo "WARNING: Nested virtualization NOT detected"
 fi
 
-# Ensure prerequisites
+# Ensure prerequisites (single-source list from troshkad._REQUIRED_HOST_PACKAGES)
 echo "Installing prerequisites..."
-dnf install -y qemu-kvm libvirt libvirt-client virt-install \
-    python3 python3-libvirt dnsmasq nftables xorriso nmap-ncat sshpass wireguard-tools || true
+dnf install -y {host_packages} || true
 
 # Enable services (RHEL 10 uses modular daemons, RHEL 9 uses monolithic libvirtd)
 if systemctl list-unit-files virtqemud.service &>/dev/null; then
@@ -161,8 +160,8 @@ elif systemctl is-active libvirtd &>/dev/null; then
     echo "libvirtd restarted"
 fi
 
-# Ensure nvme-cli is installed for device detection
-dnf install -y nvme-cli 2>/dev/null || true
+# nvme-cli (for device detection below) is in the single-source package list
+# installed above — no separate install needed.
 
 # Detect NVMe device for a given /dev/sdX name via nvme id-ctrl
 find_nvme_dev() {
@@ -771,6 +770,26 @@ def _src_root() -> str:
     )
 
 
+def _required_host_packages() -> list[str]:
+    """The full host package set, read from its single source of truth in
+    troshkad (``_REQUIRED_HOST_PACKAGES``). The bootstrap installer and troshkad's
+    startup self-heal share this one list. Parsed via ``ast`` (not imported) so
+    reading the constant never executes troshkad's module body.
+    """
+    import ast
+
+    troshkad_path = os.path.join(_src_root(), "troshkad", "troshkad.py")
+    with open(troshkad_path) as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "_REQUIRED_HOST_PACKAGES"
+            for t in node.targets
+        ):
+            return list(ast.literal_eval(node.value))
+    return []
+
+
 def deploy_troshka_serial_over_ssh(
     host_ip: str,
     ssh_user: str,
@@ -1002,6 +1021,7 @@ def deploy_agent(
     )
     script = (
         base_script.replace("{host_id}", host_id)
+        .replace("{host_packages}", " ".join(_required_host_packages()))
         .replace("{api_url}", actual_api_url)
         .replace("{storage_mode}", config.storage_mode)
         .replace("{nfs_server}", config.nfs_server)

@@ -240,6 +240,29 @@ _VENV_BIN = "/opt/troshka/venv/bin"
 _VBMCD_PID = "vbmcd.pid"
 _PXE_LOADER = "pxelinux.0"
 
+# The FULL host package set troshkad needs, and the SINGLE source of truth for
+# it. The backend's agent_deployer installs exactly this list at bootstrap
+# (extracted from here, never duplicated), and troshkad re-checks the whole set
+# on every startup — so an update (which restarts troshkad) self-heals a host
+# that's missing any of them. libguestfs-tools-c provides `guestfish`, required
+# for OCP pattern recert (offline kubelet-PKI wipe) and offline file pulls.
+_REQUIRED_HOST_PACKAGES = [
+    "qemu-kvm",
+    "libvirt",
+    "libvirt-client",
+    "virt-install",
+    "python3",
+    "python3-libvirt",
+    "dnsmasq",
+    "nftables",
+    "xorriso",
+    "nmap-ncat",
+    "sshpass",
+    "wireguard-tools",
+    "nvme-cli",
+    "libguestfs-tools-c",
+]
+
 # ── NFS health tracking ──
 
 _nfs_healthy = True
@@ -8830,6 +8853,49 @@ def _drain_running_jobs(timeout=120):
                     pass
 
 
+def _ensure_host_packages(packages=None):
+    """Install any missing host-op packages (see _REQUIRED_HOST_PACKAGES).
+
+    Runs on startup — so an update (which restarts troshkad) self-heals a host
+    that's missing a dependency like guestfish. Fully non-fatal: an air-gapped
+    host or a failed dnf must never stop troshkad from starting. Returns the
+    list of packages it attempted to install.
+    """
+    packages = _REQUIRED_HOST_PACKAGES if packages is None else packages
+    missing = []
+    for pkg in packages:
+        try:
+            proc = subprocess.run(
+                ["rpm", "-q", pkg],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if proc.returncode != 0:
+                missing.append(pkg)
+        except Exception:
+            # Can't determine — assume present rather than risk a spurious install.
+            pass
+    if not missing:
+        return []
+    logger.info("troshkad: installing missing host packages: %s", ", ".join(missing))
+    try:
+        proc = subprocess.run(
+            ["dnf", "install", "-y", *missing],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=300,
+        )
+        if proc.returncode != 0:
+            logger.warning(
+                "troshkad: dnf install failed for %s (rc=%d)",
+                ", ".join(missing),
+                proc.returncode,
+            )
+    except Exception as e:
+        logger.warning("troshkad: failed to install host packages %s: %s", missing, e)
+    return missing
+
+
 def main():
     global _config, _start_time
     conf_path = sys.argv[1] if len(sys.argv) > 1 else "/opt/troshka/troshkad.conf"
@@ -8875,6 +8941,10 @@ def main():
 
     cleanup_thread = threading.Thread(target=_job_cleanup_loop, daemon=True)
     cleanup_thread.start()
+
+    # Self-heal the host package set on every startup (so an update, which
+    # restarts troshkad, installs anything missing). Non-fatal, off the hot path.
+    threading.Thread(target=_ensure_host_packages, daemon=True).start()
 
     _cleanup_nbd_ports()
     _cleanup_stale_recert()

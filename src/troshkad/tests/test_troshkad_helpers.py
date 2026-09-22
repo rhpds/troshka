@@ -10525,3 +10525,57 @@ class TestS3DownloadStderr(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             troshkad._s3_download({}, "s3://b/k", "/tmp/x.qcow2", "AK", "SK")
         self.assertIn("404", str(ctx.exception))
+
+
+class TestEnsureHostPackages(unittest.TestCase):
+    """troshkad self-installs missing host-op packages (e.g. guestfish) on start."""
+
+    def _run_router(self, missing):
+        """Return a subprocess.run side_effect: rpm -q missing → rc 1, else rc 0."""
+        calls = {}
+
+        def _run(cmd, *a, **k):
+            proc = MagicMock()
+            if cmd[0] == "rpm":
+                proc.returncode = 1 if cmd[-1] in missing else 0
+            elif cmd[0] == "dnf":
+                calls["dnf"] = list(cmd)
+                proc.returncode = 0
+            else:
+                proc.returncode = 0
+            return proc
+
+        return _run, calls
+
+    @patch("troshkad.subprocess.run")
+    def test_installs_only_missing_packages(self, mock_run):
+        run, calls = self._run_router(missing={"libguestfs-tools-c"})
+        mock_run.side_effect = run
+        result = troshkad._ensure_host_packages(["libguestfs-tools-c", "already-there"])
+        assert result == ["libguestfs-tools-c"]
+        assert calls["dnf"] == ["dnf", "install", "-y", "libguestfs-tools-c"]
+
+    @patch("troshkad.subprocess.run")
+    def test_no_install_when_all_present(self, mock_run):
+        run, calls = self._run_router(missing=set())
+        mock_run.side_effect = run
+        result = troshkad._ensure_host_packages(["libguestfs-tools-c"])
+        assert result == []
+        assert "dnf" not in calls
+
+    @patch("troshkad.subprocess.run")
+    def test_nonfatal_on_install_failure(self, mock_run):
+        def _run(cmd, *a, **k):
+            if cmd[0] == "dnf":
+                raise Exception("no repos configured")
+            proc = MagicMock()
+            proc.returncode = 1  # rpm -q → missing
+            return proc
+
+        mock_run.side_effect = _run
+        # Must not raise even though dnf install fails.
+        troshkad._ensure_host_packages(["libguestfs-tools-c"])
+
+    def test_required_packages_includes_guestfish(self):
+        # The one place the host-op package list is defined.
+        assert "libguestfs-tools-c" in troshkad._REQUIRED_HOST_PACKAGES

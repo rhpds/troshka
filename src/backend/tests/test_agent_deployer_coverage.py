@@ -519,3 +519,23 @@ class TestDeployAgent:
         # scp_port_opts is positional arg index 6
         scp_port_opts = scp_call_args[0][6]
         assert scp_port_opts == ["-P", "30022"]
+
+
+class TestRequiredHostPackages:
+    """The host package set is defined once (in troshkad) and installed at bootstrap."""
+
+    def test_required_host_packages_reads_full_set_from_troshkad(self):
+        from app.services.agent_deployer import _required_host_packages
+
+        pkgs = _required_host_packages()
+        # Single source of truth = troshkad._REQUIRED_HOST_PACKAGES
+        assert "libguestfs-tools-c" in pkgs
+        assert "qemu-kvm" in pkgs
+        assert "libvirt" in pkgs
+
+    def test_install_script_uses_host_packages_placeholder(self):
+        # The bootstrap dnf line must NOT hardcode its own list — it installs the
+        # single-source set via the {host_packages} placeholder.
+        from app.services.agent_deployer import AGENT_INSTALL_SCRIPT
+
+        assert "{host_packages}" in AGENT_INSTALL_SCRIPT
