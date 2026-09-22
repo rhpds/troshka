@@ -1,4 +1,17 @@
-# Project Ceph Pattern Restore — Rook PVC-Adopt Spike Findings
+# Project Ceph Pattern Restore
+
+> **Current runtime (2026-09):** TroshkaCeph is a **custom Multus Ceph appliance**
+> (pods owned by Troshka — see `helpers/ceph_appliance.py`), not a Rook
+> `CephCluster` on the parent. Fixed PVCs: `troshka-ceph-mon`,
+> `troshka-ceph-osd-{i}`. Nested mon identity is always `labIp:3300`. Many
+> project Cephs can share the same OCPV workers (no hostNetwork `:6789`/`:3300`).
+>
+> The sections below preserve the original Rook PVC-adopt spike findings that
+> informed identity-preserving capture; naming and identity objects have moved
+> to the appliance secret/ConfigMap set (`troshka-ceph-fsid`, `*-keyring`,
+> `troshka-ceph-conf`).
+
+## Historical: Rook PVC-Adopt Spike Findings
 
 > Task 0 spike for identity-preserving project Ceph pattern capture
 > (`docs/superpowers/specs/2026-09-21-project-ceph-pattern-capture-design.md`).
@@ -20,11 +33,11 @@ never modified.
 
 ## PVC naming convention (discovered, not configurable)
 
-Rook creates these from Troshka's `build_ceph_cluster()` templates
-(`src/operator/helpers/rook_ceph.py`). Names are **not** the
-`troshka-ceph-osd-{i}` convention from the unused `build_osd_pvcs()` helper —
-that helper is dead code; production Ceph clusters use Rook's own
-`storageClassDeviceSets` PVC-templating path instead.
+**Appliance (current):** mon `troshka-ceph-mon`, OSDs `troshka-ceph-osd-{i}`
+with label `troshka-role=ceph-osd`.
+
+**Historical Rook** created these from Troshka's `build_ceph_cluster()` templates
+(`src/operator/helpers/rook_ceph.py`):
 
 | Resource | Name pattern | Example (live `troshka-b57b2bab`) | Example (spike) |
 |---|---|---|---|

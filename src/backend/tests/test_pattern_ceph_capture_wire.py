@@ -73,7 +73,7 @@ class TestPrepareCephCapture:
     def test_builds_device_manifest_and_freezes(self):
         devices = [
             {
-                "name": "rook-ceph-mon-a",
+                "name": "troshka-ceph-mon",
                 "kind": "ceph-mon",
                 "index": 0,
                 "size_bytes": 10 * 1073741824,
@@ -98,7 +98,7 @@ class TestPrepareCephCapture:
         assert len(ceph_devices) == 2
         mon = next(d for d in ceph_devices if d["kind"] == "ceph-mon")
         osd = next(d for d in ceph_devices if d["kind"] == "ceph-osd")
-        assert mon["pvcName"] == "rook-ceph-mon-a"
+        assert mon["pvcName"] == "troshka-ceph-mon"
         assert mon["s3Key"] == "patterns/pat-1/ceph-ceph-mon-0.tar.gz"
         assert mon["sizeGb"] == 10
         assert osd["s3Key"] == "patterns/pat-1/ceph-ceph-osd-0.qcow2"
@@ -161,7 +161,7 @@ class TestCaptureCephIdentityObjects:
             return self._secret({"key": "dmFsdWU="})
 
         def _read_cm(name, _ns):
-            if name == "rook-ceph-mon-endpoints":
+            if name == "troshka-ceph-conf":
                 return self._configmap({"data": "a=1.2.3.4:3300", "maxMonId": "0"})
             raise AssertionError(f"unexpected configmap read: {name}")
 
@@ -171,14 +171,12 @@ class TestCaptureCephIdentityObjects:
         objects = _capture_ceph_identity_objects(core_api, "ns-1")
 
         names = {(o["kind"], o["name"]) for o in objects}
-        assert ("Secret", "rook-ceph-mon") in names
-        assert ("ConfigMap", "rook-ceph-mon-endpoints") in names
-        assert ("Secret", "rook-ceph-admin-keyring") in names
-        assert ("Secret", "rook-ceph-mons-keyring") in names
+        assert ("Secret", "troshka-ceph-fsid") in names
+        assert ("ConfigMap", "troshka-ceph-conf") in names
+        assert ("Secret", "troshka-ceph-admin-keyring") in names
+        assert ("Secret", "troshka-ceph-mon-keyring") in names
 
-        mon_endpoints = next(
-            o for o in objects if o["name"] == "rook-ceph-mon-endpoints"
-        )
+        mon_endpoints = next(o for o in objects if o["name"] == "troshka-ceph-conf")
         # ConfigMap plain strings are base64-encoded for uniform storage.
         import base64
 
@@ -186,7 +184,7 @@ class TestCaptureCephIdentityObjects:
             base64.b64decode(mon_endpoints["data"]["data"]).decode() == "a=1.2.3.4:3300"
         )
 
-        mon_secret = next(o for o in objects if o["name"] == "rook-ceph-mon")
+        mon_secret = next(o for o in objects if o["name"] == "troshka-ceph-fsid")
         # Secret data is stored as-is (already base64 on the wire).
         assert mon_secret["data"]["key"] == "dmFsdWU="
 
@@ -199,7 +197,7 @@ class TestCaptureCephIdentityObjects:
         core_api.read_namespaced_secret.side_effect = ApiException(status=404)
         core_api.read_namespaced_config_map.side_effect = ApiException(status=404)
 
-        with pytest.raises(RuntimeError, match="rook-ceph-mon"):
+        with pytest.raises(RuntimeError, match="troshka-ceph-fsid"):
             _capture_ceph_identity_objects(core_api, "ns-1")
 
     def test_missing_should_capture_row_only_logs(self):
@@ -229,8 +227,8 @@ class TestCaptureCephIdentityObjects:
         assert "rook-csi-cephfs-node" not in names
         assert "rook-ceph-mgr-a-keyring" not in names
         # MUST-capture rows still present.
-        assert "rook-ceph-mon" in names
-        assert "rook-ceph-admin-keyring" in names
+        assert "troshka-ceph-fsid" in names
+        assert "troshka-ceph-admin-keyring" in names
 
     def test_non_404_api_error_propagates(self):
         from kubernetes.client.exceptions import ApiException
@@ -316,7 +314,7 @@ class TestFinalizeCephCaptureDisks:
 
         ceph_devices = [
             {
-                "pvcName": "rook-ceph-mon-a",
+                "pvcName": "troshka-ceph-mon",
                 "kind": "ceph-mon",
                 "index": 0,
                 "patternDiskId": "pd-mon",
@@ -371,10 +369,14 @@ class TestFinalizeCephCaptureDisks:
         pattern.topology = {"projectCeph": {"phase": "Ready"}, "nodes": []}
 
         identity_objects = [
-            {"kind": "Secret", "name": "rook-ceph-mon", "data": {"fsid": "ZnNpZA=="}},
+            {
+                "kind": "Secret",
+                "name": "troshka-ceph-fsid",
+                "data": {"fsid": "ZnNpZA=="},
+            },
             {
                 "kind": "ConfigMap",
-                "name": "rook-ceph-mon-endpoints",
+                "name": "troshka-ceph-conf",
                 "data": {"data": "YT0xLjIuMy40OjMzMDA="},
             },
         ]
@@ -396,7 +398,7 @@ class TestFinalizeCephCaptureDisks:
         assert mon_disk.source_disk_id == "ceph-ceph-mon-0"
         assert mon_disk.source_vm_id is None
         assert mon_disk.source_index == 0
-        assert mon_disk.source_pvc_name == "rook-ceph-mon-a"
+        assert mon_disk.source_pvc_name == "troshka-ceph-mon"
         assert mon_disk.state == "available"
 
         osd_disks = [d for d in added_disks if d.source_kind == "ceph-osd"]
@@ -524,7 +526,7 @@ class TestCaptureKubevirtNativeCephWiring:
         order = []
         ceph_devices = [
             {
-                "pvcName": "rook-ceph-mon-a",
+                "pvcName": "troshka-ceph-mon",
                 "kind": "ceph-mon",
                 "index": 0,
                 "patternDiskId": "pd-mon",
@@ -548,7 +550,7 @@ class TestCaptureKubevirtNativeCephWiring:
 
         def _identity(*_a, **_k):
             order.append("identity_ceph")
-            return [{"kind": "Secret", "name": "rook-ceph-mon", "data": {}}]
+            return [{"kind": "Secret", "name": "troshka-ceph-fsid", "data": {}}]
 
         def _poll_ceph(*_a, **_k):
             order.append("poll_ceph")
@@ -675,7 +677,7 @@ class TestCaptureKubevirtNativeCephWiring:
 
         ceph_devices = [
             {
-                "pvcName": "rook-ceph-mon-a",
+                "pvcName": "troshka-ceph-mon",
                 "kind": "ceph-mon",
                 "index": 0,
                 "patternDiskId": "pd-mon",

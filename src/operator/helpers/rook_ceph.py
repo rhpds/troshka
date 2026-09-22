@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 
 from kubernetes import client
 from kubernetes.client.exceptions import ApiException
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 CEPH_CLUSTER_NAME = "troshka-ceph"
 CEPH_BLOCK_POOL_NAME = "troshka-ceph-pool"
 TROSHKA_CEPH_CR_NAME = "project-ceph"
-CEPH_MON_PVC_NAME = "rook-ceph-mon-a"
+CEPH_MON_PVC_NAME = "troshka-ceph-mon"
 CEPH_DEVICE_SET_NAME = "osd-set"
 CEPH_OSD_TEMPLATE_NAME = "data"
 ROOK_LABEL_DEVICE_SET = "ceph.rook.io/DeviceSet"
@@ -262,14 +263,9 @@ def build_osd_pvcs(ceph_cr: dict) -> list[dict]:
 def normalize_restore_spec(spec: dict) -> dict:
     """Normalize TroshkaCeph ``spec.restore`` into ``{enabled, monPvc, osdPvcs}``.
 
-    Per the Rook PVC-adopt spike (``docs/dev/project-ceph-pattern-restore.md``),
-    Rook's ``CephCluster`` CR has no field meaning "attach PVC X" — it adopts
-    the mon PVC by its fixed name and OSD PVCs by the ``ceph.rook.io/DeviceSet*``
-    labels that a prior capture/restore step stamps on the pre-created claims
-    before this CR exists. ``spec.restore`` therefore carries mostly
-    traceability metadata; the one value ``build_ceph_cluster()`` must act on
-    is the *count* of already-adopted OSD PVCs, so it never asks Rook to
-    provision extra "empty" ones to top up to the configured ``osdCount``.
+    Appliance restore pre-creates mon/OSD PVCs by fixed names before TroshkaCeph
+    starts. ``spec.restore`` carries traceability metadata; ``osdPvcs`` length
+    caps how many OSD Deployments we expect.
     """
     restore = spec.get("restore") or {}
     if not restore.get("enabled"):
@@ -282,24 +278,14 @@ def normalize_restore_spec(spec: dict) -> dict:
 
 
 def _restore_cluster_annotations(restore: dict, osd_count: int) -> tuple[dict, int]:
-    """Return (annotations, effective_osd_count) for a restore-mode CephCluster.
-
-    Raises if ``monPvc`` cannot match Rook's fixed mon PVC name — restore can
-    never adopt under a different name (see ``normalize_restore_spec``).
-    """
+    """Return (annotations, effective_osd_count) for restore-mode metadata."""
     mon_pvc = restore.get("monPvc") or CEPH_MON_PVC_NAME
     if mon_pvc != CEPH_MON_PVC_NAME:
         raise ValueError(
-            f"restore.monPvc must be {CEPH_MON_PVC_NAME!r} (Rook's fixed mon "
-            f"PVC name), got {mon_pvc!r}"
+            f"restore.monPvc must be {CEPH_MON_PVC_NAME!r}, got {mon_pvc!r}"
         )
     osd_pvcs = restore.get("osdPvcs") or []
     if osd_pvcs:
-        # Cap the device-set count at the number of already-adopted OSD PVCs
-        # instead of the spec-computed osdCount, so Rook's reconcile does not
-        # mint new empty claims to fill the gap. If osdPvcs is empty (a
-        # malformed restore block), fall back to the spec count below rather
-        # than requesting zero OSDs.
         osd_count = len(osd_pvcs)
     annotations = {
         RESTORE_ANNOTATION_MON_PVC: mon_pvc,
@@ -1310,12 +1296,9 @@ def _expected_osd_count(namespace: str, custom_api=None) -> int:
             ) from e
         raise
 
-    device_sets = (
-        (cluster.get("spec") or {})
-        .get("storage", {})
-        .get("storageClassDeviceSets")
-        or []
-    )
+    device_sets = (cluster.get("spec") or {}).get("storage", {}).get(
+        "storageClassDeviceSets"
+    ) or []
     if not device_sets:
         raise ValueError(
             f"cannot determine osdCount for namespace {namespace}: "
@@ -1342,34 +1325,31 @@ def _osd_index_from_pvc(pvc) -> int:
     )
 
 
-def discover_ceph_device_pvcs(
-    core_api, namespace: str, custom_api=None
-) -> list[dict]:
+def discover_ceph_device_pvcs(core_api, namespace: str, custom_api=None) -> list[dict]:
     """Discover mon and OSD PVCs for project Ceph capture.
 
-    Mon PVCs are matched by fixed Rook name (``rook-ceph-mon-a``). OSD PVCs are
-    matched by ``ceph.rook.io/DeviceSet=osd-set`` labels, not random suffixes.
-
-    ``custom_api`` is forwarded to ``_expected_osd_count`` — see its docstring.
+    Appliance mon PVC is ``troshka-ceph-mon``. OSD PVCs use
+    ``troshka-role=ceph-osd`` (names ``troshka-ceph-osd-{i}``).
     """
+    from helpers.ceph_appliance import MON_PVC_NAME, osd_pvc_name
+
     expected_osds = _expected_osd_count(namespace, custom_api=custom_api)
 
     try:
         mon_pvc = core_api.read_namespaced_persistent_volume_claim(
-            name=CEPH_MON_PVC_NAME,
+            name=MON_PVC_NAME,
             namespace=namespace,
         )
     except ApiException as e:
         if e.status == 404:
             raise ValueError(
-                f"expected mon PVC {CEPH_MON_PVC_NAME}, not found in {namespace}"
+                f"expected mon PVC {MON_PVC_NAME}, not found in {namespace}"
             ) from e
         raise
 
-    label_selector = f"{ROOK_LABEL_DEVICE_SET}={CEPH_DEVICE_SET_NAME}"
     osd_pvcs = core_api.list_namespaced_persistent_volume_claim(
         namespace=namespace,
-        label_selector=label_selector,
+        label_selector="troshka-role=ceph-osd",
     ).items
 
     if len(osd_pvcs) != expected_osds:
@@ -1379,7 +1359,7 @@ def discover_ceph_device_pvcs(
 
     devices: list[dict] = [
         {
-            "name": CEPH_MON_PVC_NAME,
+            "name": MON_PVC_NAME,
             "kind": "ceph-mon",
             "index": 0,
             "size_bytes": _pvc_size_bytes(mon_pvc),
@@ -1388,23 +1368,25 @@ def discover_ceph_device_pvcs(
 
     seen_indices: set[int] = set()
     for pvc in osd_pvcs:
-        index = _osd_index_from_pvc(pvc)
+        labels = pvc.metadata.labels or {}
+        index_raw = labels.get("troshka-ceph-osd-index")
+        if index_raw is None:
+            # Fall back to name troshka-ceph-osd-N
+            name = pvc.metadata.name or ""
+            prefix = "troshka-ceph-osd-"
+            if name.startswith(prefix) and name[len(prefix) :].isdigit():
+                index = int(name[len(prefix) :])
+            else:
+                raise ValueError(f"OSD PVC {name} missing troshka-ceph-osd-index")
+        else:
+            index = int(index_raw)
         if index in seen_indices:
             raise ValueError(f"duplicate ceph-osd index {index}")
         seen_indices.add(index)
-        expected_pvc_id = f"{CEPH_DEVICE_SET_NAME}-{CEPH_OSD_TEMPLATE_NAME}-{index}"
-        labels = pvc.metadata.labels or {}
-        device_set = labels.get(ROOK_LABEL_DEVICE_SET)
-        if device_set != CEPH_DEVICE_SET_NAME:
+        expected_name = osd_pvc_name(index)
+        if pvc.metadata.name != expected_name:
             raise ValueError(
-                f"OSD PVC {pvc.metadata.name} has unexpected "
-                f"{ROOK_LABEL_DEVICE_SET}={device_set!r}"
-            )
-        pvc_id = labels.get(ROOK_LABEL_DEVICE_SET_PVC_ID)
-        if pvc_id and pvc_id != expected_pvc_id:
-            raise ValueError(
-                f"OSD PVC {pvc.metadata.name} has "
-                f"{ROOK_LABEL_DEVICE_SET_PVC_ID}={pvc_id!r}, expected {expected_pvc_id!r}"
+                f"OSD PVC {pvc.metadata.name} expected name {expected_name}"
             )
         devices.append(
             {
@@ -1423,6 +1405,181 @@ def discover_ceph_device_pvcs(
     return devices
 
 
+_ROOK_DISASTER_FINAL = "ceph.rook.io/disaster-protection"
+_ROOK_PVC_PREFIXES = (
+    "troshka-ceph-osd-",
+    "osd-set-",
+    "osd-restore-",
+    "rook-ceph-mon-",
+)
+
+
+def _strip_object_finalizers(
+    custom_api, core_api, namespace: str, kind: str, name: str
+):
+    """Clear metadata.finalizers so a stuck Rook object can finish deleting."""
+    body = {"metadata": {"finalizers": None}}
+    try:
+        if kind == "Secret":
+            core_api.patch_namespaced_secret(name=name, namespace=namespace, body=body)
+        elif kind == "ConfigMap":
+            core_api.patch_namespaced_config_map(
+                name=name, namespace=namespace, body=body
+            )
+        else:
+            custom_api.patch_namespaced_custom_object(
+                group="ceph.rook.io",
+                version="v1",
+                namespace=namespace,
+                plural=kind,
+                name=name,
+                body=body,
+            )
+        logger.info("Stripped finalizers from %s/%s in %s", kind, name, namespace)
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning(
+                "Failed to strip finalizers from %s/%s in %s: %s",
+                kind,
+                name,
+                namespace,
+                e,
+            )
+
+
+def _rook_cr_gone(custom_api, namespace: str, plural: str, name: str) -> bool:
+    try:
+        custom_api.get_namespaced_custom_object(
+            group="ceph.rook.io",
+            version="v1",
+            namespace=namespace,
+            plural=plural,
+            name=name,
+        )
+        return False
+    except ApiException as e:
+        if e.status == 404:
+            return True
+        raise
+
+
+def delete_rook_ceph_crs(
+    custom_api,
+    core_api,
+    namespace: str,
+    *,
+    wait_seconds: float = 120.0,
+    poll_seconds: float = 2.0,
+) -> None:
+    """Delete CephCluster/CephBlockPool and clear stuck Rook finalizers.
+
+    Rook CRs (and some Secrets/ConfigMaps) carry finalizers that only clear
+    while the per-namespace rook operator is healthy. If the operator is down
+    or the finalize hangs, the project namespace stays Terminating forever.
+    After a grace wait, strip those finalizers so delete can complete.
+    """
+    targets = (
+        ("cephblockpools", "troshka-ceph-pool"),
+        ("cephclusters", "troshka-ceph"),
+    )
+    for plural, cr_name in targets:
+        try:
+            custom_api.delete_namespaced_custom_object(
+                group="ceph.rook.io",
+                version="v1",
+                namespace=namespace,
+                plural=plural,
+                name=cr_name,
+            )
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Failed to delete %s/%s: %s", plural, cr_name, e)
+
+    deadline = time.monotonic() + wait_seconds
+    pending = list(targets)
+    while pending:
+        still = []
+        for plural, cr_name in pending:
+            try:
+                if _rook_cr_gone(custom_api, namespace, plural, cr_name):
+                    continue
+            except ApiException as e:
+                logger.warning("Poll %s/%s failed: %s", plural, cr_name, e)
+            still.append((plural, cr_name))
+        pending = still
+        if not pending or time.monotonic() >= deadline:
+            break
+        time.sleep(poll_seconds)
+
+    for plural, cr_name in pending:
+        logger.warning(
+            "Rook %s/%s still present after %.0fs — stripping finalizers",
+            plural,
+            cr_name,
+            wait_seconds,
+        )
+        _strip_object_finalizers(custom_api, core_api, namespace, plural, cr_name)
+        try:
+            custom_api.delete_namespaced_custom_object(
+                group="ceph.rook.io",
+                version="v1",
+                namespace=namespace,
+                plural=plural,
+                name=cr_name,
+            )
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Re-delete %s/%s failed: %s", plural, cr_name, e)
+
+    _strip_rook_disaster_finalizers(core_api, namespace)
+
+
+def _strip_rook_disaster_finalizers(core_api, namespace: str) -> None:
+    """Clear ceph.rook.io/disaster-protection on leftover Secrets/ConfigMaps."""
+    for kind, list_fn, patch_fn in (
+        (
+            "Secret",
+            core_api.list_namespaced_secret,
+            core_api.patch_namespaced_secret,
+        ),
+        (
+            "ConfigMap",
+            core_api.list_namespaced_config_map,
+            core_api.patch_namespaced_config_map,
+        ),
+    ):
+        try:
+            items = list_fn(namespace=namespace).items
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Failed to list %ss in %s: %s", kind, namespace, e)
+            continue
+        for obj in items:
+            fins = list(obj.metadata.finalizers or [])
+            if _ROOK_DISASTER_FINAL not in fins:
+                continue
+            try:
+                patch_fn(
+                    name=obj.metadata.name,
+                    namespace=namespace,
+                    body={"metadata": {"finalizers": None}},
+                )
+                logger.info(
+                    "Stripped disaster-protection from %s/%s in %s",
+                    kind,
+                    obj.metadata.name,
+                    namespace,
+                )
+            except ApiException as e:
+                if e.status != 404:
+                    logger.warning(
+                        "Failed to strip %s/%s finalizers: %s",
+                        kind,
+                        obj.metadata.name,
+                        e,
+                    )
+
+
 def delete_ceph_storage_pvcs(core_api, namespace: str) -> None:
     """Delete OSD/backing PVCs left after a TroshkaCeph teardown."""
     delete_opts = client.V1DeleteOptions(propagation_policy="Background")
@@ -1433,6 +1590,16 @@ def delete_ceph_storage_pvcs(core_api, namespace: str) -> None:
             return
         seen.add(name)
         try:
+            # Stuck PVC finalizers also block namespace teardown.
+            try:
+                core_api.patch_namespaced_persistent_volume_claim(
+                    name=name,
+                    namespace=namespace,
+                    body={"metadata": {"finalizers": None}},
+                )
+            except ApiException as e:
+                if e.status not in (404, 409):
+                    logger.warning("Failed to strip PVC finalizers %s: %s", name, e)
             core_api.delete_namespaced_persistent_volume_claim(
                 name=name,
                 namespace=namespace,
@@ -1459,7 +1626,7 @@ def delete_ceph_storage_pvcs(core_api, namespace: str) -> None:
         pvcs = core_api.list_namespaced_persistent_volume_claim(namespace=namespace)
         for pvc in pvcs.items:
             name = pvc.metadata.name or ""
-            if name.startswith("troshka-ceph-osd-") or name.startswith("osd-set-"):
+            if any(name.startswith(p) for p in _ROOK_PVC_PREFIXES):
                 _delete_pvc(name)
     except ApiException as e:
         if e.status != 404:

@@ -61,6 +61,89 @@ def _project_ns(provider, project_id):
     return f"{prefix}{project_id[:8]}"
 
 
+def _force_clear_rook_finalizers(provider, project_id) -> None:
+    """Strip Rook Ceph finalizers that leave project namespaces Terminating.
+
+    CephCluster / CephBlockPool / disaster-protection Secret finalizers only
+    clear while the per-ns rook-operator is healthy. Destroy must not depend on
+    that — clear them so namespace GC can finish.
+    """
+    from kubernetes.client.exceptions import ApiException
+
+    custom_api, core_api, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+    logger.info("Clearing Rook finalizers in %s", namespace)
+
+    for plural, name in (
+        ("cephblockpools", "troshka-ceph-pool"),
+        ("cephclusters", "troshka-ceph"),
+    ):
+        try:
+            custom_api.patch_namespaced_custom_object(
+                group="ceph.rook.io",
+                version="v1",
+                namespace=namespace,
+                plural=plural,
+                name=name,
+                body={"metadata": {"finalizers": None}},
+            )
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning(
+                    "Failed to strip finalizers on %s/%s: %s", plural, name, e
+                )
+        try:
+            custom_api.delete_namespaced_custom_object(
+                group="ceph.rook.io",
+                version="v1",
+                namespace=namespace,
+                plural=plural,
+                name=name,
+            )
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Failed to delete %s/%s: %s", plural, name, e)
+
+    def _strip_core_finalizers(list_fn, patch_fn, kind: str) -> None:
+        try:
+            listed = list_fn(namespace=namespace)
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Failed to list %ss in %s: %s", kind, namespace, e)
+            return
+        for obj in list(getattr(listed, "items", None) or []):
+            fins = list(getattr(obj.metadata, "finalizers", None) or [])
+            if not fins:
+                continue
+            name = obj.metadata.name
+            try:
+                patch_fn(
+                    name=name,
+                    namespace=namespace,
+                    body={"metadata": {"finalizers": None}},
+                )
+                logger.info("Stripped finalizers from %s/%s", kind, name)
+            except ApiException as e:
+                if e.status != 404:
+                    logger.warning(
+                        "Failed to strip %s/%s finalizers: %s", kind, name, e
+                    )
+
+    _strip_core_finalizers(
+        core_api.list_namespaced_secret, core_api.patch_namespaced_secret, "Secret"
+    )
+    _strip_core_finalizers(
+        core_api.list_namespaced_config_map,
+        core_api.patch_namespaced_config_map,
+        "ConfigMap",
+    )
+    _strip_core_finalizers(
+        core_api.list_namespaced_persistent_volume_claim,
+        core_api.patch_namespaced_persistent_volume_claim,
+        "PVC",
+    )
+
+
 def _project_namespace_labels(project_id: str) -> dict[str, str]:
     return {
         "app": "troshka",

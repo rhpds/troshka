@@ -974,25 +974,15 @@ def _ceph_device_ext(kind: str) -> str:
     return "tar.gz" if kind == CEPH_SOURCE_MON else PATTERN_STORED_FORMAT
 
 
-# MUST/Should-capture rows from the identity-object capture matrix in
-# docs/dev/project-ceph-pattern-restore.md (Task 0 spike). These are small
-# string-only Secrets/ConfigMap, read directly via the k8s API — no export
-# Job/S3 round-trip needed like the mon/OSD block devices go through.
-# must_capture=True rows abort the capture if missing (Rook would mint a new
-# fsid on restore and any baked-in Ceph client keyring would stop matching);
-# must_capture=False rows are captured for completeness but only logged if
-# absent (low-risk per the matrix's own confidence notes).
+# MUST/Should-capture rows for appliance identity (fsid + keyrings + conf).
+# must_capture=True aborts capture if missing (restore would mint a new fsid).
 _CEPH_IDENTITY_OBJECTS: list[tuple[str, str, bool]] = [
-    ("Secret", "rook-ceph-mon", True),
-    ("ConfigMap", "rook-ceph-mon-endpoints", True),
-    ("Secret", "rook-ceph-admin-keyring", True),
-    ("Secret", "rook-ceph-mons-keyring", True),
-    ("Secret", "rook-ceph-config", True),
-    ("Secret", "rook-csi-rbd-node", True),
-    ("Secret", "rook-csi-rbd-provisioner", True),
-    ("Secret", "rook-csi-cephfs-node", False),
-    ("Secret", "rook-csi-cephfs-provisioner", False),
-    ("Secret", "rook-ceph-mgr-a-keyring", False),
+    ("Secret", "troshka-ceph-fsid", True),
+    ("Secret", "troshka-ceph-admin-keyring", True),
+    ("Secret", "troshka-ceph-mon-keyring", True),
+    ("Secret", "troshka-ceph-bootstrap-osd-keyring", True),
+    ("ConfigMap", "troshka-ceph-conf", True),
+    ("Secret", "troshka-ceph-external", False),
 ]
 
 

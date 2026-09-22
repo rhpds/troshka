@@ -37,10 +37,10 @@ def test_set_and_get_project_ceph_capture():
 def test_set_and_get_project_ceph_capture_with_identity_objects():
     topo = {"nodes": []}
     identity_objects = [
-        {"kind": "Secret", "name": "rook-ceph-mon", "data": {"fsid": "ZnNpZA=="}},
+        {"kind": "Secret", "name": "troshka-ceph-fsid", "data": {"fsid": "ZnNpZA=="}},
         {
             "kind": "ConfigMap",
-            "name": "rook-ceph-mon-endpoints",
+            "name": "troshka-ceph-conf",
             "data": {"data": "YT0xLjIuMy40OjMzMDA="},
         },
     ]

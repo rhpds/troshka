@@ -12,25 +12,23 @@ from helpers.ceph_freeze import (
 )
 
 
-def test_ceph_cli_command_uses_rook_mon_host_and_keyring():
+def test_ceph_cli_command_uses_appliance_conf_and_keyring():
     cmd = _ceph_cli_command(["osd", "set", "noout"])
     assert cmd[0] == "sh"
     assert cmd[1] == "-c"
     script = cmd[2]
-    assert "--conf /dev/null" in script
-    assert '--mon-host="$ROOK_CEPH_MON_HOST"' in script
-    assert "/etc/ceph/keyring-store/keyring" in script
+    assert "--conf /etc/ceph/ceph.conf" in script
+    assert "/etc/ceph/ceph.client.admin.keyring" in script
     assert "client.admin" in script
     assert "osd set noout" in script
+    assert "ROOK_CEPH_MON_HOST" not in script
 
 
 @pytest.fixture
 def mock_clients():
     core_api = MagicMock()
     apps_api = MagicMock()
-    with patch(
-        "helpers.ceph_freeze._k8s_clients", return_value=(core_api, apps_api)
-    ):
+    with patch("helpers.ceph_freeze._k8s_clients", return_value=(core_api, apps_api)):
         yield core_api, apps_api
 
 
@@ -57,7 +55,9 @@ class TestFreezeCephForCapture:
         ):
             freeze_ceph_for_capture("troshka-abc123")
 
-        expected_flags = [("ceph", "troshka-abc123", ["osd", "set", f]) for f in OSD_FREEZE_FLAGS]
+        expected_flags = [
+            ("ceph", "troshka-abc123", ["osd", "set", f]) for f in OSD_FREEZE_FLAGS
+        ]
         assert calls[: len(expected_flags)] == expected_flags
         flush_idx = len(expected_flags)
         assert calls[flush_idx] == (
@@ -68,25 +68,25 @@ class TestFreezeCephForCapture:
         assert calls[flush_idx + 1] == (
             "scale",
             "troshka-abc123",
-            "app=rook-ceph-osd",
+            "app=troshka-ceph-osd",
             0,
         )
         assert calls[flush_idx + 2] == (
             "wait",
             "troshka-abc123",
-            "app=rook-ceph-osd",
+            "app=troshka-ceph-osd",
             False,
         )
         assert calls[flush_idx + 3] == (
             "scale",
             "troshka-abc123",
-            "app=rook-ceph-mon",
+            "app=troshka-ceph-mon",
             0,
         )
         assert calls[flush_idx + 4] == (
             "wait",
             "troshka-abc123",
-            "app=rook-ceph-mon",
+            "app=troshka-ceph-mon",
             False,
         )
         save_state.assert_called_once()
@@ -110,7 +110,9 @@ class TestUnfreezeCephAfterCapture:
         core_api, apps_api = mock_clients
         calls: list[tuple] = []
 
-        def record_scale(_apps, namespace, label_selector, replicas, deployment_replicas=None):
+        def record_scale(
+            _apps, namespace, label_selector, replicas, deployment_replicas=None
+        ):
             calls.append(("scale", namespace, label_selector, replicas))
             return deployment_replicas or {}
 
@@ -120,7 +122,11 @@ class TestUnfreezeCephAfterCapture:
         def record_ceph(_core, namespace, args):
             calls.append(("ceph", namespace, list(args)))
 
-        saved = {"rook-ceph-mon-a": 1, "rook-ceph-osd-0": 1, "rook-ceph-osd-1": 1}
+        saved = {
+            "troshka-ceph-mon": 1,
+            "troshka-ceph-osd-0": 1,
+            "troshka-ceph-osd-1": 1,
+        }
 
         with (
             patch(
@@ -143,13 +149,13 @@ class TestUnfreezeCephAfterCapture:
         assert calls[1] == (
             "wait",
             "troshka-abc123",
-            "app=rook-ceph-mon",
+            "app=troshka-ceph-mon",
             True,
         )
         assert calls[2] == (
             "wait",
             "troshka-abc123",
-            "app=rook-ceph-osd",
+            "app=troshka-ceph-osd",
             True,
         )
         unset_flags = list(reversed(OSD_FREEZE_FLAGS))
@@ -176,5 +182,5 @@ class TestUnfreezeCephAfterCapture:
         ):
             unfreeze_ceph_after_capture("troshka-abc123")
 
-        assert ("scale", "troshka-abc123", "app=rook-ceph-mon", 1) in calls
-        assert ("scale", "troshka-abc123", "app=rook-ceph-osd", 1) in calls
+        assert ("scale", "troshka-abc123", "app=troshka-ceph-mon", 1) in calls
+        assert ("scale", "troshka-abc123", "app=troshka-ceph-osd", 1) in calls

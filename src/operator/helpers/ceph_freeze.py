@@ -1,7 +1,7 @@
 """Freeze / unfreeze project Ceph for consistent PVC capture.
 
-Quiesces the namespace-scoped Rook cluster so mon and OSD block devices are idle
-before VolumeSnapshot, then restores health on the source project afterward.
+Quiesces the namespace-scoped Troshka Ceph appliance so mon and OSD block
+devices are idle before VolumeSnapshot, then restores health afterward.
 """
 
 from __future__ import annotations
@@ -23,13 +23,11 @@ OSD_FREEZE_FLAGS: tuple[str, ...] = (
     "noscrub",
     "nodeep-scrub",
 )
-OSD_DEPLOY_LABEL = "app=rook-ceph-osd"
-MON_DEPLOY_LABEL = "app=rook-ceph-mon"
+OSD_DEPLOY_LABEL = "app=troshka-ceph-osd"
+MON_DEPLOY_LABEL = "app=troshka-ceph-mon"
 FREEZE_STATE_CONFIGMAP = "troshka-ceph-capture-freeze"
 _MON_CONTAINER = "mon"
-# Rook mon pods often ship an empty/stub ceph.conf; the daemon advertises
-# ROOK_CEPH_MON_HOST and the admin keyring lives under keyring-store.
-_CEPH_KEYRING = "/etc/ceph/keyring-store/keyring"
+_CEPH_KEYRING = "/etc/ceph/ceph.client.admin.keyring"
 _POD_POLL_INTERVAL_S = 2
 _POD_POLL_TIMEOUT_S = 300
 
@@ -97,18 +95,12 @@ def _k8s_clients() -> tuple[client.CoreV1Api, client.AppsV1Api]:
 
 
 def _ceph_cli_command(args: list[str]) -> list[str]:
-    """Build a ``ceph`` argv that works inside Rook mon pods.
-
-    Bare ``ceph …`` fails with ``unable to get monitor info from DNS SRV``
-    when ``/etc/ceph/ceph.conf`` is empty. Pass ``ROOK_CEPH_MON_HOST`` and the
-    admin keyring explicitly (same approach as the Strategy A spike).
-    """
+    """Build a ``ceph`` argv for Troshka appliance mon pods."""
     quoted = " ".join(shlex.quote(a) for a in args)
     return [
         "sh",
         "-c",
-        "exec ceph --conf /dev/null"
-        ' --mon-host="$ROOK_CEPH_MON_HOST"'
+        "exec ceph --conf /etc/ceph/ceph.conf"
         f" --keyring={shlex.quote(_CEPH_KEYRING)}"
         f" -n client.admin {quoted}",
     ]
@@ -156,9 +148,14 @@ def _running_mon_pod_name(core_api: client.CoreV1Api, namespace: str) -> str:
         label_selector=MON_DEPLOY_LABEL,
     )
     for pod in pods.items:
-        if pod.status and pod.status.phase == "Running" and pod.metadata and pod.metadata.name:
+        if (
+            pod.status
+            and pod.status.phase == "Running"
+            and pod.metadata
+            and pod.metadata.name
+        ):
             return pod.metadata.name
-    raise RuntimeError(f"no running rook-ceph-mon pod in {namespace}")
+    raise RuntimeError(f"no running troshka-ceph-mon pod in {namespace}")
 
 
 def _scale_deployments(
@@ -177,7 +174,9 @@ def _scale_deployments(
         name = dep.metadata.name
         if not name:
             continue
-        prior[name] = dep.spec.replicas if dep.spec and dep.spec.replicas is not None else 1
+        prior[name] = (
+            dep.spec.replicas if dep.spec and dep.spec.replicas is not None else 1
+        )
         apps_api.patch_namespaced_deployment(
             name=name,
             namespace=namespace,
@@ -204,7 +203,9 @@ def _restore_deployments(
             namespace=namespace,
             body={"spec": {"replicas": replicas}},
         )
-        logger.info("Restored deployment %s in %s to replicas=%s", name, namespace, replicas)
+        logger.info(
+            "Restored deployment %s in %s to replicas=%s", name, namespace, replicas
+        )
 
 
 def _wait_for_pods(
@@ -228,7 +229,9 @@ def _wait_for_pods(
         if running:
             if phases and all(phase == "Running" for _, phase in phases):
                 return
-        elif not phases or all(phase not in ("Running", "Pending") for _, phase in phases):
+        elif not phases or all(
+            phase not in ("Running", "Pending") for _, phase in phases
+        ):
             return
         time.sleep(_POD_POLL_INTERVAL_S)
     state = ", ".join(f"{n}={p}" for n, p in phases) if phases else "none"

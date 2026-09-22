@@ -95,7 +95,7 @@ def _osd_device(index=0, disk_id="disk-0"):
 
 def _mon_device():
     return {
-        "pvcName": "rook-ceph-mon-a",
+        "pvcName": "troshka-ceph-mon",
         "kind": "ceph-mon",
         "index": 0,
         "patternDiskId": "disk-mon",

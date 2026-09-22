@@ -58,8 +58,8 @@ _OSD_DEVICE_1 = {
 
 
 def test_osd_restore_pvc_name_is_deterministic():
-    assert osd_restore_pvc_name(0) == "osd-restore-data-0"
-    assert osd_restore_pvc_name(3) == "osd-restore-data-3"
+    assert osd_restore_pvc_name(0) == "troshka-ceph-osd-0"
+    assert osd_restore_pvc_name(3) == "troshka-ceph-osd-3"
 
 
 class TestDeviceS3Config:
@@ -123,20 +123,19 @@ class TestBuildOsdRestoreDatavolume:
         dv = build_osd_restore_datavolume(
             "troshka-abc", _OSD_DEVICE_0, _S3_CONFIG, _DEFAULT_SECRET, "ocs-storage"
         )
-        assert dv["metadata"]["name"] == "osd-restore-data-0"
+        assert dv["metadata"]["name"] == "troshka-ceph-osd-0"
         assert dv["spec"]["pvc"]["volumeMode"] == "Block"
         assert dv["spec"]["pvc"]["storageClassName"] == "ocs-storage"
         labels = dv["metadata"]["labels"]
-        assert labels["ceph.rook.io/DeviceSet"] == "osd-set"
-        assert labels["ceph.rook.io/DeviceSetPVCId"] == "osd-set-data-0"
-        assert labels["ceph.rook.io/setIndex"] == "0"
+        assert labels["troshka-role"] == "ceph-osd"
+        assert labels["troshka-ceph-osd-index"] == "0"
 
     def test_index_1_labels(self):
         dv = build_osd_restore_datavolume(
             "troshka-abc", _OSD_DEVICE_1, _S3_CONFIG, _DEFAULT_SECRET, "ocs-storage"
         )
-        assert dv["metadata"]["name"] == "osd-restore-data-1"
-        assert dv["metadata"]["labels"]["ceph.rook.io/DeviceSetPVCId"] == "osd-set-data-1"
+        assert dv["metadata"]["name"] == "troshka-ceph-osd-1"
+        assert dv["metadata"]["labels"]["troshka-ceph-osd-index"] == "1"
 
     def test_sizes_above_virtual_size(self):
         dv = build_osd_restore_datavolume(
@@ -174,7 +173,7 @@ class TestBuildCephRestoreResources:
         assert mon_pvc is not None
         assert mon_job is not None
         assert mon_name == CEPH_MON_PVC_NAME
-        assert osd_names == ["osd-restore-data-0", "osd-restore-data-1"]
+        assert osd_names == ["troshka-ceph-osd-0", "troshka-ceph-osd-1"]
         assert [dv["metadata"]["name"] for dv in osd_dvs] == osd_names
         assert osd_dvs[0]["spec"]["source"]["s3"]["secretRef"] == _DEFAULT_SECRET
         assert osd_dvs[1]["spec"]["source"]["s3"]["secretRef"] == _CENTRAL_SECRET
@@ -221,13 +220,13 @@ class TestMaterializeCephRestorePvcs:
         )
 
         assert mon_name == CEPH_MON_PVC_NAME
-        assert osd_names == ["osd-restore-data-0"]
+        assert osd_names == ["troshka-ceph-osd-0"]
         custom_api.delete_namespaced_custom_object.assert_called()
         core_api.create_namespaced_persistent_volume_claim.assert_called_once()
         batch_api.create_namespaced_job.assert_called_once()
         assert custom_api.create_namespaced_custom_object.call_count == 1
         created_dv = custom_api.create_namespaced_custom_object.call_args.kwargs["body"]
-        assert created_dv["metadata"]["name"] == "osd-restore-data-0"
+        assert created_dv["metadata"]["name"] == "troshka-ceph-osd-0"
 
     def test_returns_empty_when_no_capture(self):
         custom_api = MagicMock()
@@ -246,7 +245,9 @@ class TestMaterializeCephRestorePvcs:
 
     def test_idempotent_on_409(self):
         custom_api = MagicMock()
-        custom_api.delete_namespaced_custom_object.side_effect = ApiException(status=404)
+        custom_api.delete_namespaced_custom_object.side_effect = ApiException(
+            status=404
+        )
         core_api = MagicMock()
         core_api.read_namespaced_persistent_volume_claim.side_effect = ApiException(
             status=404
@@ -274,7 +275,9 @@ class TestMaterializeCephRestorePvcs:
 
     def test_reraises_non_409_api_exception(self):
         custom_api = MagicMock()
-        custom_api.delete_namespaced_custom_object.side_effect = ApiException(status=404)
+        custom_api.delete_namespaced_custom_object.side_effect = ApiException(
+            status=404
+        )
         core_api = MagicMock()
         core_api.create_namespaced_persistent_volume_claim.side_effect = ApiException(
             status=500
@@ -314,7 +317,7 @@ class TestWaitForCephRestoreDatavolumes:
             wait_for_ceph_restore_datavolumes(
                 custom_api,
                 "ns",
-                ["rook-ceph-mon-a", "osd-restore-data-0"],
+                ["troshka-ceph-mon", "troshka-ceph-osd-0"],
                 batch_api=batch_api,
             )
         )
@@ -329,7 +332,7 @@ class TestWaitForCephRestoreDatavolumes:
         with pytest.raises(RuntimeError, match="failed to import"):
             asyncio.run(
                 wait_for_ceph_restore_datavolumes(
-                    custom_api, "ns", ["osd-restore-data-0"]
+                    custom_api, "ns", ["troshka-ceph-osd-0"]
                 )
             )
 
@@ -347,7 +350,7 @@ class TestWaitForCephRestoreDatavolumes:
         with pytest.raises(RuntimeError, match="mon Job"):
             asyncio.run(
                 wait_for_ceph_restore_datavolumes(
-                    custom_api, "ns", ["rook-ceph-mon-a"], batch_api=batch_api
+                    custom_api, "ns", ["troshka-ceph-mon"], batch_api=batch_api
                 )
             )
 
@@ -361,7 +364,7 @@ class TestWaitForCephRestoreDatavolumes:
                 wait_for_ceph_restore_datavolumes(
                     custom_api,
                     "ns",
-                    ["osd-restore-data-0"],
+                    ["troshka-ceph-osd-0"],
                     max_wait_seconds=1,
                     sleep_seconds=1,
                 )
@@ -380,7 +383,7 @@ class TestWaitForCephRestoreDatavolumes:
             wait_for_ceph_restore_datavolumes(
                 custom_api,
                 "ns",
-                ["osd-restore-data-0"],
+                ["troshka-ceph-osd-0"],
                 max_wait_seconds=10,
                 sleep_seconds=1,
             )
@@ -395,7 +398,7 @@ class TestWaitForCephRestoreDatavolumes:
                 wait_for_ceph_restore_datavolumes(
                     custom_api,
                     "ns",
-                    ["osd-restore-data-0"],
+                    ["troshka-ceph-osd-0"],
                     max_wait_seconds=1,
                     sleep_seconds=1,
                 )
@@ -405,22 +408,23 @@ class TestWaitForCephRestoreDatavolumes:
 _IDENTITY_OBJECTS = [
     {
         "kind": "Secret",
-        "name": "rook-ceph-mon",
+        "name": "troshka-ceph-fsid",
         "data": {
             "fsid": "ZnNpZC0xMjM=",
-            "mon-secret": "bW9uLXNlY3JldA==",  # pragma: allowlist secret  # gitleaks:allow
         },
     },
     {
         "kind": "ConfigMap",
-        "name": "rook-ceph-mon-endpoints",
-        # base64("a=1.2.3.4:3300")
-        "data": {"data": "YT0xLjIuMy40OjMzMDA="},
+        "name": "troshka-ceph-conf",
+        # base64("[global]\nfsid = x")
+        "data": {"ceph.conf": "W2dsb2JhbF0KZnNpZCA9IHg="},
     },
     {
         "kind": "Secret",
-        "name": "rook-ceph-admin-keyring",
-        "data": {"keyring": "W2NsaWVudC5hZG1pbl0="},  # pragma: allowlist secret  # gitleaks:allow
+        "name": "troshka-ceph-admin-keyring",
+        "data": {
+            "keyring": "W2NsaWVudC5hZG1pbl0=",  # pragma: allowlist secret  # gitleaks:allow
+        },
     },
 ]
 
@@ -432,25 +436,26 @@ class TestBuildIdentityObjectManifests:
 
     def test_secret_data_passed_through_as_is(self):
         manifests = build_identity_object_manifests("troshka-abc", _IDENTITY_OBJECTS)
-        mon_secret = next(m for m in manifests if m["metadata"]["name"] == "rook-ceph-mon")
+        mon_secret = next(
+            m for m in manifests if m["metadata"]["name"] == "troshka-ceph-fsid"
+        )
         assert mon_secret["kind"] == "Secret"
         assert mon_secret["metadata"]["namespace"] == "troshka-abc"
-        assert mon_secret["type"] == "kubernetes.io/rook"
+        assert mon_secret["type"] == "Opaque"
         assert mon_secret["data"] == {
             "fsid": "ZnNpZC0xMjM=",
-            "mon-secret": "bW9uLXNlY3JldA==",  # pragma: allowlist secret  # gitleaks:allow
         }
 
     def test_configmap_data_decoded_from_base64(self):
         manifests = build_identity_object_manifests("troshka-abc", _IDENTITY_OBJECTS)
-        endpoints = next(
-            m for m in manifests if m["metadata"]["name"] == "rook-ceph-mon-endpoints"
+        conf = next(
+            m for m in manifests if m["metadata"]["name"] == "troshka-ceph-conf"
         )
-        assert endpoints["kind"] == "ConfigMap"
-        assert endpoints["data"] == {"data": "a=1.2.3.4:3300"}
+        assert conf["kind"] == "ConfigMap"
+        assert conf["data"] == {"ceph.conf": "[global]\nfsid = x"}
 
     def test_no_owner_references(self):
-        """Orphan-safe: the CephCluster does not exist yet at restore time."""
+        """Orphan-safe: TroshkaCeph does not exist yet at restore time."""
         manifests = build_identity_object_manifests("ns", _IDENTITY_OBJECTS)
         assert all("ownerReferences" not in m["metadata"] for m in manifests)
 
@@ -470,9 +475,12 @@ class TestRestoreIdentityObjects:
             call.kwargs["body"]["metadata"]["name"]
             for call in core_api.create_namespaced_secret.call_args_list
         }
-        assert created_secret_names == {"rook-ceph-mon", "rook-ceph-admin-keyring"}
+        assert created_secret_names == {
+            "troshka-ceph-fsid",
+            "troshka-ceph-admin-keyring",
+        }
         cm_call = core_api.create_namespaced_config_map.call_args
-        assert cm_call.kwargs["body"]["metadata"]["name"] == "rook-ceph-mon-endpoints"
+        assert cm_call.kwargs["body"]["metadata"]["name"] == "troshka-ceph-conf"
         assert cm_call.kwargs["namespace"] == "troshka-abc"
 
     def test_noop_when_no_identity_objects(self):

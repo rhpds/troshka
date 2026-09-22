@@ -5981,7 +5981,7 @@ def _collect_ceph_restore_progress(custom_api, api_client, namespace: str) -> li
     try:
         batch = k8s_client.BatchV1Api(api_client)
         job = batch.read_namespaced_job(
-            name="restore-rook-ceph-mon-a", namespace=namespace
+            name="restore-troshka-ceph-mon", namespace=namespace
         )
         if job.status.succeeded and job.status.succeeded >= 1:  # type: ignore[union-attr]
             lines.insert(0, "ceph-mon: done")
@@ -5995,7 +5995,7 @@ def _collect_ceph_restore_progress(custom_api, api_client, namespace: str) -> li
                 version="v1beta1",
                 namespace=namespace,
                 plural="datavolumes",
-                name="rook-ceph-mon-a",
+                name="troshka-ceph-mon",
             )
             status = dv.get("status") or {}
             phase = status.get("phase") or "Pending"
@@ -12134,13 +12134,28 @@ def _wait_for_namespace_deletion(provider, project_id) -> bool:
 
     from kubernetes.client.exceptions import ApiException as _KApiErr
 
-    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+    from app.services.providers.kubevirt import (
+        _force_clear_rook_finalizers,
+        _get_k8s_clients,
+        _project_ns,
+    )
 
     _, core_api, _ = _get_k8s_clients(provider)
     ns_name = _project_ns(provider, project_id)
-    for _ in range(60):
+    cleared = False
+    for i in range(60):
         try:
             core_api.read_namespace(name=ns_name)
+            # Midway: force-clear Rook finalizers that commonly leave
+            # troshka-* namespaces Terminating after TroshkaCeph teardown.
+            if not cleared and i == 12:
+                try:
+                    _force_clear_rook_finalizers(provider, project_id)
+                    cleared = True
+                except Exception:
+                    logger.exception(
+                        "Destroy %s: rook finalizer clear failed", project_id[:8]
+                    )
             _del_time.sleep(5)
         except _KApiErr as e:
             if e.status == 404:
@@ -12152,6 +12167,27 @@ def _wait_for_namespace_deletion(provider, project_id) -> bool:
                 "Destroy %s: could not confirm namespace deletion", project_id[:8]
             )
             return False
+    if not cleared:
+        try:
+            _force_clear_rook_finalizers(provider, project_id)
+        except Exception:
+            logger.exception(
+                "Destroy %s: final rook finalizer clear failed", project_id[:8]
+            )
+        for _ in range(24):
+            try:
+                core_api.read_namespace(name=ns_name)
+                _del_time.sleep(5)
+            except _KApiErr as e:
+                if e.status == 404:
+                    logger.info(
+                        "Destroy %s: namespace terminated after finalizer clear",
+                        project_id[:8],
+                    )
+                    return True
+                _del_time.sleep(5)
+            except Exception:
+                break
     logger.warning(
         "Destroy %s: namespace %s still present after timeout (stuck finalizers?)",
         project_id[:8],

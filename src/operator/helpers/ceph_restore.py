@@ -1,15 +1,15 @@
-"""Materialize mon/OSD PVCs for project-Ceph pattern restore (Task 9).
+"""Materialize mon/OSD PVCs for project-Ceph pattern restore.
 
 Restore-mode deploy (pattern deploy whose captured topology carries a
 ``projectCephCapture.restore`` block — see
-``docs/dev/project-ceph-pattern-restore.md``, Strategy A) must pre-create the
-mon PVC (fixed name ``rook-ceph-mon-a``, Filesystem, tar.gz archive of the mon
-rocksdb store) and OSD PVC(s) (Block, qcow2 disk image) from their captured S3
-objects *before* the restore-mode ``TroshkaCeph`` CR is created, so Rook
+``docs/dev/project-ceph-pattern-restore.md``) must pre-create the mon PVC
+(fixed name ``troshka-ceph-mon``, Filesystem, tar.gz of the mon store) and
+OSD PVC(s) (``troshka-ceph-osd-{i}``, Block, qcow2) from captured S3 objects
+*before* the restore-mode ``TroshkaCeph`` CR is created, so the appliance
 adopts the pre-filled claims instead of provisioning empty new ones.
 
-OSD devices reuse CDI S3-import DataVolumes onto ``volumeMode: Block`` claims,
-labeled so Rook's ``ceph.rook.io/DeviceSet*`` discovery finds them.
+OSD devices reuse CDI S3-import DataVolumes onto ``volumeMode: Block`` claims
+labeled ``troshka-role=ceph-osd``.
 
 The mon device is restored via an empty Filesystem PVC + rclone/tar Job
 instead of CDI ``contentType: archive``. CDI's archive importer runs as
@@ -28,14 +28,7 @@ from kubernetes.client.exceptions import ApiException
 
 from helpers.k8s import TOOLS_IMAGE
 from helpers.kubevirt import s3_import_url
-from helpers.rook_ceph import (
-    CEPH_DEVICE_SET_NAME,
-    CEPH_MON_PVC_NAME,
-    CEPH_OSD_TEMPLATE_NAME,
-    ROOK_LABEL_DEVICE_SET,
-    ROOK_LABEL_DEVICE_SET_PVC_ID,
-    ROOK_LABEL_SET_INDEX,
-)
+from helpers.rook_ceph import CEPH_MON_PVC_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +44,8 @@ MON_RESTORE_JOB_NAME = f"restore-{CEPH_MON_PVC_NAME}"
 
 
 def osd_restore_pvc_name(index: int) -> str:
-    """Deterministic restore-claim name for an OSD device.
-
-    Rook adopts OSD PVCs by the ``ceph.rook.io/DeviceSet*`` labels, not by
-    name (see the Task 0 spike), so this name never needs to match Rook's own
-    ``generateName``-based ``osd-set-data-<random>`` convention.
-    """
-    return f"osd-restore-data-{int(index)}"
+    """Deterministic restore-claim name matching appliance OSD PVC names."""
+    return f"troshka-ceph-osd-{int(index)}"
 
 
 def _request_gi(size_bytes: int, minimum_gi: int) -> int:
@@ -140,7 +128,7 @@ def build_mon_restore_job(
         # mon store directory is present.
         "tar -C /disk -xzf /scratch/mon.tar.gz --exclude=lost+found "
         "--no-same-owner --no-same-permissions -m "
-        "|| test -d /disk/data/store.db; "
+        "|| test -d /disk/ceph-a || test -d /disk/data/store.db; "
         'echo "mon restore complete"'
     )
     return {
@@ -200,15 +188,13 @@ def build_osd_restore_datavolume(
     secret_name: str,
     storage_class: str,
 ) -> dict:
-    """CDI DataVolume that imports the captured OSD qcow2 block image onto a
-    ``volumeMode: Block`` claim labeled for Rook's ``osd-set`` DeviceSet
-    discovery (``ceph.rook.io/DeviceSet``/``DeviceSetPVCId``/``setIndex``)."""
+    """CDI DataVolume that imports the captured OSD qcow2 onto a Block claim
+    named/labeled for the Troshka Ceph appliance OSD Deployment."""
     index = int(device["index"])
     name = osd_restore_pvc_name(index)
     s3_url = s3_import_url(device["s3Path"], s3_config)
     size_bytes = device.get("virtualSizeBytes") or device.get("sizeBytes") or 0
     request_gi = _request_gi(size_bytes, _MIN_OSD_RESTORE_GI)
-    pvc_id = f"{CEPH_DEVICE_SET_NAME}-{CEPH_OSD_TEMPLATE_NAME}-{index}"
     return {
         "apiVersion": f"{_DV_GROUP}/{_DV_VERSION}",
         "kind": "DataVolume",
@@ -217,10 +203,8 @@ def build_osd_restore_datavolume(
             "namespace": namespace,
             "labels": {
                 "app": "troshka-ceph",
-                "troshka-role": "ceph-restore-osd",
-                ROOK_LABEL_DEVICE_SET: CEPH_DEVICE_SET_NAME,
-                ROOK_LABEL_DEVICE_SET_PVC_ID: pvc_id,
-                ROOK_LABEL_SET_INDEX: str(index),
+                "troshka-role": "ceph-osd",
+                "troshka-ceph-osd-index": str(index),
             },
         },
         "spec": {
@@ -327,14 +311,15 @@ def build_identity_object_manifests(
             "metadata": {
                 "name": name,
                 "namespace": namespace,
-                "labels": {"app": "troshka-ceph", "troshka-role": "ceph-restore-identity"},
+                "labels": {
+                    "app": "troshka-ceph",
+                    "troshka-role": "ceph-restore-identity",
+                },
             },
         }
         if kind == "Secret":
             manifest["data"] = dict(data)
-            # Rook Secrets use type kubernetes.io/rook; restoring as Opaque
-            # makes later Rook updates fail with "type: field is immutable".
-            manifest["type"] = obj.get("type") or "kubernetes.io/rook"
+            manifest["type"] = obj.get("type") or "Opaque"
         else:
             manifest["data"] = {
                 k: base64.b64decode(v).decode() for k, v in data.items()
