@@ -727,6 +727,14 @@ def showroom_infra_ip(vni_map: dict) -> str:
     return f"172.30.{octet3}.3"
 
 
+def is_terminator_ip(ip: str) -> bool:
+    """Transit gateway address (172.30.{vni}.1) where TLS terminator runs."""
+    parts = (ip or "").split(".")
+    return (
+        len(parts) == 4 and parts[0] == "172" and parts[1] == "30" and parts[3] == "1"
+    )
+
+
 def is_ops_infra_ip(ip: str) -> bool:
     """Transit-side ops-pod address (172.30.{vni}.4), not a lab NIC.
 

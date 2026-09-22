@@ -442,43 +442,36 @@ def _topology_has_showroom(topology: dict) -> bool:
 
 
 def _is_showroom_infra_forward(pf: dict) -> bool:
-    """Gateway PF 443→172.30.{vni}.3:80 auto-managed for showroom."""
+    """Gateway PF 443→172.30.{vni}.1:443 auto-managed for showroom TLS terminator."""
     int_ip = (pf.get("intIp") or "").strip()
-    if not int_ip.startswith("172.30.") or not int_ip.endswith(".3"):
+    if not int_ip.startswith("172.30.") or not int_ip.endswith(".1"):
         return False
-    return str(pf.get("extPort")) == "443" and str(pf.get("intPort")) == "80"
+    return str(pf.get("extPort")) == "443" and str(pf.get("intPort")) == "443"
 
 
 def _inject_showroom_port_forward(
     port_forwards: list, topology: dict, first_vni: int | None
 ) -> list:
-    """Auto-add gateway PF 443→showroom infra:80 (transit netns, not lab DHCP)."""
+    """Auto-add gateway PF 443→TLS terminator on gateway (transit netns)."""
     if not first_vni or not _topology_has_showroom(topology):
         return port_forwards
     octet3 = int(first_vni) & 0xFF
-    infra_ip = f"172.30.{octet3}.3"
+    term_ip = f"172.30.{octet3}.1"  # terminator listens here (see showroom TLS edge)
 
     out = [
         pf
         for pf in port_forwards
-        if not (
-            str(pf.get("extPort")) == "443"
-            and str(pf.get("intPort")) == "80"
-            and (pf.get("intIp") or "").strip() != infra_ip
-        )
+        if not (str(pf.get("extPort")) == "443" and pf.get("managedByShowroom"))
     ]
 
     if not any(
-        str(pf.get("extPort")) == "443"
-        and (pf.get("intIp") or "").strip() == infra_ip
-        and str(pf.get("intPort")) == "80"
-        for pf in out
+        str(pf.get("extPort")) == "443" and pf.get("managedByShowroom") for pf in out
     ):
         out.append(
             {
                 "extPort": "443",
-                "intIp": infra_ip,
-                "intPort": "80",
+                "intIp": term_ip,
+                "intPort": "443",
                 "proto": "tcp",
                 "extIpId": "",
                 "managedByShowroom": True,

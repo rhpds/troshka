@@ -532,14 +532,14 @@ class TestCreateRoutesForGatewayShowroom:
                 {
                     "vmId": "showroom",
                     "port": 443,
-                    "internalIp": "172.30.10.3",
-                    "internalPort": 80,
+                    "internalIp": "172.30.10.1",
+                    "internalPort": 443,
                 },
             ],
         }
         node_data = {
             "portForwards": [
-                {"extPort": 443, "intIp": "172.30.10.3", "intPort": 80},
+                {"extPort": 443, "intIp": "172.30.10.1", "intPort": 443},
             ],
         }
         _create_routes_for_gateway(

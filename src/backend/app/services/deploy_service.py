@@ -7486,7 +7486,7 @@ def _create_routes_for_gateway(
     s, driver, provider, host, project_id, node_data, topology
 ):
     """Create OCP Routes for routable port forwards and return endpoint list."""
-    from app.services.deploy_topology import is_ops_infra_ip, is_showroom_infra_ip
+    from app.services.deploy_topology import is_ops_infra_ip, is_terminator_ip
     from app.services.eip_service import allocate_standalone_transit_port
     from app.services.providers.ocpvirt import used_transit_ports_on_host
 
@@ -7507,11 +7507,11 @@ def _create_routes_for_gateway(
         try:
             if provider.type == "ocpvirt":
                 transit_port = _lookup_transit_port(topology, pf)
-                # Infra transit pods (showroom .3, ops .4) always need their own
+                # Infra transit targets (terminator .1, ops .4) always need their own
                 # DNAT target.
                 setup_dnat = (
                     transit_port is None
-                    or is_showroom_infra_ip(int_ip)
+                    or is_terminator_ip(int_ip)
                     or is_ops_infra_ip(int_ip)
                 )
                 if transit_port is None:
@@ -7551,7 +7551,7 @@ def _create_routes_for_gateway(
                     "hostname": result["hostname"],
                 }
             )
-            if is_showroom_infra_ip(int_ip):
+            if is_terminator_ip(int_ip):
                 showroom_route = result
             logger.info(
                 "Deploy %s: created Route for %s:%d → %s",
@@ -7699,16 +7699,24 @@ def _deploy_create_ocpvirt_routes(s, host, project_id, topology):
 def _showroom_route_target(topology):
     """Return (vm_name, ext_port) that named the showroom's OCP Route at deploy, or
     None. Mirrors _create_routes_for_gateway so redeploy resolves the same Route."""
-    from app.services.deploy_topology import is_showroom_infra_ip
+    from app.services.deploy_topology import _is_showroom_node, is_terminator_ip
 
+    # Find showroom node name
+    showroom_name = None
+    for node in topology.get("nodes", []):
+        if _is_showroom_node(node):
+            showroom_name = node.get("data", {}).get("name", "showroom")
+            break
+
+    # Find gateway PF targeting terminator
     for node in topology.get("nodes", []):
         if node.get("data", {}).get("subtype") != "gateway":
             continue
         for pf in node["data"].get("portForwards", []):
             int_ip = pf.get("intIp", "")
             ext_port = int(pf.get("extPort", 0))
-            if is_showroom_infra_ip(int_ip) and ext_port in _ROUTE_ACCESS_PORTS:
-                return _find_vm_name_by_ip(topology, int_ip), ext_port
+            if is_terminator_ip(int_ip) and ext_port in _ROUTE_ACCESS_PORTS:
+                return showroom_name, ext_port
     return None
 
 
