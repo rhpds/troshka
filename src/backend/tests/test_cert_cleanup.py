@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services.deploy_service import (
+    DeployError,
     _auto_enable_recert_on_rhcos,
     _clean_kubelet_certs,
     _extract_vms,
@@ -161,8 +162,9 @@ def test_clean_kubelet_certs_calls_modify_fs(mock_start, mock_wait):
 
 @patch("app.services.deploy_service.wait_for_job")
 @patch("app.services.deploy_service.start_job")
-def test_clean_kubelet_certs_nonfatal_on_failure(mock_start, mock_wait):
-    """Verify cert cleanup does not raise on failure."""
+def test_clean_kubelet_certs_raises_on_job_failure(mock_start, mock_wait):
+    """A failed wipe MUST abort the deploy — never fall through to a fresh OCP
+    install that would overwrite the captured pre-installed cluster."""
     mock_start.return_value = "job-001"
     mock_wait.return_value = {
         "status": "failed",
@@ -177,16 +179,15 @@ def test_clean_kubelet_certs_nonfatal_on_failure(mock_start, mock_wait):
         ]
     )
 
-    # Should not raise — guestfish fails but cert cleanup is non-fatal.
-    _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
-    assert mock_start.call_count == 1
-    assert mock_start.call_args_list[0][0][1] == "/vms/modify-fs"
+    with pytest.raises(DeployError, match="kubelet PKI"):
+        _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
 
 
 @patch("app.services.deploy_service.wait_for_job")
 @patch("app.services.deploy_service.start_job")
-def test_clean_kubelet_certs_nonfatal_on_exception(mock_start, mock_wait):
-    """Verify cert cleanup does not raise on troshkad exception."""
+def test_clean_kubelet_certs_raises_on_start_exception(mock_start, mock_wait):
+    """A wipe that can't even start (host unreachable) is fatal — the recert can't
+    proceed, so the deploy must fail rather than reinstall from scratch."""
     mock_start.side_effect = Exception("connection refused")
     host = MagicMock()
 
@@ -197,8 +198,8 @@ def test_clean_kubelet_certs_nonfatal_on_exception(mock_start, mock_wait):
         ]
     )
 
-    # Should not raise
-    _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
+    with pytest.raises(DeployError):
+        _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
 
 
 @patch("app.services.deploy_service.wait_for_job")
@@ -259,7 +260,7 @@ def test_clean_kubelet_certs_reraises_guestfish_missing(mock_start, mock_wait):
         [{"name": "cp-0", "os": "rhcos"}, {"name": "cp-1", "os": "rhcos"}]
     )
 
-    with pytest.raises(RuntimeError, match="guestfish not installed"):
+    with pytest.raises(DeployError, match="guestfish not installed"):
         _clean_kubelet_certs(host, "proj-0001-0000", topo, pool=None)
 
 

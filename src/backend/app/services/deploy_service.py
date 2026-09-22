@@ -9325,43 +9325,48 @@ def _start_guestfish_clean_kubelet_certs(host, project_id, vm, topology, pool):
     except Exception as e:
         err_msg = str(e)
         if "No such file or directory" in err_msg and "guestfish" in err_msg:
-            raise RuntimeError(
+            raise DeployError(
                 "guestfish not installed on host — install libguestfs-tools-c"
             ) from e
-        logger.warning(
-            "Deploy %s: cert cleanup error for %s, continuing",
-            project_id[:8],
-            vm_name,
-            exc_info=True,
-        )
-        return None
+        # A wipe that can't even start means the recert can't proceed. Fail hard
+        # rather than boot stale-cert nodes / fall through to a fresh OCP install.
+        raise DeployError(
+            f"kubelet PKI wipe could not start for {vm_name}: {err_msg}"
+        ) from e
 
 
 def _await_guestfish_clean_kubelet_certs(host, project_id, vm_name, job_id):
-    """Await a started kubelet-PKI wipe job and log the outcome. Non-fatal."""
+    """Await a started kubelet-PKI wipe job.
+
+    Returns an error string on failure (job failed or wait errored), or ``None``
+    on success. The caller aborts the deploy on any failure — a partial/failed
+    wipe must never fall through to a fresh OCP install.
+    """
     try:
         job = wait_for_job(host, job_id, timeout=120)
-    except Exception:
+    except Exception as e:
         logger.warning(
-            "Deploy %s: cert cleanup wait error for %s, continuing",
+            "Deploy %s: cert cleanup wait error for %s",
             project_id[:8],
             vm_name,
             exc_info=True,
         )
-        return
+        return f"{vm_name}: {e}"
     if job.get("status") == "failed":
+        err = job.get("result", {}).get("error", "unknown")
         logger.warning(
             "Deploy %s: cert cleanup failed for %s: %s",
             project_id[:8],
             vm_name,
-            job.get("result", {}).get("error", "unknown"),
+            err,
         )
-    else:
-        logger.info(
-            "Deploy %s: cert cleanup complete for %s",
-            project_id[:8],
-            vm_name,
-        )
+        return f"{vm_name}: {err}"
+    logger.info(
+        "Deploy %s: cert cleanup complete for %s",
+        project_id[:8],
+        vm_name,
+    )
+    return None
 
 
 def _clean_kubelet_certs(
@@ -9389,6 +9394,7 @@ def _clean_kubelet_certs(
     # started jobs concurrently, so a multi-node cluster pays ~one appliance-boot
     # latency instead of N sequential ones (the wipe happens before any VM boots).
     step = _KUBELET_WIPE_MAX_PARALLEL
+    failures: list[str] = []
     for i in range(0, len(rhcos_vms), step):
         started = []
         for vm in rhcos_vms[i : i + step]:
@@ -9398,7 +9404,18 @@ def _clean_kubelet_certs(
             if job:
                 started.append(job)
         for vm_name, job_id in started:
-            _await_guestfish_clean_kubelet_certs(host, project_id, vm_name, job_id)
+            err = _await_guestfish_clean_kubelet_certs(
+                host, project_id, vm_name, job_id
+            )
+            if err:
+                failures.append(err)
+    if failures:
+        # A failed kubelet-PKI wipe means recert cannot bring the captured cluster
+        # online. Abort — never fall through to a fresh OCP install that would
+        # overwrite the pre-installed pattern disks.
+        raise DeployError(
+            "kubelet PKI wipe failed for pattern recert: " + "; ".join(failures)
+        )
 
 
 def _is_ocp_topology(topology: dict) -> bool:
