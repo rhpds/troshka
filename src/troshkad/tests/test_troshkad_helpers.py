@@ -10582,3 +10582,20 @@ class TestEnsureHostPackages(unittest.TestCase):
 
     def test_required_packages_includes_socat(self):
         assert "socat" in troshkad._REQUIRED_HOST_PACKAGES
+
+
+class TestSelfSignedCert(unittest.TestCase):
+    @patch("troshkad.os.chmod")
+    @patch("troshkad.os.makedirs")
+    @patch("troshkad.subprocess.run")
+    def test_builds_openssl_argv_and_returns_paths(self, mock_run, _mk, _ch):
+        mock_run.return_value = MagicMock(returncode=0)
+        full, key = troshkad._gen_self_signed_cert("/gw/tls", "1.2.3.4", "1.2.3.4")
+        assert full.endswith("/fullchain.pem")
+        assert key.endswith("/privkey.pem")
+        argv = mock_run.call_args[0][0]
+        assert argv[0] == "openssl"
+        assert "req" in argv and "-x509" in argv
+        # user-influenceable values are argv items, never a shell string
+        assert "subjectAltName=IP:1.2.3.4" in " ".join(argv)
+        assert "bash" not in argv

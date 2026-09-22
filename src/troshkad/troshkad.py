@@ -1130,6 +1130,26 @@ def _validate_project_id(pid):
     return pid
 
 
+def _gen_self_signed_cert(out_dir, cn, eip):
+    """Generate a self-signed cert (argv, no shell). Returns (fullchain, key)."""
+    os.makedirs(out_dir, exist_ok=True)
+    os.chmod(out_dir, 0o700)
+    full = os.path.join(out_dir, "fullchain.pem")
+    key = os.path.join(out_dir, "privkey.pem")
+    subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", key, "-out", full, "-days", "825",
+            "-subj", f"/CN={cn}",
+            "-addext", f"subjectAltName=IP:{eip}",
+        ],
+        check=True, timeout=60,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    os.chmod(key, 0o600)
+    return full, key
+
+
 def _job_log(job, msg):
     """Append a line to job output and log to systemd."""
     job["output"].append(msg)
