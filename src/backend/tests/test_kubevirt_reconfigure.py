@@ -3,6 +3,54 @@
 from unittest.mock import MagicMock, patch
 
 
+class TestKubevirtReconfigureImageAndPvc:
+    def test_setup_ip_init_uses_configured_image_not_stable(self):
+        """The setup-ip init container must use the configured deploy tag, not a
+        hardcoded ':stable' (which doesn't exist in the registry → ImagePullBackOff)."""
+        from app.services.app_updater import image_ref
+        from app.services.kubevirt_reconfigure import _build_setup_ip_init
+
+        ctr = {"nics": [{"ip": "172.30.67.3", "cidr": "172.30.67.0/24"}]}
+        inits = _build_setup_ip_init(ctr)
+        assert inits
+        assert inits[0]["image"] == image_ref("troshka-gateway")
+        assert ":stable" not in inits[0]["image"]
+
+    def test_ensure_container_pvcs_creates_blank_pvc(self):
+        """Reconfigure must provision a container's disk PVC (the operator only
+        does so on full deploy) or the re-added pod stays Pending."""
+        from app.services.kubevirt_reconfigure import _ensure_container_pvcs
+
+        core = MagicMock()
+        core.list_namespaced_persistent_volume_claim.return_value.items = []
+        ctr = {"id": "showroom-1", "mounts": [{"diskNodeId": "disk-abc1"}]}
+        topo = {
+            "nodes": [{"id": "disk-abc1", "type": "storageNode", "data": {"sizeGb": 5}}]
+        }
+
+        _ensure_container_pvcs(core, "ns1", ctr, topo, {})
+
+        core.create_namespaced_persistent_volume_claim.assert_called_once()
+        body = core.create_namespaced_persistent_volume_claim.call_args.kwargs["body"]
+        assert body["metadata"]["name"] == "pod-showroom-disk-disk-abc"
+        assert body["spec"]["resources"]["requests"]["storage"] == "5Gi"
+        assert body["spec"]["accessModes"] == ["ReadWriteOnce"]
+
+    def test_ensure_container_pvcs_ignores_already_exists(self):
+        """A 409 (PVC already exists) must not raise."""
+        from kubernetes.client.exceptions import ApiException
+
+        from app.services.kubevirt_reconfigure import _ensure_container_pvcs
+
+        core = MagicMock()
+        core.list_namespaced_persistent_volume_claim.return_value.items = []
+        core.create_namespaced_persistent_volume_claim.side_effect = ApiException(
+            status=409
+        )
+        ctr = {"id": "showroom-1", "mounts": [{"diskNodeId": "disk-abc1"}]}
+        _ensure_container_pvcs(core, "ns1", ctr, {"nodes": []}, {})  # no raise
+
+
 class TestKubevirtNetworkHelpers:
     def test_build_troshkanetwork_spec_includes_static_leases(self):
         from app.services.kubevirt_reconfigure import (

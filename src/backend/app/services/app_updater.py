@@ -389,6 +389,15 @@ def _rolling_image_ref(suffix: str) -> str:
     return f"{_registry()}/{_repo()}/{suffix}:{_rolling_tag()}"
 
 
+def image_ref(suffix: str) -> str:
+    """Full image reference for a troshka component at the configured deploy tag.
+
+    Uses ``app_update`` registry/repo/tag (e.g. quay.io/redhat-gpte/<suffix>:
+    production) so runtime-built pod specs match what the operator deploys,
+    instead of hardcoding a tag that may not exist in the registry."""
+    return f"{_registry()}/{_repo()}/{suffix}:{_tag()}"
+
+
 def _patch_deployment_image(suffix: str, image: str) -> None:
     from kubernetes import client
     from kubernetes import config as k8s_config

@@ -9,8 +9,18 @@ from app.services.providers.kubevirt import CRD_GROUP, CRD_VERSION
 logger = logging.getLogger(__name__)
 
 _TROSHKA_DOMAIN = CRD_GROUP
-_GATEWAY_IMAGE = "quay.io/redhat-gpte/troshka-gateway:stable"
 _NET_ANNOTATION = "k8s.v1.cni.cncf.io/networks"
+# Matches the operator's helpers.kubevirt.STORAGE_CLASS; used only as a fallback
+# when the namespace has no existing PVC to copy the storage class from.
+_DEFAULT_STORAGE_CLASS = "ocs-storagecluster-ceph-rbd-virtualization"
+
+
+def _gateway_image() -> str:
+    """Gateway image at the configured deploy tag (not a hardcoded ':stable' that
+    doesn't exist in the registry). Matches what the operator deploys."""
+    from app.services.app_updater import image_ref
+
+    return image_ref("troshka-gateway")
 
 
 def _gateway_ip_for_cidr(cidr: str) -> str:
@@ -745,6 +755,69 @@ def _container_disk_pvcs(ctr: dict) -> dict[str, str]:
     return disk_pvcs
 
 
+def _disk_size_gb(topology: dict, disk_id: str) -> int:
+    """Size (GiB) of a storage node, matching the operator's default of 20."""
+    for node in (topology or {}).get("nodes", []):
+        if node.get("id") == disk_id or node.get("data", {}).get("id") == disk_id:
+            data = node.get("data", {})
+            try:
+                return int(data.get("sizeGb") or data.get("size") or 20) or 20
+            except (TypeError, ValueError):
+                return 20
+    return 20
+
+
+def _resolve_storage_class(core_api, ns: str) -> str:
+    """Reuse the namespace's existing PVC storage class (avoids drift with the
+    operator/cluster); fall back to the operator's default."""
+    try:
+        pvcs = core_api.list_namespaced_persistent_volume_claim(namespace=ns)
+        for pvc in getattr(pvcs, "items", None) or []:
+            sc = getattr(getattr(pvc, "spec", None), "storage_class_name", None)
+            if sc:
+                return sc
+    except Exception:  # noqa: BLE001 - best-effort; fall back to default
+        pass
+    return _DEFAULT_STORAGE_CLASS
+
+
+def _ensure_container_pvcs(core_api, ns: str, ctr: dict, topology: dict, owner_ref):
+    """Create blank PVCs for a container's disks before its pod is (re)created.
+
+    The reconfigure path builds the pod directly (bypassing the operator, which
+    provisions PVCs on full deploy), so without this a re-added container's pod
+    stays Pending on a missing PVC. Mirrors the operator's build_blank_pvc."""
+    from kubernetes.client.exceptions import ApiException
+
+    disk_pvcs = _container_disk_pvcs(ctr)
+    if not disk_pvcs:
+        return
+    storage_class = _resolve_storage_class(core_api, ns)
+    for disk_id, pvc_name in disk_pvcs.items():
+        pvc_body = {
+            "apiVersion": "v1",
+            "kind": "PersistentVolumeClaim",
+            "metadata": {"name": pvc_name, "namespace": ns},
+            "spec": {
+                "accessModes": ["ReadWriteOnce"],
+                "resources": {
+                    "requests": {"storage": f"{_disk_size_gb(topology, disk_id)}Gi"}
+                },
+                "storageClassName": storage_class,
+            },
+        }
+        if owner_ref:
+            pvc_body["metadata"]["ownerReferences"] = [owner_ref]
+        try:
+            core_api.create_namespaced_persistent_volume_claim(
+                namespace=ns, body=pvc_body
+            )
+            logger.info("Reconfigure %s: created container PVC %s", ns, pvc_name)
+        except ApiException as e:
+            if e.status != 409:  # already exists -> fine
+                raise
+
+
 def _env_to_list(env) -> list[dict]:
     if not env:
         return []
@@ -791,7 +864,7 @@ def _build_setup_ip_init(ctr: dict) -> list[dict]:
         inits.append(
             {
                 "name": f"setup-ip-{idx}",
-                "image": _GATEWAY_IMAGE,
+                "image": _gateway_image(),
                 "imagePullPolicy": "Always",
                 "command": ["sh", "-c", setup_cmd],
                 "securityContext": {"capabilities": {"add": ["NET_ADMIN"]}},
@@ -1013,6 +1086,7 @@ def redeploy_showroom_pod_kubevirt(
     except Exception:
         pass
     owner_ref = (_kubevirt_project_owner_refs(project_cr) or [{}])[0]
+    _ensure_container_pvcs(core_api, ns, ctr, topology, owner_ref)
     _create_showroom_pod(core_api, ns, ctr, nad_refs, owner_ref)
 
 
