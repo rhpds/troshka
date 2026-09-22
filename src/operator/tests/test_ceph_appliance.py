@@ -149,3 +149,53 @@ def test_export_job_targets_appliance_mon_label():
     assert "app=troshka-ceph-mon" in script
     assert "10.0.0.4" not in script or "lab_ip" in script
     assert "external_cluster_details" in script
+
+
+def test_osd_prepare_adopts_existing_bluestore():
+    """Restored OSD block PVCs already have BlueStore — never re-create the id."""
+    dep = build_osd_deployment(_cr(), "quay.io/ceph/ceph:v19", 0)
+    prepare = next(
+        c
+        for c in dep["spec"]["template"]["spec"]["initContainers"]
+        if c["name"] == "prepare"
+    )
+    script = prepare["command"][2]
+    assert "ceph-bluestore-tool show-label" in script
+    assert "bluestore present" in script
+    assert "prime-osd-dir" in script
+    assert 'ln -sfn "${BLOCK}" "${OSD_DIR}/block"' in script or "ln -sfn" in script
+    assert "osd_uuid" in script
+    # Ceph's OSD-dir "fsid" file must hold the OSD uuid, never cluster fsid.
+    assert 'ceph fsid >' not in script.split("bluestore present", 1)[1].split(
+        "ceph osd create", 1
+    )[0]
+    # Adopt must fetch the existing auth entity, not mint a new UUID / osd create.
+    adopt_idx = script.index("bluestore present")
+    create_idx = script.index("ceph osd create")
+    assert adopt_idx < create_idx
+    assert 'ceph auth get "osd.${OSD_ID}"' in script or "ceph auth get osd." in script
+
+
+def test_osd_run_passes_osd_uuid_from_meta():
+    """ceph-osd must start with the BlueStore label UUID, not the cluster fsid."""
+    dep = build_osd_deployment(_cr(), "quay.io/ceph/ceph:v19", 0)
+    run = next(
+        c for c in dep["spec"]["template"]["spec"]["containers"] if c["name"] == "osd"
+    )
+    script = run["command"][2]
+    assert "--osd-uuid" in script
+    assert "osd_uuid" in script
+
+
+def test_keyring_sync_stays_alive_on_restore_seed():
+    """Sidecar must not exit 0 on restore — that CrashLoops the mon pod."""
+    dep = build_mon_deployment(_cr(), "quay.io/ceph/ceph:v19")
+    sync = next(
+        c for c in dep["spec"]["template"]["spec"]["containers"] if c["name"] == "keyring-sync"
+    )
+    script = sync["command"][2]
+    assert "seed keyrings present" in script
+    # After the restore short-circuit, sleep forever (never bare exit 0).
+    seed_block = script.split("seed keyrings present", 1)[1].split("sleep 2", 1)[0]
+    assert "sleep infinity" in seed_block
+    assert "exit 0" not in seed_block

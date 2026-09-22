@@ -417,7 +417,7 @@ exec ceph-mgr -f -i a
 
 
 def _keyring_sync_script() -> str:
-    """One-shot: push generated keyrings into K8s secrets (uses kubectl in tools)."""
+    """Sidecar: push generated keyrings into K8s secrets, then stay alive."""
     return r"""
 set -euo pipefail
 NS=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
@@ -429,13 +429,13 @@ for i in $(seq 1 90); do
   # Restore path: seed already populated secrets — nothing to sync.
   if [ -s /seed/admin.keyring ]; then
     echo "seed keyrings present — skip sync"
-    exit 0
+    sleep infinity
   fi
   sleep 2
 done
 if [ ! -s /shared/admin.keyring ]; then
   echo "no keyrings to sync"
-  exit 0
+  sleep infinity
 fi
 kubectl -n "$NS" create secret generic troshka-ceph-admin-keyring \
   --from-file=keyring=/shared/admin.keyring --dry-run=client -o yaml \
@@ -660,6 +660,35 @@ if ! ceph --conf /etc/ceph/ceph.conf -s >/dev/null 2>&1; then
   exit 1
 fi
 
+mkdir -p "${{OSD_DIR}}"
+
+# Pattern restore / pod restart: BlueStore already lives on the block PVC
+# (osd-data is emptyDir, so whoami/keyring alone are not durable).
+if ceph-bluestore-tool show-label --dev "${{BLOCK}}" >/tmp/bs-label.json 2>/dev/null; then
+  echo "bluestore present on ${{BLOCK}} — adopt osd.${{OSD_ID}}"
+  UUID=$(sed -n 's/.*"osd_uuid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/bs-label.json | head -1)
+  if [ -z "${{UUID}}" ]; then
+    echo "could not parse osd_uuid from bluestore label" >&2
+    exit 1
+  fi
+  # prime-osd-dir recreates meta files; note Ceph's "fsid" file holds the
+  # OSD uuid (not the cluster fsid) — writing cluster fsid here breaks mount.
+  ceph-bluestore-tool prime-osd-dir --dev "${{BLOCK}}" --path "${{OSD_DIR}}"
+  ln -sfn "${{BLOCK}}" "${{OSD_DIR}}/block"
+  echo "${{UUID}}" > "${{OSD_DIR}}/osd_uuid"
+  # Defense in depth: prime should write fsid=OSD uuid; force it if not.
+  echo "${{UUID}}" > "${{OSD_DIR}}/fsid"
+  if [ ! -s "${{OSD_DIR}}/keyring" ]; then
+    ceph auth get "osd.${{OSD_ID}}" -o "${{OSD_DIR}}/keyring" \
+      || ceph auth get-or-create "osd.${{OSD_ID}}" \
+           mon 'allow profile osd' \
+           mgr 'allow profile osd' \
+           osd 'allow *' \
+           -o "${{OSD_DIR}}/keyring"
+  fi
+  exit 0
+fi
+
 if [ -f "${{OSD_DIR}}/whoami" ] || [ -f "${{OSD_DIR}}/keyring" ]; then
   echo "osd data present — skip prepare"
   exit 0
@@ -670,12 +699,13 @@ UUID=$(uuidgen)
 ceph osd new "${{UUID}}" "${{OSD_ID}}" 2>/dev/null || \
   ceph osd create "${{UUID}}" "${{OSD_ID}}"
 
-mkdir -p "${{OSD_DIR}}"
 ceph auth get-or-create "osd.${{OSD_ID}}" \
   mon 'allow profile osd' \
   mgr 'allow profile osd' \
   osd 'allow *' \
   -o "${{OSD_DIR}}/keyring"
+
+echo "${{UUID}}" > "${{OSD_DIR}}/osd_uuid"
 
 # BlueStore on the raw block PVC — avoid ceph-volume (needs host udev).
 ceph-osd -i "${{OSD_ID}}" --mkfs --osd-uuid "${{UUID}}" \
@@ -692,12 +722,23 @@ OSD_IP="${{OSD_IP:?}}"
 OSD_ID="${{OSD_INDEX:?}}"
 PREFIX="${{LAB_PREFIX:-24}}"
 BLOCK=/dev/osd-block
+OSD_DIR=/var/lib/ceph/osd/ceph-${{OSD_ID}}
 {_ensure_lab_iface_snippet("OSD_IP")}
-if [ ! -f /var/lib/ceph/osd/ceph-${{OSD_ID}}/keyring ]; then
+if [ ! -f "${{OSD_DIR}}/keyring" ]; then
   echo "osd ${{OSD_ID}} not prepared" >&2
   exit 1
 fi
-exec ceph-osd -f -i "${{OSD_ID}}" \
+if [ ! -s "${{OSD_DIR}}/osd_uuid" ]; then
+  # Restore/restart safety: recover UUID from the BlueStore label.
+  ceph-bluestore-tool show-label --dev "${{BLOCK}}" >/tmp/bs-label.json 2>/dev/null || true
+  sed -n 's/.*"osd_uuid"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' /tmp/bs-label.json 2>/dev/null | head -1 > "${{OSD_DIR}}/osd_uuid" || true
+fi
+UUID=$(cat "${{OSD_DIR}}/osd_uuid")
+if [ -z "${{UUID}}" ]; then
+  echo "osd ${{OSD_ID}} missing osd_uuid" >&2
+  exit 1
+fi
+exec ceph-osd -f -i "${{OSD_ID}}" --osd-uuid "${{UUID}}" \
   --osd_objectstore=bluestore \
   --bluestore_block_path="${{BLOCK}}"
 """
