@@ -129,8 +129,11 @@ def test_build_deferred_worker_nmstate_configures_both_nics():
         ],
     }
     nmstate = build_deferred_worker_nmstate(worker)
-    assert "mac-address: 52:54:00:aa:bb:02" in nmstate
-    assert "mac-address: 52:54:00:aa:bb:99" in nmstate
+    # MACs + identifier live at the host level (nodes-config interfaces), NOT the
+    # networkConfig — oc adm node-image create keys interfaces by device name.
+    assert "mac-address:" not in nmstate
+    assert "identifier:" not in nmstate
+    assert "name: cluster-nic" in nmstate
     assert "name: net1-nic" in nmstate
     assert "state: down" in nmstate
     assert "ip: 172.16.100.20" not in nmstate
@@ -155,14 +158,25 @@ def test_build_deferred_worker_nodes_config_includes_routes():
         "prefix_len": 24,
         "gateway": "10.0.0.1",
         "dns_ip": "10.0.0.2",
-        "iface_name": "cluster-nic",
+        "iface_name": "enp1s0",
+        "aux_nics": [
+            {
+                "mac": "52:54:00:aa:bb:99",
+                "ip": "172.16.100.20",
+                "prefix_len": 24,
+                "iface_name": "enp2s0",
+            }
+        ],
     }
     cfg = yaml.safe_load(build_deferred_worker_nodes_config(worker))
     host = cfg["hosts"][0]
     assert host["hostname"] == "source-worker-0"
-    assert host["interfaces"][0]["macAddress"] == "52:54:00:aa:bb:02"
+    # Every NIC listed at host level with device name + MAC.
+    by_mac = {i["macAddress"]: i["name"] for i in host["interfaces"]}
+    assert by_mac == {"52:54:00:aa:bb:02": "enp1s0", "52:54:00:aa:bb:99": "enp2s0"}
     nc = host["networkConfig"]
     assert nc["routes"]["config"][0]["next-hop-address"] == "10.0.0.1"
+    assert nc["routes"]["config"][0]["next-hop-interface"] == "enp1s0"
     assert nc["dns-resolver"]["config"]["server"] == ["10.0.0.2"]
 
 

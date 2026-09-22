@@ -355,6 +355,14 @@ def member_defers_ocp_install(cluster, node, topology) -> bool:
     return install_workers == 0 and canvas_workers > 0
 
 
+def _deferred_worker_device_name(nic_idx: int) -> str:
+    """Kernel device name for a deferred worker NIC (virtio on q35 enumerates
+    enp1s0, enp2s0, ... in NIC order). ``oc adm node-image create`` needs the real
+    device name in networkConfig (unlike the agent installer, which accepts a
+    logical name + identifier: mac-address)."""
+    return f"enp{nic_idx + 1}s0"
+
+
 def _deferred_worker_nic_on_network(
     node: dict,
     net_node: dict,
@@ -376,7 +384,7 @@ def _deferred_worker_nic_on_network(
         "mac": mac,
         "ip": ip,
         "prefix_len": net.prefixlen,
-        "iface_name": _agent_nic_interface_name(nic_idx),
+        "iface_name": _deferred_worker_device_name(nic_idx),
     }
 
 
@@ -457,7 +465,7 @@ def deferred_worker_cluster_nic(
         "prefix_len": net.prefixlen,
         "gateway": gateway,
         "dns_ip": dns_ip,
-        "iface_name": _agent_nic_interface_name(nic_idx),
+        "iface_name": _deferred_worker_device_name(nic_idx),
         "aux_nics": _deferred_worker_aux_nics(node, cluster, topology, egress_id),
     }
 

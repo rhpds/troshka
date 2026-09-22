@@ -58,12 +58,13 @@ def _nmstate_interface(entry: dict, *, down: bool = False) -> dict:
     registers the cluster NIC as InternalIP and egress uses the gateway network.
     CCLM post-install NNCPs bring migration interfaces up later.
     """
+    # oc adm node-image create wants the real device name (enp1s0, ...) — it does
+    # NOT honor identifier: mac-address the way the agent installer does. The MAC
+    # is mapped to the device via the host-level interfaces[].macAddress instead.
     iface: dict = {
         "name": entry["iface_name"],
         "type": "ethernet",
         "state": "down" if down else "up",
-        "identifier": "mac-address",
-        "mac-address": entry["mac"],
     }
     if down:
         return iface
@@ -114,13 +115,16 @@ def build_deferred_worker_nodes_config(worker: dict) -> str:
     ``--network-config-path`` flag silently drops the nmstate ``routes:`` section,
     leaving the joined worker with an IP/DNS but no gateway."""
     nmstate = yaml.safe_load(build_deferred_worker_nmstate(worker))
+    # Every NIC (cluster + migration) is listed at host level with its device
+    # name + MAC so the node-joiner maps each to the right interface.
+    host_interfaces = [{"name": worker["iface_name"], "macAddress": worker["mac"]}]
+    for aux in worker.get("aux_nics") or []:
+        host_interfaces.append({"name": aux["iface_name"], "macAddress": aux["mac"]})
     cfg = {
         "hosts": [
             {
                 "hostname": worker["name"],
-                "interfaces": [
-                    {"name": worker["iface_name"], "macAddress": worker["mac"]}
-                ],
+                "interfaces": host_interfaces,
                 "networkConfig": nmstate,
             }
         ]
