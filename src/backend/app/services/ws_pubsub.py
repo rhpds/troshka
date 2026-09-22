@@ -223,7 +223,20 @@ def _maybe_scan_ocp_monitors():
 
     from app.core.database import SessionLocal
     from app.models.project import Project
-    from app.services.deploy_service import maybe_start_ocp_health_monitor
+    from app.services.deploy_service import (
+        maybe_start_ocp_health_monitor,
+        resume_ops_pod_monitors,
+    )
+
+    # Re-attach per-project ops-pod (bastionless) INSTALL monitors. Each project
+    # is independent and lock-guarded, so this only (re)starts a monitor where one
+    # isn't already live — letting a stranded install (its monitor died/timed out)
+    # self-heal and finalize on the next scan, instead of waiting for a backend
+    # restart. Health monitors below cover the post-install (bastion) case.
+    try:
+        resume_ops_pod_monitors()
+    except Exception:
+        logger.exception("periodic ops-pod install monitor re-attach failed")
 
     db = SessionLocal()
     try:

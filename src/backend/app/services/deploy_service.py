@@ -2879,7 +2879,9 @@ def _start_ops_pod_install_monitor(host, project_id: str, clusters: list) -> Non
     from app.core.redis import enqueue_job
 
     if not _acquire_ops_monitor_lock(project_id):
-        logger.info(
+        # Expected/common path now that the periodic scan re-attaches every ~30s;
+        # keep it at debug so a live monitor doesn't spam the log.
+        logger.debug(
             "Ops pod monitor %s: already running elsewhere, not starting",
             project_id[:8],
         )

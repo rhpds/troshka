@@ -575,6 +575,30 @@ class TestMaybeScanOcpMonitors:
         finally:
             pubsub._last_ocp_scan = old_last
 
+    @patch("app.core.database.SessionLocal")
+    def test_scan_reattaches_ops_pod_install_monitors(self, mock_session_cls):
+        """The periodic scan must re-attach per-project ops-pod install monitors,
+        so a stranded bastionless install (monitor died/timed out) self-heals
+        without a backend restart — independently of any other project."""
+        import app.services.ws_pubsub as pubsub
+
+        old_last = pubsub._last_ocp_scan
+        pubsub._last_ocp_scan = 0.0
+        try:
+            mock_db = MagicMock()
+            mock_db.query.return_value.filter.return_value.all.return_value = []
+            mock_session_cls.return_value = mock_db
+            with (
+                patch("app.services.deploy_service.maybe_start_ocp_health_monitor"),
+                patch(
+                    "app.services.deploy_service.resume_ops_pod_monitors"
+                ) as mock_resume,
+            ):
+                pubsub._maybe_scan_ocp_monitors()
+                mock_resume.assert_called_once()
+        finally:
+            pubsub._last_ocp_scan = old_last
+
     def test_skips_when_interval_not_elapsed(self):
         import time
 
