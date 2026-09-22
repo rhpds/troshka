@@ -1257,7 +1257,11 @@ class KubeVirtDriver(ProviderDriver):
         pod_port = gateway_pod_listen_port(ext_port)
         guest_port = int(target_port) if target_port is not None else ext_port
 
-        svc_name = f"rt-{vm_name}-{port}"[:63]
+        # Name by the LOGICAL destination port (guest_port), not the internal
+        # gateway listen key (ext_port). The vm name already disambiguates
+        # clusters, so e.g. dest's API is rt-dest-cp-0-6443 (not ...-6444); the
+        # 6444 listen key stays internal to the Service target/gateway DNAT.
+        svc_name = f"rt-{vm_name}-{guest_port}"[:63]
         route_name = svc_name
 
         svc_body = {

@@ -251,7 +251,7 @@ def test_create_route_access_passthrough_for_secondary_api_listen():
         mock_custom = MagicMock()
         mock_core = MagicMock()
         mock_custom.create_namespaced_custom_object.return_value = {
-            "spec": {"host": "rt-api-6444.apps.cluster.example.com"}
+            "spec": {"host": "rt-api-6443.apps.cluster.example.com"}
         }
         mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
@@ -260,11 +260,16 @@ def test_create_route_access_passthrough_for_secondary_api_listen():
             provider, host, "proj-1234-5678", "api", "10.1.0.10", 6444, 6443
         )
 
-    assert result["hostname"] == "rt-api-6444.apps.cluster.example.com"
+    assert result["hostname"] == "rt-api-6443.apps.cluster.example.com"
     route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
+    # Name reflects the LOGICAL API port (guest 6443), not the internal gateway
+    # listen key (6444) — the vm name already disambiguates clusters.
+    assert route_body["metadata"]["name"] == "rt-api-6443"
     assert route_body["spec"]["tls"]["termination"] == "passthrough"
+    # Plumbing still uses the distinct listen key so clusters don't collide.
     assert route_body["spec"]["port"]["targetPort"] == 6444
     svc_body = mock_core.create_namespaced_service.call_args[1]["body"]
+    assert svc_body["metadata"]["name"] == "rt-api-6443"
     assert svc_body["spec"]["ports"][0]["port"] == 6444
     assert svc_body["spec"]["ports"][0]["targetPort"] == 6444
 
