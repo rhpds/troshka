@@ -206,6 +206,39 @@ class TestBatchFetchVmStates:
         _batch_fetch_vm_states(projects, set(), db)
         mock_troshkad.assert_not_called()
 
+    @patch(
+        "app.services.ws_pubsub._fetch_kubevirt_vm_states",
+        return_value={"vm": "Running"},
+    )
+    def test_kubevirt_deploying_project_does_not_blank_siblings(self, mock_kv):
+        """On a shared kubevirt cluster, a deploying project must not skip VM-state
+        polling for its siblings — kubevirt fetches per-namespace, so only the
+        deploying project is skipped, not the whole host."""
+        from app.services.ws_pubsub import _batch_fetch_vm_states
+
+        p1 = MagicMock()
+        p1.id = "p1"
+        p1.host_id = "h1"
+        p1.host_assignments = None
+        p2 = MagicMock()
+        p2.id = "p2"
+        p2.host_id = "h1"
+        p2.host_assignments = None
+        projects = {"p1": p1, "p2": p2}
+
+        host = MagicMock()
+        host.id = "h1"
+        host.ip_address = "api.cluster"
+        host.host_type = "kubevirt-cluster"
+        host.provider_id = "prov1"
+        db = MagicMock()
+        db.query.return_value.filter_by.return_value.first.return_value = host
+
+        # p1 is deploying; its sibling p2 must still be polled.
+        _, proj_states = _batch_fetch_vm_states(projects, {"h1"}, db, {"p1"})
+        assert "p2" in proj_states
+        assert "p1" not in proj_states
+
     @patch("app.services.ws_pubsub._fetch_troshkad_host_states")
     def test_skips_when_host_not_found(self, mock_troshkad):
         from app.services.ws_pubsub import _batch_fetch_vm_states

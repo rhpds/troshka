@@ -440,9 +440,18 @@ def _collect_hosts_to_query(projects):
     return hosts_to_query
 
 
-def _fetch_kubevirt_states_for_host(host_id, projects, host, db, project_batch_states):
-    """Fetch KubeVirt VM states for all projects on this cluster."""
+def _fetch_kubevirt_states_for_host(
+    host_id, projects, host, db, project_batch_states, deploying_project_ids=None
+):
+    """Fetch KubeVirt VM states for all projects on this cluster.
+
+    ``deploying_project_ids`` skips only the projects mid-deploy — a sibling
+    project on the same cluster must still be polled (kubevirt state is fetched
+    per-namespace, so one deploy can't race another project's read)."""
+    deploying_project_ids = deploying_project_ids or set()
     for project in projects.values():
+        if project.id in deploying_project_ids:
+            continue
         if project.host_id == host_id or (
             project.host_assignments and host_id in project.host_assignments.values()
         ):
@@ -451,28 +460,34 @@ def _fetch_kubevirt_states_for_host(host_id, projects, host, db, project_batch_s
                 project_batch_states[project.id] = kv_states
 
 
-def _batch_fetch_vm_states(projects, deploying_host_ids, db):
+def _batch_fetch_vm_states(
+    projects, deploying_host_ids, db, deploying_project_ids=None
+):
     """Batch-fetch VM states: one call per host (troshkad) or per project (kubevirt).
+
+    troshkad batches per host, so a deploying host is skipped wholesale
+    (``deploying_host_ids``). kubevirt fetches per-namespace, so its hosts are
+    always queried and only the deploying project(s) are skipped
+    (``deploying_project_ids``) — this keeps sibling projects on a shared cluster
+    from being blanked while one of them deploys.
 
     Returns (host_batch_states, project_batch_states).
     """
     from app.models.host import Host
 
+    deploying_project_ids = deploying_project_ids or set()
     host_batch_states: dict = {}
     project_batch_states: dict = {}
 
-    hosts_to_query = _collect_hosts_to_query(projects)
-    hosts_to_query -= deploying_host_ids
-
-    for host_id in hosts_to_query:
+    for host_id in _collect_hosts_to_query(projects):
         host = db.query(Host).filter_by(id=host_id).first()
         if not host or not host.ip_address:
             continue
         if host.host_type == "kubevirt-cluster":
             _fetch_kubevirt_states_for_host(
-                host_id, projects, host, db, project_batch_states
+                host_id, projects, host, db, project_batch_states, deploying_project_ids
             )
-        else:
+        elif host_id not in deploying_host_ids:
             _fetch_troshkad_host_states(host, host_batch_states)
 
     return host_batch_states, project_batch_states
@@ -547,24 +562,27 @@ def _poll_active_projects():
         projects = {p.id: p for p in all_projects}
 
         deploying_host_ids = set()
+        deploying_project_ids = set()
         for pid, p in projects.items():
             prog = _get_deploy_progress_data(pid)
             if not prog:
                 continue
             # Skip VM-state polling only while VMs are being created/modified (to
-            # avoid racing the deploy). During the OCP install phase the member
-            # VMs are already created and running (booting the agent ISO), so keep
-            # polling so their state + console stay available throughout the
-            # long install instead of the card sitting blank for ~30+ minutes.
-            if str(prog.get("step", "")).startswith("ocp-install"):
+            # avoid racing the deploy). Once the VMs exist — the whole OCP install
+            # phase (agent boot, control-plane-usable milestone, etc.) — keep
+            # polling so their state + console stay available throughout the long
+            # install instead of the card sitting blank for ~30+ minutes.
+            step = str(prog.get("step", ""))
+            if step.startswith("ocp-install") or step == "control-plane-usable":
                 continue
+            deploying_project_ids.add(pid)
             if p.host_id:
                 deploying_host_ids.add(p.host_id)
             if p.host_assignments:
                 deploying_host_ids.update(set(p.host_assignments.values()))
 
         host_batch_states, project_batch_states = _batch_fetch_vm_states(
-            projects, deploying_host_ids, db
+            projects, deploying_host_ids, db, deploying_project_ids
         )
         _notify_all_projects(projects, host_batch_states, project_batch_states)
     finally:
