@@ -3453,12 +3453,13 @@ def _handle_disk_create(job, params):
     if backing:
         backing = _validate_path(backing)
         _job_log(job, f"Using backing image: {os.path.basename(backing)}")
-        # Detect the backing's actual format + size (default raw). Ensure the
-        # target is at least as large as the backing.
-        backing_fmt = "raw"
+        # Detect the backing's actual format + size. Defaulting to raw on probe
+        # failure used to ship -F raw against qcow2 pattern caches (lock race
+        # while the cache file finishes) → UEFI "No bootable option".
+        backing_fmt = _probe_disk_format(backing)
         try:
             info = subprocess.run(
-                ["qemu-img", "info", _PODMAN_JSON, backing],
+                ["qemu-img", "info", "-U", "--output=json", backing],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -3467,7 +3468,7 @@ def _handle_disk_create(job, params):
                 import json as _json
 
                 _binfo = _json.loads(info.stdout)
-                backing_fmt = _binfo.get("format") or "raw"
+                backing_fmt = _binfo.get("format") or backing_fmt
                 backing_vsize = _binfo.get("virtual-size", 0)
                 requested = size_gb * 1073741824
                 if requested < backing_vsize:
@@ -3478,7 +3479,10 @@ def _handle_disk_create(job, params):
                     )
                     size_gb = backing_gb
         except Exception:
-            pass
+            _job_log(
+                job,
+                f"qemu-img info failed for backing; using format={backing_fmt}",
+            )
         if fmt == "raw":
             # RAW images can't carry a qemu-img backing file (`create -f raw -b`
             # fails), so materialize a standalone raw disk from the backing:
@@ -3515,6 +3519,16 @@ def _handle_disk_create(job, params):
 
 
 COMMAND_HANDLERS["disks/create"] = _handle_disk_create
+
+
+def _probe_disk_format(path):
+    """Best-effort format from path when qemu-img info is unavailable."""
+    lower = (path or "").lower()
+    if lower.endswith(".qcow2") or lower.endswith(".qcow"):
+        return "qcow2"
+    if lower.endswith(".vmdk"):
+        return "vmdk"
+    return "raw"
 
 
 def _handle_disk_resize(job, params):

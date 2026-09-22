@@ -3378,7 +3378,7 @@ class TestHandleDiskCreate(unittest.TestCase):
         self, _mock_makedirs, mock_subprocess_run, mock_run_cmd, _mock_chown
     ):
         mock_subprocess_run.return_value = MagicMock(
-            returncode=0, stdout='{"virtual-size": 21474836480}'
+            returncode=0, stdout='{"format": "qcow2", "virtual-size": 21474836480}'
         )
         job = {"job_id": "disk-create-0001", "output": [], "_process": None}
         result = troshkad._handle_disk_create(
@@ -3392,6 +3392,36 @@ class TestHandleDiskCreate(unittest.TestCase):
         self.assertEqual(result["status"], "created")
         cmd = mock_run_cmd.call_args[0][1]
         self.assertIn("-b", cmd)
+        self.assertIn("-F", cmd)
+        self.assertEqual(cmd[cmd.index("-F") + 1], "qcow2")
+        # Shared lock (-U) so a busy pattern cache can't force -F raw
+        info_cmd = mock_subprocess_run.call_args[0][0]
+        self.assertIn("-U", info_cmd)
+
+    @patch("troshkad._chown_qemu")
+    @patch("troshkad._run_cmd")
+    @patch("troshkad.subprocess.run")
+    @patch("os.makedirs")
+    def test_qcow2_backing_format_when_info_fails(
+        self, _mock_makedirs, mock_subprocess_run, mock_run_cmd, _mock_chown
+    ):
+        """If qemu-img info fails (lock race while pattern cache finishes), do
+        NOT default -F raw on a .qcow2 backing — that yields an unbootable UEFI
+        disk (BdsDxe: No bootable option)."""
+        mock_subprocess_run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="lock"
+        )
+        job = {"job_id": "disk-create-fmt", "output": [], "_process": None}
+        troshkad._handle_disk_create(
+            job,
+            {
+                "path": "/var/lib/troshka/vms/test/d.qcow2",
+                "size_gb": 120,
+                "backing_file": "/var/lib/troshka/local/cache/patterns/p/boot.qcow2",
+            },
+        )
+        cmd = mock_run_cmd.call_args[0][1]
+        self.assertEqual(cmd[cmd.index("-F") + 1], "qcow2")
 
 
 # ── _handle_disk_resize ──
