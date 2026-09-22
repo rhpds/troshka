@@ -3039,5 +3039,22 @@ class TestTlsProxy(unittest.TestCase):
         assert "bash" not in argv
 
 
+class TestGatewayTlsProxyHandlers(unittest.TestCase):
+    @patch("troshkad._start_tls_proxy", return_value=999)
+    def test_proxy_start_handler(self, mock_start):
+        out = troshkad._handle_gateway_tls_proxy({}, {
+            "project_id": "abcdef12-0000-0000-0000-000000000000", "netns": "troshka-abcdef12",
+            "listen": "172.30.5.1:443", "upstream": "172.30.5.3:80",
+            "cert_path": "/gw/full.pem", "key_path": "/gw/key.pem"})
+        assert out["pid"] == 999
+        mock_start.assert_called_once()
+
+    @patch("troshkad._stop_tls_proxy")
+    def test_proxy_stop_handler(self, mock_stop):
+        out = troshkad._handle_gateway_tls_proxy_stop({}, {"project_id": "abcdef12-0000-0000-0000-000000000000"})
+        assert out["stopped"] is True
+        mock_stop.assert_called_once_with("abcdef12-0000-0000-0000-000000000000")
+
+
 if __name__ == "__main__":
     unittest.main()

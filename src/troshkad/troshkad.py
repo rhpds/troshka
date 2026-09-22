@@ -1261,6 +1261,24 @@ def _stop_tls_proxy(project_id):
             pass
 
 
+def _handle_gateway_tls_proxy(job, params):
+    pid = _start_tls_proxy(
+        _validate_project_id(params["project_id"]),
+        params["netns"], params["listen"], params["upstream"],
+        params["cert_path"], params["key_path"],
+    )
+    return {"pid": pid}
+
+
+def _handle_gateway_tls_proxy_stop(job, params):
+    _stop_tls_proxy(_validate_project_id(params["project_id"]))
+    return {"stopped": True}
+
+
+COMMAND_HANDLERS["gateway/tls-proxy"] = _handle_gateway_tls_proxy
+COMMAND_HANDLERS["gateway/tls-proxy-stop"] = _handle_gateway_tls_proxy_stop
+
+
 def _job_log(job, msg):
     """Append a line to job output and log to systemd."""
     job["output"].append(msg)
