@@ -409,21 +409,36 @@ def _ensure_cache_s3_secrets(provider, s3_config, central_s3=None, obc_s3=None):
         _ensure_s3_secret(provider, CACHE_NAMESPACE, obc_s3, "s3-obc-credentials")
 
 
-def _upsert_cluster_role(rbac_api, body: dict) -> None:
-    """Create or replace a ClusterRole so new rules reach already-onboarded clusters."""
+class ClusterRbacMissingError(Exception):
+    """Admin-owned cluster RBAC (ClusterRole/ClusterRoleBinding) is not present.
+
+    Under the admin-owned RBAC model the provider ServiceAccount must not create
+    or modify cluster-scoped RBAC: RBAC escalation prevention forbids a SA from
+    writing a ClusterRole that grants permissions it does not itself hold, and the
+    provider SA is intentionally *not* granted the ``escalate`` verb. The
+    operator's ClusterRole/ClusterRoleBinding are bootstrapped once by a cluster
+    admin; the install flow only verifies they exist and raises this otherwise.
+    """
+
+
+def _verify_cluster_rbac(rbac_api, kind: str, name: str) -> None:
+    """Confirm an admin-bootstrapped ClusterRole/ClusterRoleBinding exists.
+
+    Read-only: never creates, replaces, or patches. Raises
+    :class:`ClusterRbacMissingError` on 404 so the caller can give the admin precise
+    remediation; any other API error propagates unchanged.
+    """
     from kubernetes.client.exceptions import ApiException
 
-    name = body["metadata"]["name"]
     try:
-        existing = rbac_api.read_cluster_role(name=name)
-        body["metadata"]["resourceVersion"] = existing.metadata.resource_version
-        rbac_api.replace_cluster_role(name=name, body=body)
-        logger.info("ClusterRole %s updated", name)
+        if kind == "ClusterRole":
+            rbac_api.read_cluster_role(name=name)
+        else:
+            rbac_api.read_cluster_role_binding(name=name)
     except ApiException as e:
-        if e.status != 404:
-            raise
-        rbac_api.create_cluster_role(body=body)
-        logger.info("ClusterRole %s created", name)
+        if e.status == 404:
+            raise ClusterRbacMissingError(f"{kind} {name}") from e
+        raise
 
 
 def _load_provider_rbac_docs() -> list[dict]:
@@ -433,9 +448,12 @@ def _load_provider_rbac_docs() -> list[dict]:
 
 
 def _ensure_provider_rbac(provider) -> None:
-    """Re-apply provider RBAC so rule additions (e.g. troshkancephs) reach live clusters.
+    """Ensure namespaced provider resources exist and verify cluster RBAC.
 
-    Skips SecurityContextConstraints — the operator manages SCC user lists per project.
+    Cluster-scoped RBAC (ClusterRole/ClusterRoleBinding) and SCCs are admin-owned
+    bootstrap: the provider SA only verifies the ClusterRole/ClusterRoleBinding are
+    present (it cannot legally write them). Namespaced resources it has rights to
+    (Namespace, ServiceAccount) are (re)applied.
     """
     from kubernetes import client
 
@@ -449,27 +467,10 @@ def _ensure_provider_rbac(provider) -> None:
             continue
         name = doc["metadata"]["name"]
         ns = doc["metadata"].get("namespace")
-        if kind == "ClusterRole":
-            _upsert_cluster_role(rbac_api, doc)
+        if kind in ("ClusterRole", "ClusterRoleBinding"):
+            _verify_cluster_rbac(rbac_api, kind, name)
             continue
-        _apply_manifest(kind, name, ns, doc, core_api, rbac_api, apps_api)
-
-
-def _try_existing_cluster_resource(kind, name, body, rbac_api):
-    """Try to read/patch an existing cluster-scoped resource. Returns True if handled."""
-    from kubernetes.client.exceptions import ApiException
-
-    try:
-        if kind == "ClusterRole":
-            _upsert_cluster_role(rbac_api, body)
-            return True
-        rbac_api.patch_cluster_role_binding(name=name, body=body)
-        logger.info(f"ClusterRoleBinding {name} patched")
-        return True
-    except ApiException as e:
-        if e.status == 404:
-            return False
-        raise
+        _apply_manifest(kind, name, ns, doc, core_api, apps_api)
 
 
 def _handle_create_conflict(kind, name, ns, body, apps_api):
@@ -479,23 +480,19 @@ def _handle_create_conflict(kind, name, ns, body, apps_api):
     logger.info(f"Updated {kind} {name}")
 
 
-def _apply_manifest(kind, name, ns, body, core_api, rbac_api, apps_api):
-    """Create or patch a single Kubernetes manifest by kind."""
-    from kubernetes.client.exceptions import ApiException
+def _apply_manifest(kind, name, ns, body, core_api, apps_api):
+    """Create or patch a namespaced manifest (Namespace, ServiceAccount, Deployment).
 
-    if kind in ("ClusterRole", "ClusterRoleBinding"):
-        if _try_existing_cluster_resource(kind, name, body, rbac_api):
-            return
+    Cluster-scoped RBAC is admin-owned and verified via :func:`_verify_cluster_rbac`,
+    never written here.
+    """
+    from kubernetes.client.exceptions import ApiException
 
     try:
         if kind == "Namespace":
             core_api.create_namespace(body=body)
         elif kind == "ServiceAccount":
             core_api.create_namespaced_service_account(namespace=ns, body=body)
-        elif kind == "ClusterRole":
-            rbac_api.create_cluster_role(body=body)
-        elif kind == "ClusterRoleBinding":
-            rbac_api.create_cluster_role_binding(body=body)
         elif kind == "Deployment":
             apps_api.create_namespaced_deployment(namespace=ns, body=body)
         logger.info(f"Created {kind} {name}")
@@ -547,12 +544,13 @@ def _deploy_operator(provider):
         if kind == "Namespace":
             body["metadata"]["name"] = operator_ns
             name = operator_ns
-        if kind == "ClusterRoleBinding":
-            for subj in body.get("subjects", []):
-                if subj.get("namespace"):
-                    subj["namespace"] = operator_ns
+        # Cluster-scoped RBAC is admin-owned bootstrap — the provider SA can only
+        # verify it exists, never create/replace it (escalation prevention).
+        if kind in ("ClusterRole", "ClusterRoleBinding"):
+            _verify_cluster_rbac(rbac_api, kind, name)
+            continue
 
-        _apply_manifest(kind, name, ns, body, core_api, rbac_api, apps_api)
+        _apply_manifest(kind, name, ns, body, core_api, apps_api)
 
     logger.info("Operator deployed successfully")
 

@@ -923,6 +923,43 @@ def test_install_operator_non_kubevirt():
     assert "kubevirt" in resp.json()["detail"].lower()
 
 
+def test_install_operator_missing_cluster_rbac_returns_403():
+    """Missing admin-owned cluster RBAC -> 403 naming the manifests to apply.
+
+    Admin-owned RBAC model: the provider SA can only *verify* the operator
+    ClusterRole/ClusterRoleBinding, so the guidance must point at the provider
+    RBAC bootstrap (ocpvirt-rbac.yaml) + operator RBAC, not "create ClusterRoles".
+    """
+    from app.services.providers.kubevirt import ClusterRbacMissingError
+
+    pid = _create_provider(
+        name=f"op-rbac-{uuid.uuid4().hex[:8]}", provider_type="kubevirt"
+    )
+    with patch(
+        "app.services.providers.kubevirt._deploy_operator",
+        side_effect=ClusterRbacMissingError("ClusterRole troshka-operator"),
+    ):
+        resp = client.post(f"/api/v1/providers/{pid}/install-operator")
+    assert resp.status_code == 403
+    detail = resp.json()["detail"]
+    assert "ocpvirt-rbac.yaml" in detail
+    assert "clusterrole.yaml" in detail
+
+
+def test_install_operator_generic_error_returns_500():
+    """Unexpected operator-install failures surface as 500 (and are logged)."""
+    pid = _create_provider(
+        name=f"op-boom-{uuid.uuid4().hex[:8]}", provider_type="kubevirt"
+    )
+    with patch(
+        "app.services.providers.kubevirt._deploy_operator",
+        side_effect=RuntimeError("boom"),
+    ):
+        resp = client.post(f"/api/v1/providers/{pid}/install-operator")
+    assert resp.status_code == 500
+    assert "Failed to install operator" in resp.json()["detail"]
+
+
 # ===========================================================================
 # Provider API tests — GET /api/v1/providers/{id}/discover-isos
 # ===========================================================================

@@ -1,6 +1,6 @@
 """Tests for uncovered kubevirt provider functions.
 
-Covers: _operator_ns, _ensure_s3_secret, _try_existing_cluster_resource,
+Covers: _operator_ns, _ensure_s3_secret, _verify_cluster_rbac,
 _handle_create_conflict, _apply_manifest, _deploy_operator,
 _poll_and_cleanup_attachments, _cleanup_volume_attachments,
 _query_cluster_capacity, _query_ceph_storage_gb,
@@ -19,9 +19,11 @@ import pytest
 from kubernetes.client.exceptions import ApiException
 
 from app.services.providers.kubevirt import (
+    ClusterRbacMissingError,
     KubeVirtDriver,
     _apply_manifest,
     _cleanup_volume_attachments,
+    _deploy_operator,
     _detect_vnc_state,
     _handle_create_conflict,
     _operator_ns,
@@ -30,7 +32,7 @@ from app.services.providers.kubevirt import (
     _poll_and_cleanup_attachments,
     _query_ceph_storage_gb,
     _query_cluster_capacity,
-    _try_existing_cluster_resource,
+    _verify_cluster_rbac,
 )
 
 # ---------------------------------------------------------------------------
@@ -181,58 +183,48 @@ class TestEnsureCacheS3Secrets:
 
 
 # ===========================================================================
-# _try_existing_cluster_resource
+# _verify_cluster_rbac
 # ===========================================================================
 
 
-class TestTryExistingClusterResource:
-    def test_existing_cluster_role_returns_true(self):
-        rbac = MagicMock()
-        existing = MagicMock()
-        existing.metadata.resource_version = "1"
-        rbac.read_cluster_role.return_value = existing
-        body = {"metadata": {"name": "my-role"}, "rules": []}
-        result = _try_existing_cluster_resource("ClusterRole", "my-role", body, rbac)
-        assert result is True
-        rbac.read_cluster_role.assert_called_once_with(name="my-role")
-        rbac.replace_cluster_role.assert_called_once_with(name="my-role", body=body)
+class TestVerifyClusterRbac:
+    """Admin-owned RBAC: the provider SA reads cluster RBAC, never writes it."""
 
-    def test_existing_cluster_role_binding_patches_and_returns_true(self):
+    def test_existing_cluster_role_ok(self):
         rbac = MagicMock()
-        body = {"metadata": {"name": "my-binding"}}
-        result = _try_existing_cluster_resource(
-            "ClusterRoleBinding", "my-binding", body, rbac
+        _verify_cluster_rbac(rbac, "ClusterRole", "troshka-operator")
+        rbac.read_cluster_role.assert_called_once_with(name="troshka-operator")
+        # verify-only: must never attempt to create/replace/patch
+        rbac.create_cluster_role.assert_not_called()
+        rbac.replace_cluster_role.assert_not_called()
+        rbac.patch_cluster_role.assert_not_called()
+
+    def test_existing_cluster_role_binding_ok(self):
+        rbac = MagicMock()
+        _verify_cluster_rbac(rbac, "ClusterRoleBinding", "troshka-operator")
+        rbac.read_cluster_role_binding.assert_called_once_with(name="troshka-operator")
+        rbac.create_cluster_role_binding.assert_not_called()
+        rbac.patch_cluster_role_binding.assert_not_called()
+
+    def test_missing_cluster_role_raises_cluster_rbac_missing(self):
+        rbac = MagicMock()
+        rbac.read_cluster_role.side_effect = _make_api_exception(404, "Not Found")
+        with pytest.raises(ClusterRbacMissingError):
+            _verify_cluster_rbac(rbac, "ClusterRole", "troshka-operator")
+
+    def test_missing_cluster_role_binding_raises_cluster_rbac_missing(self):
+        rbac = MagicMock()
+        rbac.read_cluster_role_binding.side_effect = _make_api_exception(
+            404, "Not Found"
         )
-        assert result is True
-        rbac.patch_cluster_role_binding.assert_called_once_with(
-            name="my-binding", body=body
-        )
+        with pytest.raises(ClusterRbacMissingError):
+            _verify_cluster_rbac(rbac, "ClusterRoleBinding", "troshka-operator")
 
-    def test_missing_cluster_role_is_created(self):
+    def test_non_404_error_reraises_original(self):
         rbac = MagicMock()
-        exc = _make_api_exception(404, "Not Found")
-        rbac.read_cluster_role.side_effect = exc
-        body = {"metadata": {"name": "missing"}, "rules": []}
-        result = _try_existing_cluster_resource("ClusterRole", "missing", body, rbac)
-        assert result is True
-        rbac.create_cluster_role.assert_called_once_with(body=body)
-
-    def test_not_found_binding_returns_false(self):
-        rbac = MagicMock()
-        exc = _make_api_exception(404, "Not Found")
-        rbac.patch_cluster_role_binding.side_effect = exc
-        result = _try_existing_cluster_resource(
-            "ClusterRoleBinding", "missing", {"metadata": {"name": "missing"}}, rbac
-        )
-        assert result is False
-
-    def test_other_api_error_raises(self):
-        rbac = MagicMock()
-        exc = _make_api_exception(403, "Forbidden")
-        rbac.read_cluster_role.side_effect = exc
-        body = {"metadata": {"name": "my-role"}, "rules": []}
-        with pytest.raises(Exception):
-            _try_existing_cluster_resource("ClusterRole", "my-role", body, rbac)
+        rbac.read_cluster_role.side_effect = _make_api_exception(403, "Forbidden")
+        with pytest.raises(ApiException):
+            _verify_cluster_rbac(rbac, "ClusterRole", "troshka-operator")
 
 
 # ===========================================================================
@@ -263,79 +255,45 @@ class TestHandleCreateConflict:
 class TestApplyManifest:
     def test_creates_namespace(self):
         core = MagicMock()
-        rbac = MagicMock()
         apps = MagicMock()
         body = {"kind": "Namespace", "metadata": {"name": "my-ns"}}
-        _apply_manifest("Namespace", "my-ns", None, body, core, rbac, apps)
+        _apply_manifest("Namespace", "my-ns", None, body, core, apps)
         core.create_namespace.assert_called_once_with(body=body)
 
     def test_creates_service_account(self):
         core = MagicMock()
-        rbac = MagicMock()
         apps = MagicMock()
         body = {"kind": "ServiceAccount", "metadata": {"name": "sa"}}
-        _apply_manifest("ServiceAccount", "sa", "ns", body, core, rbac, apps)
+        _apply_manifest("ServiceAccount", "sa", "ns", body, core, apps)
         core.create_namespaced_service_account.assert_called_once_with(
             namespace="ns", body=body
         )
 
     def test_creates_deployment(self):
         core = MagicMock()
-        rbac = MagicMock()
         apps = MagicMock()
         body = {"kind": "Deployment", "metadata": {"name": "dep"}}
-        _apply_manifest("Deployment", "dep", "ns", body, core, rbac, apps)
+        _apply_manifest("Deployment", "dep", "ns", body, core, apps)
         apps.create_namespaced_deployment.assert_called_once_with(
             namespace="ns", body=body
         )
 
     def test_deployment_conflict_patches(self):
         core = MagicMock()
-        rbac = MagicMock()
         apps = MagicMock()
         exc = _make_api_exception(409)
         apps.create_namespaced_deployment.side_effect = exc
         body = {"kind": "Deployment", "metadata": {"name": "dep"}}
-        _apply_manifest("Deployment", "dep", "ns", body, core, rbac, apps)
+        _apply_manifest("Deployment", "dep", "ns", body, core, apps)
         apps.patch_namespaced_deployment.assert_called_once()
-
-    def test_cluster_role_tries_existing_first(self):
-        core = MagicMock()
-        rbac = MagicMock()
-        apps = MagicMock()
-        # read_cluster_role succeeds -> _try_existing returns True -> skip create
-        body = {"kind": "ClusterRole", "metadata": {"name": "cr"}}
-        _apply_manifest("ClusterRole", "cr", None, body, core, rbac, apps)
-        rbac.read_cluster_role.assert_called_once_with(name="cr")
-        rbac.create_cluster_role.assert_not_called()
-
-    def test_cluster_role_creates_if_not_found(self):
-        core = MagicMock()
-        rbac = MagicMock()
-        apps = MagicMock()
-        exc = _make_api_exception(404, "Not Found")
-        rbac.read_cluster_role.side_effect = exc
-        body = {"kind": "ClusterRole", "metadata": {"name": "cr"}}
-        _apply_manifest("ClusterRole", "cr", None, body, core, rbac, apps)
-        rbac.create_cluster_role.assert_called_once_with(body=body)
 
     def test_non_409_api_error_raises(self):
         core = MagicMock()
-        rbac = MagicMock()
         apps = MagicMock()
         exc = _make_api_exception(403, "Forbidden")
         apps.create_namespaced_deployment.side_effect = exc
         with pytest.raises(Exception):
-            _apply_manifest("Deployment", "dep", "ns", {}, core, rbac, apps)
-
-    def test_cluster_role_binding_tries_existing_first(self):
-        core = MagicMock()
-        rbac = MagicMock()
-        apps = MagicMock()
-        body = {"kind": "ClusterRoleBinding", "metadata": {"name": "crb"}}
-        _apply_manifest("ClusterRoleBinding", "crb", None, body, core, rbac, apps)
-        rbac.patch_cluster_role_binding.assert_called_once()
-        rbac.create_cluster_role_binding.assert_not_called()
+            _apply_manifest("Deployment", "dep", "ns", {}, core, apps)
 
 
 # ===========================================================================
@@ -344,10 +302,13 @@ class TestApplyManifest:
 
 
 class TestDeployOperator:
+    @patch("app.services.providers.kubevirt._verify_cluster_rbac")
     @patch("app.services.providers.kubevirt._apply_crds")
     @patch("app.services.providers.kubevirt._apply_manifest")
     @patch("app.services.providers.kubevirt._get_k8s_clients")
-    def test_deploys_all_manifests(self, mock_clients, mock_apply, mock_crds):
+    def test_deploys_all_manifests(
+        self, mock_clients, mock_apply, mock_crds, mock_verify
+    ):
         mock_clients.return_value = (MagicMock(), MagicMock(), MagicMock())
         provider = _make_provider()
 
@@ -419,8 +380,89 @@ class TestDeployOperator:
 
                 _deploy_operator(provider)
 
-        assert mock_apply.call_count == 5
+        # Namespaced manifests (Namespace, ServiceAccount, Deployment) are applied;
+        # cluster RBAC (ClusterRole, ClusterRoleBinding) is verify-only.
+        assert mock_apply.call_count == 3
+        assert mock_verify.call_count == 2
         mock_crds.assert_called_once()
+
+
+# ===========================================================================
+# _deploy_operator — admin-owned cluster RBAC (regression for ocpv02 403)
+# ===========================================================================
+
+
+_OPERATOR_MANIFEST_BODIES = [
+    {"kind": "Namespace", "metadata": {"name": "troshka-operator"}},
+    {
+        "kind": "ServiceAccount",
+        "metadata": {"name": "troshka-operator", "namespace": "troshka-operator"},
+    },
+    {"kind": "ClusterRole", "metadata": {"name": "troshka-operator"}},
+    {
+        "kind": "ClusterRoleBinding",
+        "metadata": {"name": "troshka-operator", "namespace": "troshka-operator"},
+        "subjects": [{"kind": "ServiceAccount", "namespace": "old"}],
+    },
+    {
+        "kind": "Deployment",
+        "metadata": {"name": "troshka-operator", "namespace": "troshka-operator"},
+    },
+]
+
+
+def _run_deploy_operator_with_mocked_rbac(rbac):
+    """Drive _deploy_operator with a MagicMock RbacAuthorizationV1Api.
+
+    provider RBAC docs load empty (open is a bare MagicMock whose read()/split()
+    iterate empty), so only the operator manifest_order reaches yaml.safe_load.
+    """
+    from kubernetes import client
+
+    idx = [0]
+
+    def fake_safe_load(_f):
+        import copy
+
+        body = copy.deepcopy(_OPERATOR_MANIFEST_BODIES[idx[0]])
+        idx[0] += 1
+        return body
+
+    provider = _make_provider(namespace="troshka-operator")
+    with patch("app.services.providers.kubevirt._apply_crds"), patch(
+        "app.services.providers.kubevirt._get_k8s_clients",
+        return_value=(MagicMock(), MagicMock(), MagicMock()),
+    ), patch("builtins.open", MagicMock()), patch(
+        "yaml.safe_load", side_effect=fake_safe_load
+    ), patch.object(
+        client, "RbacAuthorizationV1Api", return_value=rbac
+    ), patch.object(
+        client, "AppsV1Api", return_value=MagicMock()
+    ), patch.object(
+        client, "ApiextensionsV1Api", return_value=MagicMock()
+    ):
+        _deploy_operator(provider)
+
+
+class TestDeployOperatorAdminOwnedRbac:
+    def test_verifies_cluster_rbac_without_writing_it(self):
+        rbac = MagicMock()
+        _run_deploy_operator_with_mocked_rbac(rbac)
+        # ClusterRole + ClusterRoleBinding are read (verify-only)...
+        rbac.read_cluster_role.assert_called_once_with(name="troshka-operator")
+        rbac.read_cluster_role_binding.assert_called_once_with(name="troshka-operator")
+        # ...and never created, replaced, or patched by the provider SA.
+        rbac.create_cluster_role.assert_not_called()
+        rbac.replace_cluster_role.assert_not_called()
+        rbac.patch_cluster_role.assert_not_called()
+        rbac.create_cluster_role_binding.assert_not_called()
+        rbac.patch_cluster_role_binding.assert_not_called()
+
+    def test_raises_cluster_rbac_missing_when_operator_role_absent(self):
+        rbac = MagicMock()
+        rbac.read_cluster_role.side_effect = _make_api_exception(404, "Not Found")
+        with pytest.raises(ClusterRbacMissingError):
+            _run_deploy_operator_with_mocked_rbac(rbac)
 
 
 # ===========================================================================

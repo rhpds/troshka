@@ -1514,27 +1514,37 @@ def install_operator(
             status_code=400, detail="Install operator is only for kubevirt providers"
         )
 
-    try:
-        from app.services.providers.kubevirt import _deploy_operator
+    from app.services.providers.kubevirt import (
+        ClusterRbacMissingError,
+        _deploy_operator,
+    )
 
+    try:
         _deploy_operator(provider)
+    except ClusterRbacMissingError as e:
+        # Admin-owned RBAC: the provider SA can only verify cluster RBAC, not
+        # create it (escalation prevention). Point the admin at the bootstrap
+        # manifests — re-applying them is what unblocks the install, not "create".
+        logger.warning(
+            "Cluster RBAC missing for %s: %s",
+            sanitize_log(provider_id[:8]),
+            sanitize_log(str(e)),
+        )
+        api_url = provider.get_credentials().get("api_url", "")
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Cluster RBAC is missing ({e}). Cluster-scoped RBAC is admin-owned "
+                "and cannot be created by the provider service account. An OCP admin "
+                "must apply the RBAC manifests as cluster-admin first:\n\n"
+                f"oc login {api_url}\n"
+                "oc apply -f infra/ocpvirt-rbac.yaml\n"
+                "oc apply -f src/operator/deploy/clusterrole.yaml\n"
+                "oc apply -f src/operator/deploy/clusterrolebinding.yaml\n\n"
+                "Then click Install Operator again."
+            ),
+        )
     except Exception as e:
-        err_str = str(e)
-        if "Forbidden" in err_str and (
-            "clusterroles" in err_str or "clusterrolebindings" in err_str
-        ):
-            api_url = provider.get_credentials().get("api_url", "")
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "The service account lacks permission to create ClusterRoles. "
-                    "An OCP admin must run these commands first:\n\n"
-                    f"oc login {api_url}\n"
-                    "oc apply -f src/operator/deploy/clusterrole.yaml\n"
-                    "oc apply -f src/operator/deploy/clusterrolebinding.yaml\n\n"
-                    "Then click Install Operator again."
-                ),
-            )
         logger.exception(
             "Failed to install operator for %s", sanitize_log(provider_id[:8])
         )
