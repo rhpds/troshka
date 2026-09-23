@@ -110,6 +110,19 @@ def runner_pod_infra_network(
     return [net]
 
 
+# Day-1 manifest that pre-creates the ImagePruner singleton suspended. Shipped
+# into each installing cluster's ``openshift/`` dir (consumed by the agent-based
+# installer). See :func:`ops_pod_config_files` for why.
+_IMAGE_PRUNER_SUSPEND_MANIFEST = (
+    "apiVersion: imageregistry.operator.openshift.io/v1\n"
+    "kind: ImagePruner\n"
+    "metadata:\n"
+    "  name: cluster\n"
+    "spec:\n"
+    "  suspend: true\n"
+)
+
+
 def ops_pod_config_files(
     clusters: list[dict], workdir: str, pull_secret_json: str
 ) -> dict[str, str]:
@@ -140,6 +153,17 @@ def ops_pod_config_files(
         agent_cfg = cluster.get("_generatedAgentConfig")
         if install_cfg is not None:
             files[f"{src_dir}/install-config.yaml"] = str(install_cfg)
+            # Nested clusters run the image-registry with managementState:
+            # Removed (no storage). The default ImagePruner CronJob then fires
+            # against a removed registry, fails to its backoff limit, degrades
+            # the image-registry operator and fails `wait-for install-complete`
+            # (the CronJob's midnight schedule collides with the install window,
+            # made likelier by clock backdating). Pre-create the ImagePruner
+            # singleton suspended as a day-1 manifest so the operator adopts it
+            # and the CronJob never fires — race-free, unlike a runtime patch.
+            files[
+                f"{src_dir}/openshift/imagepruner-suspend.yaml"
+            ] = _IMAGE_PRUNER_SUSPEND_MANIFEST
         if agent_cfg is not None:
             files[f"{src_dir}/agent-config.yaml"] = str(agent_cfg)
         itms_cfg = cluster.get("_generatedPullThroughItms")

@@ -105,6 +105,31 @@ def test_ops_pod_config_files_skips_missing_configs():
     assert files == {}
 
 
+def test_ops_pod_config_files_suspends_image_pruner_per_cluster():
+    # Nested clusters run image-registry with managementState: Removed (no
+    # storage); the default ImagePruner CronJob then fires against a removed
+    # registry, fails to its backoff limit, degrades the image-registry operator
+    # and fails `wait-for install-complete`. Ship a day-1 openshift/ manifest
+    # that pre-creates the ImagePruner suspended so the CronJob never fires.
+    files = _files()
+    wd = OPS_POD_WORKDIR
+    for ck in ("cl-1", "cl-2"):
+        # Staged in .src/openshift like itms-pull-through.yaml; the install
+        # runner copies .src/openshift/*.yaml into the cluster's openshift/ dir.
+        body = files[f"{wd}/{ck}/.src/openshift/imagepruner-suspend.yaml"]
+        assert "kind: ImagePruner" in body
+        assert "name: cluster" in body
+        assert "suspend: true" in body
+
+
+def test_ops_pod_config_files_no_image_pruner_without_install_config():
+    # Only clusters actually being installed (they have a generated
+    # install-config) get the ImagePruner manifest.
+    clusters = [{"id": "cl-x", "name": "x"}]  # no generated configs
+    files = ops_pod_config_files(clusters, OPS_POD_WORKDIR, "")
+    assert not any("imagepruner-suspend.yaml" in k for k in files)
+
+
 def test_ops_pod_image_default_points_at_configured_registry():
     # The baked fallback matches the CI-published image (build-images.yml
     # build-operator job) and the config.yaml `ocp.ops_pod_image` default.
