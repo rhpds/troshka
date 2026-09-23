@@ -88,6 +88,25 @@ describe("computeTopologyDiff", () => {
     expect(computeTopologyDiff(state)).toEqual([]);
   });
 
+  it("reports powerOnAtDeploy change as a modified VM field", () => {
+    const state: TopologyDiffState = {
+      ...emptyBaseline,
+      nodes: [vmNode({ name: "worker-0", powerOnAtDeploy: true })],
+      deployedNodeData: {
+        vm1: baseline({ name: "worker-0", powerOnAtDeploy: false }),
+      },
+    } as TopologyDiffState;
+    const diff = computeTopologyDiff(state);
+    expect(diff).toHaveLength(1);
+    expect(diff[0]).toMatchObject({ kind: "modified", resourceType: "VM", name: "worker-0" });
+    const byKey = Object.fromEntries(diff[0].fields.map((f) => [f.key, f]));
+    expect(byKey.powerOnAtDeploy).toMatchObject({
+      label: "Power On At Deploy",
+      from: "No",
+      to: "Yes",
+    });
+  });
+
   it("treats missing OCP member install defaults as equal to canvas defaults", () => {
     const canvasMember = {
       name: "ocp-54230q-cp-0",

@@ -194,6 +194,29 @@ _OCP_MONITOR_SCAN_INTERVAL = 30
 _last_ocp_scan = 0.0
 
 
+def _should_skip_vm_poll_for_progress(prog: dict | None) -> bool:
+    """True when deploy progress means VM create/mutate would race the poller.
+
+    The active/stopped poller never sees live reconfigure (that uses
+    ``project.state=reconfiguring``). Leftover ``reconfigure`` progress after a
+    crashed Apply Changes / backend restart must NOT suppress polling — that
+    blanked ``/vm-states`` and left canvas cards spinning forever.
+
+    OCP install / control-plane-usable keep polling (VMs already exist).
+    """
+    if not prog:
+        return False
+    step = str(prog.get("step", ""))
+    if not step:
+        return False
+    if step.startswith("ocp-install") or step == "control-plane-usable":
+        return False
+    # "reconfigure" / "reconfiguring" (note: latter does NOT start with the former)
+    if step.startswith("reconfigur"):
+        return False
+    return True
+
+
 def _poll_loop():
     logger.info("WS state poller started (interval=%ds)", _POLL_INTERVAL)
     import time
@@ -578,16 +601,11 @@ def _poll_active_projects():
         deploying_project_ids = set()
         for pid, p in projects.items():
             prog = _get_deploy_progress_data(pid)
-            if not prog:
+            if not _should_skip_vm_poll_for_progress(prog):
                 continue
             # Skip VM-state polling only while VMs are being created/modified (to
-            # avoid racing the deploy). Once the VMs exist — the whole OCP install
-            # phase (agent boot, control-plane-usable milestone, etc.) — keep
-            # polling so their state + console stay available throughout the long
-            # install instead of the card sitting blank for ~30+ minutes.
-            step = str(prog.get("step", ""))
-            if step.startswith("ocp-install") or step == "control-plane-usable":
-                continue
+            # avoid racing the deploy). OCP install / stale reconfigure are kept
+            # polling — see ``_should_skip_vm_poll_for_progress``.
             deploying_project_ids.add(pid)
             if p.host_id:
                 deploying_host_ids.add(p.host_id)

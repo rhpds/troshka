@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { useCanvasStore } from "@/stores/canvasStore";
+import { useCanvasStore, resolvePowerOnAtDeploy, setVmPowerOnAtDeploy } from "@/stores/canvasStore";
 import type { StartOrderEntry, VMNodeData, ContainerNodeData } from "@/stores/canvasStore";
 
 interface Props {
@@ -16,10 +16,10 @@ export default function StartOrderPanel({ onClose }: Props) {
   const vmNodes = nodes.filter((n) => n.type === "vmNode");
   const containerNodes = nodes.filter((n) => n.type === "containerNode");
   const allNodes = [...vmNodes, ...containerNodes];
-  const autoStartIds = new Set(
-    startOrder.filter((e) => e.autoStart !== false).map((e) => e.vmId || e.containerId)
-  );
   const autoStartVmNodes = allNodes.filter((v) => {
+    if (v.type === "vmNode") {
+      return resolvePowerOnAtDeploy(v.data as Record<string, unknown>);
+    }
     const entry = startOrder.find((e) => (e.vmId || e.containerId) === v.id);
     return entry ? entry.autoStart !== false : true;
   });
@@ -94,7 +94,12 @@ export default function StartOrderPanel({ onClose }: Props) {
 
   const save = () => {
     const disabledEntries = startOrder.filter((e) => e.autoStart === false);
-    setStartOrder([...order, ...disabledEntries]);
+    const next = [...order, ...disabledEntries];
+    setStartOrder(next);
+    for (const e of next) {
+      if (!e.vmId) continue;
+      setVmPowerOnAtDeploy(e.vmId, e.autoStart !== false);
+    }
     onClose();
   };
 

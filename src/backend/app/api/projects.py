@@ -1224,11 +1224,14 @@ def get_ocp_install_log(
     if not host:
         return {"install_via": "pod", "output": "", "clusters": []}
 
-    from app.services.deploy_service import read_ops_pod_install_log
+    from app.services.deploy_service import (
+        read_ops_pod_install_log,
+        resolve_ocp_install_started_at,
+    )
 
-    # Timer basis: elapse from deployment START, not from log timestamps (which
-    # recert breadcrumbs lack). deploy_started_at is the live base; once terminal,
-    # ocp_install_elapsed holds the frozen total (also correct after a reopen).
+    # Timer basis: recert uses ocpInstallStartedAt / ocp_monitor_started_at so
+    # RE-CERTING resets at ops-pod start; fresh installs keep deploy_started_at.
+    # Once terminal, ocp_install_elapsed holds the frozen total.
     timing = {
         "deploy_started_at": (
             project.deploy_started_at.timestamp() if project.deploy_started_at else None
@@ -1285,9 +1288,12 @@ def get_ocp_install_log(
             )
         if cluster_elapsed is not None:
             timing = {**timing, "ocp_install_elapsed": cluster_elapsed}
-        install_started_at = cluster_install_started_at
-        if install_started_at is None and timing.get("deploy_started_at") is not None:
-            install_started_at = timing["deploy_started_at"]
+        install_started_at = resolve_ocp_install_started_at(
+            cluster_install_started_at=cluster_install_started_at,
+            cluster_log=cluster_log,
+            ocp_monitor_started_at=project.ocp_monitor_started_at,
+            deploy_started_at=timing.get("deploy_started_at"),
+        )
         return {
             "install_via": "pod",
             "output": cluster_log,

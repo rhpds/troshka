@@ -648,6 +648,41 @@ function normalizeOcpMemberInstallFields(stable: Record<string, unknown>): void 
   if (stable.secureBoot === undefined) stable.secureBoot = false;
 }
 
+/** Effective power-on flag for a VM (Auto-start UI === powerOnAtDeploy). */
+export function resolvePowerOnAtDeploy(data: Record<string, unknown> | undefined): boolean {
+  if (!data) return true;
+  if (typeof data.powerOnAtDeploy === "boolean") return data.powerOnAtDeploy;
+  return data.deferOcpInstall === true ? false : true;
+}
+
+/**
+ * Set VM powerOnAtDeploy and keep startOrder.autoStart aligned so troshkad
+ * ordered-start and KubeVirt reconcile use the same intent.
+ */
+export function setVmPowerOnAtDeploy(vmId: string, enabled: boolean): void {
+  const store = useCanvasStore.getState();
+  store.updateNodeData(vmId, { powerOnAtDeploy: enabled });
+  const order = [...store.startOrder];
+  const idx = order.findIndex((o) => o.vmId === vmId);
+  if (idx >= 0) {
+    if (order[idx].autoStart === enabled) return;
+    order[idx] = { ...order[idx], autoStart: enabled };
+    store.setStartOrder(order);
+    return;
+  }
+  if (!enabled) {
+    order.push({
+      vmId,
+      autoStart: false,
+      waitForVm: null,
+      waitForService: "",
+      waitForPort: "",
+      delaySeconds: 0,
+    });
+    store.setStartOrder(order);
+  }
+}
+
 export function stableNodeData(
   data: Record<string, unknown>,
 ): Record<string, unknown> {

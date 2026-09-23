@@ -2722,7 +2722,7 @@ def _deploy_ops_pod_troshkad(
     # `_has_ocp_monitor` gate never sets ocp_status. Mark the install in-progress
     # here so the existing OCP-status UI shows install-in-progress; the ops-pod
     # install monitor drives it to ready/error on completion/failure.
-    _mark_ocp_install_started(s, project)
+    _mark_ocp_install_started(s, project, clusters)
     _start_ops_pod_install_monitor(host, project_id, clusters)
 
 
@@ -2978,7 +2978,7 @@ def _deploy_ops_pod_kubevirt(
         keys_to_clear = [_ops_cluster_key(c) for c in clusters]
     clear_ops_pod_log_cache_keys(project_id, keys_to_clear)
     create_ops_pod(provider, project_id, pod, secret)
-    _mark_ocp_install_started(s, project)
+    _mark_ocp_install_started(s, project, clusters)
     _start_ops_pod_install_monitor(host, project_id, clusters)
 
 
@@ -2998,17 +2998,126 @@ def _kubevirt_project_ns(provider, project_id: str) -> str:
     return _project_ns(provider, project_id)
 
 
-def _mark_ocp_install_started(s, project) -> None:
+def _stamp_recert_install_started(project, clusters: list) -> bool:
+    """Stamp ``ocpInstallStartedAt`` on recert clusters at ops-pod start.
+
+    The Status & Log panel shows RE-CERTING once the ops pod writes ``(recert)``.
+    Timing from ``deploy_started_at`` includes VM boot / offline prep and makes
+    the badge look like a multi-hour recert. Reset the per-cluster timer base
+    here so the live (and frozen) elapsed matches the recert phase. Fresh-install
+    clusters are left alone so their timer still covers boot. Does not overwrite
+    an existing stamp (restart already set one in ``_prepare_ocp_install_restart``).
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    topo = project.deployed_topology or project.topology or {}
+    recert, _ = _partition_ops_pod_clusters(topo, clusters)
+    if not recert:
+        return False
+    keys = {str(c.get("id") or c.get("name") or "") for c in recert}
+    now = int(_time.time())
+    changed = False
+    for target_attr in ("deployed_topology", "topology"):
+        target = getattr(project, target_attr, None)
+        if not isinstance(target, dict):
+            continue
+        for cluster in target.get("clusters") or []:
+            key = str(cluster.get("id") or cluster.get("name") or "")
+            if key not in keys:
+                continue
+            if cluster.get("ocpInstallStartedAt") is not None:
+                continue
+            cluster["ocpInstallStartedAt"] = now
+            cluster["ocpInstallStatus"] = "monitoring"
+            cluster.pop("ocpInstallElapsed", None)
+            changed = True
+        if changed:
+            flag_modified(project, target_attr)
+    return changed
+
+
+def _mark_ocp_install_started(s, project, clusters: list | None = None) -> None:
     """Set the initial in-progress OCP status for a pod (bastionless) install.
 
     Mirrors the bastion path's initial state (see ``_deploy_complete_and_notify``
     / kubevirt deploy) so the SAME OCP-status UI works for pod installs.
+    When ``clusters`` is provided, stamps ``ocpInstallStartedAt`` on recert
+    clusters so the RE-CERTING timer starts at ops-pod start.
     """
     project.ocp_status = "monitoring"
     project.ocp_status_detail = None
     project.ocp_install_elapsed = None
     project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
+    if clusters:
+        _stamp_recert_install_started(project, clusters)
     s.commit()
+
+
+def resolve_ocp_install_started_at(
+    *,
+    cluster_install_started_at: int | None,
+    cluster_log: str,
+    ocp_monitor_started_at: datetime.datetime | None,
+    deploy_started_at: float | None,
+) -> int | None:
+    """Epoch seconds for the Status & Log elapsed timer.
+
+    Prefer the per-cluster stamp (recert ops-pod start / install restart). For
+    in-flight recerts that predate the stamp, fall back to
+    ``ocp_monitor_started_at`` so RE-CERTING resets instead of counting from
+    project deploy. Fresh installs keep ``deploy_started_at``.
+    """
+    import re
+
+    if cluster_install_started_at is not None:
+        return int(cluster_install_started_at)
+    if re.search(r"\(recert\)", cluster_log or "", re.IGNORECASE):
+        if ocp_monitor_started_at is not None:
+            return int(ocp_monitor_started_at.timestamp())
+    if deploy_started_at is not None:
+        return int(deploy_started_at)
+    return None
+
+
+def _ops_pod_elapsed_base(
+    project_id: str, clusters: list, monitor_start: float
+) -> float:
+    """Wall-clock baseline for ops-pod frozen elapsed (matches the UI timer).
+
+    Recert / restarted clusters use ``ocpInstallStartedAt`` (or monitor start).
+    Fresh installs keep ``deploy_started_at`` so the timer covers VM boot.
+    """
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+    from app.services.ocp.ops_pod_install import _cluster_key as _ops_cluster_key
+
+    db = SessionLocal()
+    try:
+        p = db.query(Project).filter_by(id=project_id).first()
+        if not p:
+            return monitor_start
+        topo = p.deployed_topology or p.topology or {}
+        cluster_keys = {_ops_cluster_key(c) for c in clusters}
+        starts: list[float] = []
+        for cluster in topo.get("clusters") or []:
+            key = str(cluster.get("id") or cluster.get("name") or "")
+            if key not in cluster_keys:
+                continue
+            raw = cluster.get("ocpInstallStartedAt")
+            if isinstance(raw, (int, float)):
+                starts.append(float(raw))
+        if starts:
+            return min(starts)
+        recert, install = _partition_ops_pod_clusters(topo, clusters)
+        if recert and not install:
+            if p.ocp_monitor_started_at is not None:
+                return p.ocp_monitor_started_at.timestamp()
+            return monitor_start
+        return _project_deploy_start_epoch(project_id) or monitor_start
+    except Exception:
+        return _project_deploy_start_epoch(project_id) or monitor_start
+    finally:
+        db.close()
 
 
 def _detached_host_copy(host_id: str):
@@ -5202,10 +5311,9 @@ def _monitor_ops_pod_install(
     cluster_keys = [_ops_cluster_key(c) for c in clusters]
     start = _t.time()
     deadline = start + timeout
-    # Report elapsed from deploy_started_at (the frontend timer's baseline) so the
-    # frozen ocp_install_elapsed matches the live timer — not from the monitor
-    # start, which is minutes later (after VM boot) and made the timer jump back.
-    elapsed_base = _project_deploy_start_epoch(project_id) or start
+    # Recert resets at ops-pod start (ocpInstallStartedAt / monitor); fresh
+    # installs keep deploy_started_at so the timer covers VM boot.
+    elapsed_base = _ops_pod_elapsed_base(project_id, clusters, start)
     dead_count = 0
     finalized_clusters: set[str] = set()
     harvested_creds: set[str] = set()

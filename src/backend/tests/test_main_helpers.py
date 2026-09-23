@@ -207,6 +207,37 @@ class TestStartupResetStuckProjects:
         db2.commit()
         db2.close()
 
+    def test_reconfiguring_reset_clears_deploy_progress(self):
+        """Stuck reconfigure must clear deploy:{id} or active cards spin forever."""
+        db = TestSession()
+        proj = Project(
+            name="stuck-reconfiguring",
+            owner_id=OWNER_ID,
+            state="reconfiguring",
+        )
+        db.add(proj)
+        db.commit()
+        pid = proj.id
+        db.close()
+
+        with patch("app.core.database.SessionLocal", TestSession):
+            with patch("app.core.redis.is_redis_available", return_value=False):
+                with patch(
+                    "app.services.deploy_service._delete_deploy_progress"
+                ) as mock_clear:
+                    from app.main import _startup_reset_stuck_projects
+
+                    _startup_reset_stuck_projects()
+
+        mock_clear.assert_called_with(pid)
+
+        db2 = TestSession()
+        proj = db2.get(Project, pid)
+        assert proj.state == "error"
+        db2.delete(proj)
+        db2.commit()
+        db2.close()
+
 
 # ---------------------------------------------------------------------------
 # 2. _startup_reset_stuck_hosts

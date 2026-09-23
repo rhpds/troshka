@@ -2,6 +2,7 @@
 
 import React from "react";
 import type { Node } from "@xyflow/react";
+import { resolvePowerOnAtDeploy } from "@/stores/canvasStore";
 
 interface ReadOnlyPropertiesPanelProps {
   node: Node;
@@ -41,7 +42,7 @@ function VMProperties({ data }: { data: Record<string, any> }) {
 
       <Section title="Boot">
         <PropRow label="Method" value={String(data.bootMethod || "template")} />
-        <PropRow label="Auto-start" value={data.autoStart ? "Yes" : "No"} />
+        <PropRow label="Auto-start" value={resolvePowerOnAtDeploy(data) ? "Yes" : "No"} />
       </Section>
 
       {data.cloudInit && (

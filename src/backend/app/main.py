@@ -163,6 +163,7 @@ def _startup_reset_stuck_projects():
     from app.core.database import SessionLocal
     from app.core.redis import enqueue_job, is_redis_available
     from app.models.project import Project
+    from app.services.deploy_service import _delete_deploy_progress
 
     db = SessionLocal()
     try:
@@ -213,27 +214,26 @@ def _startup_reset_stuck_projects():
                         p.id[:8],
                     )
                     continue
-                logger.warning(
-                    "Startup: resetting stuck project %s (%s) from %s to error",
-                    p.name,
-                    p.id[:8],
-                    old_state,
-                )
-                p.state = "error"
-                p.deploy_error = f"Server restarted while project was {old_state}"
+                _reset_stuck_project_to_error(p, old_state, _delete_deploy_progress)
             else:
-                logger.warning(
-                    "Startup: resetting stuck project %s (%s) from %s to error",
-                    p.name,
-                    p.id[:8],
-                    old_state,
-                )
-                p.state = "error"
-                p.deploy_error = f"Server restarted while project was {old_state}"
+                _reset_stuck_project_to_error(p, old_state, _delete_deploy_progress)
         if stuck:
             db.commit()
     finally:
         db.close()
+
+
+def _reset_stuck_project_to_error(project, old_state: str, delete_progress) -> None:
+    """Mark a crash-interrupted project as error and clear leftover deploy progress."""
+    logger.warning(
+        "Startup: resetting stuck project %s (%s) from %s to error",
+        project.name,
+        project.id[:8],
+        old_state,
+    )
+    project.state = "error"
+    project.deploy_error = f"Server restarted while project was {old_state}"
+    delete_progress(project.id)
 
 
 def _startup_reset_stuck_hosts():

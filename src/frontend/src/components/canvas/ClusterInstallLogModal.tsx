@@ -246,9 +246,10 @@ export function ClusterInstallLogPanel({
   const [clusterStatus, setClusterStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [revealPw, setRevealPw] = useState(false);
-  // Timer basis: deployment START (epoch seconds), frozen at the backend's total
-  // once terminal. Elapse from deploy start — NOT from log timestamps (recert
-  // breadcrumbs have none, and installs should match).
+  // Timer basis: per-attempt install_started_at when present (recert ops-pod
+  // start / install restart), else project deploy start. Frozen at the backend's
+  // total once terminal. Recert must NOT elapse from deploy start — that includes
+  // VM boot/offline prep and makes RE-CERTING show a multi-hour clock.
   const [deployStartedAt, setDeployStartedAt] = useState<number | null>(null);
   const [installStartedAt, setInstallStartedAt] = useState<number | null>(null);
   const [installElapsed, setInstallElapsed] = useState<number | null>(null);

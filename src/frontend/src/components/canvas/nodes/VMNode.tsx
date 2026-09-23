@@ -3,7 +3,7 @@
 import React, { memo, useState, useEffect } from "react";
 import { Handle, Position, useUpdateNodeInternals, type NodeProps } from "@xyflow/react";
 import type { VMNodeData } from "@/stores/canvasStore";
-import { useCanvasStore, requestDuplicateVM, stableNodeData, stableStringify } from "@/stores/canvasStore";
+import { useCanvasStore, requestDuplicateVM, stableNodeData, stableStringify, resolvePowerOnAtDeploy, setVmPowerOnAtDeploy } from "@/stores/canvasStore";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 
@@ -33,8 +33,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
   }, [id, nicCount, dcCount, updateNodeInternals]);
   const deployedVmIds = useCanvasStore((s) => s.deployedVmIds);
   const isDeployed = (projectState === "active" || projectState === "stopped" || projectState === "starting") && deployedVmIds.has(id);
-  const startOrder = useCanvasStore((s) => s.startOrder);
-  const autoStart = (() => { const e = startOrder.find((o) => o.vmId === id); return e ? e.autoStart : true; })();
+  const autoStart = resolvePowerOnAtDeploy(d as unknown as Record<string, unknown>);
 
   const isDirty = React.useMemo(() => {
     const deployed = deployedNodeData[id];
@@ -310,15 +309,7 @@ function VMNodeComponent({ id, data, selected }: NodeProps) {
           checked={autoStart}
           onChange={(e) => {
             e.stopPropagation();
-            const store = useCanvasStore.getState();
-            const order = [...store.startOrder];
-            const idx = order.findIndex((o) => o.vmId === id);
-            if (idx >= 0) {
-              order[idx] = { ...order[idx], autoStart: e.target.checked };
-            } else {
-              order.push({ vmId: id, autoStart: e.target.checked, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 });
-            }
-            store.setStartOrder(order);
+            setVmPowerOnAtDeploy(id, e.target.checked);
           }}
           style={{ width: 12, height: 12 }}
         />

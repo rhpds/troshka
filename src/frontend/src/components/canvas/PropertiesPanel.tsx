@@ -5,7 +5,7 @@ import type { Node, Edge } from "@xyflow/react";
 import AlertModal from "@/components/AlertModal";
 import { appConfirm } from "@/lib/confirm";
 import LibraryPicker from "./LibraryPicker";
-import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp } from "@/stores/canvasStore";
+import { useCanvasStore, generateNicId, generateDiskControllerId, generateMac, syncBmcNetwork, allocateBmcIp, resolvePowerOnAtDeploy, setVmPowerOnAtDeploy } from "@/stores/canvasStore";
 import { reconcileClusterVms, applyClusterSizing, memberRole, applyClusterNetworks, applyClusterDisks, applyClusterDns, assignMissingClusterMemberNicIps, effectiveDnsNetworkId, clusterPrereqIssues, suggestClusterVips, vipCollision, vipInMemberSubnet } from "./clusterMaterialize";
 import { resolveDnsRecordDisplayIp } from "@/lib/dnsRecords";
 import { validateCephLabIp } from "@/lib/cephLabIpValidation";
@@ -1371,21 +1371,8 @@ export default function PropertiesPanel() {
                 <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <input
                     type="checkbox"
-                    checked={(() => {
-                      const entry = useCanvasStore.getState().startOrder.find((e) => e.vmId === node.id);
-                      return entry ? entry.autoStart : true;
-                    })()}
-                    onChange={(e) => {
-                      const store = useCanvasStore.getState();
-                      const order = [...store.startOrder];
-                      const idx = order.findIndex((o) => o.vmId === node.id);
-                      if (idx >= 0) {
-                        order[idx] = { ...order[idx], autoStart: e.target.checked };
-                      } else {
-                        order.push({ vmId: node.id, autoStart: e.target.checked, waitForVm: null, waitForService: "", waitForPort: "", delaySeconds: 0 });
-                      }
-                      store.setStartOrder(order);
-                    }}
+                    checked={resolvePowerOnAtDeploy(data as Record<string, unknown>)}
+                    onChange={(e) => setVmPowerOnAtDeploy(node.id, e.target.checked)}
                   />
                   Power on at deploy
                 </label>
