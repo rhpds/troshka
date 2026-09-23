@@ -768,3 +768,27 @@ class TestCaptureKubevirtNativeCephWiring:
         mock_unfreeze.assert_not_called()
         assert pattern.state == "available"
         assert pattern.total_size_bytes == 1000
+
+
+def test_import_operator_ceph_helpers_resolves_without_mock():
+    # The heavy-mock tests above stub _import_operator_ceph_helpers, so a missing
+    # operator `helpers` package in the deployed image went unnoticed. Exercise the
+    # REAL import: it must resolve helpers.ceph_freeze / helpers.rook_ceph and
+    # return 5 callables.
+    from app.services.pattern_service import _import_operator_ceph_helpers
+
+    helpers = _import_operator_ceph_helpers()
+    assert len(helpers) == 5
+    assert all(callable(h) for h in helpers)
+
+
+def test_backend_image_ships_operator_helpers():
+    # _import_operator_ceph_helpers adds /opt/app-root/operator to sys.path and
+    # imports the operator's helpers.ceph_freeze / helpers.rook_ceph. The backend
+    # image must COPY that package there — without it every Ceph-project pattern
+    # capture fails at import with "No module named 'helpers'".
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    containerfile = (root / "deploy/containerfiles/Containerfile.backend").read_text()
+    assert "src/operator/helpers/" in containerfile

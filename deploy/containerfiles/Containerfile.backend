@@ -25,6 +25,11 @@ COPY src/troshkad/troshkad.py /opt/app-root/troshkad/troshkad.py
 COPY src/troshka-vncd/troshka-vncd.py /opt/app-root/troshka-vncd/troshka-vncd.py
 COPY src/operator/crds/ /opt/app-root/operator/crds/
 COPY src/operator/deploy/ /opt/app-root/operator/deploy/
+# Pattern Ceph capture (app/services/pattern_service.py::_import_operator_ceph_helpers)
+# adds /opt/app-root/operator to sys.path and imports the operator's shared
+# helpers.ceph_freeze / helpers.rook_ceph. Ship that package here too, or every
+# Ceph-project pattern capture fails with "No module named 'helpers'".
+COPY src/operator/helpers/ /opt/app-root/operator/helpers/
 
 EXPOSE 8200
 
