@@ -599,6 +599,69 @@ def _ops_pod_join_and_hold_cmd() -> str:
     )
 
 
+# Late-convergence tolerance for `wait-for install-complete` (see
+# :func:`_resilient_wait_for_complete_cmd`). Slow nested/preview clusters can
+# converge AFTER openshift-install's fixed wait-for timeout; we then poll
+# ClusterVersion up to _LATE_CONVERGE_DEADLINE_SECS overall, but give up early if
+# progress stalls for _LATE_CONVERGE_STALL_SECS (no drop in unavailable-operator
+# count) so a genuinely-dead cluster still fails fast.
+_LATE_CONVERGE_DEADLINE_SECS = 3600
+_LATE_CONVERGE_STALL_SECS = 900
+
+
+def _resilient_wait_for_complete_cmd(
+    indent: str, oi_bin: str, install_dir: str, cluster_key: str
+) -> str:
+    """`wait-for install-complete`, tolerant of late convergence but fail-fast.
+
+    Runs openshift-install's own `wait-for install-complete` first (unchanged
+    fast path). If it exits non-zero (its fixed timeout elapsed), we do NOT treat
+    that as a hard failure — instead we poll the cluster's own ClusterVersion and
+    proceed ONLY when it reports ``Available=True``. To stay "tolerant only when
+    sure it can recover", we keep waiting solely while there is live progress
+    (the count of not-yet-available cluster operators is trending down); if
+    progress stalls for _LATE_CONVERGE_STALL_SECS or the overall deadline passes,
+    we emit the fatal ``install-complete command failed`` marker and exit 1. A
+    persistently-unreachable API reports a high sentinel (not 0), so it too trips
+    the stall guard rather than looking "fully converged".
+
+    The kubeconfig lives at ``<install_dir>/auth/kubeconfig`` (the block has
+    already ``cd``'d into the cluster dir, so ``install_dir`` is ``.``).
+    """
+    i = indent
+    kc = f"{install_dir}/auth/kubeconfig"
+    heavy = _wait_for_complete_cmd(i, oi_bin, install_dir)
+    return (
+        f"{i}set +e\n"
+        f"{heavy}"
+        f"{i}_wfc_rc=${{PIPESTATUS[0]}}\n"
+        f"{i}set -e\n"
+        f'{i}if [ "$_wfc_rc" != "0" ]; then\n'
+        f'{i}  echo "[{cluster_key}] installer wait elapsed; polling ClusterVersion for late convergence"\n'
+        f"{i}  _cv_avail() {{ oc --kubeconfig {kc} get clusterversion version "
+        f"-o jsonpath='{{.status.conditions[?(@.type==\"Available\")].status}}' 2>/dev/null; }}\n"
+        f"{i}  _co_unavail() {{ local o; o=$(oc --kubeconfig {kc} get clusteroperators "
+        f'--no-headers 2>/dev/null) || {{ echo 9999; return; }}; [ -n "$o" ] || {{ echo 9999; return; }}; '
+        f'echo "$o" | awk \'{{ if ($3!="True" || $5=="True") c++ }} END {{ print c+0 }}\'; }}\n'
+        f"{i}  _deadline=$(( $(date +%s) + {_LATE_CONVERGE_DEADLINE_SECS} ))\n"
+        f"{i}  _stall=$(( $(date +%s) + {_LATE_CONVERGE_STALL_SECS} ))\n"
+        f"{i}  _best=9999\n"
+        f'{i}  while [ "$(_cv_avail)" != "True" ]; do\n'
+        f"{i}    _now=$(date +%s)\n"
+        f"{i}    _cur=$(_co_unavail)\n"
+        f'{i}    if [ "$_cur" -lt "$_best" ]; then _best=$_cur; _stall=$(( _now + {_LATE_CONVERGE_STALL_SECS} )); fi\n'
+        f'{i}    if [ "$_now" -ge "$_deadline" ] || [ "$_now" -ge "$_stall" ]; then\n'
+        f'{i}      echo "[{cluster_key}] install-complete command failed: cluster did not converge (unavailable operators=$_cur)"\n'
+        f"{i}      exit 1\n"
+        f"{i}    fi\n"
+        f'{i}    echo "[{cluster_key}] still converging (unavailable operators=$_cur); re-checking in 30s"\n'
+        f"{i}    sleep 30\n"
+        f"{i}  done\n"
+        f'{i}  echo "[{cluster_key}] cluster reached Available after extended wait"\n'
+        f"{i}fi\n"
+    )
+
+
 def _cluster_install_block(
     cluster_key: str,
     bmc_ips: list[str],
@@ -635,7 +698,7 @@ def _cluster_install_block(
         + _agent_create_image_resume_cmd("  ", cluster_dir)
         + _boot_from_agent_iso_cmd("  ", cluster_dir, port, bmc_ips_str, serving_ip)
         + "  echo 'Waiting for cluster installation to complete...'\n"
-        + _wait_for_complete_cmd("  ", "openshift-install", ".")
+        + _resilient_wait_for_complete_cmd("  ", "openshift-install", ".", cluster_key)
         + "  echo 'Ejecting agent ISO from nodes...'\n"
         + _redfish_eject_media_cmd("  ", bmc_ips_str)
         + f"  touch {cluster_dir}/.install-complete\n"

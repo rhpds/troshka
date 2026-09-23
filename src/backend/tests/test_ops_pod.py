@@ -344,6 +344,43 @@ def test_install_script_writes_sentinel_only_after_wait_for():
         assert wait_idx < sentinel_idx
 
 
+def test_install_script_resilient_wait_polls_clusterversion_on_timeout():
+    # openshift-install's wait-for install-complete has a fixed timeout; slow
+    # nested clusters can converge AFTER it gives up. On a non-zero wait-for exit
+    # the script must fall back to polling ClusterVersion (per cluster) rather
+    # than treating the timeout as a hard failure.
+    script = _install_script()
+    assert script.count("get clusterversion") >= 2
+    assert 'type=="Available"' in script
+    # Still exactly one real installer wait per cluster (fallback uses oc, not
+    # another `wait-for install-complete`).
+    assert script.count("wait-for install-complete") == 2
+
+
+def test_install_script_resilient_wait_succeeds_only_on_available_true():
+    # The fallback loop must exit ONLY when ClusterVersion Available becomes
+    # "True" — never on a bare timeout. "Tolerant only if sure it can recover."
+    script = _install_script()
+    assert '!= "True"' in script
+
+
+def test_install_script_resilient_wait_fails_fast_when_not_converging():
+    # Not a blind wait: a stall/deadline guard emits the fatal marker
+    # (`install-complete command failed`, in _FAILURE_MARKERS) and exits non-zero
+    # when the cluster stops making progress.
+    script = _install_script()
+    assert "install-complete command failed" in script
+    assert "did not converge" in script
+
+
+def test_install_script_resilient_wait_treats_api_down_as_not_converged():
+    # If the API is unreachable, the unavailable-operator probe must NOT report 0
+    # (which would look fully converged and reset the stall timer). It reports a
+    # high sentinel so a persistently-dead API eventually trips the stall guard.
+    script = _install_script()
+    assert "9999" in script
+
+
 def test_install_script_distinct_http_ports():
     script = _install_script()
     assert "http.server 8080" in script
