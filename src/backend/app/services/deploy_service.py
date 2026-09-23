@@ -7839,13 +7839,21 @@ def _create_routes_for_gateway(
 
 def _ns_from_showroom_hostname(hostname: str) -> str:
     """Extract the project namespace from the showroom route's auto-generated host
-    ``<route-name>-<ns>.apps.<cluster>`` (the showroom route always ends in
-    ``-443``), so app-proxy public hosts can be computed as
-    ``tpf-<pid>-<code>-<ns>.<apps-domain>``. '' if not derivable."""
+    ``<route-name>-<ns>.apps.<cluster>``, so app-proxy public hosts can be computed
+    as ``tpf-<pid>-<code>-<ns>.<apps-domain>``. '' if not derivable.
+
+    The route name ends in the showroom's forwarded port — ``443`` historically,
+    but ``80`` for edge-terminated route providers (kubevirt/ocpvirt serve the
+    showroom container on ``.3:80``), e.g. ``rt-showroom-80-<ns>``. So split on the
+    first pure-numeric label (the port) rather than a hardcoded ``-443-`` — the
+    old assumption silently returned '' for ``-80`` routes, which made
+    :func:`_create_app_proxy_routes` skip the console/oauth routes entirely.
+    """
+    import re
+
     first_label = (hostname or "").split(".", 1)[0]
-    if "-443-" in first_label:
-        return first_label.split("-443-", 1)[1]
-    return ""
+    m = re.search(r"-\d+-", first_label)
+    return first_label[m.end() :] if m else ""
 
 
 def _create_app_proxy_routes(driver, provider, project_id, topology, showroom_route):

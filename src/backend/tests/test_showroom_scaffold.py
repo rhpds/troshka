@@ -960,6 +960,21 @@ def test_ns_from_showroom_hostname():
         )
         == "troshka-275876b6"
     )
+    # Edge-terminated route providers serve the showroom container on intPort 80,
+    # so the route is rt-showroom-80-<ns> (not -443). Namespace must still parse.
+    assert (
+        _ns_from_showroom_hostname(
+            "rt-showroom-80-troshka-7fc018a4.apps.ocpv08.dal10.infra.demo.redhat.com"
+        )
+        == "troshka-7fc018a4"
+    )
+    # ocpvirt equivalent with intPort 80.
+    assert (
+        _ns_from_showroom_hostname(
+            "troshka-pf-d0cc03f4-showroom-80-sandbox-8zsqb-troshka.apps.ocpv06.dal10.infra.demo.redhat.com"
+        )
+        == "sandbox-8zsqb-troshka"
+    )
     assert _ns_from_showroom_hostname("") == ""
     assert _ns_from_showroom_hostname("no-port-here.apps.x") == ""
 
