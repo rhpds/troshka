@@ -70,12 +70,15 @@ def _mint_prelude_playbook(
                     },
                     {
                         "name": f"Accumulate {name}",
+                        # One closing brace for the inner dict, then "}) }}" for
+                        # combine(...) and the outer Jinja — an extra "}" here
+                        # breaks Ansible with: unexpected '}', expected ')'.
                         "ansible.builtin.set_fact": {
                             "_troshka_clusters": (
                                 "{{ _troshka_clusters | combine({"
                                 f"'{name}': {{"
                                 "'api_url': _troshka_api_server.stdout, "
-                                "'api_token': _openshift_cluster_admin_token}}"
+                                "'api_token': _openshift_cluster_admin_token}"
                                 "}) }}"
                             )
                         },

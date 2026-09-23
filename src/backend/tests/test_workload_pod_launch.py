@@ -273,6 +273,8 @@ def test_build_artifact_files_omits_mint_playbook_without_kubeconfig():
 
 
 def test_build_artifact_files_multi_cluster_mint():
+    import yaml
+
     paths = pod_launch.RunPaths()
     files = pod_launch.build_artifact_files(
         extra_vars={"a": 1},
@@ -287,3 +289,15 @@ def test_build_artifact_files_multi_cluster_mint():
     mint = files[paths.mint_playbook]
     assert "source" in mint and "destination" in mint
     assert "default" in mint
+    # Round-trip through YAML the way ansible-playbook loads it, then check
+    # accumulate Jinja is balanced (extra "}" → "unexpected '}', expected ')'").
+    play = yaml.safe_load(mint)[0]
+    for task in play["tasks"]:
+        for step in task.get("block") or []:
+            sf = step.get("ansible.builtin.set_fact") or {}
+            expr = sf.get("_troshka_clusters")
+            if not expr or "api_token" not in expr:
+                continue
+            assert expr.count("{") == expr.count("}"), expr
+            assert expr.endswith("}}) }}") or expr.endswith("}) }}")
+            assert not expr.endswith("}}}) }}"), expr
