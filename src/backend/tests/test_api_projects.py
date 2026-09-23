@@ -262,7 +262,9 @@ def test_update_project_topology_showroom_injects_port_forwards():
     assert ext_ports == {"443"}
     vni = data["vni_map"][net_id]
     octet3 = vni & 0xFF
-    assert all(pf["intIp"] == f"172.30.{octet3}.1" for pf in pfs)
+    # Cloud provider (no route provider set): showroom :443 terminates at the
+    # socat TLS terminator on the transit-ns IP .2, not the host-side gateway .1.
+    assert all(pf["intIp"] == f"172.30.{octet3}.2" for pf in pfs)
 
 
 def test_update_project_topology_showroom_allocates_external_ip():

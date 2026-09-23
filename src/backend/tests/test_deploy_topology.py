@@ -1043,7 +1043,9 @@ def test_showroom_infra_network_dns_nameserver():
     out = _inject_showroom_port_forward(stale, topo, 1000)
     ext_ports = {pf["extPort"] for pf in out}
     assert ext_ports == {"443"}
-    assert all(pf["intIp"] == "172.30.232.1" for pf in out)
+    # Cloud (troshkad) providers terminate TLS at the socat terminator on the
+    # transit-ns IP .2:443 (host-side .1 cannot reach the showroom container).
+    assert all(pf["intIp"] == "172.30.232.2" for pf in out)
     assert not any(pf["intIp"] == "10.0.0.5" for pf in out)
 
 
