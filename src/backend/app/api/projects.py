@@ -104,6 +104,50 @@ def _patch_kv_run_strategy(custom_api, namespace, kv_name, strategy: str):
     patch_kubevirt_run_strategy(custom_api, namespace, kv_name, strategy)
 
 
+def _kv_vmi_should_clear_on_start(vmi_phase: str | None) -> bool:
+    """Whether to delete a pre-existing VMI when (re)starting a KubeVirt VM.
+
+    Start is a stopped→running transition, so any VMI present that is not
+    ``Running`` is stale/stuck — e.g. a leftover from an incomplete stop, or a
+    ``SyncFailed`` "ghost record" VMI (differing-UID libvirt domain) that loops
+    forever. Deleting it makes virt-handler tear down the stale domain and
+    recreate cleanly. A ``Running`` VMI is healthy and left untouched (start is
+    then a no-op)."""
+    return vmi_phase is not None and vmi_phase != "Running"
+
+
+def _kv_clear_stuck_vmi(custom_api, namespace, kv_name) -> bool:
+    """Delete the VMI if it exists and is not Running (see
+    :func:`_kv_vmi_should_clear_on_start`). Returns True if a VMI was deleted.
+    Best-effort: never raises."""
+    try:
+        vmi = custom_api.get_namespaced_custom_object(
+            group=_KUBEVIRT_API,
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachineinstances",
+            name=kv_name,
+        )
+    except Exception:
+        return False  # no VMI (clean) or unreachable
+    phase = (vmi.get("status", {}) or {}).get("phase")
+    if not _kv_vmi_should_clear_on_start(phase):
+        return False
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group=_KUBEVIRT_API,
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachineinstances",
+            name=kv_name,
+        )
+        logger.info("Cleared stale VMI %s (phase=%s) before start", kv_name, phase)
+        return True
+    except Exception:
+        logger.warning("Failed to clear stale VMI %s before start", kv_name)
+        return False
+
+
 def _resolve_deploy_progress(project) -> dict | None:
     """Return deploy progress data for a project in a transitional state."""
     if project.state not in ("deploying", "reconfiguring", "starting", "stopping"):
@@ -2228,6 +2272,10 @@ def start_vm(
             kv_name = f"troshka-vm-{vm_id[:8]}"
             namespace = _kubevirt_project_ns(provider, project_id)
             try:
+                # Clear a stale/stuck VMI (e.g. a ghost-record SyncFailed left by
+                # an incomplete prior stop) so virt-handler rebuilds a clean
+                # domain instead of looping — then ensure the VM runs.
+                _kv_clear_stuck_vmi(custom_api, namespace, kv_name)
                 _patch_kv_run_strategy(custom_api, namespace, kv_name, "Always")
             except Exception as e:
                 raise HTTPException(500, f"Failed to start VM: {e}")

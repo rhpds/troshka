@@ -1995,3 +1995,17 @@ def test_exec_console_text_method():
     )
     # Should fail at troshkad level, not at validation
     assert resp.status_code == 503
+
+
+def test_kv_vmi_should_clear_on_start():
+    from app.api.projects import _kv_vmi_should_clear_on_start
+
+    # No VMI (clean stopped VM) → nothing to clear.
+    assert _kv_vmi_should_clear_on_start(None) is False
+    # Healthy running VMI → never delete (start is a no-op).
+    assert _kv_vmi_should_clear_on_start("Running") is False
+    # Stale/stuck VMI (ghost-record SyncFailed sits at Scheduled; Failed too) →
+    # clear so virt-handler rebuilds a clean domain.
+    assert _kv_vmi_should_clear_on_start("Scheduled") is True
+    assert _kv_vmi_should_clear_on_start("Failed") is True
+    assert _kv_vmi_should_clear_on_start("Pending") is True

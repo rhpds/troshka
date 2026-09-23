@@ -52,6 +52,10 @@ export default function NodeContextMenu({
   const isRunning = vmStatus === "running";
   const isRedeploying = vmStatus === "redeploying";
   const isNotFound = vmStatus === "not_found";
+  // While a power transition is in flight, offer no actionable start/stop —
+  // issuing the opposite/duplicate action mid-transition is what triggers the
+  // KubeVirt "ghost record" SyncFailed spin. Show a disabled indicator instead.
+  const isTransitioning = vmStatus === "starting" || vmStatus === "stopping";
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -67,6 +71,11 @@ export default function NodeContextMenu({
       className="node-context-menu"
       style={{ position: "fixed", left: x, top: y, zIndex: 9999 }}
     >
+      {isDeployed && isTransitioning && (
+        <button disabled style={{ opacity: 0.6, cursor: "not-allowed" }}>
+          {vmStatus === "starting" ? "▶ Starting…" : "■ Stopping…"}
+        </button>
+      )}
       {isDeployed && isRunning && !isRedeploying && !isNotFound && (
         <>
           <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/stop`, { method: "POST" }); onClose(); }}>
@@ -80,7 +89,7 @@ export default function NodeContextMenu({
           </button>
         </>
       )}
-      {isDeployed && !isRunning && !isRedeploying && !isNotFound && (
+      {isDeployed && !isRunning && !isTransitioning && !isRedeploying && !isNotFound && (
         <button onClick={async () => { await fetch(`/api/v1/projects/${projectId}/vms/${nodeId}/start`, { method: "POST" }); onClose(); }}>
           ▶ Start
         </button>
