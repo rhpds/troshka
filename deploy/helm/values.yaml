@@ -93,6 +93,22 @@ redis:
   image: registry.redhat.io/rhel9/redis-7:latest
   url: ""
 
+# Workloads subsystem (ad-hoc / catalog Ansible runs). Must be present in the
+# mounted ConfigMap — the image's config.yaml is overwritten by this CM.
+workloads:
+  defaultEeImage: quay.io/agnosticd/ee-multicloud:chained-latest
+  cacheRoot: /var/lib/troshka/workload-cache
+  diskBudgetGb: 20
+  runRetentionDays: 30
+  agnosticvBranch: master
+  agnosticdV2Url: https://github.com/rhpds/agnosticd-v2.git
+  defaultRefs:
+    agnosticdV2: main
+    agnosticd: development
+    coreWorkloads: main
+    demoWorkloads: main
+    namespacedWorkloads: main
+
 worker:
   replicas: 100
   # Each RQ worker runs one job at a time, so a tiny pool is plenty. Postgres

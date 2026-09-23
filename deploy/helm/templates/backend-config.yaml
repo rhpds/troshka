@@ -53,4 +53,17 @@ data:
       ram_ratio: {{ .Values.overcommit.ramRatio }}
     ocp:
       preview_versions_enabled: {{ .Values.ocp.previewVersionsEnabled | default false }}
+    workloads:
+      default_ee_image: {{ .Values.workloads.defaultEeImage | quote }}
+      cache_root: {{ .Values.workloads.cacheRoot | quote }}
+      disk_budget_gb: {{ .Values.workloads.diskBudgetGb }}
+      run_retention_days: {{ .Values.workloads.runRetentionDays }}
+      agnosticv_branch: {{ .Values.workloads.agnosticvBranch | quote }}
+      agnosticd_v2_url: {{ .Values.workloads.agnosticdV2Url | quote }}
+      default_refs:
+        agnosticd-v2: {{ .Values.workloads.defaultRefs.agnosticdV2 | quote }}
+        agnosticd: {{ .Values.workloads.defaultRefs.agnosticd | quote }}
+        core_workloads: {{ .Values.workloads.defaultRefs.coreWorkloads | quote }}
+        demo_workloads: {{ .Values.workloads.defaultRefs.demoWorkloads | quote }}
+        namespaced_workloads: {{ .Values.workloads.defaultRefs.namespacedWorkloads | quote }}
 {{- end }}
