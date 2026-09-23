@@ -293,6 +293,9 @@ def test_build_artifact_files_multi_cluster_mint():
     # accumulate Jinja is balanced (extra "}" → "unexpected '}', expected ')'").
     play = yaml.safe_load(mint)[0]
     for task in play["tasks"]:
+        env = task.get("environment") or {}
+        if "kubeconfigs/" in str(env.get("KUBECONFIG", "")):
+            assert env.get("K8S_AUTH_KUBECONFIG") == env.get("KUBECONFIG"), task["name"]
         for step in task.get("block") or []:
             sf = step.get("ansible.builtin.set_fact") or {}
             expr = sf.get("_troshka_clusters")

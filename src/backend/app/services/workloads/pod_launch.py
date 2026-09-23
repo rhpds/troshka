@@ -85,7 +85,14 @@ def _mint_prelude_playbook(
                         "no_log": True,
                     },
                 ],
-                "environment": {"KUBECONFIG": kc_path},
+                # kubernetes.core honors K8S_AUTH_KUBECONFIG, not KUBECONFIG. The
+                # outer mint shell also sets K8S_AUTH_KUBECONFIG to the primary
+                # kubeconfig — without per-block override, every cluster's SA
+                # is minted against source and destination tokens 401.
+                "environment": {
+                    "KUBECONFIG": kc_path,
+                    "K8S_AUTH_KUBECONFIG": kc_path,
+                },
             }
         )
     first = names[0]
@@ -239,6 +246,10 @@ def _mint_prelude_steps(paths: RunPaths, log_path: str) -> list[str]:
     delivered admin kubeconfig against the target cluster. Plain ``KUBECONFIG`` is
     NOT honored by kubernetes.core inside a pod — without this it falls back to the
     runner pod's own in-cluster ServiceAccount (which has no rights on the target).
+
+    Multi-cluster mint playbooks also set ``K8S_AUTH_KUBECONFIG`` per block to the
+    matching ``/workdir/kubeconfigs/<name>/kubeconfig`` (overrides this shell
+    default) so each SA is minted on the correct cluster.
     """
     safe_mint = _safe_sq(paths.mint_playbook)
     safe_log = _safe_sq(log_path)
