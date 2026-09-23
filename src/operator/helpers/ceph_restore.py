@@ -58,10 +58,15 @@ def _request_gi(size_bytes: int, minimum_gi: int) -> int:
 def device_s3_config(device: dict, s3_config: dict, central_s3_config: dict | None):
     """Return (s3_config, secret_name) for a resolved capture device.
 
-    Mirrors ``handlers/project.py``'s ``_create_golden_pvc_for_disk``: OBC
-    (local RGW)-sourced devices use ``s3_config``'s nested ``obcConfig``,
-    central (S4)-sourced devices use ``central_s3_config``, and anything else
-    falls back to the project's own ``s3Config`` secret.
+    Source → store mapping (must match the two distinct S4 stores):
+    - ``obc``    → local RGW on the target cluster (``s3_config.obcConfig``).
+    - ``gold``   → the curated read-only store ``troshka-gold-images``, delivered
+      as ``central_s3_config`` / the ``s3-central-credentials`` secret.
+    - ``central``→ the read/write central-S4 bucket ``troshka-images`` (where a
+      shared pattern's disks are synced), which the operator receives as the
+      project's own ``s3_config`` / ``s3-credentials`` secret. It must NOT use
+      ``central_s3_config`` — that is the GOLD store, and a shared pattern's disks
+      are not there (the old ``source == "central"`` mapping 404'd on deploy).
     """
     source = device.get("source", "central")
     obc_config = s3_config.get("obcConfig") if s3_config else None
@@ -70,7 +75,7 @@ def device_s3_config(device: dict, s3_config: dict, central_s3_config: dict | No
             "credentialsSecret", "s3-obc-credentials"  # pragma: allowlist secret
         )
         return obc_config, secret
-    if source == "central" and central_s3_config:
+    if source == "gold" and central_s3_config:
         return central_s3_config, "s3-central-credentials"  # pragma: allowlist secret
     return s3_config or {}, "s3-credentials"  # pragma: allowlist secret
 

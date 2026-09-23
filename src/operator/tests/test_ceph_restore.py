@@ -72,13 +72,29 @@ class TestDeviceS3Config:
         assert cfg == s3_config["obcConfig"]
         assert secret == _OBC_SECRET
 
-    def test_central_source_uses_central_config(self):
-        central = {"bucket": "central-bucket"}
-        cfg, secret = device_s3_config({"source": "central"}, _S3_CONFIG, central)
-        assert cfg == central
+    def test_central_source_uses_project_s3_config(self):
+        # "central" == the read/write central-S4 bucket (troshka-images), which
+        # the operator receives as s3_config / the s3-credentials secret. It must
+        # NOT resolve to central_s3_config, which is the read-only GOLD store.
+        gold = {"bucket": "troshka-gold-images"}
+        cfg, secret = device_s3_config({"source": "central"}, _S3_CONFIG, gold)
+        assert cfg == _S3_CONFIG
+        assert secret == _DEFAULT_SECRET
+
+    def test_gold_source_uses_central_config(self):
+        # "gold" == the curated read-only store (troshka-gold-images), delivered
+        # as central_s3_config / the s3-central-credentials secret.
+        gold = {"bucket": "troshka-gold-images"}
+        cfg, secret = device_s3_config({"source": "gold"}, _S3_CONFIG, gold)
+        assert cfg == gold
         assert secret == _CENTRAL_SECRET
 
-    def test_falls_back_to_project_s3_config(self):
+    def test_gold_source_without_central_config_falls_back(self):
+        cfg, secret = device_s3_config({"source": "gold"}, _S3_CONFIG, None)
+        assert cfg == _S3_CONFIG
+        assert secret == _DEFAULT_SECRET
+
+    def test_central_source_falls_back_when_no_project_config(self):
         cfg, secret = device_s3_config({"source": "central"}, _S3_CONFIG, None)
         assert cfg == _S3_CONFIG
         assert secret == _DEFAULT_SECRET
@@ -175,8 +191,12 @@ class TestBuildCephRestoreResources:
         assert mon_name == CEPH_MON_PVC_NAME
         assert osd_names == ["troshka-ceph-osd-0", "troshka-ceph-osd-1"]
         assert [dv["metadata"]["name"] for dv in osd_dvs] == osd_names
+        # osd-0 is source="obc" (no obcConfig → default) and osd-1 is
+        # source="central" (read/write central-S4 → the project s3-credentials
+        # secret, NOT the gold s3-central-credentials). Gold→central_s3_config is
+        # covered by TestDeviceS3Config.test_gold_source_uses_central_config.
         assert osd_dvs[0]["spec"]["source"]["s3"]["secretRef"] == _DEFAULT_SECRET
-        assert osd_dvs[1]["spec"]["source"]["s3"]["secretRef"] == _CENTRAL_SECRET
+        assert osd_dvs[1]["spec"]["source"]["s3"]["secretRef"] == _DEFAULT_SECRET
 
     def test_compat_datavolumes_alias_returns_mon_job(self):
         mon_job, osd_dvs, mon_name, osd_names = build_ceph_restore_datavolumes(
