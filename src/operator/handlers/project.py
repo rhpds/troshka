@@ -1899,6 +1899,137 @@ def _golden_is_stuck(dv, core_api, namespace, pvc_name):
     return _golden_importer_crashlooping(core_api, namespace, pvc_name)
 
 
+# --- Golden-cache crashloop watchdog (reaper) -----------------------------
+#
+# The lazy stuck-golden recreate in _create_golden_pvc_for_disk only fires when a
+# NEW deploy requests a golden. A golden whose source is permanently gone (e.g. a
+# deleted library ISO → NoSuchKey 404) that nothing re-requests will crash-loop
+# forever (a real case ran 40 days / 11k importer restarts, starving CDI import
+# slots). This periodic reaper deletes such goldens proactively.
+_GOLDEN_REAP_INTERVAL_SECS = 300  # scan every 5 min
+_GOLDEN_REAP_GRACE_SECS = 900  # ignore goldens younger than 15 min
+
+
+def _should_reap_golden(
+    phase, importer_crashlooping, age_secs, referenced_by_active_clone, grace_secs
+):
+    """Pure decision: reap a golden cache DV only when it is a confirmed dead
+    import that no active deploy needs.
+
+    Conservative — a Succeeded golden, one still within its grace window (may be
+    legitimately importing), one an active clone references, or one whose importer
+    is not crash-looping (slow but progressing) is always kept.
+    """
+    if phase == "Succeeded":
+        return False
+    if referenced_by_active_clone:
+        return False
+    if age_secs < grace_secs:
+        return False
+    return bool(importer_crashlooping)
+
+
+def _dv_age_secs(dv, now):
+    """Age of a DataVolume in seconds from its creationTimestamp, or 0 if unknown."""
+    from datetime import datetime
+
+    created = (dv.get("metadata", {}) or {}).get("creationTimestamp")
+    if not created:
+        return 0.0
+    try:
+        ts = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        return max(0.0, now - ts.timestamp())
+    except (ValueError, AttributeError):
+        return 0.0
+
+
+def _golden_referenced_by_active_clone(custom_api, golden_name):
+    """True if any non-terminal clone DataVolume (any namespace) sources from this
+    golden PVC in troshka-cache — so the reaper never yanks it mid-deploy."""
+    from helpers.kubevirt import CACHE_NAMESPACE
+
+    try:
+        dvs = custom_api.list_cluster_custom_object(
+            group="cdi.kubevirt.io", version="v1beta1", plural="datavolumes"
+        )
+    except Exception:
+        # Fail safe: if we can't tell, assume referenced (keep the golden).
+        return True
+    for dv in dvs.get("items", []):
+        src_pvc = ((dv.get("spec", {}) or {}).get("source", {}) or {}).get("pvc", {})
+        if not src_pvc:
+            continue
+        if (
+            src_pvc.get("name") == golden_name
+            and src_pvc.get("namespace") == CACHE_NAMESPACE
+        ):
+            phase = (dv.get("status", {}) or {}).get("phase", "")
+            if phase not in ("Succeeded", "Failed"):
+                return True
+    return False
+
+
+def reap_stuck_goldens(custom_api, core_api, now=None):
+    """Delete crash-looping golden imports in troshka-cache that no active clone
+    needs. Returns the number reaped. Idempotent; safe to call periodically."""
+    import time as _t
+
+    from helpers.kubevirt import CACHE_NAMESPACE, delete_golden_import
+
+    if now is None:
+        now = _t.time()
+    try:
+        dvs = custom_api.list_namespaced_custom_object(
+            group="cdi.kubevirt.io",
+            version="v1beta1",
+            namespace=CACHE_NAMESPACE,
+            plural="datavolumes",
+        )
+    except Exception:
+        logger.exception("golden reaper: failed to list golden DataVolumes")
+        return 0
+
+    reaped = 0
+    for dv in dvs.get("items", []):
+        name = (dv.get("metadata", {}) or {}).get("name", "")
+        if not name.startswith("golden-"):
+            continue
+        phase = (dv.get("status", {}) or {}).get("phase", "")
+        crashlooping = _golden_importer_crashlooping(core_api, CACHE_NAMESPACE, name)
+        referenced = _golden_referenced_by_active_clone(custom_api, name)
+        if _should_reap_golden(
+            phase,
+            crashlooping,
+            _dv_age_secs(dv, now),
+            referenced,
+            _GOLDEN_REAP_GRACE_SECS,
+        ):
+            logger.warning(
+                "golden reaper: reaping stuck golden %s (phase=%s) — importer "
+                "crash-looping, no active clone",
+                name,
+                phase or "unknown",
+            )
+            delete_golden_import(custom_api, core_api, CACHE_NAMESPACE, name)
+            reaped += 1
+    return reaped
+
+
+@kopf.on.startup()
+async def _launch_golden_reaper(**_):
+    """Start the background golden-cache crashloop watchdog (per operator process)."""
+    asyncio.create_task(_golden_reaper_loop())
+
+
+async def _golden_reaper_loop():
+    while True:
+        await asyncio.sleep(_GOLDEN_REAP_INTERVAL_SECS)
+        try:
+            reap_stuck_goldens(client.CustomObjectsApi(), client.CoreV1Api())
+        except Exception:
+            logger.exception("golden reaper loop error")
+
+
 def _create_golden_pvc_for_disk(
     custom_api, core_api, disk, s3_config, central_s3_config
 ):
