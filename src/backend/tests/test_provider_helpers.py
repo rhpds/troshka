@@ -244,14 +244,13 @@ class TestBuildProviderCredentials:
             type="kubevirt",
             api_url="https://api.kv.example.com:6443",
             token="tok",
-            # namespace defaults to "troshka" from ProviderCreate,
-            # but kubevirt branch does `body.namespace or "troshka-operator"`,
-            # so "troshka" (truthy) is used as-is.
+            # namespace omitted → kubevirt default troshka-operator
+            # (not the old shared "troshka" schema default that broke setup scripts)
         )
         provider = _make_provider(type="kubevirt")
         creds = _build_provider_credentials(body, provider)
 
-        assert creds["namespace"] == "troshka"
+        assert creds["namespace"] == "troshka-operator"
         assert creds["cache_namespace"] == "troshka-cache"
         assert creds["project_prefix"] == "troshka-"
 

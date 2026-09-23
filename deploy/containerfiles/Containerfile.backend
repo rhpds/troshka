@@ -30,6 +30,10 @@ COPY src/operator/deploy/ /opt/app-root/operator/deploy/
 # helpers.ceph_freeze / helpers.rook_ceph. Ship that package here too, or every
 # Ceph-project pattern capture fails with "No module named 'helpers'".
 COPY src/operator/helpers/ /opt/app-root/operator/helpers/
+# kubevirt._ensure_provider_rbac resolves PROVIDER_RBAC_PATH to /opt/infra/…
+# (OPERATOR_DIR=/opt/app-root/operator → ../.. /infra). Without this COPY,
+# Install/Reinstall Operator fails with FileNotFoundError on every new cluster.
+COPY infra/ocpvirt-rbac.yaml /opt/infra/ocpvirt-rbac.yaml
 
 EXPOSE 8200
 

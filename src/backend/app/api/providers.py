@@ -38,7 +38,10 @@ class ProviderCreate(BaseModel):
     # OCP Virt / KubeVirt fields
     api_url: str = ""
     token: str = ""
-    namespace: str = "troshka"
+    # None so type-specific defaults apply (ocpvirt→troshka, kubevirt→troshka-operator).
+    # A shared default of "troshka" made kubevirt providers look for the operator
+    # in the wrong namespace when clients omitted the field (e.g. setup scripts).
+    namespace: str | None = None
     verify_ssl: bool = False
     iso_pvc: str | None = None
     cache_namespace: str = ""
