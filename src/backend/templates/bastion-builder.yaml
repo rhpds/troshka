@@ -144,3 +144,5 @@ vms:
           fi
         - curl -sL https://github.com/mozilla/geckodriver/releases/download/v0.37.0/geckodriver-v0.37.0-linux64.tar.gz | tar xz -C /usr/local/bin/
         - touch /etc/troshka-bastion-built
+        # set-default only affects the *next* boot; isolate switches this first boot to GNOME
+        - systemctl isolate graphical.target
