@@ -526,3 +526,75 @@ def test_deploy_sno_pattern_sets_ocp_flags():
     assert data["ocpMonitor"] is True
     assert data["configureBastionBrowser"] is True
     assert deploy_resp.json()["topology"]["_deploy_recert"] is True
+
+
+def test_resolve_pattern_source_prefers_deployed_topology():
+    """Capture must read deployed_topology (authoritative), not the editable
+    canvas topology which can drift (e.g. the deferred-worker powerOnAtDeploy flip
+    lands in deployed_topology but canvas auto-save reverts it in editable). Using
+    editable captured powerOnAtDeploy=False → restored workers stayed Halted.
+    """
+    import uuid as _uuid
+    from types import SimpleNamespace
+
+    from app.api.patterns import _resolve_pattern_source
+    from app.models.project import Project
+
+    db = TestSession()
+    pid = str(_uuid.uuid4())
+    editable = {
+        "nodes": [{"type": "vmNode", "data": {"name": "w", "powerOnAtDeploy": False}}]
+    }
+    deployed = {
+        "nodes": [{"type": "vmNode", "data": {"name": "w", "powerOnAtDeploy": True}}]
+    }
+    db.add(
+        Project(
+            id=pid,
+            name=f"src-{pid[:8]}",
+            owner_id=USER_ID,
+            state="active",
+            topology=editable,
+            deployed_topology=deployed,
+        )
+    )
+    db.commit()
+
+    body = SimpleNamespace(source_project_id=pid, topology=None)
+    user = SimpleNamespace(id=USER_ID, role="user")
+    _sp, topo, state = _resolve_pattern_source(body, user, db)
+    db.close()
+
+    assert state == "capturing"
+    assert topo["nodes"][0]["data"]["powerOnAtDeploy"] is True  # from deployed_topology
+
+
+def test_resolve_pattern_source_falls_back_to_editable_when_no_deployed():
+    import uuid as _uuid
+    from types import SimpleNamespace
+
+    from app.api.patterns import _resolve_pattern_source
+    from app.models.project import Project
+
+    db = TestSession()
+    pid = str(_uuid.uuid4())
+    editable = {
+        "nodes": [{"type": "vmNode", "data": {"name": "w", "powerOnAtDeploy": False}}]
+    }
+    db.add(
+        Project(
+            id=pid,
+            name=f"src-{pid[:8]}",
+            owner_id=USER_ID,
+            state="active",
+            topology=editable,
+            deployed_topology=None,
+        )
+    )
+    db.commit()
+
+    body = SimpleNamespace(source_project_id=pid, topology=None)
+    user = SimpleNamespace(id=USER_ID, role="user")
+    _sp, topo, _state = _resolve_pattern_source(body, user, db)
+    db.close()
+    assert topo["nodes"][0]["data"]["powerOnAtDeploy"] is False  # editable fallback

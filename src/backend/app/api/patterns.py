@@ -473,7 +473,13 @@ def _resolve_pattern_source(body, user, db):
                 status_code=400,
                 detail="Project must be deployed (active or stopped) to save as pattern",
             )
-        return source_project, source_project.topology or {}, "capturing"
+        # Capture from deployed_topology — the authoritative state of what is
+        # actually running. The editable canvas topology can drift from it via
+        # auto-save (e.g. the deferred-worker powerOnAtDeploy flip lands in
+        # deployed_topology after join, but editable reverts to False), which
+        # would capture stale values and leave restored workers Halted.
+        capture_topology = source_project.deployed_topology or source_project.topology
+        return source_project, capture_topology or {}, "capturing"
     if body.topology:
         return None, body.topology, "available"
     raise HTTPException(status_code=400, detail="Provide source_project_id or topology")
