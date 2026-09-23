@@ -710,6 +710,9 @@ export default function AdminHostsPage() {
           const allConnected = someSelected && selected.every((h) => h.agent_status === "connected");
           const allStopped = someSelected && selected.every((h) => h.state === "stopped");
           const allActiveConnected = allActive && allConnected;
+          // KubeVirt cluster hosts have no troshkad agent or cloud instance, so
+          // agent/power operations don't apply — only Remove does.
+          const noneKubevirt = someSelected && selected.every((h) => h.host_type !== "kubevirt-cluster");
           return (<>
             <div style={{ display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
               <input
@@ -746,7 +749,7 @@ export default function AdminHostsPage() {
               </label>
               {someSelected && (
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {allActiveConnected && (
+                  {allActiveConnected && noneKubevirt && (
                     <>
                       <Button variant="secondary" size="sm" onClick={async () => {
                         if (!(await appConfirm({ message: `Update agent on ${selected.length} host(s)?`, confirmLabel: "Update" }))) return;
@@ -766,7 +769,7 @@ export default function AdminHostsPage() {
                       }}>Clean ({selected.length})</Button>
                     </>
                   )}
-                  {allActive && (
+                  {allActive && noneKubevirt && (
                     <Button variant="secondary" size="sm" onClick={async () => {
                       if (!(await appConfirm({ message: `Power off ${selected.length} host(s)?`, confirmLabel: "Power off" }))) return;
                       for (const h of selected) {
@@ -776,7 +779,7 @@ export default function AdminHostsPage() {
                       loadData();
                     }}>Power Off ({selected.length})</Button>
                   )}
-                  {allStopped && (
+                  {allStopped && noneKubevirt && (
                     <Button variant="secondary" size="sm" onClick={async () => {
                       if (!(await appConfirm({ message: `Power on ${selected.length} host(s)?`, confirmLabel: "Power on" }))) return;
                       for (const h of selected) {
