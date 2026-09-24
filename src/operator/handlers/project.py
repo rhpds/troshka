@@ -2575,6 +2575,205 @@ def _detect_scheduling_error(core_api, namespace, kv_name):
     return None
 
 
+# Stuck virt-launcher heal (ContainerCreating on sick nodes)
+ANN_STUCK_NODES = "troshka.io/launcher-stuck-nodes"
+ANN_ATTEMPTS = "troshka.io/launcher-reschedule-attempts"
+_STUCK_LAUNCHER_MAX_ATTEMPTS = 3
+_STUCK_NODE_EXCLUDE_AFTER = 2
+
+
+def _is_virt_launcher_stuck_creating(pod, *, now=None, threshold_s=60):
+    """True when a scheduled virt-launcher has been ContainerCreating too long."""
+    if now is None:
+        now = time.time()
+    created = getattr(getattr(pod, "metadata", None), "creation_timestamp", None)
+    if created is None:
+        return False
+    age = now - created.timestamp()
+    if age < threshold_s:
+        return False
+    if not _pod_is_scheduled(pod):
+        return False
+    return _pod_waiting_container_creating(pod)
+
+
+def _pod_is_scheduled(pod):
+    for cond in getattr(getattr(pod, "status", None), "conditions", None) or []:
+        if getattr(cond, "type", None) == "PodScheduled" and getattr(cond, "status", None) == "True":
+            return True
+    return False
+
+
+def _pod_waiting_container_creating(pod):
+    for cs in getattr(getattr(pod, "status", None), "container_statuses", None) or []:
+        state = getattr(cs, "state", None)
+        if state is None:
+            continue
+        if getattr(state, "running", None) is not None:
+            return False
+        waiting = getattr(state, "waiting", None)
+        if waiting is not None and getattr(waiting, "reason", None) == "ContainerCreating":
+            return True
+    return False
+
+
+def _parse_stuck_node_counts(annotations):
+    """Parse ``host:count,host:count`` from the stuck-nodes annotation."""
+    raw = (annotations or {}).get(ANN_STUCK_NODES, "")
+    if not raw:
+        return {}
+    counts = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        host, _, n = part.partition(":")
+        try:
+            counts[host] = int(n)
+        except ValueError:
+            continue
+    return counts
+
+
+def _format_stuck_node_counts(counts):
+    """Serialize stuck-node counts as ``host:count,host:count``."""
+    return ",".join(f"{h}:{c}" for h, c in sorted(counts.items()))
+
+
+def _node_hostname_not_in_affinity(hostnames):
+    """Build a required NotIn affinity for kubernetes.io/hostname."""
+    return {
+        "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+                "nodeSelectorTerms": [
+                    {
+                        "matchExpressions": [
+                            {
+                                "key": "kubernetes.io/hostname",
+                                "operator": "NotIn",
+                                "values": list(hostnames),
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+
+
+def heal_stuck_virt_launchers(
+    core_api, custom_api, vm_items, namespace, *, now=None, threshold_s=60
+):
+    """Delete virt-launchers stuck in ContainerCreating; avoid repeat sick nodes.
+
+    Returns ``(details, errors)`` where details are human log lines and errors
+    map vmId → message for VMs that exhausted reschedule attempts.
+    """
+    if now is None:
+        now = time.time()
+    details = []
+    errors = {}
+    for vm in vm_items:
+        vm_id = vm.get("spec", {}).get("vmId", vm["metadata"]["name"])
+        kv_name = vm.get("status", {}).get("kubevirtVmName", "")
+        if not kv_name:
+            continue
+        outcome = _heal_one_stuck_launcher(
+            core_api, custom_api, namespace, vm_id, kv_name, now, threshold_s
+        )
+        if outcome is None:
+            continue
+        kind, payload = outcome
+        if kind == "error":
+            errors[vm_id] = payload
+        else:
+            details.append(payload)
+    return details, errors
+
+
+def _heal_one_stuck_launcher(
+    core_api, custom_api, namespace, vm_id, kv_name, now, threshold_s
+):
+    """Heal a single KV VM's stuck launcher. Returns (kind, payload) or None."""
+    pod = _find_stuck_launcher_pod(core_api, namespace, kv_name, now, threshold_s)
+    if pod is None:
+        return None
+    node = getattr(getattr(pod, "spec", None), "node_name", None) or "unknown"
+    try:
+        kv_vm = cast(
+            dict[str, Any],
+            custom_api.get_namespaced_custom_object(
+                group=_KUBEVIRT_GROUP,
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=kv_name,
+            ),
+        )
+    except Exception as e:
+        logger.warning(f"Failed to get KV VM {kv_name} for stuck heal: {e}")
+        return None
+
+    annotations = dict((kv_vm.get("metadata") or {}).get("annotations") or {})
+    attempts = int(annotations.get(ANN_ATTEMPTS, "0") or "0")
+    if attempts >= _STUCK_LAUNCHER_MAX_ATTEMPTS:
+        return (
+            "error",
+            f"virt-launcher stuck in ContainerCreating on {node} "
+            f"after {attempts} reschedule attempts",
+        )
+
+    counts = _parse_stuck_node_counts(annotations)
+    counts[node] = counts.get(node, 0) + 1
+    attempts += 1
+    annotations[ANN_STUCK_NODES] = _format_stuck_node_counts(counts)
+    annotations[ANN_ATTEMPTS] = str(attempts)
+
+    patch_body: dict[str, Any] = {"metadata": {"annotations": annotations}}
+    exclude = [h for h, c in counts.items() if c >= _STUCK_NODE_EXCLUDE_AFTER]
+    if exclude:
+        tmpl_spec = (
+            (kv_vm.get("spec") or {}).get("template") or {}
+        ).get("spec") or {}
+        affinity = dict(tmpl_spec.get("affinity") or {})
+        affinity.update(_node_hostname_not_in_affinity(exclude))
+        patch_body["spec"] = {"template": {"spec": {"affinity": affinity}}}
+
+    try:
+        custom_api.patch_namespaced_custom_object(
+            group=_KUBEVIRT_GROUP,
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachines",
+            name=kv_name,
+            body=patch_body,
+        )
+        core_api.delete_namespaced_pod(
+            name=pod.metadata.name, namespace=namespace  # type: ignore[union-attr]
+        )
+    except Exception as e:
+        logger.warning(f"Failed to reschedule stuck launcher for {kv_name}: {e}")
+        return None
+
+    detail = f"rescheduled {kv_name} off {node} (attempt {attempts})"
+    logger.info(f"Stuck virt-launcher heal: {detail}")
+    return ("detail", detail)
+
+
+def _find_stuck_launcher_pod(core_api, namespace, kv_name, now, threshold_s):
+    try:
+        pods = core_api.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=f"kubevirt.io/domain={kv_name}",
+        )
+    except Exception:
+        return None
+    for pod in pods.items or []:  # type: ignore[union-attr]
+        if _is_virt_launcher_stuck_creating(pod, now=now, threshold_s=threshold_s):
+            return pod
+    return None
+
+
 def _collect_vm_states(vm_items, vmi_states, core_api, namespace):
     """Collect VM states and scheduling errors from VMI states and pod conditions.
 
@@ -3107,6 +3306,13 @@ async def project_status_check(spec, status, namespace, name, body, patch, **_):
     vm_states, ready_count, scheduling_errors = _collect_vm_states(
         vm_items, vmi_states, core_api_ev, namespace
     )
+
+    if phase == "Deploying":
+        _, heal_errors = heal_stuck_virt_launchers(
+            core_api_ev, custom_api, vm_items, namespace
+        )
+        if heal_errors:
+            scheduling_errors.update(heal_errors)
 
     _patch_vm_states(status, patch, vm_states, scheduling_errors)
 

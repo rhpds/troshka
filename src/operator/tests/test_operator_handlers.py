@@ -7,6 +7,7 @@ project, vm, network, container handlers and k8s/topology helpers.
 import asyncio
 import hashlib
 import json
+import time
 import pytest
 from unittest.mock import MagicMock, patch, call
 
@@ -8466,6 +8467,185 @@ class TestDetectSchedulingErrorExtended:
 
         err = _detect_scheduling_error(core_api, "ns1", "kv-vm-1")
         assert err is None
+
+
+class TestStuckVirtLauncherHeal:
+    """Reschedule virt-launchers stuck in ContainerCreating (sick nodes)."""
+
+    def _pod(self, *, age_s=90, node="ocp-virt6-host6", creating=True, scheduled=True):
+        from datetime import datetime, timedelta, timezone
+
+        pod = MagicMock()
+        pod.metadata.name = "virt-launcher-kv-1"
+        pod.metadata.creation_timestamp = datetime.now(timezone.utc) - timedelta(
+            seconds=age_s
+        )
+        pod.spec.node_name = node
+        pod.status.phase = "Pending"
+        cond = MagicMock()
+        cond.type = "PodScheduled"
+        cond.status = "True" if scheduled else "False"
+        pod.status.conditions = [cond]
+        if creating:
+            cs = MagicMock()
+            cs.name = "compute"
+            cs.state = MagicMock(waiting=MagicMock(reason="ContainerCreating"), running=None)
+            cs.state.waiting.reason = "ContainerCreating"
+            # Make hasattr(state, 'running') work with truthiness
+            type(cs.state).running = property(lambda self: None)
+            pod.status.container_statuses = [cs]
+        else:
+            cs = MagicMock()
+            cs.name = "compute"
+            cs.state = MagicMock(waiting=None, running=MagicMock())
+            pod.status.container_statuses = [cs]
+        return pod
+
+    def test_detects_stuck_after_60s(self):
+        from handlers.project import _is_virt_launcher_stuck_creating
+
+        now = time.time()
+        pod = self._pod(age_s=90)
+        assert _is_virt_launcher_stuck_creating(pod, now=now, threshold_s=60) is True
+
+    def test_not_stuck_before_threshold(self):
+        from handlers.project import _is_virt_launcher_stuck_creating
+
+        now = time.time()
+        pod = self._pod(age_s=30)
+        assert _is_virt_launcher_stuck_creating(pod, now=now, threshold_s=60) is False
+
+    def test_not_stuck_when_running(self):
+        from handlers.project import _is_virt_launcher_stuck_creating
+
+        now = time.time()
+        pod = self._pod(age_s=120, creating=False)
+        assert _is_virt_launcher_stuck_creating(pod, now=now, threshold_s=60) is False
+
+    def test_parse_stuck_node_counts(self):
+        from handlers.project import _parse_stuck_node_counts
+
+        assert _parse_stuck_node_counts({}) == {}
+        assert _parse_stuck_node_counts(
+            {"troshka.io/launcher-stuck-nodes": "host6:2,host7:1"}
+        ) == {"host6": 2, "host7": 1}
+
+    def test_format_stuck_node_counts(self):
+        from handlers.project import _format_stuck_node_counts
+
+        assert _format_stuck_node_counts({"host6": 2, "host7": 1}) == "host6:2,host7:1"
+
+    def test_node_not_in_affinity(self):
+        from handlers.project import _node_hostname_not_in_affinity
+
+        aff = _node_hostname_not_in_affinity(["host6", "host7"])
+        terms = aff["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][
+            "nodeSelectorTerms"
+        ]
+        expr = terms[0]["matchExpressions"][0]
+        assert expr["key"] == "kubernetes.io/hostname"
+        assert expr["operator"] == "NotIn"
+        assert expr["values"] == ["host6", "host7"]
+
+    def test_heal_deletes_stuck_launcher(self):
+        from handlers.project import heal_stuck_virt_launchers
+
+        core_api = MagicMock()
+        custom_api = MagicMock()
+        pod = self._pod(age_s=90, node="host6")
+        core_api.list_namespaced_pod.return_value = MagicMock(items=[pod])
+        custom_api.get_namespaced_custom_object.return_value = {
+            "metadata": {"name": "kv-1", "annotations": {}},
+            "spec": {"template": {"spec": {}}},
+        }
+
+        vm_items = [
+            {
+                "metadata": {"name": "tvm-1"},
+                "spec": {"vmId": "vm-aaaaaaaa"},
+                "status": {"kubevirtVmName": "kv-1", "state": "Scheduling"},
+            }
+        ]
+        details, errors = heal_stuck_virt_launchers(
+            core_api, custom_api, vm_items, "ns1", now=time.time()
+        )
+        assert details
+        assert "host6" in details[0]
+        assert errors == {}
+        core_api.delete_namespaced_pod.assert_called_once()
+        custom_api.patch_namespaced_custom_object.assert_called()
+
+    def test_heal_adds_not_in_after_second_same_node(self):
+        from handlers.project import (
+            ANN_STUCK_NODES,
+            heal_stuck_virt_launchers,
+        )
+
+        core_api = MagicMock()
+        custom_api = MagicMock()
+        pod = self._pod(age_s=90, node="host6")
+        core_api.list_namespaced_pod.return_value = MagicMock(items=[pod])
+        custom_api.get_namespaced_custom_object.return_value = {
+            "metadata": {
+                "name": "kv-1",
+                "annotations": {
+                    ANN_STUCK_NODES: "host6:1",
+                    "troshka.io/launcher-reschedule-attempts": "1",
+                },
+            },
+            "spec": {"template": {"spec": {}}},
+        }
+        vm_items = [
+            {
+                "metadata": {"name": "tvm-1"},
+                "spec": {"vmId": "vm-aaaaaaaa"},
+                "status": {"kubevirtVmName": "kv-1"},
+            }
+        ]
+        heal_stuck_virt_launchers(
+            core_api, custom_api, vm_items, "ns1", now=time.time()
+        )
+        args, kwargs = custom_api.patch_namespaced_custom_object.call_args
+        body = kwargs.get("body") or (args[-1] if args else None)
+        aff = body["spec"]["template"]["spec"]["affinity"]
+        vals = aff["nodeAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][
+            "nodeSelectorTerms"
+        ][0]["matchExpressions"][0]["values"]
+        assert "host6" in vals
+
+    def test_heal_gives_up_after_max_attempts(self):
+        from handlers.project import (
+            ANN_ATTEMPTS,
+            ANN_STUCK_NODES,
+            heal_stuck_virt_launchers,
+        )
+
+        core_api = MagicMock()
+        custom_api = MagicMock()
+        pod = self._pod(age_s=90, node="host9")
+        core_api.list_namespaced_pod.return_value = MagicMock(items=[pod])
+        custom_api.get_namespaced_custom_object.return_value = {
+            "metadata": {
+                "name": "kv-1",
+                "annotations": {
+                    ANN_ATTEMPTS: "3",
+                    ANN_STUCK_NODES: "host6:2,host7:1",
+                },
+            },
+            "spec": {"template": {"spec": {}}},
+        }
+        vm_items = [
+            {
+                "metadata": {"name": "tvm-1"},
+                "spec": {"vmId": "vm-aaaaaaaa"},
+                "status": {"kubevirtVmName": "kv-1"},
+            }
+        ]
+        details, errors = heal_stuck_virt_launchers(
+            core_api, custom_api, vm_items, "ns1", now=time.time()
+        )
+        assert "vm-aaaaaaaa" in errors
+        core_api.delete_namespaced_pod.assert_not_called()
 
 
 class TestCreateRecertJobsExtended:
