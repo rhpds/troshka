@@ -721,14 +721,16 @@ def test_cluster_vip_reservations_skips_ip_reserved_by_node_nic():
 
 
 def test_infra_ip_reservations_reserves_gateway_and_dnsmasq():
-    """Infra IPs (gateway .1, dnsmasq .2) get bogus-MAC dhcp-host reservations so
-    dnsmasq never leases them and they are explicit, canonical reservations."""
+    """Infra IPs get bogus-MAC dhcp-host reservations so dnsmasq never leases
+    them (.1 gateway, .2 dnsmasq, .3 exec, .9 showroom)."""
     from app.services.vxlan import _infra_ip_reservations
 
     res = _infra_ip_reservations({"cidr": "10.0.0.0/24"}, set())
     by_ip = {r["ip"]: r for r in res}
     assert "10.0.0.1" in by_ip
     assert "10.0.0.2" in by_ip
+    assert "10.0.0.3" in by_ip
+    assert "10.0.0.9" in by_ip
     assert all(r["mac"] for r in res)  # bogus MACs present
 
 
@@ -739,7 +741,7 @@ def test_infra_ip_reservations_skips_already_reserved():
 
     res = _infra_ip_reservations({"cidr": "10.0.0.0/24"}, {"10.0.0.2"})
     ips = {r["ip"] for r in res}
-    assert ips == {"10.0.0.1"}
+    assert ips == {"10.0.0.1", "10.0.0.3", "10.0.0.9"}
 
 
 def test_build_host_network_config_includes_mtu():

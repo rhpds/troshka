@@ -541,7 +541,7 @@ class TestEnrichShowroomInfraNetworks:
         assert len(ctrs[0]["nics"]) == 2
         refs = {n["networkRef"] for n in ctrs[0]["nics"]}
         assert refs == {"net-net-mgmt", "net-net-clus"}
-        assert ctrs[0]["nics"][0]["ip"].endswith(".250")
+        assert ctrs[0]["nics"][0]["ip"].endswith(".9")
 
     def test_stamps_managed_dns_nameserver_from_dns_network(self):
         """Showroom pod must resolve via the lab dnsmasq (.2), not the host

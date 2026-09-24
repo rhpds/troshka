@@ -282,7 +282,14 @@ def _infra_ip_reservations(
     except ValueError:
         return []
     reservations: list[dict] = []
-    for offset, label in ((1, "gateway"), (2, "dnsmasq")):
+    # .1 gateway, .2 dnsmasq, .3 exec pod, .9 showroom Multus (below DHCP .10).
+    # .4 is often ceph-mon labIp — reserved via _ceph_reservations when present.
+    for offset, label in (
+        (1, "gateway"),
+        (2, "dnsmasq"),
+        (3, "exec"),
+        (9, "showroom"),
+    ):
         ip = str(net.network_address + offset)
         if ip in reserved_ips:
             continue

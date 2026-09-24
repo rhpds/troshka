@@ -228,8 +228,10 @@ def validate_topology_ips(topology: dict) -> list[str]:
 
 def _network_infra_ips(topology: dict) -> dict[str, str]:
     """Map every network's reserved infra IPs -> label (gateway ``.1``,
-    dnsmasq ``.2``). Mirrors :func:`vxlan._infra_ip_reservations` so the import
-    warning checks the same addresses Troshka reserves at deploy time."""
+    dnsmasq ``.2``, exec ``.3``, showroom ``.9``). Mirrors
+    :func:`vxlan._infra_ip_reservations` so the import warning checks the
+    same addresses Troshka reserves at deploy time. (``.4`` ceph-mon is
+    handled separately via ceph lab-IP validation when present.)"""
     import ipaddress
 
     infra: dict[str, str] = {}
@@ -245,12 +247,14 @@ def _network_infra_ips(topology: dict) -> dict[str, str]:
             continue
         infra[str(net.network_address + 1)] = "gateway"
         infra[str(net.network_address + 2)] = "dnsmasq"
+        infra[str(net.network_address + 3)] = "exec"
+        infra[str(net.network_address + 9)] = "showroom"
     return infra
 
 
 def infra_ip_overlap_warnings(topology: dict) -> list[str]:
     """Non-blocking warnings when a template-assigned IP lands on a reserved
-    infra IP (gateway ``.1`` / dnsmasq ``.2``).
+    infra IP (gateway ``.1`` / dnsmasq ``.2`` / exec ``.3`` / showroom ``.9``).
 
     Works for both providers (the infra IPs are the same lab-network addresses).
     Catches e.g. a compact/standard template whose ``api_vip`` is ``.2`` — which

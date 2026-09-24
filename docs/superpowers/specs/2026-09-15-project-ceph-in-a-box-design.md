@@ -57,14 +57,14 @@ New item under **Storage** (distinct from VM **Disk** / **ISO**):
 |-------|---------|-------|
 | `name` | `project-ceph` | Display name |
 | `networkRef` | (required) | `networkNode` id — lab L2 mons attach here |
-| `labIp` | `<network-cidr>.3` | User overridable; convention `.1` gateway, `.2` dnsmasq, `.3` ceph |
+| `labIp` | `<network-cidr>.4` | User overridable; convention `.1` gateway, `.2` dnsmasq, `.3` exec, `.4` Ceph mon bridge, `.9` showroom Multus (see lab-service-ips). Early drafts used `.3` for Ceph — **wrong**; exec owns `.3`. |
 | `capacityGi` | `300` | Total raw OSD backing; split evenly across `osdCount` PVCs |
 | `osdCount` | `3` | Number of OSD pods (1–6); drives pool replication (see below) |
 | `linkedClusters` | (edges) | `clusterNode` ids that receive credentials in topology stamp |
 
 **Validation:**
 
-- `labIp` must be in `networkRef` CIDR and not collide with gateway (`.1`), dnsmasq (`.2`), or stamped static leases
+- `labIp` must be in `networkRef` CIDR and not collide with gateway (`.1`), dnsmasq (`.2`), exec (`.3`), showroom (`.9`), or stamped static leases
 - `osdCount` integer **1–6** (default **3**)
 - `capacityGi` minimum **`osdCount × 50`** Gi (per-OSD floor 50 Gi)
 - `networkRef` network must be attached to all `linkedClusters` (or a shared network they can route to)

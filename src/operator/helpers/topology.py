@@ -290,15 +290,21 @@ def _lab_network_nodes(topology):
     return nets
 
 
+# Lab Multus host for showroom: below DHCP (.10+), above infra
+# (.1 gateway, .2 dnsmasq, .3 exec, .4 often ceph-mon).
+SHOWROOM_LAB_HOST_OCTET = 9
+
+
 def _showroom_ip_for_cidr(cidr, used_ips):
-    """Pick a high host IP on the lab subnet for showroom multus (SSH to VMs)."""
+    """Reserved lab Multus IP for showroom (``.9``), not DNS ``.2`` or high ``.250``."""
     if not cidr or "/" not in cidr:
         return ""
     base = cidr.split("/", 1)[0]
     octets = base.split(".")
     if len(octets) != 4:
         return ""
-    for last in range(250, 200, -1):
+    # Prefer .9; if taken, walk down through .5 (still clear of .1–.4 infra).
+    for last in (SHOWROOM_LAB_HOST_OCTET, 8, 7, 6, 5):
         ip = f"{octets[0]}.{octets[1]}.{octets[2]}.{last}"
         if ip not in used_ips:
             return ip

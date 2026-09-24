@@ -705,10 +705,24 @@ def _network_dot2(cidr: str) -> str:
     return ".".join(parts)
 
 
+# Lab Multus host for showroom: below DHCP (.10+), above infra
+# (.1 gateway, .2 dnsmasq, .3 exec, .4 often ceph-mon). Must match
+# operator helpers.topology.SHOWROOM_LAB_HOST_OCTET.
+SHOWROOM_LAB_HOST_OCTET = 9
+
+
 def _showroom_ip_for_cidr(cidr: str, used_ips: set[str]) -> str:
-    candidate = _network_dot2(cidr)
-    if candidate and candidate not in used_ips:
-        return candidate
+    """Reserved lab Multus IP for showroom (``.9``), never DNS ``.2``."""
+    if not cidr or "/" not in cidr:
+        return ""
+    base = cidr.split("/", 1)[0]
+    parts = base.split(".")
+    if len(parts) != 4:
+        return ""
+    for last in (SHOWROOM_LAB_HOST_OCTET, 8, 7, 6, 5):
+        ip = f"{parts[0]}.{parts[1]}.{parts[2]}.{last}"
+        if ip not in used_ips:
+            return ip
     return ""
 
 

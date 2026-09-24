@@ -2,6 +2,20 @@
 
 > Extracted from the top-level `CLAUDE.md` to keep it lean. Read this file when working on the topics below.
 
+### Lab subnet reserved host octets
+
+On every project lab CIDR (e.g. `10.0.0.0/24`), low host addresses are reserved. DHCP for VMs typically starts at **`.10`**.
+
+| Octet | Role | Notes |
+|---|---|---|
+| `.1` | Gateway | Always reserved (`_infra_ip_reservations`) |
+| `.2` | Dnsmasq (DHCP+DNS) | Always reserved — never Multus showroom |
+| `.3` | Exec pod | Always reserved |
+| `.4` | Ceph mon bridge (`labIp`) | When Ceph present (`_ceph_reservations`) |
+| `.9` | Showroom Multus | Always reserved; picker falls back `.8`→`.5` if taken |
+
+Code: `vxlan._infra_ip_reservations`, `kubevirt_reconfigure._showroom_ip_for_cidr` / operator `helpers.topology` (`SHOWROOM_LAB_HOST_OCTET = 9`), `deploy_topology._network_infra_ips`.
+
 ### Console (Direct Proxy)
 - VNC console at `/console?vm=&project=&name=` — bare layout (no app header)
 - **Direct proxy**: Browser → `wss://{instance_id}.{base_domain}/ws/{jwt}` → troshka-vncd → localhost VNC (2 hops, no SSH tunnel)
