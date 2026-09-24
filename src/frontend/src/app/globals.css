@@ -28,22 +28,51 @@ body {
 
 /* ---- Full-screen canvas layout ---- */
 
-/* Project Action Bar */
+/* Project Action Bar — title/stats on top row, actions on second row */
 .project-action-bar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 16px;
-  height: 40px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 16px;
   background: var(--troshka-surface);
   border-bottom: 1px solid var(--troshka-border);
 }
-.project-action-bar-left,
-.project-action-bar-center,
-.project-action-bar-right {
+.project-action-bar-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+}
+.project-action-bar-left {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+  justify-self: start;
+  overflow: hidden;
+}
+.project-action-bar-center {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+.project-action-bar-spacer {
+  min-width: 0;
+}
+.project-action-bar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 100%;
 }
 .project-back-btn {
   background: none;
@@ -52,6 +81,7 @@ body {
   font-size: 18px;
   cursor: pointer;
   padding: 2px 6px;
+  flex-shrink: 0;
 }
 .project-back-btn:hover {
   color: var(--troshka-text);
@@ -59,6 +89,10 @@ body {
 .project-action-name {
   font-size: 14px;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 .project-action-state {
   font-size: 11px;
@@ -66,10 +100,23 @@ body {
   border-radius: 4px;
   font-weight: 500;
   text-transform: uppercase;
+  flex-shrink: 0;
 }
-.project-action-stats {
+.project-action-stats,
+.project-action-placement {
   font-size: 12px;
-  color: var(--troshka-text-dim);
+  color: var(--troshka-text);
+  white-space: nowrap;
+}
+.project-action-placement {
+  font-size: 11px;
+  opacity: 0.9;
+}
+.project-action-bar-center .project-action-stats,
+.project-action-bar-center .project-action-placement {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 42vw;
 }
 .project-publish-btn {
   padding: 5px 16px;
@@ -80,6 +127,9 @@ body {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1.3;
 }
 .project-publish-btn:hover {
   background: #5b52e0;
@@ -93,14 +143,23 @@ body {
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1.3;
 }
 .project-stop-btn:hover {
   background: rgba(248,113,113,0.1);
 }
 
+.project-action-bar-actions .workload-status-chip {
+  flex-shrink: 0;
+  width: max-content;
+  max-width: none;
+}
+
 .canvas-editor {
   display: flex;
-  height: calc(100vh - 120px);
+  height: calc(100vh - 148px);
   overflow: hidden;
   background: var(--troshka-bg);
 }

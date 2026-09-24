@@ -8,7 +8,7 @@ import Palette from "@/components/canvas/Palette";
 import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
-import { useCanvasStore, computeTopologyDirty, computeTopologyDiff, setLatestVmStates, setLatestContainerStates, _saveTopologyToApi, type ExternalIp, type TopologyDiffEntry } from "@/stores/canvasStore";
+import { useCanvasStore, computeTopologyDirty, computeTopologyDiff, setLatestVmStates, setLatestContainerStates, _saveTopologyToApi, applyDeployedTopologyFromServer, type ExternalIp, type TopologyDiffEntry } from "@/stores/canvasStore";
 import { healClusterTopology } from "@/components/canvas/clusterTopologyHeal";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
@@ -65,6 +65,10 @@ export default function ProjectCanvasPage() {
   const [projectGuid, setProjectGuid] = useState("");
   const [projectState, setProjectState] = useState("");
   const [projectHostId, setProjectHostId] = useState("");
+  const [hostPlacement, setHostPlacement] = useState<{
+    provider: string | null;
+    host: string | null;
+  }>({ provider: null, host: null });
   const [autoStopMinutes, setAutoStopMinutes] = useState<number | null>(null);
   const [autoDeleteMinutes, setAutoDeleteMinutes] = useState<number | null>(null);
   const [autoStopExpiresAt, setAutoStopExpiresAt] = useState<string | null>(null);
@@ -116,6 +120,22 @@ export default function ProjectCanvasPage() {
         setProjectGuid(data.guid || "");
         setProjectState(data.state);
         setProjectHostId(data.host_id || "");
+        {
+          const provider =
+            data.host_provider_name ||
+            data.host_provider_type ||
+            data.provider_type ||
+            null;
+          // Prefer IP/hostname over raw instance_id (KubeVirt stores API URL there).
+          const host =
+            data.host_ip ||
+            (typeof data.host_instance_id === "string" &&
+            !data.host_instance_id.startsWith("http")
+              ? data.host_instance_id
+              : null) ||
+            (data.host_id ? String(data.host_id).slice(0, 8) : null);
+          setHostPlacement({ provider, host });
+        }
         useCanvasStore.setState({
           providerType: data.provider_type || null,
           clusterCapabilities: data.cluster_capabilities || null,
@@ -270,10 +290,11 @@ export default function ProjectCanvasPage() {
     return () => clearInterval(interval);
   }, [projectState, projectId]);
 
-  // WebSocket → topology update from another session
+  // WebSocket → topology update from another session / server stamp
   useEffect(() => {
     if (!ws.topologyUpdate) return;
-    const topo = ws.topologyUpdate;
+    const update = ws.topologyUpdate;
+    const topo = update.topology || update;
     const store = useCanvasStore.getState();
     if (topo.nodes && topo.edges) {
       const preservedEndpoints = new Map<string, unknown[]>();
@@ -315,7 +336,12 @@ export default function ProjectCanvasPage() {
         });
       }
     }
-  }, [ws.topologyUpdate]);
+    // Server-stamped baseline (e.g. deferred-worker powerOnAtDeploy flip) so
+    // Apply Changes does not read canvas vs deployed drift as a user edit.
+    if (update.deployed_topology?.nodes?.length) {
+      applyDeployedTopologyFromServer(update.deployed_topology, projectState);
+    }
+  }, [ws.topologyUpdate, projectState]);
 
   // WebSocket → EIP allocation during/after deploy
   useEffect(() => {
@@ -777,6 +803,7 @@ export default function ProjectCanvasPage() {
         </div>
       )}
       <div className="project-action-bar">
+        <div className="project-action-bar-top">
         <div className="project-action-bar-left">
           <button className="project-back-btn" onClick={() => router.push("/projects")} title="Back to projects">←</button>
           <span
@@ -818,9 +845,14 @@ export default function ProjectCanvasPage() {
         <div className="project-action-bar-center">
           <span className="project-action-stats">
             {vmCount} VM{vmCount !== 1 ? "s" : ""}{containerCount > 0 ? ` · ${containerCount} container${containerCount !== 1 ? "s" : ""}` : ""} · {netCount} net{netCount !== 1 ? "s" : ""} · {diskCount} disk{diskCount !== 1 ? "s" : ""}
+            {(hostPlacement.provider || hostPlacement.host) && (
+              <> · {[hostPlacement.provider, hostPlacement.host].filter(Boolean).join(" · ")}</>
+            )}
           </span>
         </div>
-        <div className="project-action-bar-right">
+        <div className="project-action-bar-spacer" aria-hidden="true" />
+        </div>
+        <div className="project-action-bar-actions">
           {(projectState === "active" || projectState === "stopped" || projectState === "starting") && (
             <button
               className="project-publish-btn"
@@ -837,7 +869,8 @@ export default function ProjectCanvasPage() {
           )}
           {projectState === "active" && workloadChipLabel && inflightWorkload && (
             <WorkloadStatusChip
-              label={workloadChipLabel}
+              headline={workloadChipLabel.headline}
+              detail={workloadChipLabel.detail}
               onClick={() => setOpenRunId(inflightWorkload.id)}
             />
           )}
@@ -854,18 +887,20 @@ export default function ProjectCanvasPage() {
             <button
               className="project-publish-btn"
               onClick={() => setShowWorkloadRuns(true)}
-              style={{ opacity: 0.85, display: "inline-flex", alignItems: "center", gap: 6 }}
+              style={{ opacity: 0.85 }}
             >
               Workload Runs
               {inflightWorkload && (
                 <span
                   title="Workload running"
                   style={{
+                    display: "inline-block",
                     width: 8,
                     height: 8,
+                    marginLeft: 6,
                     borderRadius: "50%",
                     background: "var(--pf-t--global--color--status--info--default, #39a5dc)",
-                    flexShrink: 0,
+                    verticalAlign: "middle",
                   }}
                 />
               )}

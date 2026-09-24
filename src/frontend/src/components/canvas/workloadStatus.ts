@@ -47,14 +47,14 @@ export function formatWorkloadChipLabel(opts: {
   roleFqcn: string | null | undefined;
   chainRoles: string[] | null | undefined;
   succeededRoles: Set<string>;
-}): string {
-  const short = shortRoleLabel(opts.roleFqcn) || "workload";
+}): { headline: string; detail: string } {
+  const detail = shortRoleLabel(opts.roleFqcn) || "workload";
   const chain = opts.chainRoles?.filter(Boolean) ?? [];
   const idx = opts.roleFqcn ? chain.indexOf(opts.roleFqcn) : -1;
   if (idx >= 0 && chain.length > 0) {
-    return `Workload ${idx + 1}/${chain.length} · ${short}`;
+    return { headline: `Workload ${idx + 1}/${chain.length}`, detail };
   }
-  return `Workload · ${short}`;
+  return { headline: "Workload", detail };
 }
 
 /** Succeeded FQCNs from a run list (for chain progress). */

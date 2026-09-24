@@ -227,6 +227,75 @@ def test_update_project_topology_preserves_placement_metadata():
     assert saved["requirements_content"] == topo["requirements_content"]
 
 
+def test_update_project_topology_preserves_deferred_worker_join_flags():
+    """Stale canvas auto-save must not revert post-join powerOnAtDeploy."""
+    worker = {
+        "id": "w0",
+        "type": "vmNode",
+        "data": {
+            "name": "source-worker-0",
+            "deferOcpInstall": True,
+            "powerOnAtDeploy": False,
+        },
+    }
+    deployed_worker = {
+        "id": "w0",
+        "type": "vmNode",
+        "data": {
+            "name": "source-worker-0",
+            "deferOcpInstall": False,
+            "powerOnAtDeploy": True,
+        },
+    }
+    pid = _create_project(
+        name="topo-join-flags",
+        state="active",
+        topology={"nodes": [worker], "edges": []},
+        deployed_topology={"nodes": [deployed_worker], "edges": []},
+    )
+    resp = client.patch(
+        f"/api/v1/projects/{pid}",
+        json={"topology": {"nodes": [worker], "edges": []}},
+    )
+    assert resp.status_code == 200
+    saved = resp.json()["topology"]["nodes"][0]["data"]
+    assert saved["deferOcpInstall"] is False
+    assert saved["powerOnAtDeploy"] is True
+
+
+def test_get_project_heals_stale_deferred_worker_join_flags():
+    """GET hydrates editable topology so reload is not falsely dirty."""
+    worker = {
+        "id": "w0",
+        "type": "vmNode",
+        "data": {
+            "name": "source-worker-0",
+            "deferOcpInstall": True,
+            "powerOnAtDeploy": False,
+        },
+    }
+    deployed_worker = {
+        "id": "w0",
+        "type": "vmNode",
+        "data": {
+            "name": "source-worker-0",
+            "deferOcpInstall": False,
+            "powerOnAtDeploy": True,
+        },
+    }
+    pid = _create_project(
+        name="topo-join-get",
+        state="active",
+        topology={"nodes": [worker], "edges": []},
+        deployed_topology={"nodes": [deployed_worker], "edges": []},
+    )
+    resp = client.get(f"/api/v1/projects/{pid}")
+    assert resp.status_code == 200
+    data = resp.json()["topology"]["nodes"][0]["data"]
+    assert data["deferOcpInstall"] is False
+    assert data["powerOnAtDeploy"] is True
+
+
 def test_update_project_topology_showroom_injects_port_forwards():
     net_id = str(uuid.uuid4())
     gw_id = str(uuid.uuid4())

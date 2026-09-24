@@ -163,7 +163,14 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
             break;
           }
           case "topology-update":
-            setTopologyUpdate(msg.topology || null);
+            setTopologyUpdate(
+              msg.topology
+                ? {
+                    topology: msg.topology,
+                    deployed_topology: msg.deployed_topology || null,
+                  }
+                : null,
+            );
             break;
           case "external-ips-updated":
             setExternalIpsUpdate(msg.externalIps || []);

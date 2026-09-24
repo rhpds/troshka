@@ -81,6 +81,48 @@ def mark_deferred_workers_joined(topology: dict, cluster: dict) -> bool:
     return changed
 
 
+def sync_joined_worker_flags_from_deployed(
+    deployed: dict | None, topology: dict
+) -> bool:
+    """Copy post-join powerOn/defer flags onto editable topology when canvas is stale.
+
+    After deferred workers join, ``deployed_topology`` is stamped
+    ``deferOcpInstall: false`` / ``powerOnAtDeploy: true``. An open canvas may
+    still hold the pre-join values and auto-save them back, which makes Apply
+    Changes show a false ``Power On At Deploy Yes → No`` dirty state. When the
+    deployed node is already joined and the editable node still looks deferred,
+    prefer the deployed stamps. Real post-join user edits
+    (``deferOcpInstall`` already false) are left alone.
+
+    Returns True when any node data changed.
+    """
+    if not deployed or not topology:
+        return False
+    dep_by_id = {
+        n["id"]: n
+        for n in (deployed.get("nodes") or [])
+        if isinstance(n, dict) and n.get("id")
+    }
+    changed = False
+    for node in topology.get("nodes") or []:
+        if not isinstance(node, dict) or node.get("type") != "vmNode":
+            continue
+        dep = dep_by_id.get(node.get("id"))
+        if not dep:
+            continue
+        ddata = dep.get("data") or {}
+        if ddata.get("deferOcpInstall") is not False:
+            continue
+        ndata = node.setdefault("data", {})
+        if ndata.get("deferOcpInstall") is not True:
+            continue
+        ndata["deferOcpInstall"] = False
+        if "powerOnAtDeploy" in ddata:
+            ndata["powerOnAtDeploy"] = ddata["powerOnAtDeploy"]
+        changed = True
+    return changed
+
+
 def _nmstate_interface(entry: dict, *, down: bool = False) -> dict:
     """Build one NMState interface stanza.
 

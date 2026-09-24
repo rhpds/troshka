@@ -75,7 +75,10 @@ describe("formatWorkloadChipLabel", () => {
       chainRoles: chain,
       succeededRoles: new Set([chain[0]]),
     });
-    expect(label).toBe("Workload 2/3 · troshka_workload_cclm_network");
+    expect(label).toEqual({
+      headline: "Workload 2/3",
+      detail: "troshka_workload_cclm_network",
+    });
   });
 
   it("omits fraction when role is not in the chain", () => {
@@ -84,7 +87,7 @@ describe("formatWorkloadChipLabel", () => {
       chainRoles: chain,
       succeededRoles: new Set(),
     });
-    expect(label).toBe("Workload · role");
+    expect(label).toEqual({ headline: "Workload", detail: "role" });
   });
 
   it("omits fraction when there is no chain", () => {
@@ -93,6 +96,6 @@ describe("formatWorkloadChipLabel", () => {
       chainRoles: null,
       succeededRoles: new Set(),
     });
-    expect(label).toBe("Workload · operators");
+    expect(label).toEqual({ headline: "Workload", detail: "operators" });
   });
 });

@@ -679,8 +679,11 @@ class TestDeferredWorkersJoinedFlip(unittest.TestCase):
             "[source] deferred workers converged\n", "other"
         )
 
+    @patch("app.services.ws_pubsub.notify_project")
     @patch("app.core.database.SessionLocal")
-    def test_check_deferred_workers_joined_flips_topology(self, mock_session_local):
+    def test_check_deferred_workers_joined_flips_topology(
+        self, mock_session_local, mock_notify
+    ):
         from app.services.deploy_service import _check_deferred_workers_joined
 
         cluster = {
@@ -745,6 +748,11 @@ class TestDeferredWorkersJoinedFlip(unittest.TestCase):
             is True
         )
         mock_db.commit.assert_called_once()
+        mock_notify.assert_called_once()
+        notify_payload = mock_notify.call_args[0][1]
+        assert notify_payload["type"] == "topology-update"
+        assert "deployed_topology" in notify_payload
+        assert notify_payload["deployed_topology"] is mock_project.deployed_topology
 
     @patch("app.core.database.SessionLocal")
     def test_check_deferred_workers_joined_no_marker(self, mock_session_local):

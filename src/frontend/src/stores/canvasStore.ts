@@ -887,6 +887,17 @@ function applyDeployedTopologySnapshot(
   }
 }
 
+/** Refresh the Apply-Changes baseline from a server deployed_topology snapshot. */
+export function applyDeployedTopologyFromServer(
+  deployed: DeployedTopologySnapshot | null | undefined,
+  projectState?: string,
+) {
+  applyDeployedTopologySnapshot({
+    deployed_topology: deployed ?? undefined,
+    state: projectState,
+  });
+}
+
 // External IPs are compared by their desired/config fields only (id + name).
 // The allocated `ip`, `_private_ip`, and `state` are deploy-time runtime values
 // that live only in deployed_topology — including them would make a running

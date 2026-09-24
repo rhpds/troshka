@@ -262,6 +262,7 @@ def _client_topology_snapshot(project, db=None) -> dict:
     import copy
 
     topo = copy.deepcopy(project.topology or {})
+    _preserve_deferred_worker_join_flags(project, topo)
     if db is not None:
         _apply_eip_runtime_to_topology(db, project.id, topo.get("externalIps", []))
     _hydrate_response_external_endpoints(
@@ -284,6 +285,15 @@ def _preserve_topology_import_metadata(previous: dict, topo: dict) -> None:
     for key in _TOPOLOGY_METADATA_KEYS:
         if previous.get(key) and not topo.get(key):
             topo[key] = previous[key]
+
+
+def _preserve_deferred_worker_join_flags(project, topo: dict) -> None:
+    """Keep post-join powerOn/defer stamps when canvas auto-save is stale."""
+    from app.services.ocp.join_deferred_workers import (
+        sync_joined_worker_flags_from_deployed,
+    )
+
+    sync_joined_worker_flags_from_deployed(project.deployed_topology, topo)
 
 
 def _strip_topology_runtime_node_fields(topology: dict) -> None:
@@ -370,6 +380,17 @@ def _project_response_dict(project, db=None):
         "created_at": project.created_at,
         "updated_at": project.updated_at,
     }
+    # Heal stale pre-join powerOn/defer flags in the response so reload does not
+    # flash a false Apply-Changes dirty state (canvas auto-save may have reverted
+    # the editable topology after deferred workers joined).
+    if project.topology and project.deployed_topology:
+        from app.services.ocp.join_deferred_workers import (
+            sync_joined_worker_flags_from_deployed,
+        )
+
+        topo = copy.deepcopy(project.topology)
+        if sync_joined_worker_flags_from_deployed(project.deployed_topology, topo):
+            result["topology"] = topo
     dp = _resolve_deploy_progress(project)
     if dp:
         result["deploy_progress"] = dp
@@ -387,25 +408,29 @@ def _project_response_dict(project, db=None):
     prov_type = _resolve_provider_type(project)
     if prov_type:
         result["provider_type"] = prov_type
-    if prov_type == "kubevirt" and db is not None:
+    if db is not None and project.host_id:
         from app.models.provider import Provider
 
-        host = (
-            db.query(Host).filter_by(id=project.host_id).first()
-            if project.host_id
-            else None
-        )
-        provider = (
-            db.query(Provider).filter_by(id=host.provider_id).first()
-            if host and host.provider_id
-            else None
-        )
-        if provider:
-            from app.services.providers.kubevirt_capabilities import (
-                fetch_cluster_capabilities,
+        host = db.query(Host).filter_by(id=project.host_id).first()
+        if host:
+            result["host_instance_id"] = host.instance_id
+            result["host_ip"] = host.ip_address
+            provider = (
+                db.query(Provider).filter_by(id=host.provider_id).first()
+                if host.provider_id
+                else None
             )
+            if provider:
+                result["host_provider_name"] = provider.name
+                result["host_provider_type"] = provider.type
+                if (prov_type or provider.type) == "kubevirt":
+                    from app.services.providers.kubevirt_capabilities import (
+                        fetch_cluster_capabilities,
+                    )
 
-            result["cluster_capabilities"] = fetch_cluster_capabilities(provider)
+                    result["cluster_capabilities"] = fetch_cluster_capabilities(
+                        provider
+                    )
     if db is not None:
         _hydrate_response_external_ips(db, project.id, result)
     _hydrate_response_external_endpoints(result)
@@ -1594,6 +1619,7 @@ def update_project(
             deployed_clusters=(project.deployed_topology or {}).get("clusters") or [],
         )
         _preserve_topology_import_metadata(previous_topology, topo)
+        _preserve_deferred_worker_join_flags(project, topo)
         _enforce_single_bastion_browser(topo)
         for ext_ip in topo.get("externalIps", []):
             ext_ip.pop("ip", None)

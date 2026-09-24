@@ -11219,6 +11219,8 @@ def _persist_deferred_workers_joined(project_id: str, cluster: dict) -> bool:
 
     Updates both ``topology`` and ``deployed_topology`` so canvas save and
     pattern capture see ``powerOnAtDeploy: true`` / ``deferOcpInstall: false``.
+    Pushes a topology-update (with deployed baseline) so an open canvas does
+    not keep the pre-join flags and read as falsely dirty.
     Returns True when any node was changed.
     """
     from sqlalchemy.orm.attributes import flag_modified
@@ -11226,6 +11228,7 @@ def _persist_deferred_workers_joined(project_id: str, cluster: dict) -> bool:
     from app.core.database import SessionLocal
     from app.models.project import Project
     from app.services.ocp.join_deferred_workers import mark_deferred_workers_joined
+    from app.services.ws_pubsub import notify_project
 
     try:
         db = SessionLocal()
@@ -11243,11 +11246,22 @@ def _persist_deferred_workers_joined(project_id: str, cluster: dict) -> bool:
                     changed = True
             if changed:
                 db.commit()
+                db.refresh(p)
                 logger.info(
                     "Project %s: deferred workers joined — "
                     "powerOnAtDeploy=true for cluster %s",
                     project_id[:8],
                     cluster.get("id") or cluster.get("name") or "?",
+                )
+                from app.api.projects import _client_topology_snapshot
+
+                notify_project(
+                    project_id,
+                    {
+                        "type": "topology-update",
+                        "topology": _client_topology_snapshot(p, db=db),
+                        "deployed_topology": p.deployed_topology,
+                    },
                 )
             return changed
         finally:

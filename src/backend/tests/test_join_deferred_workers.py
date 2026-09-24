@@ -129,6 +129,47 @@ def test_mark_deferred_workers_joined_flips_power_on():
     assert deferred_workers_for_cluster(topo, topo["clusters"][0]) == []
 
 
+def test_sync_joined_worker_flags_from_deployed_heals_stale_canvas():
+    from app.services.ocp.join_deferred_workers import (
+        sync_joined_worker_flags_from_deployed,
+    )
+
+    deployed = {
+        "nodes": [
+            {
+                "id": "w0",
+                "type": "vmNode",
+                "data": {
+                    "name": "source-worker-0",
+                    "deferOcpInstall": False,
+                    "powerOnAtDeploy": True,
+                },
+            }
+        ]
+    }
+    editable = {
+        "nodes": [
+            {
+                "id": "w0",
+                "type": "vmNode",
+                "data": {
+                    "name": "source-worker-0",
+                    "deferOcpInstall": True,
+                    "powerOnAtDeploy": False,
+                },
+            }
+        ]
+    }
+    assert sync_joined_worker_flags_from_deployed(deployed, editable) is True
+    data = editable["nodes"][0]["data"]
+    assert data["deferOcpInstall"] is False
+    assert data["powerOnAtDeploy"] is True
+    # Real post-join user edit (defer already false) is left alone
+    editable["nodes"][0]["data"]["powerOnAtDeploy"] = False
+    assert sync_joined_worker_flags_from_deployed(deployed, editable) is False
+    assert editable["nodes"][0]["data"]["powerOnAtDeploy"] is False
+
+
 def test_build_deferred_worker_nmstate_configures_both_nics():
     worker = {
         "mac": "52:54:00:aa:bb:02",
