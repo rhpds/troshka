@@ -15,6 +15,13 @@ import SavePatternModal from "@/components/canvas/SavePatternModal";
 import RunWorkloadModal from "@/components/canvas/RunWorkloadModal";
 import WorkloadRunsModal from "@/components/canvas/WorkloadRunsModal";
 import WorkloadRunDetailModal from "@/components/canvas/WorkloadRunDetailModal";
+import WorkloadStatusChip from "@/components/canvas/WorkloadStatusChip";
+import {
+  findInflightRun,
+  formatWorkloadChipLabel,
+  succeededRoleSet,
+  type WorkloadRunSummary,
+} from "@/components/canvas/workloadStatus";
 import SnapshotVMModal from "@/components/canvas/SnapshotVMModal";
 import { useVmStateSocket } from "@/hooks/useVmStateSocket";
 import AlertModal from "@/components/AlertModal";
@@ -36,6 +43,8 @@ export default function ProjectCanvasPage() {
   const [showWorkloadModal, setShowWorkloadModal] = useState(false);
   const [showWorkloadRuns, setShowWorkloadRuns] = useState(false);
   const [openRunId, setOpenRunId] = useState<string | null>(null);
+  const [workloadRuns, setWorkloadRuns] = useState<WorkloadRunSummary[]>([]);
+  const topologyWorkloads = useCanvasStore((s) => s.topologyWorkloads);
   const [runWorkloadTarget, setRunWorkloadTarget] = useState<{
     mode: "cluster" | "vms";
     clusterIds?: string[];
@@ -181,6 +190,61 @@ export default function ProjectCanvasPage() {
   useEffect(() => {
     if (ws.deployProgress) setDeployProgress(ws.deployProgress);
   }, [ws.deployProgress]);
+
+  // Workload runs: seed on active + refresh when WS progress arrives
+  const refreshWorkloadRuns = React.useCallback(() => {
+    fetch(`/api/v1/projects/${projectId}/workloads`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!Array.isArray(data)) return;
+        setWorkloadRuns(
+          data.map((row: WorkloadRunSummary) => ({
+            id: row.id,
+            role_fqcn: row.role_fqcn ?? null,
+            status: row.status,
+            created_at: row.created_at || "",
+          })),
+        );
+      })
+      .catch(() => {});
+  }, [projectId]);
+
+  useEffect(() => {
+    if (projectState !== "active") {
+      setWorkloadRuns([]);
+      return;
+    }
+    refreshWorkloadRuns();
+  }, [projectState, refreshWorkloadRuns]);
+
+  useEffect(() => {
+    if (!ws.workloadProgress?.run_id) return;
+    refreshWorkloadRuns();
+  }, [ws.workloadProgress, refreshWorkloadRuns]);
+
+  // Poll while a run is in flight so the chip clears on terminal status
+  // (finalize does not always publish a final workload-progress event).
+  useEffect(() => {
+    if (projectState !== "active") return;
+    const inflight = findInflightRun(workloadRuns);
+    if (!inflight) return;
+    const interval = setInterval(refreshWorkloadRuns, 10000);
+    return () => clearInterval(interval);
+  }, [projectState, workloadRuns, refreshWorkloadRuns]);
+
+  const inflightWorkload = useMemo(
+    () => findInflightRun(workloadRuns),
+    [workloadRuns],
+  );
+
+  const workloadChipLabel = useMemo(() => {
+    if (!inflightWorkload) return null;
+    return formatWorkloadChipLabel({
+      roleFqcn: inflightWorkload.role_fqcn,
+      chainRoles: topologyWorkloads,
+      succeededRoles: succeededRoleSet(workloadRuns),
+    });
+  }, [inflightWorkload, topologyWorkloads, workloadRuns]);
 
   // REST fallback: poll deploy progress when WS isn't delivering updates
   useEffect(() => {
@@ -770,6 +834,12 @@ export default function ProjectCanvasPage() {
               Save as Pattern
             </button>
           )}
+          {projectState === "active" && workloadChipLabel && inflightWorkload && (
+            <WorkloadStatusChip
+              label={workloadChipLabel}
+              onClick={() => setOpenRunId(inflightWorkload.id)}
+            />
+          )}
           {projectState === "active" && (
             <button
               className="project-publish-btn"
@@ -783,9 +853,21 @@ export default function ProjectCanvasPage() {
             <button
               className="project-publish-btn"
               onClick={() => setShowWorkloadRuns(true)}
-              style={{ opacity: 0.85 }}
+              style={{ opacity: 0.85, display: "inline-flex", alignItems: "center", gap: 6 }}
             >
               Workload Runs
+              {inflightWorkload && (
+                <span
+                  title="Workload running"
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: "var(--pf-t--global--color--status--info--default, #39a5dc)",
+                    flexShrink: 0,
+                  }}
+                />
+              )}
             </button>
           )}
           {nodes.length > 0 && (
