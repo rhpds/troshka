@@ -117,8 +117,31 @@ def _primary_cluster_id(topology: dict) -> str | None:
     return None
 
 
+def _all_ocp_clusters_ready(topology: dict | None) -> bool:
+    """True when every OCP cluster reports ``ocpInstallStatus=ready``.
+
+    No clusters, or no per-cluster statuses stamped yet → True (legacy /
+    VM-adjacent topologies; project-level milestone / ``ocp_status`` still
+    gate). Once any cluster has a status, **all** must be ``ready`` so
+    multi-cluster workloads do not start when only the first CP is usable.
+    """
+    clusters = (topology or {}).get("clusters") or []
+    if not clusters:
+        return True
+    if not any(c.get("ocpInstallStatus") for c in clusters):
+        return True
+    return all(c.get("ocpInstallStatus") == "ready" for c in clusters)
+
+
 def _project_workload_ready(project) -> bool:
     """True when template workloads may auto-start (or be triggered via API)."""
+    topo = (
+        getattr(project, "deployed_topology", None)
+        or getattr(project, "topology", None)
+        or {}
+    )
+    if not _all_ocp_clusters_ready(topo):
+        return False
     if getattr(project, "ocp_control_plane_usable_at", None) is not None:
         return True
     return getattr(project, "ocp_status", None) == "ready"

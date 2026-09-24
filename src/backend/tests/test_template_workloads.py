@@ -95,21 +95,104 @@ def test_workloads_done_set():
 def test_project_workload_ready_accepts_milestone_or_ocp_ready():
     assert (
         _project_workload_ready(
-            SimpleNamespace(ocp_control_plane_usable_at=None, ocp_status="monitoring")
+            SimpleNamespace(
+                ocp_control_plane_usable_at=None,
+                ocp_status="monitoring",
+                deployed_topology={},
+                topology={},
+            )
         )
         is False
     )
     assert (
         _project_workload_ready(
-            SimpleNamespace(ocp_control_plane_usable_at=None, ocp_status="ready")
+            SimpleNamespace(
+                ocp_control_plane_usable_at=None,
+                ocp_status="ready",
+                deployed_topology={},
+                topology={},
+            )
         )
         is True
     )
     assert (
         _project_workload_ready(
-            SimpleNamespace(ocp_control_plane_usable_at="set", ocp_status="monitoring")
+            SimpleNamespace(
+                ocp_control_plane_usable_at="set",
+                ocp_status="monitoring",
+                deployed_topology={},
+                topology={},
+            )
         )
         is True
+    )
+
+
+def test_project_workload_ready_requires_all_clusters_ready():
+    """Multi-cluster: milestone alone is not enough if a sibling is not ready."""
+    topo = {
+        "clusters": [
+            {"id": "source", "name": "source", "ocpInstallStatus": "ready"},
+            {
+                "id": "destination",
+                "name": "destination",
+                "ocpInstallStatus": "monitoring",
+            },
+        ]
+    }
+    assert (
+        _project_workload_ready(
+            SimpleNamespace(
+                ocp_control_plane_usable_at="set",
+                ocp_status="monitoring",
+                deployed_topology=topo,
+                topology={},
+            )
+        )
+        is False
+    )
+    topo["clusters"][1]["ocpInstallStatus"] = "ready"
+    assert (
+        _project_workload_ready(
+            SimpleNamespace(
+                ocp_control_plane_usable_at="set",
+                ocp_status="ready",
+                deployed_topology=topo,
+                topology={},
+            )
+        )
+        is True
+    )
+
+
+def test_all_ocp_clusters_ready_helper():
+    from app.services.workloads.template_workloads import _all_ocp_clusters_ready
+
+    assert _all_ocp_clusters_ready({}) is True
+    assert _all_ocp_clusters_ready({"clusters": []}) is True
+    # No statuses stamped yet → don't block (legacy / VM-adjacent)
+    assert _all_ocp_clusters_ready({"clusters": [{"id": "a"}, {"id": "b"}]}) is True
+    assert (
+        _all_ocp_clusters_ready(
+            {
+                "clusters": [
+                    {"id": "a", "ocpInstallStatus": "ready"},
+                    {"id": "b", "ocpInstallStatus": "ready"},
+                ]
+            }
+        )
+        is True
+    )
+    assert (
+        _all_ocp_clusters_ready(
+            {
+                "clusters": [
+                    {"id": "a", "ocpInstallStatus": "ready"},
+                    {"id": "b", "ocpInstallStatus": "monitoring"},
+                ]
+            }
+        )
+        is False
     )
 
 

@@ -3534,6 +3534,60 @@ def _ops_pod_running_kubevirt(host, project_id: str) -> bool:
     return phase not in ("succeeded", "failed")
 
 
+def _maybe_heal_stuck_ops_pod(host, project_id: str) -> dict:
+    """[LIVE-ENV] Reschedule a KubeVirt ops pod stuck in ContainerCreating.
+
+    No-op for troshkad hosts and when the pod is healthy / not yet past the
+    stuck threshold. See :mod:`app.services.ocp.ops_pod_heal`.
+    """
+    if getattr(host, "host_type", None) != "kubevirt-cluster":
+        return {"action": "ok"}
+    ctx = _kubevirt_ops_pod_ctx(host, project_id)
+    if not ctx:
+        return {"action": "ok"}
+    from app.services.ocp.ops_pod_heal import heal_stuck_ops_pod
+
+    core_v1, namespace, pod_name = ctx
+    return heal_stuck_ops_pod(core_v1, namespace, pod_name)
+
+
+def _fail_ops_pod_install_stuck(
+    project_id: str,
+    host,
+    cluster_keys: list[str],
+    message: str,
+    elapsed_now: int,
+) -> str:
+    """Terminal path when stuck-heal attempts are exhausted."""
+    from app.services.ocp.ops_pod_install import (
+        PHASE_FAILED,
+        inject_dead_pod_failures,
+        ops_pod_install_progress,
+    )
+
+    breadcrumb = f"[troshka] {message}"
+    cached = cache_ops_pod_logs(
+        project_id,
+        {key: breadcrumb for key in cluster_keys},
+    )
+    per_cluster = inject_dead_pod_failures(cached, pod_running=False)
+    progress = ops_pod_install_progress(per_cluster)
+    _publish_ops_pod_progress(project_id, progress)
+    _ocp_push_status(project_id, "error", message)
+    for key in cluster_keys:
+        _finalize_cluster_ocp_status(project_id, key, PHASE_FAILED, elapsed_now)
+    _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
+    try:
+        _cancel_ops_pod_install(host, project_id, cluster_keys)
+    except Exception:
+        logger.exception(
+            "Ops pod %s: cancel after stuck-heal exhausted failed", project_id[:8]
+        )
+    _release_ops_monitor_lock(project_id)
+    logger.error("Ops pod %s: %s", project_id[:8], message)
+    return "failed"
+
+
 def _ops_pod_running(host, container_name: str, project_id: str) -> bool:
     """[LIVE-ENV] Whether the ops pod reports a running state.
 
@@ -5330,6 +5384,21 @@ def _monitor_ops_pod_install(
             _cancel_ops_pod_install(host, project_id, cluster_keys)
             _release_ops_monitor_lock(project_id)
             return "cancelled"
+        # KubeVirt: reschedule ops pods stuck in ContainerCreating / Multus
+        # sandbox (Pending ≠ dead for the dead-poll path, so without this the
+        # monitor would hang until the install timeout).
+        heal = _maybe_heal_stuck_ops_pod(host, project_id)
+        if heal.get("action") == "exhausted":
+            return _fail_ops_pod_install_stuck(
+                project_id,
+                host,
+                cluster_keys,
+                heal.get("message")
+                or "ops pod sandbox stuck after reschedule attempts",
+                int(_t.time() - elapsed_base),
+            )
+        if heal.get("action") == "reschedule":
+            dead_count = 0  # new pod is Pending (alive); don't dead-poll it
         # Persist the raw per-cluster logs (keep-longest) AND use the merged
         # result for phase detection. Restarts append a resume marker instead of
         # truncating, but keep-longest still guards any transient read races.

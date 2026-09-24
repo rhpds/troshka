@@ -12,6 +12,9 @@ import yaml
 from app.services.troshkad_client import start_job
 
 _WORKDIR = "/workdir"
+# Wait for each cluster API before minting SA (covers post-install Multus blips).
+_API_WAIT_RETRIES = 30
+_API_WAIT_DELAY_S = 10
 
 
 @dataclass
@@ -24,6 +27,24 @@ class RunPaths:
     kubeconfig: str = f"{_WORKDIR}/kubeconfig"
     mint_playbook: str = f"{_WORKDIR}/mint_cluster_admin.yml"
     clusters: str = f"{_WORKDIR}/clusters.yml"
+
+
+def _wait_for_cluster_api_task(name: str | None = None) -> dict:
+    """Ansible task: retry ``oc get --raw=/version`` until the API answers.
+
+    Catches transient ``No route to host`` / DNS blips after install reports
+    ready. ``name`` is only for the task label (multi-cluster).
+    """
+    label = f"Wait for {name} API" if name else "Wait for cluster API"
+    return {
+        "name": label,
+        "ansible.builtin.command": {"cmd": "oc get --raw=/version"},
+        "register": "_troshka_api_wait",
+        "retries": _API_WAIT_RETRIES,
+        "delay": _API_WAIT_DELAY_S,
+        "until": "_troshka_api_wait is succeeded",
+        "changed_when": False,
+    }
 
 
 def _mint_prelude_playbook(
@@ -51,6 +72,7 @@ def _mint_prelude_playbook(
             {
                 "name": f"Mint and record cluster {name}",
                 "block": [
+                    _wait_for_cluster_api_task(name),
                     {
                         "name": f"Create cluster-admin SA on {name}",
                         "ansible.builtin.include_role": {
@@ -137,6 +159,7 @@ def _mint_prelude_single(paths: RunPaths) -> str:
             "connection": "local",
             "gather_facts": False,
             "tasks": [
+                _wait_for_cluster_api_task(),
                 {
                     "name": "Create cluster-admin service account and token",
                     "ansible.builtin.include_role": {

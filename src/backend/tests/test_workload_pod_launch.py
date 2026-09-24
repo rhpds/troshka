@@ -304,3 +304,36 @@ def test_build_artifact_files_multi_cluster_mint():
             assert expr.count("{") == expr.count("}"), expr
             assert expr.endswith("}}) }}") or expr.endswith("}) }}")
             assert not expr.endswith("}}}) }}"), expr
+
+
+def test_multi_cluster_mint_waits_for_api_with_retries():
+    """Each cluster block waits for /version before SA mint (transient No route)."""
+    import yaml
+
+    paths = pod_launch.RunPaths()
+    mint = pod_launch._mint_prelude_playbook(
+        paths, {"source": "KC-S", "destination": "KC-D"}
+    )
+    play = yaml.safe_load(mint)[0]
+    waits = []
+    for task in play["tasks"]:
+        for step in task.get("block") or []:
+            if "Wait for" in step.get("name", "") and "API" in step.get("name", ""):
+                waits.append(step)
+                assert step.get("retries", 0) >= 10
+                assert step.get("delay", 0) >= 5
+                assert "until" in step
+                cmd = (step.get("ansible.builtin.command") or {}).get("cmd", "")
+                assert "/version" in cmd or "whoami" in cmd
+    assert len(waits) == 2
+
+
+def test_single_cluster_mint_waits_for_api_with_retries():
+    import yaml
+
+    paths = pod_launch.RunPaths()
+    mint = pod_launch._mint_prelude_single(paths)
+    play = yaml.safe_load(mint)[0]
+    wait = next(t for t in play["tasks"] if "Wait" in t.get("name", ""))
+    assert wait.get("retries", 0) >= 10
+    assert "until" in wait
