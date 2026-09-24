@@ -89,3 +89,10 @@
 ### DNS Providers
 - `dns_providers` API + admin page for managing external DNS (Route53, etc.)
 - Projects can optionally attach a DNS provider + domain + GUID for automated DNS record management
+
+### Template workloads (auto day-2)
+- Templates may declare top-level `workloads:` (FQCN list) + `requirements_content` (git collections). Example: `ocp-cclm.yaml` CCLM chain.
+- On create, `generate_topology_from_template` stamps both onto the project topology.
+- Canvas auto-save omits them; backend `_preserve_topology_import_metadata` and the frontend store round-trip keep them.
+- After all OCP clusters reach install-complete, `maybe_enqueue_template_workloads` starts the next unfinished role (targets cluster named `source` when present). Continues on each role success.
+- Gate: `ocp_control_plane_usable_at` **or** `ocp_status=ready` (install-complete also backfills the milestone if the log marker was missed).

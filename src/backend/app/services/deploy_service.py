@@ -5400,6 +5400,9 @@ def _monitor_ops_pod_install(
                     logger.exception(
                         "Ops pod %s: reap after install failed", project_id[:8]
                     )
+                # Install-complete implies usable; backfill the milestone when the
+                # log marker was missed so API + template enqueue gates agree.
+                _persist_control_plane_usable_milestone(project_id, elapsed_now)
                 try:
                     from app.services.workloads.template_workloads import (
                         maybe_enqueue_template_workloads,

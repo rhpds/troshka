@@ -195,6 +195,16 @@ def test_update_project_topology_preserves_placement_metadata():
         "edges": [],
         "placement": {"requires_kubevirt": True},
         "ocpInstallVia": "pod",
+        "workloads": ["rhpds.demo_workloads.troshka_workload_cclm_operators"],
+        "requirements_content": {
+            "collections": [
+                {
+                    "name": "https://github.com/rhpds/demo_workloads.git",
+                    "type": "git",
+                    "version": "feat/cclm-workloads",
+                }
+            ]
+        },
     }
     pid = _create_project(name="topo-placement", topology=topo)
     canvas_save = {
@@ -213,6 +223,8 @@ def test_update_project_topology_preserves_placement_metadata():
     saved = resp.json()["topology"]
     assert saved["placement"] == {"requires_kubevirt": True}
     assert saved["ocpInstallVia"] == "pod"
+    assert saved["workloads"] == topo["workloads"]
+    assert saved["requirements_content"] == topo["requirements_content"]
 
 
 def test_update_project_topology_showroom_injects_port_forwards():

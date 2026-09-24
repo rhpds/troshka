@@ -270,7 +270,12 @@ def _client_topology_snapshot(project, db=None) -> dict:
     return topo
 
 
-_TOPOLOGY_METADATA_KEYS = ("placement", "ocpInstallVia")
+_TOPOLOGY_METADATA_KEYS = (
+    "placement",
+    "ocpInstallVia",
+    "workloads",
+    "requirements_content",
+)
 
 
 def _preserve_topology_import_metadata(previous: dict, topo: dict) -> None:

@@ -103,8 +103,11 @@ def trigger_workload_run(
     if project.state != "active":
         raise HTTPException(status_code=409, detail=_PROJECT_MUST_BE_ACTIVE)
 
-    # OCP-targeting runs require the minimal control-plane-usable milestone
-    if _has_ocp(project) and project.ocp_control_plane_usable_at is None:
+    # OCP-targeting runs require control-plane-usable, or install already ready
+    # (milestone persist can miss the log marker on multi-cluster ops-pod installs).
+    from app.services.workloads.template_workloads import _project_workload_ready
+
+    if _has_ocp(project) and not _project_workload_ready(project):
         raise HTTPException(status_code=409, detail=_CLUSTER_NOT_WORKLOAD_READY)
 
     # Parse and validate extra_vars_text if provided

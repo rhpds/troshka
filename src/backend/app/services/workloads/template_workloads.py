@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import logging
 
+from app.core.database import SessionLocal
+from app.services.workloads.run_service import start_workload_run
+
 logger = logging.getLogger(__name__)
 
 _ACTIVE_STATUSES = frozenset({"pending", "running", "queued"})
@@ -54,32 +57,55 @@ def _primary_cluster_id(topology: dict) -> str | None:
     return None
 
 
+def _project_workload_ready(project) -> bool:
+    """True when template workloads may auto-start (or be triggered via API)."""
+    if getattr(project, "ocp_control_plane_usable_at", None) is not None:
+        return True
+    return getattr(project, "ocp_status", None) == "ready"
+
+
+def resolve_template_workload_chain(project) -> tuple[list[str], dict | None, dict]:
+    """Return ``(roles, requirements_content, topology_for_targeting)``.
+
+    Prefers ``deployed_topology``; if it lost ``workloads`` (canvas wipe), falls
+    back to editable ``topology``. Targeting clusters still come from deployed
+    when present.
+    """
+    deployed = getattr(project, "deployed_topology", None) or {}
+    editable = getattr(project, "topology", None) or {}
+    topo = deployed or editable
+    roles = normalize_workload_roles(topo.get("workloads"))
+    req = topo.get("requirements_content")
+    if not roles and editable and topo is not editable:
+        roles = normalize_workload_roles(editable.get("workloads"))
+        if not isinstance(req, dict):
+            alt = editable.get("requirements_content")
+            if isinstance(alt, dict):
+                req = alt
+    if not isinstance(req, dict):
+        req = None
+    return roles, req, topo
+
+
 def maybe_enqueue_template_workloads(project_id: str) -> str | None:
     """Start the next unfinished template workload role (idempotent).
 
     Returns the new run id, or None if nothing was started.
     """
-    from app.core.database import SessionLocal
     from app.models.project import Project
     from app.models.workload_run import WorkloadRun
-    from app.services.workloads.run_service import start_workload_run
 
     db = SessionLocal()
     try:
         project = db.query(Project).filter_by(id=project_id).first()
         if not project or project.state != "active":
             return None
-        if project.ocp_control_plane_usable_at is None:
+        if not _project_workload_ready(project):
             return None
 
-        topo = project.deployed_topology or project.topology or {}
-        roles = normalize_workload_roles(topo.get("workloads"))
+        roles, req, topo = resolve_template_workload_chain(project)
         if not roles:
             return None
-
-        req = topo.get("requirements_content")
-        if not isinstance(req, dict):
-            req = None
 
         # Don't pile on if a run is already in flight.
         inflight = (
@@ -118,13 +144,14 @@ def maybe_enqueue_template_workloads(project_id: str) -> str | None:
             requirements_content=req,
             owner_id=project.owner_id,
         )
+        run_id = getattr(run, "id", None) or ""
         logger.info(
             "Project %s: enqueued template workload %s (run %s)",
             project_id[:8],
             next_role,
-            run.id[:8],
+            run_id[:8] or "?",
         )
-        return run.id
+        return run_id or None
     except Exception:
         logger.exception("Failed to enqueue template workloads for %s", project_id[:8])
         return None
