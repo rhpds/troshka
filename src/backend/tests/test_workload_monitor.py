@@ -71,6 +71,34 @@ def test_read_runner_logs_troshkad_returns_logs(monkeypatch):
     assert start_job_mock.call_args[0][2]["container_name"] == cname
 
 
+def test_read_runner_logs_kubevirt_uses_pod_log_api(monkeypatch):
+    """k8s Pod logs API works after Succeeded/Failed; exec cat does not."""
+    core = MagicMock()
+    core.read_namespaced_pod_log.return_value = "PLAY RECAP\nok=3"
+    monkeypatch.setattr(
+        run_service,
+        "_runner_pod_kubevirt_ctx",
+        lambda _h, _r: (core, "troshka-abc", "workload-runner"),
+    )
+    host = SimpleNamespace(host_type="kubevirt-cluster")
+    logs = run_service._read_runner_logs_kubevirt(host, "run-1")
+    assert logs == "PLAY RECAP\nok=3"
+    core.read_namespaced_pod_log.assert_called_once_with(
+        name="workload-runner",
+        namespace="troshka-abc",
+        container="ops",
+        tail_lines=20000,
+    )
+
+
+def test_coalesce_runner_logs_keeps_last_nonempty():
+    assert (
+        run_service._coalesce_runner_logs("", "prior PLAY RECAP") == "prior PLAY RECAP"
+    )
+    assert run_service._coalesce_runner_logs("new", "prior") == "new"
+    assert run_service._coalesce_runner_logs("", "") == ""
+
+
 def test_is_runner_pod_running_troshkad_checks_state(monkeypatch):
     """Mocked transport: troshkad get_all_container_states keyed by full name."""
     cname = "troshka-p1234567-workload-runner-runner"

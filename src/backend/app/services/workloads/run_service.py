@@ -549,16 +549,30 @@ def _read_runner_logs_troshkad(host, container_name: str) -> str:
 
 
 def _read_runner_logs_kubevirt(host, run_id: str) -> str:
-    """[LIVE-ENV] Read runner logs via k8s exec cat.
+    """[LIVE-ENV] Read runner logs via the k8s Pod logs API.
 
-    Mirrors _exec_ops_pod_cat_kubevirt: exec `cat /workdir/run.log` via
-    k8s stream API. Returns empty string on any failure or missing file.
+    Prefer ``read_namespaced_pod_log`` (works after Succeeded/Failed) over
+    ``exec cat /workdir/run.log``, which fails once the container has exited —
+    that race was emptying ``log_ref`` on finalize for KubeVirt runs.
+    Falls back to exec cat while the container is still running if the logs
+    API is unavailable.
     """
     ctx = _runner_pod_kubevirt_ctx(host, run_id)
     if not ctx:
         return ""
     core_v1, namespace, pod_name = ctx
-    log_path = "/workdir/run.log"
+
+    try:
+        result = core_v1.read_namespaced_pod_log(
+            name=pod_name,
+            namespace=namespace,
+            container="ops",
+            tail_lines=20000,
+        )
+        if isinstance(result, str) and result:
+            return result
+    except Exception:  # noqa: BLE001
+        pass
 
     from kubernetes.stream import stream as k8s_stream
 
@@ -568,7 +582,7 @@ def _read_runner_logs_kubevirt(host, run_id: str) -> str:
             pod_name,
             namespace,
             container="ops",
-            command=["cat", log_path],
+            command=["cat", "/workdir/run.log"],
             stderr=True,
             stdout=True,
             stdin=False,
@@ -579,6 +593,11 @@ def _read_runner_logs_kubevirt(host, run_id: str) -> str:
         return result if isinstance(result, str) else ""
     except Exception:  # noqa: BLE001
         return ""
+
+
+def _coalesce_runner_logs(current: str, previous: str) -> str:
+    """Prefer the latest non-empty log so finalize does not wipe a good tail."""
+    return current or previous or ""
 
 
 def _runner_pod_kubevirt_ctx(host, run_id: str):
@@ -689,12 +708,16 @@ def monitor_workload_run(run_id: str, host_id: str) -> None:
     poll_interval = 15
     deadline = _t.time() + timeout
     last_progress = {}
+    last_logs = ""
 
     while _t.time() < deadline:
         _refresh_workload_monitor_lock(run_id)
 
-        # Read logs and extract progress
-        logs = _read_runner_pod_logs(host, run_id)
+        # Read logs and extract progress. Keep the last non-empty tail so a
+        # post-exit empty read (KubeVirt exec race) does not wipe finalize.
+        logs = _coalesce_runner_logs(_read_runner_pod_logs(host, run_id), last_logs)
+        if logs:
+            last_logs = logs
         progress = parse_workload_progress(logs)
 
         # Publish if progress changed

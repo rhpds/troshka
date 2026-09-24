@@ -460,6 +460,7 @@ def test_get_run_log_endpoint_terminal():
     run = db.get(WorkloadRun, rid)
     assert run is not None
     run.log_ref = "hello from the pod"
+    run.role_fqcn = "rhpds.demo_workloads.troshka_workload_cclm_operators"
     db.commit()
     db.close()
 
@@ -469,6 +470,9 @@ def test_get_run_log_endpoint_terminal():
     assert body["id"] == rid
     assert body["status"] == "succeeded"
     assert body["log"] == "hello from the pod"
+    assert body["role_fqcn"] == "rhpds.demo_workloads.troshka_workload_cclm_operators"
+    assert body["kind"] == "ad_hoc"
+    assert body.get("created_at")
 
 
 def test_get_run_log_endpoint_404():

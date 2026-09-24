@@ -300,32 +300,43 @@ def _wait_before_worker_join_cmd(indent: str, cluster_key: str) -> str:
 def _node_image_create_cmd(
     indent: str, cluster_key: str, worker: dict, node_dir: str
 ) -> str:
-    """``oc adm node-image create`` with bounded retries for admission flakes."""
+    """``oc adm node-image create`` with bounded retries for admission flakes.
+
+    Serialized via flock so parallel workers do not race on the shared
+    ``agent-auth-token`` secret inside ``openshift-node-joiner-*`` namespaces.
+    """
     i = indent
     name = worker["name"]
     nodes_config = build_deferred_worker_nodes_config(worker)
     cfg_path = f"{node_dir}/nodes-config.yaml"
+    lock_path = "$(pwd)/.node-image-create.lock"
     return (
         f'{i}echo "[{cluster_key}] node-image create for {name}"\n'
         f"{i}mkdir -p {node_dir}\n"
-        f"{i}cat > {cfg_path} <<'NCEOF'\n{nodes_config}NCEOF\n"
-        f"{i}created=0\n"
-        f"{i}for _try in $(seq 1 8); do\n"
+        f"{i}(\n"
+        f"{i}  flock 9\n"
+        f"{i}  cat > {cfg_path} <<'NCEOF'\n{nodes_config}NCEOF\n"
+        f"{i}  created=0\n"
+        f"{i}  for _try in $(seq 1 8); do\n"
         # Read nodes-config.yaml from the asset dir (full per-host networkConfig,
         # incl. routes) instead of --mac-address/--network-config-path.
-        f"{i}  if (cd {node_dir} && oc adm node-image create 2>&1 | tee create.log); then\n"
-        f"{i}    if find {node_dir} -maxdepth 2 -name '*.iso' | grep -q .; then "
+        f"{i}    if (cd {node_dir} && oc adm node-image create 2>&1 | tee create.log); then\n"
+        f"{i}      if find {node_dir} -maxdepth 2 -name '*.iso' | grep -q .; then "
         f"created=1; break; fi\n"
-        f"{i}  fi\n"
-        f'{i}  if grep -qi "sa\\.scc\\.uid-range" create.log 2>/dev/null; then\n'
-        + _cleanup_broken_node_joiner_namespaces_cmd(f"{i}    ", cluster_key)
-        + f"{i}  fi\n"
-        + f'{i}  echo "[{cluster_key}] node-image create failed for {name} '
+        f"{i}    fi\n"
+        # SCC UID flakes and parallel-create races on agent-auth-token leave
+        # broken openshift-node-joiner-* namespaces — reap before retry.
+        f'{i}    if grep -qiE "sa\\.scc\\.uid-range|agent-auth-token|already exists" '
+        f"create.log 2>/dev/null; then\n"
+        + _cleanup_broken_node_joiner_namespaces_cmd(f"{i}      ", cluster_key)
+        + f"{i}    fi\n"
+        + f'{i}    echo "[{cluster_key}] node-image create failed for {name} '
         f'(attempt $_try), retrying in 60s..."\n'
-        f"{i}  sleep 60\n"
-        f"{i}done\n"
-        f'{i}[ "$created" = 1 ] || {{ echo "[{cluster_key}] node-image create failed '
+        f"{i}    sleep 60\n"
+        f"{i}  done\n"
+        f'{i}  [ "$created" = 1 ] || {{ echo "[{cluster_key}] node-image create failed '
         f'for {name}"; exit 1; }}\n'
+        f"{i}) 9>{lock_path}\n"
     )
 
 
@@ -389,12 +400,14 @@ def _wait_for_workers_converged_cmd(
     worker_names: list[str],
     stable_checks: int = 3,
     sleep_secs: int = 15,
+    max_tries: int = 80,
 ) -> str:
     """Wait until every deferred worker stays Ready across consecutive polls.
 
     Workers often flip Ready briefly during ISO install, then NotReady after
     ISO eject/reboot while OVN settles — do not treat join as done until Ready
-    is stable.
+    is stable. Default budget is ~20 minutes (80×15s); live joins have needed
+    ~10 minutes after eject before both workers stay Ready.
     """
     i = indent
     if not worker_names:
@@ -405,7 +418,7 @@ def _wait_for_workers_converged_cmd(
         f'{i}echo "[{cluster_key}] waiting for deferred workers to converge '
         f'(stable Ready)"\n'
         f"{i}stable=0\n"
-        f"{i}for _try in $(seq 1 30); do\n"
+        f"{i}for _try in $(seq 1 {max_tries}); do\n"
         f"{i}  {_APPROVE_PENDING_CSRS}\n"
         f"{i}  ready=0\n"
         f"{i}  for _node in {names}; do\n"
@@ -425,34 +438,6 @@ def _wait_for_workers_converged_cmd(
         f'{i}[ "$stable" -ge {stable_checks} ] || {{ echo "[{cluster_key}] worker '
         f'convergence timed out"; exit 1; }}\n'
         f'{i}echo "[{cluster_key}] deferred workers converged"\n'
-    )
-
-
-def _wait_for_worker_nodes_cmd(
-    indent: str, cluster_key: str, worker_names: list[str]
-) -> str:
-    """Quick check: every deferred worker hostname is Ready (pre-convergence)."""
-    i = indent
-    if not worker_names:
-        return ""
-    names = " ".join(shlex.quote(n) for n in worker_names)
-    expected = len(worker_names)
-    return (
-        f'{i}echo "[{cluster_key}] verifying {expected} deferred worker(s) Ready"\n'
-        f"{i}ready=0\n"
-        f"{i}for _try in $(seq 1 10); do\n"
-        f"{i}  {_APPROVE_PENDING_CSRS}\n"
-        f"{i}  ready=0\n"
-        f"{i}  for _node in {names}; do\n"
-        f'{i}    _st=$(oc get node "$_node" -o jsonpath='
-        f"'{{.status.conditions[?(@.type==\"Ready\")].status}}' 2>/dev/null || true)\n"
-        f'{i}    [ "$_st" = "True" ] && ready=$((ready + 1))\n'
-        f"{i}  done\n"
-        f'{i}  echo "[{cluster_key}] deferred workers Ready: $ready/{expected}"\n'
-        f'{i}  [ "$ready" -ge {expected} ] && break\n'
-        f"{i}  sleep 10\n"
-        f"{i}done\n"
-        f'{i}[ "$ready" -ge {expected} ] || {{ echo "[{cluster_key}] worker join timed out"; exit 1; }}\n'
     )
 
 
@@ -499,9 +484,9 @@ def build_join_deferred_workers_cmd(
         ]
     )
     worker_names = [w["name"] for w in workers]
-    lines.append(
-        _wait_for_worker_nodes_cmd(f"{i}  ", cluster_key, worker_names).rstrip()
-    )
+    # Do not insert a short all-Ready verify here — after ISO eject workers
+    # reboot and drop NotReady for several minutes. Convergence below is the
+    # authoritative wait (stable Ready across polls).
     lines.append(f"{i}  echo '[{cluster_key}] deferred workers joined'")
     lines.append(
         _wait_for_workers_converged_cmd(f"{i}  ", cluster_key, worker_names).rstrip()

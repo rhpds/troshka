@@ -266,7 +266,8 @@ def test_build_join_cmd_emits_node_image_and_redfish():
     assert "preflight: probing SCC UID allocator" in script
     assert "removing stale $_ns (missing sa.scc.uid-range)" in script
     assert "grep openshift-node-joiner || true" in script
-    assert 'grep -qi "sa\\.scc\\.uid-range" create.log' in script
+    assert "sa\\.scc\\.uid-range" in script
+    assert "agent-auth-token" in script
     assert "joining workers in parallel" in script
     assert "worker_pids+=($!)" in script
     assert 'wait "$p" || join_fail=1' in script
@@ -286,6 +287,80 @@ def test_build_join_cmd_emits_node_image_and_redfish():
         "touch .deferred-workers-joined"
     )
     assert "node-role.kubernetes.io/worker" not in script
+
+
+def test_build_join_cmd_waits_for_post_eject_convergence_not_short_verify():
+    """Post-ISO-eject reboot takes ~10m; the old 10×10s verify false-timed-out."""
+    workers = [
+        {
+            "name": "source-worker-0",
+            "mac": "52:54:00:aa:bb:02",
+            "bmc_ip": "192.168.100.20",
+            "ip": "10.0.0.20",
+            "prefix_len": 24,
+            "gateway": "10.0.0.1",
+            "dns_ip": "10.0.0.2",
+            "iface_name": "cluster-nic",
+        },
+        {
+            "name": "source-worker-1",
+            "mac": "52:54:00:aa:bb:03",
+            "bmc_ip": "192.168.100.21",
+            "ip": "10.0.0.21",
+            "prefix_len": 24,
+            "gateway": "10.0.0.1",
+            "dns_ip": "10.0.0.2",
+            "iface_name": "cluster-nic",
+        },
+    ]
+    script = build_join_deferred_workers_cmd(
+        "  ", "source", workers, "secret", 8181, serving_ip=None
+    )
+    # Short verify (10×10s / "worker join timed out") raced the reboot and
+    # marked healthy joins as failed before the stable-Ready converge ran.
+    assert "worker join timed out" not in script
+    assert "verifying 2 deferred worker(s) Ready" not in script
+    assert "for _try in $(seq 1 10); do" not in script
+    # ≥15 minutes of converge polls (80×15s) covers observed ~10m reboot gap.
+    assert "for _try in $(seq 1 80); do" in script
+    assert "waiting for deferred workers to converge" in script
+    assert "worker convergence timed out" in script
+    # Individual join wait still happens, then converge (no short verify between).
+    assert script.index("worker join failed") < script.index(
+        "waiting for deferred workers to converge"
+    )
+
+
+def test_build_join_cmd_serializes_node_image_create():
+    """Parallel oc adm node-image create races on agent-auth-token secret."""
+    workers = [
+        {
+            "name": "source-worker-0",
+            "mac": "52:54:00:aa:bb:02",
+            "bmc_ip": "192.168.100.20",
+            "ip": "10.0.0.20",
+            "prefix_len": 24,
+            "gateway": "10.0.0.1",
+            "dns_ip": "10.0.0.2",
+            "iface_name": "cluster-nic",
+        },
+        {
+            "name": "source-worker-1",
+            "mac": "52:54:00:aa:bb:03",
+            "bmc_ip": "192.168.100.21",
+            "ip": "10.0.0.21",
+            "prefix_len": 24,
+            "gateway": "10.0.0.1",
+            "dns_ip": "10.0.0.2",
+            "iface_name": "cluster-nic",
+        },
+    ]
+    script = build_join_deferred_workers_cmd(
+        "  ", "source", workers, "secret", 8181, serving_ip=None
+    )
+    assert "flock 9" in script
+    assert ".node-image-create.lock" in script
+    assert "agent-auth-token" in script
 
 
 def test_build_join_cmd_parallelizes_multiple_workers():

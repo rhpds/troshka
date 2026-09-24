@@ -56,6 +56,12 @@ class WorkloadLogResponse(BaseModel):
     id: str
     status: str
     log: str
+    role_fqcn: str | None = None
+    catalog_item: str | None = None
+    kind: str | None = None
+    created_at: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
 class WorkloadRunListItem(BaseModel):
@@ -251,6 +257,19 @@ def get_workload_run_log(run_id: str, user: CurrentUser, db: DbSession):
 
     from app.services.workloads.run_service import get_workload_log
 
+    def _iso(val) -> str | None:
+        if val and hasattr(val, "isoformat"):
+            return val.isoformat()  # type: ignore[no-any-return]
+        return None
+
     return WorkloadLogResponse(
-        id=run.id, status=run.status, log=get_workload_log(db, run)
+        id=run.id,
+        status=run.status,
+        log=get_workload_log(db, run),
+        role_fqcn=run.role_fqcn,
+        catalog_item=run.catalog_item,
+        kind=run.kind,
+        created_at=_iso(run.created_at),
+        started_at=_iso(run.started_at),
+        ended_at=_iso(run.ended_at),
     )
