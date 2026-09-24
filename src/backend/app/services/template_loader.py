@@ -30,6 +30,7 @@ _TEMPLATE_CONTENT_SECTIONS = (
     "showroom",
     "workloads",
     "requirements_content",
+    "workloadsDone",
     "cephCluster",
 )
 
@@ -2002,6 +2003,8 @@ def _generate_topology_from_vms(
         result["workloads"] = tmpl["workloads"]
     if tmpl.get("requirements_content"):
         result["requirements_content"] = tmpl["requirements_content"]
+    if tmpl.get("workloadsDone"):
+        result["workloadsDone"] = tmpl["workloadsDone"]
     return result
 
 
@@ -2838,6 +2841,8 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
         result["workloads"] = topology["workloads"]
     if topology.get("requirements_content"):
         result["requirements_content"] = topology["requirements_content"]
+    if topology.get("workloadsDone"):
+        result["workloadsDone"] = topology["workloadsDone"]
 
     return result
 

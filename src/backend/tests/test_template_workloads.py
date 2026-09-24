@@ -4,8 +4,12 @@ from types import SimpleNamespace
 
 from app.services.workloads.template_workloads import (
     _project_workload_ready,
+    mark_run_once_roles_done,
+    next_auto_workload_role,
     normalize_workload_roles,
     resolve_template_workload_chain,
+    run_once_roles,
+    workloads_done_set,
 )
 
 
@@ -23,6 +27,69 @@ def test_normalize_workload_roles_strings_and_maps():
         "rhpds.demo_workloads.role_b",
         "rhpds.demo_workloads.role_c",
     ]
+
+
+def test_run_once_roles_from_mappings():
+    assert run_once_roles(
+        [
+            "always.rerun",
+            {"role": "once.a", "runOnce": True},
+            {"name": "once.b", "runOnce": True},
+            {"role": "not.once", "runOnce": False},
+        ]
+    ) == {"once.a", "once.b"}
+
+
+def test_next_auto_skips_run_once_when_in_workloads_done():
+    workloads = [
+        {"role": "role.one", "runOnce": True},
+        {"role": "role.two", "runOnce": True},
+        "role.three",
+    ]
+    assert (
+        next_auto_workload_role(
+            workloads,
+            succeeded=set(),
+            done={"role.one", "role.two"},
+        )
+        == "role.three"
+    )
+    # Non-runOnce roles only skip via succeeded (not workloadsDone).
+    assert (
+        next_auto_workload_role(
+            workloads,
+            succeeded={"role.three"},
+            done={"role.one", "role.two"},
+        )
+        is None
+    )
+
+
+def test_next_auto_runs_run_once_when_not_done():
+    workloads = [{"role": "role.one", "runOnce": True}, "role.two"]
+    assert next_auto_workload_role(workloads, succeeded=set(), done=set()) == "role.one"
+
+
+def test_mark_run_once_roles_done_stamps_topology():
+    topo = {
+        "workloads": [
+            {"role": "a.once", "runOnce": True},
+            "b.always",
+            {"role": "c.once", "runOnce": True},
+        ]
+    }
+    marked = mark_run_once_roles_done(topo)
+    assert marked == {"a.once", "c.once"}
+    assert set(topo["workloadsDone"]) == {"a.once", "c.once"}
+    # Idempotent merge
+    topo["workloadsDone"] = ["a.once", "extra"]
+    mark_run_once_roles_done(topo)
+    assert set(topo["workloadsDone"]) == {"a.once", "c.once", "extra"}
+
+
+def test_workloads_done_set():
+    assert workloads_done_set({"workloadsDone": ["a", "b", ""]}) == {"a", "b"}
+    assert workloads_done_set({}) == set()
 
 
 def test_project_workload_ready_accepts_milestone_or_ocp_ready():

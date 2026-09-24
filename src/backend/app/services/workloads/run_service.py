@@ -791,6 +791,7 @@ def _finalize_workload_run(run_id: str, status: str, error_or_logs: str) -> None
     """Set terminal status on WorkloadRun."""
     db = SessionLocal()
     project_id = None
+    role_fqcn = None
     try:
         run = db.get(WorkloadRun, run_id)
         if run is not None:
@@ -800,6 +801,7 @@ def _finalize_workload_run(run_id: str, status: str, error_or_logs: str) -> None
             if status == "error" or status == "timeout":
                 run.error = error_or_logs[:2000]
             project_id = run.project_id
+            role_fqcn = run.role_fqcn
             db.commit()
             logger.info("Workload run %s finalized: %s", run_id[:8], status)
     finally:
@@ -810,7 +812,11 @@ def _finalize_workload_run(run_id: str, status: str, error_or_logs: str) -> None
         try:
             from app.services.workloads.template_workloads import (
                 maybe_enqueue_template_workloads,
+                stamp_run_once_role_done,
             )
+
+            if role_fqcn:
+                stamp_run_once_role_done(project_id, role_fqcn)
 
             maybe_enqueue_template_workloads(project_id)
         except Exception:  # noqa: BLE001

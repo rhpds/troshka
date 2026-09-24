@@ -275,6 +275,7 @@ _TOPOLOGY_METADATA_KEYS = (
     "ocpInstallVia",
     "workloads",
     "requirements_content",
+    "workloadsDone",
 )
 
 

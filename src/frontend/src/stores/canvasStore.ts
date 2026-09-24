@@ -334,10 +334,12 @@ interface CanvasState {
   ocpInstallVia: string | null;
   /** Template placement constraints (e.g. requires_kubevirt); null when unset. */
   topologyPlacement: Record<string, unknown> | null;
-  /** Template post-install workload FQCNs; preserved across canvas auto-save. */
-  topologyWorkloads: string[] | null;
+  /** Template post-install workload entries (FQCN strings or {role, runOnce}). */
+  topologyWorkloads: unknown[] | null;
   /** Template requirements_content (git collections) for topologyWorkloads. */
   topologyRequirementsContent: Record<string, unknown> | null;
+  /** FQCNs already auto-completed / stamped for runOnce roles. */
+  topologyWorkloadsDone: string[] | null;
   /** Cluster whose install log/status modal is open (set from its box); null = closed. */
   clusterLogTarget: { clusterKey: string; name: string } | null;
   openClusterLog: (clusterKey: string, name: string) => void;
@@ -1212,8 +1214,9 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   clusters: [] as ClusterConfig[],
   ocpInstallVia: null as string | null,
   topologyPlacement: null as Record<string, unknown> | null,
-  topologyWorkloads: null as string[] | null,
+  topologyWorkloads: null as unknown[] | null,
   topologyRequirementsContent: null as Record<string, unknown> | null,
+  topologyWorkloadsDone: null as string[] | null,
   clusterLogTarget: null as { clusterKey: string; name: string } | null,
   ocpHealth: null as { phase: string; detail: string; items?: string[] } | null,
   clusterOcpPhases: {} as Record<string, string>,
@@ -2162,13 +2165,14 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
               t.placement && typeof t.placement === "object"
                 ? (t.placement as Record<string, unknown>)
                 : null,
-            topologyWorkloads: Array.isArray(t.workloads)
-              ? (t.workloads as string[])
-              : null,
+            topologyWorkloads: Array.isArray(t.workloads) ? (t.workloads as unknown[]) : null,
             topologyRequirementsContent:
               t.requirements_content && typeof t.requirements_content === "object"
                 ? (t.requirements_content as Record<string, unknown>)
                 : null,
+            topologyWorkloadsDone: Array.isArray(t.workloadsDone)
+              ? (t.workloadsDone as string[]).filter((x) => typeof x === "string")
+              : null,
             providerType: project.provider_type || null,
             clusterCapabilities: project.cluster_capabilities || null,
           });
@@ -2609,8 +2613,9 @@ export function _saveTopologyToApi(
     deployedClusterRows?: ClusterConfig[];
     ocpInstallVia?: string | null;
     topologyPlacement?: Record<string, unknown> | null;
-    topologyWorkloads?: string[] | null;
+    topologyWorkloads?: unknown[] | null;
     topologyRequirementsContent?: Record<string, unknown> | null;
+    topologyWorkloadsDone?: string[] | null;
   },
 ): Promise<Record<string, unknown> | null> {
   const healed = healClusterTopology({
@@ -2640,6 +2645,9 @@ export function _saveTopologyToApi(
   if (state.topologyWorkloads?.length) topology.workloads = state.topologyWorkloads;
   if (state.topologyRequirementsContent) {
     topology.requirements_content = state.topologyRequirementsContent;
+  }
+  if (state.topologyWorkloadsDone?.length) {
+    topology.workloadsDone = state.topologyWorkloadsDone;
   }
   const showroomMeta = showroomConfigForSave(state.showroom, state.nodes, state.edges);
   if (showroomMeta) topology.showroom = showroomMeta;

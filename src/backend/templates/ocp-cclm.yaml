@@ -195,6 +195,8 @@ showroom:
 
 # Post-install CCLM chain (demo_workloads). Pinned to feat/cclm-workloads until
 # the lab is validated on main. Auto-enqueued when all OCP clusters are ready.
+# runOnce: true — auto-run only on first template deploy; pattern capture stamps
+# these into workloadsDone so pattern deploys do not re-fire the chain.
 requirements_content:
   collections:
     - name: https://github.com/rhpds/demo_workloads.git
@@ -202,8 +204,13 @@ requirements_content:
       version: feat/cclm-workloads
 
 workloads:
-  - rhpds.demo_workloads.troshka_workload_cclm_operators
-  - rhpds.demo_workloads.troshka_workload_cclm_network
-  - rhpds.demo_workloads.troshka_workload_cclm_hco
-  - rhpds.demo_workloads.troshka_workload_cclm_forklift
-  - rhpds.demo_workloads.troshka_workload_cclm_seed_vms
+  - role: rhpds.demo_workloads.troshka_workload_cclm_operators
+    runOnce: true
+  - role: rhpds.demo_workloads.troshka_workload_cclm_network
+    runOnce: true
+  - role: rhpds.demo_workloads.troshka_workload_cclm_hco
+    runOnce: true
+  - role: rhpds.demo_workloads.troshka_workload_cclm_forklift
+    runOnce: true
+  - role: rhpds.demo_workloads.troshka_workload_cclm_seed_vms
+    runOnce: true

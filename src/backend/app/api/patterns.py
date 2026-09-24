@@ -511,6 +511,21 @@ def create_pattern(
         )
 
     source_project, topology, state = _resolve_pattern_source(body, user, db)
+    # Always copy — pattern must not share dict identity with the live project,
+    # and runOnce stamping mutates workloadsDone on the pattern topology only.
+    topology = copy.deepcopy(topology)
+    from app.services.workloads.template_workloads import mark_run_once_roles_done
+
+    # If deployed lost mapping-form runOnce flags, prefer editable workloads.
+    if source_project:
+        editable = source_project.topology or {}
+        from app.services.workloads.template_workloads import run_once_roles
+
+        if run_once_roles(editable.get("workloads")) and not run_once_roles(
+            topology.get("workloads")
+        ):
+            topology["workloads"] = copy.deepcopy(editable.get("workloads"))
+    mark_run_once_roles_done(topology)
 
     if body.recert:
         from app.services.ocp_topology_flags import apply_sno_ocp_vm_flags
