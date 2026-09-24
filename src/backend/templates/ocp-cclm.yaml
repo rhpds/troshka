@@ -41,8 +41,9 @@ ocp:
     api_vip: 10.0.0.110
     ingress_vip: 10.0.0.110
     networks: [cluster, migration]
-    control_plane_cpu: 8
-    control_plane_memory: 32768
+    # Larger than source nodes: SNO packs ODF+CNV+MTV (+ optional NoBaa) on one node
+    control_plane_cpu: 16
+    control_plane_memory: 65536
     control_plane_disks:
       - size_gb: 120
         bootable: true
@@ -154,8 +155,8 @@ vms:
   dest-cp-0:
     cluster: destination
     role: control-plane
-    vcpus: 8
-    ram_gb: 32
+    vcpus: 16
+    ram_gb: 64
     os: rhcos
     firmware: uefi
     bmc: true
