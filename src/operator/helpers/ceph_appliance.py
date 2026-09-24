@@ -1039,30 +1039,105 @@ try:
 except Exception as exc:
     print(f"pool tune: {exc}", file=sys.stderr)
 
-# CSI user
-csi_key = ""
+# CSI users — provisioner and node must be distinct Ceph entities.
+# Reusing one key under both userIDs causes rados Permission denied on PVC create.
+csi_caps = "mon 'profile rbd' osd 'profile rbd' mgr 'profile rbd'"
+csi_node_key = admin_key
+csi_prov_key = admin_key
 try:
-    out = ceph_in_mon(
-        "auth get-or-create client.csi-rbd-node "
-        "mon 'profile rbd' osd 'profile rbd pool=troshka-ceph-pool' "
-        "mgr 'profile rbd pool=troshka-ceph-pool'"
-    )
-    csi_key = parse_keyring(out)
+    out = ceph_in_mon(f"auth get-or-create client.csi-rbd-node {csi_caps}")
+    csi_node_key = parse_keyring(out)
 except Exception as exc:
-    print(f"csi key: {exc}", file=sys.stderr)
-    csi_key = admin_key
+    print(f"csi-rbd-node key: {exc}", file=sys.stderr)
+    try:
+        ceph_in_mon(f"auth caps client.csi-rbd-node {csi_caps}")
+        csi_node_key = parse_keyring(ceph_in_mon("auth get client.csi-rbd-node"))
+    except Exception as exc2:
+        print(f"csi-rbd-node caps: {exc2}", file=sys.stderr)
+try:
+    out = ceph_in_mon(f"auth get-or-create client.csi-rbd-provisioner {csi_caps}")
+    csi_prov_key = parse_keyring(out)
+except Exception as exc:
+    print(f"csi-rbd-provisioner key: {exc}", file=sys.stderr)
+    try:
+        ceph_in_mon(f"auth caps client.csi-rbd-provisioner {csi_caps}")
+        csi_prov_key = parse_keyring(ceph_in_mon("auth get client.csi-rbd-provisioner"))
+    except Exception as exc2:
+        print(f"csi-rbd-provisioner caps: {exc2}", file=sys.stderr)
+
+# Enable mgr prometheus for ODF monitoring-endpoint (port 9283).
+try:
+    ceph_in_mon("mgr module enable prometheus")
+except Exception as exc:
+    print(f"prometheus module: {exc}", file=sys.stderr)
+
+# Lab appliance: silence single-replica .mgr warn and clear bootstrap osd flags
+# so external StorageCluster can reach Ready (HEALTH_OK).
+try:
+    ceph_in_mon("config set global mon_warn_on_pool_no_redundancy false")
+except Exception as exc:
+    print(f"mon_warn_on_pool_no_redundancy: {exc}", file=sys.stderr)
+for flag in ("noout", "nobackfill", "norecover", "noscrub", "nodeep-scrub"):
+    try:
+        ceph_in_mon(f"osd unset {flag}")
+    except Exception as exc:
+        print(f"osd unset {flag}: {exc}", file=sys.stderr)
+try:
+    if (osd_count or 0) >= 3:
+        ceph_in_mon("osd pool set .mgr size 3")
+        ceph_in_mon("osd pool set .mgr min_size 1")
+except Exception as exc:
+    print(f".mgr pool size: {exc}", file=sys.stderr)
 
 mon_host = f"{lab_ip}:3300"
-details = [
-    {"name": "fsid", "value": fsid},
-    {"name": "clusterID", "value": fsid},
-    {"name": "mon_host", "value": mon_host},
-    {"name": "cephx.admin", "value": admin_key},
-    {"name": "user.csi-rbd-node", "value": csi_key},
-    {"name": "user.csi-rbd-provisioner", "value": csi_key},
-    {"name": "rbd.pool", "value": pool_name},
-    {"name": "rook-ceph-mon-endpoints", "value": f"a={mon_host}"},
+# ODF external mode expects rook-style {name,kind,data} resources (not
+# flat name/value). Missing monitoring-endpoint or wrong shape leaves
+# StorageCluster stuck / Error.
+resources = [
+    {
+        "name": "rook-ceph-mon-endpoints",
+        "kind": "ConfigMap",
+        "data": {"data": f"a={mon_host}", "maxMonId": "0", "mapping": "{}"},
+    },
+    {
+        "name": "rook-ceph-mon",
+        "kind": "Secret",
+        "data": {
+            "admin-secret": admin_key,
+            "fsid": fsid,
+            "mon-secret": admin_key,
+        },
+    },
+    {
+        "name": "rook-ceph-operator-creds",
+        "kind": "Secret",
+        "data": {"userID": "client.admin", "userKey": admin_key},
+    },
+    {
+        "name": "rook-csi-rbd-node",
+        "kind": "Secret",
+        "data": {"userID": "csi-rbd-node", "userKey": csi_node_key},
+    },
+    {
+        "name": "rook-csi-rbd-provisioner",
+        "kind": "Secret",
+        "data": {"userID": "csi-rbd-provisioner", "userKey": csi_prov_key},
+    },
+    {
+        "name": "ceph-rbd",
+        "kind": "StorageClass",
+        "data": {"pool": pool_name},
+    },
+    {
+        "name": "monitoring-endpoint",
+        "kind": "CephCluster",
+        "data": {
+            "MonitoringEndpoint": lab_ip,
+            "MonitoringPort": "9283",
+        },
+    },
 ]
+details = resources
 patch = {
     "stringData": {
         "fsid": fsid,

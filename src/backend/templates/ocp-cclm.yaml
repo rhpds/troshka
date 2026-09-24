@@ -4,7 +4,7 @@ description: "Two nested OCP clusters (source SNO+2 workers, destination SNO) fo
 category: openshift
 install_method: agent
 install_via: pod
-deploy_time: "~60 min"
+deploy_time: "~90 min"
 versions: ["4.22"]
 
 placement:
