@@ -19,6 +19,9 @@ ocp:
     api_vip: 10.0.0.10
     ingress_vip: 10.0.0.10
     networks: [cluster, migration]
+    # Role sizing (canvas defaults + newly materialized members only).
+    # Enumerated vms: below also set vcpus/ram_gb — those win at deploy.
+    # Keep both in sync until the loader fills omitted VM size from the role.
     control_plane_cpu: 8
     control_plane_memory: 32768
     worker_cpu: 8
@@ -41,7 +44,8 @@ ocp:
     api_vip: 10.0.0.110
     ingress_vip: 10.0.0.110
     networks: [cluster, migration]
-    # Larger than source nodes: SNO packs ODF+CNV+MTV (+ optional MCG) on one node
+    # Larger than source nodes: SNO packs ODF+CNV+MTV (+ optional MCG) on one node.
+    # Must match dest-cp-0 vcpus/ram_gb below (see source cluster note).
     control_plane_cpu: 16
     control_plane_memory: 65536
     control_plane_disks:
@@ -96,6 +100,8 @@ cephCluster:
   osdCount: 3
   clusters: [source, destination]
 
+# Explicit members (static IPs). Deploy uses each VM's vcpus/ram_gb, not ocp:*_cpu.
+# Match ocp.control_plane_*/worker_* above; omitting VM size falls back to 2 vCPU / 4GB.
 vms:
   source-cp-0:
     cluster: source
