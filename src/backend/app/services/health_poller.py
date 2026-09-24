@@ -27,8 +27,18 @@ _DISCONNECT_AFTER_SECONDS = (
     getattr(_health_config, "disconnect_after_seconds", 180) if _health_config else 180
 )
 
-_WARNING_PCT = 85
+# Match Hosts page red Storage threshold (≥80%) so nav/host badges agree.
+_WARNING_PCT = 80
 _CRITICAL_PCT = 95
+
+
+def _warning_for_pct(mount: str, pct: float) -> dict | None:
+    """Return a storage_warnings entry for used_pct, or None if under threshold."""
+    if pct >= _CRITICAL_PCT:
+        return {"mount": mount, "used_pct": pct, "level": "critical"}
+    if pct >= _WARNING_PCT:
+        return {"mount": mount, "used_pct": pct, "level": "warning"}
+    return None
 
 
 def _evaluate_partitions(health):
@@ -42,11 +52,9 @@ def _evaluate_partitions(health):
         mount = p.get("mount", "")
         if mount in SKIP_MOUNTS or p.get("fstype") == "iso9660":
             continue
-        pct = p.get("used_pct", 0)
-        if pct >= _CRITICAL_PCT:
-            warnings.append({"mount": p["mount"], "used_pct": pct, "level": "critical"})
-        elif pct >= _WARNING_PCT:
-            warnings.append({"mount": p["mount"], "used_pct": pct, "level": "warning"})
+        w = _warning_for_pct(p["mount"], p.get("used_pct", 0))
+        if w:
+            warnings.append(w)
     return warnings if warnings else None
 
 
@@ -167,6 +175,25 @@ def _refresh_kubevirt_eip_capacity(host, driver, provider) -> None:
     )
 
 
+def _kubevirt_ceph_storage_warnings(provider) -> list | None:
+    """Build storage_warnings from live Ceph df for a kubevirt-cluster host."""
+    try:
+        from app.services.providers.kubevirt import (
+            _get_k8s_clients,
+            _query_ceph_storage_usage,
+        )
+
+        _, core_api, _ = _get_k8s_clients(provider)
+        usage = _query_ceph_storage_usage(core_api)
+        if not usage:
+            return None
+        w = _warning_for_pct("ceph", usage["used_pct"])
+        return [w] if w else None
+    except Exception:
+        logger.debug("Ceph storage warning query failed", exc_info=True)
+        return None
+
+
 def _poll_kubevirt_host(host, db) -> None:
     """Check KubeVirt cluster health via K8s API."""
     try:
@@ -182,6 +209,8 @@ def _poll_kubevirt_host(host, db) -> None:
                 host.last_health_at = datetime.now(UTC)
                 _apply_uplink_mtu(host, status)
                 _refresh_kubevirt_eip_capacity(host, driver, provider)
+                # Ceph pool fullness — same signal the Hosts page colors red.
+                host.storage_warnings = _kubevirt_ceph_storage_warnings(provider)
             else:
                 host.agent_status = "disconnected"
         db.commit()
@@ -321,14 +350,15 @@ def _handle_health_failure(host, now_dt) -> None:
 
 
 def _poll_host(
-    host, dev_mode: bool, db, checked_pools: set, now: float
+    host, _dev_mode: bool, db, checked_pools: set, now: float
 ) -> tuple[bool, bool]:
     """Poll one host. Returns (checked, failed)."""
     from app.services.troshkad_client import check_health
 
     if host.host_type == "kubevirt-cluster":
-        if not dev_mode:
-            _poll_kubevirt_host(host, db)
+        # Always poll — storage_warnings (Ceph fullness) drive the Hosts nav badge.
+        # Previously skipped in dev_mode, which left warnings unset and health stale.
+        _poll_kubevirt_host(host, db)
         return False, False
 
     if not host.agent_cert_fingerprint:

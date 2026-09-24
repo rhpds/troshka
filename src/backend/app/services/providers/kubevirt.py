@@ -15,6 +15,10 @@ _KUBEMACPOOL_VM_IGNORE_LABEL = "mutatevirtualmachines.kubemacpool.io"
 _KUBEVIRT_API_GROUP = "kubevirt.io"
 _QEMU_SESSION_URI = "qemu:///session"
 _ROUTE_API = "route.openshift.io"
+_SNAPSHOT_API_GROUP = "snapshot.storage.k8s.io"
+# Pattern capture / file-pull temp PVCs. Mid-destroy without reclaiming these
+# leaves TiB on the shared Ceph pool (export-/scratch- clones + snapshots).
+_CAPTURE_TEMP_PVC_PREFIXES = ("export-", "scratch-", "ceph-export-", "filepull-")
 
 
 def patch_kubevirt_run_strategy(custom_api, namespace, kv_name, strategy: str):
@@ -61,48 +65,205 @@ def _project_ns(provider, project_id):
     return f"{prefix}{project_id[:8]}"
 
 
-def _force_clear_rook_finalizers(provider, project_id) -> None:
-    """Strip Rook Ceph finalizers that leave project namespaces Terminating.
+def _strip_namespaced_cr_finalizers(
+    custom_api, group: str, version: str, plural: str, namespace: str, name: str
+) -> None:
+    """Best-effort: clear finalizers then delete a namespaced CR."""
+    from kubernetes.client.exceptions import ApiException
 
-    CephCluster / CephBlockPool / disaster-protection Secret finalizers only
-    clear while the per-ns rook-operator is healthy. Destroy must not depend on
-    that — clear them so namespace GC can finish.
+    try:
+        custom_api.patch_namespaced_custom_object(
+            group=group,
+            version=version,
+            namespace=namespace,
+            plural=plural,
+            name=name,
+            body={"metadata": {"finalizers": None}},
+        )
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Failed to strip finalizers on %s/%s: %s", plural, name, e)
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group=group,
+            version=version,
+            namespace=namespace,
+            plural=plural,
+            name=name,
+        )
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Failed to delete %s/%s: %s", plural, name, e)
+
+
+def _cleanup_volume_snapshots(custom_api, namespace: str) -> None:
+    """Delete VolumeSnapshots (+ Contents) that block namespace / PVC reclaim.
+
+    CSI snapshot finalizers commonly leave troshka-* namespaces Terminating
+    after a mid-capture destroy; stripping them unblocks PVC→RBD reclaim.
     """
     from kubernetes.client.exceptions import ApiException
 
-    custom_api, core_api, _ = _get_k8s_clients(provider)
-    namespace = _project_ns(provider, project_id)
-    logger.info("Clearing Rook finalizers in %s", namespace)
+    try:
+        snaps = custom_api.list_namespaced_custom_object(
+            group=_SNAPSHOT_API_GROUP,
+            version="v1",
+            namespace=namespace,
+            plural="volumesnapshots",
+        )
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Failed to list VolumeSnapshots in %s: %s", namespace, e)
+        return
+    except Exception:
+        logger.warning("Failed to list VolumeSnapshots in %s", namespace, exc_info=True)
+        return
 
-    for plural, name in (
-        ("cephblockpools", "troshka-ceph-pool"),
-        ("cephclusters", "troshka-ceph"),
-    ):
+    for item in dict(snaps).get("items", []) or []:  # type: ignore[call-overload]
+        name = (item.get("metadata") or {}).get("name")
+        if not name:
+            continue
+        logger.info("Clearing VolumeSnapshot %s/%s", namespace, name)
+        _strip_namespaced_cr_finalizers(
+            custom_api,
+            _SNAPSHOT_API_GROUP,
+            "v1",
+            "volumesnapshots",
+            namespace,
+            name,
+        )
+
+    try:
+        contents = custom_api.list_cluster_custom_object(
+            group=_SNAPSHOT_API_GROUP,
+            version="v1",
+            plural="volumesnapshotcontents",
+        )
+    except ApiException as e:
+        if e.status not in (404, 403):
+            logger.warning("Failed to list VolumeSnapshotContents: %s", e)
+        return
+    except Exception:
+        logger.warning("Failed to list VolumeSnapshotContents", exc_info=True)
+        return
+
+    for item in dict(contents).get("items", []) or []:  # type: ignore[call-overload]
+        meta = item.get("metadata") or {}
+        ref = (item.get("spec") or {}).get("volumeSnapshotRef") or {}
+        if ref.get("namespace") != namespace:
+            continue
+        cname = meta.get("name")
+        if not cname:
+            continue
+        logger.info("Clearing VolumeSnapshotContent %s (ns=%s)", cname, namespace)
         try:
-            custom_api.patch_namespaced_custom_object(
-                group="ceph.rook.io",
+            custom_api.patch_cluster_custom_object(
+                group=_SNAPSHOT_API_GROUP,
                 version="v1",
-                namespace=namespace,
-                plural=plural,
-                name=name,
+                plural="volumesnapshotcontents",
+                name=cname,
                 body={"metadata": {"finalizers": None}},
             )
         except ApiException as e:
             if e.status != 404:
                 logger.warning(
-                    "Failed to strip finalizers on %s/%s: %s", plural, name, e
+                    "Failed to strip VolumeSnapshotContent %s finalizers: %s",
+                    cname,
+                    e,
                 )
         try:
-            custom_api.delete_namespaced_custom_object(
-                group="ceph.rook.io",
+            custom_api.delete_cluster_custom_object(
+                group=_SNAPSHOT_API_GROUP,
                 version="v1",
-                namespace=namespace,
-                plural=plural,
-                name=name,
+                plural="volumesnapshotcontents",
+                name=cname,
             )
         except ApiException as e:
             if e.status != 404:
-                logger.warning("Failed to delete %s/%s: %s", plural, name, e)
+                logger.warning(
+                    "Failed to delete VolumeSnapshotContent %s: %s", cname, e
+                )
+
+
+def _cleanup_capture_temp_pvcs(core_api, namespace: str) -> None:
+    """Delete pattern-capture / file-pull temp PVCs (strip finalizers first)."""
+    from kubernetes.client.exceptions import ApiException
+
+    try:
+        listed = core_api.list_namespaced_persistent_volume_claim(namespace=namespace)
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Failed to list PVCs in %s: %s", namespace, e)
+        return
+    except Exception:
+        logger.warning("Failed to list PVCs in %s", namespace, exc_info=True)
+        return
+
+    for pvc in list(getattr(listed, "items", None) or []):
+        name = getattr(getattr(pvc, "metadata", None), "name", None) or ""
+        if not name.startswith(_CAPTURE_TEMP_PVC_PREFIXES):
+            continue
+        fins = list(getattr(pvc.metadata, "finalizers", None) or [])
+        if fins:
+            try:
+                core_api.patch_namespaced_persistent_volume_claim(
+                    name=name,
+                    namespace=namespace,
+                    body={"metadata": {"finalizers": None}},
+                )
+            except ApiException as e:
+                if e.status != 404:
+                    logger.warning(
+                        "Failed to strip PVC %s/%s finalizers: %s",
+                        namespace,
+                        name,
+                        e,
+                    )
+        try:
+            core_api.delete_namespaced_persistent_volume_claim(
+                name=name, namespace=namespace
+            )
+            logger.info("Deleted capture temp PVC %s/%s", namespace, name)
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning(
+                    "Failed to delete capture temp PVC %s/%s: %s", namespace, name, e
+                )
+
+
+def _cleanup_pattern_capture_temps(provider, namespace: str) -> None:
+    """Reclaim pattern-capture temps before namespace deletion.
+
+    Destroy while Capturing previously skipped operator ``_cleanup_capture_resources``,
+    leaving export/scratch PVCs and VolumeSnapshots that stuck namespace GC and
+    leaked shared Ceph capacity.
+    """
+    custom_api, core_api, _ = _get_k8s_clients(provider)
+    logger.info("Cleaning pattern-capture temps in %s", namespace)
+    _cleanup_volume_snapshots(custom_api, namespace)
+    _cleanup_capture_temp_pvcs(core_api, namespace)
+
+
+def _force_clear_rook_finalizers(provider, project_id) -> None:
+    """Strip Rook / snapshot / PVC finalizers that leave namespaces Terminating.
+
+    CephCluster / CephBlockPool / disaster-protection Secret finalizers only
+    clear while the per-ns rook-operator is healthy. VolumeSnapshot finalizers
+    similarly stick after mid-capture destroy. Clear both so namespace GC can finish.
+    """
+    from kubernetes.client.exceptions import ApiException
+
+    custom_api, core_api, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+    logger.info("Clearing stuck finalizers in %s", namespace)
+
+    for plural, name in (
+        ("cephblockpools", "troshka-ceph-pool"),
+        ("cephclusters", "troshka-ceph"),
+    ):
+        _strip_namespaced_cr_finalizers(
+            custom_api, "ceph.rook.io", "v1", plural, namespace, name
+        )
 
     def _strip_core_finalizers(list_fn, patch_fn, kind: str) -> None:
         try:
@@ -142,6 +303,10 @@ def _force_clear_rook_finalizers(provider, project_id) -> None:
         core_api.patch_namespaced_persistent_volume_claim,
         "PVC",
     )
+    # Mid-capture leftovers: VolumeSnapshots + Contents (and any remaining
+    # export-/scratch- PVCs the PVC strip above did not delete).
+    _cleanup_volume_snapshots(custom_api, namespace)
+    _cleanup_capture_temp_pvcs(core_api, namespace)
 
 
 def _project_namespace_labels(project_id: str) -> dict[str, str]:
@@ -793,15 +958,15 @@ def _query_cluster_capacity(core_api):
     return total_vcpus, total_ram_mb
 
 
-def _query_ceph_storage_gb(core_api):
-    """Query total Ceph storage via the rook-ceph-tools pod. Returns 0 on failure."""
+def _query_ceph_df(core_api) -> dict | None:
+    """Query Ceph cluster df via rook-ceph-tools. Returns stats dict or None."""
     try:
         toolbox_pods = core_api.list_namespaced_pod(
             namespace="openshift-storage",
             label_selector="app=rook-ceph-tools",
         )
         if not getattr(toolbox_pods, "items", []):
-            return 0
+            return None
 
         from kubernetes.stream import stream as k8s_stream
 
@@ -828,12 +993,35 @@ def _query_ceph_storage_gb(core_api):
         import json
 
         ceph_df = json.loads(stdout)
-        stats = ceph_df.get("stats", {})
-        total_bytes = stats.get("total_bytes", 0)
-        return int(total_bytes / (1024**3))
+        return ceph_df.get("stats") or {}
     except Exception as e:
         logger.warning(f"Failed to query Ceph storage capacity: {e}")
+        return None
+
+
+def _query_ceph_storage_gb(core_api):
+    """Query total Ceph storage via the rook-ceph-tools pod. Returns 0 on failure."""
+    stats = _query_ceph_df(core_api)
+    if not stats:
         return 0
+    return int(stats.get("total_bytes", 0) / (1024**3))
+
+
+def _query_ceph_storage_usage(core_api) -> dict | None:
+    """Return used_pct / free_gb / total_gb from Ceph df, or None on failure."""
+    stats = _query_ceph_df(core_api)
+    if not stats:
+        return None
+    total_bytes = stats.get("total_bytes", 0) or 0
+    used_bytes = stats.get("total_used_bytes", 0) or 0
+    if not total_bytes:
+        return None
+    free_bytes = total_bytes - used_bytes
+    return {
+        "used_pct": round(used_bytes / total_bytes * 100, 1),
+        "free_gb": round(free_bytes / (1024**3), 1),
+        "total_gb": round(total_bytes / (1024**3), 1),
+    }
 
 
 def _count_addresses(addr: str) -> int:
@@ -1615,6 +1803,15 @@ class KubeVirtDriver(ProviderDriver):
         _cleanup_volume_attachments(core_api, namespace)
         _delete_vm_crs(custom_api, namespace)
         _delete_namespace_jobs(provider, namespace)
+        # Mid-Capturing destroy: reclaim export/scratch PVCs + VolumeSnapshots
+        # before namespace delete, or CSI finalizers stick Terminating forever.
+        try:
+            _cleanup_pattern_capture_temps(provider, namespace)
+        except Exception:
+            logger.exception(
+                "Destroy %s: pattern-capture temp cleanup failed (continuing)",
+                project_id[:8],
+            )
 
         # Delete TroshkaProject CR and wait for finalizers
         cr_name = f"project-{project_id[:8]}"

@@ -103,13 +103,17 @@ def test_poll_kubevirt_host_sets_uplink_mtu():
     host.instance_id = "https://api.cluster.example.com:6443"
     host.uplink_mtu = None
     host.agent_status = None
+    host.storage_warnings = None
 
     # Fake db with query that returns provider
     mock_db = MagicMock()
     mock_db.query.return_value.filter_by.return_value.first.return_value = provider
 
     # Mock get_provider_driver to return a driver with get_host_status
-    with patch("app.services.providers.get_provider_driver") as mock_get_driver:
+    with patch("app.services.providers.get_provider_driver") as mock_get_driver, patch(
+        "app.services.health_poller._kubevirt_ceph_storage_warnings",
+        return_value=[{"mount": "ceph", "used_pct": 82.3, "level": "warning"}],
+    ):
         mock_driver = MagicMock()
         mock_driver.get_host_status.return_value = {
             "instance_id": "https://api.cluster.example.com:6443",
@@ -127,4 +131,5 @@ def test_poll_kubevirt_host_sets_uplink_mtu():
     # Verify host.uplink_mtu was set
     assert host.uplink_mtu == 8900
     assert host.agent_status == "connected"
+    assert host.storage_warnings[0]["level"] == "warning"
     mock_db.commit.assert_called()

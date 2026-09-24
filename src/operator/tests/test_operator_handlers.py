@@ -1188,6 +1188,7 @@ class TestCleanupCaptureResources:
         )
 
         assert core_api.delete_namespaced_persistent_volume_claim.call_count == 2
+        assert custom_api.patch_namespaced_custom_object.call_count == 2
         assert custom_api.delete_namespaced_custom_object.call_count == 2
         assert batch_api.delete_namespaced_job.call_count == 2
 
@@ -1247,6 +1248,33 @@ class TestCleanupCaptureResources:
             namespace="ns",
             propagation_policy="Background",
         )
+
+
+class TestAbortPatternCaptureTemps:
+    def test_discovers_temps_by_prefix_and_label(self):
+        from handlers.project import _abort_pattern_capture_temps
+
+        core_api = MagicMock()
+        custom_api = MagicMock()
+        batch_api = MagicMock()
+        custom_api.list_namespaced_custom_object.return_value = {
+            "items": [{"metadata": {"name": "snap-1"}}]
+        }
+        custom_api.list_cluster_custom_object.return_value = {"items": []}
+        export = MagicMock()
+        export.metadata.name = "export-vm-disk"
+        core_api.list_namespaced_persistent_volume_claim.return_value = MagicMock(
+            items=[export]
+        )
+        job = MagicMock()
+        job.metadata.name = "export-vm-disk"
+        batch_api.list_namespaced_job.return_value = MagicMock(items=[job])
+
+        _abort_pattern_capture_temps(core_api, custom_api, batch_api, "ns")
+
+        custom_api.delete_namespaced_custom_object.assert_called()
+        core_api.delete_namespaced_persistent_volume_claim.assert_called_once()
+        batch_api.delete_namespaced_job.assert_called_once()
 
 
 class TestResolveDiskS3Path:

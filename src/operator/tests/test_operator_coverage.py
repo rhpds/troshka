@@ -792,13 +792,17 @@ class TestProjectDelete:
                 return fn
         raise RuntimeError("Could not find project_delete in kopf mock call args")
 
+    @patch("handlers.project._abort_pattern_capture_temps")
     @patch("handlers.project._remove_sa_from_sccs")
     @patch("handlers.project._delete_custom_resources")
     @patch("handlers.project.client")
-    def test_deletes_all_resource_types(self, mock_client, mock_del, mock_scc):
+    def test_deletes_all_resource_types(
+        self, mock_client, mock_del, mock_scc, mock_abort
+    ):
         project_delete = self._get_project_delete_fn()
 
         asyncio.run(project_delete(namespace="troshka-abc", name="abc"))
+        mock_abort.assert_called_once()
         # _delete_custom_resources 6 times:
         # VMIs, VMs, DVs, NADs, Routes, TroshkaCeph
         assert mock_del.call_count == 6

@@ -337,6 +337,128 @@ class TestDeleteNamespaceJobs:
 
 
 # ---------------------------------------------------------------------------
+# Pattern-capture reclaim helpers (mid-destroy leak hardening)
+# ---------------------------------------------------------------------------
+
+from app.services.providers.kubevirt import (
+    _cleanup_capture_temp_pvcs,
+    _cleanup_pattern_capture_temps,
+    _cleanup_volume_snapshots,
+    _force_clear_rook_finalizers,
+)
+
+
+class TestCleanupVolumeSnapshots:
+    def test_strips_and_deletes_snapshots_and_contents(self):
+        custom_api = MagicMock()
+        custom_api.list_namespaced_custom_object.return_value = {
+            "items": [{"metadata": {"name": "snap-vm1-disk1"}}]
+        }
+        custom_api.list_cluster_custom_object.return_value = {
+            "items": [
+                {
+                    "metadata": {"name": "snapcontent-1"},
+                    "spec": {
+                        "volumeSnapshotRef": {
+                            "namespace": "troshka-abcdef12",
+                            "name": "snap-vm1-disk1",
+                        }
+                    },
+                },
+                {
+                    "metadata": {"name": "other-ns"},
+                    "spec": {
+                        "volumeSnapshotRef": {
+                            "namespace": "other",
+                            "name": "x",
+                        }
+                    },
+                },
+            ]
+        }
+        _cleanup_volume_snapshots(custom_api, "troshka-abcdef12")
+
+        custom_api.patch_namespaced_custom_object.assert_called()
+        custom_api.delete_namespaced_custom_object.assert_called()
+        custom_api.patch_cluster_custom_object.assert_called_once()
+        custom_api.delete_cluster_custom_object.assert_called_once_with(
+            group="snapshot.storage.k8s.io",
+            version="v1",
+            plural="volumesnapshotcontents",
+            name="snapcontent-1",
+        )
+
+    def test_handles_empty_list(self):
+        custom_api = MagicMock()
+        custom_api.list_namespaced_custom_object.return_value = {"items": []}
+        custom_api.list_cluster_custom_object.return_value = {"items": []}
+        _cleanup_volume_snapshots(custom_api, "ns")
+        custom_api.delete_namespaced_custom_object.assert_not_called()
+
+
+class TestCleanupCaptureTempPvcs:
+    def test_deletes_export_and_scratch_only(self):
+        core_api = MagicMock()
+        export = MagicMock()
+        export.metadata.name = "export-vm1-abcd"
+        export.metadata.finalizers = ["kubernetes.io/pvc-protection"]
+        scratch = MagicMock()
+        scratch.metadata.name = "scratch-vm1-abcd"
+        scratch.metadata.finalizers = None
+        keep = MagicMock()
+        keep.metadata.name = "troshka-vm-root"
+        keep.metadata.finalizers = None
+        core_api.list_namespaced_persistent_volume_claim.return_value = MagicMock(
+            items=[export, scratch, keep]
+        )
+
+        _cleanup_capture_temp_pvcs(core_api, "ns-test")
+
+        assert core_api.delete_namespaced_persistent_volume_claim.call_count == 2
+        deleted = {
+            c.kwargs["name"]
+            for c in core_api.delete_namespaced_persistent_volume_claim.call_args_list
+        }
+        assert deleted == {"export-vm1-abcd", "scratch-vm1-abcd"}
+        core_api.patch_namespaced_persistent_volume_claim.assert_called_once()
+
+
+class TestCleanupPatternCaptureTemps:
+    @patch("app.services.providers.kubevirt._cleanup_capture_temp_pvcs")
+    @patch("app.services.providers.kubevirt._cleanup_volume_snapshots")
+    @patch("app.services.providers.kubevirt._get_k8s_clients")
+    def test_calls_snapshot_and_pvc_cleanup(self, mock_clients, mock_snaps, mock_pvcs):
+        custom, core, _api = MagicMock(), MagicMock(), MagicMock()
+        mock_clients.return_value = (custom, core, _api)
+        _cleanup_pattern_capture_temps(MagicMock(), "troshka-abcdef12")
+        mock_snaps.assert_called_once_with(custom, "troshka-abcdef12")
+        mock_pvcs.assert_called_once_with(core, "troshka-abcdef12")
+
+
+class TestForceClearRookFinalizersIncludesSnapshots:
+    @patch("app.services.providers.kubevirt._cleanup_capture_temp_pvcs")
+    @patch("app.services.providers.kubevirt._cleanup_volume_snapshots")
+    @patch("app.services.providers.kubevirt._get_k8s_clients")
+    @patch(
+        "app.services.providers.kubevirt._project_ns", return_value="troshka-abcdef12"
+    )
+    def test_also_clears_snapshots(self, _ns, mock_clients, mock_snaps, mock_pvcs):
+        custom = MagicMock()
+        core = MagicMock()
+        core.list_namespaced_secret.return_value = MagicMock(items=[])
+        core.list_namespaced_config_map.return_value = MagicMock(items=[])
+        core.list_namespaced_persistent_volume_claim.return_value = MagicMock(items=[])
+        mock_clients.return_value = (custom, core, MagicMock())
+
+        _force_clear_rook_finalizers(
+            MagicMock(), "abcdef12-0000-0000-0000-000000000001"
+        )
+
+        mock_snaps.assert_called_once_with(custom, "troshka-abcdef12")
+        mock_pvcs.assert_called_once_with(core, "troshka-abcdef12")
+
+
+# ---------------------------------------------------------------------------
 # _find_exec_pod — mock K8s API
 # ---------------------------------------------------------------------------
 
@@ -450,6 +572,7 @@ from app.services.providers.kubevirt import KubeVirtDriver
 
 
 class TestKubeVirtDriverDestroyProject:
+    @patch("app.services.providers.kubevirt._cleanup_pattern_capture_temps")
     @patch("app.services.providers.kubevirt._delete_namespace_jobs")
     @patch("app.services.providers.kubevirt._delete_vm_crs")
     @patch("app.services.providers.kubevirt._cleanup_volume_attachments")
@@ -474,6 +597,7 @@ class TestKubeVirtDriverDestroyProject:
         mock_cleanup_va,
         mock_delete_vms,
         mock_delete_jobs,
+        mock_capture_temps,
     ):
         mock_ns.return_value = "troshka-abcdef12"
         mock_custom = MagicMock()
@@ -497,6 +621,7 @@ class TestKubeVirtDriverDestroyProject:
         mock_cleanup_va.assert_called_once_with(mock_core, "troshka-abcdef12")
         mock_delete_vms.assert_called_once_with(mock_custom, "troshka-abcdef12")
         mock_delete_jobs.assert_called_once_with(provider, "troshka-abcdef12")
+        mock_capture_temps.assert_called_once_with(provider, "troshka-abcdef12")
 
         # Verify namespace deletion attempted
         mock_core.delete_namespace.assert_called_once_with(name="troshka-abcdef12")

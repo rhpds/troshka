@@ -691,6 +691,37 @@ class TestQueryCephStorageGb:
 
         assert result == 0
 
+    def test_usage_includes_used_pct(self):
+        import json
+
+        from app.services.providers.kubevirt import _query_ceph_storage_usage
+
+        ceph_data = {
+            "stats": {
+                "total_bytes": 100 * 1024**3,
+                "total_used_bytes": 82 * 1024**3,
+            }
+        }
+        core = MagicMock()
+        pods = MagicMock()
+        pod = MagicMock()
+        pod.metadata.name = "rook-ceph-tools-xyz"
+        pods.items = [pod]
+        core.list_namespaced_pod.return_value = pods
+
+        mock_ws = MagicMock()
+        mock_ws.is_open.side_effect = [True, False]
+        mock_ws.peek_stdout.return_value = True
+        mock_ws.read_stdout.return_value = json.dumps(ceph_data)
+        mock_ws.peek_stderr.return_value = False
+
+        with patch("kubernetes.stream.stream", return_value=mock_ws):
+            result = _query_ceph_storage_usage(core)
+
+        assert result is not None
+        assert result["used_pct"] == 82.0
+        assert result["total_gb"] == 100.0
+
 
 # ===========================================================================
 # KubeVirtDriver.delete_console

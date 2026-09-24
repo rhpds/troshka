@@ -862,19 +862,21 @@ export default function AdminHostsPage() {
                     const localWarnings = (h.storage_warnings || []).filter((w: any) =>
                       !h.storage_pool_id || !w.mount.includes("/shared")
                     );
-                    return localWarnings.length > 0 && (
-                    <Tooltip
-                      content={
-                        <div>
-                          {localWarnings.map((w: any, i: number) => (
-                            <div key={i}>
-                              {w.mount}: {w.used_pct}% used ({w.level})
-                            </div>
-                          ))}
-                        </div>
-                      }
-                    >
-                      {localWarnings.some((w: any) => w.level === "critical") ? (
+                    const si = storageInfo[h.id];
+                    const liveCritical = si && si.used_pct >= 95;
+                    const liveWarn = si && si.used_pct >= 80;
+                    if (localWarnings.length === 0 && !liveWarn) return null;
+                    const critical = liveCritical || localWarnings.some((w: any) => w.level === "critical");
+                    const tipLines = localWarnings.length
+                      ? localWarnings.map((w: any, i: number) => (
+                          <div key={i}>
+                            {w.mount}: {w.used_pct}% used ({w.level})
+                          </div>
+                        ))
+                      : [<div key="live">storage: {si!.used_pct}% used</div>];
+                    return (
+                    <Tooltip content={<div>{tipLines}</div>}>
+                      {critical ? (
                         <ExclamationCircleIcon style={{ color: "var(--pf-t--global--color--status--danger--default)", marginLeft: 8 }} />
                       ) : (
                         <ExclamationTriangleIcon style={{ color: "var(--pf-t--global--color--status--warning--default)", marginLeft: 8 }} />

@@ -118,10 +118,13 @@ rules:
   - apiGroups: ["k8s.cni.cncf.io"]
     resources: ["net-attach-defs"]
     verbs: ["create", "delete", "get", "list"]
-  # VolumeSnapshots — pattern capture
+  # VolumeSnapshots — pattern capture (patch clears stuck finalizers on destroy)
   - apiGroups: ["snapshot.storage.k8s.io"]
     resources: ["volumesnapshots"]
-    verbs: ["create", "delete", "get", "list"]
+    verbs: ["create", "delete", "get", "list", "patch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents"]
+    verbs: ["get", "list", "patch", "delete"]
   # Jobs — guestfish, PXE init, pattern export
   - apiGroups: ["batch"]
     resources: ["jobs"]

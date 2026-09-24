@@ -1037,6 +1037,19 @@ def _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, nam
             except Exception:
                 pass
         try:
+            # Strip snapshot finalizers first — otherwise delete hangs and the
+            # namespace can stick Terminating if destroy races with capture.
+            try:
+                custom_api.patch_namespaced_custom_object(
+                    group=_SNAPSHOT_GROUP,
+                    version="v1",
+                    namespace=namespace,
+                    plural="volumesnapshots",
+                    name=ej["snapName"],
+                    body={"metadata": {"finalizers": None}},
+                )
+            except Exception:
+                pass
             custom_api.delete_namespaced_custom_object(
                 group=_SNAPSHOT_GROUP,
                 version="v1",
@@ -1054,6 +1067,146 @@ def _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, nam
             )
         except Exception:
             pass
+
+
+_CAPTURE_TEMP_PVC_PREFIXES = ("export-", "scratch-", "ceph-export-", "filepull-")
+
+
+def _force_delete_volume_snapshots(custom_api, namespace):
+    """Strip finalizers and delete all VolumeSnapshots (+ Contents) in a namespace."""
+    try:
+        snaps = cast(
+            dict[str, Any],
+            custom_api.list_namespaced_custom_object(
+                group=_SNAPSHOT_GROUP,
+                version="v1",
+                namespace=namespace,
+                plural="volumesnapshots",
+            ),
+        )
+    except Exception as e:
+        logger.warning(f"Failed to list VolumeSnapshots in {namespace}: {e}")
+        return
+    for item in snaps.get("items", []):
+        snap_name = item.get("metadata", {}).get("name")
+        if not snap_name:
+            continue
+        try:
+            custom_api.patch_namespaced_custom_object(
+                group=_SNAPSHOT_GROUP,
+                version="v1",
+                namespace=namespace,
+                plural="volumesnapshots",
+                name=snap_name,
+                body={"metadata": {"finalizers": None}},
+            )
+        except Exception:
+            pass
+        try:
+            custom_api.delete_namespaced_custom_object(
+                group=_SNAPSHOT_GROUP,
+                version="v1",
+                namespace=namespace,
+                plural="volumesnapshots",
+                name=snap_name,
+            )
+            logger.info(f"Deleted VolumeSnapshot {snap_name}")
+        except Exception as e:
+            logger.warning(f"Failed to delete VolumeSnapshot {snap_name}: {e}")
+
+    try:
+        contents = cast(
+            dict[str, Any],
+            custom_api.list_cluster_custom_object(
+                group=_SNAPSHOT_GROUP,
+                version="v1",
+                plural="volumesnapshotcontents",
+            ),
+        )
+    except Exception as e:
+        logger.warning(f"Failed to list VolumeSnapshotContents: {e}")
+        return
+    for item in contents.get("items", []):
+        meta = item.get("metadata") or {}
+        ref = (item.get("spec") or {}).get("volumeSnapshotRef") or {}
+        if ref.get("namespace") != namespace:
+            continue
+        cname = meta.get("name")
+        if not cname:
+            continue
+        try:
+            custom_api.patch_cluster_custom_object(
+                group=_SNAPSHOT_GROUP,
+                version="v1",
+                plural="volumesnapshotcontents",
+                name=cname,
+                body={"metadata": {"finalizers": None}},
+            )
+        except Exception:
+            pass
+        try:
+            custom_api.delete_cluster_custom_object(
+                group=_SNAPSHOT_GROUP,
+                version="v1",
+                plural="volumesnapshotcontents",
+                name=cname,
+            )
+            logger.info(f"Deleted VolumeSnapshotContent {cname}")
+        except Exception as e:
+            logger.warning(f"Failed to delete VolumeSnapshotContent {cname}: {e}")
+
+
+def _force_delete_capture_temp_pvcs(core_api, namespace):
+    """Delete export/scratch/filepull temp PVCs left by mid-destroy capture."""
+    try:
+        listed = core_api.list_namespaced_persistent_volume_claim(namespace=namespace)
+    except Exception as e:
+        logger.warning(f"Failed to list PVCs in {namespace}: {e}")
+        return
+    for pvc in list(getattr(listed, "items", None) or []):
+        name = getattr(getattr(pvc, "metadata", None), "name", "") or ""
+        if not name.startswith(_CAPTURE_TEMP_PVC_PREFIXES):
+            continue
+        try:
+            core_api.patch_namespaced_persistent_volume_claim(
+                name=name,
+                namespace=namespace,
+                body={"metadata": {"finalizers": None}},
+            )
+        except Exception:
+            pass
+        try:
+            core_api.delete_namespaced_persistent_volume_claim(
+                name=name, namespace=namespace
+            )
+            logger.info(f"Deleted capture temp PVC {name}")
+        except Exception as e:
+            logger.warning(f"Failed to delete capture temp PVC {name}: {e}")
+
+
+def _abort_pattern_capture_temps(core_api, custom_api, batch_api, namespace):
+    """Namespace-wide reclaim of pattern-capture / file-pull temps on delete.
+
+    ``_cleanup_capture_resources`` needs the in-memory export_jobs list from an
+    active capture; destroy races that path, so discover by name prefix / label.
+    """
+    _force_delete_volume_snapshots(custom_api, namespace)
+    _force_delete_capture_temp_pvcs(core_api, namespace)
+    try:
+        jobs = batch_api.list_namespaced_job(
+            namespace=namespace, label_selector="troshka-role=pattern-export"
+        )
+        for job in list(getattr(jobs, "items", None) or []):
+            try:
+                batch_api.delete_namespaced_job(
+                    name=job.metadata.name,
+                    namespace=namespace,
+                    propagation_policy="Background",
+                )
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Failed to delete pattern-export Jobs in {namespace}: {e}")
 
 
 def _patch_cr_status(custom_api, namespace, name, status_fields):
@@ -2599,7 +2752,10 @@ def _is_virt_launcher_stuck_creating(pod, *, now=None, threshold_s=60):
 
 def _pod_is_scheduled(pod):
     for cond in getattr(getattr(pod, "status", None), "conditions", None) or []:
-        if getattr(cond, "type", None) == "PodScheduled" and getattr(cond, "status", None) == "True":
+        if (
+            getattr(cond, "type", None) == "PodScheduled"
+            and getattr(cond, "status", None) == "True"
+        ):
             return True
     return False
 
@@ -2612,7 +2768,10 @@ def _pod_waiting_container_creating(pod):
         if getattr(state, "running", None) is not None:
             return False
         waiting = getattr(state, "waiting", None)
-        if waiting is not None and getattr(waiting, "reason", None) == "ContainerCreating":
+        if (
+            waiting is not None
+            and getattr(waiting, "reason", None) == "ContainerCreating"
+        ):
             return True
     return False
 
@@ -2732,9 +2891,7 @@ def _heal_one_stuck_launcher(
     patch_body: dict[str, Any] = {"metadata": {"annotations": annotations}}
     exclude = [h for h, c in counts.items() if c >= _STUCK_NODE_EXCLUDE_AFTER]
     if exclude:
-        tmpl_spec = (
-            (kv_vm.get("spec") or {}).get("template") or {}
-        ).get("spec") or {}
+        tmpl_spec = ((kv_vm.get("spec") or {}).get("template") or {}).get("spec") or {}
         affinity = dict(tmpl_spec.get("affinity") or {})
         affinity.update(_node_hostname_not_in_affinity(exclude))
         patch_body["spec"] = {"template": {"spec": {"affinity": affinity}}}
@@ -3582,6 +3739,12 @@ async def project_delete(namespace, name, **_):
         f"TroshkaProject {name} deleting — cleaning up all resources in {namespace}"
     )
     custom_api = client.CustomObjectsApi()
+    core_api = client.CoreV1Api()
+    batch_api = client.BatchV1Api()
+
+    # Reclaim mid-capture temps BEFORE other deletes — VolumeSnapshot finalizers
+    # otherwise stick the namespace Terminating and leak Ceph capacity.
+    _abort_pattern_capture_temps(core_api, custom_api, batch_api, namespace)
 
     # Force-delete VMIs first (immediate, no graceful shutdown wait)
     _delete_custom_resources(

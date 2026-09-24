@@ -153,16 +153,23 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       Promise.all([
         fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []),
         fetch("/api/v1/hosts/expected-agent-version").then(r => r.ok ? r.json() : {}),
-      ]).then(([hosts, ev]: [any[], { version?: string }]) => {
+        // Live disk/Ceph usage — Hosts page reds Storage at ≥80%; nav must match
+        // even when storage_warnings hasn't been written yet by the health poller.
+        fetch("/api/v1/hosts/storage").then(r => r.ok ? r.json() : {}),
+      ]).then(([hosts, ev, storage]: [any[], { version?: string }, Record<string, any>]) => {
         const expected = ev?.version || "";
         let hostWarn = false;
         let hostAgentWarn = false;
         let poolWarn = false;
         for (const h of hosts) {
           for (const w of (h.storage_warnings || [])) {
-            if (w.mount.includes("/shared") && h.storage_pool_id) poolWarn = true;
+            if (w.mount?.includes("/shared") && h.storage_pool_id) poolWarn = true;
             else if (w.level === "warning" || w.level === "critical") hostWarn = true;
           }
+          const si = storage?.[h.id];
+          const usedPct = si?.used_pct ?? si?.partitions?.find((p: any) => p.mount?.includes("troshka"))?.used_pct
+            ?? si?.partitions?.[0]?.used_pct;
+          if (typeof usedPct === "number" && usedPct >= 80) hostWarn = true;
           // A connected host running an agent that doesn't match the current
           // troshkad source needs an update/reinstall.
           if (expected && h.agent_status === "connected" && h.agent_version && h.agent_version !== expected) hostAgentWarn = true;
