@@ -13,7 +13,15 @@ NAMESPACE="${TROSHKA_NAMESPACE:-troshka}"
 RELEASE="${TROSHKA_RELEASE:-troshka}"
 CFN_TEMPLATE="${REPO_ROOT}/deploy/eks/cloudformation/troshka-eks.yaml"
 
+echo "Pre-run check (aws, helm, kubectl, curl, jq)..."
 require_cmd aws helm kubectl curl jq
+
+if ! aws sts get-caller-identity --region "${REGION}" >/dev/null 2>&1; then
+  echo "Pre-run check failed — AWS credentials not configured for region ${REGION}." >&2
+  echo "  Run: aws configure   (or export AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN)" >&2
+  echo "  Then: aws sts get-caller-identity --region ${REGION}" >&2
+  exit 1
+fi
 
 echo "Caller identity:"
 aws sts get-caller-identity --region "${REGION}"

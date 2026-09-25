@@ -9,14 +9,13 @@ source "${_script_dir}/../lib/common.sh"
 NAMESPACE="${TROSHKA_NAMESPACE:-troshka}"
 RELEASE="${TROSHKA_RELEASE:-troshka}"
 
+echo "Pre-run check (helm, curl, jq, oc|kubectl)..."
 require_cmd helm curl jq
+require_kube_cli
 if command -v oc >/dev/null 2>&1; then
   KUBECTL=oc
-elif command -v kubectl >/dev/null 2>&1; then
-  KUBECTL=kubectl
 else
-  echo "error: need oc or kubectl" >&2
-  exit 1
+  KUBECTL=kubectl
 fi
 
 confirm "Destroy all Troshka projects and uninstall release ${RELEASE} from ${NAMESPACE}?" "$@" || {

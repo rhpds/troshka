@@ -11,6 +11,10 @@ ENV_FILE="${COMPOSE_DIR}/.env"
 UI_PORT="${TROSHKA_UI_PORT:-3100}"
 API_PORT="${TROSHKA_API_PORT:-8200}"
 
+echo "Pre-run check (compose, curl)..."
+require_compose
+require_cmd curl
+
 detect_compose() {
   if command -v podman >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
     echo "podman compose"

@@ -17,6 +17,10 @@ fi
 API_PORT="${TROSHKA_API_PORT:-8200}"
 export TROSHKA_API_URL="${TROSHKA_API_URL:-http://localhost:${API_PORT}}"
 
+echo "Pre-run check (compose, curl, jq)..."
+require_compose
+require_cmd curl jq
+
 confirm "Destroy all Troshka projects and remove the Compose stack?" "$@" || {
   echo "Aborted."
   exit 1

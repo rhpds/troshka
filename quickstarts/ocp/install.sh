@@ -10,14 +10,13 @@ NAMESPACE="${TROSHKA_NAMESPACE:-troshka}"
 RELEASE="${TROSHKA_RELEASE:-troshka}"
 IMAGE_TAG="${TROSHKA_IMAGE_TAG:-latest}"
 
+echo "Pre-run check (helm, oc|kubectl)..."
 require_cmd helm
+require_kube_cli
 if command -v oc >/dev/null 2>&1; then
   KUBECTL=oc
-elif command -v kubectl >/dev/null 2>&1; then
-  KUBECTL=kubectl
 else
-  echo "error: need oc or kubectl" >&2
-  exit 1
+  KUBECTL=kubectl
 fi
 
 echo "Installing Troshka into namespace ${NAMESPACE} (release ${RELEASE})..."

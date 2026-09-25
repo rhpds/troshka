@@ -12,6 +12,7 @@ REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 NAMESPACE="${TROSHKA_NAMESPACE:-troshka}"
 RELEASE="${TROSHKA_RELEASE:-troshka}"
 
+echo "Pre-run check (aws, helm, kubectl, curl, jq)..."
 require_cmd aws helm kubectl curl jq
 
 confirm "Destroy all Troshka projects, uninstall Helm, and DELETE CloudFormation stack ${STACK_NAME}?" "$@" || {
