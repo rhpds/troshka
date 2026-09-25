@@ -15,11 +15,13 @@ CFN_TEMPLATE="${REPO_ROOT}/deploy/eks/cloudformation/troshka-eks.yaml"
 echo "Pre-run check (aws, helm, kubectl, curl, jq)..."
 require_cmd aws helm kubectl curl jq
 resolve_aws_region
+ensure_troshka_kubeconfig "$@"
 
 if ! aws sts get-caller-identity --region "${REGION}" >/dev/null 2>&1; then
   echo "Pre-run check failed — AWS credentials not configured for region ${REGION}." >&2
   echo "  Run: aws configure   (or export AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN)" >&2
   echo "  Then: aws sts get-caller-identity --region ${REGION}" >&2
+  print_eks_tips >&2
   exit 1
 fi
 
@@ -32,12 +34,13 @@ cat <<EOF
 WARNING: About to create/update an EKS cluster and VPC in this AWS account.
 This incurs cost (EKS control plane, NAT Gateway, EC2 nodes, ALB, etc.).
 
-  Account:  ${ACCOUNT_ID}
-  Identity: ${CALLER_ARN}
-  UserId:   ${CALLER_USER}
-  Region:   ${REGION}  ← from ${REGION_SOURCE}
-  Stack:    ${STACK_NAME}
-  Cluster:  ${CLUSTER_NAME}
+  Account:    ${ACCOUNT_ID}
+  Identity:   ${CALLER_ARN}
+  UserId:     ${CALLER_USER}
+  Region:     ${REGION}  ← from ${REGION_SOURCE}
+  Stack:      ${STACK_NAME}
+  Cluster:    ${CLUSTER_NAME}
+  KUBECONFIG: ${KUBECONFIG:-~/.kube/config (default)}
 
   Skip this prompt next time: --yes / --quiet / --no-verify
 
@@ -45,7 +48,7 @@ EOF
 
 confirm "Proceed in account ${ACCOUNT_ID} / region ${REGION}?" "$@" || {
   echo "Aborted — no changes made."
-  echo "Tip: export AWS_REGION=us-west-2   # (or your preferred region) and re-run"
+  print_eks_tips
   exit 1
 }
 
