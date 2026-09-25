@@ -66,8 +66,9 @@ kubectl delete namespace "${NAMESPACE}" --wait=true || true
 helm uninstall aws-load-balancer-controller -n kube-system || true
 
 echo "Deleting CloudFormation stack ${STACK_NAME} (this removes the EKS cluster and VPC)..."
-aws cloudformation delete-stack --stack-name "${STACK_NAME}" --region "${REGION}"
-aws cloudformation wait stack-delete-complete --stack-name "${STACK_NAME}" --region "${REGION}"
+delete_cloudformation_stack "${STACK_NAME}" "${REGION}" || {
+  echo "If delete stuck: check leftover ENIs/ALBs/security groups tagged for the VPC, then retry stack delete." >&2
+  exit 1
+}
 
 echo "EKS Troshka quickstart removed."
-echo "If delete stuck: check leftover ENIs/ALBs/security groups tagged for the VPC, then retry stack delete."

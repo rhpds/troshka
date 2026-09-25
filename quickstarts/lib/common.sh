@@ -124,6 +124,61 @@ Tips:
 EOF
 }
 
+# Poll CloudFormation until a terminal status (does not hang on ROLLBACK like aws wait).
+# Usage: wait_cloudformation_stack <stack> <region> [timeout_sec]
+# Echoes final status to stdout; returns 0 on CREATE/UPDATE_COMPLETE or DELETE (gone), 1 otherwise.
+wait_cloudformation_stack() {
+  local stack="$1"
+  local region="$2"
+  local timeout_sec="${3:-5400}"
+  local interval_sec="${TROSHKA_CFN_POLL_INTERVAL:-15}"
+  local deadline=$((SECONDS + timeout_sec))
+  local status=""
+
+  while (( SECONDS < deadline )); do
+    status="$(aws cloudformation describe-stacks --stack-name "${stack}" --region "${region}" \
+      --query 'Stacks[0].StackStatus' --output text 2>/dev/null || echo "DELETE_COMPLETE")"
+
+    case "${status}" in
+      CREATE_COMPLETE|UPDATE_COMPLETE|DELETE_COMPLETE)
+        echo "${status}"
+        return 0
+        ;;
+      CREATE_FAILED|ROLLBACK_COMPLETE|ROLLBACK_FAILED|UPDATE_FAILED|UPDATE_ROLLBACK_COMPLETE|UPDATE_ROLLBACK_FAILED|DELETE_FAILED|IMPORT_ROLLBACK_COMPLETE|IMPORT_ROLLBACK_FAILED)
+        echo "${status}"
+        return 1
+        ;;
+      *_IN_PROGRESS|*_IN_PROGRESS_*|REVIEW_IN_PROGRESS|"")
+        echo "  stack status: ${status:-unknown} (polling every ${interval_sec}s)..." >&2
+        sleep "${interval_sec}"
+        ;;
+      *)
+        # Unexpected but non-terminal — keep polling briefly
+        echo "  stack status: ${status} (polling)..." >&2
+        sleep "${interval_sec}"
+        ;;
+    esac
+  done
+
+  echo "${status:-TIMEOUT}"
+  return 1
+}
+
+# Delete a CloudFormation stack and wait until it is gone (or fail fast).
+delete_cloudformation_stack() {
+  local stack="$1"
+  local region="$2"
+  echo "Deleting CloudFormation stack ${stack} in ${region}..."
+  aws cloudformation delete-stack --stack-name "${stack}" --region "${region}"
+  local status
+  if status="$(wait_cloudformation_stack "${stack}" "${region}" "${TROSHKA_CFN_DELETE_TIMEOUT:-1800}")"; then
+    echo "Stack ${stack} deleted (${status})."
+    return 0
+  fi
+  echo "error: stack delete did not finish cleanly (${status})" >&2
+  return 1
+}
+
 
 # Install hint for a missing CLI (macOS brew first; Linux notes second).
 _cmd_install_hint() {
