@@ -130,10 +130,17 @@ def test_cclm_template_carries_workloads_chain():
     resolved = resolve_template("ocp-cclm", templates_dir=TEMPLATES_DIR)
     assert "workloads" in resolved
     assert "requirements_content" in resolved
-    assert any("cclm_operators" in r for r in resolved["workloads"])
+    roles = [
+        (r.get("role") if isinstance(r, dict) else r) or ""
+        for r in resolved["workloads"]
+    ]
+    assert any("cclm_operators" in role for role in roles)
     topo = generate_topology_from_template(resolved)
-    assert topo["workloads"][0].endswith("troshka_workload_cclm_operators")
-    assert topo["workloads"][1].endswith("troshka_workload_cclm_network")
+    topo_roles = [
+        (w.get("role") if isinstance(w, dict) else w) or "" for w in topo["workloads"]
+    ]
+    assert topo_roles[0].endswith("troshka_workload_cclm_operators")
+    assert topo_roles[1].endswith("troshka_workload_cclm_network")
     collections = topo["requirements_content"]["collections"]
     assert collections[0]["version"] == "feat/cclm-workloads"
 

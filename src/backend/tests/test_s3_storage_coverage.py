@@ -112,13 +112,8 @@ class TestGetS3Config:
         """Raises ValueError when neither DB nor config.yaml has S3 settings."""
         mock_sl.side_effect = Exception("db unavailable")
 
-        mock_config = MagicMock()
-        mock_config.s3 = MagicMock(
-            spec=[],  # empty spec -> any attribute access raises AttributeError
-        )
-        type(mock_config.s3).region = property(
-            lambda self: (_ for _ in ()).throw(AttributeError("no region"))
-        )
+        # No ``s3`` attribute at all — AttributeError before getattr defaults apply.
+        mock_config = MagicMock(spec=[])
 
         with patch("app.services.s3_storage.config", mock_config):
             from app.services.s3_storage import _get_s3_config

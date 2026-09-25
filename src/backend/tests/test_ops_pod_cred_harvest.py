@@ -17,6 +17,7 @@ def _make_host():
     h.id = "host-0001"
     h.ip_address = "10.0.0.1"
     h.host_type = "kubevirt-cluster"
+    h.provider_id = "provider-0001"
     return h
 
 
@@ -28,6 +29,7 @@ def _make_project(topology):
     return p
 
 
+@patch(f"{SVC}._maybe_heal_stuck_ops_pod", return_value={})
 @patch(f"{SVC}._store_ops_pod_creds")
 @patch(f"{SVC}._ocp_update_status")
 @patch(f"{SVC}._publish_ops_pod_progress")
@@ -36,7 +38,7 @@ def _make_project(topology):
 @patch(f"{SVC}._is_deploy_cancelled", return_value=False)
 @patch(f"{SVC}.cache_ops_pod_logs", side_effect=lambda _pid, logs: logs)
 def test_monitor_harvests_creds_at_install_complete_before_workers(
-    _cache, _cancel, mock_logs, _running, _pub, _status, mock_store
+    _cache, _cancel, mock_logs, _running, _pub, _status, mock_store, _heal
 ):
     """SNO + deferred workers: harvest when install completes, not after worker join."""
     source = {
