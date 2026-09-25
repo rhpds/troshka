@@ -906,8 +906,8 @@ def create_azure_files_nfs(
             "enableNfsV3": True,
         },
     }
-    poller = storage_client.storage_accounts.begin_create(
-        resource_group, account_name, sa_params
+    poller = storage_client.storage_accounts.begin_create(  # type: ignore[call-overload]
+        resource_group, account_name, sa_params  # type: ignore[arg-type]
     )
     poller.result()
 
@@ -1000,8 +1000,8 @@ def create_azure_files_nfs(
             "enabledProtocols": "NFS",
         }
     }
-    storage_client.file_shares.create(
-        resource_group, account_name, share_name, share_params
+    storage_client.file_shares.create(  # type: ignore[call-overload]
+        resource_group, account_name, share_name, share_params  # type: ignore[arg-type]
     )
 
     mount_url = (
@@ -1038,8 +1038,8 @@ def update_azure_files_capacity(
             "shareQuota": new_capacity_gb,
         }
     }
-    storage_client.file_shares.update(
-        resource_group, account_name, share_name, share_params
+    storage_client.file_shares.update(  # type: ignore[call-overload]
+        resource_group, account_name, share_name, share_params  # type: ignore[arg-type]
     )
 
 
