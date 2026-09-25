@@ -31,7 +31,7 @@ data:
       allowed_groups: {{ .Values.auth.allowedGroups | quote }}
       admin_groups: {{ .Values.auth.adminGroups | quote }}
       operator_groups: {{ .Values.auth.operatorGroups | quote }}
-    {{- if or .Values.s4.deploy .Values.s3.endpoint }}
+    {{- if or .Values.s4.deploy .Values.s3.endpoint .Values.s3.useAws }}
     s3:
       {{- if .Values.s3.endpoint }}
       endpoint_url: {{ .Values.s3.endpoint | quote }}

@@ -37,14 +37,16 @@ def get_public_ip() -> str | None:
 
 def _get_ec2_client(region: str | None = None, credentials: dict | None = None):
     creds = credentials or {}
+    aws_cfg = getattr(config, "aws", None)
+    region_name = region or getattr(aws_cfg, "default_region", None) or "us-east-1"
     return boto3.client(
         "ec2",
-        region_name=region or config.aws.default_region,
+        region_name=region_name,
         aws_access_key_id=creds.get("access_key_id")
-        or config.aws.access_key_id
+        or getattr(aws_cfg, "access_key_id", None)
         or None,
         aws_secret_access_key=creds.get("secret_access_key")
-        or config.aws.secret_access_key
+        or getattr(aws_cfg, "secret_access_key", None)
         or None,
     )
 
@@ -125,9 +127,12 @@ def _ensure_console_rule(client, sg_id: str):
 
 
 def ensure_security_group(
-    vpc_id: str, name: str = "troshka-host-sg", credentials: dict | None = None
+    vpc_id: str,
+    name: str = "troshka-host-sg",
+    credentials: dict | None = None,
+    region: str | None = None,
 ) -> str:
-    client = _get_ec2_client(credentials=credentials)
+    client = _get_ec2_client(region=region, credentials=credentials)
     existing = client.describe_security_groups(
         Filters=[
             {"Name": "group-name", "Values": [name]},
@@ -254,6 +259,24 @@ hostname: {hostname}
 packages:
 {packages}
 runcmd:
+  - |
+    # Troshka SSH always uses ec2-user. Fedora/CentOS Cloud AMIs default to
+    # fedora/centos — mirror authorized_keys so agent install can reach the host.
+    if ! id -u ec2-user &>/dev/null; then
+      useradd -m -G wheel -s /bin/bash ec2-user || true
+      echo 'ec2-user ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/90-ec2-user
+      chmod 440 /etc/sudoers.d/90-ec2-user
+    fi
+    mkdir -p /home/ec2-user/.ssh
+    chmod 700 /home/ec2-user/.ssh
+    for u in fedora centos rocky cloud-user; do
+      if [ -f "/home/$u/.ssh/authorized_keys" ]; then
+        cp "/home/$u/.ssh/authorized_keys" /home/ec2-user/.ssh/authorized_keys
+        break
+      fi
+    done
+    chown -R ec2-user:ec2-user /home/ec2-user/.ssh 2>/dev/null || true
+    chmod 600 /home/ec2-user/.ssh/authorized_keys 2>/dev/null || true
 {vm_runcmd}{ebs_setup}  - mkdir -p /var/lib/troshka /etc/troshka-agent
 {storage_setup}  - 'echo "host_id: {host_id}" > /etc/troshka-agent/host-id'
 {vm_tuning}"""

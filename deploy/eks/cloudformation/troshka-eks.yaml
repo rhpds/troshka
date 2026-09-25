@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Troshka quickstart — greenfield VPC + EKS managed node group for the Troshka
+  Troshka quickstart - greenfield VPC + EKS managed node group for the Troshka
   control plane only (not nested-VM hosts). Pair with quickstarts/eks/install.sh.
 
 Parameters:
@@ -9,7 +9,8 @@ Parameters:
     Default: troshka-quickstart
   KubernetesVersion:
     Type: String
-    Default: "1.31"
+    Default: "1.36"
+    Description: EKS Kubernetes version (latest STANDARD_SUPPORT by default)
   NodeInstanceType:
     Type: String
     Default: t3.xlarge
@@ -21,6 +22,36 @@ Parameters:
   NodeVolumeSize:
     Type: Number
     Default: 80
+  UseRDS:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "If true, provision RDS PostgreSQL instead of in-cluster Postgres"
+  UseS3:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "If true, provision an S3 bucket (+ IAM access keys) instead of in-cluster S4"
+  UseElastiCache:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "If true, provision ElastiCache Redis instead of in-cluster Redis"
+  UseCognito:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: "If true, provision Cognito User Pool for oauth2-proxy OIDC (--production)"
+  AppHostname:
+    Type: String
+    Default: ""
+    Description: "Public hostname for Troshka (required when UseCognito=true), e.g. troshka.example.com"
+
+Conditions:
+  CreateRDS: !Equals [!Ref UseRDS, "true"]
+  CreateS3: !Equals [!Ref UseS3, "true"]
+  CreateElastiCache: !Equals [!Ref UseElastiCache, "true"]
+  CreateCognito: !Equals [!Ref UseCognito, "true"]
 
 Resources:
   VPC:
@@ -193,7 +224,6 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
         - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
-        - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
 
   ClusterSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -243,13 +273,297 @@ Resources:
       DiskSize: !Ref NodeVolumeSize
       AmiType: AL2023_x86_64_STANDARD
 
+  # EBS CSI managed addon needs IRSA (node-role policy alone is not enough; addon hangs in CREATING).
+  EksOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    DependsOn: Cluster
+    Properties:
+      Url: !GetAtt Cluster.OpenIdConnectIssuerUrl
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 9e99a48a9960b14926bb7f3b02e22da2b0ab7280
+
+  EBSCSIDriverRole:
+    Type: AWS::IAM::Role
+    DependsOn: EksOidcProvider
+    Properties:
+      # No RoleName — let CFN name it so recreate after a failed stack cannot
+      # collide with an orphaned fixed-name role left outside the stack.
+      AssumeRolePolicyDocument:
+        Fn::Sub:
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": { "Federated": "${OidcArn}" },
+                  "Action": "sts:AssumeRoleWithWebIdentity",
+                  "Condition": {
+                    "StringEquals": {
+                      "${OidcHost}:aud": "sts.amazonaws.com",
+                      "${OidcHost}:sub": "system:serviceaccount:kube-system:ebs-csi-controller-sa"
+                    }
+                  }
+                }
+              ]
+            }
+          - OidcArn: !Ref EksOidcProvider
+            OidcHost: !Select [1, !Split ["https://", !GetAtt Cluster.OpenIdConnectIssuerUrl]]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+
   EbsCsiAddon:
     Type: AWS::EKS::Addon
-    DependsOn: NodeGroup
+    DependsOn:
+      - NodeGroup
+      - EBSCSIDriverRole
     Properties:
       ClusterName: !Ref Cluster
       AddonName: aws-ebs-csi-driver
       ResolveConflicts: OVERWRITE
+      ServiceAccountRoleArn: !GetAtt EBSCSIDriverRole.Arn
+
+  # --- Optional managed data plane (non-default) ---
+
+  DataPlaneSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: CreateRDS
+    Properties:
+      GroupDescription: Allow Troshka pods (VPC) to reach RDS
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.42.0.0/16
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-rds-sg"
+
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: CreateElastiCache
+    Properties:
+      GroupDescription: Allow Troshka pods (VPC) to reach ElastiCache Redis
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          CidrIp: 10.42.0.0/16
+      Tags:
+        - Key: Name
+          Value: !Sub "${ClusterName}-redis-sg"
+
+  RdsSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: CreateRDS
+    Properties:
+      Name: !Sub "${ClusterName}/rds"
+      Description: Troshka quickstart RDS credentials
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"troshka"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: "\"@/\\'`:%{}()[]<>"
+        RequireEachIncludedType: true
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Condition: CreateRDS
+    Properties:
+      DBSubnetGroupDescription: Troshka quickstart RDS subnets
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+
+  RDSInstance:
+    Type: AWS::RDS::DBInstance
+    Condition: CreateRDS
+    DependsOn: NatGateway
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBInstanceIdentifier: !Sub "${ClusterName}-pg"
+      Engine: postgres
+      EngineVersion: "16"
+      DBInstanceClass: db.t4g.medium
+      AllocatedStorage: 20
+      StorageType: gp3
+      MasterUsername: troshka
+      MasterUserPassword: !Sub "{{resolve:secretsmanager:${RdsSecret}:SecretString:password}}"  # pragma: allowlist secret
+      DBName: troshka
+      VPCSecurityGroups:
+        - !Ref DataPlaneSecurityGroup
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      PubliclyAccessible: false
+      BackupRetentionPeriod: 1
+      DeleteAutomatedBackups: true
+      StorageEncrypted: true
+
+  ImagesBucket:
+    Type: AWS::S3::Bucket
+    Condition: CreateS3
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub "${ClusterName}-images-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  S3User:
+    Type: AWS::IAM::User
+    Condition: CreateS3
+    Properties:
+      UserName: !Sub "${ClusterName}-s3"
+
+  S3UserPolicy:
+    Type: AWS::IAM::Policy
+    Condition: CreateS3
+    Properties:
+      PolicyName: !Sub "${ClusterName}-s3-access"
+      Users:
+        - !Ref S3User
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:ListBucket
+              - s3:GetBucketLocation
+            Resource: !GetAtt ImagesBucket.Arn
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+              - s3:AbortMultipartUpload
+              - s3:ListMultipartUploadParts
+            Resource: !Sub "${ImagesBucket.Arn}/*"
+
+  S3AccessKey:
+    Type: AWS::IAM::AccessKey
+    Condition: CreateS3
+    Properties:
+      UserName: !Ref S3User
+
+  S3Secret:
+    Type: AWS::SecretsManager::Secret
+    Condition: CreateS3
+    Properties:
+      Name: !Sub "${ClusterName}/s3"
+      Description: Troshka quickstart S3 access keys
+      SecretString: !Sub |
+        {"access_key_id":"${S3AccessKey}","secret_access_key":"${S3AccessKey.SecretAccessKey}","bucket":"${ImagesBucket}"}
+
+  RedisSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: CreateElastiCache
+    Properties:
+      Name: !Sub "${ClusterName}/redis"
+      Description: Troshka quickstart ElastiCache AUTH token
+      GenerateSecretString:
+        PasswordLength: 32
+        ExcludeCharacters: "\"@/\\'` :%{}()[]<>"
+        RequireEachIncludedType: true
+
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Condition: CreateElastiCache
+    Properties:
+      Description: Troshka quickstart Redis subnets
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+
+  RedisReplicationGroup:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Condition: CreateElastiCache
+    DependsOn: NatGateway
+    Properties:
+      ReplicationGroupId: !Sub "${ClusterName}-redis"
+      ReplicationGroupDescription: Troshka quickstart Redis
+      Engine: redis
+      EngineVersion: "7.1"
+      CacheNodeType: cache.t4g.micro
+      NumCacheClusters: 1
+      AutomaticFailoverEnabled: false
+      MultiAZEnabled: false
+      Port: 6379
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      SecurityGroupIds:
+        - !Ref RedisSecurityGroup
+      AtRestEncryptionEnabled: true
+      TransitEncryptionEnabled: true
+      AuthToken: !Sub "{{resolve:secretsmanager:${RedisSecret}:SecretString}}"
+      AutoMinorVersionUpgrade: true
+
+  # --- Cognito (oauth2-proxy OIDC for --production) ---
+
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Condition: CreateCognito
+    Properties:
+      UserPoolName: !Sub "${ClusterName}-users"
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+          RequireUppercase: true
+      Schema:
+        - Name: email
+          Required: true
+          Mutable: true
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Condition: CreateCognito
+    Properties:
+      ClientName: !Sub "${ClusterName}-oauth2-proxy"
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: true  # pragma: allowlist secret
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      SupportedIdentityProviders:
+        - COGNITO
+      CallbackURLs:
+        - !Sub "https://${AppHostname}/oauth2/callback"
+      LogoutURLs:
+        - !Sub "https://${AppHostname}/"
+      ExplicitAuthFlows:
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+      PreventUserExistenceErrors: ENABLED
+
+  CognitoUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Condition: CreateCognito
+    Properties:
+      # Globally unique prefix (account + cluster). Cognito hosted UI hostname.
+      Domain: !Sub "tr${AWS::AccountId}-${ClusterName}"
+      UserPoolId: !Ref CognitoUserPool
 
 Outputs:
   ClusterName:
@@ -272,3 +586,46 @@ Outputs:
     Value: !GetAtt Cluster.OpenIdConnectIssuerUrl
   NodeRoleArn:
     Value: !GetAtt NodeRole.Arn
+  UseRDS:
+    Value: !Ref UseRDS
+  UseS3:
+    Value: !Ref UseS3
+  UseElastiCache:
+    Value: !Ref UseElastiCache
+  RdsEndpoint:
+    Condition: CreateRDS
+    Value: !GetAtt RDSInstance.Endpoint.Address
+  RdsSecretArn:
+    Condition: CreateRDS
+    Value: !Ref RdsSecret
+  S3Bucket:
+    Condition: CreateS3
+    Value: !Ref ImagesBucket
+  S3SecretArn:
+    Condition: CreateS3
+    Value: !Ref S3Secret
+  RedisPrimaryEndpoint:
+    Condition: CreateElastiCache
+    Value: !GetAtt RedisReplicationGroup.PrimaryEndPoint.Address
+  RedisSecretArn:
+    Condition: CreateElastiCache
+    Value: !Ref RedisSecret
+  UseCognito:
+    Value: !Ref UseCognito
+  CognitoUserPoolId:
+    Condition: CreateCognito
+    Value: !Ref CognitoUserPool
+  CognitoClientId:
+    Condition: CreateCognito
+    Value: !Ref CognitoUserPoolClient
+  CognitoClientSecret:
+    Condition: CreateCognito
+    Value: !GetAtt CognitoUserPoolClient.ClientSecret
+  CognitoIssuerUrl:
+    Condition: CreateCognito
+    Value: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${CognitoUserPool}"
+  CognitoHostedUiDomain:
+    Condition: CreateCognito
+    Value: !Sub "https://tr${AWS::AccountId}-${ClusterName}.auth.${AWS::Region}.amazoncognito.com"
+  AppHostname:
+    Value: !Ref AppHostname

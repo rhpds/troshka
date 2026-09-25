@@ -701,33 +701,44 @@ def _collect_library_items(nodes, db_session, pool):
 
 
 def _resolve_library_item_by_name(node, item_id, db_session):
-    """Try to resolve a library item by name when ID lookup fails."""
+    """Try to resolve a library item by name when ID lookup fails.
+
+    ``libraryItemName`` may use ``A|B|`` alternates (ordered; empty = optional).
+    """
+    from sqlalchemy import func as sa_func
+
     from app.models.library import LibraryItem
+    from app.services.library_refs import split_library_item_names
 
     item_name = node.get("data", {}).get("libraryItemName")
     fmt = node.get("data", {}).get("format", "qcow2")
     if not item_name:
         return None, item_id
-    from sqlalchemy import func as sa_func
-
-    item = (
-        db_session.query(LibraryItem)
-        .filter(
-            sa_func.lower(LibraryItem.name) == item_name.lower(),
-            LibraryItem.format == fmt,
+    names, optional = split_library_item_names(item_name)
+    for name in names:
+        item = (
+            db_session.query(LibraryItem)
+            .filter(
+                sa_func.lower(LibraryItem.name) == name.lower(),
+                LibraryItem.format == fmt,
+            )
+            .first()
         )
-        .first()
-    )
-    if item:
-        logger.info(
-            "Library item %s not found by ID, resolved by name '%s' → %s",
-            item_id[:8] if item_id else "?",
-            item_name,
-            item.id[:8],
-        )
-        node["data"]["libraryItemId"] = item.id
-        item_id = item.id
-    return item, item_id
+        if item:
+            logger.info(
+                "Library item %s not found by ID, resolved by name '%s' → %s",
+                item_id[:8] if item_id else "?",
+                name,
+                item.id[:8],
+            )
+            node["data"]["libraryItemId"] = item.id
+            node["data"]["libraryItemName"] = item.name
+            return item, item.id
+    if optional:
+        node["data"].pop("libraryItemId", None)
+        node["data"].pop("libraryItemName", None)
+        node["data"].pop("source", None)
+    return None, item_id
 
 
 def _collect_pxe_boot_isos(nodes, db_session, pool):

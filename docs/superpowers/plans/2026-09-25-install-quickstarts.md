@@ -12,12 +12,13 @@
 
 ## Global Constraints
 
-- Quickstart auth: oauth off / dev auto-admin
+- OCP / Local auth: oauth off / dev auto-admin
+- EKS default: HTTPS (sslip.io + LE) + nginx basic auth; `--production --domain` = Cognito OIDC
 - No GUI installer — CLI scripts only
 - Teardown must refuse platform delete while projects exist
 - EKS CFN is control-plane capacity only (no troshkad hosts)
 - macOS/Windows host agent runs on Linux guest/WSL, not Darwin/native Windows
-- Image registry: `quay.io/redhat-gpte/troshka-*`
+- Image registry: `quay.io/redhat-gpte/troshka-*` (EKS in-cluster Postgres/Redis use public ECR images)
 
 ## File map
 
@@ -81,10 +82,10 @@
 - Modify: Route templates — `route.enabled`
 - Modify: S4 Route — skip when `route.enabled` false
 
-- [ ] **Step 1:** Add `ingress.enabled`, `ingress.className`, `ingress.host`, `ingress.annotations` to values; values-eks sets ingress on, route off, worker.replicas=2, postgres+s4 on, oauth off
-- [ ] **Step 2:** Frontend Ingress template (ALB annotations for AWS)
-- [ ] **Step 3:** external_url uses ingress.host when route disabled
-- [ ] **Step 4:** Commit
+- [x] **Step 1:** Add `ingress.*` + TLS + basicAuth/oauth2Proxy values; values-eks = nginx + LE + public images
+- [x] **Step 2:** Frontend Ingress template (nginx; optional basic auth / oauth2-proxy backend)
+- [x] **Step 3:** external_url uses ingress.host when route disabled
+- [x] **Step 4:** Commit (when asked)
 
 ---
 
@@ -96,12 +97,12 @@
 - Create: `quickstarts/eks/install.sh`, `teardown.sh`
 - Create: `docs/quickstarts/eks.md`
 
-- [ ] **Step 1:** CFN — VPC 2AZ, EKS cluster, managed node group, OIDC outputs
-- [ ] **Step 2:** IAM deployer policy JSON covering CFN/EC2/VPC/EKS/IAM/ELB/STS
-- [ ] **Step 3:** `install.sh` — deploy stack, update kubeconfig, install aws-load-balancer-controller (helm), helm install troshka with values-eks, print URL
-- [ ] **Step 4:** `teardown.sh` — wipe → verify → helm uninstall → cfn delete
-- [ ] **Step 5:** `eks.md` with permissions matrix + Launch Stack narrative
-- [ ] **Step 6:** Commit
+- [x] **Step 1:** CFN — VPC 2AZ, EKS, node group, EBS CSI IRSA (+ optional Cognito)
+- [x] **Step 2:** IAM deployer policy JSON covering CFN/EC2/VPC/EKS/IAM/ELB/Route53/Cognito/STS
+- [x] **Step 3:** `install.sh` — CFN, ingress-nginx, cert-manager, gp3 SC, helm Troshka (sslip/basic or Cognito)
+- [x] **Step 4:** `teardown.sh` — port-forward wipe → verify → helm uninstall → ingress/cert-manager → cfn delete
+- [x] **Step 5:** `eks.md` with permissions matrix + auth/TLS narrative
+- [ ] **Step 6:** Commit (when asked)
 
 ---
 

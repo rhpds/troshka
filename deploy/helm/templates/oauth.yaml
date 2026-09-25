@@ -1,4 +1,6 @@
-{{- if and .Values.deploy .Values.auth.oauthEnabled }}
+{{- /* OpenShift ose-oauth-proxy only. Never render on EKS / vanilla K8s —
+     auth.oauthEnabled there means "backend SSO mode" for oauth2-proxy (Cognito). */}}
+{{- if and .Values.deploy .Values.route.enabled .Values.auth.oauthEnabled (not (.Values.auth.oauth2Proxy.enabled | default false)) }}
 {{- $existingOAuth := (lookup "v1" "Secret" (include "troshka.namespace" .) "troshka-oauth-proxy") }}
 {{- $clientSecret := "" }}
 {{- $cookieSecret := "" }}

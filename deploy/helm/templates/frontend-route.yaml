@@ -1,4 +1,6 @@
 {{- if and .Values.deploy .Values.route.enabled }}
+{{- /* Wire Route to ose-oauth-proxy only for OpenShift SSO (not EKS oauth2-proxy). */}}
+{{- $ocpOauth := and .Values.auth.oauthEnabled (not (.Values.auth.oauth2Proxy.enabled | default false)) }}
 apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
@@ -15,19 +17,19 @@ spec:
   {{- end }}
   to:
     kind: Service
-    {{- if .Values.auth.oauthEnabled }}
+    {{- if $ocpOauth }}
     name: troshka-oauth-proxy
     {{- else }}
     name: troshka-frontend
     {{- end }}
   port:
-    {{- if .Values.auth.oauthEnabled }}
+    {{- if $ocpOauth }}
     targetPort: proxy
     {{- else }}
     targetPort: http
     {{- end }}
   tls:
-    {{- if .Values.auth.oauthEnabled }}
+    {{- if $ocpOauth }}
     termination: reencrypt
     {{- else }}
     termination: edge

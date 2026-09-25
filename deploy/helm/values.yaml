@@ -48,14 +48,43 @@ route:
   tls: edge
 
 ingress:
-  # Kubernetes Ingress (enable on EKS with AWS Load Balancer Controller).
+  # Kubernetes Ingress (enable on EKS / vanilla Kubernetes).
   enabled: false
-  className: alb
+  className: nginx
   host: ""
   annotations: {}
+  tls:
+    enabled: false
+    secretName: troshka-tls  # pragma: allowlist secret
+    # When set, adds cert-manager.io/cluster-issuer annotation (Let's Encrypt).
+    clusterIssuer: ""
 
 auth:
   oauthEnabled: false
+  # Edge basic auth (nginx Ingress). Used on public EKS quickstarts so the UI
+  # is not open to the internet; app still runs in oauth-off / auto-admin mode
+  # behind the edge password.
+  basicAuth:
+    enabled: false
+    username: admin
+    password: ""
+    secretName: troshka-basic-auth  # pragma: allowlist secret
+  # Generic oauth2-proxy (OIDC / Cognito) for EKS --production.
+  # Mutually exclusive with OpenShift ose-oauth-proxy (oauth.yaml): that path
+  # requires route.enabled + oauthEnabled and ignores oauth2Proxy.
+  # Backend auth.oauth_enabled still comes from oauthEnabled for both SSO modes.
+  oauth2Proxy:
+    enabled: false
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.7.1
+    clientId: ""
+    clientSecret: ""
+    oidcIssuerUrl: ""
+    redirectUrl: ""
+    cookieSecret: ""
+    emailDomains:
+      - "*"
+    # Extra skip-auth path regexes (in addition to health/ws defaults).
+    skipAuthRegexes: []
   adminUsers: ""
   operatorUsers: ""
   allowedUsers: ""
@@ -83,17 +112,23 @@ database:
 postgres:
   deploy: false
   image: registry.redhat.io/rhel9/postgresql-16:latest
+  # rhel = POSTGRESQL_* env (default). docker = POSTGRES_* for Docker Official / ECR public.
+  envFlavor: rhel
   storageSize: 10Gi
   password: ""
 
 s3:
   bucket: troshka-images
   endpoint: ""
+  # When true (and s4.deploy false), emit s3 config without endpoint_url (real AWS S3).
+  useAws: false
 
 s4:
   deploy: false
   image: quay.io/rh-aiservices-bu/s4:latest
   storageSize: 2Ti
+  # EKS EBS CSI volumes are root-owned; leave false on OpenShift (restricted SCC).
+  runAsRoot: false
 
 defaults:
   runTimerHours: 8

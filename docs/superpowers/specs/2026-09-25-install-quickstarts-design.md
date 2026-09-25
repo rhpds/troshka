@@ -52,10 +52,10 @@ quickstarts/
 deploy/
   compose/                  # local control-plane stack
   eks/
-    cloudformation/         # greenfield VPC + EKS + IAM + ALB pieces
+    cloudformation/         # greenfield VPC + EKS + IAM + EBS CSI IRSA (+ optional Cognito)
     iam-deployer-policy.json
   helm/
-    values-eks.yaml         # Ingress/ALB; oauth off for quickstart
+    values-eks.yaml         # Ingress-nginx, sslip.io/LE TLS, basic auth (Cognito on --production)
 ```
 
 Existing deep guides stay authoritative for advanced topics:
@@ -91,23 +91,25 @@ Root [`README.md`](../../../README.md) links to `docs/quickstarts/README.md`.
 
 **Install script sequence:**
 
-1. Create/update CloudFormation stack  
-2. Wait until EKS is `ACTIVE`; write kubeconfig  
-3. Ensure AWS Load Balancer Controller (script or stack dependency)  
-4. `helm upgrade --install` with `values-eks.yaml`  
-5. Print public Ingress/ALB URL  
+1. Create/update CloudFormation stack (VPC, EKS, node group, EBS CSI + IRSA OIDC)  
+2. Wait until stack `CREATE/UPDATE_COMPLETE`; write kubeconfig  
+3. Install ingress-nginx (NLB) + cert-manager + `letsencrypt-prod` ClusterIssuer  
+4. Ensure default `gp3` StorageClass (EBS CSI); optional EKS access entry for deployer  
+5. Hostname: `troshka.<nlb-ip>.sslip.io` (default) or `--domain` via Route53 CNAME  
+6. `helm upgrade --install` with `values-eks.yaml` (TLS + basic auth, or Cognito on `--production`)  
+7. Print HTTPS URL + credentials  
 
 **Stack contents:**
 
 - VPC (2 AZs), public + private subnets, NAT, IGW  
 - EKS control plane + managed node group sized for the **control plane only**  
-- OIDC provider + IRSA roles (ALB controller; EBS CSI if required for PVCs)  
-- Security groups for API + ingress  
-- Outputs: cluster name, region, Ingress hostname, kubeconfig hints  
+- Cluster IAM OIDC provider + IRSA role for **EBS CSI** (required so the addon does not hang)  
+- Optional `--production`: Cognito User Pool + app client for oauth2-proxy OIDC  
+- Outputs: cluster name, VPC, OIDC issuer, Cognito IDs (when enabled)  
 
-Nested-VM / troshkad hosts are **not** in this stack.
+Nested-VM capacity is **not** in the CFN stack itself; `install.sh` seeds one EC2 provider + host after Helm (Fedora by default, RHEL on `--production`).
 
-**Helm differences vs OCP:** use Kubernetes Ingress (ALB) instead of OpenShift Routes; no `OAuthClient`; oauth disabled for quickstart.
+**Helm differences vs OCP:** Kubernetes Ingress (nginx) instead of Routes; public Postgres/Redis images (no `registry.redhat.io` pull secret); edge auth via nginx basic auth (default) or oauth2-proxy→Cognito (`--production`). OpenShift `ose-oauth-proxy` is **not** used (`route.enabled=false`).
 
 ### Permissions (required documentation)
 
@@ -117,13 +119,14 @@ Nested-VM / troshkad hosts are **not** in this stack.
 |---|---|
 | CloudFormation | Create/update/delete stack |
 | EC2 / VPC / EIP / NAT / SG | Network for the cluster |
-| EKS | Cluster, node groups, addons |
-| IAM | Roles, instance profiles, OIDC provider, PassRole for EKS |
-| ELB / ALB | Ingress for frontend |
+| EKS | Cluster, node groups, addons, access entries |
+| IAM | Roles, OIDC provider (IRSA), PassRole for EKS |
+| ELB / NLB | ingress-nginx Service |
+| Route53 / Cognito | `--domain` / `--production` |
 | CloudWatch Logs (optional) | Cluster logging |
 | STS GetCallerIdentity | Script sanity checks |
 
-Teardown needs the same principal for stack delete, plus notes for stuck ENIs/ALBs after delete.
+Teardown needs the same principal for stack delete, plus notes for stuck ENIs/NLBs after delete.
 
 ## Local rail (Compose + host)
 
@@ -178,7 +181,7 @@ quickstarts/<platform>/teardown.sh
 - Optional post-wipe AWS sweep: warn/delete Troshka-tagged leftovers the API missed.  
 - `docs/quickstarts/teardown.md` is the full-wipe narrative linked from every rail.  
 
-Platform-specific leftover checklists in that doc: EKS ENIs/ALBs, Compose volumes, WSL/guest notes, OCP namespace finalizers.
+Platform-specific leftover checklists in that doc: EKS ENIs/NLBs, Compose volumes, WSL/guest notes, OCP namespace finalizers.
 
 ```
 install.sh → Troshka UI → compute (local | remote | cloud provider)
@@ -190,7 +193,10 @@ teardown.sh → API wipe → verify-clean → uninstall platform
 
 ## Auth defaults
 
-Quickstart happy path: **dev-mode auto-admin** (oauth off) on all three rails so the blog transcript stays short. Production SSO remains documented in `install-ocp.md` / advanced EKS appendix, not the primary path.
+- **OCP / Local happy path:** oauth off → auto-admin (blog transcript).  
+- **EKS default:** nginx basic auth at the Ingress; app still oauth-off behind the password.  
+- **EKS `--production --domain`:** Cognito Hosted UI via oauth2-proxy; backend `oauth_enabled=true`.  
+- OpenShift SSO (`ose-oauth-proxy`) remains documented in `install-ocp.md` / Helm `auth.oauthEnabled` + `route.enabled`.
 
 ## Implementation order
 

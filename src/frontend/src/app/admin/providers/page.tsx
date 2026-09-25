@@ -57,7 +57,7 @@ export default function AdminProvidersPage() {
   const [error, setError] = useState("");
   const [testResult, setTestResult] = useState<Record<string, string>>({});
   const [imageResult, setImageResult] = useState<Record<string, string>>({});
-  const [imageOptions, setImageOptions] = useState<Record<string, Array<{type: string; label: string; image_id: string; name: string; created: string}>>>({});
+  const [imageOptions, setImageOptions] = useState<Record<string, Array<{type: string; label: string; image_id: string; name: string; created: string; family?: string}>>>({});
   const [imageFilter, setImageFilter] = useState<Record<string, string>>({});
   const [imageVersionFilter, setImageVersionFilter] = useState<Record<string, string>>({});
   const [imageSearch, setImageSearch] = useState<Record<string, string>>({});
@@ -854,8 +854,9 @@ export default function AdminProvidersPage() {
                             const filter = imageFilter[p.id] || "all";
                             const versionFilter = imageVersionFilter[p.id] || "all";
                             const search = (imageSearch[p.id] || "").toLowerCase();
-                            const detectVersion = (image: {label: string; name: string; image_id: string}) => {
+                            const detectVersion = (image: {label: string; name: string; image_id: string; family?: string}) => {
                               const hay = `${image.label} ${image.name} ${image.image_id}`.toLowerCase();
+                              if (/fedora/.test(hay) || image.family === "fedora") return "fedora";
                               if (/rhel.?10[\.\-_ ]|(?:^|[\s\-_])10[-_.]lvm|lvm10[^0-9]/.test(hay)) return "10";
                               if (/rhel.?9|9[-_.]lvm|lvm.?9[^0-9]/.test(hay)) return "9";
                               return "";
@@ -870,16 +871,18 @@ export default function AdminProvidersPage() {
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                                 {p.type !== "ocpvirt" && p.type !== "kubevirt" && p.type !== "gcp" && p.type !== "azure" && (
-                                  <select style={{ ...inputStyle, maxWidth: 120 }} value={filter} onChange={(e) => setImageFilter((prev) => ({ ...prev, [p.id]: e.target.value }))}>
+                                  <select style={{ ...inputStyle, maxWidth: 140 }} value={filter} onChange={(e) => setImageFilter((prev) => ({ ...prev, [p.id]: e.target.value }))}>
                                     <option value="all">All</option>
-                                    <option value="BYOS">BYOS</option>
-                                    <option value="PAYG">PAYG</option>
+                                    <option value="BYOS">BYOS (Gold)</option>
+                                    <option value="PAYG">PAYG (Hourly)</option>
+                                    <option value="Community">Community</option>
                                   </select>
                                 )}
-                                <select style={{ ...inputStyle, maxWidth: 120 }} value={versionFilter} onChange={(e) => setImageVersionFilter((prev) => ({ ...prev, [p.id]: e.target.value }))}>
+                                <select style={{ ...inputStyle, maxWidth: 140 }} value={versionFilter} onChange={(e) => setImageVersionFilter((prev) => ({ ...prev, [p.id]: e.target.value }))}>
                                   <option value="all">All Versions</option>
                                   <option value="10">RHEL 10</option>
                                   <option value="9">RHEL 9</option>
+                                  <option value="fedora">Fedora</option>
                                 </select>
                                 <input style={{ ...inputStyle, flex: 1 }} placeholder="Search images..." value={imageSearch[p.id] || ""} onChange={(e) => setImageSearch((prev) => ({ ...prev, [p.id]: e.target.value }))} />
                                 <span style={{ fontSize: 11, opacity: 0.6, whiteSpace: "nowrap" }}>{filtered.length} of {imageOptions[p.id].length}</span>

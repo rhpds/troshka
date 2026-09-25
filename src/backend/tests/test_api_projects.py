@@ -1934,6 +1934,171 @@ def test_import_template_valid():
     assert len(data["topology"]["nodes"]) > 0
 
 
+def _ensure_personal_library_item(name, fmt="qcow2"):
+    """Create a ready personal library item for the dev user; return item id."""
+    from app.models.library import Library, LibraryItem
+
+    user_id = _ensure_dev_user()
+    db = TestSession()
+    lib = db.query(Library).filter_by(owner_id=user_id, type="personal").first()
+    if not lib:
+        lib = Library(id=str(uuid.uuid4()), type="personal", owner_id=user_id)
+        db.add(lib)
+        db.commit()
+        db.refresh(lib)
+    item = LibraryItem(
+        id=str(uuid.uuid4()),
+        library_id=lib.id,
+        name=name,
+        type="image" if fmt == "qcow2" else "iso",
+        format=fmt,
+        size_bytes=1024,
+        state="ready",
+    )
+    db.add(item)
+    db.commit()
+    item_id = item.id
+    db.close()
+    return item_id
+
+
+def test_import_template_library_name_prefers_first_alternate():
+    """Pipe alternates: first existing library name wins."""
+    rhel_name = f"RHEL Pipe First {uuid.uuid4().hex[:8]}"
+    fedora_name = f"Fedora Pipe First {uuid.uuid4().hex[:8]}"
+    rhel_id = _ensure_personal_library_item(rhel_name)
+    _ensure_personal_library_item(fedora_name)
+    pid = _create_project(name="import-pipe-first")
+    resp = client.post(
+        f"/api/v1/projects/{pid}/import-template",
+        json={
+            "template_yaml": {
+                "vms": {
+                    "vm1": {
+                        "vcpus": 2,
+                        "ram_gb": 4,
+                        "disks": [
+                            {
+                                "size_gb": 20,
+                                "library_item_name": f"{rhel_name}|{fedora_name}",
+                            }
+                        ],
+                    }
+                },
+                "networks": {"net1": {"cidr": "10.0.0.0/24"}},
+            }
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    nodes = resp.json()["topology"]["nodes"]
+    disks = [n for n in nodes if n.get("type") == "storageNode"]
+    assert any(d.get("data", {}).get("libraryItemId") == rhel_id for d in disks)
+
+
+def test_import_template_library_name_falls_back_to_second():
+    """Pipe alternates: second name used when first is missing."""
+    missing = f"Missing RHEL {uuid.uuid4().hex[:8]}"
+    fedora_name = f"Fedora Pipe Fallback {uuid.uuid4().hex[:8]}"
+    fedora_id = _ensure_personal_library_item(fedora_name)
+    pid = _create_project(name="import-pipe-fallback")
+    resp = client.post(
+        f"/api/v1/projects/{pid}/import-template",
+        json={
+            "template_yaml": {
+                "vms": {
+                    "vm1": {
+                        "vcpus": 2,
+                        "ram_gb": 4,
+                        "disks": [
+                            {
+                                "size_gb": 20,
+                                "library_item_name": f"{missing}|{fedora_name}",
+                            }
+                        ],
+                    }
+                },
+                "networks": {"net1": {"cidr": "10.0.0.0/24"}},
+            }
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    nodes = resp.json()["topology"]["nodes"]
+    disks = [n for n in nodes if n.get("type") == "storageNode"]
+    assert any(d.get("data", {}).get("libraryItemId") == fedora_id for d in disks)
+
+
+def test_import_template_optional_iso_skipped_when_missing():
+    """Trailing | on ISO name skips the ISO when not in library."""
+    img = f"Fedora Optional Iso {uuid.uuid4().hex[:8]}"
+    _ensure_personal_library_item(img)
+    pid = _create_project(name="import-optional-iso")
+    resp = client.post(
+        f"/api/v1/projects/{pid}/import-template",
+        json={
+            "template_yaml": {
+                "vms": {
+                    "vm1": {
+                        "vcpus": 2,
+                        "ram_gb": 4,
+                        "disks": [
+                            {
+                                "size_gb": 20,
+                                "library_item_name": img,
+                            }
+                        ],
+                        "isos": [
+                            {
+                                "name": "boot",
+                                "library_item_name": (
+                                    f"Missing DVD {uuid.uuid4().hex[:8]}|"
+                                ),
+                            }
+                        ],
+                    }
+                },
+                "networks": {"net1": {"cidr": "10.0.0.0/24"}},
+            }
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    nodes = resp.json()["topology"]["nodes"]
+    isos = [
+        n
+        for n in nodes
+        if n.get("type") == "storageNode" and n.get("data", {}).get("format") == "iso"
+    ]
+    assert isos == []
+
+
+def test_import_template_missing_library_still_errors():
+    """Without optional empty alternate, missing names still 400."""
+    pid = _create_project(name="import-missing-lib")
+    resp = client.post(
+        f"/api/v1/projects/{pid}/import-template",
+        json={
+            "template_yaml": {
+                "vms": {
+                    "vm1": {
+                        "vcpus": 2,
+                        "ram_gb": 4,
+                        "disks": [
+                            {
+                                "size_gb": 20,
+                                "library_item_name": (
+                                    f"Does Not Exist {uuid.uuid4().hex[:8]}"
+                                ),
+                            }
+                        ],
+                    }
+                },
+                "networks": {"net1": {"cidr": "10.0.0.0/24"}},
+            }
+        },
+    )
+    assert resp.status_code == 400
+    assert "not found" in resp.json()["detail"].lower()
+
+
 # ---------------------------------------------------------------------------
 # Deploy progress — with different project states
 # ---------------------------------------------------------------------------

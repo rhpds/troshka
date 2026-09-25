@@ -11,9 +11,10 @@ Every quickstart teardown script follows the same order so you do not delete the
 
 Shared engine (`quickstarts/lib/`):
 
-1. **`wipe-workloads.sh`** — `DELETE /api/v1/projects/{id}` for every project; poll until the list is empty  
-2. **`verify-clean.sh`** — refuse to continue if any project remains  
-3. **Platform uninstall** — Compose `down -v` / Helm uninstall + namespace / CloudFormation delete  
+1. **EKS only:** terminate seeded hosts (`DELETE /api/v1/hosts/{id}`), then delete compute IAM user + Secrets Manager secret  
+2. **`wipe-workloads.sh`** — `DELETE /api/v1/projects/{id}` for every project; poll until the list is empty  
+3. **`verify-clean.sh`** — refuse to continue if any project remains  
+4. **Platform uninstall** — Compose `down -v` / Helm uninstall + namespace / CloudFormation delete  
 
 If wipe times out, the script **exits without** removing the control plane. Fix stuck projects in the UI or API, then re-run teardown.
 
@@ -44,8 +45,11 @@ It does **not** delete:
 ### Amazon EKS
 
 - [ ] CloudFormation stack deleted (`aws cloudformation describe-stacks` → does not exist)
-- [ ] If stack delete stuck: look for ENIs, ALBs, or security groups still attached to the VPC; delete orphans; retry delete
-- [ ] Confirm no unexpected EC2 instances tagged for the quickstart cluster
+- [ ] ingress-nginx / cert-manager Helm releases removed (teardown does this)
+- [ ] Compute IAM user `<cluster>-compute` and secret `<cluster>/compute` removed
+- [ ] No leftover Troshka host EC2 instances / `troshka-vpc` (seeded compute VPC)
+- [ ] If stack delete stuck: look for ENIs, NLBs, or security groups still attached to the VPC; delete orphans; retry delete
+- [ ] Optional: delete Route53 CNAME created for `--domain` if you no longer need it
 
 ## Manual wipe (if scripts cannot reach the API)
 

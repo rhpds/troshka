@@ -35,11 +35,11 @@ vms:
     - name: disk-00
       size_gb: 20
       #library_item_id: e5527348-4863-41c3-b1ed-ded9b1ef0603
-      library_item_name: Prebuilt RHEL 10.2 Bastion
+      library_item_name: "Prebuilt RHEL 10.2 Bastion|Fedora Cloud 43"
     isos:
     - name: boot-00
       #library_item_id: 90d2efb8-44a2-4755-8bb8-3ac2c7aee95d
-      library_item_name: RHEL 10.2 Binary DVD
+      library_item_name: "RHEL 10.2 Binary DVD|"
     nics:
     - network: network-00
       model: virtio

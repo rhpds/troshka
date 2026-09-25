@@ -10,6 +10,10 @@ STACK_NAME="${TROSHKA_EKS_STACK:-troshka-eks-quickstart}"
 CLUSTER_NAME="${TROSHKA_EKS_CLUSTER:-troshka-quickstart}"
 NAMESPACE="${TROSHKA_NAMESPACE:-troshka}"
 RELEASE="${TROSHKA_RELEASE:-troshka}"
+INGRESS_NS="${TROSHKA_INGRESS_NS:-ingress-nginx}"
+CERT_MANAGER_NS="${TROSHKA_CERT_MANAGER_NS:-cert-manager}"
+
+apply_aws_cli_args "$@"
 
 echo "Pre-run check (aws, helm, kubectl, curl, jq)..."
 require_cmd aws helm kubectl curl jq
@@ -50,24 +54,93 @@ confirm "Proceed with wipe + delete in account ${ACCOUNT_ID} / region ${REGION}?
 
 aws eks update-kubeconfig --name "${CLUSTER_NAME}" --region "${REGION}" 2>/dev/null || true
 
-ADDR="$(kubectl -n "${NAMESPACE}" get ingress troshka -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
-if [[ -n "${ADDR}" ]]; then
-  export TROSHKA_API_URL="http://${ADDR}"
-elif [[ -z "${TROSHKA_API_URL:-}" ]]; then
-  echo "error: set TROSHKA_API_URL or ensure Ingress has an address so wipe can run" >&2
-  exit 1
+trap stop_backend_port_forward EXIT
+
+# Wipe via port-forward so nginx basic auth / Cognito oauth2-proxy do not block DELETE.
+if kubectl -n "${NAMESPACE}" get svc troshka-backend >/dev/null 2>&1; then
+  echo "Port-forwarding to troshka-backend for project wipe..."
+  start_backend_port_forward "${NAMESPACE}" || {
+    echo "warning: could not reach backend — skipping API wipe (namespace will still be deleted)" >&2
+  }
+  if [[ -n "${TROSHKA_API_URL:-}" ]]; then
+    read_troshka_auth_from_cluster "${NAMESPACE}"
+    if [[ "${TROSHKA_OAUTH_ENABLED}" == "true" ]]; then
+      export TROSHKA_FORWARDED_EMAIL="${TROSHKA_ADMIN_EMAIL:-${TROSHKA_ADMIN_FROM_CM:-}}"
+      if [[ -z "${TROSHKA_FORWARDED_EMAIL}" ]]; then
+        echo "error: oauth is enabled but no admin email found (set TROSHKA_ADMIN_EMAIL)" >&2
+        exit 1
+      fi
+      echo "Using SSO wipe identity: ${TROSHKA_FORWARDED_EMAIL}"
+    fi
+    # Terminate seeded EC2 hosts before project wipe / stack delete.
+    echo "Terminating Troshka hosts..."
+    host_ids="$(api_get "/api/v1/hosts/" 2>/dev/null | jq -r '.[].id // empty' || true)"
+    if [[ -n "${host_ids}" ]]; then
+      echo "${host_ids}" | while read -r hid; do
+        [[ -z "${hid}" ]] && continue
+        echo "  DELETE /api/v1/hosts/${hid}"
+        api_delete "/api/v1/hosts/${hid}" >/dev/null || \
+          echo "warning: host delete failed for ${hid}" >&2
+      done
+      # Brief wait so terminate calls are in flight before wiping projects.
+      sleep 5
+    else
+      echo "No hosts to terminate."
+    fi
+    "${_script_dir}/../lib/wipe-workloads.sh"
+    "${_script_dir}/../lib/verify-clean.sh"
+  fi
+  stop_backend_port_forward
+  trap - EXIT
+else
+  echo "No troshka-backend Service — nothing to wipe via API."
 fi
 
-"${_script_dir}/../lib/wipe-workloads.sh"
-"${_script_dir}/../lib/verify-clean.sh"
+# Remove IAM compute user + secret created by seed-compute.sh
+IAM_USER="${CLUSTER_NAME}-compute"
+SECRET_NAME="${CLUSTER_NAME}/compute"
+POLICY_NAME="troshka-compute-${CLUSTER_NAME}"
+ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+POLICY_ARN="arn:aws:iam::${ACCOUNT_ID}:policy/${POLICY_NAME}"
+echo "Cleaning compute IAM user ${IAM_USER} (if present)..."
+if aws iam get-user --user-name "${IAM_USER}" >/dev/null 2>&1; then
+  aws iam detach-user-policy --user-name "${IAM_USER}" --policy-arn "${POLICY_ARN}" >/dev/null 2>&1 || true
+  while read -r key_id; do
+    [[ -z "${key_id}" ]] && continue
+    aws iam delete-access-key --user-name "${IAM_USER}" --access-key-id "${key_id}" >/dev/null || true
+  done < <(aws iam list-access-keys --user-name "${IAM_USER}" --query 'AccessKeyMetadata[].AccessKeyId' --output text 2>/dev/null | tr '\t' '\n')
+  aws iam delete-user-policy --user-name "${IAM_USER}" --policy-name troshka-compute >/dev/null 2>&1 || true
+  aws iam delete-user --user-name "${IAM_USER}" >/dev/null 2>&1 || \
+    echo "warning: could not delete IAM user ${IAM_USER}" >&2
+fi
+if aws iam get-policy --policy-arn "${POLICY_ARN}" >/dev/null 2>&1; then
+  while read -r ver; do
+    [[ -z "${ver}" || "${ver}" == "None" ]] && continue
+    aws iam delete-policy-version --policy-arn "${POLICY_ARN}" --version-id "${ver}" >/dev/null 2>&1 || true
+  done < <(aws iam list-policy-versions --policy-arn "${POLICY_ARN}" \
+    --query 'Versions[?IsDefaultVersion==`false`].VersionId' --output text 2>/dev/null | tr '\t' '\n')
+  aws iam delete-policy --policy-arn "${POLICY_ARN}" >/dev/null 2>&1 || \
+    echo "warning: could not delete policy ${POLICY_NAME}" >&2
+fi
+aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" --region "${REGION}" \
+  --force-delete-without-recovery >/dev/null 2>&1 || true
 
-helm uninstall "${RELEASE}" -n "${NAMESPACE}" || true
-kubectl delete namespace "${NAMESPACE}" --wait=true || true
-helm uninstall aws-load-balancer-controller -n kube-system || true
+echo "Uninstalling Troshka Helm release..."
+helm uninstall "${RELEASE}" -n "${NAMESPACE}" 2>/dev/null || true
+kubectl delete namespace "${NAMESPACE}" --wait=true --timeout=5m 2>/dev/null || true
+
+echo "Uninstalling ingress-nginx / cert-manager (quickstart-managed)..."
+helm uninstall ingress-nginx -n "${INGRESS_NS}" 2>/dev/null || true
+kubectl delete namespace "${INGRESS_NS}" --wait=false 2>/dev/null || true
+helm uninstall cert-manager -n "${CERT_MANAGER_NS}" 2>/dev/null || true
+kubectl delete clusterissuer letsencrypt-prod --ignore-not-found 2>/dev/null || true
+kubectl delete namespace "${CERT_MANAGER_NS}" --wait=false 2>/dev/null || true
+# Legacy ALB controller from earlier quickstart revisions
+helm uninstall aws-load-balancer-controller -n kube-system 2>/dev/null || true
 
 echo "Deleting CloudFormation stack ${STACK_NAME} (this removes the EKS cluster and VPC)..."
 delete_cloudformation_stack "${STACK_NAME}" "${REGION}" || {
-  echo "If delete stuck: check leftover ENIs/ALBs/security groups tagged for the VPC, then retry stack delete." >&2
+  echo "If delete stuck: check leftover ENIs/NLBs/security groups tagged for the VPC, then retry stack delete." >&2
   exit 1
 }
 

@@ -67,6 +67,19 @@ spec:
                   name: troshka-secrets
                   key: s3-secret-key
                   optional: true
+            # Library/pattern S3 client reads config.s3.* (not aws.*). Same keys as S4/AWS.
+            - name: TROSHKA_S3__ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: s3-access-key
+                  optional: true
+            - name: TROSHKA_S3__SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: s3-secret-key
+                  optional: true
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:

@@ -1,4 +1,6 @@
 {{- if and .Values.deploy .Values.ingress.enabled }}
+{{- $oauth2 := and .Values.auth.oauth2Proxy.enabled .Values.auth.oauth2Proxy.clientId }}
+{{- $basic := and .Values.auth.basicAuth.enabled .Values.auth.basicAuth.password (not $oauth2) }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -11,9 +13,23 @@ metadata:
     {{- with .Values.ingress.annotations }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
+    {{- end }}
+    {{- if $basic }}
+    nginx.ingress.kubernetes.io/auth-type: basic
+    nginx.ingress.kubernetes.io/auth-secret: {{ .Values.auth.basicAuth.secretName | default "troshka-basic-auth" | quote }}
+    nginx.ingress.kubernetes.io/auth-realm: Troshka
+    {{- end }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if and .Values.ingress.tls.enabled .Values.ingress.host }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host | quote }}
+      secretName: {{ .Values.ingress.tls.secretName | default "troshka-tls" }}
   {{- end }}
   rules:
     - {{- if .Values.ingress.host }}
@@ -25,7 +41,13 @@ spec:
             pathType: Prefix
             backend:
               service:
+                {{- if $oauth2 }}
+                name: troshka-oauth2-proxy
+                port:
+                  number: 4180
+                {{- else }}
                 name: troshka-frontend
                 port:
                   number: 3000
+                {{- end }}
 {{- end }}

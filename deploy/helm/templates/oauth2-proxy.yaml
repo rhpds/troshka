@@ -1,0 +1,119 @@
+{{- if and .Values.deploy .Values.auth.oauth2Proxy.enabled }}
+{{- $existing := (lookup "v1" "Secret" (include "troshka.namespace" .) "troshka-oauth2-proxy") }}
+{{- $cookieSecret := .Values.auth.oauth2Proxy.cookieSecret | default "" }}
+{{- if and (not $cookieSecret) $existing }}
+  {{- $cookieSecret = index $existing.data "cookie-secret" | default "" | b64dec }}
+{{- end }}
+{{- if not $cookieSecret }}
+  {{- $cookieSecret = randAlphaNum 32 }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: troshka-oauth2-proxy
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth
+  annotations:
+    helm.sh/resource-policy: keep
+type: Opaque
+stringData:
+  client-id: {{ .Values.auth.oauth2Proxy.clientId | quote }}
+  client-secret: {{ .Values.auth.oauth2Proxy.clientSecret | quote }}
+  cookie-secret: {{ $cookieSecret | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: troshka-oauth2-proxy
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: troshka-oauth2-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: troshka-oauth2-proxy
+        app.kubernetes.io/component: auth
+    spec:
+      {{- include "troshka.controlPlaneAffinity" . | nindent 6 }}
+      containers:
+        - name: oauth2-proxy
+          image: {{ .Values.auth.oauth2Proxy.image | quote }}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --provider=oidc
+            - --http-address=0.0.0.0:4180
+            - --upstream=http://troshka-frontend:3000
+            - --redirect-url={{ .Values.auth.oauth2Proxy.redirectUrl }}
+            - --oidc-issuer-url={{ .Values.auth.oauth2Proxy.oidcIssuerUrl }}
+            - --cookie-secure=true
+            - --cookie-samesite=lax
+            - --email-domain={{ .Values.auth.oauth2Proxy.emailDomains | join "," }}
+            - --pass-access-token=false
+            - --pass-user-headers=true
+            - --set-xauthrequest=true
+            - --reverse-proxy=true
+            - --skip-provider-button=false
+            - --scope=openid email profile
+            - --oidc-email-claim=email
+            - --skip-auth-regex=^/api/v1/health
+            - --skip-auth-regex=^/api/v1/projects/[^/]+/ws
+            - --skip-auth-regex=^/api/v1/patterns/[^/]+/ws
+            {{- range .Values.auth.oauth2Proxy.skipAuthRegexes }}
+            - --skip-auth-regex={{ . }}
+            {{- end }}
+          env:
+            - name: OAUTH2_PROXY_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-oauth2-proxy
+                  key: client-id
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-oauth2-proxy
+                  key: client-secret
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-oauth2-proxy
+                  key: cookie-secret
+          ports:
+            - containerPort: 4180
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: 4180
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: troshka-oauth2-proxy
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: auth
+spec:
+  selector:
+    app.kubernetes.io/name: troshka-oauth2-proxy
+  ports:
+    - port: 4180
+      targetPort: 4180
+      name: http
+{{- end }}

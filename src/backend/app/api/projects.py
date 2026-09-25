@@ -866,9 +866,38 @@ def _validate_template_yaml(template_yaml):
         )
 
 
-def _find_library_item(db, user_id, item_id, item_name, label, missing):
-    """Look up a library item by ID, falling back to name. Appends to missing if not found."""
+def _lookup_library_item_by_exact_name(db, user_id, name):
+    """Personal library first, then central — exact name match."""
     from app.models.library import Library, LibraryItem
+
+    item = (
+        db.query(LibraryItem)
+        .join(Library)
+        .filter(LibraryItem.name == name, Library.owner_id == user_id)
+        .first()
+    )
+    if item:
+        return item
+    return (
+        db.query(LibraryItem)
+        .join(Library)
+        .filter(LibraryItem.name == name, Library.type == "central")
+        .first()
+    )
+
+
+def _find_library_item(db, user_id, item_id, item_name, label, missing):
+    """Look up a library item by ID, falling back to name (supports ``A|B|``).
+
+    Pipe-separated names are tried in order. An empty segment (e.g. trailing
+    ``|``) makes the ref optional: return OPTIONAL_LIBRARY_REF instead of
+    appending to ``missing`` when nothing matches.
+    """
+    from app.models.library import Library, LibraryItem
+    from app.services.library_refs import (
+        OPTIONAL_LIBRARY_REF,
+        split_library_item_names,
+    )
 
     if item_id:
         item = (
@@ -879,30 +908,40 @@ def _find_library_item(db, user_id, item_id, item_name, label, missing):
         )
         if item:
             return item
-    if item_name:
-        item = (
-            db.query(LibraryItem)
-            .join(Library)
-            .filter(LibraryItem.name == item_name, Library.owner_id == user_id)
-            .first()
-        )
+    names, optional = split_library_item_names(item_name)
+    for name in names:
+        item = _lookup_library_item_by_exact_name(db, user_id, name)
         if item:
             return item
-        item = (
-            db.query(LibraryItem)
-            .join(Library)
-            .filter(LibraryItem.name == item_name, Library.type == "central")
-            .first()
-        )
-        if item:
-            return item
-    if item_id or item_name:
-        missing.append(f"{label}: '{item_name or item_id}' not found")
+    if optional:
+        return OPTIONAL_LIBRARY_REF
+    if item_id or names:
+        shown = item_name if item_name else item_id
+        missing.append(f"{label}: '{shown}' not found")
     return None
+
+
+def _bind_or_clear_library_ref(cfg, item, id_key, name_key):
+    """Apply a resolved library item, or clear refs on optional skip."""
+    from app.models.library import LibraryItem
+    from app.services.library_refs import OPTIONAL_LIBRARY_REF
+
+    if item is OPTIONAL_LIBRARY_REF:
+        cfg.pop(id_key, None)
+        cfg.pop(name_key, None)
+        return False
+    if isinstance(item, LibraryItem):
+        cfg[id_key] = item.id
+        cfg[name_key] = item.name
+        return True
+    return False
 
 
 def _resolve_vm_library_refs(db, user_id, vm_name, vm_cfg, missing):
     """Resolve all library item references for a single VM definition."""
+    from app.models.library import LibraryItem
+    from app.services.library_refs import OPTIONAL_LIBRARY_REF
+
     for di, disk_cfg in enumerate(vm_cfg.get("disks", [])):
         item = _find_library_item(
             db,
@@ -912,9 +951,9 @@ def _resolve_vm_library_refs(db, user_id, vm_name, vm_cfg, missing):
             f"VM '{vm_name}' disk {di}",
             missing,
         )
-        if item:
-            disk_cfg["library_item_id"] = item.id
-            disk_cfg["library_item_name"] = item.name
+        _bind_or_clear_library_ref(
+            disk_cfg, item, "library_item_id", "library_item_name"
+        )
     iso_id = vm_cfg.get("pxe_boot_iso_id")
     if iso_id:
         item = _find_library_item(
@@ -925,10 +964,14 @@ def _resolve_vm_library_refs(db, user_id, vm_name, vm_cfg, missing):
             f"VM '{vm_name}' PXE boot ISO",
             missing,
         )
-        if item:
+        if item is OPTIONAL_LIBRARY_REF:
+            vm_cfg.pop("pxe_boot_iso_id", None)
+            vm_cfg.pop("pxe_boot_iso_name", None)
+        elif isinstance(item, LibraryItem):
             vm_cfg["pxe_boot_iso_id"] = item.id
             vm_cfg["pxe_boot_iso_name"] = item.name
-    for ii, iso_cfg in enumerate(vm_cfg.get("isos", [])):
+    kept_isos = []
+    for ii, iso_cfg in enumerate(list(vm_cfg.get("isos") or [])):
         item = _find_library_item(
             db,
             user_id,
@@ -937,9 +980,14 @@ def _resolve_vm_library_refs(db, user_id, vm_name, vm_cfg, missing):
             f"VM '{vm_name}' ISO {ii}",
             missing,
         )
-        if item:
+        if item is OPTIONAL_LIBRARY_REF:
+            continue
+        if isinstance(item, LibraryItem):
             iso_cfg["library_item_id"] = item.id
             iso_cfg["library_item_name"] = item.name
+        kept_isos.append(iso_cfg)
+    if "isos" in vm_cfg:
+        vm_cfg["isos"] = kept_isos
 
 
 def _resolve_template_library_items(db, user, vms_def):

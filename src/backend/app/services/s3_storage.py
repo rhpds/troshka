@@ -38,11 +38,11 @@ def _get_s3_config() -> dict:
         pass
     try:
         return {
-            "region": config.s3.region or "us-east-1",
-            "access_key_id": getattr(config.s3, "access_key_id", ""),
-            "secret_access_key": getattr(config.s3, "secret_access_key", ""),
-            "bucket": config.s3.bucket or "troshka-images",
-            "endpoint_url": getattr(config.s3, "endpoint_url", ""),
+            "region": getattr(config.s3, "region", None) or "us-east-1",
+            "access_key_id": getattr(config.s3, "access_key_id", "") or "",
+            "secret_access_key": getattr(config.s3, "secret_access_key", "") or "",
+            "bucket": getattr(config.s3, "bucket", None) or "troshka-images",
+            "endpoint_url": getattr(config.s3, "endpoint_url", "") or "",
         }
     except AttributeError:
         raise ValueError(

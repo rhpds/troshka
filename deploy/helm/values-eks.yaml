@@ -1,31 +1,59 @@
 # Quickstart values for Amazon EKS (control plane only).
 # Used by quickstarts/eks/install.sh with the main chart.
+#
+# Default: ingress-nginx + sslip.io + cert-manager LE + nginx basic auth.
+# --production --domain: Route53 hostname + Cognito OIDC via oauth2-proxy
+#   (+ RDS / S3 / ElastiCache). Install script fills host / secrets.
 
 route:
   enabled: false
 
 ingress:
   enabled: true
-  className: alb
+  className: nginx
   host: ""
   annotations:
-    alb.ingress.kubernetes.io/scheme: internet-facing
-    alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  tls:
+    enabled: true
+    secretName: troshka-tls  # pragma: allowlist secret
+    clusterIssuer: letsencrypt-prod
 
 auth:
   oauthEnabled: false
+  basicAuth:
+    enabled: true
+    username: admin
+    password: ""
+    secretName: troshka-basic-auth  # pragma: allowlist secret
+  oauth2Proxy:
+    enabled: false
+    clientId: ""
+    clientSecret: ""
+    oidcIssuerUrl: ""
+    redirectUrl: ""
+    cookieSecret: ""
+    emailDomains:
+      - "*"
 
 postgres:
   deploy: true
+  # Public images — EKS nodes have no registry.redhat.io pull secret.
+  image: public.ecr.aws/docker/library/postgres:16
+  # docker = POSTGRES_*; rhel = POSTGRESQL_* (registry.redhat.io image).
+  envFlavor: docker
   storageSize: 20Gi
 
 s4:
   deploy: true
   storageSize: 100Gi
+  runAsRoot: true
 
 redis:
   deploy: true
+  image: public.ecr.aws/docker/library/redis:7-alpine
 
 # Laptop / demo scale — not production worker fleets.
 worker:

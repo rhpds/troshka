@@ -1848,7 +1848,7 @@ def test_clear_console_config():
 
 
 def test_discover_images_ec2_success():
-    """GET discover-images returns RHEL images for EC2 provider."""
+    """GET discover-images returns RHEL + Fedora images for EC2 provider."""
     pid = _create_provider(name=f"disc-img-{uuid.uuid4().hex[:8]}")
     db = TestSession()
     p = db.query(Provider).filter_by(id=pid).first()
@@ -1860,20 +1860,40 @@ def test_discover_images_ec2_success():
     db.close()
 
     mock_ec2 = MagicMock()
-    mock_ec2.describe_images.return_value = {
-        "Images": [
-            {
-                "ImageId": "ami-111",
-                "Name": "RHEL-9.5.0_HVM-20250101-x86_64-0-Access2-GP3",
-                "CreationDate": "2025-01-01T00:00:00.000Z",
-            },
-            {
-                "ImageId": "ami-222",
-                "Name": "RHEL-9.7.0_HVM-20250601-x86_64-0-Access2-GP3",
-                "CreationDate": "2025-06-01T00:00:00.000Z",
-            },
-        ]
-    }
+
+    def _describe_images(**kwargs):
+        owners = kwargs.get("Owners") or []
+        if "125523088429" in owners:
+            return {
+                "Images": [
+                    {
+                        "ImageId": "ami-fedora43",
+                        "Name": "Fedora-Cloud-Base-AmazonEC2.x86_64-43-20260924.0",
+                        "CreationDate": "2026-09-24T00:00:00.000Z",
+                    },
+                    {
+                        "ImageId": "ami-fedora42",
+                        "Name": "Fedora-Cloud-Base-AmazonEC2.x86_64-42-20260101.0",
+                        "CreationDate": "2026-01-01T00:00:00.000Z",
+                    },
+                ]
+            }
+        return {
+            "Images": [
+                {
+                    "ImageId": "ami-111",
+                    "Name": "RHEL-9.5.0_HVM-20250101-x86_64-0-Access2-GP3",
+                    "CreationDate": "2025-01-01T00:00:00.000Z",
+                },
+                {
+                    "ImageId": "ami-222",
+                    "Name": "RHEL-9.7.0_HVM-20250601-x86_64-0-Access2-GP3",
+                    "CreationDate": "2025-06-01T00:00:00.000Z",
+                },
+            ]
+        }
+
+    mock_ec2.describe_images.side_effect = _describe_images
 
     with patch("boto3.client", return_value=mock_ec2):
         resp = client.get(f"/api/v1/providers/{pid}/discover-images")
@@ -1884,6 +1904,11 @@ def test_discover_images_ec2_success():
     img = data["images"][0]
     assert "image_id" in img
     assert "label" in img
+    fedora = [i for i in data["images"] if i.get("family") == "fedora"]
+    assert len(fedora) == 1
+    assert fedora[0]["image_id"] == "ami-fedora43"
+    assert "Fedora Cloud 43" in fedora[0]["label"]
+    assert fedora[0]["type"] == "Community"
 
 
 def test_discover_images_ec2_not_found():

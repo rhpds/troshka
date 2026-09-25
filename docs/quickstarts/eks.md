@@ -1,8 +1,6 @@
 # Troshka Quickstart — Amazon EKS
 
-Greenfield install: **CloudFormation** creates a VPC + EKS cluster, then Helm deploys Troshka. One CLI command.
-
-This stack runs the Troshka **control plane only**. Nested-VM hosts are not included — add compute after the UI is up.
+Greenfield install: **CloudFormation** creates a VPC + EKS cluster, then Helm deploys Troshka and seeds one EC2 compute provider + host. One CLI command.
 
 ## Prerequisites
 
@@ -17,14 +15,17 @@ Attach `deploy/eks/iam-deployer-policy.json` to the deploying user/role, or use 
 | Area | Why |
 |---|---|
 | **CloudFormation** | Create / update / delete the quickstart stack |
-| **EC2 / VPC / EIP / NAT / SG** | Network for the cluster |
+| **EC2 / VPC / EIP / NAT / SG** | Network for the cluster **and** Troshka compute VPC/host |
 | **EKS** | Cluster, node groups, addons, access entries |
-| **IAM** | Cluster/node roles, PassRole, OIDC provider hooks |
-| **Elastic Load Balancing** | ALB for the Troshka Ingress |
+| **IAM** | Cluster/node roles, PassRole, OIDC, compute user + access keys |
+| **Secrets Manager** | RDS/ElastiCache/S3/compute credential storage |
+| **Elastic Load Balancing** | NLB for ingress-nginx |
+| **Route53** | Optional `--domain` / `--production` public hostname |
+| **Cognito** | `--production` OIDC user pool + admin user |
 | **STS GetCallerIdentity** | Script sanity check |
 | **CloudWatch Logs** (optional) | Cluster / controller logging |
 
-Teardown needs the same principal for stack delete. After wipe, stuck **ENIs / ALBs / security groups** can block CFN delete — the teardown script notes this.
+Teardown needs the same principal for stack delete. After wipe, stuck **ENIs / NLBs / security groups** can block CFN delete — the teardown script notes this.
 
 ## Install
 
@@ -33,56 +34,97 @@ export AWS_REGION=us-east-1   # or your region
 ./quickstarts/eks/install.sh
 ```
 
-The script prints the AWS account, identity, region (and source), and KUBECONFIG, then asks `[y/N]`. Default is **no**.
+**Default path (quickstart)**
 
-If `KUBECONFIG` is unset, it warns and offers a dedicated file (`~/.kube/troshka-eks-<cluster>.yaml`) so the cluster is not merged into your default kubeconfig. With `--yes` / `--quiet` / `--no-verify` it selects that Troshka path automatically.
+1. CloudFormation VPC + EKS (+ EBS CSI with IRSA)
+2. ingress-nginx (internet-facing NLB) + cert-manager
+3. Hostname `troshka.<nlb-ip>.sslip.io` + Let's Encrypt (HTTP-01)
+4. nginx **basic auth** (random admin password printed at the end)
+5. Helm Troshka (in-cluster Postgres / **S4** / Redis; oauth off behind basic auth)
+6. Seed EC2 provider + one host on a **Fedora Cloud** AMI (`m8i.xlarge`, 100 GiB)
+7. Import **Fedora Cloud Generic qcow2** into the library via URL (host downloads → S4; no laptop upload)
 
-Non-interactive / CI (skip confirm, use resolved defaults):
+**Public hostname (still basic auth)**
+
+```bash
+./quickstarts/eks/install.sh --domain troshka.example.com
+```
+
+Requires a public Route53 hosted zone that can hold that name (use a **subdomain**, not the zone apex — the script upserts a CNAME to the NLB).
+
+**Production**
+
+```bash
+./quickstarts/eks/install.sh --production --domain troshka.example.com
+# optional:
+./quickstarts/eks/install.sh --production --domain troshka.example.com \
+  --admin-email you@example.com
+```
+
+`--production` enables:
+
+| Piece | What |
+|---|---|
+| RDS + S3 + ElastiCache | Instead of in-cluster data plane |
+| Route53 CNAME | `--domain` → NLB |
+| Let's Encrypt | Same cert-manager issuer |
+| Cognito User Pool | Hosted UI; admin user created by the script |
+| oauth2-proxy | OIDC in front of the UI; `auth.oauthEnabled=true` for the backend |
+| Host AMI | **RHEL 9 Hourly** marketplace (`m8i.2xlarge`, 500 GiB) |
+
+OpenShift **ose-oauth-proxy** is not used on EKS (`route.enabled=false`). OCP installs keep their own oauth path unchanged.
+
+Object storage: default uses **in-cluster S4** (no Troshka `type=s3` provider required). `--production` / `--use-s3` switches the control plane to Amazon S3 via Helm secrets.
+
+Managed data plane without full production auth:
+
+```bash
+./quickstarts/eks/install.sh --use-rds
+./quickstarts/eks/install.sh --use-s3
+./quickstarts/eks/install.sh --use-elasticache
+```
+
+Passwords/tokens are randomly generated (Helm `randAlphaNum` in-cluster; Secrets Manager for RDS/ElastiCache; IAM access keys for S3/compute; Cognito admin password printed once).
+
+The script prints the AWS account, identity, region, KUBECONFIG, and auth/TLS mode, then asks `[y/N]`. Default is **no**.
+
+If `KUBECONFIG` is unset, it warns and offers a dedicated file (`~/.kube/troshka-eks-<cluster>.yaml`). With `--yes` / `--quiet` / `--no-verify` it selects that path automatically.
 
 ```bash
 ./quickstarts/eks/install.sh --yes
-./quickstarts/eks/install.sh --quiet
-./quickstarts/eks/install.sh --no-verify
-# or: TROSHKA_NO_VERIFY=1 ./quickstarts/eks/install.sh
+./quickstarts/eks/install.sh --profile my-profile --region us-east-1
 ```
 
-Useful env vars:
+Overrides: `TROSHKA_EKS_STACK`, `TROSHKA_EKS_CLUSTER`, `TROSHKA_NAMESPACE`, `TROSHKA_DOMAIN`, `TROSHKA_ADMIN_EMAIL`, `TROSHKA_ADMIN_PASSWORD`, `TROSHKA_ACME_EMAIL`, `TROSHKA_EKS_PRODUCTION`, `TROSHKA_HOST_AMI`, `TROSHKA_HOST_INSTANCE_TYPE`, `TROSHKA_HOST_DISK_GB`.
 
-```bash
-# Credentials — named profile (preferred) …
-export AWS_PROFILE=my-profile
-# … or access key / secret (and session token if STS):
-export AWS_ACCESS_KEY_ID=<YOUR_ACCESS_KEY_ID>
-export AWS_SECRET_ACCESS_KEY=<YOUR_SECRET_ACCESS_KEY>
-export AWS_SESSION_TOKEN=<YOUR_SESSION_TOKEN>
+### Auth matrix (do not mix on one release)
 
-export AWS_REGION=us-west-2
-export KUBECONFIG=$HOME/.kube/troshka-eks-quickstart.yaml
-export TROSHKA_EKS_STACK=troshka-eks-quickstart
-export TROSHKA_EKS_CLUSTER=troshka-quickstart
-```
-
-What it does:
-
-1. Create/update stack from `deploy/eks/cloudformation/troshka-eks.yaml`
-2. `aws eks update-kubeconfig`
-3. Install AWS Load Balancer Controller
-4. `helm upgrade --install` with `deploy/helm/values-eks.yaml` (Ingress, oauth off, Postgres+S4)
-5. Print the ALB hostname
-
-Overrides: `TROSHKA_EKS_STACK`, `TROSHKA_EKS_CLUSTER`, `TROSHKA_NAMESPACE`, `TROSHKA_IMAGE_TAG`.
+| Platform | Edge auth | Backend `oauth_enabled` | Helm gates |
+|---|---|---|---|
+| OCP + SSO | ose-oauth-proxy | true | `route.enabled` + `auth.oauthEnabled` + `oauth2Proxy` off |
+| EKS default | nginx basic auth | false (auto-admin behind basic) | `ingress` + `basicAuth` |
+| EKS `--production` | oauth2-proxy → Cognito | true | `ingress` + `oauth2Proxy.enabled` (no `route`) |
 
 ### Console “Launch Stack” (optional)
 
-In the AWS Console → CloudFormation → Create stack → upload `deploy/eks/cloudformation/troshka-eks.yaml`, then run from step 2 of `install.sh` (or re-run `install.sh`, which updates an existing stack name).
+Upload `deploy/eks/cloudformation/troshka-eks.yaml`, then re-run `install.sh` (updates the same stack name) or continue from kubeconfig + Helm steps.
 
 ## Compute (where lab VMs run)
 
-Not in the CFN stack. After the UI is up:
+Install seeds an EC2 provider (`ec2-<cluster>`) and provisions one host:
 
-1. Remote Linux + troshkad  
-2. EC2 / Azure / GCP / KubeVirt (see [install-aws.md](../install-aws.md) and siblings)  
-3. Local libvirt / WSL / macOS guest — [local.md](local.md)
+| Mode | AMI | Instance | Disk |
+|---|---|---|---|
+| Default | Fedora Cloud Base (Fedora Project) | `m8i.xlarge` | 100 GiB |
+| `--production` | RHEL 9 Hourly (marketplace) | `m8i.2xlarge` | 500 GiB |
+
+Agent install continues in the background after the script exits — watch **Admin → Hosts** until `connected`. Compute VPC/SG are created via Troshka `create-vpc` (separate from the EKS VPC). IAM user `<cluster>-compute` + Secrets Manager `<cluster>/compute` hold the provider keys.
+
+Library: install also registers an `s4-library` provider (in-cluster S4) and imports **Fedora Cloud 43** via `import-url` (troshkad on the seeded host pulls the official Fedora URL into S4). Skip with `TROSHKA_SKIP_FEDORA_IMAGE=1`. Override URL/name via `TROSHKA_FEDORA_QCOW_URL` / `TROSHKA_FEDORA_LIBRARY_NAME`.
+
+Getting Started’s `test-web.yaml` prefers a RHEL library image (+ Binary DVD when present) and falls back to **Fedora Cloud 43**. A subscribed RHEL qcow cannot be auto-fetched; upload it to the library yourself if you want the RHEL path (name it `Prebuilt RHEL 10.2 Bastion`, or change the template).
+
+Further options: [install-aws.md](../install-aws.md), Azure/GCP/KubeVirt guides, or [local.md](local.md).
 
 ## Teardown
 
@@ -91,6 +133,6 @@ Not in the CFN stack. After the UI is up:
 ./quickstarts/eks/teardown.sh --yes
 ```
 
-Order: API wipe of all projects → verify clean → Helm uninstall → delete CloudFormation stack (cluster + VPC).
+Order: terminate hosts → API wipe of all projects (via backend port-forward) → verify clean → delete compute IAM user/secret → Helm uninstall Troshka → uninstall ingress-nginx + cert-manager → delete CloudFormation stack (cluster + VPC).
 
 Details: [teardown.md](teardown.md).

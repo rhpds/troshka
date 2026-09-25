@@ -63,6 +63,18 @@ spec:
                   name: troshka-secrets
                   key: s3-secret-key
                   optional: true
+            - name: TROSHKA_S3__ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: s3-access-key
+                  optional: true
+            - name: TROSHKA_S3__SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: s3-secret-key
+                  optional: true
           volumeMounts:
             - name: config
               mountPath: /opt/app-root/src/config/config.yaml

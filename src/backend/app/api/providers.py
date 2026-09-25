@@ -23,6 +23,125 @@ DbSession = Annotated[Session, Depends(get_db)]
 _PROVIDER_NOT_FOUND = "Provider not found"
 _SUBNET_CIDR = "10.100.0.0/16"  # NOSONAR
 
+# AMI owners for EC2 host discover-images
+_RH_AMI_OWNER = "309956199498"  # Red Hat
+_FEDORA_AMI_OWNER = "125523088429"  # Fedora Project
+
+# Catalog entries for discover_images (latest match per pattern).
+_EC2_IMAGE_CATALOG: list[dict[str, Any]] = [
+    {
+        "owners": [_RH_AMI_OWNER],
+        "pattern": "RHEL-10*x86_64*Access2-GP3",
+        "label": "RHEL 10 Access2 (Gold Image / BYOS)",
+        "source": "BYOS",
+        "family": "rhel",
+    },
+    {
+        "owners": [_RH_AMI_OWNER],
+        "pattern": "RHEL-10*x86_64*Hourly2-GP3",
+        "label": "RHEL 10 Marketplace (Hourly)",
+        "source": "PAYG",
+        "family": "rhel",
+    },
+    {
+        "owners": [_RH_AMI_OWNER],
+        "pattern": "RHEL-9*x86_64*Access2-GP3",
+        "label": "RHEL 9 Access2 (Gold Image / BYOS)",
+        "source": "BYOS",
+        "family": "rhel",
+    },
+    {
+        "owners": [_RH_AMI_OWNER],
+        "pattern": "RHEL-9*x86_64*Hourly2-GP3",
+        "label": "RHEL 9 Marketplace (Hourly)",
+        "source": "PAYG",
+        "family": "rhel",
+    },
+    {
+        # Stable Fedora Cloud (x86_64-4x…); excludes ELN/Rawhide.
+        "owners": [_FEDORA_AMI_OWNER],
+        "pattern": "Fedora-Cloud-Base-AmazonEC2.x86_64-4*",
+        "label": "Fedora Cloud Base",
+        "source": "Community",
+        "family": "fedora",
+    },
+]
+
+
+def _rhel_ami_sort_key(img: dict) -> tuple:
+    import re
+
+    m = re.search(r"RHEL-(\d+)\.(\d+)\.(\d+)", img["Name"])
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)), img["CreationDate"])
+    return (0, 0, 0, img["CreationDate"])
+
+
+def _fedora_ami_sort_key(img: dict) -> tuple:
+    import re
+
+    # Fedora-Cloud-Base-AmazonEC2.x86_64-43-20260924.0
+    m = re.search(r"x86_64-(\d+)-(\d+)\.(\d+)", img["Name"])
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)), img["CreationDate"])
+    return (0, 0, 0, img["CreationDate"])
+
+
+def _label_for_ami(entry: dict[str, Any], image_name: str) -> str:
+    import re
+
+    label = entry["label"]
+    if entry["family"] == "rhel":
+        version_match = re.search(r"RHEL-(\d+\.\d+\.\d+)", image_name)
+        version = version_match.group(1) if version_match else ""
+        if version:
+            return label.replace("RHEL 10", f"RHEL {version}").replace(
+                "RHEL 9", f"RHEL {version}"
+            )
+        return label
+    if entry["family"] == "fedora":
+        m = re.search(r"x86_64-(\d+)-", image_name)
+        if m:
+            return f"Fedora Cloud {m.group(1)}"
+        return label
+    return label
+
+
+def _latest_catalog_ami(ec2: Any, entry: dict[str, Any]) -> dict | None:
+    """Return the newest AMI matching a catalog entry, or None."""
+    sort_key = (
+        _fedora_ami_sort_key if entry["family"] == "fedora" else _rhel_ami_sort_key
+    )
+    response = ec2.describe_images(
+        Owners=entry["owners"],
+        Filters=[
+            {"Name": "name", "Values": [entry["pattern"]]},
+            {"Name": "state", "Values": ["available"]},
+            {"Name": "architecture", "Values": ["x86_64"]},
+        ],
+    )
+    images = sorted(response.get("Images") or [], key=sort_key)
+    if not images:
+        return None
+    latest = images[-1]
+    return {
+        "type": entry["source"],
+        "label": _label_for_ami(entry, latest["Name"]),
+        "image_id": latest["ImageId"],
+        "name": latest["Name"],
+        "created": latest["CreationDate"],
+        "family": entry["family"],
+    }
+
+
+def _discover_ec2_amis(ec2: Any) -> list[dict]:
+    results: list[dict] = []
+    for entry in _EC2_IMAGE_CATALOG:
+        ami = _latest_catalog_ami(ec2, entry)
+        if ami:
+            results.append(ami)
+    return results
+
 
 class ProviderCreate(BaseModel):
     name: str
@@ -658,9 +777,7 @@ def discover_images(
     user: AdminUser,
     db: DbSession,
 ):
-    """List available RHEL 9 and 10 images (both Access2/Gold and Hourly/Marketplace)."""
-    import re
-
+    """List host AMIs: RHEL 9/10 (Access2 + Hourly) and Fedora Cloud Base."""
     import boto3
 
     provider = db.query(Provider).filter_by(id=provider_id).first()
@@ -675,76 +792,10 @@ def discover_images(
             aws_access_key_id=creds.get("access_key_id"),
             aws_secret_access_key=creds.get("secret_access_key"),
         )
-
-        image_types = {
-            "rhel10-access2": {
-                "pattern": "RHEL-10*x86_64*Access2-GP3",
-                "label": "RHEL 10 Access2 (Gold Image / BYOS)",
-                "source": "BYOS",
-            },
-            "rhel10-hourly": {
-                "pattern": "RHEL-10*x86_64*Hourly2-GP3",
-                "label": "RHEL 10 Marketplace (Hourly)",
-                "source": "PAYG",
-            },
-            "rhel9-access2": {
-                "pattern": "RHEL-9*x86_64*Access2-GP3",
-                "label": "RHEL 9 Access2 (Gold Image / BYOS)",
-                "source": "BYOS",
-            },
-            "rhel9-hourly": {
-                "pattern": "RHEL-9*x86_64*Hourly2-GP3",
-                "label": "RHEL 9 Marketplace (Hourly)",
-                "source": "PAYG",
-            },
+        return {
+            "region": provider.default_region,
+            "images": _discover_ec2_amis(ec2),
         }
-
-        results = []
-        for image_type, info in image_types.items():
-            response = ec2.describe_images(
-                Owners=["309956199498"],
-                Filters=[
-                    {"Name": "name", "Values": [info["pattern"]]},
-                    {"Name": "state", "Values": ["available"]},
-                ],
-            )
-
-            def version_key(img):
-                m = re.search(r"RHEL-(\d+)\.(\d+)\.(\d+)", img["Name"])
-                if m:
-                    return (
-                        int(m.group(1)),
-                        int(m.group(2)),
-                        int(m.group(3)),
-                        img["CreationDate"],
-                    )
-                return (0, 0, 0, img["CreationDate"])
-
-            images = sorted(response["Images"], key=version_key)
-            if images:
-                latest = images[-1]
-                # Extract version from name like "RHEL-10.2.0_HVM..." or "RHEL-9.7.0_HVM..."
-                image_name = latest["Name"]
-                version_match = re.search(r"RHEL-(\d+\.\d+\.\d+)", image_name)
-                version = version_match.group(1) if version_match else ""
-                label = (
-                    info["label"]
-                    .replace("RHEL 10", f"RHEL {version}")
-                    .replace("RHEL 9", f"RHEL {version}")
-                    if version
-                    else info["label"]
-                )
-                results.append(
-                    {
-                        "type": info["source"],
-                        "label": label,
-                        "image_id": latest["ImageId"],
-                        "name": latest["Name"],
-                        "created": latest["CreationDate"],
-                    }
-                )
-
-        return {"region": provider.default_region, "images": results}
     except Exception:
         logger.exception("Image discovery failed for %s", provider.name)
         raise HTTPException(
@@ -956,7 +1007,11 @@ def create_vpc(
 
         from app.services.provisioner import ensure_security_group
 
-        sg_id = ensure_security_group(vpc_id, credentials=creds)
+        sg_id = ensure_security_group(
+            vpc_id,
+            credentials=creds,
+            region=provider.default_region or "us-east-1",
+        )
 
         provider.vpc_id = vpc_id
         provider.subnet_id = first_subnet_id
@@ -1004,7 +1059,11 @@ def setup_infrastructure(
     try:
         from app.services.provisioner import ensure_security_group
 
-        sg_id = ensure_security_group(vpc_id, credentials=creds)
+        sg_id = ensure_security_group(
+            vpc_id,
+            credentials=creds,
+            region=provider.default_region or "us-east-1",
+        )
 
         provider.vpc_id = vpc_id
         provider.subnet_id = subnet_id

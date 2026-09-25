@@ -8,6 +8,41 @@ REPO_ROOT="$(cd "${QUICKSTARTS_ROOT}/.." && pwd)"
 
 export REPO_ROOT QUICKSTARTS_ROOT
 
+# Apply --profile / --region from argv before any aws calls.
+# Usage: apply_aws_cli_args "$@"
+# Sets/exports AWS_PROFILE and AWS_REGION when flags are present.
+apply_aws_cli_args() {
+  local args=("$@")
+  local i=0
+  while (( i < ${#args[@]} )); do
+    case "${args[$i]}" in
+      --profile)
+        i=$((i + 1))
+        if (( i >= ${#args[@]} )); then
+          echo "error: --profile requires a value" >&2
+          exit 1
+        fi
+        export AWS_PROFILE="${args[$i]}"
+        ;;
+      --profile=*)
+        export AWS_PROFILE="${args[$i]#--profile=}"
+        ;;
+      --region)
+        i=$((i + 1))
+        if (( i >= ${#args[@]} )); then
+          echo "error: --region requires a value" >&2
+          exit 1
+        fi
+        export AWS_REGION="${args[$i]}"
+        ;;
+      --region=*)
+        export AWS_REGION="${args[$i]#--region=}"
+        ;;
+    esac
+    i=$((i + 1))
+  done
+}
+
 # Resolve AWS region and print where it came from.
 # Sets: REGION, REGION_SOURCE (exported).
 resolve_aws_region() {
@@ -107,6 +142,7 @@ print_eks_tips() {
 Tips:
   # Credentials (pick one)
   export AWS_PROFILE=my-profile
+  ./quickstarts/eks/install.sh --profile my-profile
   # or without a profile:
   export AWS_ACCESS_KEY_ID=<YOUR_ACCESS_KEY_ID>
   export AWS_SECRET_ACCESS_KEY=<YOUR_SECRET_ACCESS_KEY>
@@ -114,10 +150,22 @@ Tips:
 
   # Region / kubeconfig / stack
   export AWS_REGION=us-west-2            # (or your preferred region) and re-run
+  ./quickstarts/eks/install.sh --region us-west-2
   export AWS_DEFAULT_REGION=us-west-2     # fallback if AWS_REGION unset
   export KUBECONFIG=${default_kc}
   export TROSHKA_EKS_STACK=my-stack      # CloudFormation stack name
   export TROSHKA_EKS_CLUSTER=my-cluster  # EKS cluster name
+
+  # TLS / DNS / auth
+  ./quickstarts/eks/install.sh                              # sslip.io + LE + basic auth
+  ./quickstarts/eks/install.sh --domain troshka.example.com # Route53 CNAME + LE + basic auth
+  ./quickstarts/eks/install.sh --production --domain troshka.example.com
+  #   --production = RDS + S3 + ElastiCache + Cognito OIDC (requires --domain)
+
+  # Managed data plane without Cognito
+  ./quickstarts/eks/install.sh --use-rds
+  ./quickstarts/eks/install.sh --use-s3
+  ./quickstarts/eks/install.sh --use-elasticache
 
   # Non-interactive
   ./quickstarts/eks/install.sh --yes     # also --quiet / --no-verify
@@ -319,12 +367,206 @@ confirm() {
   [[ "$reply" == "y" || "$reply" == "Y" || "$reply" == "yes" ]]
 }
 
+# curl helpers that honor Troshka auth env vars (basic and/or forwarded SSO headers).
+# Env: TROSHKA_BASIC_USER, TROSHKA_BASIC_PASSWORD, TROSHKA_FORWARDED_EMAIL,
+#      TROSHKA_CURL_INSECURE=1 (-k)
+troshka_curl() {
+  local -a args=(-fsS)
+  if [[ "${TROSHKA_CURL_INSECURE:-}" == "1" || "${TROSHKA_CURL_INSECURE:-}" == "true" ]]; then
+    args+=(-k)
+  fi
+  if [[ -n "${TROSHKA_BASIC_USER:-}" && -n "${TROSHKA_BASIC_PASSWORD:-}" ]]; then
+    args+=(-u "${TROSHKA_BASIC_USER}:${TROSHKA_BASIC_PASSWORD}")
+  fi
+  if [[ -n "${TROSHKA_FORWARDED_EMAIL:-}" ]]; then
+    args+=(-H "X-Forwarded-Email: ${TROSHKA_FORWARDED_EMAIL}")
+    args+=(-H "X-Forwarded-User: ${TROSHKA_FORWARDED_EMAIL}")
+  fi
+  curl "${args[@]}" "$@"
+}
+
 api_get() {
   local path="$1"
-  curl -fsS "${TROSHKA_API_URL}${path}"
+  troshka_curl "${TROSHKA_API_URL}${path}"
+}
+
+api_post() {
+  local path="$1"
+  local body="${2:-}"
+  if [[ -n "${body}" ]]; then
+    troshka_curl -X POST -H "Content-Type: application/json" -d "${body}" \
+      "${TROSHKA_API_URL}${path}"
+  else
+    troshka_curl -X POST "${TROSHKA_API_URL}${path}"
+  fi
 }
 
 api_delete() {
   local path="$1"
-  curl -fsS -X DELETE "${TROSHKA_API_URL}${path}"
+  troshka_curl -X DELETE "${TROSHKA_API_URL}${path}"
+}
+
+# Port-forward to in-cluster backend for API wipe (bypasses ingress auth / TLS).
+# Usage: start_backend_port_forward <namespace> [local_port]
+# Sets TROSHKA_API_URL and TROSHKA_PF_PID; call stop_backend_port_forward after.
+start_backend_port_forward() {
+  local ns="$1"
+  local local_port="${2:-18200}"
+  require_cmd kubectl
+  kubectl -n "${ns}" rollout status deployment/troshka-backend --timeout=60s >/dev/null 2>&1 || true
+  kubectl -n "${ns}" port-forward svc/troshka-backend "${local_port}:8200" >/tmp/troshka-pf.log 2>&1 &
+  TROSHKA_PF_PID=$!
+  export TROSHKA_PF_PID
+  local i
+  for i in $(seq 1 30); do
+    if curl -fsS -o /dev/null "http://127.0.0.1:${local_port}/api/v1/health" 2>/dev/null; then
+      export TROSHKA_API_URL="http://127.0.0.1:${local_port}"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "error: backend port-forward did not become ready (see /tmp/troshka-pf.log)" >&2
+  stop_backend_port_forward || true
+  return 1
+}
+
+stop_backend_port_forward() {
+  if [[ -n "${TROSHKA_PF_PID:-}" ]]; then
+    kill "${TROSHKA_PF_PID}" 2>/dev/null || true
+    wait "${TROSHKA_PF_PID}" 2>/dev/null || true
+    unset TROSHKA_PF_PID
+  fi
+}
+
+# Read oauth_enabled + first admin_users email from the live ConfigMap (if present).
+# Sets: TROSHKA_OAUTH_ENABLED (true/false), TROSHKA_ADMIN_FROM_CM (email or empty)
+read_troshka_auth_from_cluster() {
+  local ns="${1:-troshka}"
+  TROSHKA_OAUTH_ENABLED=false
+  TROSHKA_ADMIN_FROM_CM=""
+  local cm
+  cm="$(kubectl -n "${ns}" get configmap troshka-config -o jsonpath='{.data.config\.yaml}' 2>/dev/null || true)"
+  if [[ -z "${cm}" ]]; then
+    export TROSHKA_OAUTH_ENABLED TROSHKA_ADMIN_FROM_CM
+    return 0
+  fi
+  if echo "${cm}" | grep -qE 'oauth_enabled:[[:space:]]*true'; then
+    TROSHKA_OAUTH_ENABLED=true
+  fi
+  TROSHKA_ADMIN_FROM_CM="$(echo "${cm}" | sed -n 's/.*admin_users:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 | cut -d, -f1 | tr -d ' ')"
+  export TROSHKA_OAUTH_ENABLED TROSHKA_ADMIN_FROM_CM
+}
+
+# Wait for a Service LoadBalancer hostname/IP. Echoes address to stdout.
+# Usage: wait_lb_hostname <namespace> <service> [timeout_sec]
+wait_lb_hostname() {
+  local ns="$1"
+  local svc="$2"
+  local timeout_sec="${3:-600}"
+  local deadline=$((SECONDS + timeout_sec))
+  local addr=""
+  while (( SECONDS < deadline )); do
+    addr="$(kubectl -n "${ns}" get svc "${svc}" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
+    if [[ -z "${addr}" ]]; then
+      addr="$(kubectl -n "${ns}" get svc "${svc}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)"
+    fi
+    if [[ -n "${addr}" ]]; then
+      echo "${addr}"
+      return 0
+    fi
+    sleep 10
+  done
+  echo "error: timed out waiting for ${ns}/${svc} LoadBalancer address" >&2
+  return 1
+}
+
+# Resolve a DNS name to the first A record (IPv4). Echoes IP or empty.
+resolve_ipv4() {
+  local name="$1"
+  # dig preferred; getent/host as fallbacks
+  if command -v dig >/dev/null 2>&1; then
+    dig +short A "${name}" | awk '/^[0-9]+\./ { print; exit }'
+    return 0
+  fi
+  if command -v getent >/dev/null 2>&1; then
+    getent ahostsv4 "${name}" 2>/dev/null | awk '{ print $1; exit }'
+    return 0
+  fi
+  python3 -c 'import socket,sys; print(socket.gethostbyname(sys.argv[1]))' "${name}" 2>/dev/null || true
+}
+
+# Find a Route53 public hosted zone that can hold records for fqdn.
+# Walks parent labels (a.b.example.com → b.example.com → example.com).
+# Echoes zone id (without /hostedzone/ prefix) or empty.
+find_route53_zone_id() {
+  local fqdn="${1%.}"
+  local candidate="${fqdn}"
+  local zone_id=""
+  while [[ "${candidate}" == *.* ]]; do
+    zone_id="$(aws route53 list-hosted-zones-by-name --dns-name "${candidate}." \
+      --query "HostedZones[?Name=='${candidate}.' && Config.PrivateZone==\`false\`].Id | [0]" \
+      --output text 2>/dev/null || true)"
+    zone_id="${zone_id##*/}"
+    if [[ -n "${zone_id}" && "${zone_id}" != "None" && "${zone_id}" != "null" ]]; then
+      echo "${zone_id}"
+      return 0
+    fi
+    candidate="${candidate#*.}"
+  done
+  return 1
+}
+
+# Upsert a CNAME to an ELB/NLB DNS name (use a subdomain, not the zone apex).
+# Usage: upsert_route53_cname <zone_id> <fqdn> <target_dns>
+upsert_route53_cname() {
+  local zone_id="$1"
+  local fqdn="${2%.}"
+  local target="${3%.}"
+  local change
+  change="$(cat <<EOF
+{
+  "Comment": "Troshka EKS quickstart",
+  "Changes": [{
+    "Action": "UPSERT",
+    "ResourceRecordSet": {
+      "Name": "${fqdn}.",
+      "Type": "CNAME",
+      "TTL": 60,
+      "ResourceRecords": [{ "Value": "${target}" }]
+    }
+  }]
+}
+EOF
+)"
+  aws route53 change-resource-record-sets --hosted-zone-id "${zone_id}" --change-batch "${change}" >/dev/null
+}
+
+# Create a Cognito admin user with a permanent password (idempotent).
+# Usage: ensure_cognito_admin <user_pool_id> <email> <password> <region>
+ensure_cognito_admin() {
+  local pool="$1"
+  local email="$2"
+  local password="$3"
+  local region="$4"
+  if aws cognito-idp admin-get-user --user-pool-id "${pool}" --username "${email}" --region "${region}" >/dev/null 2>&1; then
+    aws cognito-idp admin-set-user-password \
+      --user-pool-id "${pool}" \
+      --username "${email}" \
+      --password "${password}" \
+      --permanent \
+      --region "${region}" >/dev/null
+    return 0
+  fi
+  aws cognito-idp admin-create-user \
+    --user-pool-id "${pool}" \
+    --username "${email}" \
+    --user-attributes Name=email,Value="${email}" Name=email_verified,Value=true \
+    --message-action SUPPRESS \
+    --region "${region}" >/dev/null
+  aws cognito-idp admin-set-user-password \
+    --user-pool-id "${pool}" \
+    --username "${email}" \
+    --password "${password}" \
+    --permanent \
+    --region "${region}" >/dev/null
 }

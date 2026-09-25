@@ -20,6 +20,62 @@ spec:
         app.kubernetes.io/name: troshka-s4
         app.kubernetes.io/component: storage
     spec:
+      {{- if .Values.s4.runAsRoot }}
+      # EBS CSI volumes are root-owned; s4 needs write under /var/lib/ceph/radosgw.
+      # Do not enable on OpenShift (restricted SCC forbids runAsUser: 0).
+      securityContext:
+        fsGroup: 0
+        runAsUser: 0
+      {{- end }}
+      # Create the S3 user against sqlite BEFORE rgw starts. A parallel Job that
+      # mounts the same PVC races the running rgw process and aborts.
+      initContainers:
+        - name: ensure-s3-user
+          image: {{ .Values.s4.image }}
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              mkdir -p /var/lib/ceph/radosgw/{db,buckets,tmp}
+              # Prefer uid lookup; fall back to access-key (create can leave key
+              # registered while uid info briefly fails / after partial runs).
+              if radosgw-admin user info --uid=troshka >/dev/null 2>&1 \
+                || radosgw-admin user info --access-key="$S3_ACCESS_KEY" >/dev/null 2>&1; then
+                echo "Troshka S3 user already present"
+              else
+                set +e
+                OUT=$(radosgw-admin user create --uid=troshka --display-name="Troshka" \
+                  --access-key="$S3_ACCESS_KEY" --secret-key="$S3_SECRET_KEY" 2>&1)
+                RC=$?
+                set -e
+                if [[ $RC -eq 0 ]]; then
+                  echo "Created user troshka"
+                elif echo "$OUT" | grep -qi 'duplicate key'; then
+                  echo "Access key already registered — treating as success"
+                else
+                  echo "$OUT" >&2
+                  exit "$RC"
+                fi
+              fi
+              if radosgw-admin user info --uid=s4admin >/dev/null 2>&1; then
+                radosgw-admin user rm --uid=s4admin || true
+                echo "Removed default s4admin user"
+              fi
+          env:
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: s3-access-key
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: s3-secret-key
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/ceph/radosgw
+              subPath: radosgw
       containers:
         - name: s4
           image: {{ .Values.s4.image }}
@@ -45,6 +101,11 @@ spec:
             - name: data
               mountPath: /var/lib/ceph/radosgw
               subPath: radosgw
+          readinessProbe:
+            tcpSocket:
+              port: 7480
+            initialDelaySeconds: 10
+            periodSeconds: 10
           resources:
             requests:
               cpu: "1"
@@ -109,6 +170,7 @@ spec:
     insecureEdgeTerminationPolicy: Redirect
 {{- end }}
 ---
+# Bucket create only — no PVC mount (avoids sqlite race with running rgw).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -117,15 +179,19 @@ metadata:
   labels:
     {{- include "troshka.labels" . | nindent 4 }}
   annotations:
-    helm.sh/hook: post-install
+    helm.sh/hook: post-install,post-upgrade
     helm.sh/hook-weight: "10"
     helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
     argocd.argoproj.io/hook: Skip
 spec:
-  backoffLimit: 3
+  backoffLimit: 6
   template:
     spec:
-      restartPolicy: Never
+      restartPolicy: OnFailure
+      {{- if .Values.s4.runAsRoot }}
+      securityContext:
+        runAsUser: 0
+      {{- end }}
       initContainers:
         - name: wait-for-s4
           image: {{ include "troshka.backendImage" . }}
@@ -138,44 +204,26 @@ spec:
               done
               echo "S4 is ready"
       containers:
-        - name: setup-s4
-          image: {{ .Values.s4.image }}
+        - name: setup-bucket
+          image: {{ include "troshka.backendImage" . }}
           command: ["bash", "-c"]
           args:
             - |
-              set -e
-              # Create troshka user (idempotent)
-              if radosgw-admin user info --uid=troshka 2>/dev/null; then
-                echo "User troshka already exists"
-              else
-                radosgw-admin user create --uid=troshka --display-name="Troshka" \
-                  --access-key="$S3_ACCESS_KEY" --secret-key="$S3_SECRET_KEY"
-                echo "Created user troshka"
-              fi
-
-              # Remove insecure default s4admin user
-              if radosgw-admin user info --uid=s4admin 2>/dev/null; then
-                radosgw-admin user rm --uid=s4admin
-                echo "Removed default s4admin user"
-              fi
-
-              # Create bucket via S3 PUT (no boto3 needed)
+              set -euo pipefail
               BUCKET="{{ .Values.s3.bucket }}"
-              if radosgw-admin bucket stats --bucket="$BUCKET" 2>/dev/null; then
-                echo "Bucket $BUCKET already exists"
-              else
-                # Use curl with S3 auth headers
-                DATE=$(date -u +"%a, %d %b %Y %H:%M:%S GMT")
-                SIG=$(printf "PUT\n\n\n${DATE}\n/${BUCKET}" | openssl dgst -sha1 -hmac "$S3_SECRET_KEY" -binary | base64)
-                curl -s -X PUT "http://troshka-s4:7480/${BUCKET}" \
-                  -H "Date: ${DATE}" \
-                  -H "Authorization: AWS ${S3_ACCESS_KEY}:${SIG}"
-                echo "Created bucket $BUCKET"
+              DATE=$(date -u +"%a, %d %b %Y %H:%M:%S GMT")
+              SIG=$(printf "PUT\n\n\n${DATE}\n/${BUCKET}" | openssl dgst -sha1 -hmac "$S3_SECRET_KEY" -binary | base64)
+              RESP=$(curl -s -o /tmp/s3.out -w "%{http_code}" -X PUT "http://troshka-s4:7480/${BUCKET}" \
+                -H "Date: ${DATE}" \
+                -H "Authorization: AWS ${S3_ACCESS_KEY}:${SIG}" || true)
+              # 200 = created; 409 = already exists
+              if [[ "${RESP}" == "200" || "${RESP}" == "409" ]]; then
+                echo "Bucket ${BUCKET} ready (HTTP ${RESP})"
+                exit 0
               fi
-          volumeMounts:
-            - name: data
-              mountPath: /var/lib/ceph/radosgw
-              subPath: radosgw
+              echo "error: bucket create failed HTTP ${RESP}" >&2
+              cat /tmp/s3.out >&2 || true
+              exit 1
           env:
             - name: S3_ACCESS_KEY
               valueFrom:
@@ -187,8 +235,4 @@ spec:
                 secretKeyRef:
                   name: troshka-secrets
                   key: s3-secret-key
-      volumes:
-        - name: data
-          persistentVolumeClaim:
-            claimName: troshka-s4-data
 {{- end }}

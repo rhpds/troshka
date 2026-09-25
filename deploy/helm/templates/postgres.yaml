@@ -1,4 +1,5 @@
 {{- if and .Values.deploy .Values.postgres.deploy }}
+{{- $flavor := .Values.postgres.envFlavor | default "rhel" }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -27,6 +28,20 @@ spec:
             - containerPort: 5432
               name: postgres
           env:
+            {{- if eq $flavor "docker" }}
+            - name: POSTGRES_USER
+              value: troshka
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: troshka-secrets
+                  key: postgres-password
+            - name: POSTGRES_DB
+              value: troshka
+            # Keep data on the PVC path used by the RHEL image layout.
+            - name: PGDATA
+              value: /var/lib/pgsql/data/pgdata
+            {{- else }}
             - name: POSTGRESQL_USER
               value: troshka
             - name: POSTGRESQL_PASSWORD
@@ -41,6 +56,7 @@ spec:
             # exhausts the DB (the root cause of "remaining connection slots reserved").
             - name: POSTGRESQL_MAX_CONNECTIONS
               value: {{ add (add (mul .Values.worker.replicas .Values.worker.dbPoolSize) (mul .Values.backend.replicas (add .Values.backend.dbPoolSize .Values.backend.dbMaxOverflow))) 20 | quote }}
+            {{- end }}
           volumeMounts:
             - name: data
               mountPath: /var/lib/pgsql/data
@@ -80,5 +96,4 @@ spec:
   ports:
     - port: 5432
       targetPort: 5432
-      name: postgres
 {{- end }}

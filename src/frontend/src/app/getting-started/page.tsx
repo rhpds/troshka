@@ -160,8 +160,10 @@ export default function GettingStartedPage() {
 {`curl -LO https://raw.githubusercontent.com/rhpds/troshka/main/example_templates/test-web.yaml`}
           </pre>
           <Tip>
-            This template creates a RHEL 10 VM running Apache httpd, connected to a 10.0.0.0/24 network
-            with a gateway that forwards port 80 to the VM. Cloud-init installs and starts httpd automatically.
+            This template creates a cloud-init VM running Apache httpd on a 10.0.0.0/24 network
+            with a gateway that forwards port 80 to the VM. It prefers a <strong>RHEL 10</strong> library
+            image (and Binary DVD when present); if those are missing it falls back to{" "}
+            <strong>Fedora Cloud</strong> without a DVD. Cloud-init installs and starts httpd automatically.
           </Tip>
         </Step>
 
