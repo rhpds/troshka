@@ -249,7 +249,7 @@ Resources:
     Properties:
       ClusterName: !Ref Cluster
       AddonName: aws-ebs-csi-driver
-      ResolveConflicts: Overwrite
+      ResolveConflicts: OVERWRITE
 
 Outputs:
   ClusterName:

@@ -55,7 +55,18 @@ confirm "Proceed in account ${ACCOUNT_ID} / region ${REGION}?" "$@" || {
 }
 
 echo "Deploying CloudFormation stack ${STACK_NAME} in ${REGION}..."
-if aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --region "${REGION}" >/dev/null 2>&1; then
+EXISTING_STATUS="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --region "${REGION}" \
+  --query 'Stacks[0].StackStatus' --output text 2>/dev/null || true)"
+
+if [[ "${EXISTING_STATUS}" == "ROLLBACK_COMPLETE" || "${EXISTING_STATUS}" == "ROLLBACK_FAILED" || "${EXISTING_STATUS}" == "CREATE_FAILED" ]]; then
+  echo "Stack ${STACK_NAME} is ${EXISTING_STATUS} and cannot be updated." >&2
+  echo "Delete it, then re-run install:" >&2
+  echo "  aws cloudformation delete-stack --stack-name ${STACK_NAME} --region ${REGION}" >&2
+  echo "  aws cloudformation wait stack-delete-complete --stack-name ${STACK_NAME} --region ${REGION}" >&2
+  exit 1
+fi
+
+if [[ -n "${EXISTING_STATUS}" && "${EXISTING_STATUS}" != "None" ]]; then
   aws cloudformation update-stack \
     --stack-name "${STACK_NAME}" \
     --region "${REGION}" \
@@ -63,6 +74,7 @@ if aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --region "${R
     --capabilities CAPABILITY_NAMED_IAM \
     --parameters "ParameterKey=ClusterName,ParameterValue=${CLUSTER_NAME}" \
     || true
+  WAIT_CMD=(aws cloudformation wait stack-update-complete --stack-name "${STACK_NAME}" --region "${REGION}")
 else
   aws cloudformation create-stack \
     --stack-name "${STACK_NAME}" \
@@ -70,20 +82,30 @@ else
     --template-body "file://${CFN_TEMPLATE}" \
     --capabilities CAPABILITY_NAMED_IAM \
     --parameters "ParameterKey=ClusterName,ParameterValue=${CLUSTER_NAME}"
+  WAIT_CMD=(aws cloudformation wait stack-create-complete --stack-name "${STACK_NAME}" --region "${REGION}")
 fi
 
 echo "Waiting for stack CREATE/UPDATE_COMPLETE..."
-aws cloudformation wait stack-create-complete --stack-name "${STACK_NAME}" --region "${REGION}" 2>/dev/null \
-  || aws cloudformation wait stack-update-complete --stack-name "${STACK_NAME}" --region "${REGION}" 2>/dev/null \
-  || true
+"${WAIT_CMD[@]}" || true
 
 STATUS="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --region "${REGION}" \
   --query 'Stacks[0].StackStatus' --output text)"
 echo "Stack status: ${STATUS}"
 case "${STATUS}" in
-  *COMPLETE) ;;
+  CREATE_COMPLETE|UPDATE_COMPLETE) ;;
   *)
-    echo "error: stack not complete (${STATUS})" >&2
+    echo "error: stack not healthy (${STATUS})" >&2
+    echo "Recent events:" >&2
+    aws cloudformation describe-stack-events --stack-name "${STACK_NAME}" --region "${REGION}" \
+      --query 'StackEvents[?ResourceStatus!=`null`]|[0:8].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]' \
+      --output table >&2 || true
+    if [[ "${STATUS}" == "ROLLBACK_COMPLETE" || "${STATUS}" == "ROLLBACK_FAILED" || "${STATUS}" == "CREATE_FAILED" ]]; then
+      echo >&2
+      echo "Delete the failed stack, then re-run install:" >&2
+      echo "  aws cloudformation delete-stack --stack-name ${STACK_NAME} --region ${REGION}" >&2
+      echo "  aws cloudformation wait stack-delete-complete --stack-name ${STACK_NAME} --region ${REGION}" >&2
+      echo "  ./quickstarts/eks/install.sh" >&2
+    fi
     exit 1
     ;;
 esac
