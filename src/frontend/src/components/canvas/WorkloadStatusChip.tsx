@@ -5,11 +5,13 @@ import React from "react";
 interface Props {
   headline: string;
   detail: string;
-  /** inflight = spinner; failed = Retry for unfinished chain */
+  /** inflight = spinner+Cancel; failed = Retry for unfinished chain */
   variant?: "inflight" | "failed";
   onClick: () => void;
   onRetry?: () => void;
+  onCancel?: () => void;
   retrying?: boolean;
+  cancelling?: boolean;
 }
 
 /** Compact action-bar chip for an in-flight or failed chain workload. */
@@ -19,7 +21,9 @@ export default function WorkloadStatusChip({
   variant = "inflight",
   onClick,
   onRetry,
+  onCancel,
   retrying = false,
+  cancelling = false,
 }: Props) {
   const failed = variant === "failed";
   const title = failed
@@ -65,6 +69,29 @@ export default function WorkloadStatusChip({
           </span>
         </span>
       </button>
+      {!failed && onCancel && (
+        <button
+          type="button"
+          className="project-publish-btn"
+          data-testid="workload-chain-cancel"
+          onClick={(e) => {
+            e.stopPropagation();
+            onCancel();
+          }}
+          disabled={cancelling}
+          title="Cancel this workload and re-enable project actions"
+          style={{
+            opacity: cancelling ? 0.6 : 0.95,
+            background: "rgba(220, 38, 38, 0.2)",
+            border: "1px solid rgba(248, 113, 113, 0.5)",
+            color: "var(--pf-t--global--color--status--danger--default, #f87171)",
+            whiteSpace: "nowrap",
+            fontSize: 12,
+          }}
+        >
+          {cancelling ? "Cancelling…" : "Cancel"}
+        </button>
+      )}
       {failed && onRetry && (
         <button
           type="button"

@@ -30,7 +30,7 @@ from app.workers.jobs import job_run_workload
 logger = logging.getLogger(__name__)
 
 _LOG_TAIL_BYTES = 256 * 1024
-_TERMINAL_STATUSES = {"succeeded", "error", "timeout"}
+_TERMINAL_STATUSES = {"succeeded", "error", "timeout", "cancelled"}
 
 
 def _now():
@@ -406,10 +406,10 @@ def reconcile_stale_workload_run(db, run: WorkloadRun) -> WorkloadRun:
 
 def retry_workload_run(db, run: WorkloadRun, *, owner_id=None) -> WorkloadRun:
     """Enqueue a new run cloning the failed/interrupted one's parameters."""
-    if run.status not in ("error", "timeout", "pending"):
+    if run.status not in ("error", "timeout", "pending", "cancelled"):
         raise ValueError(
             f"Cannot retry run in status {run.status!r} "
-            "(only error, timeout, or pending)"
+            "(only error, timeout, cancelled, or pending)"
         )
     if run.status == "pending" and run.started_at is not None:
         raise ValueError("Cannot retry a pending run that has already started")
@@ -428,6 +428,107 @@ def retry_workload_run(db, run: WorkloadRun, *, owner_id=None) -> WorkloadRun:
         extra_vars=run.extra_vars,
         owner_id=owner_id or run.owner_id,
     )
+
+
+def cancel_workload_run(db, run: WorkloadRun) -> WorkloadRun:
+    """Stop an in-flight workload: kill the runner pod and mark cancelled.
+
+    Does not continue the template chain — the operator can Resume/Retry later.
+    """
+    if run.status in _TERMINAL_STATUSES:
+        raise ValueError(f"Run is already terminal ({run.status})")
+    if run.status not in ("pending", "queued", "running"):
+        raise ValueError(f"Cannot cancel run in status {run.status!r}")
+
+    # Mark terminal first so the monitor finalize path won't overwrite as error.
+    run.status = "cancelled"
+    run.error = "Cancelled by user"
+    run.ended_at = _now()
+    # Capture whatever log we have so the detail modal isn't empty.
+    try:
+        if run.project_id and not run.log_ref:
+            project = db.get(Project, run.project_id)
+            if project and project.host_id:
+                host = _host_for_project(db, project)
+                tail = _read_runner_pod_logs(host, run.id)
+                if tail:
+                    run.log_ref = tail[-_LOG_TAIL_BYTES:]
+    except Exception:  # noqa: BLE001
+        pass
+    db.commit()
+
+    _release_workload_monitor_lock(run.id)
+    _destroy_runner_pod_best_effort(db, run)
+    db.refresh(run)
+    return run
+
+
+def _destroy_runner_pod_best_effort(db, run: WorkloadRun) -> None:
+    """Delete the KubeVirt/troshkad workload-runner for this project."""
+    if not run.project_id:
+        return
+    try:
+        project = db.get(Project, run.project_id)
+        if not project or not project.host_id:
+            return
+        host = _host_for_project(db, project)
+    except Exception:  # noqa: BLE001
+        logger.exception("Cancel %s: resolve host failed", run.id[:8])
+        return
+
+    if getattr(host, "host_type", None) == "kubevirt-cluster":
+        _destroy_runner_pod_kubevirt(host, run.id)
+    else:
+        _destroy_runner_pod_troshkad(host, project.id)
+
+
+def _destroy_runner_pod_kubevirt(host, run_id: str) -> None:
+    from kubernetes.client.exceptions import ApiException
+
+    ctx = _runner_pod_kubevirt_ctx(host, run_id)
+    if not ctx:
+        return
+    core_v1, namespace, pod_name = ctx
+    try:
+        core_v1.delete_namespaced_pod(
+            name=pod_name, namespace=namespace, grace_period_seconds=0
+        )
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning(
+                "Cancel %s: delete pod %s/%s failed: %s",
+                run_id[:8],
+                namespace,
+                pod_name,
+                e,
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Cancel %s: delete pod failed: %s", run_id[:8], e)
+
+    # Config secret is named <pod>-config (ops_pod_scaffold).
+    secret_name = f"{pod_name}-config"
+    try:
+        core_v1.delete_namespaced_secret(name=secret_name, namespace=namespace)
+    except Exception:  # noqa: BLE001 — best-effort
+        pass
+
+
+def _destroy_runner_pod_troshkad(host, project_id: str) -> None:
+    from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
+    from app.services.workloads.pod_launch import _troshkad_runner_pod_name
+
+    pod_name = _troshkad_runner_pod_name(project_id)
+    try:
+        job_id = start_job(
+            host,
+            "/pods/destroy",
+            {"pod_name": pod_name, "project_id": project_id, "volumes": []},
+        )
+        wait_for_job(host, job_id, timeout=60)
+    except TroshkadError as e:
+        logger.warning(
+            "Cancel: destroy troshkad runner %s failed: %s", project_id[:8], e
+        )
 
 
 # ── Workload monitor (Plan 2, Task 7) ──────────────────────────────────────
@@ -622,6 +723,21 @@ def _read_runner_logs_troshkad(host, container_name: str) -> str:
     return ""
 
 
+def _sanitize_runner_log_text(text: str) -> str:
+    """Drop exec-cat noise when ``/workdir/run.log`` does not exist yet.
+
+    Early in a run (git clone / install_dynamic_dependencies) the logfile has
+    not been created — ``cat`` stderr was previously shown as the run log and
+    looked like a hard failure even though the playbook was still starting.
+    """
+    t = (text or "").strip()
+    if not t:
+        return ""
+    if t.startswith("cat:") and "run.log" in t and "No such file" in t:
+        return ""
+    return text
+
+
 def _read_runner_logs_kubevirt(host, run_id: str) -> str:
     """[LIVE-ENV] Read runner logs via the k8s Pod logs API.
 
@@ -651,12 +767,17 @@ def _read_runner_logs_kubevirt(host, run_id: str) -> str:
     from kubernetes.stream import stream as k8s_stream
 
     try:
+        # Prefer test+cat so a missing logfile returns empty stdout (not cat stderr).
         result = k8s_stream(
             core_v1.connect_get_namespaced_pod_exec,
             pod_name,
             namespace,
             container="ops",
-            command=["cat", "/workdir/run.log"],
+            command=[
+                "bash",
+                "-lc",
+                "test -f /workdir/run.log && cat /workdir/run.log || true",
+            ],
             stderr=True,
             stdout=True,
             stdin=False,
@@ -664,7 +785,7 @@ def _read_runner_logs_kubevirt(host, run_id: str) -> str:
             _preload_content=True,
             _request_timeout=35,
         )
-        return result if isinstance(result, str) else ""
+        return _sanitize_runner_log_text(result if isinstance(result, str) else "")
     except Exception:  # noqa: BLE001
         return ""
 
@@ -787,6 +908,16 @@ def monitor_workload_run(run_id: str, host_id: str) -> None:
     while _t.time() < deadline:
         _refresh_workload_monitor_lock(run_id)
 
+        # Exit quietly if the user cancelled (or another path finalized).
+        db_check = SessionLocal()
+        try:
+            row = db_check.get(WorkloadRun, run_id)
+            if row is not None and row.status in _TERMINAL_STATUSES:
+                _release_workload_monitor_lock(run_id)
+                return
+        finally:
+            db_check.close()
+
         # Read logs and extract progress. Keep the last non-empty tail so a
         # post-exit empty read (KubeVirt exec race) does not wipe finalize.
         logs = _coalesce_runner_logs(_read_runner_pod_logs(host, run_id), last_logs)
@@ -892,6 +1023,9 @@ def _finalize_workload_run(run_id: str, status: str, error_or_logs: str) -> None
     try:
         run = db.get(WorkloadRun, run_id)
         if run is not None:
+            if run.status in _TERMINAL_STATUSES:
+                # User cancel (or prior finalize) wins — do not overwrite.
+                return
             run.status = status
             run.ended_at = _now()
             run.log_ref = (error_or_logs or "")[-_LOG_TAIL_BYTES:]
@@ -1020,7 +1154,7 @@ def prune_workload_runs(
     runs_to_delete = (
         db.query(WorkloadRun)
         .filter(
-            WorkloadRun.status.in_(("succeeded", "error", "timeout")),
+            WorkloadRun.status.in_(("succeeded", "error", "timeout", "cancelled")),
             WorkloadRun.ended_at < cutoff,
         )
         .all()

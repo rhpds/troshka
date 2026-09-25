@@ -24,7 +24,18 @@ interface Props {
 export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Props) {
   const [runs, setRuns] = useState<RunItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState<string | null>(null);
   const clusters = useCanvasStore((s) => s.clusters);
+
+  const refresh = async () => {
+    try {
+      const r = await fetch(`/api/v1/projects/${projectId}/workloads`);
+      const data = await r.json();
+      setRuns(Array.isArray(data) ? data : []);
+    } catch {
+      /* leave */
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -43,6 +54,16 @@ export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Pro
       cancelled = true;
     };
   }, [projectId]);
+
+  const cancelRun = async (runId: string) => {
+    setBusyId(runId);
+    try {
+      const r = await fetch(`/api/v1/workloads/${runId}/cancel`, { method: "POST" });
+      if (r.ok) await refresh();
+    } finally {
+      setBusyId(null);
+    }
+  };
 
   return (
     <div
@@ -129,7 +150,17 @@ export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Pro
                       ) : null}
                     </td>
                     <td style={{ padding: "6px 8px" }}>{run.created_at?.slice(0, 19).replace("T", " ")}</td>
-                    <td style={{ padding: "6px 8px", textAlign: "right" }}>
+                    <td style={{ padding: "6px 8px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      {["pending", "queued", "running"].includes(run.status) && (
+                        <button
+                          className="props-library-btn"
+                          style={{ marginRight: 6, color: "#f87171" }}
+                          disabled={busyId === run.id}
+                          onClick={() => cancelRun(run.id)}
+                        >
+                          {busyId === run.id ? "…" : "Cancel"}
+                        </button>
+                      )}
                       <button className="props-library-btn" onClick={() => onOpenRun(run.id)}>
                         View
                       </button>

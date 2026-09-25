@@ -677,3 +677,27 @@ def test_resume_template_workload_chain_nothing_left():
             with patch("app.api.workloads._has_ocp", return_value=False):
                 resp = client.post(f"/api/v1/projects/{pid}/workloads/resume")
     assert resp.status_code == 409
+
+
+def test_cancel_workload_run_endpoint():
+    """POST /workloads/{id}/cancel marks the run cancelled."""
+    pid = _create_project(state="active")
+    rid = _create_workload_run(pid, status="running")
+    with patch(
+        "app.services.workloads.run_service._destroy_runner_pod_best_effort"
+    ), patch("app.services.workloads.run_service._release_workload_monitor_lock"):
+        resp = client.post(f"/api/v1/workloads/{rid}/cancel")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "cancelled"
+    db = TestSession()
+    run = db.get(WorkloadRun, rid)
+    assert run.status == "cancelled"
+    assert "Cancelled" in (run.error or "")
+    db.close()
+
+
+def test_cancel_workload_run_rejects_terminal():
+    pid = _create_project(state="active")
+    rid = _create_workload_run(pid, status="succeeded")
+    resp = client.post(f"/api/v1/workloads/{rid}/cancel")
+    assert resp.status_code == 400

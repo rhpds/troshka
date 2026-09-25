@@ -282,6 +282,7 @@ export default function ProjectCanvasPage() {
   }, [chipWorkload, chainRoles, workloadRuns]);
 
   const [chainRetrying, setChainRetrying] = useState(false);
+  const [chainCancelling, setChainCancelling] = useState(false);
 
   // Block disruptive actions while OCP install or topology workloads are in flight.
   const ocpBusy =
@@ -691,6 +692,29 @@ export default function ProjectCanvasPage() {
     }
   }, [projectId, refreshWorkloadRuns]);
 
+  const cancelInflightWorkload = React.useCallback(async () => {
+    if (!inflightWorkload) return;
+    setChainCancelling(true);
+    try {
+      const r = await fetch(`/api/v1/workloads/${inflightWorkload.id}/cancel`, {
+        method: "POST",
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        showToast(
+          typeof data.detail === "string" ? data.detail : "Could not cancel workload",
+        );
+        return;
+      }
+      showToast("Workload cancelled");
+      refreshWorkloadRuns();
+    } catch {
+      showToast("Could not cancel workload");
+    } finally {
+      setChainCancelling(false);
+    }
+  }, [inflightWorkload, refreshWorkloadRuns]);
+
   const openMigrate = async () => {
     const [hostsResp, projectResp] = await Promise.all([
       fetch("/api/v1/hosts/"),
@@ -937,7 +961,9 @@ export default function ProjectCanvasPage() {
               variant={failedChainWorkload ? "failed" : "inflight"}
               onClick={() => setOpenRunId(chipWorkload.id)}
               onRetry={failedChainWorkload ? resumeWorkloadChain : undefined}
+              onCancel={inflightWorkload ? cancelInflightWorkload : undefined}
               retrying={chainRetrying}
+              cancelling={chainCancelling}
             />
           )}
           {projectState === "active" && (

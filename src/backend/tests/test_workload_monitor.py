@@ -91,6 +91,52 @@ def test_read_runner_logs_kubevirt_uses_pod_log_api(monkeypatch):
     )
 
 
+def test_sanitize_runner_log_drops_missing_run_log_noise():
+    assert (
+        run_service._sanitize_runner_log_text(
+            "cat: /workdir/run.log: No such file or directory"
+        )
+        == ""
+    )
+    assert run_service._sanitize_runner_log_text("TASK [x]") == "TASK [x]"
+
+
+def test_read_runner_logs_kubevirt_exec_fallback_hides_missing_file(monkeypatch):
+    """Before tee creates run.log, exec must not surface cat stderr as the log."""
+    core = MagicMock()
+    core.read_namespaced_pod_log.return_value = ""
+    stream = MagicMock(
+        return_value="cat: /workdir/run.log: No such file or directory\n"
+    )
+    monkeypatch.setattr(
+        run_service,
+        "_runner_pod_kubevirt_ctx",
+        lambda _h, _r: (core, "troshka-abc", "workload-runner"),
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "kubernetes.stream",
+        SimpleNamespace(stream=stream),
+    )
+    # Patch the import site used inside the function
+    import kubernetes.stream as k8s_stream_mod
+
+    monkeypatch.setattr(k8s_stream_mod, "stream", stream)
+
+    host = SimpleNamespace(host_type="kubevirt-cluster")
+    logs = run_service._read_runner_logs_kubevirt(host, "run-1")
+    assert logs == ""
+    assert stream.called
+    cmd = stream.call_args[1].get("command") or stream.call_args[0][4]
+    # kwargs form: command=...
+    if "command" in (stream.call_args.kwargs or {}):
+        cmd = stream.call_args.kwargs["command"]
+    else:
+        # positional after core method, name, ns, container
+        cmd = stream.call_args[1]["command"]
+    assert "test -f /workdir/run.log" in " ".join(cmd)
+
+
 def test_coalesce_runner_logs_keeps_last_nonempty():
     assert (
         run_service._coalesce_runner_logs("", "prior PLAY RECAP") == "prior PLAY RECAP"

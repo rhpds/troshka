@@ -33,4 +33,19 @@ describe("WorkloadStatusChip", () => {
     fireEvent.click(screen.getByTestId("workload-chain-retry"));
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
+
+  it("shows Cancel for inflight variant and calls onCancel", () => {
+    const onCancel = vi.fn();
+    render(
+      <WorkloadStatusChip
+        headline="Workload 2/5"
+        detail="troshka_workload_cclm_network"
+        variant="inflight"
+        onClick={() => {}}
+        onCancel={onCancel}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("workload-chain-cancel"));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
 });

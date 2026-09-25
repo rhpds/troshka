@@ -9,7 +9,7 @@ export interface WorkloadRunSummary {
 }
 
 const INFLIGHT = new Set(["pending", "queued", "running"]);
-const FAILED = new Set(["error", "timeout"]);
+const FAILED = new Set(["error", "timeout", "cancelled"]);
 
 export function shortRoleLabel(roleFqcn: string | null | undefined): string {
   if (!roleFqcn) return "";

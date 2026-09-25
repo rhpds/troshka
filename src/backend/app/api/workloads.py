@@ -17,6 +17,7 @@ from app.models.user import User
 from app.models.workload_run import WorkloadRun
 from app.services.workloads.run_service import (
     _has_ocp,
+    cancel_workload_run,
     reconcile_stale_workload_run,
     retry_workload_run,
     start_workload_run,
@@ -386,3 +387,34 @@ def retry_workload_run_endpoint(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return WorkloadRunResponse(id=new_run.id, status=new_run.status)
+
+
+# ---------------------------------------------------------------------------
+# POST /workloads/{run_id}/cancel — stop an in-flight run
+# ---------------------------------------------------------------------------
+@router.post(
+    "/workloads/{run_id}/cancel",
+    response_model=WorkloadRunResponse,
+    status_code=200,
+    responses={400: {}, 403: {}, 404: {}},
+)
+def cancel_workload_run_endpoint(
+    run_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    run = db.get(WorkloadRun, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=_RUN_NOT_FOUND)
+
+    project = db.get(Project, run.project_id) if run.project_id else None
+    if not project:
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
+    _enforce_project_access(project, user)
+
+    try:
+        run = cancel_workload_run(db, run)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return WorkloadRunResponse(id=run.id, status=run.status)

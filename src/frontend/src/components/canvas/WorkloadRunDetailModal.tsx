@@ -2,8 +2,9 @@
 
 import React, { useEffect, useRef, useState } from "react";
 
-const TERMINAL = new Set(["succeeded", "error", "timeout"]);
-const RETRYABLE = new Set(["error", "timeout"]);
+const TERMINAL = new Set(["succeeded", "error", "timeout", "cancelled"]);
+const RETRYABLE = new Set(["error", "timeout", "cancelled"]);
+const CANCELLABLE = new Set(["pending", "queued", "running"]);
 
 export function openWorkloadRunLogWindow(runId: string, titleHint?: string): void {
   const winName = `workloadlog_${runId.replace(/-/g, "")}`;
@@ -45,6 +46,7 @@ export function formatWorkloadStatusLabel(
     }
     return "Failed";
   }
+  if (s === "cancelled") return "Cancelled";
   if (s === "timeout") return "Timed out";
   return s;
 }
@@ -87,6 +89,7 @@ export function WorkloadRunLogPanel({
   const [endedAt, setEndedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const [retryError, setRetryError] = useState<string | null>(null);
   const preRef = useRef<HTMLPreElement>(null);
   const statusRef = useRef("");
@@ -172,12 +175,35 @@ export function WorkloadRunLogPanel({
     }
   };
 
+  const handleCancel = async () => {
+    setCancelling(true);
+    setRetryError(null);
+    try {
+      const r = await fetch(`/api/v1/workloads/${runId}/cancel`, { method: "POST" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setRetryError(typeof data.detail === "string" ? data.detail : "Cancel failed");
+        return;
+      }
+      setStatus(data.status || "cancelled");
+      statusRef.current = data.status || "cancelled";
+      setError("Cancelled by user");
+      setEndedAt(new Date().toISOString());
+      onRunIdChange?.(runId);
+    } catch {
+      setRetryError("Cancel failed");
+    } finally {
+      setCancelling(false);
+    }
+  };
+
   const title = shortWorkloadName(roleFqcn, catalogItem);
   const statusLabel = formatWorkloadStatusLabel(status, startedAt, error);
   const whenLabel = endedAt
     ? `${formatWhen(startedAt || createdAt)} → ${formatWhen(endedAt)}`
     : formatWhen(startedAt || createdAt);
   const canRetry = RETRYABLE.has(status);
+  const canCancel = CANCELLABLE.has(status);
 
   return (
     <div
@@ -205,7 +231,7 @@ export function WorkloadRunLogPanel({
               style={{
                 textTransform: statusLabel === status ? "capitalize" : undefined,
                 color:
-                  status === "error" || status === "timeout"
+                  status === "error" || status === "timeout" || status === "cancelled"
                     ? "var(--pf-t--global--color--status--danger--default, #f87171)"
                     : undefined,
               }}
@@ -242,6 +268,23 @@ export function WorkloadRunLogPanel({
           )}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "flex-start", flexShrink: 0 }}>
+          {canCancel && (
+            <button
+              data-testid="workload-run-cancel"
+              onClick={handleCancel}
+              disabled={cancelling}
+              title="Stop this run and re-enable project actions"
+              style={{
+                ...headerBtnStyle,
+                background: "rgba(220, 38, 38, 0.2)",
+                border: "1px solid rgba(248, 113, 113, 0.5)",
+                color: "var(--pf-t--global--color--status--danger--default, #f87171)",
+                opacity: cancelling ? 0.6 : 1,
+              }}
+            >
+              {cancelling ? "Cancelling…" : "Cancel"}
+            </button>
+          )}
           {canRetry && (
             <button
               data-testid="workload-run-retry"
