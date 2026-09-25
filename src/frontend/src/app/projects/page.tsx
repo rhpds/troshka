@@ -23,6 +23,7 @@ import { EmptyStateHeader } from "@patternfly/react-core/dist/esm/components/Emp
 import { EmptyStateIcon } from "@patternfly/react-core/dist/esm/components/EmptyState/EmptyStateIcon";
 import PlusCircleIcon from "@patternfly/react-icons/dist/esm/icons/plus-circle-icon";
 import CubesIcon from "@patternfly/react-icons/dist/esm/icons/cubes-icon";
+import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 import { useRouter } from "next/navigation";
 
 interface Project {
@@ -847,6 +848,7 @@ export default function ProjectsPage() {
   });
   const [search, setSearch] = useState("");
   const [userRole, setUserRole] = useState("");
+  const [meEmail, setMeEmail] = useState("");
   const [pools, setPools] = useState<{id: string; name: string; mode: string; status: string}[]>([]);
   const [deployPoolId, setDeployPoolId] = useState("");
   const [availableHosts, setAvailableHosts] = useState<{id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[]>([]);
@@ -894,8 +896,9 @@ export default function ProjectsPage() {
 
   useEffect(() => {
     fetchProjects();
-    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then((d: { role?: string }) => {
+    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then((d: { role?: string; email?: string }) => {
       setUserRole(d.role || "");
+      setMeEmail(d.email || "");
       if (d.role === "admin") {
         fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []).then(hosts => {
           setAvailableHosts(hosts.filter((h: any) => h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer"));
@@ -1070,6 +1073,33 @@ export default function ProjectsPage() {
                         {p.guid}
                       </span>
                     )}
+                    {(() => {
+                      const otherOwner =
+                        !!p.owner_email &&
+                        !!meEmail &&
+                        p.owner_email.toLowerCase() !== meEmail.toLowerCase();
+                      if (!otherOwner) return null;
+                      const ownerLabel = p.owner_email!.split("@")[0];
+                      return (
+                        <span
+                          title={`Owned by ${p.owner_email}`}
+                          style={{
+                            fontSize: 11,
+                            padding: "1px 6px",
+                            borderRadius: 4,
+                            background: "rgba(96,165,250,0.18)",
+                            color: "#60a5fa",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
+                            fontWeight: 600,
+                          }}
+                        >
+                          <UserIcon style={{ width: 11, height: 11 }} />
+                          {ownerLabel}
+                        </span>
+                      );
+                    })()}
                     <span style={{
                       fontSize: 11, padding: "1px 6px", borderRadius: 4,
                       background: `${stateColors[p.state] || "#94a3b8"}22`,
@@ -1111,7 +1141,16 @@ export default function ProjectsPage() {
                   )}
                   <p style={{ fontSize: 13, opacity: 0.7, margin: "4px 0 0" }}>{p.description || "No description"}</p>
                   <p style={{ fontSize: 11, opacity: 0.5, margin: "4px 0 0" }}>
-                    {p.owner_email && <>{p.owner_email.split("@")[0]} &middot; </>}{p.host_type} &middot; created {new Date(p.created_at).toLocaleString()}
+                    {(() => {
+                      if (!p.owner_email) return null;
+                      const otherOwner =
+                        !!meEmail &&
+                        p.owner_email.toLowerCase() !== meEmail.toLowerCase();
+                      // Other owners: title badge only. Own (or me not loaded): show here.
+                      if (otherOwner) return null;
+                      return <>{p.owner_email.split("@")[0]} &middot; </>;
+                    })()}
+                    {p.host_type} &middot; created {new Date(p.created_at).toLocaleString()}
                     {p.deploy_started_at && <> &middot; deployed {new Date(p.deploy_started_at).toLocaleString()}</>}
                     {p.host_instance_id && <> &middot; {p.host_instance_id}{p.host_ip ? ` · ${p.host_ip}` : ""}{p.host_provider_name ? ` · ${p.host_provider_name} (${p.host_provider_type})` : ""}</>}
                   </p>

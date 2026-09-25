@@ -125,6 +125,15 @@ def list_items(
             if item_lib:
                 owner_libs[i.library_id] = item_lib.owner_id
 
+    from app.models.user import User
+
+    owner_ids = {oid for oid in owner_libs.values() if oid}
+    owner_emails = (
+        {u.id: u.email for u in db.query(User).filter(User.id.in_(owner_ids)).all()}
+        if owner_ids
+        else {}
+    )
+
     return [
         {
             "id": i.id,
@@ -139,6 +148,7 @@ def list_items(
             "created_at": str(i.created_at),
             "owned": i.library_id == lib.id,
             "owner_id": owner_libs.get(i.library_id),
+            "owner_email": owner_emails.get(owner_libs.get(i.library_id) or ""),
             "source": getattr(i, "source", "local"),
             "readonly": getattr(i, "source", "local") == "central",
         }

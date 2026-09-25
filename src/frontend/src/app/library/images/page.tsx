@@ -15,6 +15,7 @@ import {
   ToolbarContent,
   ToolbarItem,
 } from "@patternfly/react-core";
+import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 
 interface LibraryItem {
   id: string;
@@ -34,6 +35,9 @@ interface LibraryItem {
   source_url?: string | null;
   source?: string;
   readonly?: boolean;
+  owned?: boolean;
+  owner_id?: string | null;
+  owner_email?: string | null;
 }
 
 export default function ImagesPage() {
@@ -42,6 +46,7 @@ export default function ImagesPage() {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
+  const [meEmail, setMeEmail] = useState("");
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
   const [toast, setToast] = useState<string | null>(null);
@@ -79,6 +84,13 @@ export default function ImagesPage() {
   };
 
   useEffect(() => { loadItems(); }, [typeFilter, filter]);
+
+  useEffect(() => {
+    fetch("/api/v1/auth/me")
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((d: { email?: string }) => setMeEmail(d.email || ""))
+      .catch(() => {});
+  }, []);
 
   // Auto-refresh when any item is importing
   useEffect(() => {
@@ -422,6 +434,33 @@ export default function ImagesPage() {
                       style={{ cursor: item.readonly ? "default" : "text" }}
                     >{item.name}</strong>
                   )}
+                  {(() => {
+                    const otherOwner =
+                      !!item.owner_email &&
+                      !!meEmail &&
+                      item.owner_email.toLowerCase() !== meEmail.toLowerCase() &&
+                      item.source !== "central";
+                    if (!otherOwner) return null;
+                    return (
+                      <span
+                        title={`Owned by ${item.owner_email}`}
+                        style={{
+                          fontSize: 11,
+                          padding: "1px 6px",
+                          borderRadius: 4,
+                          background: "rgba(96,165,250,0.18)",
+                          color: "#60a5fa",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          fontWeight: 600,
+                        }}
+                      >
+                        <UserIcon style={{ width: 11, height: 11 }} />
+                        {item.owner_email!.split("@")[0]}
+                      </span>
+                    );
+                  })()}
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${stateColors[item.state] || "#94a3b8"}22`, color: stateColors[item.state] || "#94a3b8" }}>
                     {item.state === "downloading" ? (item.size_bytes > 0 ? `downloading from URL · ${formatSize(item.size_bytes)}` : "starting download...")
                       : item.state === "uploading_s3" ? (() => {
@@ -443,6 +482,14 @@ export default function ImagesPage() {
                   )}
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.6, marginTop: 4 }}>
+                  {(() => {
+                    if (!item.owner_email || item.source === "central") return null;
+                    const otherOwner =
+                      !!meEmail &&
+                      item.owner_email.toLowerCase() !== meEmail.toLowerCase();
+                    if (otherOwner) return null;
+                    return <>{item.owner_email.split("@")[0]}{" · "}</>;
+                  })()}
                   {item.state !== "importing" && formatSize(item.size_bytes)}
                   {item.description && `${item.state !== "importing" ? " · " : ""}${item.description}`}
                   {" · "}{new Date(item.created_at).toLocaleDateString()}

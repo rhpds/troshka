@@ -23,6 +23,7 @@ import {
 import BulkDeployModal from "@/components/canvas/BulkDeployModal";
 import PatternPreviewModal from "@/components/canvas/PatternPreviewModal";
 import SharePatternModal from "@/components/canvas/SharePatternModal";
+import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 
 interface PatternDisk {
   id: string;
@@ -44,6 +45,7 @@ interface Pattern {
   disks: PatternDisk[];
   created_at: string;
   owner_id: string;
+  owner_email?: string | null;
   total_vcpus?: number;
   total_ram_gb?: number;
   total_disk_gb?: number;
@@ -200,7 +202,7 @@ export default function PatternsPage() {
   const [editNameValue, setEditNameValue] = useState("");
   const [exportPattern, setExportPattern] = useState<Pattern | null>(null);
   const [sharePattern, setSharePattern] = useState<Pattern | null>(null);
-  const [me, setMe] = useState<{ id?: string; role?: string }>({});
+  const [me, setMe] = useState<{ id?: string; role?: string; email?: string }>({});
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
 
   const loadPatterns = () => {
@@ -213,7 +215,9 @@ export default function PatternsPage() {
   useEffect(() => {
     fetch("/api/v1/auth/me")
       .then((r) => (r.ok ? r.json() : {}))
-      .then((d: { id?: string; role?: string }) => setMe({ id: d.id, role: d.role }))
+      .then((d: { id?: string; role?: string; email?: string }) =>
+        setMe({ id: d.id, role: d.role, email: d.email })
+      )
       .catch(() => {});
   }, []);
 
@@ -415,6 +419,33 @@ export default function PatternsPage() {
                           style={{ cursor: saving ? "default" : "text" }}
                         >{pattern.name}</strong>
                       )}
+                      {(() => {
+                        const otherOwner =
+                          !!pattern.owner_email &&
+                          !!me.email &&
+                          pattern.owner_email.toLowerCase() !== me.email.toLowerCase();
+                        if (!otherOwner) return null;
+                        return (
+                          <span
+                            title={`Owned by ${pattern.owner_email}`}
+                            style={{
+                              fontSize: 11,
+                              padding: "1px 6px",
+                              borderRadius: 4,
+                              background: "rgba(96,165,250,0.18)",
+                              color: "#60a5fa",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 4,
+                              fontWeight: 600,
+                              marginTop: 2,
+                            }}
+                          >
+                            <UserIcon style={{ width: 11, height: 11 }} />
+                            {pattern.owner_email!.split("@")[0]}
+                          </span>
+                        );
+                      })()}
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       {certWarning && (
@@ -454,6 +485,14 @@ export default function PatternsPage() {
                     </div>
                   ) : (
                     <div style={{ fontSize: 12, opacity: 0.6 }}>
+                      {(() => {
+                        if (!pattern.owner_email) return null;
+                        const otherOwner =
+                          !!me.email &&
+                          pattern.owner_email.toLowerCase() !== me.email.toLowerCase();
+                        if (otherOwner) return null;
+                        return <>{pattern.owner_email.split("@")[0]}{" · "}</>;
+                      })()}
                       {pattern.vm_count || 0} VM{(pattern.vm_count || 0) !== 1 ? "s" : ""}
                       {" · "}{pattern.total_vcpus || 0} vCPU
                       {" · "}{pattern.total_ram_gb || 0} GB RAM

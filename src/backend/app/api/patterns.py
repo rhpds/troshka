@@ -362,7 +362,9 @@ def _compute_sync_status(p: Pattern, db: Session) -> tuple[str | None, list[dict
     return sync_status, list(provider_states.values())
 
 
-def _pattern_to_list_dict(p: Pattern, db: Session | None = None) -> dict:
+def _pattern_to_list_dict(
+    p: Pattern, db: Session | None = None, owner_email: str | None = None
+) -> dict:
     """Serialize a Pattern for list responses (lightweight)."""
     nodes = (p.topology or {}).get("nodes", [])
     vms = [n for n in nodes if n.get("type") == "vmNode"]
@@ -391,6 +393,7 @@ def _pattern_to_list_dict(p: Pattern, db: Session | None = None) -> dict:
         "name": p.name,
         "description": p.description,
         "owner_id": p.owner_id,
+        "owner_email": owner_email,
         "visibility": p.visibility,
         "state": p.state,
         "capture_progress": (
@@ -622,7 +625,18 @@ def list_patterns(
 
     patterns = q.order_by(Pattern.created_at.desc()).all()
 
-    return [_pattern_to_list_dict(p, db) for p in patterns]
+    from app.models.user import User
+
+    owner_ids = {p.owner_id for p in patterns if p.owner_id}
+    owner_emails = (
+        {u.id: u.email for u in db.query(User).filter(User.id.in_(owner_ids)).all()}
+        if owner_ids
+        else {}
+    )
+    return [
+        _pattern_to_list_dict(p, db, owner_email=owner_emails.get(p.owner_id))
+        for p in patterns
+    ]
 
 
 @router.get(
