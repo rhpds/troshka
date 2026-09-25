@@ -33,7 +33,9 @@ export AWS_REGION=us-east-1   # or your region
 ./quickstarts/eks/install.sh
 ```
 
-The script prints the AWS account, identity, and region (and where the region came from), then asks `[y/N]`. Default is **no**.
+The script prints the AWS account, identity, region (and source), and KUBECONFIG, then asks `[y/N]`. Default is **no**.
+
+If `KUBECONFIG` is unset, it warns and offers a dedicated file (`~/.kube/troshka-eks-<cluster>.yaml`) so the cluster is not merged into your default kubeconfig. With `--yes` / `--quiet` / `--no-verify` it selects that Troshka path automatically.
 
 Non-interactive / CI (skip confirm, use resolved defaults):
 
@@ -42,6 +44,22 @@ Non-interactive / CI (skip confirm, use resolved defaults):
 ./quickstarts/eks/install.sh --quiet
 ./quickstarts/eks/install.sh --no-verify
 # or: TROSHKA_NO_VERIFY=1 ./quickstarts/eks/install.sh
+```
+
+Useful env vars:
+
+```bash
+# Credentials — named profile (preferred) …
+export AWS_PROFILE=my-profile
+# … or access key / secret (and session token if STS):
+export AWS_ACCESS_KEY_ID=<YOUR_ACCESS_KEY_ID>
+export AWS_SECRET_ACCESS_KEY=<YOUR_SECRET_ACCESS_KEY>
+export AWS_SESSION_TOKEN=<YOUR_SESSION_TOKEN>
+
+export AWS_REGION=us-west-2
+export KUBECONFIG=$HOME/.kube/troshka-eks-quickstart.yaml
+export TROSHKA_EKS_STACK=troshka-eks-quickstart
+export TROSHKA_EKS_CLUSTER=troshka-quickstart
 ```
 
 What it does:

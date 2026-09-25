@@ -16,6 +16,7 @@ echo "Pre-run check (aws, helm, kubectl, curl, jq)..."
 require_cmd aws helm kubectl curl jq
 resolve_aws_region
 ensure_troshka_kubeconfig "$@"
+resolve_aws_credential_source
 
 if ! aws sts get-caller-identity --region "${REGION}" >/dev/null 2>&1; then
   echo "Pre-run check failed — AWS credentials not configured for region ${REGION}." >&2
@@ -37,6 +38,7 @@ This incurs cost (EKS control plane, NAT Gateway, EC2 nodes, ALB, etc.).
   Account:    ${ACCOUNT_ID}
   Identity:   ${CALLER_ARN}
   UserId:     ${CALLER_USER}
+  Creds:      ${AWS_CREDS_SOURCE}
   Region:     ${REGION}  ← from ${REGION_SOURCE}
   Stack:      ${STACK_NAME}
   Cluster:    ${CLUSTER_NAME}

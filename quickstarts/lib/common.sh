@@ -77,19 +77,50 @@ ensure_troshka_kubeconfig() {
   esac
 }
 
+# Describe how AWS credentials are being resolved (never print secrets).
+# Sets: AWS_CREDS_SOURCE (exported).
+resolve_aws_credential_source() {
+  if [[ -n "${AWS_PROFILE:-}" ]]; then
+    AWS_CREDS_SOURCE="AWS_PROFILE=${AWS_PROFILE}"
+  elif [[ -n "${AWS_ACCESS_KEY_ID:-}" ]]; then
+    local key_hint="${AWS_ACCESS_KEY_ID:0:4}…${AWS_ACCESS_KEY_ID: -4}"
+    if [[ -n "${AWS_SESSION_TOKEN:-}" ]]; then
+      AWS_CREDS_SOURCE="env AWS_ACCESS_KEY_ID (${key_hint}) + AWS_SESSION_TOKEN"
+    else
+      AWS_CREDS_SOURCE="env AWS_ACCESS_KEY_ID (${key_hint}) + AWS_SECRET_ACCESS_KEY"
+    fi
+  elif [[ -n "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
+    AWS_CREDS_SOURCE="env AWS_SECRET_ACCESS_KEY set but AWS_ACCESS_KEY_ID missing"
+  elif [[ -n "${AWS_DEFAULT_PROFILE:-}" ]]; then
+    AWS_CREDS_SOURCE="AWS_DEFAULT_PROFILE=${AWS_DEFAULT_PROFILE} / shared credentials file"
+  else
+    AWS_CREDS_SOURCE="default profile (~/.aws/credentials) or instance role"
+  fi
+  export AWS_CREDS_SOURCE
+}
+
 # Shared tip block for EKS install/teardown abort / help.
 print_eks_tips() {
   local default_kc
   default_kc="$(troshka_eks_kubeconfig_path)"
   cat <<EOF
 Tips:
-  export AWS_PROFILE=my-profile          # alternate AK/SK via named profile
+  # Credentials (pick one)
+  export AWS_PROFILE=my-profile
+  # or without a profile:
+  export AWS_ACCESS_KEY_ID=<YOUR_ACCESS_KEY_ID>
+  export AWS_SECRET_ACCESS_KEY=<YOUR_SECRET_ACCESS_KEY>
+  export AWS_SESSION_TOKEN=<YOUR_SESSION_TOKEN>   # if using temporary/STS credentials
+
+  # Region / kubeconfig / stack
   export AWS_REGION=us-west-2            # (or your preferred region) and re-run
-  export AWS_DEFAULT_REGION=us-west-2    # fallback if AWS_REGION unset
+  export AWS_DEFAULT_REGION=us-west-2     # fallback if AWS_REGION unset
   export KUBECONFIG=${default_kc}
   export TROSHKA_EKS_STACK=my-stack      # CloudFormation stack name
   export TROSHKA_EKS_CLUSTER=my-cluster  # EKS cluster name
-  ./quickstarts/eks/install.sh --yes     # skip confirms (also --quiet / --no-verify)
+
+  # Non-interactive
+  ./quickstarts/eks/install.sh --yes     # also --quiet / --no-verify
 EOF
 }
 

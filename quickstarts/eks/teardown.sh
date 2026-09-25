@@ -15,6 +15,7 @@ echo "Pre-run check (aws, helm, kubectl, curl, jq)..."
 require_cmd aws helm kubectl curl jq
 resolve_aws_region
 ensure_troshka_kubeconfig "$@"
+resolve_aws_credential_source
 
 if ! aws sts get-caller-identity --region "${REGION}" >/dev/null 2>&1; then
   echo "Pre-run check failed — AWS credentials not configured for region ${REGION}." >&2
@@ -31,6 +32,7 @@ WARNING: About to wipe Troshka projects and DELETE the EKS stack in this AWS acc
 
   Account:    ${ACCOUNT_ID}
   Identity:   ${CALLER_ARN}
+  Creds:      ${AWS_CREDS_SOURCE}
   Region:     ${REGION}  ← from ${REGION_SOURCE}
   Stack:      ${STACK_NAME}
   Cluster:    ${CLUSTER_NAME}
