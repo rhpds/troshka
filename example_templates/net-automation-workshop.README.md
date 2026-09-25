@@ -48,7 +48,7 @@ VMs still boot from disk; the NOS reads config from the ISO during boot.
 | Router | NICs | Disk bus | NIC model | Guest interfaces |
 |--------|------|----------|-----------|------------------|
 | rtr1 (IOS-XE) | 3 | virtio (default) | virtio | Gi1 (lab), Gi2/Gi3 (link nets) |
-| rtr2, rtr4 (vEOS) | 3 / 2 | `sata` | **e1000** | Management1 (lab), Ethernet1/2 (link nets) |
+| rtr2, rtr4 (vEOS) | 3 / 2 | `sata` | **e1000** | Management1 (lab), Ethernet1/2 (link nets); `serial_only: true` (no VNC) |
 | rtr3 (vSRX) | 2 | `sata` | virtio | fxp0 (lab), ge-0/0/0 (link net) |
 
 Mirrors containerlab vrnetlab: adapter count/model order match QEMU; `lab` = mgmt

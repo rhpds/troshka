@@ -154,6 +154,21 @@ def test_apply_serial_console_headless_for_eos():
     assert domain["devices"]["autoattachGraphicsDevice"] is False
 
 
+def test_apply_serial_console_explicit_headless():
+    """Canvas/template serial_only → TroshkaVM.spec.headless (any serialExecType)."""
+    domain: dict = {"devices": {}}
+    _apply_serial_console(domain, {"headless": True, "serialExecType": "linux"})
+    assert domain["devices"]["autoattachSerialConsole"] is True
+    assert domain["devices"]["autoattachGraphicsDevice"] is False
+
+
+def test_apply_serial_console_keeps_graphics_when_headless_false():
+    domain: dict = {"devices": {}}
+    _apply_serial_console(domain, {"headless": False, "serialExecType": "linux"})
+    assert domain["devices"]["autoattachSerialConsole"] is True
+    assert "autoattachGraphicsDevice" not in domain["devices"]
+
+
 def test_apply_serial_console_keeps_graphics_for_junos():
     domain: dict = {"devices": {}}
     _apply_serial_console(domain, {"serialExecType": "junos"})
@@ -205,6 +220,25 @@ def test_build_kubevirt_vm_includes_serial_console():
     body = build_kubevirt_vm(vm_cr, {}, {}, None)
     devices = body["spec"]["template"]["spec"]["domain"]["devices"]
     assert devices["autoattachSerialConsole"] is False
+
+
+def test_build_kubevirt_vm_serial_only_disables_graphics():
+    """TroshkaVM.spec.headless (from template serial_only) drops VGA for KubeVirt."""
+    vm_cr = {
+        "metadata": {"name": "vm-abc12345", "namespace": "troshka-test"},
+        "spec": {
+            "cpus": 2,
+            "memory": 4096,
+            "headless": True,
+            "serialExecType": "linux",
+            "disks": [],
+            "nics": [],
+        },
+    }
+    body = build_kubevirt_vm(vm_cr, {}, {}, None)
+    devices = body["spec"]["template"]["spec"]["domain"]["devices"]
+    assert devices["autoattachSerialConsole"] is True
+    assert devices["autoattachGraphicsDevice"] is False
 
 
 def test_build_kubevirt_vm_nested_virt_uses_host_passthrough():

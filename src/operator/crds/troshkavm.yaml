@@ -101,7 +101,9 @@ spec:
                 headless:
                   type: boolean
                   description: >-
-                    When true, omit graphics device so network OS writes to serial console.
+                    When true, omit graphics device so the guest console is serial only
+                    (canvas I/O "Serial only"; template serial_only). Independent of
+                    serialConsole (ttyS0 attach). EOS also implies headless.
                 legacyRootBus:
                   type: boolean
                   description: >-

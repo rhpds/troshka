@@ -517,6 +517,49 @@ def test_template_legacy_root_bus_round_trip():
     assert exported["vms"]["rtr2"]["legacy_root_bus"] is True
 
 
+def test_template_serial_only_round_trip():
+    from app.services.template_loader import (
+        export_topology_to_template,
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    tmpl = {
+        "name": "serial-only-test",
+        "networks": {"lab": {"cidr": "172.20.20.0/24", "dhcp": True}},
+        "vms": {
+            "rtr2": {
+                "vcpus": 2,
+                "ram_gb": 4,
+                "os": "blank",
+                "firmware": "bios",
+                "serial_exec": "eos",
+                "serial_only": True,
+                "disks": [{"size_gb": 10, "bus": "sata"}],
+                "nics": [{"network": "lab", "model": "e1000"}],
+            },
+            "linux1": {
+                "vcpus": 2,
+                "ram_gb": 4,
+                "os": "rhel9",
+                "headless": True,  # alias accepted on import
+                "disks": [{"size_gb": 20}],
+                "nics": [{"network": "lab"}],
+            },
+        },
+    }
+    topo = generate_topology_from_template(resolve_inline_template(tmpl))
+    rtr2 = next(n for n in topo["nodes"] if n["data"].get("name") == "rtr2")
+    linux1 = next(n for n in topo["nodes"] if n["data"].get("name") == "linux1")
+    assert rtr2["data"]["headless"] is True
+    assert linux1["data"]["headless"] is True
+
+    exported = export_topology_to_template(topo)
+    assert exported["vms"]["rtr2"]["serial_only"] is True
+    assert "headless" not in exported["vms"]["rtr2"]
+    assert exported["vms"]["linux1"]["serial_only"] is True
+
+
 def test_blank_vm_with_bootstrap_iso_gets_cdrom_controller():
     from app.services.template_loader import (
         generate_topology_from_template,
@@ -990,8 +1033,20 @@ def test_net_automation_workshop_showroom_import():
     tmpl = yaml.safe_load(tmpl_path.read_text())
     assert "containers" not in tmpl
     assert len(tmpl["showroom"]["tabs"]) == 5
+    assert tmpl["vms"]["rtr2"].get("serial_only") is True
+    assert tmpl["vms"]["rtr4"].get("serial_only") is True
+    assert "serial_only" not in tmpl["vms"]["rtr1"]
+    assert "serial_only" not in tmpl["vms"]["rtr3"]
 
     topo = generate_topology_from_template(tmpl)
+
+    vms_by_name = {
+        n["data"]["name"]: n["data"] for n in topo["nodes"] if n.get("type") == "vmNode"
+    }
+    assert vms_by_name["rtr2"]["headless"] is True
+    assert vms_by_name["rtr4"]["headless"] is True
+    assert not vms_by_name["rtr1"].get("headless")
+    assert not vms_by_name["rtr3"].get("headless")
 
     pods = [
         n

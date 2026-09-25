@@ -425,6 +425,34 @@ class TestVmHandlers(unittest.TestCase):
         self.assertEqual(cmd[video_idx + 1], "vga")
         self.assertIn("type=keyboard,bus=usb", cmd)
         self.assertIn("type=tablet,bus=usb", cmd)
+        # Non-headless VMs must request VNC (virt-install defaults to SPICE).
+        gfx = [cmd[i + 1] for i, c in enumerate(cmd) if c == "--graphics"]
+        self.assertTrue(any(g.startswith("vnc,") for g in gfx), gfx)
+
+    @patch("troshkad.subprocess.Popen")
+    def test_vm_create_headless_uses_graphics_none(self, mock_popen):
+        mock_popen.return_value = _mock_popen(stdout="Domain created")
+        job = troshkad._create_job(
+            "vms/create",
+            {
+                "domain_name": "troshka-aabbccdd-11223344",
+                "vcpus": 2,
+                "ram_mb": 4096,
+                "disks": [
+                    {
+                        "path": "/var/lib/troshka/vms/proj/aabb-1122.qcow2",
+                        "bus": "virtio",
+                    }
+                ],
+                "networks": [{"bridge": "br-troshka-abc", "model": "virtio"}],
+                "headless": True,
+            },
+        )
+        troshkad._handle_vm_create(job, job["params"])
+        cmd = mock_popen.call_args_list[0][0][0]
+        gfx = [cmd[i + 1] for i, c in enumerate(cmd) if c == "--graphics"]
+        self.assertEqual(gfx, ["none"])
+        self.assertNotIn("--video", cmd)
 
     @patch("troshkad.subprocess.Popen")
     def test_vm_destroy_calls_virsh(self, mock_popen):

@@ -1183,6 +1183,13 @@ def _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip):
     if vm_cfg.get("serial_exec"):
         vm_data["serialExecType"] = str(vm_cfg["serial_exec"]).lower()
 
+    # serial_only (template) ↔ headless (topology / TroshkaVM). Accept headless alias.
+    serial_only = vm_cfg.get("serial_only")
+    if serial_only is None:
+        serial_only = vm_cfg.get("headless")
+    if serial_only is not None:
+        vm_data["headless"] = bool(serial_only)
+
     machine_type = vm_cfg.get("machine_type") or vm_cfg.get("machineType")
     if machine_type:
         vm_data["machineType"] = str(machine_type)
@@ -2308,6 +2315,8 @@ def _export_vm_flags(d, vm_out):
             vm_out["configure_bastion_browser"] = True
     if d.get("serialExecType") and d.get("serialExecType") != "linux":
         vm_out["serial_exec"] = d["serialExecType"]
+    if d.get("headless"):
+        vm_out["serial_only"] = True
     if d.get("machineType"):
         vm_out["machine_type"] = d["machineType"]
     if d.get("legacyRootBus"):

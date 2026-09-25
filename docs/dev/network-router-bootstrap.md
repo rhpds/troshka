@@ -97,7 +97,7 @@ experience).
 | Capability | libvirt (troshkad) | KubeVirt |
 |------------|-------------------|----------|
 | Hypervisor serial port | `isa-serial` PTY | `autoattachSerialConsole` + WebSocket |
-| vEOS / NOS guest on UART | Works (`virt-install --graphics none` on serial-exec VMs) | Requires `autoattachGraphicsDevice: false` — vEOS sends login to VGA when a display is attached (vrnetlab uses `qemu -display none`) |
+| vEOS / NOS guest on UART | Works (`virt-install --graphics none` when `serial_only` / EOS) | Requires `autoattachGraphicsDevice: false` via TroshkaVM `spec.headless` (template `serial_only`) — vEOS sends login to VGA when a display is attached (vrnetlab uses `qemu -display none`) |
 | `serial_exec: ios` | Works (rtr1 tested) | Implemented (`kubevirt_serial.py`) |
 | `serial_exec: eos` | Works | Implemented |
 | `serial_exec: junos` | Code present; **vSRX guest silent on UART** | Same |
@@ -125,7 +125,7 @@ path for everything.
 │ Router   │ vrnetlab            │ Troshka (planned)                        │
 ├──────────┼─────────────────────┼──────────────────────────────────────────┤
 │ rtr1     │ config.iso (IOS-XE) │ IOS-XE bootstrap ISO at deploy (later)   │
-│ rtr2/rtr4│ serial paste        │ serial_exec: eos (existing; works)       │
+│ rtr2/rtr4│ serial paste        │ serial_exec: eos + serial_only: true     │
 │ rtr3     │ config.iso (Junos)  │ Juniper bootstrap ISO at deploy (Option 1)│
 └──────────┴─────────────────────┴──────────────────────────────────────────┘
 ```

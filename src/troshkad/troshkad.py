@@ -1593,9 +1593,15 @@ def _handle_vm_create(job, params):
         cmd.extend(["--disk", f"path={_validate_path(seed_iso)},device=cdrom,bus=sata"])
     headless = _resolve_headless(params)
     if headless:
+        # No graphical display — guest console is serial (ttyS0) only.
         cmd.extend(["--graphics", "none"])
-    elif video_model in ("virtio", "vga", "qxl"):
-        cmd.extend(["--video", video_model])
+    else:
+        # virt-install defaults to SPICE when only --video is set; Troshka console
+        # speaks VNC only, so request VNC explicitly.
+        vnc_listen = params.get("vnc_listen", "127.0.0.1")
+        cmd.extend(["--graphics", f"vnc,listen={vnc_listen}"])
+        if video_model in ("virtio", "vga", "qxl"):
+            cmd.extend(["--video", video_model])
     if not headless:
         if input_model == "virtio":
             cmd.extend(["--input", "type=keyboard,bus=virtio"])

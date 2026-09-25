@@ -134,6 +134,8 @@ def extract_vms(topology):
                 "cdrom": {},
                 "guestfishCommands": data.get("guestfishCommands", []),
             }
+            if data.get("headless") is not None:
+                vm["headless"] = bool(data.get("headless"))
             if data.get("legacyRootBus"):
                 vm["legacyRootBus"] = True
             if data.get("pxeBootIsoId"):

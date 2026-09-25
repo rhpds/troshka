@@ -2356,6 +2356,8 @@ def _build_vm_cr(
             "serialExecType": vm.get("serialExecType", ""),
         },
     }
+    if vm.get("headless") is not None:
+        vm_cr["spec"]["headless"] = bool(vm.get("headless"))
     if vm.get("legacyRootBus"):
         vm_cr["spec"]["legacyRootBus"] = True
     cdrom = vm_cdroms_map.get(vm["id"]) or vm.get("cdrom")

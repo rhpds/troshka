@@ -1873,6 +1873,30 @@ export default function PropertiesPanel() {
                   onChange={(e) => update("serialConsole", e.target.checked)}
                 />
                 Serial Console
+                <HintIcon text="Attach a serial port (ttyS0). Does not disable VNC — use Serial only for that." />
+              </label>
+            </div>
+            <div className="props-field">
+              <label className="props-label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(
+                    (data as Record<string, any>).headless
+                    || ((data as Record<string, any>).serialExecType || "").toLowerCase() === "eos"
+                  )}
+                  onChange={(e) => {
+                    const patch: Record<string, unknown> = {
+                      headless: e.target.checked || undefined,
+                    };
+                    if (e.target.checked && (data as Record<string, any>).serialConsole === false) {
+                      patch.serialConsole = true;
+                    }
+                    updateNodeData(node.id, patch);
+                  }}
+                  disabled={((data as Record<string, any>).serialExecType || "").toLowerCase() === "eos"}
+                />
+                Serial only
+                <HintIcon text="No VNC/graphics — guest console is serial only. Maps to template serial_only. Required for Arista EOS." />
               </label>
             </div>
             <div className="props-field">
@@ -1880,7 +1904,17 @@ export default function PropertiesPanel() {
               <select
                 className="props-select"
                 value={(data as Record<string, any>).serialExecType as string || "linux"}
-                onChange={(e) => update("serialExecType", e.target.value)}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  const patch: Record<string, unknown> = { serialExecType: next };
+                  if (next.toLowerCase() === "eos") {
+                    patch.headless = true;
+                    if ((data as Record<string, any>).serialConsole === false) {
+                      patch.serialConsole = true;
+                    }
+                  }
+                  updateNodeData(node.id, patch);
+                }}
               >
                 <option value="linux">Linux / cloud-init</option>
                 <option value="ios">Cisco IOS-XE</option>

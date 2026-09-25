@@ -548,6 +548,52 @@ def test_build_troshkavm_vm_spec_serial_custom():
     assert spec["serialConsole"] is False
 
 
+def test_build_troshkavm_vm_spec_headless():
+    from app.services.deploy_topology import build_troshkavm_vm_spec
+
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {
+                    "id": "vm1",
+                    "headless": True,
+                    "serialExecType": "eos",
+                    "nics": [],
+                },
+            }
+        ]
+    }
+    spec = build_troshkavm_vm_spec(
+        "vm1",
+        {"name": "vm", "vcpus": 2, "ram_gb": 4},
+        topo,
+    )
+    assert spec["headless"] is True
+    assert spec["serialExecType"] == "eos"
+
+
+def test_build_troshkavm_vm_spec_omits_headless_when_unset():
+    from app.services.deploy_topology import build_troshkavm_vm_spec
+
+    topo = {
+        "nodes": [
+            {
+                "id": "vm1",
+                "type": "vmNode",
+                "data": {"id": "vm1", "nics": []},
+            }
+        ]
+    }
+    spec = build_troshkavm_vm_spec(
+        "vm1",
+        {"name": "vm", "vcpus": 2, "ram_gb": 4},
+        topo,
+    )
+    assert "headless" not in spec
+
+
 def test_build_troshkavm_vm_spec_legacy_root_bus():
     from app.services.deploy_topology import build_troshkavm_vm_spec
 

@@ -134,6 +134,7 @@ vms:
     os: blank
     firmware: bios
     serial_exec: eos
+    serial_only: true       # no VNC/graphics — vEOS login on ttyS0
     tags:
       AnsibleGroup: routers,arista_eos
     legacy_root_bus: true   # KubeVirt q35: NICs on root PCI bus (00:03+)
@@ -179,6 +180,7 @@ vms:
     os: blank
     firmware: bios
     serial_exec: eos
+    serial_only: true       # no VNC/graphics — vEOS login on ttyS0
     tags:
       AnsibleGroup: routers,arista_eos
     legacy_root_bus: true   # KubeVirt q35: NICs on root PCI bus (00:03+)

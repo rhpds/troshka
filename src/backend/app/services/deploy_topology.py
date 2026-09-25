@@ -2074,6 +2074,8 @@ def build_troshkavm_vm_spec(vm_id: str, vm: dict, topology: dict) -> dict:
             "networkConfig": vm_data.get("ciNetworkConfig", ""),
         },
     }
+    if vm_data.get("headless") is not None:
+        spec["headless"] = bool(vm_data["headless"])
     if vm_data.get("bmcIp"):
         spec["bmcIp"] = vm_data["bmcIp"]
     if vm_data.get("guestfishCommands"):

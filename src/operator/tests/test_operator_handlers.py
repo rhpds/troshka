@@ -429,6 +429,43 @@ class TestExtractVms:
         }
         assert len(extract_vms(topo)) == 1
 
+    def test_vm_headless_from_serial_only(self):
+        from helpers.topology import extract_vms
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "vm1",
+                    "type": "vmNode",
+                    "data": {
+                        "id": "vm1",
+                        "label": "rtr2",
+                        "headless": True,
+                        "serialExecType": "eos",
+                        "serialConsole": True,
+                    },
+                }
+            ]
+        }
+        vms = extract_vms(topo)
+        assert vms[0]["headless"] is True
+        assert vms[0]["serialExecType"] == "eos"
+        assert vms[0]["serialConsole"] is True
+
+    def test_vm_omits_headless_when_unset(self):
+        from helpers.topology import extract_vms
+
+        topo = {
+            "nodes": [
+                {
+                    "id": "vm1",
+                    "type": "vmNode",
+                    "data": {"id": "vm1", "label": "linux1"},
+                }
+            ]
+        }
+        assert "headless" not in extract_vms(topo)[0]
+
 
 class TestExtractContainers:
     def test_empty_topology(self):
@@ -3104,6 +3141,15 @@ class TestBuildVmCr:
         assert cr["spec"]["memory"] == 8192
         assert cr["spec"]["firmware"] == "uefi"
         assert cr["kind"] == "TroshkaVM"
+        assert "headless" not in cr["spec"]
+
+    def test_includes_headless(self):
+        from handlers.project import _build_vm_cr
+
+        vm = self._make_vm(headless=True, serialExecType="eos")
+        cr = _build_vm_cr(vm, {}, {}, {}, None, "ns1", "proj1", self._make_body())
+        assert cr["spec"]["headless"] is True
+        assert cr["spec"]["serialExecType"] == "eos"
 
     def test_includes_nic_specs(self):
         from handlers.project import _build_vm_cr
