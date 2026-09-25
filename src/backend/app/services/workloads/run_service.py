@@ -655,7 +655,8 @@ def _publish_workload_progress(run_id: str, progress: dict) -> None:
     from app.core.redis import set_progress
     from app.services.ws_pubsub import notify_project
 
-    set_progress(f"workload:{run_id}", progress)
+    payload = {**progress, "run_id": run_id}
+    set_progress(f"workload:{run_id}", payload)
 
     # Get project_id for WebSocket notification
     db = SessionLocal()
@@ -663,7 +664,7 @@ def _publish_workload_progress(run_id: str, progress: dict) -> None:
         run = db.get(WorkloadRun, run_id)
         if run and run.project_id:
             notify_project(
-                run.project_id, {"type": "workload-progress", "progress": progress}
+                run.project_id, {"type": "workload-progress", "progress": payload}
             )
     finally:
         db.close()

@@ -98,10 +98,34 @@ export function WorkloadRunLogPanel({
     setRunId(initialRunId);
   }, [initialRunId]);
 
+  // If the open run finished and progress arrives for a newer run (template
+  // chain), follow it so the modal doesn't stick on the previous log.
+  useEffect(() => {
+    const nudge = wsNudge as { run_id?: string } | null | undefined;
+    if (!nudge?.run_id || nudge.run_id === runId) return;
+    if (!TERMINAL.has(statusRef.current)) return;
+    setRunId(nudge.run_id);
+    onRunIdChange?.(nudge.run_id);
+  }, [wsNudge, runId, onRunIdChange]);
+
+  // Reset panel contents immediately when following a different run so the
+  // previous workload's log doesn't stick until the first poll returns.
+  useEffect(() => {
+    setLog("");
+    setStatus("");
+    statusRef.current = "";
+    setError(null);
+    setRoleFqcn(null);
+    setCatalogItem(null);
+    setCreatedAt(null);
+    setStartedAt(null);
+    setEndedAt(null);
+    setRetryError(null);
+    setLoading(true);
+  }, [runId]);
+
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setRetryError(null);
     const fetchLog = async () => {
       try {
         const r = await fetch(`/api/v1/workloads/${runId}/log`);

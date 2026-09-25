@@ -241,7 +241,7 @@ export default function ProjectCanvasPage() {
   }, [projectState, refreshWorkloadRuns]);
 
   useEffect(() => {
-    if (!ws.workloadProgress?.run_id) return;
+    if (!ws.workloadProgress) return;
     refreshWorkloadRuns();
   }, [ws.workloadProgress, refreshWorkloadRuns]);
 
@@ -259,6 +259,18 @@ export default function ProjectCanvasPage() {
     () => findInflightRun(workloadRuns),
     [workloadRuns],
   );
+
+  // When the template chain advances, keep an open log modal on the new run.
+  useEffect(() => {
+    if (!openRunId || !inflightWorkload) return;
+    if (inflightWorkload.id === openRunId) return;
+    const openRun = workloadRuns.find((r) => r.id === openRunId);
+    if (!openRun) return;
+    // Only auto-follow if the open run finished (chain handoff). Don't steal
+    // focus if the user opened a different still-running run.
+    if (["pending", "queued", "running"].includes(openRun.status)) return;
+    setOpenRunId(inflightWorkload.id);
+  }, [openRunId, inflightWorkload, workloadRuns]);
 
   const chainRoles = useMemo(
     () => normalizeWorkloadRoles(topologyWorkloads),

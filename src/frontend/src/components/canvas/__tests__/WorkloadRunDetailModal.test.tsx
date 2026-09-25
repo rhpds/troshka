@@ -137,4 +137,101 @@ describe("WorkloadRunDetailModal", () => {
       expect.any(String),
     );
   });
+
+  it("refetches when runId prop changes to the next chain run", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (typeof url === "string" && url.includes("run-2")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              id: "run-2",
+              status: "running",
+              log: "TASK [next role]",
+              role_fqcn: "a.b.second",
+              created_at: "2026-09-25T16:00:00Z",
+              started_at: "2026-09-25T16:00:01Z",
+              ended_at: null,
+            }),
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            id: "run-1",
+            status: "succeeded",
+            log: "PLAY RECAP first",
+            role_fqcn: "a.b.first",
+            created_at: "2026-09-25T15:00:00Z",
+            started_at: "2026-09-25T15:00:01Z",
+            ended_at: "2026-09-25T15:05:00Z",
+          }),
+      } as Response);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(
+      <WorkloadRunDetailModal runId="run-1" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText(/PLAY RECAP first/)).toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "first" })).toBeInTheDocument();
+
+    rerender(<WorkloadRunDetailModal runId="run-2" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/TASK \[next role\]/)).toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "second" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/workloads/run-2/log");
+  });
+
+  it("follows ws nudge to a new run_id after the open run is terminal", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (typeof url === "string" && url.includes("run-2")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              id: "run-2",
+              status: "running",
+              log: "TASK [chained]",
+              role_fqcn: "a.b.chained",
+            }),
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            id: "run-1",
+            status: "succeeded",
+            log: "done",
+            role_fqcn: "a.b.first",
+          }),
+      } as Response);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const onRunIdChange = vi.fn();
+    const { rerender } = render(
+      <WorkloadRunDetailModal
+        runId="run-1"
+        onClose={() => {}}
+        onRunIdChange={onRunIdChange}
+        wsNudge={{ run_id: "run-1", percent: 100 }}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText("done")).toBeInTheDocument());
+
+    rerender(
+      <WorkloadRunDetailModal
+        runId="run-1"
+        onClose={() => {}}
+        onRunIdChange={onRunIdChange}
+        wsNudge={{ run_id: "run-2", percent: 5 }}
+      />,
+    );
+    await waitFor(() => expect(onRunIdChange).toHaveBeenCalledWith("run-2"));
+    await waitFor(() => expect(screen.getByText(/TASK \[chained\]/)).toBeInTheDocument());
+  });
 });
