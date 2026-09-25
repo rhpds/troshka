@@ -61,16 +61,30 @@ class EC2Driver(ProviderDriver):
         pass
 
     def create_console_record(self, provider, host, hostname, ip_address):
-        from app.services.console_dns import upsert_dns_record
+        from app.services.console_dns import is_sslip_console, upsert_dns_record
 
+        # sslip.io embeds the IP in the FQDN — no A-record to write.
+        if is_sslip_console(provider.console_base_domain) or (hostname or "").endswith(
+            ".sslip.io"
+        ):
+            return hostname
+        if not provider.console_zone_id:
+            return hostname
         creds = provider.get_credentials()
         upsert_dns_record(
             hostname, ip_address, provider.console_zone_id, credentials=creds
         )
+        return hostname
 
     def delete_console_record(self, provider, host, hostname, ip_address):
-        from app.services.console_dns import delete_dns_record
+        from app.services.console_dns import delete_dns_record, is_sslip_console
 
+        if is_sslip_console(provider.console_base_domain) or (hostname or "").endswith(
+            ".sslip.io"
+        ):
+            return
+        if not provider.console_zone_id:
+            return
         creds = provider.get_credentials()
         delete_dns_record(
             hostname, ip_address, provider.console_zone_id, credentials=creds

@@ -478,12 +478,26 @@ if [ -n "$VNCD_NO_TLS" ]; then
 elif [ -n "$CONSOLE_DOMAIN" ]; then
     echo "=== Setting up console TLS ==="
     /opt/troshka/venv/bin/pip install $PIP_ARGS certbot certbot-dns-route53
-    /opt/troshka/venv/bin/certbot certonly --dns-route53 \
-        -d "$CONSOLE_DOMAIN" \
-        --non-interactive --agree-tos -m noreply@redhat.com \
-        --preferred-challenges dns-01 2>&1 || echo "certbot: initial cert may have failed (will retry)"
+    # sslip.io embeds the IP — no Route53 zone; use HTTP-01 standalone on :80.
+    # Real domains use DNS-01 via the instance IAM profile (certbot-dns-route53).
+    case "$CONSOLE_DOMAIN" in
+        *.sslip.io)
+            /opt/troshka/venv/bin/certbot certonly --standalone \
+                -d "$CONSOLE_DOMAIN" \
+                --non-interactive --agree-tos -m noreply@redhat.com \
+                --preferred-challenges http-01 2>&1 \
+                || echo "certbot: initial HTTP-01 cert may have failed (will retry)"
+            ;;
+        *)
+            /opt/troshka/venv/bin/certbot certonly --dns-route53 \
+                -d "$CONSOLE_DOMAIN" \
+                --non-interactive --agree-tos -m noreply@redhat.com \
+                --preferred-challenges dns-01 2>&1 \
+                || echo "certbot: initial cert may have failed (will retry)"
+            ;;
+    esac
 
-    # Auto-renewal cron
+    # Auto-renewal cron (HTTP-01 and DNS-01 both renew via the same plugin)
     echo "0 3 * * * root /opt/troshka/venv/bin/certbot renew --quiet" > /etc/cron.d/certbot-renew
 
     # Store console_domain in troshkad config for vncd to find
@@ -494,9 +508,10 @@ conf['console_domain'] = '$CONSOLE_DOMAIN'
 json.dump(conf, open('/opt/troshka/troshkad.conf', 'w'), indent=2)
 "
 
-    # Open port 443
+    # Open ports 443 (vncd) and 80 (ACME HTTP-01 renewals)
     if which firewall-cmd &>/dev/null; then
         firewall-cmd --add-port=443/tcp --permanent 2>/dev/null || true
+        firewall-cmd --add-port=80/tcp --permanent 2>/dev/null || true
         firewall-cmd --reload 2>/dev/null || true
     fi
 

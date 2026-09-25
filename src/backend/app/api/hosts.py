@@ -467,8 +467,10 @@ def _setup_console_dns(
     from app.services.console_dns import console_domain_for_host
     from app.services.providers import get_provider_driver
 
-    fqdn = console_domain_for_host(h.instance_id, provider_console_domain)
     try:
+        fqdn = console_domain_for_host(
+            h.instance_id, provider_console_domain, h.ip_address
+        )
         drv = get_provider_driver(prov_obj)
         result = drv.create_console_record(prov_obj, h, fqdn, h.ip_address)
         h.console_domain = result if result else fqdn
@@ -1235,17 +1237,30 @@ def poweron_host(
 def _update_console_dns_for_new_ip(
     h: Host, s: Session, old_ip: str | None, new_ip: str
 ) -> None:
-    """Update console DNS record when a host's public IP changes after power-on."""
+    """Update console DNS / sslip FQDN when a host's public IP changes after power-on."""
     if not (new_ip and new_ip != old_ip and h.console_domain):
         return
     try:
         prov = s.query(Provider).filter_by(id=h.provider_id).first()
-        if prov:
-            from app.services.providers import get_provider_driver
+        if not prov:
+            return
+        from app.services.console_dns import console_domain_for_host, is_sslip_console
+        from app.services.providers import get_provider_driver
 
-            drv = get_provider_driver(prov)
-            drv.create_console_record(prov, h, h.console_domain, new_ip)
-            logger.info("Updated console DNS %s -> %s", h.console_domain, new_ip)
+        # sslip.io embeds the IP — rewrite the FQDN; agent reinstall re-certs.
+        if is_sslip_console(prov.console_base_domain) or h.console_domain.endswith(
+            ".sslip.io"
+        ):
+            base = prov.console_base_domain or "sslip.io"
+            if h.instance_id:
+                h.console_domain = console_domain_for_host(h.instance_id, base, new_ip)
+                s.commit()
+            logger.info("Updated sslip console FQDN -> %s", h.console_domain)
+            return
+
+        drv = get_provider_driver(prov)
+        drv.create_console_record(prov, h, h.console_domain, new_ip)
+        logger.info("Updated console DNS %s -> %s", h.console_domain, new_ip)
     except Exception as e:
         logger.warning("Failed to update console DNS for %s: %s", h.id[:8], e)
 

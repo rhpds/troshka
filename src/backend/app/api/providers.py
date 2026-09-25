@@ -1731,6 +1731,113 @@ class ConsoleSetupRequest(BaseModel):
     base_domain: str
 
 
+def _ensure_provider_console_sg(provider: Provider) -> None:
+    """Open TCP/80 + 443 on the provider SG for vncd + ACME HTTP-01."""
+    if provider.type != "ec2" or not provider.security_group_id:
+        return
+    try:
+        import boto3
+
+        from app.services.provisioner import _ensure_console_rule
+
+        creds = provider.get_credentials()
+        ec2 = boto3.client(
+            "ec2",
+            region_name=provider.default_region or "us-east-1",
+            aws_access_key_id=creds.get("access_key_id"),
+            aws_secret_access_key=creds.get("secret_access_key"),
+        )
+        _ensure_console_rule(ec2, provider.security_group_id)
+    except Exception:
+        logger.warning(
+            "Failed to open console SG ports for provider %s",
+            sanitize_log(provider.id),
+            exc_info=True,
+        )
+
+
+def _backfill_host_console_domains(db: Session, provider: Provider) -> list[str]:
+    """Assign console_domain on existing hosts; return host IDs needing agent reinstall."""
+    from app.models.host import Host
+    from app.services.console_dns import console_domain_for_host
+
+    host_ids: list[str] = []
+    hosts = db.query(Host).filter_by(provider_id=provider.id).all()
+    base = provider.console_base_domain or ""
+    for h in hosts:
+        if not (h.instance_id and h.ip_address):
+            continue
+        try:
+            h.console_domain = console_domain_for_host(
+                h.instance_id, base, h.ip_address
+            )
+            if h.private_key and h.ip_address:
+                host_ids.append(h.id)
+        except Exception:
+            logger.warning(
+                "Failed to assign console domain for host %s",
+                h.id[:8],
+                exc_info=True,
+            )
+    return host_ids
+
+
+def _enqueue_console_agent_reinstalls(host_ids: list[str]) -> None:
+    """Reinstall agents so certbot/vncd pick up the new console_domain."""
+    if not host_ids:
+        return
+    from app.api.hosts import _install_bg
+    from app.core.database import SessionLocal
+    from app.core.redis import enqueue_job
+    from app.models.host import Host
+
+    s = SessionLocal()
+    try:
+        for hid in host_ids:
+            h = s.query(Host).filter_by(id=hid).first()
+            if not h or not h.ip_address or not h.private_key:
+                continue
+            if h.agent_status in ("waiting_ssh", "installing"):
+                continue
+            h.agent_status = "waiting_ssh"
+            s.commit()
+            enqueue_job(
+                _install_bg,
+                h.id,
+                h.ip_address,
+                h.private_key,
+                queue_name="host_lifecycle",
+                host_id=h.id,
+            )
+    finally:
+        s.close()
+
+
+def _setup_console_sslip(db: Session, provider: Provider, _base_domain: str) -> dict:
+    """Configure console via sslip.io + Let's Encrypt HTTP-01 (no Route53)."""
+    provider.console_zone_id = None
+    provider.console_base_domain = "sslip.io"
+    provider.console_nameservers = None
+    _ensure_provider_console_sg(provider)
+    host_ids = _backfill_host_console_domains(db, provider)
+    db.commit()
+    # Reinstall agents async so LE cert + vncd come up without blocking the API.
+    import threading
+
+    threading.Thread(
+        target=_enqueue_console_agent_reinstalls,
+        args=(host_ids,),
+        daemon=True,
+    ).start()
+    return {
+        "zone_id": None,
+        "base_domain": "sslip.io",
+        "nameservers": [],
+        "mode": "sslip",
+        "hosts_queued": len(host_ids),
+    }
+
+
 @router.post(
     "/{provider_id}/setup-console",
     responses={
@@ -1762,6 +1869,11 @@ def setup_console(
             "base_domain": base_domain,
             "nameservers": [],
         }
+
+    from app.services.console_dns import is_sslip_console
+
+    if is_sslip_console(base_domain):
+        return _setup_console_sslip(db, provider, base_domain)
 
     import boto3
 
@@ -1867,6 +1979,7 @@ def setup_console(
         provider.console_zone_id = zone_id
         provider.console_base_domain = base_domain
         provider.console_nameservers = nameservers
+        _ensure_provider_console_sg(provider)
         db.commit()
 
         return {
@@ -1963,13 +2076,12 @@ def delete_console(
     provider = db.query(Provider).filter_by(id=provider_id).first()
     if not provider:
         raise HTTPException(status_code=404, detail=_PROVIDER_NOT_FOUND)
-    if not provider.console_zone_id:
+    if not provider.console_zone_id and not provider.console_base_domain:
         raise HTTPException(status_code=400, detail="Console not configured")
 
-    creds = provider.get_credentials()
-    zone_id = provider.console_zone_id
-
-    _delete_hosted_zone_if_unused(db, provider_id, zone_id, creds)
+    if provider.console_zone_id:
+        creds = provider.get_credentials()
+        _delete_hosted_zone_if_unused(db, provider_id, provider.console_zone_id, creds)
     _clear_console_config(db, provider)
     db.commit()
 

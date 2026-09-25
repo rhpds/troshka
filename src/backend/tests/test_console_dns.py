@@ -90,3 +90,22 @@ def test_console_domain_from_instance_id():
 
     fqdn = console_domain_for_host("i-0abc123def456", "tc.rhdp.net")
     assert fqdn == "i-0abc123def456.tc.rhdp.net"
+
+
+def test_console_domain_sslip_embeds_ip():
+    from app.services.console_dns import console_domain_for_host, is_sslip_console
+
+    assert is_sslip_console("sslip.io")
+    assert is_sslip_console("SSLIP.IO")
+    assert not is_sslip_console("tc.rhdp.net")
+    fqdn = console_domain_for_host("i-0abc123", "sslip.io", "3.89.152.9")
+    assert fqdn == "i-0abc123.3.89.152.9.sslip.io"
+
+
+def test_console_domain_sslip_requires_ip():
+    import pytest
+
+    from app.services.console_dns import console_domain_for_host
+
+    with pytest.raises(ValueError, match="requires host IP"):
+        console_domain_for_host("i-0abc123", "sslip.io")

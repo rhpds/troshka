@@ -13,9 +13,32 @@ logger = logging.getLogger(__name__)
 
 JWT_EXPIRY_SECONDS = 300  # 5 minutes
 
+SSLIP_BASE = "sslip.io"
 
-def console_domain_for_host(instance_id: str, base_domain: str) -> str:
-    return f"{instance_id}.{base_domain}"
+
+def is_sslip_console(base_domain: str | None) -> bool:
+    """True when console uses sslip.io (no Route53 zone)."""
+    if not isinstance(base_domain, str):
+        return False
+    d = base_domain.strip().lower().rstrip(".")
+    return d == SSLIP_BASE or d.endswith(f".{SSLIP_BASE}")
+
+
+def console_domain_for_host(
+    instance_id: str, base_domain: str, ip_address: str = ""
+) -> str:
+    """Build the host console FQDN.
+
+    Route53 / managed DNS: ``{instance_id}.{base_domain}``.
+    sslip.io: ``{instance_id}.{ip}.sslip.io`` (IP is the A-record; no zone).
+    """
+    base = (base_domain or "").strip().lower().rstrip(".")
+    if is_sslip_console(base):
+        ip = (ip_address or "").strip()
+        if not ip:
+            raise ValueError("sslip.io console domain requires host IP address")
+        return f"{instance_id}.{ip}.{SSLIP_BASE}"
+    return f"{instance_id}.{base}"
 
 
 def sign_console_jwt(domain_name: str, host_id: str, secret: str) -> str:

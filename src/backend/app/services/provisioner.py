@@ -98,11 +98,11 @@ def _ensure_troshkad_rule(client, sg_id: str):
             logger.warning("Failed to add troshkad rule to SG %s", sg_id, exc_info=True)
 
 
-def _ensure_console_rule(client, sg_id: str):
-    """Ensure port 443 rule exists on an existing security group."""
+def _ensure_sg_tcp_port(client, sg_id: str, port: int, description: str) -> None:
+    """Ensure a single TCP port ingress rule exists on a security group."""
     sg = client.describe_security_groups(GroupIds=[sg_id])["SecurityGroups"][0]
     for perm in sg.get("IpPermissions", []):
-        if perm.get("FromPort") == 443 and perm.get("ToPort") == 443:
+        if perm.get("FromPort") == port and perm.get("ToPort") == port:
             return
     try:
         client.authorize_security_group_ingress(
@@ -110,20 +110,26 @@ def _ensure_console_rule(client, sg_id: str):
             IpPermissions=[
                 {
                     "IpProtocol": "tcp",
-                    "FromPort": 443,
-                    "ToPort": 443,
+                    "FromPort": port,
+                    "ToPort": port,
                     "IpRanges": [
                         {
                             "CidrIp": _ALL_TRAFFIC_CIDR,
-                            "Description": "Console VNC proxy",
+                            "Description": description,
                         }
                     ],
                 }
             ],
         )
-        logger.info("Added port 443 rule to existing SG %s", sg_id)
+        logger.info("Added port %s rule to existing SG %s", port, sg_id)
     except Exception:
         pass
+
+
+def _ensure_console_rule(client, sg_id: str):
+    """Ensure port 443 (VNC) and 80 (ACME HTTP-01) on an existing SG."""
+    _ensure_sg_tcp_port(client, sg_id, 443, "Console VNC proxy")
+    _ensure_sg_tcp_port(client, sg_id, 80, "ACME HTTP-01")
 
 
 def ensure_security_group(
@@ -169,6 +175,14 @@ def ensure_security_group(
                 "ToPort": 443,
                 "IpRanges": [
                     {"CidrIp": _ALL_TRAFFIC_CIDR, "Description": "Console VNC proxy"}
+                ],
+            },
+            {
+                "IpProtocol": "tcp",
+                "FromPort": 80,
+                "ToPort": 80,
+                "IpRanges": [
+                    {"CidrIp": _ALL_TRAFFIC_CIDR, "Description": "ACME HTTP-01"}
                 ],
             },
             {

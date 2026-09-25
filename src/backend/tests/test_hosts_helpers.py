@@ -759,7 +759,7 @@ class TestSetupConsoleDns(unittest.TestCase):
 
         _setup_console_dns(h, s, "console.example.com")
 
-        mock_domain.assert_called_once_with("i-abc", "console.example.com")
+        mock_domain.assert_called_once_with("i-abc", "console.example.com", "10.0.0.1")
         drv.create_console_record.assert_called_once_with(
             prov_obj, h, "i-abc.console.example.com", "10.0.0.1"
         )

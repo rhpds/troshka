@@ -1644,6 +1644,82 @@ def test_setup_console_ec2_failure():
     assert resp.status_code == 500
 
 
+def test_setup_console_sslip_no_route53():
+    """POST setup-console with sslip.io skips Route53 and sets host FQDNs."""
+    from app.models.host import Host
+
+    pid = _create_provider(name=f"console-sslip-{uuid.uuid4().hex[:8]}")
+    db = TestSession()
+    p = db.query(Provider).filter_by(id=pid).first()
+    p.set_credentials(
+        {"access_key_id": "AKIA_FAKE", "secret_access_key": "secret_fake"}
+    )
+    p.security_group_id = "sg-test"
+    p.default_region = "us-east-1"
+    host = Host(
+        id=str(uuid.uuid4()),
+        provider_id=pid,
+        instance_id="i-sslipabc",
+        instance_type="m5.xlarge",
+        region="us-east-1",
+        ip_address="3.89.152.9",
+        private_key="fake-key",
+        state="active",
+        agent_status="connected",
+        total_vcpus=4,
+        total_ram_mb=16384,
+        storage_size_gb=100,
+        max_eips=5,
+    )
+    db.add(host)
+    db.commit()
+    hid = host.id
+    db.close()
+
+    with (
+        patch("app.api.providers._ensure_provider_console_sg"),
+        patch("app.api.providers._enqueue_console_agent_reinstalls"),
+        patch("threading.Thread") as mock_thread,
+    ):
+        mock_thread.return_value.start = MagicMock()
+        resp = client.post(
+            f"/api/v1/providers/{pid}/setup-console",
+            json={"base_domain": "sslip.io"},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["mode"] == "sslip"
+    assert data["base_domain"] == "sslip.io"
+    assert data["zone_id"] is None
+    assert data["hosts_queued"] == 1
+
+    db = TestSession()
+    p = db.query(Provider).filter_by(id=pid).first()
+    assert p.console_base_domain == "sslip.io"
+    assert p.console_zone_id is None
+    h = db.query(Host).filter_by(id=hid).first()
+    assert h.console_domain == "i-sslipabc.3.89.152.9.sslip.io"
+    db.close()
+
+
+def test_delete_console_sslip_no_zone():
+    """DELETE console for sslip.io provider clears config without Route53."""
+    pid = _create_provider(name=f"del-console-sslip-{uuid.uuid4().hex[:8]}")
+    db = TestSession()
+    p = db.query(Provider).filter_by(id=pid).first()
+    p.console_base_domain = "sslip.io"
+    p.console_zone_id = None
+    db.commit()
+    db.close()
+
+    resp = client.delete(f"/api/v1/providers/{pid}/console")
+    assert resp.status_code == 200
+    db = TestSession()
+    p = db.query(Provider).filter_by(id=pid).first()
+    assert p.console_base_domain is None
+    db.close()
+
+
 # ===========================================================================
 # Provider API tests — delete_console with zone configured
 # ===========================================================================

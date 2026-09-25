@@ -394,8 +394,8 @@ export default function AdminProvidersPage() {
     }
   };
 
-  const setupConsole = async (providerId: string) => {
-    const domain = consoleDomain[providerId]?.trim();
+  const setupConsole = async (providerId: string, domainOverride?: string) => {
+    const domain = (domainOverride ?? consoleDomain[providerId] ?? "").trim();
     if (!domain) return;
     setSettingUpConsole(providerId);
     setConsoleSetupResult((prev) => ({ ...prev, [providerId]: "" }));
@@ -409,7 +409,14 @@ export default function AdminProvidersPage() {
       if (!resp.ok) {
         setConsoleSetupResult((prev) => ({ ...prev, [providerId]: data.detail || "Setup failed" }));
       } else {
-        setConsoleSetupResult((prev) => ({ ...prev, [providerId]: "Console configured" }));
+        const extra =
+          data.mode === "sslip" && data.hosts_queued
+            ? ` (${data.hosts_queued} host(s) reinstalling)`
+            : "";
+        setConsoleSetupResult((prev) => ({
+          ...prev,
+          [providerId]: data.mode === "sslip" ? `sslip.io console ready${extra}` : "Console configured",
+        }));
         loadProviders();
       }
     } catch {
@@ -420,8 +427,8 @@ export default function AdminProvidersPage() {
 
   const removeConsole = async (providerId: string) => {
     if (!(await appConfirm({
-      title: "Remove Console DNS",
-      message: "Remove console DNS? This will delete the hosted zone and all DNS records.",
+      title: "Remove Console",
+      message: "Remove console DNS/configuration? Route53 zones (if any) and host console domains will be cleared.",
       confirmLabel: "Remove",
       variant: "danger",
     }))) return;
@@ -937,7 +944,10 @@ export default function AdminProvidersPage() {
                       <Card style={{ marginTop: 12 }}>
                         <CardBody>
                           <div style={{ fontWeight: 600, marginBottom: 8 }}>Setup Console DNS</div>
-                          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                          <div style={{ fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>
+                            Use a Route53 parent domain, or sslip.io (non-prod) for automatic DNS + Let&apos;s Encrypt HTTP-01.
+                          </div>
+                          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                             <input
                               style={inputStyle}
                               placeholder="e.g., troshka.dev.rhdp.net"
@@ -951,6 +961,17 @@ export default function AdminProvidersPage() {
                               onClick={() => setupConsole(p.id)}
                             >
                               Create
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              isLoading={settingUpConsole === p.id}
+                              isDisabled={settingUpConsole === p.id}
+                              onClick={() => {
+                                setConsoleDomain((prev) => ({ ...prev, [p.id]: "sslip.io" }));
+                                setupConsole(p.id, "sslip.io");
+                              }}
+                            >
+                              Use sslip.io
                             </Button>
                             <Button variant="plain" onClick={() => setConsoleDomain((prev) => { const n = { ...prev }; delete n[p.id]; return n; })}>
                               Cancel
@@ -967,6 +988,14 @@ export default function AdminProvidersPage() {
                     {p.console_configured && p.console_base_domain && (p.type === "ocpvirt" || p.type === "kubevirt") && (
                       <div style={{ marginTop: 8, fontSize: 12, color: "var(--pf-t--global--text--color--subtle)" }}>
                         Console Domain: <code style={{ fontSize: 11 }}>{p.console_base_domain}</code>
+                      </div>
+                    )}
+                    {p.console_configured && p.console_base_domain === "sslip.io" && p.type === "ec2" && (
+                      <div style={{ marginTop: 8, fontSize: 12, color: "var(--pf-t--global--text--color--subtle)", display: "flex", alignItems: "center", gap: 8 }}>
+                        <span>Console: <code style={{ fontSize: 11 }}>{"{instance}.{ip}.sslip.io"}</code> (Let&apos;s Encrypt HTTP-01)</span>
+                        <Button variant="danger" onClick={() => removeConsole(p.id)} style={{ padding: "2px 8px", fontSize: 11 }}>
+                          Remove
+                        </Button>
                       </div>
                     )}
                     {p.console_configured && p.console_nameservers && p.type !== "ocpvirt" && p.type !== "kubevirt" && (

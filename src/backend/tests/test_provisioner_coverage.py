@@ -162,7 +162,14 @@ class TestEnsureConsoleRule:
 
         mock_ec2 = MagicMock()
         mock_ec2.describe_security_groups.return_value = {
-            "SecurityGroups": [{"IpPermissions": [{"FromPort": 443, "ToPort": 443}]}]
+            "SecurityGroups": [
+                {
+                    "IpPermissions": [
+                        {"FromPort": 443, "ToPort": 443},
+                        {"FromPort": 80, "ToPort": 80},
+                    ]
+                }
+            ]
         }
         _ensure_console_rule(mock_ec2, "sg-123")
         mock_ec2.authorize_security_group_ingress.assert_not_called()
@@ -175,7 +182,12 @@ class TestEnsureConsoleRule:
             "SecurityGroups": [{"IpPermissions": []}]
         }
         _ensure_console_rule(mock_ec2, "sg-123")
-        mock_ec2.authorize_security_group_ingress.assert_called_once()
+        assert mock_ec2.authorize_security_group_ingress.call_count == 2
+        ports = {
+            c.kwargs["IpPermissions"][0]["FromPort"]
+            for c in mock_ec2.authorize_security_group_ingress.call_args_list
+        }
+        assert ports == {80, 443}
 
     def test_exception_suppressed(self):
         from app.services.provisioner import _ensure_console_rule
