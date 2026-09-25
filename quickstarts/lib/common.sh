@@ -164,6 +164,15 @@ wait_cloudformation_stack() {
   return 1
 }
 
+print_cfn_failure_events() {
+  local stack="$1"
+  local region="$2"
+  echo "Failed resource events:" >&2
+  aws cloudformation describe-stack-events --stack-name "${stack}" --region "${region}" \
+    --query 'StackEvents[?contains(ResourceStatus, `FAILED`)].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]' \
+    --output table >&2 || true
+}
+
 # Delete a CloudFormation stack and wait until it is gone (or fail fast).
 delete_cloudformation_stack() {
   local stack="$1"
