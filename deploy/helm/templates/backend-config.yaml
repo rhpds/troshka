@@ -38,6 +38,10 @@ data:
       {{- else if .Values.s4.deploy }}
       endpoint_url: "http://troshka-s4.{{ include "troshka.namespace" . }}.svc:7480"
       {{- end }}
+      {{- if and .Values.s4.deploy .Values.s4.expose.enabled .Values.ingress.host }}
+      # Reachable from EC2 troshkad hosts (Ingress + IP allowlist). Pods use endpoint_url.
+      host_endpoint_url: "https://s4.{{ .Values.ingress.host }}"
+      {{- end }}
       bucket: {{ .Values.s3.bucket | quote }}
     {{- end }}
     defaults:

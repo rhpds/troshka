@@ -50,6 +50,9 @@ s4:
   deploy: true
   storageSize: 100Gi
   runAsRoot: true
+  expose:
+    enabled: true
+    allowedCidrs: []
 
 redis:
   deploy: true

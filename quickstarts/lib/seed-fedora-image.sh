@@ -5,6 +5,9 @@
 # Expects: TROSHKA_API_URL, and at least one host with agent_status=connected
 # Optional: TROSHKA_FEDORA_QCOW_URL, TROSHKA_FEDORA_LIBRARY_NAME,
 #           TROSHKA_SKIP_FEDORA_IMAGE=1, NAMESPACE (default troshka)
+#
+# On EKS, troshka-s4 Ingress is IP-allowlisted to connected host EIPs; backend
+# config host_endpoint_url is used for troshkad S3 jobs (pods keep ClusterIP).
 set -euo pipefail
 
 _lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +23,8 @@ require_cmd curl jq kubectl
 NAMESPACE="${NAMESPACE:-${TROSHKA_NAMESPACE:-troshka}}"
 LIBRARY_NAME="${TROSHKA_FEDORA_LIBRARY_NAME:-Fedora Cloud 43}"
 QCOW_URL="${TROSHKA_FEDORA_QCOW_URL:-https://download.fedoraproject.org/pub/fedora/linux/releases/43/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-43-1.6.x86_64.qcow2}"
+# Provider endpoint stays ClusterIP so backend boto works behind the allowlist.
+S4_INTERNAL="http://troshka-s4.${NAMESPACE}.svc:7480"
 
 if [[ -z "${TROSHKA_API_URL:-}" ]]; then
   echo "error: TROSHKA_API_URL is required" >&2
@@ -27,21 +32,26 @@ if [[ -z "${TROSHKA_API_URL:-}" ]]; then
 fi
 
 ensure_s4_provider() {
-  local exist ak sk body
+  local exist ak sk body host_ep
   exist="$(api_get /api/v1/providers/ | jq -r '.[]|select(.type=="s3" and .name=="s4-library")|.id' | head -1)"
-  if [[ -n "${exist}" && "${exist}" != "null" ]]; then
-    echo "S4 library provider already present (${exist:0:8})."
-    return 0
-  fi
   ak="$(kubectl -n "${NAMESPACE}" get secret troshka-secrets -o jsonpath='{.data.s3-access-key}' | base64 -d)"
   sk="$(kubectl -n "${NAMESPACE}" get secret troshka-secrets -o jsonpath='{.data.s3-secret-key}' | base64 -d)"
   if [[ -z "${ak}" || -z "${sk}" ]]; then
     echo "warning: could not read S4 keys from troshka-secrets — skip s4-library provider" >&2
     return 0
   fi
-  echo "Creating s4-library provider (in-cluster S4)..."
-  body="$(jq -n --arg ak "${ak}" --arg sk "${sk}" \
-    '{name:"s4-library",type:"s3",default_region:"us-east-1",access_key_id:$ak,secret_access_key:$sk,bucket:"troshka-images",endpoint_url:"http://troshka-s4.'"${NAMESPACE}"'.svc:7480"}')"
+  host_ep="$(resolve_s4_host_endpoint "${NAMESPACE}" || true)"
+  if [[ -n "${exist}" && "${exist}" != "null" ]]; then
+    echo "Updating s4-library provider endpoint → ${S4_INTERNAL} (host jobs use host_endpoint_url)..."
+    body="$(jq -n --arg ak "${ak}" --arg sk "${sk}" --arg ep "${S4_INTERNAL}" \
+      --arg desc "${host_ep:+Hosts use ${host_ep}}" \
+      '{access_key_id:$ak,secret_access_key:$sk,bucket:"troshka-images",endpoint_url:$ep,description:$desc}')"
+    api_patch "/api/v1/providers/${exist}" "${body}" >/dev/null || true
+    return 0
+  fi
+  echo "Creating s4-library provider (ClusterIP; hosts use Ingress host_endpoint_url)..."
+  body="$(jq -n --arg ak "${ak}" --arg sk "${sk}" --arg ep "${S4_INTERNAL}" \
+    '{name:"s4-library",type:"s3",default_region:"us-east-1",access_key_id:$ak,secret_access_key:$sk,bucket:"troshka-images",endpoint_url:$ep}')"
   api_post /api/v1/providers/ "${body}" >/dev/null
 }
 
@@ -83,6 +93,13 @@ wait_item_ready() {
 }
 
 ensure_s4_provider
+wait_connected_host
+refresh_s4_host_allowlist "${NAMESPACE}"
+
+HOST_EP="$(resolve_s4_host_endpoint "${NAMESPACE}" || true)"
+if [[ -n "${HOST_EP}" ]]; then
+  echo "Troshkad S3 endpoint (from backend config): ${HOST_EP}"
+fi
 
 EXISTING="$(api_get /api/v1/library/ | jq -r --arg n "${LIBRARY_NAME}" \
   '.[]|select(.name==$n and (.state=="ready" or .state=="available"))|.id' | head -1)"
@@ -90,8 +107,6 @@ if [[ -n "${EXISTING}" && "${EXISTING}" != "null" ]]; then
   echo "Library image \"${LIBRARY_NAME}\" already ready (${EXISTING:0:8})."
   exit 0
 fi
-
-wait_connected_host
 
 ITEM_ID="$(api_get /api/v1/library/ | jq -r --arg n "${LIBRARY_NAME}" \
   '.[]|select(.name==$n)|.id' | head -1)"

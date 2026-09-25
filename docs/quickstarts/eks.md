@@ -124,6 +124,8 @@ Library: install also registers an `s4-library` provider (in-cluster S4) and imp
 
 Getting Started’s `test-web.yaml` prefers a RHEL library image (+ Binary DVD when present) and falls back to **Fedora Cloud 43**. A subscribed RHEL qcow cannot be auto-fetched; upload it to the library yourself if you want the RHEL path (name it `Prebuilt RHEL 10.2 Bastion`, or change the template).
 
+**S4 from compute hosts:** EKS exposes S3 at `https://s4.<ingress.host>` (same NLB/LE as the UI). Backend pods keep using ClusterIP; troshkad jobs use `s3.host_endpoint_url`. The S3 API is still SigV4-authenticated. IP allowlisting at nginx is not reliable on AWS NLB with `externalTrafficPolicy=Cluster` (client IP is SNAT’d); do not enable `Local` or PROXY protocol on this quickstart NLB without re-validating sslip connectivity.
+
 Further options: [install-aws.md](../install-aws.md), Azure/GCP/KubeVirt guides, or [local.md](local.md).
 
 ## Teardown

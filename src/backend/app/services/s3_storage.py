@@ -50,6 +50,22 @@ def _get_s3_config() -> dict:
         )
 
 
+def s3_creds_for_host(creds: dict | None = None) -> dict:
+    """S3 creds for troshkad jobs — prefer host_endpoint_url when set (EKS Ingress).
+
+    In-cluster callers (boto in backend/worker) must keep using ``_get_s3_config()``
+    so they hit ClusterIP. Host agents outside the cluster need the public URL.
+    """
+    base = dict(creds) if creds is not None else _get_s3_config()
+    try:
+        host_ep = getattr(config.s3, "host_endpoint_url", None) or ""
+    except AttributeError:
+        host_ep = ""
+    if host_ep:
+        base["endpoint_url"] = host_ep
+    return base
+
+
 def _get_s3_client():
     cfg = _get_s3_config()
     kwargs = {"region_name": cfg["region"]}

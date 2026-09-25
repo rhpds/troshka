@@ -149,6 +149,52 @@ spec:
     - port: 5000
       targetPort: 5000
       name: ui
+{{- if and .Values.s4.expose.enabled .Values.ingress.enabled .Values.ingress.host }}
+---
+# Public S3 API for troshkad hosts (EC2). IP-allowlisted; no basic auth (SigV4).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: troshka-s4
+  namespace: {{ include "troshka.namespace" . }}
+  labels:
+    {{- include "troshka.labels" . | nindent 4 }}
+    app.kubernetes.io/component: storage
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    {{- $cidrs := .Values.s4.expose.allowedCidrs | default list }}
+    {{- if $cidrs }}
+    nginx.ingress.kubernetes.io/whitelist-source-range: {{ $cidrs | join "," | quote }}
+    {{- end }}
+    {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.tls.clusterIssuer | quote }}
+    {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls.enabled }}
+  tls:
+    - hosts:
+        - {{ printf "s4.%s" .Values.ingress.host | quote }}
+      secretName: troshka-s4-tls
+  {{- end }}
+  rules:
+    - host: {{ printf "s4.%s" .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: troshka-s4
+                port:
+                  name: s3
+{{- end }}
 {{- if .Values.route.enabled }}
 ---
 apiVersion: route.openshift.io/v1

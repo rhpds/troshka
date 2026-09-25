@@ -261,7 +261,7 @@ export default function Palette({ onOpenStartOrder, onOpenExternalIps, projectDe
   const [portalCopied, setPortalCopied] = useState(false);
   const ocpLogRef = React.useRef<HTMLPreElement>(null);
 
-  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(["Compute", "Containers", "Networking", "Storage", "Project"]));
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set(["Compute", "Containers", "OpenShift", "Networking", "Storage", "Project"]));
   const [revealedPasswords, setRevealedPasswords] = useState<Set<string>>(new Set());
   const [hostInfo, setHostInfo] = useState<{ instance_id: string; ip_address: string; provider_type: string; provider_name: string } | null>(null);
   const [customStopOpen, setCustomStopOpen] = useState(false);

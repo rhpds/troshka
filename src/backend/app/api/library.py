@@ -592,13 +592,15 @@ def _find_import_host(sess, item_id_short):
 
 def _run_import_job(host, it, sess, item_id, s3_key, download_url):
     """Run import-via-troshkad and update item state on completion."""
-    from app.services.s3_storage import _bucket, _get_s3_client, _get_s3_config
+    from app.services.s3_storage import _bucket, _get_s3_client
     from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
 
     bucket = _bucket()
     cache_path = f"/var/lib/troshka/tmp/import-{item_id[:8]}"
     s3_upload_url = f"s3://{bucket}/{s3_key}"
-    s3_creds = _get_s3_config()
+    from app.services.s3_storage import s3_creds_for_host
+
+    s3_creds = s3_creds_for_host()
 
     try:
         job_id = start_job(

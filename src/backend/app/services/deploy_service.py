@@ -973,7 +973,11 @@ def _select_download_creds(ic, s3_creds, s3_bucket, readonly_creds):
 def _start_download_jobs(items_to_download, host):
     """Start S3 download jobs on the host for each item. Returns list of active jobs."""
     from app.services import s3_storage
-    from app.services.s3_storage import _get_readonly_s3_config, _get_s3_config
+    from app.services.s3_storage import (
+        _get_readonly_s3_config,
+        _get_s3_config,
+        s3_creds_for_host,
+    )
 
     s3_creds = _get_s3_config()
     s3_bucket = s3_storage._bucket()
@@ -983,6 +987,7 @@ def _start_download_jobs(items_to_download, host):
         dl_creds, dl_bucket = _select_download_creds(
             ic, s3_creds, s3_bucket, readonly_creds
         )
+        dl_creds = s3_creds_for_host(dl_creds)
         s3_url = f"s3://{dl_bucket}/{ic['s3_key']}"
         try:
             job_id = start_job(
@@ -8335,12 +8340,12 @@ def _add_registry_creds(pull_params, ctr, s):
 
 
 def _load_container_from_pattern(host, project_id, ctr, pattern_id):
-    from app.services.s3_storage import _bucket, _get_s3_config
+    from app.services.s3_storage import _bucket, s3_creds_for_host
 
     tar_filename = f"container-{ctr['node_id'][:8]}-image.tar.gz"
     cache_path = f"/var/lib/troshka/local/cache/patterns/{pattern_id}/{tar_filename}"
     s3_key = f"patterns/{pattern_id}/{tar_filename}"
-    creds = _get_s3_config()
+    creds = s3_creds_for_host()
     logger.info(
         "Deploy %s: downloading container image %s from pattern cache",
         project_id[:8],

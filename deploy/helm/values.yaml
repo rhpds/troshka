@@ -129,6 +129,11 @@ s4:
   storageSize: 2Ti
   # EKS EBS CSI volumes are root-owned; leave false on OpenShift (restricted SCC).
   runAsRoot: false
+  # Public Ingress for troshkad hosts (EKS). Pods keep using ClusterIP.
+  expose:
+    enabled: false
+    # CIDRs allowed to hit the S4 Ingress (host EIPs as /32). Empty → 127.0.0.1/32 (deny-all until seed).
+    allowedCidrs: []
 
 defaults:
   runTimerHours: 8

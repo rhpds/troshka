@@ -10,6 +10,7 @@ from app.core.logging_utils import sanitize_log
 from app.core.redis import enqueue_job
 from app.models.pattern import Pattern, PatternDisk
 from app.services.pattern_sync import sync_pattern_to_central
+from app.services.s3_storage import s3_creds_for_host
 
 log = logging.getLogger(__name__)
 
@@ -145,7 +146,7 @@ def _capture_container_volumes(
     host, topology, project_id, pattern_id, creds, pool, pattern, db
 ):
     """Capture raw volumes attached to container pods (e.g. showroom content)."""
-    from app.services.s3_storage import capture_bucket
+    from app.services.s3_storage import capture_bucket, s3_creds_for_host
     from app.services.troshkad_client import TroshkadError, start_job, wait_for_job
 
     volume_disks = _collect_container_volume_disks(topology, project_id, pool)
@@ -169,7 +170,7 @@ def _capture_container_volumes(
                 "aws_access_key_id": creds.get("access_key_id", ""),
                 "aws_secret_access_key": creds.get("secret_access_key", ""),
                 "aws_region": creds.get("region", "us-east-1"),
-                "aws_endpoint_url": creds.get("endpoint_url", ""),
+                "aws_endpoint_url": s3_creds_for_host(creds).get("endpoint_url", ""),
             },
         )
         job = wait_for_job(host, job_id, timeout=3600)
@@ -522,7 +523,9 @@ def _capture_vm_via_nbd(
                     "aws_access_key_id": creds.get("access_key_id", ""),
                     "aws_secret_access_key": creds.get("secret_access_key", ""),
                     "aws_region": creds.get("region", "us-east-1"),
-                    "aws_endpoint_url": creds.get("endpoint_url", ""),
+                    "aws_endpoint_url": s3_creds_for_host(creds).get(
+                        "endpoint_url", ""
+                    ),
                 },
             )
             upload_job = _poll_job_with_progress(
@@ -1992,7 +1995,9 @@ def _capture_direct(
                     "aws_access_key_id": creds.get("access_key_id", ""),
                     "aws_secret_access_key": creds.get("secret_access_key", ""),
                     "aws_region": creds.get("region", "us-east-1"),
-                    "aws_endpoint_url": creds.get("endpoint_url", ""),
+                    "aws_endpoint_url": s3_creds_for_host(creds).get(
+                        "endpoint_url", ""
+                    ),
                 },
             )
             vm_name = vm_nodes.get(vm_id, {}).get("data", {}).get("label", vm_id[:8])
@@ -2111,7 +2116,9 @@ def _capture_container_images(host, topology, pattern_id, creds, pattern, db):
                     "aws_access_key_id": creds.get("access_key_id", ""),
                     "aws_secret_access_key": creds.get("secret_access_key", ""),
                     "aws_region": creds.get("region", "us-east-1"),
-                    "aws_endpoint_url": creds.get("endpoint_url", ""),
+                    "aws_endpoint_url": s3_creds_for_host(creds).get(
+                        "endpoint_url", ""
+                    ),
                 },
             )
             wait_for_job(host, job_id, timeout=1200)

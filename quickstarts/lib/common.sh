@@ -406,6 +406,58 @@ api_delete() {
   troshka_curl -X DELETE "${TROSHKA_API_URL}${path}"
 }
 
+api_patch() {
+  local path="$1"
+  local body="${2:-}"
+  troshka_curl -X PATCH -H "Content-Type: application/json" -d "${body}" \
+    "${TROSHKA_API_URL}${path}"
+}
+
+# Public S4 URL for troshkad (EKS Ingress). Empty if not exposed.
+# Uses ingress host from the troshka Ingress, or TROSHKA_S4_HOST_ENDPOINT override.
+resolve_s4_host_endpoint() {
+  local ns="${1:-${NAMESPACE:-troshka}}"
+  if [[ -n "${TROSHKA_S4_HOST_ENDPOINT:-}" ]]; then
+    echo "${TROSHKA_S4_HOST_ENDPOINT}"
+    return 0
+  fi
+  local ui_host
+  ui_host="$(kubectl -n "${ns}" get ingress troshka -o jsonpath='{.spec.rules[0].host}' 2>/dev/null || true)"
+  if [[ -z "${ui_host}" ]]; then
+    return 0
+  fi
+  echo "https://s4.${ui_host}"
+}
+
+# Optionally annotate S4 Ingress allowlist from connected host IPs.
+# On AWS NLB + externalTrafficPolicy=Cluster this is ineffective (SNAT); skip unless
+# TROSHKA_S4_ALLOWLIST=1 is set.
+refresh_s4_host_allowlist() {
+  local ns="${1:-${NAMESPACE:-troshka}}"
+  if [[ "${TROSHKA_S4_ALLOWLIST:-}" != "1" && "${TROSHKA_S4_ALLOWLIST:-}" != "true" ]]; then
+    echo "Skipping S4 IP allowlist (set TROSHKA_S4_ALLOWLIST=1 to enable; needs real client IPs)."
+    return 0
+  fi
+  require_cmd kubectl jq
+  if ! kubectl -n "${ns}" get ingress troshka-s4 >/dev/null 2>&1; then
+    echo "No troshka-s4 Ingress — skip allowlist refresh."
+    return 0
+  fi
+  local cidrs
+  cidrs="$(api_get /api/v1/hosts/ | jq -r '
+    [.[] | select(.agent_status=="connected" and .ip_address != null and .ip_address != "")
+     | "\(.ip_address)/32"] | unique | join(",")')"
+  if [[ -z "${cidrs}" ]]; then
+    echo "No connected host IPs — leave S4 Ingress without whitelist."
+    kubectl -n "${ns}" annotate ingress troshka-s4 \
+      nginx.ingress.kubernetes.io/whitelist-source-range- >/dev/null 2>&1 || true
+    return 0
+  fi
+  echo "S4 Ingress allowlist: ${cidrs}"
+  kubectl -n "${ns}" annotate ingress troshka-s4 --overwrite \
+    "nginx.ingress.kubernetes.io/whitelist-source-range=${cidrs}" >/dev/null
+}
+
 # Port-forward to in-cluster backend for API wipe (bypasses ingress auth / TLS).
 # Usage: start_backend_port_forward <namespace> [local_port]
 # Sets TROSHKA_API_URL and TROSHKA_PF_PID; call stop_backend_port_forward after.
