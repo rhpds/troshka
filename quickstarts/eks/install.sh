@@ -119,7 +119,11 @@ else
     aws cloudformation describe-stack-events --stack-name "${STACK_NAME}" --region "${REGION}" \
       --query 'StackEvents[?ResourceStatus!=`null`]|[0:8].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]' \
       --output table >&2 || true
-    echo "Cleaning up failed stack ${STACK_NAME}..."
+    echo
+    confirm "Delete failed stack ${STACK_NAME} now?" "$@" || {
+      echo "Left stack ${STACK_NAME} (${STATUS}) in place. Re-run install later to clean up."
+      exit 1
+    }
     delete_cloudformation_stack "${STACK_NAME}" "${REGION}" || true
     echo "Re-run ./quickstarts/eks/install.sh after fixing the template/permissions error." >&2
     exit 1
