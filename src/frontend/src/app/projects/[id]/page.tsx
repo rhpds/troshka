@@ -18,6 +18,7 @@ import WorkloadRunDetailModal from "@/components/canvas/WorkloadRunDetailModal";
 import WorkloadStatusChip from "@/components/canvas/WorkloadStatusChip";
 import {
   findInflightRun,
+  findFailedChainRun,
   formatWorkloadChipLabel,
   normalizeWorkloadRoles,
   succeededRoleSet,
@@ -224,6 +225,7 @@ export default function ProjectCanvasPage() {
             role_fqcn: row.role_fqcn ?? null,
             status: row.status,
             created_at: row.created_at || "",
+            error: row.error ?? null,
           })),
         );
       })
@@ -258,14 +260,28 @@ export default function ProjectCanvasPage() {
     [workloadRuns],
   );
 
+  const chainRoles = useMemo(
+    () => normalizeWorkloadRoles(topologyWorkloads),
+    [topologyWorkloads],
+  );
+
+  const failedChainWorkload = useMemo(() => {
+    if (inflightWorkload) return null;
+    return findFailedChainRun(workloadRuns, chainRoles);
+  }, [inflightWorkload, workloadRuns, chainRoles]);
+
+  const chipWorkload = inflightWorkload || failedChainWorkload;
+
   const workloadChipLabel = useMemo(() => {
-    if (!inflightWorkload) return null;
+    if (!chipWorkload) return null;
     return formatWorkloadChipLabel({
-      roleFqcn: inflightWorkload.role_fqcn,
-      chainRoles: normalizeWorkloadRoles(topologyWorkloads),
+      roleFqcn: chipWorkload.role_fqcn,
+      chainRoles,
       succeededRoles: succeededRoleSet(workloadRuns),
     });
-  }, [inflightWorkload, topologyWorkloads, workloadRuns]);
+  }, [chipWorkload, chainRoles, workloadRuns]);
+
+  const [chainRetrying, setChainRetrying] = useState(false);
 
   // Block disruptive actions while OCP install or topology workloads are in flight.
   const ocpBusy =
@@ -651,6 +667,30 @@ export default function ProjectCanvasPage() {
     setTimeout(() => setToast(null), duration);
   };
 
+  const resumeWorkloadChain = React.useCallback(async () => {
+    setChainRetrying(true);
+    try {
+      const r = await fetch(`/api/v1/projects/${projectId}/workloads/resume`, {
+        method: "POST",
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        showToast(
+          typeof data.detail === "string"
+            ? data.detail
+            : "Could not resume workload chain",
+        );
+        return;
+      }
+      if (data.id) setOpenRunId(data.id);
+      refreshWorkloadRuns();
+    } catch {
+      showToast("Could not resume workload chain");
+    } finally {
+      setChainRetrying(false);
+    }
+  }, [projectId, refreshWorkloadRuns]);
+
   const openMigrate = async () => {
     const [hostsResp, projectResp] = await Promise.all([
       fetch("/api/v1/hosts/"),
@@ -890,11 +930,14 @@ export default function ProjectCanvasPage() {
               Save as Pattern
             </button>
           )}
-          {projectState === "active" && workloadChipLabel && inflightWorkload && (
+          {projectState === "active" && workloadChipLabel && chipWorkload && (
             <WorkloadStatusChip
               headline={workloadChipLabel.headline}
               detail={workloadChipLabel.detail}
-              onClick={() => setOpenRunId(inflightWorkload.id)}
+              variant={failedChainWorkload ? "failed" : "inflight"}
+              onClick={() => setOpenRunId(chipWorkload.id)}
+              onRetry={failedChainWorkload ? resumeWorkloadChain : undefined}
+              retrying={chainRetrying}
             />
           )}
           {projectState === "active" && (

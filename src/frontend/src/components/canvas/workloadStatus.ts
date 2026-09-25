@@ -5,9 +5,11 @@ export interface WorkloadRunSummary {
   role_fqcn: string | null;
   status: string;
   created_at: string;
+  error?: string | null;
 }
 
 const INFLIGHT = new Set(["pending", "queued", "running"]);
+const FAILED = new Set(["error", "timeout"]);
 
 export function shortRoleLabel(roleFqcn: string | null | undefined): string {
   if (!roleFqcn) return "";
@@ -39,6 +41,26 @@ export function findInflightRun(
   const inflight = runs.filter((r) => INFLIGHT.has(r.status));
   if (!inflight.length) return null;
   return inflight.reduce((a, b) =>
+    (a.created_at || "") >= (b.created_at || "") ? a : b,
+  );
+}
+
+/**
+ * Newest failed/timeout run for the next unfinished chain role.
+ * Used to show Workload N/M with Retry after an interrupt/failure.
+ */
+export function findFailedChainRun(
+  runs: WorkloadRunSummary[],
+  chainRoles: string[],
+): WorkloadRunSummary | null {
+  const succeeded = succeededRoleSet(runs);
+  const nextRole = chainRoles.find((r) => !succeeded.has(r));
+  if (!nextRole) return null;
+  const failed = runs.filter(
+    (r) => r.role_fqcn === nextRole && FAILED.has(r.status),
+  );
+  if (!failed.length) return null;
+  return failed.reduce((a, b) =>
     (a.created_at || "") >= (b.created_at || "") ? a : b,
   );
 }

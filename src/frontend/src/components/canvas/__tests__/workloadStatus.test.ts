@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   shortRoleLabel,
   findInflightRun,
+  findFailedChainRun,
   formatWorkloadChipLabel,
   type WorkloadRunSummary,
 } from "../workloadStatus";
@@ -59,6 +60,57 @@ describe("findInflightRun", () => {
         { id: "q", role_fqcn: "x", status: "queued", created_at: "2026-09-24T11:00:00Z" },
       ])?.id,
     ).toBe("q");
+  });
+});
+
+describe("findFailedChainRun", () => {
+  const chain = ["a.role.one", "a.role.two", "a.role.three"];
+
+  it("returns the newest failed run for the next unfinished role", () => {
+    const runs: WorkloadRunSummary[] = [
+      {
+        id: "ok",
+        role_fqcn: "a.role.one",
+        status: "succeeded",
+        created_at: "2026-09-24T10:00:00Z",
+      },
+      {
+        id: "old-fail",
+        role_fqcn: "a.role.two",
+        status: "error",
+        created_at: "2026-09-24T10:05:00Z",
+      },
+      {
+        id: "new-fail",
+        role_fqcn: "a.role.two",
+        status: "error",
+        created_at: "2026-09-24T11:00:00Z",
+        error: "Interrupted: boom",
+      },
+    ];
+    expect(findFailedChainRun(runs, chain)?.id).toBe("new-fail");
+  });
+
+  it("returns null when the next role has not failed", () => {
+    const runs: WorkloadRunSummary[] = [
+      {
+        id: "ok",
+        role_fqcn: "a.role.one",
+        status: "succeeded",
+        created_at: "2026-09-24T10:00:00Z",
+      },
+    ];
+    expect(findFailedChainRun(runs, chain)).toBeNull();
+  });
+
+  it("returns null when the chain is complete", () => {
+    const runs: WorkloadRunSummary[] = chain.map((role, i) => ({
+      id: `r${i}`,
+      role_fqcn: role,
+      status: "succeeded",
+      created_at: `2026-09-24T10:0${i}:00Z`,
+    }));
+    expect(findFailedChainRun(runs, chain)).toBeNull();
   });
 });
 

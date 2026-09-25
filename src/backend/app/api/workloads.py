@@ -293,6 +293,61 @@ def get_workload_run_log(run_id: str, user: CurrentUser, db: DbSession):
 
 
 # ---------------------------------------------------------------------------
+# POST /projects/{project_id}/workloads/resume — continue unfinished chain
+# ---------------------------------------------------------------------------
+@router.post(
+    "/projects/{project_id}/workloads/resume",
+    response_model=WorkloadRunResponse,
+    status_code=202,
+    responses={403: {}, 404: {}, 409: {}},
+)
+def resume_template_workload_chain(
+    project_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    """Enqueue the next unfinished template workload role.
+
+    Used after a failed/interrupted run so the operator can continue the
+    ordered ``workloads:`` chain (role N, then N+1 on success, …).
+    """
+    project = db.query(Project).filter_by(id=project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
+    _enforce_project_access(project, user)
+
+    if project.state != "active":
+        raise HTTPException(status_code=409, detail=_PROJECT_MUST_BE_ACTIVE)
+
+    from app.services.workloads.template_workloads import (
+        _project_workload_ready,
+        maybe_enqueue_template_workloads,
+    )
+
+    if _has_ocp(project) and not _project_workload_ready(project):
+        raise HTTPException(status_code=409, detail=_CLUSTER_NOT_WORKLOAD_READY)
+
+    # Flip stuck pending rows so they don't block the "already inflight" guard.
+    for r in (
+        db.query(WorkloadRun)
+        .filter_by(project_id=project_id)
+        .filter(WorkloadRun.status.in_(("pending", "running")))
+        .all()
+    ):
+        reconcile_stale_workload_run(db, r)
+
+    run_id = maybe_enqueue_template_workloads(project_id)
+    if not run_id:
+        raise HTTPException(
+            status_code=409,
+            detail="No unfinished template workloads to start "
+            "(chain complete, or a run is already in flight)",
+        )
+
+    return WorkloadRunResponse(id=run_id, status="pending")
+
+
+# ---------------------------------------------------------------------------
 # POST /workloads/{run_id}/retry — re-enqueue a failed/interrupted run
 # ---------------------------------------------------------------------------
 @router.post(

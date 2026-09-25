@@ -644,3 +644,36 @@ def test_list_reconciles_stale_pending():
     match = next(r for r in rows if r["id"] == rid)
     assert match["status"] == "error"
     assert "Interrupted" in (match["error"] or "")
+
+
+def test_resume_template_workload_chain():
+    """POST /workloads/resume enqueues the next unfinished template role."""
+    pid = _create_project(state="active")
+    with patch(
+        "app.services.workloads.template_workloads.maybe_enqueue_template_workloads",
+        return_value="new-run-id",
+    ) as enq:
+        with patch(
+            "app.services.workloads.template_workloads._project_workload_ready",
+            return_value=True,
+        ):
+            with patch("app.api.workloads._has_ocp", return_value=False):
+                resp = client.post(f"/api/v1/projects/{pid}/workloads/resume")
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["id"] == "new-run-id"
+    enq.assert_called_once_with(pid)
+
+
+def test_resume_template_workload_chain_nothing_left():
+    pid = _create_project(state="active")
+    with patch(
+        "app.services.workloads.template_workloads.maybe_enqueue_template_workloads",
+        return_value=None,
+    ):
+        with patch(
+            "app.services.workloads.template_workloads._project_workload_ready",
+            return_value=True,
+        ):
+            with patch("app.api.workloads._has_ocp", return_value=False):
+                resp = client.post(f"/api/v1/projects/{pid}/workloads/resume")
+    assert resp.status_code == 409

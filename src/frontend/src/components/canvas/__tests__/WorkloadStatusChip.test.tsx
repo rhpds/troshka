@@ -14,7 +14,23 @@ describe("WorkloadStatusChip", () => {
     );
     expect(screen.getByText(/Workload 2\/5/)).toBeInTheDocument();
     expect(screen.getByText(/troshka_workload_cclm_operators/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /workload 2\/5/i }));
+    fireEvent.click(screen.getByTestId("workload-status-chip"));
     expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows Retry for failed variant and calls onRetry", () => {
+    const onRetry = vi.fn();
+    render(
+      <WorkloadStatusChip
+        headline="Workload 2/5"
+        detail="troshka_workload_cclm_network"
+        variant="failed"
+        onClick={() => {}}
+        onRetry={onRetry}
+      />,
+    );
+    expect(screen.getByText(/Interrupted/)).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("workload-chain-retry"));
+    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 });
