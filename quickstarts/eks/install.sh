@@ -60,7 +60,16 @@ EXISTING_STATUS="$(aws cloudformation describe-stacks --stack-name "${STACK_NAME
 
 case "${EXISTING_STATUS}" in
   ROLLBACK_COMPLETE|ROLLBACK_FAILED|CREATE_FAILED|DELETE_FAILED|UPDATE_ROLLBACK_COMPLETE|UPDATE_ROLLBACK_FAILED|UPDATE_FAILED)
-    echo "Stack ${STACK_NAME} is ${EXISTING_STATUS} — cleaning it up before recreate..."
+    echo
+    echo "Found existing failed stack ${STACK_NAME} (${EXISTING_STATUS})."
+    echo "It must be deleted before a new install can create the same stack name."
+    echo
+    confirm "Delete failed stack ${STACK_NAME} in ${REGION} and continue install?" "$@" || {
+      echo "Aborted — left stack ${STACK_NAME} (${EXISTING_STATUS}) in place."
+      echo "Delete manually when ready:"
+      echo "  aws cloudformation delete-stack --stack-name ${STACK_NAME} --region ${REGION}"
+      exit 1
+    }
     delete_cloudformation_stack "${STACK_NAME}" "${REGION}"
     EXISTING_STATUS=""
     ;;
