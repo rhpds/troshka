@@ -267,6 +267,20 @@ export default function ProjectCanvasPage() {
     });
   }, [inflightWorkload, topologyWorkloads, workloadRuns]);
 
+  // Block disruptive actions while OCP install or topology workloads are in flight.
+  const ocpBusy =
+    !!ocpStatus &&
+    !["ready", "error", "warning", "none", "complete"].includes(ocpStatus);
+  const disruptiveActionsDisabled = !!inflightWorkload || ocpBusy;
+  const disruptiveDisabledTitle = inflightWorkload
+    ? "Wait for workloads to finish or fail"
+    : ocpBusy
+      ? "Wait for OpenShift install to finish or fail"
+      : undefined;
+  const disruptiveBtnStyle = disruptiveActionsDisabled
+    ? { opacity: 0.4, cursor: "not-allowed" as const }
+    : { opacity: 0.85 };
+
   // REST fallback: poll deploy progress when WS isn't delivering updates
   useEffect(() => {
     if (!["deploying", "reconfiguring", "starting", "stopping"].includes(projectState)) return;
@@ -863,7 +877,16 @@ export default function ProjectCanvasPage() {
             </button>
           )}
           {(projectState === "active" || projectState === "stopped") && (
-            <button className="project-publish-btn" onClick={() => setShowPatternModal(true)} style={{ opacity: 0.85 }}>
+            <button
+              className="project-publish-btn"
+              disabled={disruptiveActionsDisabled}
+              title={disruptiveDisabledTitle}
+              onClick={() => {
+                if (disruptiveActionsDisabled) return;
+                setShowPatternModal(true);
+              }}
+              style={disruptiveBtnStyle}
+            >
               Save as Pattern
             </button>
           )}
@@ -877,8 +900,13 @@ export default function ProjectCanvasPage() {
           {projectState === "active" && (
             <button
               className="project-publish-btn"
-              onClick={() => setShowWorkloadModal(true)}
-              style={{ opacity: 0.85 }}
+              disabled={disruptiveActionsDisabled}
+              title={disruptiveDisabledTitle}
+              onClick={() => {
+                if (disruptiveActionsDisabled) return;
+                setShowWorkloadModal(true);
+              }}
+              style={disruptiveBtnStyle}
             >
               Run Workload
             </button>
@@ -915,7 +943,7 @@ export default function ProjectCanvasPage() {
               Export Template
             </button>
           )}
-          {projectState !== "deploying" && projectState !== "reconfiguring" && projectState !== "deleting" && (
+          {projectState !== "deleting" && (
             <button
               className="project-stop-btn"
               style={{ borderColor: "var(--pf-t--global--color--status--danger--default)", color: "var(--pf-t--global--color--status--danger--default)" }}
@@ -955,20 +983,47 @@ export default function ProjectCanvasPage() {
           )}
           {projectState === "active" && (
             <>
-              <button className="project-stop-btn" onClick={async () => {
-                if (!(await appConfirm({ message: "Stop all VMs in this environment?", confirmLabel: "Stop" }))) return;
-                fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" })
-                  .then(() => setProjectState("stopping"));
-              }}>
+              <button
+                className="project-stop-btn"
+                disabled={disruptiveActionsDisabled}
+                title={disruptiveDisabledTitle}
+                style={disruptiveActionsDisabled ? { opacity: 0.4, cursor: "not-allowed" } : undefined}
+                onClick={async () => {
+                  if (disruptiveActionsDisabled) return;
+                  if (!(await appConfirm({ message: "Stop all VMs in this environment?", confirmLabel: "Stop" }))) return;
+                  fetch(`/api/v1/projects/${projectId}/stop`, { method: "POST" })
+                    .then(() => setProjectState("stopping"));
+                }}
+              >
                 ■ Stop
               </button>
-              {isAdmin && <button className="project-publish-btn" onClick={openMigrate} style={{ opacity: 0.85 }}>
-                Migrate
-              </button>}
+              {isAdmin && (
+                <button
+                  className="project-publish-btn"
+                  disabled={disruptiveActionsDisabled}
+                  title={disruptiveDisabledTitle}
+                  onClick={() => {
+                    if (disruptiveActionsDisabled) return;
+                    openMigrate();
+                  }}
+                  style={disruptiveBtnStyle}
+                >
+                  Migrate
+                </button>
+              )}
               <button className="project-publish-btn" disabled={!topologyDirty || applyingChanges} style={(!topologyDirty || applyingChanges) ? { opacity: 0.4 } : {}} onClick={handleApplyChanges}>
                 {applyingChanges ? <><span className="project-btn-spinner" /> Applying...</> : "Apply Changes"}
               </button>
-              <button className="project-publish-btn" onClick={() => handleRepublish("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.")}>
+              <button
+                className="project-publish-btn"
+                disabled={disruptiveActionsDisabled}
+                title={disruptiveDisabledTitle}
+                onClick={() => {
+                  if (disruptiveActionsDisabled) return;
+                  handleRepublish("Republish? This will DESTROY all VMs and disks, and redeploy from scratch.");
+                }}
+                style={disruptiveBtnStyle}
+              >
                 ↻ Republish
               </button>
             </>
