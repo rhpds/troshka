@@ -8,12 +8,12 @@ source "${_script_dir}/../lib/common.sh"
 
 STACK_NAME="${TROSHKA_EKS_STACK:-troshka-eks-quickstart}"
 CLUSTER_NAME="${TROSHKA_EKS_CLUSTER:-troshka-quickstart}"
-REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 NAMESPACE="${TROSHKA_NAMESPACE:-troshka}"
 RELEASE="${TROSHKA_RELEASE:-troshka}"
 
 echo "Pre-run check (aws, helm, kubectl, curl, jq)..."
 require_cmd aws helm kubectl curl jq
+resolve_aws_region
 
 if ! aws sts get-caller-identity --region "${REGION}" >/dev/null 2>&1; then
   echo "Pre-run check failed — AWS credentials not configured for region ${REGION}." >&2
@@ -29,14 +29,15 @@ WARNING: About to wipe Troshka projects and DELETE the EKS stack in this AWS acc
 
   Account:  ${ACCOUNT_ID}
   Identity: ${CALLER_ARN}
-  Region:   ${REGION}
+  Region:   ${REGION}  ← from ${REGION_SOURCE}
   Stack:    ${STACK_NAME}
   Cluster:  ${CLUSTER_NAME}
 
 EOF
 
-confirm "Proceed with full wipe + delete stack ${STACK_NAME} in account ${ACCOUNT_ID}?" "$@" || {
+confirm "Proceed with wipe + delete in account ${ACCOUNT_ID} / region ${REGION}?" "$@" || {
   echo "Aborted."
+  echo "Tip: export AWS_REGION=us-west-2   # must match the region used at install"
   exit 1
 }
 

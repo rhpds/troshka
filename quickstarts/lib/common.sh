@@ -8,8 +8,29 @@ REPO_ROOT="$(cd "${QUICKSTARTS_ROOT}/.." && pwd)"
 
 export REPO_ROOT QUICKSTARTS_ROOT
 
-TROSHKA_API_URL="${TROSHKA_API_URL:-http://localhost:8200}"
-export TROSHKA_API_URL
+# Resolve AWS region and print where it came from.
+# Sets: REGION, REGION_SOURCE (exported).
+resolve_aws_region() {
+  if [[ -n "${AWS_REGION:-}" ]]; then
+    REGION="${AWS_REGION}"
+    REGION_SOURCE="AWS_REGION env"
+  elif [[ -n "${AWS_DEFAULT_REGION:-}" ]]; then
+    REGION="${AWS_DEFAULT_REGION}"
+    REGION_SOURCE="AWS_DEFAULT_REGION env"
+  else
+    local cfg
+    cfg="$(aws configure get region 2>/dev/null || true)"
+    if [[ -n "${cfg}" ]]; then
+      REGION="${cfg}"
+      REGION_SOURCE="aws configure (~/.aws/config)"
+    else
+      REGION="us-east-1"
+      REGION_SOURCE="script default (set AWS_REGION to override)"
+    fi
+  fi
+  export REGION REGION_SOURCE
+}
+
 
 # Install hint for a missing CLI (macOS brew first; Linux notes second).
 _cmd_install_hint() {

@@ -8,13 +8,13 @@ source "${_script_dir}/../lib/common.sh"
 
 STACK_NAME="${TROSHKA_EKS_STACK:-troshka-eks-quickstart}"
 CLUSTER_NAME="${TROSHKA_EKS_CLUSTER:-troshka-quickstart}"
-REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
 NAMESPACE="${TROSHKA_NAMESPACE:-troshka}"
 RELEASE="${TROSHKA_RELEASE:-troshka}"
 CFN_TEMPLATE="${REPO_ROOT}/deploy/eks/cloudformation/troshka-eks.yaml"
 
 echo "Pre-run check (aws, helm, kubectl, curl, jq)..."
 require_cmd aws helm kubectl curl jq
+resolve_aws_region
 
 if ! aws sts get-caller-identity --region "${REGION}" >/dev/null 2>&1; then
   echo "Pre-run check failed — AWS credentials not configured for region ${REGION}." >&2
@@ -35,14 +35,15 @@ This incurs cost (EKS control plane, NAT Gateway, EC2 nodes, ALB, etc.).
   Account:  ${ACCOUNT_ID}
   Identity: ${CALLER_ARN}
   UserId:   ${CALLER_USER}
-  Region:   ${REGION}
+  Region:   ${REGION}  ← from ${REGION_SOURCE}
   Stack:    ${STACK_NAME}
   Cluster:  ${CLUSTER_NAME}
 
 EOF
 
-confirm "Proceed with CloudFormation + Helm install in account ${ACCOUNT_ID} (${REGION})?" "$@" || {
+confirm "Proceed in account ${ACCOUNT_ID} / region ${REGION}?" "$@" || {
   echo "Aborted — no changes made."
+  echo "Tip: export AWS_REGION=us-west-2   # (or your preferred region) and re-run"
   exit 1
 }
 
