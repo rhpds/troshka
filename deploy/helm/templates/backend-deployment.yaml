@@ -21,6 +21,7 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/backend-config.yaml") . | sha256sum }}
     spec:
       serviceAccountName: troshka-backend
+      {{- include "troshka.controlPlaneAffinity" . | nindent 6 }}
       containers:
         - name: backend
           image: {{ include "troshka.backendImage" . }}

@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 
 const TERMINAL = new Set(["succeeded", "error", "timeout"]);
+const RETRYABLE = new Set(["error", "timeout"]);
 
 export function openWorkloadRunLogWindow(runId: string, titleHint?: string): void {
   const winName = `workloadlog_${runId.replace(/-/g, "")}`;
@@ -27,6 +28,27 @@ function formatWhen(iso: string | null | undefined): string {
   return iso.slice(0, 19).replace("T", " ");
 }
 
+/** Human label: Interrupted (never started / worker lost) vs Failed vs raw status. */
+export function formatWorkloadStatusLabel(
+  status: string,
+  startedAt: string | null | undefined,
+  error: string | null | undefined,
+): string {
+  const s = (status || "pending").toLowerCase();
+  if (s === "error") {
+    const err = (error || "").toLowerCase();
+    if (err.includes("interrupted") || err.includes("superseded")) {
+      return "Interrupted";
+    }
+    if (!startedAt) {
+      return "Interrupted";
+    }
+    return "Failed";
+  }
+  if (s === "timeout") return "Timed out";
+  return s;
+}
+
 const headerBtnStyle: React.CSSProperties = {
   background: "rgba(255,255,255,0.08)",
   border: "1px solid rgba(255,255,255,0.15)",
@@ -42,30 +64,41 @@ export type WorkloadRunLogPanelProps = {
   standalone?: boolean;
   onClose?: () => void;
   onPopOut?: () => void;
+  onRunIdChange?: (runId: string) => void;
   wsNudge?: unknown;
 };
 
 export function WorkloadRunLogPanel({
-  runId,
+  runId: initialRunId,
   standalone = false,
   onClose,
   onPopOut,
+  onRunIdChange,
   wsNudge,
 }: WorkloadRunLogPanelProps) {
+  const [runId, setRunId] = useState(initialRunId);
   const [log, setLog] = useState("");
   const [status, setStatus] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const [roleFqcn, setRoleFqcn] = useState<string | null>(null);
   const [catalogItem, setCatalogItem] = useState<string | null>(null);
   const [createdAt, setCreatedAt] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const [endedAt, setEndedAt] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
   const preRef = useRef<HTMLPreElement>(null);
   const statusRef = useRef("");
 
   useEffect(() => {
+    setRunId(initialRunId);
+  }, [initialRunId]);
+
+  useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setRetryError(null);
     const fetchLog = async () => {
       try {
         const r = await fetch(`/api/v1/workloads/${runId}/log`);
@@ -75,6 +108,7 @@ export function WorkloadRunLogPanel({
           setLog(data.log || "");
           setStatus(data.status || "");
           statusRef.current = data.status || "";
+          setError(data.error ?? null);
           setRoleFqcn(data.role_fqcn ?? null);
           setCatalogItem(data.catalog_item ?? null);
           setCreatedAt(data.created_at ?? null);
@@ -108,13 +142,42 @@ export function WorkloadRunLogPanel({
   useEffect(() => {
     if (!standalone) return;
     const title = shortWorkloadName(roleFqcn, catalogItem);
-    document.title = status ? `${title} — ${status}` : title;
-  }, [standalone, roleFqcn, catalogItem, status]);
+    const label = formatWorkloadStatusLabel(status, startedAt, error);
+    document.title = status ? `${title} — ${label}` : title;
+  }, [standalone, roleFqcn, catalogItem, status, startedAt, error]);
+
+  const handleRetry = async () => {
+    setRetrying(true);
+    setRetryError(null);
+    try {
+      const r = await fetch(`/api/v1/workloads/${runId}/retry`, { method: "POST" });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setRetryError(typeof data.detail === "string" ? data.detail : "Retry failed");
+        return;
+      }
+      const newId = data.id as string;
+      setLog("");
+      setStatus(data.status || "pending");
+      statusRef.current = data.status || "pending";
+      setError(null);
+      setStartedAt(null);
+      setEndedAt(null);
+      setRunId(newId);
+      onRunIdChange?.(newId);
+    } catch {
+      setRetryError("Retry failed");
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   const title = shortWorkloadName(roleFqcn, catalogItem);
+  const statusLabel = formatWorkloadStatusLabel(status, startedAt, error);
   const whenLabel = endedAt
     ? `${formatWhen(startedAt || createdAt)} → ${formatWhen(endedAt)}`
     : formatWhen(startedAt || createdAt);
+  const canRetry = RETRYABLE.has(status);
 
   return (
     <div
@@ -137,10 +200,38 @@ export function WorkloadRunLogPanel({
         <div style={{ minWidth: 0 }}>
           <h2 style={{ margin: 0, fontSize: 18, wordBreak: "break-word" }}>{title}</h2>
           <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
-            <span style={{ textTransform: "capitalize" }}>{status || "pending"}</span>
+            <span
+              data-testid="workload-run-status"
+              style={{
+                textTransform: statusLabel === status ? "capitalize" : undefined,
+                color:
+                  status === "error" || status === "timeout"
+                    ? "var(--pf-t--global--color--status--danger--default, #f87171)"
+                    : undefined,
+              }}
+            >
+              {statusLabel || "pending"}
+            </span>
             {" · "}
             {whenLabel}
           </div>
+          {error && (
+            <div
+              data-testid="workload-run-error"
+              style={{
+                marginTop: 6,
+                fontSize: 12,
+                color: "var(--pf-t--global--color--status--danger--default, #f87171)",
+                opacity: 0.95,
+                wordBreak: "break-word",
+              }}
+            >
+              {error}
+            </div>
+          )}
+          {retryError && (
+            <div style={{ marginTop: 4, fontSize: 12, color: "#f87171" }}>{retryError}</div>
+          )}
           {(roleFqcn || catalogItem) && title !== (roleFqcn || catalogItem) && (
             <div
               data-testid="workload-run-fqcn"
@@ -151,6 +242,22 @@ export function WorkloadRunLogPanel({
           )}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "flex-start", flexShrink: 0 }}>
+          {canRetry && (
+            <button
+              data-testid="workload-run-retry"
+              onClick={handleRetry}
+              disabled={retrying}
+              title="Start a new run with the same parameters"
+              style={{
+                ...headerBtnStyle,
+                background: "rgba(59, 130, 246, 0.25)",
+                border: "1px solid rgba(59, 130, 246, 0.5)",
+                opacity: retrying ? 0.6 : 1,
+              }}
+            >
+              {retrying ? "Retrying…" : "Retry"}
+            </button>
+          )}
           {onPopOut && (
             <button onClick={onPopOut} title="Open in a separate window" style={headerBtnStyle}>
               Pop out
@@ -212,12 +319,21 @@ export function WorkloadRunLogPanel({
 interface ModalProps {
   runId: string;
   onClose: () => void;
+  onRunIdChange?: (runId: string) => void;
   wsNudge?: unknown;
 }
 
-export default function WorkloadRunDetailModal({ runId, onClose, wsNudge }: ModalProps) {
+export default function WorkloadRunDetailModal({
+  runId,
+  onClose,
+  onRunIdChange,
+  wsNudge,
+}: ModalProps) {
+  const [activeRunId, setActiveRunId] = useState(runId);
+  useEffect(() => setActiveRunId(runId), [runId]);
+
   const handlePopOut = () => {
-    openWorkloadRunLogWindow(runId);
+    openWorkloadRunLogWindow(activeRunId);
     onClose();
   };
 
@@ -236,10 +352,14 @@ export default function WorkloadRunDetailModal({ runId, onClose, wsNudge }: Moda
     >
       <div onClick={(e) => e.stopPropagation()}>
         <WorkloadRunLogPanel
-          runId={runId}
+          runId={activeRunId}
           wsNudge={wsNudge}
           onClose={onClose}
           onPopOut={handlePopOut}
+          onRunIdChange={(id) => {
+            setActiveRunId(id);
+            onRunIdChange?.(id);
+          }}
         />
       </div>
     </div>

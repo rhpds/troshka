@@ -4,6 +4,15 @@ namespace:
   create: true
   name: troshka
 
+# Soft scheduling for control-plane pods (backend/frontend/postgres/redis).
+# See templates/_helpers.tpl troshka.controlPlaneAffinity.
+affinity:
+  # Prefer spreading control-plane components across nodes (blast-radius).
+  spreadControlPlane: true
+  # Prefer avoiding these node hostnames (known flaky). Soft — not a hard ban.
+  avoidNodes:
+    - ocp-infra01-worker04
+
 backend:
   image:
     repository: quay.io/redhat-gpte/troshka-backend

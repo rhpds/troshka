@@ -15,7 +15,12 @@ from app.core.redis import get_progress
 from app.models.project import Project
 from app.models.user import User
 from app.models.workload_run import WorkloadRun
-from app.services.workloads.run_service import _has_ocp, start_workload_run
+from app.services.workloads.run_service import (
+    _has_ocp,
+    reconcile_stale_workload_run,
+    retry_workload_run,
+    start_workload_run,
+)
 
 router = APIRouter(tags=["workloads"])
 
@@ -62,6 +67,7 @@ class WorkloadLogResponse(BaseModel):
     created_at: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
+    error: str | None = None
 
 
 class WorkloadRunListItem(BaseModel):
@@ -73,6 +79,7 @@ class WorkloadRunListItem(BaseModel):
     status: str
     error: str | None
     created_at: str
+    started_at: str | None = None
     target_map: dict | None = None
 
 
@@ -180,9 +187,13 @@ def list_workload_runs(
 
     items = []
     for r in runs:
+        r = reconcile_stale_workload_run(db, r)
         created_at_str = ""
         if r.created_at and hasattr(r.created_at, "isoformat"):
             created_at_str = r.created_at.isoformat()  # type: ignore
+        started_at_str = None
+        if r.started_at and hasattr(r.started_at, "isoformat"):
+            started_at_str = r.started_at.isoformat()  # type: ignore
         items.append(
             WorkloadRunListItem(
                 id=r.id,
@@ -193,6 +204,7 @@ def list_workload_runs(
                 status=r.status,
                 error=r.error,
                 created_at=created_at_str,
+                started_at=started_at_str,
                 target_map=r.target_map,
             )
         )
@@ -226,6 +238,8 @@ def get_workload_run_status(
         if user.role != "admin":
             raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
+    run = reconcile_stale_workload_run(db, run)
+
     # Redis-only progress (WorkloadRun has no progress column)
     progress = get_progress(f"workload:{run_id}")
 
@@ -255,6 +269,8 @@ def get_workload_run_log(run_id: str, user: CurrentUser, db: DbSession):
     elif user.role != "admin":
         raise HTTPException(status_code=403, detail=_ACCESS_DENIED)
 
+    run = reconcile_stale_workload_run(db, run)
+
     from app.services.workloads.run_service import get_workload_log
 
     def _iso(val) -> str | None:
@@ -272,4 +288,46 @@ def get_workload_run_log(run_id: str, user: CurrentUser, db: DbSession):
         created_at=_iso(run.created_at),
         started_at=_iso(run.started_at),
         ended_at=_iso(run.ended_at),
+        error=run.error,
     )
+
+
+# ---------------------------------------------------------------------------
+# POST /workloads/{run_id}/retry — re-enqueue a failed/interrupted run
+# ---------------------------------------------------------------------------
+@router.post(
+    "/workloads/{run_id}/retry",
+    response_model=WorkloadRunResponse,
+    status_code=202,
+    responses={400: {}, 403: {}, 404: {}, 409: {}},
+)
+def retry_workload_run_endpoint(
+    run_id: str,
+    user: CurrentUser,
+    db: DbSession,
+):
+    run = db.get(WorkloadRun, run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=_RUN_NOT_FOUND)
+
+    project = db.get(Project, run.project_id) if run.project_id else None
+    if not project:
+        raise HTTPException(status_code=404, detail=_PROJECT_NOT_FOUND)
+    _enforce_project_access(project, user)
+
+    if project.state != "active":
+        raise HTTPException(status_code=409, detail=_PROJECT_MUST_BE_ACTIVE)
+
+    from app.services.workloads.template_workloads import _project_workload_ready
+
+    if _has_ocp(project) and not _project_workload_ready(project):
+        raise HTTPException(status_code=409, detail=_CLUSTER_NOT_WORKLOAD_READY)
+
+    run = reconcile_stale_workload_run(db, run)
+
+    try:
+        new_run = retry_workload_run(db, run, owner_id=user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return WorkloadRunResponse(id=new_run.id, status=new_run.status)

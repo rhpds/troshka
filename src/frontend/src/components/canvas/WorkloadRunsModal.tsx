@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { useCanvasStore } from "@/stores/canvasStore";
+import { formatWorkloadStatusLabel } from "@/components/canvas/WorkloadRunDetailModal";
 
 interface RunItem {
   id: string;
@@ -11,6 +12,7 @@ interface RunItem {
   status: string;
   error: string | null;
   created_at: string;
+  started_at?: string | null;
   target_map: { mode?: string; cluster_id?: string; vm_names?: string[] } | null;
 }
 interface Props {
@@ -106,7 +108,26 @@ export default function WorkloadRunsModal({ projectId, onClose, onOpenRun }: Pro
                     <td style={{ padding: "6px 8px" }}>{run.role_fqcn || run.catalog_item || "—"}</td>
                     <td style={{ padding: "6px 8px" }}>{targetLabel}</td>
                     <td style={{ padding: "6px 8px" }}>{run.kind}</td>
-                    <td style={{ padding: "6px 8px" }}>{run.status}</td>
+                    <td style={{ padding: "6px 8px" }}>
+                      <div>
+                        {formatWorkloadStatusLabel(run.status, run.started_at, run.error)}
+                      </div>
+                      {run.error ? (
+                        <div
+                          style={{
+                            fontSize: 11,
+                            opacity: 0.7,
+                            maxWidth: 220,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                          title={run.error}
+                        >
+                          {run.error}
+                        </div>
+                      ) : null}
+                    </td>
                     <td style={{ padding: "6px 8px" }}>{run.created_at?.slice(0, 19).replace("T", " ")}</td>
                     <td style={{ padding: "6px 8px", textAlign: "right" }}>
                       <button className="props-library-btn" onClick={() => onOpenRun(run.id)}>

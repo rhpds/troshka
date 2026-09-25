@@ -150,6 +150,39 @@ def _cleanup_host_locks(host_id: str | None, project_id: str | None):
             pass
 
 
+def _fail_workload_run_from_job(job, exc_type, exc_value) -> None:
+    """If this RQ job was a workload run, mark the WorkloadRun terminal.
+
+    Worker/node deaths raise AbandonedJobError without entering run_workload_job's
+    except path — without this, status stays pending forever.
+    """
+    func_name = getattr(job, "func_name", None) or ""
+    if "job_run_workload" not in func_name:
+        return
+    args = getattr(job, "args", None) or ()
+    if not args:
+        return
+    run_id = args[0]
+    if not isinstance(run_id, str):
+        return
+    is_abandoned = exc_type and getattr(exc_type, "__name__", "") == "AbandonedJobError"
+    if is_abandoned:
+        message = (
+            "Interrupted: the worker restarted or the node was lost "
+            "before this workload finished"
+        )
+    elif exc_value:
+        message = f"Failed: {exc_value}"
+    else:
+        message = "Failed: workload job ended unexpectedly"
+    try:
+        from app.services.workloads.run_service import mark_workload_run_interrupted
+
+        mark_workload_run_interrupted(run_id, message)
+    except Exception:
+        logger.exception("Failed to mark WorkloadRun %s interrupted", str(run_id)[:8])
+
+
 def _set_project_error_state(project_id: str, exc_value):
     """Set a project to error state after a job failure."""
     try:
@@ -182,6 +215,7 @@ def _on_job_failure(job, connection, exc_type, exc_value, traceback):
         exc_type.__name__ if exc_type else "unknown",
         exc_value,
     )
+    _fail_workload_run_from_job(job, exc_type, exc_value)
     _cleanup_host_locks(host_id, project_id)
     is_abandoned = exc_type and exc_type.__name__ == "AbandonedJobError"
     if not project_id:

@@ -19,6 +19,7 @@ spec:
         app.kubernetes.io/name: troshka-postgres
         app.kubernetes.io/component: database
     spec:
+      {{- include "troshka.controlPlaneAffinity" . | nindent 6 }}
       containers:
         - name: postgres
           image: {{ .Values.postgres.image }}

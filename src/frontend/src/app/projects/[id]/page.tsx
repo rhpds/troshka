@@ -1367,6 +1367,10 @@ export default function ProjectCanvasPage() {
           runId={openRunId}
           wsNudge={ws.workloadProgress}
           onClose={() => setOpenRunId(null)}
+          onRunIdChange={(id) => {
+            setOpenRunId(id);
+            refreshWorkloadRuns();
+          }}
         />
       )}
       {showMigrate && (

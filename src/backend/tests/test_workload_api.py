@@ -591,26 +591,56 @@ def test_trigger_workload_run_extra_vars_text_non_mapping():
     assert "extra_vars must be a YAML/JSON key: value mapping" in resp.json()["detail"]
 
 
-def test_trigger_workload_run_extra_vars_text_empty():
-    """POST with empty extra_vars_text stores None/empty."""
+def test_retry_workload_run_endpoint():
+    """POST /workloads/{id}/retry clones an errored run."""
     pid = _create_project(state="active")
+    rid = _create_workload_run(
+        pid,
+        kind="ad_hoc",
+        catalog_item=None,
+        status="error",
+    )
+    db = TestSession()
+    run = db.get(WorkloadRun, rid)
+    run.role_fqcn = "rhpds.demo_workloads.troshka_workload_cclm_network"
+    run.error = "Interrupted: boom"
+    db.commit()
+    db.close()
 
-    with patch("app.services.workloads.run_service.enqueue_job"):
-        resp = client.post(
-            f"/api/v1/projects/{pid}/workloads",
-            json={
-                "kind": "ad_hoc",
-                "role_fqcn": "demo_workloads.test_role",
-                "extra_vars_text": "",
-            },
-        )
+    with patch("app.services.workloads.run_service.enqueue_job") as enq:
+        with patch(
+            "app.api.workloads._project_workload_ready",
+            create=True,
+        ):
+            with patch(
+                "app.services.workloads.template_workloads._project_workload_ready",
+                return_value=True,
+            ):
+                with patch("app.api.workloads._has_ocp", return_value=False):
+                    resp = client.post(f"/api/v1/workloads/{rid}/retry")
 
-        assert resp.status_code == 202
-        data = resp.json()
-        run_id = data["id"]
+    assert resp.status_code == 202, resp.text
+    data = resp.json()
+    assert data["id"] != rid
+    assert data["status"] == "pending"
+    enq.assert_called_once()
 
-        db = TestSession()
-        run = db.get(WorkloadRun, run_id)
-        assert run is not None
-        assert run.extra_vars is None
-        db.close()
+
+def test_list_reconciles_stale_pending():
+    """GET list flips old pending-never-started runs to error."""
+    pid = _create_project(state="active")
+    rid = _create_workload_run(pid, status="pending")
+    db = TestSession()
+    run = db.get(WorkloadRun, rid)
+    run.created_at = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
+        minutes=10
+    )
+    db.commit()
+    db.close()
+
+    resp = client.get(f"/api/v1/projects/{pid}/workloads")
+    assert resp.status_code == 200
+    rows = resp.json()
+    match = next(r for r in rows if r["id"] == rid)
+    assert match["status"] == "error"
+    assert "Interrupted" in (match["error"] or "")

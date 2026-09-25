@@ -72,6 +72,61 @@ describe("WorkloadRunDetailModal", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("shows Interrupted and a Retry button for never-started errors", async () => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (typeof url === "string" && url.endsWith("/retry") && init?.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          status: 202,
+          json: () => Promise.resolve({ id: "run-2", status: "pending" }),
+        } as Response);
+      }
+      if (typeof url === "string" && url.includes("run-2")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              id: "run-2",
+              status: "pending",
+              log: "",
+              role_fqcn: "a.b.network",
+              error: null,
+              created_at: "2026-09-25T15:10:00Z",
+              started_at: null,
+              ended_at: null,
+            }),
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            id: "run-1",
+            status: "error",
+            log: "",
+            role_fqcn: "a.b.network",
+            error: "Interrupted: the worker stopped before this run finished",
+            created_at: "2026-09-25T15:05:50Z",
+            started_at: null,
+            ended_at: "2026-09-25T15:05:50Z",
+          }),
+      } as Response);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorkloadRunDetailModal runId="run-1" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByTestId("workload-run-status")).toHaveTextContent("Interrupted"));
+    expect(screen.getByTestId("workload-run-error")).toHaveTextContent(/Interrupted/);
+    fireEvent.click(screen.getByTestId("workload-run-retry"));
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/v1/workloads/run-1/retry",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+  });
+
   it("openWorkloadRunLogWindow encodes run id", () => {
     const open = vi.fn();
     vi.stubGlobal("open", open);

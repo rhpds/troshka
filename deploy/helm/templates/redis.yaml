@@ -18,6 +18,7 @@ spec:
         app.kubernetes.io/name: troshka-redis
         app.kubernetes.io/component: redis
     spec:
+      {{- include "troshka.controlPlaneAffinity" . | nindent 6 }}
       containers:
         - name: redis
           image: {{ .Values.redis.image }}

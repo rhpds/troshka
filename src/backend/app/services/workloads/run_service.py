@@ -356,6 +356,80 @@ def _fail_run(db, run_id, message: str) -> None:
         db.commit()
 
 
+_INTERRUPT_MSG = (
+    "Interrupted: the worker stopped before this run finished "
+    "(node loss, worker restart, or job failure)"
+)
+_STALE_PENDING_SECONDS = 90
+
+
+def mark_workload_run_interrupted(run_id: str, message: str | None = None) -> None:
+    """Mark a non-terminal WorkloadRun as error/interrupted (RQ failure path)."""
+    db = SessionLocal()
+    try:
+        row = db.get(WorkloadRun, run_id)
+        if row is None:
+            return
+        if row.status in _TERMINAL_STATUSES:
+            return
+        row.status = "error"
+        row.error = (message or _INTERRUPT_MSG)[:2000]
+        row.ended_at = _now()
+        db.commit()
+    finally:
+        db.close()
+
+
+def reconcile_stale_workload_run(db, run: WorkloadRun) -> WorkloadRun:
+    """Flip stuck pending/running rows that never got a terminal update.
+
+    Hard node/worker kills skip run_workload_job's except path and RQ may only
+    raise AbandonedJobError — leaving status=pending forever. Age-gate pending
+    runs that never started; leave healthy running monitors alone.
+    """
+    if run.status not in ("pending", "running"):
+        return run
+    if run.status == "running" and run.started_at is not None:
+        return run
+    created = run.created_at
+    if not isinstance(created, datetime.datetime):
+        return run
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=datetime.UTC)
+    age = (_now() - created).total_seconds()
+    if age < _STALE_PENDING_SECONDS:
+        return run
+    _fail_run(db, run.id, _INTERRUPT_MSG)
+    db.refresh(run)
+    return run
+
+
+def retry_workload_run(db, run: WorkloadRun, *, owner_id=None) -> WorkloadRun:
+    """Enqueue a new run cloning the failed/interrupted one's parameters."""
+    if run.status not in ("error", "timeout", "pending"):
+        raise ValueError(
+            f"Cannot retry run in status {run.status!r} "
+            "(only error, timeout, or pending)"
+        )
+    if run.status == "pending" and run.started_at is not None:
+        raise ValueError("Cannot retry a pending run that has already started")
+    # Supersede a stuck pending/error so the UI stops treating it as inflight.
+    if run.status == "pending":
+        _fail_run(db, run.id, "Superseded by retry")
+    return start_workload_run(
+        db,
+        project_id=run.project_id,
+        kind=run.kind,
+        catalog_item=run.catalog_item,
+        role_fqcn=run.role_fqcn,
+        target_map=run.target_map,
+        requirements_content=run.requirements_content,
+        ee_image=run.ee_image,
+        extra_vars=run.extra_vars,
+        owner_id=owner_id or run.owner_id,
+    )
+
+
 # ── Workload monitor (Plan 2, Task 7) ──────────────────────────────────────
 
 _WORKLOAD_MONITOR_TTL = 120
