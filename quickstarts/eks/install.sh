@@ -23,8 +23,28 @@ if ! aws sts get-caller-identity --region "${REGION}" >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Caller identity:"
-aws sts get-caller-identity --region "${REGION}"
+ACCOUNT_ID="$(aws sts get-caller-identity --region "${REGION}" --query Account --output text)"
+CALLER_ARN="$(aws sts get-caller-identity --region "${REGION}" --query Arn --output text)"
+CALLER_USER="$(aws sts get-caller-identity --region "${REGION}" --query UserId --output text)"
+
+cat <<EOF
+
+WARNING: About to create/update an EKS cluster and VPC in this AWS account.
+This incurs cost (EKS control plane, NAT Gateway, EC2 nodes, ALB, etc.).
+
+  Account:  ${ACCOUNT_ID}
+  Identity: ${CALLER_ARN}
+  UserId:   ${CALLER_USER}
+  Region:   ${REGION}
+  Stack:    ${STACK_NAME}
+  Cluster:  ${CLUSTER_NAME}
+
+EOF
+
+confirm "Proceed with CloudFormation + Helm install in account ${ACCOUNT_ID} (${REGION})?" "$@" || {
+  echo "Aborted — no changes made."
+  exit 1
+}
 
 echo "Deploying CloudFormation stack ${STACK_NAME} in ${REGION}..."
 if aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --region "${REGION}" >/dev/null 2>&1; then

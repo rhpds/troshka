@@ -15,7 +15,27 @@ RELEASE="${TROSHKA_RELEASE:-troshka}"
 echo "Pre-run check (aws, helm, kubectl, curl, jq)..."
 require_cmd aws helm kubectl curl jq
 
-confirm "Destroy all Troshka projects, uninstall Helm, and DELETE CloudFormation stack ${STACK_NAME}?" "$@" || {
+if ! aws sts get-caller-identity --region "${REGION}" >/dev/null 2>&1; then
+  echo "Pre-run check failed — AWS credentials not configured for region ${REGION}." >&2
+  exit 1
+fi
+
+ACCOUNT_ID="$(aws sts get-caller-identity --region "${REGION}" --query Account --output text)"
+CALLER_ARN="$(aws sts get-caller-identity --region "${REGION}" --query Arn --output text)"
+
+cat <<EOF
+
+WARNING: About to wipe Troshka projects and DELETE the EKS stack in this AWS account.
+
+  Account:  ${ACCOUNT_ID}
+  Identity: ${CALLER_ARN}
+  Region:   ${REGION}
+  Stack:    ${STACK_NAME}
+  Cluster:  ${CLUSTER_NAME}
+
+EOF
+
+confirm "Proceed with full wipe + delete stack ${STACK_NAME} in account ${ACCOUNT_ID}?" "$@" || {
   echo "Aborted."
   exit 1
 }
