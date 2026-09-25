@@ -12864,6 +12864,7 @@ def _wait_for_namespace_deletion(provider, project_id) -> bool:
     from kubernetes.client.exceptions import ApiException as _KApiErr
 
     from app.services.providers.kubevirt import (
+        _cleanup_project_persistent_volumes,
         _force_clear_rook_finalizers,
         _get_k8s_clients,
         _project_ns,
@@ -12872,6 +12873,17 @@ def _wait_for_namespace_deletion(provider, project_id) -> bool:
     _, core_api, _ = _get_k8s_clients(provider)
     ns_name = _project_ns(provider, project_id)
     cleared = False
+
+    def _on_namespace_gone() -> bool:
+        try:
+            _cleanup_project_persistent_volumes(core_api, ns_name)
+        except Exception:
+            logger.exception(
+                "Destroy %s: project PV cleanup failed (continuing)", project_id[:8]
+            )
+        logger.info("Destroy %s: namespace terminated", project_id[:8])
+        return True
+
     for i in range(60):
         try:
             core_api.read_namespace(name=ns_name)
@@ -12888,8 +12900,7 @@ def _wait_for_namespace_deletion(provider, project_id) -> bool:
             _del_time.sleep(5)
         except _KApiErr as e:
             if e.status == 404:
-                logger.info("Destroy %s: namespace terminated", project_id[:8])
-                return True
+                return _on_namespace_gone()
             _del_time.sleep(5)
         except Exception:
             logger.warning(
@@ -12909,11 +12920,7 @@ def _wait_for_namespace_deletion(provider, project_id) -> bool:
                 _del_time.sleep(5)
             except _KApiErr as e:
                 if e.status == 404:
-                    logger.info(
-                        "Destroy %s: namespace terminated after finalizer clear",
-                        project_id[:8],
-                    )
-                    return True
+                    return _on_namespace_gone()
                 _del_time.sleep(5)
             except Exception:
                 break
@@ -12922,6 +12929,13 @@ def _wait_for_namespace_deletion(provider, project_id) -> bool:
         project_id[:8],
         ns_name,
     )
+    # Best-effort: still try to clear PVs claiming this ns even if Terminating.
+    try:
+        _cleanup_project_persistent_volumes(core_api, ns_name)
+    except Exception:
+        logger.exception(
+            "Destroy %s: project PV cleanup after timeout failed", project_id[:8]
+        )
     return False
 
 

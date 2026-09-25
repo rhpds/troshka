@@ -436,13 +436,16 @@ class TestCleanupPatternCaptureTemps:
 
 
 class TestForceClearRookFinalizersIncludesSnapshots:
+    @patch("app.services.providers.kubevirt._cleanup_project_persistent_volumes")
     @patch("app.services.providers.kubevirt._cleanup_capture_temp_pvcs")
     @patch("app.services.providers.kubevirt._cleanup_volume_snapshots")
     @patch("app.services.providers.kubevirt._get_k8s_clients")
     @patch(
         "app.services.providers.kubevirt._project_ns", return_value="troshka-abcdef12"
     )
-    def test_also_clears_snapshots(self, _ns, mock_clients, mock_snaps, mock_pvcs):
+    def test_also_clears_snapshots(
+        self, _ns, mock_clients, mock_snaps, mock_pvcs, mock_pvs
+    ):
         custom = MagicMock()
         core = MagicMock()
         core.list_namespaced_secret.return_value = MagicMock(items=[])
@@ -456,6 +459,67 @@ class TestForceClearRookFinalizersIncludesSnapshots:
 
         mock_snaps.assert_called_once_with(custom, "troshka-abcdef12")
         mock_pvcs.assert_called_once_with(core, "troshka-abcdef12")
+        mock_pvs.assert_called_once_with(core, "troshka-abcdef12")
+
+
+class TestListOrphanTroshkaPvs:
+    def test_only_released_unknown_troshka_ns(self):
+        from app.services.providers.kubevirt import list_orphan_troshka_pvs
+
+        core = MagicMock()
+        orphan = MagicMock()
+        orphan.status.phase = "Released"
+        orphan.metadata.name = "pvc-orphan"
+        orphan.spec.claim_ref.namespace = "troshka-deadbeef"
+        orphan.spec.claim_ref.name = "disk-1"
+        orphan.spec.csi.driver = "openshift-storage.rbd.csi.ceph.com"
+        orphan.spec.csi.volume_attributes = {
+            "imageName": "csi-vol-aaaa",
+            "pool": "ocs-storagecluster-cephblockpool",
+        }
+        orphan.spec.csi.volume_handle = "x"
+        keep = MagicMock()
+        keep.status.phase = "Released"
+        keep.metadata.name = "pvc-live"
+        keep.spec.claim_ref.namespace = "troshka-alive001"
+        keep.spec.claim_ref.name = "disk-2"
+        keep.spec.csi.driver = "openshift-storage.rbd.csi.ceph.com"
+        keep.spec.csi.volume_attributes = {"imageName": "csi-vol-bbbb", "pool": "p"}
+        keep.spec.csi.volume_handle = "y"
+        core.list_persistent_volume.return_value = MagicMock(items=[orphan, keep])
+
+        result = list_orphan_troshka_pvs(core, known_prefixes={"alive001"})
+        assert len(result) == 1
+        assert result[0]["pv"] == "pvc-orphan"
+        assert result[0]["image"] == "csi-vol-aaaa"
+
+
+class TestCleanupProjectPersistentVolumes:
+    def test_deletes_pvs_for_namespace(self):
+        from app.services.providers.kubevirt import _cleanup_project_persistent_volumes
+
+        core = MagicMock()
+        pv = MagicMock()
+        pv.metadata.name = "pvc-1"
+        pv.spec.claim_ref.namespace = "troshka-abcdef12"
+        pv.spec.csi.driver = "openshift-storage.rbd.csi.ceph.com"
+        pv.spec.csi.volume_attributes = {
+            "imageName": "csi-vol-1",
+            "pool": "ocs-storagecluster-cephblockpool",
+        }
+        pv.spec.csi.volume_handle = "h"
+        other = MagicMock()
+        other.metadata.name = "pvc-2"
+        other.spec.claim_ref.namespace = "other-ns"
+        other.spec.csi.driver = "openshift-storage.rbd.csi.ceph.com"
+        other.spec.csi.volume_attributes = {"imageName": "csi-vol-2", "pool": "p"}
+        other.spec.csi.volume_handle = "h2"
+        core.list_persistent_volume.return_value = MagicMock(items=[pv, other])
+
+        targets = _cleanup_project_persistent_volumes(core, "troshka-abcdef12")
+        assert len(targets) == 1
+        assert targets[0]["image"] == "csi-vol-1"
+        core.delete_persistent_volume.assert_called_once_with(name="pvc-1")
 
 
 # ---------------------------------------------------------------------------

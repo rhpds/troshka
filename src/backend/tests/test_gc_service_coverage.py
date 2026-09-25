@@ -336,22 +336,97 @@ class TestKubevirtClusterGc:
         result = gc._detect_unreferenced_goldens(MagicMock())
         assert result == ["golden-orphan"]
 
+    @patch(
+        "app.services.providers.kubevirt.list_unclaimed_available_rbd_pvs",
+        return_value=[],
+    )
+    @patch("app.services.providers.kubevirt.list_orphan_troshka_pvs", return_value=[])
+    @patch("app.services.providers.kubevirt._get_k8s_clients")
     @patch("app.services.gc_service._detect_unreferenced_goldens", return_value=["g1"])
     @patch(
         "app.services.gc_service._detect_orphan_kubevirt_namespaces",
         return_value=["troshka-deadbeef"],
     )
-    def test_reconcile_reports_but_does_not_delete(self, _ns, _gold):
+    def test_reconcile_reports_but_does_not_delete(
+        self, _ns, _gold, mock_clients, mock_orphan_pvs, mock_unclaimed
+    ):
         db = MagicMock()
         provider = MagicMock()
         provider.type = "kubevirt"
         db.query.return_value.filter_by.return_value.first.return_value = provider
+        db.query.return_value.all.return_value = []
         host = MagicMock()
         host.provider_id = "prov-1"
         report: dict = {}
-        gc._reconcile_kubevirt_cluster(db, host, "host-1234abcd", report)
+        mock_clients.return_value = (MagicMock(), MagicMock(), MagicMock())
+        gc._reconcile_kubevirt_cluster(db, host, "host-1234abcd", report, dry_run=True)
         assert report["kubevirt_orphan_namespaces"] == ["troshka-deadbeef"]
         assert report["kubevirt_unreferenced_goldens"] == ["g1"]
+        assert report["kubevirt_orphan_pvs"] == []
+
+    @patch(
+        "app.services.providers.kubevirt.reclaim_rbd_images",
+        return_value=[{"image": "csi-vol-x", "status": "ok"}],
+    )
+    @patch(
+        "app.services.providers.kubevirt._delete_persistent_volume", return_value=True
+    )
+    @patch(
+        "app.services.providers.kubevirt.list_unclaimed_available_rbd_pvs",
+        return_value=[{"pv": "pvc-avail", "image": "csi-vol-a"}],
+    )
+    @patch(
+        "app.services.providers.kubevirt.list_orphan_troshka_pvs",
+        return_value=[
+            {
+                "pv": "pvc-orphan",
+                "phase": "Released",
+                "namespace": "troshka-deadbeef",
+                "claim": "disk-1",
+                "pool": "ocs-storagecluster-cephblockpool",
+                "image": "csi-vol-x",
+            }
+        ],
+    )
+    @patch("app.services.providers.kubevirt._get_k8s_clients")
+    @patch("app.services.gc_service._detect_unreferenced_goldens", return_value=[])
+    @patch(
+        "app.services.gc_service._detect_orphan_kubevirt_namespaces",
+        return_value=[],
+    )
+    def test_reconcile_deletes_orphan_pvs_and_reclaims(
+        self,
+        _ns,
+        _gold,
+        mock_clients,
+        mock_orphan_pvs,
+        mock_unclaimed,
+        mock_del,
+        mock_reclaim,
+    ):
+        db = MagicMock()
+        provider = MagicMock()
+        provider.type = "kubevirt"
+        db.query.return_value.filter_by.return_value.first.return_value = provider
+        db.query.return_value.all.return_value = []
+        host = MagicMock()
+        host.provider_id = "prov-1"
+        report: dict = {}
+        mock_clients.return_value = (MagicMock(), MagicMock(), MagicMock())
+        gc._reconcile_kubevirt_cluster(
+            db,
+            host,
+            "host-1234abcd",
+            report,
+            dry_run=False,
+            reclaim_rbd=True,
+        )
+        assert report["kubevirt_orphan_pvs_action"]["deleted"] == 1
+        mock_del.assert_called_once_with(mock_clients.return_value[1], "pvc-orphan")
+        mock_reclaim.assert_called_once()
+        assert report["kubevirt_unclaimed_available_pvs"][0]["pv"] == "pvc-avail"
+        # Available unclaimed must not be deleted
+        assert mock_del.call_count == 1
 
     def test_reconcile_skips_non_kubevirt_provider(self):
         db = MagicMock()

@@ -244,6 +244,259 @@ def _cleanup_pattern_capture_temps(provider, namespace: str) -> None:
     _cleanup_capture_temp_pvcs(core_api, namespace)
 
 
+def _pv_rbd_target(pv) -> dict[str, str] | None:
+    """Extract {pool, image, pv} from a CSI RBD PersistentVolume, or None."""
+    import re
+
+    spec = getattr(pv, "spec", None)
+    csi = getattr(spec, "csi", None) if spec else None
+    if not csi:
+        return None
+    pv_name = getattr(getattr(pv, "metadata", None), "name", "") or ""
+    attrs = getattr(csi, "volume_attributes", None) or {}
+    if hasattr(attrs, "items") and not isinstance(attrs, dict):
+        attrs = dict(attrs)
+    handle = getattr(csi, "volume_handle", None) or ""
+    driver = getattr(csi, "driver", "") or ""
+    if "rbd.csi.ceph.com" not in driver:
+        return None
+    image = attrs.get("imageName") or ""
+    if not image:
+        m = re.search(
+            r"(csi-vol-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+            handle,
+        )
+        image = m.group(1) if m else ""
+    if not image:
+        return None
+    pool = attrs.get("pool") or "ocs-storagecluster-cephblockpool"
+    return {"pv": pv_name, "pool": pool, "image": image}
+
+
+def _delete_persistent_volume(core_api, pv_name: str) -> bool:
+    """Strip finalizers and delete a PV. Returns True if deleted or already gone."""
+    from kubernetes.client.exceptions import ApiException
+
+    try:
+        core_api.patch_persistent_volume(
+            name=pv_name, body={"metadata": {"finalizers": None}}
+        )
+    except ApiException as e:
+        if e.status == 404:
+            return True
+        logger.warning("Failed to strip PV %s finalizers: %s", pv_name, e)
+    try:
+        core_api.delete_persistent_volume(name=pv_name)
+        logger.info("Deleted PersistentVolume %s", pv_name)
+        return True
+    except ApiException as e:
+        if e.status == 404:
+            return True
+        logger.warning("Failed to delete PV %s: %s", pv_name, e)
+        return False
+
+
+def _cleanup_project_persistent_volumes(core_api, namespace: str) -> list[dict]:
+    """Delete PVs whose claimRef.namespace matches the project namespace.
+
+    Call after (or while) destroying a project so Released/Bound PVs do not
+    leave RBD images behind once the namespace is gone. Returns RBD targets
+    ``{pv, pool, image}`` for optional toolbox reclaim.
+    """
+    from kubernetes.client.exceptions import ApiException
+
+    targets: list[dict] = []
+    try:
+        listed = core_api.list_persistent_volume()
+    except ApiException as e:
+        logger.warning("Failed to list PVs for %s cleanup: %s", namespace, e)
+        return targets
+    except Exception:
+        logger.warning("Failed to list PVs for %s cleanup", namespace, exc_info=True)
+        return targets
+
+    for pv in list(getattr(listed, "items", None) or []):
+        claim = getattr(getattr(pv, "spec", None), "claim_ref", None)
+        claim_ns = getattr(claim, "namespace", None) if claim else None
+        if claim_ns != namespace:
+            continue
+        pv_name = getattr(getattr(pv, "metadata", None), "name", "") or ""
+        tgt = _pv_rbd_target(pv)
+        if tgt:
+            targets.append(tgt)
+        if pv_name:
+            _delete_persistent_volume(core_api, pv_name)
+    if targets:
+        logger.info("Destroy %s: removed %d project PV(s)", namespace, len(targets))
+    return targets
+
+
+def list_orphan_troshka_pvs(core_api, known_prefixes: set[str]) -> list[dict]:
+    """Released/Failed PVs claiming a troshka-<8hex> ns with no matching project.
+
+    These are DB-proven Troshka leftovers (claimRef names the project namespace).
+    """
+    from kubernetes.client.exceptions import ApiException
+
+    orphans: list[dict] = []
+    try:
+        listed = core_api.list_persistent_volume()
+    except ApiException:
+        return orphans
+    for pv in list(getattr(listed, "items", None) or []):
+        phase = getattr(getattr(pv, "status", None), "phase", "") or ""
+        if phase not in ("Released", "Failed"):
+            continue
+        claim = getattr(getattr(pv, "spec", None), "claim_ref", None)
+        claim_ns = getattr(claim, "namespace", None) if claim else None
+        if not claim_ns or not claim_ns.startswith("troshka-"):
+            continue
+        suffix = claim_ns[len("troshka-") :]
+        if len(suffix) != 8 or any(c not in "0123456789abcdef" for c in suffix):
+            continue
+        if suffix in known_prefixes:
+            continue
+        tgt = _pv_rbd_target(pv) or {}
+        orphans.append(
+            {
+                "pv": getattr(pv.metadata, "name", ""),
+                "phase": phase,
+                "namespace": claim_ns,
+                "claim": getattr(claim, "name", "") if claim else "",
+                "pool": tgt.get("pool", ""),
+                "image": tgt.get("image", ""),
+            }
+        )
+    return orphans
+
+
+def list_unclaimed_available_rbd_pvs(core_api) -> list[dict]:
+    """Available RBD PVs with no claimRef — report-only (not DB-proven Troshka)."""
+    from kubernetes.client.exceptions import ApiException
+
+    found: list[dict] = []
+    try:
+        listed = core_api.list_persistent_volume()
+    except ApiException:
+        return found
+    for pv in list(getattr(listed, "items", None) or []):
+        phase = getattr(getattr(pv, "status", None), "phase", "") or ""
+        if phase != "Available":
+            continue
+        claim = getattr(getattr(pv, "spec", None), "claim_ref", None)
+        if claim and getattr(claim, "namespace", None):
+            continue
+        tgt = _pv_rbd_target(pv)
+        if not tgt:
+            continue
+        capacity = getattr(getattr(pv, "spec", None), "capacity", None) or {}
+        if hasattr(capacity, "get"):
+            size = capacity.get("storage", "")
+        else:
+            size = getattr(capacity, "storage", "") if capacity else ""
+        found.append(
+            {
+                "pv": tgt["pv"],
+                "phase": phase,
+                "size": size,
+                "pool": tgt["pool"],
+                "image": tgt["image"],
+            }
+        )
+    return found
+
+
+def _rook_toolbox_exec(core_api, command: list[str], *, timeout_s: int = 120) -> str:
+    """Run a command in the openshift-storage rook-ceph-tools pod."""
+    from kubernetes.stream import stream as k8s_stream
+
+    pods = core_api.list_namespaced_pod(
+        namespace="openshift-storage",
+        label_selector="app=rook-ceph-tools",
+    )
+    items = list(getattr(pods, "items", None) or [])
+    running = [
+        p
+        for p in items
+        if getattr(getattr(p, "status", None), "phase", "") == "Running"
+    ]
+    if not running:
+        raise RuntimeError("No running rook-ceph-tools pod in openshift-storage")
+    resp = k8s_stream(
+        core_api.connect_get_namespaced_pod_exec,
+        running[0].metadata.name,
+        "openshift-storage",
+        command=command,
+        stderr=True,
+        stdout=True,
+        stdin=False,
+        tty=False,
+        _preload_content=False,
+    )
+    stdout = ""
+    stderr = ""
+    while resp.is_open():
+        resp.update(timeout=timeout_s)
+        if resp.peek_stdout():
+            stdout += resp.read_stdout()
+        if resp.peek_stderr():
+            stderr += resp.read_stderr()
+    resp.close()
+    if stderr and not stdout:
+        raise RuntimeError(stderr.strip()[:500])
+    return (stdout or stderr).strip()
+
+
+def reclaim_rbd_images(core_api, targets: list[dict]) -> list[dict]:
+    """Delete RBD images (and trash clone children) via rook-ceph-tools.
+
+    Each target is ``{pool, image}`` from a Troshka-orphan PV. Removes CSI
+    snapshot clone chains that block ``rbd rm`` after mid-capture destroy.
+    """
+    import shlex
+
+    results: list[dict] = []
+    for t in targets:
+        pool = t.get("pool") or "ocs-storagecluster-cephblockpool"
+        image = t.get("image") or ""
+        if not image:
+            continue
+        qp, qi = shlex.quote(pool), shlex.quote(image)
+        script = (
+            f"POOL={qp}; IMG={qi}; "
+            'if ! rbd info "$POOL/$IMG" >/dev/null 2>&1; then echo GONE; exit 0; fi; '
+            'rbd children --all "$POOL/$IMG" 2>/dev/null | while read -r line; do '
+            '  [ -z "$line" ] && continue; '
+            "  tid=$(echo \"$line\" | sed -n 's/.*trash \\([0-9a-f]*\\).*/\\1/p'); "
+            '  [ -n "$tid" ] && timeout 120 rbd trash rm "$POOL/$tid" >/dev/null 2>&1 || true; '
+            "done; "
+            'timeout 60 rbd snap purge "$POOL/$IMG" >/dev/null 2>&1 || true; '
+            'if timeout 120 rbd rm "$POOL/$IMG" >/dev/null 2>&1; then echo OK; '
+            'elif timeout 30 rbd trash mv "$POOL/$IMG" >/dev/null 2>&1; then echo TRASH; '
+            "else echo FAIL; fi"
+        )
+        try:
+            out = _rook_toolbox_exec(core_api, ["bash", "-c", script], timeout_s=300)
+            status = "ok"
+            for token in ("GONE", "OK", "TRASH", "FAIL"):
+                if token in out.split():
+                    status = token.lower()
+                    break
+            results.append(
+                {"pool": pool, "image": image, "status": status, "detail": out[-200:]}
+            )
+        except Exception as e:
+            results.append(
+                {
+                    "pool": pool,
+                    "image": image,
+                    "status": "error",
+                    "detail": str(e)[:200],
+                }
+            )
+    return results
+
+
 def _force_clear_rook_finalizers(provider, project_id) -> None:
     """Strip Rook / snapshot / PVC finalizers that leave namespaces Terminating.
 
@@ -307,6 +560,8 @@ def _force_clear_rook_finalizers(provider, project_id) -> None:
     # export-/scratch- PVCs the PVC strip above did not delete).
     _cleanup_volume_snapshots(custom_api, namespace)
     _cleanup_capture_temp_pvcs(core_api, namespace)
+    # PVs claiming this namespace (Released while Terminating).
+    _cleanup_project_persistent_volumes(core_api, namespace)
 
 
 def _project_namespace_labels(project_id: str) -> dict[str, str]:

@@ -783,13 +783,23 @@ def _detect_unreferenced_goldens(provider) -> list[str]:
     return sorted(goldens - referenced - {""})
 
 
-def _reconcile_kubevirt_cluster(db, host, host_id, report) -> None:
-    """Report-only detection of orphaned KubeVirt cluster resources: per-project
-    namespaces with no matching project, and unreferenced golden-image
-    DataVolumes. Surfaces them in the report/logs; does NOT delete (deletion is
-    intentionally opt-in until the detection is proven in the field)."""
+def _reconcile_kubevirt_cluster(
+    db, host, host_id, report, *, dry_run: bool = True, reclaim_rbd: bool = False
+) -> None:
+    """Reconcile orphaned KubeVirt cluster resources.
+
+    Always reports orphan namespaces, unreferenced goldens, and Released/Failed
+    PVs whose claimRef is a troshka-<8hex> namespace with no matching project
+    (DB-proven Troshka leftovers). Available unclaimed RBD PVs are report-only
+    (no claimRef → cannot prove Troshka).
+
+    When ``dry_run`` is False, deletes orphan Released/Failed PVs. When
+    ``reclaim_rbd`` is also True, runs rook-toolbox RBD reclaim for those PVs'
+    volumeHandles (clone-chain aware).
+    """
     if not host.provider_id:
         return
+    from app.models.project import Project
     from app.models.provider import Provider
 
     provider = db.query(Provider).filter_by(id=host.provider_id).first()
@@ -826,6 +836,78 @@ def _reconcile_kubevirt_cluster(db, host, host_id, report) -> None:
     except Exception:
         log.warning(
             "Host %s GC: golden-image scan failed (non-fatal)",
+            host_id[:8],
+            exc_info=True,
+        )
+
+    try:
+        from app.services.providers.kubevirt import (
+            _delete_persistent_volume,
+            _get_k8s_clients,
+            list_orphan_troshka_pvs,
+            list_unclaimed_available_rbd_pvs,
+            reclaim_rbd_images,
+        )
+
+        _, core_api, _ = _get_k8s_clients(provider)
+        known = {p.id[:8] for p in db.query(Project).all()}
+        orphan_pvs = list_orphan_troshka_pvs(core_api, known)
+        report["kubevirt_orphan_pvs"] = orphan_pvs
+        # Report-only: no claimRef → not DB-proven Troshka.
+        unclaimed = list_unclaimed_available_rbd_pvs(core_api)
+        report["kubevirt_unclaimed_available_pvs"] = unclaimed
+        if unclaimed:
+            log.warning(
+                "Host %s GC: %d Available unclaimed RBD PV(s) (report-only): %s",
+                host_id[:8],
+                len(unclaimed),
+                [u["pv"] for u in unclaimed[:10]],
+            )
+
+        if orphan_pvs and dry_run:
+            report["kubevirt_orphan_pvs_action"] = {
+                "dry_run": True,
+                "would_delete": len(orphan_pvs),
+            }
+            if reclaim_rbd:
+                report["kubevirt_rbd_reclaim"] = {
+                    "dry_run": True,
+                    "would_reclaim": [
+                        {"pool": o["pool"], "image": o["image"]}
+                        for o in orphan_pvs
+                        if o.get("image")
+                    ],
+                }
+        elif orphan_pvs and not dry_run:
+            deleted = 0
+            for o in orphan_pvs:
+                if o.get("pv") and _delete_persistent_volume(core_api, o["pv"]):
+                    deleted += 1
+            report["kubevirt_orphan_pvs_action"] = {
+                "deleted": deleted,
+                "total": len(orphan_pvs),
+            }
+            log.info(
+                "Host %s GC: deleted %d/%d orphan Troshka PV(s)",
+                host_id[:8],
+                deleted,
+                len(orphan_pvs),
+            )
+            if reclaim_rbd:
+                targets = [
+                    {"pool": o["pool"], "image": o["image"]}
+                    for o in orphan_pvs
+                    if o.get("image")
+                ]
+                report["kubevirt_rbd_reclaim"] = reclaim_rbd_images(core_api, targets)
+                log.info(
+                    "Host %s GC: RBD reclaim attempted for %d image(s)",
+                    host_id[:8],
+                    len(targets),
+                )
+    except Exception:
+        log.warning(
+            "Host %s GC: orphan PV scan/cleanup failed (non-fatal)",
             host_id[:8],
             exc_info=True,
         )
@@ -915,8 +997,16 @@ def _gc_append_remote_reports(
         _reconcile_ocp_routes(db, host, host_id, report)
 
 
-def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
-    """Full reconciliation: sync capacity + discover + clean orphans + repair networks."""
+def reconcile_host(
+    host_id: str, dry_run: bool = False, *, reclaim_rbd: bool = False
+) -> dict:
+    """Full reconciliation: sync capacity + discover + clean orphans + repair networks.
+
+    ``reclaim_rbd`` only applies to kubevirt-cluster hosts: after deleting
+    DB-proven orphan Troshka PVs, optionally reclaim their RBD images via the
+    rook toolbox (clone-chain aware). Ignored on preview (dry_run) except to
+    populate ``would_reclaim`` in the report.
+    """
     from app.core.database import SessionLocal
     from app.models.host import Host
 
@@ -935,9 +1025,16 @@ def reconcile_host(host_id: str, dry_run: bool = False) -> dict:
 
         # KubeVirt-cluster hosts have no troshkad agent — the troshkad orphan
         # scan doesn't apply. Reconcile cluster-level orphans (namespaces, golden
-        # images) instead.
+        # images, Released Troshka PVs) instead.
         if host.host_type == "kubevirt-cluster":
-            _reconcile_kubevirt_cluster(db, host, host_id, report)
+            _reconcile_kubevirt_cluster(
+                db,
+                host,
+                host_id,
+                report,
+                dry_run=dry_run,
+                reclaim_rbd=reclaim_rbd,
+            )
             return report
 
         if not host.ip_address or host.agent_status != "connected":

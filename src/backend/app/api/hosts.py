@@ -1858,15 +1858,20 @@ def gc_preview(
     host_id: HostIdPath,
     user: AdminUser,
     db: DbSession,
+    reclaim_rbd: bool = False,
 ):
-    """Dry-run garbage collection — show what would be cleaned."""
+    """Dry-run garbage collection — show what would be cleaned.
+
+    For kubevirt-cluster hosts, ``reclaim_rbd=true`` includes would-be RBD
+    reclaim targets (Released Troshka orphan PVs only) in the report.
+    """
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
         raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
 
     from app.services.gc_service import reconcile_host
 
-    return reconcile_host(host_id, dry_run=True)
+    return reconcile_host(host_id, dry_run=True, reclaim_rbd=reclaim_rbd)
 
 
 @router.post(
@@ -1880,19 +1885,27 @@ def gc_run(
     host_id: HostIdPath,
     user: AdminUser,
     db: DbSession,
+    reclaim_rbd: bool = False,
 ):
-    """Run garbage collection on a host."""
+    """Run garbage collection on a host.
+
+    For kubevirt-cluster hosts, ``reclaim_rbd=true`` deletes DB-proven orphan
+    Troshka PVs and then reclaims their RBD images via the rook toolbox
+    (clone-chain aware). Preview first with GET .../gc/preview?reclaim_rbd=true.
+    """
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
         raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
-    if not host.ip_address or host.agent_status != "connected":
-        raise HTTPException(
-            status_code=400, detail="Host must be active with agent connected"
-        )
+    # KubeVirt clusters have no troshkad agent — GC uses the provider kubeconfig.
+    if host.host_type != "kubevirt-cluster":
+        if not host.ip_address or host.agent_status != "connected":
+            raise HTTPException(
+                status_code=400, detail="Host must be active with agent connected"
+            )
 
     from app.services.gc_service import reconcile_host
 
-    return reconcile_host(host_id, dry_run=False)
+    return reconcile_host(host_id, dry_run=False, reclaim_rbd=reclaim_rbd)
 
 
 def _destroy_active_project(project, results: dict) -> None:
