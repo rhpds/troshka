@@ -130,23 +130,32 @@ require_kube_cli() {
   exit 1
 }
 
-has_yes_flag() {
+# True if the user opted out of interactive confirmations.
+# Flags: --yes / -y / --quiet / -q / --no-verify
+# Env:   TROSHKA_YES=1 or TROSHKA_NO_VERIFY=1
+skip_confirm() {
   local arg
   for arg in "$@"; do
-    if [[ "$arg" == "--yes" ]]; then
-      return 0
-    fi
+    case "$arg" in
+      --yes|-y|--quiet|-q|--no-verify) return 0 ;;
+    esac
   done
+  if [[ "${TROSHKA_YES:-}" == "1" || "${TROSHKA_NO_VERIFY:-}" == "1" ]]; then
+    return 0
+  fi
   return 1
+}
+
+# Backward-compatible alias.
+has_yes_flag() {
+  skip_confirm "$@"
 }
 
 confirm() {
   local prompt="$1"
   shift || true
-  if has_yes_flag "$@"; then
-    return 0
-  fi
-  if [[ "${TROSHKA_YES:-}" == "1" ]]; then
+  if skip_confirm "$@"; then
+    echo "Skipping confirm (--yes/--quiet/--no-verify): proceeding with defaults."
     return 0
   fi
   read -r -p "${prompt} [y/N] " reply

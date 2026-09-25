@@ -33,6 +33,8 @@ WARNING: About to wipe Troshka projects and DELETE the EKS stack in this AWS acc
   Stack:    ${STACK_NAME}
   Cluster:  ${CLUSTER_NAME}
 
+  Skip this prompt next time: --yes / --quiet / --no-verify
+
 EOF
 
 confirm "Proceed with wipe + delete in account ${ACCOUNT_ID} / region ${REGION}?" "$@" || {

@@ -39,6 +39,8 @@ This incurs cost (EKS control plane, NAT Gateway, EC2 nodes, ALB, etc.).
   Stack:    ${STACK_NAME}
   Cluster:  ${CLUSTER_NAME}
 
+  Skip this prompt next time: --yes / --quiet / --no-verify
+
 EOF
 
 confirm "Proceed in account ${ACCOUNT_ID} / region ${REGION}?" "$@" || {

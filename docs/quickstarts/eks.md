@@ -33,6 +33,17 @@ export AWS_REGION=us-east-1   # or your region
 ./quickstarts/eks/install.sh
 ```
 
+The script prints the AWS account, identity, and region (and where the region came from), then asks `[y/N]`. Default is **no**.
+
+Non-interactive / CI (skip confirm, use resolved defaults):
+
+```bash
+./quickstarts/eks/install.sh --yes
+./quickstarts/eks/install.sh --quiet
+./quickstarts/eks/install.sh --no-verify
+# or: TROSHKA_NO_VERIFY=1 ./quickstarts/eks/install.sh
+```
+
 What it does:
 
 1. Create/update stack from `deploy/eks/cloudformation/troshka-eks.yaml`
