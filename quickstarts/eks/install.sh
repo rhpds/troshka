@@ -97,10 +97,8 @@ if [[ -n "${EXISTING_STATUS}" && "${EXISTING_STATUS}" != "None" ]]; then
     echo "Waiting for stack UPDATE_COMPLETE (polling; exits on rollback/failure)..."
     STATUS="$(wait_cloudformation_stack "${STACK_NAME}" "${REGION}" "${TROSHKA_CFN_WAIT_TIMEOUT:-5400}")" || {
       echo "error: stack not healthy (${STATUS})" >&2
-      aws cloudformation describe-stack-events --stack-name "${STACK_NAME}" --region "${REGION}" \
-        --query 'StackEvents[?ResourceStatus!=`null`]|[0:8].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]' \
-        --output table >&2 || true
-      echo "Re-run install — failed stacks are deleted automatically." >&2
+      print_cfn_failure_events "${STACK_NAME}" "${REGION}"
+      echo "Re-run install — failed stacks are deleted automatically after confirm." >&2
       exit 1
     }
   else
@@ -116,9 +114,7 @@ else
   echo "Waiting for stack CREATE_COMPLETE (polling; exits on rollback/failure)..."
   STATUS="$(wait_cloudformation_stack "${STACK_NAME}" "${REGION}" "${TROSHKA_CFN_WAIT_TIMEOUT:-5400}")" || {
     echo "error: stack not healthy (${STATUS})" >&2
-    aws cloudformation describe-stack-events --stack-name "${STACK_NAME}" --region "${REGION}" \
-      --query 'StackEvents[?ResourceStatus!=`null`]|[0:8].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]' \
-      --output table >&2 || true
+    print_cfn_failure_events "${STACK_NAME}" "${REGION}"
     echo
     confirm "Delete failed stack ${STACK_NAME} now?" "$@" || {
       echo "Left stack ${STACK_NAME} (${STATUS}) in place. Re-run install later to clean up."
