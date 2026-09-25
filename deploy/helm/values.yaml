@@ -42,8 +42,17 @@ frontend:
       memory: 512Mi
 
 route:
+  # OpenShift Routes (disable on vanilla Kubernetes / EKS).
+  enabled: true
   host: ""
   tls: edge
+
+ingress:
+  # Kubernetes Ingress (enable on EKS with AWS Load Balancer Controller).
+  enabled: false
+  className: alb
+  host: ""
+  annotations: {}
 
 auth:
   oauthEnabled: false

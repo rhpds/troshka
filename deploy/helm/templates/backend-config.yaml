@@ -15,7 +15,13 @@ data:
       host: "0.0.0.0"
       log_level: info
       root_path: ""
+      {{- if and .Values.ingress.enabled .Values.ingress.host }}
+      external_url: "https://{{ .Values.ingress.host }}"
+      {{- else if .Values.route.host }}
       external_url: "https://{{ .Values.route.host }}"
+      {{- else }}
+      external_url: ""
+      {{- end }}
     auth:
       oauth_enabled: {{ .Values.auth.oauthEnabled }}
       jwt_algorithm: "HS256"

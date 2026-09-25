@@ -1,0 +1,112 @@
+# Troshka local quickstart control plane (Podman/Docker Compose).
+# Images: quay.io/redhat-gpte/troshka-*
+name: troshka
+
+services:
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: troshka
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: troshka
+    volumes:
+      - troshka-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U troshka"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: docker.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    volumes:
+      - troshka-minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio-init:
+    image: docker.io/minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      mc mb --ignore-existing local/troshka-images
+      "
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    restart: "no"
+
+  backend:
+    image: quay.io/redhat-gpte/troshka-backend:${TROSHKA_IMAGE_TAG:-latest}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "${TROSHKA_API_PORT:-8200}:8200"
+    environment:
+      TROSHKA_DATABASE__URL: postgresql+psycopg2://troshka:${POSTGRES_PASSWORD}@postgres:5432/troshka
+      TROSHKA_REDIS__URL: redis://redis:6379/0
+      TROSHKA_AUTH__OAUTH_ENABLED: "false"
+      TROSHKA_AUTH__JWT_SECRET: ${JWT_SECRET}
+      TROSHKA_AUTH__ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      TROSHKA_S3__ENDPOINT_URL: http://minio:9000
+      TROSHKA_S3__BUCKET: troshka-images
+      TROSHKA_AWS__ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      TROSHKA_AWS__SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+      TROSHKA_APP__EXTERNAL_URL: http://localhost:${TROSHKA_UI_PORT:-3100}
+
+  worker:
+    image: quay.io/redhat-gpte/troshka-backend:${TROSHKA_IMAGE_TAG:-latest}
+    command: ["python3", "-m", "app.workers.deploy_worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    environment:
+      TROSHKA_DATABASE__URL: postgresql+psycopg2://troshka:${POSTGRES_PASSWORD}@postgres:5432/troshka
+      TROSHKA_REDIS__URL: redis://redis:6379/0
+      TROSHKA_AUTH__OAUTH_ENABLED: "false"
+      TROSHKA_AUTH__JWT_SECRET: ${JWT_SECRET}
+      TROSHKA_AUTH__ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      TROSHKA_S3__ENDPOINT_URL: http://minio:9000
+      TROSHKA_S3__BUCKET: troshka-images
+      TROSHKA_AWS__ACCESS_KEY_ID: ${S3_ACCESS_KEY}
+      TROSHKA_AWS__SECRET_ACCESS_KEY: ${S3_SECRET_KEY}
+
+  frontend:
+    image: quay.io/redhat-gpte/troshka-frontend:${TROSHKA_IMAGE_TAG:-latest}
+    depends_on:
+      - backend
+    ports:
+      - "${TROSHKA_UI_PORT:-3100}:3000"
+    environment:
+      BACKEND_URL: http://backend:8200
+
+volumes:
+  troshka-pgdata:
+  troshka-minio:

@@ -1,0 +1,44 @@
+# Quickstart values for Amazon EKS (control plane only).
+# Used by quickstarts/eks/install.sh with the main chart.
+
+route:
+  enabled: false
+
+ingress:
+  enabled: true
+  className: alb
+  host: ""
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+
+auth:
+  oauthEnabled: false
+
+postgres:
+  deploy: true
+  storageSize: 20Gi
+
+s4:
+  deploy: true
+  storageSize: 100Gi
+
+redis:
+  deploy: true
+
+# Laptop / demo scale — not production worker fleets.
+worker:
+  replicas: 2
+
+affinity:
+  spreadControlPlane: false
+  avoidNodes: []
+
+backend:
+  image:
+    tag: latest
+
+frontend:
+  image:
+    tag: latest

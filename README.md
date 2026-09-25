@@ -161,17 +161,17 @@ Troshka eliminates this entire class of problems:
 
 ### Installation
 
-**Container deployment (recommended):** Deploy on any OpenShift cluster with one command:
+**Quickstarts (recommended for blogs / demos):** one-command install and teardown on OpenShift, Amazon EKS, or local Compose:
 
 ```bash
-ansible-playbook deploy/ansible/deploy.yaml \
-  -e troshka_deploy_postgres=true \
-  -e troshka_deploy_minio=true \
-  -e troshka_oauth_enabled=true \
-  -e troshka_admin_users=you@example.com
+./quickstarts/ocp/install.sh      # OpenShift
+./quickstarts/eks/install.sh      # Amazon EKS (CloudFormation + Helm)
+./quickstarts/local/install.sh    # Mac / Windows / Linux containers
 ```
 
-See **[OCP Deployment Guide](docs/install-ocp.md)** for full details — SSO, external DB, kustomize, and configuration options.
+See **[Install Quickstarts](docs/quickstarts/README.md)** for permissions (EKS), host bootstrap, and full wipe docs.
+
+**OpenShift (detailed):** Ansible / Helm / SSO options in **[OCP Deployment Guide](docs/install-ocp.md)**.
 
 **Local development:** See [Common Setup](docs/install-common.md) for running backend/frontend directly.
 

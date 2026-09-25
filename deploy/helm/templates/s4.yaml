@@ -88,6 +88,7 @@ spec:
     - port: 5000
       targetPort: 5000
       name: ui
+{{- if .Values.route.enabled }}
 ---
 apiVersion: route.openshift.io/v1
 kind: Route
@@ -106,6 +107,7 @@ spec:
   tls:
     termination: edge
     insecureEdgeTerminationPolicy: Redirect
+{{- end }}
 ---
 apiVersion: batch/v1
 kind: Job
