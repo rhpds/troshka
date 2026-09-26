@@ -677,6 +677,41 @@ def _apply_bastion_cloud_init(
             break
 
 
+def _vm_uses_cloud_init(data: dict) -> bool:
+    """True when the VM already has (or implies) cloud-init configuration."""
+    return bool(
+        data.get("cloudInit")
+        or data.get("ciPackages")
+        or data.get("ciUserData")
+        or data.get("ciMinimalCloudInit")
+        or data.get("ciUserDataOnly")
+    )
+
+
+def _apply_cloud_init_credentials(topology, common_password, ssh_key_ids, ssh_keys):
+    """Fill cloud-user password / SSH keys on cloud-init VMs that lack them.
+
+    Does not overwrite credentials already present in the imported YAML.
+    Enables ``cloudInit`` when packages/user_data imply cloud-init so
+    injected credentials actually take effect at deploy.
+    """
+    if not common_password and not ssh_key_ids and not ssh_keys:
+        return
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        data = node.setdefault("data", {})
+        if not _vm_uses_cloud_init(data):
+            continue
+        data["cloudInit"] = True
+        if common_password and not data.get("ciCloudUserPassword"):
+            data["ciCloudUserPassword"] = common_password
+        if ssh_key_ids and not data.get("ciSshKeyIds"):
+            data["ciSshKeyIds"] = list(ssh_key_ids)
+        if ssh_keys and not data.get("ciSshKeys"):
+            data["ciSshKeys"] = list(ssh_keys)
+
+
 def _parse_clock_target(clock_target_str):
     """Parse a clock target string or datetime into a datetime object."""
     if not clock_target_str:
@@ -1036,6 +1071,10 @@ def import_template(
         topology = generate_topology_from_template(resolved)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid template: {e}")
+
+    common_password = body.get("common_password", "") or ""
+    _, ssh_key_ids, ssh_keys = _resolve_ssh_keys(db, user, body)
+    _apply_cloud_init_credentials(topology, common_password, ssh_key_ids, ssh_keys)
 
     from app.services.deploy_topology import (
         infra_ip_overlap_warnings,

@@ -61,6 +61,13 @@ export default function ProjectCanvasPage() {
   const [importYaml, setImportYaml] = useState("");
   const [importError, setImportError] = useState("");
   const [importing, setImporting] = useState(false);
+  const [importPassword, setImportPassword] = useState(() => {
+    const chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  });
+  const [importSshKeyId, setImportSshKeyId] = useState("");
+  const [importSshKeys, setImportSshKeys] = useState<Array<{ id: string; name: string }>>([]);
+  const [importAutoDeploy, setImportAutoDeploy] = useState(true);
   const [projectName, setProjectName] = useState("");
   const [projectDesc, setProjectDesc] = useState("");
   const [projectGuid, setProjectGuid] = useState("");
@@ -1277,7 +1284,18 @@ export default function ProjectCanvasPage() {
                 Drag components from the palette or import a template
               </div>
               <button
-                onClick={() => { setImportYaml(""); setImportError(""); setShowImportModal(true); }}
+                onClick={() => {
+                  setImportYaml("");
+                  setImportError("");
+                  setImportSshKeyId("");
+                  const chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+                  setImportPassword(Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join(""));
+                  fetch("/api/v1/auth/ssh-keys")
+                    .then((r) => (r.ok ? r.json() : []))
+                    .then((data) => setImportSshKeys(Array.isArray(data) ? data : []))
+                    .catch(() => setImportSshKeys([]));
+                  setShowImportModal(true);
+                }}
                 style={{
                   padding: "10px 24px", borderRadius: 8,
                   border: "1px solid var(--pf-t--global--border--color--default)",
@@ -1524,6 +1542,69 @@ export default function ProjectCanvasPage() {
                 border: "1px solid var(--pf-t--global--border--color--default)",
               }}
             />
+            <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 12 }}>
+              <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>
+                Cloud-init credentials (applied when the template enables cloud-init and omits them)
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>SSH Key</label>
+                  <select
+                    style={{
+                      width: "100%", padding: "6px 10px", borderRadius: 6, fontSize: 13,
+                      border: "1px solid var(--pf-t--global--border--color--default)",
+                      background: "var(--pf-t--global--background--color--primary--default)",
+                      color: "var(--pf-t--global--text--color--regular)",
+                    }}
+                    value={importSshKeyId}
+                    onChange={(e) => setImportSshKeyId(e.target.value)}
+                  >
+                    <option value="">None</option>
+                    {importSshKeys.map((k) => (
+                      <option key={k.id} value={k.id}>{k.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
+                    Password <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user console)</span>
+                  </label>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <input
+                      style={{
+                        flex: "1 1 0", minWidth: 0, padding: "6px 10px", borderRadius: 6, fontSize: 13,
+                        border: "1px solid var(--pf-t--global--border--color--default)",
+                        background: "var(--pf-t--global--background--color--primary--default)",
+                        color: "var(--pf-t--global--text--color--regular)",
+                      }}
+                      value={importPassword}
+                      onChange={(e) => setImportPassword(e.target.value)}
+                      placeholder="Used for console login"
+                    />
+                    <button
+                      type="button"
+                      style={{
+                        padding: "4px 10px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+                        border: "1px solid var(--pf-t--global--border--color--default)",
+                        background: "var(--pf-t--global--background--color--primary--default)",
+                        color: "var(--pf-t--global--text--color--regular)",
+                      }}
+                      onClick={() => { navigator.clipboard.writeText(importPassword); }}
+                      title="Copy password"
+                    >Copy</button>
+                  </div>
+                  {!importPassword.trim() && (
+                    <div style={{ fontSize: 11, color: "#f59e0b", marginTop: 4 }}>
+                      No password set — cloud images may have no console login until you set one on the VM.
+                    </div>
+                  )}
+                </div>
+                <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginTop: 4 }}>
+                  <input type="checkbox" checked={importAutoDeploy} onChange={(e) => setImportAutoDeploy(e.target.checked)} />
+                  Deploy immediately after import
+                </label>
+              </div>
+            </div>
             {importError && (
               <div style={{ color: "var(--pf-t--global--color--status--danger--default)", fontSize: 12, marginTop: 8 }}>
                 {importError}
@@ -1571,10 +1652,13 @@ export default function ProjectCanvasPage() {
                       setImporting(false);
                       return;
                     }
+                    const importBody: Record<string, unknown> = { template_yaml: parsed };
+                    if (importPassword) importBody.common_password = importPassword;
+                    if (importSshKeyId) importBody.bastion_ssh_key_id = importSshKeyId;
                     const resp = await fetch(`/api/v1/projects/${projectId}/import-template`, {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ template_yaml: parsed }),
+                      body: JSON.stringify(importBody),
                     });
                     if (!resp.ok) {
                       const err = await resp.json().catch(() => ({ detail: "Import failed" }));
@@ -1593,7 +1677,17 @@ export default function ProjectCanvasPage() {
                       );
                     }
                     setShowImportModal(false);
-                    loadProject(projectId);
+                    await loadProject(projectId);
+                    if (importAutoDeploy) {
+                      const deployResp = await fetch(`/api/v1/projects/${projectId}/deploy`, { method: "POST" });
+                      if (!deployResp.ok) {
+                        const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
+                        setAlertMsg(typeof err.detail === "string" ? err.detail : "Deploy failed");
+                      } else {
+                        // Refresh state so the toolbar reflects deploying.
+                        loadProject(projectId);
+                      }
+                    }
                   } catch (err: unknown) {
                     setImportError(err instanceof Error ? err.message : "Import failed");
                   } finally {

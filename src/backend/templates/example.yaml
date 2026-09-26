@@ -1,58 +1,32 @@
 name: example
 display_name: "Example Template"
-description: "Minimal example for testing YAML-driven topology generation"
+description: "Minimal single-VM smoke template. Prefers RHEL 10 KVM guest image, falls back to Fedora Cloud."
 category: example
-install_method: agent
 deploy_time: "~5 min"
 
-ocp:
-  cluster_name: test
-  base_domain: example.local
-
-dns_records:
-  - name: infra.example.local
-    target: bastion
-
 networks:
-  cluster:
+  mgmt:
     cidr: 10.0.0.0/24
     dhcp: true
-    domain: example.local
-  bmc:
-    cidr: 192.168.100.0/24
-    type: bmc
+    gateway: true
 
 gateway:
   outbound_ports: [53, 80, 443, 123, icmp]
 
 vms:
-  bastion:
-    role: bastion
+  demo:
     vcpus: 2
     ram_gb: 4
-    os: rhel-10
+    os: rhel10
     firmware: uefi
+    cloud_init: true
     disks:
-      - size_gb: 50
+      - size_gb: 40
+        library_item_name: "RHEL 10.2 KVM Guest Image|Fedora Cloud 43"
+    isos:
+      - name: dvd
+        library_item_name: "RHEL 10.2 Binary DVD|"
     nics:
-      - network: cluster
-        model: virtio
-        ip: 10.0.0.50
-      - network: bmc
-        model: virtio
-
-  cp-0:
-    role: control-plane
-    vcpus: 4
-    ram_gb: 16
-    os: rhcos
-    firmware: uefi
-    bmc_ip: 192.168.100.10
-    disks:
-      - size_gb: 120
-    nics:
-      - network: cluster
+      - network: mgmt
         model: virtio
         ip: 10.0.0.10
-      - network: bmc
-        model: virtio

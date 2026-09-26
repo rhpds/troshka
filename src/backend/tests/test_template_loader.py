@@ -258,28 +258,52 @@ def test_load_example_template():
     tmpl = load_template("example", templates_dir=TEMPLATES_DIR)
     assert tmpl["name"] == "example"
     assert "vms" in tmpl
-    assert "bastion" in tmpl["vms"]
-    assert "cp-0" in tmpl["vms"]
+    assert "demo" in tmpl["vms"]
+    assert "bastion" not in tmpl["vms"]
+    assert "cp-0" not in tmpl["vms"]
+    assert "ocp" not in tmpl
+    disk = tmpl["vms"]["demo"]["disks"][0]
+    assert "RHEL 10.2 KVM Guest Image" in disk["library_item_name"]
+    assert "Fedora Cloud 43" in disk["library_item_name"]
 
 
 def test_resolve_example_has_vms():
     from app.services.template_loader import resolve_template
 
     resolved = resolve_template("example", overrides={}, templates_dir=TEMPLATES_DIR)
-    assert resolved["install_method"] == "agent"
     assert "vms" in resolved
-    assert len(resolved["vms"]) == 2
+    assert len(resolved["vms"]) == 1
+    assert "demo" in resolved["vms"]
+    assert "ocp" not in resolved
+    assert not resolved.get("bastion")
 
 
 def test_resolve_declarative_sections():
     """Templates can declare ocp, dns_records, and other sections that pass through."""
-    from app.services.template_loader import resolve_template
+    from app.services.template_loader import resolve_inline_template
 
-    resolved = resolve_template("example", overrides={}, templates_dir=TEMPLATES_DIR)
+    resolved = resolve_inline_template(
+        {
+            "name": "decl-test",
+            "install_method": "agent",
+            "ocp": [{"name": "test", "base_domain": "example.local"}],
+            "dns_records": [{"name": "infra.example.local", "target": "jump"}],
+            "networks": {"cluster": {"cidr": "10.0.0.0/24"}},
+            "vms": {
+                "jump": {
+                    "vcpus": 2,
+                    "ram_gb": 4,
+                    "os": "rhel10",
+                    "disks": [{"size_gb": 40}],
+                    "nics": [{"network": "cluster", "ip": "10.0.0.50"}],
+                }
+            },
+        }
+    )
     assert resolved["ocp"][0]["name"] == "test"
     assert resolved["ocp"][0]["base_domain"] == "example.local"
     assert len(resolved["dns_records"]) >= 1
-    assert resolved["dns_records"][0]["target"] == "bastion"
+    assert resolved["dns_records"][0]["target"] == "jump"
 
 
 def test_generate_topology_node_counts():
@@ -294,12 +318,12 @@ def test_generate_topology_node_counts():
     vm_nodes = [n for n in topo["nodes"] if n["type"] == "vmNode"]
     net_nodes = [n for n in topo["nodes"] if n["type"] == "networkNode"]
 
-    assert len(vm_nodes) == 2
-    assert len(net_nodes) == 3  # cluster + bmc + gateway
+    assert len(vm_nodes) == 1
+    assert len(net_nodes) >= 1  # mgmt (+ optional gateway node)
 
     vm_names = [n["data"]["name"] for n in vm_nodes]
-    assert "bastion" in vm_names
-    assert "cp-0" in vm_names
+    assert "demo" in vm_names
+    assert "bastion" not in vm_names
 
 
 def test_generate_topology_vm_properties():
@@ -311,24 +335,16 @@ def test_generate_topology_vm_properties():
     resolved = resolve_template("example", templates_dir=TEMPLATES_DIR)
     topo = generate_topology_from_template(resolved)
 
-    bastion = next(
+    demo = next(
         n
         for n in topo["nodes"]
-        if n["type"] == "vmNode" and n["data"]["name"] == "bastion"
+        if n["type"] == "vmNode" and n["data"]["name"] == "demo"
     )
-    assert bastion["data"]["os"] == "rhel-10"
-    assert bastion["data"]["vcpus"] == 2
-    assert bastion["data"]["ram"] == 4
-    assert bastion["data"]["powerOnAtDeploy"] is True
-
-    cp = next(
-        n
-        for n in topo["nodes"]
-        if n["type"] == "vmNode" and n["data"]["name"] == "cp-0"
-    )
-    assert cp["data"]["os"] == "rhcos"
-    assert cp["data"]["bmcEnabled"] is True
-    assert cp["data"]["bmcIp"] == "192.168.100.10"
+    assert demo["data"]["os"] == "rhel10"
+    assert demo["data"]["vcpus"] == 2
+    assert demo["data"]["ram"] == 4
+    assert demo["data"]["powerOnAtDeploy"] is True
+    assert demo["data"].get("bmcEnabled") is not True
 
 
 def test_generate_topology_nic_models():
@@ -340,15 +356,14 @@ def test_generate_topology_nic_models():
     resolved = resolve_template("example", templates_dir=TEMPLATES_DIR)
     topo = generate_topology_from_template(resolved)
 
-    cp = next(
+    demo = next(
         n
         for n in topo["nodes"]
-        if n["type"] == "vmNode" and n["data"]["name"] == "cp-0"
+        if n["type"] == "vmNode" and n["data"]["name"] == "demo"
     )
-    nics = cp["data"]["nics"]
-    assert len(nics) == 2
+    nics = demo["data"]["nics"]
+    assert len(nics) == 1
     assert nics[0]["model"] == "virtio"
-    assert nics[1]["model"] == "virtio"
 
 
 def test_generate_topology_network_cidrs():
@@ -365,18 +380,73 @@ def test_generate_topology_network_cidrs():
         for n in topo["nodes"]
         if n["type"] == "networkNode"
     }
-    assert nets["cluster"] == "10.0.0.0/24"
-    assert nets["bmc"] == "192.168.100.0/24"
+    assert nets["mgmt"] == "10.0.0.0/24"
 
 
-def test_dns_records_from_template():
-    from app.services.ocp.agent_template import _setup_dns_records
+def test_generate_topology_library_disk_and_optional_iso():
     from app.services.template_loader import (
         generate_topology_from_template,
         resolve_template,
     )
 
     resolved = resolve_template("example", templates_dir=TEMPLATES_DIR)
+    topo = generate_topology_from_template(resolved)
+
+    storage = [n for n in topo["nodes"] if n["type"] == "storageNode"]
+    disks = [n for n in storage if n["data"].get("format") != "iso"]
+    isos = [n for n in storage if n["data"].get("format") == "iso"]
+    assert len(disks) == 1
+    assert "RHEL 10.2 KVM Guest Image|Fedora Cloud 43" in disks[0]["data"].get(
+        "libraryItemName", ""
+    )
+    assert len(isos) == 1
+    assert isos[0]["data"].get("libraryItemName", "").startswith("RHEL 10.2 Binary DVD")
+
+
+def test_dns_records_from_template():
+    from app.services.ocp.agent_template import _setup_dns_records
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        resolve_inline_template,
+    )
+
+    resolved = resolve_inline_template(
+        {
+            "name": "dns-agent-test",
+            "install_method": "agent",
+            "ocp": [{"name": "test", "base_domain": "example.local"}],
+            "dns_records": [{"name": "infra.example.local", "target": "jump"}],
+            "networks": {
+                "cluster": {"cidr": "10.0.0.0/24", "domain": "example.local"},
+                "bmc": {"cidr": "192.168.100.0/24", "type": "bmc"},
+            },
+            "vms": {
+                "jump": {
+                    "role": "bastion",
+                    "vcpus": 2,
+                    "ram_gb": 4,
+                    "os": "rhel10",
+                    "disks": [{"size_gb": 40}],
+                    "nics": [
+                        {"network": "cluster", "ip": "10.0.0.50"},
+                        {"network": "bmc"},
+                    ],
+                },
+                "cp-0": {
+                    "role": "control-plane",
+                    "vcpus": 4,
+                    "ram_gb": 16,
+                    "os": "rhcos",
+                    "bmc_ip": "192.168.100.10",
+                    "disks": [{"size_gb": 120}],
+                    "nics": [
+                        {"network": "cluster", "ip": "10.0.0.10"},
+                        {"network": "bmc"},
+                    ],
+                },
+            },
+        }
+    )
     topo = generate_topology_from_template(resolved)
 
     _setup_dns_records(
@@ -442,14 +512,31 @@ def test_network_dns_records_resolve_vm_targets():
     assert by_name["vscode.workshop.local"] == "10.0.0.12"
 
 
-def test_example_template_resolves_top_level_dns_target():
+def test_top_level_dns_target_resolves_to_vm_ip():
     from app.services.template_loader import (
         generate_topology_from_template,
-        resolve_template,
+        resolve_inline_template,
     )
 
     topo = generate_topology_from_template(
-        resolve_template("example", templates_dir=TEMPLATES_DIR)
+        resolve_inline_template(
+            {
+                "name": "top-dns",
+                "dns_records": [{"name": "infra.example.local", "target": "jump"}],
+                "networks": {
+                    "cluster": {"cidr": "10.0.0.0/24", "domain": "example.local"}
+                },
+                "vms": {
+                    "jump": {
+                        "vcpus": 2,
+                        "ram_gb": 4,
+                        "os": "rhel10",
+                        "disks": [{"size_gb": 40}],
+                        "nics": [{"network": "cluster", "ip": "10.0.0.50"}],
+                    }
+                },
+            }
+        )
     )
     cluster = next(
         n

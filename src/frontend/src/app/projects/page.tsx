@@ -271,10 +271,13 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
             try {
               const jsYaml = await import("js-yaml");
               const parsed = jsYaml.load(yamlContent) as Record<string, unknown>;
+              const importBody: Record<string, unknown> = { template_yaml: parsed };
+              if (commonPassword) importBody.common_password = commonPassword;
+              if (bastionSshKeyId) importBody.bastion_ssh_key_id = bastionSshKeyId;
               const importResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/import-template`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ template_yaml: parsed }),
+                body: JSON.stringify(importBody),
               });
               if (!importResp.ok) {
                 const err = await importResp.json().catch(() => ({ detail: "Import failed" }));
@@ -283,6 +286,16 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                 const importData = await importResp.json().catch(() => ({}));
                 if (importData?.warnings?.length) {
                   setAlertMsg("Imported with warnings: " + importData.warnings.join("; "));
+                }
+                if (autoDeploy) {
+                  const deployParams = new URLSearchParams();
+                  if (deployHostId) deployParams.set("host_id", deployHostId);
+                  const deployQs = deployParams.toString() ? `?${deployParams.toString()}` : "";
+                  const deployResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy${deployQs}`, { method: "POST" });
+                  if (!deployResp.ok) {
+                    const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
+                    setAlertMsg(err.detail || "Deploy failed");
+                  }
                 }
               }
             } catch {
@@ -460,6 +473,66 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                     Loaded from {yamlFileName}
                   </div>
                 )}
+                <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 12 }}>
+                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>
+                    Cloud-init credentials (applied when the template enables cloud-init and omits them)
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>SSH Key</label>
+                      <select style={inputStyle} value={bastionSshKeyId} onChange={(e) => setBastionSshKeyId(e.target.value)}>
+                        <option value="">None</option>
+                        {sshKeys.map((k) => (
+                          <option key={k.id} value={k.id}>{k.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>
+                        Password <span style={{ color: "var(--pf-t--global--text--color--subtle)" }}>(cloud-user console)</span>
+                      </label>
+                      <div style={{ display: "flex", gap: 4 }}>
+                        <input
+                          style={{ ...inputStyle, width: "auto", flex: "1 1 0", minWidth: 0 }}
+                          value={commonPassword}
+                          onChange={(e) => setCommonPassword(e.target.value)}
+                          placeholder="Used for console login"
+                          onKeyDown={(e) => { if (e.key === "Enter") handleCreate(); }}
+                        />
+                        <button
+                          type="button"
+                          style={{ ...inputStyle, width: "auto", flex: "0 0 auto", cursor: "pointer", padding: "4px 10px", fontSize: 12 }}
+                          onClick={() => { navigator.clipboard.writeText(commonPassword); }}
+                          title="Copy password"
+                        >Copy</button>
+                      </div>
+                      {!commonPassword.trim() && (
+                        <div style={{ fontSize: 11, color: "#f59e0b", marginTop: 4 }}>
+                          No password set — cloud images may have no console login until you set one on the VM.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 12 }}>
+                  {userRole === "admin" && availableHosts.length > 0 && autoDeploy && (
+                    <div style={{ marginBottom: 8 }}>
+                      <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Host</label>
+                      <select style={inputStyle} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}>
+                        <option value="">Auto (best host)</option>
+                        {availableHosts.map((h) => (
+                          <option key={h.id} value={h.id}>
+                            {h.id.slice(0, 8)} — {h.ip_address} ({h.provider_type}), {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                    <input type="checkbox" checked={autoDeploy} onChange={(e) => setAutoDeploy(e.target.checked)} />
+                    Deploy immediately after import
+                  </label>
+                </div>
               </div>
             )}
             {mode === "template" && selectedTemplate && (() => {

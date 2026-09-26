@@ -15,9 +15,14 @@ vms:
     vcpus: 4
     ram_gb: 8
     os: rhel10
+    firmware: uefi
+    cloud_init: true
     disks:
       - size_gb: 80
-        library_item_name: "RHEL 10.2 KVM Guest Image"
+        library_item_name: "RHEL 10.2 KVM Guest Image|Fedora Cloud 43"
+    isos:
+      - name: dvd
+        library_item_name: "RHEL 10.2 Binary DVD|"
     nics:
       - network: mgmt
         ip: 10.0.0.10
@@ -43,20 +48,26 @@ vms:
       - dconf
       - gdm
     user_data: |
+      # nofail: missing DVD (Fedora / optional ISO) must not fail boot; RHEL with DVD mounts as usual.
       mounts:
         - [/dev/sr0, /mnt/rhel-dvd, iso9660, "ro,nofail", "0", "0"]
-      yum_repos:
-        rhel-dvd-baseos:
-          name: RHEL DVD BaseOS
-          baseurl: file:///mnt/rhel-dvd/BaseOS
-          enabled: true
-          gpgcheck: false
-        rhel-dvd-appstream:
-          name: RHEL DVD AppStream
-          baseurl: file:///mnt/rhel-dvd/AppStream
-          enabled: true
-          gpgcheck: false
       runcmd:
+        # Only enable file:// DVD repos when the disc is actually mounted (skip on Fedora).
+        - |
+          if [ -d /mnt/rhel-dvd/BaseOS ]; then
+            cat > /etc/yum.repos.d/rhel-dvd.repo << 'DVDEOF'
+          [rhel-dvd-baseos]
+          name=RHEL DVD BaseOS
+          baseurl=file:///mnt/rhel-dvd/BaseOS
+          enabled=1
+          gpgcheck=0
+          [rhel-dvd-appstream]
+          name=RHEL DVD AppStream
+          baseurl=file:///mnt/rhel-dvd/AppStream
+          enabled=1
+          gpgcheck=0
+          DVDEOF
+          fi
         - dnf groupinstall -y "Server with GUI"
         - dnf install -y firefox ptyxis gnome-shell-extension-dash-to-dock google-noto-sans-fonts google-noto-sans-mono-fonts dejavu-sans-fonts desktop-backgrounds-gnome
         - pip install kubernetes selenium
