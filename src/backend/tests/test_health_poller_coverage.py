@@ -417,20 +417,25 @@ class TestSyncCloudPowerstate:
         host.provider_id = "prov-1"
         host.state = "active"
         host.agent_status = "disconnected"
+        host.ip_address = "1.2.3.4"
+        host.console_domain = None
+        host.private_key = None
 
         provider = MagicMock()
         provider.type = "ec2"
+        provider.console_base_domain = None
         db = MagicMock()
         db.get.return_value = provider
 
         drv = MagicMock()
-        drv.get_host_powerstate.return_value = "stopped"
+        drv.get_host_status.return_value = {"state": "stopped", "public_ip": None}
         mock_get_drv.return_value = drv
 
         assert hp._sync_cloud_powerstate(host, db) is True
         assert host.state == "stopped"
         assert host.agent_status == "disconnected"
-        drv.get_host_powerstate.assert_called_once_with(provider, "i-abc")
+        drv.get_host_status.assert_called_once_with(provider, "i-abc")
+        mock_get_drv.assert_called_once()
 
     @patch("app.services.providers.get_provider_driver")
     def test_leaves_active_when_cloud_running(self, mock_get_drv):
@@ -440,18 +445,60 @@ class TestSyncCloudPowerstate:
         host.instance_id = "i-abc"
         host.provider_id = "prov-1"
         host.state = "active"
+        host.ip_address = "1.2.3.4"
+        host.console_domain = None
 
         provider = MagicMock()
         provider.type = "ec2"
+        provider.console_base_domain = None
         db = MagicMock()
         db.get.return_value = provider
 
         drv = MagicMock()
-        drv.get_host_powerstate.return_value = "running"
+        drv.get_host_status.return_value = {
+            "state": "running",
+            "public_ip": "1.2.3.4",
+            "private_ip": "10.0.0.1",
+        }
         mock_get_drv.return_value = drv
 
         assert hp._sync_cloud_powerstate(host, db) is False
         assert host.state == "active"
+        assert host.ip_address == "1.2.3.4"
+
+    @patch("app.services.health_poller._enqueue_agent_reinstall_for_ip_change")
+    @patch("app.services.providers.get_provider_driver")
+    def test_syncs_public_ip_and_sslip_fqdn(self, mock_get_drv, mock_reinstall):
+        host = MagicMock()
+        host.id = "abcdef12-3456-7890"
+        host.host_type = "shared"
+        host.instance_id = "i-abc"
+        host.provider_id = "prov-1"
+        host.state = "active"
+        host.ip_address = "1.2.3.4"
+        host.private_ip = "10.0.0.1"
+        host.console_domain = "i-abc.1.2.3.4.sslip.io"
+        host.private_key = "key"
+        host.agent_status = "disconnected"
+
+        provider = MagicMock()
+        provider.type = "ec2"
+        provider.console_base_domain = "sslip.io"
+        db = MagicMock()
+        db.get.return_value = provider
+
+        drv = MagicMock()
+        drv.get_host_status.return_value = {
+            "state": "running",
+            "public_ip": "9.9.9.9",
+            "private_ip": "10.0.0.1",
+        }
+        mock_get_drv.return_value = drv
+
+        assert hp._sync_cloud_powerstate(host, db) is False
+        assert host.ip_address == "9.9.9.9"
+        assert host.console_domain == "i-abc.9.9.9.9.sslip.io"
+        mock_reinstall.assert_called_once_with(host)
 
     @patch("app.services.providers.get_provider_driver")
     def test_skips_kubevirt_provider_type(self, mock_get_drv):

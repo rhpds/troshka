@@ -7,7 +7,8 @@ Periodically calls GET /health on each connected host to:
 - Detect disconnected hosts (mark as disconnected after timeout)
 - Auto-reconnect hosts that come back online
 - Sync cloud power state for non-KubeVirt hosts (mark stopped when the
-  instance is stopped/deallocated in EC2/GCP/Azure/OCP Virt)
+  instance is stopped/deallocated in EC2/GCP/Azure/OCP Virt, and sync
+  public IP / sslip console FQDN when the instance was started outside Troshka)
 """
 
 import logging
@@ -331,11 +332,32 @@ def _handle_health_success(host, health, db, checked_pools: set) -> None:
         enqueue_job(recover_host_services, host.id, queue_name="default")
 
 
-def _sync_cloud_powerstate(host, db) -> bool:
-    """Query cloud provider power state; mark host stopped if instance is down.
+def _apply_sslip_console_for_ip(host, provider, new_ip: str) -> bool:
+    """Rewrite sslip console FQDN when public IP changes. Returns True if changed."""
+    from app.services.console_dns import console_domain_for_host, is_sslip_console
 
-    Applies to all non-KubeVirt hosts (EC2, GCP, Azure, OCP Virt). Returns True
-    when ``host.state`` was set to ``stopped``.
+    if not is_sslip_console(provider.console_base_domain) and not (
+        host.console_domain or ""
+    ).endswith(".sslip.io"):
+        return False
+    if not host.instance_id:
+        return False
+    base = provider.console_base_domain or "sslip.io"
+    new_fqdn = console_domain_for_host(host.instance_id, base, new_ip)
+    if host.console_domain == new_fqdn:
+        return False
+    host.console_domain = new_fqdn
+    return True
+
+
+def _sync_cloud_powerstate(host, db) -> bool:
+    """Sync cloud power + public IP for non-KubeVirt hosts.
+
+    Marks ``host.state=stopped`` when the instance is down. When running with a
+    different public IP (manual AWS start, EIP churn), updates ``ip_address``
+    and sslip console FQDN so health checks hit the right host.
+
+    Returns True only when the host was marked stopped (caller can stop retrying).
     """
     if host.host_type == "kubevirt-cluster":
         return False
@@ -349,18 +371,52 @@ def _sync_cloud_powerstate(host, db) -> bool:
         if not provider or provider.type == "kubevirt":
             return False
         drv = get_provider_driver(provider)
-        power = (drv.get_host_powerstate(provider, host.instance_id) or "").lower()
-        if power not in _STOPPED_POWER_STATES:
-            return False
-        host.state = "stopped"
-        host.agent_status = "disconnected"
-        _skip_until[host.id] = time.time() + 86400
-        logger.info(
-            "Host %s marked stopped (cloud powerstate=%s)",
-            host.id[:8],
-            power,
-        )
-        return True
+        status = drv.get_host_status(provider, host.instance_id)
+        if not isinstance(status, dict):
+            status = {}
+        power = (status.get("state") or "").lower()
+        if not power:
+            power = (drv.get_host_powerstate(provider, host.instance_id) or "").lower()
+            if not isinstance(power, str):
+                power = ""
+
+        if power in _STOPPED_POWER_STATES:
+            host.state = "stopped"
+            host.agent_status = "disconnected"
+            _skip_until[host.id] = time.time() + 86400
+            logger.info(
+                "Host %s marked stopped (cloud powerstate=%s)",
+                host.id[:8],
+                power,
+            )
+            return True
+
+        new_ip = status.get("public_ip")
+        if not isinstance(new_ip, str):
+            new_ip = None
+        else:
+            new_ip = new_ip.strip() or None
+        if new_ip and new_ip != host.ip_address:
+            old_ip = host.ip_address
+            host.ip_address = new_ip
+            private = status.get("private_ip")
+            if private:
+                host.private_ip = private
+            if host.state == "stopped":
+                host.state = "active"
+            fqdn_changed = _apply_sslip_console_for_ip(host, provider, new_ip)
+            _skip_until.pop(host.id, None)
+            logger.info(
+                "Host %s public IP synced %s → %s%s",
+                host.id[:8],
+                old_ip,
+                new_ip,
+                " (sslip console updated)" if fqdn_changed else "",
+            )
+            # sslip LE cert is bound to the old FQDN — reinstall agent for new cert.
+            if fqdn_changed and host.private_key:
+                _enqueue_agent_reinstall_for_ip_change(host)
+        return False
     except Exception:
         logger.debug(
             "Cloud powerstate check failed for host %s",
@@ -368,6 +424,35 @@ def _sync_cloud_powerstate(host, db) -> bool:
             exc_info=True,
         )
         return False
+
+
+def _enqueue_agent_reinstall_for_ip_change(host) -> None:
+    """Reinstall agent after sslip console FQDN change (non-blocking)."""
+    try:
+        from app.api.hosts import _install_bg
+        from app.core.redis import enqueue_job
+
+        if host.agent_status in ("waiting_ssh", "installing"):
+            return
+        host.agent_status = "waiting_ssh"
+        enqueue_job(
+            _install_bg,
+            host.id,
+            host.ip_address,
+            host.private_key,
+            queue_name="host_lifecycle",
+            host_id=host.id,
+        )
+        logger.info(
+            "Host %s queued agent reinstall after public IP change",
+            host.id[:8],
+        )
+    except Exception:
+        logger.warning(
+            "Host %s: failed to queue agent reinstall after IP change",
+            host.id[:8],
+            exc_info=True,
+        )
 
 
 def _handle_health_failure(host, now_dt, db=None) -> None:
