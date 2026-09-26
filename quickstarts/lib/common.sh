@@ -236,6 +236,104 @@ delete_cloudformation_stack() {
   return 1
 }
 
+# Tear down seeded compute VPCs (Name=troshka-vpc). Distinct from the EKS CFN VPC
+# (troshka-quickstart-vpc). Terminates leftover instances in those VPCs first.
+delete_troshka_compute_vpcs() {
+  local region="${1:-${REGION:?region required}}"
+  local vpc_ids vpc_id inst_ids ep_ids igw_ids subnet_ids sg_ids
+  local i
+
+  echo "Looking for Troshka compute VPCs (tag Name=troshka-vpc) in ${region}..."
+  vpc_ids="$(aws ec2 describe-vpcs --region "${region}" \
+    --filters "Name=tag:Name,Values=troshka-vpc" \
+    --query 'Vpcs[].VpcId' --output text 2>/dev/null | tr '\t' ' ' || true)"
+  if [[ -z "${vpc_ids// }" ]]; then
+    echo "  No troshka-vpc found."
+    return 0
+  fi
+
+  for vpc_id in ${vpc_ids}; do
+    [[ -z "${vpc_id}" || "${vpc_id}" == "None" ]] && continue
+    echo "  Cleaning VPC ${vpc_id}..."
+
+    # Instances still attached (host DELETE may have been skipped).
+    inst_ids="$(aws ec2 describe-instances --region "${region}" \
+      --filters "Name=vpc-id,Values=${vpc_id}" \
+        "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+      --query 'Reservations[].Instances[].InstanceId' --output text 2>/dev/null | tr '\t' ' ' || true)"
+    if [[ -n "${inst_ids// }" ]]; then
+      echo "    terminating instances: ${inst_ids}"
+      # shellcheck disable=SC2086
+      aws ec2 terminate-instances --region "${region}" --instance-ids ${inst_ids} >/dev/null 2>&1 || true
+      for i in $(seq 1 40); do
+        left="$(aws ec2 describe-instances --region "${region}" \
+          --instance-ids ${inst_ids} \
+          --query 'Reservations[].Instances[?State.Name!=`terminated`].InstanceId' \
+          --output text 2>/dev/null | tr -d '[:space:]' || true)"
+        [[ -z "${left}" ]] && break
+        sleep 5
+      done
+    fi
+
+    # VPC endpoints (S3 gateway, etc.)
+    ep_ids="$(aws ec2 describe-vpc-endpoints --region "${region}" \
+      --filters "Name=vpc-id,Values=${vpc_id}" \
+      --query 'VpcEndpoints[].VpcEndpointId' --output text 2>/dev/null | tr '\t' ' ' || true)"
+    for ep in ${ep_ids}; do
+      [[ -z "${ep}" || "${ep}" == "None" ]] && continue
+      echo "    deleting VPC endpoint ${ep}"
+      aws ec2 delete-vpc-endpoints --region "${region}" --vpc-endpoint-ids "${ep}" >/dev/null 2>&1 || true
+    done
+
+    # Non-default security groups
+    sg_ids="$(aws ec2 describe-security-groups --region "${region}" \
+      --filters "Name=vpc-id,Values=${vpc_id}" \
+      --query 'SecurityGroups[?GroupName!=`default`].GroupId' --output text 2>/dev/null | tr '\t' ' ' || true)"
+    for sg in ${sg_ids}; do
+      [[ -z "${sg}" || "${sg}" == "None" ]] && continue
+      echo "    deleting security group ${sg}"
+      aws ec2 delete-security-group --region "${region}" --group-id "${sg}" >/dev/null 2>&1 || true
+    done
+
+    # Detach + delete internet gateways
+    igw_ids="$(aws ec2 describe-internet-gateways --region "${region}" \
+      --filters "Name=attachment.vpc-id,Values=${vpc_id}" \
+      --query 'InternetGateways[].InternetGatewayId' --output text 2>/dev/null | tr '\t' ' ' || true)"
+    for igw in ${igw_ids}; do
+      [[ -z "${igw}" || "${igw}" == "None" ]] && continue
+      echo "    detaching/deleting IGW ${igw}"
+      aws ec2 detach-internet-gateway --region "${region}" --internet-gateway-id "${igw}" --vpc-id "${vpc_id}" >/dev/null 2>&1 || true
+      aws ec2 delete-internet-gateway --region "${region}" --internet-gateway-id "${igw}" >/dev/null 2>&1 || true
+    done
+
+    # Subnets
+    subnet_ids="$(aws ec2 describe-subnets --region "${region}" \
+      --filters "Name=vpc-id,Values=${vpc_id}" \
+      --query 'Subnets[].SubnetId' --output text 2>/dev/null | tr '\t' ' ' || true)"
+    for sub in ${subnet_ids}; do
+      [[ -z "${sub}" || "${sub}" == "None" ]] && continue
+      echo "    deleting subnet ${sub}"
+      aws ec2 delete-subnet --region "${region}" --subnet-id "${sub}" >/dev/null 2>&1 || true
+    done
+
+    # Network interfaces left in "available"
+    while read -r eni; do
+      [[ -z "${eni}" || "${eni}" == "None" ]] && continue
+      echo "    deleting ENI ${eni}"
+      aws ec2 delete-network-interface --region "${region}" --network-interface-id "${eni}" >/dev/null 2>&1 || true
+    done < <(aws ec2 describe-network-interfaces --region "${region}" \
+      --filters "Name=vpc-id,Values=${vpc_id}" "Name=status,Values=available" \
+      --query 'NetworkInterfaces[].NetworkInterfaceId' --output text 2>/dev/null | tr '\t' '\n')
+
+    echo "    deleting VPC ${vpc_id}"
+    if ! aws ec2 delete-vpc --region "${region}" --vpc-id "${vpc_id}" 2>/tmp/troshka-delete-vpc.err; then
+      echo "    warning: could not delete ${vpc_id}: $(tr '\n' ' ' </tmp/troshka-delete-vpc.err)" >&2
+    else
+      echo "    deleted ${vpc_id}"
+    fi
+  done
+}
+
 
 # Install hint for a missing CLI (macOS brew first; Linux notes second).
 _cmd_install_hint() {

@@ -124,18 +124,48 @@ fi
 aws secretsmanager delete-secret --secret-id "${SECRET_NAME}" --region "${REGION}" \
   --force-delete-without-recovery >/dev/null 2>&1 || true
 
-echo "Uninstalling Troshka Helm release..."
-helm uninstall "${RELEASE}" -n "${NAMESPACE}" 2>/dev/null || true
-kubectl delete namespace "${NAMESPACE}" --wait=true --timeout=5m 2>/dev/null || true
+# Seeded compute VPC(s) — separate from the EKS CFN VPC (Name=troshka-vpc).
+delete_troshka_compute_vpcs "${REGION}"
 
-echo "Uninstalling ingress-nginx / cert-manager (quickstart-managed)..."
-helm uninstall ingress-nginx -n "${INGRESS_NS}" 2>/dev/null || true
-kubectl delete namespace "${INGRESS_NS}" --wait=false 2>/dev/null || true
-helm uninstall cert-manager -n "${CERT_MANAGER_NS}" 2>/dev/null || true
-kubectl delete clusterissuer letsencrypt-prod --ignore-not-found 2>/dev/null || true
-kubectl delete namespace "${CERT_MANAGER_NS}" --wait=false 2>/dev/null || true
-# Legacy ALB controller from earlier quickstart revisions
-helm uninstall aws-load-balancer-controller -n kube-system 2>/dev/null || true
+# Short kubectl/helm deadline — once the API is gone, aws eks get-token can hang forever.
+_k8s_timeout() {
+  # usage: _k8s_timeout <seconds> <cmd> [args...]
+  local secs="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${secs}" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "${secs}" "$@"
+  else
+    "$@"
+  fi
+}
+
+_cluster_api_reachable() {
+  # Cheap probe; fail fast if EKS auth or apiserver is already dead.
+  _k8s_timeout 15 kubectl --request-timeout=10s get --raw=/readyz >/dev/null 2>&1
+}
+
+echo "Uninstalling Troshka Helm release..."
+if _cluster_api_reachable; then
+  _k8s_timeout 60 helm uninstall "${RELEASE}" -n "${NAMESPACE}" 2>/dev/null || true
+  _k8s_timeout 300 kubectl delete namespace "${NAMESPACE}" --wait=true --timeout=5m 2>/dev/null || true
+else
+  echo "  Cluster API unreachable — skip Helm/namespace uninstall (CFN delete will remove the cluster)."
+fi
+
+if _cluster_api_reachable; then
+  echo "Uninstalling ingress-nginx / cert-manager (quickstart-managed)..."
+  _k8s_timeout 60 helm uninstall ingress-nginx -n "${INGRESS_NS}" 2>/dev/null || true
+  _k8s_timeout 30 kubectl --request-timeout=15s delete namespace "${INGRESS_NS}" --wait=false 2>/dev/null || true
+  _k8s_timeout 60 helm uninstall cert-manager -n "${CERT_MANAGER_NS}" 2>/dev/null || true
+  _k8s_timeout 30 kubectl --request-timeout=15s delete clusterissuer letsencrypt-prod --ignore-not-found 2>/dev/null || true
+  _k8s_timeout 30 kubectl --request-timeout=15s delete namespace "${CERT_MANAGER_NS}" --wait=false 2>/dev/null || true
+  # Legacy ALB controller from earlier quickstart revisions
+  _k8s_timeout 60 helm uninstall aws-load-balancer-controller -n kube-system 2>/dev/null || true
+else
+  echo "Cluster API unreachable — skip ingress-nginx / cert-manager cleanup; CFN delete tears the cluster down."
+fi
 
 echo "Deleting CloudFormation stack ${STACK_NAME} (this removes the EKS cluster and VPC)..."
 delete_cloudformation_stack "${STACK_NAME}" "${REGION}" || {

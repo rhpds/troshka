@@ -47,7 +47,7 @@ It does **not** delete:
 - [ ] CloudFormation stack deleted (`aws cloudformation describe-stacks` → does not exist)
 - [ ] ingress-nginx / cert-manager Helm releases removed (teardown does this)
 - [ ] Compute IAM user `<cluster>-compute` and secret `<cluster>/compute` removed
-- [ ] No leftover Troshka host EC2 instances / `troshka-vpc` (seeded compute VPC)
+- [ ] No leftover Troshka host EC2 instances / `troshka-vpc` (seeded compute VPC — teardown deletes all `Name=troshka-vpc`)
 - [ ] If stack delete stuck: look for ENIs, NLBs, or security groups still attached to the VPC; delete orphans; retry delete
 - [ ] Optional: delete Route53 CNAME created for `--domain` if you no longer need it
 
