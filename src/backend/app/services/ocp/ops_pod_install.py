@@ -451,29 +451,39 @@ def _ensure_ptr_registries_cmd(pull_through_registry: dict | None) -> str:
     return "".join(lines)
 
 
-def _ensure_installers_cmd(ocp_version: str) -> str:
+def _ensure_installers_cmd(ocp_version: str, distribution: str | None = None) -> str:
     """Ensure ``oc``/``openshift-install`` on PATH, downloading if absent.
 
-    Uses the same OCP client mirror URL the bastion installer uses (shared via
+    Uses the same client mirror URL the bastion installer uses (shared via
     :func:`client_mirror.installer_tarball_url`); a no-op when the tools are
     already baked into the ops-pod execution environment image.
 
-    Dev-preview (5.x) always re-downloads: the EE image ships GA 4.x clients and
-    ``command -v openshift-install`` would skip the 5.0 dev-preview tarball.
+    Dev-preview (5.x) and OKD/SCOS always re-download: the EE image ships GA
+    OCP 4.x clients and ``command -v openshift-install`` would skip the right
+    tarball.
     """
     from app.services.ocp.client_mirror import (
         installer_tarball_url,
+        is_okd_scos,
         uses_dev_preview_mirror,
     )
 
-    oi_url = installer_tarball_url(ocp_version, "openshift-install-linux.tar.gz")
-    oc_url = installer_tarball_url(ocp_version, "openshift-client-linux.tar.gz")
-    if uses_dev_preview_mirror(ocp_version):
+    oi_url = installer_tarball_url(
+        ocp_version, "openshift-install-linux.tar.gz", distribution
+    )
+    oc_url = installer_tarball_url(
+        ocp_version, "openshift-client-linux.tar.gz", distribution
+    )
+    force_redownload = uses_dev_preview_mirror(ocp_version) or is_okd_scos(distribution)
+    if force_redownload:
         oi_guard = "true"
         oc_guard = "true"
-        preview_note = (
-            "# Dev-preview: EE image ships GA 4.x clients — always replace.\n"
-        )
+        if is_okd_scos(distribution):
+            preview_note = "# OKD/SCOS: EE image ships OCP clients — always replace.\n"
+        else:
+            preview_note = (
+                "# Dev-preview: EE image ships GA 4.x clients — always replace.\n"
+            )
     else:
         oi_guard = "! command -v openshift-install >/dev/null 2>&1"
         oc_guard = "! command -v oc >/dev/null 2>&1"
@@ -481,7 +491,7 @@ def _ensure_installers_cmd(ocp_version: str) -> str:
     return (
         preview_note
         + "# Ensure oc / openshift-install present (baked into the EE image, else\n"
-        + "# download from the same OCP client mirror the bastion installer uses).\n"
+        + "# download from the same client mirror the bastion installer uses).\n"
         + f"if {oi_guard}; then\n"
         f'  echo "Downloading openshift-install {ocp_version}..."\n'
         f"  curl -L -o /tmp/openshift-install.tar.gz {oi_url}\n"
@@ -1013,6 +1023,7 @@ def build_ops_pod_install_script(
     net_ip_assignments: list[tuple[str, str]] | None = None,
     serving_ip: str | None = None,
     topology: dict | None = None,
+    distribution: str | None = None,
 ) -> str:
     """Generate the ops-pod bash script that installs every cluster in parallel.
 
@@ -1036,7 +1047,7 @@ def build_ops_pod_install_script(
         f"OCP_VERSION={ocp_version}\n",
         "\n",
         _self_assign_net_ips(net_ip_assignments),
-        _ensure_installers_cmd(ocp_version),
+        _ensure_installers_cmd(ocp_version, distribution),
         "\n",
         "pids=()\n",
     ]

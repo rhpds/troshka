@@ -17,6 +17,32 @@ def test_load_sno_template():
     assert "bastion" not in tmpl["vms"]
 
 
+def test_load_okd_sno_template():
+    from app.services.template_loader import (
+        generate_topology_from_template,
+        list_yaml_templates,
+        load_template,
+        resolve_template,
+    )
+
+    tmpl = load_template("okd-sno", templates_dir=TEMPLATES_DIR)
+    assert tmpl["name"] == "okd-sno"
+    assert tmpl.get("distribution") == "okd-scos"
+    assert tmpl.get("requires_pull_secret") is False
+    assert tmpl.get("install_via") == "pod"
+    assert "bastion" not in tmpl["vms"]
+
+    resolved = resolve_template("okd-sno", templates_dir=TEMPLATES_DIR)
+    assert resolved["distribution"] == "okd-scos"
+    topo = generate_topology_from_template(resolved)
+    assert topo["clusters"][0]["ocpDistribution"] == "okd-scos"
+
+    listed = {e["id"]: e for e in list_yaml_templates(TEMPLATES_DIR)}
+    assert listed["okd-sno"]["requires_pull_secret"] is False
+    assert listed["okd-sno"]["distribution"] == "okd-scos"
+    assert listed["ocp-sno"]["requires_pull_secret"] is True
+
+
 def test_load_compact_template():
     from app.services.template_loader import load_template
 

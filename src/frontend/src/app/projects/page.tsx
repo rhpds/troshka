@@ -77,6 +77,9 @@ interface TemplateSummary {
   category: string;
   deploy_time?: string;
   bastion_image_name?: string;
+  distribution?: string;
+  requires_pull_secret?: boolean;
+  versions?: string[];
 }
 
 export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, setAlertMsg }: { onClose: () => void; onCreated: (id: string) => void; userRole: string; availableHosts: {id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[]; setAlertMsg: (msg: string | null) => void }) {
@@ -92,7 +95,11 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
   const [patternDropdownOpen, setPatternDropdownOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [nameAutoSet, setNameAutoSet] = useState(true);
-  const versionedName = (tName: string, ver: string) => ver ? tName.replace(/^(OpenShift)/, `$1 ${ver}`) : tName;
+  const versionedName = (tName: string, ver: string) => {
+    if (!ver) return tName;
+    if (/^OKD/i.test(tName)) return tName.replace(/^(OKD)/i, `$1 ${ver}`);
+    return tName.replace(/^(OpenShift)/, `$1 ${ver}`);
+  };
   const [bastionImageId, setBastionImageId] = useState("");
   const [bastionIsoId, setBastionIsoId] = useState("");
   const [bastionSshKeyId, setBastionSshKeyId] = useState("");
@@ -403,16 +410,25 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                   }}
                   onClick={() => {
                     setSelectedTemplate(t.id);
-                    setName(versionedName(t.name, ocpVersion));
+                    const tmplVers = t.versions?.length
+                      ? t.versions
+                      : ocpVersions.map((v) => v.minor);
+                    const ver = tmplVers.length
+                      ? tmplVers[tmplVers.length - 1]
+                      : ocpVersion;
+                    if (t.versions?.length) {
+                      setOcpVersion(ver);
+                    }
+                    setName(versionedName(t.name, ver));
                     setNameAutoSet(true);
                     setMode("template");
                     if (t.bastion_image_name) {
                       const match = libraryImages.find((i) => i.name === t.bastion_image_name);
                       if (match) {
                         setBastionImageId(match.id);
-                        const ver = match.name.match(/(\d+\.\d+)/);
-                        if (ver) {
-                          const iso = libraryIsos.find((i) => i.name.includes(ver[1]) && /dvd|binary/i.test(i.name));
+                        const verMatch = match.name.match(/(\d+\.\d+)/);
+                        if (verMatch) {
+                          const iso = libraryIsos.find((i) => i.name.includes(verMatch[1]) && /dvd|binary/i.test(i.name));
                           if (iso) setBastionIsoId(iso.id);
                         }
                       }
@@ -420,8 +436,13 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                   }}
                 >
                   <div style={{ marginBottom: 8, display: "flex", justifyContent: "center" }}>
-                    {t.category === "openshift" ? (
-                      <svg width="32" height="32" viewBox="0 0 24 24" fill="#EE0000" xmlns="http://www.w3.org/2000/svg">
+                    {t.distribution === "okd-scos" ? (
+                      // Official OKD "O" mark (okd.io docs/img/okd_logo.svg) — ring, not the OpenShift swirl
+                      <svg width="32" height="32" viewBox="47 35 79 80" xmlns="http://www.w3.org/2000/svg" aria-label="OKD">
+                        <path fill="#F22B29" d="M86.4,35.3c10.8,0,20.1,3.8,27.7,11.3c7.7,7.5,11.5,16.7,11.5,27.5c0,10.8-3.9,20.2-11.6,28.1 c-7.7,7.9-17,11.8-27.7,11.8c-10.5,0-19.6-3.9-27.3-11.8c-7.7-7.8-11.5-17.1-11.5-27.8c0-10.8,3.8-20,11.3-27.7 C66.4,39.1,75.6,35.3,86.4,35.3z M61.4,74.7c0,7,2.5,13.1,7.5,18.3c5,5.2,10.9,7.9,17.6,7.9c6.9,0,12.8-2.6,17.8-7.7 c5-5.1,7.5-11.4,7.5-18.6c0-7.2-2.5-13.4-7.5-18.7c-5-5.3-10.9-8-17.8-8c-6.5,0-12.4,2.6-17.5,8C64,61.2,61.4,67.4,61.4,74.7z"/>
+                      </svg>
+                    ) : t.category === "openshift" ? (
+                      <svg width="32" height="32" viewBox="0 0 24 24" fill="#EE0000" xmlns="http://www.w3.org/2000/svg" aria-label="OpenShift">
                         <path d="M21.665,11.812c-0.11-1.377-0.476-2.724-1.08-3.966L24,6.599c-0.268-0.556-0.585-1.092-0.943-1.595 l-1.601,0.583c-3.534-4.95-10.412-6.098-15.363-2.565c-3.144,2.244-4.883,5.972-4.582,9.823l1.604-0.584 c0.051,0.615,0.153,1.224,0.305,1.822L0,15.335c0.338,1.339,0.922,2.604,1.721,3.731l1.812-0.659 c3.526,4.95,10.398,6.106,15.349,2.58c1.555-1.107,2.796-2.6,3.599-4.332c0.802-1.715,1.144-3.61,0.991-5.497L21.665,11.812z M16.925,9.177c0.687,1.227,0.998,2.629,0.895,4.032l1.809-0.657c-0.063,0.856-0.282,1.694-0.646,2.471 c-1.67,3.584-5.928,5.138-9.514,3.472c-0.782-0.365-1.491-0.87-2.092-1.49l-1.813,0.66c-0.979-1.01-1.64-2.285-1.903-3.667 l3.426-1.242c-0.121-0.624-0.159-1.262-0.111-1.896H6.97l-1.604,0.583c0.294-3.932,3.72-6.881,7.652-6.587 c0.868,0.065,1.716,0.288,2.504,0.658V5.508c0.778,0.364,1.483,0.867,2.082,1.483l1.599-0.582c0.002,0.002,0.004,0.003,0.006,0.005 c0.441,0.454,0.82,0.965,1.128,1.518L16.925,9.177z"/>
                       </svg>
                     ) : (
@@ -538,6 +559,11 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
             {mode === "template" && selectedTemplate && (() => {
               const _selTmpl = templates.find((t) => t.id === selectedTemplate);
               const _isOcp = _selTmpl?.category === "openshift";
+              const _needsPullSecret = _isOcp && _selTmpl?.requires_pull_secret !== false;
+              const _isOkd = _selTmpl?.distribution === "okd-scos";
+              const _versionChoices = _selTmpl?.versions?.length
+                ? _selTmpl.versions.map((v) => ({ minor: v, latest: v }))
+                : ocpVersions;
               return (
               <>
                 <div style={{
@@ -549,10 +575,10 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                   <div style={{ opacity: 0.6, marginTop: 2 }}>{_selTmpl?.description}</div>
                 </div>
                 {_isOcp && <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 4 }}>
-                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>OpenShift Version</div>
+                  <div style={{ fontSize: 11, color: "var(--pf-t--global--text--color--subtle)", marginBottom: 8 }}>{_isOkd ? "OKD Version" : "OpenShift Version"}</div>
                   <div>
-                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>OCP Version</label>
-                    {loadingVersions ? (
+                    <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>{_isOkd ? "OKD Version" : "OCP Version"}</label>
+                    {loadingVersions && !_selTmpl?.versions?.length ? (
                       <div style={{ ...inputStyle, display: "flex", alignItems: "center", justifyContent: "center" }}>
                         <span className="project-btn-spinner" style={{ width: 14, height: 14, aspectRatio: "1 / 1" }} />
                       </div>
@@ -560,7 +586,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                       <input style={inputStyle} autoFocus value={customVersionText} placeholder="e.g. 4.18" onChange={(e) => {
                         const v = e.target.value.replace(/[^\d.]/g, ""); setCustomVersionText(v);
                         if (/^\d+\.\d+$/.test(v)) { setOcpVersion(v); if (nameAutoSet && selectedTemplate) { const t = templates.find((t) => t.id === selectedTemplate); if (t) setName(versionedName(t.name, v)); } }
-                      }} onBlur={() => { if (!/^\d+\.\d+$/.test(customVersionText)) { setCustomVersion(false); setOcpVersion(ocpVersions.length ? ocpVersions[ocpVersions.length - 1].minor : "4.20"); } }} />
+                      }} onBlur={() => { if (!/^\d+\.\d+$/.test(customVersionText)) { setCustomVersion(false); setOcpVersion(_versionChoices.length ? _versionChoices[_versionChoices.length - 1].minor : "4.20"); } }} />
                     ) : (
                       <select style={inputStyle} value={ocpVersion} onChange={(e) => {
                         if (e.target.value === "__other__") { setCustomVersion(true); setCustomVersionText(""); }
@@ -569,8 +595,8 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                           if (nameAutoSet && selectedTemplate) { const t = templates.find((t) => t.id === selectedTemplate); if (t) setName(versionedName(t.name, e.target.value)); }
                         }
                       }}>
-                        {ocpVersions.map((v) => (
-                          <option key={v.minor} value={v.minor}>{v.minor} (latest: {v.latest})</option>
+                        {_versionChoices.map((v) => (
+                          <option key={v.minor} value={v.minor}>{_isOkd ? v.minor : `${v.minor} (latest: ${v.latest})`}</option>
                         ))}
                         <option value="__other__">Other...</option>
                       </select>
@@ -628,13 +654,16 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                         ))}
                       </select>
                     </div>}
-                    {_isOcp && <div style={{ fontSize: 12, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                    {_needsPullSecret && <div style={{ fontSize: 12, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
                       <span>Pull Secret <span style={{ color: "#f87171" }}>*</span>:</span>
                       {hasPullSecret ? (
                         <span style={{ color: "#4ade80" }}>configured ✓</span>
                       ) : (
                         <span style={{ color: "#f87171" }}>not set — <a href="/settings" style={{ color: "#3b82f6" }}>configure in Settings</a></span>
                       )}
+                    </div>}
+                    {_isOkd && !_needsPullSecret && <div style={{ fontSize: 12, marginBottom: 8, opacity: 0.7 }}>
+                      No Red Hat pull secret required (OKD/SCOS).
                     </div>}
                     <div>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>SSH Key</label>
@@ -889,12 +918,22 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
               )}
               <button
                 onClick={handleCreate}
-                disabled={creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (templates.find((t) => t.id === selectedTemplate)?.category === "openshift" && (!commonPassword || !hasPullSecret || loadingVersions || (installVia === "bastion" && (!bastionImageId || !bastionIsoId || !!bmcIpError))))))}
+                disabled={creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (() => {
+                  const t = templates.find((x) => x.id === selectedTemplate);
+                  if (t?.category !== "openshift") return false;
+                  const needsPull = t.requires_pull_secret !== false;
+                  return !commonPassword || (needsPull && !hasPullSecret) || (loadingVersions && !t.versions?.length) || (installVia === "bastion" && (!bastionImageId || !bastionIsoId || !!bmcIpError));
+                })()))}
                 style={{
                   ...inputStyle, width: "auto", padding: "6px 16px",
                   cursor: creating ? "wait" : "pointer",
                   background: "rgba(74,222,128,0.15)", borderColor: "#4ade80", color: "#4ade80",
-                  opacity: creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (templates.find((t) => t.id === selectedTemplate)?.category === "openshift" && (!commonPassword || !hasPullSecret || loadingVersions || (installVia === "bastion" && (!bastionImageId || !bastionIsoId || !!bmcIpError)))))) ? 0.4 : 1,
+                  opacity: creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (() => {
+                  const t = templates.find((x) => x.id === selectedTemplate);
+                  if (t?.category !== "openshift") return false;
+                  const needsPull = t.requires_pull_secret !== false;
+                  return !commonPassword || (needsPull && !hasPullSecret) || (loadingVersions && !t.versions?.length) || (installVia === "bastion" && (!bastionImageId || !bastionIsoId || !!bmcIpError));
+                })())) ? 0.4 : 1,
                 }}
               >
                 {creating ? "Creating..." : mode === "yaml" ? "Import & Create" : mode === "pattern" ? "Create from Pattern" : mode === "template" ? "Create" : "Create Project"}

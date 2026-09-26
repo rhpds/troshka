@@ -2103,15 +2103,36 @@ def _resolve_ops_pod_ocp_version(install_clusters: list, topology: dict) -> str:
     return "4.20"
 
 
-def _resolve_ops_pod_pull_secret(s, project) -> str:
-    """Decrypt the project owner's pull secret for ops-pod install-config."""
+def _resolve_ops_pod_distribution(install_clusters: list, topology: dict) -> str:
+    """Pick distribution (ocp | okd-scos) for installer downloads."""
+    from app.services.ocp.client_mirror import normalize_distribution
+
+    for source in (install_clusters, _ocp_clusters(topology)):
+        for cluster in source:
+            dist = str(cluster.get("ocpDistribution") or "").strip()
+            if dist:
+                return normalize_distribution(dist)
+    return normalize_distribution(None)
+
+
+def _topology_distribution(topology: dict | None) -> str:
+    """Distribution from topology clusters (default ocp)."""
+    return _resolve_ops_pod_distribution([], topology or {})
+
+
+def _resolve_ops_pod_pull_secret(s, project, topology=None) -> str:
+    """Decrypt the project owner's pull secret for ops-pod install-config.
+
+    OKD/SCOS accepts an empty JSON object when no Red Hat pull secret is set.
+    """
     from app.core.encryption import decrypt
     from app.models.user import User
+    from app.services.ocp.client_mirror import default_pull_secret_for_distribution
 
     owner = s.query(User).filter_by(id=project.owner_id).first()
     if owner and owner.ocp_pull_secret:
         return decrypt(owner.ocp_pull_secret)
-    return ""
+    return default_pull_secret_for_distribution(_topology_distribution(topology))
 
 
 def _resolve_ops_pod_pull_through_registry(s, project, topology=None) -> dict | None:
@@ -2155,7 +2176,7 @@ def _ensure_ocp_generated_configs(s, project, topology) -> None:
     ptr = _resolve_ops_pod_pull_through_registry(s, project, topology)
     config = {
         "resolved": {"pull_through_registry": ptr} if ptr else {},
-        "pull_secret_json": _resolve_ops_pod_pull_secret(s, project),
+        "pull_secret_json": _resolve_ops_pod_pull_secret(s, project, topology),
         "ssh_pub_key": "",
     }
     for i, cluster in enumerate(clusters):
@@ -2351,6 +2372,7 @@ def _build_ops_pod_runner_script(
     net_ip_assignments=None,
     serving_ip=None,
     pull_through_registry: dict | None = None,
+    distribution: str | None = None,
 ) -> str:
     """Ops-pod bash script: per-cluster recert and/or fresh agent install blocks."""
     from app.services.ocp.join_deferred_workers import deferred_workers_for_cluster
@@ -2371,6 +2393,7 @@ def _build_ops_pod_runner_script(
     if not recert_clusters and not install_clusters:
         return "#!/bin/bash\necho 'No clusters to install'\nexit 1\n"
 
+    dist = distribution or _resolve_ops_pod_distribution(clusters, topology)
     parts: list[str] = [
         "#!/bin/bash\n",
         "# Per-cluster OCP ops-pod runner (recert and/or agent install).\n",
@@ -2379,7 +2402,7 @@ def _build_ops_pod_runner_script(
         f"OCP_VERSION={ocp_version}\n",
         "\n",
         _self_assign_net_ips(net_ip_assignments),
-        _ensure_installers_cmd(ocp_version),
+        _ensure_installers_cmd(ocp_version, dist),
         _ensure_ptr_registries_cmd(pull_through_registry),
         "\n",
         "pids=()\n",
@@ -2437,6 +2460,7 @@ def _ops_pod_command(
         net_ip_assignments=net_ip_assignments,
         serving_ip=serving_ip,
         pull_through_registry=pull_through_registry,
+        distribution=_resolve_ops_pod_distribution(clusters, topology),
     )
     preamble = "\n".join(_ops_pod_workdir_lines(clusters, workdir))
     return ["bash", "-c", preamble + "\n" + script]
@@ -2632,7 +2656,7 @@ def _deploy_ops_pod(
         )
         return
     _ensure_ocp_generated_configs(s, project, topology)
-    pull_secret_json = _resolve_ops_pod_pull_secret(s, project)
+    pull_secret_json = _resolve_ops_pod_pull_secret(s, project, topology)
     api_key = mint_ops_pod_key(s, project)
     ocp_version = _resolve_ops_pod_ocp_version(install_clusters, topology)
     logger.info(
@@ -2952,7 +2976,7 @@ def _deploy_ops_pod_kubevirt(
         pull_through_registry=ptr,
     )
     recert_clusters, install_clusters = _partition_ops_pod_clusters(topology, clusters)
-    pull_secret_json = _resolve_ops_pod_pull_secret(s, project)
+    pull_secret_json = _resolve_ops_pod_pull_secret(s, project, topology)
     config_files = ops_pod_config_files(
         install_clusters, OPS_POD_WORKDIR, pull_secret_json
     )

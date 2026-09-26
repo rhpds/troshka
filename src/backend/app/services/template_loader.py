@@ -245,6 +245,13 @@ def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[
                 entry.get("configure_bastion_browser", False)
             ),
         }
+        # Optional distribution (ocp | okd-scos). Default omitted = ocp so
+        # existing topologies stay unchanged.
+        from app.services.ocp.client_mirror import normalize_distribution
+
+        dist = entry.get("distribution")
+        if dist:
+            cluster_obj["ocpDistribution"] = normalize_distribution(dist)
         if install_workers is not None:
             cluster_obj["installWorkers"] = install_workers
         # Preserve per-role disk lists and network IDs for member materialization.
@@ -388,8 +395,19 @@ def _prepare_ocp_clusters(tmpl, vms_def):
     Returns ``(vms_def, clusters, vm_cluster_map)``. ``vms_def`` may be replaced
     with a materialized copy that includes generated control-plane/worker VMs.
     """
+    from app.services.ocp.client_mirror import normalize_distribution
+
     ocp_list = normalize_ocp_section(tmpl.get("ocp"))
+    root_dist = tmpl.get("distribution")
+    if root_dist:
+        for entry in ocp_list:
+            entry.setdefault("distribution", root_dist)
     clusters = build_topology_clusters(ocp_list, vms_def)
+    # Stamp root distribution onto clusters that didn't declare one.
+    if root_dist:
+        canon = normalize_distribution(root_dist)
+        for c in clusters:
+            c.setdefault("ocpDistribution", canon)
     if clusters:
         vms_def = materialize_cluster_vms(clusters, vms_def)
         for c in clusters:
@@ -723,6 +741,7 @@ def resolve_template(
     # install_via propagates (agnosticd ships template YAML). None => use default.
     resolved["install_via"] = tmpl.get("install_via")
     resolved["deploy_time"] = tmpl.get("deploy_time", "")
+    resolved["distribution"] = _template_distribution(tmpl)
     resolved["bastion"] = base_for_versions.get("bastion", {})
     resolved["networks"] = tmpl.get("networks") or base_for_versions.get("networks", {})
     resolved["gateway"] = tmpl.get("gateway") or base_for_versions.get("gateway", {})
@@ -778,17 +797,42 @@ def _find_bastion_image_name(tmpl: dict) -> str:
     return ""
 
 
+def _template_distribution(tmpl: dict) -> str:
+    """Resolve distribution from template root or first ocp entry."""
+    from app.services.ocp.client_mirror import normalize_distribution
+
+    dist = tmpl.get("distribution")
+    if not dist:
+        ocp_list = tmpl.get("ocp") or []
+        if ocp_list and isinstance(ocp_list[0], dict):
+            dist = ocp_list[0].get("distribution")
+    return normalize_distribution(dist)
+
+
 def _parse_template_entry(f, tmpl: dict) -> dict:
     """Build a template listing entry from a parsed template dict."""
+    from app.services.ocp.client_mirror import is_okd_scos
+
     bastion_image_name = _find_bastion_image_name(tmpl)
+    category = tmpl.get("category", "")
+    distribution = _template_distribution(tmpl)
+    if "requires_pull_secret" in tmpl:
+        requires_pull_secret = bool(tmpl["requires_pull_secret"])
+    else:
+        requires_pull_secret = category == "openshift" and not is_okd_scos(distribution)
     entry = {
         "id": tmpl.get("name", f.stem),
         "name": tmpl.get("display_name", tmpl.get("name", f.stem)),
         "description": tmpl.get("description", ""),
-        "category": tmpl.get("category", ""),
+        "category": category,
         "install_method": tmpl.get("install_method", ""),
         "deploy_time": tmpl.get("deploy_time", ""),
+        "distribution": distribution,
+        "requires_pull_secret": requires_pull_secret,
     }
+    versions = tmpl.get("versions")
+    if isinstance(versions, list) and versions:
+        entry["versions"] = [str(v) for v in versions]
     if bastion_image_name:
         entry["bastion_image_name"] = bastion_image_name
     return entry
@@ -2666,6 +2710,7 @@ _OCP_EXPORT_FIELDS = [
     ("workerMemory", "worker_memory"),
     ("workerDisk", "worker_disk"),
     ("ocpVersion", "ocp_version"),
+    ("ocpDistribution", "distribution"),
     ("pullThroughRegistry", "pull_through_registry"),
 ]
 

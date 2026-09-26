@@ -1,0 +1,78 @@
+name: okd-sno
+display_name: "OKD SNO"
+description: "Single Node OKD (SCOS) — community OpenShift, no Red Hat pull secret required"
+category: openshift
+distribution: okd-scos
+requires_pull_secret: false
+install_method: agent
+# The in-cluster ops pod runs the agent install and drives status (no bastion
+# VM). Same path as ocp-sno; installer/client tarballs come from okd-project/okd.
+install_via: pod
+deploy_time: "~20 min"
+versions: ["4.22", "5.0"]
+
+ocp:
+  - name: ocp
+    type: sno
+    distribution: okd-scos
+    ocp_version: "4.22"
+    base_domain: local
+    api_vip: 10.0.0.10
+    ingress_vip: 10.0.0.10
+
+gateway:
+  outbound_ports:
+    - 53
+    - 80/tcp
+    - 443/tcp
+    - 123/udp
+
+networks:
+  cluster:
+    cidr: 10.0.0.0/24
+    gateway: true
+    domain: local
+    dns_records:
+      - name: api.ocp.local
+        ip: 10.0.0.10
+      - name: api-int.ocp.local
+        ip: 10.0.0.10
+      - name: .apps.ocp.local
+        ip: 10.0.0.10
+  bmc:
+    type: bmc
+    cidr: 192.168.100.0/24
+
+vms:
+  cp-0:
+    role: control-plane
+    vcpus: 8
+    ram_gb: 32
+    os: rhcos
+    firmware: uefi
+    bmc: true
+    bmc_ip: 192.168.100.10
+    recert: true
+    disks:
+      - size_gb: 120
+      - size_gb: 250
+        ocp_mount: /var/lib/containers
+    nics:
+      - network: cluster
+        ip: 10.0.0.10
+
+showroom:
+  enabled: true
+  dns_network: cluster
+  content_repo: https://github.com/rhpds/showroom-troshka-ocp-base.git
+  content_ref: main
+  build_content: true
+  disk_gb: 5
+  tabs:
+    - type: proxy
+      cluster: ocp
+      proxy_port: 443
+      proxy_tls: true
+    - type: terminal
+      target: clusters
+      name: OpenShift Cluster Terminal

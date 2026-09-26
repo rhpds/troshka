@@ -796,6 +796,12 @@ def create_project_from_template(
     bastion_iso = _resolve_bastion_iso(db, user, body.get("bastion_iso_id"))
     ssh_pub_key, ssh_key_ids, ssh_keys = _resolve_ssh_keys(db, user, body)
     pull_secret_json = _resolve_pull_secret(user)
+    if not pull_secret_json:
+        from app.services.ocp.client_mirror import default_pull_secret_for_distribution
+
+        pull_secret_json = default_pull_secret_for_distribution(
+            resolved.get("distribution")
+        )
 
     if not resolved.get("pull_through_registry") and user.pull_through_registry:
         if user.pull_through_registry_url:
@@ -841,6 +847,7 @@ def create_project_from_template(
                 "auto_install_ocp": body.get("auto_install_ocp", True),
                 "install_via": install_via,
                 "resolved": resolved,
+                "distribution": resolved.get("distribution") or "ocp",
             },
         )
 

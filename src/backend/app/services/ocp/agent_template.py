@@ -44,6 +44,7 @@ class BastionOCPConfig:
     ingress_vip: str
     bastion_bmc_ip: str
     pull_through_registry: dict | None = None
+    distribution: str = "ocp"
 
 
 def _find_bastion_ip(topology):
@@ -917,6 +918,9 @@ def _bake_single_cluster_bastion(topology, config, template_id, api_vip, ingress
             ingress_vip=ingress_vip,
             bastion_bmc_ip=config.get("bastion_bmc_ip", "192.168.100.50"),
             pull_through_registry=resolved.get("pull_through_registry"),
+            distribution=config.get("distribution")
+            or (topology.get("clusters") or [{}])[0].get("ocpDistribution")
+            or "ocp",
         ),
     )
 
@@ -965,10 +969,15 @@ def customize_topology(topology: dict, template_id: str, config: dict) -> dict:
     # value only reached the bastion bake, so pod-install clusters silently kept
     # the template's baked-in version (e.g. 4.22 even when the user picked 5.0).
     ocp_version = str(config.get("ocp_version") or "").strip()
+    distribution = str(config.get("distribution") or "").strip()
     for cluster in clusters:
         cluster["installOnDeploy"] = install_on_deploy
         if ocp_version:
             cluster["ocpVersion"] = ocp_version
+        if distribution:
+            from app.services.ocp.client_mirror import normalize_distribution
+
+            cluster["ocpDistribution"] = normalize_distribution(distribution)
     if not topology.get("clusters"):
         topology["clusters"] = clusters
 
@@ -1532,6 +1541,7 @@ def _setup_bastion_auto_install(
         ocp_config.cluster_name,
         ocp_config.base_domain,
         topology=topology,
+        distribution=ocp_config.distribution,
     )
 
     _write_ocp_config_files(node, _guard, install_config, agent_config)
@@ -1905,6 +1915,12 @@ def _build_install_config(
 
     if pull_secret:
         ic_lines.append(f"pullSecret: '{pull_secret}'")
+    else:
+        # openshift-install requires the field; OKD accepts an empty object.
+        from app.services.ocp.client_mirror import is_okd_scos
+
+        if is_okd_scos(cluster.get("ocpDistribution")):
+            ic_lines.append("pullSecret: '{}'")
     if ssh_key:
         ic_lines.append(f"sshKey: '{ssh_key}'")
 
@@ -1947,6 +1963,9 @@ def _build_install_config_legacy(
         "controlPlane": num_masters,
         "workers": _count_ocp_nodes_by_group(topology, "workers"),
     }
+    topo_clusters = topology.get("clusters") or []
+    if topo_clusters and topo_clusters[0].get("ocpDistribution"):
+        cluster["ocpDistribution"] = topo_clusters[0]["ocpDistribution"]
     members = [n for n in topology.get("nodes", []) if n.get("type") == "vmNode"]
     return _build_install_config(
         cluster,
@@ -2367,7 +2386,14 @@ def _build_install_script(
     cluster_name="ocp",
     base_domain="ocp.local",
     topology=None,
+    distribution=None,
 ):
+    oi_url = _installer_tarball_url(
+        ocp_version, "openshift-install-linux.tar.gz", distribution
+    )
+    oc_url = _installer_tarball_url(
+        ocp_version, "openshift-client-linux.tar.gz", distribution
+    )
     return (
         _YAML_BLOCK_SCALAR
         + "    cat > /home/cloud-user/install-ocp.sh << 'SCRIPTEOF'\n"
@@ -2401,10 +2427,10 @@ def _build_install_script(
         "    # Download openshift-install and oc if not present\n"
         "    if [ ! -f openshift-install ]; then\n"
         '      echo "Downloading openshift-install $OCP_VERSION..."\n'
-        f"      curl -L -o /tmp/openshift-install.tar.gz {_installer_tarball_url(ocp_version, 'openshift-install-linux.tar.gz')}\n"
+        f"      curl -L -o /tmp/openshift-install.tar.gz {oi_url}\n"
         "      tar xzf /tmp/openshift-install.tar.gz && rm -f /tmp/openshift-install.tar.gz\n"
         '      echo "Downloading oc client..."\n'
-        f"      curl -L -o /tmp/openshift-client.tar.gz {_installer_tarball_url(ocp_version, 'openshift-client-linux.tar.gz')}\n"
+        f"      curl -L -o /tmp/openshift-client.tar.gz {oc_url}\n"
         "      tar xzf /tmp/openshift-client.tar.gz && rm -f /tmp/openshift-client.tar.gz\n"
         "      sudo mv oc kubectl /usr/bin/\n"
         '      echo "Downloaded openshift-install and oc"\n'
