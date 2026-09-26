@@ -6,6 +6,8 @@ Periodically calls GET /health on each connected host to:
 - Update agent_version
 - Detect disconnected hosts (mark as disconnected after timeout)
 - Auto-reconnect hosts that come back online
+- Sync cloud power state for non-KubeVirt hosts (mark stopped when the
+  instance is stopped/deallocated in EC2/GCP/Azure/OCP Virt)
 """
 
 import logging
@@ -30,6 +32,18 @@ _DISCONNECT_AFTER_SECONDS = (
 # Match Hosts page red Storage threshold (≥80%) so nav/host badges agree.
 _WARNING_PCT = 80
 _CRITICAL_PCT = 95
+
+# Cloud power states that mean the VM/instance is not running.
+_STOPPED_POWER_STATES = frozenset(
+    {
+        "stopped",
+        "stopping",
+        "terminated",
+        "shutting-down",
+        "deallocated",
+        "deallocating",
+    }
+)
 
 
 def _warning_for_pct(mount: str, pct: float) -> dict | None:
@@ -317,7 +331,46 @@ def _handle_health_success(host, health, db, checked_pools: set) -> None:
         enqueue_job(recover_host_services, host.id, queue_name="default")
 
 
-def _handle_health_failure(host, now_dt) -> None:
+def _sync_cloud_powerstate(host, db) -> bool:
+    """Query cloud provider power state; mark host stopped if instance is down.
+
+    Applies to all non-KubeVirt hosts (EC2, GCP, Azure, OCP Virt). Returns True
+    when ``host.state`` was set to ``stopped``.
+    """
+    if host.host_type == "kubevirt-cluster":
+        return False
+    if not (host.instance_id and host.provider_id):
+        return False
+    try:
+        from app.models.provider import Provider
+        from app.services.providers import get_provider_driver
+
+        provider = db.get(Provider, host.provider_id)
+        if not provider or provider.type == "kubevirt":
+            return False
+        drv = get_provider_driver(provider)
+        power = (drv.get_host_powerstate(provider, host.instance_id) or "").lower()
+        if power not in _STOPPED_POWER_STATES:
+            return False
+        host.state = "stopped"
+        host.agent_status = "disconnected"
+        _skip_until[host.id] = time.time() + 86400
+        logger.info(
+            "Host %s marked stopped (cloud powerstate=%s)",
+            host.id[:8],
+            power,
+        )
+        return True
+    except Exception:
+        logger.debug(
+            "Cloud powerstate check failed for host %s",
+            host.id[:8],
+            exc_info=True,
+        )
+        return False
+
+
+def _handle_health_failure(host, now_dt, db=None) -> None:
     """Process a failed health check — update status and schedule backoff."""
     if host.agent_status == "connected" and host.last_health_at:
         elapsed = (now_dt - host.last_health_at).total_seconds()
@@ -329,9 +382,16 @@ def _handle_health_failure(host, now_dt) -> None:
                 host.id[:8],
                 int(elapsed),
             )
+            # Immediate cloud check — catch stopped instances without waiting
+            # another poll cycle.
+            if db is not None:
+                _sync_cloud_powerstate(host, db)
         else:
             _skip_until[host.id] = time.time() + 15
     elif host.agent_status == "disconnected":
+        if db is not None and _sync_cloud_powerstate(host, db):
+            return
+        # Pattern buffers: auto-mark stopped after 10min if cloud check unavailable
         if (
             host.host_type == "pattern_buffer"
             and host.last_health_at
@@ -361,8 +421,13 @@ def _poll_host(
         _poll_kubevirt_host(host, db)
         return False, False
 
+    # No agent yet (or cert missing): still sync cloud power so Hosts UI shows
+    # Power On when the instance was stopped externally.
     if not host.agent_cert_fingerprint:
+        if _sync_cloud_powerstate(host, db):
+            return True, True
         return False, False
+
     skip_ts = _skip_until.get(host.id)
     if skip_ts and now < skip_ts:
         return False, False
@@ -372,10 +437,11 @@ def _poll_host(
         if health:
             _handle_health_success(host, health, db, checked_pools)
             return True, False
-        _handle_health_failure(host, datetime.now(UTC))
+        _handle_health_failure(host, datetime.now(UTC), db)
         return True, True
     except Exception:
         logger.debug("Health check failed for host %s", host.id[:8], exc_info=True)
+        _handle_health_failure(host, datetime.now(UTC), db)
         return True, True
 
 

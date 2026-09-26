@@ -386,3 +386,104 @@ class TestStartHealthPoller:
         assert thread.daemon is True
         assert thread.name == "health-poller"
         thread.join(timeout=1)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _sync_cloud_powerstate / disconnected → stopped
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestSyncCloudPowerstate:
+    def test_skips_kubevirt_cluster(self):
+        host = MagicMock()
+        host.host_type = "kubevirt-cluster"
+        host.instance_id = "x"
+        host.provider_id = "p"
+        assert hp._sync_cloud_powerstate(host, MagicMock()) is False
+
+    def test_skips_missing_instance(self):
+        host = MagicMock()
+        host.host_type = "shared"
+        host.instance_id = None
+        host.provider_id = "p"
+        assert hp._sync_cloud_powerstate(host, MagicMock()) is False
+
+    @patch("app.services.providers.get_provider_driver")
+    def test_marks_stopped_when_cloud_says_stopped(self, mock_get_drv):
+        host = MagicMock()
+        host.id = "abcdef12-3456-7890"
+        host.host_type = "shared"
+        host.instance_id = "i-abc"
+        host.provider_id = "prov-1"
+        host.state = "active"
+        host.agent_status = "disconnected"
+
+        provider = MagicMock()
+        provider.type = "ec2"
+        db = MagicMock()
+        db.get.return_value = provider
+
+        drv = MagicMock()
+        drv.get_host_powerstate.return_value = "stopped"
+        mock_get_drv.return_value = drv
+
+        assert hp._sync_cloud_powerstate(host, db) is True
+        assert host.state == "stopped"
+        assert host.agent_status == "disconnected"
+        drv.get_host_powerstate.assert_called_once_with(provider, "i-abc")
+
+    @patch("app.services.providers.get_provider_driver")
+    def test_leaves_active_when_cloud_running(self, mock_get_drv):
+        host = MagicMock()
+        host.id = "abcdef12-3456-7890"
+        host.host_type = "shared"
+        host.instance_id = "i-abc"
+        host.provider_id = "prov-1"
+        host.state = "active"
+
+        provider = MagicMock()
+        provider.type = "ec2"
+        db = MagicMock()
+        db.get.return_value = provider
+
+        drv = MagicMock()
+        drv.get_host_powerstate.return_value = "running"
+        mock_get_drv.return_value = drv
+
+        assert hp._sync_cloud_powerstate(host, db) is False
+        assert host.state == "active"
+
+    @patch("app.services.providers.get_provider_driver")
+    def test_skips_kubevirt_provider_type(self, mock_get_drv):
+        host = MagicMock()
+        host.host_type = "shared"
+        host.instance_id = "i-abc"
+        host.provider_id = "prov-1"
+        provider = MagicMock()
+        provider.type = "kubevirt"
+        db = MagicMock()
+        db.get.return_value = provider
+        assert hp._sync_cloud_powerstate(host, db) is False
+        mock_get_drv.assert_not_called()
+
+    @patch("app.services.health_poller._sync_cloud_powerstate", return_value=True)
+    def test_handle_failure_disconnected_uses_cloud(self, mock_sync):
+        host = MagicMock()
+        host.id = "abcdef12-3456-7890"
+        host.agent_status = "disconnected"
+        host.host_type = "shared"
+        db = MagicMock()
+        hp._handle_health_failure(host, datetime.now(UTC), db)
+        mock_sync.assert_called_once_with(host, db)
+
+    @patch("app.services.troshkad_client.check_health", return_value=None)
+    @patch("app.services.health_poller._sync_cloud_powerstate", return_value=True)
+    def test_poll_host_no_cert_still_checks_cloud(self, mock_sync, _mock_health):
+        host = MagicMock()
+        host.id = "abcdef12-3456-7890"
+        host.host_type = "shared"
+        host.agent_cert_fingerprint = None
+        checked, failed = hp._poll_host(host, False, MagicMock(), set(), time.time())
+        assert checked is True and failed is True
+        mock_sync.assert_called_once()
+        _mock_health.assert_not_called()
