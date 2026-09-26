@@ -233,6 +233,41 @@ def test_stuck_recovery_sets_error_state():
     db.close()
 
 
+def test_stuck_recovery_zombie_started_no_progress():
+    """Started RQ job with no deploy progress after grace is recovered."""
+    from unittest.mock import patch
+
+    from app.services.project_timer import _check_project_timers
+
+    now = datetime.datetime.now(datetime.UTC)
+    pid = _create_project(
+        "Zombie Started",
+        state="deploying",
+        updated_at=now - datetime.timedelta(minutes=10),
+    )
+
+    with (
+        patch("app.core.redis.is_redis_available", return_value=True),
+        patch(
+            "app.core.redis.get_job_info",
+            return_value={"job_id": "zombie-1", "status": "started"},
+        ),
+        patch("app.core.redis.get_progress", return_value=None),
+        patch("app.core.redis._clear_project_job_ref") as mock_clear,
+        patch("app.services.project_timer._notify"),
+    ):
+        result = _check_project_timers(_dry_run=False)
+
+    assert pid in result.get("stuck_recovered", [])
+    mock_clear.assert_called()
+    db = TestSession()
+    p = db.query(Project).filter_by(id=pid).first()
+    assert p.state == "error"
+    db.query(Project).filter_by(id=pid).delete()
+    db.commit()
+    db.close()
+
+
 def test_spawn_stop():
     """_spawn_stop enqueues a stop job via Redis."""
     from unittest.mock import patch

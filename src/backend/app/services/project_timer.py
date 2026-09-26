@@ -126,7 +126,12 @@ def _process_timer_warnings(s, now, warning_threshold, result, _dry_run):
 
 def _recover_stuck_projects(s, now, result, _dry_run):
     """Recover projects stuck in transitional states with no active RQ job."""
-    from app.core.redis import get_job_info, is_redis_available
+    from app.core.redis import (
+        _clear_project_job_ref,
+        get_job_info,
+        get_progress,
+        is_redis_available,
+    )
     from app.models.project import Project
 
     if not is_redis_available():
@@ -143,8 +148,24 @@ def _recover_stuck_projects(s, now, result, _dry_run):
     )
     for p in stuck:
         job_info = get_job_info(p.id)
-        if job_info and job_info.get("status") in ("queued", "started"):
-            continue
+        status = (job_info or {}).get("status") or ""
+        if status in ("queued", "started"):
+            # Live deploys write progress; started+no progress after grace = zombie.
+            # Only apply to deploying — stop/start jobs don't use deploy:{id} progress.
+            if (
+                status == "started"
+                and p.state == "deploying"
+                and not get_progress(f"deploy:{p.id}")
+            ):
+                logger.warning(
+                    "Project %s (%s) has started job with no deploy progress — treating as lost",
+                    p.name,
+                    p.id[:8],
+                )
+                if not _dry_run:
+                    _clear_project_job_ref(p.id, (job_info or {}).get("job_id"))
+            else:
+                continue
         logger.warning(
             "Recovering stuck project %s (%s) — state=%s, no active job",
             p.name,
@@ -157,6 +178,8 @@ def _recover_stuck_projects(s, now, result, _dry_run):
         old_state = p.state
         p.state = "error"
         p.deploy_error = f"Background job lost while {old_state} — please retry"
+        if job_info and job_info.get("job_id"):
+            _clear_project_job_ref(p.id, job_info.get("job_id"))
         s.commit()
         _notify(
             p.id,

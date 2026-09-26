@@ -291,8 +291,39 @@ def enqueue_job(
     return t
 
 
+def _normalize_rq_status(status) -> str:
+    """RQ may return str or JobStatus enum — always compare as plain text."""
+    if status is None:
+        return ""
+    value = getattr(status, "value", status)
+    return str(value)
+
+
+def _clear_project_job_ref(project_id: str, job_id: str | None = None) -> None:
+    """Drop the project→job pointer (and optional RQ job) for a dead/zombie job."""
+    try:
+        r = get_redis()
+        r.delete(f"job:project:{project_id}")
+        if job_id:
+            from rq.job import Job
+
+            try:
+                Job.fetch(str(job_id), connection=get_redis_raw()).delete()
+            except Exception:
+                pass
+    except Exception:
+        logger.debug(
+            "Failed to clear job ref for project %s", project_id[:8], exc_info=True
+        )
+
+
 def get_job_info(project_id: str) -> dict | None:
-    """Get job status and queue position for a project's active job."""
+    """Get job status and queue position for a project's active job.
+
+    Returns None when there is no job, or when a ``started`` job is a zombie
+    (no worker_name, or worker no longer registered) so stuck-project recovery
+    can unblock the UI.
+    """
     if not _redis_available:
         return None
     try:
@@ -306,13 +337,18 @@ def get_job_info(project_id: str) -> dict | None:
 
         r_raw = get_redis_raw()
         job = Job.fetch(job_id, connection=r_raw)
-        status = job.get_status()
+        status = _normalize_rq_status(job.get_status())
 
-        if status == "started" and job.worker_name:
+        if status == "started":
+            worker_name = (job.worker_name or "").strip()
+            if not worker_name:
+                _clear_project_job_ref(project_id, job_id)
+                return None
             from rq import Worker
 
             worker_names = {w.name for w in Worker.all(connection=r_raw)}
-            if job.worker_name not in worker_names:
+            if worker_name not in worker_names:
+                _clear_project_job_ref(project_id, job_id)
                 return None
 
         result: dict = {"job_id": job_id, "status": status}

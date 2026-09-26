@@ -1041,10 +1041,53 @@ class TestGetJobInfo:
 
         with patch("rq.job.Job.fetch", return_value=mock_job), patch(
             "rq.Worker.all", return_value=[]
-        ):
+        ), patch("app.core.redis._clear_project_job_ref") as mock_clear:
             result = redis_mod.get_job_info("proj-stale")
 
         assert result is None
+        mock_clear.assert_called_once_with("proj-stale", "job-id-stale")
+
+    @patch("app.core.redis.get_redis_raw")
+    def test_get_job_info_started_no_worker_name_is_zombie(self, mock_raw):
+        mc = _set_redis_mock()
+        mc.get.return_value = "job-no-worker"
+        mock_raw.return_value = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.get_status.return_value = "started"
+        mock_job.worker_name = None
+
+        with patch("rq.job.Job.fetch", return_value=mock_job), patch(
+            "app.core.redis._clear_project_job_ref"
+        ) as mock_clear:
+            result = redis_mod.get_job_info("proj-zombie")
+
+        assert result is None
+        mock_clear.assert_called_once_with("proj-zombie", "job-no-worker")
+
+    @patch("app.core.redis.get_redis_raw")
+    def test_get_job_info_normalizes_status_enum(self, mock_raw):
+        from enum import Enum
+
+        class JobStatus(str, Enum):
+            STARTED = "started"
+
+        mc = _set_redis_mock()
+        mc.get.return_value = "job-enum"
+        mock_raw.return_value = MagicMock()
+
+        mock_job = MagicMock()
+        mock_job.get_status.return_value = JobStatus.STARTED
+        mock_job.worker_name = "worker-1"
+        mock_worker = MagicMock()
+        mock_worker.name = "worker-1"
+
+        with patch("rq.job.Job.fetch", return_value=mock_job), patch(
+            "rq.Worker.all", return_value=[mock_worker]
+        ):
+            result = redis_mod.get_job_info("proj-enum")
+
+        assert result["status"] == "started"
 
     @patch("app.core.redis.get_redis_raw")
     def test_get_job_info_queued_job_not_in_queue(self, mock_raw):
