@@ -72,7 +72,9 @@ if kubectl -n "${NAMESPACE}" get svc troshka-backend >/dev/null 2>&1; then
       fi
       echo "Using SSO wipe identity: ${TROSHKA_FORWARDED_EMAIL}"
     fi
-    # Terminate seeded EC2 hosts before project wipe / stack delete.
+    # Destroy projects first — host DELETE returns 409 while any are active/deploying.
+    "${_script_dir}/../lib/wipe-workloads.sh"
+    "${_script_dir}/../lib/verify-clean.sh"
     echo "Terminating Troshka hosts..."
     host_ids="$(api_get "/api/v1/hosts/" 2>/dev/null | jq -r '.[].id // empty' || true)"
     if [[ -n "${host_ids}" ]]; then
@@ -82,13 +84,10 @@ if kubectl -n "${NAMESPACE}" get svc troshka-backend >/dev/null 2>&1; then
         api_delete "/api/v1/hosts/${hid}" >/dev/null || \
           echo "warning: host delete failed for ${hid}" >&2
       done
-      # Brief wait so terminate calls are in flight before wiping projects.
       sleep 5
     else
       echo "No hosts to terminate."
     fi
-    "${_script_dir}/../lib/wipe-workloads.sh"
-    "${_script_dir}/../lib/verify-clean.sh"
   fi
   stop_backend_port_forward
   trap - EXIT
