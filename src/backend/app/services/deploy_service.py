@@ -4249,13 +4249,20 @@ def _apply_ops_pod_creds(topology: dict, creds: dict) -> bool:
     return changed
 
 
-def _store_ops_pod_creds(host, project_id: str, clusters: list, workdir: str) -> None:
+def _store_ops_pod_creds(
+    host, project_id: str, clusters: list, workdir: str
+) -> set[str]:
     """After a successful pod install, read each cluster's kubeadmin-password +
     kubeconfig from the ops pod and persist them on the cluster's control-plane
     member node, so the UI can surface them (bastionless has no bastion monitor
-    to do it). Best-effort — never raises into the install monitor."""
+    to do it). Best-effort — never raises into the install monitor.
+
+    Returns the set of cluster keys that stored a valid kubeconfig this call
+    (monitor uses this to avoid marking a harvest complete on empty/invalid cat).
+    """
     from app.core.database import SessionLocal
     from app.models.project import Project
+    from app.services.ocp.kubeconfig_merge import is_valid_kubeconfig
     from app.services.ocp.ops_pod_install import _cluster_key as _ck
 
     container = _ops_pod_container_name(project_id)
@@ -4271,33 +4278,51 @@ def _store_ops_pod_creds(host, project_id: str, clusters: list, workdir: str) ->
         if pw or kc:
             creds[key] = (pw, kc)
     if not creds:
-        return
+        return set()
+    stored_keys: set[str] = set()
     db = SessionLocal()
     try:
         p = db.query(Project).filter_by(id=project_id).first()
         if not p:
-            return
+            return set()
         topo = copy.deepcopy(p.topology or {})
-        if _apply_ops_pod_creds(topo, creds):
-            p.topology = topo
-            if p.deployed_topology:
-                dt = copy.deepcopy(p.deployed_topology)
-                _apply_ops_pod_creds(dt, creds)
-                p.deployed_topology = dt
+        # deployed_topology is the SoT for harvested creds — canvas autosave
+        # strips ocpKubeconfig from editable topology (see DEPLOY_TRANSIENT_NODE_KEYS),
+        # so merging from topology alone drops earlier clusters and overwrites
+        # /showroom/kube/config with a partial merge.
+        deployed = copy.deepcopy(p.deployed_topology or topo)
+        changed_topo = _apply_ops_pod_creds(topo, creds)
+        changed_deployed = _apply_ops_pod_creds(deployed, creds)
+        if changed_topo or changed_deployed:
+            if changed_topo:
+                p.topology = topo
+            p.deployed_topology = deployed
             db.commit()
+        for key, (_pw, kc) in creds.items():
+            raw = kc.decode("utf-8", errors="replace") if isinstance(kc, bytes) else kc
+            if is_valid_kubeconfig(raw):
+                stored_keys.add(key)
         # Feed the bastionless "cluster terminal" (a showroom container with oc):
         # merge EVERY harvested cluster into /showroom/kube/config (not just the
         # cluster harvested this round — multi-cluster projects inject one at a
-        # time as each finishes).
-        all_creds = _stored_cluster_creds(topo)
+        # time as each finishes). Prefer deployed_topology so prior harvests
+        # survive editable-topology wipes.
+        all_creds = _stored_cluster_creds(deployed)
+        if not all_creds:
+            all_creds = _stored_cluster_creds(topo)
         if all_creds:
             _inject_cluster_kubeconfigs(
-                host, project_id, topo, all_creds, _ocp_clusters(topo)
+                host,
+                project_id,
+                deployed if p.deployed_topology else topo,
+                all_creds,
+                _ocp_clusters(deployed) or _ocp_clusters(topo),
             )
     except Exception:
         logger.exception("Failed to store ops-pod creds for %s", project_id[:8])
     finally:
         db.close()
+    return stored_keys
 
 
 def _stored_cluster_creds(topology: dict) -> dict:
@@ -4333,15 +4358,34 @@ def _stored_cluster_creds(topology: dict) -> dict:
     return creds
 
 
-def _inject_stored_cluster_kubeconfigs(host, project_id: str, topology: dict) -> None:
+def _inject_stored_cluster_kubeconfigs(
+    host, project_id: str, topology: dict, deployed: dict | None = None
+) -> None:
     """Inject the cluster terminal's merged kubeconfig from creds already stored in
     the topology (install-time harvest) — for adding the terminal to a deployed
-    project. No-op without a cluster-terminal tab or stored creds."""
-    creds = _stored_cluster_creds(topology)
+    project. No-op without a cluster-terminal tab or stored creds.
+
+    Prefer ``deployed`` for creds when given: editable canvas topology may have
+    had ``ocpKubeconfig`` stripped by autosave.
+    """
+    creds_topo = deployed or topology
+    creds = _stored_cluster_creds(creds_topo)
+    if not creds:
+        creds = _stored_cluster_creds(topology)
+        creds_topo = topology
     if not creds:
         return
+    showroom_topo = (
+        topology
+        if _showroom_with_cluster_terminal(topology)
+        else (deployed or topology)
+    )
     _inject_cluster_kubeconfigs(
-        host, project_id, topology, creds, _ocp_clusters(topology)
+        host,
+        project_id,
+        showroom_topo,
+        creds,
+        _ocp_clusters(creds_topo) or _ocp_clusters(topology),
     )
 
 
@@ -5486,8 +5530,10 @@ def _monitor_ops_pod_install(
             log = per_cluster.get(key, "")
             if key not in harvested_creds and cluster_install_complete_in_log(log, key):
                 try:
-                    _store_ops_pod_creds(host, project_id, [cluster], workdir)
-                    harvested_creds.add(key)
+                    stored = _store_ops_pod_creds(host, project_id, [cluster], workdir)
+                    # Only mark harvested when a valid kubeconfig was stored —
+                    # empty/invalid cat should retry next poll.
+                    harvested_creds.update(stored or set())
                 except Exception:
                     logger.exception(
                         "Ops pod %s: cred harvest for %s failed",
@@ -8080,16 +8126,28 @@ def _ns_from_showroom_hostname(hostname: str) -> str:
     ``<route-name>-<ns>.apps.<cluster>``, so app-proxy public hosts can be computed
     as ``tpf-<pid>-<code>-<ns>.<apps-domain>``. '' if not derivable.
 
-    The route name ends in the showroom's forwarded port — ``443`` historically,
-    but ``80`` for edge-terminated route providers (kubevirt/ocpvirt serve the
-    showroom container on ``.3:80``), e.g. ``rt-showroom-80-<ns>``. So split on the
-    first pure-numeric label (the port) rather than a hardcoded ``-443-`` — the
-    old assumption silently returned '' for ``-80`` routes, which made
-    :func:`_create_app_proxy_routes` skip the console/oauth routes entirely.
+    Current route names omit the port (``showroom-<ns>``,
+    ``troshka-pf-<pid>-showroom-<ns>``). Legacy names included the forwarded port
+    (``rt-showroom-80-<ns>``, ``troshka-pf-<pid>-showroom-443-<ns>``); those still
+    parse via the first pure-numeric label.
     """
     import re
 
     first_label = (hostname or "").split(".", 1)[0]
+    if not first_label:
+        return ""
+
+    # Short kubevirt name: showroom-<ns> (not showroom-<port>-<ns>)
+    m = re.match(r"^showroom-(.+)$", first_label)
+    if m and not re.match(r"^showroom-\d+-", first_label):
+        return m.group(1)
+
+    # Short ocpvirt name: troshka-pf-<pid>-showroom-<ns>
+    m = re.match(r"^troshka-pf-[a-f0-9]+-showroom-(.+)$", first_label)
+    if m and not re.match(r"^troshka-pf-[a-f0-9]+-showroom-\d+-", first_label):
+        return m.group(1)
+
+    # Legacy: route name ends in the showroom's forwarded port
     m = re.search(r"-\d+-", first_label)
     return first_label[m.end() :] if m else ""
 

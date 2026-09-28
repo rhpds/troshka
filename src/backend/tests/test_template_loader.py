@@ -41,6 +41,11 @@ def test_load_okd_sno_template():
     assert listed["okd-sno"]["requires_pull_secret"] is False
     assert listed["okd-sno"]["distribution"] == "okd-scos"
     assert listed["ocp-sno"]["requires_pull_secret"] is True
+    assert listed["ocp-sno"].get("requires_kubevirt") is False
+    assert listed["ocp-cclm"]["requires_kubevirt"] is True
+    assert listed["ocp-cclm"]["versions"] == ["4.22", "5.0"]
+    assert listed["ocp-sno"]["versions"][-1] == "5.0"
+    assert listed["ocp-sno"]["versions"][-2] == "4.22"
 
 
 def test_load_compact_template():

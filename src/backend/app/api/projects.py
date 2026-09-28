@@ -5443,7 +5443,7 @@ def _reconfigure_showroom(
         # port is deterministic (first free, no EIP), so this reuses the same port and
         # the Route/Service/URL fill are idempotent.
         _deploy_create_provider_routes(s, p_id, current, host=h)
-        _inject_stored_cluster_kubeconfigs(h, p_id, current)
+        _inject_stored_cluster_kubeconfigs(h, p_id, current, deployed)
     except Exception as e:  # noqa: BLE001 - best-effort, surfaced via errors
         logger.exception("Reconfigure %s: showroom redeploy failed", p_id[:8])
         errors.append(f"Showroom redeploy failed: {e}")

@@ -1156,7 +1156,11 @@ class OCPVirtDriver(ProviderDriver):
             raise ValueError("transit_port is required for OCP Virt route access")
 
         safe_name = re.sub(r"[^a-z0-9-]", "-", vm_name.lower())[:20]
-        resource_name = f"troshka-pf-{project_id[:8]}-{safe_name}-{port}"
+        # Showroom public hostname should read as …-showroom-<ns>.apps… (no port).
+        if safe_name == "showroom":
+            resource_name = f"troshka-pf-{project_id[:8]}-showroom"
+        else:
+            resource_name = f"troshka-pf-{project_id[:8]}-{safe_name}-{port}"
 
         labels = {
             "app": "troshka",
@@ -1303,8 +1307,10 @@ class OCPVirtDriver(ProviderDriver):
 
     def find_showroom_route(self, provider, project_id, vm_name, port):
         """Return {"hostname", "route_name"} for the existing showroom Route, or None.
-        The Route name is deterministic (see create_route_access), so redeploy can
-        resolve it without recreating the Route (avoiding transit-port/DNAT churn)."""
+
+        Prefers the short ``…-showroom`` name; falls back to legacy
+        ``…-showroom-<port>`` so redeploy finds routes created before the rename.
+        """
         import re
 
         from kubernetes import client
@@ -1313,24 +1319,36 @@ class OCPVirtDriver(ProviderDriver):
         namespace = creds.get("namespace", "troshka")
         custom_api, _ = _get_k8s_clients(creds)
         safe_name = re.sub(r"[^a-z0-9-]", "-", vm_name.lower())[:20]
-        route_name = f"troshka-pf-{project_id[:8]}-{safe_name}-{port}"
-        try:
-            route = cast(
-                dict[str, Any],
-                custom_api.get_namespaced_custom_object(
-                    group=_ROUTE_API,
-                    version="v1",
-                    namespace=namespace,
-                    plural="routes",
-                    name=route_name,
-                ),
-            )
-        except client.ApiException:
-            return None
-        return {
-            "hostname": route.get("spec", {}).get("host", ""),
-            "route_name": route_name,
-        }
+        pid = project_id[:8]
+        candidates = []
+        if safe_name == "showroom":
+            candidates.append(f"troshka-pf-{pid}-showroom")
+        candidates.append(f"troshka-pf-{pid}-{safe_name}-{port}")
+        for legacy_port in (80, 443):
+            candidates.append(f"troshka-pf-{pid}-showroom-{legacy_port}")
+        seen: set[str] = set()
+        for route_name in candidates:
+            if route_name in seen:
+                continue
+            seen.add(route_name)
+            try:
+                route = cast(
+                    dict[str, Any],
+                    custom_api.get_namespaced_custom_object(
+                        group=_ROUTE_API,
+                        version="v1",
+                        namespace=namespace,
+                        plural="routes",
+                        name=route_name,
+                    ),
+                )
+            except client.ApiException:
+                continue
+            return {
+                "hostname": route.get("spec", {}).get("host", ""),
+                "route_name": route_name,
+            }
+        return None
 
     def delete_route_access(self, provider, project_id, namespace=None):
         """Delete all Route and Service resources created for a project's external access."""

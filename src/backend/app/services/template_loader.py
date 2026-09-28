@@ -829,6 +829,7 @@ def _parse_template_entry(f, tmpl: dict) -> dict:
         "deploy_time": tmpl.get("deploy_time", ""),
         "distribution": distribution,
         "requires_pull_secret": requires_pull_secret,
+        "requires_kubevirt": _template_requires_kubevirt(tmpl),
     }
     versions = tmpl.get("versions")
     if isinstance(versions, list) and versions:

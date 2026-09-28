@@ -4,6 +4,10 @@ import React, { useEffect, useState } from "react";
 import AlertModal from "@/components/AlertModal";
 import ConfirmModal from "@/components/ConfirmModal";
 import { appConfirm } from "@/lib/confirm";
+import {
+  formatTemplateVersionLabel,
+  pickDefaultOcpVersion,
+} from "@/lib/ocpVersion";
 import TagEditor from "@/components/TagEditor";
 import {
   Button,
@@ -79,10 +83,23 @@ interface TemplateSummary {
   bastion_image_name?: string;
   distribution?: string;
   requires_pull_secret?: boolean;
+  requires_kubevirt?: boolean;
   versions?: string[];
 }
 
-export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, setAlertMsg }: { onClose: () => void; onCreated: (id: string) => void; userRole: string; availableHosts: {id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[]; setAlertMsg: (msg: string | null) => void }) {
+type DeployHostOption = {
+  id: string;
+  ip_address: string;
+  instance_id: string;
+  provider_type: string;
+  host_type?: string;
+  used_vcpus: number;
+  total_vcpus: number;
+  used_ram_mb: number;
+  total_ram_mb: number;
+};
+
+export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, setAlertMsg }: { onClose: () => void; onCreated: (id: string) => void; userRole: string; availableHosts: DeployHostOption[]; setAlertMsg: (msg: string | null) => void }) {
   const [mode, setMode] = useState<"choose" | "blank" | "yaml" | "pattern" | "template" | "template-picker">("choose");
   const [yamlContent, setYamlContent] = useState("");
   const [yamlFileName, setYamlFileName] = useState("");
@@ -129,6 +146,20 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
   const [libraryImages, setLibraryImages] = useState<Array<{id: string; name: string; size_gb: number; format: string}>>([]);
   const [libraryIsos, setLibraryIsos] = useState<Array<{id: string; name: string; size_gb: number}>>([]);
   const [sshKeys, setSshKeys] = useState<Array<{id: string; name: string}>>([]);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  const requiresKubevirt =
+    mode === "template" &&
+    !!templates.find((t) => t.id === selectedTemplate)?.requires_kubevirt;
+  const deployHosts = requiresKubevirt
+    ? availableHosts.filter((h) => h.host_type === "kubevirt-cluster")
+    : availableHosts;
+
+  useEffect(() => {
+    if (deployHostId && !deployHosts.some((h) => h.id === deployHostId)) {
+      setDeployHostId("");
+    }
+  }, [deployHostId, deployHosts]);
 
   useEffect(() => {
     fetch(`${API_BASE}/api/v1/patterns/`)
@@ -144,7 +175,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
       .then((data) => {
         setOcpVersions(Array.isArray(data) ? data : []);
         if (data.length) {
-          const ver = data[data.length - 1].minor;
+          const ver = pickDefaultOcpVersion(data.map((v: { minor: string }) => v.minor));
           setOcpVersion(ver);
           setName((prev) => prev ? prev.replace(/^(OpenShift)(\s+\d+\.\d+)?/, `$1 ${ver}`) : prev);
         }
@@ -200,6 +231,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
   const handleCreate = async () => {
     if (!name.trim()) return;
     setCreating(true);
+    setCreateError(null);
     try {
       if (mode === "pattern" && selectedPattern) {
         const resp = await fetch(`${API_BASE}/api/v1/patterns/${selectedPattern}/deploy`, {
@@ -212,7 +244,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
           onCreated(data.id);
         } else {
           const err = await resp.json().catch(() => ({ detail: "Failed to create project" }));
-          setAlertMsg(err.detail || "Failed to create project");
+          setCreateError(err.detail || "Failed to create project");
         }
       } else if (mode === "template" && selectedTemplate) {
         const templateBody: Record<string, any> = { template_id: selectedTemplate, name };
@@ -238,7 +270,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
         });
         if (!resp.ok) {
           const err = await resp.json().catch(() => ({ detail: "Failed to create project" }));
-          setAlertMsg(err.detail || "Failed to create project");
+          setCreateError(err.detail || "Failed to create project");
         } else {
           const data = await resp.json();
           if (data?.warnings?.length) {
@@ -261,7 +293,13 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
             const deployResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy${deployQs}`, { method: "POST" });
             if (!deployResp.ok) {
               const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
-              setAlertMsg(err.detail || "Deploy failed");
+              // Keep modal open so the placement error is visible; project already exists.
+              setCreateError(
+                (typeof err.detail === "string" ? err.detail : null) ||
+                  "Deploy failed — project was created as draft"
+              );
+              setCreating(false);
+              return;
             }
           }
           onCreated(data.id);
@@ -288,35 +326,43 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
               });
               if (!importResp.ok) {
                 const err = await importResp.json().catch(() => ({ detail: "Import failed" }));
-                setAlertMsg(err.detail || "Template import failed");
-              } else {
-                const importData = await importResp.json().catch(() => ({}));
-                if (importData?.warnings?.length) {
-                  setAlertMsg("Imported with warnings: " + importData.warnings.join("; "));
-                }
-                if (autoDeploy) {
-                  const deployParams = new URLSearchParams();
-                  if (deployHostId) deployParams.set("host_id", deployHostId);
-                  const deployQs = deployParams.toString() ? `?${deployParams.toString()}` : "";
-                  const deployResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy${deployQs}`, { method: "POST" });
-                  if (!deployResp.ok) {
-                    const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
-                    setAlertMsg(err.detail || "Deploy failed");
-                  }
+                setCreateError(err.detail || "Template import failed");
+                setCreating(false);
+                return;
+              }
+              const importData = await importResp.json().catch(() => ({}));
+              if (importData?.warnings?.length) {
+                setAlertMsg("Imported with warnings: " + importData.warnings.join("; "));
+              }
+              if (autoDeploy) {
+                const deployParams = new URLSearchParams();
+                if (deployHostId) deployParams.set("host_id", deployHostId);
+                const deployQs = deployParams.toString() ? `?${deployParams.toString()}` : "";
+                const deployResp = await fetch(`${API_BASE}/api/v1/projects/${data.id}/deploy${deployQs}`, { method: "POST" });
+                if (!deployResp.ok) {
+                  const err = await deployResp.json().catch(() => ({ detail: "Deploy failed" }));
+                  setCreateError(
+                    (typeof err.detail === "string" ? err.detail : null) ||
+                      "Deploy failed — project was created as draft"
+                  );
+                  setCreating(false);
+                  return;
                 }
               }
             } catch {
-              setAlertMsg("Invalid YAML syntax in template file");
+              setCreateError("Invalid YAML syntax in template file");
+              setCreating(false);
+              return;
             }
           }
           onCreated(data.id);
         } else {
           const err = await resp.json().catch(() => ({ detail: "Failed to create project" }));
-          setAlertMsg(err.detail || "Failed to create project");
+          setCreateError(err.detail || "Failed to create project");
         }
       }
     } catch {
-      /* ignore */
+      setCreateError("Request failed");
     }
     setCreating(false);
   };
@@ -414,7 +460,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                       ? t.versions
                       : ocpVersions.map((v) => v.minor);
                     const ver = tmplVers.length
-                      ? tmplVers[tmplVers.length - 1]
+                      ? pickDefaultOcpVersion(tmplVers)
                       : ocpVersion;
                     if (t.versions?.length) {
                       setOcpVersion(ver);
@@ -536,12 +582,12 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                   </div>
                 </div>
                 <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 12, marginTop: 12 }}>
-                  {userRole === "admin" && availableHosts.length > 0 && autoDeploy && (
+                  {userRole === "admin" && deployHosts.length > 0 && autoDeploy && (
                     <div style={{ marginBottom: 8 }}>
                       <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Host</label>
                       <select style={inputStyle} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}>
                         <option value="">Auto (best host)</option>
-                        {availableHosts.map((h) => (
+                        {deployHosts.map((h) => (
                           <option key={h.id} value={h.id}>
                             {h.id.slice(0, 8)} — {h.ip_address} ({h.provider_type}), {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free
                           </option>
@@ -586,7 +632,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                       <input style={inputStyle} autoFocus value={customVersionText} placeholder="e.g. 4.18" onChange={(e) => {
                         const v = e.target.value.replace(/[^\d.]/g, ""); setCustomVersionText(v);
                         if (/^\d+\.\d+$/.test(v)) { setOcpVersion(v); if (nameAutoSet && selectedTemplate) { const t = templates.find((t) => t.id === selectedTemplate); if (t) setName(versionedName(t.name, v)); } }
-                      }} onBlur={() => { if (!/^\d+\.\d+$/.test(customVersionText)) { setCustomVersion(false); setOcpVersion(_versionChoices.length ? _versionChoices[_versionChoices.length - 1].minor : "4.20"); } }} />
+                      }} onBlur={() => { if (!/^\d+\.\d+$/.test(customVersionText)) { setCustomVersion(false); setOcpVersion(pickDefaultOcpVersion(_versionChoices.map((v) => v.minor)) || "4.20"); } }} />
                     ) : (
                       <select style={inputStyle} value={ocpVersion} onChange={(e) => {
                         if (e.target.value === "__other__") { setCustomVersion(true); setCustomVersionText(""); }
@@ -596,7 +642,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                         }
                       }}>
                         {_versionChoices.map((v) => (
-                          <option key={v.minor} value={v.minor}>{_isOkd ? v.minor : `${v.minor} (latest: ${v.latest})`}</option>
+                          <option key={v.minor} value={v.minor}>{formatTemplateVersionLabel(v.minor, !!_isOkd, v.latest)}</option>
                         ))}
                         <option value="__other__">Other...</option>
                       </select>
@@ -737,9 +783,11 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                     </div>}
                   </div>
                   <div style={{ borderTop: "1px solid var(--pf-t--global--border--color--default)", paddingTop: 8, marginTop: 4 }}>
-                    {userRole === "admin" && availableHosts.length > 0 && (
+                    {userRole === "admin" && deployHosts.length > 0 && (
                       <div style={{ marginBottom: 6 }}>
-                        <label style={{ fontSize: 12, display: "block", marginBottom: 2 }}>Host</label>
+                        <label style={{ fontSize: 12, display: "block", marginBottom: 2 }}>
+                          Host{requiresKubevirt ? " (KubeVirt only)" : ""}
+                        </label>
                         <select style={{
                           padding: "4px 8px", borderRadius: 6, fontSize: 12, width: "100%",
                           border: "1px solid var(--pf-t--global--border--color--default)",
@@ -747,12 +795,17 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                           color: "var(--pf-t--global--text--color--regular)",
                         }} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}>
                           <option value="">Auto (best host)</option>
-                          {availableHosts.map((h) => (
+                          {deployHosts.map((h) => (
                             <option key={h.id} value={h.id}>
                               {h.id.slice(0, 8)} — {h.ip_address} ({h.provider_type}), {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free
                             </option>
                           ))}
                         </select>
+                      </div>
+                    )}
+                    {userRole === "admin" && requiresKubevirt && deployHosts.length === 0 && (
+                      <div style={{ fontSize: 11, color: "#f59e0b", marginBottom: 6 }}>
+                        This template requires a KubeVirt cluster host — none are currently available.
                       </div>
                     )}
                     <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
@@ -868,7 +921,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                       <input type="checkbox" checked={autoStart} onChange={(e) => setAutoStart(e.target.checked)} />
                       Start VMs after deploy
                     </label>
-                    {userRole === "admin" && availableHosts.length > 0 && (
+                    {userRole === "admin" && deployHosts.length > 0 && (
                       <div style={{ marginTop: 4 }}>
                         <label style={{ fontSize: 12, display: "block", marginBottom: 2 }}>Host</label>
                         <select style={{
@@ -878,7 +931,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                           color: "var(--pf-t--global--text--color--regular)",
                         }} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}>
                           <option value="">Auto (best host)</option>
-                          {availableHosts.map((h) => (
+                          {deployHosts.map((h) => (
                             <option key={h.id} value={h.id}>
                               {h.id.slice(0, 8)} — {h.ip_address} ({h.provider_type}), {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free
                             </option>
@@ -890,8 +943,13 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                 )}
               </div>
             )}
+            {createError && (
+              <div style={{ fontSize: 12, color: "#f87171", marginTop: 8, lineHeight: 1.4 }}>
+                {createError}
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-              <button onClick={() => { setMode("choose"); setSelectedPattern(null); setSelectedTemplate(null); setYamlContent(""); setYamlFileName(""); }} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
+              <button onClick={() => { setMode("choose"); setSelectedPattern(null); setSelectedTemplate(null); setYamlContent(""); setYamlFileName(""); setCreateError(null); }} style={{ ...inputStyle, width: "auto", cursor: "pointer", padding: "6px 16px" }}>
                 Back
               </button>
               {mode === "yaml" && (
@@ -963,7 +1021,7 @@ export default function ProjectsPage() {
   const [meEmail, setMeEmail] = useState("");
   const [pools, setPools] = useState<{id: string; name: string; mode: string; status: string}[]>([]);
   const [deployPoolId, setDeployPoolId] = useState("");
-  const [availableHosts, setAvailableHosts] = useState<{id: string; ip_address: string; instance_id: string; provider_type: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[]>([]);
+  const [availableHosts, setAvailableHosts] = useState<{id: string; ip_address: string; instance_id: string; provider_type: string; host_type?: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number}[]>([]);
   const [deployHostId, setDeployHostId] = useState("");
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
   const [republishTarget, setRepublishTarget] = useState<Project | null>(null);

@@ -29,6 +29,7 @@ import { useVmStateSocket } from "@/hooks/useVmStateSocket";
 import AlertModal from "@/components/AlertModal";
 import ConfirmModal from "@/components/ConfirmModal";
 import { appConfirm } from "@/lib/confirm";
+import { resolveShowroomUrl } from "@/lib/routeUrl";
 import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 
 export default function ProjectCanvasPage() {
@@ -681,11 +682,32 @@ export default function ProjectCanvasPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [applyingChanges, setApplyingChanges] = useState(false);
   const [showMigrate, setShowMigrate] = useState(false);
-  const [availableHosts, setAvailableHosts] = useState<{id: string; instance_id: string | null; ip_address: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number; storage_pool_id: string | null; provider_id: string | null; provider_name: string | null; provider_type: string | null}[]>([]);
+  const [availableHosts, setAvailableHosts] = useState<{id: string; instance_id: string | null; ip_address: string; used_vcpus: number; total_vcpus: number; used_ram_mb: number; total_ram_mb: number; storage_pool_id: string | null; provider_id: string | null; provider_name: string | null; provider_type: string | null; host_type?: string}[]>([]);
+  const topologyPlacement = useCanvasStore((s) => s.topologyPlacement);
+  const requiresKubevirt = !!(
+    topologyPlacement?.requires_kubevirt || topologyPlacement?.requiresKubevirt
+  );
+  const deployHosts = useMemo(
+    () =>
+      requiresKubevirt
+        ? availableHosts.filter((h) => h.host_type === "kubevirt-cluster")
+        : availableHosts,
+    [availableHosts, requiresKubevirt]
+  );
   const [migrateTarget, setMigrateTarget] = useState("");
   const [migrating, setMigrating] = useState(false);
   const [migrateSourceHost, setMigrateSourceHost] = useState<{instance_id: string | null; ip_address: string} | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    if (!deployHostId) return;
+    if (deployHostId.startsWith("provider:")) {
+      const pid = deployHostId.slice(9);
+      if (!deployHosts.some((h) => h.provider_id === pid)) setDeployHostId("");
+      return;
+    }
+    if (!deployHosts.some((h) => h.id === deployHostId)) setDeployHostId("");
+  }, [deployHostId, deployHosts]);
 
   const showToast = (msg: string, duration = 4000) => {
     setToast(msg);
@@ -780,6 +802,23 @@ export default function ProjectCanvasPage() {
   };
 
   const vmCount = nodes.filter((n) => n.type === "vmNode").length;
+  const showroomUrl = useMemo(() => {
+    const deployed =
+      typeof window !== "undefined"
+        ? (
+            window as unknown as {
+              __deployedTopology?: {
+                _showroom_url?: string;
+                nodes?: Array<{ data?: Record<string, unknown> }>;
+              };
+            }
+          ).__deployedTopology
+        : undefined;
+    return resolveShowroomUrl(
+      nodes as Array<{ data?: Record<string, unknown> }>,
+      deployed || null,
+    );
+  }, [nodes, projectState]);
   const containerCount = nodes.filter((n) => n.type === "containerNode").length;
   const netCount = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, any>).subtype === "network").length;
   const diskCount = nodes.filter((n) => n.type === "storageNode").length;
@@ -991,6 +1030,16 @@ export default function ProjectCanvasPage() {
               MegaConsole
             </button>
           )}
+          {showroomUrl && (projectState === "active" || projectState === "stopped") && (
+            <button
+              className="project-publish-btn"
+              onClick={() => window.open(showroomUrl, "_blank", "noopener,noreferrer")}
+              style={{ opacity: 0.85 }}
+              title={showroomUrl}
+            >
+              Open Showroom
+            </button>
+          )}
           {(projectState === "active" || projectState === "stopped") && (
             <button
               className="project-publish-btn"
@@ -1074,17 +1123,19 @@ export default function ProjectCanvasPage() {
           )}
           {projectState === "draft" && (
             <>
-              {isAdmin && availableHosts.length > 0 && (
+              {isAdmin && deployHosts.length > 0 && (
                 <select style={{
                   padding: "6px 10px", borderRadius: 6, fontSize: 12,
                   border: "1px solid var(--pf-t--global--border--color--default)",
                   background: "var(--pf-t--global--background--color--primary--default)",
                   color: "var(--pf-t--global--text--color--regular)",
-                }} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}>
+                }} value={deployHostId} onChange={(e) => setDeployHostId(e.target.value)}
+                  title={requiresKubevirt ? "This project requires a KubeVirt cluster host" : undefined}
+                >
                   <option value="">Auto (best host)</option>
                   {(() => {
                     const providers = new Map<string, {id: string; name: string; type: string}>();
-                    for (const h of availableHosts) {
+                    for (const h of deployHosts) {
                       if (h.provider_id && h.provider_name && !providers.has(h.provider_id)) {
                         providers.set(h.provider_id, {id: h.provider_id, name: h.provider_name, type: h.provider_type || ""});
                       }
@@ -1093,8 +1144,13 @@ export default function ProjectCanvasPage() {
                       <option key={`provider:${p.id}`} value={`provider:${p.id}`}>Auto ({p.name})</option>
                     ));
                   })()}
-                  {availableHosts.map((h) => <option key={h.id} value={h.id}>{h.id.slice(0, 8)} — {h.ip_address}{h.provider_type ? ` (${h.provider_type})` : ""}, {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free</option>)}
+                  {deployHosts.map((h) => <option key={h.id} value={h.id}>{h.id.slice(0, 8)} — {h.ip_address}{h.provider_type ? ` (${h.provider_type})` : ""}, {h.total_vcpus - h.used_vcpus} vCPUs / {Math.round((h.total_ram_mb - h.used_ram_mb) / 1024)}G free</option>)}
                 </select>
+              )}
+              {isAdmin && requiresKubevirt && deployHosts.length === 0 && (
+                <span style={{ fontSize: 11, color: "#f59e0b", maxWidth: 220 }}>
+                  Needs a KubeVirt cluster host
+                </span>
               )}
               <button className="project-publish-btn" onClick={handlePublish}>
                 ⚡ Deploy

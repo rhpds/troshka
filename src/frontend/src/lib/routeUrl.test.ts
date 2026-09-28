@@ -4,6 +4,7 @@ import {
   formatEipAccessUrl,
   formatOcpRouteUrl,
   isOcpRoutableForward,
+  resolveShowroomUrl,
   type RouteEndpoint,
 } from "./routeUrl";
 
@@ -85,5 +86,37 @@ describe("formatEipAccessUrl", () => {
         showroomUrl: "https://showroom.guid.example.com",
       }),
     ).toBe("https://showroom.guid.example.com");
+  });
+});
+
+describe("resolveShowroomUrl", () => {
+  it("prefers stamped _showroom_url", () => {
+    expect(
+      resolveShowroomUrl([], { _showroom_url: "https://showroom.example.com" }),
+    ).toBe("https://showroom.example.com");
+  });
+
+  it("falls back to gateway showroom route endpoint", () => {
+    expect(
+      resolveShowroomUrl([
+        {
+          data: {
+            subtype: "gateway",
+            externalEndpoints: [
+              {
+                vmName: "showroom",
+                hostname: "showroom-troshka-1e559f8a.apps.example.com",
+                port: 443,
+                type: "route",
+              },
+            ],
+          },
+        },
+      ]),
+    ).toBe("https://showroom-troshka-1e559f8a.apps.example.com");
+  });
+
+  it("returns null when no showroom is present", () => {
+    expect(resolveShowroomUrl([{ data: { subtype: "gateway", externalEndpoints: [] } }])).toBeNull();
   });
 });

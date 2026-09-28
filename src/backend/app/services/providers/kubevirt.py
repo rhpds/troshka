@@ -1702,7 +1702,12 @@ class KubeVirtDriver(ProviderDriver):
         # gateway listen key (ext_port). The vm name already disambiguates
         # clusters, so e.g. dest's API is rt-dest-cp-0-6443 (not ...-6444); the
         # 6444 listen key stays internal to the Service target/gateway DNAT.
-        svc_name = f"rt-{vm_name}-{guest_port}"[:63]
+        # Showroom is the project lab UI — keep the public hostname short
+        # (showroom-<ns>.apps…) without a port suffix.
+        if (vm_name or "").lower() == "showroom":
+            svc_name = "showroom"
+        else:
+            svc_name = f"rt-{vm_name}-{guest_port}"[:63]
         route_name = svc_name
 
         svc_body = {
@@ -1848,27 +1853,41 @@ class KubeVirtDriver(ProviderDriver):
 
     def find_showroom_route(self, provider, project_id, vm_name, port):
         """Return {"hostname", "route_name"} for the existing showroom Route, or None.
-        The Route name is deterministic (see create_route_access), so redeploy can
-        resolve it without recreating the Route."""
+
+        Prefers the short ``showroom`` name; falls back to legacy
+        ``rt-showroom-<port>`` so redeploy finds routes created before the rename.
+        """
         custom_api, _core_api, _ = _get_k8s_clients(provider)
         ns = _project_ns(provider, project_id)
-        route_name = f"rt-{vm_name}-{port}"[:63]
-        try:
-            raw = custom_api.get_namespaced_custom_object(
-                group=_ROUTE_API,
-                version="v1",
-                namespace=ns,
-                plural="routes",
-                name=route_name,
-            )
-        except Exception:
-            return None
-        spec: dict = {}
-        if isinstance(raw, dict):
-            _s = raw.get("spec")
-            if isinstance(_s, dict):
-                spec = _s
-        return {"hostname": spec.get("host", ""), "route_name": route_name}
+        candidates = []
+        if (vm_name or "").lower() == "showroom":
+            candidates.append("showroom")
+        candidates.append(f"rt-{vm_name}-{port}"[:63])
+        # Historical edge/passthrough ports used in older deploys
+        for legacy_port in (80, 443):
+            candidates.append(f"rt-showroom-{legacy_port}"[:63])
+        seen: set[str] = set()
+        for route_name in candidates:
+            if route_name in seen:
+                continue
+            seen.add(route_name)
+            try:
+                raw = custom_api.get_namespaced_custom_object(
+                    group=_ROUTE_API,
+                    version="v1",
+                    namespace=ns,
+                    plural="routes",
+                    name=route_name,
+                )
+            except Exception:
+                continue
+            spec: dict = {}
+            if isinstance(raw, dict):
+                _s = raw.get("spec")
+                if isinstance(_s, dict):
+                    spec = _s
+            return {"hostname": spec.get("host", ""), "route_name": route_name}
+        return None
 
     def get_apps_domain(self, provider) -> str:
         """Cluster apps wildcard domain (e.g. apps.<cluster>). Authoritative source

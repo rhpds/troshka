@@ -1105,7 +1105,9 @@ def redeploy_container_kubevirt_bg(
     ns = _project_ns(provider, project_id)
     project_cr = _fetch_troshka_project_cr(custom_api, ns, project_id)
     redeploy_showroom_pod_kubevirt(provider, project_id, topo, node, project_cr)
-    _inject_stored_cluster_kubeconfigs(host, project_id, topo)
+    _inject_stored_cluster_kubeconfigs(
+        host, project_id, topo, project.deployed_topology
+    )
     _sync_deployed_container_node(project, container_id, topo)
 
 
@@ -1176,7 +1178,7 @@ def reconfigure_showroom_kubevirt(
         if proj:
             _recreate_showroom_app_proxy(s, h, proj, p_id, current)
         redeploy_showroom_pod_kubevirt(provider, p_id, current, cur, project_cr)
-        _inject_stored_cluster_kubeconfigs(h, p_id, current)
+        _inject_stored_cluster_kubeconfigs(h, p_id, current, deployed)
     except Exception as e:  # noqa: BLE001 - best-effort
         logger.exception("Reconfigure %s: kubevirt showroom redeploy failed", p_id[:8])
         errors.append(f"Showroom redeploy failed: {e}")

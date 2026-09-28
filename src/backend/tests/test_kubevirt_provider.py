@@ -209,9 +209,11 @@ def test_create_route_access_edge_for_port_443():
 
     assert result["hostname"] == "showroom-443.apps.cluster.example.com"
     route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
+    assert route_body["metadata"]["name"] == "showroom"
     assert route_body["spec"]["tls"]["termination"] == "edge"
     assert route_body["spec"]["port"]["targetPort"] == 1443
     svc_body = mock_core.create_namespaced_service.call_args[1]["body"]
+    assert svc_body["metadata"]["name"] == "showroom"
     assert svc_body["spec"]["ports"][0]["port"] == 1443
     assert svc_body["spec"]["ports"][0]["targetPort"] == 1443
 
@@ -235,9 +237,11 @@ def test_create_route_access_edge_for_port_80():
 
     assert result["hostname"] == "showroom-80.apps.cluster.example.com"
     route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
+    assert route_body["metadata"]["name"] == "showroom"
     assert route_body["spec"]["tls"]["termination"] == "edge"
     assert route_body["spec"]["port"]["targetPort"] == 1080
     svc_body = mock_core.create_namespaced_service.call_args[1]["body"]
+    assert svc_body["metadata"]["name"] == "showroom"
     assert svc_body["spec"]["ports"][0]["port"] == 1080
     assert svc_body["spec"]["ports"][0]["targetPort"] == 1080
 

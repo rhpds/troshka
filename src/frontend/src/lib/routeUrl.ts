@@ -57,6 +57,32 @@ export function formatOcpRouteUrl(hostname: string, port: string | number): stri
   return `https://${hostname}`;
 }
 
+/** Resolve the project showroom URL from deployed topology or gateway endpoints. */
+export function resolveShowroomUrl(
+  nodes: Array<{ data?: Record<string, unknown> }>,
+  deployed?: { _showroom_url?: string; nodes?: Array<{ data?: Record<string, unknown> }> } | null,
+): string | null {
+  const stamped = (deployed?._showroom_url || "").trim();
+  if (stamped) return stamped;
+
+  const scan = (list: Array<{ data?: Record<string, unknown> }> | undefined) => {
+    for (const n of list || []) {
+      const eps = n.data?.externalEndpoints;
+      if (!Array.isArray(eps)) continue;
+      for (const ep of eps) {
+        if (!ep || typeof ep !== "object") continue;
+        const row = ep as RouteEndpoint;
+        if (row.vmName === "showroom" && row.hostname) {
+          return formatOcpRouteUrl(row.hostname, row.port ?? 443);
+        }
+      }
+    }
+    return null;
+  };
+
+  return scan(nodes) || scan(deployed?.nodes) || null;
+}
+
 /** Build a browser URL for an EIP-bound web forward (cloud showroom :443 etc.).
  *  Returns null for non-browser ports (e.g. API 6443) so callers keep ip:port text.
  *

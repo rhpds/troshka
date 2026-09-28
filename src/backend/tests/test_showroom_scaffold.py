@@ -975,6 +975,19 @@ def test_ns_from_showroom_hostname():
         )
         == "sandbox-8zsqb-troshka"
     )
+    # Short names (no port in the route): showroom-<ns> / …-showroom-<ns>
+    assert (
+        _ns_from_showroom_hostname(
+            "showroom-troshka-1e559f8a.apps.ocpv06.dal10.infra.demo.redhat.com"
+        )
+        == "troshka-1e559f8a"
+    )
+    assert (
+        _ns_from_showroom_hostname(
+            "troshka-pf-d0cc03f4-showroom-sandbox-8zsqb-troshka.apps.ocpv06.dal10.infra.demo.redhat.com"
+        )
+        == "sandbox-8zsqb-troshka"
+    )
     assert _ns_from_showroom_hostname("") == ""
     assert _ns_from_showroom_hostname("no-port-here.apps.x") == ""
 

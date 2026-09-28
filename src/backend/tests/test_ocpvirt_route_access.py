@@ -242,6 +242,7 @@ def test_create_route_access_edge_for_showroom_443_to_80(
 
     route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
     assert route_body["spec"]["tls"]["termination"] == "edge"
+    assert route_body["metadata"]["name"] == "troshka-pf-proj-001-showroom"
 
 
 @patch("app.services.providers.ocpvirt._get_k8s_clients")
