@@ -306,6 +306,9 @@ def test_redfish_insert_media_retries_bmc_readiness():
     # the list), so its non-zero status does not abort the subshell.
     assert "SYS_ID=$(curl" in cmd
     assert '&& [ -n "$SYS_ID" ] && break' in cmd
+    # Timeouts so a wedged BMC cannot stall a retry forever.
+    assert "--connect-timeout 5" in cmd
+    assert "--max-time 15" in cmd
     # A BMC that never becomes ready is skipped, not fatal.
     assert "continue" in cmd
 
@@ -316,13 +319,18 @@ def test_redfish_eject_media_retries_and_is_set_e_safe():
     safe (guarded && list) so it never aborts the subshell before the completion
     breadcrumb/sentinel — which previously made the pod exit 1, restart, and race
     the monitor's cred harvest + cluster-terminal kubeconfig injection (a 3+2's 5
-    BMCs made this likely)."""
+    BMCs made this likely). curl timeouts keep each attempt bounded so the loop
+    can reach the WARNING / install-complete breadcrumb.
+    """
     from app.services.ocp.agent_template import _redfish_eject_media_cmd
 
     cmd = _redfish_eject_media_cmd("  ", "192.168.100.10 192.168.100.11")
     assert "for _try in $(seq 1" in cmd  # bounded readiness retry
     assert '&& [ -n "$SYS_ID" ] && break' in cmd  # set -e safe retry
+    assert "--connect-timeout 5" in cmd
+    assert "--max-time 15" in cmd
     assert "VirtualMedia.EjectMedia" in cmd
+    assert "BMC $BMC_IP not ready yet" in cmd
 
 
 def test_build_install_script_golden():

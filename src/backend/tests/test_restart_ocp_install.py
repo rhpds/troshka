@@ -80,6 +80,23 @@ def test_phase_from_input_treats_bootstrap_timeout_as_failed():
     assert _phase_from_input(log) == PHASE_FAILED
 
 
+def test_phase_from_input_installer_install_complete_is_not_troshka_complete():
+    """openshift-install's ``Install complete!`` must NOT mark the cluster done.
+
+    Harvest + worker join only unlock after the Troshka breadcrumb
+    ``[<cluster>] install complete`` (post ISO eject). Treating the installer
+    line as complete reaped the ops pod early and enqueued workloads without
+    a kubeconfig.
+    """
+    log = (
+        "[18:03:59] level=info msg=Install complete!\n"
+        "Ejecting agent ISO from nodes...\n"
+        "Ejecting agent ISO from BMC 192.168.100.11..."
+    )
+    assert _phase_from_input(log) == PHASE_WAITING
+    assert _phase_from_input(log + "\n[source] install complete") == PHASE_COMPLETE
+
+
 def test_phase_from_input_worker_join_stays_waiting_until_joined():
     sno_done = "[source] install complete\n[source] control-plane-usable"
     assert _phase_from_input(sno_done) == PHASE_COMPLETE

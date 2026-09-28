@@ -2299,11 +2299,18 @@ def _serve_iso_cmd(
     )
 
 
+# BMC/sushy curls must not hang forever: a wedged Virtual BMC previously
+# blocked ISO eject after Install complete!, so the ops-pod never emitted
+# ``[<cluster>] install complete`` → no kubeconfig harvest / worker join.
+_REDFISH_CURL = "curl -s --connect-timeout 5 --max-time 15"
+
+
 def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
     """Redfish loop: InsertMedia + ComputerSystem.Reset (ForceRestart) per BMC."""
     b = indent
     b2 = indent + "  "
     b4 = indent + "    "
+    c = _REDFISH_CURL
     return (
         f"{b}for BMC_IP in {bmc_ips_str}; do\n"
         f'{b2}echo "Mounting ISO on BMC $BMC_IP..."\n'
@@ -2312,21 +2319,22 @@ def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
         f"{b2}# this pipeline is otherwise unguarded — under set -e/pipefail a\n"
         f"{b2}# single not-ready BMC would abort the whole (multi-node) install.\n"
         f"{b2}# The `&&` list is set -e safe (only its last command can abort).\n"
+        f"{b2}# curl timeouts so a half-open BMC cannot stall a retry forever.\n"
         f'{b2}SYS_ID=""\n'
         f"{b2}for _try in $(seq 1 30); do\n"
-        f"{b4}SYS_ID=$(curl -s -u admin:$BMC_PASS http://${{BMC_IP}}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\" 2>/dev/null) && [ -n \"$SYS_ID\" ] && break\n"
+        f"{b4}SYS_ID=$({c} -u admin:$BMC_PASS http://${{BMC_IP}}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\" 2>/dev/null) && [ -n \"$SYS_ID\" ] && break\n"
         f'{b4}echo "  BMC $BMC_IP not ready yet (attempt $_try); retrying..."\n'
         f"{b4}sleep 5\n"
         f"{b2}done\n"
         f'{b2}if [ -z "$SYS_ID" ]; then echo "  WARNING: BMC $BMC_IP never became ready; skipping"; continue; fi\n'
         f'{b2}echo "  System: $SYS_ID"\n'
         f"{b2}# Insert virtual media (Systems path, HTTP, with auth)\n"
-        f'{b2}curl -s -u admin:$BMC_PASS -X POST "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \\\n'
+        f'{b2}{c} -u admin:$BMC_PASS -X POST "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \\\n'
         f"{b4}-H 'Content-Type: application/json' \\\n"
         f'{b4}-d "{{\\"Image\\": \\"${{ISO_URL}}\\", \\"Inserted\\": true, \\"WriteProtected\\": true}}" || true\n'
         f"{b2}# Power on from ISO when off; reboot when already running (ForceRestart\n"
         f"{b2}# is a no-op on a shut-off libvirt domain).\n"
-        f'{b2}POWER=$(curl -s -u admin:$BMC_PASS "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('
+        f'{b2}POWER=$({c} -u admin:$BMC_PASS "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('
         "'"
         "PowerState"
         "'"
@@ -2336,7 +2344,7 @@ def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
         "'"
         '))" 2>/dev/null || echo "")\n'
         f'{b2}case "$POWER" in Off|PoweringOff) RESET=On;; *) RESET=ForceRestart;; esac\n'
-        f'{b2}curl -s -u admin:$BMC_PASS -X POST "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/Actions/ComputerSystem.Reset" \\\n'
+        f'{b2}{c} -u admin:$BMC_PASS -X POST "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/Actions/ComputerSystem.Reset" \\\n'
         f"{b4}-H 'Content-Type: application/json' \\\n"
         f'{b4}-d "{{\\"ResetType\\": \\"${{RESET}}\\"}}" || true\n'
         f'{b2}echo "Booted $BMC_IP from ISO (ResetType=$RESET, was $POWER)"\n'
@@ -2349,6 +2357,7 @@ def _redfish_eject_media_cmd(indent: str, bmc_ips_str: str) -> str:
     b = indent
     b2 = indent + "  "
     b4 = indent + "    "
+    c = _REDFISH_CURL
     return (
         f"{b}for BMC_IP in {bmc_ips_str}; do\n"
         f'{b2}echo "Ejecting agent ISO from BMC $BMC_IP..."\n'
@@ -2359,13 +2368,16 @@ def _redfish_eject_media_cmd(indent: str, bmc_ips_str: str) -> str:
         # restart, and race the cred harvest). Only warn if a BMC is still
         # unreachable after the full retry window (the node boots disk-first now
         # that CoreOS is written, so we proceed rather than hang/abort).
+        # curl timeouts: without them a wedged BMC hangs forever on attempt 1 and
+        # never reaches the WARNING / [cluster] install complete breadcrumb.
         f'{b2}SYS_ID=""\n'
         f"{b2}for _try in $(seq 1 30); do\n"
-        f"{b4}SYS_ID=$(curl -s -u admin:$BMC_PASS http://${{BMC_IP}}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\" 2>/dev/null) && [ -n \"$SYS_ID\" ] && break\n"
+        f"{b4}SYS_ID=$({c} -u admin:$BMC_PASS http://${{BMC_IP}}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\" 2>/dev/null) && [ -n \"$SYS_ID\" ] && break\n"
+        f'{b4}echo "  BMC $BMC_IP not ready yet (attempt $_try); retrying..."\n'
         f"{b4}sleep 5\n"
         f"{b2}done\n"
         f'{b2}if [ -z "$SYS_ID" ]; then echo "  WARNING: BMC $BMC_IP unreachable; ISO NOT ejected (node may re-boot from CD)"; continue; fi\n'
-        f"{b2}curl -s -u admin:$BMC_PASS -X POST \"http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia\" -H 'Content-Type: application/json' -d '{{}}' >/dev/null 2>&1 || true\n"
+        f"{b2}{c} -u admin:$BMC_PASS -X POST \"http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia\" -H 'Content-Type: application/json' -d '{{}}' >/dev/null 2>&1 || true\n"
         f"{b}done\n"
     )
 

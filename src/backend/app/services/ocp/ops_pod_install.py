@@ -90,10 +90,16 @@ _RANK_TO_PHASE = {rank: phase for phase, rank in _PHASE_RANK.items()}
 # authoritative status — e.g. the troshkad job failed → "failed").
 _KNOWN_PHASES = set(_PHASE_RANK) | {PHASE_FAILED}
 
+# Troshka breadcrumb only — NOT openshift-install's ``msg=Install complete!``,
+# which fires before ISO eject / cred harvest / deferred worker join.
+_TROSHKA_INSTALL_COMPLETE_RE = re.compile(
+    r"\[[^\]]+\] install (?:already )?complete", re.IGNORECASE
+)
+
 # Log markers → phase, scanned furthest-progressed first (see the install
-# script's per-cluster ``echo`` breadcrumbs). "install complete" wins outright.
+# script's per-cluster ``echo`` breadcrumbs). Complete is handled via
+# ``_TROSHKA_INSTALL_COMPLETE_RE`` above (not a bare "install complete" match).
 _LOG_MARKERS = (
-    ("install complete", PHASE_COMPLETE),
     ("Waiting for cluster installation to complete", PHASE_WAITING),
     ("Agent ISO created", PHASE_BOOTING),
     ("booting nodes", PHASE_BOOTING),
@@ -126,8 +132,9 @@ _FAILURE_MARKERS = (
 def _phase_from_input(value: str) -> str:
     """Map one cluster's raw log text (or an exact phase string) to a phase.
 
-    Priority: an exact known-phase string passes through; otherwise a
-    ``complete`` marker wins outright, then a fatal-failure marker, then the
+    Priority: an exact known-phase string passes through; otherwise Troshka's
+    ``[<cluster>] install complete`` breadcrumb (not openshift-install's
+    ``Install complete!``) wins, then a fatal-failure marker, then the
     furthest-progressed log marker; default ``creating-image`` (started but no
     breadcrumb yet).
     """
@@ -159,8 +166,12 @@ def _phase_from_input(value: str) -> str:
         if "node-image create failed" in lowered and "retrying in" in lowered:
             return PHASE_WAITING
         return PHASE_WAITING
-    if "install complete" in lowered:
+    # Troshka post-eject breadcrumb only — bare "Install complete!" is the
+    # installer finishing wait-for, before eject / harvest / worker join.
+    if _TROSHKA_INSTALL_COMPLETE_RE.search(text):
         return PHASE_COMPLETE
+    if "msg=install complete" in lowered or "ejecting agent iso" in lowered:
+        return PHASE_WAITING
     if any(marker in lowered for marker in _FAILURE_MARKERS):
         # Retry breadcrumbs are not terminal — only the final exit-1 line is.
         if (

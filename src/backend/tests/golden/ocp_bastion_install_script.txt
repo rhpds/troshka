@@ -87,23 +87,24 @@
       # this pipeline is otherwise unguarded — under set -e/pipefail a
       # single not-ready BMC would abort the whole (multi-node) install.
       # The `&&` list is set -e safe (only its last command can abort).
+      # curl timeouts so a half-open BMC cannot stall a retry forever.
       SYS_ID=""
       for _try in $(seq 1 30); do
-        SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c "import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])" 2>/dev/null) && [ -n "$SYS_ID" ] && break
+        SYS_ID=$(curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c "import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])" 2>/dev/null) && [ -n "$SYS_ID" ] && break
         echo "  BMC $BMC_IP not ready yet (attempt $_try); retrying..."
         sleep 5
       done
       if [ -z "$SYS_ID" ]; then echo "  WARNING: BMC $BMC_IP never became ready; skipping"; continue; fi
       echo "  System: $SYS_ID"
       # Insert virtual media (Systems path, HTTP, with auth)
-      curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \
+      curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \
         -H 'Content-Type: application/json' \
         -d "{\"Image\": \"${ISO_URL}\", \"Inserted\": true, \"WriteProtected\": true}" || true
       # Power on from ISO when off; reboot when already running (ForceRestart
       # is a no-op on a shut-off libvirt domain).
-      POWER=$(curl -s -u admin:$BMC_PASS "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('PowerState',''))" 2>/dev/null || echo "")
+      POWER=$(curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('PowerState',''))" 2>/dev/null || echo "")
       case "$POWER" in Off|PoweringOff) RESET=On;; *) RESET=ForceRestart;; esac
-      curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/Actions/ComputerSystem.Reset" \
+      curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/Actions/ComputerSystem.Reset" \
         -H 'Content-Type: application/json' \
         -d "{\"ResetType\": \"${RESET}\"}" || true
       echo "Booted $BMC_IP from ISO (ResetType=$RESET, was $POWER)"
@@ -133,11 +134,12 @@
       echo "Ejecting agent ISO from BMC $BMC_IP..."
       SYS_ID=""
       for _try in $(seq 1 30); do
-        SYS_ID=$(curl -s -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c "import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])" 2>/dev/null) && [ -n "$SYS_ID" ] && break
+        SYS_ID=$(curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c "import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])" 2>/dev/null) && [ -n "$SYS_ID" ] && break
+        echo "  BMC $BMC_IP not ready yet (attempt $_try); retrying..."
         sleep 5
       done
       if [ -z "$SYS_ID" ]; then echo "  WARNING: BMC $BMC_IP unreachable; ISO NOT ejected (node may re-boot from CD)"; continue; fi
-      curl -s -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1 || true
+      curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1 || true
     done
     # Write static MOTD with cluster credentials
     KUBEADMIN_PW=$(cat /home/cloud-user/ocp-install/auth/kubeadmin-password)

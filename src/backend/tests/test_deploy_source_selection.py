@@ -259,6 +259,68 @@ def test_download_creds_gold_uses_readonly_store():
     assert bucket == "troshka-gold-images"
 
 
+def test_collect_library_items_maps_central_to_gold_download_source():
+    """LibraryItem.source=central lives in the read-only gold store.
+
+    PatternLocation.central means the instance RW bucket — different namespace.
+    Collect must emit source=gold so _select_download_creds hits gold S4.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    item_id = str(uuid.uuid4())
+    item = SimpleNamespace(
+        id=item_id,
+        name="RHEL 10.2 KVM Guest Image",
+        s3_key="library/user/item/RHEL 10.2 KVM Guest Image.qcow2",
+        size_bytes=1162674176,
+        source="central",
+        source_provider_id="prov-ro",
+    )
+    db = MagicMock()
+    db.query.return_value.filter_by.return_value.first.return_value = item
+    nodes = [
+        {
+            "type": "storageNode",
+            "data": {
+                "source": "library",
+                "libraryItemId": item_id,
+                "format": "qcow2",
+            },
+        }
+    ]
+    items = deploy_service._collect_library_items(nodes, db, pool=None)
+    assert len(items) == 1
+    assert items[0]["source"] == "gold"
+    assert items[0]["s3_key"] == item.s3_key
+
+
+def test_collect_pxe_boot_isos_maps_central_to_gold_download_source():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    item_id = str(uuid.uuid4())
+    item = SimpleNamespace(
+        id=item_id,
+        name="RHEL 10.2 Binary DVD",
+        s3_key="library/user/iso/RHEL 10.2 Binary DVD.iso",
+        size_bytes=11059986432,
+        source="central",
+        source_provider_id="prov-ro",
+    )
+    db = MagicMock()
+    db.query.return_value.filter_by.return_value.first.return_value = item
+    nodes = [
+        {
+            "type": "vmNode",
+            "data": {"pxeBootIsoId": item_id},
+        }
+    ]
+    items = deploy_service._collect_pxe_boot_isos(nodes, db, pool=None)
+    assert len(items) == 1
+    assert items[0]["source"] == "gold"
+
+
 def test_download_creds_obc_uses_attached_cluster_creds():
     s3_creds = {"access_key_id": "rw"}
     obc_creds = {"access_key_id": "obc", "bucket": "cluster-bucket"}

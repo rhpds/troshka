@@ -133,6 +133,30 @@ def _all_ocp_clusters_ready(topology: dict | None) -> bool:
     return all(c.get("ocpInstallStatus") == "ready" for c in clusters)
 
 
+def _all_ocp_cluster_kubeconfigs_present(topology: dict | None) -> bool:
+    """True when every listed OCP cluster has a harvested admin kubeconfig.
+
+    Defense in depth: status can flip to ready (or milestone stamp) before
+    cred harvest finishes if phase parsing misfires. Workloads that need
+    ``oc`` / Ansible against the API must not start without kubeconfigs.
+    No ``clusters`` list → True (VM-only / legacy topologies).
+    """
+    clusters = (topology or {}).get("clusters") or []
+    if not clusters:
+        return True
+    from app.services.deploy_service import _stored_cluster_creds
+
+    creds = _stored_cluster_creds(topology or {})
+    for c in clusters:
+        cid = c.get("id")
+        if not cid:
+            continue
+        pair = creds.get(cid)
+        if not pair or not pair[1]:
+            return False
+    return True
+
+
 def _project_workload_ready(project) -> bool:
     """True when template workloads may auto-start (or be triggered via API)."""
     topo = (
@@ -141,6 +165,8 @@ def _project_workload_ready(project) -> bool:
         or {}
     )
     if not _all_ocp_clusters_ready(topo):
+        return False
+    if not _all_ocp_cluster_kubeconfigs_present(topo):
         return False
     if getattr(project, "ocp_control_plane_usable_at", None) is not None:
         return True

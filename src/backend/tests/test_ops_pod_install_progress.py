@@ -31,6 +31,22 @@ def test_progress_all_complete_is_done():
     assert progress["overall"] == PHASE_COMPLETE
 
 
+def test_progress_installer_complete_alone_does_not_finish_multi_cluster():
+    """Sibling finished; this cluster only has installer Install complete!."""
+    progress = ops_pod_install_progress(
+        {
+            "destination": "[destination] install complete",
+            "source": (
+                "level=info msg=Install complete!\n"
+                "Ejecting agent ISO from BMC 192.168.100.11..."
+            ),
+        }
+    )
+    assert progress["clusters"]["destination"] == PHASE_COMPLETE
+    assert progress["clusters"]["source"] == PHASE_WAITING
+    assert progress["done"] is False
+
+
 def test_progress_mixed_complete_and_failed_is_not_overall_success():
     progress = ops_pod_install_progress(
         {"destination": "complete", "source": PHASE_FAILED}

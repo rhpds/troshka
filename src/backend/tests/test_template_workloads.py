@@ -128,18 +128,44 @@ def test_project_workload_ready_accepts_milestone_or_ocp_ready():
     )
 
 
+_VALID_KC = (
+    "apiVersion: v1\nkind: Config\nclusters: []\n"
+    "contexts:\n- name: default\n  context: {}\n"
+)
+
+
+def _topo_with_cluster_kubeconfigs(clusters, *, missing=None):
+    """Build topology with control-plane nodes holding harvested kubeconfigs."""
+    missing = set(missing or ())
+    nodes = []
+    for c in clusters:
+        cid = c["id"]
+        if cid in missing:
+            continue
+        nodes.append(
+            {
+                "type": "vmNode",
+                "data": {
+                    "clusterId": cid,
+                    "clusterRole": "master",
+                    "ocpKubeconfig": _VALID_KC,
+                },
+            }
+        )
+    return {"clusters": clusters, "nodes": nodes}
+
+
 def test_project_workload_ready_requires_all_clusters_ready():
     """Multi-cluster: milestone alone is not enough if a sibling is not ready."""
-    topo = {
-        "clusters": [
-            {"id": "source", "name": "source", "ocpInstallStatus": "ready"},
-            {
-                "id": "destination",
-                "name": "destination",
-                "ocpInstallStatus": "monitoring",
-            },
-        ]
-    }
+    clusters = [
+        {"id": "source", "name": "source", "ocpInstallStatus": "ready"},
+        {
+            "id": "destination",
+            "name": "destination",
+            "ocpInstallStatus": "monitoring",
+        },
+    ]
+    topo = _topo_with_cluster_kubeconfigs(clusters)
     assert (
         _project_workload_ready(
             SimpleNamespace(
@@ -158,6 +184,38 @@ def test_project_workload_ready_requires_all_clusters_ready():
                 ocp_control_plane_usable_at="set",
                 ocp_status="ready",
                 deployed_topology=topo,
+                topology={},
+            )
+        )
+        is True
+    )
+
+
+def test_project_workload_ready_requires_harvested_kubeconfigs():
+    """Status ready without kubeconfig must not auto-start workloads."""
+    clusters = [
+        {"id": "source", "name": "source", "ocpInstallStatus": "ready"},
+        {"id": "destination", "name": "destination", "ocpInstallStatus": "ready"},
+    ]
+    missing_source = _topo_with_cluster_kubeconfigs(clusters, missing={"source"})
+    assert (
+        _project_workload_ready(
+            SimpleNamespace(
+                ocp_control_plane_usable_at="set",
+                ocp_status="ready",
+                deployed_topology=missing_source,
+                topology={},
+            )
+        )
+        is False
+    )
+    both = _topo_with_cluster_kubeconfigs(clusters)
+    assert (
+        _project_workload_ready(
+            SimpleNamespace(
+                ocp_control_plane_usable_at="set",
+                ocp_status="ready",
+                deployed_topology=both,
                 topology={},
             )
         )

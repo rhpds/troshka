@@ -693,7 +693,7 @@ def _collect_library_items(nodes, db_session, pool):
                 "s3_key": item.s3_key,
                 "cache_path": cache_path,
                 "expected_size": item.size_bytes,
-                "source": getattr(item, "source", "local"),
+                "source": _library_item_download_source(getattr(item, "source", None)),
                 "source_provider_id": getattr(item, "source_provider_id", None),
             }
         )
@@ -763,7 +763,7 @@ def _collect_pxe_boot_isos(nodes, db_session, pool):
                 "s3_key": item.s3_key,
                 "cache_path": cache_path,
                 "expected_size": item.size_bytes,
-                "source": getattr(item, "source", "local"),
+                "source": _library_item_download_source(getattr(item, "source", None)),
                 "source_provider_id": getattr(item, "source_provider_id", None),
             }
         )
@@ -955,12 +955,29 @@ def _filter_locally_cached_items(items_to_cache, host):
     return items_to_download
 
 
+def _library_item_download_source(item_source: str | None) -> str:
+    """Map LibraryItem.source to cache download source for _select_download_creds.
+
+    LibraryItem.source ``central`` means the curated read-only gold store
+    (sync_central_library). That is *not* PatternLocation ``central``, which
+    means the instance's shared read/write bucket. Emit ``gold`` so downloads
+    hit troshka-gold-images instead of the empty local sandbox S4.
+    """
+    if item_source == "central":
+        return "gold"
+    return item_source or "local"
+
+
 def _select_download_creds(ic, s3_creds, s3_bucket, readonly_creds):
     """Pick (creds, bucket) for a cache item based on its source.
 
     obc disks carry cluster ``download_creds``; gold disks come from the
     read-only admin store; central/local (and anything else) come from the
     instance's own read/write bucket — the store reachable from every provider.
+
+    Note: LibraryItem.source=central must be remapped to gold *before* this
+    helper (see _library_item_download_source); PatternLocation central stays
+    as ``central`` and correctly uses the RW bucket.
     """
     if ic.get("download_creds"):
         creds = ic["download_creds"]
@@ -9409,7 +9426,12 @@ def _deploy_cache_images_and_pxe(host, project_id, topology, vni_map, s, project
         )
 
     _prepare_topology_library_refs(topology, s, project)
-    cache_library_images(topology, host, s, progress_callback=_progress)
+    failed = cache_library_images(topology, host, s, progress_callback=_progress)
+    if failed:
+        raise TroshkadError(
+            f"image caching failed: {', '.join(failed)} "
+            "— disk/pattern source not reachable"
+        )
     logger.info("Deploy %s: setting up PXE boot services", project_id[:8])
     _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
 
@@ -12842,7 +12864,15 @@ def _start_troshkad_host_project(s, project, host, project_id):
             return False
 
     _prepare_topology_library_refs(topology, s, project)
-    cache_library_images(topology, host, s)
+    failed = cache_library_images(topology, host, s)
+    if failed:
+        error_msg = (
+            f"image caching failed: {', '.join(failed)} "
+            "— disk/pattern source not reachable"
+        )
+        logger.error("Start %s: %s", project_id[:8], error_msg)
+        _set_project_error(s, project_id, error_msg, project=project)
+        return False
     _setup_pxe_via_troshkad(host, topology, vni_map, project_id)
 
     start_failures = _start_vms_via_troshkad(host, project_id, topology)
