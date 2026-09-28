@@ -824,6 +824,13 @@ export default function ProjectCanvasPage() {
   const diskCount = nodes.filter((n) => n.type === "storageNode").length;
 
   const handlePublish = async () => {
+    // Host list is only fetched for admins; non-admins rely on backend placement.
+    if (isAdmin && requiresKubevirt && deployHosts.length === 0) {
+      setAlertMsg(
+        "No KubeVirt cluster host is available — this project requires kubevirt-cluster placement.",
+      );
+      return;
+    }
     if (vmCount === 0 && containerCount === 0) {
       setAlertMsg("Add at least one VM or container before publishing.");
       return;
@@ -1152,7 +1159,21 @@ export default function ProjectCanvasPage() {
                   Needs a KubeVirt cluster host
                 </span>
               )}
-              <button className="project-publish-btn" onClick={handlePublish}>
+              <button
+                className="project-publish-btn"
+                onClick={handlePublish}
+                disabled={isAdmin && requiresKubevirt && deployHosts.length === 0}
+                title={
+                  isAdmin && requiresKubevirt && deployHosts.length === 0
+                    ? "This project requires a KubeVirt cluster host"
+                    : undefined
+                }
+                style={
+                  isAdmin && requiresKubevirt && deployHosts.length === 0
+                    ? { opacity: 0.4, cursor: "not-allowed" }
+                    : undefined
+                }
+              >
                 ⚡ Deploy
               </button>
             </>

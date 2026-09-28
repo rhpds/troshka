@@ -909,6 +909,16 @@ def place_project(
         return error
 
     if not host:
+        # KubeVirt-only templates must not fall through to multi-host mesh or
+        # shared-host auto-provision (ocpvirt/troshkad) — that silently places
+        # on the wrong provider type.
+        if requires_kubevirt:
+            return {
+                "error": (
+                    "No KubeVirt cluster host is available — "
+                    "this template requires kubevirt-cluster placement"
+                )
+            }
         multihost_result = _try_multihost_placement(
             db, project, storage_pool_id, has_anti_affinity, required_mtu
         )

@@ -87,3 +87,39 @@ def test_place_project_requires_kubevirt_skips_shared_hosts():
         assert result.get("host_id") == kv.id
     finally:
         db.close()
+
+
+def test_place_project_requires_kubevirt_errors_when_none_available():
+    db = TestSession()
+    try:
+        prov = str(uuid.uuid4())
+        _make_host(db, prov, host_type="shared")
+
+        user = User(email=f"{uuid.uuid4()}@test.com", password_hash="fake")
+        db.add(user)
+        db.flush()
+
+        project = Project(
+            name="cclm-no-kv",
+            owner_id=user.id,
+            provider_id=prov,
+            topology={
+                "placement": {"requires_kubevirt": True},
+                "nodes": [
+                    {
+                        "id": "vm1",
+                        "type": "vmNode",
+                        "data": {"vcpus": 4, "ram": 8},
+                    }
+                ],
+            },
+        )
+        db.add(project)
+        db.flush()
+
+        result = place_project(db, project)
+        assert "error" in result
+        assert "KubeVirt cluster host" in result["error"]
+        assert "host_id" not in result
+    finally:
+        db.close()

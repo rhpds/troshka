@@ -230,6 +230,18 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
 
   const handleCreate = async () => {
     if (!name.trim()) return;
+    // Host list is only fetched for admins; non-admins rely on backend placement.
+    if (
+      userRole === "admin" &&
+      mode === "template" &&
+      requiresKubevirt &&
+      deployHosts.length === 0
+    ) {
+      setCreateError(
+        "This template requires a KubeVirt cluster host — none are currently available.",
+      );
+      return;
+    }
     setCreating(true);
     setCreateError(null);
     try {
@@ -978,6 +990,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                 onClick={handleCreate}
                 disabled={creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (() => {
                   const t = templates.find((x) => x.id === selectedTemplate);
+                  if (userRole === "admin" && t?.requires_kubevirt && deployHosts.length === 0) return true;
                   if (t?.category !== "openshift") return false;
                   const needsPull = t.requires_pull_secret !== false;
                   return !commonPassword || (needsPull && !hasPullSecret) || (loadingVersions && !t.versions?.length) || (installVia === "bastion" && (!bastionImageId || !bastionIsoId || !!bmcIpError));
@@ -988,6 +1001,7 @@ export function NewProjectModal({ onClose, onCreated, userRole, availableHosts, 
                   background: "rgba(74,222,128,0.15)", borderColor: "#4ade80", color: "#4ade80",
                   opacity: creating || !name.trim() || (mode === "yaml" && !yamlContent) || (mode === "pattern" && !selectedPattern) || (mode === "template" && (!selectedTemplate || (() => {
                   const t = templates.find((x) => x.id === selectedTemplate);
+                  if (userRole === "admin" && t?.requires_kubevirt && deployHosts.length === 0) return true;
                   if (t?.category !== "openshift") return false;
                   const needsPull = t.requires_pull_secret !== false;
                   return !commonPassword || (needsPull && !hasPullSecret) || (loadingVersions && !t.versions?.length) || (installVia === "bastion" && (!bastionImageId || !bastionIsoId || !!bmcIpError));
