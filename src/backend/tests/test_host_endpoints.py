@@ -973,6 +973,67 @@ class TestPoweronHost:
 
 
 # ===================================================================
+# POST /hosts/{id}/migrate  (OCP Virt live migrate)
+# ===================================================================
+
+
+class TestMigrateHost:
+    def test_migrate_success(self):
+        prov_id = _create_provider(provider_type="ocpvirt")
+        hid = _create_host(provider_id=prov_id, state="active")
+        db = TestSession()
+        h = db.query(Host).filter_by(id=hid).first()
+        h.instance_id = "troshka-host-c73f2e79"
+        db.commit()
+        db.close()
+
+        mock_drv = MagicMock()
+        mock_drv.migrate_host.return_value = {
+            "migration_name": "troshka-host-c73f2e79-migrate-1700000000",
+            "source_node": "ocp-virtdev1-host2",
+            "vmi_name": "troshka-host-c73f2e79",
+        }
+        with patch("app.services.providers.get_provider_driver", return_value=mock_drv):
+            resp = client.post(f"/api/v1/hosts/{hid}/migrate", headers=ADMIN_HEADERS)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "migrating"
+        assert data["source_node"] == "ocp-virtdev1-host2"
+        assert data["migration_name"].startswith("troshka-host-c73f2e79-migrate-")
+        mock_drv.migrate_host.assert_called_once()
+
+    def test_migrate_rejects_non_ocpvirt(self):
+        prov_id = _create_provider(provider_type="ec2")
+        hid = _create_host(provider_id=prov_id, state="active")
+        db = TestSession()
+        h = db.query(Host).filter_by(id=hid).first()
+        h.instance_id = "i-ec2"
+        db.commit()
+        db.close()
+        resp = client.post(f"/api/v1/hosts/{hid}/migrate", headers=ADMIN_HEADERS)
+        assert resp.status_code == 400
+        assert "OCP Virt" in resp.json()["detail"]
+
+    def test_migrate_rejects_wrong_state(self):
+        prov_id = _create_provider(provider_type="ocpvirt")
+        hid = _create_host(provider_id=prov_id, state="provisioning")
+        db = TestSession()
+        h = db.query(Host).filter_by(id=hid).first()
+        h.instance_id = "troshka-host-x"
+        db.commit()
+        db.close()
+        resp = client.post(f"/api/v1/hosts/{hid}/migrate", headers=ADMIN_HEADERS)
+        assert resp.status_code == 409
+
+    def test_migrate_not_found(self):
+        resp = client.post(
+            f"/api/v1/hosts/{uuid.uuid4()}/migrate",
+            headers=ADMIN_HEADERS,
+        )
+        assert resp.status_code == 404
+
+
+# ===================================================================
 # POST /hosts/{id}/resize  (lines 1312-1360)
 # ===================================================================
 

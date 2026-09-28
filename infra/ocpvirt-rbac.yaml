@@ -26,6 +26,14 @@ rules:
   - apiGroups: ["subresources.kubevirt.io"]
     resources: ["virtualmachines", "virtualmachineinstances", "virtualmachineinstances/vnc", "virtualmachineinstances/console", "virtualmachineinstances/exec"]
     verbs: ["get"]
+  # Pause/unpause — Hosts UI "Resume" for IO-error / admin-paused guests
+  - apiGroups: ["subresources.kubevirt.io"]
+    resources: ["virtualmachineinstances/pause", "virtualmachineinstances/unpause"]
+    verbs: ["update"]
+  # Live migrate — Hosts UI "Live Migrate" (VirtualMachineInstanceMigration)
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachineinstancemigrations"]
+    verbs: ["create", "delete", "get", "list", "watch"]
   # CDI DataVolumes — created via VM dataVolumeTemplates
   - apiGroups: ["cdi.kubevirt.io"]
     resources: ["datavolumes"]

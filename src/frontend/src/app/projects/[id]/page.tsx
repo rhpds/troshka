@@ -29,6 +29,7 @@ import { useVmStateSocket } from "@/hooks/useVmStateSocket";
 import AlertModal from "@/components/AlertModal";
 import ConfirmModal from "@/components/ConfirmModal";
 import { appConfirm } from "@/lib/confirm";
+import UserIcon from "@patternfly/react-icons/dist/esm/icons/user-icon";
 
 export default function ProjectCanvasPage() {
   const params = useParams();
@@ -73,6 +74,8 @@ export default function ProjectCanvasPage() {
   const [projectGuid, setProjectGuid] = useState("");
   const [projectState, setProjectState] = useState("");
   const [projectHostId, setProjectHostId] = useState("");
+  const [ownerEmail, setOwnerEmail] = useState<string | null>(null);
+  const [meEmail, setMeEmail] = useState("");
   const [hostPlacement, setHostPlacement] = useState<{
     provider: string | null;
     host: string | null;
@@ -128,6 +131,7 @@ export default function ProjectCanvasPage() {
         setProjectGuid(data.guid || "");
         setProjectState(data.state);
         setProjectHostId(data.host_id || "");
+        setOwnerEmail(data.owner_email || null);
         {
           const provider =
             data.host_provider_name ||
@@ -165,8 +169,9 @@ export default function ProjectCanvasPage() {
   }, [projectId]);
 
   useEffect(() => {
-    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then((d: { role?: string }) => {
+    fetch("/api/v1/auth/me").then(r => r.ok ? r.json() : {}).then((d: { role?: string; email?: string }) => {
       setIsAdmin(d.role === "admin");
+      if (d.email) setMeEmail(d.email);
       if (d.role === "admin") {
         Promise.all([
           fetch("/api/v1/hosts/").then(r => r.ok ? r.json() : []),
@@ -920,6 +925,33 @@ export default function ProjectCanvasPage() {
             }}
             title="Click to rename"
           >{projectName || "Untitled"}</span>
+          {(() => {
+            const otherOwner =
+              !!ownerEmail &&
+              !!meEmail &&
+              ownerEmail.toLowerCase() !== meEmail.toLowerCase();
+            if (!otherOwner) return null;
+            const ownerLabel = ownerEmail!.split("@")[0];
+            return (
+              <span
+                title={`Owned by ${ownerEmail}`}
+                style={{
+                  fontSize: 11,
+                  padding: "1px 6px",
+                  borderRadius: 4,
+                  background: "rgba(96,165,250,0.18)",
+                  color: "#60a5fa",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  fontWeight: 600,
+                }}
+              >
+                <UserIcon style={{ width: 11, height: 11 }} />
+                {ownerLabel}
+              </span>
+            );
+          })()}
           <span className="project-action-state" style={{ background: `${stateColors[projectState] || "#94a3b8"}22`, color: stateColors[projectState] || "#94a3b8" }}>
             {projectState === "stopped" && autoStopped ? "stopped (auto)" : projectState}
           </span>

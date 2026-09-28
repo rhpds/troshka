@@ -432,6 +432,12 @@ def _project_response_dict(project, db=None):
                         provider
                     )
     if db is not None:
+        if project.owner_id:
+            from app.models.user import User
+
+            owner = db.query(User).filter_by(id=project.owner_id).first()
+            if owner:
+                result["owner_email"] = owner.email
         _hydrate_response_external_ips(db, project.id, result)
     _hydrate_response_external_endpoints(result)
     return result

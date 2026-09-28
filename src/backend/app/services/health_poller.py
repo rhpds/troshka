@@ -46,6 +46,10 @@ _STOPPED_POWER_STATES = frozenset(
     }
 )
 
+# Guest is running in the hypervisor but frozen (KubeVirt IO-error / admin pause).
+_PAUSED_POWER_STATES = frozenset({"paused"})
+_PAUSED_WARNING_MOUNT = "vm-paused"
+
 
 def _warning_for_pct(mount: str, pct: float) -> dict | None:
     """Return a storage_warnings entry for used_pct, or None if under threshold."""
@@ -54,6 +58,36 @@ def _warning_for_pct(mount: str, pct: float) -> dict | None:
     if pct >= _WARNING_PCT:
         return {"mount": mount, "used_pct": pct, "level": "warning"}
     return None
+
+
+def _merge_paused_warning(warnings: list | None, reason: str | None) -> list:
+    """Upsert a critical warning so Hosts UI shows why the guest is frozen."""
+    msg = (reason or "Host VM paused").strip() or "Host VM paused"
+    entry = {
+        "mount": _PAUSED_WARNING_MOUNT,
+        "used_pct": 100,
+        "level": "critical",
+        "reason": "paused",
+        "message": msg,
+    }
+    out = [
+        w
+        for w in (warnings or [])
+        if not (isinstance(w, dict) and w.get("mount") == _PAUSED_WARNING_MOUNT)
+    ]
+    out.append(entry)
+    return out
+
+
+def _clear_paused_warning(warnings: list | None) -> list | None:
+    if not warnings:
+        return warnings
+    out = [
+        w
+        for w in warnings
+        if not (isinstance(w, dict) and w.get("mount") == _PAUSED_WARNING_MOUNT)
+    ]
+    return out or None
 
 
 def _evaluate_partitions(health):
@@ -330,6 +364,9 @@ def _handle_health_success(host, health, db, checked_pools: set) -> None:
         from app.services.gc_service import recover_host_services
 
         enqueue_job(recover_host_services, host.id, queue_name="default")
+    if host.state == "paused":
+        host.state = "active"
+        host.storage_warnings = _clear_paused_warning(host.storage_warnings)
 
 
 def _apply_sslip_console_for_ip(host, provider, new_ip: str) -> bool:
@@ -390,6 +427,25 @@ def _sync_cloud_powerstate(host, db) -> bool:
                 power,
             )
             return True
+
+        if power in _PAUSED_POWER_STATES:
+            # Keep in inventory (not stopped) — Power On / Resume can unpause.
+            host.state = "paused"
+            host.agent_status = "disconnected"
+            host.storage_warnings = _merge_paused_warning(
+                host.storage_warnings, status.get("reason")
+            )
+            _skip_until[host.id] = time.time() + 30
+            logger.warning(
+                "Host %s marked paused (agent disconnected): %s",
+                host.id[:8],
+                status.get("reason") or "paused",
+            )
+            return False
+
+        if power == "running" and host.state == "paused":
+            host.state = "active"
+            host.storage_warnings = _clear_paused_warning(host.storage_warnings)
 
         new_ip = status.get("public_ip")
         if not isinstance(new_ip, str):
@@ -457,6 +513,13 @@ def _enqueue_agent_reinstall_for_ip_change(host) -> None:
 
 def _handle_health_failure(host, now_dt, db=None) -> None:
     """Process a failed health check — update status and schedule backoff."""
+    # Cloud sync first so OCP Virt IO-pauses surface as state=paused immediately
+    # instead of waiting for the disconnect timeout while troshkad SYN_SENTs pile up.
+    if db is not None and _sync_cloud_powerstate(host, db):
+        return
+    if host.state == "paused":
+        _skip_until[host.id] = time.time() + 30
+        return
     if host.agent_status == "connected" and host.last_health_at:
         elapsed = (now_dt - host.last_health_at).total_seconds()
         if elapsed > _DISCONNECT_AFTER_SECONDS:
@@ -467,15 +530,9 @@ def _handle_health_failure(host, now_dt, db=None) -> None:
                 host.id[:8],
                 int(elapsed),
             )
-            # Immediate cloud check — catch stopped instances without waiting
-            # another poll cycle.
-            if db is not None:
-                _sync_cloud_powerstate(host, db)
         else:
             _skip_until[host.id] = time.time() + 15
     elif host.agent_status == "disconnected":
-        if db is not None and _sync_cloud_powerstate(host, db):
-            return
         # Pattern buffers: auto-mark stopped after 10min if cloud check unavailable
         if (
             host.host_type == "pattern_buffer"

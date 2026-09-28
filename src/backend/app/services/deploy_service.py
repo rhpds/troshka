@@ -3801,6 +3801,10 @@ def read_ops_pod_install_log(host, project_id: str, topology: dict) -> dict[str,
     merged with the persisted cache (keep-longest) so a truncated/stopped pod
     still yields the full completed log. The install-log viewer uses this for the
     pod path; the bastion path reads the bastion VM's ``install.log`` instead.
+
+    When the troshkad agent is disconnected (paused/unreachable host), skip the
+    live ops-pod exec — otherwise the Status & Log poll blocks for tens of
+    seconds per request and starves the backend thread/DB pool.
     """
     from app.core.redis import get_progress
     from app.services.ocp.ops_pod_install import _cluster_key as _ops_cluster_key
@@ -3811,9 +3815,12 @@ def read_ops_pod_install_log(host, project_id: str, topology: dict) -> dict[str,
         return {}
     cluster_keys = [_ops_cluster_key(c) for c in clusters]
     container_name = _ops_pod_container_name(project_id)
-    live = _read_ops_pod_cluster_logs(
-        host, container_name, cluster_keys, OPS_POD_WORKDIR, project_id
-    )
+    if _ops_pod_live_log_unreachable(host):
+        live = {key: "" for key in cluster_keys}
+    else:
+        live = _read_ops_pod_cluster_logs(
+            host, container_name, cluster_keys, OPS_POD_WORKDIR, project_id
+        )
     # Merge with (and refresh) the persisted cache so a stopped/truncated pod
     # still returns the full log.
     merged = cache_ops_pod_logs(project_id, live)
@@ -3825,6 +3832,17 @@ def read_ops_pod_install_log(host, project_id: str, topology: dict) -> dict[str,
                 ckey, ""
             )
     return merged
+
+
+def _ops_pod_live_log_unreachable(host) -> bool:
+    """True when live ops-pod exec would hang (troshkad agent not connected).
+
+    KubeVirt-native hosts use the k8s API, not troshkad, so agent_status does
+    not gate their log reads.
+    """
+    if getattr(host, "host_type", None) == "kubevirt-cluster":
+        return False
+    return getattr(host, "agent_status", None) != "connected"
 
 
 def _ops_pod_cat(host, project_id: str, container_name: str, path: str) -> str:

@@ -438,6 +438,43 @@ class TestSyncCloudPowerstate:
         mock_get_drv.assert_called_once()
 
     @patch("app.services.providers.get_provider_driver")
+    def test_marks_paused_when_cloud_says_paused(self, mock_get_drv):
+        """OCP Virt IO-paused guest: leave active inventory but mark paused + disconnect."""
+        host = MagicMock()
+        host.id = "c73f2e79-e12a-4597"
+        host.host_type = "shared"
+        host.instance_id = "troshka-host-c73f2e79"
+        host.provider_id = "prov-1"
+        host.state = "active"
+        host.agent_status = "connected"
+        host.ip_address = "67.228.103.5"
+        host.console_domain = None
+        host.storage_warnings = None
+
+        provider = MagicMock()
+        provider.type = "ocpvirt"
+        provider.console_base_domain = None
+        db = MagicMock()
+        db.get.return_value = provider
+
+        drv = MagicMock()
+        drv.get_host_status.return_value = {
+            "state": "paused",
+            "reason": "VM Paused due to IO error at the volume: rootdisk",
+            "public_ip": None,
+            "private_ip": "10.130.8.239",
+        }
+        mock_get_drv.return_value = drv
+
+        # Not a permanent stop — poller should keep checking for recovery.
+        assert hp._sync_cloud_powerstate(host, db) is False
+        assert host.state == "paused"
+        assert host.agent_status == "disconnected"
+        assert any(
+            (w or {}).get("reason") == "paused" for w in (host.storage_warnings or [])
+        )
+
+    @patch("app.services.providers.get_provider_driver")
     def test_leaves_active_when_cloud_running(self, mock_get_drv):
         host = MagicMock()
         host.id = "abcdef12-3456-7890"

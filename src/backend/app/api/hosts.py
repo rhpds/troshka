@@ -604,40 +604,60 @@ def _wait_for_running_instance(
 ) -> tuple[str | None, dict[str, Any] | None]:
     """Wait for a cloud instance to stop (if shutting down), start it, poll until running.
 
-    Returns (public_ip, status_dict) or (None, None) if it never reached running.
+    Returns (public_ip, status_dict) or (None, status_dict) if it never reached running.
+    For OCP Virt, ``public_ip`` may be None/empty while ``status_dict["state"]`` is
+    ``running`` — the LB address is tracked on the Host row, not in get_host_status.
     """
     import time
 
     state_now = "unknown"
+    st_check = None
     for _ in range(60):
         st_check = drv.get_host_status(prov, instance_id)
         state_now = st_check["state"] if st_check else "unknown"
-        if state_now in ("stopped", "deallocated", "terminated", "running"):
+        if state_now in ("stopped", "deallocated", "terminated", "running", "paused"):
             break
         logger.info("Host %s in %s state, waiting for stop...", host_id[:8], state_now)
         time.sleep(5)
 
-    if state_now != "running":
+    if state_now == "paused":
+        try:
+            if hasattr(drv, "unpause_host"):
+                drv.unpause_host(prov, instance_id)
+            else:
+                drv.start_host(prov, instance_id)
+        except Exception as e:
+            logger.warning("unpause_host failed for %s: %s", host_id[:8], e)
+            # Do not burn 5 minutes polling — caller restores state=paused.
+            return None, st_check
+    elif state_now != "running":
         try:
             drv.start_host(prov, instance_id)
         except Exception as e:
             logger.warning("start_host failed for %s: %s", host_id[:8], e)
 
-    deadline = time.time() + 300
+    is_ocpvirt = getattr(prov, "type", None) == "ocpvirt"
+    # Unpause either works quickly or IO-error re-pauses; don't wait full EIP budget.
+    deadline = time.time() + (90 if state_now == "paused" else 300)
     last_running_st = None
+    still_paused_polls = 0
     while time.time() < deadline:
         st = drv.get_host_status(prov, instance_id)
+        if st and st.get("state") == "paused" and state_now == "paused":
+            still_paused_polls += 1
+            if still_paused_polls >= 3:
+                return None, st
+        else:
+            still_paused_polls = 0
         if st and st.get("state") == "running":
             last_running_st = st
-            # The public IP association lags the running transition — keep polling
-            # until it appears rather than giving up (and mislabeling the host) on
-            # the first running status.
             if st.get("public_ip"):
                 return st.get("public_ip"), st
-        time.sleep(10)
-    # Deadline hit. Return the last running status (if any) so the caller can tell
-    # "running but no public IP" apart from "never started".
-    return None, last_running_st
+            if is_ocpvirt:
+                # LB/public IP lives on Host.ip_address; do not overwrite with pod IP.
+                return None, st
+        time.sleep(5 if state_now == "paused" else 10)
+    return None, last_running_st or st_check
 
 
 def _finalize_termination(s: Session, h: Host, prov, drv) -> bool:
@@ -1160,12 +1180,22 @@ def poweron_host(
     db: DbSession,
     body: PowerOnRequest | None = None,
 ):
-    """Start a stopped EC2 instance, optionally changing instance type first."""
+    """Start a stopped (or resume a paused) cloud/KubeVirt host.
+
+    Optionally changes instance type first when stopped. Paused OCP Virt guests
+    (IO-error freeze) are resumed via the driver's ``unpause_host`` path inside
+    ``_wait_for_running_instance``.
+    """
     host = db.query(Host).filter_by(id=host_id).first()
     if not host:
         raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if not host.instance_id:
         raise HTTPException(status_code=400, detail="No instance ID")
+    if host.state not in ("stopped", "paused", "active", "starting"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Host is {host.state}, cannot power on",
+        )
 
     if host.provider_id:
         provider = db.query(Provider).filter_by(id=host.provider_id).first()
@@ -1232,6 +1262,66 @@ def poweron_host(
         queue_name="host_lifecycle",
     )
     return {"status": "starting"}
+
+
+@router.post(
+    "/{host_id}/migrate",
+    responses={
+        400: {"description": "Not an OCP Virt host or missing instance"},
+        404: {"description": "Host not found"},
+        409: {"description": "Host state does not allow migrate"},
+        500: {"description": "Failed to create migration"},
+    },
+)
+def migrate_host(
+    host_id: HostIdPath,
+    user: AdminUser,
+    db: DbSession,
+):
+    """Live-migrate an OCP Virt host to another worker node via KubeVirt.
+
+    Creates a VirtualMachineInstanceMigration; does not wait for completion.
+    Useful when a host is stuck paused on a bad node / storage path.
+    """
+    host = db.query(Host).filter_by(id=host_id).first()
+    if not host:
+        raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
+    if not host.instance_id:
+        raise HTTPException(status_code=400, detail="No instance ID")
+    if host.state not in ("active", "paused"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Host is {host.state}, cannot live migrate",
+        )
+
+    provider = (
+        db.query(Provider).filter_by(id=host.provider_id).first()
+        if host.provider_id
+        else None
+    )
+    if not provider or provider.type != "ocpvirt":
+        raise HTTPException(
+            status_code=400,
+            detail="Live migrate is only supported for OCP Virt hosts",
+        )
+
+    provider.get_credentials()
+    from app.services.providers import get_provider_driver
+
+    drv = get_provider_driver(provider)
+    migrate_fn = getattr(drv, "migrate_host", None)
+    if migrate_fn is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Live migrate is only supported for OCP Virt hosts",
+        )
+    try:
+        result = migrate_fn(provider, host.instance_id)
+    except Exception:
+        logger.exception("Failed to migrate host %s", host_id[:8])
+        raise HTTPException(status_code=500, detail="Failed to create live migration")
+
+    return {"status": "migrating", **result}
 
 
 def _update_console_dns_for_new_ip(
@@ -1360,15 +1450,25 @@ def _wait_and_reinstall_bg(host_id: str, instance_id: str, provider_id: str):
                 )
 
         if not new_ip:
-            # st truthy => the instance IS running, it just has no public IP (e.g.
-            # detach failed, or a host that only ever had an EIP). Do NOT mislabel a
-            # running instance as stopped.
-            if st:
+            # st truthy with state=running => instance IS running, it just has no
+            # public IP (ocpvirt LB, EIP detach lag). Do NOT mislabel as stopped.
+            # st with state=paused => unpause failed or IO-error re-paused.
+            st_state = (st or {}).get("state") if isinstance(st, dict) else None
+            if st_state == "running" or (st and not st_state):
                 logger.warning(
                     "Host %s is running but has no public IP after power-on",
                     host_id[:8],
                 )
                 h.state = "active"
+                if isinstance(st, dict) and st.get("private_ip"):
+                    h.private_ip = st["private_ip"]
+            elif st_state == "paused":
+                logger.warning(
+                    "Host %s still paused after resume attempt: %s",
+                    host_id[:8],
+                    (st or {}).get("reason") or "paused",
+                )
+                h.state = "paused"
             else:
                 logger.warning(
                     "Host %s never reached running state after power-on",

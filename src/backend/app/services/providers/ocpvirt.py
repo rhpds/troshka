@@ -133,6 +133,51 @@ def _get_k8s_clients(credentials):
     return custom_api, core_api
 
 
+def _paused_reason_from_status(status: dict) -> str | None:
+    """Best-effort pause reason from VMI/VM status conditions."""
+    for cond in status.get("conditions") or []:
+        if cond.get("type") != "Paused" or str(cond.get("status")) != "True":
+            continue
+        return cond.get("message") or cond.get("reason") or "Paused"
+    return None
+
+
+def _vmi_paused_info(vmi: dict) -> tuple[bool, str | None]:
+    """Return (paused, reason) from a VirtualMachineInstance object."""
+    status = vmi.get("status") or {}
+    if (status.get("printableStatus") or "").strip() == "Paused":
+        return True, _paused_reason_from_status(status) or "Paused"
+    for cond in status.get("conditions") or []:
+        if cond.get("type") == "Paused" and str(cond.get("status")) == "True":
+            return True, cond.get("message") or cond.get("reason") or "Paused"
+    return False, None
+
+
+def _vm_paused_info(
+    custom_api, namespace: str, instance_id: str
+) -> tuple[bool, str | None]:
+    """Fall back to VirtualMachine printableStatus when the VMI omits pause."""
+    from kubernetes import client
+
+    try:
+        vm = cast(
+            dict[str, Any],
+            custom_api.get_namespaced_custom_object(
+                group=_KUBEVIRT_GROUP,
+                version="v1",
+                namespace=namespace,
+                plural="virtualmachines",
+                name=instance_id,
+            ),
+        )
+    except client.ApiException:
+        return False, None
+    status = vm.get("status") or {}
+    if (status.get("printableStatus") or "").strip() == "Paused":
+        return True, _paused_reason_from_status(status) or "Paused"
+    return False, None
+
+
 def _parse_instance_type(instance_type):
     """Parse '64c-256g' into (cores, memory_gi)."""
     if not instance_type or "-" not in instance_type:
@@ -835,6 +880,21 @@ class OCPVirtDriver(ProviderDriver):
             phase = vmi.get("status", {}).get("phase", "Unknown")
             interfaces = vmi.get("status", {}).get("interfaces", [])
             pod_ip = interfaces[0].get("ipAddress") if interfaces else None
+            paused, pause_reason = _vmi_paused_info(vmi)
+            if not paused and not (vmi.get("status") or {}).get("printableStatus"):
+                # VMI sometimes omits printableStatus while the VM object shows Paused
+                # (e.g. IO-error pause). Fall back to the VirtualMachine status.
+                paused, pause_reason = _vm_paused_info(
+                    custom_api, namespace, instance_id
+                )
+            if paused:
+                return {
+                    "instance_id": instance_id,
+                    "state": "paused",
+                    "reason": pause_reason,
+                    "public_ip": None,
+                    "private_ip": pod_ip,
+                }
             state_map = {
                 "Running": "running",
                 "Succeeded": "terminated",
@@ -850,6 +910,91 @@ class OCPVirtDriver(ProviderDriver):
             }
         except client.ApiException:
             return None
+
+    def unpause_host(self, provider, instance_id):
+        """Resume a KubeVirt guest paused by IO error or admin pause.
+
+        ``start_host`` (spec.running=True) is a no-op while the VMI is already
+        Running-but-Paused — the unpause subresource is required.
+
+        The subresource expects an empty PUT. ``Accept: application/json`` yields
+        406; a JSON body also fails. Match ``virtctl unpause`` / bare curl.
+        """
+        creds = provider.get_credentials()
+        namespace = creds.get("namespace", "troshka")
+        custom_api, _ = _get_k8s_clients(creds)
+        path = (
+            f"/apis/subresources.kubevirt.io/v1/namespaces/{namespace}"
+            f"/virtualmachineinstances/{instance_id}/unpause"
+        )
+        host = custom_api.api_client.configuration.host.rstrip("/")
+        # Use the pool's raw request so we fully control headers (call_api injects
+        # Accept: application/json → 406 Not Acceptable on this subresource).
+        custom_api.api_client.request(
+            "PUT",
+            f"{host}{path}",
+            headers={
+                "Authorization": f"Bearer {creds['token']}",
+                "Accept": "*/*",
+            },
+        )
+
+    def migrate_host(self, provider, instance_id):
+        """Create a VirtualMachineInstanceMigration for live migration.
+
+        Returns migration metadata (name, source node). Does not wait for
+        completion — KubeVirt migrates asynchronously.
+        """
+        creds = provider.get_credentials()
+        namespace = creds.get("namespace", "troshka")
+        custom_api, _ = _get_k8s_clients(creds)
+
+        source_node = None
+        try:
+            vmi = cast(
+                dict[str, Any],
+                custom_api.get_namespaced_custom_object(
+                    group=_KUBEVIRT_GROUP,
+                    version="v1",
+                    namespace=namespace,
+                    plural="virtualmachineinstances",
+                    name=instance_id,
+                ),
+            )
+            source_node = (vmi.get("status") or {}).get("nodeName")
+        except Exception as exc:
+            logger.warning("Could not read VMI %s before migrate: %s", instance_id, exc)
+
+        migration_name = f"{instance_id}-migrate-{int(time.time())}"
+        body = {
+            "apiVersion": "kubevirt.io/v1",
+            "kind": "VirtualMachineInstanceMigration",
+            "metadata": {
+                "name": migration_name,
+                "namespace": namespace,
+            },
+            "spec": {
+                "vmiName": instance_id,
+            },
+        }
+        custom_api.create_namespaced_custom_object(
+            group=_KUBEVIRT_GROUP,
+            version="v1",
+            namespace=namespace,
+            plural="virtualmachineinstancemigrations",
+            body=body,
+        )
+        logger.info(
+            "Created VMI migration %s for %s (source_node=%s)",
+            migration_name,
+            instance_id,
+            source_node,
+        )
+        return {
+            "migration_name": migration_name,
+            "source_node": source_node,
+            "vmi_name": instance_id,
+        }
 
     def resize_host(self, provider, instance_id, new_instance_type):
         raise NotImplementedError("Resize is not supported for OCP Virt hosts")

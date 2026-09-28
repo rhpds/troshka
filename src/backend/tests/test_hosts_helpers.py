@@ -1319,6 +1319,53 @@ class TestWaitForRunningInstance(unittest.TestCase):
 
     @patch("time.sleep")
     @patch("time.time")
+    def test_paused_calls_unpause_then_running(self, mock_time, mock_sleep):
+        """Paused OCP Virt host → unpause_host, then wait until running."""
+        from app.api.hosts import _wait_for_running_instance
+
+        drv = MagicMock()
+        prov = MagicMock()
+        prov.type = "ocpvirt"
+        drv.get_host_status.side_effect = [
+            {"state": "paused", "reason": "IO error"},
+            {"state": "running", "public_ip": None, "private_ip": "10.1.1.1"},
+        ]
+        # Extra time.time values avoid StopIteration on 3.13.
+        mock_time.side_effect = [0, 1, 2, 3, 4, 5, 6, 7]
+
+        ip, st = _wait_for_running_instance(
+            drv, prov, "c73f2e79-xxxx", "troshka-host-x"
+        )
+
+        # ocpvirt: do not return pod IP as public — caller keeps Host.ip_address.
+        self.assertIsNone(ip)
+        self.assertEqual(st["state"], "running")
+        drv.unpause_host.assert_called_once_with(prov, "troshka-host-x")
+        drv.start_host.assert_not_called()
+
+    @patch("time.sleep")
+    @patch("time.time")
+    def test_unpause_failure_returns_immediately(self, mock_time, mock_sleep):
+        from app.api.hosts import _wait_for_running_instance
+
+        drv = MagicMock()
+        prov = MagicMock()
+        prov.type = "ocpvirt"
+        paused = {"state": "paused", "reason": "IO error"}
+        drv.get_host_status.return_value = paused
+        drv.unpause_host.side_effect = RuntimeError("call_api kwargs")
+        mock_time.side_effect = [0, 1, 2, 3]
+
+        ip, st = _wait_for_running_instance(
+            drv, prov, "c73f2e79-xxxx", "troshka-host-x"
+        )
+
+        self.assertIsNone(ip)
+        self.assertEqual(st["state"], "paused")
+        mock_sleep.assert_not_called()
+
+    @patch("time.sleep")
+    @patch("time.time")
     def test_stopped_then_starts(self, mock_time, mock_sleep):
         """Instance stopped -> calls start_host, then polls until running."""
         from app.api.hosts import _wait_for_running_instance

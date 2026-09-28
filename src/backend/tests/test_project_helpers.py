@@ -2406,6 +2406,55 @@ class TestProjectResponseDict:
         assert result["clock_target"] == "2025-01-15T00:00:00+00:00"
         assert result["lifetime_expires_at"] is None
 
+    @patch("app.api.projects._hydrate_response_external_endpoints")
+    @patch("app.api.projects._hydrate_response_external_ips")
+    @patch("app.services.ws_pubsub.get_cached_vm_states", return_value=None)
+    @patch("app.api.projects._resolve_provider_type", return_value=None)
+    @patch("app.api.projects._resolve_deploy_progress", return_value=None)
+    def test_owner_email_with_db(
+        self, mock_dp, mock_prov, mock_states, mock_ext_ips, mock_ext_eps
+    ):
+        from app.api.projects import _project_response_dict
+
+        owner = MagicMock()
+        owner.email = "alice@example.com"
+        db = MagicMock()
+        db.query.return_value.filter_by.return_value.first.return_value = owner
+
+        project = MagicMock()
+        project.id = "proj-1"
+        project.name = "test"
+        project.description = None
+        project.owner_id = "owner-1"
+        project.provider_id = None
+        project.host_type = "ec2"
+        project.host_id = None
+        project.guid = None
+        project.state = "active"
+        project.public_token = None
+        project.guest_permission = "view"
+        project.topology = None
+        project.deployed_topology = None
+        project.vni_map = None
+        project.deploy_error = None
+        project.ocp_status = None
+        project.ocp_install_elapsed = None
+        project.tags = None
+        project.auto_stop_minutes = None
+        project.auto_stop_expires_at = None
+        project.auto_delete_minutes = None
+        project.auto_stopped = False
+        project.lifetime_expires_at = None
+        project.poweroff_mode = "acpi"
+        project.clock_target = None
+        project.guest_exec_enabled = True
+        project.created_at = "2025-01-01"
+        project.updated_at = "2025-01-01"
+
+        result = _project_response_dict(project, db=db)
+        assert result["owner_email"] == "alice@example.com"
+        mock_ext_ips.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # _cleanup_old_vm_files

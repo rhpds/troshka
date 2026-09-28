@@ -120,6 +120,99 @@ def test_get_host_status_running(mock_clients):
 
 
 @patch("app.services.providers.ocpvirt._get_k8s_clients")
+def test_get_host_status_paused_printable(mock_clients):
+    """VMI phase stays Running when paused — printableStatus must win."""
+    mock_custom = MagicMock()
+    mock_clients.return_value = (mock_custom, MagicMock())
+    mock_custom.get_namespaced_custom_object.return_value = {
+        "status": {
+            "phase": "Running",
+            "printableStatus": "Paused",
+            "interfaces": [{"ipAddress": "10.130.8.239"}],
+            "conditions": [
+                {
+                    "type": "Paused",
+                    "status": "True",
+                    "reason": "PausedByIOError",
+                    "message": "VM Paused due to IO error at the volume: rootdisk",
+                }
+            ],
+        }
+    }
+
+    status = OCPVirtDriver().get_host_status(_make_provider(), "troshka-host-c73f2e79")
+
+    assert status["state"] == "paused"
+    assert status["private_ip"] == "10.130.8.239"
+    assert "IO error" in (status.get("reason") or "")
+
+
+@patch("app.services.providers.ocpvirt._get_k8s_clients")
+def test_get_host_status_paused_via_vm_fallback(mock_clients):
+    """When VMI omits printableStatus, fall back to the VM object's status."""
+    mock_custom = MagicMock()
+    mock_clients.return_value = (mock_custom, MagicMock())
+
+    def _get(**kwargs):
+        plural = kwargs.get("plural")
+        if plural == "virtualmachineinstances":
+            return {
+                "status": {
+                    "phase": "Running",
+                    "interfaces": [{"ipAddress": "10.1.1.1"}],
+                }
+            }
+        if plural == "virtualmachines":
+            return {"status": {"printableStatus": "Paused"}}
+        raise AssertionError(plural)
+
+    mock_custom.get_namespaced_custom_object.side_effect = _get
+
+    status = OCPVirtDriver().get_host_status(_make_provider(), "troshka-host-x")
+    assert status["state"] == "paused"
+
+
+@patch("app.services.providers.ocpvirt._get_k8s_clients")
+def test_unpause_host_puts_vmi_subresource(mock_clients):
+    mock_custom = MagicMock()
+    mock_clients.return_value = (mock_custom, MagicMock())
+    mock_custom.api_client.configuration.host = "https://api.example:6443"
+
+    OCPVirtDriver().unpause_host(_make_provider(), "troshka-host-paused")
+
+    mock_custom.api_client.request.assert_called_once()
+    args, kwargs = mock_custom.api_client.request.call_args
+    assert args[0] == "PUT"
+    assert "virtualmachineinstances/troshka-host-paused/unpause" in args[1]
+    assert "subresources.kubevirt.io" in args[1]
+    assert kwargs["headers"]["Accept"] == "*/*"
+    assert kwargs["headers"]["Authorization"].startswith("Bearer ")
+
+
+@patch("app.services.providers.ocpvirt._get_k8s_clients")
+@patch("app.services.providers.ocpvirt.time")
+def test_migrate_host_creates_vmi_migration(mock_time, mock_clients):
+    mock_time.time.return_value = 1700000000
+    mock_custom = MagicMock()
+    mock_clients.return_value = (mock_custom, MagicMock())
+    mock_custom.get_namespaced_custom_object.return_value = {
+        "status": {"phase": "Running", "nodeName": "ocp-virtdev1-host2"}
+    }
+
+    result = OCPVirtDriver().migrate_host(_make_provider(), "troshka-host-c73f2e79")
+
+    mock_custom.create_namespaced_custom_object.assert_called_once()
+    kwargs = mock_custom.create_namespaced_custom_object.call_args.kwargs
+    assert kwargs["plural"] == "virtualmachineinstancemigrations"
+    assert kwargs["group"] == "kubevirt.io"
+    body = kwargs["body"]
+    assert body["kind"] == "VirtualMachineInstanceMigration"
+    assert body["spec"]["vmiName"] == "troshka-host-c73f2e79"
+    assert result["source_node"] == "ocp-virtdev1-host2"
+    assert result["migration_name"].startswith("troshka-host-c73f2e79-migrate-")
+
+
+@patch("app.services.providers.ocpvirt._get_k8s_clients")
 def test_stop_host_patches_vm(mock_clients):
     mock_custom = MagicMock()
     mock_core = MagicMock()

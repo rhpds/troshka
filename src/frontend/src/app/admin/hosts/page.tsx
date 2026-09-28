@@ -46,7 +46,7 @@ interface Host {
   last_health_at: string | null;
   created_at: string;
   storage_pool_id: string | null;
-  storage_warnings?: Array<{mount: string; used_pct: number; level: string}> | null;
+  storage_warnings?: Array<{mount: string; used_pct: number; level: string; reason?: string; message?: string}> | null;
   auto_extend_enabled: boolean;
   auto_extend_threshold_pct: number;
   auto_extend_increment_gb: number;
@@ -245,6 +245,7 @@ export default function AdminHostsPage() {
     provisioning: "#fbbf24",
     draining: "#fbbf24",
     starting: "#fbbf24",
+    paused: "#fb923c",
     stopped: "#94a3b8",
     shutting_down: "#fb923c",
     terminating: "#f87171",
@@ -318,6 +319,26 @@ export default function AdminHostsPage() {
       setAlertMsg("Failed to connect to server");
     }
     setPoweringHosts((prev) => { const next = new Set(prev); next.delete(hostId); return next; });
+  };
+
+  const [migratingHosts, setMigratingHosts] = useState<Set<string>>(new Set());
+
+  const migrateHost = async (hostId: string) => {
+    setMigratingHosts((prev) => new Set(prev).add(hostId));
+    try {
+      const resp = await fetch(`/api/v1/hosts/${hostId}/migrate`, { method: "POST" });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        setAlertMsg(data.detail || "Failed to live migrate");
+      } else {
+        const node = data.source_node ? ` from ${data.source_node}` : "";
+        setAlertMsg(`Live migration started${node}: ${data.migration_name || "ok"}`);
+      }
+      loadData();
+    } catch {
+      setAlertMsg("Failed to connect to server");
+    }
+    setMigratingHosts((prev) => { const next = new Set(prev); next.delete(hostId); return next; });
   };
 
   const [installingHosts, setInstallingHosts] = useState<Set<string>>(new Set());
@@ -870,7 +891,9 @@ export default function AdminHostsPage() {
                     const tipLines = localWarnings.length
                       ? localWarnings.map((w: any, i: number) => (
                           <div key={i}>
-                            {w.mount}: {w.used_pct}% used ({w.level})
+                            {w.message
+                              ? w.message
+                              : `${w.mount}: ${w.used_pct}% used (${w.level})`}
                           </div>
                         ))
                       : [<div key="live">storage: {si!.used_pct}% used</div>];
@@ -952,7 +975,13 @@ export default function AdminHostsPage() {
                 const hostBusy = isPowering || installingHosts.has(h.id) || updatingHosts.has(h.id) || h.agent_status === "waiting_ssh" || h.agent_status === "installing";
                 if (isPowering) return (
                   <>
-                    <Button variant="secondary" isLoading isDisabled>{h.state === "stopped" ? "Powering on..." : "Powering off..."}</Button>
+                    <Button variant="secondary" isLoading isDisabled>
+                      {h.state === "stopped"
+                        ? "Powering on..."
+                        : h.state === "paused" || h.state === "starting"
+                          ? "Resuming..."
+                          : "Powering off..."}
+                    </Button>
                     <Button variant="danger" onClick={() => removeHost(h.id, h.instance_id)} isDisabled={removingHosts.has(h.id)} isLoading={removingHosts.has(h.id)}>
                       {removingHosts.has(h.id) ? "Terminating..." : "Remove"}
                     </Button>
@@ -1128,6 +1157,30 @@ export default function AdminHostsPage() {
                   </Button>
                 );
               })()}
+              {h.state === "paused" && (
+                <Button variant="secondary" onClick={async () => {
+                  const pauseWarn = (h.storage_warnings || []).find((w: any) => w?.reason === "paused" || w?.mount === "vm-paused");
+                  const detail = pauseWarn?.message ? `\n\n${pauseWarn.message}` : "";
+                  if (!(await appConfirm({
+                    message: `Resume ${h.instance_id}? The guest is paused (often an IO error on rootdisk). Unpause may fail again if storage is still unhealthy.${detail}`,
+                    confirmLabel: "Resume",
+                  }))) return;
+                  powerHost(h.id, "poweron");
+                }} isLoading={poweringHosts.has(h.id)} isDisabled={poweringHosts.has(h.id)}>
+                  Resume
+                </Button>
+              )}
+              {isOcpVirtHost(h) && (h.state === "active" || h.state === "paused") && (
+                <Button variant="secondary" onClick={async () => {
+                  if (!(await appConfirm({
+                    message: `Live migrate ${h.instance_id} to another worker node? KubeVirt will create a VirtualMachineInstanceMigration. If the guest is IO-paused, migration may still fail until storage recovers.`,
+                    confirmLabel: "Live Migrate",
+                  }))) return;
+                  migrateHost(h.id);
+                }} isLoading={migratingHosts.has(h.id)} isDisabled={migratingHosts.has(h.id) || poweringHosts.has(h.id)}>
+                  Live Migrate
+                </Button>
+              )}
               {h.state === "starting" && (
                 <Button variant="secondary" isDisabled isLoading>
                   Starting...

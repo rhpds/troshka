@@ -578,6 +578,8 @@ def test_read_ops_pod_install_log_shows_restart_breadcrumbs_while_marker_active(
     from app.services.deploy_service import read_ops_pod_install_log
 
     host = MagicMock()
+    host.host_type = "shared"
+    host.agent_status = "connected"
     preamble = "[ocp-1] wiped boot disk on troshka-vm-abc (cp-0, disk-123)\n"
     with patch(
         "app.services.deploy_service._ocp_clusters",
@@ -605,6 +607,41 @@ def test_read_ops_pod_install_log_shows_restart_breadcrumbs_while_marker_active(
     ):
         logs = read_ops_pod_install_log(host, "proj-1", {"clusters": [{"id": "ocp-1"}]})
     assert logs["ocp-1"] == preamble
+
+
+def test_read_ops_pod_install_log_skips_live_when_agent_disconnected():
+    """Disconnected/paused troshkad hosts must not block on live ops-pod exec."""
+    from app.services.deploy_service import read_ops_pod_install_log
+
+    host = MagicMock()
+    host.host_type = "shared"
+    host.agent_status = "disconnected"
+    cached = {"ocp": "=== install complete ===\n"}
+    with patch(
+        "app.services.deploy_service._ocp_clusters",
+        return_value=[{"id": "ocp"}],
+    ), patch(
+        "app.services.ocp.ops_pod_install._cluster_key", return_value="ocp"
+    ), patch(
+        "app.services.deploy_service._ops_pod_container_name",
+        return_value="troshka-p-ops",
+    ), patch(
+        "app.services.deploy_service._read_ops_pod_cluster_logs",
+    ) as live_read, patch(
+        "app.services.deploy_service.cache_ops_pod_logs",
+        side_effect=lambda _pid, _logs: dict(cached),
+    ) as cache_fn, patch(
+        "app.services.deploy_service._ocp_install_restart_in_progress",
+        return_value=False,
+    ), patch(
+        "app.services.deploy_service._ocp_install_cancel_in_progress",
+        return_value=False,
+    ):
+        logs = read_ops_pod_install_log(host, "proj-1", {"clusters": [{"id": "ocp"}]})
+    live_read.assert_not_called()
+    cache_fn.assert_called_once()
+    assert cache_fn.call_args.args[1] == {"ocp": ""}
+    assert logs["ocp"] == "=== install complete ===\n"
 
 
 def test_ocp_boot_disks_prefers_disk0():
