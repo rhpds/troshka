@@ -22,8 +22,8 @@ ocp:
     # Role sizing (canvas defaults + newly materialized members only).
     # Enumerated vms: below also set vcpus/ram_gb — those win at deploy.
     # Keep both in sync until the loader fills omitted VM size from the role.
-    control_plane_cpu: 8
-    control_plane_memory: 32768
+    control_plane_cpu: 16
+    control_plane_memory: 65536
     worker_cpu: 8
     worker_memory: 32768
     control_plane_disks:
@@ -44,7 +44,7 @@ ocp:
     api_vip: 10.0.0.110
     ingress_vip: 10.0.0.110
     networks: [cluster, migration]
-    # Larger than source nodes: SNO packs ODF+CNV+MTV (+ optional MCG) on one node.
+    # Same size as source CP: SNO packs ODF+CNV+MTV (+ optional MCG) on one node.
     # Must match dest-cp-0 vcpus/ram_gb below (see source cluster note).
     control_plane_cpu: 16
     control_plane_memory: 65536
@@ -106,8 +106,8 @@ vms:
   source-cp-0:
     cluster: source
     role: control-plane
-    vcpus: 8
-    ram_gb: 32
+    vcpus: 16
+    ram_gb: 64
     os: rhcos
     firmware: uefi
     bmc: true
