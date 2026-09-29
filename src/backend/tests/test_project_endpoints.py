@@ -35,6 +35,14 @@ TOKEN = create_jwt(user_id=_user.id, email=_user.email, role=_user.role)
 USER_ID = _user.id
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 
+
+def _detail_text(resp):
+    detail = resp.json()["detail"]
+    if isinstance(detail, dict):
+        return str(detail.get("message", detail))
+    return str(detail)
+
+
 _user2 = User(
     email="projep-other@example.com",
     display_name="Other User",
@@ -171,7 +179,7 @@ class TestImportTemplate:
             headers=HEADERS,
         )
         assert resp.status_code == 400
-        assert "template_yaml is required" in resp.json()["detail"]
+        assert "template_yaml is required" in _detail_text(resp)
 
     def test_import_missing_vms_section(self):
         pid = _create_draft_project()
@@ -181,7 +189,7 @@ class TestImportTemplate:
             headers=HEADERS,
         )
         assert resp.status_code == 400
-        assert "vms" in resp.json()["detail"]
+        assert "vms" in _detail_text(resp)
 
     def test_import_missing_networks_section(self):
         pid = _create_draft_project()
@@ -191,7 +199,7 @@ class TestImportTemplate:
             headers=HEADERS,
         )
         assert resp.status_code == 400
-        assert "networks" in resp.json()["detail"]
+        assert "networks" in _detail_text(resp)
 
     def test_import_non_draft_project(self):
         db = TestSession()
@@ -213,7 +221,7 @@ class TestImportTemplate:
             headers=HEADERS,
         )
         assert resp.status_code == 409
-        assert "draft" in resp.json()["detail"]
+        assert "draft" in _detail_text(resp)
 
     def test_import_not_found(self):
         fake_id = str(uuid.uuid4())
@@ -232,7 +240,7 @@ class TestImportTemplate:
             headers=HEADERS,
         )
         assert resp.status_code == 400
-        assert "YAML mapping" in resp.json()["detail"]
+        assert "YAML mapping" in _detail_text(resp)
 
 
 # ===================================================================
@@ -395,7 +403,7 @@ class TestVmExec:
             headers=HEADERS,
         )
         assert resp.status_code == 400
-        assert "Command is required" in resp.json()["detail"]
+        assert "Command is required" in _detail_text(resp)
 
     def test_exec_project_not_active(self):
         pid = _create_draft_project()
@@ -830,7 +838,7 @@ class TestCreateFromTemplate:
             headers=HEADERS,
         )
         assert resp.status_code == 400
-        assert "template_id or template_yaml is required" in resp.json()["detail"]
+        assert "template_id or template_yaml is required" in _detail_text(resp)
 
     def test_from_template_not_found(self):
         with patch(
@@ -843,7 +851,7 @@ class TestCreateFromTemplate:
                 headers=HEADERS,
             )
         assert resp.status_code == 404
-        assert "not found" in resp.json()["detail"]
+        assert "not found" in _detail_text(resp)
 
     def test_from_template_invalid_bmc_ip(self):
         template = {
@@ -874,7 +882,7 @@ class TestCreateFromTemplate:
                 headers=HEADERS,
             )
         assert resp.status_code == 400
-        assert "Invalid bastion BMC IP" in resp.json()["detail"]
+        assert "Invalid bastion BMC IP" in _detail_text(resp)
 
     def test_from_template_topology_validation_errors(self):
         template = {
@@ -904,7 +912,7 @@ class TestCreateFromTemplate:
                 headers=HEADERS,
             )
         assert resp.status_code == 400
-        assert "duplicate names" in resp.json()["detail"].lower()
+        assert "duplicate names" in _detail_text(resp)
 
 
 # ===================================================================
@@ -976,7 +984,7 @@ class TestImportTemplateAdditional:
                 headers=HEADERS,
             )
         assert resp.status_code == 400
-        assert "duplicate names" in resp.json()["detail"].lower()
+        assert "duplicate names" in _detail_text(resp)
 
     def test_import_invalid_template_raises_400(self):
         pid = _create_draft_project()
@@ -994,7 +1002,7 @@ class TestImportTemplateAdditional:
                 headers=HEADERS,
             )
         assert resp.status_code == 400
-        assert "Invalid template" in resp.json()["detail"]
+        assert "Invalid template" in _detail_text(resp)
 
     def test_import_access_denied(self):
         pid = _create_draft_project()
@@ -1130,7 +1138,7 @@ class TestContainerLifecycle:
                 headers=HEADERS,
             )
         assert resp.status_code == 503
-        assert "connection refused" in resp.json()["detail"]
+        assert "connection refused" in _detail_text(resp)
 
 
 # ===================================================================
@@ -1251,7 +1259,7 @@ class TestVmExecExtended:
             headers=HEADERS,
         )
         assert resp.status_code == 400
-        assert "Command is required" in resp.json()["detail"]
+        assert "Command is required" in _detail_text(resp)
 
     def test_exec_wrong_state(self):
         pid = _create_draft_project()
@@ -1285,7 +1293,7 @@ class TestVmExecExtended:
             headers=HEADERS,
         )
         assert resp.status_code == 503
-        assert "no password" in resp.json()["detail"].lower()
+        assert "no password" in _detail_text(resp)
 
 
 # ===================================================================
@@ -1303,7 +1311,7 @@ class TestReconfigure:
             headers=HEADERS,
         )
         assert resp.status_code == 409
-        assert "draft" in resp.json()["detail"]
+        assert "draft" in _detail_text(resp)
 
     def test_reconfigure_deploying_state(self):
         db = TestSession()
@@ -1336,7 +1344,7 @@ class TestReconfigure:
             headers=HEADERS,
         )
         assert resp.status_code == 409
-        assert "deploying" in resp.json()["detail"]
+        assert "deploying" in _detail_text(resp)
 
     def test_reconfigure_no_host(self):
         db = TestSession()
@@ -1358,7 +1366,7 @@ class TestReconfigure:
             headers=HEADERS,
         )
         assert resp.status_code == 400
-        assert "no active deployment" in resp.json()["detail"].lower()
+        assert "no active deployment" in _detail_text(resp)
 
     def test_reconfigure_success(self):
         pid, _hid = _create_active_project_with_host()
@@ -1504,7 +1512,7 @@ class TestBuildKubevirtVmSpec:
                     "data": {
                         "label": "test-vm",
                         "vcpus": 4,
-                        "ram": 8,
+                        "ram_gb": 8,
                         "nics": [{"ip": "10.0.0.5"}],
                         "firmware": "uefi",
                         "bootDevices": ["disk-1"],
@@ -1533,7 +1541,7 @@ class TestBuildKubevirtVmSpec:
                 {
                     "id": "vm-1",
                     "type": "vmNode",
-                    "data": {"label": "vm", "vcpus": 2, "ram": 4, "nics": []},
+                    "data": {"label": "vm", "vcpus": 2, "ram_gb": 4, "nics": []},
                 },
             ],
             "edges": [],
@@ -1644,7 +1652,7 @@ class TestDoReconfigureBg:
                     "data": {
                         "label": "test-vm",
                         "vcpus": 2,
-                        "ram": 4,
+                        "ram_gb": 4,
                         "nics": [{"ip": "192.168.1.10"}],
                         "ciCloudUserPassword": "pass",
                     },

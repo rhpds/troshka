@@ -636,3 +636,89 @@ def test_ceph_cluster_phase_raises_on_forbidden():
     with pytest.raises(ApiException) as ei:
         ceph_cluster_phase(custom_api, "troshka-abc")
     assert ei.value.status == 403
+
+
+def test_appliance_osd_index_from_label_and_name():
+    from helpers.rook_ceph import _appliance_osd_index
+
+    labeled = _mock_pvc("anything", "50Gi", {"troshka-ceph-osd-index": "2"})
+    assert _appliance_osd_index(labeled) == 2
+
+    named = _mock_pvc("troshka-ceph-osd-3", "50Gi")
+    assert _appliance_osd_index(named) == 3
+
+    with pytest.raises(ValueError, match="missing troshka-ceph-osd-index"):
+        _appliance_osd_index(_mock_pvc("bad-name", "50Gi"))
+
+
+def test_collect_osd_device_entries_validates():
+    from helpers.rook_ceph import _collect_osd_device_entries
+
+    def osd_name(i):
+        return f"troshka-ceph-osd-{i}"
+
+    pvcs = [
+        _mock_pvc("troshka-ceph-osd-0", "50Gi", {"troshka-ceph-osd-index": "0"}),
+        _mock_pvc("troshka-ceph-osd-1", "50Gi", {"troshka-ceph-osd-index": "1"}),
+    ]
+    devices = _collect_osd_device_entries(pvcs, 2, osd_name)
+    assert [d["index"] for d in devices] == [0, 1]
+    assert all(d["kind"] == "ceph-osd" for d in devices)
+
+    with pytest.raises(ValueError, match="expected 3"):
+        _collect_osd_device_entries(pvcs, 3, osd_name)
+
+    dup = [
+        _mock_pvc("troshka-ceph-osd-0", "50Gi", {"troshka-ceph-osd-index": "0"}),
+        _mock_pvc("troshka-ceph-osd-1", "50Gi", {"troshka-ceph-osd-index": "0"}),
+    ]
+    with pytest.raises(ValueError, match="duplicate"):
+        _collect_osd_device_entries(dup, 2, osd_name)
+
+
+def test_export_job_needs_recreate_states():
+    from helpers.rook_ceph import _export_job_needs_recreate
+
+    batch_api = MagicMock()
+    core_api = MagicMock()
+
+    succeeded = MagicMock()
+    succeeded.status = MagicMock(succeeded=1, failed=0)
+    with patch(
+        "helpers.rook_ceph.ceph_external_details_exported", return_value=True
+    ):
+        assert _export_job_needs_recreate(batch_api, core_api, "ns", succeeded) is False
+
+    with patch(
+        "helpers.rook_ceph.ceph_external_details_exported", return_value=False
+    ), patch("helpers.rook_ceph._delete_export_job") as del_job:
+        assert _export_job_needs_recreate(batch_api, core_api, "ns", succeeded) is True
+        del_job.assert_called_once()
+
+    failed = MagicMock()
+    failed.status = MagicMock(succeeded=0, failed=1)
+    with patch("helpers.rook_ceph._delete_export_job") as del_job:
+        assert _export_job_needs_recreate(batch_api, core_api, "ns", failed) is True
+        del_job.assert_called_once()
+
+    running = MagicMock()
+    running.status = MagicMock(succeeded=0, failed=0)
+    assert _export_job_needs_recreate(batch_api, core_api, "ns", running) is False
+
+
+def test_delete_ignore_404_warns_on_other_errors():
+    from helpers.rook_ceph import _delete_ignore_404
+
+    def boom():
+        raise ApiException(status=500)
+
+    with patch("helpers.rook_ceph.logger") as log:
+        _delete_ignore_404(boom, warn_label="thing")
+        log.warning.assert_called_once()
+
+    def missing():
+        raise ApiException(status=404)
+
+    with patch("helpers.rook_ceph.logger") as log:
+        _delete_ignore_404(missing, warn_label="thing")
+        log.warning.assert_not_called()

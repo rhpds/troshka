@@ -100,7 +100,7 @@ def _enforce_project_access(project: Project, user: User) -> None:
     "/projects/{project_id}/workloads",
     response_model=WorkloadRunResponse,
     status_code=202,
-    responses={403: {}, 404: {}, 409: {}},
+    responses={400: {}, 403: {}, 404: {}, 409: {}},
 )
 def trigger_workload_run(
     project_id: str,

@@ -130,6 +130,12 @@ _CLEAR_BASTION_OCP_COOKIES_CMD = (
 _LOG_DEPLOY = "Deploy %s: %s"
 _KUBEVIRT_API = "kubevirt.io"
 _VM_START_FAILED = "Failed to start VM %s: %s"
+_RECERT_MARKER_RE = r"\(recert\)"
+_CDI_API_GROUP = "cdi.kubevirt.io"
+_VMS_START_PATH = "/vms/start"
+_PROJECT_HAS_NO_HOST = "Project has no host"
+_CLUSTER_INSTALL_ALREADY_COMPLETED = "Cluster install already completed"
+_CONTAINERS_EXEC_PATH = "/containers/exec"
 
 
 def _set_deploy_progress(project_id: str, data: dict):
@@ -238,10 +244,29 @@ def _ensure_acme_http01_sg(s, host, project) -> None:
         )
 
 
+def _showroom_dns_and_acme(
+    s, host, project, fqdn, eip, dp_type, dp_config, route53
+) -> None:
+    """Create showroom A-record (if needed) and open HTTP-01 SG for ACME."""
+    from app.services.dns_service import create_dns_records
+
+    if fqdn and dp_type and not fqdn.endswith(".sslip.io"):
+        dns_errors = create_dns_records(
+            dp_type, dp_config, [{"name": fqdn, "type": "A", "value": eip}], ttl=30
+        )
+        if dns_errors:
+            logger.warning(
+                "Deploy %s: showroom DNS record errors: %s",
+                project.id[:8],
+                dns_errors,
+            )
+    if fqdn and not route53.get("access_key_id"):
+        _ensure_acme_http01_sg(s, host, project)
+
+
 def _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns) -> str:
     """Create DNS + cert + TLS terminator for the troshkad showroom. Non-fatal.
     Returns the showroom URL."""
-    from app.services.dns_service import create_dns_records
     from app.services.showroom_scaffold import (
         _find_showroom_container,
         app_proxy_eip_public_host,
@@ -264,19 +289,7 @@ def _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns) -> s
         for h in app_proxy_internal_hosts(tabs)
     ]
     try:
-        # sslip.io needs no A-record create; only real DNS providers get writes.
-        if fqdn and dp_type and not fqdn.endswith(".sslip.io"):
-            dns_errors = create_dns_records(
-                dp_type, dp_config, [{"name": fqdn, "type": "A", "value": eip}], ttl=30
-            )
-            if dns_errors:
-                logger.warning(
-                    "Deploy %s: showroom DNS record errors: %s",
-                    project.id[:8],
-                    dns_errors,
-                )
-        if fqdn and not route53.get("access_key_id"):
-            _ensure_acme_http01_sg(s, host, project)
+        _showroom_dns_and_acme(s, host, project, fqdn, eip, dp_type, dp_config, route53)
         cert = _tls_cert_via_job(host, project.id, fqdn, eip, route53, extra_dns)
         if not cert:
             logger.warning("Deploy %s: showroom cert job failed", project.id[:8])
@@ -770,8 +783,8 @@ def _collect_pxe_boot_isos(nodes, db_session, pool):
     return items
 
 
-def _collect_pattern_disks(nodes, db_session, pool, provider_id=None):
-    """Collect pattern disk items from storage nodes for caching."""
+def _pattern_disk_cache_item(db_session, node, pool, provider_id=None) -> dict | None:
+    """Build one pattern-disk cache item from a storage node, or None if skip."""
     from app.models.pattern import Pattern, PatternDisk
     from app.services.pattern_locations import pattern_disk_source_for_cluster
     from app.services.s3_storage import (
@@ -779,53 +792,55 @@ def _collect_pattern_disks(nodes, db_session, pool, provider_id=None):
         get_cluster_s3_config,
     )
 
+    data = node.get("data", {})
+    pattern_id = data.get("patternId")
+    pattern_disk_id = data.get("patternDiskId")
+    if not (pattern_id and pattern_disk_id):
+        return None
+    pd = (
+        db_session.query(PatternDisk)
+        .filter_by(id=pattern_disk_id, pattern_id=pattern_id)
+        .first()
+    )
+    if not pd or not pd.s3_key:
+        return None
+    cache_path = _pattern_cache_path(
+        pattern_id,
+        pd.source_disk_id,
+        _ext_from_s3_key(pd.s3_key, pd.format),
+        pool,
+    )
+    disk_name = data.get("label") or data.get("name") or node.get("id", "")[:8]
+    pattern_obj = db_session.query(Pattern).filter_by(id=pattern_id).first()
+    source = pattern_disk_source_for_cluster(db_session, pattern_disk_id, provider_id)
+    source_provider_id = (
+        pattern_obj.source_provider_id if source == "obc" and pattern_obj else None
+    )
+    item = {
+        "item_id": pattern_disk_id,
+        "name": disk_name,
+        "s3_key": pd.s3_key,
+        "cache_path": cache_path,
+        "expected_size": pd.size_bytes,
+        "source": source or "local",
+        "source_provider_id": source_provider_id,
+    }
+    if source == "obc" and source_provider_id:
+        obc_cfg = get_cluster_s3_config(db_session, source_provider_id)
+        if obc_cfg:
+            item["download_creds"] = cluster_s3_to_upload_creds(obc_cfg)
+    return item
+
+
+def _collect_pattern_disks(nodes, db_session, pool, provider_id=None):
+    """Collect pattern disk items from storage nodes for caching."""
     items = []
     for node in nodes:
         if node.get("type") != "storageNode":
             continue
-        data = node.get("data", {})
-        pattern_id = data.get("patternId")
-        pattern_disk_id = data.get("patternDiskId")
-        if not (pattern_id and pattern_disk_id):
-            continue
-        pd = (
-            db_session.query(PatternDisk)
-            .filter_by(id=pattern_disk_id, pattern_id=pattern_id)
-            .first()
-        )
-        if not pd or not pd.s3_key:
-            continue
-        cache_path = _pattern_cache_path(
-            pattern_id,
-            pd.source_disk_id,
-            _ext_from_s3_key(pd.s3_key, pd.format),
-            pool,
-        )
-        disk_name = data.get("label") or data.get("name") or node.get("id", "")[:8]
-        pattern_obj = db_session.query(Pattern).filter_by(id=pattern_id).first()
-        source = pattern_disk_source_for_cluster(
-            db_session, pattern_disk_id, provider_id
-        )
-        source_provider_id = (
-            pattern_obj.source_provider_id if source == "obc" and pattern_obj else None
-        )
-        item = {
-            "item_id": pattern_disk_id,
-            "name": disk_name,
-            "s3_key": pd.s3_key,
-            "cache_path": cache_path,
-            "expected_size": pd.size_bytes,
-            "source": source or "local",
-            "source_provider_id": source_provider_id,
-        }
-        if source == "obc" and source_provider_id:
-            obc_cfg = get_cluster_s3_config(db_session, source_provider_id)
-            if obc_cfg:
-                item["download_creds"] = cluster_s3_to_upload_creds(obc_cfg)
-        # central: omit download_creds — the shared read/write bucket is the
-        # instance's own S3 config. gold: omit too — _start_download_jobs routes
-        # gold-source items to the read-only admin store.
-        items.append(item)
+        item = _pattern_disk_cache_item(db_session, node, pool, provider_id)
+        if item:
+            items.append(item)
     return items
 
 
@@ -882,6 +897,32 @@ def _collect_snapshot_disks(nodes, db_session):
     return items
 
 
+def _shared_cache_item_ready(db_session, pool, host, ic) -> bool:
+    """True if shared cache is ready and the file exists (else purge stale entry)."""
+    status, entry = _check_shared_cache(db_session, pool, ic["item_id"], "image")
+    if status != "ready":
+        return False
+    if _verify_shared_cache_file(host, ic):
+        return True
+    if entry:
+        db_session.delete(entry)
+        db_session.commit()
+    return False
+
+
+def _wait_or_claim_shared_cache(db_session, pool, _host, ic) -> str:
+    """Handle downloading/claim. Returns 'skip', 'waited', or 'claim'."""
+    status, _entry = _check_shared_cache(db_session, pool, ic["item_id"], "image")
+    if status != "downloading":
+        return "claim"
+    logger.info("  %s being downloaded by another host, waiting...", ic["name"])
+    if _wait_for_shared_cache(db_session, pool.id, ic["item_id"], "image"):
+        logger.info("  %s now available on shared storage", ic["name"])
+        return "waited"
+    logger.warning("  %s download timed out, will retry", ic["name"])
+    return "claim"
+
+
 def _filter_shared_cache_items(items_to_cache, host, db_session, pool):
     """Filter out items already on shared storage, coordinate concurrent downloads."""
     items_needing_download = []
@@ -889,35 +930,13 @@ def _filter_shared_cache_items(items_to_cache, host, db_session, pool):
         if ic["cache_path"].startswith("/var/lib/troshka/local/"):
             items_needing_download.append(ic)
             continue
-        status, entry = _check_shared_cache(
-            db_session,
-            pool,
-            ic["item_id"],
-            "image",
-        )
-        if status == "ready":
-            if _verify_shared_cache_file(host, ic):
-                continue
-            if entry:
-                db_session.delete(entry)
-                db_session.commit()
-        elif status == "downloading":
-            logger.info(
-                "  %s being downloaded by another host, waiting...",
-                ic["name"],
-            )
-            if _wait_for_shared_cache(db_session, pool.id, ic["item_id"], "image"):
-                logger.info("  %s now available on shared storage", ic["name"])
-                continue
-            logger.warning("  %s download timed out, will retry", ic["name"])
+        if _shared_cache_item_ready(db_session, pool, host, ic):
+            continue
+        outcome = _wait_or_claim_shared_cache(db_session, pool, host, ic)
+        if outcome == "waited":
+            continue
         rel_path = ic["cache_path"].replace("/var/lib/troshka/shared/", "")
-        _create_shared_cache_entry(
-            db_session,
-            pool,
-            ic["item_id"],
-            "image",
-            rel_path,
-        )
+        _create_shared_cache_entry(db_session, pool, ic["item_id"], "image", rel_path)
         items_needing_download.append(ic)
     return items_needing_download
 
@@ -1857,7 +1876,7 @@ def _start_ordered_vms(host, project_id, vms, start_order):
             _time.sleep(delay)
         vm_name = _vm_domain_name(project_id, vm["node_id"])
         try:
-            job_id = start_job(host, "/vms/start", {"domain_name": vm_name})
+            job_id = start_job(host, _VMS_START_PATH, {"domain_name": vm_name})
             wait_for_job(host, job_id, timeout=120)
         except TroshkadError as e:
             logger.warning(_VM_START_FAILED, vm_name, e)
@@ -1889,7 +1908,7 @@ def _start_unordered_vms(host, project_id, vms, ordered_vm_ids, topology):
             continue
         vm_name = _vm_domain_name(project_id, vm["node_id"])
         try:
-            job_id = start_job(host, "/vms/start", {"domain_name": vm_name})
+            job_id = start_job(host, _VMS_START_PATH, {"domain_name": vm_name})
             unordered_jobs.append((vm["name"], vm_name, job_id))
         except TroshkadError as e:
             logger.warning(_VM_START_FAILED, vm_name, e)
@@ -1966,7 +1985,20 @@ def _troshkad_network_entries(networks: list[dict]) -> list[dict]:
     return entries
 
 
-def _pod_create_params(host, project_id, ctr, topology, vni_map, pool=None):
+def _pod_init_containers_for_create(ctr: dict) -> list:
+    """Init containers for /pods/create; drop content builders when pre-built."""
+    init_containers = ctr.get("init_containers", [])
+    if ctr.get("build_content") is False:
+        # Content is pre-built (pattern/snapshot), so skip the content inits
+        # (git-cloner, antora-builder) — but KEEP the nginx-config init, which
+        # (re)writes the pid-specific ui-config.yml / nginx.conf for THIS deploy.
+        # Without it the captured showroom serves the SOURCE project's app-proxy
+        # URLs (e.g. the console tab points at the old project's route -> 503).
+        return [ic for ic in init_containers if ic.get("name") == "nginx-config"]
+    return init_containers
+
+
+def _pod_create_params(_host, project_id, ctr, topology, vni_map, pool=None):
     """Build troshkad /pods/create params for a container pod node."""
     pod_name = ctr["name"]
     networks = _find_container_networks(ctr["node_id"], topology, vni_map, project_id)
@@ -1981,16 +2013,7 @@ def _pod_create_params(host, project_id, ctr, topology, vni_map, pool=None):
                 result.append(f"{vol['mount_dir']}:{m.get('mountPath', '/data')}")
         return result
 
-    init_containers = ctr.get("init_containers", [])
-    if ctr.get("build_content") is False:
-        # Content is pre-built (pattern/snapshot), so skip the content inits
-        # (git-cloner, antora-builder) — but KEEP the nginx-config init, which
-        # (re)writes the pid-specific ui-config.yml / nginx.conf for THIS deploy.
-        # Without it the captured showroom serves the SOURCE project's app-proxy
-        # URLs (e.g. the console tab points at the old project's route -> 503).
-        init_containers = [
-            ic for ic in init_containers if ic.get("name") == "nginx-config"
-        ]
+    init_containers = _pod_init_containers_for_create(ctr)
 
     return {
         "project_id": project_id,
@@ -2246,7 +2269,7 @@ def _ops_pod_cluster_complete(project_id: str, cluster: dict) -> bool:
 
 def _expand_ops_pod_clusters_for_reconfigure(
     topology: dict,
-    deployed: dict,
+    _deployed: dict,
     clusters: list[dict],
     project_id: str,
 ) -> list[dict]:
@@ -2903,6 +2926,24 @@ def _kubevirt_ops_pod_dns(net_ip_assignments):
     return ".".join(str(net.network_address).split(".")[:3] + ["2"])
 
 
+def _effective_dns_ip_for_network(data: dict, kubevirt: bool) -> str | None:
+    """Compute display DNS IP for a cluster network node, or None if unusable."""
+    import ipaddress
+
+    cidr = data.get("cidr")
+    if not cidr:
+        return None
+    explicit = str(data.get("dnsServerIp") or "").strip()
+    if explicit:
+        return explicit
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return None
+    octet = "2" if kubevirt else "1"
+    return ".".join(str(net.network_address).split(".")[:3] + [octet])
+
+
 def _stamp_effective_dns_ips(topology, kubevirt):
     """Record each cluster network's effective DNS IP for the palette to display.
 
@@ -2912,29 +2953,16 @@ def _stamp_effective_dns_ips(topology, kubevirt):
     network node in the deployed topology (a read-only display value — never the
     user's override). The canvas surfaces it as the DNS field placeholder.
     """
-    import ipaddress
-
     for node in topology.get("nodes", []) or []:
         if node.get("type") != "networkNode":
             continue
         data = node.get("data") or {}
         if data.get("subtype") != "network" or data.get("networkType") == "bmc":
             continue
-        cidr = data.get("cidr")
-        if not cidr:
+        effective = _effective_dns_ip_for_network(data, kubevirt)
+        if not effective:
             continue
-        explicit = str(data.get("dnsServerIp") or "").strip()
-        if explicit:
-            data["effectiveDnsIp"] = explicit
-        else:
-            try:
-                net = ipaddress.ip_network(cidr, strict=False)
-            except ValueError:
-                continue
-            octet = "2" if kubevirt else "1"
-            data["effectiveDnsIp"] = ".".join(
-                str(net.network_address).split(".")[:3] + [octet]
-            )
+        data["effectiveDnsIp"] = effective
         node["data"] = data
 
 
@@ -3055,6 +3083,20 @@ def _kubevirt_project_ns(provider, project_id: str) -> str:
     return _project_ns(provider, project_id)
 
 
+def _stamp_recert_keys_on_topology(target: dict, keys: set[str], now: int) -> bool:
+    """Stamp install-started fields on matching clusters in one topology dict."""
+    changed = False
+    for cluster in target.get("clusters") or []:
+        key = str(cluster.get("id") or cluster.get("name") or "")
+        if key not in keys or cluster.get("ocpInstallStartedAt") is not None:
+            continue
+        cluster["ocpInstallStartedAt"] = now
+        cluster["ocpInstallStatus"] = "monitoring"
+        cluster.pop("ocpInstallElapsed", None)
+        changed = True
+    return changed
+
+
 def _stamp_recert_install_started(project, clusters: list) -> bool:
     """Stamp ``ocpInstallStartedAt`` on recert clusters at ops-pod start.
 
@@ -3078,18 +3120,9 @@ def _stamp_recert_install_started(project, clusters: list) -> bool:
         target = getattr(project, target_attr, None)
         if not isinstance(target, dict):
             continue
-        for cluster in target.get("clusters") or []:
-            key = str(cluster.get("id") or cluster.get("name") or "")
-            if key not in keys:
-                continue
-            if cluster.get("ocpInstallStartedAt") is not None:
-                continue
-            cluster["ocpInstallStartedAt"] = now
-            cluster["ocpInstallStatus"] = "monitoring"
-            cluster.pop("ocpInstallElapsed", None)
-            changed = True
-        if changed:
+        if _stamp_recert_keys_on_topology(target, keys, now):
             flag_modified(project, target_attr)
+            changed = True
     return changed
 
 
@@ -3128,12 +3161,25 @@ def resolve_ocp_install_started_at(
 
     if cluster_install_started_at is not None:
         return int(cluster_install_started_at)
-    if re.search(r"\(recert\)", cluster_log or "", re.IGNORECASE):
+    if re.search(_RECERT_MARKER_RE, cluster_log or "", re.IGNORECASE):
         if ocp_monitor_started_at is not None:
             return int(ocp_monitor_started_at.timestamp())
     if deploy_started_at is not None:
         return int(deploy_started_at)
     return None
+
+
+def _cluster_install_start_epochs(topo: dict, cluster_keys: set[str]) -> list[float]:
+    """Collect ocpInstallStartedAt epochs for the given cluster keys."""
+    starts: list[float] = []
+    for cluster in topo.get("clusters") or []:
+        key = str(cluster.get("id") or cluster.get("name") or "")
+        if key not in cluster_keys:
+            continue
+        raw = cluster.get("ocpInstallStartedAt")
+        if isinstance(raw, (int, float)):
+            starts.append(float(raw))
+    return starts
 
 
 def _ops_pod_elapsed_base(
@@ -3155,14 +3201,7 @@ def _ops_pod_elapsed_base(
             return monitor_start
         topo = p.deployed_topology or p.topology or {}
         cluster_keys = {_ops_cluster_key(c) for c in clusters}
-        starts: list[float] = []
-        for cluster in topo.get("clusters") or []:
-            key = str(cluster.get("id") or cluster.get("name") or "")
-            if key not in cluster_keys:
-                continue
-            raw = cluster.get("ocpInstallStartedAt")
-            if isinstance(raw, (int, float)):
-                starts.append(float(raw))
+        starts = _cluster_install_start_epochs(topo, cluster_keys)
         if starts:
             return min(starts)
         recert, install = _partition_ops_pod_clusters(topo, clusters)
@@ -3442,7 +3481,7 @@ def _exec_ops_pod_cat(host, container_name: str, path: str) -> str | None:
     try:
         job_id = start_job(
             host,
-            "/containers/exec",
+            _CONTAINERS_EXEC_PATH,
             {"container_name": container_name, "command": ["cat", path]},
         )
         job = wait_for_job(host, job_id, timeout=30)
@@ -3549,7 +3588,7 @@ def _read_ops_pod_cluster_logs_kubevirt(
 ) -> dict[str, str]:
     ctx = _kubevirt_ops_pod_ctx(host, project_id)
     if not ctx:
-        return {key: "" for key in cluster_keys}
+        return dict.fromkeys(cluster_keys, "")
     core_v1, namespace, pod_name = ctx
     return {
         key: (
@@ -3625,7 +3664,7 @@ def _fail_ops_pod_install_stuck(
     breadcrumb = f"[troshka] {message}"
     cached = cache_ops_pod_logs(
         project_id,
-        {key: breadcrumb for key in cluster_keys},
+        dict.fromkeys(cluster_keys, breadcrumb),
     )
     per_cluster = inject_dead_pod_failures(cached, pod_running=False)
     progress = ops_pod_install_progress(per_cluster)
@@ -3833,7 +3872,7 @@ def read_ops_pod_install_log(host, project_id: str, topology: dict) -> dict[str,
     cluster_keys = [_ops_cluster_key(c) for c in clusters]
     container_name = _ops_pod_container_name(project_id)
     if _ops_pod_live_log_unreachable(host):
-        live = {key: "" for key in cluster_keys}
+        live = dict.fromkeys(cluster_keys, "")
     else:
         live = _read_ops_pod_cluster_logs(
             host, container_name, cluster_keys, OPS_POD_WORKDIR, project_id
@@ -3894,7 +3933,7 @@ def _ops_pod_exec(host, project_id: str, container_name: str, argv, timeout=60) 
     try:
         job_id = start_job(
             host,
-            "/containers/exec",
+            _CONTAINERS_EXEC_PATH,
             {"container_name": container_name, "command": argv},
         )
         job = wait_for_job(host, job_id, timeout=timeout)
@@ -3929,6 +3968,17 @@ def _ops_pod_write_file(
     return "OK" in check
 
 
+def _is_control_plane_vm_data(d: dict) -> bool:
+    """True when VM node data is a control-plane (non-worker) OCP member."""
+    role = d.get("clusterRole") or ""
+    group = (d.get("tags") or {}).get("AnsibleGroup", "")
+    if role == "worker":
+        return False
+    if not role and "workers" in group:
+        return False
+    return True
+
+
 def _recert_cp_member_vm_id(topology: dict, cluster: dict) -> str:
     """A control-plane RHCOS member's VM node id for a cluster (any one — they all
     carry lb-ext.kubeconfig). Empty if none."""
@@ -3938,10 +3988,8 @@ def _recert_cp_member_vm_id(topology: dict, cluster: dict) -> str:
         d = m.get("data", {})
         if d.get("os") != "rhcos":
             continue
-        role = d.get("clusterRole") or ""
-        group = (d.get("tags") or {}).get("AnsibleGroup", "")
-        if role == "worker" or (not role and "workers" in group):
-            continue  # control-plane members only
+        if not _is_control_plane_vm_data(d):
+            continue
         return str(m.get("id") or d.get("id") or "")
     return ""
 
@@ -4220,6 +4268,41 @@ def _maybe_start_recert_delivery(host, project_id: str, clusters: list) -> None:
     )
 
 
+def _apply_ops_pod_pw(d: dict, cid: str, pw) -> bool:
+    """Store a validated kubeadmin password on node data. Returns True if changed."""
+    from app.services.ocp.kubeconfig_merge import is_valid_kubeadmin_password
+
+    if not pw:
+        return False
+    if not is_valid_kubeadmin_password(pw):
+        logger.warning("Skipping invalid kubeadmin password for cluster %s", cid)
+        return False
+    if d.get("ocpKubeadminPassword") == pw:
+        return False
+    d["ocpKubeadminPassword"] = pw
+    return True
+
+
+def _apply_ops_pod_kc(d: dict, cid: str, kc) -> bool:
+    """Store a validated kubeconfig on node data. Returns True if changed."""
+    from app.services.ocp.kubeconfig_merge import is_valid_kubeconfig
+
+    if not kc:
+        return False
+    if isinstance(kc, bytes):
+        kc = kc.decode("utf-8", errors="replace")
+    if not is_valid_kubeconfig(kc):
+        logger.warning(
+            "Skipping invalid kubeconfig for cluster %s (not updating stored creds)",
+            cid,
+        )
+        return False
+    if d.get("ocpKubeconfig") == kc:
+        return False
+    d["ocpKubeconfig"] = kc
+    return True
+
+
 def _apply_ops_pod_creds(topology: dict, creds: dict) -> bool:
     """Write kubeadmin password + kubeconfig onto each cluster's control-plane
     member node (``creds`` maps clusterId -> (pw, kubeconfig)). Skips workers.
@@ -4230,56 +4313,18 @@ def _apply_ops_pod_creds(topology: dict, creds: dict) -> bool:
             continue
         d = node.setdefault("data", {})
         cid = d.get("clusterId")
-        if not cid or cid not in creds:
+        if not cid or cid not in creds or not _is_control_plane_vm_data(d):
             continue
-        role = d.get("clusterRole") or ""
-        group = (d.get("tags") or {}).get("AnsibleGroup", "")
-        if role == "worker" or (not role and "workers" in group):
-            continue  # control-plane members only
         pw, kc = creds[cid]
-        if pw:
-            from app.services.ocp.kubeconfig_merge import is_valid_kubeadmin_password
-
-            if is_valid_kubeadmin_password(pw):
-                if d.get("ocpKubeadminPassword") != pw:
-                    d["ocpKubeadminPassword"] = pw
-                    changed = True
-            else:
-                logger.warning(
-                    "Skipping invalid kubeadmin password for cluster %s",
-                    cid,
-                )
-        if kc:
-            from app.services.ocp.kubeconfig_merge import is_valid_kubeconfig
-
-            if isinstance(kc, bytes):
-                kc = kc.decode("utf-8", errors="replace")
-            if is_valid_kubeconfig(kc):
-                if d.get("ocpKubeconfig") != kc:
-                    d["ocpKubeconfig"] = kc
-                    changed = True
-            else:
-                logger.warning(
-                    "Skipping invalid kubeconfig for cluster %s (not updating stored creds)",
-                    cid,
-                )
+        if _apply_ops_pod_pw(d, cid, pw):
+            changed = True
+        if _apply_ops_pod_kc(d, cid, kc):
+            changed = True
     return changed
 
 
-def _store_ops_pod_creds(
-    host, project_id: str, clusters: list, workdir: str
-) -> set[str]:
-    """After a successful pod install, read each cluster's kubeadmin-password +
-    kubeconfig from the ops pod and persist them on the cluster's control-plane
-    member node, so the UI can surface them (bastionless has no bastion monitor
-    to do it). Best-effort — never raises into the install monitor.
-
-    Returns the set of cluster keys that stored a valid kubeconfig this call
-    (monitor uses this to avoid marking a harvest complete on empty/invalid cat).
-    """
-    from app.core.database import SessionLocal
-    from app.models.project import Project
-    from app.services.ocp.kubeconfig_merge import is_valid_kubeconfig
+def _harvest_ops_pod_creds(host, project_id: str, clusters: list, workdir: str) -> dict:
+    """Read kubeadmin-password + kubeconfig from the ops pod per cluster."""
     from app.services.ocp.ops_pod_install import _cluster_key as _ck
 
     container = _ops_pod_container_name(project_id)
@@ -4294,8 +4339,42 @@ def _store_ops_pod_creds(
         )
         if pw or kc:
             creds[key] = (pw, kc)
-    if not creds:
-        return set()
+    return creds
+
+
+def _valid_kubeconfig_keys(creds: dict) -> set[str]:
+    """Cluster keys whose harvested kubeconfig validates."""
+    from app.services.ocp.kubeconfig_merge import is_valid_kubeconfig
+
+    keys: set[str] = set()
+    for key, (_pw, kc) in creds.items():
+        raw = kc.decode("utf-8", errors="replace") if isinstance(kc, bytes) else kc
+        if is_valid_kubeconfig(raw):
+            keys.add(key)
+    return keys
+
+
+def _maybe_inject_harvested_kubeconfigs(
+    host, project_id, project, topo, deployed
+) -> None:
+    """Inject merged cluster kubeconfigs into the showroom terminal when present."""
+    all_creds = _stored_cluster_creds(deployed) or _stored_cluster_creds(topo)
+    if not all_creds:
+        return
+    _inject_cluster_kubeconfigs(
+        host,
+        project_id,
+        deployed if project.deployed_topology else topo,
+        all_creds,
+        _ocp_clusters(deployed) or _ocp_clusters(topo),
+    )
+
+
+def _persist_ops_pod_creds(host, project_id: str, creds: dict) -> set[str]:
+    """Write harvested creds into topology + inject cluster-terminal kubeconfig."""
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+
     stored_keys: set[str] = set()
     db = SessionLocal()
     try:
@@ -4303,10 +4382,6 @@ def _store_ops_pod_creds(
         if not p:
             return set()
         topo = copy.deepcopy(p.topology or {})
-        # deployed_topology is the SoT for harvested creds — canvas autosave
-        # strips ocpKubeconfig from editable topology (see DEPLOY_TRANSIENT_NODE_KEYS),
-        # so merging from topology alone drops earlier clusters and overwrites
-        # /showroom/kube/config with a partial merge.
         deployed = copy.deepcopy(p.deployed_topology or topo)
         changed_topo = _apply_ops_pod_creds(topo, creds)
         changed_deployed = _apply_ops_pod_creds(deployed, creds)
@@ -4315,31 +4390,45 @@ def _store_ops_pod_creds(
                 p.topology = topo
             p.deployed_topology = deployed
             db.commit()
-        for key, (_pw, kc) in creds.items():
-            raw = kc.decode("utf-8", errors="replace") if isinstance(kc, bytes) else kc
-            if is_valid_kubeconfig(raw):
-                stored_keys.add(key)
-        # Feed the bastionless "cluster terminal" (a showroom container with oc):
-        # merge EVERY harvested cluster into /showroom/kube/config (not just the
-        # cluster harvested this round — multi-cluster projects inject one at a
-        # time as each finishes). Prefer deployed_topology so prior harvests
-        # survive editable-topology wipes.
-        all_creds = _stored_cluster_creds(deployed)
-        if not all_creds:
-            all_creds = _stored_cluster_creds(topo)
-        if all_creds:
-            _inject_cluster_kubeconfigs(
-                host,
-                project_id,
-                deployed if p.deployed_topology else topo,
-                all_creds,
-                _ocp_clusters(deployed) or _ocp_clusters(topo),
-            )
+        stored_keys |= _valid_kubeconfig_keys(creds)
+        _maybe_inject_harvested_kubeconfigs(host, project_id, p, topo, deployed)
     except Exception:
         logger.exception("Failed to store ops-pod creds for %s", project_id[:8])
     finally:
         db.close()
     return stored_keys
+
+
+def _store_ops_pod_creds(
+    host, project_id: str, clusters: list, workdir: str
+) -> set[str]:
+    """After a successful pod install, harvest + persist cluster creds.
+
+    Returns the set of cluster keys that stored a valid kubeconfig this call
+    (monitor uses this to avoid marking a harvest complete on empty/invalid cat).
+    """
+    creds = _harvest_ops_pod_creds(host, project_id, clusters, workdir)
+    if not creds:
+        return set()
+    return _persist_ops_pod_creds(host, project_id, creds)
+
+
+def _validated_stored_creds(d: dict) -> tuple[str, str] | None:
+    """Return ``(pw, kc)`` from node data when either is valid, else None."""
+    from app.services.ocp.kubeconfig_merge import (
+        is_valid_kubeadmin_password,
+        is_valid_kubeconfig,
+    )
+
+    pw = d.get("ocpKubeadminPassword") or ""
+    if not is_valid_kubeadmin_password(pw):
+        pw = ""
+    kc = d.get("ocpKubeconfig") or ""
+    if not kc or not is_valid_kubeconfig(kc):
+        kc = ""
+    if pw or kc:
+        return (pw, kc)
+    return None
 
 
 def _stored_cluster_creds(topology: dict) -> dict:
@@ -4353,25 +4442,11 @@ def _stored_cluster_creds(topology: dict) -> dict:
             continue
         d = node.get("data", {})
         cid = d.get("clusterId")
-        if not cid or cid in creds:
+        if not cid or cid in creds or not _is_control_plane_vm_data(d):
             continue
-        role = d.get("clusterRole") or ""
-        group = (d.get("tags") or {}).get("AnsibleGroup", "")
-        if role == "worker" or (not role and "workers" in group):
-            continue  # control-plane members only
-        from app.services.ocp.kubeconfig_merge import (
-            is_valid_kubeadmin_password,
-            is_valid_kubeconfig,
-        )
-
-        pw = d.get("ocpKubeadminPassword") or ""
-        if not is_valid_kubeadmin_password(pw):
-            pw = ""
-        kc = d.get("ocpKubeconfig") or ""
-        if not kc or not is_valid_kubeconfig(kc):
-            kc = ""
-        if pw or kc:
-            creds[cid] = (pw, kc)
+        pair = _validated_stored_creds(d)
+        if pair:
+            creds[cid] = pair
     return creds
 
 
@@ -4508,7 +4583,7 @@ def _inject_cluster_kubeconfigs(
     try:
         job_id = start_job(
             host,
-            "/containers/exec",
+            _CONTAINERS_EXEC_PATH,
             {"container_name": container, "command": ["sh", "-c", script]},
         )
         wait_for_job(host, job_id, timeout=30)
@@ -4706,9 +4781,7 @@ def _cancel_ops_pod_install(host, project_id: str, cluster_keys) -> None:
         _cancel_ops_pod_install_kubevirt(host, project_id)
     else:
         _cancel_ops_pod_install_troshkad(host, project_id)
-    progress = ops_pod_install_progress(
-        {key: "" for key in cluster_keys}, cancelled=True
-    )
+    progress = ops_pod_install_progress(dict.fromkeys(cluster_keys, ""), cancelled=True)
     _publish_ops_pod_progress(project_id, progress)
 
 
@@ -4769,19 +4842,19 @@ def validate_restart_ocp_cluster_install(
     if ocp_install_via(topology) != "pod":
         return "Restart install is only supported for pod-based installs"
     if not host:
-        return "Project has no host"
+        return _PROJECT_HAS_NO_HOST
     cluster = _cluster_for_key(topology, cluster_key)
     if not cluster:
         return f"Cluster {cluster_key} not found"
     if not _cluster_install_on_deploy(cluster):
         return "Cluster is not configured for install on deploy"
     if _ops_pod_cluster_complete(project.id, cluster):
-        return "Cluster install already completed"
+        return _CLUSTER_INSTALL_ALREADY_COMPLETED
     deployed = project.deployed_topology or topology
     if _cluster_ocp_install_status(deployed, cluster_key) == "ready":
-        return "Cluster install already completed"
+        return _CLUSTER_INSTALL_ALREADY_COMPLETED
     log = _cluster_install_log_text(host, project.id, topology, cluster_key)
-    if re.search(r"\(recert\)", log, re.IGNORECASE):
+    if re.search(_RECERT_MARKER_RE, log, re.IGNORECASE):
         return "Cannot restart a recert install"
     status = _cluster_ocp_install_status(deployed, cluster_key)
     if status != "error" and _phase_from_input(log) != PHASE_FAILED:
@@ -4877,7 +4950,7 @@ def _ocp_boot_disks(vm_disks: list[dict]) -> list[dict]:
         return []
     for disk in qcow2:
         name = str(disk.get("name") or "")
-        if name.endswith("-disk0") or name.endswith("disk0"):
+        if name.endswith(("-disk0", "disk0")):
             return [disk]
     return [min(qcow2, key=lambda d: d.get("size_gb") or d.get("size") or 9999)]
 
@@ -5049,43 +5122,35 @@ def _topology_vm_name(topology: dict, vm_node_id: str) -> str:
     return vm_node_id
 
 
-def _restart_cluster_post_boot_cleanup(
-    s, host, project_id: str, topology: dict, cluster: dict
-) -> None:
-    """Stop cluster VMs and wipe boot disks; BMC ISO boot powers nodes back on."""
-    cluster_key = str(cluster.get("id") or cluster.get("name") or "")
-    vms = _cluster_member_vm_entries(topology, cluster)
-    _append_restart_install_log_breadcrumb(
-        project_id,
-        cluster_key,
-        "post-boot restart: wiping boot disks before re-install",
-    )
+def _wipe_cluster_boot_disks_kubevirt(
+    s, host, project_id: str, topology: dict, cluster_key: str, vms: list
+) -> int:
+    """Stop KubeVirt cluster VMs and wipe boot disks. Returns wipe count."""
     wipe_count = 0
-    if host.host_type == "kubevirt-cluster":
-        _stop_kubevirt_vms(s, host, project_id, vms, force=True)
-        for vm in vms:
-            vm_name = _topology_vm_name(topology, vm["node_id"])
-            kv_name = f"troshka-vm-{vm['node_id'][:8]}"
-            boot_disks = _ocp_boot_disks(_find_vm_disks(vm["node_id"], topology))
-            if not boot_disks:
-                continue
-            disk_ids = [d["node_id"] for d in boot_disks]
-            _wipe_vm_boot_disk_kubevirt(s, host, project_id, vm["node_id"], disk_ids)
-            wipe_count += len(boot_disks)
-            vol_names = ", ".join(f"disk-{d['node_id'][:8]}" for d in boot_disks)
-            _append_restart_install_log_breadcrumb(
-                project_id,
-                cluster_key,
-                f"wiped boot disk on {kv_name} ({vm_name}, {vol_names})",
-            )
+    _stop_kubevirt_vms(s, host, project_id, vms, force=True)
+    for vm in vms:
+        vm_name = _topology_vm_name(topology, vm["node_id"])
+        kv_name = f"troshka-vm-{vm['node_id'][:8]}"
+        boot_disks = _ocp_boot_disks(_find_vm_disks(vm["node_id"], topology))
+        if not boot_disks:
+            continue
+        disk_ids = [d["node_id"] for d in boot_disks]
+        _wipe_vm_boot_disk_kubevirt(s, host, project_id, vm["node_id"], disk_ids)
+        wipe_count += len(boot_disks)
+        vol_names = ", ".join(f"disk-{d['node_id'][:8]}" for d in boot_disks)
         _append_restart_install_log_breadcrumb(
             project_id,
             cluster_key,
-            f"boot disk wipe complete ({wipe_count} disk(s))",
+            f"wiped boot disk on {kv_name} ({vm_name}, {vol_names})",
         )
-        return
-    if not host.ip_address:
-        return
+    return wipe_count
+
+
+def _wipe_cluster_boot_disks_troshkad(
+    s, host, project_id: str, topology: dict, cluster_key: str, vms: list
+) -> int:
+    """Force-off troshkad cluster VMs and wipe qcow2 boot disks. Returns wipe count."""
+    wipe_count = 0
     _force_off_troshkad_vms(host, project_id, vms)
     pool = _get_host_pool(host, s)
     for vm in vms:
@@ -5102,6 +5167,30 @@ def _restart_cluster_post_boot_cleanup(
             project_id,
             cluster_key,
             f"wiped boot disk on {dom} ({vm_name}, {qcow2_count} qcow2 disk(s))",
+        )
+    return wipe_count
+
+
+def _restart_cluster_post_boot_cleanup(
+    s, host, project_id: str, topology: dict, cluster: dict
+) -> None:
+    """Stop cluster VMs and wipe boot disks; BMC ISO boot powers nodes back on."""
+    cluster_key = str(cluster.get("id") or cluster.get("name") or "")
+    vms = _cluster_member_vm_entries(topology, cluster)
+    _append_restart_install_log_breadcrumb(
+        project_id,
+        cluster_key,
+        "post-boot restart: wiping boot disks before re-install",
+    )
+    if host.host_type == "kubevirt-cluster":
+        wipe_count = _wipe_cluster_boot_disks_kubevirt(
+            s, host, project_id, topology, cluster_key, vms
+        )
+    elif not host.ip_address:
+        return
+    else:
+        wipe_count = _wipe_cluster_boot_disks_troshkad(
+            s, host, project_id, topology, cluster_key, vms
         )
     _append_restart_install_log_breadcrumb(
         project_id,
@@ -5131,7 +5220,7 @@ def restart_ocp_cluster_install(project_id: str, cluster_key: str) -> None:
         if not cluster:
             raise RuntimeError(f"Cluster {cluster_key} not found")
         if not host:
-            raise RuntimeError("Project has no host")
+            raise RuntimeError(_PROJECT_HAS_NO_HOST)
 
         post_boot = bool(
             (
@@ -5207,24 +5296,43 @@ def validate_cancel_ocp_cluster_install(
     if ocp_install_via(topology) != "pod":
         return "Cancel install is only supported for pod-based installs"
     if not host:
-        return "Project has no host"
+        return _PROJECT_HAS_NO_HOST
     cluster = _cluster_for_key(topology, cluster_key)
     if not cluster:
         return f"Cluster {cluster_key} not found"
     if not _cluster_install_on_deploy(cluster):
         return "Cluster is not configured for install on deploy"
     if _ops_pod_cluster_complete(project.id, cluster):
-        return "Cluster install already completed"
+        return _CLUSTER_INSTALL_ALREADY_COMPLETED
     deployed = project.deployed_topology or topology
     if _cluster_ocp_install_status(deployed, cluster_key) == "ready":
-        return "Cluster install already completed"
+        return _CLUSTER_INSTALL_ALREADY_COMPLETED
     log = _cluster_install_log_text(host, project.id, topology, cluster_key)
-    if re.search(r"\(recert\)", log, re.IGNORECASE):
+    if re.search(_RECERT_MARKER_RE, log, re.IGNORECASE):
         return "Cannot cancel a recert install"
     status = _cluster_ocp_install_status(deployed, cluster_key)
     if status == "error":
         return "Cluster install is not running"
     return None
+
+
+def _finalize_cancelled_cluster_installs(
+    project_id: str, deployed: dict, cluster_key: str, elapsed_now: int
+) -> list[str]:
+    """Mark requested + in-flight clusters failed; return affected keys."""
+    from app.services.ocp.ops_pod_install import PHASE_FAILED
+
+    affected_keys: list[str] = []
+    for cluster in deployed.get("clusters") or []:
+        key = str(cluster.get("id") or cluster.get("name") or "")
+        status = cluster.get("ocpInstallStatus")
+        if (key == cluster_key or status == "monitoring") and status != "ready":
+            affected_keys.append(key)
+            _finalize_cluster_ocp_status(project_id, key, PHASE_FAILED, elapsed_now)
+    if cluster_key not in affected_keys:
+        _finalize_cluster_ocp_status(project_id, cluster_key, PHASE_FAILED, elapsed_now)
+        affected_keys.append(cluster_key)
+    return affected_keys
 
 
 def cancel_ocp_cluster_install(project_id: str, cluster_key: str) -> None:
@@ -5258,25 +5366,11 @@ def cancel_ocp_cluster_install(project_id: str, cluster_key: str) -> None:
         elapsed_base = _project_deploy_start_epoch(project_id) or _time.time()
         elapsed_now = int(_time.time() - elapsed_base)
         deployed = project.deployed_topology or topology
-        affected_keys: list[str] = []
-        for cluster in deployed.get("clusters") or []:
-            key = str(cluster.get("id") or cluster.get("name") or "")
-            status = cluster.get("ocpInstallStatus")
-            if key == cluster_key or status == "monitoring":
-                if status != "ready":
-                    affected_keys.append(key)
-                    _finalize_cluster_ocp_status(
-                        project_id, key, PHASE_FAILED, elapsed_now
-                    )
-        if cluster_key not in affected_keys:
-            _finalize_cluster_ocp_status(
-                project_id, cluster_key, PHASE_FAILED, elapsed_now
-            )
-            affected_keys.append(cluster_key)
-        _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
-        progress = ops_pod_install_progress(
-            {key: PHASE_FAILED for key in affected_keys}
+        affected_keys = _finalize_cancelled_cluster_installs(
+            project_id, deployed, cluster_key, elapsed_now
         )
+        _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
+        progress = ops_pod_install_progress(dict.fromkeys(affected_keys, PHASE_FAILED))
         _publish_ops_pod_progress(project_id, progress)
         logger.info(
             "Cancel %s: stopped ops pod install for cluster %s",
@@ -5349,6 +5443,15 @@ def _apply_cluster_ocp_install_status(
     return changed
 
 
+def _aggregate_cluster_ocp_status(statuses: list[str]) -> str:
+    """Pick project-level ocp_status from per-cluster install statuses."""
+    if any(s == "monitoring" for s in statuses):
+        return "monitoring"
+    if any(s == "ready" for s in statuses):
+        return "ready"
+    return "error"
+
+
 def _sync_project_ocp_status_from_clusters(project_id: str, elapsed_secs: int) -> None:
     """Derive project ``ocp_status`` from per-cluster ``ocpInstallStatus`` values.
 
@@ -5373,13 +5476,8 @@ def _sync_project_ocp_status_from_clusters(project_id: str, elapsed_secs: int) -
         ]
         if not statuses:
             return
-        if any(s == "monitoring" for s in statuses):
-            project.ocp_status = "monitoring"
-        elif any(s == "ready" for s in statuses):
-            project.ocp_status = "ready"
-            project.ocp_install_elapsed = elapsed_secs
-        else:
-            project.ocp_status = "error"
+        project.ocp_status = _aggregate_cluster_ocp_status(statuses)
+        if project.ocp_status in ("ready", "error"):
             project.ocp_install_elapsed = elapsed_secs
         db.commit()
     except Exception:
@@ -5446,6 +5544,149 @@ def _finalize_ops_pod_ocp_status(
         _ocp_update_status(project_id, status, elapsed_secs)
 
 
+def _ops_pod_harvest_and_finalize(
+    project_id: str,
+    host,
+    clusters: list[dict],
+    per_cluster: dict,
+    progress: dict,
+    workdir: str,
+    elapsed_now: int,
+    harvested_creds: set[str],
+    finalized_clusters: set[str],
+) -> None:
+    """Harvest creds and finalize terminal clusters for one monitor poll."""
+    from app.services.ocp.ops_pod_install import (
+        PHASE_COMPLETE,
+        PHASE_FAILED,
+        cluster_install_complete_in_log,
+    )
+    from app.services.ocp.ops_pod_install import (
+        _cluster_key as _ops_cluster_key,
+    )
+
+    for cluster in clusters:
+        key = _ops_cluster_key(cluster)
+        log = per_cluster.get(key, "")
+        if key not in harvested_creds and cluster_install_complete_in_log(log, key):
+            try:
+                stored = _store_ops_pod_creds(host, project_id, [cluster], workdir)
+                harvested_creds.update(stored or set())
+            except Exception:
+                logger.exception(
+                    "Ops pod %s: cred harvest for %s failed",
+                    project_id[:8],
+                    key,
+                )
+        phase = progress["clusters"].get(key)
+        if key not in finalized_clusters and phase in (PHASE_COMPLETE, PHASE_FAILED):
+            _finalize_cluster_ocp_status(project_id, key, phase, elapsed_now)
+            finalized_clusters.add(key)
+
+
+def _ops_pod_on_install_done(
+    project_id: str, host, cluster_keys: list[str], progress: dict, elapsed_now: int
+) -> str:
+    """Handle monitor completion: reap on full success, enqueue workloads, release lock."""
+    from app.services.ocp.ops_pod_install import PHASE_COMPLETE
+
+    _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
+    all_complete = all(
+        progress["clusters"].get(key) == PHASE_COMPLETE for key in cluster_keys
+    )
+    if all_complete:
+        try:
+            _cancel_ops_pod_install(host, project_id, cluster_keys)
+            logger.info("Ops pod %s: reaped after successful install", project_id[:8])
+        except Exception:
+            logger.exception("Ops pod %s: reap after install failed", project_id[:8])
+        _persist_control_plane_usable_milestone(project_id, elapsed_now)
+        try:
+            from app.services.workloads.template_workloads import (
+                maybe_enqueue_template_workloads,
+            )
+
+            maybe_enqueue_template_workloads(project_id)
+        except Exception:
+            logger.exception(
+                "Ops pod %s: template workload enqueue failed",
+                project_id[:8],
+            )
+    _release_ops_monitor_lock(project_id)
+    return progress["overall"]
+
+
+def _ops_pod_monitor_sleep(project_id: str, poll_interval: int) -> str | None:
+    """Sleep up to poll_interval seconds; return 'superseded' if exit requested."""
+    import time as _t
+
+    for _ in range(poll_interval):
+        if _ops_monitor_exit_requested(project_id):
+            _clear_ops_monitor_exit_request(project_id)
+            _release_ops_monitor_lock(project_id)
+            return "superseded"
+        _t.sleep(1)
+    return None
+
+
+def _ops_pod_monitor_timeout(
+    project_id: str,
+    clusters: list[dict],
+    finalized_clusters: set[str],
+    elapsed_base: float,
+) -> str:
+    """Finalize unfinished clusters as failed after the monitor deadline."""
+    import time as _t
+
+    from app.services.ocp.ops_pod_install import PHASE_FAILED
+    from app.services.ocp.ops_pod_install import (
+        _cluster_key as _ops_cluster_key,
+    )
+
+    logger.warning("Ops pod %s: install monitor timed out", project_id[:8])
+    elapsed_now = int(_t.time() - elapsed_base)
+    for cluster in clusters:
+        key = _ops_cluster_key(cluster)
+        if key in finalized_clusters:
+            continue
+        _finalize_cluster_ocp_status(project_id, key, PHASE_FAILED, elapsed_now)
+    _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
+    _release_ops_monitor_lock(project_id)
+    return "timeout"
+
+
+def _ops_pod_monitor_precheck(
+    project_id: str, host, cluster_keys: list[str], elapsed_base: float
+) -> str | None:
+    """Handle supersede/cancel/heal before a monitor poll. Return status or None.
+
+    Special return ``"reschedule"`` means the pod was rescheduled — caller should
+    reset the dead-poll counter and continue.
+    """
+    import time as _t
+
+    if _ops_monitor_exit_requested(project_id):
+        _clear_ops_monitor_exit_request(project_id)
+        _release_ops_monitor_lock(project_id)
+        return "superseded"
+    if _is_deploy_cancelled(project_id):
+        _cancel_ops_pod_install(host, project_id, cluster_keys)
+        _release_ops_monitor_lock(project_id)
+        return "cancelled"
+    heal = _maybe_heal_stuck_ops_pod(host, project_id)
+    if heal.get("action") == "exhausted":
+        return _fail_ops_pod_install_stuck(
+            project_id,
+            host,
+            cluster_keys,
+            heal.get("message") or "ops pod sandbox stuck after reschedule attempts",
+            int(_t.time() - elapsed_base),
+        )
+    if heal.get("action") == "reschedule":
+        return "reschedule"
+    return None
+
+
 def _monitor_ops_pod_install(
     project_id: str,
     host,
@@ -5468,14 +5709,11 @@ def _monitor_ops_pod_install(
     import time as _t
 
     from app.services.ocp.ops_pod_install import (
-        PHASE_COMPLETE,
-        PHASE_FAILED,
-        cluster_install_complete_in_log,
-        inject_dead_pod_failures,
-        ops_pod_install_progress,
+        _cluster_key as _ops_cluster_key,
     )
     from app.services.ocp.ops_pod_install import (
-        _cluster_key as _ops_cluster_key,
+        inject_dead_pod_failures,
+        ops_pod_install_progress,
     )
     from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
 
@@ -5492,46 +5730,19 @@ def _monitor_ops_pod_install(
     harvested_creds: set[str] = set()
 
     while _t.time() < deadline:
-        _refresh_ops_monitor_lock(
-            project_id
-        )  # heartbeat: keep the per-project lock alive
-        if _ops_monitor_exit_requested(project_id):
-            _clear_ops_monitor_exit_request(project_id)
-            _release_ops_monitor_lock(project_id)
-            return "superseded"
-        if _is_deploy_cancelled(project_id):
-            _cancel_ops_pod_install(host, project_id, cluster_keys)
-            _release_ops_monitor_lock(project_id)
-            return "cancelled"
-        # KubeVirt: reschedule ops pods stuck in ContainerCreating / Multus
-        # sandbox (Pending ≠ dead for the dead-poll path, so without this the
-        # monitor would hang until the install timeout).
-        heal = _maybe_heal_stuck_ops_pod(host, project_id)
-        if heal.get("action") == "exhausted":
-            return _fail_ops_pod_install_stuck(
-                project_id,
-                host,
-                cluster_keys,
-                heal.get("message")
-                or "ops pod sandbox stuck after reschedule attempts",
-                int(_t.time() - elapsed_base),
-            )
-        if heal.get("action") == "reschedule":
-            dead_count = 0  # new pod is Pending (alive); don't dead-poll it
-        # Persist the raw per-cluster logs (keep-longest) AND use the merged
-        # result for phase detection. Restarts append a resume marker instead of
-        # truncating, but keep-longest still guards any transient read races.
+        _refresh_ops_monitor_lock(project_id)
+        early = _ops_pod_monitor_precheck(project_id, host, cluster_keys, elapsed_base)
+        if early is not None:
+            if early == "reschedule":
+                dead_count = 0
+            else:
+                return early
         per_cluster = cache_ops_pod_logs(
             project_id,
             _read_ops_pod_cluster_logs(
                 host, container_name, cluster_keys, workdir, project_id
             ),
         )
-        # Dead-job detection: a crashed pod can never finish a non-terminal
-        # cluster. But the pod is restart_policy=always + idempotent, so a brief
-        # restart window is recoverable — only fail after _OPS_POD_DEAD_POLLS
-        # CONSECUTIVE confirmed-not-running polls (transient status errors reset
-        # the counter, see _ops_pod_running / _next_ops_pod_dead_count).
         dead_count = _next_ops_pod_dead_count(
             dead_count, _ops_pod_running(host, container_name, project_id)
         )
@@ -5541,88 +5752,32 @@ def _monitor_ops_pod_install(
         progress = ops_pod_install_progress(per_cluster)
         _publish_ops_pod_progress(project_id, progress)
         elapsed_now = int(_t.time() - elapsed_base)
-
-        for cluster in clusters:
-            key = _ops_cluster_key(cluster)
-            log = per_cluster.get(key, "")
-            if key not in harvested_creds and cluster_install_complete_in_log(log, key):
-                try:
-                    stored = _store_ops_pod_creds(host, project_id, [cluster], workdir)
-                    # Only mark harvested when a valid kubeconfig was stored —
-                    # empty/invalid cat should retry next poll.
-                    harvested_creds.update(stored or set())
-                except Exception:
-                    logger.exception(
-                        "Ops pod %s: cred harvest for %s failed",
-                        project_id[:8],
-                        key,
-                    )
-            phase = progress["clusters"].get(key)
-            if key not in finalized_clusters and phase in (
-                PHASE_COMPLETE,
-                PHASE_FAILED,
-            ):
-                _finalize_cluster_ocp_status(project_id, key, phase, elapsed_now)
-                finalized_clusters.add(key)
-        # Detect control-plane-usable milestone: once per cluster, when the marker
-        # first appears in the log, persist the timestamp + elapsed and publish a
-        # one-time progress notification.
+        _ops_pod_harvest_and_finalize(
+            project_id,
+            host,
+            clusters,
+            per_cluster,
+            progress,
+            workdir,
+            elapsed_now,
+            harvested_creds,
+            finalized_clusters,
+        )
         _check_control_plane_usable_milestone(
             project_id, per_cluster, cluster_keys, elapsed_now
         )
-        # After deferred workers converge, flip powerOnAtDeploy so pattern
-        # capture boots them on the next deploy (they are already joined).
         _check_deferred_workers_joined(project_id, per_cluster, clusters)
         if progress["done"]:
-            _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
-            # Reap only when every cluster succeeded — never because a sibling
-            # finished while another is still terminal-failed or converging.
-            all_complete = all(
-                progress["clusters"].get(key) == PHASE_COMPLETE for key in cluster_keys
+            return _ops_pod_on_install_done(
+                project_id, host, cluster_keys, progress, elapsed_now
             )
-            if all_complete:
-                try:
-                    _cancel_ops_pod_install(host, project_id, cluster_keys)
-                    logger.info(
-                        "Ops pod %s: reaped after successful install", project_id[:8]
-                    )
-                except Exception:
-                    logger.exception(
-                        "Ops pod %s: reap after install failed", project_id[:8]
-                    )
-                # Install-complete implies usable; backfill the milestone when the
-                # log marker was missed so API + template enqueue gates agree.
-                _persist_control_plane_usable_milestone(project_id, elapsed_now)
-                try:
-                    from app.services.workloads.template_workloads import (
-                        maybe_enqueue_template_workloads,
-                    )
+        early = _ops_pod_monitor_sleep(project_id, poll_interval)
+        if early:
+            return early
 
-                    maybe_enqueue_template_workloads(project_id)
-                except Exception:
-                    logger.exception(
-                        "Ops pod %s: template workload enqueue failed",
-                        project_id[:8],
-                    )
-            _release_ops_monitor_lock(project_id)
-            return progress["overall"]
-        for _ in range(poll_interval):
-            if _ops_monitor_exit_requested(project_id):
-                _clear_ops_monitor_exit_request(project_id)
-                _release_ops_monitor_lock(project_id)
-                return "superseded"
-            _t.sleep(1)
-
-    logger.warning("Ops pod %s: install monitor timed out", project_id[:8])
-    elapsed_now = int(_t.time() - elapsed_base)
-    for cluster in clusters:
-        key = _ops_cluster_key(cluster)
-        if key in finalized_clusters:
-            continue
-        _finalize_cluster_ocp_status(project_id, key, PHASE_FAILED, elapsed_now)
-    _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
-    _release_ops_monitor_lock(project_id)
-    return "timeout"
+    return _ops_pod_monitor_timeout(
+        project_id, clusters, finalized_clusters, elapsed_base
+    )
 
 
 def _resume_one_ops_pod_monitor(db, p) -> None:
@@ -5715,6 +5870,20 @@ def _sync_deployed_container_node(project, container_id: str, topo: dict) -> Non
         project.deployed_topology = deployed
 
 
+def _redeploy_container_troshkad(
+    db, host, project, project_id, container_id, topo, ctr
+):
+    """Destroy + recreate a container/pod on a troshkad host."""
+    pool = _get_host_pool(host, db)
+    vni_map = project.vni_map or {}
+    _destroy_container(host, project_id, ctr, topo, pool)
+    if ctr.get("is_pod"):
+        _create_and_start_pod(host, project_id, ctr, topo, vni_map, pool)
+    else:
+        _create_and_start_container(host, project_id, ctr, topo, vni_map, pool)
+    _sync_deployed_container_node(project, container_id, topo)
+
+
 def redeploy_container_bg(project_id: str, container_id: str) -> None:
     """Redeploy a single container/pod node: destroy then recreate so its init
     containers re-run (re-clone content_repo/ref and rebuild). VMs are left
@@ -5722,7 +5891,7 @@ def redeploy_container_bg(project_id: str, container_id: str) -> None:
     """
     from app.core.database import SessionLocal
     from app.models.project import Project
-    from app.services.deploy_topology import _extract_containers
+    from app.services.deploy_topology import _extract_containers, _is_showroom_node
 
     prog_key = f"redeploy-container:{project_id}:{container_id}"
     db = SessionLocal()
@@ -5736,16 +5905,7 @@ def redeploy_container_bg(project_id: str, container_id: str) -> None:
             else None
         )
         topo = copy.deepcopy(project.topology or {})
-        # Rebuild the showroom spec from its tabs before extracting — persisted
-        # podContainers may be the incomplete frontend-materialized set (missing
-        # the cluster-terminal wetty container).
         _refresh_showroom_spec(topo, project_id)
-        # For a showroom redeploy, (re)create the app-proxy console/oauth routes and
-        # fill their tab URLs into the pod's baked ui-config BEFORE we recreate the
-        # pod — otherwise the console tab has no route (e.g. the original deploy hit
-        # the custom-host RBAC gap) and the pod bakes placeholder URLs.
-        from app.services.deploy_topology import _is_showroom_node
-
         if any(
             _is_showroom_node(n) and n.get("id") == container_id
             for n in topo.get("nodes", [])
@@ -5768,32 +5928,20 @@ def redeploy_container_bg(project_id: str, container_id: str) -> None:
             redeploy_container_kubevirt_bg(
                 db, host, project, project_id, container_id, topo
             )
-            db.commit()
-            notify_project(
-                project_id,
-                {"type": "container-redeployed", "containerId": container_id},
-            )
-            logger.info(
-                "Redeploy container %s/%s: complete (kubevirt)",
-                project_id[:8],
-                container_id[:8],
-            )
-            return
-        pool = _get_host_pool(host, db)
-        vni_map = project.vni_map or {}
-        _destroy_container(host, project_id, ctr, topo, pool)
-        if ctr.get("is_pod"):
-            _create_and_start_pod(host, project_id, ctr, topo, vni_map, pool)
         else:
-            _create_and_start_container(host, project_id, ctr, topo, vni_map, pool)
-        _sync_deployed_container_node(project, container_id, topo)
+            _redeploy_container_troshkad(
+                db, host, project, project_id, container_id, topo, ctr
+            )
         db.commit()
         notify_project(
             project_id,
             {"type": "container-redeployed", "containerId": container_id},
         )
         logger.info(
-            "Redeploy container %s/%s: complete", project_id[:8], container_id[:8]
+            "Redeploy container %s/%s: complete%s",
+            project_id[:8],
+            container_id[:8],
+            " (kubevirt)" if host.host_type == "kubevirt-cluster" else "",
         )
     except Exception as e:  # noqa: BLE001 - report failure via progress
         logger.exception(
@@ -5879,6 +6027,11 @@ def _check_central_source(
             return False
 
 
+def _disk_size_bytes_fallback(disk) -> int:
+    """Prefer qcow2 virtual size, else raw file size."""
+    return disk.virtual_size_bytes or disk.size_bytes or 0
+
+
 def _library_disk_virtual_size_bytes(db, lib_item, s3_path: str) -> int:
     """Return qcow2 virtual size for a library disk (bytes), or 0 if unknown."""
     from sqlalchemy import select
@@ -5891,16 +6044,13 @@ def _library_disk_virtual_size_bytes(db, lib_item, s3_path: str) -> int:
     for disk in disks:
         if s3_path and disk.s3_key != s3_path:
             continue
-        if disk.virtual_size_bytes:
-            return disk.virtual_size_bytes
-        # Raw images (e.g. ISOs) have no qcow2 virtual size but a real file
-        # size — fall back to size_bytes so goldens/clones are sized correctly.
-        if disk.size_bytes:
-            return disk.size_bytes
-    if len(disks) == 1 and disks[0].virtual_size_bytes:
-        return disks[0].virtual_size_bytes
-    if len(disks) == 1 and disks[0].size_bytes:
-        return disks[0].size_bytes
+        size = _disk_size_bytes_fallback(disk)
+        if size:
+            return size
+    if len(disks) == 1:
+        size = _disk_size_bytes_fallback(disks[0])
+        if size:
+            return size
 
     max_gb = 0
     for disk in (lib_item.vm_config or {}).get("disks", []):
@@ -5910,9 +6060,7 @@ def _library_disk_virtual_size_bytes(db, lib_item, s3_path: str) -> int:
         return max_gb * 1073741824
     # ISOs and other single-file items have no LibraryItemDisk rows or vm_config
     # disks, but the LibraryItem itself records the real file size.
-    if getattr(lib_item, "size_bytes", 0):
-        return lib_item.size_bytes
-    return 0
+    return getattr(lib_item, "size_bytes", 0) or 0
 
 
 def library_item_deploy_size_gb(lib_item, db=None) -> int:
@@ -5925,7 +6073,9 @@ def library_item_deploy_size_gb(lib_item, db=None) -> int:
             db, lib_item, lib_item.s3_key or ""
         )
     elif lib_item.item_disks:
-        virtual_bytes = max((d.virtual_size_bytes or 0) for d in lib_item.item_disks)
+        virtual_bytes = max(
+            (_disk_size_bytes_fallback(d) for d in lib_item.item_disks), default=0
+        )
     if not virtual_bytes:
         for disk in (lib_item.vm_config or {}).get("disks", []):
             size = disk.get("size") or disk.get("size_gb") or 0
@@ -6258,9 +6408,9 @@ def _preflight_verify_ceph_capture(topology, s3_client, bucket, s3_op):
 
 def _preflight_verify_library_disks(
     topology,
-    s3_client,
-    bucket,
-    s3_op,
+    _s3_client,
+    _bucket,
+    _s3_op,
     central_s3_client,
     central_bucket,
     central_op,
@@ -6436,9 +6586,7 @@ def _pick_disk_dv_status(friendly, cache_dv, clone_dv) -> str:
     """Pick the deploy status to show for a disk across cache and clone DVs."""
     if clone_dv:
         clone_phase = clone_dv.get("status", {}).get("phase", "")
-        if clone_phase == "Succeeded":
-            return _dv_status_suffix(_format_dv_status_line(friendly, clone_dv))
-        if clone_phase == "CloneInProgress":
+        if clone_phase in ("Succeeded", "CloneInProgress", "Failed"):
             return _dv_status_suffix(_format_dv_status_line(friendly, clone_dv))
         if clone_phase in ("CloneScheduled", "Pending", "ImportScheduled") and cache_dv:
             cache_phase = cache_dv.get("status", {}).get("phase", "")
@@ -6446,8 +6594,6 @@ def _pick_disk_dv_status(friendly, cache_dv, clone_dv) -> str:
                 return _dv_status_suffix(_format_dv_status_line(friendly, cache_dv))
             if cache_phase == "Succeeded":
                 return "waiting to clone"
-        if clone_phase == "Failed":
-            return _dv_status_suffix(_format_dv_status_line(friendly, clone_dv))
     if cache_dv:
         return _dv_status_suffix(_format_dv_status_line(friendly, cache_dv))
     if clone_dv:
@@ -6488,68 +6634,96 @@ def _fill_missing_disk_labels(topology, best_status):
                 best_status[label] = "waiting"
 
 
-def _collect_dv_progress(project_id, provider, topology):
-    """Collect DataVolume progress lines for deploy status display."""
+def _golden_name_map_from_topology(topology) -> dict[str, str]:
+    """Map golden-<hash16> DataVolume names to storage-node labels."""
     import hashlib
 
+    golden_name_map: dict[str, str] = {}
+    for node in topology.get("nodes", []):
+        ndata = node.get("data", {})
+        if node.get("type") == "storageNode" and ndata.get("resolvedS3Path"):
+            h = hashlib.sha256(ndata["resolvedS3Path"].encode()).hexdigest()[:16]
+            golden_name_map[f"golden-{h}"] = ndata.get("label", ndata.get("name", ""))
+    return golden_name_map
+
+
+def _list_project_datavolumes(custom_api, proj_ns: str) -> list:
+    """List DataVolumes in troshka-cache and the project namespace."""
+    all_dvs: list = []
+    for ns in ["troshka-cache", proj_ns]:
+        try:
+            dvs = custom_api.list_namespaced_custom_object(
+                group=_CDI_API_GROUP,
+                version="v1beta1",
+                namespace=ns,
+                plural="datavolumes",
+            )
+            items = dvs.get("items", []) if isinstance(dvs, dict) else []
+            if isinstance(items, list):
+                all_dvs.extend(items)
+        except Exception:
+            pass
+    return all_dvs
+
+
+def _index_clone_dvs(all_dvs, topology) -> tuple[dict[str, dict], dict[str, str]]:
+    """Index project-ns clone DVs by label; map golden PVC names → labels."""
+    clone_name_map = _build_clone_name_map(topology)
+    clone_by_label: dict[str, dict] = {}
+    golden_ref_map: dict[str, str] = {}
+    for dv in all_dvs:
+        if dv["metadata"]["namespace"] == "troshka-cache":
+            continue
+        friendly = clone_name_map.get(dv["metadata"]["name"])
+        if not friendly:
+            continue
+        label = friendly[:24]
+        clone_by_label[label] = dv
+        pvc_src = dv.get("spec", {}).get("source", {}).get("pvc", {})
+        if pvc_src.get("namespace") == "troshka-cache":
+            golden_name = pvc_src.get("name", "")
+            if golden_name:
+                golden_ref_map[golden_name] = label
+    return clone_by_label, golden_ref_map
+
+
+def _index_cache_dvs(
+    all_dvs, golden_name_map: dict[str, str], golden_ref_map: dict[str, str]
+) -> dict[str, dict]:
+    """Index troshka-cache golden DVs by friendly label."""
+    cache_by_label: dict[str, dict] = {}
+    for dv in all_dvs:
+        if dv["metadata"]["namespace"] != "troshka-cache":
+            continue
+        raw_name = dv["metadata"]["name"]
+        friendly = golden_name_map.get(raw_name) or golden_ref_map.get(raw_name)
+        if friendly:
+            cache_by_label[friendly[:24]] = dv
+    return cache_by_label
+
+
+def _index_clone_and_cache_dvs(
+    all_dvs, topology, golden_name_map: dict[str, str]
+) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Build label→DV maps for project clones and cache goldens."""
+    clone_by_label, golden_ref_map = _index_clone_dvs(all_dvs, topology)
+    cache_by_label = _index_cache_dvs(all_dvs, golden_name_map, golden_ref_map)
+    return clone_by_label, cache_by_label
+
+
+def _collect_dv_progress(project_id, provider, topology):
+    """Collect DataVolume progress lines for deploy status display."""
     from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
 
     dv_lines: list[str] = []
     try:
-        golden_name_map: dict[str, str] = {}
-        for node in topology.get("nodes", []):
-            ndata = node.get("data", {})
-            if node.get("type") == "storageNode" and ndata.get("resolvedS3Path"):
-                h = hashlib.sha256(ndata["resolvedS3Path"].encode()).hexdigest()[:16]
-                golden_name_map[f"golden-{h}"] = ndata.get(
-                    "label", ndata.get("name", "")
-                )
-
+        golden_name_map = _golden_name_map_from_topology(topology)
         custom_api, _, api_client = _get_k8s_clients(provider)
         proj_ns = _project_ns(provider, project_id)
-        all_dvs: list = []
-        for ns in ["troshka-cache", proj_ns]:
-            try:
-                dvs = custom_api.list_namespaced_custom_object(
-                    group="cdi.kubevirt.io",
-                    version="v1beta1",
-                    namespace=ns,
-                    plural="datavolumes",
-                )
-                items = dvs.get("items", []) if isinstance(dvs, dict) else []
-                if isinstance(items, list):
-                    all_dvs.extend(items)
-            except Exception:
-                pass
-
-        clone_name_map = _build_clone_name_map(topology)
-        clone_by_label: dict[str, dict] = {}
-        golden_ref_map: dict[str, str] = {}
-        for dv in all_dvs:
-            if dv["metadata"]["namespace"] == "troshka-cache":
-                continue
-            raw_name = dv["metadata"]["name"]
-            friendly = clone_name_map.get(raw_name)
-            if not friendly:
-                continue
-            label = friendly[:24]
-            clone_by_label[label] = dv
-            pvc_src = dv.get("spec", {}).get("source", {}).get("pvc", {})
-            if pvc_src.get("namespace") == "troshka-cache":
-                golden_name = pvc_src.get("name", "")
-                if golden_name:
-                    golden_ref_map[golden_name] = label
-
-        cache_by_label: dict[str, dict] = {}
-        for dv in all_dvs:
-            if dv["metadata"]["namespace"] != "troshka-cache":
-                continue
-            raw_name = dv["metadata"]["name"]
-            friendly = golden_name_map.get(raw_name) or golden_ref_map.get(raw_name)
-            if not friendly:
-                continue
-            cache_by_label[friendly[:24]] = dv
-
+        all_dvs = _list_project_datavolumes(custom_api, proj_ns)
+        clone_by_label, cache_by_label = _index_clone_and_cache_dvs(
+            all_dvs, topology, golden_name_map
+        )
         all_labels = set(cache_by_label) | set(clone_by_label)
         best_status = {
             label: _pick_disk_dv_status(
@@ -6561,21 +6735,18 @@ def _collect_dv_progress(project_id, provider, topology):
         dv_lines = [f"{k}: {v}" for k, v in best_status.items()]
         ceph_lines = _collect_ceph_restore_progress(custom_api, api_client, proj_ns)
         if ceph_lines:
-            # Prepend so Ceph restore is visible even if step stays on images.
             dv_lines = ceph_lines + dv_lines
     except Exception:
         pass
     return dv_lines
 
 
-def _collect_ceph_restore_progress(custom_api, api_client, namespace: str) -> list[str]:
-    """Progress lines for project-Ceph mon Job / OSD restore DataVolumes."""
-    from kubernetes import client as k8s_client
-
+def _ceph_osd_restore_dv_lines(custom_api, namespace: str) -> list[str]:
+    """Progress lines for Ceph OSD restore DataVolumes."""
     lines: list[str] = []
     try:
         dvs = custom_api.list_namespaced_custom_object(
-            group="cdi.kubevirt.io",
+            group=_CDI_API_GROUP,
             version="v1beta1",
             namespace=namespace,
             plural="datavolumes",
@@ -6594,6 +6765,13 @@ def _collect_ceph_restore_progress(custom_api, api_client, namespace: str) -> li
                 lines.append(f"ceph-{name}: {progress}")
     except Exception:
         pass
+    return lines
+
+
+def _ceph_mon_restore_line(custom_api, api_client, namespace: str) -> str | None:
+    """Single progress line for mon Job or legacy mon DV, if present."""
+    from kubernetes import client as k8s_client
+
     try:
         batch = k8s_client.BatchV1Api(api_client)
         job = batch.read_namespaced_job(
@@ -6601,34 +6779,40 @@ def _collect_ceph_restore_progress(custom_api, api_client, namespace: str) -> li
         )
         succeeded = getattr(getattr(job, "status", None), "succeeded", None)
         if succeeded and succeeded >= 1:
-            lines.insert(0, "ceph-mon: done")
-        else:
-            lines.insert(0, "ceph-mon: restoring")
+            return "ceph-mon: done"
+        return "ceph-mon: restoring"
     except Exception:
-        # No mon Job yet — may still be on the legacy CDI mon DV path.
-        try:
-            dv = custom_api.get_namespaced_custom_object(
-                group="cdi.kubevirt.io",
-                version="v1beta1",
-                namespace=namespace,
-                plural="datavolumes",
-                name="troshka-ceph-mon",
-            )
-            status = dv.get("status") or {}
-            phase = status.get("phase") or "Pending"
-            msg = ""
-            for cond in status.get("conditions") or []:
-                if cond.get("type") == "Running" and cond.get("message"):
-                    msg = cond["message"][:80]
-                    break
-            if phase == "Succeeded":
-                lines.insert(0, "ceph-mon: done")
-            elif msg:
-                lines.insert(0, f"ceph-mon: {msg}")
-            else:
-                lines.insert(0, f"ceph-mon: {phase}")
-        except Exception:
-            pass
+        pass
+    try:
+        dv = custom_api.get_namespaced_custom_object(
+            group=_CDI_API_GROUP,
+            version="v1beta1",
+            namespace=namespace,
+            plural="datavolumes",
+            name="troshka-ceph-mon",
+        )
+        status = dv.get("status") or {}
+        phase = status.get("phase") or "Pending"
+        msg = ""
+        for cond in status.get("conditions") or []:
+            if cond.get("type") == "Running" and cond.get("message"):
+                msg = cond["message"][:80]
+                break
+        if phase == "Succeeded":
+            return "ceph-mon: done"
+        if msg:
+            return f"ceph-mon: {msg}"
+        return f"ceph-mon: {phase}"
+    except Exception:
+        return None
+
+
+def _collect_ceph_restore_progress(custom_api, api_client, namespace: str) -> list[str]:
+    """Progress lines for project-Ceph mon Job / OSD restore DataVolumes."""
+    lines = _ceph_osd_restore_dv_lines(custom_api, namespace)
+    mon = _ceph_mon_restore_line(custom_api, api_client, namespace)
+    if mon:
+        lines.insert(0, mon)
     return lines
 
 
@@ -6677,46 +6861,42 @@ def _is_vm_lifecycle_stage(op_stage: str) -> bool:
     )
 
 
-def _resolve_deploy_step(
-    all_disks_done, op_stage, op_detail, dv_detail, dv_lines, status, last
-):
-    """Determine step and detail from deploy state signals."""
-    # Ceph restore gates VM boot and runs before/alongside image DVs — show it
-    # first so the modal does not look stuck on "images: … waiting".
-    ceph_lines = [ln for ln in (dv_lines or []) if ln.startswith("ceph-")]
-    if _is_ceph_restore_stage(op_stage) or (
-        ceph_lines and not all(ln.endswith(": done") for ln in ceph_lines)
-    ):
-        detail = op_detail or "\n".join(ceph_lines) or op_stage.lower()
-        if not op_detail and ceph_lines:
-            detail = "\n".join(ceph_lines)
-        elif op_detail and ceph_lines and op_detail not in "\n".join(ceph_lines):
-            detail = f"{op_detail}\n" + "\n".join(ceph_lines)
-        step = (
-            op_stage.lower() if _is_ceph_restore_stage(op_stage) else "restoring ceph"
-        )
-        return step, detail
-    # cephRestoreActive stays True after TroshkaCeph is Ready (boot-gate flag).
-    # Only claim "restoring ceph" while the operator is still on a Ceph stage —
-    # otherwise fall through so Starting VMs / images win.
-    if (
-        status.get("cephRestoreActive")
-        and not all_disks_done
-        and (not op_stage or _is_ceph_restore_stage(op_stage))
-    ):
-        detail = op_detail or "importing mon/OSD devices"
-        return "restoring ceph", detail
-    if all_disks_done and op_stage:
-        step = op_stage.lower()
-        if "certificate" in op_stage.lower():
-            return step, op_detail or step
-        vm_states = status.get("vmStates", {})
-        if vm_states:
-            ready = sum(1 for s in vm_states.values() if s in ("Running", "Stopped"))
-            return step, f"{ready}/{len(vm_states)} VMs ready"
+def _ceph_restore_step_detail(op_stage, op_detail, ceph_lines):
+    """Step/detail when Ceph restore is the active deploy focus."""
+    joined = "\n".join(ceph_lines)
+    if not op_detail and ceph_lines:
+        detail = joined
+    elif op_detail and ceph_lines and op_detail not in joined:
+        detail = f"{op_detail}\n{joined}"
+    else:
+        detail = op_detail or joined or op_stage.lower()
+    step = op_stage.lower() if _is_ceph_restore_stage(op_stage) else "restoring ceph"
+    return step, detail
+
+
+def _disks_done_step_detail(op_stage, op_detail, status):
+    """Step/detail once all disk imports finished."""
+    step = op_stage.lower()
+    if "certificate" in op_stage.lower():
         return step, op_detail or step
-    # Operator may start ready VMs while one disk is still cloning — prefer the
-    # VM lifecycle stage over a lingering "images" line for the stuck DV.
+    vm_states = status.get("vmStates", {})
+    if vm_states:
+        ready = sum(1 for s in vm_states.values() if s in ("Running", "Stopped"))
+        return step, f"{ready}/{len(vm_states)} VMs ready"
+    return step, op_detail or step
+
+
+def _active_ceph_restore_step(all_disks_done, op_stage, op_detail, status):
+    """Return ceph step when flag is active and disks unfinished, else None."""
+    if not status.get("cephRestoreActive") or all_disks_done:
+        return None
+    if op_stage and not _is_ceph_restore_stage(op_stage):
+        return None
+    return "restoring ceph", op_detail or "importing mon/OSD devices"
+
+
+def _fallback_deploy_step(op_stage, op_detail, dv_detail, dv_lines, last):
+    """Non-ceph step/detail once disks-done and ceph-restore paths are ruled out."""
     if _is_vm_lifecycle_stage(op_stage):
         return op_stage.lower(), op_detail or op_stage.lower()
     if dv_lines:
@@ -6724,6 +6904,24 @@ def _resolve_deploy_step(
     if op_stage:
         return op_stage.lower(), op_detail or op_stage.lower()
     return last.get("step", "") or "deploying", last.get("detail", "")
+
+
+def _resolve_deploy_step(
+    all_disks_done, op_stage, op_detail, dv_detail, dv_lines, status, last
+):
+    """Determine step and detail from deploy state signals."""
+    ceph_lines = [ln for ln in (dv_lines or []) if ln.startswith("ceph-")]
+    ceph_busy = _is_ceph_restore_stage(op_stage) or (
+        ceph_lines and not all(ln.endswith(": done") for ln in ceph_lines)
+    )
+    if ceph_busy:
+        return _ceph_restore_step_detail(op_stage, op_detail, ceph_lines)
+    active = _active_ceph_restore_step(all_disks_done, op_stage, op_detail, status)
+    if active:
+        return active
+    if all_disks_done and op_stage:
+        return _disks_done_step_detail(op_stage, op_detail, status)
+    return _fallback_deploy_step(op_stage, op_detail, dv_detail, dv_lines, last)
 
 
 def _notify_client_topology_update(project_id, project, db):
@@ -6967,55 +7165,63 @@ def _read_kubevirt_domain_uuids(project, db):
         return {}
 
 
-def _patch_kubevirt_gateway_forwards(provider, project_id, topology):
-    """Patch the gateway Deployment with PORT_FORWARDS env var for DNAT rules."""
-    from app.services.deploy_topology import _is_showroom_node, is_showroom_infra_ip
+def _resolve_showroom_cluster_svc(provider, project_id, topology) -> str:
+    """Create/resolve the showroom ClusterIP service name, or '' on failure."""
+    from app.services.deploy_topology import _is_showroom_node
     from app.services.providers.kubevirt import ensure_showroom_cluster_service
 
     showroom_node = next(
         (n for n in topology.get("nodes", []) if _is_showroom_node(n)),
         None,
     )
-    showroom_svc = ""
-    if showroom_node:
-        try:
-            showroom_svc = ensure_showroom_cluster_service(
-                provider, project_id, showroom_node["id"]
-            )
-        except Exception:
-            logger.exception(
-                "Deploy %s: failed to create showroom service (non-fatal)",
-                project_id[:8],
-            )
+    if not showroom_node:
+        return ""
+    try:
+        return ensure_showroom_cluster_service(
+            provider, project_id, showroom_node["id"]
+        )
+    except Exception:
+        logger.exception(
+            "Deploy %s: failed to create showroom service (non-fatal)",
+            project_id[:8],
+        )
+        return ""
+
+
+def _collect_gateway_port_forwards(topology, showroom_svc: str) -> list[str]:
+    """Build PORT_FORWARDS entries from the gateway node's portForwards."""
+    from app.services.deploy_topology import is_showroom_infra_ip
 
     all_forwards = []
     for node in topology.get("nodes", []):
         node_data = node.get("data", {})
-        if node_data.get("subtype") == "gateway":
-            for pf in node_data.get("portForwards", []):
-                ext_port = pf.get("extPort", "")
-                int_ip = pf.get("intIp", "")
-                if showroom_svc and is_showroom_infra_ip(int_ip):
-                    int_ip = showroom_svc
-                int_port = pf.get("intPort", "")
-                if ext_port and int_ip and int_port:
-                    proto = pf.get("proto", "tcp")
-                    all_forwards.append(f"{ext_port}:{int_ip}:{int_port}:{proto}")
-            break
+        if node_data.get("subtype") != "gateway":
+            continue
+        for pf in node_data.get("portForwards", []):
+            ext_port = pf.get("extPort", "")
+            int_ip = pf.get("intIp", "")
+            if showroom_svc and is_showroom_infra_ip(int_ip):
+                int_ip = showroom_svc
+            int_port = pf.get("intPort", "")
+            if ext_port and int_ip and int_port:
+                proto = pf.get("proto", "tcp")
+                all_forwards.append(f"{ext_port}:{int_ip}:{int_port}:{proto}")
+        break
+    return all_forwards
 
+
+def _apply_gateway_port_forwards_patch(provider, project_id, forwards_str: str) -> None:
+    """Patch the gateway Deployment PORT_FORWARDS env (best-effort)."""
     from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
 
-    forwards_str = ",".join(all_forwards)
     try:
         _, _core_api, api_client = _get_k8s_clients(provider)
         from kubernetes import client as k8s_client
 
         apps_api = k8s_client.AppsV1Api(api_client)
         ns = _project_ns(provider, project_id)
-        dep_name = f"gateway-{ns}"
-
         apps_api.patch_namespaced_deployment(
-            name=dep_name,
+            name=f"gateway-{ns}",
             namespace=ns,
             body={
                 "spec": {
@@ -7047,6 +7253,13 @@ def _patch_kubevirt_gateway_forwards(provider, project_id, topology):
             "Deploy %s: failed to patch gateway port forwards (non-fatal)",
             project_id[:8],
         )
+
+
+def _patch_kubevirt_gateway_forwards(provider, project_id, topology):
+    """Patch the gateway Deployment with PORT_FORWARDS env var for DNAT rules."""
+    showroom_svc = _resolve_showroom_cluster_svc(provider, project_id, topology)
+    forwards_str = ",".join(_collect_gateway_port_forwards(topology, showroom_svc))
+    _apply_gateway_port_forwards_patch(provider, project_id, forwards_str)
 
 
 def _handle_kubevirt_deploy_error(project_id, project, status, db, notify_project):
@@ -7088,6 +7301,45 @@ def _push_kubevirt_deploy_progress(
     )
 
 
+def _poll_kubevirt_once(project_id, project, provider, driver, topology, db) -> str:
+    """One poll iteration. Returns 'done', 'continue', or 'cancelled'."""
+    from app.services.ws_pubsub import notify_project
+
+    if _is_deploy_cancelled(project_id):
+        logger.info("Deploy %s: cancelled by redeploy", project_id[:8])
+        _clear_deploy_cancelled(project_id)
+        return "cancelled"
+    if _project_deleted(project_id):
+        return "cancelled"
+    try:
+        status = driver.get_project_status(provider, project_id)
+        if not isinstance(status, dict):
+            status = {}
+    except Exception:
+        status = {}
+
+    phase = status.get("phase", "Pending")
+    progress = status.get("deployProgress", {})
+    dv_lines = _collect_dv_progress(project_id, provider, topology)
+    step, detail, percent = _compute_deploy_step(project_id, status, dv_lines, progress)
+
+    if phase == "Running":
+        host = None
+        if project.host_id:
+            from app.models.host import Host
+
+            host = db.query(Host).filter_by(id=project.host_id).first()
+        _finalize_kubevirt_deploy(project_id, project, topology, db, host=host)
+        return "done"
+    if phase == "Error":
+        _handle_kubevirt_deploy_error(project_id, project, status, db, notify_project)
+        return "done"
+    _push_kubevirt_deploy_progress(
+        project_id, project, step, detail, percent, dv_lines, db, notify_project
+    )
+    return "continue"
+
+
 def _poll_kubevirt_deploy(project_id, project, provider, driver, topology, db):
     """Poll TroshkaProject CR status until Running/Error/timeout."""
     import time
@@ -7099,48 +7351,13 @@ def _poll_kubevirt_deploy(project_id, project, provider, driver, topology, db):
     for _ in range(1440):
         if _time.time() > deploy_deadline:
             break
-        if _is_deploy_cancelled(project_id):
-            logger.info("Deploy %s: cancelled by redeploy", project_id[:8])
-            _clear_deploy_cancelled(project_id)
-            return
-        if _project_deleted(project_id):
-            return
-        try:
-            status = driver.get_project_status(provider, project_id)
-            if not isinstance(status, dict):
-                status = {}
-        except Exception:
-            status = {}
-
-        phase = status.get("phase", "Pending")
-        progress = status.get("deployProgress", {})
-        dv_lines = _collect_dv_progress(project_id, provider, topology)
-        step, detail, percent = _compute_deploy_step(
-            project_id, status, dv_lines, progress
+        outcome = _poll_kubevirt_once(
+            project_id, project, provider, driver, topology, db
         )
-
-        if phase == "Running":
-            host = None
-            if project.host_id:
-                from app.models.host import Host
-
-                host = db.query(Host).filter_by(id=project.host_id).first()
-            _finalize_kubevirt_deploy(project_id, project, topology, db, host=host)
+        if outcome != "continue":
             return
-
-        if phase == "Error":
-            _handle_kubevirt_deploy_error(
-                project_id, project, status, db, notify_project
-            )
-            return
-
-        _push_kubevirt_deploy_progress(
-            project_id, project, step, detail, percent, dv_lines, db, notify_project
-        )
-
         time.sleep(5)
 
-    # Timed out
     project.state = "error"
     project.deploy_error = "Deploy timed out waiting for operator (2 hours)"
     db.commit()
@@ -7297,6 +7514,122 @@ def _wait_for_old_kubevirt_resources(_ca, _cv1, _ns, cr_name, project_id):
         )
 
 
+def _kubevirt_preflight_disks(
+    topology,
+    db,
+    host,
+    s3_client,
+    bucket,
+    s3_op,
+    central_s3_client,
+    central_bucket,
+    central_op,
+) -> None:
+    """Resolve S3 paths and preflight-verify pattern/ceph/library disks."""
+    _resolve_disk_s3_paths(
+        topology,
+        db,
+        host.provider_id,
+        s3_client,
+        bucket,
+        s3_op,
+        central_s3_client,
+        central_bucket,
+        central_op,
+    )
+    _resolve_ceph_capture_s3_paths(topology, db, host.provider_id)
+    _preflight_verify_pattern_disks(
+        topology,
+        s3_client,
+        bucket,
+        s3_op,
+        central_s3_client,
+        central_bucket,
+        central_op,
+    )
+    _preflight_verify_ceph_capture(topology, s3_client, bucket, s3_op)
+    _preflight_verify_library_disks(
+        topology,
+        s3_client,
+        bucket,
+        s3_op,
+        central_s3_client,
+        central_bucket,
+        central_op,
+    )
+
+
+def _kubevirt_create_or_resume_cr(
+    provider,
+    driver,
+    project_id,
+    project,
+    topology,
+    db,
+    mtu_map,
+    s3_config,
+    central_s3_config,
+    exec_privkey_pem,
+) -> str | None:
+    """Create TroshkaProject CR (or resume). Returns cr_name, or None on hard failure."""
+    existing_cr = None
+    cr_name = f"project-{project_id[:8]}"
+    try:
+        existing_cr = driver.get_project_status(provider, project_id)
+    except Exception:
+        pass
+
+    resume_poll = bool(existing_cr and existing_cr.get("phase") == "Deploying")
+    if resume_poll:
+        logger.info("Deploy %s: CR already deploying, resuming poll", project_id[:8])
+        return cr_name
+    if existing_cr and existing_cr.get("phase"):
+        logger.info(
+            "Deploy %s: replacing stale CR with fresh presigned URLs",
+            project_id[:8],
+        )
+        _replace_stale_kubevirt_cr(provider, project_id)
+
+    from app.services.deploy_topology import inject_showroom_gateway_port_forwards
+
+    _kubevirt_prebake_showroom(topology, project_id, provider, driver)
+    if inject_showroom_gateway_port_forwards(
+        topology, project.vni_map or {}, "kubevirt"
+    ):
+        project.topology = topology
+        db.commit()
+    logger.info(
+        "Deploy %s: creating CR with exec_ssh_key=%s",
+        project_id[:8],
+        bool(exec_privkey_pem),
+    )
+    try:
+        logger.info(
+            "Deploy %s: central_s3=%s",
+            project_id[:8],
+            bool(central_s3_config),
+        )
+        return driver.deploy_project(
+            provider,
+            project_id,
+            topology,
+            s3_config,
+            exec_ssh_key=exec_privkey_pem,
+            central_s3_config=central_s3_config,
+            db=db,
+            mtu_map=mtu_map,
+        )
+    except Exception as e:
+        if "AlreadyExists" in str(e):
+            logger.info("Deploy %s: CR already exists, resuming", project_id[:8])
+            return cr_name
+        project.state = "error"
+        project.deploy_error = f"Failed to create TroshkaProject CR: {e}"
+        db.commit()
+        logger.exception("Deploy %s: CR creation failed", project_id[:8])
+        return None
+
+
 def _deploy_kubevirt_native(project_id, project, host, topology, db, mtu_map):
     """Deploy via KubeVirt operator — create TroshkaProject CR and poll status."""
     from app.models.provider import Provider
@@ -7324,30 +7657,10 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db, mtu_map):
     ) = _setup_kubevirt_s3_clients()
 
     try:
-        _resolve_disk_s3_paths(
+        _kubevirt_preflight_disks(
             topology,
             db,
-            host.provider_id,
-            s3_client,
-            bucket,
-            s3_op,
-            central_s3_client,
-            central_bucket,
-            central_op,
-        )
-        _resolve_ceph_capture_s3_paths(topology, db, host.provider_id)
-        _preflight_verify_pattern_disks(
-            topology,
-            s3_client,
-            bucket,
-            s3_op,
-            central_s3_client,
-            central_bucket,
-            central_op,
-        )
-        _preflight_verify_ceph_capture(topology, s3_client, bucket, s3_op)
-        _preflight_verify_library_disks(
-            topology,
+            host,
             s3_client,
             bucket,
             s3_op,
@@ -7377,76 +7690,20 @@ def _deploy_kubevirt_native(project_id, project, host, topology, db, mtu_map):
 
     _wait_for_namespace_termination(provider, project_id)
 
-    existing_cr = None
-    cr_name = f"project-{project_id[:8]}"
-    try:
-        existing_cr = driver.get_project_status(provider, project_id)
-    except Exception:
-        pass
-
-    _resume_poll = False
-    if existing_cr and existing_cr.get("phase") == "Deploying":
-        _resume_poll = True
-        logger.info("Deploy %s: CR already deploying, resuming poll", project_id[:8])
-    elif existing_cr and existing_cr.get("phase"):
-        logger.info(
-            "Deploy %s: replacing stale CR with fresh presigned URLs",
-            project_id[:8],
-        )
-        _replace_stale_kubevirt_cr(provider, project_id)
-
-    if not _resume_poll:
-        from app.services.deploy_topology import inject_showroom_gateway_port_forwards
-
-        # Rebuild the showroom pod spec from its tabs before the operator bakes the
-        # CR — the frontend materialization omits the cluster-terminal wetty sidecar
-        # and the app-proxy console vhost/tab (troshkad gets this via
-        # _deploy_create_containers; the KubeVirt path never did).
-        _kubevirt_prebake_showroom(topology, project_id, provider, driver)
-
-        if inject_showroom_gateway_port_forwards(
-            topology, project.vni_map or {}, "kubevirt"
-        ):
-            project.topology = topology
-            db.commit()
-        logger.info(
-            "Deploy %s: creating CR with exec_ssh_key=%s",
-            project_id[:8],
-            bool(exec_privkey_pem),
-        )
-        try:
-            logger.info(
-                "Deploy %s: central_s3=%s",
-                project_id[:8],
-                bool(central_s3_config),
-            )
-            cr_name = driver.deploy_project(
-                provider,
-                project_id,
-                topology,
-                s3_config,
-                exec_ssh_key=exec_privkey_pem,
-                central_s3_config=central_s3_config,
-                db=db,
-                mtu_map=mtu_map,
-            )
-        except Exception as e:
-            if "AlreadyExists" in str(e):
-                cr_name = f"project-{project_id[:8]}"
-                logger.info("Deploy %s: CR already exists, resuming", project_id[:8])
-            else:
-                project.state = "error"
-                project.deploy_error = f"Failed to create TroshkaProject CR: {e}"
-                db.commit()
-                notify_project(
-                    project_id,
-                    {
-                        "type": "project-state",
-                        "state": "error",
-                        "deploy_error": project.deploy_error,
-                    },
-                )
-                return
+    cr_name = _kubevirt_create_or_resume_cr(
+        provider,
+        driver,
+        project_id,
+        project,
+        topology,
+        db,
+        mtu_map,
+        s3_config,
+        central_s3_config,
+        exec_privkey_pem,
+    )
+    if cr_name is None:
+        return
 
     logger.info(
         "Deploy %s: polling TroshkaProject CR %s",
@@ -7638,6 +7895,62 @@ def _start_multihost_vms(project_id, vm_id_set_by_host, topology, db):
             )
 
 
+def _multihost_fail(project, db, project_id: str, msg: str) -> None:
+    project.state = "error"
+    project.deploy_error = msg
+    db.commit()
+    _delete_deploy_progress(project_id)
+
+
+def _deploy_multihost_networks(
+    db, project, project_id, network_host, topology, vni_map, host_assignments
+) -> bool:
+    """Set up primary + remote networks for multi-host deploy. False on failure."""
+    _update_deploy_progress(
+        project_id, "networks", "setting up networks on network host"
+    )
+    logger.info(
+        "Deploy %s: setting up networks on network host %s",
+        project_id[:8],
+        network_host.id[:8],
+    )
+    with _get_network_lock(network_host.id):
+        net_result = _setup_networks_via_troshkad(
+            network_host, topology, vni_map, db, project_id
+        )
+    if net_result is not True:
+        logger.error("Deploy %s: network setup failed: %s", project_id[:8], net_result)
+        _multihost_fail(project, db, project_id, f"Network setup failed: {net_result}")
+        return False
+
+    _update_deploy_progress(
+        project_id, "remote-networks", "setting up VXLAN on remote hosts"
+    )
+    logger.info("Deploy %s: setting up VXLAN on remote hosts", project_id[:8])
+    if not _setup_remote_networks(db, project, host_assignments, vni_map, topology):
+        _multihost_fail(project, db, project_id, "Remote network setup failed")
+        return False
+    return True
+
+
+def _deploy_multihost_vms(
+    db, project, project_id, topology, vni_map, mtu_map, all_vms, vm_id_set_by_host
+) -> bool:
+    """Deploy VMs on each assigned host. False on failure."""
+    for host_id, vm_node_ids in vm_id_set_by_host.items():
+        host = db.query(Host).filter_by(id=host_id).first()
+        if not host:
+            continue
+        host_vms = [v for v in all_vms if v["node_id"] in vm_node_ids]
+        err = _deploy_vms_on_host(
+            host, project_id, project, host_vms, topology, vni_map, db, mtu_map
+        )
+        if err:
+            _multihost_fail(project, db, project_id, err)
+            return False
+    return True
+
+
 def _deploy_multihost(project_id: str, project, db, mtu_map: dict | None = None):
     """Multi-host deploy orchestration: mesh → networks → VMs per host."""
     logger.info("Deploy %s: starting multi-host orchestration", project_id[:8])
@@ -7661,10 +7974,7 @@ def _deploy_multihost(project_id: str, project, db, mtu_map: dict | None = None)
         len(host_assignments),
     )
     if not _setup_mesh(db, project, host_assignments, host_ips):
-        project.state = "error"
-        project.deploy_error = "Mesh setup failed"
-        db.commit()
-        _delete_deploy_progress(project_id)
+        _multihost_fail(project, db, project_id, "Mesh setup failed")
         return
 
     network_host_id = project.mesh_network_host_id
@@ -7673,41 +7983,12 @@ def _deploy_multihost(project_id: str, project, db, mtu_map: dict | None = None)
         logger.error(
             "Deploy %s: network host %s not found", project_id[:8], network_host_id[:8]
         )
-        project.state = "error"
-        project.deploy_error = "Network host not found"
-        db.commit()
-        _delete_deploy_progress(project_id)
+        _multihost_fail(project, db, project_id, "Network host not found")
         return
 
-    _update_deploy_progress(
-        project_id, "networks", "setting up networks on network host"
-    )
-    logger.info(
-        "Deploy %s: setting up networks on network host %s",
-        project_id[:8],
-        network_host_id[:8],
-    )
-    with _get_network_lock(network_host.id):
-        net_result = _setup_networks_via_troshkad(
-            network_host, topology, vni_map, db, project_id
-        )
-    if net_result is not True:
-        logger.error("Deploy %s: network setup failed: %s", project_id[:8], net_result)
-        project.state = "error"
-        project.deploy_error = f"Network setup failed: {net_result}"
-        db.commit()
-        _delete_deploy_progress(project_id)
-        return
-
-    _update_deploy_progress(
-        project_id, "remote-networks", "setting up VXLAN on remote hosts"
-    )
-    logger.info("Deploy %s: setting up VXLAN on remote hosts", project_id[:8])
-    if not _setup_remote_networks(db, project, host_assignments, vni_map, topology):
-        project.state = "error"
-        project.deploy_error = "Remote network setup failed"
-        db.commit()
-        _delete_deploy_progress(project_id)
+    if not _deploy_multihost_networks(
+        db, project, project_id, network_host, topology, vni_map, host_assignments
+    ):
         return
 
     all_vms = _extract_vms(topology)
@@ -7715,20 +7996,10 @@ def _deploy_multihost(project_id: str, project, db, mtu_map: dict | None = None)
     for vm_node_id, hid in (project.host_assignments or {}).items():
         vm_id_set_by_host.setdefault(hid, set()).add(vm_node_id)
 
-    for host_id, vm_node_ids in vm_id_set_by_host.items():
-        host = db.query(Host).filter_by(id=host_id).first()
-        if not host:
-            continue
-        host_vms = [v for v in all_vms if v["node_id"] in vm_node_ids]
-        err = _deploy_vms_on_host(
-            host, project_id, project, host_vms, topology, vni_map, db, mtu_map
-        )
-        if err:
-            project.state = "error"
-            project.deploy_error = err
-            db.commit()
-            _delete_deploy_progress(project_id)
-            return
+    if not _deploy_multihost_vms(
+        db, project, project_id, topology, vni_map, mtu_map, all_vms, vm_id_set_by_host
+    ):
+        return
 
     project.topology = topology
     db.commit()
@@ -8048,90 +8319,111 @@ def _lookup_transit_port(topology, pf) -> int | None:
     return None
 
 
-def _create_routes_for_gateway(
-    s, driver, provider, host, project_id, node_data, topology
+def _create_one_gateway_route(
+    s,
+    driver,
+    provider,
+    host,
+    project_id,
+    topology,
+    pf,
+    lb_used,
+    allocated_this_pass,
 ):
-    """Create OCP Routes for routable port forwards and return endpoint list."""
+    """Create one OCP Route for a port-forward. Returns (endpoint, showroom_result, lb_used)."""
     from app.services.deploy_topology import is_ops_infra_ip, is_showroom_infra_ip
     from app.services.eip_service import allocate_standalone_transit_port
     from app.services.providers.ocpvirt import used_transit_ports_on_host
 
+    ext_port = int(pf.get("extPort", 0))
+    int_ip = pf.get("intIp", "")
+    int_port = int(pf.get("intPort", ext_port))
+    vm_name = _find_vm_name_by_ip(topology, int_ip)
+    if provider.type == "ocpvirt":
+        transit_port = _lookup_transit_port(topology, pf)
+        setup_dnat = (
+            transit_port is None
+            or is_showroom_infra_ip(int_ip)
+            or is_ops_infra_ip(int_ip)
+        )
+        if transit_port is None:
+            if lb_used is None:
+                lb_used = used_transit_ports_on_host(provider, host)
+            transit_port = allocate_standalone_transit_port(
+                s, host, extra_used=lb_used | allocated_this_pass
+            )
+            allocated_this_pass.add(transit_port)
+        result = driver.create_route_access(
+            provider,
+            host,
+            project_id,
+            vm_name,
+            int_ip,
+            ext_port,
+            int_port,
+            transit_port=transit_port,
+            setup_dnat=setup_dnat,
+        )
+    else:
+        result = driver.create_route_access(
+            provider,
+            host,
+            project_id,
+            vm_name,
+            int_ip,
+            ext_port,
+            int_port,
+        )
+    endpoint = {
+        "vmName": vm_name,
+        "vmIp": int_ip,
+        "port": ext_port,
+        "type": "route",
+        "hostname": result["hostname"],
+    }
+    showroom = result if is_showroom_infra_ip(int_ip) else None
+    logger.info(
+        "Deploy %s: created Route for %s:%d → %s",
+        project_id[:8],
+        vm_name,
+        ext_port,
+        result["hostname"],
+    )
+    return endpoint, showroom, lb_used
+
+
+def _create_routes_for_gateway(
+    s, driver, provider, host, project_id, node_data, topology
+):
+    """Create OCP Routes for routable port forwards and return endpoint list."""
     external_endpoints = []
     showroom_route = None
-    # Cross-project transit-port dedup: the host LB's pf-* ports (read once,
-    # lazily) plus ports we allocate in THIS pass — so two projects (and two
-    # route-only pfs in one deploy) never share a transit port.
     lb_used: set[int] | None = None
     allocated_this_pass: set[int] = set()
     for pf in node_data.get("portForwards", []):
         if not _is_route_access_forward(pf):
             continue
-        ext_port = int(pf.get("extPort", 0))
-        int_ip = pf.get("intIp", "")
-        int_port = int(pf.get("intPort", ext_port))
-        vm_name = _find_vm_name_by_ip(topology, int_ip)
         try:
-            if provider.type == "ocpvirt":
-                transit_port = _lookup_transit_port(topology, pf)
-                # Infra transit targets (showroom .3, ops .4) always need their own
-                # DNAT target.
-                setup_dnat = (
-                    transit_port is None
-                    or is_showroom_infra_ip(int_ip)
-                    or is_ops_infra_ip(int_ip)
-                )
-                if transit_port is None:
-                    if lb_used is None:
-                        lb_used = used_transit_ports_on_host(provider, host)
-                    transit_port = allocate_standalone_transit_port(
-                        s, host, extra_used=lb_used | allocated_this_pass
-                    )
-                    allocated_this_pass.add(transit_port)
-                result = driver.create_route_access(
-                    provider,
-                    host,
-                    project_id,
-                    vm_name,
-                    int_ip,
-                    ext_port,
-                    int_port,
-                    transit_port=transit_port,
-                    setup_dnat=setup_dnat,
-                )
-            else:
-                result = driver.create_route_access(
-                    provider,
-                    host,
-                    project_id,
-                    vm_name,
-                    int_ip,
-                    ext_port,
-                    int_port,
-                )
-            external_endpoints.append(
-                {
-                    "vmName": vm_name,
-                    "vmIp": int_ip,
-                    "port": ext_port,
-                    "type": "route",
-                    "hostname": result["hostname"],
-                }
+            endpoint, showroom, lb_used = _create_one_gateway_route(
+                s,
+                driver,
+                provider,
+                host,
+                project_id,
+                topology,
+                pf,
+                lb_used,
+                allocated_this_pass,
             )
-            if is_showroom_infra_ip(int_ip):
-                showroom_route = result
-            logger.info(
-                "Deploy %s: created Route for %s:%d → %s",
-                project_id[:8],
-                vm_name,
-                ext_port,
-                result["hostname"],
-            )
+            external_endpoints.append(endpoint)
+            if showroom:
+                showroom_route = showroom
         except Exception:
             logger.warning(
-                "Deploy %s: Route creation failed for %s:%d, continuing",
+                "Deploy %s: Route creation failed for %s:%s, continuing",
                 project_id[:8],
-                vm_name,
-                ext_port,
+                pf.get("intIp"),
+                pf.get("extPort"),
                 exc_info=True,
             )
     _create_app_proxy_routes(driver, provider, project_id, topology, showroom_route)
@@ -8273,7 +8565,7 @@ def _patch_live_showroom_ui_config(host, project_id, filled_yaml: str):
     try:
         jid = start_job(
             host,
-            "/containers/exec",
+            _CONTAINERS_EXEC_PATH,
             {
                 "container_name": cname,
                 "command": [
@@ -8510,19 +8802,9 @@ def _deploy_validate_bmc(project_id, topology):
     return None
 
 
-def _deploy_create_disks(host, project_id, topology, pool):
-    vms = _extract_vms(topology)
-    disk_items = _build_disk_progress_items(vms)
-    _update_deploy_progress(
-        project_id, "creating disks", "preparing VM disks", items=disk_items
-    )
-    disk_jobs = []
-    for vm in vms:
-        vm_disks = _find_vm_disks(vm["node_id"], topology)
-        job_ids = _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool)
-        disk_jobs.extend(job_ids if isinstance(job_ids, list) else [])
-    containers = _extract_containers(topology)
-    for ctr in containers:
+def _enqueue_container_volume_disk_jobs(host, project_id, topology, pool, disk_jobs):
+    """Enqueue /disks/create jobs for container volume disks."""
+    for ctr in _extract_containers(topology):
         ctr_vols = _find_container_volumes(ctr["node_id"], topology, project_id, pool)
         for vol in ctr_vols:
             disk_node = next(
@@ -8545,8 +8827,11 @@ def _deploy_create_disks(host, project_id, topology, pool):
             backing = _resolve_disk_backing(disk_info, pool)
             if backing:
                 params["backing_file"] = backing
-            jid = start_job(host, "/disks/create", params)
-            disk_jobs.append(jid)
+            disk_jobs.append(start_job(host, "/disks/create", params))
+
+
+def _wait_disk_create_jobs(host, project_id, disk_jobs) -> None:
+    """Wait for all disk-create jobs; raise TroshkadError on failure."""
     for di, jid in enumerate(disk_jobs):
         try:
             _update_deploy_progress(
@@ -8560,6 +8845,21 @@ def _deploy_create_disks(host, project_id, topology, pool):
         except TroshkadError as e:
             logger.exception("Deploy %s: disk creation failed: %s", project_id[:8], e)
             raise
+
+
+def _deploy_create_disks(host, project_id, topology, pool):
+    vms = _extract_vms(topology)
+    disk_items = _build_disk_progress_items(vms)
+    _update_deploy_progress(
+        project_id, "creating disks", "preparing VM disks", items=disk_items
+    )
+    disk_jobs = []
+    for vm in vms:
+        vm_disks = _find_vm_disks(vm["node_id"], topology)
+        job_ids = _create_vm_disks_via_troshkad(host, project_id, vm, vm_disks, pool)
+        disk_jobs.extend(job_ids if isinstance(job_ids, list) else [])
+    _enqueue_container_volume_disk_jobs(host, project_id, topology, pool, disk_jobs)
+    _wait_disk_create_jobs(host, project_id, disk_jobs)
     return vms
 
 
@@ -8835,6 +9135,34 @@ def _showroom_route_hostname(topology):
     return None
 
 
+def _network_display_name(node: dict) -> str:
+    data = node.get("data") or {}
+    return str(data.get("name") or data.get("label") or "")
+
+
+def _cluster_network_nodes(topology) -> list:
+    """Non-BMC cluster network nodes from a topology."""
+    return [
+        n
+        for n in topology.get("nodes", [])
+        if n.get("type") == "networkNode"
+        and (n.get("data") or {}).get("subtype") == "network"
+        and (n.get("data") or {}).get("networkType") != "bmc"
+    ]
+
+
+def _find_showroom_dns_network(topology, dns_net_name: str):
+    """Locate the cluster network used for showroom DNS resolution."""
+    nets = _cluster_network_nodes(topology)
+    if dns_net_name:
+        named = next(
+            (n for n in nets if _network_display_name(n) == dns_net_name), None
+        )
+        if named is not None:
+            return named
+    return nets[0] if nets else None
+
+
 def _showroom_resolver_ips(topology, showroom_node):
     """DNS-network dnsmasq IPs for the showroom app-proxy nginx resolver.
 
@@ -8846,30 +9174,7 @@ def _showroom_resolver_ips(topology, showroom_node):
     dns_net_name = str(
         (showroom_node.get("data") or {}).get("dnsNetwork") or ""
     ).strip()
-    nets = [
-        n
-        for n in topology.get("nodes", [])
-        if n.get("type") == "networkNode"
-        and (n.get("data") or {}).get("subtype") == "network"
-        and (n.get("data") or {}).get("networkType") != "bmc"
-    ]
-    net = None
-    if dns_net_name:
-        net = next(
-            (
-                n
-                for n in nets
-                if str(
-                    (n.get("data") or {}).get("name")
-                    or (n.get("data") or {}).get("label")
-                    or ""
-                )
-                == dns_net_name
-            ),
-            None,
-        )
-    if net is None:
-        net = nets[0] if nets else None
+    net = _find_showroom_dns_network(topology, dns_net_name)
     if net is None:
         return []
     d = net.get("data") or {}
@@ -8988,18 +9293,26 @@ def _start_ordered_containers(
         delay = entry.get("delaySeconds", 0)
         if delay > 0:
             _time.sleep(delay)
-        if ctr.get("is_pod"):
-            full_pod_name = f"troshka-{project_id[:8]}-{ctr['name']}"
-            timeout = 900 if ctr.get("build_content", True) else 120
-            _start_pod(host, full_pod_name, timeout=timeout)
-        else:
-            container_name = f"troshka-{project_id[:8]}-{ctr['node_id'][:8]}"
-            _start_container(host, container_name)
-        for node in topology.get("nodes", []):
-            if node["id"] == ctr_id:
-                node.setdefault("data", {})["status"] = "running"
-                break
+        _start_unordered_container(host, project_id, ctr)
+        _mark_container_node_running(topology, ctr_id)
     return started_ids
+
+
+def _mark_container_node_running(topology, node_id: str) -> None:
+    for node in topology.get("nodes", []):
+        if node["id"] == node_id:
+            node.setdefault("data", {})["status"] = "running"
+            break
+
+
+def _start_unordered_container(host, project_id: str, ctr: dict) -> None:
+    if ctr.get("is_pod"):
+        full_pod_name = f"troshka-{project_id[:8]}-{ctr['name']}"
+        timeout = 900 if ctr.get("build_content", True) else 120
+        _start_pod(host, full_pod_name, timeout=timeout)
+    else:
+        container_name = f"troshka-{project_id[:8]}-{ctr['node_id'][:8]}"
+        _start_container(host, container_name)
 
 
 def _deploy_start_containers(host, project_id, topology, auto_start):
@@ -9013,17 +9326,8 @@ def _deploy_start_containers(host, project_id, topology, auto_start):
     for ctr in containers:
         if ctr["node_id"] in started_ids:
             continue
-        if ctr.get("is_pod"):
-            full_pod_name = f"troshka-{project_id[:8]}-{ctr['name']}"
-            timeout = 900 if ctr.get("build_content", True) else 120
-            _start_pod(host, full_pod_name, timeout=timeout)
-        else:
-            container_name = f"troshka-{project_id[:8]}-{ctr['node_id'][:8]}"
-            _start_container(host, container_name)
-        for node in topology.get("nodes", []):
-            if node["id"] == ctr["node_id"]:
-                node.setdefault("data", {})["status"] = "running"
-                break
+        _start_unordered_container(host, project_id, ctr)
+        _mark_container_node_running(topology, ctr["node_id"])
 
 
 def _deploy_start_vms(s, host, project_id, project, topology, auto_start):
@@ -9333,14 +9637,8 @@ def _deploy_host_error_msg(s, project, host):
     return "Assigned host has no IP address — it may still be provisioning"
 
 
-def _deploy_init_context(s, project, project_id):
-    """Compute clock offset and allocate VNIs.
-
-    Returns ``(topology, clock_offset, vni_map)``.
-    """
-    topology = project.topology or {}
-    # Project cluster-level OCP flags (monitor / bastion-browser) onto member VMs
-    # so the per-VM deploy machinery works unchanged for all paths.
+def _deploy_normalize_topology_flags(s, project, topology, project_id: str) -> tuple:
+    """Apply OCP flags / member fields / auto-recert. Returns (topology, is_ocp_pattern)."""
     from app.services.ocp_topology_flags import apply_cluster_ocp_flags
     from app.services.template_loader import normalize_cluster_member_fields
 
@@ -9351,13 +9649,7 @@ def _deploy_init_context(s, project, project_id):
     normalize_cluster_member_fields(topology)
     if _json.dumps(topology, sort_keys=True) != _topo_before:
         changed = True
-    # Recert is an OCP-cluster property, not a per-VM toggle: any OCP PATTERN
-    # deploy recerts, decided here (shared prep) so BOTH providers do the same
-    # thing — guestfish wipes the kubelet PKI (the only cert that expires on a
-    # realistic timescale; etcd/apiserver/CA certs are valid 5–10y), then the
-    # ops-pod approves the re-bootstrapping CSRs (+ apiserver redeploy for
-    # multi-node). The RH recert tool is retired (it over-rotated the CA + SA key,
-    # breaking the kubeconfig + crashlooping etcd-restored pods).
+    # Recert is an OCP-cluster property: any OCP PATTERN deploy recerts.
     is_ocp_pattern = _is_pattern_deploy(topology) and _is_ocp_topology(topology)
     if is_ocp_pattern:
         _auto_enable_recert_on_rhcos(topology, True, project_id)
@@ -9365,27 +9657,48 @@ def _deploy_init_context(s, project, project_id):
     if changed:
         project.topology = topology
         s.commit()
-    clock_offset = None
+    return topology, is_ocp_pattern
+
+
+def _deploy_resolve_clock_offset(project, is_ocp_pattern: bool, project_id: str):
+    """Compute clock offset unless this is an OCP pattern (real-time) deploy."""
     if project.clock_target and not is_ocp_pattern:
         from app.services.clock_service import compute_clock_offset
 
-        clock_offset = compute_clock_offset(project.clock_target)
-    elif is_ocp_pattern and project.clock_target:
-        # No clock backdating for OCP recert deploys — the certs are valid 5–10y,
-        # so the cluster boots at REAL time. Backdating is a fragile crutch
-        # (external TLS breaks, NTP correction later "expires" the certs).
+        return compute_clock_offset(project.clock_target)
+    if is_ocp_pattern and project.clock_target:
         logger.info(
             "Deploy %s: OCP pattern — skipping clock backdating (real-time recert)",
             project_id[:8],
         )
-    vni_map = project.vni_map or {}
-    if not vni_map:
-        from app.services.vxlan import allocate_vnis_for_project
+    return None
 
-        vni_map = allocate_vnis_for_project(s, topology)
-        project.vni_map = vni_map
-        s.commit()
-        logger.info("Deploy %s: allocated VNIs %s", project_id[:8], vni_map)
+
+def _deploy_ensure_vni_map(s, project, topology) -> dict:
+    vni_map = project.vni_map or {}
+    if vni_map:
+        return vni_map
+    from app.services.vxlan import allocate_vnis_for_project
+
+    vni_map = allocate_vnis_for_project(s, topology)
+    project.vni_map = vni_map
+    s.commit()
+    logger.info("Deploy %s: allocated VNIs %s", project.id[:8], vni_map)
+    return vni_map
+
+
+def _deploy_init_context(s, project, project_id):
+    """Compute clock offset and allocate VNIs.
+
+    Returns ``(topology, clock_offset, vni_map)``.
+    """
+    topology = project.topology or {}
+    topology, is_ocp_pattern = _deploy_normalize_topology_flags(
+        s, project, topology, project_id
+    )
+    clock_offset = _deploy_resolve_clock_offset(project, is_ocp_pattern, project_id)
+    vni_map = _deploy_ensure_vni_map(s, project, topology)
+
     from app.services.deploy_topology import inject_showroom_gateway_port_forwards
 
     provider_type = None
@@ -9456,6 +9769,40 @@ def _deploy_create_bmc_bridge(host, project_id, topology):
         logger.info("Deploy %s: BMC bridge created", project_id[:8])
 
 
+def _deploy_setup_networks_phase(
+    s, host, project, topology, vni_map, project_id, external_ips
+) -> tuple[bool, object]:
+    """Run the networks checkpoint. Returns (ok, lb_config)."""
+    _checkpoint(s, project_id, "networks")
+    _update_deploy_progress(project_id, "networking", "waiting for lock")
+    with _get_network_lock(host.id):
+        _update_deploy_progress(project_id, "networking", "configuring VXLAN")
+        logger.info(
+            "Deploy %s: setting up networks on %s",
+            project_id[:8],
+            host.ip_address,
+        )
+        net_result = _setup_networks_via_troshkad(
+            host, topology, vni_map, s, project_id
+        )
+    if net_result is not True:
+        logger.error(_LOG_DEPLOY, project_id[:8], net_result)
+        _set_deploy_error(s, project, net_result)
+        _delete_deploy_progress(project_id)
+        return False, None
+
+    lb_config = _deploy_setup_lb(host, project_id, topology, vni_map)
+    if external_ips:
+        _deploy_sync_sg_rules(s, project_id, project, host, topology, lb_config)
+    if _project_deleted(project_id):
+        _delete_deploy_progress(project_id)
+        return False, None
+    _deploy_inject_gateway_ip(topology, project_id)
+    _deploy_disable_guest_exec(project, topology)
+    _deploy_create_provider_routes(s, project_id, topology, host=host)
+    return True, lb_config
+
+
 def _deploy_single_host_setup(
     s, project, host, topology, vni_map, project_id, resume_from, pool
 ):
@@ -9479,36 +9826,11 @@ def _deploy_single_host_setup(
 
     lb_config = None
     if not _should_skip(resume_from, "networks"):
-        _checkpoint(s, project_id, "networks")
-        _update_deploy_progress(project_id, "networking", "waiting for lock")
-        with _get_network_lock(host.id):
-            _update_deploy_progress(project_id, "networking", "configuring VXLAN")
-            logger.info(
-                "Deploy %s: setting up networks on %s",
-                project_id[:8],
-                host.ip_address,
-            )
-            net_result = _setup_networks_via_troshkad(
-                host, topology, vni_map, s, project_id
-            )
-        if net_result is not True:
-            logger.error(_LOG_DEPLOY, project_id[:8], net_result)
-            _set_deploy_error(s, project, net_result)
-            _delete_deploy_progress(project_id)
+        ok, lb_config = _deploy_setup_networks_phase(
+            s, host, project, topology, vni_map, project_id, external_ips
+        )
+        if not ok:
             return None
-
-        lb_config = _deploy_setup_lb(host, project_id, topology, vni_map)
-
-        if external_ips:
-            _deploy_sync_sg_rules(s, project_id, project, host, topology, lb_config)
-
-        if _project_deleted(project_id):
-            _delete_deploy_progress(project_id)
-            return None
-
-        _deploy_inject_gateway_ip(topology, project_id)
-        _deploy_disable_guest_exec(project, topology)
-        _deploy_create_provider_routes(s, project_id, topology, host=host)
 
     if not _should_skip(resume_from, "seeds"):
         _checkpoint(s, project_id, "seeds")
@@ -9562,12 +9884,13 @@ def _deploy_single_host_execute(
     disk_cache,
     clock_offset,
     auto_start,
-    lb_config,
-    external_ips,
+    ctx_setup,
     resume_from: str | None = None,
     mtu_map: dict | None = None,
 ):
     """Create VMs, start them, and finalize single-host deploy."""
+    lb_config = ctx_setup["lb_config"]
+    external_ips = ctx_setup["external_ips"]
     vms = _extract_vms(topology)
     bmc_config = None
 
@@ -9733,6 +10056,23 @@ def _deploy_handle_failure(s, project_id, exception):
 # ── Main deploy orchestrator ─────────────────────────────────────────────
 
 
+def _deploy_resolve_mtu_map(project, topology, uplink_mtu, project_id: str) -> dict:
+    """Resolve per-network MTUs and push any warnings to deploy progress."""
+    from app.services.deploy_topology import network_mtu_map, resolve_topology_mtus
+
+    spans_hosts = bool(project.mesh_network_host_id)
+    for w in resolve_topology_mtus(topology, uplink_mtu, spans_hosts):
+        _update_deploy_progress(project_id, "networks", w)
+        logger.warning("Deploy %s: MTU: %s", project_id[:8], w)
+    return network_mtu_map(topology, uplink_mtu, spans_hosts)
+
+
+def _deploy_after_special_host(s, host, project_id, project, topology, vni_map) -> None:
+    """Launch ops pod after multihost/kubevirt bring-up when not in error."""
+    if getattr(project, "state", None) != "error":
+        _maybe_deploy_ops_pod(s, host, project_id, project, topology, vni_map)
+
+
 def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
     project_id: str, auto_start: bool = True, resume_from: str | None = None
 ):
@@ -9772,11 +10112,10 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
         if host_err:
             _set_deploy_error_and_notify(s, project_id, project, host_err)
             return
-        assert host is not None  # guaranteed when host_err is None
+        assert host is not None
 
         topology, clock_offset, vni_map = _deploy_init_context(s, project, project_id)
 
-        # Ensure uplink MTU is known before resolving network MTUs
         uplink_mtu = _ensure_host_uplink_mtu(host, s)
         if uplink_mtu is None:
             _set_deploy_error_and_notify(
@@ -9787,20 +10126,8 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             )
             return
 
-        # Resolve per-network MTU
-        from app.services.deploy_topology import (
-            network_mtu_map,
-            resolve_topology_mtus,
-        )
+        mtu_map = _deploy_resolve_mtu_map(project, topology, uplink_mtu, project_id)
 
-        spans_hosts = bool(project.mesh_network_host_id)
-        mtu_warnings = resolve_topology_mtus(topology, uplink_mtu, spans_hosts)
-        for w in mtu_warnings:
-            _update_deploy_progress(project_id, "networks", w)
-            logger.warning("Deploy %s: MTU: %s", project_id[:8], w)
-        mtu_map = network_mtu_map(topology, uplink_mtu, spans_hosts)
-
-        # Multi-host deploy: mesh setup -> network setup -> VM distribution
         if project.mesh_network_host_id:
             logger.info(
                 "Deploy %s: multi-host mode (network host: %s)",
@@ -9808,31 +10135,21 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                 project.mesh_network_host_id[:8],
             )
             _deploy_multihost(project_id, project, s, mtu_map)
-            # A pod-default OCP project deployed multi-host still needs the ops
-            # pod to run the install (the primary host reaches cross-host cluster
-            # VMs over the VXLAN mesh). Only after a non-error VM bring-up.
-            if getattr(project, "state", None) != "error":
-                _maybe_deploy_ops_pod(s, host, project_id, project, topology, vni_map)
+            _deploy_after_special_host(s, host, project_id, project, topology, vni_map)
             return
 
-        # KubeVirt native: delegate entire deploy to operator via CRDs
         if host.host_type == "kubevirt-cluster":
             _deploy_kubevirt_native(project_id, project, host, topology, s, mtu_map)
-            # _deploy_kubevirt_native blocks until the VMs reach Running (or sets
-            # project.state="error"), so this is the correct point to launch the
-            # pod-default OCP install. Without it a pod OCP project on a kubevirt
-            # host finishes with the VMs up but OpenShift never installed.
-            if getattr(project, "state", None) != "error":
-                _maybe_deploy_ops_pod(s, host, project_id, project, topology, vni_map)
+            _deploy_after_special_host(s, host, project_id, project, topology, vni_map)
             return
 
         pool = _get_host_pool(host, s)
         disk_cache = "none" if pool and pool.mode.startswith("shared") else None
 
-        ctx = _deploy_single_host_setup(
+        ctx_setup = _deploy_single_host_setup(
             s, project, host, topology, vni_map, project_id, resume_from, pool
         )
-        if ctx is None:
+        if ctx_setup is None:
             return
 
         _deploy_single_host_execute(
@@ -9846,8 +10163,7 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
             disk_cache,
             clock_offset,
             auto_start,
-            ctx["lb_config"],
-            ctx["external_ips"],
+            ctx_setup,
             resume_from,
             mtu_map,
         )
@@ -10760,6 +11076,17 @@ def _extract_ocp_kubeadmin_password(nodes, vm_id=None):
     return _first_kubeadmin_password(nodes, lambda n: n.get("type") == "vmNode")
 
 
+def _apply_kubeadmin_pw_to_topology(topo: dict, vm_id: str, pw: str) -> bool:
+    """Set ocpKubeadminPassword on matching VM node. Returns True if changed."""
+    for n in topo.get("nodes", []):
+        if n.get("id") == vm_id and n.get("type") == "vmNode":
+            data = n.setdefault("data", {})
+            if data.get("ocpKubeadminPassword") != pw:
+                data["ocpKubeadminPassword"] = pw
+                return True
+    return False
+
+
 def _persist_ocp_kubeadmin_password(project_id, vm_id, pw):
     """Store the installer-generated kubeadmin password on the VM node so the UI
     shows the real value. Recert sets ocpKubeadminPassword directly; the Agent
@@ -10780,13 +11107,9 @@ def _persist_ocp_kubeadmin_password(project_id, vm_id, pw):
                 topo = getattr(p, attr, None)
                 if not topo:
                     continue
-                for n in topo.get("nodes", []):
-                    if n.get("id") == vm_id and n.get("type") == "vmNode":
-                        data = n.setdefault("data", {})
-                        if data.get("ocpKubeadminPassword") != pw:
-                            data["ocpKubeadminPassword"] = pw
-                            flag_modified(p, attr)
-                            changed = True
+                if _apply_kubeadmin_pw_to_topology(topo, vm_id, pw):
+                    flag_modified(p, attr)
+                    changed = True
             if changed:
                 db.commit()
         finally:
@@ -10993,6 +11316,96 @@ def _ocp_vm_wait_for_console(oc_fn, approve_fn, push_fn, deadline):
         _t.sleep(5)
 
 
+def _sync_bastion_kubeadmin_pw(
+    nodes, vm_id, host, project_id, bastion_ip, password, _oc, _push, status_phase
+) -> None:
+    """Write kubeadmin password to bastion (or read it back into topology)."""
+    kubeadmin_pw = _extract_ocp_kubeadmin_password(nodes, vm_id)
+    if kubeadmin_pw:
+        _push(status_phase, "syncing kubeadmin password to bastion")
+        _write_bastion_kubeadmin_password(
+            host, project_id, bastion_ip, password, kubeadmin_pw
+        )
+        return
+    if not vm_id:
+        return
+    read_pw = _oc(
+        "cat /home/cloud-user/ocp-install/auth/kubeadmin-password 2>/dev/null",
+        timeout=10,
+    )
+    read_pw = (read_pw or "").strip()
+    if read_pw:
+        _push(status_phase, "reading kubeadmin password from bastion")
+        _persist_ocp_kubeadmin_password(project_id, vm_id, read_pw)
+
+
+def _configure_bastion_browser(
+    nodes,
+    vm_id,
+    kc_path,
+    host,
+    project_id,
+    bastion_ip,
+    password,
+    _oc,
+    _push,
+    vm_name,
+    status_phase,
+):
+    """Copy kubeconfig, refresh CA, sync password, and deploy browser autologin."""
+    if kc_path:
+        _push(status_phase, "setting bastion kubeconfig for this cluster")
+        _exec_on_bastion(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            f"mkdir -p /home/cloud-user/ocp-install/auth /home/cloud-user/.kube;"
+            f" cp {kc_path} /home/cloud-user/ocp-install/auth/kubeconfig;"
+            f" cp {kc_path} /home/cloud-user/.kube/config;"
+            f" chown -R cloud-user:cloud-user"
+            " /home/cloud-user/ocp-install /home/cloud-user/.kube 2>/dev/null || true",
+            timeout=10,
+        )
+
+    _push(status_phase, "refreshing bastion CA trust")
+    _oc(
+        "oc get secret -n openshift-ingress router-certs-default "
+        "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
+        "| sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null "
+        "&& sudo update-ca-trust",
+        timeout=15,
+    )
+
+    _sync_bastion_kubeadmin_pw(
+        nodes, vm_id, host, project_id, bastion_ip, password, _oc, _push, status_phase
+    )
+
+    _push(status_phase, "deploying browser autologin script")
+    _ensure_bastion_geckodriver(host, project_id, bastion_ip, password)
+    _ensure_bastion_selenium(host, project_id, bastion_ip, password)
+    _deploy_bastion_autologin_script(host, project_id, bastion_ip, password)
+
+    _push(status_phase, "ensuring Firefox profile")
+    _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        password,
+        _KILL_BROWSER_CMD
+        + "; "
+        + _CLEAR_BASTION_OCP_COOKIES_CMD
+        + "; "
+        + _ENSURE_FIREFOX_PROFILE_CMD,
+        timeout=25,
+    )
+
+    _push(status_phase, "verifying bastion browser setup")
+    return _verify_bastion_browser(
+        _oc, _push, project_id, vm_name, status_phase=status_phase
+    )
+
+
 def _configure_bastion_and_cleanup(
     nodes,
     vm_id,
@@ -11012,79 +11425,21 @@ def _configure_bastion_and_cleanup(
         "configureBastionBrowser"
     )
     if configure_browser:
-        # Copy kubeconfig to bastion default locations (skip if already using bastion default)
-        if kc_path:
-            _push(status_phase, "setting bastion kubeconfig for this cluster")
-            _exec_on_bastion(
-                host,
-                project_id,
-                bastion_ip,
-                password,
-                f"mkdir -p /home/cloud-user/ocp-install/auth /home/cloud-user/.kube;"
-                f" cp {kc_path} /home/cloud-user/ocp-install/auth/kubeconfig;"
-                f" cp {kc_path} /home/cloud-user/.kube/config;"
-                f" chown -R cloud-user:cloud-user"
-                " /home/cloud-user/ocp-install /home/cloud-user/.kube 2>/dev/null || true",
-                timeout=10,
-            )
-
-        # Refresh bastion CA trust with this cluster's ingress cert
-        _push(status_phase, "refreshing bastion CA trust")
-        _oc(
-            "oc get secret -n openshift-ingress router-certs-default "
-            "-o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d "
-            "| sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null "
-            "&& sudo update-ca-trust",
-            timeout=15,
-        )
-
-        kubeadmin_pw = _extract_ocp_kubeadmin_password(nodes, vm_id)
-        if kubeadmin_pw:
-            _push(status_phase, "syncing kubeadmin password to bastion")
-            _write_bastion_kubeadmin_password(
-                host, project_id, bastion_ip, password, kubeadmin_pw
-            )
-        elif vm_id:
-            # Agent Installer generated the kubeadmin password on the bastion;
-            # read it back so the UI shows the real value (not the bastion pw).
-            read_pw = _oc(
-                "cat /home/cloud-user/ocp-install/auth/kubeadmin-password "
-                "2>/dev/null",
-                timeout=10,
-            )
-            read_pw = (read_pw or "").strip()
-            if read_pw:
-                _push(status_phase, "reading kubeadmin password from bastion")
-                _persist_ocp_kubeadmin_password(project_id, vm_id, read_pw)
-
-        _push(status_phase, "deploying browser autologin script")
-        _ensure_bastion_geckodriver(host, project_id, bastion_ip, password)
-        _ensure_bastion_selenium(host, project_id, bastion_ip, password)
-        _deploy_bastion_autologin_script(host, project_id, bastion_ip, password)
-
-        _push(status_phase, "ensuring Firefox profile")
-        _exec_on_bastion(
+        return _configure_bastion_browser(
+            nodes,
+            vm_id,
+            kc_path,
             host,
             project_id,
             bastion_ip,
             password,
-            _KILL_BROWSER_CMD
-            + "; "
-            + _CLEAR_BASTION_OCP_COOKIES_CMD
-            + "; "
-            + _ENSURE_FIREFOX_PROFILE_CMD,
-            timeout=25,
+            _oc,
+            _push,
+            vm_name,
+            status_phase,
         )
 
-        # Verify CA fingerprint + run autologin with retry loop
-        _push(status_phase, "verifying bastion browser setup")
-        bastion_ready = _verify_bastion_browser(
-            _oc, _push, project_id, vm_name, status_phase=status_phase
-        )
-        return bastion_ready
-
-    # Cleanup temp kubeconfig (skip if we used bastion default or copied it there)
-    if kc_path and not configure_browser:
+    if kc_path:
         _exec_on_bastion(
             host, project_id, bastion_ip, password, f"rm -f {kc_path}", timeout=5
         )
@@ -11781,36 +12136,47 @@ def _control_plane_detail(phases_seen, full_text, _re):
     return cp_detail
 
 
-def _build_bootstrap_items(phases_seen, node_status, full_text, _re):
-    """Build progress items for bootstrap, API, and control-plane phases."""
-    items = []
+def _bootstrap_etcd_item(phases_seen, node_status) -> str | None:
     has_bootkube = any(s == "bootkube" for s in node_status.values())
     has_configuring = any(
         s in ("configuring", "joined", "done") for s in node_status.values()
     )
+    if not (has_bootkube or has_configuring or "bootstrap-api" in phases_seen):
+        return None
+    mark = "✓" if has_configuring or "bootstrap" in phases_seen else "⏳"
+    return f"etcd: {mark}"
 
-    if has_bootkube or has_configuring or "bootstrap-api" in phases_seen:
-        items.append(
-            f"etcd: {'✓' if has_configuring or 'bootstrap' in phases_seen else '⏳'}"
-        )
 
+def _bootstrap_phase_item(phases_seen, node_status) -> str | None:
     if "bootstrap" in phases_seen:
-        items.append("Bootstrap: ✓")
-    elif "bootstrap-api" in phases_seen or has_bootkube:
-        items.append("Bootstrap: ⏳")
-    elif node_status:
-        items.append("Bootstrap: —")
+        return "Bootstrap: ✓"
+    if "bootstrap-api" in phases_seen or any(
+        s == "bootkube" for s in node_status.values()
+    ):
+        return "Bootstrap: ⏳"
+    if node_status:
+        return "Bootstrap: —"
+    return None
 
+
+def _build_bootstrap_items(phases_seen, node_status, full_text, _re):
+    """Build progress items for bootstrap, API, and control-plane phases."""
+    items = []
+    etcd = _bootstrap_etcd_item(phases_seen, node_status)
+    if etcd:
+        items.append(etcd)
+    boot = _bootstrap_phase_item(phases_seen, node_status)
+    if boot:
+        items.append(boot)
     if "bootstrap" in phases_seen and "control-plane" not in phases_seen:
         items.append("API: ⏳")
-
     if "control-plane" in phases_seen:
         items.append("API: ✓")
-        cp_detail = _control_plane_detail(phases_seen, full_text, _re)
-        items.append(f"Cluster init: {cp_detail}")
+        items.append(
+            f"Cluster init: {_control_plane_detail(phases_seen, full_text, _re)}"
+        )
     elif "bootstrap" in phases_seen:
         items.append("Cluster init: —")
-
     return items
 
 
@@ -12314,6 +12680,37 @@ def _ocp_push_status(project_id, phase, detail, items=None, vm_id=None, vm_name=
         logger.exception("Failed to save ocp_status_detail for %s", project_id[:8])
 
 
+def _ping_one_cp_node(host, project_id, bastion_ip, password, name, idx) -> str:
+    """Return '{name}: reachable|waiting' for one control-plane ping."""
+    ip_suffix = 10 + idx
+    result = _exec_on_bastion(
+        host,
+        project_id,
+        bastion_ip,
+        password,
+        f"ping -c1 -W2 10.0.0.{ip_suffix} >/dev/null 2>&1 && echo up || echo down",
+        timeout=10,
+    )
+    if result and "up" in result:
+        return f"{name}: reachable"
+    return f"{name}: waiting"
+
+
+def _maybe_approve_csrs_during_ping(
+    host, project_id, bastion_ip, password, push_fn, last_csr_check_ping
+) -> float:
+    """Approve pending CSRs at most every 15s. Returns updated last-check time."""
+    import time as _t
+
+    now = _t.time()
+    if now - last_csr_check_ping < 15:
+        return last_csr_check_ping
+    approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
+    if approved:
+        push_fn("certs", f"approved {approved} certificate(s)")
+    return now
+
+
 def _ocp_ping_cp_nodes(
     host, project_id, bastion_ip, password, cp_names, push_fn, deadline
 ):
@@ -12321,37 +12718,18 @@ def _ocp_ping_cp_nodes(
     import time as _t
 
     push_fn("nodes", "pinging control plane nodes")
-    last_csr_check_ping = 0
+    last_csr_check_ping = 0.0
     while _t.time() < deadline:
-        if _t.time() - last_csr_check_ping >= 15:
-            approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
-            if approved:
-                push_fn("certs", f"approved {approved} certificate(s)")
-            last_csr_check_ping = _t.time()
-
-        items = []
-        all_up = True
-        for idx, name in enumerate(cp_names):
-            ip_suffix = 10 + idx
-            result = _exec_on_bastion(
-                host,
-                project_id,
-                bastion_ip,
-                password,
-                f"ping -c1 -W2 10.0.0.{ip_suffix} >/dev/null 2>&1 && echo up || echo down",
-                timeout=10,
-            )
-            if result and "up" in result:
-                items.append(f"{name}: reachable")
-            else:
-                items.append(f"{name}: waiting")
-                all_up = False
-        push_fn(
-            "nodes",
-            f"{sum(1 for i in items if 'reachable' in i)}/{len(cp_names)} nodes reachable",
-            items,
+        last_csr_check_ping = _maybe_approve_csrs_during_ping(
+            host, project_id, bastion_ip, password, push_fn, last_csr_check_ping
         )
-        if all_up:
+        items = [
+            _ping_one_cp_node(host, project_id, bastion_ip, password, name, idx)
+            for idx, name in enumerate(cp_names)
+        ]
+        reachable = sum(1 for i in items if "reachable" in i)
+        push_fn("nodes", f"{reachable}/{len(cp_names)} nodes reachable", items)
+        if reachable == len(cp_names):
             break
         _t.sleep(5)
 
@@ -12593,7 +12971,7 @@ def _start_troshkad_vms(host, project_id, vms):
     for vm in vms:
         vm_name = _vm_domain_name(project_id, vm["node_id"])
         try:
-            job_id = start_job(host, "/vms/start", {"domain_name": vm_name})
+            job_id = start_job(host, _VMS_START_PATH, {"domain_name": vm_name})
             wait_for_job(host, job_id, timeout=120)
         except TroshkadError as e:
             logger.warning(
@@ -13008,6 +13386,74 @@ def destroy_project_sync(ctx: dict, *, delete_record: bool = True):
         _deploy_semaphore.release()
 
 
+def _namespace_gone_cleanup(core_api, ns_name: str, project_id: str) -> bool:
+    """Cleanup PVs after namespace 404; always returns True (gone confirmed)."""
+    try:
+        from app.services.providers.kubevirt import _cleanup_project_persistent_volumes
+
+        _cleanup_project_persistent_volumes(core_api, ns_name)
+    except Exception:
+        logger.exception(
+            "Destroy %s: project PV cleanup failed (continuing)", project_id[:8]
+        )
+    logger.info("Destroy %s: namespace terminated", project_id[:8])
+    return True
+
+
+def _poll_namespace_until_gone(
+    core_api, ns_name: str, project_id: str, rounds: int, sleep_s: float = 5
+) -> bool | None:
+    """Poll namespace. True if gone, False on unexpected error, None if still present."""
+    import time as _del_time
+
+    from kubernetes.client.exceptions import ApiException as _KApiErr
+
+    for _ in range(rounds):
+        try:
+            core_api.read_namespace(name=ns_name)
+            _del_time.sleep(sleep_s)
+        except _KApiErr as e:
+            if e.status == 404:
+                return _namespace_gone_cleanup(core_api, ns_name, project_id)
+            _del_time.sleep(sleep_s)
+        except Exception:
+            logger.warning(
+                "Destroy %s: could not confirm namespace deletion", project_id[:8]
+            )
+            return False
+    return None
+
+
+def _try_clear_rook_finalizers(provider, project_id: str, label: str) -> bool:
+    """Best-effort rook finalizer clear. Returns True if the call succeeded."""
+    from app.services.providers.kubevirt import _force_clear_rook_finalizers
+
+    try:
+        _force_clear_rook_finalizers(provider, project_id)
+        return True
+    except Exception:
+        logger.exception("Destroy %s: %s", project_id[:8], label)
+        return False
+
+
+def _namespace_deletion_timeout(core_api, ns_name: str, project_id: str) -> bool:
+    """Log stuck-namespace timeout and attempt PV cleanup. Always returns False."""
+    from app.services.providers.kubevirt import _cleanup_project_persistent_volumes
+
+    logger.warning(
+        "Destroy %s: namespace %s still present after timeout (stuck finalizers?)",
+        project_id[:8],
+        ns_name,
+    )
+    try:
+        _cleanup_project_persistent_volumes(core_api, ns_name)
+    except Exception:
+        logger.exception(
+            "Destroy %s: project PV cleanup after timeout failed", project_id[:8]
+        )
+    return False
+
+
 def _wait_for_namespace_deletion(provider, project_id) -> bool:
     """Poll until the project namespace is gone. Returns True only when the
     namespace is confirmed terminated (404); False if it is still present after
@@ -13018,44 +13464,23 @@ def _wait_for_namespace_deletion(provider, project_id) -> bool:
 
     from kubernetes.client.exceptions import ApiException as _KApiErr
 
-    from app.services.providers.kubevirt import (
-        _cleanup_project_persistent_volumes,
-        _force_clear_rook_finalizers,
-        _get_k8s_clients,
-        _project_ns,
-    )
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
 
     _, core_api, _ = _get_k8s_clients(provider)
     ns_name = _project_ns(provider, project_id)
     cleared = False
 
-    def _on_namespace_gone() -> bool:
-        try:
-            _cleanup_project_persistent_volumes(core_api, ns_name)
-        except Exception:
-            logger.exception(
-                "Destroy %s: project PV cleanup failed (continuing)", project_id[:8]
-            )
-        logger.info("Destroy %s: namespace terminated", project_id[:8])
-        return True
-
     for i in range(60):
         try:
             core_api.read_namespace(name=ns_name)
-            # Midway: force-clear Rook finalizers that commonly leave
-            # troshka-* namespaces Terminating after TroshkaCeph teardown.
             if not cleared and i == 12:
-                try:
-                    _force_clear_rook_finalizers(provider, project_id)
-                    cleared = True
-                except Exception:
-                    logger.exception(
-                        "Destroy %s: rook finalizer clear failed", project_id[:8]
-                    )
+                cleared = _try_clear_rook_finalizers(
+                    provider, project_id, "rook finalizer clear failed"
+                )
             _del_time.sleep(5)
         except _KApiErr as e:
             if e.status == 404:
-                return _on_namespace_gone()
+                return _namespace_gone_cleanup(core_api, ns_name, project_id)
             _del_time.sleep(5)
         except Exception:
             logger.warning(
@@ -13063,35 +13488,13 @@ def _wait_for_namespace_deletion(provider, project_id) -> bool:
             )
             return False
     if not cleared:
-        try:
-            _force_clear_rook_finalizers(provider, project_id)
-        except Exception:
-            logger.exception(
-                "Destroy %s: final rook finalizer clear failed", project_id[:8]
-            )
-        for _ in range(24):
-            try:
-                core_api.read_namespace(name=ns_name)
-                _del_time.sleep(5)
-            except _KApiErr as e:
-                if e.status == 404:
-                    return _on_namespace_gone()
-                _del_time.sleep(5)
-            except Exception:
-                break
-    logger.warning(
-        "Destroy %s: namespace %s still present after timeout (stuck finalizers?)",
-        project_id[:8],
-        ns_name,
-    )
-    # Best-effort: still try to clear PVs claiming this ns even if Terminating.
-    try:
-        _cleanup_project_persistent_volumes(core_api, ns_name)
-    except Exception:
-        logger.exception(
-            "Destroy %s: project PV cleanup after timeout failed", project_id[:8]
+        _try_clear_rook_finalizers(
+            provider, project_id, "final rook finalizer clear failed"
         )
-    return False
+        result = _poll_namespace_until_gone(core_api, ns_name, project_id, 24)
+        if result is not None:
+            return result
+    return _namespace_deletion_timeout(core_api, ns_name, project_id)
 
 
 def _destroy_kubevirt_native(project_id, host, session, delete_record):
@@ -13169,32 +13572,8 @@ def _destroy_container(host, project_id, ctr, topo, pool):
         )
 
 
-def _destroy_troshkad_resources(host, project_id, topo, vni_map, session):
-    """Tear down containers, VMs, files, metadata, BMC, and networks via troshkad."""
-    # Destroy containers first (before networks teardown)
-    pool = _get_host_pool(host, session)
-    containers = _extract_containers(topo)
-    for ctr in containers:
-        _destroy_container(host, project_id, ctr, topo, pool)
-
-    # Destroy VMs via troshkad
-    vms = _extract_vms(topo)
-    destroyed_domains = set()
-    for vm in vms:
-        vm_name = _vm_domain_name(project_id, vm["node_id"])
-        destroyed_domains.add(vm_name)
-        try:
-            job_id = start_job(host, _VMS_DESTROY_PATH, {"domain_name": vm_name})
-            wait_for_job(host, job_id, timeout=60)
-        except TroshkadError as e:
-            logger.warning(
-                "Destroy %s: failed to destroy %s: %s", project_id[:8], vm_name, e
-            )
-
-    # Belt-and-suspenders: the destroy topology can drift from what is actually
-    # on the host (e.g. a stale deployed_topology), so reap any remaining domain
-    # for THIS project by prefix — otherwise a VM missing from the topology is
-    # orphaned on delete.
+def _reap_orphan_project_domains(host, project_id: str, destroyed_domains: set) -> None:
+    """Destroy leftover domains matching this project's prefix (best-effort)."""
     prefix = f"troshka-{project_id[:8]}-"
     try:
         for domain in get_all_vm_states(host) or {}:
@@ -13214,6 +13593,32 @@ def _destroy_troshkad_resources(host, project_id, topo, vni_map, session):
         logger.warning(
             "Destroy %s: orphan-domain reap scan failed: %s", project_id[:8], e
         )
+
+
+def _destroy_topology_vms(host, project_id, topo) -> set:
+    """Destroy VMs listed in topology; return set of domain names destroyed."""
+    destroyed_domains = set()
+    for vm in _extract_vms(topo):
+        vm_name = _vm_domain_name(project_id, vm["node_id"])
+        destroyed_domains.add(vm_name)
+        try:
+            job_id = start_job(host, _VMS_DESTROY_PATH, {"domain_name": vm_name})
+            wait_for_job(host, job_id, timeout=60)
+        except TroshkadError as e:
+            logger.warning(
+                "Destroy %s: failed to destroy %s: %s", project_id[:8], vm_name, e
+            )
+    return destroyed_domains
+
+
+def _destroy_troshkad_resources(host, project_id, topo, vni_map, session):
+    """Tear down containers, VMs, files, metadata, BMC, and networks via troshkad."""
+    pool = _get_host_pool(host, session)
+    for ctr in _extract_containers(topo):
+        _destroy_container(host, project_id, ctr, topo, pool)
+
+    destroyed_domains = _destroy_topology_vms(host, project_id, topo)
+    _reap_orphan_project_domains(host, project_id, destroyed_domains)
 
     # Remove project VM directory
     pool = _get_host_pool(host, session)
@@ -13480,10 +13885,44 @@ def _destroy_revoke_ops_pod_key(s, project_id: str) -> None:
         )
 
 
+def _destroy_single_host_resources(s, ctx, project, delete_record: bool) -> bool:
+    """Tear down single-host project resources. Returns False if destroy finished
+    early (missing host / kubevirt-native path handled the full destroy)."""
+    from app.models.host import Host
+
+    project_id = ctx["project_id"]
+    host = s.query(Host).filter_by(id=ctx["host_id"]).first()
+    if not host or not host.ip_address:
+        if delete_record:
+            _delete_project_record(project_id)
+        return False
+
+    if host.host_type == "kubevirt-cluster":
+        _destroy_kubevirt_native(project_id, host, s, delete_record)
+        return False
+
+    vni_map = ctx.get("vni_map", {})
+    topo = ctx.get("topology", {})
+    _destroy_troshkad_resources(host, project_id, topo, vni_map, s)
+    if _should_use_ops_pod(topo):
+        _cancel_ops_pod_install_troshkad(host, project_id)
+    _destroy_cleanup_sg_rules(host, project_id, s)
+    _destroy_cleanup_route_access(host, project_id, s)
+
+    from app.models.elastic_ip import ElasticIp
+    from app.services.vxlan import _topology_has_showroom
+
+    if not _topology_has_showroom(topo):
+        return True
+    project_eips = s.query(ElasticIp).filter_by(project_id=project_id).all()
+    if project_eips:
+        _teardown_showroom_tls(s, host, project, project_eips[0].public_ip)
+    return True
+
+
 def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
     """Orchestrate project destruction by delegating to focused helper functions."""
     from app.core.database import SessionLocal
-    from app.models.host import Host
     from app.models.project import Project
 
     project_id = ctx["project_id"]
@@ -13499,63 +13938,18 @@ def _destroy_project_inner(ctx: dict, *, delete_record: bool = True):
         # KubeVirt-native early return below); no-op for non-ops-pod projects.
         _destroy_revoke_ops_pod_key(s, project_id)
 
-        # Multi-host project: delegate to multi-host destroy path
         if project.mesh_subnet_id:
             logger.info("Destroy %s: multi-host project detected", project_id[:8])
             _destroy_multihost(s, project)
-            # Continue with common cleanup (DNS, EIPs, etc.)
-            # Fall through to common cleanup section below
-        else:
-            # Single-host project: existing path
-            host = s.query(Host).filter_by(id=ctx["host_id"]).first()
-            if not host or not host.ip_address:
-                if delete_record:
-                    _delete_project_record(project_id)
-                return
+        elif not _destroy_single_host_resources(s, ctx, project, delete_record):
+            return
 
-            # KubeVirt native: delegate destroy to operator
-            if host.host_type == "kubevirt-cluster":
-                _destroy_kubevirt_native(project_id, host, s, delete_record)
-                return
-
-            vni_map = ctx.get("vni_map", {})
-            topo = ctx.get("topology", {})
-
-            # Tear down all troshkad-managed resources (containers, VMs, files, BMC, networks)
-            _destroy_troshkad_resources(host, project_id, topo, vni_map, s)
-
-            # The ops pod is created at deploy time (not a topology node), so it
-            # is not reaped by the node-driven teardown above — destroy it
-            # explicitly for pod-install OCP projects (best-effort; no-op when
-            # the pod is absent).
-            if _should_use_ops_pod(topo):
-                _cancel_ops_pod_install_troshkad(host, project_id)
-
-            # Clean up security group rules for this project
-            _destroy_cleanup_sg_rules(host, project_id, s)
-
-            # Clean up Route-based external access (OCP Virt only)
-            _destroy_cleanup_route_access(host, project_id, s)
-
-            # Tear down showroom TLS edge (terminator + DNS)
-            from app.models.elastic_ip import ElasticIp
-            from app.services.vxlan import _topology_has_showroom
-
-            if _topology_has_showroom(topo):
-                project_eips = s.query(ElasticIp).filter_by(project_id=project_id).all()
-                if project_eips:
-                    eip = project_eips[0].public_ip
-                    _teardown_showroom_tls(s, host, project, eip)
-
-        # Common cleanup for both single-host and multi-host projects
         _destroy_cleanup_dns(s, ctx, project_id)
         _destroy_cleanup_eips(s, project_id)
-
         logger.info("Destroy %s: complete, released capacity", project_id[:8])
         s.close()
         if delete_record:
             _delete_project_record(project_id)
-        return
     except Exception as e:
         logger.exception("Destroy %s failed", project_id[:8])
         _set_destroy_error(project_id, str(e))

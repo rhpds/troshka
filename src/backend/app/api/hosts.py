@@ -25,6 +25,7 @@ _HOST_NOT_FOUND = "Host not found"
 _TROSHKAD_SCRIPT = "troshkad.py"
 _STORED_CREDS_MSG = "Stored troshkad credentials for host %s"
 _NO_SSH_KEY = "No SSH key stored for this host"
+_NO_INSTANCE_ID = "No instance ID"
 
 # S8410 annotated type aliases
 OperatorUser = Annotated[User, Depends(require_role("operator"))]
@@ -112,9 +113,70 @@ def get_overcommit():
     return {"cpu_ratio": cpu, "ram_ratio": ram}
 
 
+def _topology_vm_count(topology: dict | None) -> int:
+    """Count vmNode entries in a deployed topology dict."""
+    if not topology:
+        return 0
+    return sum(1 for n in topology.get("nodes", []) if n.get("type") == "vmNode")
+
+
+def _apply_host_project_stats(resp: HostResponse, all_projects: list) -> None:
+    """Fill running/total project and VM counts on a HostResponse."""
+    running = [p for p in all_projects if p.state in ("active", "deployed")]
+    resp.running_projects = len(running)
+    resp.total_projects = sum(
+        1 for p in all_projects if p.state in ("active", "deployed", "stopped")
+    )
+    resp.running_vms = sum(_topology_vm_count(p.deployed_topology) for p in running)
+    resp.total_vms = sum(
+        _topology_vm_count(p.deployed_topology)
+        for p in all_projects
+        if p.deployed_topology
+    )
+
+
+def _apply_host_provider_ssh(resp: HostResponse, db: Session, host: Host) -> None:
+    """Attach provider_type and SSH defaults when the host has a provider."""
+    if not host.provider_id:
+        return
+    prov = db.query(Provider).filter_by(id=host.provider_id).first()
+    if not prov:
+        return
+    resp.provider_type = prov.type
+    from app.services.agent_deployer import (
+        get_provider_ssh_port,
+        get_provider_ssh_user,
+    )
+
+    try:
+        resp.ssh_port = get_provider_ssh_port(prov.type)
+        resp.ssh_user = get_provider_ssh_user(prov.type)
+    except ValueError:
+        pass
+
+
+def _build_host_list_item(db: Session, host: Host, get_host_eip_usage) -> HostResponse:
+    """Build one HostResponse row for GET /hosts."""
+    from app.models.project import Project
+
+    resp = HostResponse.model_validate(host)
+    resp.used_eips = get_host_eip_usage(db, host.id)
+    all_projects = (
+        db.query(Project)
+        .filter(
+            Project.host_id == host.id,
+            Project.state.in_(["active", "deployed", "stopped", "draft"]),
+        )
+        .all()
+    )
+    _apply_host_project_stats(resp, all_projects)
+    _apply_host_provider_ssh(resp, db, host)
+    return resp
+
+
 @router.get("/", response_model=list[HostResponse])
 def list_hosts(
-    user: OperatorUser,
+    _user: OperatorUser,
     db: DbSession,
     region: Annotated[str | None, Query()] = None,
 ):
@@ -130,64 +192,7 @@ def list_hosts(
     for host in hosts:
         sync_host_capacity(db, host)
     db.commit()
-    from app.models.project import Project
-
-    results = []
-    for host in hosts:
-        resp = HostResponse.model_validate(host)
-        resp.used_eips = get_host_eip_usage(db, host.id)
-        all_projects = (
-            db.query(Project)
-            .filter(
-                Project.host_id == host.id,
-                Project.state.in_(["active", "deployed", "stopped", "draft"]),
-            )
-            .all()
-        )
-        running = [p for p in all_projects if p.state in ("active", "deployed")]
-        resp.running_projects = len(running)
-        resp.total_projects = len(
-            [p for p in all_projects if p.state in ("active", "deployed", "stopped")]
-        )
-        resp.running_vms = sum(
-            len(
-                [
-                    n
-                    for n in (p.deployed_topology or {}).get("nodes", [])
-                    if n.get("type") == "vmNode"
-                ]
-            )
-            for p in running
-        )
-        resp.total_vms = sum(
-            len(
-                [
-                    n
-                    for n in (p.deployed_topology or {}).get("nodes", [])
-                    if n.get("type") == "vmNode"
-                ]
-            )
-            for p in all_projects
-            if p.deployed_topology
-        )
-        if host.provider_id:
-            from app.models.provider import Provider
-
-            prov = db.query(Provider).filter_by(id=host.provider_id).first()
-            if prov:
-                resp.provider_type = prov.type
-                from app.services.agent_deployer import (
-                    get_provider_ssh_port,
-                    get_provider_ssh_user,
-                )
-
-                try:
-                    resp.ssh_port = get_provider_ssh_port(prov.type)
-                    resp.ssh_user = get_provider_ssh_user(prov.type)
-                except ValueError:
-                    pass
-        results.append(resp)
-    return results
+    return [_build_host_list_item(db, host, get_host_eip_usage) for host in hosts]
 
 
 def _get_ceph_storage(db: Session, host: Host) -> dict[str, Any] | None:
@@ -599,15 +604,8 @@ def _verify_and_update_agent_version(h: Host) -> None:
         logger.warning("Could not verify agent version after install: %s", e)
 
 
-def _wait_for_running_instance(
-    drv, prov, host_id: str, instance_id: str
-) -> tuple[str | None, dict[str, Any] | None]:
-    """Wait for a cloud instance to stop (if shutting down), start it, poll until running.
-
-    Returns (public_ip, status_dict) or (None, status_dict) if it never reached running.
-    For OCP Virt, ``public_ip`` may be None/empty while ``status_dict["state"]`` is
-    ``running`` — the LB address is tracked on the Host row, not in get_host_status.
-    """
+def _wait_until_stable_state(drv, prov, host_id: str, instance_id: str):
+    """Poll until instance reaches a stable power state. Returns (state, status)."""
     import time
 
     state_now = "unknown"
@@ -619,7 +617,13 @@ def _wait_for_running_instance(
             break
         logger.info("Host %s in %s state, waiting for stop...", host_id[:8], state_now)
         time.sleep(5)
+    return state_now, st_check
 
+
+def _start_or_unpause_instance(
+    drv, prov, host_id: str, instance_id: str, state_now: str
+):
+    """Start/unpause a non-running instance. Returns False if unpause failed."""
     if state_now == "paused":
         try:
             if hasattr(drv, "unpause_host"):
@@ -628,36 +632,85 @@ def _wait_for_running_instance(
                 drv.start_host(prov, instance_id)
         except Exception as e:
             logger.warning("unpause_host failed for %s: %s", host_id[:8], e)
-            # Do not burn 5 minutes polling — caller restores state=paused.
-            return None, st_check
+            return False
     elif state_now != "running":
         try:
             drv.start_host(prov, instance_id)
         except Exception as e:
             logger.warning("start_host failed for %s: %s", host_id[:8], e)
+    return True
 
-    is_ocpvirt = getattr(prov, "type", None) == "ocpvirt"
+
+def _still_paused_abort(st, state_now: str, still_paused_polls: int):
+    """Track stuck-paused polls. Returns (abort, new_poll_count, status_if_abort)."""
+    if st and st.get("state") == "paused" and state_now == "paused":
+        still_paused_polls += 1
+        if still_paused_polls >= 3:
+            return True, still_paused_polls, st
+        return False, still_paused_polls, None
+    return False, 0, None
+
+
+def _running_poll_outcome(st, is_ocpvirt: bool):
+    """If status is running, return (done, ip_or_none, st). Else (False, None, None)."""
+    if not (st and st.get("state") == "running"):
+        return False, None, None
+    if st.get("public_ip"):
+        return True, st.get("public_ip"), st
+    if is_ocpvirt:
+        # LB/public IP lives on Host.ip_address; do not overwrite with pod IP.
+        return True, None, st
+    return False, None, st
+
+
+def _poll_until_running(
+    drv, prov, instance_id: str, state_now: str, *, is_ocpvirt: bool
+):
+    """Poll until running (with public IP when available). Returns (ip, status)."""
+    import time
+
     # Unpause either works quickly or IO-error re-pauses; don't wait full EIP budget.
     deadline = time.time() + (90 if state_now == "paused" else 300)
     last_running_st = None
     still_paused_polls = 0
     while time.time() < deadline:
         st = drv.get_host_status(prov, instance_id)
-        if st and st.get("state") == "paused" and state_now == "paused":
-            still_paused_polls += 1
-            if still_paused_polls >= 3:
-                return None, st
-        else:
-            still_paused_polls = 0
-        if st and st.get("state") == "running":
-            last_running_st = st
-            if st.get("public_ip"):
-                return st.get("public_ip"), st
-            if is_ocpvirt:
-                # LB/public IP lives on Host.ip_address; do not overwrite with pod IP.
-                return None, st
+        abort, still_paused_polls, abort_st = _still_paused_abort(
+            st, state_now, still_paused_polls
+        )
+        if abort:
+            return None, abort_st
+        done, ip, running_st = _running_poll_outcome(st, is_ocpvirt)
+        if running_st is not None:
+            last_running_st = running_st
+        if done:
+            return ip, running_st
         time.sleep(5 if state_now == "paused" else 10)
-    return None, last_running_st or st_check
+    return None, last_running_st
+
+
+def _wait_for_running_instance(
+    drv, prov, host_id: str, instance_id: str
+) -> tuple[str | None, dict[str, Any] | None]:
+    """Wait for a cloud instance to stop (if shutting down), start it, poll until running.
+
+    Returns (public_ip, status_dict) or (None, status_dict) if it never reached running.
+    For OCP Virt, ``public_ip`` may be None/empty while ``status_dict["state"]`` is
+    ``running`` — the LB address is tracked on the Host row, not in get_host_status.
+    """
+    state_now, st_check = _wait_until_stable_state(drv, prov, host_id, instance_id)
+    if not _start_or_unpause_instance(drv, prov, host_id, instance_id, state_now):
+        # Do not burn 5 minutes polling — caller restores state=paused.
+        return None, st_check
+    is_ocpvirt = getattr(prov, "type", None) == "ocpvirt"
+    ip, last_st = _poll_until_running(
+        drv, prov, instance_id, state_now, is_ocpvirt=is_ocpvirt
+    )
+    if ip is not None or (last_st and last_st.get("state") == "running"):
+        return ip, last_st
+    if last_st is not None:
+        return None, last_st
+    return None, st_check
 
 
 def _finalize_termination(s: Session, h: Host, prov, drv) -> bool:
@@ -1100,7 +1153,7 @@ def poweroff_host(
     if not host:
         raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if not host.instance_id:
-        raise HTTPException(status_code=400, detail="No instance ID")
+        raise HTTPException(status_code=400, detail=_NO_INSTANCE_ID)
     # Check for running projects (not just allocated — stopped projects are OK to power off)
     from app.models.project import Project
 
@@ -1190,7 +1243,7 @@ def poweron_host(
     if not host:
         raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if not host.instance_id:
-        raise HTTPException(status_code=400, detail="No instance ID")
+        raise HTTPException(status_code=400, detail=_NO_INSTANCE_ID)
     if host.state not in ("stopped", "paused", "active", "starting"):
         raise HTTPException(
             status_code=409,
@@ -1287,7 +1340,7 @@ def migrate_host(
     if not host:
         raise HTTPException(status_code=404, detail=_HOST_NOT_FOUND)
     if not host.instance_id:
-        raise HTTPException(status_code=400, detail="No instance ID")
+        raise HTTPException(status_code=400, detail=_NO_INSTANCE_ID)
     if host.state not in ("active", "paused"):
         raise HTTPException(
             status_code=409,
@@ -1404,6 +1457,60 @@ def _reinstall_agent_after_poweron(h: Host, s: Session) -> dict | None:
     return result
 
 
+def _apply_poweron_no_ip_state(h, st) -> None:
+    """Set host state when power-on finished without a usable public IP."""
+    # st truthy with state=running => instance IS running, it just has no
+    # public IP (ocpvirt LB, EIP detach lag). Do NOT mislabel as stopped.
+    # st with state=paused => unpause failed or IO-error re-paused.
+    st_state = (st or {}).get("state") if isinstance(st, dict) else None
+    if st_state == "running" or (st and not st_state):
+        logger.warning(
+            "Host %s is running but has no public IP after power-on",
+            h.id[:8],
+        )
+        h.state = "active"
+        if isinstance(st, dict) and st.get("private_ip"):
+            h.private_ip = st["private_ip"]
+    elif st_state == "paused":
+        logger.warning(
+            "Host %s still paused after resume attempt: %s",
+            h.id[:8],
+            (st or {}).get("reason") or "paused",
+        )
+        h.state = "paused"
+    else:
+        logger.warning(
+            "Host %s never reached running state after power-on",
+            h.id[:8],
+        )
+        h.state = "stopped"
+    h.agent_status = "disconnected"
+
+
+def _reattach_host_eips(s, h, host_id: str) -> None:
+    try:
+        from app.services.eip_service import reattach_host_eips
+
+        reattach_host_eips(s, h)
+    except Exception:
+        logger.warning(
+            "Host %s: EIP reattach after power-on failed",
+            host_id[:8],
+            exc_info=True,
+        )
+
+
+def _detach_eips_before_poweron(s, h, host_id: str) -> None:
+    try:
+        from app.services.eip_service import detach_host_eips_preserve_ip
+
+        detach_host_eips_preserve_ip(s, h)
+    except Exception:
+        logger.warning(
+            "Host %s: EIP detach before power-on failed", host_id[:8], exc_info=True
+        )
+
+
 def _wait_and_reinstall_bg(host_id: str, instance_id: str, provider_id: str):
     from app.core.database import SessionLocal
     from app.services.providers import get_provider_driver as _get_drv
@@ -1422,14 +1529,7 @@ def _wait_and_reinstall_bg(host_id: str, instance_id: str, provider_id: str):
         h = s.query(Host).filter_by(id=host_id).first()
         if not h:
             return
-        try:
-            from app.services.eip_service import detach_host_eips_preserve_ip
-
-            detach_host_eips_preserve_ip(s, h)
-        except Exception:
-            logger.warning(
-                "Host %s: EIP detach before power-on failed", host_id[:8], exc_info=True
-            )
+        _detach_eips_before_poweron(s, h, host_id)
 
         new_ip, st = _wait_for_running_instance(_drv, _prov, host_id, instance_id)
 
@@ -1437,47 +1537,10 @@ def _wait_and_reinstall_bg(host_id: str, instance_id: str, provider_id: str):
         if not h:
             return
 
-        def _reattach_eips():
-            try:
-                from app.services.eip_service import reattach_host_eips
-
-                reattach_host_eips(s, h)
-            except Exception:
-                logger.warning(
-                    "Host %s: EIP reattach after power-on failed",
-                    host_id[:8],
-                    exc_info=True,
-                )
-
         if not new_ip:
-            # st truthy with state=running => instance IS running, it just has no
-            # public IP (ocpvirt LB, EIP detach lag). Do NOT mislabel as stopped.
-            # st with state=paused => unpause failed or IO-error re-paused.
-            st_state = (st or {}).get("state") if isinstance(st, dict) else None
-            if st_state == "running" or (st and not st_state):
-                logger.warning(
-                    "Host %s is running but has no public IP after power-on",
-                    host_id[:8],
-                )
-                h.state = "active"
-                if isinstance(st, dict) and st.get("private_ip"):
-                    h.private_ip = st["private_ip"]
-            elif st_state == "paused":
-                logger.warning(
-                    "Host %s still paused after resume attempt: %s",
-                    host_id[:8],
-                    (st or {}).get("reason") or "paused",
-                )
-                h.state = "paused"
-            else:
-                logger.warning(
-                    "Host %s never reached running state after power-on",
-                    host_id[:8],
-                )
-                h.state = "stopped"
-            h.agent_status = "disconnected"
+            _apply_poweron_no_ip_state(h, st)
             s.commit()
-            _reattach_eips()  # restore project EIPs regardless
+            _reattach_host_eips(s, h, host_id)
             return
 
         old_ip = h.ip_address
@@ -1489,7 +1552,7 @@ def _wait_and_reinstall_bg(host_id: str, instance_id: str, provider_id: str):
 
         # Re-associate project EIPs to their preserved secondary private IPs; this
         # coexists with the primary's freshly auto-assigned management IP.
-        _reattach_eips()
+        _reattach_host_eips(s, h, host_id)
 
         _update_console_dns_for_new_ip(h, s, old_ip, new_ip)
 

@@ -1568,7 +1568,7 @@ class TestStartProjectAsync:
     @patch(f"{SVC}._extract_bmc_config", return_value=None)
     @patch(f"{SVC}._start_vms_via_troshkad", return_value=[])
     @patch(f"{SVC}._setup_pxe_via_troshkad")
-    @patch(f"{SVC}.cache_library_images")
+    @patch(f"{SVC}.cache_library_images", return_value=[])
     @patch(f"{SVC}._setup_networks_via_troshkad", return_value=True)
     @patch(f"{SVC}._get_network_lock")
     def test_basic_start(
@@ -1696,7 +1696,7 @@ class TestStartProjectAsync:
     @patch(f"{SVC}._extract_bmc_config", return_value=None)
     @patch(f"{SVC}._start_vms_via_troshkad")
     @patch(f"{SVC}._setup_pxe_via_troshkad")
-    @patch(f"{SVC}.cache_library_images")
+    @patch(f"{SVC}.cache_library_images", return_value=[])
     @patch(f"{SVC}._setup_networks_via_troshkad", return_value=True)
     @patch(f"{SVC}._get_network_lock")
     def test_start_vm_failures_set_error(
@@ -1775,7 +1775,7 @@ class TestStartProjectAsync:
     @patch(f"{SVC}._extract_bmc_config", return_value=None)
     @patch(f"{SVC}._start_vms_via_troshkad", return_value=[])
     @patch(f"{SVC}._setup_pxe_via_troshkad")
-    @patch(f"{SVC}.cache_library_images")
+    @patch(f"{SVC}.cache_library_images", return_value=[])
     @patch(f"{SVC}._setup_networks_via_troshkad", return_value=True)
     @patch(f"{SVC}._get_network_lock")
     def test_ocp_monitor_restarted(
@@ -1822,7 +1822,7 @@ class TestStartProjectAsync:
     @patch(f"{SVC}._setup_bmc_via_troshkad")
     @patch(f"{SVC}._start_vms_via_troshkad", return_value=[])
     @patch(f"{SVC}._setup_pxe_via_troshkad")
-    @patch(f"{SVC}.cache_library_images")
+    @patch(f"{SVC}.cache_library_images", return_value=[])
     @patch(f"{SVC}._setup_networks_via_troshkad", return_value=True)
     @patch(f"{SVC}._get_network_lock")
     def test_bmc_failure_nonfatal(
@@ -1885,7 +1885,7 @@ class TestDeployProjectInner:
     @patch(f"{SVC}._setup_metadata_via_troshkad")
     @patch(f"{SVC}._create_seed_isos_via_troshkad")
     @patch(f"{SVC}._setup_pxe_via_troshkad")
-    @patch(f"{SVC}.cache_library_images")
+    @patch(f"{SVC}.cache_library_images", return_value=[])
     @patch(f"{SVC}._setup_networks_via_troshkad", return_value=True)
     @patch(f"{SVC}._auto_assign_container_ips")
     @patch(f"{SVC}._get_network_lock")
@@ -2063,7 +2063,7 @@ class TestDeployProjectInner:
     @patch(f"{SVC}._setup_metadata_via_troshkad")
     @patch(f"{SVC}._create_seed_isos_via_troshkad")
     @patch(f"{SVC}._setup_pxe_via_troshkad")
-    @patch(f"{SVC}.cache_library_images")
+    @patch(f"{SVC}.cache_library_images", return_value=[])
     @patch(f"{SVC}._setup_networks_via_troshkad", return_value=True)
     @patch(f"{SVC}._auto_assign_container_ips")
     @patch(f"{SVC}._get_network_lock")
@@ -3799,7 +3799,7 @@ class TestStartProjectAsyncEipReassociation:
     @patch(f"{SVC}._extract_bmc_config", return_value=None)
     @patch(f"{SVC}._start_vms_via_troshkad", return_value=[])
     @patch(f"{SVC}._setup_pxe_via_troshkad")
-    @patch(f"{SVC}.cache_library_images")
+    @patch(f"{SVC}.cache_library_images", return_value=[])
     @patch(f"{SVC}._setup_networks_via_troshkad", return_value=True)
     @patch(f"{SVC}._get_network_lock")
     def test_eip_reassociation(
@@ -4975,7 +4975,7 @@ class TestOpsPodDeadDetection:
         mock_logs.side_effect = [
             {"c1": waiting},  # poll 1: not running, count=1 (< threshold)
             {"c1": waiting},  # poll 2: running again, counter reset
-            {"c1": "install complete"},  # poll 3: finished
+            {"c1": "[c1] install complete"},  # poll 3: finished (Troshka breadcrumb)
         ]
         mock_running.side_effect = [False, True, True]
 

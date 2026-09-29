@@ -73,51 +73,29 @@ def _ensure_user_library(user: User, db: Session) -> Library:
     return lib
 
 
-@router.get("/")
-def list_items(
-    user: CurrentUser,
-    db: DbSession,
-    type: Annotated[str | None, Query()] = None,
-    q: Annotated[str | None, Query()] = None,
-):
-    """List library items: user's own + shared with them."""
+def _library_list_query(db: Session, user: User, lib: Library, shared_ids: list):
     from sqlalchemy import or_
     from sqlalchemy.sql import false as sa_false
-
-    lib = _ensure_user_library(user, db)
-
-    # Get IDs of items shared with this user
-    shared_ids = [
-        s.item_id
-        for s in db.query(LibraryShare.item_id).filter_by(shared_with_id=user.id).all()
-    ]
 
     central_lib = db.query(Library).filter_by(type="central").first()
     central_lib_id = central_lib.id if central_lib else None
 
     if user.role == "admin":
-        query = db.query(LibraryItem)
-    else:
-        query = db.query(LibraryItem).filter(
-            or_(
-                LibraryItem.library_id == lib.id,
-                LibraryItem.id.in_(shared_ids) if shared_ids else sa_false(),
-                (
-                    LibraryItem.library_id == central_lib_id
-                    if central_lib_id
-                    else sa_false()
-                ),
-            )
+        return db.query(LibraryItem)
+    return db.query(LibraryItem).filter(
+        or_(
+            LibraryItem.library_id == lib.id,
+            LibraryItem.id.in_(shared_ids) if shared_ids else sa_false(),
+            (
+                LibraryItem.library_id == central_lib_id
+                if central_lib_id
+                else sa_false()
+            ),
         )
+    )
 
-    if type:
-        query = query.filter(LibraryItem.type == type)
-    if q:
-        query = query.filter(LibraryItem.name.ilike(f"%{q}%"))
 
-    items = query.order_by(LibraryItem.created_at.desc()).all()
-
-    # Get owner info for shared items
+def _owner_maps_for_items(db: Session, items, lib: Library) -> tuple[dict, dict]:
     owner_libs = {lib.id: lib.owner_id}
     for i in items:
         if i.library_id not in owner_libs:
@@ -133,27 +111,54 @@ def list_items(
         if owner_ids
         else {}
     )
+    return owner_libs, owner_emails
 
-    return [
-        {
-            "id": i.id,
-            "name": i.name,
-            "description": i.description,
-            "type": i.type,
-            "format": i.format,
-            "size_bytes": i.size_bytes,
-            "os_variant": i.os_variant,
-            "state": i.state,
-            "tags": i.tags,
-            "created_at": str(i.created_at),
-            "owned": i.library_id == lib.id,
-            "owner_id": owner_libs.get(i.library_id),
-            "owner_email": owner_emails.get(owner_libs.get(i.library_id) or ""),
-            "source": getattr(i, "source", "local"),
-            "readonly": getattr(i, "source", "local") == "central",
-        }
-        for i in items
+
+def _library_item_row(i, lib: Library, owner_libs: dict, owner_emails: dict) -> dict:
+    return {
+        "id": i.id,
+        "name": i.name,
+        "description": i.description,
+        "type": i.type,
+        "format": i.format,
+        "size_bytes": i.size_bytes,
+        "os_variant": i.os_variant,
+        "state": i.state,
+        "tags": i.tags,
+        "created_at": str(i.created_at),
+        "owned": i.library_id == lib.id,
+        "owner_id": owner_libs.get(i.library_id),
+        "owner_email": owner_emails.get(owner_libs.get(i.library_id) or ""),
+        "source": getattr(i, "source", "local"),
+        "readonly": getattr(i, "source", "local") == "central",
+    }
+
+
+@router.get("/")
+def list_items(
+    user: CurrentUser,
+    db: DbSession,
+    type: Annotated[str | None, Query()] = None,
+    q: Annotated[str | None, Query()] = None,
+):
+    """List library items: user's own + shared with them."""
+    lib = _ensure_user_library(user, db)
+
+    # Get IDs of items shared with this user
+    shared_ids = [
+        s.item_id
+        for s in db.query(LibraryShare.item_id).filter_by(shared_with_id=user.id).all()
     ]
+
+    query = _library_list_query(db, user, lib, shared_ids)
+    if type:
+        query = query.filter(LibraryItem.type == type)
+    if q:
+        query = query.filter(LibraryItem.name.ilike(f"%{q}%"))
+
+    items = query.order_by(LibraryItem.created_at.desc()).all()
+    owner_libs, owner_emails = _owner_maps_for_items(db, items, lib)
+    return [_library_item_row(i, lib, owner_libs, owner_emails) for i in items]
 
 
 @router.get("/{item_id}", responses={404: {"description": "Item not found"}})

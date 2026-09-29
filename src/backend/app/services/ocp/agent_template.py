@@ -29,6 +29,9 @@ _YAML_BLOCK_SCALAR = "  - |\n"
 _MKDIR_OCP_INSTALL = "    mkdir -p /home/cloud-user/ocp-install/openshift\n"
 _API_VIP_OFFSET = 2
 _INGRESS_VIP_OFFSET = 3
+_DEFAULT_BASE_DOMAIN = "ocp.local"
+# Default Virtual BMC address on the lab BMC network.
+_DEFAULT_BASTION_BMC_IP = "192.168.100.50"  # NOSONAR — lab BMC default
 
 
 @dataclass
@@ -79,28 +82,39 @@ def _find_cluster_cidr(topology):
     return default
 
 
+def _edge_peer_id(edge: dict, node_id: str) -> str | None:
+    if edge.get("source") == node_id:
+        return edge.get("target")
+    if edge.get("target") == node_id:
+        return edge.get("source")
+    return None
+
+
+def _rhcos_disk_device_for_edge(edge: dict, vm_node: dict) -> str | None:
+    if vm_node.get("type") != "vmNode":
+        return None
+    if vm_node.get("data", {}).get("os") != "rhcos":
+        return None
+    handle = edge.get("targetHandle") or edge.get("sourceHandle", "")
+    dcs = vm_node.get("data", {}).get("diskControllers", [])
+    disk_index = next((i for i, dc in enumerate(dcs) if dc["id"] in handle), -1)
+    if disk_index < 0:
+        return None
+    return f"/dev/vd{chr(ord('a') + disk_index)}"
+
+
 def _find_ocp_mount_device(node_id, edges, nodes_by_id):
     """Find the block device path for a storage node connected to an RHCOS VM."""
     for edge in edges:
-        if edge.get("source") == node_id:
-            vm_id = edge.get("target")
-        elif edge.get("target") == node_id:
-            vm_id = edge.get("source")
-        else:
+        vm_id = _edge_peer_id(edge, node_id)
+        if not vm_id:
             continue
         vm_node = nodes_by_id.get(vm_id)
-        if not vm_node or vm_node.get("type") != "vmNode":
+        if not vm_node:
             continue
-        if vm_node.get("data", {}).get("os") != "rhcos":
-            continue
-        handle = edge.get("targetHandle") or edge.get("sourceHandle", "")
-        dcs = vm_node.get("data", {}).get("diskControllers", [])
-        disk_index = next(
-            (i for i, dc in enumerate(dcs) if dc["id"] in handle),
-            -1,
-        )
-        if disk_index >= 0:
-            return f"/dev/vd{chr(ord('a') + disk_index)}"
+        device = _rhcos_disk_device_for_edge(edge, vm_node)
+        if device:
+            return device
         break
     return None
 
@@ -365,10 +379,10 @@ def _deferred_worker_device_name(nic_idx: int) -> str:
 
 
 def _deferred_worker_nic_on_network(
-    node: dict,
+    _node: dict,
     net_node: dict,
-    cluster: dict,
-    topology: dict,
+    _cluster: dict,
+    _topology: dict,
     nic_idx: int,
     nic: dict,
 ) -> dict | None:
@@ -419,6 +433,16 @@ def _deferred_worker_aux_nics(
     return aux
 
 
+def _deferred_worker_egress_net_node(cluster: dict, topology: dict, members: list):
+    from app.services.deploy_topology import cluster_egress_network_node
+
+    net_node = cluster_egress_network_node(cluster, topology)
+    if net_node:
+        return net_node
+    net_nodes = _cluster_machine_network_nodes(cluster, members, topology)
+    return net_nodes[0] if net_nodes else None
+
+
 def deferred_worker_cluster_nic(
     node: dict, cluster: dict, topology: dict, dns_ip_override: str | None = None
 ) -> dict | None:
@@ -430,7 +454,6 @@ def deferred_worker_cluster_nic(
     """
     from app.services.deploy_topology import (
         cluster_egress_network_id,
-        cluster_egress_network_node,
         vm_nic_for_network,
     )
 
@@ -440,10 +463,7 @@ def deferred_worker_cluster_nic(
     if (node.get("data") or {}).get("deferOcpInstall") is False:
         return None
     members = _cluster_members_for(topology, cluster)
-    net_node = cluster_egress_network_node(cluster, topology)
-    if not net_node:
-        net_nodes = _cluster_machine_network_nodes(cluster, members, topology)
-        net_node = net_nodes[0] if net_nodes else None
+    net_node = _deferred_worker_egress_net_node(cluster, topology, members)
     if not net_node:
         return None
     network_id = net_node.get("id", (net_node.get("data") or {}).get("id", ""))
@@ -635,6 +655,64 @@ def _compute_dhcp_bounds(
     return dhcp_range_start, dhcp_range_end
 
 
+def _resolve_cluster_network_node(topology: dict, cluster: dict, members: list):
+    """Prefer the cluster's explicit networkIds[0], else find via members."""
+    network_ids = cluster.get("networkIds")
+    if network_ids:
+        network_id = network_ids[0]
+        for node in topology.get("nodes", []):
+            if node.get("id") == network_id and node.get("type") == "networkNode":
+                return node
+    return _cluster_network_node(topology, members)
+
+
+def _add_dhcp_range_ips(used: set[str], data: dict, cidr: str) -> None:
+    if not data.get("dhcp"):
+        return
+    range_start = data.get("dhcpRangeStart", "")
+    range_end = data.get("dhcpRangeEnd", "")
+    range_start, range_end = _compute_dhcp_bounds(cidr, range_start, range_end)
+    if not (range_start and range_end):
+        return
+    try:
+        start_ip = ipaddress.ip_address(range_start)
+        end_ip = ipaddress.ip_address(range_end)
+        for ip_int in range(int(start_ip), int(end_ip) + 1):
+            used.add(str(ipaddress.ip_address(ip_int)))
+    except ValueError:
+        pass
+
+
+def _add_vm_nic_ips_on_net(used: set[str], topology: dict, net) -> None:
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        for nic in node.get("data", {}).get("nics", []):
+            ip = nic.get("ip")
+            if not ip:
+                continue
+            try:
+                if ipaddress.ip_address(ip) in net:
+                    used.add(ip)
+            except ValueError:
+                pass
+
+
+def _add_other_cluster_vips(used: set[str], topology: dict, cluster: dict, net) -> None:
+    for other in topology.get("clusters", []):
+        if other.get("id") == cluster.get("id"):
+            continue
+        for vip_key in ("apiVip", "ingressVip"):
+            vip = other.get(vip_key)
+            if not vip:
+                continue
+            try:
+                if ipaddress.ip_address(vip) in net:
+                    used.add(vip)
+            except ValueError:
+                pass
+
+
 def _network_used_ips(topology: dict, cluster: dict, members: list) -> set[str]:
     """Collect all used IPs on a cluster's machine network.
 
@@ -653,17 +731,7 @@ def _network_used_ips(topology: dict, cluster: dict, members: list) -> set[str]:
     Returns:
         Set of IP addresses (as strings) that are in use.
     """
-    # Prefer the cluster's explicit networkIds[0], else find the network node via members
-    network_node = None
-    network_ids = cluster.get("networkIds")
-    if network_ids:
-        network_id = network_ids[0]
-        for node in topology.get("nodes", []):
-            if node.get("id") == network_id and node.get("type") == "networkNode":
-                network_node = node
-                break
-    if not network_node:
-        network_node = _cluster_network_node(topology, members)
+    network_node = _resolve_cluster_network_node(topology, cluster, members)
     if not network_node:
         return set()
 
@@ -678,50 +746,11 @@ def _network_used_ips(topology: dict, cluster: dict, members: list) -> set[str]:
         return set()
 
     used = {str(net.network_address), str(net.broadcast_address)}
-
-    # Add gateway (explicit or default to network_address + 1)
     gateway = data.get("gateway") or str(net.network_address + 1)
     used.add(gateway)
-
-    # Add DHCP range if enabled
-    if data.get("dhcp"):
-        range_start = data.get("dhcpRangeStart", "")
-        range_end = data.get("dhcpRangeEnd", "")
-        range_start, range_end = _compute_dhcp_bounds(cidr, range_start, range_end)
-        if range_start and range_end:
-            try:
-                start_ip = ipaddress.ip_address(range_start)
-                end_ip = ipaddress.ip_address(range_end)
-                for ip_int in range(int(start_ip), int(end_ip) + 1):
-                    used.add(str(ipaddress.ip_address(ip_int)))
-            except ValueError:
-                pass
-
-    # Add all VM NIC static IPs on this network
-    for node in topology.get("nodes", []):
-        if node.get("type") != "vmNode":
-            continue
-        for nic in node.get("data", {}).get("nics", []):
-            ip = nic.get("ip")
-            if ip:
-                try:
-                    if ipaddress.ip_address(ip) in net:
-                        used.add(ip)
-                except ValueError:
-                    pass
-
-    # Add VIPs from other clusters on the same network
-    for other in topology.get("clusters", []):
-        if other.get("id") != cluster.get("id"):
-            for vip_key in ("apiVip", "ingressVip"):
-                vip = other.get(vip_key)
-                if vip:
-                    try:
-                        if ipaddress.ip_address(vip) in net:
-                            used.add(vip)
-                    except ValueError:
-                        pass
-
+    _add_dhcp_range_ips(used, data, cidr)
+    _add_vm_nic_ips_on_net(used, topology, net)
+    _add_other_cluster_vips(used, topology, cluster, net)
     return used
 
 
@@ -818,7 +847,7 @@ def _legacy_cluster_from_config(topology, template_id, config):
     num_workers = _count_ocp_nodes_by_group(topology, "workers")
     return {
         "name": config.get("cluster_name", "ocp"),
-        "baseDomain": config.get("base_domain", "ocp.local"),
+        "baseDomain": config.get("base_domain", _DEFAULT_BASE_DOMAIN),
         "apiVip": ocp_cfg.get("api_vip", ""),
         "ingressVip": ocp_cfg.get("ingress_vip", ""),
         "controlPlane": num_masters,
@@ -883,7 +912,7 @@ def _customize_one_cluster(topology, cluster, config, include_extras):
     _setup_dns_records(
         topology,
         cluster.get("name", "ocp"),
-        cluster.get("baseDomain", "ocp.local"),
+        cluster.get("baseDomain", _DEFAULT_BASE_DOMAIN),
         api_vip,
         ingress_vip,
         resolved if include_extras else {},
@@ -910,13 +939,13 @@ def _bake_single_cluster_bastion(topology, config, template_id, api_vip, ingress
         config.get("pull_secret_json", ""),
         BastionOCPConfig(
             cluster_name=config.get("cluster_name", "ocp"),
-            base_domain=config.get("base_domain", "ocp.local"),
+            base_domain=config.get("base_domain", _DEFAULT_BASE_DOMAIN),
             ocp_version=config.get("ocp_version", "4.22"),
             template_id=template_id,
             auto_install_ocp=config.get("auto_install_ocp", True),
             api_vip=api_vip,
             ingress_vip=ingress_vip,
-            bastion_bmc_ip=config.get("bastion_bmc_ip", "192.168.100.50"),
+            bastion_bmc_ip=config.get("bastion_bmc_ip", _DEFAULT_BASTION_BMC_IP),
             pull_through_registry=resolved.get("pull_through_registry"),
             distribution=config.get("distribution")
             or (topology.get("clusters") or [{}])[0].get("ocpDistribution")
@@ -1037,6 +1066,41 @@ def _build_ocp_dns_records(
     return records
 
 
+def _member_nic_ips(members) -> list[str]:
+    """Collect static NIC IPs from vmNode members."""
+    return [
+        nic.get("ip")
+        for m in members
+        if m.get("type") == "vmNode"
+        for nic in m.get("data", {}).get("nics", [])
+        if nic.get("ip")
+    ]
+
+
+def _is_eligible_lab_network_node(node) -> bool:
+    """True for non-BMC lab networkNodes (candidate for cluster DNS/VIPs)."""
+    if node.get("type") != "networkNode":
+        return False
+    data = node.get("data", {})
+    if data.get("subtype") != "network":
+        return False
+    return data.get("networkType") != "bmc"
+
+
+def _cidr_contains_any_ip(cidr: str, ips: list[str]) -> bool:
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return False
+    for ip in ips:
+        try:
+            if ipaddress.ip_address(ip) in net:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _cluster_network_node(topology, members):
     """Return the lab network node a cluster's DNS records belong on.
 
@@ -1045,30 +1109,15 @@ def _cluster_network_node(topology, members):
     network); falls back to the first eligible network node — matching the
     pre-multicluster single-cluster behavior when ``members`` is empty.
     """
-    member_ips = [
-        nic.get("ip")
-        for m in members
-        if m.get("type") == "vmNode"
-        for nic in m.get("data", {}).get("nics", [])
-        if nic.get("ip")
-    ]
+    member_ips = _member_nic_ips(members)
     first = None
     for node in topology.get("nodes", []):
-        if node.get("type") != "networkNode":
-            continue
-        data = node.get("data", {})
-        if data.get("subtype") != "network" or data.get("networkType") == "bmc":
+        if not _is_eligible_lab_network_node(node):
             continue
         if first is None:
             first = node
-        cidr = data.get("cidr")
-        if not cidr:
-            continue
-        try:
-            net = ipaddress.ip_network(cidr, strict=False)
-        except ValueError:
-            continue
-        if any(ipaddress.ip_address(ip) in net for ip in member_ips):
+        cidr = node.get("data", {}).get("cidr")
+        if cidr and _cidr_contains_any_ip(cidr, member_ips):
             return node
     return first
 
@@ -1863,7 +1912,7 @@ def _build_install_config(
     the cluster's VIPs and BMC hosts scoped to ``members``.
     """
     cluster_name = cluster.get("name", "ocp")
-    base_domain = cluster.get("baseDomain", "ocp.local")
+    base_domain = cluster.get("baseDomain", _DEFAULT_BASE_DOMAIN)
     num_masters, num_workers = _cluster_install_replicas(cluster, topology)
     api_vip, ingress_vip = resolve_cluster_vips(cluster, members, topology)
 
@@ -2396,7 +2445,7 @@ def _build_install_script(
     bmc_password="",
     bmc_ips_str="",
     cluster_name="ocp",
-    base_domain="ocp.local",
+    base_domain=_DEFAULT_BASE_DOMAIN,
     topology=None,
     distribution=None,
 ):

@@ -17,7 +17,7 @@ from app.core.database import SessionLocal
 from app.models.pattern import Pattern, PatternDisk
 from app.models.pattern_location import PatternLocation
 from app.models.provider import Provider
-from app.services.s3_storage import _get_s3_config, get_cluster_s3_config
+from app.services.s3_storage import _get_s3_config, get_cluster_s3_config, owner_params
 
 log = logging.getLogger(__name__)
 
@@ -232,10 +232,11 @@ def _verify_central_readback(dst_cfg: dict, keys: list[str]) -> list[str]:
     if endpoint:
         kw["endpoint_url"] = endpoint
     client = boto3.client("s3", **kw)
+    head_op = owner_params(dst_cfg)
     missing = []
     for k in keys:
         try:
-            client.head_object(Bucket=bucket, Key=k)
+            client.head_object(Bucket=bucket, Key=k, **head_op)
         except Exception:  # noqa: BLE001 — any failure means "not readable here"
             missing.append(k)
     return missing
@@ -274,6 +275,19 @@ def _collect_pending_rows(db, disks) -> list:
 # ---------------------------------------------------------------------------
 
 
+def _mark_sync_failed(db, pending, message: str) -> None:
+    _fail_central_rows(db, [row for _, row in pending], message)
+
+
+def _finalize_central_sync(db, pending, keys: list[str], pattern_id: str) -> None:
+    now = datetime.datetime.now(datetime.UTC)
+    for _pd, row in pending:
+        row.state = "synced"
+        row.synced_at = now
+    db.commit()
+    log.info("sync: pattern %s synced %d disks to central", pattern_id, len(keys))
+
+
 def sync_pattern_to_central(pattern_id: str) -> None:
     """RQ worker: copy a pattern's disks from source OBC to central S4."""
     db = SessionLocal()
@@ -294,10 +308,8 @@ def sync_pattern_to_central(pattern_id: str) -> None:
 
         addl = sum(pd.size_bytes or 0 for pd, _ in pending)
         if not central_capacity_available(db, addl):
-            _fail_central_rows(
-                db,
-                [row for _, row in pending],
-                "central S4 capacity exceeded — cannot sync pattern",
+            _mark_sync_failed(
+                db, pending, "central S4 capacity exceeded — cannot sync pattern"
             )
             log.error(
                 "sync: capacity guard rejected pattern %s (%d bytes)", pattern_id, addl
@@ -310,28 +322,19 @@ def sync_pattern_to_central(pattern_id: str) -> None:
         src_cfg = get_cluster_s3_config(db, pattern.source_provider_id)
         dst_cfg = _get_s3_config()
         if not provider or not src_cfg:
-            _fail_central_rows(
-                db,
-                [row for _, row in pending],
-                "source cluster OBC config unavailable",
-            )
+            _mark_sync_failed(db, pending, "source cluster OBC config unavailable")
             return
 
         keys = [pd.s3_key for pd, _ in pending]
         job_name = f"sync-{pattern_id[:8]}"
-        ok = _run_rclone_job(provider, job_name, keys, src_cfg, dst_cfg)
-        if not ok:
-            _fail_central_rows(
-                db,
-                [row for _, row in pending],
-                "rclone sync job failed or timed out",
-            )
+        if not _run_rclone_job(provider, job_name, keys, src_cfg, dst_cfg):
+            _mark_sync_failed(db, pending, "rclone sync job failed or timed out")
             return
         missing = _verify_central_readback(dst_cfg, keys)
         if missing:
-            _fail_central_rows(
+            _mark_sync_failed(
                 db,
-                [row for _, row in pending],
+                pending,
                 "copied but not readable in the shared central bucket: "
                 + ", ".join(missing),
             )
@@ -341,11 +344,6 @@ def sync_pattern_to_central(pattern_id: str) -> None:
                 len(missing),
             )
             return
-        now = datetime.datetime.now(datetime.UTC)
-        for _pd, row in pending:
-            row.state = "synced"
-            row.synced_at = now
-        db.commit()
-        log.info("sync: pattern %s synced %d disks to central", pattern_id, len(keys))
+        _finalize_central_sync(db, pending, keys, pattern_id)
     finally:
         db.close()

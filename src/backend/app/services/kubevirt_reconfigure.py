@@ -13,6 +13,8 @@ _NET_ANNOTATION = "k8s.v1.cni.cncf.io/networks"
 # Matches the operator's helpers.kubevirt.STORAGE_CLASS; used only as a fallback
 # when the namespace has no existing PVC to copy the storage class from.
 _DEFAULT_STORAGE_CLASS = "ocs-storagecluster-ceph-rbd-virtualization"
+# Fallback lab subnet when a network node omits cidr.
+_DEFAULT_NET_CIDR = "10.0.0.0/24"  # NOSONAR — RFC1918 lab default
 
 
 def _gateway_image() -> str:
@@ -100,6 +102,58 @@ def _extract_nic_id(handle: str) -> str:
     return f"nic-{handle}" if handle else ""
 
 
+def _topology_node_data_map(nodes: list[dict]) -> dict[str, dict]:
+    node_map: dict[str, dict] = {}
+    for node in nodes:
+        data = node.get("data") or {}
+        nid = node.get("id", data.get("id", ""))
+        node_map[nid] = data
+    return node_map
+
+
+def _vm_edge_endpoint(
+    edge: dict, node_map: dict[str, dict]
+) -> tuple[dict | None, str, str]:
+    """Return (vm_data, network_node_id, nic_id) for a VM↔network edge."""
+    src, tgt = edge.get("source", ""), edge.get("target", "")
+    src_data, tgt_data = node_map.get(src, {}), node_map.get(tgt, {})
+    if src_data.get("nics"):
+        return src_data, tgt, _extract_nic_id(edge.get("sourceHandle", ""))
+    if tgt_data.get("nics"):
+        return tgt_data, src, _extract_nic_id(edge.get("targetHandle", ""))
+    return None, "", ""
+
+
+def _lease_from_vm_nic(vm_data: dict, nic_id: str) -> dict | None:
+    for nic in vm_data.get("nics", []):
+        if nic.get("id") != nic_id:
+            continue
+        mac, ip = nic.get("mac", ""), nic.get("ip", "")
+        if mac and ip:
+            return {
+                "mac": mac,
+                "ip": ip,
+                "hostname": vm_data.get("name", vm_data.get("label", "")),
+            }
+    return None
+
+
+def _append_reservation_leases(
+    leases: list[dict], reserved_ips: set[str], reservations: list[dict]
+) -> None:
+    for entry in reservations:
+        ip = entry.get("ip", "")
+        if ip:
+            reserved_ips.add(ip)
+        leases.append(
+            {
+                "mac": entry.get("mac", ""),
+                "ip": ip,
+                "hostname": entry.get("name", entry.get("hostname", "")),
+            }
+        )
+
+
 def _static_leases_for_network(net_id: str, topology: dict) -> list[dict]:
     from app.services.vxlan import (
         _cluster_vip_reservations,
@@ -108,76 +162,45 @@ def _static_leases_for_network(net_id: str, topology: dict) -> list[dict]:
 
     nodes = topology.get("nodes", [])
     edges = topology.get("edges", [])
-    node_map: dict[str, dict] = {}
-    for node in nodes:
-        data = node.get("data") or {}
-        nid = node.get("id", data.get("id", ""))
-        node_map[nid] = data
+    node_map = _topology_node_data_map(nodes)
 
     leases: list[dict] = []
     reserved_ips: set[str] = set()
     for edge in edges:
-        src, tgt = edge.get("source", ""), edge.get("target", "")
-        src_data, tgt_data = node_map.get(src, {}), node_map.get(tgt, {})
-        vm_data = net_target = nic_id = None
-        if src_data.get("nics"):
-            vm_data, net_target, nic_id = (
-                src_data,
-                tgt,
-                _extract_nic_id(edge.get("sourceHandle", "")),
-            )
-        elif tgt_data.get("nics"):
-            vm_data, net_target, nic_id = (
-                tgt_data,
-                src,
-                _extract_nic_id(edge.get("targetHandle", "")),
-            )
+        vm_data, net_target, nic_id = _vm_edge_endpoint(edge, node_map)
         if not vm_data or net_target != net_id or not nic_id:
             continue
-        for nic in vm_data.get("nics", []):
-            if nic.get("id") != nic_id:
-                continue
-            mac, ip = nic.get("mac", ""), nic.get("ip", "")
-            if mac and ip:
-                leases.append(
-                    {
-                        "mac": mac,
-                        "ip": ip,
-                        "hostname": vm_data.get("name", vm_data.get("label", "")),
-                    }
-                )
-                reserved_ips.add(ip)
+        lease = _lease_from_vm_nic(vm_data, nic_id)
+        if lease:
+            leases.append(lease)
+            reserved_ips.add(lease["ip"])
 
-    for vip in _cluster_vip_reservations(net_id, nodes, edges, reserved_ips):
-        ip = vip.get("ip", "")
-        if ip:
-            reserved_ips.add(ip)
-        leases.append(
-            {
-                "mac": vip.get("mac", ""),
-                "ip": ip,
-                "hostname": vip.get("name", vip.get("hostname", "")),
-            }
-        )
+    _append_reservation_leases(
+        leases,
+        reserved_ips,
+        _cluster_vip_reservations(net_id, nodes, edges, reserved_ips),
+    )
 
     net_data = next(
         (n.get("data", {}) for n in nodes if n.get("id") == net_id),
         {},
     )
-    for infra in _infra_ip_reservations(net_data, reserved_ips):
-        ip = infra.get("ip", "")
-        if ip:
-            reserved_ips.add(ip)
-        leases.append(
-            {
-                "mac": infra.get("mac", ""),
-                "ip": ip,
-                "hostname": infra.get("name", infra.get("hostname", "")),
-            }
-        )
+    _append_reservation_leases(
+        leases, reserved_ips, _infra_ip_reservations(net_data, reserved_ips)
+    )
 
     leases.extend(_ceph_reservations(net_id, nodes, reserved_ips))
     return leases
+
+
+def _ceph_ips_for_node(data: dict) -> list[str]:
+    return [str(data.get("labIp") or "").strip(), *(data.get("osdIps") or [])]
+
+
+def _ceph_hostname_for_index(idx: int) -> str:
+    if idx == 0:
+        return "ceph-mon"
+    return f"ceph-osd-{idx - 1}"
 
 
 def _ceph_reservations(
@@ -196,13 +219,17 @@ def _ceph_reservations(
         data = node.get("data") or {}
         if str(data.get("networkRef") or "") != net_id:
             continue
-        ceph_ips = [str(data.get("labIp") or "").strip(), *(data.get("osdIps") or [])]
-        for idx, ip in enumerate(ceph_ips):
+        for idx, ip in enumerate(_ceph_ips_for_node(data)):
             if not ip or ip in reserved_ips:
                 continue
             reserved_ips.add(ip)
-            label = "ceph-mon" if idx == 0 else f"ceph-osd-{idx - 1}"
-            out.append({"mac": _bogus_mac_for_ip(ip), "ip": ip, "hostname": label})
+            out.append(
+                {
+                    "mac": _bogus_mac_for_ip(ip),
+                    "ip": ip,
+                    "hostname": _ceph_hostname_for_index(idx),
+                }
+            )
     return out
 
 
@@ -311,22 +338,28 @@ def _wait_kubevirt_networks_ready(
         time.sleep(3)
 
 
+def _is_exportable_kubevirt_network(node: dict) -> bool:
+    if node.get("type") != "networkNode":
+        return False
+    data = node.get("data") or {}
+    if data.get("subtype") in ("gateway",):
+        return False
+    return data.get("networkType") != "bmc"
+
+
+def _kubevirt_network_nodes_by_id(topology: dict) -> dict:
+    return {
+        n["id"]: n
+        for n in topology.get("nodes", [])
+        if _is_exportable_kubevirt_network(n)
+    }
+
+
 def _find_changed_kubevirt_networks(current: dict, deployed: dict) -> list[str]:
-    cur_nodes = {
-        n["id"]: n
-        for n in current.get("nodes", [])
-        if n.get("type") == "networkNode"
-        and (n.get("data") or {}).get("subtype") not in ("gateway",)
-        and (n.get("data") or {}).get("networkType") != "bmc"
-    }
-    dep_nodes = {
-        n["id"]: n
-        for n in deployed.get("nodes", [])
-        if n.get("type") == "networkNode"
-        and (n.get("data") or {}).get("subtype") not in ("gateway",)
-        and (n.get("data") or {}).get("networkType") != "bmc"
-    }
     import json
+
+    cur_nodes = _kubevirt_network_nodes_by_id(current)
+    dep_nodes = _kubevirt_network_nodes_by_id(deployed)
 
     def _stable(obj: dict) -> str:
         return json.dumps(obj, sort_keys=True, default=str)
@@ -356,23 +389,10 @@ def _kubevirt_project_owner_refs(project_cr: dict) -> list[dict]:
     ]
 
 
-def apply_kubevirt_network_changes(
-    custom_api,
-    ns: str,
-    p_id: str,
-    current: dict,
-    deployed: dict,
-    diff: dict,
-    project_cr: dict,
-    errors: list[str],
-) -> bool:
-    """Create/patch/delete TroshkaNetwork CRs. Returns True when gateway NADs changed."""
-    owner_refs = _kubevirt_project_owner_refs(project_cr)
-    labels = {"troshka-project": p_id[:8]}
-    gateway_changed = False
-    pending: list[str] = []
-
-    for node in diff.get("removed_networks", []):
+def _delete_removed_kubevirt_networks(
+    custom_api, ns: str, p_id: str, removed_networks: list[dict]
+) -> None:
+    for node in removed_networks:
         if (node.get("data") or {}).get("subtype") == "gateway":
             continue
         cr_name = f"net-{node['id'][:8]}"
@@ -388,7 +408,20 @@ def apply_kubevirt_network_changes(
         except Exception:
             pass
 
-    for node in diff.get("added_networks", []):
+
+def _create_added_kubevirt_networks(
+    custom_api,
+    ns: str,
+    p_id: str,
+    current: dict,
+    added_networks: list[dict],
+    owner_refs: list[dict],
+    labels: dict,
+    pending: list[str],
+    errors: list[str],
+) -> bool:
+    gateway_changed = False
+    for node in added_networks:
         entry = _network_entry_from_node(node, current)
         if not entry:
             continue
@@ -406,7 +439,18 @@ def apply_kubevirt_network_changes(
                 "Reconfigure %s: failed to create %s: %s", p_id[:8], cr_name, e
             )
             errors.append(f"Failed to add network {entry['id'][:8]}: {e}")
+    return gateway_changed
 
+
+def _patch_changed_kubevirt_networks(
+    custom_api,
+    ns: str,
+    p_id: str,
+    current: dict,
+    deployed: dict,
+    pending: list[str],
+    errors: list[str],
+) -> None:
     for net_id in _find_changed_kubevirt_networks(current, deployed):
         node = next(
             (n for n in current.get("nodes", []) if n.get("id") == net_id), None
@@ -443,79 +487,95 @@ def apply_kubevirt_network_changes(
             )
             errors.append(f"Failed to update network {net_id[:8]}: {e}")
 
-    _wait_kubevirt_networks_ready(custom_api, ns, pending)
-    return gateway_changed
 
-
-def apply_kubevirt_ceph_changes(
+def apply_kubevirt_network_changes(
     custom_api,
     ns: str,
     p_id: str,
     current: dict,
+    deployed: dict,
     diff: dict,
     project_cr: dict,
     errors: list[str],
-) -> None:
-    """Create, update, or delete TroshkaCeph when cephClusterNode changes."""
-    from app.services.project_ceph import (
-        TROSHKA_CEPH_CR_NAME,
-        build_troshka_ceph_cr,
-        extract_ceph_cluster_spec,
-    )
-
+) -> bool:
+    """Create/patch/delete TroshkaNetwork CRs. Returns True when gateway NADs changed."""
     owner_refs = _kubevirt_project_owner_refs(project_cr)
+    labels = {"troshka-project": p_id[:8]}
+    pending: list[str] = []
 
-    if diff.get("ceph_removed"):
-        try:
-            custom_api.delete_namespaced_custom_object(
-                group=_TROSHKA_DOMAIN,
-                version=CRD_VERSION,
-                namespace=ns,
-                plural="troshkancephs",
-                name=TROSHKA_CEPH_CR_NAME,
-            )
-            logger.info("Reconfigure %s: deleted TroshkaCeph", p_id[:8])
-        except Exception as e:
-            if "404" not in str(e) and getattr(e, "status", None) != 404:
-                logger.warning(
-                    "Reconfigure %s: failed to delete TroshkaCeph: %s", p_id[:8], e
-                )
-                errors.append(f"Failed to remove Ceph: {e}")
-        return
-
-    if not (diff.get("ceph_added") or diff.get("ceph_changed")):
-        return
-
-    spec = extract_ceph_cluster_spec(current)
-    if not spec:
-        errors.append("Ceph Storage node present but spec could not be resolved")
-        return
-    if not spec.get("networkNad"):
-        errors.append("Ceph Storage network is not resolved to a Troshka network")
-        return
-
-    body = build_troshka_ceph_cr(
-        namespace=ns, project_id=p_id, spec=spec, owner_refs=owner_refs
+    _delete_removed_kubevirt_networks(
+        custom_api, ns, p_id, diff.get("removed_networks", [])
     )
+    gateway_changed = _create_added_kubevirt_networks(
+        custom_api,
+        ns,
+        p_id,
+        current,
+        diff.get("added_networks", []),
+        owner_refs,
+        labels,
+        pending,
+        errors,
+    )
+    _patch_changed_kubevirt_networks(
+        custom_api, ns, p_id, current, deployed, pending, errors
+    )
+    _wait_kubevirt_networks_ready(custom_api, ns, pending)
+    return gateway_changed
+
+
+def _is_not_found_error(exc: Exception) -> bool:
+    return "404" in str(exc) or getattr(exc, "status", None) == 404
+
+
+def _delete_troshka_ceph_cr(
+    custom_api, ns: str, p_id: str, cr_name: str, errors: list[str]
+) -> None:
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group=_TROSHKA_DOMAIN,
+            version=CRD_VERSION,
+            namespace=ns,
+            plural="troshkancephs",
+            name=cr_name,
+        )
+        logger.info("Reconfigure %s: deleted TroshkaCeph", p_id[:8])
+    except Exception as e:
+        if not _is_not_found_error(e):
+            logger.warning(
+                "Reconfigure %s: failed to delete TroshkaCeph: %s", p_id[:8], e
+            )
+            errors.append(f"Failed to remove Ceph: {e}")
+
+
+def _upsert_troshka_ceph_cr(
+    custom_api,
+    ns: str,
+    p_id: str,
+    cr_name: str,
+    body: dict,
+    spec: dict,
+    errors: list[str],
+) -> None:
     try:
         custom_api.get_namespaced_custom_object(
             group=_TROSHKA_DOMAIN,
             version=CRD_VERSION,
             namespace=ns,
             plural="troshkancephs",
-            name=TROSHKA_CEPH_CR_NAME,
+            name=cr_name,
         )
         custom_api.patch_namespaced_custom_object(
             group=_TROSHKA_DOMAIN,
             version=CRD_VERSION,
             namespace=ns,
             plural="troshkancephs",
-            name=TROSHKA_CEPH_CR_NAME,
+            name=cr_name,
             body={"spec": spec},
         )
         logger.info("Reconfigure %s: updated TroshkaCeph", p_id[:8])
     except Exception as e:
-        if "404" not in str(e) and getattr(e, "status", None) != 404:
+        if not _is_not_found_error(e):
             logger.warning(
                 "Reconfigure %s: failed to update TroshkaCeph: %s", p_id[:8], e
             )
@@ -537,6 +597,47 @@ def apply_kubevirt_ceph_changes(
                 create_err,
             )
             errors.append(f"Failed to add Ceph: {create_err}")
+
+
+def apply_kubevirt_ceph_changes(
+    custom_api,
+    ns: str,
+    p_id: str,
+    current: dict,
+    diff: dict,
+    project_cr: dict,
+    errors: list[str],
+) -> None:
+    """Create, update, or delete TroshkaCeph when cephClusterNode changes."""
+    from app.services.project_ceph import (
+        TROSHKA_CEPH_CR_NAME,
+        build_troshka_ceph_cr,
+        extract_ceph_cluster_spec,
+    )
+
+    owner_refs = _kubevirt_project_owner_refs(project_cr)
+
+    if diff.get("ceph_removed"):
+        _delete_troshka_ceph_cr(custom_api, ns, p_id, TROSHKA_CEPH_CR_NAME, errors)
+        return
+
+    if not (diff.get("ceph_added") or diff.get("ceph_changed")):
+        return
+
+    spec = extract_ceph_cluster_spec(current)
+    if not spec:
+        errors.append("Ceph Storage node present but spec could not be resolved")
+        return
+    if not spec.get("networkNad"):
+        errors.append("Ceph Storage network is not resolved to a Troshka network")
+        return
+
+    body = build_troshka_ceph_cr(
+        namespace=ns, project_id=p_id, spec=spec, owner_refs=owner_refs
+    )
+    _upsert_troshka_ceph_cr(
+        custom_api, ns, p_id, TROSHKA_CEPH_CR_NAME, body, spec, errors
+    )
 
 
 def patch_kubevirt_gateway_networks(provider, project_id: str, topology: dict) -> None:
@@ -563,7 +664,7 @@ def patch_kubevirt_gateway_networks(provider, project_id: str, topology: dict) -
             or data.get("gateway")
             or _gateway_ip_for_cidr(data.get("cidr", ""))
         )
-        cidr = data.get("cidr", "10.0.0.0/24")
+        cidr = data.get("cidr", _DEFAULT_NET_CIDR)
         prefix = cidr.split("/")[1] if "/" in cidr else "24"
         if gw_ip:
             gateway_addrs.append(f"{gw_ip}/{prefix}")
@@ -635,6 +736,27 @@ def _container_from_node(node: dict) -> dict:
     }
 
 
+def _nic_network_ref_from_edge(
+    src_node: dict, tgt_node: dict, edge: dict, src: str, tgt: str
+) -> tuple[str, str] | None:
+    """Return (nic_id, net-{id[:8]}) when edge links a container NIC to a network."""
+    if (
+        src_node.get("type") == "networkNode"
+        and tgt_node.get("type") == "containerNode"
+    ):
+        nic_id = _extract_nic_id(edge.get("targetHandle", ""))
+        if nic_id:
+            return nic_id, f"net-{src[:8]}"
+    if (
+        tgt_node.get("type") == "networkNode"
+        and src_node.get("type") == "containerNode"
+    ):
+        nic_id = _extract_nic_id(edge.get("sourceHandle", ""))
+        if nic_id:
+            return nic_id, f"net-{tgt[:8]}"
+    return None
+
+
 def _resolve_nic_networks(topology: dict) -> dict[str, str]:
     edges = topology.get("edges", [])
     nodes = {n["id"]: n for n in topology.get("nodes", [])}
@@ -644,22 +766,9 @@ def _resolve_nic_networks(topology: dict) -> dict[str, str]:
         src_node, tgt_node = nodes.get(src), nodes.get(tgt)
         if not src_node or not tgt_node:
             continue
-        if (
-            src_node.get("type") == "networkNode"
-            and tgt_node.get("type") == "containerNode"
-        ):
-            handle = edge.get("targetHandle", "")
-            nic_id = _extract_nic_id(handle)
-            if nic_id:
-                nic_map[nic_id] = f"net-{src[:8]}"
-        elif (
-            tgt_node.get("type") == "networkNode"
-            and src_node.get("type") == "containerNode"
-        ):
-            handle = edge.get("sourceHandle", "")
-            nic_id = _extract_nic_id(handle)
-            if nic_id:
-                nic_map[nic_id] = f"net-{tgt[:8]}"
+        ref = _nic_network_ref_from_edge(src_node, tgt_node, edge, src, tgt)
+        if ref:
+            nic_map[ref[0]] = ref[1]
     return nic_map
 
 
@@ -726,20 +835,22 @@ def _showroom_ip_for_cidr(cidr: str, used_ips: set[str]) -> str:
     return ""
 
 
-def _enrich_showroom_infra_networks(topology: dict, ctr: dict) -> None:
-    lab_nets = _lab_network_nodes(topology)
-    if not lab_nets:
-        return
-    if not ctr.get("infraNetworking") and ctr.get("nics"):
-        return
+def _collect_used_nic_ips(topology: dict) -> set[str]:
     used_ips: set[str] = set()
     for node in topology.get("nodes", []):
         for nic in (node.get("data") or {}).get("nics", []):
             ip = nic.get("ip", "")
             if ip:
                 used_ips.add(ip)
-    existing_refs = {n.get("networkRef") for n in ctr.get("nics", [])}
-    new_nics = list(ctr.get("nics", []))
+    return used_ips
+
+
+def _append_missing_showroom_infra_nics(
+    lab_nets: list[tuple[str, str]],
+    existing_refs: set,
+    used_ips: set[str],
+    new_nics: list[dict],
+) -> None:
     for net_id, cidr in lab_nets:
         net_ref = f"net-{net_id[:8]}"
         if net_ref in existing_refs:
@@ -756,7 +867,11 @@ def _enrich_showroom_infra_networks(topology: dict, ctr: dict) -> None:
                 "model": "virtio",
             }
         )
-    ctr["nics"] = new_nics
+
+
+def _resolve_showroom_dns_nameserver(
+    topology: dict, ctr: dict, lab_nets: list[tuple[str, str]]
+) -> None:
     dns_net = (ctr.get("dnsNetwork") or "").strip()
     for node in topology.get("nodes", []):
         data = node.get("data") or {}
@@ -772,28 +887,43 @@ def _enrich_showroom_infra_networks(topology: dict, ctr: dict) -> None:
         ctr["dnsNameserver"] = _network_dot2(lab_nets[0][1])
 
 
-def _container_disk_pvcs(ctr: dict) -> dict[str, str]:
-    ctr_id = ctr.get("id", "")
-    disk_pvcs: dict[str, str] = {}
-    seen: set[str] = set()
-    for mount in ctr.get("mounts", []):
+def _enrich_showroom_infra_networks(topology: dict, ctr: dict) -> None:
+    lab_nets = _lab_network_nodes(topology)
+    if not lab_nets:
+        return
+    if not ctr.get("infraNetworking") and ctr.get("nics"):
+        return
+    used_ips = _collect_used_nic_ips(topology)
+    existing_refs = {n.get("networkRef") for n in ctr.get("nics", [])}
+    new_nics = list(ctr.get("nics", []))
+    _append_missing_showroom_infra_nics(lab_nets, existing_refs, used_ips, new_nics)
+    ctr["nics"] = new_nics
+    _resolve_showroom_dns_nameserver(topology, ctr, lab_nets)
+
+
+def _register_disk_pvcs_from_mounts(
+    mounts: list[dict],
+    ctr_id: str,
+    disk_pvcs: dict[str, str],
+    seen: set[str],
+) -> None:
+    for mount in mounts:
         disk_id = mount.get("diskNodeId", "")
         if not disk_id or disk_id in seen:
             continue
         seen.add(disk_id)
         disk_pvcs[disk_id] = f"pod-{ctr_id[:8]}-disk-{disk_id[:8]}"
+
+
+def _container_disk_pvcs(ctr: dict) -> dict[str, str]:
+    ctr_id = ctr.get("id", "")
+    disk_pvcs: dict[str, str] = {}
+    seen: set[str] = set()
+    _register_disk_pvcs_from_mounts(ctr.get("mounts", []), ctr_id, disk_pvcs, seen)
     for ic in ctr.get("initContainers", []):
-        for mount in ic.get("mounts", []):
-            disk_id = mount.get("diskNodeId", "")
-            if disk_id and disk_id not in seen:
-                seen.add(disk_id)
-                disk_pvcs[disk_id] = f"pod-{ctr_id[:8]}-disk-{disk_id[:8]}"
+        _register_disk_pvcs_from_mounts(ic.get("mounts", []), ctr_id, disk_pvcs, seen)
     for pc in ctr.get("podContainers", []):
-        for mount in pc.get("mounts", []):
-            disk_id = mount.get("diskNodeId", "")
-            if disk_id and disk_id not in seen:
-                seen.add(disk_id)
-                disk_pvcs[disk_id] = f"pod-{ctr_id[:8]}-disk-{disk_id[:8]}"
+        _register_disk_pvcs_from_mounts(pc.get("mounts", []), ctr_id, disk_pvcs, seen)
     return disk_pvcs
 
 
@@ -915,48 +1045,59 @@ def _build_setup_ip_init(ctr: dict) -> list[dict]:
     return inits
 
 
-def _create_showroom_pod(
-    core_api, ns: str, ctr: dict, nad_refs: dict[str, str], owner_ref: dict
+def _add_showroom_volume_mount(
+    mount: dict,
+    disk_pvcs: dict[str, str],
+    volumes: list[dict],
+    volume_mounts: list[dict],
+    seen_vols: set[str],
+    seen_mounts: set[tuple[str, str]],
 ) -> None:
-    from kubernetes.client.exceptions import ApiException
+    disk_id = mount.get("diskNodeId", "")
+    mount_path = mount.get("mountPath", "")
+    if not disk_id or not mount_path:
+        return
+    pvc_name = disk_pvcs.get(disk_id)
+    if not pvc_name:
+        return
+    vol_name = f"disk-{disk_id[:8]}"
+    if vol_name not in seen_vols:
+        seen_vols.add(vol_name)
+        volumes.append(
+            {"name": vol_name, "persistentVolumeClaim": {"claimName": pvc_name}}
+        )
+    key = (vol_name, mount_path)
+    if key in seen_mounts:
+        return
+    seen_mounts.add(key)
+    volume_mounts.append({"name": vol_name, "mountPath": mount_path})
 
-    ctr_id = ctr.get("id", "")[:8]
-    pod_name = f"pod-{ctr_id}"
-    disk_pvcs = _container_disk_pvcs(ctr)
+
+def _collect_showroom_volumes_and_mounts(
+    ctr: dict, disk_pvcs: dict[str, str]
+) -> tuple[list[dict], list[dict]]:
     volumes: list[dict] = []
     volume_mounts: list[dict] = []
     seen_vols: set[str] = set()
     seen_mounts: set[tuple[str, str]] = set()
-
-    def _add_mount(mount: dict) -> None:
-        disk_id = mount.get("diskNodeId", "")
-        mount_path = mount.get("mountPath", "")
-        if not disk_id or not mount_path:
-            return
-        pvc_name = disk_pvcs.get(disk_id)
-        if not pvc_name:
-            return
-        vol_name = f"disk-{disk_id[:8]}"
-        if vol_name not in seen_vols:
-            seen_vols.add(vol_name)
-            volumes.append(
-                {"name": vol_name, "persistentVolumeClaim": {"claimName": pvc_name}}
-            )
-        key = (vol_name, mount_path)
-        if key in seen_mounts:
-            return
-        seen_mounts.add(key)
-        volume_mounts.append({"name": vol_name, "mountPath": mount_path})
-
     for mount in ctr.get("mounts", []):
-        _add_mount(mount)
+        _add_showroom_volume_mount(
+            mount, disk_pvcs, volumes, volume_mounts, seen_vols, seen_mounts
+        )
     for ic in ctr.get("initContainers", []):
         for mount in ic.get("mounts", []):
-            _add_mount(mount)
+            _add_showroom_volume_mount(
+                mount, disk_pvcs, volumes, volume_mounts, seen_vols, seen_mounts
+            )
     for pc in ctr.get("podContainers", []):
         for mount in pc.get("mounts", []):
-            _add_mount(mount)
+            _add_showroom_volume_mount(
+                mount, disk_pvcs, volumes, volume_mounts, seen_vols, seen_mounts
+            )
+    return volumes, volume_mounts
 
+
+def _build_showroom_init_containers(ctr: dict, volume_mounts: list[dict]) -> list[dict]:
     init_containers = _build_setup_ip_init(ctr)
     for i, ic in enumerate(ctr.get("initContainers", [])):
         spec = {
@@ -970,7 +1111,22 @@ def _create_showroom_pod(
         if volume_mounts:
             spec["volumeMounts"] = volume_mounts
         init_containers.append(spec)
+    return init_containers
 
+
+def _container_ports_spec(ports: list[dict]) -> list[dict]:
+    return [
+        {
+            "containerPort": p.get(
+                "container_port", p.get("containerPort", p.get("port", 0))
+            ),
+            "protocol": "TCP",
+        }
+        for p in ports
+    ]
+
+
+def _build_showroom_containers(ctr: dict, volume_mounts: list[dict]) -> list[dict]:
     containers = []
     for i, pc in enumerate(ctr.get("podContainers", [])):
         c_spec = {
@@ -982,15 +1138,7 @@ def _create_showroom_pod(
         if cmd:
             c_spec.update(cmd)
         if pc.get("ports"):
-            c_spec["ports"] = [
-                {
-                    "containerPort": p.get(
-                        "container_port", p.get("containerPort", p.get("port", 0))
-                    ),
-                    "protocol": "TCP",
-                }
-                for p in pc["ports"]
-            ]
+            c_spec["ports"] = _container_ports_spec(pc["ports"])
         if pc.get("securityContext"):
             c_spec["securityContext"] = pc["securityContext"]
         if volume_mounts:
@@ -998,8 +1146,20 @@ def _create_showroom_pod(
         containers.append(c_spec)
     if not containers:
         containers = [{"name": "main", "image": ctr.get("image", "")}]
+    return containers
 
-    net_annotations = _build_network_annotations(ctr, nad_refs)
+
+def _assemble_showroom_pod_body(
+    ns: str,
+    pod_name: str,
+    ctr_id: str,
+    ctr: dict,
+    init_containers: list[dict],
+    containers: list[dict],
+    volumes: list[dict],
+    nad_refs: dict[str, str],
+    owner_ref: dict,
+) -> dict:
     pod_body: dict = {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -1026,10 +1186,36 @@ def _create_showroom_pod(
         pod_body["spec"]["dnsConfig"] = lab_pod_dns_config(dns_ns)
     if volumes:
         pod_body["spec"]["volumes"] = volumes
+    net_annotations = _build_network_annotations(ctr, nad_refs)
     if net_annotations:
         pod_body["metadata"]["annotations"] = {
             _NET_ANNOTATION: ",".join(net_annotations)
         }
+    return pod_body
+
+
+def _create_showroom_pod(
+    core_api, ns: str, ctr: dict, nad_refs: dict[str, str], owner_ref: dict
+) -> None:
+    from kubernetes.client.exceptions import ApiException
+
+    ctr_id = ctr.get("id", "")[:8]
+    pod_name = f"pod-{ctr_id}"
+    disk_pvcs = _container_disk_pvcs(ctr)
+    volumes, volume_mounts = _collect_showroom_volumes_and_mounts(ctr, disk_pvcs)
+    init_containers = _build_showroom_init_containers(ctr, volume_mounts)
+    containers = _build_showroom_containers(ctr, volume_mounts)
+    pod_body = _assemble_showroom_pod_body(
+        ns,
+        pod_name,
+        ctr_id,
+        ctr,
+        init_containers,
+        containers,
+        volumes,
+        nad_refs,
+        owner_ref,
+    )
 
     try:
         core_api.create_namespaced_pod(namespace=ns, body=pod_body)

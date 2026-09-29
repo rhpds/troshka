@@ -37,25 +37,32 @@ def _external_ip_vm_ids(topology: dict) -> set[str]:
     return {e.get("vmId") for e in (topology.get("externalIps") or []) if e.get("ip")}
 
 
+def _validate_vm_inventory_node(node: dict) -> str | None:
+    """Validate one VM node; return bastion node id if tagged, else None."""
+    data = node.get("data") or {}
+    if not data.get("name"):
+        raise InventoryError("a VM node is missing data.name")
+    nics = data.get("nics") or []
+    if not nics or not nics[0].get("ip"):
+        raise InventoryError(f"VM {data.get('name')} has no first-NIC IP")
+    groups = _groups(node)
+    if not groups:
+        raise InventoryError(f"VM {data['name']} has no AnsibleGroup tag")
+    if "bastions" not in groups:
+        return None
+    node_id = node.get("id")
+    return node_id if node_id is not None else None
+
+
 def validate_ansible_groups(topology: dict, *, require_bastion: bool) -> None:
     nodes = _vm_nodes(topology)
     if not nodes:
         raise InventoryError("project has no VM nodes to target")
     bastions: list[str] = []
     for node in nodes:
-        data = node.get("data") or {}
-        if not data.get("name"):
-            raise InventoryError("a VM node is missing data.name")
-        nics = data.get("nics") or []
-        if not nics or not nics[0].get("ip"):
-            raise InventoryError(f"VM {data.get('name')} has no first-NIC IP")
-        groups = _groups(node)
-        if not groups:
-            raise InventoryError(f"VM {data['name']} has no AnsibleGroup tag")
-        if "bastions" in groups:
-            node_id = node.get("id")
-            if node_id is not None:
-                bastions.append(node_id)
+        bastion_id = _validate_vm_inventory_node(node)
+        if bastion_id is not None:
+            bastions.append(bastion_id)
     if require_bastion:
         _validate_bastion(bastions, topology)
 

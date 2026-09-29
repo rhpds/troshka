@@ -13,6 +13,7 @@ _DEFAULT_TEMPLATES_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "templates"
 )
 _STORAGE_EDGE_STROKE = "rgba(251,191,36,0.6)"
+_NETWORK_EDGE_STROKE = "rgba(34,211,238,0.5)"
 
 # Topology "content" sections carried verbatim from a template into the resolved
 # form. Both resolve_template (quickstart by id) and resolve_inline_template
@@ -33,6 +34,9 @@ _TEMPLATE_CONTENT_SECTIONS = (
     "workloadsDone",
     "cephCluster",
 )
+
+# Default Virtual BMC lab network CIDR when a template omits an explicit BMC net.
+_DEFAULT_BMC_CIDR = "192.168.100.0/24"  # NOSONAR — lab BMC network default
 
 
 def normalize_ocp_section(ocp: dict | list | None) -> list[dict]:
@@ -193,6 +197,67 @@ def _coerce_workers(workers, fallback: int) -> int:
         return fallback
 
 
+def _apply_topology_cluster_optionals(entry, cluster_obj, normalized, install_workers):
+    """Attach optional distribution / disks / networks onto a cluster object."""
+    from app.services.ocp.client_mirror import normalize_distribution
+
+    dist = entry.get("distribution")
+    if dist:
+        cluster_obj["ocpDistribution"] = normalize_distribution(dist)
+    if install_workers is not None:
+        cluster_obj["installWorkers"] = install_workers
+    if normalized.get("controlPlaneDisks"):
+        cluster_obj["controlPlaneDisks"] = normalized["controlPlaneDisks"]
+    if normalized.get("workerDisks"):
+        cluster_obj["workerDisks"] = normalized["workerDisks"]
+    if normalized.get("networkIds"):
+        cluster_obj["networkIds"] = normalized["networkIds"]
+    if entry.get("networks"):
+        cluster_obj["_networkNames"] = entry["networks"]
+
+
+def _build_one_topology_cluster(entry, vms_def, single):
+    """Build one camelCase topology cluster from a template ocp entry."""
+    name = entry["name"]
+    cp_count, wk_count = _count_cluster_roles(name, vms_def, single)
+    ctype = entry.get("type") or _infer_type(cp_count, wk_count)
+    control_plane = 1 if ctype == "sno" else 3
+    workers = _coerce_workers(entry.get("workers"), wk_count)
+    install_workers = entry.get("install_workers")
+    if install_workers is not None:
+        install_workers = _coerce_workers(install_workers, 0)
+
+    normalized = normalize_cluster_disks(entry)
+    cluster_obj = {
+        "id": _slug(name),
+        "name": name,
+        "type": ctype,
+        "controlPlane": control_plane,
+        "workers": workers,
+        "controlPlaneCpu": entry.get("control_plane_cpu", _CP_SIZE_DEFAULTS["cpu"]),
+        "controlPlaneMemory": entry.get(
+            "control_plane_memory", _CP_SIZE_DEFAULTS["memory"]
+        ),
+        "controlPlaneDisk": entry.get("control_plane_disk", _CP_SIZE_DEFAULTS["disk"]),
+        "workerCpu": entry.get("worker_cpu", _WORKER_SIZE_DEFAULTS["cpu"]),
+        "workerMemory": entry.get("worker_memory", _WORKER_SIZE_DEFAULTS["memory"]),
+        "workerDisk": entry.get("worker_disk", _WORKER_SIZE_DEFAULTS["disk"]),
+        "baseDomain": entry.get("base_domain", "ocp.local"),
+        "apiVip": entry.get("api_vip"),
+        "ingressVip": entry.get("ingress_vip"),
+        "ocpVersion": entry.get("ocp_version", "4.22"),
+        "pullThroughRegistry": entry.get("pull_through_registry"),
+        # Cluster-level OCP flags (projected onto member VMs at deploy).
+        # Defaults: recert ON for SNO (single node must regenerate certs to
+        # get a unique identity), health monitoring ON for every OCP type.
+        "recert": bool(entry.get("recert", ctype == "sno")),
+        "monitorHealth": bool(entry.get("ocp_monitor", True)),
+        "configureBastionBrowser": bool(entry.get("configure_bastion_browser", False)),
+    }
+    _apply_topology_cluster_optionals(entry, cluster_obj, normalized, install_workers)
+    return cluster_obj
+
+
 def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[dict]:
     """Build camelCase cluster objects for ``topology['clusters']``.
 
@@ -203,68 +268,7 @@ def build_topology_clusters(ocp_list: list[dict], vms_def: dict | None) -> list[
     single = len(ocp_list) == 1
     out = []
     for entry in ocp_list:
-        name = entry["name"]
-        cp_count, wk_count = _count_cluster_roles(name, vms_def, single)
-        ctype = entry.get("type") or _infer_type(cp_count, wk_count)
-        control_plane = 1 if ctype == "sno" else 3
-        workers = _coerce_workers(entry.get("workers"), wk_count)
-        install_workers = entry.get("install_workers")
-        if install_workers is not None:
-            install_workers = _coerce_workers(install_workers, 0)
-
-        # Normalize cluster to handle legacy single-disk format
-        normalized = normalize_cluster_disks(entry)
-
-        cluster_obj = {
-            "id": _slug(name),
-            "name": name,
-            "type": ctype,
-            "controlPlane": control_plane,
-            "workers": workers,
-            "controlPlaneCpu": entry.get("control_plane_cpu", _CP_SIZE_DEFAULTS["cpu"]),
-            "controlPlaneMemory": entry.get(
-                "control_plane_memory", _CP_SIZE_DEFAULTS["memory"]
-            ),
-            "controlPlaneDisk": entry.get(
-                "control_plane_disk", _CP_SIZE_DEFAULTS["disk"]
-            ),
-            "workerCpu": entry.get("worker_cpu", _WORKER_SIZE_DEFAULTS["cpu"]),
-            "workerMemory": entry.get("worker_memory", _WORKER_SIZE_DEFAULTS["memory"]),
-            "workerDisk": entry.get("worker_disk", _WORKER_SIZE_DEFAULTS["disk"]),
-            "baseDomain": entry.get("base_domain", "ocp.local"),
-            "apiVip": entry.get("api_vip"),
-            "ingressVip": entry.get("ingress_vip"),
-            "ocpVersion": entry.get("ocp_version", "4.22"),
-            "pullThroughRegistry": entry.get("pull_through_registry"),
-            # Cluster-level OCP flags (projected onto member VMs at deploy).
-            # Defaults: recert ON for SNO (single node must regenerate certs to
-            # get a unique identity), health monitoring ON for every OCP type.
-            "recert": bool(entry.get("recert", ctype == "sno")),
-            "monitorHealth": bool(entry.get("ocp_monitor", True)),
-            "configureBastionBrowser": bool(
-                entry.get("configure_bastion_browser", False)
-            ),
-        }
-        # Optional distribution (ocp | okd-scos). Default omitted = ocp so
-        # existing topologies stay unchanged.
-        from app.services.ocp.client_mirror import normalize_distribution
-
-        dist = entry.get("distribution")
-        if dist:
-            cluster_obj["ocpDistribution"] = normalize_distribution(dist)
-        if install_workers is not None:
-            cluster_obj["installWorkers"] = install_workers
-        # Preserve per-role disk lists and network IDs for member materialization.
-        if normalized.get("controlPlaneDisks"):
-            cluster_obj["controlPlaneDisks"] = normalized["controlPlaneDisks"]
-        if normalized.get("workerDisks"):
-            cluster_obj["workerDisks"] = normalized["workerDisks"]
-        if normalized.get("networkIds"):
-            cluster_obj["networkIds"] = normalized["networkIds"]
-        # Keep network names for later resolution (exported format)
-        if entry.get("networks"):
-            cluster_obj["_networkNames"] = entry["networks"]
-        out.append(cluster_obj)
+        out.append(_build_one_topology_cluster(entry, vms_def, single))
     return out
 
 
@@ -475,6 +479,17 @@ def _normalize_member_role(data):
     data["tags"] = tags
 
 
+def _edge_matches_controller_storage(e, vm_id, dc_id, storage_ids):
+    """Return storage node id if edge links vm_id↔dc_id to a storage node."""
+    if e.get("target") == vm_id and dc_id in e.get("targetHandle", ""):
+        if e.get("source") in storage_ids:
+            return e["source"]
+    if e.get("source") == vm_id and dc_id in e.get("sourceHandle", ""):
+        if e.get("target") in storage_ids:
+            return e["target"]
+    return None
+
+
 def _storage_node_for_controller(vm_id, dc_id, topology):
     """Return the storageNode id wired to a VM's disk controller (or '')."""
     if not dc_id:
@@ -483,12 +498,9 @@ def _storage_node_for_controller(vm_id, dc_id, topology):
         n["id"] for n in topology.get("nodes", []) if n.get("type") == "storageNode"
     }
     for e in topology.get("edges", []):
-        if e.get("target") == vm_id and dc_id in e.get("targetHandle", ""):
-            if e.get("source") in storage_ids:
-                return e["source"]
-        if e.get("source") == vm_id and dc_id in e.get("sourceHandle", ""):
-            if e.get("target") in storage_ids:
-                return e["target"]
+        found = _edge_matches_controller_storage(e, vm_id, dc_id, storage_ids)
+        if found:
+            return found
     return ""
 
 
@@ -595,6 +607,39 @@ def _build_cluster_boundary_nodes(clusters):
     return cnodes
 
 
+def _cluster_boundary_anchor_edge(net_id, boundary_id, use_bottom):
+    """Build one display-only network→cluster-boundary edge."""
+    return {
+        "id": _id(),
+        "source": net_id,
+        "target": boundary_id,
+        "sourceHandle": "top" if use_bottom else "bottom",
+        "targetHandle": ("cluster-net-bottom" if use_bottom else "cluster-net-top"),
+        "type": "clusterAnchor",
+        "style": {
+            "stroke": _NETWORK_EDGE_STROKE,
+            "strokeWidth": 2,
+            "strokeDasharray": "6 4",
+        },
+        "animated": True,
+    }
+
+
+def _append_boundary_edges_for_cluster(c, node_by_id, node_ids, linked, edges):
+    """Append network→boundary edges for one cluster; mutates edges/linked."""
+    boundary_id = f"cluster-{c['id']}"
+    if boundary_id not in node_ids:
+        return
+    for idx, net_id in enumerate(c.get("networkIds") or []):
+        if net_id not in node_ids or (net_id, boundary_id) in linked:
+            continue
+        net_data = node_by_id.get(net_id, {}).get("data", {})
+        is_bmc = net_data.get("networkType") == "bmc"
+        use_bottom = idx > 0 or is_bmc
+        edges.append(_cluster_boundary_anchor_edge(net_id, boundary_id, use_bottom))
+        linked.add((net_id, boundary_id))
+
+
 def _add_cluster_boundary_network_edges(clusters, nodes, edges):
     """Add a visual network→boundary anchor edge per cluster network.
 
@@ -611,34 +656,7 @@ def _add_cluster_boundary_network_edges(clusters, nodes, edges):
     node_ids = set(node_by_id)
     linked = {(e.get("source"), e.get("target")) for e in edges}
     for c in clusters:
-        boundary_id = f"cluster-{c['id']}"
-        if boundary_id not in node_ids:
-            continue
-        for idx, net_id in enumerate(c.get("networkIds") or []):
-            if net_id not in node_ids or (net_id, boundary_id) in linked:
-                continue
-            net_data = node_by_id.get(net_id, {}).get("data", {})
-            is_bmc = net_data.get("networkType") == "bmc"
-            use_bottom = idx > 0 or is_bmc
-            edges.append(
-                {
-                    "id": _id(),
-                    "source": net_id,
-                    "target": boundary_id,
-                    "sourceHandle": "top" if use_bottom else "bottom",
-                    "targetHandle": (
-                        "cluster-net-bottom" if use_bottom else "cluster-net-top"
-                    ),
-                    "type": "clusterAnchor",
-                    "style": {
-                        "stroke": "rgba(34,211,238,0.5)",
-                        "strokeWidth": 2,
-                        "strokeDasharray": "6 4",
-                    },
-                    "animated": True,
-                }
-            )
-            linked.add((net_id, boundary_id))
+        _append_boundary_edges_for_cluster(c, node_by_id, node_ids, linked, edges)
 
 
 def _template_requires_kubevirt(tmpl: dict) -> bool:
@@ -904,7 +922,7 @@ def _workload_net_edge(net_id, workload_id, nic_id, workload_handle="top"):
         "targetHandle": f"nic-{nic_id}-{workload_handle}",
         "type": "smoothstep",
         "style": {
-            "stroke": "rgba(34,211,238,0.5)",
+            "stroke": _NETWORK_EDGE_STROKE,
             "strokeWidth": 2,
             "strokeDasharray": "6 4",
         },
@@ -921,7 +939,7 @@ def _gw_net_edge(gw_id, net_id):
         "targetHandle": "top",
         "type": "smoothstep",
         "style": {
-            "stroke": "rgba(34,211,238,0.5)",
+            "stroke": _NETWORK_EDGE_STROKE,
             "strokeWidth": 2,
             "strokeDasharray": "6 4",
         },
@@ -932,8 +950,8 @@ def _gw_net_edge(gw_id, net_id):
 def _bmc_cidr_from_nets(nets_def: dict) -> str:
     for net_cfg in nets_def.values():
         if net_cfg.get("type") == "bmc":
-            return str(net_cfg.get("cidr") or "192.168.100.0/24")
-    return "192.168.100.0/24"
+            return str(net_cfg.get("cidr") or _DEFAULT_BMC_CIDR)
+    return _DEFAULT_BMC_CIDR
 
 
 def _next_free_bmc_ip(used: set[str], cidr: str) -> str:
@@ -1209,25 +1227,27 @@ def _apply_vm_cloud_init_fields(vm_cfg, vm_data):
         vm_data["ciNetworkConfig"] = vm_cfg["network_config"]
 
 
-def _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip):
-    if vm_cfg.get("uuid"):
-        try:
-            uuid.UUID(vm_cfg["uuid"])
-        except ValueError:
-            raise ValueError(
-                f"VM '{vm_name}': invalid uuid '{vm_cfg['uuid']}' — must be UUID format"
-            )
-        vm_data["smbiosUuid"] = vm_cfg["uuid"]
-    if bmc_ip:
-        vm_data["bmcIp"] = bmc_ip
+def _apply_vm_smbios_uuid(vm_name, vm_cfg, vm_data):
+    """Validate and set smbiosUuid from template uuid when present."""
+    if not vm_cfg.get("uuid"):
+        return
+    try:
+        uuid.UUID(vm_cfg["uuid"])
+    except ValueError:
+        raise ValueError(
+            f"VM '{vm_name}': invalid uuid '{vm_cfg['uuid']}' — must be UUID format"
+        )
+    vm_data["smbiosUuid"] = vm_cfg["uuid"]
+
+
+def _apply_vm_pxe_and_serial(vm_cfg, vm_data):
+    """Apply PXE ISO refs and serial/headless flags onto vm_data."""
     if vm_cfg.get("pxe_boot_iso_id"):
         vm_data["pxeBootIsoId"] = vm_cfg["pxe_boot_iso_id"]
     if vm_cfg.get("pxe_boot_iso_name"):
         vm_data["pxeBootIsoName"] = vm_cfg["pxe_boot_iso_name"]
-
     if vm_cfg.get("serial_exec"):
         vm_data["serialExecType"] = str(vm_cfg["serial_exec"]).lower()
-
     # serial_only (template) ↔ headless (topology / TroshkaVM). Accept headless alias.
     serial_only = vm_cfg.get("serial_only")
     if serial_only is None:
@@ -1235,16 +1255,21 @@ def _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip):
     if serial_only is not None:
         vm_data["headless"] = bool(serial_only)
 
+
+def _apply_vm_machine_and_bus(vm_cfg, vm_data):
+    """Apply machine type and legacy root bus onto vm_data."""
     machine_type = vm_cfg.get("machine_type") or vm_cfg.get("machineType")
     if machine_type:
         vm_data["machineType"] = str(machine_type)
-
     legacy_root_bus = vm_cfg.get("legacy_root_bus")
     if legacy_root_bus is None:
         legacy_root_bus = vm_cfg.get("legacyRootBus")
     if legacy_root_bus:
         vm_data["legacyRootBus"] = True
 
+
+def _apply_vm_role_tags(vm_cfg, vm_data, role):
+    """Set tags from config or role-based AnsibleGroup defaults."""
     if vm_cfg.get("tags"):
         vm_data["tags"] = vm_cfg["tags"]
     elif role == "control-plane":
@@ -1254,13 +1279,19 @@ def _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip):
     elif role == "bastion":
         vm_data["tags"] = {"AnsibleGroup": "bastions,showroom"}
 
-    _apply_vm_cloud_init_fields(vm_cfg, vm_data)
 
+def _apply_vm_optional_fields(vm_name, vm_cfg, vm_data, role, bmc_ip):
+    _apply_vm_smbios_uuid(vm_name, vm_cfg, vm_data)
+    if bmc_ip:
+        vm_data["bmcIp"] = bmc_ip
+    _apply_vm_pxe_and_serial(vm_cfg, vm_data)
+    _apply_vm_machine_and_bus(vm_cfg, vm_data)
+    _apply_vm_role_tags(vm_cfg, vm_data, role)
+    _apply_vm_cloud_init_fields(vm_cfg, vm_data)
     if vm_cfg.get("affinity_group"):
         vm_data["affinityGroup"] = vm_cfg["affinity_group"]
     if vm_cfg.get("separate_host"):
         vm_data["separateHost"] = vm_cfg["separate_host"]
-
     if vm_cfg.get("nested_virt") or vm_cfg.get("nestedVirt"):
         vm_data["nestedVirt"] = True
 
@@ -1365,33 +1396,14 @@ def _build_disk_node_and_edge(vm_name, disk_cfg, di, vm_x, vm_row_y):
     return dc, disk_id, disk_node, disk_edge
 
 
-def _build_vm_data(
-    vm_name,
-    vm_cfg,
-    _vms_def,
-    nets_def,
-    net_ids,
-    vm_x,
-    vm_row_y,
-    force_nested_virt=False,
-):
-    """Build VM node and associated disk/iso/edge nodes from VM config."""
-    role = vm_cfg.get("role", "")
-    os_type = vm_cfg.get("os", "rhcos")
-    power_on = vm_cfg.get("power_on", True)
-    has_bmc = vm_cfg.get("bmc", role == "control-plane")
-    bmc_ip = vm_cfg.get("bmc_ip", "")
-    disks_cfg = vm_cfg.get("disks", [{"size_gb": 50}])
-    nics_cfg = vm_cfg.get("nics", [])
-    # FIX 3: Check if this VM is a cluster member (has control-plane or worker role)
-    is_cluster_member = role in ("control-plane", "worker")
-
-    icon = "\U0001f5a5"
+def _vm_icon_for_os(os_type):
     if os_type == "blank":
-        icon = "\U0001f4e6"
+        return "\U0001f4e6"
+    return "\U0001f5a5"
 
-    nics = _build_vm_nics(nics_cfg, nets_def)
 
+def _build_vm_disk_set(vm_name, disks_cfg, vm_x, vm_row_y, is_cluster_member):
+    """Build disk controllers/nodes/edges and boot device ids for a VM."""
     disk_controllers = []
     disk_nodes = []
     disk_edges_list = []
@@ -1408,7 +1420,7 @@ def _build_vm_data(
         if di == 0 and first_bootable_disk_id is None:
             first_bootable_disk_id = disk_id
         disk_nodes.append(disk_node)
-        # FIX 3: Hide disk storageNode and its edge for cluster members (visual parity with frontend)
+        # Hide disk storageNode and its edge for cluster members (visual parity with frontend)
         if is_cluster_member:
             disk_node["hidden"] = True
             disk_edge["hidden"] = True
@@ -1416,12 +1428,21 @@ def _build_vm_data(
 
     if first_bootable_disk_id is not None:
         boot_device_ids.append(first_bootable_disk_id)
+    return disk_controllers, disk_nodes, disk_edges_list, boot_device_ids
 
-    isos_cfg = vm_cfg.get("isos", [])
-    if os_type != "blank" or isos_cfg:
-        disk_controllers.append(_cdrom_controller())
 
-    vm_data = {
+def _base_vm_data_dict(
+    vm_name,
+    vm_cfg,
+    os_type,
+    icon,
+    nics,
+    disk_controllers,
+    has_bmc,
+    boot_device_ids,
+    power_on,
+):
+    return {
         "label": vm_name,
         "name": vm_name,
         "vcpus": vm_cfg.get("vcpus", 2),
@@ -1441,7 +1462,66 @@ def _build_vm_data(
         "powerOnAtDeploy": power_on,
     }
 
-    # Add clusterRole for cluster members (Task 6: parity with frontend).
+
+def _build_vm_nic_edges(nics_cfg, net_ids, vm_node, is_cluster_member):
+    """Build NIC→network edges for a VM node."""
+    nic_edges = []
+    for ni, nic_cfg in enumerate(nics_cfg):
+        net_identifier = nic_cfg.get("network", "")
+        # net_identifier can be either a network name (template) or a network node ID
+        # (cluster materialized). Prefer name lookup; fall back to raw id.
+        net_node_id = net_ids.get(net_identifier, net_identifier)
+        if net_node_id:
+            handle = "top" if ni == 0 else "bottom"
+            nic_edge = _net_edge(net_node_id, vm_node, ni, handle)
+            if is_cluster_member:
+                nic_edge["hidden"] = True
+            nic_edges.append(nic_edge)
+    return nic_edges
+
+
+def _build_vm_data(
+    vm_name,
+    vm_cfg,
+    _vms_def,
+    nets_def,
+    net_ids,
+    vm_x,
+    vm_row_y,
+    force_nested_virt=False,
+):
+    """Build VM node and associated disk/iso/edge nodes from VM config."""
+    role = vm_cfg.get("role", "")
+    os_type = vm_cfg.get("os", "rhcos")
+    power_on = vm_cfg.get("power_on", True)
+    has_bmc = vm_cfg.get("bmc", role == "control-plane")
+    bmc_ip = vm_cfg.get("bmc_ip", "")
+    disks_cfg = vm_cfg.get("disks", [{"size_gb": 50}])
+    nics_cfg = vm_cfg.get("nics", [])
+    is_cluster_member = role in ("control-plane", "worker")
+
+    icon = _vm_icon_for_os(os_type)
+    nics = _build_vm_nics(nics_cfg, nets_def)
+    disk_controllers, disk_nodes, disk_edges_list, boot_device_ids = _build_vm_disk_set(
+        vm_name, disks_cfg, vm_x, vm_row_y, is_cluster_member
+    )
+
+    isos_cfg = vm_cfg.get("isos", [])
+    if os_type != "blank" or isos_cfg:
+        disk_controllers.append(_cdrom_controller())
+
+    vm_data = _base_vm_data_dict(
+        vm_name,
+        vm_cfg,
+        os_type,
+        icon,
+        nics,
+        disk_controllers,
+        has_bmc,
+        boot_device_ids,
+        power_on,
+    )
+
     if role in ("control-plane", "worker"):
         vm_data["clusterRole"] = role
 
@@ -1468,20 +1548,7 @@ def _build_vm_data(
     iso_nodes_edges = _build_vm_iso_nodes(
         vm_cfg, vm_name, vm_node["id"], disk_controllers, disks_cfg, vm_x, vm_row_y
     )
-
-    nic_edges = []
-    for ni, nic_cfg in enumerate(nics_cfg):
-        net_identifier = nic_cfg.get("network", "")
-        # net_identifier can be either a network name (template) or a network node ID (cluster materialized).
-        # First try as a network name; if not found, use it as a node ID directly.
-        net_node_id = net_ids.get(net_identifier, net_identifier)
-        if net_node_id:
-            handle = "top" if ni == 0 else "bottom"
-            nic_edge = _net_edge(net_node_id, vm_node, ni, handle)
-            # FIX 3: Hide NIC edges for cluster members (visual parity with frontend)
-            if is_cluster_member:
-                nic_edge["hidden"] = True
-            nic_edges.append(nic_edge)
+    nic_edges = _build_vm_nic_edges(nics_cfg, net_ids, vm_node, is_cluster_member)
 
     return vm_node, disk_nodes, disk_edges_list, iso_nodes_edges, nic_edges
 
@@ -1796,6 +1863,29 @@ def _validate_uuid_uniqueness(nodes):
             seen_uuids[u] = d.get("name", "")
 
 
+def _append_nic_network_id(nic, nets_def, net_ids, ids):
+    """Append a non-BMC NIC network id to ids if not already present."""
+    net = nic.get("network", "")
+    if (nets_def.get(net) or {}).get("type") == "bmc":
+        return
+    nid = net_ids.get(net, net)
+    if nid and nid not in ids:
+        ids.append(nid)
+
+
+def _network_ids_from_cluster_members(
+    cid, vms_def, vm_cluster_map, net_ids, nets_def
+) -> list[str]:
+    """Collect unique non-BMC network node IDs from a cluster's member VMs."""
+    ids: list[str] = []
+    for vm_name, vm_cfg in (vms_def or {}).items():
+        if vm_cluster_map.get(vm_name) != cid:
+            continue
+        for nic in vm_cfg.get("nics", []) or []:
+            _append_nic_network_id(nic, nets_def, net_ids, ids)
+    return ids
+
+
 def _infer_cluster_network_ids(
     clusters: list[dict],
     vms_def: dict,
@@ -1814,18 +1904,9 @@ def _infer_cluster_network_ids(
     for cluster in clusters:
         if cluster.get("networkIds"):
             continue
-        cid = cluster.get("id")
-        ids: list[str] = []
-        for vm_name, vm_cfg in (vms_def or {}).items():
-            if vm_cluster_map.get(vm_name) != cid:
-                continue
-            for nic in vm_cfg.get("nics", []) or []:
-                net = nic.get("network", "")
-                if (nets_def.get(net) or {}).get("type") == "bmc":
-                    continue
-                nid = net_ids.get(net, net)
-                if nid and nid not in ids:
-                    ids.append(nid)
+        ids = _network_ids_from_cluster_members(
+            cluster.get("id"), vms_def, vm_cluster_map, net_ids, nets_def
+        )
         if ids:
             cluster["networkIds"] = ids
 
@@ -1863,6 +1944,203 @@ def _default_dns_network_name(
         ):
             return gw_net
     return ""
+
+
+def _maybe_append_ceph_scaffold(tmpl, clusters, net_ids, nets_def, nodes, edges):
+    """Append Ceph scaffold node/edges when kubevirt placement requires it."""
+    ceph_cfg = tmpl.get("cephCluster") or tmpl.get("ceph_cluster")
+    if not (ceph_cfg and _template_requires_kubevirt(tmpl)):
+        return
+    from app.services.ceph_scaffold import build_ceph_from_config
+
+    cluster_name_to_id = {
+        c["name"]: f"cluster-{c['id']}" for c in clusters if c.get("name")
+    }
+    ceph_node, ceph_edges = build_ceph_from_config(
+        ceph_cfg,
+        net_ids=net_ids,
+        nets_def=nets_def,
+        cluster_name_to_id=cluster_name_to_id,
+    )
+    nodes.append(ceph_node)
+    edges.extend(ceph_edges)
+
+
+def _materialize_vm_nodes(
+    vms_def,
+    nets_def,
+    net_ids,
+    vm_cluster_map,
+    requires_kubevirt,
+    nodes,
+    edges,
+    vm_x,
+    vm_row_y,
+    vm_spacing,
+):
+    """Materialize VM nodes (+ disks/isos/nics); returns (vm_name_to_id, vm_x)."""
+    vm_name_to_id = {}
+    for vm_name, vm_cfg in vms_def.items():
+        vm_node, disk_nodes, disk_edges, iso_nodes_edges, nic_edges = _build_vm_data(
+            vm_name,
+            vm_cfg,
+            vms_def,
+            nets_def,
+            net_ids,
+            vm_x,
+            vm_row_y,
+            force_nested_virt=requires_kubevirt,
+        )
+        _stamp_cluster_membership(vm_node, vm_cluster_map, vm_name)
+        nodes.append(vm_node)
+        nodes.extend(disk_nodes)
+        edges.extend(disk_edges)
+        for iso_node, iso_edge in iso_nodes_edges:
+            nodes.append(iso_node)
+            edges.append(iso_edge)
+        edges.extend(nic_edges)
+        vm_name_to_id[vm_name] = vm_node["id"]
+        vm_x += vm_spacing
+    return vm_name_to_id, vm_x
+
+
+def _showroom_resolver_ips(showroom_cfg, nets_def, gw_net_name):
+    """Resolve dnsmasq IPs for showroom app-proxy from the DNS network."""
+    from app.services.showroom_scaffold import dns_network_resolver_ips
+
+    dns_net = str(showroom_cfg.get("dns_network") or "").strip() or (
+        _default_dns_network_name(nets_def, gw_net_name) or ""
+    )
+    dns_net_cfg = nets_def.get(dns_net, {}) if dns_net else {}
+    return dns_network_resolver_ips(
+        str(dns_net_cfg.get("cidr") or ""),
+        str(dns_net_cfg.get("dns_server_ip") or dns_net_cfg.get("dnsServerIp") or ""),
+    )
+
+
+def _ensure_showroom_dns_network(showroom_meta, ctr_node, nets_def, gw_net_name):
+    """Fill dns_network on showroom meta/node when scaffold omitted it."""
+    if showroom_meta.get("dns_network"):
+        return
+    default_dns = _default_dns_network_name(nets_def, gw_net_name)
+    if default_dns:
+        showroom_meta["dns_network"] = default_dns
+        ctr_node["data"]["dnsNetwork"] = default_dns
+
+
+def _append_showroom_scaffold(
+    tmpl,
+    nets_def,
+    gw_net_name,
+    vm_name_to_id,
+    vms_def,
+    net_ids,
+    gw_node,
+    clusters,
+    nodes,
+    edges,
+    container_name_to_id,
+    vm_x,
+    vm_spacing,
+):
+    """Scaffold showroom container when enabled and not already in containers."""
+    showroom_cfg = tmpl.get("showroom") or {}
+    containers_def = tmpl.get("containers", {})
+    if not (bool(showroom_cfg.get("enabled")) and "showroom" not in containers_def):
+        return None, vm_x
+
+    # Resolve the DNS network up front so the showroom app-proxy nginx gets a
+    # request-time resolver (dnsmasq) for the embedded console/oauth upstreams
+    # — otherwise nginx does a startup DNS lookup of a not-yet-existent
+    # .apps.<cluster> host and crashloops (KubeVirt).
+    from app.services.showroom_scaffold import build_showroom_from_config
+
+    resolver_ips = _showroom_resolver_ips(showroom_cfg, nets_def, gw_net_name)
+    (
+        ctr_node,
+        disk_nodes,
+        disk_edges,
+        nic_edges,
+        showroom_meta,
+    ) = build_showroom_from_config(
+        showroom_cfg,
+        vm_name_to_id,
+        vms_def,
+        net_ids,
+        gw_node["position"]["x"] - vm_spacing,
+        gw_node["position"]["y"],
+        clusters,
+        resolver_ips=resolver_ips,
+    )
+    nodes.append(ctr_node)
+    nodes.extend(disk_nodes)
+    edges.extend(disk_edges)
+    edges.extend(nic_edges)
+    container_name_to_id["showroom"] = ctr_node["id"]
+    _ensure_showroom_dns_network(showroom_meta, ctr_node, nets_def, gw_net_name)
+    return showroom_meta, vm_x + vm_spacing
+
+
+def _materialize_container_nodes(
+    containers_def,
+    net_ids,
+    nets_def,
+    nodes,
+    edges,
+    container_name_to_id,
+    vm_x,
+    vm_row_y,
+    vm_spacing,
+):
+    """Materialize explicit container nodes; returns updated vm_x."""
+    for ctr_key, ctr_cfg in containers_def.items():
+        ctr_node, disk_nodes, disk_edges, nic_edges = _build_container_node(
+            ctr_key, ctr_cfg, net_ids, nets_def, vm_x, vm_row_y
+        )
+        nodes.append(ctr_node)
+        nodes.extend(disk_nodes)
+        edges.extend(disk_edges)
+        edges.extend(nic_edges)
+        container_name_to_id[ctr_key] = ctr_node["id"]
+        vm_x += vm_spacing
+    return vm_x
+
+
+def _collect_hidden_node_ids(tmpl, all_name_to_id):
+    """Resolve template hidden_nodes names to node IDs."""
+    hidden_ids = []
+    for name in tmpl.get("hidden_nodes", []):
+        nid = all_name_to_id.get(name)
+        if nid:
+            hidden_ids.append(nid)
+    return hidden_ids
+
+
+def _assemble_topology_result(
+    nodes, edges, external_ips, start_order, hidden_ids, clusters, showroom_meta, tmpl
+):
+    """Assemble the final topology dict with optional template sections."""
+    result = {
+        "nodes": nodes,
+        "edges": edges,
+        "externalIps": external_ips,
+        "startOrder": start_order,
+        "hiddenNodeIds": hidden_ids,
+        "clusters": clusters,
+    }
+    if showroom_meta is not None:
+        result["showroom"] = showroom_meta
+    elif tmpl.get("showroom"):
+        result["showroom"] = tmpl["showroom"]
+    if tmpl.get("placement"):
+        result["placement"] = tmpl["placement"]
+    if tmpl.get("workloads"):
+        result["workloads"] = tmpl["workloads"]
+    if tmpl.get("requirements_content"):
+        result["requirements_content"] = tmpl["requirements_content"]
+    if tmpl.get("workloadsDone"):
+        result["workloadsDone"] = tmpl["workloadsDone"]
+    return result
 
 
 def _generate_topology_from_vms(
@@ -1911,118 +2189,49 @@ def _generate_topology_from_vms(
     # Cluster boundary group nodes must precede their child VM nodes.
     nodes.extend(_build_cluster_boundary_nodes(clusters))
     _add_cluster_boundary_network_edges(clusters, nodes, edges)
-
-    ceph_cfg = tmpl.get("cephCluster") or tmpl.get("ceph_cluster")
-    if ceph_cfg and _template_requires_kubevirt(tmpl):
-        from app.services.ceph_scaffold import build_ceph_from_config
-
-        cluster_name_to_id = {
-            c["name"]: f"cluster-{c['id']}" for c in clusters if c.get("name")
-        }
-        ceph_node, ceph_edges = build_ceph_from_config(
-            ceph_cfg,
-            net_ids=net_ids,
-            nets_def=nets_def,
-            cluster_name_to_id=cluster_name_to_id,
-        )
-        nodes.append(ceph_node)
-        edges.extend(ceph_edges)
+    _maybe_append_ceph_scaffold(tmpl, clusters, net_ids, nets_def, nodes, edges)
 
     requires_kubevirt = _template_requires_kubevirt(tmpl)
-
-    vm_name_to_id = {}
-    vm_x = 150
-    for vm_name, vm_cfg in vms_def.items():
-        vm_node, disk_nodes, disk_edges, iso_nodes_edges, nic_edges = _build_vm_data(
-            vm_name,
-            vm_cfg,
-            vms_def,
-            nets_def,
-            net_ids,
-            vm_x,
-            VM_ROW_Y,
-            force_nested_virt=requires_kubevirt,
-        )
-        _stamp_cluster_membership(vm_node, vm_cluster_map, vm_name)
-        nodes.append(vm_node)
-        nodes.extend(disk_nodes)
-        edges.extend(disk_edges)
-        for iso_node, iso_edge in iso_nodes_edges:
-            nodes.append(iso_node)
-            edges.append(iso_edge)
-        edges.extend(nic_edges)
-        vm_name_to_id[vm_name] = vm_node["id"]
-        vm_x += VM_SPACING
-
-    container_name_to_id = {}
-    containers_def = tmpl.get("containers", {})
-    showroom_cfg = tmpl.get("showroom") or {}
-    scaffold_showroom = (
-        bool(showroom_cfg.get("enabled")) and "showroom" not in containers_def
+    vm_name_to_id, vm_x = _materialize_vm_nodes(
+        vms_def,
+        nets_def,
+        net_ids,
+        vm_cluster_map,
+        requires_kubevirt,
+        nodes,
+        edges,
+        150,
+        VM_ROW_Y,
+        VM_SPACING,
     )
 
-    if scaffold_showroom:
-        # Resolve the DNS network up front so the showroom app-proxy nginx gets a
-        # request-time resolver (dnsmasq) for the embedded console/oauth upstreams
-        # — otherwise nginx does a startup DNS lookup of a not-yet-existent
-        # .apps.<cluster> host and crashloops (KubeVirt).
-        from app.services.showroom_scaffold import (
-            build_showroom_from_config,
-            dns_network_resolver_ips,
-        )
-
-        _dns_net = str(showroom_cfg.get("dns_network") or "").strip() or (
-            _default_dns_network_name(nets_def, gw_net_name) or ""
-        )
-        _dns_net_cfg = nets_def.get(_dns_net, {}) if _dns_net else {}
-        _resolver_ips = dns_network_resolver_ips(
-            str(_dns_net_cfg.get("cidr") or ""),
-            str(
-                _dns_net_cfg.get("dns_server_ip")
-                or _dns_net_cfg.get("dnsServerIp")
-                or ""
-            ),
-        )
-        (
-            ctr_node,
-            disk_nodes,
-            disk_edges,
-            nic_edges,
-            showroom_meta,
-        ) = build_showroom_from_config(
-            showroom_cfg,
-            vm_name_to_id,
-            vms_def,
-            net_ids,
-            gw_node["position"]["x"] - VM_SPACING,
-            gw_node["position"]["y"],
-            clusters,
-            resolver_ips=_resolver_ips,
-        )
-        nodes.append(ctr_node)
-        nodes.extend(disk_nodes)
-        edges.extend(disk_edges)
-        edges.extend(nic_edges)
-        container_name_to_id["showroom"] = ctr_node["id"]
-        if not showroom_meta.get("dns_network"):
-            default_dns = _default_dns_network_name(nets_def, gw_net_name)
-            if default_dns:
-                showroom_meta["dns_network"] = default_dns
-                ctr_node["data"]["dnsNetwork"] = default_dns
-        vm_x += VM_SPACING
-    else:
-        showroom_meta = None
-
-    for ctr_key, ctr_cfg in containers_def.items():
-        ctr_node, disk_nodes, disk_edges, nic_edges = _build_container_node(
-            ctr_key, ctr_cfg, net_ids, nets_def, vm_x, VM_ROW_Y
-        )
-        nodes.append(ctr_node)
-        nodes.extend(disk_nodes)
-        edges.extend(disk_edges)
-        edges.extend(nic_edges)
-        container_name_to_id[ctr_key] = ctr_node["id"]
-        vm_x += VM_SPACING
+    container_name_to_id = {}
+    showroom_meta, vm_x = _append_showroom_scaffold(
+        tmpl,
+        nets_def,
+        gw_net_name,
+        vm_name_to_id,
+        vms_def,
+        net_ids,
+        gw_node,
+        clusters,
+        nodes,
+        edges,
+        container_name_to_id,
+        vm_x,
+        VM_SPACING,
+    )
+    vm_x = _materialize_container_nodes(
+        tmpl.get("containers", {}),
+        net_ids,
+        nets_def,
+        nodes,
+        edges,
+        container_name_to_id,
+        vm_x,
+        VM_ROW_Y,
+        VM_SPACING,
+    )
 
     start_order = _build_start_order(tmpl, vm_name_to_id, container_name_to_id)
     _apply_dns_records(tmpl, nodes)
@@ -2030,56 +2239,47 @@ def _generate_topology_from_vms(
     _validate_uuid_uniqueness(nodes)
     _assign_bmc_ips(nodes, nets_def)
 
-    hidden_ids = []
     all_name_to_id = {**vm_name_to_id, **container_name_to_id, **net_ids}
-    for name in tmpl.get("hidden_nodes", []):
-        nid = all_name_to_id.get(name)
-        if nid:
-            hidden_ids.append(nid)
+    hidden_ids = _collect_hidden_node_ids(tmpl, all_name_to_id)
+    return _assemble_topology_result(
+        nodes,
+        edges,
+        external_ips,
+        start_order,
+        hidden_ids,
+        clusters,
+        showroom_meta,
+        tmpl,
+    )
 
-    result = {
-        "nodes": nodes,
-        "edges": edges,
-        "externalIps": external_ips,
-        "startOrder": start_order,
-        "hiddenNodeIds": hidden_ids,
-        "clusters": clusters,
-    }
-    if showroom_meta is not None:
-        result["showroom"] = showroom_meta
-    elif tmpl.get("showroom"):
-        result["showroom"] = tmpl["showroom"]
-    if tmpl.get("placement"):
-        result["placement"] = tmpl["placement"]
-    if tmpl.get("workloads"):
-        result["workloads"] = tmpl["workloads"]
-    if tmpl.get("requirements_content"):
-        result["requirements_content"] = tmpl["requirements_content"]
-    if tmpl.get("workloadsDone"):
-        result["workloadsDone"] = tmpl["workloadsDone"]
-    return result
+
+def _library_ids_from_storage_nodes(nodes: list[dict]) -> list[str]:
+    """Collect libraryItemId values from storage nodes."""
+    lib_ids = []
+    for n in nodes:
+        if n.get("type") != "storageNode":
+            continue
+        lid = n.get("data", {}).get("libraryItemId")
+        if lid:
+            lib_ids.append(lid)
+    return lib_ids
 
 
 def _collect_iso_item_ids(nodes: list[dict], db) -> set[str]:
     """Build set of library item IDs that are actually ISOs (check DB)."""
-    _iso_item_ids: set[str] = set()
-    if db:
-        from app.models.library import LibraryItem
+    if not db:
+        return set()
+    from app.models.library import LibraryItem
 
-        lib_ids = []
-        for n in nodes:
-            if n.get("type") == "storageNode":
-                lid = n.get("data", {}).get("libraryItemId")
-                if lid:
-                    lib_ids.append(lid)
-        if lib_ids:
-            items = (
-                db.query(LibraryItem.id, LibraryItem.format)
-                .filter(LibraryItem.id.in_(lib_ids))
-                .all()
-            )
-            _iso_item_ids = {i.id for i in items if i.format == "iso"}
-    return _iso_item_ids
+    lib_ids = _library_ids_from_storage_nodes(nodes)
+    if not lib_ids:
+        return set()
+    items = (
+        db.query(LibraryItem.id, LibraryItem.format)
+        .filter(LibraryItem.id.in_(lib_ids))
+        .all()
+    )
+    return {i.id for i in items if i.format == "iso"}
 
 
 def _build_nic_to_net_map(
@@ -2340,6 +2540,37 @@ def _export_vm_role(d):
     return ""
 
 
+def _export_standalone_ocp_vm_flags(d, vm_out):
+    """Export per-VM OCP flags for non-cluster-member (standalone) VMs."""
+    if d.get("clusterId"):
+        return
+    if d.get("recertEnabled"):
+        vm_out["recert"] = True
+    if d.get("ocpMonitor"):
+        vm_out["ocp_monitor"] = True
+    if d.get("configureBastionBrowser"):
+        vm_out["configure_bastion_browser"] = True
+
+
+def _export_vm_bmc_fields(d, vm_out):
+    """Export BMC enabled/ip flags when they differ from role defaults."""
+    if d.get("bmcEnabled") and vm_out.get("role") != "control-plane":
+        vm_out["bmc"] = True
+    if d.get("bmcIp"):
+        vm_out["bmc_ip"] = d["bmcIp"]
+
+
+def _export_vm_tags_if_custom(d, vm_out):
+    """Export tags unless they match the default AnsibleGroup for a role."""
+    tags = d.get("tags", {})
+    if (
+        tags
+        and tags != {"AnsibleGroup": "controllers"}
+        and tags != {"AnsibleGroup": "bastions,showroom"}
+    ):
+        vm_out["tags"] = tags
+
+
 def _export_vm_flags(d, vm_out):
     if d.get("secureBoot"):
         vm_out["secure_boot"] = True
@@ -2351,13 +2582,7 @@ def _export_vm_flags(d, vm_out):
     # OCP flags (recert/ocp_monitor/configure_bastion_browser) are cluster-level
     # now — exported on the ``ocp:`` cluster, not per-VM — for cluster members.
     # Non-member VMs (legacy standalone RHCOS) still export them per-VM.
-    if not d.get("clusterId"):
-        if d.get("recertEnabled"):
-            vm_out["recert"] = True
-        if d.get("ocpMonitor"):
-            vm_out["ocp_monitor"] = True
-        if d.get("configureBastionBrowser"):
-            vm_out["configure_bastion_browser"] = True
+    _export_standalone_ocp_vm_flags(d, vm_out)
     if d.get("serialExecType") and d.get("serialExecType") != "linux":
         vm_out["serial_exec"] = d["serialExecType"]
     if d.get("headless"):
@@ -2366,18 +2591,8 @@ def _export_vm_flags(d, vm_out):
         vm_out["machine_type"] = d["machineType"]
     if d.get("legacyRootBus"):
         vm_out["legacy_root_bus"] = True
-    if d.get("bmcEnabled") and vm_out.get("role") != "control-plane":
-        vm_out["bmc"] = True
-    if d.get("bmcIp"):
-        vm_out["bmc_ip"] = d["bmcIp"]
-
-    tags = d.get("tags", {})
-    if (
-        tags
-        and tags != {"AnsibleGroup": "controllers"}
-        and tags != {"AnsibleGroup": "bastions,showroom"}
-    ):
-        vm_out["tags"] = tags
+    _export_vm_bmc_fields(d, vm_out)
+    _export_vm_tags_if_custom(d, vm_out)
 
 
 def _export_vm_cloud_init(d, vm_out):
@@ -2528,21 +2743,26 @@ def _export_container_disks(cd, all_storage_nodes):
     return disks_export
 
 
+def _export_sub_mounts(sc, all_storage_nodes) -> list:
+    return [
+        {
+            "disk": _resolve_disk_name(m.get("diskNodeId", ""), all_storage_nodes),
+            "mount_path": m.get("mountPath", ""),
+        }
+        for m in sc.get("mounts", [])
+        if m.get("diskNodeId")
+    ]
+
+
 def _export_sub_container(sc, all_storage_nodes):
     entry: dict = {"name": sc["name"], "image": sc.get("image", "")}
     if sc.get("command"):
         entry["command"] = sc["command"]
     if sc.get("envVars"):
         entry["env"] = {ev["key"]: ev["value"] for ev in sc["envVars"] if ev.get("key")}
-    if sc.get("mounts"):
-        entry["mounts"] = [
-            {
-                "disk": _resolve_disk_name(m.get("diskNodeId", ""), all_storage_nodes),
-                "mount_path": m.get("mountPath", ""),
-            }
-            for m in sc["mounts"]
-            if m.get("diskNodeId")
-        ]
+    mounts = _export_sub_mounts(sc, all_storage_nodes)
+    if mounts:
+        entry["mounts"] = mounts
     if sc.get("ports"):
         entry["ports"] = [
             p["containerPort"] for p in sc["ports"] if p.get("containerPort")
@@ -2584,8 +2804,19 @@ def _export_pod_container(cd, nics_export, disks_export, all_storage_nodes):
     return ctr_export
 
 
-def _export_single_container(cd, nics_export, disks_export):
-    ctr_export: dict = {"image": cd.get("image", "")}
+def _export_single_container_ports(cd) -> list:
+    ports = []
+    for p in cd.get("ports", []):
+        entry = {"container_port": p["containerPort"]}
+        if p.get("hostPort"):
+            entry["host_port"] = p["hostPort"]
+        if p.get("protocol", "tcp") != "tcp":
+            entry["protocol"] = p["protocol"]
+        ports.append(entry)
+    return ports
+
+
+def _apply_single_container_resources(ctr_export: dict, cd: dict) -> None:
     if cd.get("registryCredentialName"):
         ctr_export["registry_credential"] = cd["registryCredentialName"]
     if cd.get("cpus", 1) != 1:
@@ -2598,6 +2829,11 @@ def _export_single_container(cd, nics_export, disks_export):
         ctr_export["restart_policy"] = cd["restartPolicy"]
     if cd.get("command"):
         ctr_export["command"] = cd["command"]
+
+
+def _export_single_container(cd, nics_export, disks_export):
+    ctr_export: dict = {"image": cd.get("image", "")}
+    _apply_single_container_resources(ctr_export, cd)
     if nics_export:
         ctr_export["nics"] = nics_export
     if cd.get("envVars"):
@@ -2605,18 +2841,7 @@ def _export_single_container(cd, nics_export, disks_export):
             ev["key"]: ev["value"] for ev in cd["envVars"] if ev.get("key")
         }
     if cd.get("ports"):
-        ctr_export["ports"] = [
-            {
-                "container_port": p["containerPort"],
-                **({"host_port": p["hostPort"]} if p.get("hostPort") else {}),
-                **(
-                    {"protocol": p["protocol"]}
-                    if p.get("protocol", "tcp") != "tcp"
-                    else {}
-                ),
-            }
-            for p in cd["ports"]
-        ]
+        ctr_export["ports"] = _export_single_container_ports(cd)
     if disks_export:
         ctr_export["disks"] = disks_export
     return ctr_export
@@ -2727,6 +2952,45 @@ def _resolve_network_ids_to_names(
     return names
 
 
+def _copy_ocp_export_fields(cluster, entry):
+    """Copy mapped camelCase→snake_case fields, omitting missing/None values."""
+    for src, dst in _OCP_EXPORT_FIELDS:
+        if src not in cluster:
+            continue
+        val = cluster[src]
+        if val is None:
+            continue
+        entry[dst] = val
+
+
+def _export_ocp_cluster_flags_and_disks(cluster, entry):
+    """Export cluster-level OCP flags and per-role disk lists when set."""
+    if cluster.get("recert"):
+        entry["recert"] = True
+    if cluster.get("monitorHealth"):
+        entry["ocp_monitor"] = True
+    if cluster.get("configureBastionBrowser"):
+        entry["configure_bastion_browser"] = True
+    if cluster.get("controlPlaneDisks"):
+        entry["control_plane_disks"] = cluster["controlPlaneDisks"]
+    if cluster.get("workerDisks"):
+        entry["worker_disks"] = cluster["workerDisks"]
+
+
+def _export_one_ocp_cluster(cluster, net_id_to_name):
+    """Map one camelCase topology cluster to a snake_case template ocp entry."""
+    entry: dict[str, object] = {}
+    _copy_ocp_export_fields(cluster, entry)
+    _export_ocp_cluster_flags_and_disks(cluster, entry)
+    if cluster.get("networkIds"):
+        network_names = _resolve_network_ids_to_names(
+            cluster["networkIds"], net_id_to_name
+        )
+        if network_names:
+            entry["networks"] = network_names
+    return entry
+
+
 def _export_ocp_clusters(
     topology: dict, net_id_to_name: dict[str, str] | None = None
 ) -> list[dict]:
@@ -2744,83 +3008,38 @@ def _export_ocp_clusters(
 
     out = []
     for cluster in topology.get("clusters", []) or []:
-        entry: dict[str, object] = {}
-        for src, dst in _OCP_EXPORT_FIELDS:
-            if src not in cluster:
-                continue
-            val = cluster[src]
-            if val is None:
-                continue
-            entry[dst] = val
-
-        # Cluster-level OCP flags (only when enabled, to keep templates clean).
-        if cluster.get("recert"):
-            entry["recert"] = True
-        if cluster.get("monitorHealth"):
-            entry["ocp_monitor"] = True
-        if cluster.get("configureBastionBrowser"):
-            entry["configure_bastion_browser"] = True
-
-        # Export per-role disk lists as-is (list of {sizeGb, bus?, bootable?})
-        if cluster.get("controlPlaneDisks"):
-            entry["control_plane_disks"] = cluster["controlPlaneDisks"]
-        if cluster.get("workerDisks"):
-            entry["worker_disks"] = cluster["workerDisks"]
-
-        # Export networkIds as network names (for portability)
-        if cluster.get("networkIds"):
-            network_names = _resolve_network_ids_to_names(
-                cluster["networkIds"], net_id_to_name
-            )
-            if network_names:
-                entry["networks"] = network_names
-
-        out.append(entry)
+        out.append(_export_one_ocp_cluster(cluster, net_id_to_name))
     return out
 
 
-def export_topology_to_template(topology: dict, db=None) -> dict:
-    """Reverse-map a canvas topology JSONB to a simple infra_template YAML dict."""
+def _index_topology_for_export(topology, db):
+    """Index nodes/edges and collect ISO library IDs for template export."""
     nodes = topology.get("nodes", [])
     edges = topology.get("edges", [])
-
-    # Build set of library item IDs that are actually ISOs (check DB)
-    _iso_item_ids = _collect_iso_item_ids(nodes, db)
-
-    # Index network nodes by id
+    iso_item_ids = _collect_iso_item_ids(nodes, db)
     net_nodes = {n["id"]: n for n in nodes if n.get("type") == "networkNode"}
     vm_nodes = [n for n in nodes if n.get("type") == "vmNode"]
-
-    # Build edge lookup: target node id -> list of source node ids
     edge_by_target: dict[str, list] = {}
     for e in edges:
         edge_by_target.setdefault(e["target"], []).append(e)
-
-    # Map network node IDs to friendly names
     net_names = {}
     for nid, nn in net_nodes.items():
         d = nn.get("data", {})
         if d.get("subtype") == "gateway":
             continue
         net_names[nid] = d.get("name", d.get("label", nid[:8]))
+    return nodes, edges, iso_item_ids, net_nodes, vm_nodes, edge_by_target, net_names
 
-    # Build NIC -> network mapping from edges
-    nic_to_net = _build_nic_to_net_map(edges, net_names)
 
-    # ── Networks ──
-    networks = _export_networks(net_nodes, net_names)
-
-    # ── Gateway ──
-    gateway = _export_gateway(net_nodes, edges, net_names)
-
-    # ── VMs ──
-    # Cluster id -> name, so member VMs export a human-friendly ``cluster:``.
+def _export_topology_vms(
+    topology, vm_nodes, edge_by_target, nodes, net_names, nic_to_net, iso_item_ids
+):
+    """Export all VM nodes to a name→config mapping."""
     cluster_names = {
         c["id"]: c.get("name", c["id"])
         for c in (topology.get("clusters") or [])
         if c.get("id")
     }
-
     vms = {}
     for vm in vm_nodes:
         d = vm.get("data", {})
@@ -2831,21 +3050,14 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
             nodes,
             net_names,
             nic_to_net,
-            _iso_item_ids,
+            iso_item_ids,
             cluster_names,
         )
+    return vms
 
-    result: dict = {"networks": networks}
-    # Build reverse mapping from network node IDs to names for cluster export
-    net_id_to_name = {nid: name for nid, name in net_names.items()}
-    ocp_clusters = _export_ocp_clusters(topology, net_id_to_name)
-    if ocp_clusters:
-        result["ocp"] = ocp_clusters
-    if gateway:
-        result["gateway"] = gateway
-    result["vms"] = vms
 
-    # ── Containers (non-showroom pods; showroom exports via showroom section) ──
+def _partition_container_nodes(nodes):
+    """Split container nodes into non-showroom vs showroom lists."""
     container_nodes = [
         n
         for n in nodes
@@ -2856,6 +3068,30 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
         for n in nodes
         if n.get("type") == "containerNode" and n.get("data", {}).get("isShowroom")
     ]
+    return container_nodes, showroom_nodes
+
+
+def _node_id_to_name_map(nodes):
+    """Map node IDs to friendly names for start_order / hidden_nodes."""
+    id_to_name = {}
+    for n in nodes:
+        d = n.get("data", {})
+        id_to_name[n["id"]] = d.get("name", d.get("label", n["id"][:8]))
+    return id_to_name
+
+
+def _attach_export_optional_sections(
+    result,
+    topology,
+    nodes,
+    edges,
+    net_nodes,
+    net_id_to_name,
+    container_nodes,
+    showroom_nodes,
+    id_to_name,
+):
+    """Attach containers, start_order, hidden, showroom, ceph, workloads sections."""
     if container_nodes:
         all_storage_nodes = {
             n["id"]: n for n in nodes if n.get("type") == "storageNode"
@@ -2863,12 +3099,6 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
         result["containers"] = _export_containers(
             container_nodes, edges, net_nodes, all_storage_nodes
         )
-
-    # Map node IDs to names for start_order and hidden_nodes
-    id_to_name = {}
-    for n in nodes:
-        d = n.get("data", {})
-        id_to_name[n["id"]] = d.get("name", d.get("label", n["id"][:8]))
 
     so_out = _export_start_order(topology, container_nodes + showroom_nodes, id_to_name)
     if so_out:
@@ -2899,6 +3129,48 @@ def export_topology_to_template(topology: dict, db=None) -> dict:
     if topology.get("workloadsDone"):
         result["workloadsDone"] = topology["workloadsDone"]
 
+
+def export_topology_to_template(topology: dict, db=None) -> dict:
+    """Reverse-map a canvas topology JSONB to a simple infra_template YAML dict."""
+    (
+        nodes,
+        edges,
+        iso_item_ids,
+        net_nodes,
+        vm_nodes,
+        edge_by_target,
+        net_names,
+    ) = _index_topology_for_export(topology, db)
+
+    nic_to_net = _build_nic_to_net_map(edges, net_names)
+    networks = _export_networks(net_nodes, net_names)
+    gateway = _export_gateway(net_nodes, edges, net_names)
+    vms = _export_topology_vms(
+        topology, vm_nodes, edge_by_target, nodes, net_names, nic_to_net, iso_item_ids
+    )
+
+    result: dict = {"networks": networks}
+    net_id_to_name = dict(net_names)
+    ocp_clusters = _export_ocp_clusters(topology, net_id_to_name)
+    if ocp_clusters:
+        result["ocp"] = ocp_clusters
+    if gateway:
+        result["gateway"] = gateway
+    result["vms"] = vms
+
+    container_nodes, showroom_nodes = _partition_container_nodes(nodes)
+    id_to_name = _node_id_to_name_map(nodes)
+    _attach_export_optional_sections(
+        result,
+        topology,
+        nodes,
+        edges,
+        net_nodes,
+        net_id_to_name,
+        container_nodes,
+        showroom_nodes,
+        id_to_name,
+    )
     return result
 
 

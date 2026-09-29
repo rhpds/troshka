@@ -213,6 +213,32 @@ def topology_requires_kubevirt(topology: dict | None) -> bool:
     return bool(placement.get("requires_kubevirt") or placement.get("requiresKubevirt"))
 
 
+def _host_fits_requirements(
+    db: Session,
+    host,
+    *,
+    required_vcpus: int,
+    required_ram_mb: int,
+    required_eips: int,
+    pattern_disk_ids: list[str] | None,
+    required_mtu: int | None,
+) -> tuple | None:
+    """Return candidate tuple if host has capacity, else None."""
+    alloc_vcpus, alloc_ram = get_allocatable(host)
+    free_vcpus = alloc_vcpus - host.used_vcpus
+    free_ram = alloc_ram - host.used_ram_mb
+    if free_vcpus < required_vcpus or free_ram < required_ram_mb:
+        return None
+    if required_eips > 0 and not _check_eip_capacity(db, host, required_eips):
+        return None
+    if not _host_has_pattern_storage(db, host, pattern_disk_ids):
+        return None
+    if not _host_mtu_ok(host, required_mtu):
+        return None
+    inflight = _get_inflight_deploys(host.id)
+    return (host, free_vcpus, free_ram, inflight)
+
+
 def find_available_host(
     db: Session,
     required_vcpus: int,
@@ -250,21 +276,17 @@ def find_available_host(
 
     candidates = []
     for host in hosts:
-        alloc_vcpus, alloc_ram = get_allocatable(host)
-        free_vcpus = alloc_vcpus - host.used_vcpus
-        free_ram = alloc_ram - host.used_ram_mb
-        if free_vcpus >= required_vcpus and free_ram >= required_ram_mb:
-            if required_eips > 0 and not _check_eip_capacity(db, host, required_eips):
-                continue
-
-            if not _host_has_pattern_storage(db, host, pattern_disk_ids):
-                continue
-
-            if not _host_mtu_ok(host, required_mtu):
-                continue
-
-            inflight = _get_inflight_deploys(host.id)
-            candidates.append((host, free_vcpus, free_ram, inflight))
+        cand = _host_fits_requirements(
+            db,
+            host,
+            required_vcpus=required_vcpus,
+            required_ram_mb=required_ram_mb,
+            required_eips=required_eips,
+            pattern_disk_ids=pattern_disk_ids,
+            required_mtu=required_mtu,
+        )
+        if cand:
+            candidates.append(cand)
 
     if not candidates:
         return None
@@ -642,6 +664,41 @@ def _resolve_specified_host(
     return host, None
 
 
+def _validate_specified_host_for_select(
+    host,
+    storage_pool_id: str | None,
+    *,
+    required_mtu: int | None,
+    requires_kubevirt: bool,
+) -> tuple:
+    """Return (host, storage_pool_id, error_dict) for an admin-specified host."""
+    if requires_kubevirt and host.host_type != "kubevirt-cluster":
+        return (
+            None,
+            storage_pool_id,
+            {
+                "error": (
+                    f"Host {host.id[:8]} is not a KubeVirt cluster — "
+                    "this template requires kubevirt-cluster placement"
+                )
+            },
+        )
+    if not _host_mtu_ok(host, required_mtu):
+        return (
+            None,
+            storage_pool_id,
+            {
+                "error": (
+                    f"Host {host.id[:8]} (cluster MTU {host.uplink_mtu}) cannot "
+                    f"run this deployment which requires MTU {required_mtu}"
+                )
+            },
+        )
+    if not storage_pool_id and host.storage_pool_id:
+        storage_pool_id = host.storage_pool_id
+    return host, storage_pool_id, None
+
+
 def _select_host(
     db: Session,
     project: Project,
@@ -658,28 +715,12 @@ def _select_host(
         host, err = _resolve_specified_host(db, host_id)
         if err or not host:
             return None, storage_pool_id, {"error": err or "Host not found"}
-        if requires_kubevirt and host.host_type != "kubevirt-cluster":
-            return (
-                None,
-                storage_pool_id,
-                {
-                    "error": (
-                        f"Host {host.id[:8]} is not a KubeVirt cluster — "
-                        "this template requires kubevirt-cluster placement"
-                    )
-                },
-            )
-        if not _host_mtu_ok(host, required_mtu):
-            return (
-                None,
-                storage_pool_id,
-                {
-                    "error": f"Host {host.id[:8]} (cluster MTU {host.uplink_mtu}) cannot run this deployment which requires MTU {required_mtu}"
-                },
-            )
-        if not storage_pool_id and host.storage_pool_id:
-            storage_pool_id = host.storage_pool_id
-        return host, storage_pool_id, None
+        return _validate_specified_host_for_select(
+            host,
+            storage_pool_id,
+            required_mtu=required_mtu,
+            requires_kubevirt=requires_kubevirt,
+        )
 
     if not storage_pool_id:
         storage_pool_id = _auto_select_pool(db)

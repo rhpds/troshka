@@ -93,3 +93,59 @@ def test_reap_stuck_goldens_deletes_only_dead_golden(monkeypatch):
     reaped = p.reap_stuck_goldens(custom_api, core_api, now=time.time())
     assert reaped == 1
     assert deleted == ["golden-dead"]
+
+
+def test_container_status_crashlooping_by_reason():
+    from handlers.project import _container_status_crashlooping
+    from types import SimpleNamespace
+
+    waiting = SimpleNamespace(reason="CrashLoopBackOff")
+    state = SimpleNamespace(waiting=waiting)
+    cs = SimpleNamespace(restart_count=0, state=state)
+    assert _container_status_crashlooping(cs) is True
+
+
+def test_container_status_crashlooping_by_restarts():
+    from handlers.project import _container_status_crashlooping
+    from types import SimpleNamespace
+
+    cs = SimpleNamespace(restart_count=3, state=None)
+    assert _container_status_crashlooping(cs) is True
+
+
+def test_container_status_not_crashlooping():
+    from handlers.project import _container_status_crashlooping
+    from types import SimpleNamespace
+
+    cs = SimpleNamespace(restart_count=1, state=None)
+    assert _container_status_crashlooping(cs) is False
+
+
+def test_resolve_golden_s3_config_obc():
+    from handlers.project import _resolve_golden_s3_config
+
+    obc = {"bucket": "obc", "credentialsSecret": "s3-obc-credentials"}  # pragma: allowlist secret
+    s3 = {"obcConfig": obc}
+    cfg, secret = _resolve_golden_s3_config(
+        {"patternImage": {"source": "obc"}}, s3, {}, False
+    )
+    assert cfg is obc
+    assert secret == "s3-obc-credentials"  # pragma: allowlist secret
+
+
+def test_resolve_golden_s3_config_central():
+    from handlers.project import _resolve_golden_s3_config
+
+    central = {"bucket": "central"}
+    cfg, secret = _resolve_golden_s3_config({}, {"bucket": "local"}, central, True)
+    assert cfg is central
+    assert secret == "s3-central-credentials"  # pragma: allowlist secret
+
+
+def test_resolve_golden_s3_config_default():
+    from handlers.project import _resolve_golden_s3_config
+
+    local = {"bucket": "local"}
+    cfg, secret = _resolve_golden_s3_config({}, local, None, False)
+    assert cfg is local
+    assert secret == "s3-credentials"  # pragma: allowlist secret

@@ -11568,3 +11568,36 @@ class TestProviderExecRbac:
         rbac.create_namespaced_role_binding.side_effect = ApiException(status=409)
         with patch("handlers.vm.client.RbacAuthorizationV1Api", return_value=rbac):
             _ensure_provider_exec_rbac("troshka-abc123")  # must not raise
+
+
+class TestPollExportJobHelpers:
+    def test_poll_once_and_timeout(self):
+        import asyncio
+        from unittest.mock import MagicMock
+        from handlers.project import (
+            _export_jobs_timeout_error,
+            _poll_export_jobs_once,
+            _patch_export_progress_status,
+        )
+
+        batch_api = MagicMock()
+        job = MagicMock()
+        job.status.succeeded = 1
+        job.status.failed = None
+        job.status.conditions = []
+        batch_api.read_namespaced_job.return_value = job
+        export_jobs = [{"jobName": "j1", "displayName": "disk1"}]
+        statuses = {"j1": "starting"}
+        custom_api = MagicMock()
+        done, err = _poll_export_jobs_once(
+            batch_api, export_jobs, "ns", custom_api, "cr", None, statuses
+        )
+        assert done is True and err is None
+        assert statuses["j1"] == "done"
+        _patch_export_progress_status(custom_api, "ns", "cr", export_jobs, statuses)
+
+        job.status.succeeded = None
+        msg = _export_jobs_timeout_error(
+            batch_api, export_jobs, "ns", custom_api, "cr", 120
+        )
+        assert "timed out" in msg

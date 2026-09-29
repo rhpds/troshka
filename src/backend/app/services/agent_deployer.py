@@ -6,6 +6,7 @@ Uses the host's stored private key to connect and deploy.
 
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -16,6 +17,9 @@ logger = logging.getLogger(__name__)
 # OCP Virt host cloud-init (dnf from DVD or HTTP repo + data disk format) can exceed 5 min
 # before the install script's own work begins.
 AGENT_INSTALL_TIMEOUT = 900
+_SSH_STRICT_HOST_KEY = "StrictHostKeyChecking=no"
+_SSH_USER_KNOWN_HOSTS = "UserKnownHostsFile=/dev/null"
+_SSH_IDENTITIES_ONLY = "IdentitiesOnly=yes"
 
 
 @dataclass
@@ -566,15 +570,15 @@ def wait_for_ssh(
             cmd = [
                 "ssh",
                 "-o",
-                "StrictHostKeyChecking=no",
+                _SSH_STRICT_HOST_KEY,
                 "-o",
-                "UserKnownHostsFile=/dev/null",
+                _SSH_USER_KNOWN_HOSTS,
                 "-o",
                 "ConnectTimeout=5",
                 "-o",
                 "BatchMode=yes",
                 "-o",
-                "IdentitiesOnly=yes",
+                _SSH_IDENTITIES_ONLY,
                 "-i",
                 key_path,
             ]
@@ -821,12 +825,14 @@ def deploy_troshka_serial_over_ssh(
         logger.warning("troshka_serial not found at %s", serial_dir)
         return False
 
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tf:
-        tar_path = tf.name
+    stage_dir = tempfile.mkdtemp(prefix="troshka-serial-")
+    tar_path = os.path.join(stage_dir, "troshka_serial.tar.gz")
     try:
         with tarfile.open(tar_path, "w:gz") as tar:
             tar.add(serial_dir, arcname="troshka_serial")
-        tmp_remote = "/tmp/troshka_serial.tar.gz"
+        # Remote staging under /tmp then extracted with sudo (same pattern as
+        # _scp_file_to_host); not left world-writable locally.
+        tmp_remote = "/tmp/troshka_serial.tar.gz"  # NOSONAR — remote host staging; rm after extract
         scp_result = subprocess.run(
             [
                 "scp",
@@ -873,10 +879,7 @@ def deploy_troshka_serial_over_ssh(
             return False
         return True
     finally:
-        try:
-            os.unlink(tar_path)
-        except OSError:
-            pass
+        shutil.rmtree(stage_dir, ignore_errors=True)
 
 
 def deploy_troshka_serial_for_host(host) -> bool:
@@ -903,20 +906,20 @@ def deploy_troshka_serial_for_host(host) -> bool:
     os.chmod(key_path, 0o600)
     ssh_opts = [
         "-o",
-        "StrictHostKeyChecking=no",
+        _SSH_STRICT_HOST_KEY,
         "-o",
-        "UserKnownHostsFile=/dev/null",
+        _SSH_USER_KNOWN_HOSTS,
         "-o",
         "ConnectTimeout=30",
         "-o",
-        "IdentitiesOnly=yes",
+        _SSH_IDENTITIES_ONLY,
         "-i",
         key_path,
     ]
     ssh_port_opts = ["-p", str(ssh_port)] if ssh_port != 22 else []
     scp_port_opts = ["-P", str(ssh_port)] if ssh_port != 22 else []
     try:
-        return deploy_troshka_serial_over_ssh(
+        success = deploy_troshka_serial_over_ssh(
             host.ip_address,
             ssh_user,
             ssh_opts,
@@ -928,6 +931,7 @@ def deploy_troshka_serial_for_host(host) -> bool:
             os.unlink(key_path)
         except OSError:
             pass
+    return success
 
 
 def _run_install_script_via_ssh(
@@ -1088,13 +1092,13 @@ def deploy_agent(
     try:
         ssh_opts = [
             "-o",
-            "StrictHostKeyChecking=no",
+            _SSH_STRICT_HOST_KEY,
             "-o",
-            "UserKnownHostsFile=/dev/null",
+            _SSH_USER_KNOWN_HOSTS,
             "-o",
             "ConnectTimeout=30",
             "-o",
-            "IdentitiesOnly=yes",
+            _SSH_IDENTITIES_ONLY,
             "-i",
             key_path,
         ]

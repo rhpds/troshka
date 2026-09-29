@@ -67,6 +67,68 @@ def _pick_context(cfg: dict) -> dict | None:
     return next((c for c in contexts if c.get("name") == cur), None) or contexts[0]
 
 
+def _unique_context_name(base: str, seen: set[str]) -> str:
+    name = _sanitize_context_name(base)
+    if name not in seen:
+        return name
+    i = 2
+    while f"{name}-{i}" in seen:
+        i += 1
+    return f"{name}-{i}"
+
+
+def _source_cluster_user(cfg: dict, body: dict) -> tuple[dict | None, dict | None]:
+    cluster_entry = next(
+        (
+            c
+            for c in (cfg.get("clusters") or [])
+            if c.get("name") == body.get("cluster")
+        ),
+        None,
+    )
+    user_entry = next(
+        (u for u in (cfg.get("users") or []) if u.get("name") == body.get("user")),
+        None,
+    )
+    return cluster_entry, user_entry
+
+
+def _append_merged_context(
+    merged: dict, name: str, cluster_entry: dict, user_entry: dict, body: dict
+) -> None:
+    merged["clusters"].append(
+        {"name": name, "cluster": cluster_entry.get("cluster", {})}
+    )
+    merged["users"].append({"name": name, "user": user_entry.get("user", {})})
+    new_ctx: dict = {"name": name, "context": {"cluster": name, "user": name}}
+    if body.get("namespace"):
+        new_ctx["context"]["namespace"] = body["namespace"]
+    merged["contexts"].append(new_ctx)
+    if not merged["current-context"]:
+        merged["current-context"] = name
+
+
+def _merge_one_kubeconfig(merged: dict, seen: set[str], display: str, raw: str) -> None:
+    if not raw:
+        return
+    try:
+        cfg = yaml.safe_load(raw)
+    except yaml.YAMLError:
+        return
+    if not isinstance(cfg, dict):
+        return
+    ctx = _pick_context(cfg)
+    if not ctx:
+        return
+    body = ctx.get("context", {}) or {}
+    cluster_entry, user_entry = _source_cluster_user(cfg, body)
+    if not cluster_entry or not user_entry:
+        return
+    name = _unique_context_name(display, seen)
+    seen.add(name)
+    _append_merged_context(merged, name, cluster_entry, user_entry, body)
+
+
 def merge_kubeconfigs(named_configs: list[tuple[str, str]]) -> str:
     """Merge ``[(display_name, kubeconfig_yaml), ...]`` into one kubeconfig.
 
@@ -85,49 +147,7 @@ def merge_kubeconfigs(named_configs: list[tuple[str, str]]) -> str:
     }
     seen: set[str] = set()
     for display, raw in named_configs:
-        if not raw:
-            continue
-        try:
-            cfg = yaml.safe_load(raw)
-        except yaml.YAMLError:
-            continue
-        if not isinstance(cfg, dict):
-            continue
-        ctx = _pick_context(cfg)
-        if not ctx:
-            continue
-        body = ctx.get("context", {}) or {}
-        cluster_entry = next(
-            (
-                c
-                for c in (cfg.get("clusters") or [])
-                if c.get("name") == body.get("cluster")
-            ),
-            None,
-        )
-        user_entry = next(
-            (u for u in (cfg.get("users") or []) if u.get("name") == body.get("user")),
-            None,
-        )
-        if not cluster_entry or not user_entry:
-            continue
-        name = _sanitize_context_name(display)
-        if name in seen:  # keep names unique if two clusters slug to the same
-            i = 2
-            while f"{name}-{i}" in seen:
-                i += 1
-            name = f"{name}-{i}"
-        seen.add(name)
-        merged["clusters"].append(
-            {"name": name, "cluster": cluster_entry.get("cluster", {})}
-        )
-        merged["users"].append({"name": name, "user": user_entry.get("user", {})})
-        new_ctx: dict = {"name": name, "context": {"cluster": name, "user": name}}
-        if body.get("namespace"):
-            new_ctx["context"]["namespace"] = body["namespace"]
-        merged["contexts"].append(new_ctx)
-        if not merged["current-context"]:
-            merged["current-context"] = name
+        _merge_one_kubeconfig(merged, seen, display, raw)
     return yaml.safe_dump(merged, default_flow_style=False, sort_keys=False)
 
 
@@ -162,32 +182,57 @@ def _cluster_meta_by_context(
     return kubeadmin, base_domain
 
 
-def cluster_terminal_motd_text(
-    merged_yaml: str,
+def _motd_context_lines(
+    ctx: dict,
     *,
-    clusters: list[dict] | None = None,
-    creds: dict[str, tuple[str, str]] | None = None,
-) -> str:
-    """Banner for the showroom cluster terminal with per-context access info."""
+    current: str,
+    cluster_entries: dict,
+    clusters_by_name: dict,
+    kubeadmin_by_ctx: dict[str, str],
+    base_domain_by_ctx: dict[str, str],
+) -> list[str]:
+    name = str(ctx.get("name") or "").strip()
+    if not name:
+        return []
+    cluster_body = (cluster_entries.get(name) or {}).get("cluster") or {}
+    server = str(cluster_body.get("server") or "").strip()
+    sni = str(cluster_body.get("tls-server-name") or "").strip()
+    marker = "* " if name == current else "  "
+    suffix = "  (current)" if name == current else ""
+    lines = [f"{marker}{name}{suffix}"]
+    if server:
+        api_line = f"    API:       {server}"
+        if sni:
+            api_line += f"  (SNI: {sni})"
+        lines.append(api_line)
+    cluster_row = clusters_by_name.get(name) or {}
+    display_name = str(cluster_row.get("name") or name)
+    bd = base_domain_by_ctx.get(name, "")
+    console = _console_url(display_name, bd)
+    if console:
+        lines.append(f"    Console:   {console}")
+    pw = kubeadmin_by_ctx.get(name, "")
+    if pw:
+        lines.append(f"    Kubeadmin: {pw}")
+    lines.append("")
+    return lines
+
+
+def _parse_merged_kubeconfig(merged_yaml: str) -> dict | None:
     if not merged_yaml.strip():
-        return ""
+        return None
     try:
         cfg = yaml.safe_load(merged_yaml)
     except yaml.YAMLError:
-        return ""
+        return None
     if not isinstance(cfg, dict):
-        return ""
-    contexts = cfg.get("contexts") or []
-    if not contexts:
-        return ""
-    current = str(cfg.get("current-context") or "").strip()
-    clusters_by_name = {
-        str(c.get("name") or ""): c for c in (clusters or []) if c.get("name")
-    }
-    kubeadmin_by_ctx, base_domain_by_ctx = _cluster_meta_by_context(clusters, creds)
-    if creds is None and clusters is None:
-        kubeadmin_by_ctx, base_domain_by_ctx = {}, {}
+        return None
+    if not (cfg.get("contexts") or []):
+        return None
+    return cfg
 
+
+def _motd_header_lines(contexts: list) -> list[str]:
     lines = ["", "OpenShift cluster terminal", ""]
     if len(contexts) > 1:
         lines.extend(
@@ -197,33 +242,41 @@ def cluster_terminal_motd_text(
                 "",
             ]
         )
+    return lines
 
+
+def cluster_terminal_motd_text(
+    merged_yaml: str,
+    *,
+    clusters: list[dict] | None = None,
+    creds: dict[str, tuple[str, str]] | None = None,
+) -> str:
+    """Banner for the showroom cluster terminal with per-context access info."""
+    cfg = _parse_merged_kubeconfig(merged_yaml)
+    if not cfg:
+        return ""
+    contexts = cfg.get("contexts") or []
+    current = str(cfg.get("current-context") or "").strip()
+    clusters_by_name = {
+        str(c.get("name") or ""): c for c in (clusters or []) if c.get("name")
+    }
+    kubeadmin_by_ctx, base_domain_by_ctx = _cluster_meta_by_context(clusters, creds)
+    if creds is None and clusters is None:
+        kubeadmin_by_ctx, base_domain_by_ctx = {}, {}
+
+    lines = _motd_header_lines(contexts)
     cluster_entries = {c.get("name"): c for c in (cfg.get("clusters") or [])}
     for ctx in contexts:
-        name = str(ctx.get("name") or "").strip()
-        if not name:
-            continue
-        cluster_body = (cluster_entries.get(name) or {}).get("cluster") or {}
-        server = str(cluster_body.get("server") or "").strip()
-        sni = str(cluster_body.get("tls-server-name") or "").strip()
-        marker = "* " if name == current else "  "
-        suffix = "  (current)" if name == current else ""
-        lines.append(f"{marker}{name}{suffix}")
-        if server:
-            api_line = f"    API:       {server}"
-            if sni:
-                api_line += f"  (SNI: {sni})"
-            lines.append(api_line)
-        cluster_row = clusters_by_name.get(name) or {}
-        display_name = str(cluster_row.get("name") or name)
-        bd = base_domain_by_ctx.get(name, "")
-        console = _console_url(display_name, bd)
-        if console:
-            lines.append(f"    Console:   {console}")
-        pw = kubeadmin_by_ctx.get(name, "")
-        if pw:
-            lines.append(f"    Kubeadmin: {pw}")
-        lines.append("")
+        lines.extend(
+            _motd_context_lines(
+                ctx,
+                current=current,
+                cluster_entries=cluster_entries,
+                clusters_by_name=clusters_by_name,
+                kubeadmin_by_ctx=kubeadmin_by_ctx,
+                base_domain_by_ctx=base_domain_by_ctx,
+            )
+        )
 
     lines.append("")
     return "\n".join(lines)

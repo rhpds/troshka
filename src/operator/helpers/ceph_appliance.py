@@ -34,6 +34,11 @@ from helpers.rook_ceph import (
 
 logger = logging.getLogger(__name__)
 
+_CEPH_CONF_KEY = "ceph.conf"
+_CEPH_CONF_MOUNT = "/etc/ceph/ceph.conf"
+_SHARED_MOUNT = "/shared"
+_SEED_ADMIN_KEYRING = "/seed/admin.keyring"
+
 CEPH_SA = "troshka-ceph"
 CEPH_POOL_NAME = "troshka-ceph-pool"
 MON_NAME = "troshka-ceph-mon"
@@ -89,10 +94,10 @@ def osd_ip_for(spec: dict, index: int) -> str:
     """Resolve OSD ``index``'s Multus IP: the backend-allocated
     ``spec.osdIps[index]`` when present, else the legacy ``.20 + i`` offset."""
     osd_ips = spec.get("osdIps") or []
-    if index < len(osd_ips):
-        ip = str(osd_ips[index] or "").strip()
-        if ip and _IPV4_RE.match(ip):
-            return ip
+    raw = osd_ips[index] if 0 <= index < len(osd_ips) else None
+    ip = str(raw or "").strip()
+    if ip and _IPV4_RE.match(ip):
+        return ip
     return osd_lab_ip(spec.get("labIp", ""), index)
 
 
@@ -231,7 +236,7 @@ def build_conf_configmap(ceph_cr: dict, fsid: str) -> dict:
             "ownerReferences": [owner_ref(ceph_cr)],
             "labels": {"app": "troshka-ceph"},
         },
-        "data": {"ceph.conf": conf},
+        "data": {_CEPH_CONF_KEY: conf},
     }
 
 
@@ -474,15 +479,15 @@ def build_mon_deployment(ceph_cr: dict, ceph_image: str) -> dict:
     volume_mounts_conf = [
         {
             "name": "ceph-conf",
-            "mountPath": "/etc/ceph/ceph.conf",
-            "subPath": "ceph.conf",
+            "mountPath": _CEPH_CONF_MOUNT,
+            "subPath": _CEPH_CONF_KEY,
         },
         {"name": "mon-data", "mountPath": "/var/lib/ceph/mon"},
-        {"name": "shared", "mountPath": "/shared"},
+        {"name": "shared", "mountPath": _SHARED_MOUNT},
         {"name": "seed-mon", "mountPath": "/seed/mon.keyring", "subPath": "keyring"},
         {
             "name": "seed-admin",
-            "mountPath": "/seed/admin.keyring",
+            "mountPath": _SEED_ADMIN_KEYRING,
             "subPath": "keyring",
         },
         {
@@ -552,14 +557,14 @@ def build_mon_deployment(ceph_cr: dict, ceph_image: str) -> dict:
                             "volumeMounts": [
                                 {
                                     "name": "ceph-conf",
-                                    "mountPath": "/etc/ceph/ceph.conf",
-                                    "subPath": "ceph.conf",
+                                    "mountPath": _CEPH_CONF_MOUNT,
+                                    "subPath": _CEPH_CONF_KEY,
                                 },
-                                {"name": "shared", "mountPath": "/shared"},
+                                {"name": "shared", "mountPath": _SHARED_MOUNT},
                                 {"name": "mgr-data", "mountPath": "/var/lib/ceph/mgr"},
                                 {
                                     "name": "seed-admin",
-                                    "mountPath": "/seed/admin.keyring",
+                                    "mountPath": _SEED_ADMIN_KEYRING,
                                     "subPath": "keyring",
                                 },
                             ],
@@ -570,10 +575,10 @@ def build_mon_deployment(ceph_cr: dict, ceph_image: str) -> dict:
                             "image": TOOLS_IMAGE,
                             "command": ["sh", "-c", _keyring_sync_script()],
                             "volumeMounts": [
-                                {"name": "shared", "mountPath": "/shared"},
+                                {"name": "shared", "mountPath": _SHARED_MOUNT},
                                 {
                                     "name": "seed-admin",
-                                    "mountPath": "/seed/admin.keyring",
+                                    "mountPath": _SEED_ADMIN_KEYRING,
                                     "subPath": "keyring",
                                 },
                             ],
@@ -802,8 +807,8 @@ def build_osd_deployment(ceph_cr: dict, ceph_image: str, index: int) -> dict:
                             "volumeMounts": [
                                 {
                                     "name": "ceph-conf",
-                                    "mountPath": "/etc/ceph/ceph.conf",
-                                    "subPath": "ceph.conf",
+                                    "mountPath": _CEPH_CONF_MOUNT,
+                                    "subPath": _CEPH_CONF_KEY,
                                 },
                                 {
                                     "name": "osd-data",
@@ -838,8 +843,8 @@ def build_osd_deployment(ceph_cr: dict, ceph_image: str, index: int) -> dict:
                             "volumeMounts": [
                                 {
                                     "name": "ceph-conf",
-                                    "mountPath": "/etc/ceph/ceph.conf",
-                                    "subPath": "ceph.conf",
+                                    "mountPath": _CEPH_CONF_MOUNT,
+                                    "subPath": _CEPH_CONF_KEY,
                                 },
                                 {
                                     "name": "osd-data",
@@ -1273,7 +1278,7 @@ def new_fsid() -> str:
     return str(uuid.uuid4())
 
 
-def read_or_create_fsid(core_api, namespace: str, ceph_cr: dict) -> str:
+def read_or_create_fsid(core_api, namespace: str, _ceph_cr: dict) -> str:
     try:
         secret = core_api.read_namespaced_secret(
             name=IDENTITY_FSID, namespace=namespace
@@ -1327,24 +1332,65 @@ def apply_secret_if_absent(core_api, namespace: str, body: dict) -> None:
             raise
 
 
+def _delete_ignore_missing(delete_fn, label: str) -> None:
+    try:
+        delete_fn()
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("delete %s: %s", label, e)
+
+
+def _appliance_resource_kind(name: str) -> str:
+    """Classify an appliance resource name as configmap, secret, or pvc."""
+    if name == CONF_CONFIGMAP:
+        return "configmap"
+    if name.endswith("-keyring") or name in (CEPH_EXTERNAL_SECRET, IDENTITY_FSID):
+        return "secret"
+    return "pvc"
+
+
+def _delete_appliance_named_resource(core_api, namespace: str, name: str) -> None:
+    kind = _appliance_resource_kind(name)
+    if kind == "configmap":
+        _delete_ignore_missing(
+            lambda: core_api.delete_namespaced_config_map(
+                name=name, namespace=namespace
+            ),
+            name,
+        )
+        return
+    if kind == "secret":
+        _delete_ignore_missing(
+            lambda: core_api.delete_namespaced_secret(name=name, namespace=namespace),
+            name,
+        )
+        return
+    _delete_ignore_missing(
+        lambda: core_api.delete_namespaced_persistent_volume_claim(
+            name=name, namespace=namespace
+        ),
+        name,
+    )
+
+
 def delete_appliance(
     apps_api, core_api, batch_api, namespace: str, osd_count: int
 ) -> None:
     for name in [MON_NAME, *[osd_pvc_name(i) for i in range(osd_count)]]:
-        try:
-            apps_api.delete_namespaced_deployment(name=name, namespace=namespace)
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning("delete deployment %s: %s", name, e)
-    try:
-        batch_api.delete_namespaced_job(
+        _delete_ignore_missing(
+            lambda n=name: apps_api.delete_namespaced_deployment(
+                name=n, namespace=namespace
+            ),
+            f"deployment {name}",
+        )
+    _delete_ignore_missing(
+        lambda: batch_api.delete_namespaced_job(
             name=EXPORT_JOB_NAME,
             namespace=namespace,
             body=client.V1DeleteOptions(propagation_policy="Foreground"),
-        )
-    except ApiException as e:
-        if e.status != 404:
-            logger.warning("delete export job: %s", e)
+        ),
+        "export job",
+    )
 
     for name in (
         MON_PVC_NAME,
@@ -1356,21 +1402,7 @@ def delete_appliance(
         IDENTITY_BOOTSTRAP_OSD,
         CONF_CONFIGMAP,
     ):
-        try:
-            if name == CONF_CONFIGMAP:
-                core_api.delete_namespaced_config_map(name=name, namespace=namespace)
-            elif name.endswith("-keyring") or name in (
-                CEPH_EXTERNAL_SECRET,
-                IDENTITY_FSID,
-            ):
-                core_api.delete_namespaced_secret(name=name, namespace=namespace)
-            else:
-                core_api.delete_namespaced_persistent_volume_claim(
-                    name=name, namespace=namespace
-                )
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning("delete %s: %s", name, e)
+        _delete_appliance_named_resource(core_api, namespace, name)
 
 
 def service_account_ref(namespace: str, sa_name: str = CEPH_SA) -> str:

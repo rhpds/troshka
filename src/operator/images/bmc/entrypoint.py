@@ -32,6 +32,8 @@ _AUTH_ERROR_BODY = {
 _PUBLIC_PATHS = frozenset(
     ["/redfish/v1", "/redfish/v1/Systems", "/redfish/v1/Managers"]
 )
+_VMEDIA_DOWNLOAD_PREFIX = "/vmedia/download/"
+_OCTET_STREAM = "application/octet-stream"
 
 
 def _check_auth(handler):
@@ -262,7 +264,7 @@ def _get_manager_or_vmedia(handler, path):
 
 def _get_vmedia_download(handler, path):
     """Handle GET /vmedia/download/{identity} — stream ISO from source URL."""
-    identity = path.split("/vmedia/download/")[1]
+    identity = path.split(_VMEDIA_DOWNLOAD_PREFIX)[1]
     state = driver.get_vmedia_state(identity)
     url = state.get("url", "") if state else ""
     if not url:
@@ -272,7 +274,7 @@ def _get_vmedia_download(handler, path):
         req = urllib.request.Request(url)
         with urllib.request.urlopen(req, timeout=300) as resp:
             handler.send_response(200)
-            handler.send_header("Content-Type", "application/octet-stream")
+            handler.send_header("Content-Type", _OCTET_STREAM)
             length = resp.headers.get("Content-Length")
             if length:
                 handler.send_header("Content-Length", length)
@@ -364,6 +366,46 @@ def _post_vmedia_insert(handler, identity, body):
     handler.end_headers()
 
 
+def _head_upstream_url(handler, url):
+    """Respond to HEAD by probing an upstream URL (HEAD, then Range GET fallback)."""
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            handler.send_response(200)
+            handler.send_header("Content-Type", _OCTET_STREAM)
+            length = resp.headers.get("Content-Length")
+            if length:
+                handler.send_header("Content-Length", length)
+            handler.end_headers()
+            return
+    except Exception:
+        pass
+    try:
+        req = urllib.request.Request(url)
+        req.add_header("Range", "bytes=0-0")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            handler.send_response(200)
+            handler.send_header("Content-Type", _OCTET_STREAM)
+            cl = resp.headers.get("Content-Range", "").split("/")[-1]
+            if cl.isdigit():
+                handler.send_header("Content-Length", cl)
+            handler.end_headers()
+    except Exception:
+        handler.send_response(502)
+        handler.end_headers()
+
+
+def _head_vmedia_download(handler, identity):
+    """Handle HEAD /vmedia/download/<identity>."""
+    state = driver.get_vmedia_state(identity)
+    url = state.get("url", "") if state else ""
+    if not url:
+        handler.send_response(404)
+        handler.end_headers()
+        return
+    _head_upstream_url(handler, url)
+
+
 class RedfishHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         """CDI's HTTP datasource probes with HEAD before GET; default 501 breaks imports."""
@@ -371,37 +413,9 @@ class RedfishHandler(BaseHTTPRequestHandler):
             return
 
         path = self.path.rstrip("/")
-        if path.startswith("/vmedia/download/"):
-            identity = path.split("/vmedia/download/")[1]
-            state = driver.get_vmedia_state(identity)
-            url = state.get("url", "") if state else ""
-            if not url:
-                self.send_response(404)
-                self.end_headers()
-                return
-            try:
-                req = urllib.request.Request(url, method="HEAD")
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/octet-stream")
-                    length = resp.headers.get("Content-Length")
-                    if length:
-                        self.send_header("Content-Length", length)
-                    self.end_headers()
-            except Exception:
-                try:
-                    req = urllib.request.Request(url)
-                    req.add_header("Range", "bytes=0-0")
-                    with urllib.request.urlopen(req, timeout=60) as resp:
-                        self.send_response(200)
-                        self.send_header("Content-Type", "application/octet-stream")
-                        cl = resp.headers.get("Content-Range", "").split("/")[-1]
-                        if cl.isdigit():
-                            self.send_header("Content-Length", cl)
-                        self.end_headers()
-                except Exception:
-                    self.send_response(502)
-                    self.end_headers()
+        if path.startswith(_VMEDIA_DOWNLOAD_PREFIX):
+            identity = path.split(_VMEDIA_DOWNLOAD_PREFIX)[1]
+            _head_vmedia_download(self, identity)
             return
 
         self.send_response(404)
@@ -433,7 +447,7 @@ class RedfishHandler(BaseHTTPRequestHandler):
         if path.startswith(_MANAGERS_PREFIX):
             if _get_manager_or_vmedia(self, path):
                 return
-        if path.startswith("/vmedia/download/"):
+        if path.startswith(_VMEDIA_DOWNLOAD_PREFIX):
             _get_vmedia_download(self, path)
             return
 

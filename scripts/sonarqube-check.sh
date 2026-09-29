@@ -6,7 +6,12 @@ if [ -z "${SONAR_URL:-}" ] || [ -z "${SONAR_TOKEN:-}" ]; then
     exit 0
 fi
 
-if ! curl -sf --connect-timeout 5 "$SONAR_URL/api/system/status" >/dev/null 2>&1; then
+CURL_CA=()
+if [ -n "${NODE_EXTRA_CA_CERTS:-}" ] && [ -f "$NODE_EXTRA_CA_CERTS" ]; then
+    CURL_CA=(--cacert "$NODE_EXTRA_CA_CERTS")
+fi
+
+if ! curl -sf --connect-timeout 5 "${CURL_CA[@]}" "$SONAR_URL/api/system/status" >/dev/null 2>&1; then
     echo "⚠️  SonarQube unreachable (not on VPN?) — skipping"
     exit 0
 fi

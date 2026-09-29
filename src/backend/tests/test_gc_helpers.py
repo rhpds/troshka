@@ -730,3 +730,51 @@ def test_reconcile_host_unreachable(
     result = reconcile_host(host.id)
     assert "not reachable" in result.get("orphans", {}).get("error", "")
     mock_discover.assert_not_called()
+
+
+def test_missing_project_bridges():
+    from app.services.gc_service import _missing_project_bridges
+
+    p = MagicMock(vni_map={"net1": 100, "net2": 200})
+    assert _missing_project_bridges(p, {"br-100"}) == ["200"]
+    assert _missing_project_bridges(p, {"br-100", "br-200"}) == []
+    assert _missing_project_bridges(MagicMock(vni_map=None), set()) == []
+
+
+def test_repair_one_project_networks_success():
+    from app.services.gc_service import _repair_one_project_networks
+
+    p = MagicMock(
+        id="abcdef12-xxxx",
+        vni_map={"n": 42},
+        deployed_topology={"nodes": []},
+        topology=None,
+    )
+    setup = MagicMock(return_value=True)
+    n = _repair_one_project_networks(MagicMock(), p, set(), MagicMock(), setup)
+    assert n == 1
+    setup.assert_called_once()
+
+
+def test_repair_one_project_networks_skip_when_present():
+    from app.services.gc_service import _repair_one_project_networks
+
+    p = MagicMock(id="abcdef12-xxxx", vni_map={"n": 42})
+    setup = MagicMock()
+    n = _repair_one_project_networks(MagicMock(), p, {"br-42"}, MagicMock(), setup)
+    assert n == 0
+    setup.assert_not_called()
+
+
+def test_repair_one_project_networks_setup_failure():
+    from app.services.gc_service import _repair_one_project_networks
+
+    p = MagicMock(
+        id="abcdef12-xxxx",
+        vni_map={"n": 42},
+        deployed_topology={},
+        topology=None,
+    )
+    setup = MagicMock(return_value="error")
+    n = _repair_one_project_networks(MagicMock(), p, set(), MagicMock(), setup)
+    assert n == 0

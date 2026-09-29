@@ -35,10 +35,11 @@ _CACHE_TTL_SECONDS = 6 * 60 * 60
 
 # Served when the upstream lifecycle API is unreachable. Kept aligned with the
 # supported (non-EOL) 4.x stream as of this writing.
+_MAINTENANCE_SUPPORT = "Maintenance Support"
 _FALLBACK_VERSIONS: list[dict[str, str]] = [
-    {"name": "4.20", "support": "Maintenance Support"},
-    {"name": "4.19", "support": "Maintenance Support"},
-    {"name": "4.18", "support": "Maintenance Support"},
+    {"name": "4.20", "support": _MAINTENANCE_SUPPORT},
+    {"name": "4.19", "support": _MAINTENANCE_SUPPORT},
+    {"name": "4.18", "support": _MAINTENANCE_SUPPORT},
 ]
 
 _cache: dict[str, Any] = {"at": 0.0, "versions": []}
@@ -97,9 +98,7 @@ def _response(versions: list[dict[str, str]], source: str) -> OcpVersionsRespons
     )
 
 
-@router.get(
-    "", response_model=OcpVersionsResponse, dependencies=[Depends(get_current_user)]
-)
+@router.get("", dependencies=[Depends(get_current_user)])
 def list_ocp_versions() -> OcpVersionsResponse:
     now = time.time()
     cached = _cache.get("versions") or []

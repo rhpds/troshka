@@ -158,10 +158,58 @@ def _startup_recover_abandoned_jobs():
         logger.warning("Startup: failed to check abandoned jobs")
 
 
+def _project_has_active_rq_job(project_id: str) -> bool:
+    from app.core.redis import get_job_info, is_redis_available
+
+    if not is_redis_available():
+        return False
+    job_info = get_job_info(project_id)
+    return bool(job_info and job_info.get("status") in ("queued", "started"))
+
+
+def _resume_or_skip_deploying(project, enqueue_job) -> None:
+    """Resume a crash-interrupted deploy (or skip if an RQ job is already active)."""
+    if _project_has_active_rq_job(project.id):
+        logger.info(
+            "Startup: project %s (%s) has active RQ job, skipping resume",
+            project.name,
+            project.id[:8],
+        )
+        return
+    logger.info(
+        "Startup: resuming deploy for %s (%s) from step '%s'",
+        project.name,
+        project.id[:8],
+        project.deploy_step,
+    )
+    from app.services.deploy_service import deploy_project_async
+
+    enqueue_job(
+        deploy_project_async,
+        project.id,
+        resume_from=project.deploy_step,
+    )
+
+
+def _handle_stuck_project(project, enqueue_job, delete_progress) -> None:
+    old_state = project.state
+    if old_state == "deploying" and project.deploy_step:
+        _resume_or_skip_deploying(project, enqueue_job)
+        return
+    if _project_has_active_rq_job(project.id):
+        logger.info(
+            "Startup: project %s (%s) has active RQ job, skipping",
+            project.name,
+            project.id[:8],
+        )
+        return
+    _reset_stuck_project_to_error(project, old_state, delete_progress)
+
+
 def _startup_reset_stuck_projects():
     """Reset projects stuck in transient states from a previous crash/restart."""
     from app.core.database import SessionLocal
-    from app.core.redis import enqueue_job, is_redis_available
+    from app.core.redis import enqueue_job
     from app.models.project import Project
     from app.services.deploy_service import _delete_deploy_progress
 
@@ -177,46 +225,7 @@ def _startup_reset_stuck_projects():
             .all()
         )
         for p in stuck:
-            old_state = p.state
-            if old_state == "deploying" and p.deploy_step:
-                if is_redis_available():
-                    from app.core.redis import get_job_info
-
-                    job_info = get_job_info(p.id)
-                    if job_info and job_info.get("status") in ("queued", "started"):
-                        logger.info(
-                            "Startup: project %s (%s) has active RQ job, skipping resume",
-                            p.name,
-                            p.id[:8],
-                        )
-                        continue
-                logger.info(
-                    "Startup: resuming deploy for %s (%s) from step '%s'",
-                    p.name,
-                    p.id[:8],
-                    p.deploy_step,
-                )
-                from app.services.deploy_service import deploy_project_async
-
-                enqueue_job(
-                    deploy_project_async,
-                    p.id,
-                    resume_from=p.deploy_step,
-                )
-            elif is_redis_available():
-                from app.core.redis import get_job_info
-
-                job_info = get_job_info(p.id)
-                if job_info and job_info.get("status") in ("queued", "started"):
-                    logger.info(
-                        "Startup: project %s (%s) has active RQ job, skipping",
-                        p.name,
-                        p.id[:8],
-                    )
-                    continue
-                _reset_stuck_project_to_error(p, old_state, _delete_deploy_progress)
-            else:
-                _reset_stuck_project_to_error(p, old_state, _delete_deploy_progress)
+            _handle_stuck_project(p, enqueue_job, _delete_deploy_progress)
         if stuck:
             db.commit()
     finally:
@@ -856,7 +865,7 @@ def _collect_worker_info(r):
                 "queues": [q.name for q in w.queues],
                 "current_job": str(w.get_current_job_id() or ""),
                 "current_queue": cj.origin if cj else "",
-                "current_func": ((cj.func_name or "").split(".")[-1] if cj else ""),
+                "current_func": (str(cj.func_name or "").split(".")[-1] if cj else ""),
                 "successful_count": w.successful_job_count,
                 "failed_count": w.failed_job_count,
                 "total_working_time": w.total_working_time,
@@ -909,7 +918,8 @@ def queue_status(user: AdminUser):
         from app.services.worker_scaling import worker_scaling_status
 
         scaling = worker_scaling_status()
-    except Exception:  # noqa: BLE001 - not in-cluster, or deployment not found
+    except Exception:  # noqa: BLE001
+        # Not in-cluster, or deployment not found.
         scaling = None
 
     return {
@@ -922,7 +932,10 @@ def queue_status(user: AdminUser):
     }
 
 
-@app.post(f"{_API_PREFIX}/admin/workers/scale")
+@app.post(
+    f"{_API_PREFIX}/admin/workers/scale",
+    responses={400: {}, 409: {}},
+)
 def scale_workers_endpoint(user: AdminUser, body: dict):
     """Scale the worker Deployment by ``delta`` (+1/-1), clamped to the DB-safe
     max. Kubernetes only."""
@@ -942,7 +955,10 @@ def scale_workers_endpoint(user: AdminUser, body: dict):
         )
 
 
-@app.post(f"{_API_PREFIX}/admin/db-pool")
+@app.post(
+    f"{_API_PREFIX}/admin/db-pool",
+    responses={400: {}, 409: {}},
+)
 def set_db_pool_endpoint(user: AdminUser, body: dict):
     """Set the per-process DB pool (pool_size/max_overflow) on backend+worker
     Deployments; triggers a rolling restart. Rejected if it would exceed Postgres
@@ -970,9 +986,24 @@ def set_db_pool_endpoint(user: AdminUser, body: dict):
         )
 
 
+def _failed_job_entry(job, jid: str) -> dict:
+    meta = job.meta or {}
+    return {
+        "id": jid,
+        "func": job.func_name,
+        "args": [str(a)[:100] for a in (job.args or [])],
+        "error": str(job.exc_info or "")[:500],
+        "enqueued_at": (job.enqueued_at.isoformat() if job.enqueued_at else None),
+        "ended_at": job.ended_at.isoformat() if job.ended_at else None,
+        "project": (meta.get("project_id") or "")[:8],
+        "host": (meta.get("host_id") or "")[:8],
+        "worker_pod": meta.get("worker_pod", ""),
+    }
+
+
 @app.get(f"{_API_PREFIX}/admin/failed-jobs")
 def list_failed_jobs(
-    user: AdminUser,
+    _user: AdminUser,
     queue_name: str = "deploy",
 ):
     """List failed jobs with error details."""
@@ -994,22 +1025,7 @@ def list_failed_jobs(
         for jid in failed_ids[:50]:
             try:
                 job = Job.fetch(jid, connection=r)
-                meta = job.meta or {}
-                jobs.append(
-                    {
-                        "id": jid,
-                        "func": job.func_name,
-                        "args": [str(a)[:100] for a in (job.args or [])],
-                        "error": str(job.exc_info or "")[:500],
-                        "enqueued_at": (
-                            job.enqueued_at.isoformat() if job.enqueued_at else None
-                        ),
-                        "ended_at": job.ended_at.isoformat() if job.ended_at else None,
-                        "project": (meta.get("project_id") or "")[:8],
-                        "host": (meta.get("host_id") or "")[:8],
-                        "worker_pod": meta.get("worker_pod", ""),
-                    }
-                )
+                jobs.append(_failed_job_entry(job, jid))
             except Exception:
                 jobs.append({"id": jid, "error": "could not fetch"})
         return {"queue": queue_name, "count": len(failed_ids), "jobs": jobs}

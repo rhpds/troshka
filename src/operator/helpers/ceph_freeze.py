@@ -208,6 +208,12 @@ def _restore_deployments(
         )
 
 
+def _pods_match_desired(phases: list[tuple[str, str | None]], *, running: bool) -> bool:
+    if running:
+        return bool(phases) and all(phase == "Running" for _, phase in phases)
+    return not phases or all(phase not in ("Running", "Pending") for _, phase in phases)
+
+
 def _wait_for_pods(
     core_api: client.CoreV1Api,
     namespace: str,
@@ -216,6 +222,7 @@ def _wait_for_pods(
     running: bool,
 ) -> None:
     deadline = time.time() + _POD_POLL_TIMEOUT_S
+    phases: list[tuple[str, str | None]] = []
     while time.time() < deadline:
         pods = core_api.list_namespaced_pod(
             namespace=namespace,
@@ -226,12 +233,7 @@ def _wait_for_pods(
             for pod in pods.items or []
             if pod.metadata and pod.metadata.name
         ]
-        if running:
-            if phases and all(phase == "Running" for _, phase in phases):
-                return
-        elif not phases or all(
-            phase not in ("Running", "Pending") for _, phase in phases
-        ):
+        if _pods_match_desired(phases, running=running):
             return
         time.sleep(_POD_POLL_INTERVAL_S)
     state = ", ".join(f"{n}={p}" for n, p in phases) if phases else "none"

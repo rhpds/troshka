@@ -38,6 +38,7 @@ _STORAGE_EDGE_STYLE = {
     "strokeDasharray": "4 4",
 }
 _SHOWROOM_DISK_Y_OFFSET = 70
+_SHOWROOM_MOUNT_PATH = "/showroom"
 
 
 def _id() -> str:
@@ -63,6 +64,71 @@ def _find_showroom_container(topology: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
+def _set_showroom_field(
+    data: dict[str, Any] | None,
+    showroom_meta: dict[str, Any] | None,
+    *,
+    camel: str,
+    snake: str,
+    value: Any,
+) -> None:
+    """Write one override onto the canvas node data and/or topology.showroom meta."""
+    if data is not None:
+        data[camel] = value
+    if showroom_meta is not None:
+        showroom_meta[snake] = value
+
+
+def _patch_git_cloner_env(
+    data: dict[str, Any],
+    content_repo: str | None,
+    content_ref: str | None,
+) -> None:
+    """Update GIT_REPO_URL / GIT_REPO_REF on the git-cloner init container."""
+    for ic in data.get("initContainers", []):
+        if ic.get("name") != "git-cloner":
+            continue
+        for ev in ic.get("envVars", []):
+            if content_repo is not None and ev.get("key") == "GIT_REPO_URL":
+                ev["value"] = content_repo
+            if content_ref is not None and ev.get("key") == "GIT_REPO_REF":
+                ev["value"] = content_ref
+
+
+def _write_showroom_content_fields(
+    node_data: dict[str, Any] | None,
+    showroom_meta: dict[str, Any] | None,
+    content_repo: str | None,
+    content_ref: str | None,
+    build_content: bool | None,
+) -> None:
+    """Write contentRepo / contentRef / buildContent onto node data and/or meta."""
+    if content_repo is not None:
+        _set_showroom_field(
+            node_data,
+            showroom_meta,
+            camel="contentRepo",
+            snake="content_repo",
+            value=content_repo,
+        )
+    if content_ref is not None:
+        _set_showroom_field(
+            node_data,
+            showroom_meta,
+            camel="contentRef",
+            snake="content_ref",
+            value=content_ref,
+        )
+    if build_content is not None:
+        _set_showroom_field(
+            node_data,
+            showroom_meta,
+            camel="buildContent",
+            snake="build_content",
+            value=build_content,
+        )
+
+
 def apply_showroom_deploy_overrides(
     topology: dict[str, Any],
     *,
@@ -84,34 +150,18 @@ def apply_showroom_deploy_overrides(
     if build_content is None and (content_repo is not None or content_ref is not None):
         build_content = True
 
-    data = showroom_node.get("data", {}) if showroom_node else {}
-    if content_repo is not None:
-        if showroom_node is not None:
-            data["contentRepo"] = content_repo
-        if showroom_meta is not None:
-            showroom_meta["content_repo"] = content_repo
-    if content_ref is not None:
-        if showroom_node is not None:
-            data["contentRef"] = content_ref
-        if showroom_meta is not None:
-            showroom_meta["content_ref"] = content_ref
-    if build_content is not None:
-        if showroom_node is not None:
-            data["buildContent"] = build_content
-        if showroom_meta is not None:
-            showroom_meta["build_content"] = build_content
+    data = showroom_node.get("data", {}) if showroom_node else None
+    node_data = data if showroom_node is not None else None
+    _write_showroom_content_fields(
+        node_data, showroom_meta, content_repo, content_ref, build_content
+    )
 
-    if showroom_node is not None and (
-        content_repo is not None or content_ref is not None
+    if (
+        showroom_node is not None
+        and data is not None
+        and (content_repo is not None or content_ref is not None)
     ):
-        for ic in data.get("initContainers", []):
-            if ic.get("name") != "git-cloner":
-                continue
-            for ev in ic.get("envVars", []):
-                if content_repo is not None and ev.get("key") == "GIT_REPO_URL":
-                    ev["value"] = content_repo
-                if content_ref is not None and ev.get("key") == "GIT_REPO_REF":
-                    ev["value"] = content_ref
+        _patch_git_cloner_env(data, content_repo, content_ref)
 
 
 def _vm_ip_on_network(vms_def: dict[str, Any], vm_name: str, network_name: str) -> str:
@@ -121,73 +171,89 @@ def _vm_ip_on_network(vms_def: dict[str, Any], vm_name: str, network_name: str) 
     return ""
 
 
+def _parse_one_template_tab(
+    raw: dict[str, Any],
+    vm_name_to_id: dict[str, str],
+    net_ids: dict[str, str],
+    clusters: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Convert one template tab entry to a canvas showroomTab."""
+    tab_type = raw.get("type", "terminal")
+    tab: dict[str, Any] = {
+        "id": str(uuid.uuid4()),
+        "name": raw.get("name", tab_type),
+        "type": tab_type,
+    }
+    vm_name = raw.get("vm", "")
+    if vm_name:
+        if vm_name not in vm_name_to_id:
+            raise ValueError(f"Showroom tab references unknown VM '{vm_name}'")
+        tab["vmId"] = vm_name_to_id[vm_name]
+    # A cluster-linked proxy tab derives its name + hosts from the cluster.
+    cluster_linked = _apply_cluster_link(tab, raw, clusters)
+    # Name-based proxy tabs resolve their upstream via the showroom's DNS,
+    # so they need neither a VM nor a per-tab network.
+    name_based_proxy = tab_type == "proxy" and (
+        bool(raw.get("proxy_host") or raw.get("proxy_hosts")) or cluster_linked
+    )
+    # Cluster terminal: a local oc shell (all deployed clusters' kubeconfigs)
+    # served from a container — no VM, no bastion, no per-tab network.
+    cluster_terminal = tab_type == "terminal" and raw.get("target") == "clusters"
+    if cluster_terminal:
+        tab["target"] = "clusters"
+    network = raw.get("network", "")
+    if (
+        tab_type != "external"
+        and not name_based_proxy
+        and not cluster_terminal
+        and not network
+    ):
+        raise ValueError(f"Showroom tab '{tab['name']}' requires network")
+    if network:
+        if network not in net_ids:
+            raise ValueError(f"Showroom tab references unknown network '{network}'")
+        tab["network"] = network
+        tab["networkId"] = net_ids[network]
+    _copy_optional_tab_fields(tab, raw)
+    return tab
+
+
+def _copy_optional_tab_fields(tab: dict[str, Any], raw: dict[str, Any]) -> None:
+    """Copy optional SSH / proxy / URL fields from template YAML onto a tab."""
+    if raw.get("ssh_user"):
+        tab["sshUser"] = raw["ssh_user"]
+    if raw.get("ssh_pass"):
+        tab["sshPass"] = raw["ssh_pass"]
+    if raw.get("ssh_port") is not None:
+        tab["sshPort"] = int(raw["ssh_port"])
+    if raw.get("proxy_path"):
+        tab["proxyPath"] = raw["proxy_path"]
+    if raw.get("proxy_port") is not None:
+        tab["proxyPort"] = int(raw["proxy_port"])
+    if raw.get("proxy_tls"):
+        tab["proxyTls"] = bool(raw["proxy_tls"])
+    if raw.get("proxy_host"):
+        tab["proxyHost"] = raw["proxy_host"]
+    proxy_hosts = _resolve_proxy_hosts(raw)
+    if proxy_hosts:
+        tab["proxyHosts"] = proxy_hosts
+    if raw.get("url"):
+        tab["url"] = raw["url"]
+
+
 def parse_template_tabs(
     tabs_yaml: list[dict[str, Any]],
     vm_name_to_id: dict[str, str],
-    vms_def: dict[str, Any],
+    _vms_def: dict[str, Any],
     net_ids: dict[str, str],
     clusters: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Convert template tab entries (vm names) to canvas showroomTabs (vmIds)."""
-    tabs: list[dict[str, Any]] = []
-    for raw in tabs_yaml:
-        tab_type = raw.get("type", "terminal")
-        tab: dict[str, Any] = {
-            "id": str(uuid.uuid4()),
-            "name": raw.get("name", tab_type),
-            "type": tab_type,
-        }
-        vm_name = raw.get("vm", "")
-        if vm_name:
-            if vm_name not in vm_name_to_id:
-                raise ValueError(f"Showroom tab references unknown VM '{vm_name}'")
-            tab["vmId"] = vm_name_to_id[vm_name]
-        # A cluster-linked proxy tab derives its name + hosts from the cluster.
-        cluster_linked = _apply_cluster_link(tab, raw, clusters or [])
-        # Name-based proxy tabs resolve their upstream via the showroom's DNS,
-        # so they need neither a VM nor a per-tab network.
-        name_based_proxy = tab_type == "proxy" and (
-            bool(raw.get("proxy_host") or raw.get("proxy_hosts")) or cluster_linked
-        )
-        # Cluster terminal: a local oc shell (all deployed clusters' kubeconfigs)
-        # served from a container — no VM, no bastion, no per-tab network.
-        cluster_terminal = tab_type == "terminal" and raw.get("target") == "clusters"
-        if cluster_terminal:
-            tab["target"] = "clusters"
-        network = raw.get("network", "")
-        if (
-            tab_type != "external"
-            and not name_based_proxy
-            and not cluster_terminal
-            and not network
-        ):
-            raise ValueError(f"Showroom tab '{tab['name']}' requires network")
-        if network:
-            if network not in net_ids:
-                raise ValueError(f"Showroom tab references unknown network '{network}'")
-            tab["network"] = network
-            tab["networkId"] = net_ids[network]
-        if raw.get("ssh_user"):
-            tab["sshUser"] = raw["ssh_user"]
-        if raw.get("ssh_pass"):
-            tab["sshPass"] = raw["ssh_pass"]
-        if raw.get("ssh_port") is not None:
-            tab["sshPort"] = int(raw["ssh_port"])
-        if raw.get("proxy_path"):
-            tab["proxyPath"] = raw["proxy_path"]
-        if raw.get("proxy_port") is not None:
-            tab["proxyPort"] = int(raw["proxy_port"])
-        if raw.get("proxy_tls"):
-            tab["proxyTls"] = bool(raw["proxy_tls"])
-        if raw.get("proxy_host"):
-            tab["proxyHost"] = raw["proxy_host"]
-        proxy_hosts = _resolve_proxy_hosts(raw)
-        if proxy_hosts:
-            tab["proxyHosts"] = proxy_hosts
-        if raw.get("url"):
-            tab["url"] = raw["url"]
-        tabs.append(tab)
-    return tabs
+    clusters = clusters or []
+    return [
+        _parse_one_template_tab(raw, vm_name_to_id, net_ids, clusters)
+        for raw in tabs_yaml
+    ]
 
 
 def _resolve_proxy_hosts(raw: dict[str, Any]) -> list[str]:
@@ -319,7 +385,8 @@ def app_proxy_route_code(internal_host: str) -> str:
         base = _APP_PROXY_CODES[label]
         return f"{base}-{cluster}" if cluster else base
     slug = re.sub(r"[^a-z0-9]+", "-", label).strip("-")[:8].strip("-")
-    h = hashlib.sha1(host.encode()).hexdigest()[:6]
+    # Non-cryptographic: stable short suffix for route names (not a secret).
+    h = hashlib.sha1(host.encode(), usedforsecurity=False).hexdigest()[:6]
     generic = f"{slug}-{h}" if slug else h
     return f"{generic}-{cluster}" if cluster else generic
 
@@ -409,6 +476,84 @@ def _resolve_name_based_proxy(tab: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _resolve_vm_proxy_tab(
+    tab: dict[str, Any], vm_name: str, vm_ip: str
+) -> dict[str, Any]:
+    """Resolve a VM-backed proxy tab to an inline nginx location target."""
+    proxy_path = tab.get("proxyPath") or f"/{_slugify(vm_name)}/"
+    if not proxy_path.endswith("/"):
+        proxy_path = f"{proxy_path}/"
+    port = int(tab.get("proxyPort") or 80)
+    scheme = "https" if tab.get("proxyTls") else "http"
+    return {
+        "tab": tab,
+        "proxyPath": proxy_path,
+        "proxyTarget": f"{scheme}://{vm_ip}:{port}",
+        "proxyTls": bool(tab.get("proxyTls")),
+    }
+
+
+def _resolve_one_showroom_tab(
+    tab: dict[str, Any],
+    id_to_name: dict[str, str],
+    vms_def: dict[str, Any],
+    wetty_port: int,
+) -> tuple[dict[str, Any], int]:
+    """Resolve one canvas tab; returns (resolved_item, next_wetty_port)."""
+    tab_type = tab.get("type")
+    if tab_type == "external":
+        return {"tab": tab}, wetty_port
+
+    # App-proxy: multiple internal hosts (console + oauth) served by the
+    # deploy-time vhost. Marked here; no inline location is emitted.
+    if tab_type == "proxy" and tab.get("proxyHosts"):
+        return {"tab": tab, "appProxyHosts": list(tab["proxyHosts"])}, wetty_port
+
+    # Name-based proxy: target a hostname resolved via the showroom's
+    # internal DNS (Host header + TLS SNI = the hostname). No VM/IP needed.
+    if tab_type == "proxy" and tab.get("proxyHost"):
+        return _resolve_name_based_proxy(tab), wetty_port
+
+    # Cluster terminal: a LOCAL oc shell (not SSH-into-a-VM). Served by a
+    # wetty container that runs a shell in-container with oc + every deployed
+    # cluster's kubeconfig on the shared showroom disk. No vmId/host.
+    if tab_type == "terminal" and tab.get("target") == "clusters":
+        item = {
+            "tab": tab,
+            "wettyPath": "/wetty_clusters",
+            "wettyPort": wetty_port,
+            "ocTerminal": True,
+        }
+        return item, wetty_port + 1
+
+    vm_id = tab.get("vmId", "")
+    vm_name = id_to_name.get(vm_id, "")
+    if not vm_name or vm_name not in vms_def:
+        return {"tab": tab, "warning": "Select a VM for this tab"}, wetty_port
+
+    network_name = tab.get("network", "")
+    if not network_name:
+        return {"tab": tab, "warning": "Select a network for this tab"}, wetty_port
+
+    vm_ip = _vm_ip_on_network(vms_def, vm_name, network_name)
+    if not vm_ip:
+        return (
+            {"tab": tab, "warning": f"{vm_name} has no IP on {network_name}"},
+            wetty_port,
+        )
+
+    if tab_type == "terminal":
+        item = {
+            "tab": tab,
+            "wettyPath": f"/wetty_{_slugify(vm_name)}",
+            "wettyPort": wetty_port,
+            "wettyHost": vm_ip,
+        }
+        return item, wetty_port + 1
+
+    return _resolve_vm_proxy_tab(tab, vm_name, vm_ip), wetty_port
+
+
 def resolve_showroom_tabs(
     tabs: list[dict[str, Any]],
     vms_def: dict[str, Any],
@@ -420,82 +565,10 @@ def resolve_showroom_tabs(
     resolved: list[dict[str, Any]] = []
 
     for tab in tabs:
-        tab_type = tab.get("type")
-        if tab_type == "external":
-            resolved.append({"tab": tab})
-            continue
-
-        # App-proxy: multiple internal hosts (console + oauth) served by the
-        # deploy-time vhost. Marked here; no inline location is emitted.
-        if tab_type == "proxy" and tab.get("proxyHosts"):
-            resolved.append({"tab": tab, "appProxyHosts": list(tab["proxyHosts"])})
-            continue
-
-        # Name-based proxy: target a hostname resolved via the showroom's
-        # internal DNS (Host header + TLS SNI = the hostname). No VM/IP needed.
-        if tab_type == "proxy" and tab.get("proxyHost"):
-            resolved.append(_resolve_name_based_proxy(tab))
-            continue
-
-        # Cluster terminal: a LOCAL oc shell (not SSH-into-a-VM). Served by a
-        # wetty container that runs a shell in-container with oc + every deployed
-        # cluster's kubeconfig on the shared showroom disk. No vmId/host.
-        if tab_type == "terminal" and tab.get("target") == "clusters":
-            resolved.append(
-                {
-                    "tab": tab,
-                    "wettyPath": "/wetty_clusters",
-                    "wettyPort": wetty_port,
-                    "ocTerminal": True,
-                }
-            )
-            wetty_port += 1
-            continue
-
-        vm_id = tab.get("vmId", "")
-        vm_name = id_to_name.get(vm_id, "")
-        if not vm_name or vm_name not in vms_def:
-            resolved.append({"tab": tab, "warning": "Select a VM for this tab"})
-            continue
-
-        network_name = tab.get("network", "")
-        if not network_name:
-            resolved.append({"tab": tab, "warning": "Select a network for this tab"})
-            continue
-
-        vm_ip = _vm_ip_on_network(vms_def, vm_name, network_name)
-        if not vm_ip:
-            resolved.append(
-                {"tab": tab, "warning": f"{vm_name} has no IP on {network_name}"}
-            )
-            continue
-
-        if tab_type == "terminal":
-            wetty_path = f"/wetty_{_slugify(vm_name)}"
-            resolved.append(
-                {
-                    "tab": tab,
-                    "wettyPath": wetty_path,
-                    "wettyPort": wetty_port,
-                    "wettyHost": vm_ip,
-                }
-            )
-            wetty_port += 1
-            continue
-
-        proxy_path = tab.get("proxyPath") or f"/{_slugify(vm_name)}/"
-        if not proxy_path.endswith("/"):
-            proxy_path = f"{proxy_path}/"
-        port = int(tab.get("proxyPort") or 80)
-        scheme = "https" if tab.get("proxyTls") else "http"
-        resolved.append(
-            {
-                "tab": tab,
-                "proxyPath": proxy_path,
-                "proxyTarget": f"{scheme}://{vm_ip}:{port}",
-                "proxyTls": bool(tab.get("proxyTls")),
-            }
+        item, wetty_port = _resolve_one_showroom_tab(
+            tab, id_to_name, vms_def, wetty_port
         )
+        resolved.append(item)
 
     return resolved
 
@@ -568,6 +641,75 @@ def build_ui_config_yaml(
     return "\n".join(lines) + "\n"
 
 
+def _nginx_wetty_location(item: dict[str, Any]) -> list[str]:
+    """nginx location block for a wetty (terminal) tab."""
+    path = item["wettyPath"].rstrip("/")
+    return [
+        f"    location ^~ {path} {{",
+        f"      proxy_pass http://127.0.0.1:{item['wettyPort']}{path};",
+        "      proxy_http_version 1.1;",
+        "      proxy_set_header Upgrade $http_upgrade;",
+        "      proxy_set_header Connection $connection_upgrade;",
+        "      proxy_set_header Host $host;",
+        "      proxy_read_timeout 43200000;",
+        "    }",
+    ]
+
+
+def _nginx_proxy_location(item: dict[str, Any]) -> list[str]:
+    """nginx location block for an inline (non-app-proxy) proxy tab."""
+    loc = item["proxyPath"]
+    proxy_host = item.get("proxyHost")
+    host_value = proxy_host if proxy_host else "$host"
+    blocks = [
+        f"    location {loc} {{",
+        f"      proxy_pass {item['proxyTarget']};",
+        "      proxy_http_version 1.1;",
+        "      proxy_set_header Upgrade $http_upgrade;",
+        "      proxy_set_header Connection $connection_upgrade;",
+        f"      proxy_set_header Host {host_value};",
+        "      proxy_read_timeout 86400;",
+    ]
+    if item.get("proxyTls"):
+        blocks.append("      proxy_ssl_verify off;")
+        # Send SNI matching the backend vhost so a router can route it.
+        if proxy_host:
+            blocks.append("      proxy_ssl_server_name on;")
+            blocks.append(f"      proxy_ssl_name {proxy_host};")
+    blocks.append("    }")
+    return blocks
+
+
+def _collect_app_proxy_hosts(resolved: list[dict[str, Any]]) -> list[str]:
+    """Ordered unique app-proxy internal hosts across resolved tabs."""
+    app_hosts: list[str] = []
+    for item in resolved:
+        for host in item.get("appProxyHosts", []):
+            if host not in app_hosts:
+                app_hosts.append(host)
+    return app_hosts
+
+
+def _nginx_tab_locations(resolved: list[dict[str, Any]]) -> list[str]:
+    """Emit wetty + inline-proxy location blocks for resolved tabs."""
+    blocks: list[str] = []
+    for item in resolved:
+        tab = item["tab"]
+        if (
+            tab.get("type") == "terminal"
+            and item.get("wettyPath")
+            and item.get("wettyPort")
+        ):
+            blocks.extend(_nginx_wetty_location(item))
+        if (
+            tab.get("type") == "proxy"
+            and item.get("proxyPath")
+            and item.get("proxyTarget")
+        ):
+            blocks.extend(_nginx_proxy_location(item))
+    return blocks
+
+
 def build_nginx_config(
     resolved: list[dict[str, Any]], resolver_ips: list[str] | None = None
 ) -> str:
@@ -590,58 +732,9 @@ def build_nginx_config(
         "      proxy_set_header X-Forwarded-Proto $scheme;",
         "    }",
     ]
-    for item in resolved:
-        tab = item["tab"]
-        if (
-            tab.get("type") == "terminal"
-            and item.get("wettyPath")
-            and item.get("wettyPort")
-        ):
-            path = item["wettyPath"].rstrip("/")
-            blocks.extend(
-                [
-                    f"    location ^~ {path} {{",
-                    f"      proxy_pass http://127.0.0.1:{item['wettyPort']}{path};",
-                    "      proxy_http_version 1.1;",
-                    "      proxy_set_header Upgrade $http_upgrade;",
-                    "      proxy_set_header Connection $connection_upgrade;",
-                    "      proxy_set_header Host $host;",
-                    "      proxy_read_timeout 43200000;",
-                    "    }",
-                ]
-            )
-        if (
-            tab.get("type") == "proxy"
-            and item.get("proxyPath")
-            and item.get("proxyTarget")
-        ):
-            loc = item["proxyPath"]
-            proxy_host = item.get("proxyHost")
-            host_value = proxy_host if proxy_host else "$host"
-            blocks.extend(
-                [
-                    f"    location {loc} {{",
-                    f"      proxy_pass {item['proxyTarget']};",
-                    "      proxy_http_version 1.1;",
-                    "      proxy_set_header Upgrade $http_upgrade;",
-                    "      proxy_set_header Connection $connection_upgrade;",
-                    f"      proxy_set_header Host {host_value};",
-                    "      proxy_read_timeout 86400;",
-                ]
-            )
-            if item.get("proxyTls"):
-                blocks.append("      proxy_ssl_verify off;")
-                # Send SNI matching the backend vhost so a router can route it.
-                if proxy_host:
-                    blocks.append("      proxy_ssl_server_name on;")
-                    blocks.append(f"      proxy_ssl_name {proxy_host};")
-            blocks.append("    }")
+    blocks.extend(_nginx_tab_locations(resolved))
     blocks.append("  }")  # close main server
-    app_hosts: list[str] = []
-    for item in resolved:
-        for host in item.get("appProxyHosts", []):
-            if host not in app_hosts:
-                app_hosts.append(host)
+    app_hosts = _collect_app_proxy_hosts(resolved)
     if app_hosts:
         blocks.append(
             build_app_proxy_config(app_hosts, resolver_ips=resolver_ips).rstrip("\n")
@@ -823,7 +916,7 @@ def _oc_terminal_container(item: dict[str, Any], disk_id: str) -> dict[str, Any]
             "--command",
             _CLUSTER_SHELL_PATH,
         ],
-        "mounts": [{"diskNodeId": disk_id, "mountPath": "/showroom"}],
+        "mounts": [{"diskNodeId": disk_id, "mountPath": _SHOWROOM_MOUNT_PATH}],
         # wetty must run as ROOT to spawn the --command login session (as a
         # non-root uid it falls back to a "login" prompt), so NO runAsUser
         # override. cluster-shell then setpriv-drops the interactive SHELL to the
@@ -837,7 +930,7 @@ def _oc_terminal_container(item: dict[str, Any], disk_id: str) -> dict[str, Any]
 
 def _build_wetty_containers(
     resolved: list[dict[str, Any]],
-    tabs: list[dict[str, Any]],
+    _tabs: list[dict[str, Any]],
     vms_def: dict[str, Any],
     vm_name_to_id: dict[str, str],
     disk_id: str,
@@ -899,7 +992,7 @@ def _build_init_containers(
     ui_config_b64: str,
     disk_id: str,
 ) -> list[dict[str, Any]]:
-    mount = {"diskNodeId": disk_id, "mountPath": "/showroom"}
+    mount = {"diskNodeId": disk_id, "mountPath": _SHOWROOM_MOUNT_PATH}
     return [
         {
             "name": "git-cloner",
@@ -974,7 +1067,7 @@ def _build_init_containers(
 
 
 def _build_pod_containers(disk_id: str) -> list[dict[str, Any]]:
-    mount = {"diskNodeId": disk_id, "mountPath": "/showroom"}
+    mount = {"diskNodeId": disk_id, "mountPath": _SHOWROOM_MOUNT_PATH}
     return [
         {
             "name": "proxy",
@@ -1013,7 +1106,7 @@ def _build_pod_containers(disk_id: str) -> list[dict[str, Any]]:
 def _showroom_disk_id(showroom_node: dict[str, Any]) -> str | None:
     """Return the diskNodeId the showroom pod mounts at /showroom, or None."""
     for mount in showroom_node.get("data", {}).get("mounts", []):
-        if mount.get("mountPath") == "/showroom" and mount.get("diskNodeId"):
+        if mount.get("mountPath") == _SHOWROOM_MOUNT_PATH and mount.get("diskNodeId"):
             return str(mount["diskNodeId"])
     return None
 
@@ -1150,7 +1243,7 @@ def build_showroom_from_config(
             "command": None,
             "restartPolicy": "always",
             "privileged": False,
-            "mounts": [{"diskNodeId": disk_id, "mountPath": "/showroom"}],
+            "mounts": [{"diskNodeId": disk_id, "mountPath": _SHOWROOM_MOUNT_PATH}],
             "initContainers": init_containers,
             "podContainers": pod_containers,
         },
@@ -1170,11 +1263,65 @@ def build_showroom_from_config(
     return ctr_node, [disk_node], [disk_edge], nic_edges, showroom_meta
 
 
+def _export_showroom_tab(
+    tab: dict[str, Any],
+    id_to_name: dict[str, str],
+    net_nodes: dict[str, dict],
+    cluster_names: dict[str, Any],
+) -> dict[str, Any]:
+    """Export one canvas showroomTab to readable template YAML form."""
+    entry: dict[str, Any] = {
+        "name": tab.get("name", ""),
+        "type": tab.get("type", "terminal"),
+    }
+    # Cluster-managed console tab: export as ``cluster: <name>`` so it
+    # re-imports as managed (name + hosts re-derived), not as static hosts.
+    cluster_id = tab.get("clusterId")
+    if cluster_id and cluster_names.get(cluster_id):
+        entry["cluster"] = cluster_names[cluster_id]
+    vm_id = tab.get("vmId")
+    if vm_id:
+        entry["vm"] = id_to_name.get(vm_id, "")
+    if tab.get("network"):
+        entry["network"] = tab["network"]
+    elif tab.get("networkId") and tab["networkId"] in net_nodes:
+        net_data = net_nodes[tab["networkId"]].get("data", {})
+        entry["network"] = net_data.get("name") or net_data.get("label")
+    _copy_exported_optional_fields(entry, tab)
+    return entry
+
+
+def _copy_exported_optional_fields(entry: dict[str, Any], tab: dict[str, Any]) -> None:
+    """Copy optional SSH / proxy / URL fields onto an exported tab entry."""
+    if tab.get("sshUser"):
+        entry["ssh_user"] = tab["sshUser"]
+    if tab.get("sshPass"):
+        entry["ssh_pass"] = tab["sshPass"]
+    if tab.get("sshPort") is not None:
+        entry["ssh_port"] = tab["sshPort"]
+    if tab.get("proxyPath"):
+        entry["proxy_path"] = tab["proxyPath"]
+    if tab.get("proxyPort") is not None:
+        entry["proxy_port"] = tab["proxyPort"]
+    if tab.get("proxyTls"):
+        entry["proxy_tls"] = True
+    if tab.get("url"):
+        entry["url"] = tab["url"]
+
+
+def _resolve_exported_dns_network(cd: dict[str, Any], topology: dict[str, Any]) -> str:
+    dns_network = str(cd.get("dnsNetwork") or "").strip()
+    if dns_network:
+        return dns_network
+    showroom_meta = topology.get("showroom") or {}
+    return str(showroom_meta.get("dns_network") or "").strip()
+
+
 def export_showroom_section(
     topology: dict[str, Any],
     container_nodes: list[dict[str, Any]],
     id_to_name: dict[str, str],
-    edges: list[dict],
+    _edges: list[dict],
     net_nodes: dict[str, dict],
 ) -> dict[str, Any] | None:
     """Export readable showroom YAML (no base64, vm names not IDs)."""
@@ -1191,10 +1338,7 @@ def export_showroom_section(
         "content_ref": cd.get("contentRef", "main"),
         "build_content": cd.get("buildContent", True),
     }
-    dns_network = str(cd.get("dnsNetwork") or "").strip()
-    if not dns_network:
-        showroom_meta = topology.get("showroom") or {}
-        dns_network = str(showroom_meta.get("dns_network") or "").strip()
+    dns_network = _resolve_exported_dns_network(cd, topology)
     if dns_network:
         exported["dns_network"] = dns_network
 
@@ -1209,40 +1353,10 @@ def export_showroom_section(
     cluster_names = {
         c.get("id"): c.get("name") for c in (topology.get("clusters") or [])
     }
-    tabs_out: list[dict[str, Any]] = []
-    for tab in cd.get("showroomTabs", []):
-        entry: dict[str, Any] = {
-            "name": tab.get("name", ""),
-            "type": tab.get("type", "terminal"),
-        }
-        # Cluster-managed console tab: export as ``cluster: <name>`` so it
-        # re-imports as managed (name + hosts re-derived), not as static hosts.
-        cluster_id = tab.get("clusterId")
-        if cluster_id and cluster_names.get(cluster_id):
-            entry["cluster"] = cluster_names[cluster_id]
-        vm_id = tab.get("vmId")
-        if vm_id:
-            entry["vm"] = id_to_name.get(vm_id, "")
-        if tab.get("network"):
-            entry["network"] = tab["network"]
-        elif tab.get("networkId") and tab["networkId"] in net_nodes:
-            net_data = net_nodes[tab["networkId"]].get("data", {})
-            entry["network"] = net_data.get("name") or net_data.get("label")
-        if tab.get("sshUser"):
-            entry["ssh_user"] = tab["sshUser"]
-        if tab.get("sshPass"):
-            entry["ssh_pass"] = tab["sshPass"]
-        if tab.get("sshPort") is not None:
-            entry["ssh_port"] = tab["sshPort"]
-        if tab.get("proxyPath"):
-            entry["proxy_path"] = tab["proxyPath"]
-        if tab.get("proxyPort") is not None:
-            entry["proxy_port"] = tab["proxyPort"]
-        if tab.get("proxyTls"):
-            entry["proxy_tls"] = True
-        if tab.get("url"):
-            entry["url"] = tab["url"]
-        tabs_out.append(entry)
+    tabs_out = [
+        _export_showroom_tab(tab, id_to_name, net_nodes, cluster_names)
+        for tab in cd.get("showroomTabs", [])
+    ]
     if tabs_out:
         exported["tabs"] = tabs_out
 

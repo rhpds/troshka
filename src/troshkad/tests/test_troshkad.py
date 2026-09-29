@@ -3089,23 +3089,27 @@ class TestGatewayTlsCert(unittest.TestCase):
 
 class TestTlsProxy(unittest.TestCase):
     @patch("troshkad.subprocess.Popen")
+    @patch("troshkad.os.path.realpath", side_effect=lambda p: p)
     @patch("troshkad.os.chmod")
     @patch("troshkad.os.makedirs")
     @patch(
         "builtins.open", new_callable=mock_open, read_data="CERT"
     )  # fullchain/key reads for combined.pem
-    def test_start_runs_socat_in_netns(self, _open, _mk, _ch, mock_popen):
+    def test_start_runs_socat_in_netns(self, _open, _mk, _ch, _rp, mock_popen):
         """Showroom is netns-only; terminator must listen in the project netns (.2)."""
         proc = MagicMock()
         proc.pid = 4321
         mock_popen.return_value = proc
+        tls_dir = troshkad._gateway_tls_dir("abcdef12-0000")
+        cert = f"{tls_dir}/fullchain.pem"
+        key = f"{tls_dir}/privkey.pem"
         pid = troshkad._start_tls_proxy(
             "abcdef12-0000",
             "troshka-abcdef12",
             "172.30.5.2:443",
             "172.30.5.3:80",
-            "/gw/full.pem",
-            "/gw/key.pem",
+            cert,
+            key,
         )
         assert pid == 4321
         argv = mock_popen.call_args[0][0]

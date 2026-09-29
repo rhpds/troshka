@@ -320,6 +320,42 @@ def _extract_pf_rules(ip_permissions: list[dict]) -> dict:
     return rules
 
 
+def _sg_ip_permission(rule: dict) -> dict:
+    return {
+        "IpProtocol": rule["protocol"],
+        "FromPort": rule["port"],
+        "ToPort": rule["port"],
+        "IpRanges": [
+            {
+                "CidrIp": "0.0.0.0/0",
+                "Description": rule["description"],
+            }
+        ],
+    }
+
+
+def _authorize_sg_rules(ec2, sg_id: str, to_add: dict) -> None:
+    if not to_add:
+        return
+    try:
+        ec2.authorize_security_group_ingress(
+            GroupId=sg_id,
+            IpPermissions=[_sg_ip_permission(r) for r in to_add.values()],
+        )
+    except Exception as e:
+        if "InvalidPermission.Duplicate" not in str(e):
+            raise
+
+
+def _revoke_sg_rules(ec2, sg_id: str, to_remove: dict) -> None:
+    if not to_remove:
+        return
+    ec2.revoke_security_group_ingress(
+        GroupId=sg_id,
+        IpPermissions=[_sg_ip_permission(r) for r in to_remove.values()],
+    )
+
+
 def sync_security_group_rules(
     _db: Session, provider, desired_rules: list[dict]
 ) -> dict:
@@ -338,7 +374,6 @@ def sync_security_group_rules(
 
     sg = ec2.describe_security_groups(GroupIds=[sg_id])
     current_perms = sg["SecurityGroups"][0]["IpPermissions"]
-
     current_pf_rules = _extract_pf_rules(current_perms)
 
     desired_set = {}
@@ -352,48 +387,8 @@ def sync_security_group_rules(
 
     to_add = {k: v for k, v in desired_set.items() if k not in current_pf_rules}
     to_remove = {k: v for k, v in current_pf_rules.items() if k not in desired_set}
-
-    if to_add:
-        try:
-            ec2.authorize_security_group_ingress(
-                GroupId=sg_id,
-                IpPermissions=[
-                    {
-                        "IpProtocol": r["protocol"],
-                        "FromPort": r["port"],
-                        "ToPort": r["port"],
-                        "IpRanges": [
-                            {
-                                "CidrIp": "0.0.0.0/0",
-                                "Description": r["description"],
-                            }
-                        ],
-                    }
-                    for r in to_add.values()
-                ],
-            )
-        except Exception as e:
-            if "InvalidPermission.Duplicate" not in str(e):
-                raise
-
-    if to_remove:
-        ec2.revoke_security_group_ingress(
-            GroupId=sg_id,
-            IpPermissions=[
-                {
-                    "IpProtocol": r["protocol"],
-                    "FromPort": r["port"],
-                    "ToPort": r["port"],
-                    "IpRanges": [
-                        {
-                            "CidrIp": "0.0.0.0/0",
-                            "Description": r["description"],
-                        }
-                    ],
-                }
-                for r in to_remove.values()
-            ],
-        )
+    _authorize_sg_rules(ec2, sg_id, to_add)
+    _revoke_sg_rules(ec2, sg_id, to_remove)
 
     added = len(to_add)
     removed = len(to_remove)

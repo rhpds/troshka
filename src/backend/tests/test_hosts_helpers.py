@@ -1409,8 +1409,8 @@ class TestWaitForRunningInstance(unittest.TestCase):
 
     @patch("time.sleep")
     @patch("time.time")
-    def test_timeout_returns_none(self, mock_time, mock_sleep):
-        """Instance never reaches running -> returns (None, None)."""
+    def test_timeout_returns_last_status(self, mock_time, mock_sleep):
+        """Instance never reaches running -> (None, last status from stable poll)."""
         from app.api.hosts import _wait_for_running_instance
 
         drv = MagicMock()
@@ -1423,7 +1423,7 @@ class TestWaitForRunningInstance(unittest.TestCase):
         ip, st = _wait_for_running_instance(drv, prov, "host-12345678", "i-abc")
 
         self.assertIsNone(ip)
-        self.assertIsNone(st)
+        self.assertEqual(st, {"state": "stopped"})
 
     @patch("time.sleep")
     @patch("time.time")
@@ -1902,3 +1902,141 @@ class TestWaitAndReinstallEipOrchestration(unittest.TestCase):
         self.assertEqual(h.state, "active")
         self.assertEqual(h.agent_status, "disconnected")
         db.close()
+
+
+class TestListHostsHelpers(unittest.TestCase):
+    """S3776 helpers extracted from list_hosts."""
+
+    def test_topology_vm_count(self):
+        from app.api.hosts import _topology_vm_count
+
+        self.assertEqual(_topology_vm_count(None), 0)
+        self.assertEqual(_topology_vm_count({}), 0)
+        topo = {
+            "nodes": [
+                {"type": "vmNode"},
+                {"type": "networkNode"},
+                {"type": "vmNode"},
+            ]
+        }
+        self.assertEqual(_topology_vm_count(topo), 2)
+
+    def test_apply_host_project_stats(self):
+        from app.api.hosts import _apply_host_project_stats
+        from app.schemas.host import HostResponse
+
+        resp = MagicMock(spec=HostResponse)
+        projects = [
+            MagicMock(
+                state="deployed",
+                deployed_topology={"nodes": [{"type": "vmNode"}, {"type": "vmNode"}]},
+            ),
+            MagicMock(
+                state="stopped", deployed_topology={"nodes": [{"type": "vmNode"}]}
+            ),
+            MagicMock(state="draft", deployed_topology=None),
+        ]
+        _apply_host_project_stats(resp, projects)
+        self.assertEqual(resp.running_projects, 1)
+        self.assertEqual(resp.total_projects, 2)
+        self.assertEqual(resp.running_vms, 2)
+        self.assertEqual(resp.total_vms, 3)
+
+    def test_apply_host_provider_ssh_skips_without_provider(self):
+        from types import SimpleNamespace
+
+        from app.api.hosts import _apply_host_provider_ssh
+
+        resp = SimpleNamespace()
+        host = MagicMock(provider_id=None)
+        _apply_host_provider_ssh(resp, MagicMock(), host)
+        self.assertFalse(hasattr(resp, "provider_type"))
+
+    @patch("app.services.agent_deployer.get_provider_ssh_user", return_value="ec2-user")
+    @patch("app.services.agent_deployer.get_provider_ssh_port", return_value=22)
+    def test_apply_host_provider_ssh_sets_fields(self, mock_port, mock_user):
+        from app.api.hosts import _apply_host_provider_ssh
+
+        resp = MagicMock()
+        host = MagicMock(provider_id="prov-1")
+        prov = MagicMock(type="ec2")
+        db = MagicMock()
+        db.query.return_value.filter_by.return_value.first.return_value = prov
+        _apply_host_provider_ssh(resp, db, host)
+        self.assertEqual(resp.provider_type, "ec2")
+        self.assertEqual(resp.ssh_port, 22)
+        self.assertEqual(resp.ssh_user, "ec2-user")
+
+
+class TestPollUntilRunningHelpers(unittest.TestCase):
+    """Tests for _still_paused_abort / _running_poll_outcome / _poll_until_running."""
+
+    def test_still_paused_aborts_after_three(self):
+        from app.api.hosts import _still_paused_abort
+
+        abort, polls, st = _still_paused_abort({"state": "paused"}, "paused", 2)
+        self.assertTrue(abort)
+        self.assertEqual(polls, 3)
+        self.assertEqual(st["state"], "paused")
+
+    def test_still_paused_resets_when_not_paused(self):
+        from app.api.hosts import _still_paused_abort
+
+        abort, polls, st = _still_paused_abort({"state": "running"}, "paused", 2)
+        self.assertFalse(abort)
+        self.assertEqual(polls, 0)
+        self.assertIsNone(st)
+
+    def test_running_outcome_with_public_ip(self):
+        from app.api.hosts import _running_poll_outcome
+
+        done, ip, st = _running_poll_outcome(
+            {"state": "running", "public_ip": "1.2.3.4"}, False
+        )
+        self.assertTrue(done)
+        self.assertEqual(ip, "1.2.3.4")
+        self.assertEqual(st["public_ip"], "1.2.3.4")
+
+    def test_running_outcome_ocpvirt_without_ip(self):
+        from app.api.hosts import _running_poll_outcome
+
+        done, ip, st = _running_poll_outcome({"state": "running"}, True)
+        self.assertTrue(done)
+        self.assertIsNone(ip)
+        self.assertEqual(st["state"], "running")
+
+    def test_running_outcome_waits_for_ip(self):
+        from app.api.hosts import _running_poll_outcome
+
+        done, ip, st = _running_poll_outcome({"state": "running"}, False)
+        self.assertFalse(done)
+        self.assertIsNone(ip)
+        self.assertEqual(st["state"], "running")
+
+    @patch("time.sleep", return_value=None)
+    def test_poll_until_running_returns_ip(self, _sleep):
+        from app.api.hosts import _poll_until_running
+
+        drv = MagicMock()
+        drv.get_host_status.return_value = {
+            "state": "running",
+            "public_ip": "9.9.9.9",
+        }
+        ip, st = _poll_until_running(
+            drv, MagicMock(), "i-1", "stopped", is_ocpvirt=False
+        )
+        self.assertEqual(ip, "9.9.9.9")
+        self.assertEqual(st["public_ip"], "9.9.9.9")
+
+    @patch("time.sleep", return_value=None)
+    def test_poll_until_running_aborts_stuck_pause(self, _sleep):
+        from app.api.hosts import _poll_until_running
+
+        drv = MagicMock()
+        drv.get_host_status.return_value = {"state": "paused"}
+        ip, st = _poll_until_running(
+            drv, MagicMock(), "i-1", "paused", is_ocpvirt=False
+        )
+        self.assertIsNone(ip)
+        self.assertEqual(st["state"], "paused")
+        self.assertGreaterEqual(drv.get_host_status.call_count, 3)

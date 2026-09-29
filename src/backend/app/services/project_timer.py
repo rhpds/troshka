@@ -124,7 +124,67 @@ def _process_timer_warnings(s, now, warning_threshold, result, _dry_run):
         )
 
 
-def _recover_stuck_projects(s, now, result, _dry_run):
+def _started_deploy_is_zombie(status: str, project, get_progress) -> bool:
+    return (
+        status == "started"
+        and project.state == "deploying"
+        and not get_progress(f"deploy:{project.id}")
+    )
+
+
+def _mark_project_error(s, project, job_info, clear_job_ref, result) -> None:
+    logger.warning(
+        "Recovering stuck project %s (%s) — state=%s, no active job",
+        project.name,
+        project.id[:8],
+        project.state,
+    )
+    result.setdefault("stuck_recovered", []).append(project.id)
+    old_state = project.state
+    project.state = "error"
+    project.deploy_error = f"Background job lost while {old_state} — please retry"
+    if job_info and job_info.get("job_id"):
+        clear_job_ref(project.id, job_info.get("job_id"))
+    s.commit()
+    _notify(
+        project.id,
+        {
+            "type": "project-state",
+            "state": "error",
+            "deploy_error": project.deploy_error,
+        },
+    )
+
+
+def _recover_one_stuck_project(
+    s, project, result, dry_run, *, get_job_info, get_progress, clear_job_ref
+) -> None:
+    job_info = get_job_info(project.id)
+    status = (job_info or {}).get("status") or ""
+    if status in ("queued", "started"):
+        if _started_deploy_is_zombie(status, project, get_progress):
+            logger.warning(
+                "Project %s (%s) has started job with no deploy progress — treating as lost",
+                project.name,
+                project.id[:8],
+            )
+            if not dry_run:
+                clear_job_ref(project.id, (job_info or {}).get("job_id"))
+        else:
+            return
+    if dry_run:
+        result.setdefault("stuck_recovered", []).append(project.id)
+        logger.warning(
+            "Recovering stuck project %s (%s) — state=%s, no active job",
+            project.name,
+            project.id[:8],
+            project.state,
+        )
+        return
+    _mark_project_error(s, project, job_info, clear_job_ref, result)
+
+
+def _recover_stuck_projects(s, now, result, dry_run):
     """Recover projects stuck in transitional states with no active RQ job."""
     from app.core.redis import (
         _clear_project_job_ref,
@@ -147,47 +207,14 @@ def _recover_stuck_projects(s, now, result, _dry_run):
         .all()
     )
     for p in stuck:
-        job_info = get_job_info(p.id)
-        status = (job_info or {}).get("status") or ""
-        if status in ("queued", "started"):
-            # Live deploys write progress; started+no progress after grace = zombie.
-            # Only apply to deploying — stop/start jobs don't use deploy:{id} progress.
-            if (
-                status == "started"
-                and p.state == "deploying"
-                and not get_progress(f"deploy:{p.id}")
-            ):
-                logger.warning(
-                    "Project %s (%s) has started job with no deploy progress — treating as lost",
-                    p.name,
-                    p.id[:8],
-                )
-                if not _dry_run:
-                    _clear_project_job_ref(p.id, (job_info or {}).get("job_id"))
-            else:
-                continue
-        logger.warning(
-            "Recovering stuck project %s (%s) — state=%s, no active job",
-            p.name,
-            p.id[:8],
-            p.state,
-        )
-        result.setdefault("stuck_recovered", []).append(p.id)
-        if _dry_run:
-            continue
-        old_state = p.state
-        p.state = "error"
-        p.deploy_error = f"Background job lost while {old_state} — please retry"
-        if job_info and job_info.get("job_id"):
-            _clear_project_job_ref(p.id, job_info.get("job_id"))
-        s.commit()
-        _notify(
-            p.id,
-            {
-                "type": "project-state",
-                "state": "error",
-                "deploy_error": p.deploy_error,
-            },
+        _recover_one_stuck_project(
+            s,
+            p,
+            result,
+            dry_run,
+            get_job_info=get_job_info,
+            get_progress=get_progress,
+            clear_job_ref=_clear_project_job_ref,
         )
 
 
