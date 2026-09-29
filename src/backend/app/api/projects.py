@@ -141,7 +141,11 @@ def _kv_clear_stuck_vmi(custom_api, namespace, kv_name) -> bool:
             plural="virtualmachineinstances",
             name=kv_name,
         )
-        logger.info("Cleared stale VMI %s (phase=%s) before start", kv_name, phase)
+        logger.info(
+            "Cleared stale VMI before start (namespace=%s phase=%s)",
+            namespace,
+            phase,
+        )
         return True
     except Exception:
         logger.warning("Failed to clear stale VMI %s before start", kv_name)

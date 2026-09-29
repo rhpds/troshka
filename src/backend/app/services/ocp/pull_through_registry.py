@@ -16,7 +16,8 @@ from app.models.user import User
 logger = logging.getLogger("troshka.ocp.ptr")
 
 _PROBE_TIMEOUT_S = 10
-_BEARER_PARAM_RE = re.compile(r'(\w+)="([^"]*)"')
+# Bounded token classes avoid catastrophic backtracking on malformed auth headers.
+_BEARER_PARAM_RE = re.compile(r'([A-Za-z0-9_]+)="([^"]*)"')
 
 
 class PullThroughRegistryError(Exception):

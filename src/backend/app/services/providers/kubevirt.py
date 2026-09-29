@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import time
 
 import yaml
@@ -2344,12 +2345,15 @@ def force_stop_kubevirt_vm(custom_api, core_api, namespace: str, kv_name: str) -
     except Exception:
         pass
     if not wait_virt_launcher_gone(core_api, namespace, kv_name, timeout=30):
-        logger.warning("Timed out waiting for %s virt-launcher to terminate", kv_name)
+        logger.warning(
+            "Timed out waiting for virt-launcher to terminate (namespace=%s)",
+            namespace,
+        )
     try:
         patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Halted")
     except Exception:
         pass
-    logger.info("Force-stopped KubeVirt VM %s in %s", kv_name, namespace)
+    logger.info("Force-stopped KubeVirt VM (namespace=%s)", namespace)
 
 
 def wait_virt_launcher_compute_ready(
@@ -2692,6 +2696,16 @@ def _kubevirt_ws_pod_exec(core_v1, pod_name, namespace, command, timeout, attemp
     ) from last_err
 
 
+def _safe_ssh_remote_path(remote_path: str) -> str:
+    """Reject shell metacharacters before building remote SSH commands."""
+    path = (remote_path or "").strip()
+    if not path or path.startswith("-") or any(c in path for c in "\n\r\0"):
+        raise ValueError("invalid remote path")
+    if not re.match(r"^[/\w.@+_-]+$", path):
+        raise ValueError("invalid remote path")
+    return path
+
+
 def kubevirt_upload_to_vm(
     provider,
     project_id,
@@ -2711,6 +2725,7 @@ def kubevirt_upload_to_vm(
     if not password:
         raise RuntimeError("No password for KubeVirt file upload")
 
+    remote_path = _safe_ssh_remote_path(remote_path)
     tmp = f"/tmp/troshka-up-{uuid.uuid4().hex}"
     tmp_q = shlex.quote(tmp)
     dest_q = shlex.quote(remote_path)
@@ -2756,6 +2771,7 @@ def kubevirt_download_from_vm(
     if not password:
         raise RuntimeError("No password for KubeVirt file download")
 
+    remote_path = _safe_ssh_remote_path(remote_path)
     cmd = f"base64 -w0 {shlex.quote(remote_path)}"
     result = kubevirt_exec_ssh(
         provider,
@@ -2918,10 +2934,11 @@ def _detect_vnc_state(ocr_text):
         return "password"
     if re.search(r"[\]$#~]\s*$", last_lines, re.MULTILINE):
         return "shell"
-    _login = r"(?:\blogin\s*:?|\S+\s+login\s*:?)"
-    if re.search(_login + r"\s+[\w.-]+\s*$", last_lines, re.IGNORECASE | re.MULTILINE):
+    if re.search(
+        r"\blogin\s*:?\s*[\w.-]+\s*$", last_lines, re.IGNORECASE | re.MULTILINE
+    ):
         return "login_submit"
-    if re.search(_login, last_lines, re.IGNORECASE | re.MULTILINE):
+    if re.search(r"\blogin\s*:?", last_lines, re.IGNORECASE | re.MULTILINE):
         return "login"
     return "unknown"
 

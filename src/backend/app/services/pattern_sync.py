@@ -17,7 +17,7 @@ from app.core.database import SessionLocal
 from app.models.pattern import Pattern, PatternDisk
 from app.models.pattern_location import PatternLocation
 from app.models.provider import Provider
-from app.services.s3_storage import _get_s3_config, get_cluster_s3_config
+from app.services.s3_storage import _get_s3_config, get_cluster_s3_config, owner_params
 
 log = logging.getLogger(__name__)
 
@@ -232,10 +232,11 @@ def _verify_central_readback(dst_cfg: dict, keys: list[str]) -> list[str]:
     if endpoint:
         kw["endpoint_url"] = endpoint
     client = boto3.client("s3", **kw)
+    head_op = owner_params(dst_cfg)
     missing = []
     for k in keys:
         try:
-            client.head_object(Bucket=bucket, Key=k)
+            client.head_object(Bucket=bucket, Key=k, **head_op)
         except Exception:  # noqa: BLE001 — any failure means "not readable here"
             missing.append(k)
     return missing

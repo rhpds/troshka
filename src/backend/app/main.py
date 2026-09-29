@@ -856,7 +856,7 @@ def _collect_worker_info(r):
                 "queues": [q.name for q in w.queues],
                 "current_job": str(w.get_current_job_id() or ""),
                 "current_queue": cj.origin if cj else "",
-                "current_func": ((cj.func_name or "").split(".")[-1] if cj else ""),
+                "current_func": (str(cj.func_name or "").split(".")[-1] if cj else ""),
                 "successful_count": w.successful_job_count,
                 "failed_count": w.failed_job_count,
                 "total_working_time": w.total_working_time,

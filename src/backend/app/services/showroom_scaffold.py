@@ -319,7 +319,8 @@ def app_proxy_route_code(internal_host: str) -> str:
         base = _APP_PROXY_CODES[label]
         return f"{base}-{cluster}" if cluster else base
     slug = re.sub(r"[^a-z0-9]+", "-", label).strip("-")[:8].strip("-")
-    h = hashlib.sha1(host.encode()).hexdigest()[:6]
+    # Non-cryptographic: stable short suffix for route names (not a secret).
+    h = hashlib.sha1(host.encode(), usedforsecurity=False).hexdigest()[:6]
     generic = f"{slug}-{h}" if slug else h
     return f"{generic}-{cluster}" if cluster else generic
 

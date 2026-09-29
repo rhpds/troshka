@@ -2168,10 +2168,14 @@ def reap_stuck_goldens(custom_api, core_api, now=None):
     return reaped
 
 
+_golden_reaper_task: asyncio.Task | None = None
+
+
 @kopf.on.startup()
 async def _launch_golden_reaper(**_):
     """Start the background golden-cache crashloop watchdog (per operator process)."""
-    asyncio.create_task(_golden_reaper_loop())
+    global _golden_reaper_task
+    _golden_reaper_task = asyncio.create_task(_golden_reaper_loop())
 
 
 async def _golden_reaper_loop():

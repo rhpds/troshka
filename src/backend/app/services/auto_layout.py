@@ -202,7 +202,7 @@ def _is_backbone_network(net: dict) -> bool:
     if name in ("mgmt", "management", "cluster"):
         return True
     cidr = str(net.get("data", {}).get("cidr") or "")
-    if re.search(r"/(2[0-4]|1[6-9]|[89]|[0-9])\b", cidr):
+    if re.search(r"/(?:[0-9]|1[0-9]|2[0-4])(?:\b|$)", cidr):
         return True
     return False
 

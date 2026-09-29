@@ -89,10 +89,10 @@ def osd_ip_for(spec: dict, index: int) -> str:
     """Resolve OSD ``index``'s Multus IP: the backend-allocated
     ``spec.osdIps[index]`` when present, else the legacy ``.20 + i`` offset."""
     osd_ips = spec.get("osdIps") or []
-    if index < len(osd_ips):
-        ip = str(osd_ips[index] or "").strip()
-        if ip and _IPV4_RE.match(ip):
-            return ip
+    raw = osd_ips[index] if 0 <= index < len(osd_ips) else None
+    ip = str(raw or "").strip()
+    if ip and _IPV4_RE.match(ip):
+        return ip
     return osd_lab_ip(spec.get("labIp", ""), index)
 
 

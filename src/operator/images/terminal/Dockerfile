@@ -44,7 +44,7 @@ RUN dnf module -y reset nodejs \
         "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/${OCP_VERSION}/openshift-client-linux.tar.gz" \
         | tar xzf - -C /usr/local/bin oc kubectl \
     && chmod 0755 /usr/local/bin/oc /usr/local/bin/kubectl \
-    && npm install -g "wetty@${WETTY_VERSION}" \
+    && npm install -g --ignore-scripts "wetty@${WETTY_VERSION}" \
     && dnf remove -y gcc-c++ make \
     && dnf clean all \
     && rm -rf /var/cache/dnf

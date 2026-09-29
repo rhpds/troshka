@@ -60,7 +60,7 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL \
 # image tracks the published source; a Galaxy/Automation-Hub ref can replace the
 # git URL once the collection is published there.
 ARG TROSHKA_COLLECTION_GIT=git+https://github.com/rhpds/troshka-ansible-collection.git
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir --only-binary :all: \
         ansible-core \
         ansible-navigator \
     && ansible-galaxy collection install "${TROSHKA_COLLECTION_GIT}" \

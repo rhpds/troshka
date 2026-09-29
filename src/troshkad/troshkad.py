@@ -1270,8 +1270,14 @@ COMMAND_HANDLERS["gateway/tls-cert"] = _handle_gateway_tls_cert
 def _write_combined_pem(tls_dir, cert_path, key_path):
     os.makedirs(tls_dir, exist_ok=True)
     os.chmod(tls_dir, 0o700)
+    base = os.path.realpath(tls_dir)
+    cert_real = os.path.realpath(cert_path)
+    key_real = os.path.realpath(key_path)
+    for path in (cert_real, key_real):
+        if path != base and not path.startswith(base + os.sep):
+            raise ValueError("TLS material must stay under the gateway tls directory")
     combined = os.path.join(tls_dir, "combined.pem")
-    with open(cert_path) as c, open(key_path) as k:
+    with open(cert_real) as c, open(key_real) as k:
         data = c.read() + "\n" + k.read()
     with open(combined, "w") as f:
         f.write(data)
@@ -12268,7 +12274,7 @@ def _net_token(name: str) -> str:
     netns and ``v*showroom*`` veths and colliding on a shared host. 8 hex chars
     keep veth names within the 15-char IFNAMSIZ limit.
     """
-    return hashlib.sha1(name.encode()).hexdigest()[:8]
+    return hashlib.sha1(name.encode(), usedforsecurity=False).hexdigest()[:8]
 
 
 def _attach_container_to_bridges(job, name, networks):
