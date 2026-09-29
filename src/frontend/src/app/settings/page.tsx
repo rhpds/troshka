@@ -185,11 +185,11 @@ export default function SettingsPage() {
         <PageSection>
           <Title headingLevel="h2" style={{ marginBottom: 12 }}>OpenShift IngressController</Title>
           <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
-            Cluster IngressController used for Troshka Routes and showroom.
-            Use <code>default</code> for the cluster apps domain
-            (e.g. apps.ocpv06.dal10.infra.demo.redhat.com), or{" "}
+            Name of the cluster IngressController used for Troshka Routes and
+            showroom. Use <code>default</code> for the cluster apps domain
+            (e.g. {"apps.<cluster>.example.com"}), or{" "}
             <code>ingress-rhdp-net</code> for the per-cluster rhdp.net domain
-            (e.g. apps.ocpv06.rhdp.net).
+            (e.g. {"apps.<cluster>.rhdp.net"}).
           </p>
           {ingressSaved && (
             <Alert
