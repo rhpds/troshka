@@ -10710,3 +10710,79 @@ class TestRestoreTlsProxies(unittest.TestCase):
         mock_start.assert_called_once()
         args = mock_start.call_args[0]
         assert "troshka-abcdef12" in args
+
+
+# ── Complexity-reduction helpers (pure / lightly mocked) ──
+
+
+class TestInferPodVolumesHelpers(unittest.TestCase):
+    def test_resolve_mnt_suffix_disk_finds_raw(self):
+        with patch("troshkad.os.listdir", return_value=["disk-a-abc.raw", "other"]):
+            path = troshkad._resolve_mnt_suffix_disk("/var/lib/troshka/vms/p/mnt-abc")
+        self.assertEqual(path, "/var/lib/troshka/vms/p/disk-a-abc.raw")
+
+    def test_resolve_mnt_suffix_disk_rejects_non_mnt(self):
+        self.assertIsNone(troshkad._resolve_mnt_suffix_disk("/data/foo"))
+
+    def test_resolve_mnt_suffix_disk_oserror(self):
+        with patch("troshkad.os.listdir", side_effect=OSError("gone")):
+            self.assertIsNone(
+                troshkad._resolve_mnt_suffix_disk("/var/lib/troshka/vms/p/mnt-abc")
+            )
+
+    def test_infer_volume_from_mount_spec(self):
+        seen = set()
+        with patch(
+            "troshkad._resolve_mnt_suffix_disk",
+            return_value="/var/lib/troshka/vms/p/d-abc.raw",
+        ):
+            vol = troshkad._infer_volume_from_mount_spec(
+                "/host/mnt-abc:/data", seen
+            )
+        self.assertEqual(vol["mount_path"], "/data")
+        self.assertEqual(vol["disk_path"], "/var/lib/troshka/vms/p/d-abc.raw")
+        self.assertIn("/host/mnt-abc", seen)
+
+    def test_infer_pod_volumes_uses_explicit_volumes(self):
+        vols = [{"disk_path": "/a.raw", "mount_dir": "/m", "mount_path": "/d"}]
+        self.assertEqual(troshkad._infer_pod_volumes({"volumes": vols}), vols)
+
+    def test_infer_pod_volumes_from_containers(self):
+        params = {
+            "containers": [{"mounts": ["/host/mnt-xyz:/mnt"]}],
+        }
+        with patch(
+            "troshkad._resolve_mnt_suffix_disk",
+            return_value="/host/vol-xyz.raw",
+        ):
+            inferred = troshkad._infer_pod_volumes(params)
+        self.assertEqual(len(inferred), 1)
+        self.assertEqual(inferred[0]["mount_path"], "/mnt")
+
+
+class TestConsoleLoginStep(unittest.TestCase):
+    @patch("troshkad._console_send_text")
+    def test_login_state_sends_username(self, mock_send):
+        result = troshkad._console_login_step("dom", "root", "pw", "login", 0)
+        self.assertIsNone(result)
+        mock_send.assert_called_once_with("dom", "root\n")
+
+    def test_shell_state_returns_true(self):
+        self.assertTrue(
+            troshkad._console_login_step("dom", "u", "p", "shell", 0)
+        )
+
+
+class TestAppendVmGraphics(unittest.TestCase):
+    def test_headless(self):
+        cmd = []
+        troshkad._append_vm_graphics_and_input(cmd, {}, True, "virtio", "virtio")
+        self.assertEqual(cmd, ["--graphics", "none"])
+
+    def test_vnc_virtio_input(self):
+        cmd = []
+        troshkad._append_vm_graphics_and_input(
+            cmd, {"vnc_listen": "0.0.0.0"}, False, "virtio", "virtio"
+        )
+        self.assertIn("vnc,listen=0.0.0.0", cmd)
+        self.assertIn("virtio", cmd)

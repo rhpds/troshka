@@ -96,21 +96,49 @@ def _network_nad_for_ref(nodes: list, network_ref: str) -> tuple[str, str]:
     return "", ""
 
 
+def _edge_peer(edge: dict, node_id: str) -> str:
+    src, tgt = edge.get("source", ""), edge.get("target", "")
+    if src == node_id:
+        return tgt
+    if tgt == node_id:
+        return src
+    return ""
+
+
+def _cluster_id_for_node(nodes: list, node_id: str) -> str | None:
+    for node in nodes:
+        if node.get("id") != node_id or node.get("type") != "clusterNode":
+            continue
+        data = node.get("data") or {}
+        cluster_id = data.get("clusterId") or data.get("name") or ""
+        return str(cluster_id) if cluster_id else None
+    return None
+
+
 def _linked_cluster_ids(nodes: list, edges: list, ceph_node_id: str) -> list[str]:
     linked: list[str] = []
     for edge in edges:
-        src, tgt = edge.get("source", ""), edge.get("target", "")
-        other = tgt if src == ceph_node_id else src if tgt == ceph_node_id else ""
+        other = _edge_peer(edge, ceph_node_id)
         if not other:
             continue
-        for node in nodes:
-            if node.get("id") != other or node.get("type") != "clusterNode":
-                continue
-            data = node.get("data") or {}
-            cluster_id = data.get("clusterId") or data.get("name") or ""
-            if cluster_id:
-                linked.append(str(cluster_id))
+        cluster_id = _cluster_id_for_node(nodes, other)
+        if cluster_id:
+            linked.append(cluster_id)
     return linked
+
+
+def _ceph_prefix_from_cidr(cidr: str) -> int:
+    if cidr and "/" in cidr:
+        return int(cidr.split("/")[1])
+    return 24
+
+
+def _ceph_osd_sizing(data: dict) -> tuple[int, int]:
+    osd_count = int(data.get("osdCount") or _DEFAULT_OSD_COUNT)
+    osd_count = max(_MIN_OSD_COUNT, min(_MAX_OSD_COUNT, osd_count))
+    capacity_gi = int(data.get("capacityGi") or osd_count * _MIN_OSD_SIZE_GI)
+    capacity_gi = max(capacity_gi, osd_count * _MIN_OSD_SIZE_GI)
+    return osd_count, capacity_gi
 
 
 def extract_ceph_cluster_spec(topology: dict) -> dict | None:
@@ -125,17 +153,9 @@ def extract_ceph_cluster_spec(topology: dict) -> dict | None:
     ceph_id = data.get("id", ceph_node.get("id", ""))
     network_ref = data.get("networkRef", "")
     network_nad, cidr = _network_nad_for_ref(nodes, str(network_ref))
-
     lab_ip = str(data.get("labIp") or "").strip() or _default_ceph_lab_ip(cidr)
-
-    osd_count = int(data.get("osdCount") or _DEFAULT_OSD_COUNT)
-    osd_count = max(_MIN_OSD_COUNT, min(_MAX_OSD_COUNT, osd_count))
-    capacity_gi = int(data.get("capacityGi") or osd_count * _MIN_OSD_SIZE_GI)
-    capacity_gi = max(capacity_gi, osd_count * _MIN_OSD_SIZE_GI)
-
-    prefix = 24
-    if cidr and "/" in cidr:
-        prefix = int(cidr.split("/")[1])
+    osd_count, capacity_gi = _ceph_osd_sizing(data)
+    prefix = _ceph_prefix_from_cidr(cidr)
 
     linked = list(data.get("linkedClusters") or [])
     if not linked:

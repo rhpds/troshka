@@ -1,9 +1,11 @@
 """Unit tests for canvas auto-layout."""
 
+from collections import defaultdict
 from pathlib import Path
 
 import yaml
 
+from app.services import auto_layout as al
 from app.services.auto_layout import auto_layout
 from app.services.template_loader import (
     generate_topology_from_template,
@@ -333,3 +335,157 @@ def test_auto_layout_keeps_cluster_members_inside_boundary():
     for net in nodes:
         if net["type"] == "networkNode":
             assert not _overlap(brect, _rect(net, 240, 70)), net["data"].get("name")
+
+
+# --- Helper unit tests (S3776 extractions) ---
+
+
+def test_vote_network_side_from_edge():
+    votes = defaultdict(lambda: {"top": 0, "bottom": 0})
+    al._vote_network_side_from_edge(votes, "nic-abc-top", "net1")
+    al._vote_network_side_from_edge(votes, "nic-def-bottom", "net1")
+    al._vote_network_side_from_edge(votes, "left", "net1")  # no side
+    assert votes["net1"] == {"top": 1, "bottom": 1}
+
+
+def test_fixed_network_workload_handles_directions():
+    e = {"id": "e1", "sourceHandle": "nic-1-top", "targetHandle": "nic-2-bottom"}
+    above_src = al._fixed_network_workload_handles(e, net_is_source=True, above=True)
+    assert above_src["sourceHandle"] == "bottom"
+    assert above_src["targetHandle"] == "nic-2-top"
+
+    below_src = al._fixed_network_workload_handles(e, net_is_source=True, above=False)
+    assert below_src["sourceHandle"] == "top"
+    assert below_src["targetHandle"] == "nic-2-bottom"
+
+    above_tgt = al._fixed_network_workload_handles(e, net_is_source=False, above=True)
+    assert above_tgt["sourceHandle"] == "nic-1-top"
+    assert above_tgt["targetHandle"] == "bottom"
+
+    below_tgt = al._fixed_network_workload_handles(e, net_is_source=False, above=False)
+    assert below_tgt["sourceHandle"] == "nic-1-bottom"
+    assert below_tgt["targetHandle"] == "top"
+
+
+def test_lab_edge_endpoints_and_rewrite():
+    nodes = [
+        {"id": "lab", "type": "networkNode", "data": {"name": "lab"}},
+        {"id": "vm1", "type": "vmNode", "data": {"name": "r1"}},
+        {"id": "other", "type": "storageNode", "data": {"name": "disk"}},
+    ]
+    lab_ids = {"lab"}
+    e = {"id": "e1", "source": "lab", "target": "vm1", "targetHandle": "nic-0-top"}
+    assert al._lab_edge_endpoints(e, nodes, lab_ids) == ("lab", "vm1")
+
+    e2 = {"id": "e2", "source": "vm1", "target": "lab", "sourceHandle": "nic-0-bottom"}
+    assert al._lab_edge_endpoints(e2, nodes, lab_ids) == ("lab", "vm1")
+
+    e3 = {"id": "e3", "source": "lab", "target": "other"}
+    assert al._lab_edge_endpoints(e3, nodes, lab_ids) is None
+
+    outer = al._rewrite_lab_edge(e, "lab", "vm1", {"vm1"})
+    assert outer["source"] == "vm1" and outer["target"] == "lab"
+    assert outer["targetHandle"] == "bottom"
+
+    inner = al._rewrite_lab_edge(e, "lab", "vm1", set())
+    assert inner["source"] == "lab" and inner["target"] == "vm1"
+    assert inner["sourceHandle"] == "top"
+
+
+def test_partition_and_grid_cluster_members():
+    members = [
+        {
+            "id": "cp0",
+            "data": {"name": "cp-0", "clusterRole": "control-plane"},
+            "position": {"x": 0, "y": 0},
+        },
+        {
+            "id": "w0",
+            "data": {"name": "worker-0", "clusterRole": "worker"},
+            "position": {"x": 0, "y": 0},
+        },
+        {"id": "misc", "data": {"name": "extra"}, "position": {"x": 0, "y": 0}},
+    ]
+    cps, workers = al._partition_cluster_members(members)
+    assert [m["id"] for m in cps] == ["cp0", "misc"]
+    assert [m["id"] for m in workers] == ["w0"]
+
+    al._grid_cluster_members(cps, workers)
+    assert cps[0]["position"]["y"] == al._CL_HEADER_H + al._CL_PAD
+    assert workers[0]["position"]["y"] > cps[0]["position"]["y"]
+
+    style = al._cluster_box_style(len(members), cps, workers)
+    assert style["width"] >= al._CL_HEADER_MIN_W
+    assert style["height"] > al._CL_HEADER_H
+
+
+def test_position_anchored_network_top_and_bottom():
+    net = {"id": "n1", "position": {"x": 0, "y": 0}}
+    box = (100.0, 200.0, 300.0, 400.0)
+    al._position_anchored_network(net, [box], "top", net_w=80, net_h=40, gap=10)
+    assert net["position"]["y"] == 200.0 - 40 - 10
+    assert net["position"]["x"] == 100.0 + (200.0 - 80) / 2
+
+    al._position_anchored_network(net, [box], "bottom", net_w=80, net_h=40, gap=10)
+    assert net["position"]["y"] == 400.0 + 10
+
+    boxes = [(0.0, 0.0, 100.0, 50.0), (200.0, 10.0, 400.0, 60.0)]
+    al._position_anchored_network(net, boxes, "top", net_w=100, net_h=20, gap=5)
+    assert net["position"]["x"] == 0.0 + (400.0 - 100) / 2
+
+
+def test_invert_cluster_network_anchors():
+    anchors = {
+        "net-a": [
+            {"cluster_id": "c1", "side": "top"},
+            {"cluster_id": "c2", "side": "bottom"},
+        ]
+    }
+    inverted = al._invert_cluster_network_anchors(anchors)
+    assert inverted["net-a"]["top"] == ["c1"]
+    assert inverted["net-a"]["bottom"] == ["c2"]
+
+
+def test_smoothstep_path_offset():
+    link = {"data": {"name": "link-a", "cidr": "10.0.0.0/30"}}
+    lab = {"data": {"name": "lab"}}
+    other = {"data": {"name": "mgmt", "cidr": "10.0.0.0/24"}}
+    wl = {"id": "vm1"}
+    e_from_vm = {"source": "vm1"}
+    e_from_net = {"source": "lab"}
+    assert al._smoothstep_path_offset(link, e_from_vm, wl, 100.0) == 72
+    assert al._smoothstep_path_offset(lab, e_from_vm, wl, 100.0) == min(
+        180, 72 + 100.0 * 0.08
+    )
+    assert al._smoothstep_path_offset(lab, e_from_net, wl, 100.0) == min(
+        140, 36 + 100.0 * 0.05
+    )
+    assert al._smoothstep_path_offset(other, e_from_vm, wl, 100.0) == min(
+        96, 28 + 100.0 * 0.04
+    )
+
+
+def test_partition_networks_by_placement():
+    networks = [
+        {"id": "bb"},
+        {"id": "lk"},
+        {"id": "wd"},
+        {"id": "bot-bb"},
+    ]
+    placements = {
+        "bb": {"side": "top", "tier": "backbone"},
+        "lk": {"side": "top", "tier": "link"},
+        "wd": {"side": "bottom", "tier": "wide"},
+        "bot-bb": {"side": "bottom", "tier": "backbone"},
+    }
+    top_bb, top_lk, bottom = al._partition_networks_by_placement(networks, placements)
+    assert [n["id"] for n in top_bb] == ["bb"]
+    assert [n["id"] for n in top_lk] == ["lk"]
+    assert [n["id"] for n in bottom] == ["wd", "bot-bb"]
+
+
+def test_bmc_position_clear_of_clusters():
+    boxes = [(0.0, 0.0, 100.0, 200.0)]
+    nx, ny = al._bmc_position_clear_of_clusters(40, 30, 10, boxes)
+    assert nx == 100.0 + 10
+    assert ny == 0.0 + max(0, (200.0 - 0.0 - 30) / 2)

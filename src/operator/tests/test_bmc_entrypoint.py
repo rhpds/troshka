@@ -717,3 +717,24 @@ class TestVirtualMediaUnderSystems:
         entrypoint.RedfishHandler.do_GET(handler)
         data = json.loads(handler.wfile.write.call_args[0][0])
         assert data["PowerState"] == "On"
+
+
+class TestHeadVmediaHelpers:
+    def test_head_vmedia_missing_url_404(self):
+        handler = MagicMock()
+        _mock_driver.get_vmedia_state.return_value = {}
+        entrypoint._head_vmedia_download(handler, "vm-1")
+        handler.send_response.assert_called_with(404)
+        handler.end_headers.assert_called()
+
+    @patch("urllib.request.urlopen")
+    def test_head_upstream_url_success(self, mock_urlopen):
+        resp = MagicMock()
+        resp.headers = {"Content-Length": "42"}
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = resp
+        handler = MagicMock()
+        entrypoint._head_upstream_url(handler, "http://example.com/iso")
+        handler.send_response.assert_called_with(200)
+        handler.send_header.assert_any_call("Content-Length", "42")

@@ -492,7 +492,7 @@ def test_update_project_topology_single_bastion_browser():
     }
     resp = client.patch(f"/api/v1/projects/{pid}", json={"topology": topo})
     assert resp.status_code == 400
-    assert "bastion browser" in resp.json()["detail"].lower()
+    assert "bastion browser" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -642,7 +642,7 @@ def test_get_kubeconfig_not_found_no_kc():
     pid = _create_project(name="no-kc-proj")
     resp = client.get(f"/api/v1/projects/{pid}/kubeconfig")
     assert resp.status_code == 404
-    assert "Kubeconfig not found" in resp.json()["detail"]
+    assert "Kubeconfig not found" in _detail_text(resp)
 
 
 def test_get_kubeconfig_with_data():
@@ -703,21 +703,21 @@ def test_deploy_project_wrong_state():
     pid = _create_project(name="deploy-active", state="active")
     resp = client.post(f"/api/v1/projects/{pid}/deploy")
     assert resp.status_code == 409
-    assert "not draft" in resp.json()["detail"]
+    assert "not draft" in _detail_text(resp)
 
 
 def test_deploy_project_no_topology():
     pid = _create_project(name="deploy-no-topo", topology=None)
     resp = client.post(f"/api/v1/projects/{pid}/deploy")
     assert resp.status_code == 400
-    assert "no topology" in resp.json()["detail"]
+    assert "no topology" in _detail_text(resp)
 
 
 def test_deploy_project_empty_topology():
     pid = _create_project(name="deploy-empty-topo", topology={"nodes": [], "edges": []})
     resp = client.post(f"/api/v1/projects/{pid}/deploy")
     assert resp.status_code == 400
-    assert "no VMs" in resp.json()["detail"]
+    assert "no VMs" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -733,7 +733,7 @@ def test_stop_project_wrong_state():
     pid = _create_project(name="stop-draft", state="draft")
     resp = client.post(f"/api/v1/projects/{pid}/stop")
     assert resp.status_code == 409
-    assert "not active" in resp.json()["detail"]
+    assert "not active" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -749,7 +749,7 @@ def test_start_project_wrong_state():
     pid = _create_project(name="start-draft", state="draft")
     resp = client.post(f"/api/v1/projects/{pid}/start")
     assert resp.status_code == 409
-    assert "not stopped" in resp.json()["detail"]
+    assert "not stopped" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -771,7 +771,7 @@ def test_extend_timer_invalid_type():
         json={"timer": "bogus", "add_minutes": 10},
     )
     assert resp.status_code == 400
-    assert "must be" in resp.json()["detail"]
+    assert "must be" in _detail_text(resp)
 
 
 def test_extend_timer_auto_stop_not_active():
@@ -781,7 +781,7 @@ def test_extend_timer_auto_stop_not_active():
         json={"timer": "auto_stop", "add_minutes": 30},
     )
     assert resp.status_code == 400
-    assert "not active" in resp.json()["detail"]
+    assert "not active" in _detail_text(resp)
 
 
 def test_extend_timer_auto_delete_not_active():
@@ -791,7 +791,7 @@ def test_extend_timer_auto_delete_not_active():
         json={"timer": "auto_delete", "add_minutes": 30},
     )
     assert resp.status_code == 400
-    assert "not active" in resp.json()["detail"]
+    assert "not active" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -857,6 +857,15 @@ def test_export_template_with_ocp_meta():
 # ---------------------------------------------------------------------------
 # POST /projects/{id}/import-template — validation errors
 # ---------------------------------------------------------------------------
+
+
+def _detail_text(resp):
+    detail = resp.json()["detail"]
+    if isinstance(detail, dict):
+        return str(detail.get("message", detail))
+    return str(detail)
+
+
 def test_import_template_not_found():
     fake_id = str(uuid.uuid4())
     resp = client.post(
@@ -873,7 +882,7 @@ def test_import_template_wrong_state():
         json={"template_yaml": {"vms": {}, "networks": {}}},
     )
     assert resp.status_code == 409
-    assert "draft" in resp.json()["detail"]
+    assert "draft" in _detail_text(resp)
 
 
 def test_import_template_missing_yaml():
@@ -883,7 +892,7 @@ def test_import_template_missing_yaml():
         json={},
     )
     assert resp.status_code == 400
-    assert "required" in resp.json()["detail"].lower()
+    assert "required" in _detail_text(resp)
 
 
 def test_import_template_invalid_type():
@@ -893,7 +902,7 @@ def test_import_template_invalid_type():
         json={"template_yaml": "not-a-dict"},
     )
     assert resp.status_code == 400
-    assert "mapping" in resp.json()["detail"].lower()
+    assert "mapping" in _detail_text(resp)
 
 
 def test_import_template_missing_vms():
@@ -903,7 +912,7 @@ def test_import_template_missing_vms():
         json={"template_yaml": {"networks": {}}},
     )
     assert resp.status_code == 400
-    assert "vms" in resp.json()["detail"].lower()
+    assert "vms" in _detail_text(resp)
 
 
 def test_import_template_missing_networks():
@@ -913,7 +922,7 @@ def test_import_template_missing_networks():
         json={"template_yaml": {"vms": {}}},
     )
     assert resp.status_code == 400
-    assert "networks" in resp.json()["detail"].lower()
+    assert "networks" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -922,7 +931,7 @@ def test_import_template_missing_networks():
 def test_from_template_no_template():
     resp = client.post("/api/v1/projects/from-template", json={})
     assert resp.status_code == 400
-    assert "required" in resp.json()["detail"].lower()
+    assert "required" in _detail_text(resp)
 
 
 def test_from_template_invalid_template_id():
@@ -931,7 +940,7 @@ def test_from_template_invalid_template_id():
         json={"template_id": "nonexistent-template-xyz"},
     )
     assert resp.status_code == 404
-    assert "not found" in resp.json()["detail"].lower()
+    assert "not found" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -947,14 +956,14 @@ def test_reconfigure_wrong_state():
     pid = _create_project(name="reconfig-draft", state="draft")
     resp = client.post(f"/api/v1/projects/{pid}/reconfigure")
     assert resp.status_code == 409
-    assert "cannot reconfigure" in resp.json()["detail"]
+    assert "cannot reconfigure" in _detail_text(resp)
 
 
 def test_reconfigure_no_host():
     pid = _create_project(name="reconfig-no-host", state="active")
     resp = client.post(f"/api/v1/projects/{pid}/reconfigure")
     assert resp.status_code == 400
-    assert "no active deployment" in resp.json()["detail"]
+    assert "no active deployment" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -987,14 +996,14 @@ def test_redeploy_wrong_state():
     pid = _create_project(name="redeploy-draft", state="draft")
     resp = client.post(f"/api/v1/projects/{pid}/redeploy")
     assert resp.status_code == 409
-    assert "cannot redeploy" in resp.json()["detail"]
+    assert "cannot redeploy" in _detail_text(resp)
 
 
 def test_redeploy_no_topology():
     pid = _create_project(name="redeploy-no-topo", state="active", topology=None)
     resp = client.post(f"/api/v1/projects/{pid}/redeploy")
     assert resp.status_code == 400
-    assert "no topology" in resp.json()["detail"]
+    assert "no topology" in _detail_text(resp)
 
 
 def test_redeploy_no_vms():
@@ -1003,7 +1012,7 @@ def test_redeploy_no_vms():
     )
     resp = client.post(f"/api/v1/projects/{pid}/redeploy")
     assert resp.status_code == 400
-    assert "no VMs" in resp.json()["detail"]
+    assert "no VMs" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -1073,7 +1082,7 @@ def test_import_vm_snapshot_not_found():
         json={"snapshot_id": str(uuid.uuid4())},
     )
     assert resp.status_code == 404
-    assert "Snapshot not found" in resp.json()["detail"]
+    assert "Snapshot not found" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -1140,7 +1149,7 @@ def test_exec_vm_wrong_state():
         json={"command": "echo hi"},
     )
     assert resp.status_code == 409
-    assert "not accessible" in resp.json()["detail"]
+    assert "not accessible" in _detail_text(resp)
 
 
 def test_exec_vm_no_host():
@@ -1151,7 +1160,7 @@ def test_exec_vm_no_host():
         json={"command": "echo hi"},
     )
     assert resp.status_code == 503
-    assert "Host not available" in resp.json()["detail"]
+    assert "Host not available" in _detail_text(resp)
 
 
 def test_exec_vm_no_command():
@@ -1162,7 +1171,7 @@ def test_exec_vm_no_command():
         json={"command": ""},
     )
     assert resp.status_code == 400
-    assert "Command is required" in resp.json()["detail"]
+    assert "Command is required" in _detail_text(resp)
 
 
 def test_exec_vm_project_must_be_active():
@@ -1425,7 +1434,7 @@ def test_vm_ready_vm_not_found():
     fake_vm = str(uuid.uuid4())
     resp = client.get(f"/api/v1/projects/{pid}/vms/{fake_vm}/ready")
     assert resp.status_code == 404
-    assert "VM not found" in resp.json()["detail"]
+    assert "VM not found" in _detail_text(resp)
 
 
 def test_vm_ready_no_ip():
@@ -1588,7 +1597,7 @@ def test_reconfigure_with_host_no_key():
     pid = _create_project(name="reconfig-no-key", state="active", host_id=hid)
     resp = client.post(f"/api/v1/projects/{pid}/reconfigure")
     assert resp.status_code == 503
-    assert "Host not available" in resp.json()["detail"]
+    assert "Host not available" in _detail_text(resp)
 
 
 def test_reconfigure_bmc_no_connected_vm():
@@ -1608,7 +1617,7 @@ def test_reconfigure_bmc_no_connected_vm():
     )
     resp = client.post(f"/api/v1/projects/{pid}/reconfigure")
     assert resp.status_code == 400
-    assert "BMC network requires" in resp.json()["detail"]
+    assert "BMC network requires" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -1621,7 +1630,7 @@ def test_deploy_bmc_no_connected_vm():
             {
                 "id": "v1",
                 "type": "vmNode",
-                "data": {"name": "vm1", "vcpus": 2, "ram": 4},
+                "data": {"name": "vm1", "vcpus": 2, "ram_gb": 4},
             },
             {
                 "id": "bmc-net",
@@ -1634,7 +1643,7 @@ def test_deploy_bmc_no_connected_vm():
     pid = _create_project(name="deploy-bmc-no-vm", topology=topo)
     resp = client.post(f"/api/v1/projects/{pid}/deploy")
     assert resp.status_code == 400
-    assert "BMC network requires" in resp.json()["detail"]
+    assert "BMC network requires" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -1717,7 +1726,7 @@ def test_force_stop_no_host():
     pid = _create_project(name="force-stop-no-host", state="active")
     resp = client.post(f"/api/v1/projects/{pid}/force-stop")
     assert resp.status_code == 503
-    assert "Host not available" in resp.json()["detail"]
+    assert "Host not available" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -1747,7 +1756,7 @@ def test_redeploy_project_stopped():
     )
     resp = client.post(f"/api/v1/projects/{pid}/redeploy")
     assert resp.status_code == 400
-    assert "no topology" in resp.json()["detail"]
+    assert "no topology" in _detail_text(resp)
 
 
 def test_redeploy_project_error_state_no_vms():
@@ -1759,7 +1768,7 @@ def test_redeploy_project_error_state_no_vms():
     )
     resp = client.post(f"/api/v1/projects/{pid}/redeploy")
     assert resp.status_code == 400
-    assert "no VMs" in resp.json()["detail"]
+    assert "no VMs" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -1857,14 +1866,14 @@ def test_from_template_invalid_bmc_ip():
         "/api/v1/projects/from-template",
         json={
             "template_yaml": {
-                "vms": {"vm1": {"vcpus": 2, "ram": 4096}},
+                "vms": {"vm1": {"vcpus": 2, "ram_gb": 4}},
                 "networks": {"net1": {"cidr": "192.168.1.0/24"}},
             },
             "bastion_bmc_ip": "not-an-ip",
         },
     )
     assert resp.status_code == 400
-    assert "Invalid bastion BMC IP" in resp.json()["detail"]
+    assert "Invalid bastion BMC IP" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -1894,7 +1903,7 @@ def test_vm_op_host_no_ip():
     fake_vm = str(uuid.uuid4())
     resp = client.post(f"/api/v1/projects/{pid}/vms/{fake_vm}/stop")
     assert resp.status_code == 503
-    assert "Host not available" in resp.json()["detail"]
+    assert "Host not available" in _detail_text(resp)
 
 
 def test_vm_op_host_no_private_key():
@@ -1904,7 +1913,7 @@ def test_vm_op_host_no_private_key():
     fake_vm = str(uuid.uuid4())
     resp = client.get(f"/api/v1/projects/{pid}/vms/{fake_vm}/status")
     assert resp.status_code == 503
-    assert "Host not available" in resp.json()["detail"]
+    assert "Host not available" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -1920,8 +1929,8 @@ def test_import_template_valid():
                 "vms": {
                     "vm1": {
                         "vcpus": 2,
-                        "ram": 4096,
-                        "disks": [{"name": "disk1", "size": 20}],
+                        "ram_gb": 4,
+                        "disks": [{"name": "disk1", "size_gb": 20}],
                     }
                 },
                 "networks": {"net1": {"cidr": "192.168.1.0/24"}},
@@ -2096,7 +2105,7 @@ def test_import_template_missing_library_still_errors():
         },
     )
     assert resp.status_code == 400
-    assert "not found" in resp.json()["detail"].lower()
+    assert "not found" in _detail_text(resp)
 
 
 # ---------------------------------------------------------------------------
@@ -2153,7 +2162,7 @@ def test_from_template_inline_yaml():
         "/api/v1/projects/from-template",
         json={
             "template_yaml": {
-                "vms": {"vm1": {"vcpus": 2, "ram": 4096}},
+                "vms": {"vm1": {"vcpus": 2, "ram_gb": 4}},
                 "networks": {"net1": {"cidr": "192.168.1.0/24"}},
             },
             "name": f"inline-template-{uuid.uuid4().hex[:8]}",

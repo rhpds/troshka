@@ -755,3 +755,37 @@ def test_requirements_content_wins_over_user_extra_vars(monkeypatch):
     finally:
         if db.is_active:
             db.close()
+
+
+def test_validate_run_inventory_vm_names(monkeypatch):
+    called = {}
+
+    def _vn(topo, names):
+        called["names"] = names
+
+    monkeypatch.setattr("app.services.workloads.inventory.validate_vm_names", _vn)
+    run_service._validate_run_inventory({"nodes": []}, {"vm_names": ["bastion"]})
+    assert called["names"] == ["bastion"]
+
+
+def test_validate_run_inventory_groups(monkeypatch):
+    called = {}
+
+    def _vag(topo, require_bastion=True):
+        called["bastion"] = require_bastion
+
+    monkeypatch.setattr(run_service, "validate_ansible_groups", _vag)
+    monkeypatch.setattr(run_service, "_should_validate_inventory", lambda m: True)
+    run_service._validate_run_inventory({"nodes": []}, {})
+    assert called["bastion"] is False
+
+
+def test_build_run_extra_vars_merges_and_requirements(monkeypatch):
+    item = SimpleNamespace(extra_vars={"a": 1}, requirements_content="reqs")
+    run = SimpleNamespace(extra_vars={"b": 2})
+    host = SimpleNamespace(host_type="troshkad", provider_id=None)
+    topo, ev = run_service._build_run_extra_vars(
+        item, run, MagicMock(), host, MagicMock(), {"nodes": []}
+    )
+    assert ev["a"] == 1 and ev["b"] == 2
+    assert ev["requirements_content"] == "reqs"

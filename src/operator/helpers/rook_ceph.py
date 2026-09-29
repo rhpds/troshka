@@ -24,6 +24,10 @@ from helpers.k8s import (
 
 logger = logging.getLogger(__name__)
 
+_CEPH_ROOK_API_GROUP = "ceph.rook.io"
+_RBAC_API_GROUP = "rbac.authorization.k8s.io"
+_RBAC_API_VERSION = "rbac.authorization.k8s.io/v1"
+
 CEPH_CLUSTER_NAME = "troshka-ceph"
 CEPH_BLOCK_POOL_NAME = "troshka-ceph-pool"
 TROSHKA_CEPH_CR_NAME = "project-ceph"
@@ -201,7 +205,7 @@ def discover_ceph_image(custom_api) -> str:
     """Match the cluster ODF Ceph image so operator CLI and mons share cephx/msgr."""
     try:
         clusters = custom_api.list_namespaced_custom_object(
-            group="ceph.rook.io",
+            group=_CEPH_ROOK_API_GROUP,
             version="v1",
             namespace=ODF_ROOK_OPERATOR_NS,
             plural="cephclusters",
@@ -568,14 +572,14 @@ def build_rook_cluster_role_binding(
     """Bind a project rook SA to a Troshka-owned cluster-scoped Rook ClusterRole."""
     namespace = ceph_cr["metadata"]["namespace"]
     return {
-        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "apiVersion": _RBAC_API_VERSION,
         "kind": "ClusterRoleBinding",
         "metadata": {
             "name": rook_crb_name(namespace, sa_name, cluster_role),
             "labels": {"app": "troshka-ceph", "troshka-project-ns": namespace},
         },
         "roleRef": {
-            "apiGroup": "rbac.authorization.k8s.io",
+            "apiGroup": _RBAC_API_GROUP,
             "kind": "ClusterRole",
             "name": cluster_role,
         },
@@ -594,7 +598,7 @@ def build_rook_cmd_reporter_rbac(ceph_cr: dict) -> tuple[dict, dict]:
     namespace = ceph_cr["metadata"]["namespace"]
     labels = {"app": "troshka-ceph", "troshka-role": "rook-cmd-reporter"}
     role = {
-        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "apiVersion": _RBAC_API_VERSION,
         "kind": "Role",
         "metadata": {
             "name": ROOK_CMD_REPORTER_ROLE,
@@ -618,7 +622,7 @@ def build_rook_cmd_reporter_rbac(ceph_cr: dict) -> tuple[dict, dict]:
         ],
     }
     binding = {
-        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "apiVersion": _RBAC_API_VERSION,
         "kind": "RoleBinding",
         "metadata": {
             "name": ROOK_CMD_REPORTER_ROLE,
@@ -627,7 +631,7 @@ def build_rook_cmd_reporter_rbac(ceph_cr: dict) -> tuple[dict, dict]:
             "labels": labels,
         },
         "roleRef": {
-            "apiGroup": "rbac.authorization.k8s.io",
+            "apiGroup": _RBAC_API_GROUP,
             "kind": "Role",
             "name": ROOK_CMD_REPORTER_ROLE,
         },
@@ -1009,57 +1013,72 @@ PY
 """
 
 
+def _delete_export_job(batch_api, namespace: str) -> None:
+    """Delete the Ceph export Job; ignore 404."""
+    try:
+        batch_api.delete_namespaced_job(
+            name=EXPORT_JOB_NAME,
+            namespace=namespace,
+            body=client.V1DeleteOptions(propagation_policy="Foreground"),
+        )
+    except ApiException as e:
+        if e.status != 404:
+            raise
+
+
+def _refresh_export_for_nested_mon(batch_api, core_api, namespace: str) -> None:
+    """Clear stamped export details and Job so nested mon hostNetwork can refresh."""
+    if not ceph_external_details_exported(core_api, namespace):
+        return
+    logger.info(
+        "Refreshing Ceph export in %s (nested mon must be hostNetwork:3300)",
+        namespace,
+    )
+    clear_ceph_external_details(core_api, namespace)
+    _delete_export_job(batch_api, namespace)
+
+
+def _read_export_job(batch_api, namespace: str):
+    """Return the export Job object, or None if missing."""
+    try:
+        return batch_api.read_namespaced_job(name=EXPORT_JOB_NAME, namespace=namespace)
+    except ApiException as e:
+        if e.status != 404:
+            raise
+        return None
+
+
+def _export_job_needs_recreate(batch_api, core_api, namespace: str, job) -> bool:
+    """True when an existing export Job should be deleted and recreated."""
+    status = job.status or client.V1JobStatus()
+    if (status.succeeded or 0) >= 1:
+        # Stale success while details cleared — delete and recreate
+        if not ceph_external_details_exported(core_api, namespace):
+            _delete_export_job(batch_api, namespace)
+            return True
+        return False
+    if (status.failed or 0) >= 1:
+        _delete_export_job(batch_api, namespace)
+        return True
+    # Still running
+    return False
+
+
 def ensure_ceph_export_job(batch_api, ceph_cr: dict, namespace: str) -> None:
     """Launch (or relaunch) the export job when ODF details are not yet stamped."""
     core_api = client.CoreV1Api()
     lab_ip = (ceph_cr.get("spec") or {}).get("labIp", "")
     if ceph_export_needs_nested_mon_refresh(core_api, namespace, lab_ip):
-        if ceph_external_details_exported(core_api, namespace):
-            logger.info(
-                "Refreshing Ceph export in %s (nested mon must be hostNetwork:3300)",
-                namespace,
-            )
-            clear_ceph_external_details(core_api, namespace)
-            try:
-                batch_api.delete_namespaced_job(
-                    name=EXPORT_JOB_NAME,
-                    namespace=namespace,
-                    body=client.V1DeleteOptions(propagation_policy="Foreground"),
-                )
-            except ApiException as e:
-                if e.status != 404:
-                    raise
+        _refresh_export_for_nested_mon(batch_api, core_api, namespace)
         # fall through to create
     elif ceph_external_details_exported(core_api, namespace):
         return
 
-    try:
-        job = batch_api.read_namespaced_job(name=EXPORT_JOB_NAME, namespace=namespace)
-    except ApiException as e:
-        if e.status != 404:
-            raise
-        job = None
-
-    if job is not None:
-        status = job.status or client.V1JobStatus()
-        if (status.succeeded or 0) >= 1:
-            # Stale success while details cleared — delete and recreate below
-            if not ceph_external_details_exported(core_api, namespace):
-                batch_api.delete_namespaced_job(
-                    name=EXPORT_JOB_NAME,
-                    namespace=namespace,
-                    body=client.V1DeleteOptions(propagation_policy="Foreground"),
-                )
-            else:
-                return
-        elif (status.failed or 0) >= 1:
-            batch_api.delete_namespaced_job(
-                name=EXPORT_JOB_NAME,
-                namespace=namespace,
-                body=client.V1DeleteOptions(propagation_policy="Foreground"),
-            )
-        else:
-            return
+    job = _read_export_job(batch_api, namespace)
+    if job is not None and not _export_job_needs_recreate(
+        batch_api, core_api, namespace, job
+    ):
+        return
 
     batch_api.create_namespaced_job(namespace=namespace, body=build_export_job(ceph_cr))
 
@@ -1101,7 +1120,7 @@ def build_ceph_rbac(ceph_cr: dict) -> tuple[dict, dict]:
     """Role + RoleBinding so export job can patch secrets in the project ns."""
     namespace = ceph_cr["metadata"]["namespace"]
     role = {
-        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "apiVersion": _RBAC_API_VERSION,
         "kind": "Role",
         "metadata": {
             "name": "troshka-ceph",
@@ -1121,14 +1140,14 @@ def build_ceph_rbac(ceph_cr: dict) -> tuple[dict, dict]:
                 "verbs": ["get", "list", "create"],
             },
             {
-                "apiGroups": ["ceph.rook.io"],
+                "apiGroups": [_CEPH_ROOK_API_GROUP],
                 "resources": ["cephclusters"],
                 "verbs": ["get"],
             },
         ],
     }
     binding = {
-        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "apiVersion": _RBAC_API_VERSION,
         "kind": "RoleBinding",
         "metadata": {
             "name": "troshka-ceph",
@@ -1136,7 +1155,7 @@ def build_ceph_rbac(ceph_cr: dict) -> tuple[dict, dict]:
             "ownerReferences": [owner_ref(ceph_cr)],
         },
         "roleRef": {
-            "apiGroup": "rbac.authorization.k8s.io",
+            "apiGroup": _RBAC_API_GROUP,
             "kind": "Role",
             "name": "troshka-ceph",
         },
@@ -1159,7 +1178,7 @@ def rook_ceph_cluster_phase(custom_api, namespace: str) -> tuple[str, str]:
     """
     try:
         cluster = custom_api.get_namespaced_custom_object(
-            group="ceph.rook.io",
+            group=_CEPH_ROOK_API_GROUP,
             version="v1",
             namespace=namespace,
             plural="cephclusters",
@@ -1216,7 +1235,7 @@ def _rook_ceph_fsid(custom_api, namespace: str) -> str:
     """Best-effort fsid from Rook CephCluster (may 403 for provider SA)."""
     try:
         cluster = custom_api.get_namespaced_custom_object(
-            group="ceph.rook.io",
+            group=_CEPH_ROOK_API_GROUP,
             version="v1",
             namespace=namespace,
             plural="cephclusters",
@@ -1282,7 +1301,7 @@ def _expected_osd_count(namespace: str, custom_api=None) -> int:
 
     try:
         cluster = custom_api.get_namespaced_custom_object(
-            group="ceph.rook.io",
+            group=_CEPH_ROOK_API_GROUP,
             version="v1",
             namespace=namespace,
             plural="cephclusters",
@@ -1325,65 +1344,50 @@ def _osd_index_from_pvc(pvc) -> int:
     )
 
 
-def discover_ceph_device_pvcs(core_api, namespace: str, custom_api=None) -> list[dict]:
-    """Discover mon and OSD PVCs for project Ceph capture.
+def _appliance_osd_index(pvc) -> int:
+    """Resolve OSD index from troshka-ceph-osd-index label or PVC name suffix."""
+    labels = pvc.metadata.labels or {}
+    index_raw = labels.get("troshka-ceph-osd-index")
+    if index_raw is not None:
+        return int(index_raw)
+    name = pvc.metadata.name or ""
+    prefix = "troshka-ceph-osd-"
+    if name.startswith(prefix) and name[len(prefix) :].isdigit():
+        return int(name[len(prefix) :])
+    raise ValueError(f"OSD PVC {name} missing troshka-ceph-osd-index")
 
-    Appliance mon PVC is ``troshka-ceph-mon``. OSD PVCs use
-    ``troshka-role=ceph-osd`` (names ``troshka-ceph-osd-{i}``).
-    """
-    from helpers.ceph_appliance import MON_PVC_NAME, osd_pvc_name
 
-    expected_osds = _expected_osd_count(namespace, custom_api=custom_api)
-
+def _read_mon_pvc_or_raise(core_api, namespace: str, mon_pvc_name: str):
     try:
-        mon_pvc = core_api.read_namespaced_persistent_volume_claim(
-            name=MON_PVC_NAME,
+        return core_api.read_namespaced_persistent_volume_claim(
+            name=mon_pvc_name,
             namespace=namespace,
         )
     except ApiException as e:
         if e.status == 404:
             raise ValueError(
-                f"expected mon PVC {MON_PVC_NAME}, not found in {namespace}"
+                f"expected mon PVC {mon_pvc_name}, not found in {namespace}"
             ) from e
         raise
 
-    osd_pvcs = core_api.list_namespaced_persistent_volume_claim(
-        namespace=namespace,
-        label_selector="troshka-role=ceph-osd",
-    ).items
 
+def _collect_osd_device_entries(
+    osd_pvcs, expected_osds: int, osd_pvc_name_fn
+) -> list[dict]:
+    """Validate OSD PVCs and build device dicts (index, size)."""
     if len(osd_pvcs) != expected_osds:
         raise ValueError(
             f"expected {expected_osds} ceph-osd PVC(s), found {len(osd_pvcs)}"
         )
 
-    devices: list[dict] = [
-        {
-            "name": MON_PVC_NAME,
-            "kind": "ceph-mon",
-            "index": 0,
-            "size_bytes": _pvc_size_bytes(mon_pvc),
-        }
-    ]
-
+    devices: list[dict] = []
     seen_indices: set[int] = set()
     for pvc in osd_pvcs:
-        labels = pvc.metadata.labels or {}
-        index_raw = labels.get("troshka-ceph-osd-index")
-        if index_raw is None:
-            # Fall back to name troshka-ceph-osd-N
-            name = pvc.metadata.name or ""
-            prefix = "troshka-ceph-osd-"
-            if name.startswith(prefix) and name[len(prefix) :].isdigit():
-                index = int(name[len(prefix) :])
-            else:
-                raise ValueError(f"OSD PVC {name} missing troshka-ceph-osd-index")
-        else:
-            index = int(index_raw)
+        index = _appliance_osd_index(pvc)
         if index in seen_indices:
             raise ValueError(f"duplicate ceph-osd index {index}")
         seen_indices.add(index)
-        expected_name = osd_pvc_name(index)
+        expected_name = osd_pvc_name_fn(index)
         if pvc.metadata.name != expected_name:
             raise ValueError(
                 f"OSD PVC {pvc.metadata.name} expected name {expected_name}"
@@ -1400,7 +1404,36 @@ def discover_ceph_device_pvcs(core_api, namespace: str, custom_api=None) -> list
     if seen_indices != set(range(expected_osds)):
         missing = sorted(set(range(expected_osds)) - seen_indices)
         raise ValueError(f"missing ceph-osd index(es): {missing}")
+    return devices
 
+
+def discover_ceph_device_pvcs(core_api, namespace: str, custom_api=None) -> list[dict]:
+    """Discover mon and OSD PVCs for project Ceph capture.
+
+    Appliance mon PVC is ``troshka-ceph-mon``. OSD PVCs use
+    ``troshka-role=ceph-osd`` (names ``troshka-ceph-osd-{i}``).
+    """
+    from helpers.ceph_appliance import MON_PVC_NAME, osd_pvc_name
+
+    expected_osds = _expected_osd_count(namespace, custom_api=custom_api)
+    mon_pvc = _read_mon_pvc_or_raise(core_api, namespace, MON_PVC_NAME)
+
+    osd_pvcs = core_api.list_namespaced_persistent_volume_claim(
+        namespace=namespace,
+        label_selector="troshka-role=ceph-osd",
+    ).items
+
+    devices: list[dict] = [
+        {
+            "name": MON_PVC_NAME,
+            "kind": "ceph-mon",
+            "index": 0,
+            "size_bytes": _pvc_size_bytes(mon_pvc),
+        }
+    ]
+    devices.extend(
+        _collect_osd_device_entries(osd_pvcs, expected_osds, osd_pvc_name)
+    )
     devices.sort(key=lambda d: (0 if d["kind"] == "ceph-mon" else 1, d["index"]))
     return devices
 
@@ -1428,7 +1461,7 @@ def _strip_object_finalizers(
             )
         else:
             custom_api.patch_namespaced_custom_object(
-                group="ceph.rook.io",
+                group=_CEPH_ROOK_API_GROUP,
                 version="v1",
                 namespace=namespace,
                 plural=kind,
@@ -1450,7 +1483,7 @@ def _strip_object_finalizers(
 def _rook_cr_gone(custom_api, namespace: str, plural: str, name: str) -> bool:
     try:
         custom_api.get_namespaced_custom_object(
-            group="ceph.rook.io",
+            group=_CEPH_ROOK_API_GROUP,
             version="v1",
             namespace=namespace,
             plural=plural,
@@ -1461,6 +1494,75 @@ def _rook_cr_gone(custom_api, namespace: str, plural: str, name: str) -> bool:
         if e.status == 404:
             return True
         raise
+
+
+def _delete_rook_cr_ignore_missing(custom_api, namespace: str, plural: str, cr_name: str):
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group=_CEPH_ROOK_API_GROUP,
+            version="v1",
+            namespace=namespace,
+            plural=plural,
+            name=cr_name,
+        )
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Failed to delete %s/%s: %s", plural, cr_name, e)
+
+
+def _wait_for_rook_crs_gone(
+    custom_api,
+    namespace: str,
+    targets: list[tuple[str, str]],
+    *,
+    wait_seconds: float,
+    poll_seconds: float,
+) -> list[tuple[str, str]]:
+    """Poll until CRs are gone or deadline; return still-pending targets."""
+    deadline = time.monotonic() + wait_seconds
+    pending = list(targets)
+    while pending:
+        still = []
+        for plural, cr_name in pending:
+            try:
+                if _rook_cr_gone(custom_api, namespace, plural, cr_name):
+                    continue
+            except ApiException as e:
+                logger.warning("Poll %s/%s failed: %s", plural, cr_name, e)
+            still.append((plural, cr_name))
+        pending = still
+        if not pending or time.monotonic() >= deadline:
+            break
+        time.sleep(poll_seconds)
+    return pending
+
+
+def _force_delete_pending_rook_crs(
+    custom_api,
+    core_api,
+    namespace: str,
+    pending: list[tuple[str, str]],
+    wait_seconds: float,
+) -> None:
+    for plural, cr_name in pending:
+        logger.warning(
+            "Rook %s/%s still present after %.0fs — stripping finalizers",
+            plural,
+            cr_name,
+            wait_seconds,
+        )
+        _strip_object_finalizers(custom_api, core_api, namespace, plural, cr_name)
+        try:
+            custom_api.delete_namespaced_custom_object(
+                group=_CEPH_ROOK_API_GROUP,
+                version="v1",
+                namespace=namespace,
+                plural=plural,
+                name=cr_name,
+            )
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Re-delete %s/%s failed: %s", plural, cr_name, e)
 
 
 def delete_rook_ceph_crs(
@@ -1478,60 +1580,50 @@ def delete_rook_ceph_crs(
     or the finalize hangs, the project namespace stays Terminating forever.
     After a grace wait, strip those finalizers so delete can complete.
     """
-    targets = (
+    targets = [
         ("cephblockpools", "troshka-ceph-pool"),
         ("cephclusters", "troshka-ceph"),
-    )
+    ]
     for plural, cr_name in targets:
-        try:
-            custom_api.delete_namespaced_custom_object(
-                group="ceph.rook.io",
-                version="v1",
-                namespace=namespace,
-                plural=plural,
-                name=cr_name,
-            )
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning("Failed to delete %s/%s: %s", plural, cr_name, e)
+        _delete_rook_cr_ignore_missing(custom_api, namespace, plural, cr_name)
 
-    deadline = time.monotonic() + wait_seconds
-    pending = list(targets)
-    while pending:
-        still = []
-        for plural, cr_name in pending:
-            try:
-                if _rook_cr_gone(custom_api, namespace, plural, cr_name):
-                    continue
-            except ApiException as e:
-                logger.warning("Poll %s/%s failed: %s", plural, cr_name, e)
-            still.append((plural, cr_name))
-        pending = still
-        if not pending or time.monotonic() >= deadline:
-            break
-        time.sleep(poll_seconds)
-
-    for plural, cr_name in pending:
-        logger.warning(
-            "Rook %s/%s still present after %.0fs — stripping finalizers",
-            plural,
-            cr_name,
-            wait_seconds,
-        )
-        _strip_object_finalizers(custom_api, core_api, namespace, plural, cr_name)
-        try:
-            custom_api.delete_namespaced_custom_object(
-                group="ceph.rook.io",
-                version="v1",
-                namespace=namespace,
-                plural=plural,
-                name=cr_name,
-            )
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning("Re-delete %s/%s failed: %s", plural, cr_name, e)
-
+    pending = _wait_for_rook_crs_gone(
+        custom_api,
+        namespace,
+        targets,
+        wait_seconds=wait_seconds,
+        poll_seconds=poll_seconds,
+    )
+    _force_delete_pending_rook_crs(
+        custom_api, core_api, namespace, pending, wait_seconds
+    )
     _strip_rook_disaster_finalizers(core_api, namespace)
+
+
+def _strip_one_disaster_finalizer(kind: str, obj, patch_fn, namespace: str) -> None:
+    fins = list(obj.metadata.finalizers or [])
+    if _ROOK_DISASTER_FINAL not in fins:
+        return
+    try:
+        patch_fn(
+            name=obj.metadata.name,
+            namespace=namespace,
+            body={"metadata": {"finalizers": None}},
+        )
+        logger.info(
+            "Stripped disaster-protection from %s/%s in %s",
+            kind,
+            obj.metadata.name,
+            namespace,
+        )
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning(
+                "Failed to strip %s/%s finalizers: %s",
+                kind,
+                obj.metadata.name,
+                e,
+            )
 
 
 def _strip_rook_disaster_finalizers(core_api, namespace: str) -> None:
@@ -1555,82 +1647,70 @@ def _strip_rook_disaster_finalizers(core_api, namespace: str) -> None:
                 logger.warning("Failed to list %ss in %s: %s", kind, namespace, e)
             continue
         for obj in items:
-            fins = list(obj.metadata.finalizers or [])
-            if _ROOK_DISASTER_FINAL not in fins:
-                continue
-            try:
-                patch_fn(
-                    name=obj.metadata.name,
-                    namespace=namespace,
-                    body={"metadata": {"finalizers": None}},
-                )
-                logger.info(
-                    "Stripped disaster-protection from %s/%s in %s",
-                    kind,
-                    obj.metadata.name,
-                    namespace,
-                )
-            except ApiException as e:
-                if e.status != 404:
-                    logger.warning(
-                        "Failed to strip %s/%s finalizers: %s",
-                        kind,
-                        obj.metadata.name,
-                        e,
-                    )
+            _strip_one_disaster_finalizer(kind, obj, patch_fn, namespace)
 
 
-def delete_ceph_storage_pvcs(core_api, namespace: str) -> None:
-    """Delete OSD/backing PVCs left after a TroshkaCeph teardown."""
+def _delete_ceph_pvc(core_api, namespace: str, name: str, seen: set[str]) -> None:
+    """Strip finalizers and delete a PVC once; ignore missing."""
+    if not name or name in seen:
+        return
+    seen.add(name)
     delete_opts = client.V1DeleteOptions(propagation_policy="Background")
-    seen: set[str] = set()
-
-    def _delete_pvc(name: str) -> None:
-        if not name or name in seen:
-            return
-        seen.add(name)
+    try:
+        # Stuck PVC finalizers also block namespace teardown.
         try:
-            # Stuck PVC finalizers also block namespace teardown.
-            try:
-                core_api.patch_namespaced_persistent_volume_claim(
-                    name=name,
-                    namespace=namespace,
-                    body={"metadata": {"finalizers": None}},
-                )
-            except ApiException as e:
-                if e.status not in (404, 409):
-                    logger.warning("Failed to strip PVC finalizers %s: %s", name, e)
-            core_api.delete_namespaced_persistent_volume_claim(
+            core_api.patch_namespaced_persistent_volume_claim(
                 name=name,
                 namespace=namespace,
-                body=delete_opts,
+                body={"metadata": {"finalizers": None}},
             )
-            logger.info("Deleted ceph PVC %s in %s", name, namespace)
         except ApiException as e:
-            if e.status != 404:
-                logger.warning("Failed to delete ceph PVC %s: %s", name, e)
+            if e.status not in (404, 409):
+                logger.warning("Failed to strip PVC finalizers %s: %s", name, e)
+        core_api.delete_namespaced_persistent_volume_claim(
+            name=name,
+            namespace=namespace,
+            body=delete_opts,
+        )
+        logger.info("Deleted ceph PVC %s in %s", name, namespace)
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Failed to delete ceph PVC %s: %s", name, e)
 
-    for selector in ("app=rook-ceph-osd", "app=troshka-ceph"):
-        try:
-            pvcs = core_api.list_namespaced_persistent_volume_claim(
-                namespace=namespace,
-                label_selector=selector,
-            )
-            for pvc in pvcs.items:
-                _delete_pvc(pvc.metadata.name)
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning("Failed to list ceph PVCs (%s): %s", selector, e)
 
+def _delete_pvcs_by_selector(
+    core_api, namespace: str, selector: str, seen: set[str]
+) -> None:
+    try:
+        pvcs = core_api.list_namespaced_persistent_volume_claim(
+            namespace=namespace,
+            label_selector=selector,
+        )
+        for pvc in pvcs.items:
+            _delete_ceph_pvc(core_api, namespace, pvc.metadata.name, seen)
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Failed to list ceph PVCs (%s): %s", selector, e)
+
+
+def _delete_pvcs_by_prefix(core_api, namespace: str, seen: set[str]) -> None:
     try:
         pvcs = core_api.list_namespaced_persistent_volume_claim(namespace=namespace)
         for pvc in pvcs.items:
             name = pvc.metadata.name or ""
             if any(name.startswith(p) for p in _ROOK_PVC_PREFIXES):
-                _delete_pvc(name)
+                _delete_ceph_pvc(core_api, namespace, name, seen)
     except ApiException as e:
         if e.status != 404:
             logger.warning("Failed to list namespace PVCs for ceph cleanup: %s", e)
+
+
+def delete_ceph_storage_pvcs(core_api, namespace: str) -> None:
+    """Delete OSD/backing PVCs left after a TroshkaCeph teardown."""
+    seen: set[str] = set()
+    for selector in ("app=rook-ceph-osd", "app=troshka-ceph"):
+        _delete_pvcs_by_selector(core_api, namespace, selector, seen)
+    _delete_pvcs_by_prefix(core_api, namespace, seen)
 
 
 def validate_lab_ip(lab_ip: str) -> bool:
@@ -1727,28 +1807,35 @@ def ensure_rook_operator(ceph_cr: dict) -> None:
     )
 
 
-def delete_rook_operator(ceph_cr: dict | None, namespace: str) -> None:
-    """Tear down per-project rook operator resources."""
-    apps_api = client.AppsV1Api()
-    rbac_api = client.RbacAuthorizationV1Api()
-    core_api = client.CoreV1Api()
+def _delete_ignore_404(delete_call, *, warn_label: str) -> None:
+    """Run a delete callable; log non-404 ApiExceptions."""
+    try:
+        delete_call()
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Failed to delete %s: %s", warn_label, e)
 
-    for dep_name in (ROOK_OPERATOR_DEPLOYMENT,):
-        try:
-            apps_api.delete_namespaced_deployment(name=dep_name, namespace=namespace)
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning("Failed to delete %s: %s", dep_name, e)
 
+def _delete_rook_operator_deployment(apps_api, namespace: str) -> None:
+    _delete_ignore_404(
+        lambda: apps_api.delete_namespaced_deployment(
+            name=ROOK_OPERATOR_DEPLOYMENT, namespace=namespace
+        ),
+        warn_label=ROOK_OPERATOR_DEPLOYMENT,
+    )
+
+
+def _delete_rook_cluster_role_bindings(rbac_api, namespace: str) -> None:
     for sa_name, cluster_roles in TROSHKA_ROOK_SA_CLUSTER_ROLES.items():
         for cluster_role in cluster_roles:
             crb_name = rook_crb_name(namespace, sa_name, cluster_role)
-            try:
-                rbac_api.delete_cluster_role_binding(name=crb_name)
-            except ApiException as e:
-                if e.status != 404:
-                    logger.warning("Failed to delete CRB %s: %s", crb_name, e)
+            _delete_ignore_404(
+                lambda n=crb_name: rbac_api.delete_cluster_role_binding(name=n),
+                warn_label=f"CRB {crb_name}",
+            )
 
+
+def _delete_rook_namespace_rbac(rbac_api, namespace: str) -> None:
     for kind, delete_fn, obj_name in (
         (
             "RoleBinding",
@@ -1757,34 +1844,51 @@ def delete_rook_operator(ceph_cr: dict | None, namespace: str) -> None:
         ),
         ("Role", rbac_api.delete_namespaced_role, ROOK_CMD_REPORTER_ROLE),
     ):
-        try:
-            delete_fn(name=obj_name, namespace=namespace)
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning("Failed to delete rook %s %s: %s", kind, obj_name, e)
+        _delete_ignore_404(
+            lambda fn=delete_fn, n=obj_name: fn(name=n, namespace=namespace),
+            warn_label=f"rook {kind} {obj_name}",
+        )
 
+
+def _delete_rook_operand_sas(core_api, namespace: str) -> None:
     for sa_name in ROOK_OPERAND_SAS:
         if sa_name == ROOK_SYSTEM_SA:
             continue
-        try:
-            core_api.delete_namespaced_service_account(
-                name=sa_name, namespace=namespace
-            )
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning("Failed to delete rook SA %s: %s", sa_name, e)
-
-    for cm_name in (ROOK_OPERATOR_CONFIG,):
-        try:
-            core_api.delete_namespaced_config_map(name=cm_name, namespace=namespace)
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning("Failed to delete configmap %s: %s", cm_name, e)
-
-    try:
-        core_api.delete_namespaced_service_account(
-            name=ROOK_SYSTEM_SA, namespace=namespace
+        _delete_ignore_404(
+            lambda n=sa_name: core_api.delete_namespaced_service_account(
+                name=n, namespace=namespace
+            ),
+            warn_label=f"rook SA {sa_name}",
         )
-    except ApiException as e:
-        if e.status != 404:
-            logger.warning("Failed to delete rook SA: %s", e)
+
+
+def _delete_rook_operator_config(core_api, namespace: str) -> None:
+    _delete_ignore_404(
+        lambda: core_api.delete_namespaced_config_map(
+            name=ROOK_OPERATOR_CONFIG, namespace=namespace
+        ),
+        warn_label=f"configmap {ROOK_OPERATOR_CONFIG}",
+    )
+
+
+def _delete_rook_system_sa(core_api, namespace: str) -> None:
+    _delete_ignore_404(
+        lambda: core_api.delete_namespaced_service_account(
+            name=ROOK_SYSTEM_SA, namespace=namespace
+        ),
+        warn_label="rook SA",
+    )
+
+
+def delete_rook_operator(_ceph_cr: dict | None, namespace: str) -> None:
+    """Tear down per-project rook operator resources."""
+    apps_api = client.AppsV1Api()
+    rbac_api = client.RbacAuthorizationV1Api()
+    core_api = client.CoreV1Api()
+
+    _delete_rook_operator_deployment(apps_api, namespace)
+    _delete_rook_cluster_role_bindings(rbac_api, namespace)
+    _delete_rook_namespace_rbac(rbac_api, namespace)
+    _delete_rook_operand_sas(core_api, namespace)
+    _delete_rook_operator_config(core_api, namespace)
+    _delete_rook_system_sa(core_api, namespace)

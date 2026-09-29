@@ -239,6 +239,13 @@ _AWS_CLI = "/opt/troshka/venv/bin/aws"
 _VENV_BIN = "/opt/troshka/venv/bin"
 _VBMCD_PID = "vbmcd.pid"
 _PXE_LOADER = "pxelinux.0"
+_PROXY_PID_FILE = "proxy.pid"
+_TLS_FULLCHAIN_PEM = "fullchain.pem"
+_TLS_PRIVKEY_PEM = "privkey.pem"  # pragma: allowlist secret
+_PROXY_JSON_FILE = "proxy.json"
+_SHUT_OFF_STATE = "shut off"
+_BIN_SH = "/bin/sh"
+_VAR_RUN_NETNS = "/var/run/netns"
 
 # The FULL host package set troshkad needs, and the SINGLE source of truth for
 # it. The backend's agent_deployer installs exactly this list at bootstrap
@@ -504,6 +511,36 @@ def _get_storage_capacity():
         return {"storage_total_gb": 0, "storage_used_gb": 0}
 
 
+def _parse_dominfo_resources(stdout: str) -> tuple[int, int]:
+    """Return (vcpus, ram_mb) from a virsh dominfo dump."""
+    vcpus = 0
+    ram_mb = 0
+    for line in stdout.split("\n"):
+        if line.startswith("CPU(s):"):
+            vcpus += int(line.split(":")[1].strip())
+        elif line.startswith("Max memory:"):
+            ram_mb += int(line.split(":")[1].strip().split()[0]) // 1024
+    return vcpus, ram_mb
+
+
+def _sum_domain_resources(domains: list[str]) -> tuple[int, int]:
+    vcpus_used = 0
+    ram_used = 0
+    for domain in domains:
+        info = subprocess.run(
+            ["virsh", "dominfo", domain],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if info.returncode != 0:
+            continue
+        v, r = _parse_dominfo_resources(info.stdout)
+        vcpus_used += v
+        ram_used += r
+    return vcpus_used, ram_used
+
+
 def _get_vm_capacity():
     """Return dict with total_vms, running_vms, vcpus_used, ram_used_mb."""
     result_dict = {}
@@ -528,21 +565,7 @@ def _get_vm_capacity():
             result_dict["running_vms"] = len(
                 [d for d in running.stdout.strip().split("\n") if d.strip()]
             )
-        vcpus_used = 0
-        ram_used = 0
-        for domain in domains:
-            info = subprocess.run(
-                ["virsh", "dominfo", domain],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if info.returncode == 0:
-                for line in info.stdout.split("\n"):
-                    if line.startswith("CPU(s):"):
-                        vcpus_used += int(line.split(":")[1].strip())
-                    elif line.startswith("Max memory:"):
-                        ram_used += int(line.split(":")[1].strip().split()[0]) // 1024
+        vcpus_used, ram_used = _sum_domain_resources(domains)
         result_dict["vcpus_used"] = vcpus_used
         result_dict["ram_used_mb"] = ram_used
     except Exception:
@@ -1138,8 +1161,8 @@ def _gen_self_signed_cert(out_dir, cn, eip, extra_dns=None):
     """
     os.makedirs(out_dir, exist_ok=True)
     os.chmod(out_dir, 0o700)
-    full = os.path.join(out_dir, "fullchain.pem")
-    key = os.path.join(out_dir, "privkey.pem")
+    full = os.path.join(out_dir, _TLS_FULLCHAIN_PEM)
+    key = os.path.join(out_dir, _TLS_PRIVKEY_PEM)
     san_parts = [f"IP:{eip}"]
     for name in extra_dns or []:
         name = (name or "").strip()
@@ -1227,7 +1250,7 @@ def _obtain_letsencrypt_cert(fqdn, route53, extra_dns=None):
     if proc.returncode != 0:
         return None, None, "self-signed"
     live = f"/etc/letsencrypt/live/{names[0]}"
-    return f"{live}/fullchain.pem", f"{live}/privkey.pem", "letsencrypt"
+    return f"{live}/{_TLS_FULLCHAIN_PEM}", f"{live}/{_TLS_PRIVKEY_PEM}", "letsencrypt"
 
 
 _FQDN_RE = re.compile(r"^[a-zA-Z0-9.-]{1,253}$")
@@ -1267,20 +1290,57 @@ def _handle_gateway_tls_cert(job, params):
 COMMAND_HANDLERS["gateway/tls-cert"] = _handle_gateway_tls_cert
 
 
+_LETSENCRYPT_LIVE = "/etc/letsencrypt/live"
+_TLS_SOURCE_BASENAMES = frozenset(
+    {_TLS_FULLCHAIN_PEM, _TLS_PRIVKEY_PEM, "cert.pem", "chain.pem"}
+)
+
+
+def _tls_source_allowed(real_path, tls_base):
+    """True if real_path is under the gateway tls dir or Let's Encrypt live/."""
+    if real_path == tls_base or real_path.startswith(tls_base + os.sep):
+        return True
+    le_base = os.path.realpath(_LETSENCRYPT_LIVE)
+    if not real_path.startswith(le_base + os.sep):
+        return False
+    return os.path.basename(real_path) in _TLS_SOURCE_BASENAMES
+
+
+def _read_confined_tls_bytes(path, tls_base):
+    """Read TLS material only after realpath confinement to allowed bases."""
+    real = os.path.realpath(path)
+    if not _tls_source_allowed(real, tls_base):
+        raise ValueError("TLS material must stay under an allowed TLS directory")
+    # Reconstruct via dirname+basename so open() is not fed the caller string.
+    confined = os.path.join(os.path.dirname(real), os.path.basename(real))
+    if os.path.realpath(confined) != real:
+        raise ValueError("TLS material path mismatch after confinement")
+    with open(confined) as f:
+        return f.read()
+
+
 def _write_combined_pem(tls_dir, cert_path, key_path):
+    """Combine cert+key into tls_dir/combined.pem.
+
+    Sources must resolve under the gateway tls_dir or ``/etc/letsencrypt/live/``.
+    Content is re-written to fixed names under tls_dir so subsequent open()
+    calls never use caller-supplied paths (pythonsecurity:S2083).
+    """
     os.makedirs(tls_dir, exist_ok=True)
     os.chmod(tls_dir, 0o700)
     base = os.path.realpath(tls_dir)
-    cert_real = os.path.realpath(cert_path)
-    key_real = os.path.realpath(key_path)
-    for path in (cert_real, key_real):
-        if path != base and not path.startswith(base + os.sep):
-            raise ValueError("TLS material must stay under the gateway tls directory")
-    combined = os.path.join(tls_dir, "combined.pem")
-    with open(cert_real) as c, open(key_real) as k:
-        data = c.read() + "\n" + k.read()
+    cert_data = _read_confined_tls_bytes(cert_path, base)
+    key_data = _read_confined_tls_bytes(key_path, base)
+    local_cert = os.path.join(base, _TLS_FULLCHAIN_PEM)
+    local_key = os.path.join(base, _TLS_PRIVKEY_PEM)
+    combined = os.path.join(base, "combined.pem")
+    with open(local_cert, "w") as f:
+        f.write(cert_data)
+    with open(local_key, "w") as f:
+        f.write(key_data)
+    os.chmod(local_key, 0o600)
     with open(combined, "w") as f:
-        f.write(data)
+        f.write(cert_data + "\n" + key_data)
     os.chmod(combined, 0o600)
     return combined
 
@@ -1299,7 +1359,7 @@ def _start_tls_proxy(project_id, netns, listen, upstream, cert_path, key_path):
     _stop_tls_proxy(project_id)
     bind_ip, _, port = listen.partition(":")
     ipaddress.ip_address(bind_ip)
-    up_ip, _, up_port = upstream.partition(":")
+    up_ip, _, _ = upstream.partition(":")
     ipaddress.ip_address(up_ip)  # raises on malformed upstream
     port = port or "443"
     tls_dir = _gateway_tls_dir(project_id)
@@ -1316,9 +1376,9 @@ def _start_tls_proxy(project_id, netns, listen, upstream, cert_path, key_path):
         f"TCP:{upstream}",
     ]
     proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    with open(os.path.join(tls_dir, "proxy.pid"), "w") as f:
+    with open(os.path.join(tls_dir, _PROXY_PID_FILE), "w") as f:
         f.write(str(proc.pid))
-    with open(os.path.join(tls_dir, "proxy.json"), "w") as f:
+    with open(os.path.join(tls_dir, _PROXY_JSON_FILE), "w") as f:
         json.dump(
             {
                 "netns": netns,
@@ -1334,8 +1394,8 @@ def _start_tls_proxy(project_id, netns, listen, upstream, cert_path, key_path):
 
 def _stop_tls_proxy(project_id):
     tls_dir = _gateway_tls_dir(project_id)
-    pidfile = os.path.join(tls_dir, "proxy.pid")
-    meta = os.path.join(tls_dir, "proxy.json")
+    pidfile = os.path.join(tls_dir, _PROXY_PID_FILE)
+    meta = os.path.join(tls_dir, _PROXY_JSON_FILE)
     netns = None
     try:
         with open(meta) as f:
@@ -1358,7 +1418,7 @@ def _stop_tls_proxy(project_id):
             stderr=subprocess.DEVNULL,
             timeout=10,
         )
-    for name in ("proxy.pid", "proxy.json"):
+    for name in (_PROXY_PID_FILE, _PROXY_JSON_FILE):
         try:
             os.remove(os.path.join(tls_dir, name))
         except OSError:
@@ -1548,6 +1608,49 @@ def _build_boot_parts(firmware, secure_boot, boot_devs):
     return boot_parts
 
 
+def _append_vm_graphics_and_input(cmd, params, headless, video_model, input_model):
+    """Append virt-install graphics/video/input args for headless or VNC consoles."""
+    if headless:
+        # No graphical display — guest console is serial (ttyS0) only.
+        cmd.extend(["--graphics", "none"])
+        return
+    # virt-install defaults to SPICE when only --video is set; Troshka console
+    # speaks VNC only, so request VNC explicitly.
+    vnc_listen = params.get("vnc_listen", "127.0.0.1")
+    cmd.extend(["--graphics", f"vnc,listen={vnc_listen}"])
+    if video_model in ("virtio", "vga", "qxl"):
+        cmd.extend(["--video", video_model])
+    if input_model == "virtio":
+        cmd.extend(["--input", "type=keyboard,bus=virtio"])
+        cmd.extend(["--input", "type=tablet,bus=virtio"])
+    elif input_model == "usb":
+        cmd.extend(["--input", "type=keyboard,bus=usb"])
+        cmd.extend(["--input", "type=tablet,bus=usb"])
+
+
+def _inject_domain_hwuuid(job, domain, hwuuid):
+    """Insert <hwuuid> into domain XML when an SMBIOS UUID was requested."""
+    if not hwuuid:
+        return
+    import xml.etree.ElementTree as ET
+
+    xml_str = subprocess.check_output(
+        ["virsh", "dumpxml", domain], text=True, timeout=10
+    )
+    root = ET.fromstring(xml_str)
+    uuid_elem = root.find("uuid")
+    if uuid_elem is None:
+        raise RuntimeError(f"No <uuid> element in domain XML for {domain}")
+    hwuuid_elem = ET.Element("hwuuid")
+    hwuuid_elem.text = hwuuid
+    root.insert(list(root).index(uuid_elem) + 1, hwuuid_elem)
+    tmp = f"/tmp/troshka-hwuuid-{domain}.xml"
+    ET.ElementTree(root).write(tmp, xml_declaration=False)
+    _run_cmd(job, ["virsh", "define", tmp], timeout=10)
+    os.unlink(tmp)
+    _job_log(job, f"Set hwuuid={hwuuid} on {domain}")
+
+
 def _handle_vm_create(job, params):
     domain = _validate_domain_name(params["domain_name"])
     vcpus = int(params["vcpus"])
@@ -1598,23 +1701,7 @@ def _handle_vm_create(job, params):
     if seed_iso:
         cmd.extend(["--disk", f"path={_validate_path(seed_iso)},device=cdrom,bus=sata"])
     headless = _resolve_headless(params)
-    if headless:
-        # No graphical display — guest console is serial (ttyS0) only.
-        cmd.extend(["--graphics", "none"])
-    else:
-        # virt-install defaults to SPICE when only --video is set; Troshka console
-        # speaks VNC only, so request VNC explicitly.
-        vnc_listen = params.get("vnc_listen", "127.0.0.1")
-        cmd.extend(["--graphics", f"vnc,listen={vnc_listen}"])
-        if video_model in ("virtio", "vga", "qxl"):
-            cmd.extend(["--video", video_model])
-    if not headless:
-        if input_model == "virtio":
-            cmd.extend(["--input", "type=keyboard,bus=virtio"])
-            cmd.extend(["--input", "type=tablet,bus=virtio"])
-        elif input_model == "usb":
-            cmd.extend(["--input", "type=keyboard,bus=usb"])
-            cmd.extend(["--input", "type=tablet,bus=usb"])
+    _append_vm_graphics_and_input(cmd, params, headless, video_model, input_model)
     cmd.extend(
         ["--channel", "unix,target.type=virtio,target.name=org.qemu.guest_agent.0"]
     )
@@ -1622,24 +1709,7 @@ def _handle_vm_create(job, params):
         cmd.extend(["--clock", f"offset=variable,adjustment={int(clock_offset)}"])
     _run_cmd(job, cmd, timeout=600)
 
-    if _hwuuid:
-        import xml.etree.ElementTree as ET
-
-        xml_str = subprocess.check_output(
-            ["virsh", "dumpxml", domain], text=True, timeout=10
-        )
-        root = ET.fromstring(xml_str)
-        uuid_elem = root.find("uuid")
-        if uuid_elem is None:
-            raise RuntimeError(f"No <uuid> element in domain XML for {domain}")
-        hwuuid_elem = ET.Element("hwuuid")
-        hwuuid_elem.text = _hwuuid
-        root.insert(list(root).index(uuid_elem) + 1, hwuuid_elem)
-        tmp = f"/tmp/troshka-hwuuid-{domain}.xml"
-        ET.ElementTree(root).write(tmp, xml_declaration=False)
-        _run_cmd(job, ["virsh", "define", tmp], timeout=10)
-        os.unlink(tmp)
-        _job_log(job, f"Set hwuuid={_hwuuid} on {domain}")
+    _inject_domain_hwuuid(job, domain, _hwuuid)
 
     # Return the auto-generated domain UUID so the backend can store it
     dom_uuid = ""
@@ -1735,7 +1805,7 @@ def _handle_vm_force_off(job, params):
         if result.returncode != 0:
             return {"domain": domain, "status": "off", "method": "not_found"}
         state = result.stdout.strip()
-        if state == "shut off":
+        if state == _SHUT_OFF_STATE:
             return {"domain": domain, "status": "off", "method": method}
         method = "destroy"
         try:
@@ -1814,7 +1884,7 @@ def _handle_vm_stop(job, params):
         result = subprocess.run(
             ["virsh", "domstate", domain], capture_output=True, text=True, timeout=5
         )
-        if result.returncode != 0 or result.stdout.strip() in ("shut off", ""):
+        if result.returncode != 0 or result.stdout.strip() in (_SHUT_OFF_STATE, ""):
             return {"domain": domain, "status": "stopped", "method": "shutdown"}
     # Force destroy if graceful shutdown didn't work
     _job_log(job, f"Graceful shutdown timed out after {grace}s, forcing destroy")
@@ -2076,6 +2146,15 @@ def _handle_vm_config(job, params):
 COMMAND_HANDLERS["vms/config"] = _handle_vm_config
 
 
+def _next_virtio_disk_target(used: set[str]) -> str | None:
+    for letter in "bcdefghijklmnop":
+        dev = f"vd{letter}"
+        if dev not in used:
+            used.add(dev)
+            return dev
+    return None
+
+
 def _hot_attach_new_disks(job, domain, disks, cur_root):
     """Hot-attach new disks to a running VM without restart.
 
@@ -2089,20 +2168,13 @@ def _hot_attach_new_disks(job, domain, disks, cur_root):
     new_disks = [d for d in disks if d["path"] not in cur_disk_paths]
     if not new_disks:
         return False
-    target_letters = "bcdefghijklmnop"
     used = {
         d.find("target").get("dev")
         for d in cur_root.find("devices").findall("disk")
         if d.find("target") is not None
     }
     for d in new_disks:
-        tgt = None
-        for letter in target_letters:
-            dev = f"vd{letter}"
-            if dev not in used:
-                tgt = dev
-                used.add(dev)
-                break
+        tgt = _next_virtio_disk_target(used)
         if not tgt:
             continue
         _run_cmd(
@@ -2260,15 +2332,20 @@ def _add_cdrom_element(job, devices, path, cdrom_bus, dev_prefix, used_targets, 
     _job_log(job, f"Updated cdrom {path} on {domain} (bus={cdrom_bus})")
 
 
-def _reconfigure_cdroms(job, root, domain, cdroms):
-    """Synchronize CDROM entries in libvirt XML with the desired list."""
-    devices = root.find("devices")
+def _cdrom_dev_prefix(cdrom_bus: str) -> str:
+    if cdrom_bus == "sata":
+        return "sd"
+    if cdrom_bus == "ide":
+        return "hd"
+    return "vd"
+
+
+def _existing_cdrom_state(devices):
     existing_cdroms = [
         d
         for d in (devices.findall("disk") if devices is not None else [])
         if d.get("device") == "cdrom"
     ]
-    desired_set = set(cdroms)
     existing_set = set()
     cdrom_bus = "sata"
     for cd in existing_cdroms:
@@ -2277,17 +2354,18 @@ def _reconfigure_cdroms(job, root, domain, cdroms):
         tgt = cd.find("target")
         if tgt is not None and tgt.get("bus"):
             cdrom_bus = tgt.get("bus")
+    return existing_cdroms, existing_set, cdrom_bus
 
-    if existing_set == desired_set:
+
+def _reconfigure_cdroms(job, root, domain, cdroms):
+    """Synchronize CDROM entries in libvirt XML with the desired list."""
+    devices = root.find("devices")
+    existing_cdroms, existing_set, cdrom_bus = _existing_cdrom_state(devices)
+    if existing_set == set(cdroms):
         return
     for cd in existing_cdroms:
         devices.remove(cd)
-    if cdrom_bus == "sata":
-        dev_prefix = "sd"
-    elif cdrom_bus == "ide":
-        dev_prefix = "hd"
-    else:
-        dev_prefix = "vd"
+    dev_prefix = _cdrom_dev_prefix(cdrom_bus)
     used_targets = {
         d.find("target").get("dev")
         for d in devices.findall("disk")
@@ -2331,7 +2409,7 @@ def _apply_headless_graphics(root):
     if devices is None:
         return
     for tag in ("graphics", "video"):
-        for elem in list(devices.findall(tag)):
+        for elem in devices.findall(tag):
             devices.remove(elem)
 
 
@@ -3452,6 +3530,69 @@ def _cleanup_stale_recert():
 _DISK_FORMATS = {"qcow2", "raw", "vmdk"}
 
 
+def _probe_backing_size_gb(job, backing, backing_fmt, size_gb):
+    """Probe backing format/size; expand size_gb if smaller than backing virtual size."""
+    try:
+        info = subprocess.run(
+            ["qemu-img", "info", "-U", "--output=json", backing],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if info.returncode != 0:
+            return backing_fmt, size_gb
+        import json as _json
+
+        _binfo = _json.loads(info.stdout)
+        backing_fmt = _binfo.get("format") or backing_fmt
+        backing_vsize = _binfo.get("virtual-size", 0)
+        requested = size_gb * 1073741824
+        if requested < backing_vsize:
+            backing_gb = (backing_vsize + 1073741823) // 1073741824
+            _job_log(
+                job,
+                f"Overlay {size_gb}G < backing {backing_gb}G, expanding to {backing_gb}G",
+            )
+            size_gb = backing_gb
+    except Exception:
+        _job_log(
+            job,
+            f"qemu-img info failed for backing; using format={backing_fmt}",
+        )
+    return backing_fmt, size_gb
+
+
+def _materialize_raw_from_backing(job, path, backing, backing_fmt, size_gb):
+    """Create a standalone raw disk from backing (reflink or convert) and resize."""
+    # RAW images can't carry a qemu-img backing file (`create -f raw -b`
+    # fails), so materialize a standalone raw disk from the backing:
+    #  - raw backing  -> `cp --reflink=auto` (thin copy-on-write where the
+    #    filesystem supports it, e.g. the pattern-buffer NVMe pool);
+    #  - non-raw (e.g. qcow2 RHCOS/recert) backing -> convert to raw, else
+    #    a qcow2-content file named .raw fails downstream "must be raw"
+    #    checks (KubeVirt/container volumes).
+    # Then grow to the requested size (already expanded to >= backing).
+    if backing_fmt == "raw":
+        _run_cmd(job, ["cp", "--reflink=auto", backing, path])
+    else:
+        _run_cmd(
+            job,
+            [
+                "qemu-img",
+                "convert",
+                "-f",
+                backing_fmt,
+                "-O",
+                "raw",
+                backing,
+                path,
+            ],
+        )
+    _run_cmd(job, ["qemu-img", "resize", "-f", "raw", path, f"{size_gb}G"])
+    _chown_qemu(path)
+    return {"path": path, "status": "created"}
+
+
 def _handle_disk_create(job, params):
     path = _validate_path(params["path"])
     size_gb = int(params["size_gb"])
@@ -3469,60 +3610,13 @@ def _handle_disk_create(job, params):
         # failure used to ship -F raw against qcow2 pattern caches (lock race
         # while the cache file finishes) → UEFI "No bootable option".
         backing_fmt = _probe_disk_format(backing)
-        try:
-            info = subprocess.run(
-                ["qemu-img", "info", "-U", "--output=json", backing],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if info.returncode == 0:
-                import json as _json
-
-                _binfo = _json.loads(info.stdout)
-                backing_fmt = _binfo.get("format") or backing_fmt
-                backing_vsize = _binfo.get("virtual-size", 0)
-                requested = size_gb * 1073741824
-                if requested < backing_vsize:
-                    backing_gb = (backing_vsize + 1073741823) // 1073741824
-                    _job_log(
-                        job,
-                        f"Overlay {size_gb}G < backing {backing_gb}G, expanding to {backing_gb}G",
-                    )
-                    size_gb = backing_gb
-        except Exception:
-            _job_log(
-                job,
-                f"qemu-img info failed for backing; using format={backing_fmt}",
-            )
+        backing_fmt, size_gb = _probe_backing_size_gb(
+            job, backing, backing_fmt, size_gb
+        )
         if fmt == "raw":
-            # RAW images can't carry a qemu-img backing file (`create -f raw -b`
-            # fails), so materialize a standalone raw disk from the backing:
-            #  - raw backing  -> `cp --reflink=auto` (thin copy-on-write where the
-            #    filesystem supports it, e.g. the pattern-buffer NVMe pool);
-            #  - non-raw (e.g. qcow2 RHCOS/recert) backing -> convert to raw, else
-            #    a qcow2-content file named .raw fails downstream "must be raw"
-            #    checks (KubeVirt/container volumes).
-            # Then grow to the requested size (already expanded to >= backing).
-            if backing_fmt == "raw":
-                _run_cmd(job, ["cp", "--reflink=auto", backing, path])
-            else:
-                _run_cmd(
-                    job,
-                    [
-                        "qemu-img",
-                        "convert",
-                        "-f",
-                        backing_fmt,
-                        "-O",
-                        "raw",
-                        backing,
-                        path,
-                    ],
-                )
-            _run_cmd(job, ["qemu-img", "resize", "-f", "raw", path, f"{size_gb}G"])
-            _chown_qemu(path)
-            return {"path": path, "status": "created"}
+            return _materialize_raw_from_backing(
+                job, path, backing, backing_fmt, size_gb
+            )
         cmd.extend(["-b", backing, "-F", backing_fmt])
     cmd.extend([path, f"{size_gb}G"])
     _run_cmd(job, cmd)
@@ -3536,7 +3630,7 @@ COMMAND_HANDLERS["disks/create"] = _handle_disk_create
 def _probe_disk_format(path):
     """Best-effort format from path when qemu-img info is unavailable."""
     lower = (path or "").lower()
-    if lower.endswith(".qcow2") or lower.endswith(".qcow"):
+    if lower.endswith((".qcow2", ".qcow")):
         return "qcow2"
     if lower.endswith(".vmdk"):
         return "vmdk"
@@ -3595,7 +3689,7 @@ def _force_off_domains_holding_disk(job, path):
         )
         if state_result.returncode != 0:
             continue
-        if state_result.stdout.strip() == "shut off":
+        if state_result.stdout.strip() == _SHUT_OFF_STATE:
             continue
         _job_log(job, f"Force-off {domain} still holding {path}")
         try:
@@ -6479,12 +6573,14 @@ class MetadataHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
 socketserver.TCPServer.allow_reuse_address = True
-server = http.server.HTTPServer(("169.254.169.254", 80), MetadataHandler)
+server = http.server.HTTPServer(("{metadata_host}", 80), MetadataHandler)
 server.serve_forever()
 """
 
 
-_METADATA_IP = "169.254.169.254/32"
+# AWS/cloud-init link-local metadata endpoint (not a routable host address).
+_METADATA_HOST = "169.254.169.254"  # NOSONAR — link-local cloud-init metadata
+_METADATA_IP = f"{_METADATA_HOST}/32"
 
 
 def _list_namespace_bridges(namespace):
@@ -6595,7 +6691,10 @@ def _handle_metadata_deploy(job, params):
     # Step 3: Write metadata service script
     script_path = f"/opt/troshka/metadata-{project_id[:8]}.py"
     configs_json = json.dumps(vm_configs)
-    script_content = _METADATA_SCRIPT_TEMPLATE.format(configs_json=configs_json)
+    script_content = _METADATA_SCRIPT_TEMPLATE.format(
+        configs_json=configs_json,
+        metadata_host=_METADATA_HOST,
+    )
 
     os.makedirs("/opt/troshka", exist_ok=True)
     with open(script_path, "w") as f:
@@ -6961,6 +7060,9 @@ _AGENT_ISO_NAME = "agent.x86_64.iso"
 # Well beyond any OpenShift agent install (minutes-to-~2h); guards against
 # reaping an ISO dir belonging to an install still in progress.
 _STALE_AGENT_ISO_AGE = 6 * 3600
+# openshift-install agent create image drops ISO dirs here (outside our private
+# tmp); GC must scan/clean this system path intentionally.
+_AGENT_ISO_SCAN_ROOT = "/tmp"  # NOSONAR — system-tmp scan for leftover agent ISOs
 
 
 def _discover_stale_agent_isos(job):
@@ -6972,12 +7074,12 @@ def _discover_stale_agent_isos(job):
     stale = []
     now = time.time()
     try:
-        entries = os.listdir("/tmp")
+        entries = os.listdir(_AGENT_ISO_SCAN_ROOT)
     except OSError as e:
-        _job_log(job, f"Failed to scan /tmp for agent ISOs: {e}")
+        _job_log(job, f"Failed to scan {_AGENT_ISO_SCAN_ROOT} for agent ISOs: {e}")
         return stale
     for entry in entries:
-        d = os.path.join("/tmp", entry)
+        d = os.path.join(_AGENT_ISO_SCAN_ROOT, entry)
         iso = os.path.join(d, _AGENT_ISO_NAME)
         if not os.path.isdir(d) or not os.path.isfile(iso):
             continue
@@ -7177,7 +7279,7 @@ def _pool_target_path(pool_name):
         return ""
 
 
-def _undefine_pool(job, pool_name):
+def _undefine_pool(_job, pool_name):
     """Deactivate + undefine a storage pool. Returns True on undefine success."""
     subprocess.run(
         ["virsh", "pool-destroy", pool_name], capture_output=True, timeout=10
@@ -7196,7 +7298,7 @@ def _project_from_vms_target(target):
     return ""
 
 
-def _discover_orphan_pools(job, known_project_ids):
+def _discover_orphan_pools(_job, known_project_ids):
     """Per-project VMS storage pools whose project is not known. libvirt/virt-install
     auto-creates a dir pool for the VM disk directory; project destroy leaked them
     (which also wedged virt-install, since it enumerates all domains/pools)."""
@@ -7376,14 +7478,16 @@ def _clean_orphan_metadata(job, orphan_metadata_ids):
 
 
 def _clean_stale_agent_isos(job, paths):
-    """Remove leftover agent-installer ISO dirs. Hard-restricted to /tmp so a
-    bad path can never delete outside it. Returns count removed."""
+    """Remove leftover agent-installer ISO dirs. Hard-restricted to the agent
+    ISO scan root so a bad path can never delete outside it. Returns count removed."""
     removed = 0
+    root = os.path.realpath(_AGENT_ISO_SCAN_ROOT)
+    root_prefix = root + os.sep
     for path in paths:
         try:
             rp = os.path.realpath(path)
-            if rp == "/tmp" or not rp.startswith("/tmp/"):
-                _job_log(job, f"Refusing to remove non-/tmp path: {path}")
+            if rp == root or not rp.startswith(root_prefix):
+                _job_log(job, f"Refusing to remove non-{_AGENT_ISO_SCAN_ROOT} path: {path}")
                 continue
             shutil.rmtree(rp)
             _job_log(job, f"Removed stale agent ISO dir: {rp}")
@@ -7472,7 +7576,7 @@ def _handle_snapshot_create(job, params):
                 text=True,
                 timeout=5,
             )
-            if "shut off" in result.stdout:
+            if _SHUT_OFF_STATE in result.stdout:
                 break
             time.sleep(1)
     except RuntimeError:
@@ -9098,6 +9202,20 @@ def create_server(config):
 # ── Main ──
 
 
+def _kill_remaining_jobs() -> None:
+    with _jobs_lock:
+        for job in _jobs.values():
+            if job["status"] == "running" and job.get("_process"):
+                try:
+                    job["_process"].kill()
+                    logger.warning(
+                        "Killed job %s subprocess (drain timeout)",
+                        job["job_id"][:8],
+                    )
+                except Exception:
+                    pass
+
+
 def _drain_running_jobs(timeout=120):
     """Wait for running jobs to finish, kill any remaining after timeout."""
     _SKIP_DRAIN = {_VMS_STATE_CMD, "vms/states", "host/disk-usage", _GC_DISCOVER_CMD}
@@ -9117,17 +9235,7 @@ def _drain_running_jobs(timeout=120):
         )
         time.sleep(2)
 
-    with _jobs_lock:
-        for job in _jobs.values():
-            if job["status"] == "running" and job.get("_process"):
-                try:
-                    job["_process"].kill()
-                    logger.warning(
-                        "Killed job %s subprocess (drain timeout)",
-                        job["job_id"][:8],
-                    )
-                except Exception:
-                    pass
+    _kill_remaining_jobs()
 
 
 def _ensure_host_packages(packages=None):
@@ -10240,33 +10348,33 @@ def _handle_bmc_create_bridge(job, params):
 COMMAND_HANDLERS["bmc/create-bridge"] = _handle_bmc_create_bridge
 
 
+def _kill_pidfile(job, pid_path, label):
+    """SIGTERM the PID in pid_path. Returns 1 if killed, else 0."""
+    try:
+        with open(pid_path) as f:
+            p = int(f.read().strip())
+        if _safe_kill(p, signal.SIGTERM):
+            _job_log(job, f"Killed {label} PID {p}")
+            return 1
+    except (ValueError, ProcessLookupError, PermissionError):
+        pass
+    return 0
+
+
 def _kill_bmc_processes(job, bmc_dir):
     """Kill all sushy-emulator and vbmcd processes for a BMC directory. Returns kill count."""
     killed = 0
     if os.path.isdir(bmc_dir):
         for fname in os.listdir(bmc_dir):
             if fname.startswith("sushy-") and fname.endswith(".pid"):
-                pid_path = os.path.join(bmc_dir, fname)
-                try:
-                    with open(pid_path) as f:
-                        p = int(f.read().strip())
-                    if _safe_kill(p, signal.SIGTERM):
-                        killed += 1
-                        _job_log(job, f"Killed sushy-emulator PID {p}")
-                except (ValueError, ProcessLookupError, PermissionError):
-                    pass
+                killed += _kill_pidfile(
+                    job, os.path.join(bmc_dir, fname), "sushy-emulator"
+                )
 
     # Kill vbmcd directly — all vbmc entries die with it, no need for graceful stop
     vbmcd_pid_path = os.path.join(bmc_dir, _VBMCD_PID)
     if os.path.exists(vbmcd_pid_path):
-        try:
-            with open(vbmcd_pid_path) as f:
-                p = int(f.read().strip())
-            if _safe_kill(p, signal.SIGTERM):
-                killed += 1
-                _job_log(job, f"Killed vbmcd PID {p}")
-        except (ValueError, ProcessLookupError, PermissionError):
-            pass
+        killed += _kill_pidfile(job, vbmcd_pid_path, "vbmcd")
     return killed
 
 
@@ -10557,7 +10665,9 @@ def _serial_junos_poke_and_login(child, domain, timeout_secs):
     return {"domain": domain, "output": "", "error": err}
 
 
-def _serial_poke_and_login(child, username, password, domain, any_prompt, shell_prompt):
+def _serial_poke_and_login(
+    child, username, password, domain, _any_prompt, _shell_prompt
+):
     """Poke the serial console and handle login if needed. Returns error dict or None."""
     err = _linux_poke_and_login_impl(
         PexpectSerialTransport(child), username, password, 60
@@ -10567,7 +10677,7 @@ def _serial_poke_and_login(child, username, password, domain, any_prompt, shell_
     return {"domain": domain, "output": "", "error": err}
 
 
-def _handle_vm_serial_exec_ios(job, params, timeout_secs):
+def _handle_vm_serial_exec_ios(_job, params, timeout_secs):
     """Execute a command on Cisco IOS-XE via isa-serial console."""
     domain = _validate_domain_name(params["domain_name"])
     username = params.get("username", "admin")
@@ -10589,7 +10699,7 @@ def _handle_vm_serial_exec_ios(job, params, timeout_secs):
     return _run_serial_session(domain, timeout_secs, work)
 
 
-def _handle_vm_serial_exec_junos(job, params, timeout_secs):
+def _handle_vm_serial_exec_junos(_job, params, timeout_secs):
     """Execute a command on Juniper vSRX via serial (FreeBSD → cli)."""
     domain = _validate_domain_name(params["domain_name"])
     command = params.get("command", "")
@@ -10825,7 +10935,7 @@ def _handle_vm_guest_exec(job, params):
         {
             "execute": "guest-exec",
             "arguments": {
-                "path": "/bin/sh",
+                "path": _BIN_SH,
                 "arg": ["-c", command],
                 "capture-output": True,
             },
@@ -10985,6 +11095,40 @@ def _console_detect_state(ocr_text):
     return "unknown"
 
 
+def _console_login_step(domain, username, password, state, attempt):
+    """Act on one console OCR state. Returns True if shell reached, else None."""
+    if state == "shell":
+        return True
+
+    if state == "unknown":
+        # RHCOS/agent installer getty is often on TTY1; cycle TTYs before giving up.
+        fkey = "KEY_F1" if attempt % 2 == 0 else "KEY_F3"
+        _console_send_keys(domain, "KEY_LEFTCTRL", "KEY_LEFTALT", fkey)
+        time.sleep(2)
+        _console_send_keys(domain, "KEY_ENTER")
+        time.sleep(1)
+        return None
+
+    if state == "login":
+        _console_send_text(domain, username + "\n")
+        time.sleep(2)
+        return None
+
+    if state == "login_submit":
+        _console_send_keys(domain, "KEY_ENTER")
+        time.sleep(2)
+        return None
+
+    if state == "password":
+        _console_send_text(domain, password + "\n")
+        time.sleep(3)
+        if _console_detect_state(_console_screenshot_ocr(domain)) == "shell":
+            return True
+        return None
+
+    return None
+
+
 def _console_login(job, domain, username, password):
     """Log into the console if needed. Returns True if shell prompt reached."""
     for attempt in range(6):
@@ -10995,35 +11139,8 @@ def _console_login(job, domain, username, password):
             job,
             f"Console state: {state} (attempt {attempt + 1}, last: {last_line[:80]})",
         )
-
-        if state == "shell":
+        if _console_login_step(domain, username, password, state, attempt):
             return True
-
-        if state == "unknown":
-            # RHCOS/agent installer getty is often on TTY1; cycle TTYs before giving up.
-            fkey = "KEY_F1" if attempt % 2 == 0 else "KEY_F3"
-            _console_send_keys(domain, "KEY_LEFTCTRL", "KEY_LEFTALT", fkey)
-            time.sleep(2)
-            _console_send_keys(domain, "KEY_ENTER")
-            time.sleep(1)
-            continue
-
-        if state == "login":
-            _console_send_text(domain, username + "\n")
-            time.sleep(2)
-            continue
-
-        if state == "login_submit":
-            _console_send_keys(domain, "KEY_ENTER")
-            time.sleep(2)
-            continue
-
-        if state == "password":
-            _console_send_text(domain, password + "\n")
-            time.sleep(3)
-            if _console_detect_state(_console_screenshot_ocr(domain)) == "shell":
-                return True
-
     return False
 
 
@@ -11592,7 +11709,9 @@ def _handle_fscheck(job, params):
         raise RuntimeError(f"Disk not found: {disk_path}")
 
     overlay = f"{disk_path}.fscheck.qcow2"
-    mnt = f"{_LOCAL_DIR}/tmp/fscheck-{os.getpid()}-{int(time.time())}"
+    mnt = os.path.join(
+        _LOCAL_DIR, "tmp", f"fscheck-{os.getpid()}-{int(time.time())}"
+    )
     _ensure_nbd_module()
     dev = _allocate_nbd_device()
     connected = False
@@ -11935,6 +12054,50 @@ def _handle_container_pull(job, params):
 COMMAND_HANDLERS["containers/pull"] = _handle_container_pull
 
 
+def _collect_container_mount_specs(params):
+    """Gather mount specs from init + main containers."""
+    mount_specs = []
+    for ic in params.get("init_containers") or []:
+        mount_specs.extend(ic.get("mounts") or [])
+    for ctr in params.get("containers") or []:
+        mount_specs.extend(ctr.get("mounts") or [])
+    return mount_specs
+
+
+def _resolve_mnt_suffix_disk(host_path):
+    """Find the .raw disk sibling for a mnt-<suffix> host path, or None."""
+    base = os.path.basename(host_path)
+    if not base.startswith("mnt-"):
+        return None
+    suffix = base[4:]
+    parent = os.path.dirname(host_path)
+    try:
+        for entry in os.listdir(parent):
+            if entry.endswith(f"-{suffix}.raw"):
+                return os.path.join(parent, entry)
+    except OSError:
+        return None
+    return None
+
+
+def _infer_volume_from_mount_spec(spec, seen_dirs):
+    """Infer one volume dict from a host:container mount spec, or None."""
+    if not spec or ":" not in spec:
+        return None
+    host_path, container_path = spec.split(":", 1)
+    if host_path in seen_dirs:
+        return None
+    disk_path = _resolve_mnt_suffix_disk(host_path)
+    if not disk_path:
+        return None
+    seen_dirs.add(host_path)
+    return {
+        "disk_path": disk_path,
+        "mount_dir": host_path,
+        "mount_path": container_path,
+    }
+
+
 def _infer_pod_volumes(params):
     """Resolve pod volume specs from params or container mount paths.
 
@@ -11947,41 +12110,10 @@ def _infer_pod_volumes(params):
 
     inferred = []
     seen_dirs = set()
-    mount_specs = []
-    for ic in params.get("init_containers") or []:
-        mount_specs.extend(ic.get("mounts") or [])
-    for ctr in params.get("containers") or []:
-        mount_specs.extend(ctr.get("mounts") or [])
-
-    for spec in mount_specs:
-        if not spec or ":" not in spec:
-            continue
-        host_path, container_path = spec.split(":", 1)
-        if host_path in seen_dirs:
-            continue
-        base = os.path.basename(host_path)
-        if not base.startswith("mnt-"):
-            continue
-        suffix = base[4:]
-        parent = os.path.dirname(host_path)
-        disk_path = None
-        try:
-            for entry in os.listdir(parent):
-                if entry.endswith(f"-{suffix}.raw"):
-                    disk_path = os.path.join(parent, entry)
-                    break
-        except OSError:
-            continue
-        if not disk_path:
-            continue
-        seen_dirs.add(host_path)
-        inferred.append(
-            {
-                "disk_path": disk_path,
-                "mount_dir": host_path,
-                "mount_path": container_path,
-            }
-        )
+    for spec in _collect_container_mount_specs(params):
+        vol = _infer_volume_from_mount_spec(spec, seen_dirs)
+        if vol:
+            inferred.append(vol)
     return inferred
 
 
@@ -12053,17 +12185,17 @@ def _append_podman_image_command(cmd, image, command):
         return
 
     command_str = str(command).strip()
-    if command_str.startswith("/bin/sh"):
-        cmd.extend(["--entrypoint", "/bin/sh"])
+    if command_str.startswith(_BIN_SH):
+        cmd.extend(["--entrypoint", _BIN_SH])
         cmd.append(image)
-        rest = command_str[len("/bin/sh") :].strip()
+        rest = command_str[len(_BIN_SH) :].strip()
         if rest:
             cmd.extend(shlex.split(rest))
         return
 
     shell_markers = ("&&", "||", "|", ">", "<", ";", "$", "`")
     if any(m in command_str for m in shell_markers) or " " in command_str:
-        cmd.extend(["--entrypoint", "/bin/sh"])
+        cmd.extend(["--entrypoint", _BIN_SH])
         cmd.append(image)
         cmd.extend(["-c", command_str])
         return
@@ -12293,7 +12425,7 @@ def _attach_container_to_bridges(job, name, networks):
 
     tok = _net_token(name)
     netns_path = f"/var/run/netns/ctr-{tok}"
-    os.makedirs("/var/run/netns", exist_ok=True)
+    os.makedirs(_VAR_RUN_NETNS, exist_ok=True)
     try:
         os.symlink(f"/proc/{ctr_pid}/ns/net", netns_path)
     except FileExistsError:
@@ -12507,7 +12639,7 @@ COMMAND_HANDLERS["containers/logs"] = _handle_container_logs
 
 def _handle_container_exec(job, params):
     name = params["container_name"]
-    command = params.get("command", ["/bin/sh"])
+    command = params.get("command", [_BIN_SH])
 
     _job_log(job, f"Executing command in {name}...")
     cmd = ["podman", "exec", name] + command
@@ -12672,7 +12804,7 @@ def _attach_pod_to_infra_transit(job, full_pod_name, infra_pid, net, project_id)
     """Attach showroom pod to project netns transit (not a lab bridge)."""
     tok = _net_token(full_pod_name)
     netns_name = f"ctr-{tok}"
-    os.makedirs("/var/run/netns", exist_ok=True)
+    os.makedirs(_VAR_RUN_NETNS, exist_ok=True)
     ns_path = f"/var/run/netns/{netns_name}"
     proc_ns = f"/proc/{infra_pid}/ns/net"
     # lexists (not exists) so a stale/dangling symlink from a prior deploy of
@@ -12961,7 +13093,7 @@ def _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id):
     """Attach a pod's infra container to VXLAN bridges via veth pairs."""
     tok = _net_token(full_pod_name)
     netns_name = f"ctr-{tok}"
-    os.makedirs("/var/run/netns", exist_ok=True)
+    os.makedirs(_VAR_RUN_NETNS, exist_ok=True)
     ns_path = f"/var/run/netns/{netns_name}"
     proc_ns = f"/proc/{infra_pid}/ns/net"
     # lexists (not exists) so a stale/dangling symlink from a prior deploy of
@@ -13012,7 +13144,8 @@ def _pod_dns_nameserver(net):
 
 def _write_pod_resolv_conf(pod_name, nameserver):
     """Write a resolv.conf for pod containers (podman --network none has no DNS)."""
-    path = f"/tmp/troshka-resolv-{pod_name}.conf"
+    os.makedirs(_TMP_DIR, exist_ok=True)
+    path = os.path.join(_TMP_DIR, f"troshka-resolv-{pod_name}.conf")
     with open(path, "w") as f:
         f.write(f"nameserver {nameserver}\n")
     return path

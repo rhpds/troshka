@@ -72,6 +72,82 @@ def _network_node_by_id(topology: dict, network_id: str) -> dict | None:
     return None
 
 
+def _claim_cidr_infra_ips(cidr: str, claimed: dict[str, str]) -> None:
+    """Reserve gateway (.1) and dnsmasq (.2) from a lab CIDR."""
+    if not cidr:
+        return
+    try:
+        network = ipaddress.ip_network(cidr, strict=False)
+        claimed[str(network.network_address + 1)] = "gateway"
+        claimed[str(network.network_address + 2)] = "dnsmasq"
+    except ValueError:
+        pass
+
+
+def _claim_dns_records_and_lb(net_data: dict, claimed: dict[str, str]) -> None:
+    for rec in net_data.get("dnsRecords") or []:
+        ip = str(rec.get("ip") or "").strip()
+        name = str(rec.get("name") or "dns record")
+        if ip:
+            claimed[ip] = f"DNS record '{name}'"
+    lb_ip = str(net_data.get("lbIp") or "").strip()
+    if lb_ip:
+        claimed[lb_ip] = "load balancer"
+
+
+def _claim_nic_ips_for_network(
+    topology: dict,
+    network_id: str,
+    nic_to_network: dict[str, str],
+    claimed: dict[str, str],
+) -> None:
+    for node in topology.get("nodes", []):
+        if node.get("type") not in ("vmNode", "containerNode"):
+            continue
+        name = node.get("data", {}).get("name", "?")
+        for nic in node.get("data", {}).get("nics", []):
+            if nic_to_network.get(nic.get("id", "")) != network_id:
+                continue
+            ip = str(nic.get("ip") or "").strip()
+            if ip:
+                claimed[ip] = f"VM/container '{name}'"
+
+
+def _claim_vip_keys(
+    source: dict, cname: str, claimed: dict[str, str], *, snake_fallback: bool
+) -> None:
+    for key, label in (("apiVip", "API VIP"), ("ingressVip", "ingress VIP")):
+        if snake_fallback:
+            ip = str(
+                source.get(key) or source.get(key.replace("Vip", "_vip")) or ""
+            ).strip()
+        else:
+            ip = str(source.get(key) or "").strip()
+        if ip:
+            claimed[ip] = f"cluster '{cname}' {label}"
+
+
+def _claim_topology_cluster_vips(
+    topology: dict, network_id: str, claimed: dict[str, str]
+) -> None:
+    for cluster in topology.get("clusters") or []:
+        if network_id not in set(cluster.get("networkIds") or []):
+            continue
+        _claim_vip_keys(
+            cluster, cluster.get("name") or "cluster", claimed, snake_fallback=True
+        )
+
+
+def _claim_cluster_node_vips(topology: dict, claimed: dict[str, str]) -> None:
+    for node in topology.get("nodes", []):
+        if node.get("type") != "clusterNode":
+            continue
+        data = node.get("data", {})
+        _claim_vip_keys(
+            data, data.get("name") or "cluster", claimed, snake_fallback=False
+        )
+
+
 def _collect_ips_on_network(
     topology: dict,
     network_id: str,
@@ -85,62 +161,15 @@ def _collect_ips_on_network(
         return {}
 
     net_data = net_node.get("data", {})
-    cidr = str(net_data.get("cidr") or "")
     claimed: dict[str, str] = {}
-
-    if cidr:
-        try:
-            network = ipaddress.ip_network(cidr, strict=False)
-            claimed[str(network.network_address + 1)] = "gateway"
-            claimed[str(network.network_address + 2)] = "dnsmasq"
-        except ValueError:
-            pass
-
-    for rec in net_data.get("dnsRecords") or []:
-        ip = str(rec.get("ip") or "").strip()
-        name = str(rec.get("name") or "dns record")
-        if ip:
-            claimed[ip] = f"DNS record '{name}'"
-
-    lb_ip = str(net_data.get("lbIp") or "").strip()
-    if lb_ip:
-        claimed[lb_ip] = "load balancer"
+    _claim_cidr_infra_ips(str(net_data.get("cidr") or ""), claimed)
+    _claim_dns_records_and_lb(net_data, claimed)
 
     nodes_by_id = nodes_by_id or {n["id"]: n for n in topology.get("nodes", [])}
     nic_to_network = nic_to_network or _build_nic_to_network_map(topology, nodes_by_id)
-    for node in topology.get("nodes", []):
-        if node.get("type") not in ("vmNode", "containerNode"):
-            continue
-        name = node.get("data", {}).get("name", "?")
-        for nic in node.get("data", {}).get("nics", []):
-            if nic_to_network.get(nic.get("id", "")) != network_id:
-                continue
-            ip = str(nic.get("ip") or "").strip()
-            if ip:
-                claimed[ip] = f"VM/container '{name}'"
-
-    for cluster in topology.get("clusters") or []:
-        net_ids = set(cluster.get("networkIds") or [])
-        if network_id not in net_ids:
-            continue
-        cname = cluster.get("name") or "cluster"
-        for key, label in (("apiVip", "API VIP"), ("ingressVip", "ingress VIP")):
-            ip = str(
-                cluster.get(key) or cluster.get(key.replace("Vip", "_vip")) or ""
-            ).strip()
-            if ip:
-                claimed[ip] = f"cluster '{cname}' {label}"
-
-    for node in topology.get("nodes", []):
-        if node.get("type") != "clusterNode":
-            continue
-        data = node.get("data", {})
-        cname = data.get("name") or "cluster"
-        for key, label in (("apiVip", "API VIP"), ("ingressVip", "ingress VIP")):
-            ip = str(data.get(key) or "").strip()
-            if ip:
-                claimed[ip] = f"cluster '{cname}' {label}"
-
+    _claim_nic_ips_for_network(topology, network_id, nic_to_network, claimed)
+    _claim_topology_cluster_vips(topology, network_id, claimed)
+    _claim_cluster_node_vips(topology, claimed)
     return claimed
 
 
@@ -158,6 +187,81 @@ def _lab_ip_in_dhcp_pool(lab_ip: str, net_data: dict) -> bool:
     return start <= ip_int <= end
 
 
+def _ceph_lab_ip_cidr_error(
+    lab_ip: str, cidr: str, ceph_name: str, net_label: str
+) -> str | None:
+    """Return an error if lab_ip is invalid or outside cidr; else None."""
+    try:
+        ip_addr = ipaddress.ip_address(lab_ip)
+        if not cidr:
+            return None
+        network = ipaddress.ip_network(cidr, strict=False)
+        if ip_addr not in network:
+            return (
+                f"Ceph Storage '{ceph_name}' lab IP {lab_ip} is outside "
+                f"network '{net_label}' ({cidr})"
+            )
+    except ValueError:
+        return f"Ceph Storage '{ceph_name}' lab IP {lab_ip!r} is invalid"
+    return None
+
+
+def _ceph_lab_ip_conflict_error(
+    lab_ip: str,
+    ceph_name: str,
+    net_label: str,
+    net_data: dict,
+    claimed: dict[str, str],
+) -> str | None:
+    if lab_ip in claimed:
+        return (
+            f"Ceph Storage '{ceph_name}' lab IP {lab_ip} conflicts with "
+            f"{claimed[lab_ip]} on network '{net_label}'"
+        )
+    if _lab_ip_in_dhcp_pool(lab_ip, net_data):
+        return (
+            f"Ceph Storage '{ceph_name}' lab IP {lab_ip} falls in the DHCP pool "
+            f"on network '{net_label}'"
+        )
+    return None
+
+
+def _validate_one_ceph_lab_ip(
+    node: dict,
+    topology: dict,
+    nodes_by_id: dict[str, dict],
+    nic_to_network: dict[str, str],
+) -> list[str]:
+    data = node.get("data", {})
+    ceph_name = data.get("name") or data.get("label") or "Ceph Storage"
+    network_ref = str(data.get("networkRef") or "").strip()
+    net_node = _network_node_by_id(topology, network_ref)
+    if not network_ref or not net_node:
+        return [f"Ceph Storage '{ceph_name}' has no lab network selected"]
+
+    net_data = net_node.get("data", {})
+    net_label = net_data.get("name") or network_ref
+    cidr = str(net_data.get("cidr") or "")
+    lab_ip = str(data.get("labIp") or "").strip() or _default_ceph_lab_ip(cidr)
+    if not lab_ip:
+        return [f"Ceph Storage '{ceph_name}' has no lab IP configured"]
+
+    cidr_err = _ceph_lab_ip_cidr_error(lab_ip, cidr, ceph_name, net_label)
+    if cidr_err:
+        return [cidr_err]
+
+    claimed = _collect_ips_on_network(
+        topology,
+        network_ref,
+        nodes_by_id=nodes_by_id,
+        nic_to_network=nic_to_network,
+    )
+    conflict = _ceph_lab_ip_conflict_error(
+        lab_ip, ceph_name, net_label, net_data, claimed
+    )
+    return [conflict] if conflict else []
+
+
 def validate_ceph_lab_ips(topology: dict) -> list[str]:
     """Validate cephClusterNode labIp against reserved infra, static leases, and DHCP."""
     errors: list[str] = []
@@ -167,52 +271,9 @@ def validate_ceph_lab_ips(topology: dict) -> list[str]:
     for node in topology.get("nodes", []):
         if node.get("type") != "cephClusterNode":
             continue
-        data = node.get("data", {})
-        ceph_name = data.get("name") or data.get("label") or "Ceph Storage"
-        network_ref = str(data.get("networkRef") or "").strip()
-        net_node = _network_node_by_id(topology, network_ref)
-        if not network_ref or not net_node:
-            errors.append(f"Ceph Storage '{ceph_name}' has no lab network selected")
-            continue
-
-        net_data = net_node.get("data", {})
-        net_label = net_data.get("name") or network_ref
-        cidr = str(net_data.get("cidr") or "")
-        lab_ip = str(data.get("labIp") or "").strip() or _default_ceph_lab_ip(cidr)
-        if not lab_ip:
-            errors.append(f"Ceph Storage '{ceph_name}' has no lab IP configured")
-            continue
-
-        try:
-            ip_addr = ipaddress.ip_address(lab_ip)
-            if cidr:
-                network = ipaddress.ip_network(cidr, strict=False)
-                if ip_addr not in network:
-                    errors.append(
-                        f"Ceph Storage '{ceph_name}' lab IP {lab_ip} is outside "
-                        f"network '{net_label}' ({cidr})"
-                    )
-                    continue
-        except ValueError:
-            errors.append(f"Ceph Storage '{ceph_name}' lab IP {lab_ip!r} is invalid")
-            continue
-
-        claimed = _collect_ips_on_network(
-            topology,
-            network_ref,
-            nodes_by_id=nodes_by_id,
-            nic_to_network=nic_to_network,
+        errors.extend(
+            _validate_one_ceph_lab_ip(node, topology, nodes_by_id, nic_to_network)
         )
-        if lab_ip in claimed:
-            errors.append(
-                f"Ceph Storage '{ceph_name}' lab IP {lab_ip} conflicts with "
-                f"{claimed[lab_ip]} on network '{net_label}'"
-            )
-        elif _lab_ip_in_dhcp_pool(lab_ip, net_data):
-            errors.append(
-                f"Ceph Storage '{ceph_name}' lab IP {lab_ip} falls in the DHCP pool "
-                f"on network '{net_label}'"
-            )
 
     return errors
 
@@ -252,6 +313,34 @@ def _network_infra_ips(topology: dict) -> dict[str, str]:
     return infra
 
 
+def _vm_infra_overlap_warnings(node: dict, infra: dict[str, str]) -> list[str]:
+    data = node.get("data", {})
+    name = data.get("label") or data.get("name") or node.get("id", "")[:8]
+    warnings: list[str] = []
+    for nic in data.get("nics", []):
+        ip = str(nic.get("ip") or "").strip()
+        if ip in infra:
+            warnings.append(
+                f"VM '{name}' IP {ip} overlaps the reserved "
+                f"{infra[ip]} infra address"
+            )
+    return warnings
+
+
+def _cluster_infra_overlap_warnings(node: dict, infra: dict[str, str]) -> list[str]:
+    data = node.get("data", {})
+    cname = data.get("name", "cluster")
+    warnings: list[str] = []
+    for key, label in (("apiVip", "API VIP"), ("ingressVip", "ingress VIP")):
+        ip = str(data.get(key) or "").strip()
+        if ip in infra:
+            warnings.append(
+                f"Cluster '{cname}' {label} {ip} overlaps the reserved "
+                f"{infra[ip]} infra address"
+            )
+    return warnings
+
+
 def infra_ip_overlap_warnings(topology: dict) -> list[str]:
     """Non-blocking warnings when a template-assigned IP lands on a reserved
     infra IP (gateway ``.1`` / dnsmasq ``.2`` / exec ``.3`` / showroom ``.9``).
@@ -265,25 +354,10 @@ def infra_ip_overlap_warnings(topology: dict) -> list[str]:
         return []
     warnings: list[str] = []
     for node in topology.get("nodes", []):
-        data = node.get("data", {})
         if node.get("type") == "vmNode":
-            name = data.get("label") or data.get("name") or node.get("id", "")[:8]
-            for nic in data.get("nics", []):
-                ip = str(nic.get("ip") or "").strip()
-                if ip in infra:
-                    warnings.append(
-                        f"VM '{name}' IP {ip} overlaps the reserved "
-                        f"{infra[ip]} infra address"
-                    )
+            warnings.extend(_vm_infra_overlap_warnings(node, infra))
         elif node.get("type") == "clusterNode":
-            cname = data.get("name", "cluster")
-            for key, label in (("apiVip", "API VIP"), ("ingressVip", "ingress VIP")):
-                ip = str(data.get(key) or "").strip()
-                if ip in infra:
-                    warnings.append(
-                        f"Cluster '{cname}' {label} {ip} overlaps the reserved "
-                        f"{infra[ip]} infra address"
-                    )
+            warnings.extend(_cluster_infra_overlap_warnings(node, infra))
     return warnings
 
 
@@ -377,6 +451,13 @@ def _is_gateway_node(node: dict | None) -> bool:
     )
 
 
+def _find_gateway_node(topology: dict) -> dict | None:
+    return next(
+        (n for n in topology.get("nodes", []) if _is_gateway_node(n)),
+        None,
+    )
+
+
 def _is_plain_network(node: dict | None) -> bool:
     if not node or node.get("type") != "networkNode":
         return False
@@ -394,6 +475,26 @@ def _showroom_content_repo(topology: dict, showroom_node: dict) -> str:
     return str(data.get("contentRepo") or "").strip()
 
 
+def _validate_showroom_dns_config(topology: dict) -> list[str]:
+    """Errors for the showroom DNS lab network selection."""
+    dns_net_name = _showroom_dns_network_name(topology)
+    if not dns_net_name:
+        return ["Enable DNS on at least one network connected to the gateway"]
+    dns_net = _find_lab_network_by_name(topology, dns_net_name)
+    if not dns_net:
+        return [f"Showroom DNS network '{dns_net_name}' was not found on the canvas"]
+    dns_data = dns_net.get("data", {})
+    if not _network_dns_enabled(dns_data):
+        return [f"Showroom DNS network '{dns_net_name}' must have DNS enabled"]
+    if not dns_data.get("cidr"):
+        return [f"Showroom DNS network '{dns_net_name}' must have a CIDR"]
+    if not _is_network_gateway_connected(topology, dns_net["id"]):
+        return [
+            f"Showroom DNS network '{dns_net_name}' must be connected to the gateway"
+        ]
+    return []
+
+
 def validate_showroom_topology(topology: dict) -> list[str]:
     """Validate showroom content config (infra networking is deploy-managed)."""
     showroom_nodes = [n for n in topology.get("nodes", []) if _is_showroom_node(n)]
@@ -405,10 +506,7 @@ def validate_showroom_topology(topology: dict) -> list[str]:
     showroom = showroom_nodes[0]
     errors: list[str] = []
 
-    gateway = next(
-        (n for n in topology.get("nodes", []) if _is_gateway_node(n)),
-        None,
-    )
+    gateway = _find_gateway_node(topology)
     if not gateway:
         errors.append("A gateway is required for external showroom access")
 
@@ -418,30 +516,7 @@ def validate_showroom_topology(topology: dict) -> list[str]:
         errors.append("Showroom content repo URL is required")
 
     if enabled:
-        dns_net_name = _showroom_dns_network_name(topology)
-        if not dns_net_name:
-            errors.append("Enable DNS on at least one network connected to the gateway")
-        else:
-            dns_net = _find_lab_network_by_name(topology, dns_net_name)
-            if not dns_net:
-                errors.append(
-                    f"Showroom DNS network '{dns_net_name}' was not found on the canvas"
-                )
-            else:
-                dns_data = dns_net.get("data", {})
-                if not _network_dns_enabled(dns_data):
-                    errors.append(
-                        f"Showroom DNS network '{dns_net_name}' must have DNS enabled"
-                    )
-                elif not dns_data.get("cidr"):
-                    errors.append(
-                        f"Showroom DNS network '{dns_net_name}' must have a CIDR"
-                    )
-                elif not _is_network_gateway_connected(topology, dns_net["id"]):
-                    errors.append(
-                        f"Showroom DNS network '{dns_net_name}' must be connected to the gateway"
-                    )
-
+        errors.extend(_validate_showroom_dns_config(topology))
         if gateway and not _gateway_allows_dns_upstream(gateway.get("data", {})):
             errors.append(
                 "Gateway outbound must allow DNS (port 53) so showroom can resolve external names"
@@ -456,15 +531,7 @@ def ensure_showroom_external_ips(topology: dict) -> bool:
 
     if not _topology_has_showroom(topology):
         return False
-    gateway = next(
-        (
-            n
-            for n in topology.get("nodes", [])
-            if n.get("type") == "networkNode"
-            and n.get("data", {}).get("subtype") == "gateway"
-        ),
-        None,
-    )
+    gateway = _find_gateway_node(topology)
     if not gateway:
         return False
     if topology.get("externalIps"):
@@ -473,45 +540,37 @@ def ensure_showroom_external_ips(topology: dict) -> bool:
     return True
 
 
-def strip_showroom_gateway_access(topology: dict) -> bool:
-    """Remove auto-managed showroom gateway port forward, outbound ports, and IP-1."""
+def _strip_gateway_showroom_forwards(gateway: dict) -> tuple[bool, list]:
+    """Remove managed showroom forwards/outbound from a gateway node."""
     from app.services.vxlan import _is_showroom_infra_forward
 
     changed = False
-    gateway = next(
-        (
-            n
-            for n in topology.get("nodes", [])
-            if n.get("type") == "networkNode"
-            and n.get("data", {}).get("subtype") == "gateway"
-        ),
-        None,
-    )
-    gateway_pfs: list = []
-    if gateway:
-        data = gateway.setdefault("data", {})
-        existing = list(data.get("portForwards") or [])
-        stripped = [pf for pf in existing if not _is_showroom_infra_forward(pf)]
-        if stripped != existing:
-            data["portForwards"] = stripped
-            gateway_pfs = stripped
-            if not stripped and data.get("gatewayMode") == "nat-portforward":
-                data["gatewayMode"] = "nat"
-            changed = True
-        else:
-            gateway_pfs = existing
+    data = gateway.setdefault("data", {})
+    existing = list(data.get("portForwards") or [])
+    stripped = [pf for pf in existing if not _is_showroom_infra_forward(pf)]
+    gateway_pfs = existing
+    if stripped != existing:
+        data["portForwards"] = stripped
+        gateway_pfs = stripped
+        if not stripped and data.get("gatewayMode") == "nat-portforward":
+            data["gatewayMode"] = "nat"
+        changed = True
 
-        if data.get("outboundPolicy") == "restrict":
-            managed = list(data.get("showroomManagedOutbound") or [])
-            if managed:
-                new_ports = _strip_showroom_outbound_ports(
-                    str(data.get("outboundPorts") or ""), managed
-                )
-                if new_ports != str(data.get("outboundPorts") or ""):
-                    data["outboundPorts"] = new_ports
-                    changed = True
-                data.pop("showroomManagedOutbound", None)
+    if data.get("outboundPolicy") == "restrict":
+        managed = list(data.get("showroomManagedOutbound") or [])
+        if managed:
+            new_ports = _strip_showroom_outbound_ports(
+                str(data.get("outboundPorts") or ""), managed
+            )
+            if new_ports != str(data.get("outboundPorts") or ""):
+                data["outboundPorts"] = new_ports
+                changed = True
+            data.pop("showroomManagedOutbound", None)
+    return changed, gateway_pfs
 
+
+def _maybe_strip_unused_auto_external_ip(topology: dict, gateway_pfs: list) -> bool:
+    """Drop empty auto IP-1 when no forward references it."""
     ext_ips = topology.get("externalIps") or []
     if (
         len(ext_ips) == 1
@@ -520,6 +579,19 @@ def strip_showroom_gateway_access(topology: dict) -> bool:
         and not any(pf.get("extIpId") == ext_ips[0].get("id") for pf in gateway_pfs)
     ):
         topology["externalIps"] = []
+        return True
+    return False
+
+
+def strip_showroom_gateway_access(topology: dict) -> bool:
+    """Remove auto-managed showroom gateway port forward, outbound ports, and IP-1."""
+    changed = False
+    gateway = _find_gateway_node(topology)
+    gateway_pfs: list = []
+    if gateway:
+        stripped, gateway_pfs = _strip_gateway_showroom_forwards(gateway)
+        changed = stripped
+    if _maybe_strip_unused_auto_external_ip(topology, gateway_pfs):
         changed = True
     return changed
 
@@ -597,6 +669,120 @@ def _showroom_needs_eip(gateway: dict | None, route_web: bool) -> bool:
     return any(str(pf.get("extPort")) not in ("443", "80") for pf in pfs)
 
 
+def _is_showroom_managed_forward(pf: dict) -> bool:
+    return bool(
+        pf.get("managedByShowroom")
+        or (
+            str(pf.get("extPort")) == "443"
+            and str(pf.get("intPort")) == "80"
+            and (pf.get("intIp") or "").strip().startswith("172.30.")
+            and (pf.get("intIp") or "").strip().endswith(".3")
+        )
+    )
+
+
+def _filter_non_showroom_web_forwards(merged: list) -> list:
+    """Drop non-showroom 443/80 forwards that would collide with showroom."""
+    return [
+        pf
+        for pf in merged
+        if is_showroom_infra_ip(pf.get("intIp", ""))
+        or pf.get("managedByShowroom")
+        or str(pf.get("extPort")) not in ("443", "80")
+    ]
+
+
+def _bind_one_forward_eip(pf: dict, eip_id: str, route_web: bool) -> dict:
+    entry = {**pf}
+    if _is_showroom_managed_forward(pf):
+        entry["managedByShowroom"] = True
+    # On OpenShift-ingress providers, web + API (intPort 6443) are served
+    # by a Route — strip extIpId so they stay Route-only.
+    if route_web and (
+        str(pf.get("extPort")) in ("443", "80", "6443")
+        or str(pf.get("intPort") or "").strip() == "6443"
+    ):
+        entry.pop("extIpId", None)
+    elif eip_id:
+        entry["extIpId"] = pf.get("extIpId") or eip_id
+    return entry
+
+
+def _bind_showroom_forwards_to_eip(merged: list, eip_id: str, route_web: bool) -> list:
+    # Run whenever there's an EIP to bind OR a route provider that must strip
+    # extIpId from 443/80 — the latter matters even when no EIP exists.
+    if not (eip_id or route_web):
+        return merged
+    return [_bind_one_forward_eip(pf, eip_id, route_web) for pf in merged]
+
+
+def _desired_showroom_gateway_mode(merged: list) -> str:
+    return (
+        "nat-portforward"
+        if any(pf.get("extIpId") or pf.get("managedByShowroom") for pf in merged)
+        else "nat"
+    )
+
+
+def _apply_showroom_gateway_mode(data: dict, merged: list) -> bool:
+    desired_mode = _desired_showroom_gateway_mode(merged)
+    if data.get("gatewayMode") != desired_mode:
+        data["gatewayMode"] = desired_mode
+        return True
+    return False
+
+
+def _ensure_showroom_restrict_outbound(data: dict) -> bool:
+    if data.get("outboundPolicy") != "restrict":
+        return False
+    new_ports, added = _inject_showroom_outbound_ports(
+        str(data.get("outboundPorts") or "")
+    )
+    if not added:
+        return False
+    data["outboundPorts"] = new_ports
+    managed = list(data.get("showroomManagedOutbound") or [])
+    data["showroomManagedOutbound"] = list(dict.fromkeys(managed + added))
+    return True
+
+
+def _sync_showroom_gateway_forwards(
+    topology: dict, gateway: dict, vni_map: dict, route_web: bool
+) -> bool:
+    """Merge showroom port-forwards onto gateway; return True if data changed."""
+    from app.services.vxlan import _inject_showroom_port_forward
+
+    first_vni = min(vni_map.values()) if vni_map else None
+    data = gateway.setdefault("data", {})
+    existing = list(data.get("portForwards") or [])
+    merged = _inject_showroom_port_forward(existing, topology, first_vni, route_web)
+    # A showroom owns external 443/80: console/ingress is reached through its
+    # proxy (app-proxy routes). The gateway can't serve two forwards on one
+    # external port — they collapse onto a single pod-listen-port and 502 both —
+    # so drop any non-showroom 443/80 forward (e.g. the direct cluster ingress).
+    # The API forward (6443, a distinct port) is untouched.
+    merged = _filter_non_showroom_web_forwards(merged)
+
+    ext_ips = topology.get("externalIps") or []
+    eip_id = str(ext_ips[0].get("id", "")) if ext_ips else ""
+    merged = _bind_showroom_forwards_to_eip(merged, eip_id, route_web)
+
+    changed = False
+    if merged != existing:
+        data["portForwards"] = merged
+        changed = True
+
+    # A showroom needs an inbound route, so its presence forces nat-portforward
+    # even on route providers where the 443 forward is Route-served (no extIpId).
+    # Mirror the frontend (extIpId OR managedByShowroom) so the deployed topology
+    # doesn't drift/read dirty and the gateway isn't left "NAT outbound only".
+    if _apply_showroom_gateway_mode(data, merged):
+        changed = True
+    if _ensure_showroom_restrict_outbound(data):
+        changed = True
+    return changed
+
+
 def inject_showroom_gateway_port_forwards(
     topology: dict, vni_map: dict, provider_type: str | None = None
 ) -> bool:
@@ -606,24 +792,12 @@ def inject_showroom_gateway_port_forwards(
     by a Route and must NOT be bound to the EIP; on cloud providers they stay on
     the EIP.
     """
-    from app.services.vxlan import (
-        _inject_showroom_port_forward,
-        _topology_has_showroom,
-    )
+    from app.services.vxlan import _topology_has_showroom
 
     if not _topology_has_showroom(topology):
         return strip_showroom_gateway_access(topology)
 
-    gateway = next(
-        (
-            n
-            for n in topology.get("nodes", [])
-            if n.get("type") == "networkNode"
-            and n.get("data", {}).get("subtype") == "gateway"
-        ),
-        None,
-    )
-
+    gateway = _find_gateway_node(topology)
     route_web = provider_type in _ROUTE_PROVIDERS
     if _showroom_needs_eip(gateway, route_web):
         changed = ensure_showroom_external_ips(topology)
@@ -633,78 +807,8 @@ def inject_showroom_gateway_port_forwards(
     if not gateway:
         return changed
 
-    first_vni = min(vni_map.values()) if vni_map else None
-    data = gateway.setdefault("data", {})
-    existing = list(data.get("portForwards") or [])
-    merged = _inject_showroom_port_forward(existing, topology, first_vni, route_web)
-
-    # A showroom owns external 443/80: console/ingress is reached through its
-    # proxy (app-proxy routes). The gateway can't serve two forwards on one
-    # external port — they collapse onto a single pod-listen-port and 502 both —
-    # so drop any non-showroom 443/80 forward (e.g. the direct cluster ingress).
-    # The API forward (6443, a distinct port) is untouched.
-    merged = [
-        pf
-        for pf in merged
-        if is_showroom_infra_ip(pf.get("intIp", ""))
-        or pf.get("managedByShowroom")
-        or str(pf.get("extPort")) not in ("443", "80")
-    ]
-
-    ext_ips = topology.get("externalIps") or []
-    eip_id = str(ext_ips[0].get("id", "")) if ext_ips else ""
-    # Run whenever there's an EIP to bind OR a route provider that must strip
-    # extIpId from 443/80 — the latter matters even when no EIP exists.
-    if eip_id or route_web:
-        new_merged = []
-        for pf in merged:
-            is_showroom = pf.get("managedByShowroom") or (
-                str(pf.get("extPort")) == "443"
-                and str(pf.get("intPort")) == "80"
-                and (pf.get("intIp") or "").strip().startswith("172.30.")
-                and (pf.get("intIp") or "").strip().endswith(".3")
-            )
-            entry = {**pf}
-            if is_showroom:
-                entry["managedByShowroom"] = True
-            # On OpenShift-ingress providers, web + API (intPort 6443) are served
-            # by a Route — strip extIpId so they stay Route-only.
-            if route_web and (
-                str(pf.get("extPort")) in ("443", "80", "6443")
-                or str(pf.get("intPort") or "").strip() == "6443"
-            ):
-                entry.pop("extIpId", None)
-            elif eip_id:
-                entry["extIpId"] = pf.get("extIpId") or eip_id
-            new_merged.append(entry)
-        merged = new_merged
-    if merged != existing:
-        data["portForwards"] = merged
+    if _sync_showroom_gateway_forwards(topology, gateway, vni_map, route_web):
         changed = True
-
-    # A showroom needs an inbound route, so its presence forces nat-portforward
-    # even on route providers where the 443 forward is Route-served (no extIpId).
-    # Mirror the frontend (extIpId OR managedByShowroom) so the deployed topology
-    # doesn't drift/read dirty and the gateway isn't left "NAT outbound only".
-    desired_mode = (
-        "nat-portforward"
-        if any(pf.get("extIpId") or pf.get("managedByShowroom") for pf in merged)
-        else "nat"
-    )
-    if data.get("gatewayMode") != desired_mode:
-        data["gatewayMode"] = desired_mode
-        changed = True
-
-    if data.get("outboundPolicy") == "restrict":
-        new_ports, added = _inject_showroom_outbound_ports(
-            str(data.get("outboundPorts") or "")
-        )
-        if added:
-            data["outboundPorts"] = new_ports
-            managed = list(data.get("showroomManagedOutbound") or [])
-            data["showroomManagedOutbound"] = list(dict.fromkeys(managed + added))
-            changed = True
-
     return changed
 
 
@@ -863,37 +967,34 @@ def _eligible_egress_network_node(
     return node
 
 
-def _control_plane_network_for_cluster(
-    cluster: dict, topology: dict, gw_ids: set[str], nodes_by_id: dict[str, dict]
-) -> dict | None:
-    """Gateway-connected network whose CIDR contains the cluster CP primary IP."""
-    import ipaddress
+def _is_control_plane_vm(data: dict, cluster_id) -> bool:
+    if data.get("clusterId") != cluster_id:
+        return False
+    if data.get("clusterRole") == "control-plane":
+        return True
+    tags = data.get("tags") or {}
+    return tags.get("AnsibleGroup") == "controllers"
 
-    cluster_id = cluster.get("id")
-    cp_node = None
+
+def _find_control_plane_vm(cluster_id, topology: dict) -> dict | None:
     for node in topology.get("nodes", []):
         if node.get("type") != "vmNode":
             continue
-        data = node.get("data") or {}
-        if data.get("clusterId") != cluster_id:
-            continue
-        if data.get("clusterRole") == "control-plane":
-            cp_node = node
-            break
-        tags = data.get("tags") or {}
-        if tags.get("AnsibleGroup") == "controllers":
-            cp_node = node
-            break
-    if not cp_node:
-        return None
+        if _is_control_plane_vm(node.get("data") or {}, cluster_id):
+            return node
+    return None
+
+
+def _cp_primary_ip(cp_node: dict) -> str:
     nics = (cp_node.get("data") or {}).get("nics") or []
-    cp_ip = str((nics[0] or {}).get("ip") or "").strip()
-    if not cp_ip:
-        return None
-    try:
-        addr = ipaddress.ip_address(cp_ip)
-    except ValueError:
-        return None
+    if not nics:
+        return ""
+    return str((nics[0] or {}).get("ip") or "").strip()
+
+
+def _network_containing_ip(
+    gw_ids: set[str], nodes_by_id: dict[str, dict], addr
+) -> dict | None:
     for net_id in gw_ids:
         node = _eligible_egress_network_node(nodes_by_id, net_id)
         if not node:
@@ -905,6 +1006,79 @@ def _control_plane_network_for_cluster(
         except ValueError:
             continue
     return None
+
+
+def _control_plane_network_for_cluster(
+    cluster: dict, topology: dict, gw_ids: set[str], nodes_by_id: dict[str, dict]
+) -> dict | None:
+    """Gateway-connected network whose CIDR contains the cluster CP primary IP."""
+    cp_node = _find_control_plane_vm(cluster.get("id"), topology)
+    if not cp_node:
+        return None
+    cp_ip = _cp_primary_ip(cp_node)
+    if not cp_ip:
+        return None
+    try:
+        addr = ipaddress.ip_address(cp_ip)
+    except ValueError:
+        return None
+    return _network_containing_ip(gw_ids, nodes_by_id, addr)
+
+
+def _append_ranked_network(
+    node: dict | None, seen: set[str], ranked: list[dict]
+) -> None:
+    if not node:
+        return
+    net_id = node.get("id", "")
+    if net_id and net_id not in seen:
+        seen.add(net_id)
+        ranked.append(node)
+
+
+def _rank_dns_egress_networks(
+    cluster: dict,
+    gw_ids: set[str],
+    nodes_by_id: dict[str, dict],
+    seen: set[str],
+    ranked: list[dict],
+) -> None:
+    for net_id in cluster.get("networkIds") or []:
+        if net_id not in gw_ids:
+            continue
+        node = _eligible_egress_network_node(nodes_by_id, net_id)
+        if node and _network_dns_enabled(node.get("data") or {}):
+            _append_ranked_network(node, seen, ranked)
+
+
+def _rank_cluster_network_ids(
+    cluster: dict,
+    gw_ids: set[str],
+    nodes_by_id: dict[str, dict],
+    seen: set[str],
+    ranked: list[dict],
+) -> None:
+    for net_id in cluster.get("networkIds") or []:
+        if net_id not in gw_ids:
+            continue
+        _append_ranked_network(
+            _eligible_egress_network_node(nodes_by_id, net_id), seen, ranked
+        )
+
+
+def _rank_remaining_gw_networks(
+    gw_ids: set[str],
+    nodes_by_id: dict[str, dict],
+    seen: set[str],
+    ranked: list[dict],
+) -> None:
+    remaining = []
+    for net_id in sorted(gw_ids):
+        node = _eligible_egress_network_node(nodes_by_id, net_id)
+        if node and node.get("id") not in seen:
+            remaining.append(node)
+    remaining.sort(key=lambda n: str(n.get("id", "")))
+    ranked.extend(remaining)
 
 
 def rank_cluster_egress_network_nodes(cluster: dict, topology: dict) -> list[dict]:
@@ -926,35 +1100,14 @@ def rank_cluster_egress_network_nodes(cluster: dict, topology: dict) -> list[dic
     ranked: list[dict] = []
     seen: set[str] = set()
 
-    def _append(node: dict | None) -> None:
-        if not node:
-            return
-        net_id = node.get("id", "")
-        if net_id and net_id not in seen:
-            seen.add(net_id)
-            ranked.append(node)
-
-    for net_id in cluster.get("networkIds") or []:
-        if net_id not in gw_ids:
-            continue
-        node = _eligible_egress_network_node(nodes_by_id, net_id)
-        if node and _network_dns_enabled(node.get("data") or {}):
-            _append(node)
-
-    for net_id in cluster.get("networkIds") or []:
-        if net_id not in gw_ids:
-            continue
-        _append(_eligible_egress_network_node(nodes_by_id, net_id))
-
-    _append(_control_plane_network_for_cluster(cluster, topology, gw_ids, nodes_by_id))
-
-    remaining = []
-    for net_id in sorted(gw_ids):
-        node = _eligible_egress_network_node(nodes_by_id, net_id)
-        if node and node.get("id") not in seen:
-            remaining.append(node)
-    remaining.sort(key=lambda n: str(n.get("id", "")))
-    ranked.extend(remaining)
+    _rank_dns_egress_networks(cluster, gw_ids, nodes_by_id, seen, ranked)
+    _rank_cluster_network_ids(cluster, gw_ids, nodes_by_id, seen, ranked)
+    _append_ranked_network(
+        _control_plane_network_for_cluster(cluster, topology, gw_ids, nodes_by_id),
+        seen,
+        ranked,
+    )
+    _rank_remaining_gw_networks(gw_ids, nodes_by_id, seen, ranked)
     return ranked
 
 
@@ -1352,17 +1505,67 @@ def _resolve_network_gateway(net_data: dict, cidr: str) -> str:
         return ""
 
 
+def _edge_container_nic_binding(
+    edge: dict, container_node_id: str
+) -> tuple[str | None, str | None]:
+    """Return (nic_id, net_node_id) when edge attaches container NIC to a network."""
+    src, tgt = edge.get("source"), edge.get("target")
+    src_h, tgt_h = edge.get("sourceHandle", ""), edge.get("targetHandle", "")
+    if src == container_node_id and src_h.startswith("nic-"):
+        return _extract_nic_id(src_h), tgt
+    if tgt == container_node_id and tgt_h.startswith("nic-"):
+        return _extract_nic_id(tgt_h), src
+    return None, None
+
+
+def _container_lab_network_entry(nic: dict, nic_id: str, vni, net_data: dict) -> dict:
+    cidr = net_data.get("cidr", "")
+    return {
+        "bridge": f"br-{vni}",
+        "mac": nic.get("mac", ""),
+        "nic_id": nic_id,
+        "model": nic.get("model", "virtio"),
+        "ip": nic.get("ip", ""),
+        "cidr": cidr,
+        "gateway": _resolve_network_gateway(net_data, cidr),
+    }
+
+
+def _lab_networks_for_container(
+    container_node: dict,
+    container_node_id: str,
+    topology: dict,
+    vni_map: dict,
+) -> list[dict]:
+    nics_by_id = {
+        nic["id"]: nic for nic in container_node.get("data", {}).get("nics", [])
+    }
+    results: list[dict] = []
+    nodes_by_id = {n["id"]: n for n in topology.get("nodes", [])}
+    for edge in topology.get("edges", []):
+        nic_id, net_node_id = _edge_container_nic_binding(edge, container_node_id)
+        if not nic_id or not net_node_id:
+            continue
+        vni = vni_map.get(net_node_id)
+        if not vni:
+            continue
+        nic = nics_by_id.get(nic_id, {})
+        net_node = nodes_by_id.get(net_node_id)
+        net_data = net_node.get("data", {}) if net_node else {}
+        results.append(_container_lab_network_entry(nic, nic_id, vni, net_data))
+    return results
+
+
 def _find_container_networks(
     container_node_id: str, topology: dict, vni_map: dict, project_id: str = ""
 ) -> list[dict]:
     """Find networks connected to a container via NIC handles."""
     _ = project_id  # reserved for future use; callers pass it
-    results: list[dict] = []
     container_node = next(
         (n for n in topology.get("nodes", []) if n["id"] == container_node_id), None
     )
     if not container_node:
-        return results
+        return []
 
     if _is_showroom_node(container_node):
         nics = container_node.get("data", {}).get("nics", [])
@@ -1370,50 +1573,9 @@ def _find_container_networks(
         dns = _showroom_dns_nameserver(topology)
         return showroom_infra_network(vni_map, mac, dns_nameserver=dns)
 
-    nics_by_id = {
-        nic["id"]: nic for nic in container_node.get("data", {}).get("nics", [])
-    }
-
-    for edge in topology.get("edges", []):
-        src, tgt = edge.get("source"), edge.get("target")
-        src_h, tgt_h = edge.get("sourceHandle", ""), edge.get("targetHandle", "")
-
-        nic_id = None
-        net_node_id = None
-        if src == container_node_id and src_h.startswith("nic-"):
-            nic_id = _extract_nic_id(src_h)
-            net_node_id = tgt
-        elif tgt == container_node_id and tgt_h.startswith("nic-"):
-            nic_id = _extract_nic_id(tgt_h)
-            net_node_id = src
-
-        if not nic_id or not net_node_id:
-            continue
-
-        nic = nics_by_id.get(nic_id, {})
-        vni = vni_map.get(net_node_id)
-        if not vni:
-            continue
-
-        net_node = next(
-            (n for n in topology.get("nodes", []) if n["id"] == net_node_id), None
-        )
-        net_data = net_node.get("data", {}) if net_node else {}
-        cidr = net_data.get("cidr", "")
-
-        results.append(
-            {
-                "bridge": f"br-{vni}",
-                "mac": nic.get("mac", ""),
-                "nic_id": nic_id,
-                "model": nic.get("model", "virtio"),
-                "ip": nic.get("ip", ""),
-                "cidr": cidr,
-                "gateway": _resolve_network_gateway(net_data, cidr),
-            }
-        )
-
-    return results
+    return _lab_networks_for_container(
+        container_node, container_node_id, topology, vni_map
+    )
 
 
 def _find_vm_name_by_ip(topology, ip):
@@ -1930,8 +2092,8 @@ def _storage_node_data(topology: dict, storage_id: str) -> dict:
     return {}
 
 
-def build_troshkavm_disk_spec(disk: dict, topology: dict) -> dict:
-    """Build a TroshkaVM CR disk entry from _find_vm_disks() output."""
+def _merge_disk_storage_data(disk: dict, topology: dict) -> dict:
+    """Merge canvas storage-node data with resolved disk fields from deploy."""
     storage_id = disk.get("node_id", "")
     sd = dict(_storage_node_data(topology, storage_id))
     if disk.get("resolvedS3Path") and not sd.get("resolvedS3Path"):
@@ -1940,6 +2102,74 @@ def build_troshkavm_disk_spec(disk: dict, topology: dict) -> dict:
         sd["centralSource"] = disk["centralSource"]
     if disk.get("diskSource") and "diskSource" not in sd:
         sd["diskSource"] = disk["diskSource"]
+    return sd
+
+
+def _apply_pattern_disk_image(
+    spec: dict, disk: dict, sd: dict, central: bool, source_size_gb: int
+) -> bool:
+    if not (disk.get("patternId") or sd.get("patternId")):
+        return False
+    pattern_id = disk.get("patternId") or sd.get("patternId", "")
+    pattern_disk_id = sd.get("patternDiskId", "")
+    spec["patternImage"] = {
+        "s3Path": sd.get("resolvedS3Path")
+        or f"patterns/{pattern_id}/{pattern_disk_id}.qcow2",
+        "format": "qcow2",
+        "central": central,
+        "source": sd.get("diskSource", "central"),
+    }
+    if source_size_gb > 0:
+        spec["sourceSizeGb"] = source_size_gb
+    return True
+
+
+def _apply_library_disk_image(
+    spec: dict, disk: dict, sd: dict, fmt: str, central: bool, source_size_gb: int
+) -> bool:
+    lib_id = (
+        disk.get("library_item_id")
+        or disk.get("libraryItemId")
+        or sd.get("libraryItemId")
+    )
+    if not lib_id:
+        return False
+    spec["libraryImage"] = {
+        "s3Path": sd.get("resolvedS3Path") or f"library/{lib_id}.{fmt}",
+        "format": fmt,
+        "central": central,
+    }
+    if source_size_gb > 0:
+        spec["sourceSizeGb"] = source_size_gb
+    return True
+
+
+def _apply_disk_image_source(
+    spec: dict, disk: dict, sd: dict, source: str, fmt: str, central: bool
+) -> None:
+    source_size_gb = int(sd.get("sourceSizeGb", 0) or 0)
+    if source == "pattern" and _apply_pattern_disk_image(
+        spec, disk, sd, central, source_size_gb
+    ):
+        return
+    if source == "library" and _apply_library_disk_image(
+        spec, disk, sd, fmt, central, source_size_gb
+    ):
+        return
+    if source == "snapshot" and sd.get("resolvedS3Path"):
+        spec["libraryImage"] = {
+            "s3Path": sd["resolvedS3Path"],
+            "format": fmt,
+            "central": central,
+        }
+        return
+    spec["blank"] = True
+
+
+def build_troshkavm_disk_spec(disk: dict, topology: dict) -> dict:
+    """Build a TroshkaVM CR disk entry from _find_vm_disks() output."""
+    storage_id = disk.get("node_id", "")
+    sd = _merge_disk_storage_data(disk, topology)
     fmt = disk.get("format", sd.get("format", "qcow2"))
     size_gb = disk.get("size_gb", disk.get("size", sd.get("size", 20)))
     source = disk.get("source") or sd.get("source", "blank")
@@ -1954,44 +2184,7 @@ def build_troshkavm_disk_spec(disk: dict, topology: dict) -> dict:
     if disk.get("rotation_rate") is not None:
         spec["rotationRate"] = disk["rotation_rate"]
 
-    source_size_gb = int(sd.get("sourceSizeGb", 0) or 0)
-    if source == "pattern" and (disk.get("patternId") or sd.get("patternId")):
-        pattern_id = disk.get("patternId") or sd.get("patternId", "")
-        pattern_disk_id = sd.get("patternDiskId", "")
-        spec["patternImage"] = {
-            "s3Path": sd.get("resolvedS3Path")
-            or f"patterns/{pattern_id}/{pattern_disk_id}.qcow2",
-            "format": "qcow2",
-            "central": central,
-            "source": sd.get("diskSource", "central"),
-        }
-        if source_size_gb > 0:
-            spec["sourceSizeGb"] = source_size_gb
-    elif source == "library" and (
-        disk.get("library_item_id")
-        or disk.get("libraryItemId")
-        or sd.get("libraryItemId")
-    ):
-        lib_id = (
-            disk.get("library_item_id")
-            or disk.get("libraryItemId")
-            or sd.get("libraryItemId", "")
-        )
-        spec["libraryImage"] = {
-            "s3Path": sd.get("resolvedS3Path") or f"library/{lib_id}.{fmt}",
-            "format": fmt,
-            "central": central,
-        }
-        if source_size_gb > 0:
-            spec["sourceSizeGb"] = source_size_gb
-    elif source == "snapshot" and sd.get("resolvedS3Path"):
-        spec["libraryImage"] = {
-            "s3Path": sd["resolvedS3Path"],
-            "format": fmt,
-            "central": central,
-        }
-    else:
-        spec["blank"] = True
+    _apply_disk_image_source(spec, disk, sd, source, fmt, central)
     return spec
 
 
@@ -2280,27 +2473,33 @@ def _pick_available_ip(dhcp_range: tuple[int, int], used_ips: set[str]) -> str |
     return None
 
 
-def _collect_used_ips(topology: dict) -> set[str]:
-    """Collect all IPs already assigned: static IPs on VMs/containers + gateway IPs."""
-    used = set()
-    for node in topology.get("nodes", []):
-        data = node.get("data", {})
-        for nic in data.get("nics", []):
-            ip = nic.get("ip", "")
+def _add_node_used_ips(node: dict, used: set[str]) -> None:
+    data = node.get("data", {})
+    for nic in data.get("nics", []):
+        ip = nic.get("ip", "")
+        if ip:
+            used.add(ip)
+    if node.get("type") == "cephClusterNode":
+        for ip in data.get("osdIps") or []:
             if ip:
                 used.add(ip)
-        if node.get("type") == "cephClusterNode":
-            for ip in data.get("osdIps") or []:
-                if ip:
-                    used.add(ip)
-        if node.get("type") == "networkNode":
-            cidr = data.get("cidr", "")
-            if cidr:
-                try:
-                    net = ipaddress.ip_network(cidr, strict=False)
-                    used.add(str(net.network_address + 1))
-                except ValueError:
-                    pass
+    if node.get("type") != "networkNode":
+        return
+    cidr = data.get("cidr", "")
+    if not cidr:
+        return
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+        used.add(str(net.network_address + 1))
+    except ValueError:
+        pass
+
+
+def _collect_used_ips(topology: dict) -> set[str]:
+    """Collect all IPs already assigned: static IPs on VMs/containers + gateway IPs."""
+    used: set[str] = set()
+    for node in topology.get("nodes", []):
+        _add_node_used_ips(node, used)
     return used
 
 
@@ -2369,6 +2568,18 @@ def _cidr_for_network_ref(nodes: list, network_ref: str) -> str:
     return ""
 
 
+def _keep_valid_osd_ips(
+    existing: list, valid_hosts: set[str], reserved: set[str], osd_count: int
+) -> list[str]:
+    kept: list[str] = []
+    for ip in existing or []:
+        if ip in valid_hosts and ip not in reserved and ip not in kept:
+            kept.append(ip)
+        if len(kept) >= osd_count:
+            break
+    return kept
+
+
 def _auto_assign_ceph_osd_ips(topology: dict) -> None:
     """Allocate stable static Multus IPs for each Ceph OSD, persisting them on
     the cephClusterNode's ``data.osdIps``.
@@ -2395,14 +2606,9 @@ def _auto_assign_ceph_osd_ips(topology: dict) -> None:
     # This node's own OSD IPs are excluded from the reserved set — we are
     # re-deriving them here and preserve valid ones below.
     reserved = _ceph_reserved_ips(topology, cidr) - set(data.get("osdIps") or [])
-    # Keep existing OSD IPs still valid + not colliding, in order, capped at
-    # osd_count (trim extras from the tail).
-    kept: list[str] = []
-    for ip in data.get("osdIps") or []:
-        if ip in valid_hosts and ip not in reserved and ip not in kept:
-            kept.append(ip)
-        if len(kept) >= osd_count:
-            break
+    kept = _keep_valid_osd_ips(
+        data.get("osdIps") or [], valid_hosts, reserved, osd_count
+    )
     need = osd_count - len(kept)
     if need > 0:
         kept.extend(_pick_high_free_ips(cidr, need, reserved | set(kept)))

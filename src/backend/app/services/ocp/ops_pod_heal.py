@@ -164,55 +164,43 @@ def _plain(obj: Any) -> Any:
     return None
 
 
-def _build_ops_pod_recreate_body(
-    pod, *, annotations: dict[str, str], affinity: dict | None
-) -> dict[str, Any]:
-    """Build a create-able Pod dict from a live read (strip runtime fields)."""
-    body: dict[str, Any] | None = None
-    if _is_k8s_model(pod):
-        try:
-            from kubernetes.client import ApiClient
+def _ops_pod_body_from_attrs(pod) -> dict[str, Any]:
+    meta = pod.metadata
+    spec = pod.spec
+    body: dict[str, Any] = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": meta.name,
+            "labels": dict(getattr(meta, "labels", None) or {}),
+        },
+        "spec": {
+            "restartPolicy": getattr(spec, "restart_policy", None) or "Always",
+            "serviceAccountName": getattr(spec, "service_account_name", None)
+            or "default",
+            "containers": _plain(getattr(spec, "containers", None) or []) or [],
+            "volumes": _plain(getattr(spec, "volumes", None) or []) or [],
+        },
+    }
+    ns = getattr(meta, "namespace", None)
+    if ns:
+        body["metadata"]["namespace"] = ns
+    for attr, key in (
+        ("dns_policy", "dnsPolicy"),
+        ("dns_config", "dnsConfig"),
+        ("host_aliases", "hostAliases"),
+        ("security_context", "securityContext"),
+    ):
+        val = _plain(getattr(spec, attr, None))
+        if val:
+            body["spec"][key] = val
+    existing_aff = _plain(getattr(spec, "affinity", None))
+    if existing_aff:
+        body["spec"]["affinity"] = existing_aff
+    return body
 
-            raw = ApiClient().sanitize_for_serialization(pod)
-            if isinstance(raw, dict) and isinstance(raw.get("metadata"), dict):
-                body = raw
-        except Exception:  # noqa: BLE001 - fall back for partial objects
-            body = None
 
-    if body is None:
-        meta = pod.metadata
-        spec = pod.spec
-        body = {
-            "apiVersion": "v1",
-            "kind": "Pod",
-            "metadata": {
-                "name": meta.name,
-                "labels": dict(getattr(meta, "labels", None) or {}),
-            },
-            "spec": {
-                "restartPolicy": getattr(spec, "restart_policy", None) or "Always",
-                "serviceAccountName": getattr(spec, "service_account_name", None)
-                or "default",
-                "containers": _plain(getattr(spec, "containers", None) or []) or [],
-                "volumes": _plain(getattr(spec, "volumes", None) or []) or [],
-            },
-        }
-        ns = getattr(meta, "namespace", None)
-        if ns:
-            body["metadata"]["namespace"] = ns
-        for attr, key in (
-            ("dns_policy", "dnsPolicy"),
-            ("dns_config", "dnsConfig"),
-            ("host_aliases", "hostAliases"),
-            ("security_context", "securityContext"),
-        ):
-            val = _plain(getattr(spec, attr, None))
-            if val:
-                body["spec"][key] = val
-        existing_aff = _plain(getattr(spec, "affinity", None))
-        if existing_aff:
-            body["spec"]["affinity"] = existing_aff
-
+def _strip_ops_pod_runtime_fields(body: dict[str, Any]) -> None:
     meta = body.setdefault("metadata", {})
     for k in (
         "resourceVersion",
@@ -232,16 +220,41 @@ def _build_ops_pod_recreate_body(
     for k in ("nodeName", "node_name"):
         spec.pop(k, None)
 
-    # Merge Multus / prior annotations with heal state.
+
+def _build_ops_pod_recreate_body(
+    pod, *, annotations: dict[str, str], affinity: dict | None
+) -> dict[str, Any]:
+    """Build a create-able Pod dict from a live read (strip runtime fields)."""
+    body = _pod_body_from_serialized_model(pod)
+    if body is None:
+        body = _ops_pod_body_from_attrs(pod)
+
+    _strip_ops_pod_runtime_fields(body)
+    meta = body.setdefault("metadata", {})
     prior = dict(meta.get("annotations") or {})
     prior.update(annotations)
     meta["annotations"] = prior
 
+    spec = body.setdefault("spec", {})
     if affinity:
         merged = dict(spec.get("affinity") or {})
         merged.update(affinity)
         spec["affinity"] = merged
     return body
+
+
+def _pod_body_from_serialized_model(pod) -> dict[str, Any] | None:
+    if not _is_k8s_model(pod):
+        return None
+    try:
+        from kubernetes.client import ApiClient
+
+        raw = ApiClient().sanitize_for_serialization(pod)
+        if isinstance(raw, dict) and isinstance(raw.get("metadata"), dict):
+            return raw
+    except Exception:  # noqa: BLE001 - fall back for partial objects
+        return None
+    return None
 
 
 def _recreate_ops_pod(core_api, namespace: str, pod_body: dict, name: str) -> None:

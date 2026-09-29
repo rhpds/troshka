@@ -387,6 +387,70 @@ def _apply_sslip_console_for_ip(host, provider, new_ip: str) -> bool:
     return True
 
 
+def _mark_host_stopped(host, power: str) -> bool:
+    host.state = "stopped"
+    host.agent_status = "disconnected"
+    _skip_until[host.id] = time.time() + 86400
+    logger.info(
+        "Host %s marked stopped (cloud powerstate=%s)",
+        host.id[:8],
+        power,
+    )
+    return True
+
+
+def _mark_host_paused(host, status: dict) -> bool:
+    # Keep in inventory (not stopped) — Power On / Resume can unpause.
+    host.state = "paused"
+    host.agent_status = "disconnected"
+    host.storage_warnings = _merge_paused_warning(
+        host.storage_warnings, status.get("reason")
+    )
+    _skip_until[host.id] = time.time() + 30
+    logger.warning(
+        "Host %s marked paused (agent disconnected): %s",
+        host.id[:8],
+        status.get("reason") or "paused",
+    )
+    return False
+
+
+def _sync_host_public_ip(host, provider, status: dict) -> None:
+    new_ip = status.get("public_ip")
+    if not isinstance(new_ip, str):
+        return
+    new_ip = new_ip.strip() or None
+    if not new_ip or new_ip == host.ip_address:
+        return
+    old_ip = host.ip_address
+    host.ip_address = new_ip
+    private = status.get("private_ip")
+    if private:
+        host.private_ip = private
+    if host.state == "stopped":
+        host.state = "active"
+    fqdn_changed = _apply_sslip_console_for_ip(host, provider, new_ip)
+    _skip_until.pop(host.id, None)
+    logger.info(
+        "Host %s public IP synced %s → %s%s",
+        host.id[:8],
+        old_ip,
+        new_ip,
+        " (sslip console updated)" if fqdn_changed else "",
+    )
+    # sslip LE cert is bound to the old FQDN — reinstall agent for new cert.
+    if fqdn_changed and host.private_key:
+        _enqueue_agent_reinstall_for_ip_change(host)
+
+
+def _read_cloud_power(drv, provider, instance_id: str, status: dict) -> str:
+    power = (status.get("state") or "").lower()
+    if power:
+        return power
+    power = (drv.get_host_powerstate(provider, instance_id) or "").lower()
+    return power if isinstance(power, str) else ""
+
+
 def _sync_cloud_powerstate(host, db) -> bool:
     """Sync cloud power + public IP for non-KubeVirt hosts.
 
@@ -411,67 +475,19 @@ def _sync_cloud_powerstate(host, db) -> bool:
         status = drv.get_host_status(provider, host.instance_id)
         if not isinstance(status, dict):
             status = {}
-        power = (status.get("state") or "").lower()
-        if not power:
-            power = (drv.get_host_powerstate(provider, host.instance_id) or "").lower()
-            if not isinstance(power, str):
-                power = ""
+        power = _read_cloud_power(drv, provider, host.instance_id, status)
 
         if power in _STOPPED_POWER_STATES:
-            host.state = "stopped"
-            host.agent_status = "disconnected"
-            _skip_until[host.id] = time.time() + 86400
-            logger.info(
-                "Host %s marked stopped (cloud powerstate=%s)",
-                host.id[:8],
-                power,
-            )
-            return True
+            return _mark_host_stopped(host, power)
 
         if power in _PAUSED_POWER_STATES:
-            # Keep in inventory (not stopped) — Power On / Resume can unpause.
-            host.state = "paused"
-            host.agent_status = "disconnected"
-            host.storage_warnings = _merge_paused_warning(
-                host.storage_warnings, status.get("reason")
-            )
-            _skip_until[host.id] = time.time() + 30
-            logger.warning(
-                "Host %s marked paused (agent disconnected): %s",
-                host.id[:8],
-                status.get("reason") or "paused",
-            )
-            return False
+            return _mark_host_paused(host, status)
 
         if power == "running" and host.state == "paused":
             host.state = "active"
             host.storage_warnings = _clear_paused_warning(host.storage_warnings)
 
-        new_ip = status.get("public_ip")
-        if not isinstance(new_ip, str):
-            new_ip = None
-        else:
-            new_ip = new_ip.strip() or None
-        if new_ip and new_ip != host.ip_address:
-            old_ip = host.ip_address
-            host.ip_address = new_ip
-            private = status.get("private_ip")
-            if private:
-                host.private_ip = private
-            if host.state == "stopped":
-                host.state = "active"
-            fqdn_changed = _apply_sslip_console_for_ip(host, provider, new_ip)
-            _skip_until.pop(host.id, None)
-            logger.info(
-                "Host %s public IP synced %s → %s%s",
-                host.id[:8],
-                old_ip,
-                new_ip,
-                " (sslip console updated)" if fqdn_changed else "",
-            )
-            # sslip LE cert is bound to the old FQDN — reinstall agent for new cert.
-            if fqdn_changed and host.private_key:
-                _enqueue_agent_reinstall_for_ip_change(host)
+        _sync_host_public_ip(host, provider, status)
         return False
     except Exception:
         logger.debug(

@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 _KUBEVIRT_GROUP = "kubevirt.io"
 _KUBEVIRT_DOMAIN_LABEL = "kubevirt.io/domain"
 _ROUTE_API = "route.openshift.io"
+_ROUTE_API_VERSION = "route.openshift.io/v1"
+_MERGE_PATCH_CONTENT_TYPE = "application/merge-patch+json"
 _HOST_ID_LABEL = "troshka/host-id"
 SSH_LB_PORT = 22000
 
@@ -517,7 +519,7 @@ def _ensure_host_transit_port(provider, host, transit_port: int) -> None:
         lb_name,
         namespace,
         {"spec": {"ports": merged}},
-        _content_type="application/merge-patch+json",
+        _content_type=_MERGE_PATCH_CONTENT_TYPE,
     )
     logger.info(
         "Exposed transit port %d on host LB %s for route access",
@@ -598,7 +600,7 @@ def _create_or_get_route(custom_api, namespace, route_body, resource_name):
                         plural="routes",
                         name=resource_name,
                         body=patch_body,
-                        _content_type="application/merge-patch+json",
+                        _content_type=_MERGE_PATCH_CONTENT_TYPE,
                     )
                 existing = cast(
                     dict[str, Any],
@@ -1064,7 +1066,7 @@ class OCPVirtDriver(ProviderDriver):
         # {route-name}-{namespace}.{apps-domain} from the wildcard cert)
         route_name = f"troshka-console-{host_short}"
         route = {
-            "apiVersion": "route.openshift.io/v1",
+            "apiVersion": _ROUTE_API_VERSION,
             "kind": "Route",
             "metadata": {
                 "name": route_name,
@@ -1212,7 +1214,7 @@ class OCPVirtDriver(ProviderDriver):
                             ],
                         }
                     },
-                    _content_type="application/merge-patch+json",
+                    _content_type=_MERGE_PATCH_CONTENT_TYPE,
                 )
             else:
                 raise
@@ -1222,7 +1224,7 @@ class OCPVirtDriver(ProviderDriver):
         # Showroom-style 443→80 HTTP needs edge termination.
         passthrough = int(vm_port) == 6443 or (port == 443 and int(vm_port) == 443)
         route = {
-            "apiVersion": "route.openshift.io/v1",
+            "apiVersion": _ROUTE_API_VERSION,
             "kind": "Route",
             "metadata": {
                 "name": resource_name,
@@ -1286,7 +1288,7 @@ class OCPVirtDriver(ProviderDriver):
         src_spec = src.get("spec", {})
         name = route_name[:63]
         route = {
-            "apiVersion": "route.openshift.io/v1",
+            "apiVersion": _ROUTE_API_VERSION,
             "kind": "Route",
             "metadata": {
                 "name": name,
@@ -1575,7 +1577,7 @@ class OCPVirtDriver(ProviderDriver):
             allocation_id,
             namespace,
             {"spec": {"ports": svc_ports}},
-            _content_type="application/merge-patch+json",
+            _content_type=_MERGE_PATCH_CONTENT_TYPE,
         )
         logger.info(
             "Updated EIP %s ports: %s",

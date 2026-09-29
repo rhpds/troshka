@@ -499,3 +499,34 @@ def test_build_datavolume_from_s3_falls_back_to_size_gb():
     # max(20+10, int(20*1.2)=24) = 30Gi.
     dv = build_datavolume_from_s3("g", "cache", "lib/x.qcow2", 20, {})
     assert _s3_storage(dv) == "30Gi"
+
+
+def test_decode_admission_error_body_bytes():
+    exc = ApiException(status=422)
+    exc.body = b'{"message":"x"}'
+    assert kv_helpers._decode_admission_error_body(exc) == {"message": "x"}
+
+
+def test_top_level_admission_message_strips_webhook_prefix():
+    data = {
+        "message": (
+            'Admission webhook "virtualmachine-validator.kubevirt.io" denied '
+            "the request: IDE bus is not supported"
+        )
+    }
+    msgs = kv_helpers._top_level_admission_message(data)
+    assert msgs == ["IDE bus is not supported"]
+
+
+def test_messages_from_admission_causes_with_field():
+    data = {
+        "details": {
+            "causes": [
+                {"message": "bad bus", "field": "spec.disks[0]"},
+                {"message": "  ", "field": "ignored"},
+            ]
+        }
+    }
+    assert kv_helpers._messages_from_admission_causes(data) == [
+        "bad bus (spec.disks[0])"
+    ]

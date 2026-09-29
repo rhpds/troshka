@@ -11957,3 +11957,134 @@ class TestGoldenNameMap:
             ]
         }
         assert _golden_name_map_from_topology(topo) == {f"golden-{h}": "disk0"}
+
+
+# ── Newly extracted Sonar helpers ───────────────────────────────────────
+
+
+class TestAggregateClusterOcpStatus:
+    def test_monitoring_wins(self):
+        from app.services.deploy_service import _aggregate_cluster_ocp_status
+
+        assert _aggregate_cluster_ocp_status(["ready", "monitoring"]) == "monitoring"
+
+    def test_ready(self):
+        from app.services.deploy_service import _aggregate_cluster_ocp_status
+
+        assert _aggregate_cluster_ocp_status(["ready", "error"]) == "ready"
+
+    def test_error(self):
+        from app.services.deploy_service import _aggregate_cluster_ocp_status
+
+        assert _aggregate_cluster_ocp_status(["error", "failed"]) == "error"
+
+
+class TestFallbackDeployStep:
+    def test_images(self):
+        from app.services.deploy_service import _fallback_deploy_step
+
+        assert _fallback_deploy_step(None, None, "dv", ["a"], {}) == ("images", "dv")
+
+    def test_last(self):
+        from app.services.deploy_service import _fallback_deploy_step
+
+        assert _fallback_deploy_step(
+            None, None, None, None, {"step": "x", "detail": "y"}
+        ) == (
+            "x",
+            "y",
+        )
+
+
+class TestShowroomDnsNetwork:
+    def test_named(self):
+        from app.services.deploy_service import _find_showroom_dns_network
+
+        topo = {
+            "nodes": [
+                {
+                    "type": "networkNode",
+                    "data": {"subtype": "network", "name": "cluster"},
+                },
+                {
+                    "type": "networkNode",
+                    "data": {"subtype": "network", "name": "dnsnet"},
+                },
+            ]
+        }
+        n = _find_showroom_dns_network(topo, "dnsnet")
+        assert n["data"]["name"] == "dnsnet"
+
+    def test_first_fallback(self):
+        from app.services.deploy_service import _find_showroom_dns_network
+
+        topo = {
+            "nodes": [
+                {
+                    "type": "networkNode",
+                    "data": {"subtype": "network", "name": "only"},
+                }
+            ]
+        }
+        assert _find_showroom_dns_network(topo, "")["data"]["name"] == "only"
+
+
+class TestGatewayPortForwards:
+    def test_collect(self):
+        from app.services.deploy_service import _collect_gateway_port_forwards
+
+        topo = {
+            "nodes": [
+                {
+                    "data": {
+                        "subtype": "gateway",
+                        "portForwards": [
+                            {
+                                "extPort": "443",
+                                "intIp": "10.0.0.5",
+                                "intPort": "443",
+                                "proto": "tcp",
+                            },
+                            {"extPort": "", "intIp": "x", "intPort": "1"},
+                        ],
+                    }
+                }
+            ]
+        }
+        assert _collect_gateway_port_forwards(topo, "") == ["443:10.0.0.5:443:tcp"]
+
+
+class TestPodInitContainers:
+    def test_keeps_nginx_when_prebuilt(self):
+        from app.services.deploy_service import _pod_init_containers_for_create
+
+        ctr = {
+            "build_content": False,
+            "init_containers": [
+                {"name": "git-cloner"},
+                {"name": "nginx-config"},
+            ],
+        }
+        assert [i["name"] for i in _pod_init_containers_for_create(ctr)] == [
+            "nginx-config"
+        ]
+
+    def test_keeps_all_when_building(self):
+        from app.services.deploy_service import _pod_init_containers_for_create
+
+        ctr = {"init_containers": [{"name": "a"}, {"name": "b"}]}
+        assert len(_pod_init_containers_for_create(ctr)) == 2
+
+
+class TestDiskSizeFallback:
+    def test_prefer_virtual(self):
+        from app.services.deploy_service import _disk_size_bytes_fallback
+
+        d = MagicMock(virtual_size_bytes=10, size_bytes=5)
+        assert _disk_size_bytes_fallback(d) == 10
+
+    def test_fallback_size(self):
+        from app.services.deploy_service import _disk_size_bytes_fallback
+
+        d = MagicMock(virtual_size_bytes=0, size_bytes=7)
+        assert _disk_size_bytes_fallback(d) == 7

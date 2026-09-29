@@ -48,6 +48,44 @@ def ceph_position_for_cluster_count(count: int) -> tuple[int, int]:
     return 50, _CLUSTER_BASE_Y + 120
 
 
+def _clamp_osd_capacity(ceph_cfg: dict) -> tuple[int, int]:
+    osd_count = int(ceph_cfg.get("osdCount") or _DEFAULT_OSD_COUNT)
+    osd_count = max(_MIN_OSD_COUNT, min(_MAX_OSD_COUNT, osd_count))
+    capacity_gi = int(ceph_cfg.get("capacityGi") or osd_count * _MIN_OSD_SIZE_GI)
+    capacity_gi = max(capacity_gi, osd_count * _MIN_OSD_SIZE_GI)
+    return osd_count, capacity_gi
+
+
+def _ceph_edge_handles(idx: int) -> tuple[str, str]:
+    # Alternate sides: first cluster on ceph right, second on left, etc.
+    if idx % 2 == 0:
+        return "right", "ceph-left"
+    return "left", "ceph-right"
+
+
+def _ceph_cluster_edges(
+    node_id: str,
+    linked_names: list,
+    cluster_name_to_id: dict[str, str],
+) -> list[dict]:
+    edges: list[dict] = []
+    for idx, cluster_name in enumerate(linked_names):
+        cluster_id = cluster_name_to_id.get(cluster_name)
+        if not cluster_id:
+            continue
+        source_handle, target_handle = _ceph_edge_handles(idx)
+        edges.append(
+            {
+                "id": f"edge-{node_id}-{cluster_id}",
+                "source": node_id,
+                "target": cluster_id,
+                "sourceHandle": source_handle,
+                "targetHandle": target_handle,
+            }
+        )
+    return edges
+
+
 def build_ceph_from_config(
     ceph_cfg: dict,
     *,
@@ -61,11 +99,7 @@ def build_ceph_from_config(
     network_name = str(ceph_cfg.get("network") or "cluster").strip()
     net_id = net_ids.get(network_name, network_name)
     cidr = str((nets_def.get(network_name) or {}).get("cidr") or "")
-
-    osd_count = int(ceph_cfg.get("osdCount") or _DEFAULT_OSD_COUNT)
-    osd_count = max(_MIN_OSD_COUNT, min(_MAX_OSD_COUNT, osd_count))
-    capacity_gi = int(ceph_cfg.get("capacityGi") or osd_count * _MIN_OSD_SIZE_GI)
-    capacity_gi = max(capacity_gi, osd_count * _MIN_OSD_SIZE_GI)
+    osd_count, capacity_gi = _clamp_osd_capacity(ceph_cfg)
 
     lab_ip = str(ceph_cfg.get("labIp") or "").strip() or _default_ceph_lab_ip(cidr)
     node_id = f"ceph-{uuid.uuid4().hex[:8]}"
@@ -91,29 +125,7 @@ def build_ceph_from_config(
             "storageClassName": ceph_cfg.get("storageClassName") or "troshka-ceph-rbd",
         },
     }
-
-    edges: list[dict] = []
-
-    for idx, cluster_name in enumerate(ceph_cfg.get("clusters") or []):
-        cluster_id = cluster_name_to_id.get(cluster_name)
-        if not cluster_id:
-            continue
-        # Alternate sides: first cluster on ceph right, second on left, etc.
-        if idx % 2 == 0:
-            source_handle, target_handle = "right", "ceph-left"
-        else:
-            source_handle, target_handle = "left", "ceph-right"
-        edges.append(
-            {
-                "id": f"edge-{node_id}-{cluster_id}",
-                "source": node_id,
-                "target": cluster_id,
-                "sourceHandle": source_handle,
-                "targetHandle": target_handle,
-            }
-        )
-
-    return node, edges
+    return node, _ceph_cluster_edges(node_id, linked, cluster_name_to_id)
 
 
 def export_ceph_section(

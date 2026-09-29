@@ -1663,6 +1663,7 @@ def install_operator(
     responses={
         400: {"description": "Provider type does not expose cluster capabilities"},
         404: {"description": _PROVIDER_NOT_FOUND},
+        503: {"description": "Capabilities not yet published"},
     },
 )
 def get_provider_capabilities(

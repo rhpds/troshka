@@ -43,6 +43,7 @@ _SNAPSHOT_GROUP = "snapshot.storage.k8s.io"
 _SECURITY_GROUP = "security.openshift.io"
 _DEFAULT_SUBNET = "10.0.0.0/24"  # NOSONAR
 _ROUTE_API = "route.openshift.io"
+_CDI_API_GROUP = "cdi.kubevirt.io"
 
 
 def _cleanup_legacy_pod(core_api, namespace, pod_name):
@@ -782,8 +783,8 @@ async def _run_ceph_capture_phase(
         captured_ceph_disks = await _capture_ceph_devices(
             ceph_devices, s3_config, custom_api, core_api, batch_api, namespace, name
         )
-    except Exception as e:
-        logger.error(f"Ceph capture phase aborted for {name}: {e}")
+    except Exception:
+        logger.exception("Ceph capture phase aborted for %s", name)
         _clear_capture_annotation(custom_api, namespace, name)
         return False
     patch.status["capturedCephDisks"] = captured_ceph_disks
@@ -900,6 +901,64 @@ def _export_job_poll_result(
     return False, None
 
 
+def _patch_export_progress_status(
+    custom_api, namespace, cr_name, export_jobs, disk_statuses
+) -> None:
+    done_count = sum(1 for s in disk_statuses.values() if s == "done")
+    _patch_cr_status(
+        custom_api,
+        namespace,
+        cr_name,
+        {
+            "captureProgress": (
+                f"Exporting disks to S3 ({done_count}/{len(export_jobs)})"
+            ),
+            "captureDisks": [
+                {
+                    "name": ej.get("displayName", ej["jobName"]),
+                    "status": disk_statuses[ej["jobName"]],
+                }
+                for ej in export_jobs
+            ],
+        },
+    )
+
+
+def _poll_export_jobs_once(
+    batch_api, export_jobs, namespace, custom_api, cr_name, core_api, disk_statuses
+):
+    """One poll pass. Returns (all_done, error_or_None)."""
+    all_done = True
+    for ej in export_jobs:
+        done, err = _export_job_poll_result(
+            batch_api, ej, namespace, custom_api, cr_name, core_api, disk_statuses
+        )
+        if err:
+            return False, err
+        if not done:
+            all_done = False
+    return all_done, None
+
+
+def _export_jobs_timeout_error(
+    batch_api, export_jobs, namespace, custom_api, cr_name, max_wait: int
+) -> str:
+    pending = [
+        ej["jobName"]
+        for ej in export_jobs
+        if _check_export_job(batch_api, ej, namespace) != "done"
+    ]
+    msg = f"Export timed out after {max_wait}s, jobs still pending: {pending}"
+    logger.error(msg)
+    _patch_cr_status(
+        custom_api,
+        namespace,
+        cr_name,
+        {"phase": "CaptureError", "captureError": msg},
+    )
+    return msg
+
+
 async def _poll_export_jobs(
     batch_api, export_jobs, namespace, custom_api, cr_name, core_api=None
 ):
@@ -914,53 +973,26 @@ async def _poll_export_jobs(
 
     disk_statuses = {ej["jobName"]: "starting" for ej in export_jobs}
     for _ in range(iterations):
-        all_done = True
-        for ej in export_jobs:
-            done, err = _export_job_poll_result(
-                batch_api, ej, namespace, custom_api, cr_name, core_api, disk_statuses
-            )
-            if err:
-                return err
-            if not done:
-                all_done = False
-        done_count = sum(1 for s in disk_statuses.values() if s == "done")
-        _patch_cr_status(
-            custom_api,
+        all_done, err = _poll_export_jobs_once(
+            batch_api,
+            export_jobs,
             namespace,
+            custom_api,
             cr_name,
-            {
-                "captureProgress": f"Exporting disks to S3 ({done_count}/{len(export_jobs)})",
-                "captureDisks": [
-                    {
-                        "name": ej.get("displayName", ej["jobName"]),
-                        "status": disk_statuses[ej["jobName"]],
-                    }
-                    for ej in export_jobs
-                ],
-            },
+            core_api,
+            disk_statuses,
+        )
+        if err:
+            return err
+        _patch_export_progress_status(
+            custom_api, namespace, cr_name, export_jobs, disk_statuses
         )
         if all_done:
-            break
+            return None
         await asyncio.sleep(10)
-    else:
-        pending = [
-            ej["jobName"]
-            for ej in export_jobs
-            if _check_export_job(batch_api, ej, namespace) != "done"
-        ]
-        msg = f"Export timed out after {max_wait}s, jobs still pending: {pending}"
-        logger.error(msg)
-        _patch_cr_status(
-            custom_api,
-            namespace,
-            cr_name,
-            {
-                "phase": "CaptureError",
-                "captureError": msg,
-            },
-        )
-        return msg
-    return None
+    return _export_jobs_timeout_error(
+        batch_api, export_jobs, namespace, custom_api, cr_name, max_wait
+    )
 
 
 def _read_export_sizes(core_api, export_jobs, namespace):
@@ -1072,6 +1104,74 @@ def _cleanup_capture_resources(core_api, custom_api, batch_api, export_jobs, nam
 _CAPTURE_TEMP_PVC_PREFIXES = ("export-", "scratch-", "ceph-export-", "filepull-")
 
 
+def _strip_and_delete_volume_snapshot(custom_api, namespace, snap_name):
+    """Strip finalizers and delete one VolumeSnapshot."""
+    try:
+        custom_api.patch_namespaced_custom_object(
+            group=_SNAPSHOT_GROUP,
+            version="v1",
+            namespace=namespace,
+            plural="volumesnapshots",
+            name=snap_name,
+            body={"metadata": {"finalizers": None}},
+        )
+    except Exception:
+        pass
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group=_SNAPSHOT_GROUP,
+            version="v1",
+            namespace=namespace,
+            plural="volumesnapshots",
+            name=snap_name,
+        )
+        logger.info(f"Deleted VolumeSnapshot {snap_name}")
+    except Exception as e:
+        logger.warning(f"Failed to delete VolumeSnapshot {snap_name}: {e}")
+
+
+def _strip_and_delete_snapshot_content(custom_api, cname):
+    """Strip finalizers and delete one VolumeSnapshotContent."""
+    try:
+        custom_api.patch_cluster_custom_object(
+            group=_SNAPSHOT_GROUP,
+            version="v1",
+            plural="volumesnapshotcontents",
+            name=cname,
+            body={"metadata": {"finalizers": None}},
+        )
+    except Exception:
+        pass
+    try:
+        custom_api.delete_cluster_custom_object(
+            group=_SNAPSHOT_GROUP,
+            version="v1",
+            plural="volumesnapshotcontents",
+            name=cname,
+        )
+        logger.info(f"Deleted VolumeSnapshotContent {cname}")
+    except Exception as e:
+        logger.warning(f"Failed to delete VolumeSnapshotContent {cname}: {e}")
+
+
+def _delete_all_volume_snapshots(custom_api, namespace, snaps: dict) -> None:
+    for item in snaps.get("items", []):
+        snap_name = item.get("metadata", {}).get("name")
+        if snap_name:
+            _strip_and_delete_volume_snapshot(custom_api, namespace, snap_name)
+
+
+def _delete_snapshot_contents_for_namespace(custom_api, namespace, contents: dict) -> None:
+    for item in contents.get("items", []):
+        meta = item.get("metadata") or {}
+        ref = (item.get("spec") or {}).get("volumeSnapshotRef") or {}
+        if ref.get("namespace") != namespace:
+            continue
+        cname = meta.get("name")
+        if cname:
+            _strip_and_delete_snapshot_content(custom_api, cname)
+
+
 def _force_delete_volume_snapshots(custom_api, namespace):
     """Strip finalizers and delete all VolumeSnapshots (+ Contents) in a namespace."""
     try:
@@ -1087,32 +1187,7 @@ def _force_delete_volume_snapshots(custom_api, namespace):
     except Exception as e:
         logger.warning(f"Failed to list VolumeSnapshots in {namespace}: {e}")
         return
-    for item in snaps.get("items", []):
-        snap_name = item.get("metadata", {}).get("name")
-        if not snap_name:
-            continue
-        try:
-            custom_api.patch_namespaced_custom_object(
-                group=_SNAPSHOT_GROUP,
-                version="v1",
-                namespace=namespace,
-                plural="volumesnapshots",
-                name=snap_name,
-                body={"metadata": {"finalizers": None}},
-            )
-        except Exception:
-            pass
-        try:
-            custom_api.delete_namespaced_custom_object(
-                group=_SNAPSHOT_GROUP,
-                version="v1",
-                namespace=namespace,
-                plural="volumesnapshots",
-                name=snap_name,
-            )
-            logger.info(f"Deleted VolumeSnapshot {snap_name}")
-        except Exception as e:
-            logger.warning(f"Failed to delete VolumeSnapshot {snap_name}: {e}")
+    _delete_all_volume_snapshots(custom_api, namespace, snaps)
 
     try:
         contents = cast(
@@ -1126,34 +1201,7 @@ def _force_delete_volume_snapshots(custom_api, namespace):
     except Exception as e:
         logger.warning(f"Failed to list VolumeSnapshotContents: {e}")
         return
-    for item in contents.get("items", []):
-        meta = item.get("metadata") or {}
-        ref = (item.get("spec") or {}).get("volumeSnapshotRef") or {}
-        if ref.get("namespace") != namespace:
-            continue
-        cname = meta.get("name")
-        if not cname:
-            continue
-        try:
-            custom_api.patch_cluster_custom_object(
-                group=_SNAPSHOT_GROUP,
-                version="v1",
-                plural="volumesnapshotcontents",
-                name=cname,
-                body={"metadata": {"finalizers": None}},
-            )
-        except Exception:
-            pass
-        try:
-            custom_api.delete_cluster_custom_object(
-                group=_SNAPSHOT_GROUP,
-                version="v1",
-                plural="volumesnapshotcontents",
-                name=cname,
-            )
-            logger.info(f"Deleted VolumeSnapshotContent {cname}")
-        except Exception as e:
-            logger.warning(f"Failed to delete VolumeSnapshotContent {cname}: {e}")
+    _delete_snapshot_contents_for_namespace(custom_api, namespace, contents)
 
 
 def _force_delete_capture_temp_pvcs(core_api, namespace):
@@ -1163,7 +1211,7 @@ def _force_delete_capture_temp_pvcs(core_api, namespace):
     except Exception as e:
         logger.warning(f"Failed to list PVCs in {namespace}: {e}")
         return
-    for pvc in list(getattr(listed, "items", None) or []):
+    for pvc in getattr(listed, "items", None) or []:
         name = getattr(getattr(pvc, "metadata", None), "name", "") or ""
         if not name.startswith(_CAPTURE_TEMP_PVC_PREFIXES):
             continue
@@ -1196,7 +1244,7 @@ def _abort_pattern_capture_temps(core_api, custom_api, batch_api, namespace):
         jobs = batch_api.list_namespaced_job(
             namespace=namespace, label_selector="troshka-role=pattern-export"
         )
-        for job in list(getattr(jobs, "items", None) or []):
+        for job in getattr(jobs, "items", None) or []:
             try:
                 batch_api.delete_namespaced_job(
                     name=job.metadata.name,
@@ -2000,7 +2048,7 @@ def _get_existing_golden(custom_api, pvc_name):
 
     try:
         return custom_api.get_namespaced_custom_object(
-            group="cdi.kubevirt.io",
+            group=_CDI_API_GROUP,
             version="v1beta1",
             namespace=CACHE_NAMESPACE,
             plural="datavolumes",
@@ -2010,6 +2058,25 @@ def _get_existing_golden(custom_api, pvc_name):
         if e.status == 404:
             return None
         raise
+
+
+def _container_status_crashlooping(cs) -> bool:
+    """True if a container status is CrashLoopBackOff or has restarted enough times."""
+    restart_count = getattr(cs, "restart_count", 0) or 0
+    waiting = getattr(getattr(cs, "state", None), "waiting", None)
+    reason = getattr(waiting, "reason", "") if waiting else ""
+    return reason == "CrashLoopBackOff" or restart_count >= 3
+
+
+def _pod_importer_crashlooping(pod, pvc_name: str) -> bool:
+    """True if this pod is the importer for pvc_name and is crashlooping."""
+    pod_name = getattr(pod.metadata, "name", "") or ""
+    if pvc_name not in pod_name:
+        return False
+    for cs in getattr(pod.status, "container_statuses", None) or []:
+        if _container_status_crashlooping(cs):
+            return True
+    return False
 
 
 def _golden_importer_crashlooping(core_api, namespace, pvc_name):
@@ -2023,17 +2090,7 @@ def _golden_importer_crashlooping(core_api, namespace, pvc_name):
         items = list(pods.items or [])
     except Exception:
         return False
-    for pod in items:
-        pod_name = getattr(pod.metadata, "name", "") or ""
-        if pvc_name not in pod_name:
-            continue
-        for cs in getattr(pod.status, "container_statuses", None) or []:
-            restart_count = getattr(cs, "restart_count", 0) or 0
-            waiting = getattr(getattr(cs, "state", None), "waiting", None)
-            reason = getattr(waiting, "reason", "") if waiting else ""
-            if reason == "CrashLoopBackOff" or restart_count >= 3:
-                return True
-    return False
+    return any(_pod_importer_crashlooping(pod, pvc_name) for pod in items)
 
 
 def _golden_is_stuck(dv, core_api, namespace, pvc_name):
@@ -2103,7 +2160,7 @@ def _golden_referenced_by_active_clone(custom_api, golden_name):
 
     try:
         dvs = custom_api.list_cluster_custom_object(
-            group="cdi.kubevirt.io", version="v1beta1", plural="datavolumes"
+            group=_CDI_API_GROUP, version="v1beta1", plural="datavolumes"
         )
     except Exception:
         # Fail safe: if we can't tell, assume referenced (keep the golden).
@@ -2133,7 +2190,7 @@ def reap_stuck_goldens(custom_api, core_api, now=None):
         now = _t.time()
     try:
         dvs = custom_api.list_namespaced_custom_object(
-            group="cdi.kubevirt.io",
+            group=_CDI_API_GROUP,
             version="v1beta1",
             namespace=CACHE_NAMESPACE,
             plural="datavolumes",
@@ -2187,6 +2244,22 @@ async def _golden_reaper_loop():
             logger.exception("golden reaper loop error")
 
 
+def _resolve_golden_s3_config(disk, s3_config, central_s3_config, use_central):
+    """Pick S3 config + credentials secret for a golden import."""
+    # Pattern disks carry an explicit source: obc (local RGW) or central (S4).
+    pattern_source = None
+    if disk.get("patternImage"):
+        pattern_source = disk["patternImage"].get("source", "central")
+    obc_config = s3_config.get("obcConfig")
+    if pattern_source == "obc" and obc_config:
+        return obc_config, obc_config.get(
+            "credentialsSecret", "s3-obc-credentials"  # pragma: allowlist secret
+        )
+    if use_central and central_s3_config:
+        return central_s3_config, "s3-central-credentials"  # pragma: allowlist secret
+    return s3_config, "s3-credentials"  # pragma: allowlist secret
+
+
 def _create_golden_pvc_for_disk(
     custom_api, core_api, disk, s3_config, central_s3_config
 ):
@@ -2198,22 +2271,9 @@ def _create_golden_pvc_for_disk(
     if not s3_path:
         return
 
-    # Pattern disks carry an explicit source: obc (local RGW) or central (S4).
-    pattern_source = None
-    if disk.get("patternImage"):
-        pattern_source = disk["patternImage"].get("source", "central")
-    obc_config = s3_config.get("obcConfig")
-    if pattern_source == "obc" and obc_config:
-        disk_s3_config = obc_config
-        secret_name = obc_config.get(
-            "credentialsSecret", "s3-obc-credentials"  # pragma: allowlist secret
-        )
-    elif use_central and central_s3_config:
-        disk_s3_config = central_s3_config
-        secret_name = "s3-central-credentials"  # pragma: allowlist secret
-    else:
-        disk_s3_config = s3_config
-        secret_name = "s3-credentials"  # pragma: allowlist secret
+    disk_s3_config, secret_name = _resolve_golden_s3_config(
+        disk, s3_config, central_s3_config, use_central
+    )
 
     from helpers.kubevirt import delete_golden_import, golden_import_matches
 
@@ -2246,7 +2306,7 @@ def _create_golden_pvc_for_disk(
     )
     try:
         custom_api.create_namespaced_custom_object(
-            group="cdi.kubevirt.io",
+            group=_CDI_API_GROUP,
             version="v1beta1",
             namespace=CACHE_NAMESPACE,
             plural="datavolumes",
@@ -2857,7 +2917,7 @@ def heal_stuck_virt_launchers(
 
 
 def _heal_one_stuck_launcher(
-    core_api, custom_api, namespace, vm_id, kv_name, now, threshold_s
+    core_api, custom_api, namespace, _vm_id, kv_name, now, threshold_s
 ):
     """Heal a single KV VM's stuck launcher. Returns (kind, payload) or None."""
     pod = _find_stuck_launcher_pod(core_api, namespace, kv_name, now, threshold_s)
@@ -2978,7 +3038,7 @@ def _recert_pvc_datavolume_phase(namespace, name):
         dv = cast(
             dict[str, Any],
             client.CustomObjectsApi().get_namespaced_custom_object(
-                group="cdi.kubevirt.io",
+                group=_CDI_API_GROUP,
                 version="v1beta1",
                 namespace=namespace,
                 plural="datavolumes",
@@ -3772,7 +3832,7 @@ async def project_delete(namespace, name, **_):
     )
     _delete_custom_resources(
         custom_api,
-        "cdi.kubevirt.io",
+        _CDI_API_GROUP,
         "v1beta1",
         "datavolumes",
         namespace,

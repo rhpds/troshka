@@ -799,8 +799,9 @@ def test_inject_running_pod_leaves_non_terminal_in_progress():
 def test_inject_dead_pod_preserves_terminal_clusters():
     # A cluster that already completed is not clobbered to failed even if the pod
     # has since stopped (install already finished for that cluster).
+    # Completion requires the Troshka breadcrumb "[<id>] install complete".
     out = inject_dead_pod_failures(
-        {"c1": "install complete", "c2": "booting nodes"}, pod_running=False
+        {"c1": "[c1] install complete", "c2": "booting nodes"}, pod_running=False
     )
     p = ops_pod_install_progress(out)
     assert p["clusters"]["c1"] == "complete"

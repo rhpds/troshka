@@ -113,7 +113,70 @@ def _unbind_scc(custom_api, namespace: str) -> None:
             )
 
 
-async def _reconcile_ceph(body, patch, namespace: str) -> None:
+def _ensure_external_secret(core_api, namespace: str, body, fsid: str, lab_ip: str) -> None:
+    """Create the ceph-external secret, or backfill fsid/mon-host on conflict."""
+    secret_body = build_external_secret(body, fsid=fsid)
+    try:
+        core_api.create_namespaced_secret(namespace=namespace, body=secret_body)
+        return
+    except ApiException as e:
+        if e.status != 409:
+            raise
+    if ceph_external_details_exported(core_api, namespace):
+        return
+    try:
+        existing = core_api.read_namespaced_secret(
+            name=CEPH_EXTERNAL_SECRET, namespace=namespace
+        )
+        data = existing.data or {}
+        if not data.get("fsid") and fsid:
+            core_api.patch_namespaced_secret(
+                name=CEPH_EXTERNAL_SECRET,
+                namespace=namespace,
+                body={"stringData": {"fsid": fsid, "mon-host": f"{lab_ip}:3300"}},
+            )
+    except ApiException:
+        pass
+
+
+def _set_ceph_status_endpoints(patch, spec, core_api, namespace, lab_ip, osd_count, replicate_size):
+    """Populate shared TroshkaCeph status fields (endpoints, pool, counts)."""
+    lab_mon_endpoint = f"{lab_ip}:3300"
+    nested_mon = nested_mon_host_from_secret(core_api, namespace)
+    patch.status["monEndpoint"] = nested_mon or lab_mon_endpoint
+    patch.status["labMonEndpoint"] = lab_mon_endpoint
+    patch.status["secretName"] = CEPH_EXTERNAL_SECRET
+    patch.status["storageClassName"] = spec.get("storageClassName", "troshka-ceph-rbd")
+    patch.status["poolName"] = CEPH_POOL_NAME
+    patch.status["osdCount"] = osd_count
+    patch.status["replicateSize"] = replicate_size
+
+
+def _update_ceph_ready_phase(patch, apps_api, core_api, body, namespace, osd_count):
+    """Set Ready / Progressing phase based on appliance + export status."""
+    if not appliance_is_ready(apps_api, namespace, osd_count):
+        patch.status["phase"] = "Progressing"
+        patch.status["message"] = "Waiting for Ceph mon/OSD pods"
+        return
+    batch_api = client.BatchV1Api()
+    ensure_ceph_export_job(batch_api, body, namespace)
+    if ceph_external_details_exported(core_api, namespace):
+        nested_mon = nested_mon_host_from_secret(core_api, namespace)
+        if nested_mon:
+            patch.status["monEndpoint"] = nested_mon
+        patch.status["phase"] = "Ready"
+        patch.status["message"] = "Ceph appliance ready"
+        logger.info(
+            "TroshkaCeph ready in %s (mon=%s)",
+            namespace,
+            patch.status["monEndpoint"],
+        )
+        return
+    patch.status["phase"] = "Progressing"
+    patch.status["message"] = "Exporting ODF external cluster details"
+
+
+def _reconcile_ceph(body, patch, namespace: str) -> None:
     spec = body.get("spec", {})
     lab_ip = spec.get("labIp", "")
     if not validate_lab_ip(lab_ip):
@@ -141,8 +204,7 @@ async def _reconcile_ceph(body, patch, namespace: str) -> None:
 
     apply_configmap(core_api, namespace, build_conf_configmap(body, fsid))
 
-    restore_enabled = restore["enabled"]
-    if not restore_enabled:
+    if not restore["enabled"]:
         apply_pvc(core_api, namespace, build_mon_pvc(body))
         for pvc in build_osd_pvcs(body):
             apply_pvc(core_api, namespace, pvc)
@@ -154,75 +216,24 @@ async def _reconcile_ceph(body, patch, namespace: str) -> None:
     for i in range(osd_count):
         apply_deployment(apps_api, namespace, build_osd_deployment(body, ceph_image, i))
 
-    secret_body = build_external_secret(body, fsid=fsid)
-    try:
-        core_api.create_namespaced_secret(namespace=namespace, body=secret_body)
-    except ApiException as e:
-        if e.status != 409:
-            raise
-        if not ceph_external_details_exported(core_api, namespace):
-            try:
-                existing = core_api.read_namespaced_secret(
-                    name=CEPH_EXTERNAL_SECRET, namespace=namespace
-                )
-                data = existing.data or {}
-                if not data.get("fsid") and fsid:
-                    core_api.patch_namespaced_secret(
-                        name=CEPH_EXTERNAL_SECRET,
-                        namespace=namespace,
-                        body={
-                            "stringData": {"fsid": fsid, "mon-host": f"{lab_ip}:3300"}
-                        },
-                    )
-            except ApiException:
-                pass
-
-    lab_mon_endpoint = f"{lab_ip}:3300"
-    nested_mon = nested_mon_host_from_secret(core_api, namespace)
-    mon_endpoint = nested_mon or lab_mon_endpoint
-
-    patch.status["monEndpoint"] = mon_endpoint
-    patch.status["labMonEndpoint"] = lab_mon_endpoint
-    patch.status["secretName"] = CEPH_EXTERNAL_SECRET
-    patch.status["storageClassName"] = spec.get("storageClassName", "troshka-ceph-rbd")
-    patch.status["poolName"] = CEPH_POOL_NAME
-    patch.status["osdCount"] = osd_count
-    patch.status["replicateSize"] = replicate_size
-
-    if appliance_is_ready(apps_api, namespace, osd_count):
-        batch_api = client.BatchV1Api()
-        ensure_ceph_export_job(batch_api, body, namespace)
-        if ceph_external_details_exported(core_api, namespace):
-            nested_mon = nested_mon_host_from_secret(core_api, namespace)
-            if nested_mon:
-                patch.status["monEndpoint"] = nested_mon
-            patch.status["phase"] = "Ready"
-            patch.status["message"] = "Ceph appliance ready"
-            logger.info(
-                "TroshkaCeph ready in %s (mon=%s)",
-                namespace,
-                patch.status["monEndpoint"],
-            )
-            return
-        patch.status["phase"] = "Progressing"
-        patch.status["message"] = "Exporting ODF external cluster details"
-        return
-
-    patch.status["phase"] = "Progressing"
-    patch.status["message"] = "Waiting for Ceph mon/OSD pods"
+    _ensure_external_secret(core_api, namespace, body, fsid, lab_ip)
+    _set_ceph_status_endpoints(
+        patch, spec, core_api, namespace, lab_ip, osd_count, replicate_size
+    )
+    _update_ceph_ready_phase(patch, apps_api, core_api, body, namespace, osd_count)
 
 
 @kopf.on.create(CRD_GROUP, CRD_VERSION, "troshkancephs")
 async def ceph_create(body, patch, namespace, name, **_):
     logger.info("Creating TroshkaCeph %s in %s", name, namespace)
     patch.status["phase"] = "Pending"
-    await _reconcile_ceph(body, patch, namespace)
+    _reconcile_ceph(body, patch, namespace)
 
 
 @kopf.on.update(CRD_GROUP, CRD_VERSION, "troshkancephs", field="spec")
 async def ceph_update(body, patch, namespace, name, **_):
     logger.info("Updating TroshkaCeph %s in %s", name, namespace)
-    await _reconcile_ceph(body, patch, namespace)
+    _reconcile_ceph(body, patch, namespace)
 
 
 @kopf.timer(CRD_GROUP, CRD_VERSION, "troshkancephs", interval=30.0, idle=15.0)
@@ -230,7 +241,7 @@ async def ceph_poll(body, patch, namespace, name, status, **_):
     current = (status or {}).get("phase", "")
     if current in ("Ready", "Failed"):
         return
-    await _reconcile_ceph(body, patch, namespace)
+    _reconcile_ceph(body, patch, namespace)
 
 
 @kopf.on.delete(CRD_GROUP, CRD_VERSION, "troshkancephs")

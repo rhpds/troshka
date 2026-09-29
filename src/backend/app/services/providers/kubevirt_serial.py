@@ -90,7 +90,13 @@ def _kubevirt_exec_ios_multisession(
             per_cmd + (25 if first else 15),
         )
 
-        def work(transport, *, _first: bool = first, _line: str = line) -> str:
+        def work(
+            transport,
+            *,
+            _first: bool = first,
+            _line: str = line,
+            _session_timeout: int = session_timeout,
+        ) -> str:
             if _first:
                 err = ios_poke_and_login(
                     transport,
@@ -102,13 +108,15 @@ def _kubevirt_exec_ios_multisession(
             else:
                 err = ios_ensure_prompt(
                     transport,
-                    min(20, session_timeout // 2),
+                    min(20, _session_timeout // 2),
                     username=username,
                     password=password,
                 )
             if err:
                 raise RuntimeError(err)
-            return ios_exec_command(transport, _line, min(per_cmd, session_timeout - 5))
+            return ios_exec_command(
+                transport, _line, min(per_cmd, _session_timeout - 5)
+            )
 
         outputs.append(run_stream_pexpect_session(open_stream, session_timeout, work))
 

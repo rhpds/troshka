@@ -481,6 +481,28 @@ def _create_namespaced_job(batch_api, namespace: str, job: dict) -> None:
             raise
     # Existing Job: leave succeeded Jobs alone; recreate failed/incomplete ones
     # so command fixes (tar soft-fail, endpoint) take effect on retry.
+    _recreate_incomplete_job(batch_api, namespace, name, job)
+
+
+def _job_already_succeeded(existing) -> bool:
+    return bool(existing.status.succeeded and existing.status.succeeded >= 1)  # type: ignore[union-attr]
+
+
+def _wait_for_job_name_gone(batch_api, namespace: str, name: str) -> None:
+    """Brief settle so a Job name can be reused (Jobs are immutable)."""
+    import time
+
+    for _ in range(20):
+        try:
+            batch_api.read_namespaced_job(name=name, namespace=namespace)
+            time.sleep(0.5)
+        except ApiException as e:
+            if e.status == 404:
+                return
+            raise
+
+
+def _recreate_incomplete_job(batch_api, namespace: str, name: str, job: dict) -> None:
     try:
         existing = batch_api.read_namespaced_job(name=name, namespace=namespace)
     except ApiException as e:
@@ -488,7 +510,7 @@ def _create_namespaced_job(batch_api, namespace: str, job: dict) -> None:
             batch_api.create_namespaced_job(namespace=namespace, body=job)
             return
         raise
-    if existing.status.succeeded and existing.status.succeeded >= 1:  # type: ignore[union-attr]
+    if _job_already_succeeded(existing):
         logger.info("ceph-restore mon Job %s already succeeded in %s", name, namespace)
         return
     logger.info("Recreating incomplete ceph-restore mon Job %s in %s", name, namespace)
@@ -501,17 +523,7 @@ def _create_namespaced_job(batch_api, namespace: str, job: dict) -> None:
     except ApiException as del_err:
         if del_err.status != 404:
             raise
-    # Brief settle so the name can be reused (Jobs are immutable).
-    import time
-
-    for _ in range(20):
-        try:
-            batch_api.read_namespaced_job(name=name, namespace=namespace)
-            time.sleep(0.5)
-        except ApiException as e:
-            if e.status == 404:
-                break
-            raise
+    _wait_for_job_name_gone(batch_api, namespace, name)
     batch_api.create_namespaced_job(namespace=namespace, body=job)
     logger.info("Recreated ceph-restore mon Job %s in %s", name, namespace)
 
@@ -635,6 +647,44 @@ def _ceph_restore_progress_detail(
     return "\n".join(lines)
 
 
+def _emit_ceph_restore_progress(
+    on_progress, custom_api, batch_api, namespace, mon_name, osd_names
+) -> None:
+    if not on_progress:
+        return
+    try:
+        on_progress(
+            _ceph_restore_progress_detail(
+                custom_api, batch_api, namespace, mon_name, osd_names
+            )
+        )
+    except Exception as e:
+        logger.warning("ceph restore progress callback failed: %s", e)
+
+
+def _check_mon_restore_status(batch_api, namespace: str, need_mon: bool) -> bool:
+    """Return True if mon is done (or not needed). Raises on mon Job failure."""
+    if not need_mon:
+        return True
+    mon_st = _mon_job_status(batch_api, namespace)
+    if mon_st == "failed":
+        raise RuntimeError(f"ceph-restore mon Job {MON_RESTORE_JOB_NAME} failed")
+    return mon_st == "done"
+
+
+def _filter_pending_osd_restores(custom_api, namespace: str, pending_osds: list[str]) -> list[str]:
+    """Drop Succeeded OSDs; raise on Failed. Return still-pending names."""
+    still_pending = []
+    for name in pending_osds:
+        phase = _dv_phase(custom_api, namespace, name)
+        if phase == "Succeeded":
+            continue
+        if phase == "Failed":
+            raise RuntimeError(f"ceph-restore DataVolume {name} failed to import")
+        still_pending.append(name)
+    return still_pending
+
+
 async def wait_for_ceph_restore(
     custom_api,
     namespace: str,
@@ -659,35 +709,13 @@ async def wait_for_ceph_restore(
 
     iterations = max(1, max_wait_seconds // sleep_seconds)
     for _ in range(iterations):
-        if on_progress:
-            try:
-                on_progress(
-                    _ceph_restore_progress_detail(
-                        custom_api, batch_api, namespace, mon_name, osd_names
-                    )
-                )
-            except Exception as e:
-                logger.warning("ceph restore progress callback failed: %s", e)
-
-        mon_done = True
-        if need_mon:
-            mon_st = _mon_job_status(batch_api, namespace)
-            if mon_st == "failed":
-                raise RuntimeError(
-                    f"ceph-restore mon Job {MON_RESTORE_JOB_NAME} failed"
-                )
-            mon_done = mon_st == "done"
-
-        still_pending = []
-        for name in pending_osds:
-            phase = _dv_phase(custom_api, namespace, name)
-            if phase == "Succeeded":
-                continue
-            if phase == "Failed":
-                raise RuntimeError(f"ceph-restore DataVolume {name} failed to import")
-            still_pending.append(name)
-        pending_osds = still_pending
-
+        _emit_ceph_restore_progress(
+            on_progress, custom_api, batch_api, namespace, mon_name, osd_names
+        )
+        mon_done = _check_mon_restore_status(batch_api, namespace, need_mon)
+        pending_osds = _filter_pending_osd_restores(
+            custom_api, namespace, pending_osds
+        )
         if mon_done and not pending_osds:
             return
         await asyncio.sleep(sleep_seconds)

@@ -65,36 +65,32 @@ def _workload_sort_key(node: dict) -> tuple:
     return (2, 0, name)
 
 
+def _network_subtype_nodes(nodes: list[dict], subtype: str) -> list[dict]:
+    return [
+        n
+        for n in nodes
+        if n.get("type") == "networkNode"
+        and n.get("data", {}).get("subtype") == subtype
+    ]
+
+
+def _nodes_of_type(nodes: list[dict], node_type: str) -> list[dict]:
+    return [n for n in nodes if n.get("type") == node_type]
+
+
 def _classify_nodes(nodes: list[dict]) -> dict[str, list[dict]]:
     """Classify nodes into networks, routers, gateways, workloads, and storage."""
-    networks = [
-        n
-        for n in nodes
-        if n.get("type") == "networkNode"
-        and n.get("data", {}).get("subtype") == "network"
-    ]
-    routers = [
-        n
-        for n in nodes
-        if n.get("type") == "networkNode"
-        and n.get("data", {}).get("subtype") == "router"
-    ]
-    gateways = [
-        n
-        for n in nodes
-        if n.get("type") == "networkNode"
-        and n.get("data", {}).get("subtype") == "gateway"
-    ]
-    vm_nodes = sorted(
-        [n for n in nodes if n.get("type") == "vmNode"], key=_workload_sort_key
-    )
-    container_nodes = [n for n in nodes if n.get("type") == "containerNode"]
+    networks = _network_subtype_nodes(nodes, "network")
+    routers = _network_subtype_nodes(nodes, "router")
+    gateways = _network_subtype_nodes(nodes, "gateway")
+    vm_nodes = sorted(_nodes_of_type(nodes, "vmNode"), key=_workload_sort_key)
+    container_nodes = _nodes_of_type(nodes, "containerNode")
     showroom_nodes = [n for n in container_nodes if _is_showroom_node(n)]
     workload_containers = sorted(
         [n for n in container_nodes if not _is_showroom_node(n)],
         key=_workload_sort_key,
     )
-    storage_nodes = [n for n in nodes if n.get("type") == "storageNode"]
+    storage_nodes = _nodes_of_type(nodes, "storageNode")
 
     return {
         "networks": networks,
@@ -164,6 +160,16 @@ def _network_side_from_vm_handle(vm_handle: str) -> str | None:
     return None
 
 
+def _vote_network_side_from_edge(
+    votes: dict[str, dict[str, int]],
+    workload_handle: str,
+    network_id: str,
+) -> None:
+    side = _network_side_from_vm_handle(workload_handle)
+    if side:
+        votes[network_id][side] += 1
+
+
 def _collect_network_side_votes(
     nodes: list[dict], edges: list[dict]
 ) -> dict[str, dict[str, int]]:
@@ -177,13 +183,9 @@ def _collect_network_side_votes(
         src_type = src.get("type", "")
         tgt_type = tgt.get("type", "")
         if src_type in _WORKLOAD_TYPES and tgt_type == "networkNode":
-            side = _network_side_from_vm_handle(e.get("sourceHandle", ""))
-            if side:
-                votes[tgt["id"]][side] += 1
+            _vote_network_side_from_edge(votes, e.get("sourceHandle", ""), tgt["id"])
         if tgt_type in _WORKLOAD_TYPES and src_type == "networkNode":
-            side = _network_side_from_vm_handle(e.get("targetHandle", ""))
-            if side:
-                votes[src["id"]][side] += 1
+            _vote_network_side_from_edge(votes, e.get("targetHandle", ""), src["id"])
     return votes
 
 
@@ -202,7 +204,7 @@ def _is_backbone_network(net: dict) -> bool:
     if name in ("mgmt", "management", "cluster"):
         return True
     cidr = str(net.get("data", {}).get("cidr") or "")
-    if re.search(r"/(?:[0-9]|1[0-9]|2[0-4])(?:\b|$)", cidr):
+    if re.search(r"/(?:\d|1\d|2[0-4])(?:\b|$)", cidr):
         return True
     return False
 
@@ -240,6 +242,49 @@ def _preferred_network_side(
     return "top"
 
 
+def _tier_and_side_from_anchors(
+    net: dict,
+    side: str,
+    anchor_sides: set[str],
+    connects_cluster: bool,
+    conn_count: int,
+) -> tuple[str, str]:
+    """Resolve (side, tier) after preferred-side and cluster-connect rules."""
+    if _is_link_network(net):
+        return side, "link"
+    if "bottom" in anchor_sides:
+        return "bottom", "backbone"
+    if "top" in anchor_sides or connects_cluster:
+        return "top", "backbone"
+    if _is_wide_bottom_network(net, conn_count):
+        return side, "wide"
+    return side, "backbone"
+
+
+def _placement_for_network(
+    net: dict,
+    votes: dict[str, dict[str, int]],
+    network_to_vms: dict[str, list[str]],
+    cluster_member_ids: set[str],
+    cluster_anchor_by_net: dict[str, list[dict[str, str]]],
+) -> dict[str, str]:
+    """Return {side, tier} for one network."""
+    conn_count = len(network_to_vms.get(net["id"], []))
+    anchor_sides = {a["side"] for a in cluster_anchor_by_net.get(net["id"], [])}
+    side = _preferred_network_side(net, votes, conn_count)
+    # A network wired to OCP cluster members belongs ABOVE the cluster box
+    # (top backbone), never in the wide-bottom row where it would land inside
+    # the boundary. The BMC network is exempt — it correctly sits below.
+    is_bmc = net.get("data", {}).get("networkType") == "bmc"
+    connects_cluster = not is_bmc and any(
+        vm in cluster_member_ids for vm in network_to_vms.get(net["id"], [])
+    )
+    side, tier = _tier_and_side_from_anchors(
+        net, side, anchor_sides, connects_cluster, conn_count
+    )
+    return {"side": side, "tier": tier}
+
+
 def _classify_network_placements(
     networks: list[dict],
     votes: dict[str, dict[str, int]],
@@ -252,29 +297,13 @@ def _classify_network_placements(
     cluster_anchor_by_net = cluster_anchor_by_net or {}
     placements: dict[str, dict[str, str]] = {}
     for net in networks:
-        conn_count = len(network_to_vms.get(net["id"], []))
-        anchor_sides = {a["side"] for a in cluster_anchor_by_net.get(net["id"], [])}
-        side = _preferred_network_side(net, votes, conn_count)
-        # A network wired to OCP cluster members belongs ABOVE the cluster box
-        # (top backbone), never in the wide-bottom row where it would land inside
-        # the boundary. The BMC network is exempt — it correctly sits below.
-        is_bmc = net.get("data", {}).get("networkType") == "bmc"
-        connects_cluster = not is_bmc and any(
-            vm in cluster_member_ids for vm in network_to_vms.get(net["id"], [])
+        placements[net["id"]] = _placement_for_network(
+            net,
+            votes,
+            network_to_vms,
+            cluster_member_ids,
+            cluster_anchor_by_net,
         )
-        if _is_link_network(net):
-            tier = "link"
-        elif "bottom" in anchor_sides:
-            side = "bottom"
-            tier = "backbone"
-        elif "top" in anchor_sides or connects_cluster:
-            side = "top"
-            tier = "backbone"
-        elif _is_wide_bottom_network(net, conn_count):
-            tier = "wide"
-        else:
-            tier = "backbone"
-        placements[net["id"]] = {"side": side, "tier": tier}
     return placements
 
 
@@ -386,6 +415,22 @@ def _shared_vm_ids(
     return bool(set(network_to_vms.get(net_a, [])) & set(network_to_vms.get(net_b, [])))
 
 
+def _link_fits_row(
+    net_id: str,
+    interval: tuple[float, float],
+    intervals: list[tuple[float, float]],
+    row_net_ids: list[str],
+    network_to_vms: dict[str, list[str]],
+) -> bool:
+    if any(_intervals_overlap(interval, existing) for existing in intervals):
+        return False
+    if any(
+        _shared_vm_ids(net_id, other_id, network_to_vms) for other_id in row_net_ids
+    ):
+        return False
+    return True
+
+
 def _assign_top_link_rows(
     link_nets: list[dict],
     network_to_vms: dict[str, list[str]],
@@ -409,11 +454,8 @@ def _assign_top_link_rows(
         interval = _net_x_interval(net["id"], network_to_vms, positions, net_w, vm_w)
         placed = False
         for idx, intervals in enumerate(row_intervals):
-            if any(_intervals_overlap(interval, existing) for existing in intervals):
-                continue
-            if any(
-                _shared_vm_ids(net["id"], other_id, network_to_vms)
-                for other_id in row_net_ids[idx]
+            if not _link_fits_row(
+                net["id"], interval, intervals, row_net_ids[idx], network_to_vms
             ):
                 continue
             intervals.append(interval)
@@ -643,7 +685,7 @@ def _set_nic_handle_side(handle: str, side: str) -> str:
 
 
 def _parse_network_workload_edge(
-    e: dict, src: dict, tgt: dict
+    _e: dict, src: dict, tgt: dict
 ) -> tuple[dict, dict, bool] | None:
     """Return (network, workload, network_is_source) for network↔workload edges."""
     src_type = src.get("type", "")
@@ -679,6 +721,35 @@ def _network_is_above_workload(
     return net_cy < wl_cy
 
 
+def _fixed_network_workload_handles(e: dict, net_is_source: bool, above: bool) -> dict:
+    """Rewrite handles so the edge attaches on the near side of each node."""
+    if net_is_source:
+        vm_handle = e.get("targetHandle", "")
+        if above:
+            return {
+                **e,
+                "sourceHandle": "bottom",
+                "targetHandle": _set_nic_handle_side(vm_handle, "top"),
+            }
+        return {
+            **e,
+            "sourceHandle": "top",
+            "targetHandle": _set_nic_handle_side(vm_handle, "bottom"),
+        }
+    vm_handle = e.get("sourceHandle", "")
+    if above:
+        return {
+            **e,
+            "sourceHandle": _set_nic_handle_side(vm_handle, "top"),
+            "targetHandle": "bottom",
+        }
+    return {
+        **e,
+        "sourceHandle": _set_nic_handle_side(vm_handle, "bottom"),
+        "targetHandle": "top",
+    }
+
+
 def _fix_network_edge_handles(
     edges: list[dict],
     nodes: list[dict],
@@ -704,43 +775,7 @@ def _fix_network_edge_handles(
         above = _network_is_above_workload(
             net_node["id"], wl_node["id"], positions, net_h, workload_h
         )
-
-        if net_is_source:
-            vm_handle = e.get("targetHandle", "")
-            if above:
-                new_edges.append(
-                    {
-                        **e,
-                        "sourceHandle": "bottom",
-                        "targetHandle": _set_nic_handle_side(vm_handle, "top"),
-                    }
-                )
-            else:
-                new_edges.append(
-                    {
-                        **e,
-                        "sourceHandle": "top",
-                        "targetHandle": _set_nic_handle_side(vm_handle, "bottom"),
-                    }
-                )
-        else:
-            vm_handle = e.get("sourceHandle", "")
-            if above:
-                new_edges.append(
-                    {
-                        **e,
-                        "sourceHandle": _set_nic_handle_side(vm_handle, "top"),
-                        "targetHandle": "bottom",
-                    }
-                )
-            else:
-                new_edges.append(
-                    {
-                        **e,
-                        "sourceHandle": _set_nic_handle_side(vm_handle, "bottom"),
-                        "targetHandle": "top",
-                    }
-                )
+        new_edges.append(_fixed_network_workload_handles(e, net_is_source, above))
     return new_edges
 
 
@@ -770,6 +805,43 @@ def _vm_nic_handle_from_edge(e: dict, vm_id: str) -> str:
     return "nic-0-bottom"
 
 
+def _lab_edge_endpoints(
+    e: dict, nodes: list[dict], lab_ids: set[str]
+) -> tuple[str, str] | None:
+    """Return (lab_id, vm_id) when the edge connects a lab net to a workload."""
+    src_id = e.get("source", "")
+    tgt_id = e.get("target", "")
+    if src_id in lab_ids:
+        wl = _find(nodes, tgt_id)
+        if wl and wl.get("type") in _WORKLOAD_TYPES:
+            return src_id, tgt_id
+    if tgt_id in lab_ids:
+        wl = _find(nodes, src_id)
+        if wl and wl.get("type") in _WORKLOAD_TYPES:
+            return tgt_id, src_id
+    return None
+
+
+def _rewrite_lab_edge(e: dict, lab_id: str, vm_id: str, outer_vms: set[str]) -> dict:
+    """Outer VMs attach bottom→lab bottom; inner VMs lab top→VM bottom."""
+    nic = _vm_nic_handle_from_edge(e, vm_id)
+    if vm_id in outer_vms:
+        return {
+            **e,
+            "source": vm_id,
+            "target": lab_id,
+            "sourceHandle": nic,
+            "targetHandle": "bottom",
+        }
+    return {
+        **e,
+        "source": lab_id,
+        "target": vm_id,
+        "sourceHandle": "top",
+        "targetHandle": nic,
+    }
+
+
 def _fix_lab_edges(
     edges: list[dict],
     nodes: list[dict],
@@ -791,44 +863,29 @@ def _fix_lab_edges(
 
     result: list[dict] = []
     for e in edges:
-        src_id = e.get("source", "")
-        tgt_id = e.get("target", "")
-        lab_id: str | None = None
-        vm_id: str | None = None
-        if src_id in lab_ids:
-            wl = _find(nodes, tgt_id)
-            if wl and wl.get("type") in _WORKLOAD_TYPES:
-                lab_id, vm_id = src_id, tgt_id
-        elif tgt_id in lab_ids:
-            wl = _find(nodes, src_id)
-            if wl and wl.get("type") in _WORKLOAD_TYPES:
-                lab_id, vm_id = tgt_id, src_id
-        if not lab_id or not vm_id:
+        endpoints = _lab_edge_endpoints(e, nodes, lab_ids)
+        if not endpoints:
             result.append(e)
             continue
-
-        nic = _vm_nic_handle_from_edge(e, vm_id)
-        if vm_id in outer_by_lab.get(lab_id, set()):
-            result.append(
-                {
-                    **e,
-                    "source": vm_id,
-                    "target": lab_id,
-                    "sourceHandle": nic,
-                    "targetHandle": "bottom",
-                }
-            )
-        else:
-            result.append(
-                {
-                    **e,
-                    "source": lab_id,
-                    "target": vm_id,
-                    "sourceHandle": "top",
-                    "targetHandle": nic,
-                }
-            )
+        lab_id, vm_id = endpoints
+        result.append(
+            _rewrite_lab_edge(e, lab_id, vm_id, outer_by_lab.get(lab_id, set()))
+        )
     return result
+
+
+def _smoothstep_path_offset(
+    net_node: dict, e: dict, wl_node: dict, x_delta: float
+) -> float:
+    """Choose smoothstep bend offset from network kind and horizontal span."""
+    if _is_link_network(net_node):
+        return 72
+    if _is_lab_network(net_node):
+        # Outer VM→lab edges need a wider bend to clear disk pills.
+        if wl_node["id"] == e.get("source"):
+            return min(180, 72 + x_delta * 0.08)
+        return min(140, 36 + x_delta * 0.05)
+    return min(96, 28 + x_delta * 0.04)
 
 
 def _apply_edge_path_options(
@@ -837,8 +894,8 @@ def _apply_edge_path_options(
     positions: dict[str, dict],
     net_w: int,
     vm_w: int,
-    net_h: int,
-    vm_h: int,
+    _net_h: int,
+    _vm_h: int,
 ) -> list[dict]:
     """Bias smoothstep bends so corridors avoid the disk row between VMs and networks."""
     new_edges: list[dict] = []
@@ -859,19 +916,7 @@ def _apply_edge_path_options(
         net_pos = positions.get(net_node["id"], {})
         net_cx = float(net_pos.get("x", 0)) + net_w / 2
         x_delta = abs(vm_cx - net_cx)
-
-        if _is_link_network(net_node):
-            offset = 72
-        elif _is_lab_network(net_node):
-            # Outer VM→lab edges need a wider bend to clear disk pills.
-            vm_is_source = wl_node["id"] == e.get("source")
-            if vm_is_source:
-                offset = min(180, 72 + x_delta * 0.08)
-            else:
-                offset = min(140, 36 + x_delta * 0.05)
-        else:
-            offset = min(96, 28 + x_delta * 0.04)
-
+        offset = _smoothstep_path_offset(net_node, e, wl_node, x_delta)
         new_edges.append({**e, "pathOptions": {"offset": offset, "borderRadius": 6}})
     return new_edges
 
@@ -900,18 +945,75 @@ def _cluster_member_index(node: dict) -> int:
     return int(digits) if digits else 0
 
 
-def reflow_cluster_members(nodes: list[dict]) -> None:
-    """Re-lay OCP cluster members inside their boundary and size the box.
+def _partition_cluster_members(
+    members: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Split members into control-plane then worker lists (untyped go to CP)."""
+    cps = sorted(
+        [m for m in members if _cluster_member_role(m) == "control-plane"],
+        key=_cluster_member_index,
+    )
+    workers = sorted(
+        [m for m in members if _cluster_member_role(m) == "worker"],
+        key=_cluster_member_index,
+    )
+    placed = {id(m) for m in cps} | {id(m) for m in workers}
+    cps += [m for m in members if id(m) not in placed]
+    return cps, workers
 
-    The core layout above is cluster-agnostic: it gives member VMs ABSOLUTE
-    positions as if they were free workloads, but React Flow renders a child's
-    position RELATIVE to its parent boundary — so a laid-out member floats
-    outside the box. For each cluster boundary, anchor the boundary at the
-    top-left of where its members landed, then grid the members inside it
-    (control-plane rows first, then workers) with RELATIVE positions and size
-    the boundary to contain them. Mirrors the frontend reflowMembers /
-    clusterBoxSize and the template loader's original reflow.
-    """
+
+def _grid_cluster_members(cps: list[dict], workers: list[dict]) -> None:
+    """Assign relative grid positions inside a cluster boundary."""
+    cp_rows = (len(cps) + _CL_COLS - 1) // _CL_COLS if cps else 0
+    for i, m in enumerate(cps):
+        m["position"] = {
+            "x": _CL_PAD + (i % _CL_COLS) * _CL_CELL_W,
+            "y": _CL_HEADER_H + _CL_PAD + (i // _CL_COLS) * _CL_CELL_H,
+        }
+    for j, m in enumerate(workers):
+        m["position"] = {
+            "x": _CL_PAD + (j % _CL_COLS) * _CL_CELL_W,
+            "y": _CL_HEADER_H + _CL_PAD + (cp_rows + j // _CL_COLS) * _CL_CELL_H,
+        }
+
+
+def _cluster_box_style(member_count: int, cps: list[dict], workers: list[dict]) -> dict:
+    cols = max(1, min(_CL_COLS, member_count))
+    cp_rows = (len(cps) + _CL_COLS - 1) // _CL_COLS if cps else 0
+    worker_rows = (len(workers) + _CL_COLS - 1) // _CL_COLS if workers else 0
+    rows = max(1, cp_rows + worker_rows)
+    return {
+        "width": max(2 * _CL_PAD + cols * _CL_CELL_W, _CL_HEADER_MIN_W),
+        "height": _CL_HEADER_H + _CL_PAD + rows * _CL_CELL_H,
+    }
+
+
+def _reflow_one_cluster(boundary: dict, members: list[dict]) -> None:
+    cps, workers = _partition_cluster_members(members)
+    _grid_cluster_members(cps, workers)
+    boundary["style"] = _cluster_box_style(len(members), cps, workers)
+
+
+def _pack_cluster_boundaries(
+    entries: list[tuple[dict, list[dict], float]], nodes: list[dict]
+) -> None:
+    """Pack cluster boxes left-to-right on the VM row with optional Ceph gap."""
+    entries.sort(key=lambda e: e[2])
+    common_y = _VM_ROW_Y
+    x = min(orig_x for _, _, orig_x in entries)
+    has_ceph = any(n.get("type") == "cephClusterNode" for n in nodes)
+    pack_gap = _CL_GAP
+    if has_ceph and len(entries) >= 2:
+        pack_gap = _CEPH_W + 2 * _CEPH_CLUSTER_GAP
+    for boundary, _members, _orig_x in entries:
+        boundary["position"] = {"x": x, "y": common_y}
+        x += boundary["style"]["width"] + pack_gap
+
+
+def _cluster_reflow_entries(
+    nodes: list[dict],
+) -> list[tuple[dict, list[dict], float]]:
+    """Collect (boundary, members, orig_x) for each non-empty cluster."""
     entries = []
     for boundary in nodes:
         if boundary.get("type") != "clusterNode":
@@ -926,56 +1028,29 @@ def reflow_cluster_members(nodes: list[dict]) -> None:
             # preserve left-to-right order when packing.
             orig_x = min(m["position"]["x"] for m in members)
             entries.append((boundary, members, orig_x))
+    return entries
+
+
+def reflow_cluster_members(nodes: list[dict]) -> None:
+    """Re-lay OCP cluster members inside their boundary and size the box.
+
+    The core layout above is cluster-agnostic: it gives member VMs ABSOLUTE
+    positions as if they were free workloads, but React Flow renders a child's
+    position RELATIVE to its parent boundary — so a laid-out member floats
+    outside the box. For each cluster boundary, anchor the boundary at the
+    top-left of where its members landed, then grid the members inside it
+    (control-plane rows first, then workers) with RELATIVE positions and size
+    the boundary to contain them. Mirrors the frontend reflowMembers /
+    clusterBoxSize and the template loader's original reflow.
+    """
+    entries = _cluster_reflow_entries(nodes)
     if not entries:
         return
 
-    # Grid the members inside each boundary (relative) and size the box.
     for boundary, members, _orig_x in entries:
-        cps = sorted(
-            [m for m in members if _cluster_member_role(m) == "control-plane"],
-            key=_cluster_member_index,
-        )
-        workers = sorted(
-            [m for m in members if _cluster_member_role(m) == "worker"],
-            key=_cluster_member_index,
-        )
-        # Any member without a recognizable role still needs a slot.
-        placed = set(id(m) for m in cps) | set(id(m) for m in workers)
-        cps += [m for m in members if id(m) not in placed]
+        _reflow_one_cluster(boundary, members)
 
-        cp_rows = (len(cps) + _CL_COLS - 1) // _CL_COLS if cps else 0
-        for i, m in enumerate(cps):
-            m["position"] = {
-                "x": _CL_PAD + (i % _CL_COLS) * _CL_CELL_W,
-                "y": _CL_HEADER_H + _CL_PAD + (i // _CL_COLS) * _CL_CELL_H,
-            }
-        for j, m in enumerate(workers):
-            m["position"] = {
-                "x": _CL_PAD + (j % _CL_COLS) * _CL_CELL_W,
-                "y": _CL_HEADER_H + _CL_PAD + (cp_rows + j // _CL_COLS) * _CL_CELL_H,
-            }
-        cols = max(1, min(_CL_COLS, len(members)))
-        worker_rows = (len(workers) + _CL_COLS - 1) // _CL_COLS if workers else 0
-        rows = max(1, cp_rows + worker_rows)
-        boundary["style"] = {
-            "width": max(2 * _CL_PAD + cols * _CL_CELL_W, _CL_HEADER_MIN_W),
-            "height": _CL_HEADER_H + _CL_PAD + rows * _CL_CELL_H,
-        }
-
-    # Pack the boxes left-to-right on a single row with a small gap, so multiple
-    # clusters sit adjacent instead of being spread out by where their members
-    # happened to land in the flat workload layout. Preserve rough left-to-right
-    # order and keep the top at the member row (below the network row).
-    entries.sort(key=lambda e: e[2])
-    common_y = _VM_ROW_Y
-    x = min(orig_x for _, _, orig_x in entries)
-    has_ceph = any(n.get("type") == "cephClusterNode" for n in nodes)
-    pack_gap = _CL_GAP
-    if has_ceph and len(entries) >= 2:
-        pack_gap = _CEPH_W + 2 * _CEPH_CLUSTER_GAP
-    for boundary, _members, _orig_x in entries:
-        boundary["position"] = {"x": x, "y": common_y}
-        x += boundary["style"]["width"] + pack_gap
+    _pack_cluster_boundaries(entries, nodes)
 
 
 def _cluster_bounds(node: dict) -> tuple[float, float, float, float]:
@@ -1077,6 +1152,59 @@ def _collect_cluster_network_anchors(
     return dict(anchors)
 
 
+def _invert_cluster_network_anchors(
+    anchors: dict[str, list[dict[str, str]]],
+) -> dict[str, dict[str, list[str]]]:
+    """network id -> {top: [cluster_ids], bottom: [cluster_ids]}."""
+    net_to_clusters: dict[str, dict[str, list[str]]] = defaultdict(
+        lambda: {"top": [], "bottom": []}
+    )
+    for net_id, anchor_list in anchors.items():
+        for info in anchor_list:
+            net_to_clusters[net_id][info["side"]].append(info["cluster_id"])
+    return net_to_clusters
+
+
+def _cluster_boxes_for_ids(
+    nodes: list[dict], cluster_ids: list[str]
+) -> list[tuple[float, float, float, float]]:
+    boxes = []
+    for cluster_id in cluster_ids:
+        cluster = _find(nodes, cluster_id)
+        if not cluster or not cluster.get("style"):
+            continue
+        cx = cluster["position"]["x"]
+        cy = cluster["position"]["y"]
+        cw = cluster["style"]["width"]
+        ch = cluster["style"]["height"]
+        boxes.append((cx, cy, cx + cw, cy + ch))
+    return boxes
+
+
+def _position_anchored_network(
+    net: dict,
+    boxes: list[tuple[float, float, float, float]],
+    side: str,
+    net_w: int,
+    net_h: int,
+    gap: int,
+) -> None:
+    min_x = min(b[0] for b in boxes)
+    max_x = max(b[2] for b in boxes)
+    min_y = min(b[1] for b in boxes)
+    max_y = max(b[3] for b in boxes)
+    if len(boxes) == 1:
+        nx = boxes[0][0] + max(0, (boxes[0][2] - boxes[0][0] - net_w) / 2)
+    else:
+        span_w = max_x - min_x
+        nx = min_x + max(0, (span_w - net_w) / 2)
+    if side == "top":
+        ny = min_y - net_h - gap
+    else:
+        ny = max_y + gap
+    net["position"] = {"x": nx, "y": ny}
+
+
 def _layout_cluster_anchored_networks(
     nodes: list[dict],
     edges: list[dict],
@@ -1094,12 +1222,7 @@ def _layout_cluster_anchored_networks(
         return
 
     # Invert: one network may anchor to multiple clusters (e.g. shared migration L2).
-    net_to_clusters: dict[str, dict[str, list[str]]] = defaultdict(
-        lambda: {"top": [], "bottom": []}
-    )
-    for net_id, anchor_list in anchors.items():
-        for info in anchor_list:
-            net_to_clusters[net_id][info["side"]].append(info["cluster_id"])
+    net_to_clusters = _invert_cluster_network_anchors(anchors)
 
     for net_id, sides in net_to_clusters.items():
         net = _find(nodes, net_id)
@@ -1110,36 +1233,66 @@ def _layout_cluster_anchored_networks(
             cluster_ids = sides.get(side) or []
             if not cluster_ids:
                 continue
-
-            boxes = []
-            for cluster_id in cluster_ids:
-                cluster = _find(nodes, cluster_id)
-                if not cluster or not cluster.get("style"):
-                    continue
-                cx = cluster["position"]["x"]
-                cy = cluster["position"]["y"]
-                cw = cluster["style"]["width"]
-                ch = cluster["style"]["height"]
-                boxes.append((cx, cy, cx + cw, cy + ch))
-
+            boxes = _cluster_boxes_for_ids(nodes, cluster_ids)
             if not boxes:
                 continue
-
-            min_x = min(b[0] for b in boxes)
-            max_x = max(b[2] for b in boxes)
-            min_y = min(b[1] for b in boxes)
-            max_y = max(b[3] for b in boxes)
-            if len(boxes) == 1:
-                nx = boxes[0][0] + max(0, (boxes[0][2] - boxes[0][0] - net_w) / 2)
-            else:
-                span_w = max_x - min_x
-                nx = min_x + max(0, (span_w - net_w) / 2)
-            if side == "top":
-                ny = min_y - net_h - gap
-            else:
-                ny = max_y + gap
-            net["position"] = {"x": nx, "y": ny}
+            _position_anchored_network(net, boxes, side, net_w, net_h, gap)
             break
+
+
+def _cluster_style_box_rects(
+    nodes: list[dict],
+) -> list[tuple[float, float, float, float]]:
+    return [
+        (
+            b["position"]["x"],
+            b["position"]["y"],
+            b["position"]["x"] + b["style"]["width"],
+            b["position"]["y"] + b["style"]["height"],
+        )
+        for b in nodes
+        if b.get("type") == "clusterNode" and b.get("style")
+    ]
+
+
+def _bmc_position_clear_of_clusters(
+    net_w: int,
+    net_h: int,
+    gap: int,
+    box_rects: list[tuple[float, float, float, float]],
+) -> tuple[float, float]:
+    max_right = max(r[2] for r in box_rects)
+    min_top = min(r[1] for r in box_rects)
+    max_bottom = max(r[3] for r in box_rects)
+    nx = max_right + gap
+    ny = min_top + max(0, (max_bottom - min_top - net_h) / 2)
+    candidate = (nx, ny, nx + net_w, ny + net_h)
+    if any(_rects_overlap(candidate, br) for br in box_rects):
+        nx = min(r[0] for r in box_rects)
+        ny = max_bottom + gap
+    return nx, ny
+
+
+def _reposition_one_bmc_network(
+    n: dict,
+    net_w: int,
+    net_h: int,
+    gap: int,
+    box_rects: list[tuple[float, float, float, float]],
+    skip: set[str],
+) -> None:
+    if n.get("type") != "networkNode":
+        return
+    if n.get("id") in skip:
+        return
+    if n.get("data", {}).get("networkType") != "bmc":
+        return
+    px, py = n["position"]["x"], n["position"]["y"]
+    nr = (px, py, px + net_w, py + net_h)
+    if not any(_rects_overlap(nr, br) for br in box_rects):
+        return
+    nx, ny = _bmc_position_clear_of_clusters(net_w, net_h, gap, box_rects)
+    n["position"] = {"x": nx, "y": ny}
 
 
 def _reposition_bmc_networks_clear_of_clusters(
@@ -1154,40 +1307,12 @@ def _reposition_bmc_networks_clear_of_clusters(
     BMC is laid out in the bottom network row before ``reflow_cluster_members``
     sizes the cluster box; a multi-node cluster can grow over the BMC node.
     """
-    box_rects = [
-        (
-            b["position"]["x"],
-            b["position"]["y"],
-            b["position"]["x"] + b["style"]["width"],
-            b["position"]["y"] + b["style"]["height"],
-        )
-        for b in nodes
-        if b.get("type") == "clusterNode" and b.get("style")
-    ]
+    box_rects = _cluster_style_box_rects(nodes)
     if not box_rects:
         return
-    max_right = max(r[2] for r in box_rects)
-    min_top = min(r[1] for r in box_rects)
-    max_bottom = max(r[3] for r in box_rects)
     skip = skip_net_ids or set()
     for n in nodes:
-        if n.get("type") != "networkNode":
-            continue
-        if n.get("id") in skip:
-            continue
-        if n.get("data", {}).get("networkType") != "bmc":
-            continue
-        px, py = n["position"]["x"], n["position"]["y"]
-        nr = (px, py, px + net_w, py + net_h)
-        if not any(_rects_overlap(nr, br) for br in box_rects):
-            continue
-        nx = max_right + gap
-        ny = min_top + max(0, (max_bottom - min_top - net_h) / 2)
-        candidate = (nx, ny, nx + net_w, ny + net_h)
-        if any(_rects_overlap(candidate, br) for br in box_rects):
-            nx = min(r[0] for r in box_rects)
-            ny = max_bottom + gap
-        n["position"] = {"x": nx, "y": ny}
+        _reposition_one_bmc_network(n, net_w, net_h, gap, box_rects, skip)
 
 
 def _push_free_networks_below_clusters(
@@ -1204,16 +1329,7 @@ def _push_free_networks_below_clusters(
     """
     if not free_net_ids:
         return
-    box_rects = [
-        (
-            b["position"]["x"],
-            b["position"]["y"],
-            b["position"]["x"] + b["style"]["width"],
-            b["position"]["y"] + b["style"]["height"],
-        )
-        for b in nodes
-        if b.get("type") == "clusterNode" and b.get("style")
-    ]
+    box_rects = _cluster_style_box_rects(nodes)
     if not box_rects:
         return
     max_bottom = max(r[3] for r in box_rects)
@@ -1226,6 +1342,143 @@ def _push_free_networks_below_clusters(
             n["position"] = {"x": px, "y": max_bottom + gap_y}
 
 
+def _cluster_member_ids(nodes: list[dict]) -> set[str]:
+    boundary_ids = {n["id"] for n in nodes if n.get("type") == "clusterNode"}
+    return {
+        n["id"]
+        for n in nodes
+        if n.get("type") == "vmNode"
+        and (n.get("parentId") in boundary_ids or n.get("data", {}).get("clusterId"))
+    }
+
+
+def _partition_networks_by_placement(
+    networks: list[dict], placements: dict[str, dict[str, str]]
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Split networks into top_backbone, top_links, bottom_wide lists."""
+    top_backbone = []
+    top_links = []
+    bottom_wide = []
+    for n in networks:
+        p = placements[n["id"]]
+        if p["side"] == "top" and p["tier"] == "backbone":
+            top_backbone.append(n)
+        elif p["side"] == "top" and p["tier"] == "link":
+            top_links.append(n)
+        elif p["tier"] == "wide" or (p["side"] == "bottom" and p["tier"] == "backbone"):
+            bottom_wide.append(n)
+    return top_backbone, top_links, bottom_wide
+
+
+def _place_unattached_storage(
+    storage_nodes: list[dict],
+    storage_to_vm: dict[str, str],
+    updated: dict[str, dict],
+    current_y: float,
+    disk_w: int,
+    gap_x: int,
+) -> None:
+    unattached = [n for n in storage_nodes if n["id"] not in storage_to_vm]
+    for i, n in enumerate(unattached):
+        updated[n["id"]] = {"x": 40 + i * (disk_w + gap_x), "y": current_y}
+
+
+def _free_network_ids(nodes: list[dict], edges: list[dict]) -> set[str]:
+    edged = {e.get("source") for e in edges} | {e.get("target") for e in edges}
+    return {
+        n["id"]
+        for n in nodes
+        if n.get("type") == "networkNode" and n["id"] not in edged
+    }
+
+
+def _finalize_cluster_aware_layout(
+    new_nodes: list[dict],
+    edges: list[dict],
+    nodes: list[dict],
+    net_w: int,
+    net_h: int,
+    gap_y: int,
+) -> None:
+    """Reflow clusters, place Ceph/anchors, and clear BMC/free nets of boxes."""
+    reflow_cluster_members(new_nodes)
+    _layout_ceph_between_clusters(new_nodes)
+    cluster_anchored = set(_collect_cluster_network_anchors(edges, new_nodes).keys())
+    _layout_cluster_anchored_networks(new_nodes, edges, net_w, net_h, gap_y)
+    _reposition_bmc_networks_clear_of_clusters(
+        new_nodes, net_w, net_h, gap_y, skip_net_ids=cluster_anchored
+    )
+    # A cluster box sized just now can overlap an unconnected network (e.g. the
+    # bastionless BMC network); nudge such free networks clear of every box.
+    free_net_ids = _free_network_ids(nodes, edges)
+    _push_free_networks_below_clusters(new_nodes, free_net_ids, net_w, net_h, gap_y)
+
+
+def _layout_network_rows(
+    classified: dict[str, list[dict]],
+    placements: dict[str, dict[str, str]],
+    network_to_vms: dict[str, list[str]],
+    router_to_nets: dict[str, list[str]],
+    updated: dict[str, dict],
+    vm_row_bottom: float,
+    net_w: int,
+    vm_w: int,
+    vm_h: int,
+    net_h: int,
+    gap_y: int,
+    vm_to_storage: dict[str, list[str]],
+    disk_h: int,
+) -> float:
+    """Place top/bottom network rows and routers; return bottom y cursor."""
+    top_backbone, top_links, bottom_wide = _partition_networks_by_placement(
+        classified["networks"], placements
+    )
+    link_row_y = _assign_top_link_rows(top_links, network_to_vms, updated, net_w, vm_w)
+    backbone_row_y = _compute_backbone_row_y(
+        updated,
+        classified["showroom_nodes"],
+        vm_to_storage,
+        disk_h,
+    )
+    updated.update(
+        _layout_network_group(
+            [n for n in top_links if n["id"] in link_row_y],
+            network_to_vms,
+            updated,
+            net_w,
+            vm_w,
+            y_by_id=link_row_y,
+        )
+    )
+    updated.update(
+        _layout_network_group(
+            top_backbone,
+            network_to_vms,
+            updated,
+            net_w,
+            vm_w,
+            default_y=backbone_row_y,
+        )
+    )
+    updated.update(
+        _layout_routers_near_nets(classified["routers"], router_to_nets, updated)
+    )
+    positions, current_y = _layout_bottom_network_rows(
+        bottom_wide,
+        network_to_vms,
+        updated,
+        vm_row_bottom,
+        _VM_ROW_Y,
+        vm_h,
+        net_w,
+        vm_w,
+        net_h,
+        gap_y,
+    )
+    updated.update(positions)
+    return current_y
+
+
 def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
     """Apply auto-layout to nodes/edges, return updated copies."""
     if not nodes:
@@ -1234,20 +1487,12 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
     classified = _classify_nodes(nodes)
     vm_to_storage, storage_to_vm, network_to_vms = _build_connection_maps(nodes, edges)
     side_votes = _collect_network_side_votes(nodes, edges)
-    boundary_ids = {n["id"] for n in nodes if n.get("type") == "clusterNode"}
-    cluster_member_ids = {
-        n["id"]
-        for n in nodes
-        if n.get("type") == "vmNode"
-        and (n.get("parentId") in boundary_ids or n.get("data", {}).get("clusterId"))
-    }
-    cluster_anchor_by_net = _collect_cluster_network_anchors(edges, nodes)
     placements = _classify_network_placements(
         classified["networks"],
         side_votes,
         network_to_vms,
-        cluster_member_ids,
-        cluster_anchor_by_net,
+        _cluster_member_ids(nodes),
+        _collect_cluster_network_anchors(edges, nodes),
     )
 
     # Sizing constants (match frontend)
@@ -1299,79 +1544,30 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
     )
     updated.update(positions)
 
-    top_backbone = [
-        n
-        for n in classified["networks"]
-        if placements[n["id"]]["side"] == "top"
-        and placements[n["id"]]["tier"] == "backbone"
-    ]
-    top_links = [
-        n
-        for n in classified["networks"]
-        if placements[n["id"]]["side"] == "top"
-        and placements[n["id"]]["tier"] == "link"
-    ]
-    bottom_wide = [
-        n
-        for n in classified["networks"]
-        if placements[n["id"]]["tier"] == "wide"
-        or (
-            placements[n["id"]]["side"] == "bottom"
-            and placements[n["id"]]["tier"] == "backbone"
-        )
-    ]
-
-    link_row_y = _assign_top_link_rows(top_links, network_to_vms, updated, net_w, vm_w)
-    backbone_row_y = _compute_backbone_row_y(
+    current_y = _layout_network_rows(
+        classified,
+        placements,
+        network_to_vms,
+        router_to_nets,
         updated,
-        classified["showroom_nodes"],
+        vm_row_bottom,
+        net_w,
+        vm_w,
+        vm_h,
+        net_h,
+        gap_y,
         vm_to_storage,
         disk_h,
     )
-    updated.update(
-        _layout_network_group(
-            [n for n in top_links if n["id"] in link_row_y],
-            network_to_vms,
-            updated,
-            net_w,
-            vm_w,
-            y_by_id=link_row_y,
-        )
-    )
-    updated.update(
-        _layout_network_group(
-            top_backbone,
-            network_to_vms,
-            updated,
-            net_w,
-            vm_w,
-            default_y=backbone_row_y,
-        )
-    )
-    updated.update(
-        _layout_routers_near_nets(classified["routers"], router_to_nets, updated)
-    )
 
-    positions, current_y = _layout_bottom_network_rows(
-        bottom_wide,
-        network_to_vms,
+    _place_unattached_storage(
+        classified["storage_nodes"],
+        storage_to_vm,
         updated,
-        vm_row_bottom,
-        _VM_ROW_Y,
-        vm_h,
-        net_w,
-        vm_w,
-        net_h,
-        gap_y,
+        current_y,
+        disk_w,
+        gap_x,
     )
-    updated.update(positions)
-
-    unattached = [
-        n for n in classified["storage_nodes"] if n["id"] not in storage_to_vm
-    ]
-    if unattached:
-        for i, n in enumerate(unattached):
-            updated[n["id"]] = {"x": 40 + i * (disk_w + gap_x), "y": current_y}
 
     new_nodes = _apply_positions(nodes, updated)
     new_edges = _fix_network_edge_handles(edges, nodes, updated, net_h, vm_h)
@@ -1379,24 +1575,7 @@ def auto_layout(nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[
     new_edges = _apply_edge_path_options(
         new_edges, nodes, updated, net_w, vm_w, net_h, vm_h
     )
-    # Cluster-aware pass: pull OCP cluster members back inside their boundary
-    # (they were laid out above as free workloads) and size the box.
-    reflow_cluster_members(new_nodes)
-    _layout_ceph_between_clusters(new_nodes)
-    cluster_anchored = set(_collect_cluster_network_anchors(edges, new_nodes).keys())
-    _layout_cluster_anchored_networks(new_nodes, edges, net_w, net_h, gap_y)
-    _reposition_bmc_networks_clear_of_clusters(
-        new_nodes, net_w, net_h, gap_y, skip_net_ids=cluster_anchored
-    )
-    # A cluster box sized just now can overlap an unconnected network (e.g. the
-    # bastionless BMC network); nudge such free networks clear of every box.
-    edged = {e.get("source") for e in edges} | {e.get("target") for e in edges}
-    free_net_ids = {
-        n["id"]
-        for n in nodes
-        if n.get("type") == "networkNode" and n["id"] not in edged
-    }
-    _push_free_networks_below_clusters(new_nodes, free_net_ids, net_w, net_h, gap_y)
+    _finalize_cluster_aware_layout(new_nodes, edges, nodes, net_w, net_h, gap_y)
     return new_nodes, new_edges
 
 

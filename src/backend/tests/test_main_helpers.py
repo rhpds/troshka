@@ -1433,7 +1433,7 @@ class TestFailedJobsWithRedis:
         ), patch("rq.Queue", return_value=mock_queue), patch(
             "rq.job.Job.fetch", return_value=mock_job
         ):
-            data = list_failed_jobs(user=mock_user, queue_name="deploy")
+            data = list_failed_jobs(_user=mock_user, queue_name="deploy")
             assert data["queue"] == "deploy"
             assert data["count"] == 1
             assert len(data["jobs"]) == 1
@@ -1453,7 +1453,7 @@ class TestFailedJobsWithRedis:
         ), patch("rq.Queue", return_value=mock_queue), patch(
             "rq.job.Job.fetch", side_effect=Exception("no such job")
         ):
-            data = list_failed_jobs(user=mock_user)
+            data = list_failed_jobs(_user=mock_user)
             assert data["jobs"][0]["id"] == "bad-job"
             assert data["jobs"][0]["error"] == "could not fetch"
 

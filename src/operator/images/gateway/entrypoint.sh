@@ -28,11 +28,12 @@ nft add chain inet filter forward '{ type filter hook forward priority 0 ; polic
 
 _gateway_listen_port() {
   # OpenShift/OVN blocks some inbound ports on the pod network (MetalLB path).
-  case "$1" in
+  local port="$1"
+  case "$port" in
     80) echo 1080 ;;
     443) echo 1443 ;;
     8080) echo 18080 ;;
-    *) echo "$1" ;;
+    *) echo "$port" ;;
   esac
 }
 

@@ -15,6 +15,7 @@ _WORKDIR = "/workdir"
 # Wait for each cluster API before minting SA (covers post-install Multus blips).
 _API_WAIT_RETRIES = 30
 _API_WAIT_DELAY_S = 10
+_ANSIBLE_BUILTIN_COMMAND = "ansible.builtin.command"
 
 
 @dataclass
@@ -38,7 +39,7 @@ def _wait_for_cluster_api_task(name: str | None = None) -> dict:
     label = f"Wait for {name} API" if name else "Wait for cluster API"
     return {
         "name": label,
-        "ansible.builtin.command": {"cmd": "oc get --raw=/version"},
+        _ANSIBLE_BUILTIN_COMMAND: {"cmd": "oc get --raw=/version"},
         "register": "_troshka_api_wait",
         "retries": _API_WAIT_RETRIES,
         "delay": _API_WAIT_DELAY_S,
@@ -81,7 +82,7 @@ def _mint_prelude_playbook(
                     },
                     {
                         "name": f"Read API server for {name}",
-                        "ansible.builtin.command": {
+                        _ANSIBLE_BUILTIN_COMMAND: {
                             "cmd": (
                                 "oc config view --minify "
                                 "-o jsonpath={.clusters[0].cluster.server}"
@@ -168,7 +169,7 @@ def _mint_prelude_single(paths: RunPaths) -> str:
                 },
                 {
                     "name": "Read API server URL from delivered kubeconfig",
-                    "ansible.builtin.command": {
+                    _ANSIBLE_BUILTIN_COMMAND: {
                         "cmd": "oc config view --minify "
                         "-o jsonpath={.clusters[0].cluster.server}"
                     },
@@ -355,7 +356,7 @@ def build_run_command(
     )
     if has_kubeconfig:
         main_cmd += f" -e @'{_safe_sq(paths.clusters)}'"
-    main_cmd += " -e ACTION=provision" " -e cloud_provider=none"
+    main_cmd += " -e ACTION=provision -e cloud_provider=none"
     if limit:
         main_cmd += f" --limit '{_safe_sq(limit)}'"
     main_cmd += f" 2>&1 | tee '{safe_log}'"

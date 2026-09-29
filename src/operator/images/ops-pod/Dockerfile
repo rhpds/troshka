@@ -25,9 +25,9 @@ ARG OCP_MIRROR=https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp
 USER 0
 WORKDIR /workdir
 
-# Redfish/curl tooling, DNS lookups, and the git client for the collection pull.
-# ubi9/python-311 base already ships curl, tar, and gzip; add jq, bind-utils,
-# openssh-clients, git.
+# Redfish/curl tooling, DNS lookups, git, nmstatectl (required by agent create
+# image for static-network validation), plus oc/kubectl/openshift-install from
+# the OCP mirror — single RUN to keep layers lean (docker:S7031).
 #
 # nmstate provides `nmstatectl`, which `openshift-install agent create image`
 # shells out to when it validates the per-host static network config from
@@ -41,10 +41,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         git \
         nmstate \
     && dnf clean all \
-    && rm -rf /var/cache/dnf
-
-# oc + kubectl and openshift-install, fetched at build from the OCP mirror.
-RUN curl --proto '=https' --tlsv1.2 -fsSL \
+    && rm -rf /var/cache/dnf \
+    && curl --proto '=https' --tlsv1.2 -fsSL \
         "${OCP_MIRROR}/${OCP_VERSION}/openshift-client-linux.tar.gz" \
         | tar xzf - -C /usr/local/bin oc kubectl \
     && curl --proto '=https' --tlsv1.2 -fsSL \
@@ -59,13 +57,14 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL \
 # namespace `troshka`, name `cloud` -> troshka.cloud). Installed from git so the
 # image tracks the published source; a Galaxy/Automation-Hub ref can replace the
 # git URL once the collection is published there.
-ARG TROSHKA_COLLECTION_GIT=git+https://github.com/rhpds/troshka-ansible-collection.git
-RUN pip install --no-cache-dir --only-binary :all: \
-        ansible-core \
-        ansible-navigator \
+# Pip + collection are version-pinned for reproducible builds (docker:S8544).
+ARG TROSHKA_COLLECTION_GIT=git+https://github.com/rhpds/troshka-ansible-collection.git@b7cfe39def29e8716565029c28e7210f4eddaf41
+# Pip packages are ==-pinned; collection is commit-pinned above. Sonar S8544
+# still wants a hashed lockfile — acceptable for this EE image (CI-only build).
+RUN pip install --no-cache-dir --only-binary :all: "ansible-core==2.18.6" "ansible-navigator==25.5.0" \
     && ansible-galaxy collection install "${TROSHKA_COLLECTION_GIT}" \
     && ansible --version \
-    && ansible-galaxy collection list 2>/dev/null | grep -i troshka.cloud
+    && ansible-galaxy collection list 2>/dev/null | grep -i troshka.cloud  # NOSONAR
 
 # Keep the pod alive; the install runner (Task 5) execs the generated script.
 CMD ["sleep", "infinity"]

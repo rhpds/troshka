@@ -222,15 +222,8 @@ def _remap_ceph_node(nodes: list, id_map: dict, cluster_id_map: dict[str, str]) 
             ]
 
 
-def _remap_clusters(topo: dict, id_map: dict) -> dict[str, str]:
-    """Remap clusters[] ids/nodeIds and member clusterId/parentId refs.
-
-    ``_remap_node_ids`` has already assigned a fresh bare UUID to every node
-    (including the ``clusterNode``), recorded in ``id_map``. Reuse that map so
-    each cluster's ``nodeId`` points at its remapped node, and mint a fresh
-    unique cluster id independent of the node id so two clones of the same
-    pattern into one project never collide.
-    """
+def _assign_cluster_ids(topo: dict, id_map: dict) -> dict[str, str]:
+    """Mint remapped cluster ids and rewrite clusters[].networkIds / dnsNetworkId."""
     old_to_new: dict[str, str] = {}
     for cluster in topo.get("clusters", []):
         old_cluster_id = cluster.get("id")
@@ -243,8 +236,6 @@ def _remap_clusters(topo: dict, id_map: dict) -> dict[str, str]:
         cluster["id"] = new_cluster_id
         if old_cluster_id is not None:
             old_to_new[old_cluster_id] = new_cluster_id
-
-        # Remap network node references in clusters
         if cluster.get("networkIds"):
             cluster["networkIds"] = [
                 id_map.get(nid, nid) for nid in cluster["networkIds"]
@@ -253,7 +244,12 @@ def _remap_clusters(topo: dict, id_map: dict) -> dict[str, str]:
             cluster["dnsNetworkId"] = id_map.get(
                 cluster["dnsNetworkId"], cluster["dnsNetworkId"]
             )
+    return old_to_new
 
+
+def _remap_member_cluster_refs(
+    topo: dict, old_to_new: dict[str, str], id_map: dict
+) -> None:
     for node in topo.get("nodes", []):
         data = node.get("data", {})
         if data.get("clusterId") in old_to_new:
@@ -261,6 +257,8 @@ def _remap_clusters(topo: dict, id_map: dict) -> dict[str, str]:
         if node.get("parentId") in id_map:
             node["parentId"] = id_map[node["parentId"]]
 
+
+def _stamp_cluster_node_ids(topo: dict) -> None:
     # The clusterNode itself carries no clusterId from older patterns, so the
     # loop above can't remap it. Set it from its cluster's (remapped) id keyed by
     # nodeId, so the install-log lookup (clusters[].id) matches what the UI
@@ -271,6 +269,19 @@ def _remap_clusters(topo: dict, id_map: dict) -> dict[str, str]:
         if cn is not None and cn.get("type") == "clusterNode":
             cn.setdefault("data", {})["clusterId"] = cluster["id"]
 
+
+def _remap_clusters(topo: dict, id_map: dict) -> dict[str, str]:
+    """Remap clusters[] ids/nodeIds and member clusterId/parentId refs.
+
+    ``_remap_node_ids`` has already assigned a fresh bare UUID to every node
+    (including the ``clusterNode``), recorded in ``id_map``. Reuse that map so
+    each cluster's ``nodeId`` points at its remapped node, and mint a fresh
+    unique cluster id independent of the node id so two clones of the same
+    pattern into one project never collide.
+    """
+    old_to_new = _assign_cluster_ids(topo, id_map)
+    _remap_member_cluster_refs(topo, old_to_new, id_map)
+    _stamp_cluster_node_ids(topo)
     return old_to_new
 
 
@@ -312,6 +323,35 @@ def _remap_topology(topology: dict) -> dict:
     return topo
 
 
+def _pattern_provider_states(all_locs, providers: dict) -> dict[str, dict]:
+    provider_states: dict[str, dict] = {}
+    for loc in all_locs:
+        pid = loc.provider_id
+        if pid is None:
+            continue
+        if pid not in provider_states:
+            provider_states[pid] = {
+                "provider_id": pid,
+                "provider_name": providers.get(pid),
+                "state": "synced",
+                "synced_at": loc.synced_at,
+            }
+        if loc.state != "synced":
+            provider_states[pid]["state"] = loc.state
+    return provider_states
+
+
+def _aggregate_pattern_sync_status(
+    provider_states: dict, kubevirt_providers: int
+) -> str:
+    synced_count = sum(1 for ps in provider_states.values() if ps["state"] == "synced")
+    if kubevirt_providers > 0 and synced_count >= kubevirt_providers:
+        return "synced"
+    if synced_count > 0:
+        return f"partial {synced_count}/{kubevirt_providers}"
+    return "local"
+
+
 def _compute_sync_status(p: Pattern, db: Session) -> tuple[str | None, list[dict]]:
     """Compute aggregate sync status and per-provider location list."""
     if not p.disks:
@@ -330,35 +370,13 @@ def _compute_sync_status(p: Pattern, db: Session) -> tuple[str | None, list[dict
         prov.id: prov.name
         for prov in db.query(Provider).filter(Provider.id.in_(provider_ids)).all()
     }
-
-    provider_states: dict[str, dict] = {}
-    for loc in all_locs:
-        pid = loc.provider_id
-        if pid is None:
-            continue
-        if pid not in provider_states:
-            provider_states[pid] = {
-                "provider_id": pid,
-                "provider_name": providers.get(pid),
-                "state": "synced",
-                "synced_at": loc.synced_at,
-            }
-        if loc.state != "synced":
-            provider_states[pid]["state"] = loc.state
-
+    provider_states = _pattern_provider_states(all_locs, providers)
     kubevirt_providers = (
         db.query(Provider)
         .filter(Provider.type == "kubevirt", Provider.state == "active")
         .count()
     )
-    synced_count = sum(1 for ps in provider_states.values() if ps["state"] == "synced")
-    if kubevirt_providers > 0 and synced_count >= kubevirt_providers:
-        sync_status = "synced"
-    elif synced_count > 0:
-        sync_status = f"partial {synced_count}/{kubevirt_providers}"
-    else:
-        sync_status = "local"
-
+    sync_status = _aggregate_pattern_sync_status(provider_states, kubevirt_providers)
     return sync_status, list(provider_states.values())
 
 
@@ -1205,6 +1223,7 @@ def _start_auto_deploy(
     "/{pattern_id}/deploy",
     status_code=201,
     responses={
+        400: {"description": "Invalid deploy request"},
         404: {"description": "Pattern not found"},
         409: {"description": "Project with this name already exists"},
     },

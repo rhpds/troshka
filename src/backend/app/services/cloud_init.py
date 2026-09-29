@@ -13,6 +13,8 @@ from passlib.hash import sha512_crypt as _sha512_crypt_impl  # type: ignore[attr
 
 logger = logging.getLogger(__name__)
 
+_CLOUD_CONFIG_HEADER = "#cloud-config"
+
 
 def _sha512_crypt(password: str, rounds: int = 5000) -> str:
     """SHA-512 crypt hash compatible with /etc/shadow."""
@@ -177,7 +179,7 @@ def _parse_custom_userdata(vm_data: dict) -> tuple[list[str], list[str]]:
             elif stripped and not stripped.startswith("#"):
                 in_runcmd = False
                 top_lines.append(line)
-        elif stripped and not stripped.startswith("#cloud-config"):
+        elif stripped and not stripped.startswith(_CLOUD_CONFIG_HEADER):
             top_lines.append(line)
 
     return top_lines, runcmd_lines
@@ -235,12 +237,14 @@ def generate_userdata(vm_data: dict) -> str:
     custom = vm_data.get("ciUserData", "").strip()
     if vm_data.get("ciUserDataOnly") and custom:
         result = (
-            custom if custom.startswith("#cloud-config") else f"#cloud-config\n{custom}"
+            custom
+            if custom.startswith(_CLOUD_CONFIG_HEADER)
+            else f"{_CLOUD_CONFIG_HEADER}\n{custom}"
         )
         _validate_cloud_config(result)
         return result
 
-    lines = ["#cloud-config"]
+    lines = [_CLOUD_CONFIG_HEADER]
 
     hostname = vm_data.get("ciHostname") or vm_data.get("name", "localhost")
     lines.append(f"hostname: {hostname}")

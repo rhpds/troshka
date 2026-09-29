@@ -26,7 +26,7 @@ RUN dnf install -y gcc make bison libevent-devel ncurses-devel pkgconf-pkg-confi
     && tmux -V
 
 # ---- Final stage: UBI9 wetty + oc --------------------------------------------
-FROM registry.access.redhat.com/ubi9/ubi:latest
+FROM registry.access.redhat.com/ubi9/ubi:9.8
 
 ARG OCP_VERSION=stable
 ARG WETTY_VERSION=2.5.0

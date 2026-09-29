@@ -17,7 +17,7 @@ logger = logging.getLogger("troshka.ocp.ptr")
 
 _PROBE_TIMEOUT_S = 10
 # Bounded token classes avoid catastrophic backtracking on malformed auth headers.
-_BEARER_PARAM_RE = re.compile(r'([A-Za-z0-9_]+)="([^"]*)"')
+_BEARER_PARAM_RE = re.compile(r'(\w+)="([^"]*)"')
 
 
 class PullThroughRegistryError(Exception):
@@ -48,7 +48,7 @@ def _basic_auth_header(username: str, password: str) -> str:
 def _parse_bearer_challenge(www_authenticate: str | None) -> dict[str, str]:
     if not www_authenticate or not www_authenticate.lower().startswith("bearer"):
         return {}
-    return {k: v for k, v in _BEARER_PARAM_RE.findall(www_authenticate)}
+    return dict(_BEARER_PARAM_RE.findall(www_authenticate))
 
 
 def _urlopen(req: urllib.request.Request, timeout: float):
@@ -101,6 +101,62 @@ def _fetch_bearer_token(
     return token
 
 
+def _assert_probe_ok(resp, base: str) -> None:
+    if getattr(resp, "status", 200) >= 400:
+        raise PullThroughRegistryError(
+            _auth_failure_message(base, getattr(resp, "status", 0), "error")
+        )
+
+
+def _probe_with_bearer(
+    probe_url: str,
+    challenge: dict[str, str],
+    username: str,
+    password: str,
+    *,
+    base: str,
+    timeout: float,
+) -> None:
+    token = _fetch_bearer_token(challenge, username, password, timeout=timeout)
+    bearer_req = urllib.request.Request(
+        probe_url,
+        headers={"Authorization": f"Bearer {token}"},
+        method="GET",
+    )
+    try:
+        with _urlopen(bearer_req, timeout) as resp:
+            _assert_probe_ok(resp, base)
+    except urllib.error.HTTPError as be:
+        raise PullThroughRegistryError(
+            _auth_failure_message(base, be.code, be.reason)
+        ) from be
+
+
+def _handle_probe_http_error(
+    e: urllib.error.HTTPError,
+    *,
+    probe_url: str,
+    username: str,
+    password: str,
+    base: str,
+    timeout: float,
+) -> None:
+    if e.code != 401:
+        raise PullThroughRegistryError(
+            _auth_failure_message(base, e.code, e.reason)
+        ) from e
+    challenge = _parse_bearer_challenge(
+        e.headers.get("WWW-Authenticate") if e.headers else None
+    )
+    if not challenge.get("realm"):
+        raise PullThroughRegistryError(
+            _auth_failure_message(base, e.code, e.reason)
+        ) from e
+    _probe_with_bearer(
+        probe_url, challenge, username, password, base=base, timeout=timeout
+    )
+
+
 def probe_pull_through_registry(
     url: str,
     username: str,
@@ -122,42 +178,19 @@ def probe_pull_through_registry(
     )
     try:
         with _urlopen(req, timeout) as resp:
-            if getattr(resp, "status", 200) >= 400:
-                raise PullThroughRegistryError(
-                    _auth_failure_message(base, getattr(resp, "status", 0), "error")
-                )
+            _assert_probe_ok(resp, base)
             return
     except PullThroughRegistryError:
         raise
     except urllib.error.HTTPError as e:
-        if e.code != 401:
-            raise PullThroughRegistryError(
-                _auth_failure_message(base, e.code, e.reason)
-            ) from e
-        challenge = _parse_bearer_challenge(
-            e.headers.get("WWW-Authenticate") if e.headers else None
+        _handle_probe_http_error(
+            e,
+            probe_url=probe_url,
+            username=username,
+            password=password,
+            base=base,
+            timeout=timeout,
         )
-        if not challenge.get("realm"):
-            raise PullThroughRegistryError(
-                _auth_failure_message(base, e.code, e.reason)
-            ) from e
-        token = _fetch_bearer_token(challenge, username, password, timeout=timeout)
-        # Confirm the token works against /v2/.
-        bearer_req = urllib.request.Request(
-            probe_url,
-            headers={"Authorization": f"Bearer {token}"},
-            method="GET",
-        )
-        try:
-            with _urlopen(bearer_req, timeout) as resp:
-                if getattr(resp, "status", 200) >= 400:
-                    raise PullThroughRegistryError(
-                        _auth_failure_message(base, getattr(resp, "status", 0), "error")
-                    )
-        except urllib.error.HTTPError as be:
-            raise PullThroughRegistryError(
-                _auth_failure_message(base, be.code, be.reason)
-            ) from be
     except urllib.error.URLError as e:
         reason = getattr(e, "reason", e) or e
         raise PullThroughRegistryError(

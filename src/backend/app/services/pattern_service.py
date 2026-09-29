@@ -21,6 +21,7 @@ CAPTURE_REQUEST_ANNOTATION = "troshka.redhat.com/capture-request"
 # format. The declared format is preserved separately in metadata for the VM XML
 # and is what the deploy materializes (e.g. raw for container volumes).
 PATTERN_STORED_FORMAT = "qcow2"
+_UPDATE_PATTERN_TOPOLOGY_SQL = "UPDATE patterns SET topology = :topo WHERE id = :pid"
 
 
 def _set_capture_progress(pattern_id: str, data: dict):
@@ -264,6 +265,103 @@ def _run_recert_force_expire(host, pattern_id, topology, disks, db):
             pattern.recert = False
 
 
+def _find_quiesce_bastion(topology):
+    """Return the bastion vmNode from topology, or None."""
+    return next(
+        (
+            n
+            for n in topology.get("nodes", [])
+            if n.get("type") == "vmNode" and n.get("data", {}).get("label") == "bastion"
+        ),
+        None,
+    )
+
+
+def _bastion_ip_and_password(bastion) -> tuple[str, str]:
+    bastion_ip = ""
+    for nic in bastion.get("data", {}).get("nics", []):
+        if nic.get("ip"):
+            bastion_ip = nic["ip"]
+            break
+    if not bastion_ip:
+        bastion_ip = "10.0.0.50"
+    password = bastion.get("data", {}).get("ciCloudUserPassword", "")
+    return bastion_ip, password
+
+
+def _notify_quiesce_progress(pattern_id, detail: str) -> None:
+    from app.services.ws_pubsub import notify_pattern
+
+    progress = {"step": "quiescing", "detail": detail}
+    _set_capture_progress(pattern_id, progress)
+    notify_pattern(pattern_id, {"type": "capture-progress", **progress})
+
+
+def _cluster_operators_all_available(result: str | None) -> bool:
+    if not result:
+        return False
+    lines = result.strip().split("\n")
+    return all("True False" in line for line in lines if line.strip())
+
+
+def _approve_csrs_and_rollout(
+    host, project_id, bastion_ip, password, pattern_id, approve_fn, exec_fn
+) -> None:
+    approved = approve_fn(host, project_id, bastion_ip, password)
+    if not approved:
+        return
+    log.info("Pattern %s: approved %d CSR(s)", pattern_id[:8], approved)
+    # Force kube-apiserver rollout only if certs rotated — the rollout
+    # itself causes temporary auth disruption, so skip it if unnecessary
+    exec_fn(
+        host,
+        project_id,
+        bastion_ip,
+        password,
+        'oc patch kubeapiserver cluster --type=merge -p \'{"spec":{"forceRedeploymentReason":"pattern-capture-\'$(date +%s)\'"}}\' 2>/dev/null',
+        timeout=10,
+    )
+    log.info(
+        "Pattern %s: triggered kube-apiserver rollout after CSR approval",
+        pattern_id[:8],
+    )
+
+
+def _wait_for_cluster_operators(
+    host, project_id, bastion_ip, password, pattern_id, exec_fn
+) -> None:
+    """Poll until all cluster operators are Available and not Progressing."""
+    import time
+
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        result = exec_fn(
+            host,
+            project_id,
+            bastion_ip,
+            password,
+            "oc get co --no-headers 2>/dev/null | awk '{print $3,$4}' | sort | uniq -c",
+            timeout=15,
+        )
+        if _cluster_operators_all_available(result):
+            log.info(
+                "Pattern %s: cluster quiesced — all operators available",
+                pattern_id[:8],
+            )
+            _notify_quiesce_progress(
+                pattern_id, "Cluster stable — all operators available"
+            )
+            return
+        _notify_quiesce_progress(
+            pattern_id, "Waiting for cluster operators to stabilize"
+        )
+        time.sleep(10)
+    log.warning(
+        "Pattern %s: quiesce timed out after 5m, proceeding with capture",
+        pattern_id[:8],
+    )
+
+
 def _quiesce_ocp_cluster(host, project_id, topology, pattern_id):
     """Wait for OCP cluster to be in a clean state before pattern capture.
 
@@ -278,126 +376,26 @@ def _quiesce_ocp_cluster(host, project_id, topology, pattern_id):
 
     if not _is_ocp_topology(topology):
         return
-
-    nodes = topology.get("nodes", [])
-    bastion = next(
-        (
-            n
-            for n in nodes
-            if n.get("type") == "vmNode" and n.get("data", {}).get("label") == "bastion"
-        ),
-        None,
-    )
+    bastion = _find_quiesce_bastion(topology)
     if not bastion:
         return
 
-    bastion_ip = ""
-    for nic in bastion.get("data", {}).get("nics", []):
-        if nic.get("ip"):
-            bastion_ip = nic["ip"]
-            break
-    if not bastion_ip:
-        bastion_ip = "10.0.0.50"
-    password = bastion.get("data", {}).get("ciCloudUserPassword", "")
-
+    bastion_ip, password = _bastion_ip_and_password(bastion)
     log.info("Pattern %s: quiescing OCP cluster before capture", pattern_id[:8])
-    _set_capture_progress(
+    _notify_quiesce_progress(pattern_id, "Checking cluster health")
+
+    _approve_csrs_and_rollout(
+        host,
+        project_id,
+        bastion_ip,
+        password,
         pattern_id,
-        {
-            "step": "quiescing",
-            "detail": "Checking cluster health",
-        },
+        _approve_pending_csrs,
+        _exec_on_bastion,
     )
-    from app.services.ws_pubsub import notify_pattern
-
-    notify_pattern(
-        pattern_id,
-        {
-            "type": "capture-progress",
-            "step": "quiescing",
-            "detail": "Checking cluster health",
-        },
+    _wait_for_cluster_operators(
+        host, project_id, bastion_ip, password, pattern_id, _exec_on_bastion
     )
-
-    # Approve any pending CSRs
-    approved = _approve_pending_csrs(host, project_id, bastion_ip, password)
-    if approved:
-        log.info("Pattern %s: approved %d CSR(s)", pattern_id[:8], approved)
-        # Force kube-apiserver rollout only if certs rotated — the rollout
-        # itself causes temporary auth disruption, so skip it if unnecessary
-        _exec_on_bastion(
-            host,
-            project_id,
-            bastion_ip,
-            password,
-            'oc patch kubeapiserver cluster --type=merge -p \'{"spec":{"forceRedeploymentReason":"pattern-capture-\'$(date +%s)\'"}}\' 2>/dev/null',
-            timeout=10,
-        )
-        log.info(
-            "Pattern %s: triggered kube-apiserver rollout after CSR approval",
-            pattern_id[:8],
-        )
-
-    # Wait for all cluster operators to be Available and not Progressing
-    import time
-
-    deadline = time.time() + 300
-    while time.time() < deadline:
-        result = _exec_on_bastion(
-            host,
-            project_id,
-            bastion_ip,
-            password,
-            "oc get co --no-headers 2>/dev/null | awk '{print $3,$4}' | sort | uniq -c",
-            timeout=15,
-        )
-        if result:
-            lines = result.strip().split("\n")
-            all_good = all("True False" in line for line in lines if line.strip())
-            if all_good:
-                log.info(
-                    "Pattern %s: cluster quiesced — all operators available",
-                    pattern_id[:8],
-                )
-                _set_capture_progress(
-                    pattern_id,
-                    {
-                        "step": "quiescing",
-                        "detail": "Cluster stable — all operators available",
-                    },
-                )
-                notify_pattern(
-                    pattern_id,
-                    {
-                        "type": "capture-progress",
-                        "step": "quiescing",
-                        "detail": "Cluster stable — all operators available",
-                    },
-                )
-                break
-        _set_capture_progress(
-            pattern_id,
-            {
-                "step": "quiescing",
-                "detail": "Waiting for cluster operators to stabilize",
-            },
-        )
-        notify_pattern(
-            pattern_id,
-            {
-                "type": "capture-progress",
-                "step": "quiescing",
-                "detail": "Waiting for cluster operators to stabilize",
-            },
-        )
-        time.sleep(10)
-    else:
-        log.warning(
-            "Pattern %s: quiesce timed out after 5m, proceeding with capture",
-            pattern_id[:8],
-        )
-
-    # Final CSR sweep
     _approve_pending_csrs(host, project_id, bastion_ip, password)
 
 
@@ -863,6 +861,45 @@ def _update_topology_with_captures(topo, captured_disks, pattern_id, pd_id_by_di
 _EMPTY_DISK_MAX_BYTES = 8 * 1024 * 1024  # 8 MiB
 
 
+def _first_content_disk_id(disks, size_by_disk_id) -> str | None:
+    """Return first attached disk whose captured size exceeds the empty threshold."""
+    return next(
+        (
+            d["node_id"]
+            for d in disks
+            if size_by_disk_id.get(d["node_id"], 0) > _EMPTY_DISK_MAX_BYTES
+        ),
+        None,
+    )
+
+
+def _repoint_vm_boot_if_empty(vm, topo, size_by_disk_id) -> None:
+    """If this VM's boot disk was captured empty, switch Boot Order to a content disk."""
+    from app.services.deploy_topology import _find_vm_disks
+
+    disks = [d for d in _find_vm_disks(vm["id"], topo) if d.get("format") != "iso"]
+    if not disks:
+        return
+    data = vm.setdefault("data", {})
+    boot = data.get("bootDevices") or []
+    current = boot[0] if boot else disks[0]["node_id"]
+    cur_size = size_by_disk_id.get(current)
+    # Only correct when the current boot disk is known to have been captured
+    # empty — never override a boot order that points at a real disk.
+    if cur_size is None or cur_size > _EMPTY_DISK_MAX_BYTES:
+        return
+    content = _first_content_disk_id(disks, size_by_disk_id)
+    if not content or content == current:
+        return
+    data["bootDevices"] = [content]
+    log.info(
+        "Capture: repointed %s Boot Order from empty disk %s to %s",
+        (data.get("name") or vm.get("id", ""))[:20],
+        current[:8],
+        content[:8],
+    )
+
+
 def _correct_boot_devices_from_captures(topo, size_by_disk_id):
     """Repoint each VM's Boot Order to a captured disk that actually has content.
 
@@ -874,38 +911,9 @@ def _correct_boot_devices_from_captures(topo, size_by_disk_id):
     disk (preferring edge order among content disks). Provider-agnostic: both
     capture paths supply ``size_by_disk_id`` (storage-node id -> captured bytes).
     """
-    from app.services.deploy_topology import _find_vm_disks
-
     for vm in topo.get("nodes", []):
-        if vm.get("type") != "vmNode":
-            continue
-        disks = [d for d in _find_vm_disks(vm["id"], topo) if d.get("format") != "iso"]
-        if not disks:
-            continue
-        data = vm.setdefault("data", {})
-        boot = data.get("bootDevices") or []
-        current = boot[0] if boot else disks[0]["node_id"]
-        cur_size = size_by_disk_id.get(current)
-        # Only correct when the current boot disk is known to have been captured
-        # empty — never override a boot order that points at a real disk.
-        if cur_size is None or cur_size > _EMPTY_DISK_MAX_BYTES:
-            continue
-        content = next(
-            (
-                d["node_id"]
-                for d in disks
-                if size_by_disk_id.get(d["node_id"], 0) > _EMPTY_DISK_MAX_BYTES
-            ),
-            None,
-        )
-        if content and content != current:
-            data["bootDevices"] = [content]
-            log.info(
-                "Capture: repointed %s Boot Order from empty disk %s to %s",
-                (data.get("name") or vm.get("id", ""))[:20],
-                current[:8],
-                content[:8],
-            )
+        if vm.get("type") == "vmNode":
+            _repoint_vm_boot_if_empty(vm, topo, size_by_disk_id)
 
 
 def _restart_kubevirt_vms(custom_api, namespace):
@@ -1253,7 +1261,7 @@ def _finalize_ceph_capture_disks(
     from sqlalchemy import text
 
     db.execute(
-        text("UPDATE patterns SET topology = :topo WHERE id = :pid"),
+        text(_UPDATE_PATTERN_TOPOLOGY_SQL),
         {"topo": _json.dumps(topo), "pid": pattern.id},
     )
     db.commit()
@@ -1261,48 +1269,13 @@ def _finalize_ceph_capture_disks(
     return total_size
 
 
-def _capture_kubevirt_native(db, pattern, project, host, restart_after):
-    """Capture pattern disks via KubeVirt VolumeSnapshot + S3 export Jobs."""
-    import json as _json
+def _mark_pattern_capture_error(db, pattern, pattern_id: str, message: str) -> None:
+    pattern.state = "error"
+    db.commit()
+    log.error("Pattern %s: %s", pattern_id[:8], message)
 
-    from app.models.provider import Provider
-    from app.services.providers.kubevirt import (
-        CRD_GROUP,
-        CRD_VERSION,
-        _ensure_s3_secret,
-        _get_k8s_clients,
-        _project_ns,
-    )
-    from app.services.ws_pubsub import notify_pattern
 
-    pattern_id = pattern.id
-    project_id = project.id
-
-    provider = db.query(Provider).filter_by(id=host.provider_id).first()
-    if not provider:
-        pattern.state = "error"
-        db.commit()
-        log.error("Pattern %s: provider not found", pattern_id[:8])
-        return
-
-    pattern.source_provider_id = provider.id
-
-    custom_api, _core_api, _ = _get_k8s_clients(provider)
-    namespace = _project_ns(provider, project_id)
-
-    from app.services.s3_storage import get_cluster_s3_config
-
-    cluster_s3 = get_cluster_s3_config(db, provider.id)
-    if not cluster_s3:
-        pattern.state = "error"
-        db.commit()
-        log.error(
-            "Pattern %s: no OBC credentials for provider %s",
-            pattern_id[:8],
-            provider.name,
-        )
-        return
-
+def _cluster_s3_capture_configs(cluster_s3: dict) -> tuple[dict, dict]:
     s3_config_for_secret = {
         "access_key_id": cluster_s3.get("access_key_id", ""),
         "secret_access_key": cluster_s3.get("secret_access_key", ""),
@@ -1315,180 +1288,117 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         "region": cluster_s3.get("region", "us-east-1"),
         "credentialsSecret": "s3-credentials",  # pragma: allowlist secret
     }
+    return s3_config_for_secret, capture_s3
 
-    _ensure_s3_secret(provider, namespace, s3_config_for_secret)
 
-    topology = project.deployed_topology or project.topology or {}
-    disk_nodes, vm_nodes, disk_to_vm, _ = _build_disk_to_vm_map(topology)
-
-    disk_manifest = _build_capture_disk_manifest(
-        disk_nodes, disk_to_vm, pattern_id, vm_nodes
-    )
-
-    from app.services.project_ceph import topology_has_ceph
-
-    has_ceph = topology_has_ceph(topology)
-    if not disk_manifest and not has_ceph:
-        pattern.state = "error"
-        db.commit()
-        log.error("Pattern %s: no disks to capture", pattern_id[:8])
-        return
-
-    ceph_devices = []
-    identity_objects = []
-    if has_ceph:
-        try:
-            ceph_devices = _prepare_ceph_capture(
-                custom_api, _core_api, namespace, pattern_id
-            )
-            identity_objects = _capture_ceph_identity_objects(_core_api, namespace)
-        except (ValueError, RuntimeError) as e:
-            pattern.state = "error"
-            db.commit()
-            log.error(
-                "Pattern %s: Ceph capture preflight failed: %s", pattern_id[:8], e
-            )
-            # freeze_ceph_for_capture may have partially applied safety flags /
-            # scaled deployments before failing — best-effort restore.
-            _unfreeze_ceph_best_effort(_core_api, namespace, pattern_id)
-            return
-
-    capture_config = {
-        "patternId": pattern_id,
-        "s3Config": capture_s3,
-        "disks": disk_manifest,
-        "restartAfter": restart_after,
-    }
-    if ceph_devices:
-        capture_config["cephDevices"] = ceph_devices
-
-    _set_capture_progress(
-        pattern_id,
-        {
-            "step": "capturing",
-            "detail": "Triggering capture on cluster",
-        },
-    )
-    notify_pattern(
-        pattern_id,
-        {
-            "type": "capture-progress",
-            "step": "capturing",
-            "detail": "Triggering capture on cluster",
-        },
-    )
-
-    cr_name = f"project-{project_id[:8]}"
+def _prepare_ceph_for_kubevirt_capture(
+    custom_api, core_api, namespace, pattern_id, db, pattern
+) -> tuple[list, list] | None:
+    """Freeze Ceph and capture identity objects. Returns None on failure."""
     try:
-        # Clear stale capture status before starting
-        custom_api.patch_namespaced_custom_object_status(
-            group=CRD_GROUP,
-            version=CRD_VERSION,
-            namespace=namespace,
-            plural="troshkaprojects",
-            name=cr_name,
-            body={
-                "status": {
-                    "phase": "Active",
-                    "captureProgress": None,
-                    "captureError": None,
-                    "captureDisks": None,
-                    "capturedDisks": None,
-                    "capturedCephDisks": None,
-                }
-            },
+        ceph_devices = _prepare_ceph_capture(
+            custom_api, core_api, namespace, pattern_id
         )
-        custom_api.patch_namespaced_custom_object(
-            group=CRD_GROUP,
-            version=CRD_VERSION,
-            namespace=namespace,
-            plural="troshkaprojects",
-            name=cr_name,
-            body={
-                "metadata": {
-                    "annotations": {
-                        CAPTURE_REQUEST_ANNOTATION: _json.dumps(capture_config)
-                    }
-                }
-            },
+        identity_objects = _capture_ceph_identity_objects(core_api, namespace)
+        return ceph_devices, identity_objects
+    except (ValueError, RuntimeError) as e:
+        _mark_pattern_capture_error(
+            db, pattern, pattern_id, f"Ceph capture preflight failed: {e}"
         )
-    except Exception as e:
-        log.exception("Failed to trigger capture on %s: %s", cr_name, e)
-        pattern.state = "error"
-        db.commit()
-        if ceph_devices:
-            _unfreeze_ceph_best_effort(_core_api, namespace, pattern_id)
-        return
+        # freeze_ceph_for_capture may have partially applied safety flags /
+        # scaled deployments before failing — best-effort restore.
+        _unfreeze_ceph_best_effort(core_api, namespace, pattern_id)
+        return None
 
-    total_disk_gb = sum(d.get("sizeGb", 50) for d in disk_manifest)
-    poll_timeout = max(2700, total_disk_gb * 30)
 
-    # Release the DB transaction before the long poll so cancel/delete
-    # can modify the pattern row without blocking on our lock.
-    db.commit()
-    db.expire_all()
+def _trigger_kubevirt_capture_cr(
+    custom_api, namespace, cr_name, capture_config, crd_group, crd_version
+) -> None:
+    import json as _json
 
-    ceph_total_size = 0
-    if ceph_devices:
-        ceph_total_gb = sum(d.get("sizeGb", 1) for d in ceph_devices)
-        ceph_poll_timeout = max(900, ceph_total_gb * 20)
-        captured_ceph_disks = _poll_ceph_capture_phase(
-            custom_api,
-            namespace,
-            cr_name,
-            pattern_id,
-            CRD_GROUP,
-            CRD_VERSION,
-            ceph_poll_timeout,
-        )
+    # Clear stale capture status before starting
+    custom_api.patch_namespaced_custom_object_status(
+        group=crd_group,
+        version=crd_version,
+        namespace=namespace,
+        plural="troshkaprojects",
+        name=cr_name,
+        body={
+            "status": {
+                "phase": "Active",
+                "captureProgress": None,
+                "captureError": None,
+                "captureDisks": None,
+                "capturedDisks": None,
+                "capturedCephDisks": None,
+            }
+        },
+    )
+    custom_api.patch_namespaced_custom_object(
+        group=crd_group,
+        version=crd_version,
+        namespace=namespace,
+        plural="troshkaprojects",
+        name=cr_name,
+        body={
+            "metadata": {
+                "annotations": {CAPTURE_REQUEST_ANNOTATION: _json.dumps(capture_config)}
+            }
+        },
+    )
 
-        # Re-query pattern — it may have been deleted by cancel during the poll.
-        pattern = db.query(Pattern).filter_by(id=pattern_id).first()
-        if not pattern:
-            log.info("Pattern %s deleted during Ceph capture", pattern_id[:8])
-            _clear_capture_progress(pattern_id)
-            _unfreeze_ceph_best_effort(_core_api, namespace, pattern_id)
-            return
 
-        if captured_ceph_disks is None:
-            pattern.state = "error"
-            db.commit()
-            log.error("Pattern %s: Ceph capture failed or timed out", pattern_id[:8])
-            _clear_capture_progress(pattern_id)
-            _unfreeze_ceph_best_effort(_core_api, namespace, pattern_id)
-            return
-
-        ceph_total_size = _finalize_ceph_capture_disks(
-            db, pattern, ceph_devices, captured_ceph_disks, identity_objects
-        )
-        _unfreeze_ceph_best_effort(_core_api, namespace, pattern_id)
-        db.expire_all()
-
-    captured_disks = _poll_capture_completion(
+def _run_ceph_capture_phase(
+    db,
+    pattern_id,
+    custom_api,
+    core_api,
+    namespace,
+    cr_name,
+    ceph_devices,
+    identity_objects,
+    crd_group,
+    crd_version,
+) -> tuple[object, int] | None:
+    """Poll Ceph capture and finalize disks. Returns (pattern, size) or None."""
+    ceph_total_gb = sum(d.get("sizeGb", 1) for d in ceph_devices)
+    ceph_poll_timeout = max(900, ceph_total_gb * 20)
+    captured_ceph_disks = _poll_ceph_capture_phase(
         custom_api,
         namespace,
         cr_name,
         pattern_id,
-        CRD_GROUP,
-        CRD_VERSION,
-        max_wait_seconds=poll_timeout,
+        crd_group,
+        crd_version,
+        ceph_poll_timeout,
     )
 
-    # Re-query pattern after poll — it may have been deleted by cancel
+    # Re-query pattern — it may have been deleted by cancel during the poll.
     pattern = db.query(Pattern).filter_by(id=pattern_id).first()
     if not pattern:
-        log.info("Pattern %s deleted during capture", pattern_id[:8])
+        log.info("Pattern %s deleted during Ceph capture", pattern_id[:8])
         _clear_capture_progress(pattern_id)
-        return
+        _unfreeze_ceph_best_effort(core_api, namespace, pattern_id)
+        return None
 
-    if captured_disks is None:
-        pattern.state = "error"
-        db.commit()
-        log.error("Pattern %s: capture failed or timed out", pattern_id[:8])
+    if captured_ceph_disks is None:
+        _mark_pattern_capture_error(
+            db, pattern, pattern_id, "Ceph capture failed or timed out"
+        )
         _clear_capture_progress(pattern_id)
-        return
+        _unfreeze_ceph_best_effort(core_api, namespace, pattern_id)
+        return None
 
-    # Create PatternDisk records from captured disks
+    ceph_total_size = _finalize_ceph_capture_disks(
+        db, pattern, ceph_devices, captured_ceph_disks, identity_objects
+    )
+    _unfreeze_ceph_best_effort(core_api, namespace, pattern_id)
+    db.expire_all()
+    return pattern, ceph_total_size
+
+
+def _persist_kubevirt_captured_disks(db, pattern, pattern_id, captured_disks):
+    """Create PatternDisk (+ location) rows. Returns (total_size, pd_id_by_disk_id)."""
     from app.models.pattern_location import PatternLocation
 
     total_size = 0
@@ -1519,18 +1429,40 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
                 size_bytes=cd.get("sizeBytes", 0),
             )
             db.add(loc)
+    return total_size, pd_id_by_disk_id
 
-    # Update topology nodes to reference pattern (by PatternDisk.id)
+
+def _finish_kubevirt_capture(
+    db,
+    pattern,
+    pattern_id,
+    captured_disks,
+    ceph_total_size,
+    custom_api,
+    namespace,
+    cr_name,
+    restart_after,
+    crd_group,
+    crd_version,
+) -> None:
+    import json as _json
+
+    from sqlalchemy import text
+
+    from app.services.ws_pubsub import notify_pattern
+
+    total_size, pd_id_by_disk_id = _persist_kubevirt_captured_disks(
+        db, pattern, pattern_id, captured_disks
+    )
+
     topo = pattern.topology or {}
     _update_topology_with_captures(topo, captured_disks, pattern_id, pd_id_by_disk_id)
     _correct_boot_devices_from_captures(
         topo, {cd.get("diskId", ""): cd.get("sizeBytes", 0) for cd in captured_disks}
     )
 
-    from sqlalchemy import text
-
     db.execute(
-        text("UPDATE patterns SET topology = :topo WHERE id = :pid"),
+        text(_UPDATE_PATTERN_TOPOLOGY_SQL),
         {"topo": _json.dumps(topo), "pid": pattern_id},
     )
 
@@ -1541,19 +1473,15 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
     _clear_capture_progress(pattern_id)
     notify_pattern(pattern_id, {"type": "capture-complete"})
     _enqueue_pattern_sync(pattern_id, pattern.source_provider_id)
-
-    # Save the canonical metadata.json to central S4 (topology + full disk
-    # identity) so cross-cluster import / DR recovery can rebuild the pattern.
     _save_pattern_metadata_to_s3(pattern, pattern_id)
 
     if restart_after:
         _restart_kubevirt_vms(custom_api, namespace)
 
-    # Clear the capture annotation
     try:
         custom_api.patch_namespaced_custom_object(
-            group=CRD_GROUP,
-            version=CRD_VERSION,
+            group=crd_group,
+            version=crd_version,
             namespace=namespace,
             plural="troshkaprojects",
             name=cr_name,
@@ -1568,6 +1496,250 @@ def _capture_kubevirt_native(db, pattern, project, host, restart_after):
         len(captured_disks),
         total_size,
     )
+
+
+def _capture_kubevirt_native(db, pattern, project, host, restart_after):
+    """Capture pattern disks via KubeVirt VolumeSnapshot + S3 export Jobs."""
+    from app.models.provider import Provider
+    from app.services.providers.kubevirt import (
+        CRD_GROUP,
+        CRD_VERSION,
+        _ensure_s3_secret,
+        _get_k8s_clients,
+        _project_ns,
+    )
+    from app.services.ws_pubsub import notify_pattern
+
+    pattern_id = pattern.id
+    project_id = project.id
+
+    provider = db.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider:
+        _mark_pattern_capture_error(db, pattern, pattern_id, "provider not found")
+        return
+
+    pattern.source_provider_id = provider.id
+    custom_api, core_api, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+
+    from app.services.s3_storage import get_cluster_s3_config
+
+    cluster_s3 = get_cluster_s3_config(db, provider.id)
+    if not cluster_s3:
+        _mark_pattern_capture_error(
+            db,
+            pattern,
+            pattern_id,
+            f"no OBC credentials for provider {provider.name}",
+        )
+        return
+
+    s3_config_for_secret, capture_s3 = _cluster_s3_capture_configs(cluster_s3)
+    _ensure_s3_secret(provider, namespace, s3_config_for_secret)
+
+    topology = project.deployed_topology or project.topology or {}
+    disk_nodes, vm_nodes, disk_to_vm, _ = _build_disk_to_vm_map(topology)
+    disk_manifest = _build_capture_disk_manifest(
+        disk_nodes, disk_to_vm, pattern_id, vm_nodes
+    )
+
+    from app.services.project_ceph import topology_has_ceph
+
+    has_ceph = topology_has_ceph(topology)
+    if not disk_manifest and not has_ceph:
+        _mark_pattern_capture_error(db, pattern, pattern_id, "no disks to capture")
+        return
+
+    ceph_devices, identity_objects = _kv_ceph_devices_or_abort(
+        has_ceph, custom_api, core_api, namespace, pattern_id, db, pattern
+    )
+    if ceph_devices is None:
+        return
+
+    capture_config = _kv_capture_config(
+        pattern_id, capture_s3, disk_manifest, restart_after, ceph_devices
+    )
+    _notify_kv_capture_started(pattern_id, notify_pattern)
+
+    cr_name = f"project-{project_id[:8]}"
+    if not _safe_trigger_kv_capture(
+        custom_api,
+        namespace,
+        cr_name,
+        capture_config,
+        CRD_GROUP,
+        CRD_VERSION,
+        db,
+        pattern,
+        ceph_devices,
+        core_api,
+        pattern_id,
+    ):
+        return
+
+    poll_timeout = max(2700, sum(d.get("sizeGb", 50) for d in disk_manifest) * 30)
+    # Release the DB transaction before the long poll so cancel/delete
+    # can modify the pattern row without blocking on our lock.
+    db.commit()
+    db.expire_all()
+
+    ceph_total_size = _kv_optional_ceph_phase(
+        db,
+        pattern_id,
+        custom_api,
+        core_api,
+        namespace,
+        cr_name,
+        ceph_devices,
+        identity_objects,
+        CRD_GROUP,
+        CRD_VERSION,
+    )
+    if ceph_total_size is None:
+        return
+
+    captured_disks = _poll_capture_completion(
+        custom_api,
+        namespace,
+        cr_name,
+        pattern_id,
+        CRD_GROUP,
+        CRD_VERSION,
+        max_wait_seconds=poll_timeout,
+    )
+    pattern = _reload_pattern_after_poll(db, pattern_id)
+    if pattern is None or captured_disks is None:
+        if pattern is not None:
+            _mark_pattern_capture_error(
+                db, pattern, pattern_id, "capture failed or timed out"
+            )
+            _clear_capture_progress(pattern_id)
+        return
+
+    _finish_kubevirt_capture(
+        db,
+        pattern,
+        pattern_id,
+        captured_disks,
+        ceph_total_size,
+        custom_api,
+        namespace,
+        cr_name,
+        restart_after,
+        CRD_GROUP,
+        CRD_VERSION,
+    )
+
+
+def _kv_capture_config(
+    pattern_id, capture_s3, disk_manifest, restart_after, ceph_devices
+):
+    capture_config = {
+        "patternId": pattern_id,
+        "s3Config": capture_s3,
+        "disks": disk_manifest,
+        "restartAfter": restart_after,
+    }
+    if ceph_devices:
+        capture_config["cephDevices"] = ceph_devices
+    return capture_config
+
+
+def _notify_kv_capture_started(pattern_id, notify_pattern) -> None:
+    _set_capture_progress(
+        pattern_id, {"step": "capturing", "detail": "Triggering capture on cluster"}
+    )
+    notify_pattern(
+        pattern_id,
+        {
+            "type": "capture-progress",
+            "step": "capturing",
+            "detail": "Triggering capture on cluster",
+        },
+    )
+
+
+def _kv_optional_ceph_phase(
+    db,
+    pattern_id,
+    custom_api,
+    core_api,
+    namespace,
+    cr_name,
+    ceph_devices,
+    identity_objects,
+    crd_group,
+    crd_version,
+):
+    """Run Ceph phase when needed. Returns total size, 0 if skipped, None on abort."""
+    if not ceph_devices:
+        return 0
+    ceph_result = _run_ceph_capture_phase(
+        db,
+        pattern_id,
+        custom_api,
+        core_api,
+        namespace,
+        cr_name,
+        ceph_devices,
+        identity_objects,
+        crd_group,
+        crd_version,
+    )
+    if ceph_result is None:
+        return None
+    _pattern, ceph_total_size = ceph_result
+    return ceph_total_size
+
+
+def _kv_ceph_devices_or_abort(
+    has_ceph, custom_api, core_api, namespace, pattern_id, db, pattern
+):
+    """Return (ceph_devices, identity_objects); (None, None) aborts capture."""
+    if not has_ceph:
+        return [], []
+    prepared = _prepare_ceph_for_kubevirt_capture(
+        custom_api, core_api, namespace, pattern_id, db, pattern
+    )
+    if prepared is None:
+        return None, None
+    return prepared
+
+
+def _safe_trigger_kv_capture(
+    custom_api,
+    namespace,
+    cr_name,
+    capture_config,
+    crd_group,
+    crd_version,
+    db,
+    pattern,
+    ceph_devices,
+    core_api,
+    pattern_id,
+) -> bool:
+    try:
+        _trigger_kubevirt_capture_cr(
+            custom_api, namespace, cr_name, capture_config, crd_group, crd_version
+        )
+        return True
+    except Exception as e:
+        log.exception("Failed to trigger capture on %s: %s", cr_name, e)
+        pattern.state = "error"
+        db.commit()
+        if ceph_devices:
+            _unfreeze_ceph_best_effort(core_api, namespace, pattern_id)
+        return False
+
+
+def _reload_pattern_after_poll(db, pattern_id):
+    pattern = db.query(Pattern).filter_by(id=pattern_id).first()
+    if not pattern:
+        log.info("Pattern %s deleted during capture", pattern_id[:8])
+        _clear_capture_progress(pattern_id)
+        return None
+    return pattern
 
 
 def _build_disk_to_vm_map(topology):
@@ -1912,123 +2084,99 @@ def _process_direct_capture_results(all_jobs, host, pattern_id, pattern, db):
     return True
 
 
-def _capture_direct(
+def _build_direct_disk_params(
+    vm_id, vm_disk_nodes, project_id, pattern_id, pool, bucket
+):
+    """Build disks_params + disk_metadata for one VM (skips ISO)."""
+    from app.services.deploy_topology import _disk_path
+
+    disks_params = []
+    disk_metadata = []
+    for disk_node in vm_disk_nodes:
+        disk_id = disk_node["id"]
+        fmt = disk_node.get("data", {}).get("format", "qcow2")
+        if fmt == "iso":
+            continue
+        disk_path = _disk_path(project_id, vm_id, disk_id, fmt, pool=pool)
+        # Stored file is qcow2 (flattened); declared `fmt` kept in metadata.
+        s3_key = f"patterns/{pattern_id}/{disk_id}.{PATTERN_STORED_FORMAT}"
+        s3_url = f"s3://{bucket}/{s3_key}"
+        cache_path = (
+            f"/var/lib/troshka/local/cache/patterns/{pattern_id}/"
+            f"{disk_id}.{PATTERN_STORED_FORMAT}"
+        )
+        vsize = int(disk_node.get("data", {}).get("size", 0)) * 1073741824
+        disks_params.append(
+            {
+                "disk_path": disk_path,
+                "s3_url": s3_url,
+                "cache_path": cache_path,
+                "virtual_size_bytes": vsize,
+            }
+        )
+        disk_metadata.append(
+            {
+                "disk_id": disk_id,
+                "vm_id": vm_id,
+                "s3_key": s3_key,
+                "format": fmt,
+                "virtual_size_bytes": vsize,
+            }
+        )
+    return disks_params, disk_metadata
+
+
+def _start_direct_vm_capture(
     host,
-    vm_to_disks,
+    vm_id,
     vm_nodes,
+    disks_params,
+    disk_metadata,
     project_id,
     pattern_id,
     creds,
-    pool,
-    pattern,
-    db,
+    start_job,
 ):
-    """Capture disks directly on the VM host (original flow).
+    """Start a capture-direct job for one VM. Returns job info dict."""
+    from app.services.deploy_topology import _vm_domain_name
 
-    Returns True on success, False on error (pattern.state set to 'error').
-    """
+    domain_name = _vm_domain_name(project_id, vm_id)
+    job_id = start_job(
+        host,
+        "/patterns/capture-direct",
+        {
+            "disks": disks_params,
+            "domain_name": domain_name,
+            "aws_access_key_id": creds.get("access_key_id", ""),
+            "aws_secret_access_key": creds.get("secret_access_key", ""),
+            "aws_region": creds.get("region", "us-east-1"),
+            "aws_endpoint_url": s3_creds_for_host(creds).get("endpoint_url", ""),
+        },
+    )
+    vm_name = vm_nodes.get(vm_id, {}).get("data", {}).get("label", vm_id[:8])
+    log.info(
+        "Pattern %s: started capture job for VM %s (%d disks)",
+        pattern_id[:8],
+        vm_id[:8],
+        len(disks_params),
+    )
+    return {
+        "job_id": job_id,
+        "vm_id": vm_id,
+        "vm_name": vm_name,
+        "disks_params": disks_params,
+        "disk_metadata": disk_metadata,
+    }
+
+
+def _poll_direct_capture_jobs(
+    host, all_jobs, pattern_id, poll_job, troshkad_error
+) -> bool:
+    """Poll until all direct capture jobs complete. Returns False if cancelled."""
     import time as _time
 
-    from app.services.deploy_topology import _disk_path
-    from app.services.s3_storage import capture_bucket
-
-    bucket = capture_bucket(creds)
-    from app.services.troshkad_client import TroshkadError, poll_job, start_job
     from app.services.ws_pubsub import notify_pattern
 
-    all_jobs = []
-    all_metadata = []
-    for vm_id, vm_disk_nodes in vm_to_disks.items():
-        disks_params = []
-        disk_metadata = []
-        for disk_node in vm_disk_nodes:
-            disk_id = disk_node["id"]
-            fmt = disk_node.get("data", {}).get("format", "qcow2")
-
-            if fmt == "iso":
-                continue
-
-            disk_path = _disk_path(project_id, vm_id, disk_id, fmt, pool=pool)
-
-            # Stored file is qcow2 (flattened); declared `fmt` kept in metadata.
-            s3_key = f"patterns/{pattern_id}/{disk_id}.{PATTERN_STORED_FORMAT}"
-            s3_url = f"s3://{bucket}/{s3_key}"
-            cache_path = (
-                f"/var/lib/troshka/local/cache/patterns/{pattern_id}/"
-                f"{disk_id}.{PATTERN_STORED_FORMAT}"
-            )
-
-            vsize = int(disk_node.get("data", {}).get("size", 0)) * 1073741824
-            disks_params.append(
-                {
-                    "disk_path": disk_path,
-                    "s3_url": s3_url,
-                    "cache_path": cache_path,
-                    "virtual_size_bytes": vsize,
-                }
-            )
-
-            disk_metadata.append(
-                {
-                    "disk_id": disk_id,
-                    "vm_id": vm_id,
-                    "s3_key": s3_key,
-                    "format": fmt,
-                    "virtual_size_bytes": int(disk_node.get("data", {}).get("size", 0))
-                    * 1073741824,
-                }
-            )
-
-        if not disks_params:
-            continue
-
-        try:
-            from app.services.deploy_topology import _vm_domain_name
-
-            domain_name = _vm_domain_name(project_id, vm_id)
-            job_id = start_job(
-                host,
-                "/patterns/capture-direct",
-                {
-                    "disks": disks_params,
-                    "domain_name": domain_name,
-                    "aws_access_key_id": creds.get("access_key_id", ""),
-                    "aws_secret_access_key": creds.get("secret_access_key", ""),
-                    "aws_region": creds.get("region", "us-east-1"),
-                    "aws_endpoint_url": s3_creds_for_host(creds).get(
-                        "endpoint_url", ""
-                    ),
-                },
-            )
-            vm_name = vm_nodes.get(vm_id, {}).get("data", {}).get("label", vm_id[:8])
-            all_jobs.append(
-                {
-                    "job_id": job_id,
-                    "vm_id": vm_id,
-                    "vm_name": vm_name,
-                    "disks_params": disks_params,
-                    "disk_metadata": disk_metadata,
-                }
-            )
-            all_metadata.extend(disk_metadata)
-            log.info(
-                "Pattern %s: started capture job for VM %s (%d disks)",
-                pattern_id[:8],
-                vm_id[:8],
-                len(disks_params),
-            )
-        except TroshkadError as e:
-            log.exception(
-                "Failed to start capture for pattern %s VM %s: %s",
-                pattern_id[:8],
-                vm_id[:8],
-                e,
-            )
-            pattern.state = "error"
-            db.commit()
-            return False
-
-    # Poll all jobs concurrently, update progress with per-VM status
     completed_jobs: set[str] = set()
     deadline = _time.time() + 3600
     _set_capture_progress(
@@ -2049,7 +2197,7 @@ def _capture_direct(
             )
             return False
         lines = [
-            _poll_one_capture_job(host, jinfo, completed_jobs, poll_job, TroshkadError)
+            _poll_one_capture_job(host, jinfo, completed_jobs, poll_job, troshkad_error)
             for jinfo in all_jobs
         ]
         progress = {
@@ -2060,8 +2208,64 @@ def _capture_direct(
         _set_capture_progress(pattern_id, progress)
         notify_pattern(pattern_id, {"type": "capture-progress", **progress})
         _time.sleep(5)
+    return True
 
-    # Process results — save successful VMs, skip failed ones
+
+def _capture_direct(
+    host,
+    vm_to_disks,
+    vm_nodes,
+    project_id,
+    pattern_id,
+    creds,
+    pool,
+    pattern,
+    db,
+):
+    """Capture disks directly on the VM host (original flow).
+
+    Returns True on success, False on error (pattern.state set to 'error').
+    """
+    from app.services.s3_storage import capture_bucket
+    from app.services.troshkad_client import TroshkadError, poll_job, start_job
+
+    bucket = capture_bucket(creds)
+    all_jobs = []
+    for vm_id, vm_disk_nodes in vm_to_disks.items():
+        disks_params, disk_metadata = _build_direct_disk_params(
+            vm_id, vm_disk_nodes, project_id, pattern_id, pool, bucket
+        )
+        if not disks_params:
+            continue
+        try:
+            all_jobs.append(
+                _start_direct_vm_capture(
+                    host,
+                    vm_id,
+                    vm_nodes,
+                    disks_params,
+                    disk_metadata,
+                    project_id,
+                    pattern_id,
+                    creds,
+                    start_job,
+                )
+            )
+        except TroshkadError as e:
+            log.exception(
+                "Failed to start capture for pattern %s VM %s: %s",
+                pattern_id[:8],
+                vm_id[:8],
+                e,
+            )
+            pattern.state = "error"
+            db.commit()
+            return False
+
+    if not _poll_direct_capture_jobs(
+        host, all_jobs, pattern_id, poll_job, TroshkadError
+    ):
+        return False
     return _process_direct_capture_results(all_jobs, host, pattern_id, pattern, db)
 
 
@@ -2228,45 +2432,82 @@ def _ensure_central_pattern_locations(db, pattern) -> None:
         )
 
 
-def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
-    """Update topology, run recert, save metadata, and send completion notification."""
-    import copy
-    import json
-
-    from sqlalchemy import text
-
-    from app.services.ws_pubsub import notify_pattern
-
-    # Update pattern topology: point storage nodes to captured pattern disks
-    topo = pattern.topology or {}
+def _stamp_storage_nodes_from_pattern_disks(
+    topo: dict, pattern, pattern_id: str
+) -> None:
     disk_map = {d.source_disk_id: d for d in pattern.disks}
     for node in topo.get("nodes", []):
         if node.get("type") != "storageNode":
             continue
         if node.get("data", {}).get("format") == "iso":
             continue
-        pd = disk_map.get(node["id"])  # type: ignore[assignment]
-        if pd:
-            node["data"]["source"] = "pattern"
-            node["data"]["patternId"] = pattern_id
-            node["data"]["patternDiskId"] = pd.id
-            node["data"].pop("libraryItemId", None)
+        pd = disk_map.get(node["id"])
+        if not pd:
+            continue
+        node["data"]["source"] = "pattern"
+        node["data"]["patternId"] = pattern_id
+        node["data"]["patternDiskId"] = pd.id
+        node["data"].pop("libraryItemId", None)
 
-    _correct_boot_devices_from_captures(
-        topo, {d.source_disk_id: d.size_bytes for d in pattern.disks}
-    )
 
+def _ensure_pattern_locations_after_capture(db, pattern) -> None:
+    _clear_pattern_locations(db, pattern)
+    if pattern.source_provider_id:
+        _ensure_obc_pattern_locations(db, pattern, pattern.source_provider_id)
+    else:
+        _ensure_central_pattern_locations(db, pattern)
+
+
+def _touch_pattern_buffer_activity(db, worker_host) -> None:
+    if not (worker_host and worker_host.storage_pool_id):
+        return
+    try:
+        from app.services.pattern_buffer_service import touch_activity
+
+        touch_activity(db, worker_host.storage_pool_id)
+    except Exception:
+        log.debug("Failed to touch PB activity", exc_info=True)
+
+
+def _apply_recert_and_showroom_flags(topo, pattern) -> None:
     if pattern.recert:
         from app.services.ocp_topology_flags import apply_sno_ocp_vm_flags
 
         apply_sno_ocp_vm_flags(topo, recert=True)
-
     apply_showroom_pattern_flags(topo)
 
+
+def _persist_finalized_topology(db, topo, pattern_id: str) -> None:
+    import copy
+    import json
+
+    from sqlalchemy import text
+
     db.execute(
-        text("UPDATE patterns SET topology = :topo WHERE id = :pid"),
+        text(_UPDATE_PATTERN_TOPOLOGY_SQL),
         {"topo": json.dumps(copy.deepcopy(topo)), "pid": pattern_id},
     )
+
+
+def _notify_pattern_capture_complete(pattern_id: str) -> None:
+    from app.services.ws_pubsub import notify_pattern
+
+    _set_capture_progress(
+        pattern_id,
+        {"step": "complete", "detail": "Capture complete", "vms": []},
+    )
+    notify_pattern(pattern_id, {"type": "capture-complete", "state": "available"})
+
+
+def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
+    """Update topology, run recert, save metadata, and send completion notification."""
+    topo = pattern.topology or {}
+    _stamp_storage_nodes_from_pattern_disks(topo, pattern, pattern_id)
+    _correct_boot_devices_from_captures(
+        topo, {d.source_disk_id: d.size_bytes for d in pattern.disks}
+    )
+    _apply_recert_and_showroom_flags(topo, pattern)
+    _persist_finalized_topology(db, topo, pattern_id)
 
     if pattern.recert:
         _run_recert_force_expire(
@@ -2275,11 +2516,7 @@ def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
 
     pattern.state = "available"
     pattern.total_size_bytes = sum(d.size_bytes for d in pattern.disks)
-    _clear_pattern_locations(db, pattern)
-    if pattern.source_provider_id:
-        _ensure_obc_pattern_locations(db, pattern, pattern.source_provider_id)
-    else:
-        _ensure_central_pattern_locations(db, pattern)
+    _ensure_pattern_locations_after_capture(db, pattern)
     db.commit()
     # A cluster-OBC capture lives only on its source cluster; replicate it to
     # central S4 so the pattern can also deploy on OTHER providers (mirrors
@@ -2289,29 +2526,10 @@ def _finalize_pattern_capture(pattern, pattern_id, worker_host, host, db):
     if pattern.source_provider_id:
         _enqueue_pattern_sync(pattern_id, pattern.source_provider_id)
 
-    # Save the canonical metadata.json to central S4 for recovery after DB loss
     _save_pattern_metadata_to_s3(pattern, pattern_id)
-
     log.info("Pattern %s capture complete", pattern_id)
-
-    # Touch pattern buffer activity
-    if worker_host and worker_host.storage_pool_id:
-        try:
-            from app.services.pattern_buffer_service import touch_activity
-
-            touch_activity(db, worker_host.storage_pool_id)
-        except Exception:
-            log.debug("Failed to touch PB activity", exc_info=True)
-
-    _set_capture_progress(
-        pattern_id,
-        {
-            "step": "complete",
-            "detail": "Capture complete",
-            "vms": [],
-        },
-    )
-    notify_pattern(pattern_id, {"type": "capture-complete", "state": "available"})
+    _touch_pattern_buffer_activity(db, worker_host)
+    _notify_pattern_capture_complete(pattern_id)
 
 
 def _run_capture_pipeline(

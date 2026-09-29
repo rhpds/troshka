@@ -48,8 +48,8 @@ def _write(header: str, frame=None, *, all_threads: bool = True) -> None:
                 faulthandler.dump_traceback(file=fh, all_threads=True)
             fh.write(f"{'=' * 72}\n")
             fh.flush()
-    except OSError as exc:
-        logger.error("crash_report write failed: %s", exc)
+    except OSError:
+        logger.exception("crash_report write failed")
 
 
 def _excepthook(exc_type, exc, tb):

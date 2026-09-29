@@ -81,6 +81,29 @@ def mark_deferred_workers_joined(topology: dict, cluster: dict) -> bool:
     return changed
 
 
+def _apply_joined_worker_flags(node: dict, dep_data: dict) -> bool:
+    """Stamp post-join flags onto a deferred canvas node. Returns True if changed."""
+    ndata = node.setdefault("data", {})
+    if ndata.get("deferOcpInstall") is not True:
+        return False
+    ndata["deferOcpInstall"] = False
+    if "powerOnAtDeploy" in dep_data:
+        ndata["powerOnAtDeploy"] = dep_data["powerOnAtDeploy"]
+    return True
+
+
+def _maybe_sync_joined_worker_node(node: dict, dep_by_id: dict) -> bool:
+    if not isinstance(node, dict) or node.get("type") != "vmNode":
+        return False
+    dep = dep_by_id.get(node.get("id"))
+    if not dep:
+        return False
+    ddata = dep.get("data") or {}
+    if ddata.get("deferOcpInstall") is not False:
+        return False
+    return _apply_joined_worker_flags(node, ddata)
+
+
 def sync_joined_worker_flags_from_deployed(
     deployed: dict | None, topology: dict
 ) -> bool:
@@ -105,21 +128,8 @@ def sync_joined_worker_flags_from_deployed(
     }
     changed = False
     for node in topology.get("nodes") or []:
-        if not isinstance(node, dict) or node.get("type") != "vmNode":
-            continue
-        dep = dep_by_id.get(node.get("id"))
-        if not dep:
-            continue
-        ddata = dep.get("data") or {}
-        if ddata.get("deferOcpInstall") is not False:
-            continue
-        ndata = node.setdefault("data", {})
-        if ndata.get("deferOcpInstall") is not True:
-            continue
-        ndata["deferOcpInstall"] = False
-        if "powerOnAtDeploy" in ddata:
-            ndata["powerOnAtDeploy"] = ddata["powerOnAtDeploy"]
-        changed = True
+        if _maybe_sync_joined_worker_node(node, dep_by_id):
+            changed = True
     return changed
 
 

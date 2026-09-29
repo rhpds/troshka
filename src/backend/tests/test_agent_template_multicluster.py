@@ -1498,3 +1498,54 @@ def test_sno_vips_are_node_ip():
     api_vip, ingress_vip = resolve_cluster_vips(cluster, members, topo)
     assert api_vip == "10.0.0.50"
     assert ingress_vip == "10.0.0.50"
+
+
+def test_member_nic_ips_and_cluster_network_node():
+    from app.services.ocp.agent_template import (
+        _cidr_contains_any_ip,
+        _cluster_network_node,
+        _is_eligible_lab_network_node,
+        _member_nic_ips,
+        _network_used_ips,
+    )
+
+    members = [
+        {
+            "type": "vmNode",
+            "data": {"nics": [{"ip": "10.1.0.10"}, {"ip": ""}]},
+        },
+        {"type": "storageNode", "data": {"nics": [{"ip": "ignored"}]}},
+    ]
+    assert _member_nic_ips(members) == ["10.1.0.10"]
+    assert _cidr_contains_any_ip("10.1.0.0/24", ["10.1.0.10"]) is True
+    assert _cidr_contains_any_ip("not-a-cidr", ["10.1.0.10"]) is False
+    assert _cidr_contains_any_ip("10.1.0.0/24", ["bad-ip"]) is False
+
+    net_a = {
+        "id": "na",
+        "type": "networkNode",
+        "data": {"subtype": "network", "cidr": "10.0.0.0/24"},
+    }
+    net_b = {
+        "id": "nb",
+        "type": "networkNode",
+        "data": {"subtype": "network", "cidr": "10.1.0.0/24"},
+    }
+    bmc = {
+        "id": "bmc",
+        "type": "networkNode",
+        "data": {"subtype": "network", "networkType": "bmc", "cidr": "10.1.0.0/24"},
+    }
+    assert _is_eligible_lab_network_node(net_a) is True
+    assert _is_eligible_lab_network_node(bmc) is False
+
+    topo = {"nodes": [net_a, bmc, net_b] + members, "clusters": []}
+    assert _cluster_network_node(topo, members)["id"] == "nb"
+    # empty members -> first eligible
+    assert _cluster_network_node(topo, [])["id"] == "na"
+
+    cluster = {"id": "c1", "networkIds": ["nb"]}
+    used = _network_used_ips(topo, cluster, members)
+    assert "10.1.0.0" in used
+    assert "10.1.0.255" in used
+    assert "10.1.0.10" in used
