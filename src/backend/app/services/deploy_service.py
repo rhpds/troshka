@@ -770,8 +770,8 @@ def _collect_pxe_boot_isos(nodes, db_session, pool):
     return items
 
 
-def _collect_pattern_disks(nodes, db_session, pool, provider_id=None):
-    """Collect pattern disk items from storage nodes for caching."""
+def _pattern_disk_cache_item(db_session, node, pool, provider_id=None) -> dict | None:
+    """Build one pattern-disk cache item from a storage node, or None if skip."""
     from app.models.pattern import Pattern, PatternDisk
     from app.services.pattern_locations import pattern_disk_source_for_cluster
     from app.services.s3_storage import (
@@ -779,53 +779,55 @@ def _collect_pattern_disks(nodes, db_session, pool, provider_id=None):
         get_cluster_s3_config,
     )
 
+    data = node.get("data", {})
+    pattern_id = data.get("patternId")
+    pattern_disk_id = data.get("patternDiskId")
+    if not (pattern_id and pattern_disk_id):
+        return None
+    pd = (
+        db_session.query(PatternDisk)
+        .filter_by(id=pattern_disk_id, pattern_id=pattern_id)
+        .first()
+    )
+    if not pd or not pd.s3_key:
+        return None
+    cache_path = _pattern_cache_path(
+        pattern_id,
+        pd.source_disk_id,
+        _ext_from_s3_key(pd.s3_key, pd.format),
+        pool,
+    )
+    disk_name = data.get("label") or data.get("name") or node.get("id", "")[:8]
+    pattern_obj = db_session.query(Pattern).filter_by(id=pattern_id).first()
+    source = pattern_disk_source_for_cluster(db_session, pattern_disk_id, provider_id)
+    source_provider_id = (
+        pattern_obj.source_provider_id if source == "obc" and pattern_obj else None
+    )
+    item = {
+        "item_id": pattern_disk_id,
+        "name": disk_name,
+        "s3_key": pd.s3_key,
+        "cache_path": cache_path,
+        "expected_size": pd.size_bytes,
+        "source": source or "local",
+        "source_provider_id": source_provider_id,
+    }
+    if source == "obc" and source_provider_id:
+        obc_cfg = get_cluster_s3_config(db_session, source_provider_id)
+        if obc_cfg:
+            item["download_creds"] = cluster_s3_to_upload_creds(obc_cfg)
+    return item
+
+
+def _collect_pattern_disks(nodes, db_session, pool, provider_id=None):
+    """Collect pattern disk items from storage nodes for caching."""
     items = []
     for node in nodes:
         if node.get("type") != "storageNode":
             continue
-        data = node.get("data", {})
-        pattern_id = data.get("patternId")
-        pattern_disk_id = data.get("patternDiskId")
-        if not (pattern_id and pattern_disk_id):
-            continue
-        pd = (
-            db_session.query(PatternDisk)
-            .filter_by(id=pattern_disk_id, pattern_id=pattern_id)
-            .first()
-        )
-        if not pd or not pd.s3_key:
-            continue
-        cache_path = _pattern_cache_path(
-            pattern_id,
-            pd.source_disk_id,
-            _ext_from_s3_key(pd.s3_key, pd.format),
-            pool,
-        )
-        disk_name = data.get("label") or data.get("name") or node.get("id", "")[:8]
-        pattern_obj = db_session.query(Pattern).filter_by(id=pattern_id).first()
-        source = pattern_disk_source_for_cluster(
-            db_session, pattern_disk_id, provider_id
-        )
-        source_provider_id = (
-            pattern_obj.source_provider_id if source == "obc" and pattern_obj else None
-        )
-        item = {
-            "item_id": pattern_disk_id,
-            "name": disk_name,
-            "s3_key": pd.s3_key,
-            "cache_path": cache_path,
-            "expected_size": pd.size_bytes,
-            "source": source or "local",
-            "source_provider_id": source_provider_id,
-        }
-        if source == "obc" and source_provider_id:
-            obc_cfg = get_cluster_s3_config(db_session, source_provider_id)
-            if obc_cfg:
-                item["download_creds"] = cluster_s3_to_upload_creds(obc_cfg)
-        # central: omit download_creds — the shared read/write bucket is the
-        # instance's own S3 config. gold: omit too — _start_download_jobs routes
-        # gold-source items to the read-only admin store.
-        items.append(item)
+        item = _pattern_disk_cache_item(db_session, node, pool, provider_id)
+        if item:
+            items.append(item)
     return items
 
 
@@ -2903,6 +2905,24 @@ def _kubevirt_ops_pod_dns(net_ip_assignments):
     return ".".join(str(net.network_address).split(".")[:3] + ["2"])
 
 
+def _effective_dns_ip_for_network(data: dict, kubevirt: bool) -> str | None:
+    """Compute display DNS IP for a cluster network node, or None if unusable."""
+    import ipaddress
+
+    cidr = data.get("cidr")
+    if not cidr:
+        return None
+    explicit = str(data.get("dnsServerIp") or "").strip()
+    if explicit:
+        return explicit
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return None
+    octet = "2" if kubevirt else "1"
+    return ".".join(str(net.network_address).split(".")[:3] + [octet])
+
+
 def _stamp_effective_dns_ips(topology, kubevirt):
     """Record each cluster network's effective DNS IP for the palette to display.
 
@@ -2912,29 +2932,16 @@ def _stamp_effective_dns_ips(topology, kubevirt):
     network node in the deployed topology (a read-only display value — never the
     user's override). The canvas surfaces it as the DNS field placeholder.
     """
-    import ipaddress
-
     for node in topology.get("nodes", []) or []:
         if node.get("type") != "networkNode":
             continue
         data = node.get("data") or {}
         if data.get("subtype") != "network" or data.get("networkType") == "bmc":
             continue
-        cidr = data.get("cidr")
-        if not cidr:
+        effective = _effective_dns_ip_for_network(data, kubevirt)
+        if not effective:
             continue
-        explicit = str(data.get("dnsServerIp") or "").strip()
-        if explicit:
-            data["effectiveDnsIp"] = explicit
-        else:
-            try:
-                net = ipaddress.ip_network(cidr, strict=False)
-            except ValueError:
-                continue
-            octet = "2" if kubevirt else "1"
-            data["effectiveDnsIp"] = ".".join(
-                str(net.network_address).split(".")[:3] + [octet]
-            )
+        data["effectiveDnsIp"] = effective
         node["data"] = data
 
 
@@ -3929,6 +3936,17 @@ def _ops_pod_write_file(
     return "OK" in check
 
 
+def _is_control_plane_vm_data(d: dict) -> bool:
+    """True when VM node data is a control-plane (non-worker) OCP member."""
+    role = d.get("clusterRole") or ""
+    group = (d.get("tags") or {}).get("AnsibleGroup", "")
+    if role == "worker":
+        return False
+    if not role and "workers" in group:
+        return False
+    return True
+
+
 def _recert_cp_member_vm_id(topology: dict, cluster: dict) -> str:
     """A control-plane RHCOS member's VM node id for a cluster (any one — they all
     carry lb-ext.kubeconfig). Empty if none."""
@@ -3938,10 +3956,8 @@ def _recert_cp_member_vm_id(topology: dict, cluster: dict) -> str:
         d = m.get("data", {})
         if d.get("os") != "rhcos":
             continue
-        role = d.get("clusterRole") or ""
-        group = (d.get("tags") or {}).get("AnsibleGroup", "")
-        if role == "worker" or (not role and "workers" in group):
-            continue  # control-plane members only
+        if not _is_control_plane_vm_data(d):
+            continue
         return str(m.get("id") or d.get("id") or "")
     return ""
 
@@ -4220,6 +4236,41 @@ def _maybe_start_recert_delivery(host, project_id: str, clusters: list) -> None:
     )
 
 
+def _apply_ops_pod_pw(d: dict, cid: str, pw) -> bool:
+    """Store a validated kubeadmin password on node data. Returns True if changed."""
+    from app.services.ocp.kubeconfig_merge import is_valid_kubeadmin_password
+
+    if not pw:
+        return False
+    if not is_valid_kubeadmin_password(pw):
+        logger.warning("Skipping invalid kubeadmin password for cluster %s", cid)
+        return False
+    if d.get("ocpKubeadminPassword") == pw:
+        return False
+    d["ocpKubeadminPassword"] = pw
+    return True
+
+
+def _apply_ops_pod_kc(d: dict, cid: str, kc) -> bool:
+    """Store a validated kubeconfig on node data. Returns True if changed."""
+    from app.services.ocp.kubeconfig_merge import is_valid_kubeconfig
+
+    if not kc:
+        return False
+    if isinstance(kc, bytes):
+        kc = kc.decode("utf-8", errors="replace")
+    if not is_valid_kubeconfig(kc):
+        logger.warning(
+            "Skipping invalid kubeconfig for cluster %s (not updating stored creds)",
+            cid,
+        )
+        return False
+    if d.get("ocpKubeconfig") == kc:
+        return False
+    d["ocpKubeconfig"] = kc
+    return True
+
+
 def _apply_ops_pod_creds(topology: dict, creds: dict) -> bool:
     """Write kubeadmin password + kubeconfig onto each cluster's control-plane
     member node (``creds`` maps clusterId -> (pw, kubeconfig)). Skips workers.
@@ -4230,39 +4281,13 @@ def _apply_ops_pod_creds(topology: dict, creds: dict) -> bool:
             continue
         d = node.setdefault("data", {})
         cid = d.get("clusterId")
-        if not cid or cid not in creds:
+        if not cid or cid not in creds or not _is_control_plane_vm_data(d):
             continue
-        role = d.get("clusterRole") or ""
-        group = (d.get("tags") or {}).get("AnsibleGroup", "")
-        if role == "worker" or (not role and "workers" in group):
-            continue  # control-plane members only
         pw, kc = creds[cid]
-        if pw:
-            from app.services.ocp.kubeconfig_merge import is_valid_kubeadmin_password
-
-            if is_valid_kubeadmin_password(pw):
-                if d.get("ocpKubeadminPassword") != pw:
-                    d["ocpKubeadminPassword"] = pw
-                    changed = True
-            else:
-                logger.warning(
-                    "Skipping invalid kubeadmin password for cluster %s",
-                    cid,
-                )
-        if kc:
-            from app.services.ocp.kubeconfig_merge import is_valid_kubeconfig
-
-            if isinstance(kc, bytes):
-                kc = kc.decode("utf-8", errors="replace")
-            if is_valid_kubeconfig(kc):
-                if d.get("ocpKubeconfig") != kc:
-                    d["ocpKubeconfig"] = kc
-                    changed = True
-            else:
-                logger.warning(
-                    "Skipping invalid kubeconfig for cluster %s (not updating stored creds)",
-                    cid,
-                )
+        if _apply_ops_pod_pw(d, cid, pw):
+            changed = True
+        if _apply_ops_pod_kc(d, cid, kc):
+            changed = True
     return changed
 
 
@@ -4342,6 +4367,24 @@ def _store_ops_pod_creds(
     return stored_keys
 
 
+def _validated_stored_creds(d: dict) -> tuple[str, str] | None:
+    """Return ``(pw, kc)`` from node data when either is valid, else None."""
+    from app.services.ocp.kubeconfig_merge import (
+        is_valid_kubeadmin_password,
+        is_valid_kubeconfig,
+    )
+
+    pw = d.get("ocpKubeadminPassword") or ""
+    if not is_valid_kubeadmin_password(pw):
+        pw = ""
+    kc = d.get("ocpKubeconfig") or ""
+    if not kc or not is_valid_kubeconfig(kc):
+        kc = ""
+    if pw or kc:
+        return (pw, kc)
+    return None
+
+
 def _stored_cluster_creds(topology: dict) -> dict:
     """``{clusterId: (kubeadmin_pw, kubeconfig)}`` from each cluster's control-plane
     member node — creds already harvested at install. Used to (re)inject the
@@ -4353,25 +4396,11 @@ def _stored_cluster_creds(topology: dict) -> dict:
             continue
         d = node.get("data", {})
         cid = d.get("clusterId")
-        if not cid or cid in creds:
+        if not cid or cid in creds or not _is_control_plane_vm_data(d):
             continue
-        role = d.get("clusterRole") or ""
-        group = (d.get("tags") or {}).get("AnsibleGroup", "")
-        if role == "worker" or (not role and "workers" in group):
-            continue  # control-plane members only
-        from app.services.ocp.kubeconfig_merge import (
-            is_valid_kubeadmin_password,
-            is_valid_kubeconfig,
-        )
-
-        pw = d.get("ocpKubeadminPassword") or ""
-        if not is_valid_kubeadmin_password(pw):
-            pw = ""
-        kc = d.get("ocpKubeconfig") or ""
-        if not kc or not is_valid_kubeconfig(kc):
-            kc = ""
-        if pw or kc:
-            creds[cid] = (pw, kc)
+        pair = _validated_stored_creds(d)
+        if pair:
+            creds[cid] = pair
     return creds
 
 
@@ -5446,6 +5475,117 @@ def _finalize_ops_pod_ocp_status(
         _ocp_update_status(project_id, status, elapsed_secs)
 
 
+def _ops_pod_harvest_and_finalize(
+    project_id: str,
+    host,
+    clusters: list[dict],
+    per_cluster: dict,
+    progress: dict,
+    workdir: str,
+    elapsed_now: int,
+    harvested_creds: set[str],
+    finalized_clusters: set[str],
+) -> None:
+    """Harvest creds and finalize terminal clusters for one monitor poll."""
+    from app.services.ocp.ops_pod_install import (
+        PHASE_COMPLETE,
+        PHASE_FAILED,
+        cluster_install_complete_in_log,
+    )
+    from app.services.ocp.ops_pod_install import (
+        _cluster_key as _ops_cluster_key,
+    )
+
+    for cluster in clusters:
+        key = _ops_cluster_key(cluster)
+        log = per_cluster.get(key, "")
+        if key not in harvested_creds and cluster_install_complete_in_log(log, key):
+            try:
+                stored = _store_ops_pod_creds(host, project_id, [cluster], workdir)
+                harvested_creds.update(stored or set())
+            except Exception:
+                logger.exception(
+                    "Ops pod %s: cred harvest for %s failed",
+                    project_id[:8],
+                    key,
+                )
+        phase = progress["clusters"].get(key)
+        if key not in finalized_clusters and phase in (PHASE_COMPLETE, PHASE_FAILED):
+            _finalize_cluster_ocp_status(project_id, key, phase, elapsed_now)
+            finalized_clusters.add(key)
+
+
+def _ops_pod_on_install_done(
+    project_id: str, host, cluster_keys: list[str], progress: dict, elapsed_now: int
+) -> str:
+    """Handle monitor completion: reap on full success, enqueue workloads, release lock."""
+    from app.services.ocp.ops_pod_install import PHASE_COMPLETE
+
+    _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
+    all_complete = all(
+        progress["clusters"].get(key) == PHASE_COMPLETE for key in cluster_keys
+    )
+    if all_complete:
+        try:
+            _cancel_ops_pod_install(host, project_id, cluster_keys)
+            logger.info("Ops pod %s: reaped after successful install", project_id[:8])
+        except Exception:
+            logger.exception("Ops pod %s: reap after install failed", project_id[:8])
+        _persist_control_plane_usable_milestone(project_id, elapsed_now)
+        try:
+            from app.services.workloads.template_workloads import (
+                maybe_enqueue_template_workloads,
+            )
+
+            maybe_enqueue_template_workloads(project_id)
+        except Exception:
+            logger.exception(
+                "Ops pod %s: template workload enqueue failed",
+                project_id[:8],
+            )
+    _release_ops_monitor_lock(project_id)
+    return progress["overall"]
+
+
+def _ops_pod_monitor_sleep(project_id: str, poll_interval: int) -> str | None:
+    """Sleep up to poll_interval seconds; return 'superseded' if exit requested."""
+    import time as _t
+
+    for _ in range(poll_interval):
+        if _ops_monitor_exit_requested(project_id):
+            _clear_ops_monitor_exit_request(project_id)
+            _release_ops_monitor_lock(project_id)
+            return "superseded"
+        _t.sleep(1)
+    return None
+
+
+def _ops_pod_monitor_timeout(
+    project_id: str,
+    clusters: list[dict],
+    finalized_clusters: set[str],
+    elapsed_base: float,
+) -> str:
+    """Finalize unfinished clusters as failed after the monitor deadline."""
+    import time as _t
+
+    from app.services.ocp.ops_pod_install import PHASE_FAILED
+    from app.services.ocp.ops_pod_install import (
+        _cluster_key as _ops_cluster_key,
+    )
+
+    logger.warning("Ops pod %s: install monitor timed out", project_id[:8])
+    elapsed_now = int(_t.time() - elapsed_base)
+    for cluster in clusters:
+        key = _ops_cluster_key(cluster)
+        if key in finalized_clusters:
+            continue
+        _finalize_cluster_ocp_status(project_id, key, PHASE_FAILED, elapsed_now)
+    _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
+    _release_ops_monitor_lock(project_id)
+    return "timeout"
+
+
 def _monitor_ops_pod_install(
     project_id: str,
     host,
@@ -5468,14 +5608,11 @@ def _monitor_ops_pod_install(
     import time as _t
 
     from app.services.ocp.ops_pod_install import (
-        PHASE_COMPLETE,
-        PHASE_FAILED,
-        cluster_install_complete_in_log,
-        inject_dead_pod_failures,
-        ops_pod_install_progress,
+        _cluster_key as _ops_cluster_key,
     )
     from app.services.ocp.ops_pod_install import (
-        _cluster_key as _ops_cluster_key,
+        inject_dead_pod_failures,
+        ops_pod_install_progress,
     )
     from app.services.ocp.ops_pod_scaffold import OPS_POD_WORKDIR
 
@@ -5492,9 +5629,7 @@ def _monitor_ops_pod_install(
     harvested_creds: set[str] = set()
 
     while _t.time() < deadline:
-        _refresh_ops_monitor_lock(
-            project_id
-        )  # heartbeat: keep the per-project lock alive
+        _refresh_ops_monitor_lock(project_id)
         if _ops_monitor_exit_requested(project_id):
             _clear_ops_monitor_exit_request(project_id)
             _release_ops_monitor_lock(project_id)
@@ -5503,9 +5638,6 @@ def _monitor_ops_pod_install(
             _cancel_ops_pod_install(host, project_id, cluster_keys)
             _release_ops_monitor_lock(project_id)
             return "cancelled"
-        # KubeVirt: reschedule ops pods stuck in ContainerCreating / Multus
-        # sandbox (Pending ≠ dead for the dead-poll path, so without this the
-        # monitor would hang until the install timeout).
         heal = _maybe_heal_stuck_ops_pod(host, project_id)
         if heal.get("action") == "exhausted":
             return _fail_ops_pod_install_stuck(
@@ -5517,21 +5649,13 @@ def _monitor_ops_pod_install(
                 int(_t.time() - elapsed_base),
             )
         if heal.get("action") == "reschedule":
-            dead_count = 0  # new pod is Pending (alive); don't dead-poll it
-        # Persist the raw per-cluster logs (keep-longest) AND use the merged
-        # result for phase detection. Restarts append a resume marker instead of
-        # truncating, but keep-longest still guards any transient read races.
+            dead_count = 0
         per_cluster = cache_ops_pod_logs(
             project_id,
             _read_ops_pod_cluster_logs(
                 host, container_name, cluster_keys, workdir, project_id
             ),
         )
-        # Dead-job detection: a crashed pod can never finish a non-terminal
-        # cluster. But the pod is restart_policy=always + idempotent, so a brief
-        # restart window is recoverable — only fail after _OPS_POD_DEAD_POLLS
-        # CONSECUTIVE confirmed-not-running polls (transient status errors reset
-        # the counter, see _ops_pod_running / _next_ops_pod_dead_count).
         dead_count = _next_ops_pod_dead_count(
             dead_count, _ops_pod_running(host, container_name, project_id)
         )
@@ -5541,88 +5665,32 @@ def _monitor_ops_pod_install(
         progress = ops_pod_install_progress(per_cluster)
         _publish_ops_pod_progress(project_id, progress)
         elapsed_now = int(_t.time() - elapsed_base)
-
-        for cluster in clusters:
-            key = _ops_cluster_key(cluster)
-            log = per_cluster.get(key, "")
-            if key not in harvested_creds and cluster_install_complete_in_log(log, key):
-                try:
-                    stored = _store_ops_pod_creds(host, project_id, [cluster], workdir)
-                    # Only mark harvested when a valid kubeconfig was stored —
-                    # empty/invalid cat should retry next poll.
-                    harvested_creds.update(stored or set())
-                except Exception:
-                    logger.exception(
-                        "Ops pod %s: cred harvest for %s failed",
-                        project_id[:8],
-                        key,
-                    )
-            phase = progress["clusters"].get(key)
-            if key not in finalized_clusters and phase in (
-                PHASE_COMPLETE,
-                PHASE_FAILED,
-            ):
-                _finalize_cluster_ocp_status(project_id, key, phase, elapsed_now)
-                finalized_clusters.add(key)
-        # Detect control-plane-usable milestone: once per cluster, when the marker
-        # first appears in the log, persist the timestamp + elapsed and publish a
-        # one-time progress notification.
+        _ops_pod_harvest_and_finalize(
+            project_id,
+            host,
+            clusters,
+            per_cluster,
+            progress,
+            workdir,
+            elapsed_now,
+            harvested_creds,
+            finalized_clusters,
+        )
         _check_control_plane_usable_milestone(
             project_id, per_cluster, cluster_keys, elapsed_now
         )
-        # After deferred workers converge, flip powerOnAtDeploy so pattern
-        # capture boots them on the next deploy (they are already joined).
         _check_deferred_workers_joined(project_id, per_cluster, clusters)
         if progress["done"]:
-            _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
-            # Reap only when every cluster succeeded — never because a sibling
-            # finished while another is still terminal-failed or converging.
-            all_complete = all(
-                progress["clusters"].get(key) == PHASE_COMPLETE for key in cluster_keys
+            return _ops_pod_on_install_done(
+                project_id, host, cluster_keys, progress, elapsed_now
             )
-            if all_complete:
-                try:
-                    _cancel_ops_pod_install(host, project_id, cluster_keys)
-                    logger.info(
-                        "Ops pod %s: reaped after successful install", project_id[:8]
-                    )
-                except Exception:
-                    logger.exception(
-                        "Ops pod %s: reap after install failed", project_id[:8]
-                    )
-                # Install-complete implies usable; backfill the milestone when the
-                # log marker was missed so API + template enqueue gates agree.
-                _persist_control_plane_usable_milestone(project_id, elapsed_now)
-                try:
-                    from app.services.workloads.template_workloads import (
-                        maybe_enqueue_template_workloads,
-                    )
+        early = _ops_pod_monitor_sleep(project_id, poll_interval)
+        if early:
+            return early
 
-                    maybe_enqueue_template_workloads(project_id)
-                except Exception:
-                    logger.exception(
-                        "Ops pod %s: template workload enqueue failed",
-                        project_id[:8],
-                    )
-            _release_ops_monitor_lock(project_id)
-            return progress["overall"]
-        for _ in range(poll_interval):
-            if _ops_monitor_exit_requested(project_id):
-                _clear_ops_monitor_exit_request(project_id)
-                _release_ops_monitor_lock(project_id)
-                return "superseded"
-            _t.sleep(1)
-
-    logger.warning("Ops pod %s: install monitor timed out", project_id[:8])
-    elapsed_now = int(_t.time() - elapsed_base)
-    for cluster in clusters:
-        key = _ops_cluster_key(cluster)
-        if key in finalized_clusters:
-            continue
-        _finalize_cluster_ocp_status(project_id, key, PHASE_FAILED, elapsed_now)
-    _sync_project_ocp_status_from_clusters(project_id, elapsed_now)
-    _release_ops_monitor_lock(project_id)
-    return "timeout"
+    return _ops_pod_monitor_timeout(
+        project_id, clusters, finalized_clusters, elapsed_base
+    )
 
 
 def _resume_one_ops_pod_monitor(db, p) -> None:
