@@ -61,6 +61,12 @@ export default function SettingsPage() {
   const [editCredId, setEditCredId] = useState<string | null>(null);
   const [credForm, setCredForm] = useState({ name: "", registry: "", username: "", password: "" });
 
+  // OpenShift IngressController (admin / global)
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [ingressController, setIngressController] = useState("default");
+  const [ingressSaving, setIngressSaving] = useState(false);
+  const [ingressSaved, setIngressSaved] = useState(false);
+
   useEffect(() => {
     fetch("/api/v1/api-keys/")
       .then((r) => r.json())
@@ -83,6 +89,21 @@ export default function SettingsPage() {
       .then((r) => r.json())
       .then((data) => setRegistryCreds(data))
       .catch(() => {});
+    try {
+      const raw = localStorage.getItem("troshka-user");
+      const role = raw ? JSON.parse(raw).role : "";
+      if (role === "admin") {
+        setIsAdmin(true);
+        fetch("/api/v1/admin/settings")
+          .then((r) => (r.ok ? r.json() : null))
+          .then((data) => {
+            if (data?.ingress_controller) setIngressController(data.ingress_controller);
+          })
+          .catch(() => {});
+      }
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   const createKey = async () => {
@@ -160,6 +181,68 @@ export default function SettingsPage() {
       <PageSection>
         <Title headingLevel="h1">Settings</Title>
       </PageSection>
+      {isAdmin && (
+        <PageSection>
+          <Title headingLevel="h2" style={{ marginBottom: 12 }}>OpenShift IngressController</Title>
+          <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 12 }}>
+            Cluster IngressController used for Troshka Routes and showroom.
+            Use <code>default</code> for the cluster apps domain
+            (e.g. apps.ocpv06.dal10.infra.demo.redhat.com), or{" "}
+            <code>ingress-rhdp-net</code> for the per-cluster rhdp.net domain
+            (e.g. apps.ocpv06.rhdp.net).
+          </p>
+          {ingressSaved && (
+            <Alert
+              variant="success"
+              title="Saved. New routes use this IngressController on next deploy."
+              style={{ marginBottom: 12 }}
+              isInline
+            />
+          )}
+          <Card>
+            <CardBody>
+              <label style={{ fontSize: 12, display: "block", marginBottom: 4 }}>Controller name</label>
+              <input
+                style={{ width: "100%", maxWidth: 420, padding: "8px 10px", borderRadius: 6, fontSize: 13, border: "1px solid var(--pf-t--global--border--color--default)", background: "var(--pf-t--global--background--color--primary--default)", color: "var(--pf-t--global--text--color--regular)" }}
+                value={ingressController}
+                onChange={(e) => { setIngressController(e.target.value); setIngressSaved(false); }}
+                placeholder="default"
+              />
+              <div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}>
+                <Button
+                  variant="primary"
+                  isDisabled={ingressSaving}
+                  onClick={async () => {
+                    setIngressSaving(true);
+                    setIngressSaved(false);
+                    try {
+                      const resp = await fetch("/api/v1/admin/settings", {
+                        method: "PUT",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          ingress_controller: ingressController.trim() || "default",
+                        }),
+                      });
+                      if (!resp.ok) {
+                        const err = await resp.json().catch(() => ({ detail: "Save failed" }));
+                        setAlertMsg(err.detail || "Save failed");
+                        return;
+                      }
+                      const data = await resp.json();
+                      setIngressController(data.ingress_controller);
+                      setIngressSaved(true);
+                    } finally {
+                      setIngressSaving(false);
+                    }
+                  }}
+                >
+                  {ingressSaving ? "Saving..." : "Save"}
+                </Button>
+              </div>
+            </CardBody>
+          </Card>
+        </PageSection>
+      )}
       <PageSection>
         <Title headingLevel="h2" size="lg" style={{ marginBottom: 16 }}>API Keys</Title>
         <p style={{ fontSize: 13, opacity: 0.7, marginBottom: 16 }}>
