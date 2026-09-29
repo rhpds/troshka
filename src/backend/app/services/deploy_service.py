@@ -4291,20 +4291,8 @@ def _apply_ops_pod_creds(topology: dict, creds: dict) -> bool:
     return changed
 
 
-def _store_ops_pod_creds(
-    host, project_id: str, clusters: list, workdir: str
-) -> set[str]:
-    """After a successful pod install, read each cluster's kubeadmin-password +
-    kubeconfig from the ops pod and persist them on the cluster's control-plane
-    member node, so the UI can surface them (bastionless has no bastion monitor
-    to do it). Best-effort — never raises into the install monitor.
-
-    Returns the set of cluster keys that stored a valid kubeconfig this call
-    (monitor uses this to avoid marking a harvest complete on empty/invalid cat).
-    """
-    from app.core.database import SessionLocal
-    from app.models.project import Project
-    from app.services.ocp.kubeconfig_merge import is_valid_kubeconfig
+def _harvest_ops_pod_creds(host, project_id: str, clusters: list, workdir: str) -> dict:
+    """Read kubeadmin-password + kubeconfig from the ops pod per cluster."""
     from app.services.ocp.ops_pod_install import _cluster_key as _ck
 
     container = _ops_pod_container_name(project_id)
@@ -4319,8 +4307,15 @@ def _store_ops_pod_creds(
         )
         if pw or kc:
             creds[key] = (pw, kc)
-    if not creds:
-        return set()
+    return creds
+
+
+def _persist_ops_pod_creds(host, project_id: str, creds: dict) -> set[str]:
+    """Write harvested creds into topology + inject cluster-terminal kubeconfig."""
+    from app.core.database import SessionLocal
+    from app.models.project import Project
+    from app.services.ocp.kubeconfig_merge import is_valid_kubeconfig
+
     stored_keys: set[str] = set()
     db = SessionLocal()
     try:
@@ -4328,10 +4323,6 @@ def _store_ops_pod_creds(
         if not p:
             return set()
         topo = copy.deepcopy(p.topology or {})
-        # deployed_topology is the SoT for harvested creds — canvas autosave
-        # strips ocpKubeconfig from editable topology (see DEPLOY_TRANSIENT_NODE_KEYS),
-        # so merging from topology alone drops earlier clusters and overwrites
-        # /showroom/kube/config with a partial merge.
         deployed = copy.deepcopy(p.deployed_topology or topo)
         changed_topo = _apply_ops_pod_creds(topo, creds)
         changed_deployed = _apply_ops_pod_creds(deployed, creds)
@@ -4344,14 +4335,7 @@ def _store_ops_pod_creds(
             raw = kc.decode("utf-8", errors="replace") if isinstance(kc, bytes) else kc
             if is_valid_kubeconfig(raw):
                 stored_keys.add(key)
-        # Feed the bastionless "cluster terminal" (a showroom container with oc):
-        # merge EVERY harvested cluster into /showroom/kube/config (not just the
-        # cluster harvested this round — multi-cluster projects inject one at a
-        # time as each finishes). Prefer deployed_topology so prior harvests
-        # survive editable-topology wipes.
-        all_creds = _stored_cluster_creds(deployed)
-        if not all_creds:
-            all_creds = _stored_cluster_creds(topo)
+        all_creds = _stored_cluster_creds(deployed) or _stored_cluster_creds(topo)
         if all_creds:
             _inject_cluster_kubeconfigs(
                 host,
@@ -4365,6 +4349,20 @@ def _store_ops_pod_creds(
     finally:
         db.close()
     return stored_keys
+
+
+def _store_ops_pod_creds(
+    host, project_id: str, clusters: list, workdir: str
+) -> set[str]:
+    """After a successful pod install, harvest + persist cluster creds.
+
+    Returns the set of cluster keys that stored a valid kubeconfig this call
+    (monitor uses this to avoid marking a harvest complete on empty/invalid cat).
+    """
+    creds = _harvest_ops_pod_creds(host, project_id, clusters, workdir)
+    if not creds:
+        return set()
+    return _persist_ops_pod_creds(host, project_id, creds)
 
 
 def _validated_stored_creds(d: dict) -> tuple[str, str] | None:
@@ -5586,6 +5584,38 @@ def _ops_pod_monitor_timeout(
     return "timeout"
 
 
+def _ops_pod_monitor_precheck(
+    project_id: str, host, cluster_keys: list[str], elapsed_base: float
+) -> str | None:
+    """Handle supersede/cancel/heal before a monitor poll. Return status or None.
+
+    Special return ``"reschedule"`` means the pod was rescheduled — caller should
+    reset the dead-poll counter and continue.
+    """
+    import time as _t
+
+    if _ops_monitor_exit_requested(project_id):
+        _clear_ops_monitor_exit_request(project_id)
+        _release_ops_monitor_lock(project_id)
+        return "superseded"
+    if _is_deploy_cancelled(project_id):
+        _cancel_ops_pod_install(host, project_id, cluster_keys)
+        _release_ops_monitor_lock(project_id)
+        return "cancelled"
+    heal = _maybe_heal_stuck_ops_pod(host, project_id)
+    if heal.get("action") == "exhausted":
+        return _fail_ops_pod_install_stuck(
+            project_id,
+            host,
+            cluster_keys,
+            heal.get("message") or "ops pod sandbox stuck after reschedule attempts",
+            int(_t.time() - elapsed_base),
+        )
+    if heal.get("action") == "reschedule":
+        return "reschedule"
+    return None
+
+
 def _monitor_ops_pod_install(
     project_id: str,
     host,
@@ -5630,26 +5660,12 @@ def _monitor_ops_pod_install(
 
     while _t.time() < deadline:
         _refresh_ops_monitor_lock(project_id)
-        if _ops_monitor_exit_requested(project_id):
-            _clear_ops_monitor_exit_request(project_id)
-            _release_ops_monitor_lock(project_id)
-            return "superseded"
-        if _is_deploy_cancelled(project_id):
-            _cancel_ops_pod_install(host, project_id, cluster_keys)
-            _release_ops_monitor_lock(project_id)
-            return "cancelled"
-        heal = _maybe_heal_stuck_ops_pod(host, project_id)
-        if heal.get("action") == "exhausted":
-            return _fail_ops_pod_install_stuck(
-                project_id,
-                host,
-                cluster_keys,
-                heal.get("message")
-                or "ops pod sandbox stuck after reschedule attempts",
-                int(_t.time() - elapsed_base),
-            )
-        if heal.get("action") == "reschedule":
-            dead_count = 0
+        early = _ops_pod_monitor_precheck(project_id, host, cluster_keys, elapsed_base)
+        if early is not None:
+            if early == "reschedule":
+                dead_count = 0
+            else:
+                return early
         per_cluster = cache_ops_pod_logs(
             project_id,
             _read_ops_pod_cluster_logs(
@@ -6636,10 +6652,8 @@ def _collect_dv_progress(project_id, provider, topology):
     return dv_lines
 
 
-def _collect_ceph_restore_progress(custom_api, api_client, namespace: str) -> list[str]:
-    """Progress lines for project-Ceph mon Job / OSD restore DataVolumes."""
-    from kubernetes import client as k8s_client
-
+def _ceph_osd_restore_dv_lines(custom_api, namespace: str) -> list[str]:
+    """Progress lines for Ceph OSD restore DataVolumes."""
     lines: list[str] = []
     try:
         dvs = custom_api.list_namespaced_custom_object(
@@ -6662,6 +6676,13 @@ def _collect_ceph_restore_progress(custom_api, api_client, namespace: str) -> li
                 lines.append(f"ceph-{name}: {progress}")
     except Exception:
         pass
+    return lines
+
+
+def _ceph_mon_restore_line(custom_api, api_client, namespace: str) -> str | None:
+    """Single progress line for mon Job or legacy mon DV, if present."""
+    from kubernetes import client as k8s_client
+
     try:
         batch = k8s_client.BatchV1Api(api_client)
         job = batch.read_namespaced_job(
@@ -6669,34 +6690,40 @@ def _collect_ceph_restore_progress(custom_api, api_client, namespace: str) -> li
         )
         succeeded = getattr(getattr(job, "status", None), "succeeded", None)
         if succeeded and succeeded >= 1:
-            lines.insert(0, "ceph-mon: done")
-        else:
-            lines.insert(0, "ceph-mon: restoring")
+            return "ceph-mon: done"
+        return "ceph-mon: restoring"
     except Exception:
-        # No mon Job yet — may still be on the legacy CDI mon DV path.
-        try:
-            dv = custom_api.get_namespaced_custom_object(
-                group="cdi.kubevirt.io",
-                version="v1beta1",
-                namespace=namespace,
-                plural="datavolumes",
-                name="troshka-ceph-mon",
-            )
-            status = dv.get("status") or {}
-            phase = status.get("phase") or "Pending"
-            msg = ""
-            for cond in status.get("conditions") or []:
-                if cond.get("type") == "Running" and cond.get("message"):
-                    msg = cond["message"][:80]
-                    break
-            if phase == "Succeeded":
-                lines.insert(0, "ceph-mon: done")
-            elif msg:
-                lines.insert(0, f"ceph-mon: {msg}")
-            else:
-                lines.insert(0, f"ceph-mon: {phase}")
-        except Exception:
-            pass
+        pass
+    try:
+        dv = custom_api.get_namespaced_custom_object(
+            group="cdi.kubevirt.io",
+            version="v1beta1",
+            namespace=namespace,
+            plural="datavolumes",
+            name="troshka-ceph-mon",
+        )
+        status = dv.get("status") or {}
+        phase = status.get("phase") or "Pending"
+        msg = ""
+        for cond in status.get("conditions") or []:
+            if cond.get("type") == "Running" and cond.get("message"):
+                msg = cond["message"][:80]
+                break
+        if phase == "Succeeded":
+            return "ceph-mon: done"
+        if msg:
+            return f"ceph-mon: {msg}"
+        return f"ceph-mon: {phase}"
+    except Exception:
+        return None
+
+
+def _collect_ceph_restore_progress(custom_api, api_client, namespace: str) -> list[str]:
+    """Progress lines for project-Ceph mon Job / OSD restore DataVolumes."""
+    lines = _ceph_osd_restore_dv_lines(custom_api, namespace)
+    mon = _ceph_mon_restore_line(custom_api, api_client, namespace)
+    if mon:
+        lines.insert(0, mon)
     return lines
 
 
@@ -6745,46 +6772,48 @@ def _is_vm_lifecycle_stage(op_stage: str) -> bool:
     )
 
 
+def _ceph_restore_step_detail(op_stage, op_detail, ceph_lines):
+    """Step/detail when Ceph restore is the active deploy focus."""
+    joined = "\n".join(ceph_lines)
+    if not op_detail and ceph_lines:
+        detail = joined
+    elif op_detail and ceph_lines and op_detail not in joined:
+        detail = f"{op_detail}\n{joined}"
+    else:
+        detail = op_detail or joined or op_stage.lower()
+    step = op_stage.lower() if _is_ceph_restore_stage(op_stage) else "restoring ceph"
+    return step, detail
+
+
+def _disks_done_step_detail(op_stage, op_detail, status):
+    """Step/detail once all disk imports finished."""
+    step = op_stage.lower()
+    if "certificate" in op_stage.lower():
+        return step, op_detail or step
+    vm_states = status.get("vmStates", {})
+    if vm_states:
+        ready = sum(1 for s in vm_states.values() if s in ("Running", "Stopped"))
+        return step, f"{ready}/{len(vm_states)} VMs ready"
+    return step, op_detail or step
+
+
 def _resolve_deploy_step(
     all_disks_done, op_stage, op_detail, dv_detail, dv_lines, status, last
 ):
     """Determine step and detail from deploy state signals."""
-    # Ceph restore gates VM boot and runs before/alongside image DVs — show it
-    # first so the modal does not look stuck on "images: … waiting".
     ceph_lines = [ln for ln in (dv_lines or []) if ln.startswith("ceph-")]
     if _is_ceph_restore_stage(op_stage) or (
         ceph_lines and not all(ln.endswith(": done") for ln in ceph_lines)
     ):
-        detail = op_detail or "\n".join(ceph_lines) or op_stage.lower()
-        if not op_detail and ceph_lines:
-            detail = "\n".join(ceph_lines)
-        elif op_detail and ceph_lines and op_detail not in "\n".join(ceph_lines):
-            detail = f"{op_detail}\n" + "\n".join(ceph_lines)
-        step = (
-            op_stage.lower() if _is_ceph_restore_stage(op_stage) else "restoring ceph"
-        )
-        return step, detail
-    # cephRestoreActive stays True after TroshkaCeph is Ready (boot-gate flag).
-    # Only claim "restoring ceph" while the operator is still on a Ceph stage —
-    # otherwise fall through so Starting VMs / images win.
+        return _ceph_restore_step_detail(op_stage, op_detail, ceph_lines)
     if (
         status.get("cephRestoreActive")
         and not all_disks_done
         and (not op_stage or _is_ceph_restore_stage(op_stage))
     ):
-        detail = op_detail or "importing mon/OSD devices"
-        return "restoring ceph", detail
+        return "restoring ceph", op_detail or "importing mon/OSD devices"
     if all_disks_done and op_stage:
-        step = op_stage.lower()
-        if "certificate" in op_stage.lower():
-            return step, op_detail or step
-        vm_states = status.get("vmStates", {})
-        if vm_states:
-            ready = sum(1 for s in vm_states.values() if s in ("Running", "Stopped"))
-            return step, f"{ready}/{len(vm_states)} VMs ready"
-        return step, op_detail or step
-    # Operator may start ready VMs while one disk is still cloning — prefer the
-    # VM lifecycle stage over a lingering "images" line for the stuck DV.
+        return _disks_done_step_detail(op_stage, op_detail, status)
     if _is_vm_lifecycle_stage(op_stage):
         return op_stage.lower(), op_detail or op_stage.lower()
     if dv_lines:
@@ -13076,6 +13105,44 @@ def destroy_project_sync(ctx: dict, *, delete_record: bool = True):
         _deploy_semaphore.release()
 
 
+def _namespace_gone_cleanup(core_api, ns_name: str, project_id: str) -> bool:
+    """Cleanup PVs after namespace 404; always returns True (gone confirmed)."""
+    try:
+        from app.services.providers.kubevirt import _cleanup_project_persistent_volumes
+
+        _cleanup_project_persistent_volumes(core_api, ns_name)
+    except Exception:
+        logger.exception(
+            "Destroy %s: project PV cleanup failed (continuing)", project_id[:8]
+        )
+    logger.info("Destroy %s: namespace terminated", project_id[:8])
+    return True
+
+
+def _poll_namespace_until_gone(
+    core_api, ns_name: str, project_id: str, rounds: int, sleep_s: float = 5
+) -> bool | None:
+    """Poll namespace. True if gone, False on unexpected error, None if still present."""
+    import time as _del_time
+
+    from kubernetes.client.exceptions import ApiException as _KApiErr
+
+    for _ in range(rounds):
+        try:
+            core_api.read_namespace(name=ns_name)
+            _del_time.sleep(sleep_s)
+        except _KApiErr as e:
+            if e.status == 404:
+                return _namespace_gone_cleanup(core_api, ns_name, project_id)
+            _del_time.sleep(sleep_s)
+        except Exception:
+            logger.warning(
+                "Destroy %s: could not confirm namespace deletion", project_id[:8]
+            )
+            return False
+    return None
+
+
 def _wait_for_namespace_deletion(provider, project_id) -> bool:
     """Poll until the project namespace is gone. Returns True only when the
     namespace is confirmed terminated (404); False if it is still present after
@@ -13097,21 +13164,9 @@ def _wait_for_namespace_deletion(provider, project_id) -> bool:
     ns_name = _project_ns(provider, project_id)
     cleared = False
 
-    def _on_namespace_gone() -> bool:
-        try:
-            _cleanup_project_persistent_volumes(core_api, ns_name)
-        except Exception:
-            logger.exception(
-                "Destroy %s: project PV cleanup failed (continuing)", project_id[:8]
-            )
-        logger.info("Destroy %s: namespace terminated", project_id[:8])
-        return True
-
     for i in range(60):
         try:
             core_api.read_namespace(name=ns_name)
-            # Midway: force-clear Rook finalizers that commonly leave
-            # troshka-* namespaces Terminating after TroshkaCeph teardown.
             if not cleared and i == 12:
                 try:
                     _force_clear_rook_finalizers(provider, project_id)
@@ -13123,7 +13178,7 @@ def _wait_for_namespace_deletion(provider, project_id) -> bool:
             _del_time.sleep(5)
         except _KApiErr as e:
             if e.status == 404:
-                return _on_namespace_gone()
+                return _namespace_gone_cleanup(core_api, ns_name, project_id)
             _del_time.sleep(5)
         except Exception:
             logger.warning(
@@ -13137,22 +13192,14 @@ def _wait_for_namespace_deletion(provider, project_id) -> bool:
             logger.exception(
                 "Destroy %s: final rook finalizer clear failed", project_id[:8]
             )
-        for _ in range(24):
-            try:
-                core_api.read_namespace(name=ns_name)
-                _del_time.sleep(5)
-            except _KApiErr as e:
-                if e.status == 404:
-                    return _on_namespace_gone()
-                _del_time.sleep(5)
-            except Exception:
-                break
+        result = _poll_namespace_until_gone(core_api, ns_name, project_id, 24)
+        if result is not None:
+            return result
     logger.warning(
         "Destroy %s: namespace %s still present after timeout (stuck finalizers?)",
         project_id[:8],
         ns_name,
     )
-    # Best-effort: still try to clear PVs claiming this ns even if Terminating.
     try:
         _cleanup_project_persistent_volumes(core_api, ns_name)
     except Exception:
