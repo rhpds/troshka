@@ -2869,7 +2869,11 @@ class TestDeployProjectEndpoint:
             "vni_map": {"net-1": 100},
         }
         db = MagicMock()
-        db.query.return_value.filter_by.return_value.first.side_effect = [project, host]
+        db.query.return_value.filter_by.return_value.first.side_effect = [
+            project,
+            host,
+            host,
+        ]
         with _override_deps(db=db) as client:
             resp = client.post("/api/v1/projects/proj-1/deploy")
         assert resp.status_code == 200

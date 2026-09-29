@@ -106,7 +106,9 @@ class ProviderDriver:
         Only implemented by providers with native ingress (OCP Virt)."""
         raise NotImplementedError
 
-    def find_showroom_route(self, provider, project_id, vm_name, port) -> dict | None:
+    def find_showroom_route(
+        self, _provider, _project_id, _vm_name, _port
+    ) -> dict | None:
         """Return {"hostname", "route_name"} for an already-created showroom Route,
         or None. Used by container redeploy to (re)create app-proxy routes without
         recreating the showroom Route itself. Only providers with native ingress
@@ -140,7 +142,7 @@ class ProviderDriver:
         raise NotImplementedError
 
     def pull_file(
-        self, provider, project_id, vm_id, guest_path, *, host=None, **kwargs
+        self, _provider, project_id, vm_id, guest_path, *, host=None, **kwargs
     ) -> bytes:
         """Extract a single file from a (possibly running) VM's disk via a
         point-in-time snapshot read OFFLINE with guestfish — never touching the

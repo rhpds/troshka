@@ -1,9 +1,11 @@
 import logging
 import os
+import re
 import time
 
 import yaml
 
+from app.core.logging_utils import sanitize_log
 from app.services.providers.base import ProviderDriver
 
 logger = logging.getLogger(__name__)
@@ -15,6 +17,8 @@ _KUBEMACPOOL_VM_IGNORE_LABEL = "mutatevirtualmachines.kubemacpool.io"
 _KUBEVIRT_API_GROUP = "kubevirt.io"
 _QEMU_SESSION_URI = "qemu:///session"
 _ROUTE_API = "route.openshift.io"
+_ROUTE_API_VERSION = "route.openshift.io/v1"
+_HAPROXY_TIMEOUT_ANNOTATION = "haproxy.router.openshift.io/timeout"
 _SNAPSHOT_API_GROUP = "snapshot.storage.k8s.io"
 # Pattern capture / file-pull temp PVCs. Mid-destroy without reclaiming these
 # leaves TiB on the shared Ceph pool (export-/scratch- clones + snapshots).
@@ -96,16 +100,12 @@ def _strip_namespaced_cr_finalizers(
             logger.warning("Failed to delete %s/%s: %s", plural, name, e)
 
 
-def _cleanup_volume_snapshots(custom_api, namespace: str) -> None:
-    """Delete VolumeSnapshots (+ Contents) that block namespace / PVC reclaim.
-
-    CSI snapshot finalizers commonly leave troshka-* namespaces Terminating
-    after a mid-capture destroy; stripping them unblocks PVC→RBD reclaim.
-    """
+def _list_volume_snapshots(custom_api, namespace: str):
+    """List VolumeSnapshots in namespace, or None if the API is unavailable."""
     from kubernetes.client.exceptions import ApiException
 
     try:
-        snaps = custom_api.list_namespaced_custom_object(
+        return custom_api.list_namespaced_custom_object(
             group=_SNAPSHOT_API_GROUP,
             version="v1",
             namespace=namespace,
@@ -114,27 +114,30 @@ def _cleanup_volume_snapshots(custom_api, namespace: str) -> None:
     except ApiException as e:
         if e.status != 404:
             logger.warning("Failed to list VolumeSnapshots in %s: %s", namespace, e)
-        return
+        return None
     except Exception:
         logger.warning("Failed to list VolumeSnapshots in %s", namespace, exc_info=True)
-        return
+        return None
 
-    for item in dict(snaps).get("items", []) or []:  # type: ignore[call-overload]
-        name = (item.get("metadata") or {}).get("name")
-        if not name:
-            continue
-        logger.info("Clearing VolumeSnapshot %s/%s", namespace, name)
-        _strip_namespaced_cr_finalizers(
-            custom_api,
-            _SNAPSHOT_API_GROUP,
-            "v1",
-            "volumesnapshots",
-            namespace,
-            name,
-        )
+
+def _clear_one_volume_snapshot(custom_api, namespace: str, name: str) -> None:
+    logger.info("Clearing VolumeSnapshot %s/%s", namespace, name)
+    _strip_namespaced_cr_finalizers(
+        custom_api,
+        _SNAPSHOT_API_GROUP,
+        "v1",
+        "volumesnapshots",
+        namespace,
+        name,
+    )
+
+
+def _list_volume_snapshot_contents(custom_api):
+    """List cluster VolumeSnapshotContents, or None if the API is unavailable."""
+    from kubernetes.client.exceptions import ApiException
 
     try:
-        contents = custom_api.list_cluster_custom_object(
+        return custom_api.list_cluster_custom_object(
             group=_SNAPSHOT_API_GROUP,
             version="v1",
             plural="volumesnapshotcontents",
@@ -142,11 +145,46 @@ def _cleanup_volume_snapshots(custom_api, namespace: str) -> None:
     except ApiException as e:
         if e.status not in (404, 403):
             logger.warning("Failed to list VolumeSnapshotContents: %s", e)
-        return
+        return None
     except Exception:
         logger.warning("Failed to list VolumeSnapshotContents", exc_info=True)
-        return
+        return None
 
+
+def _clear_one_volume_snapshot_content(custom_api, cname: str) -> None:
+    from kubernetes.client.exceptions import ApiException
+
+    try:
+        custom_api.patch_cluster_custom_object(
+            group=_SNAPSHOT_API_GROUP,
+            version="v1",
+            plural="volumesnapshotcontents",
+            name=cname,
+            body={"metadata": {"finalizers": None}},
+        )
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning(
+                "Failed to strip VolumeSnapshotContent %s finalizers: %s",
+                cname,
+                e,
+            )
+    try:
+        custom_api.delete_cluster_custom_object(
+            group=_SNAPSHOT_API_GROUP,
+            version="v1",
+            plural="volumesnapshotcontents",
+            name=cname,
+        )
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Failed to delete VolumeSnapshotContent %s: %s", cname, e)
+
+
+def _clear_volume_snapshot_contents_for_ns(custom_api, namespace: str) -> None:
+    contents = _list_volume_snapshot_contents(custom_api)
+    if contents is None:
+        return
     for item in dict(contents).get("items", []) or []:  # type: ignore[call-overload]
         meta = item.get("metadata") or {}
         ref = (item.get("spec") or {}).get("volumeSnapshotRef") or {}
@@ -156,33 +194,66 @@ def _cleanup_volume_snapshots(custom_api, namespace: str) -> None:
         if not cname:
             continue
         logger.info("Clearing VolumeSnapshotContent %s (ns=%s)", cname, namespace)
-        try:
-            custom_api.patch_cluster_custom_object(
-                group=_SNAPSHOT_API_GROUP,
-                version="v1",
-                plural="volumesnapshotcontents",
-                name=cname,
-                body={"metadata": {"finalizers": None}},
+        _clear_one_volume_snapshot_content(custom_api, cname)
+
+
+def _cleanup_volume_snapshots(custom_api, namespace: str) -> None:
+    """Delete VolumeSnapshots (+ Contents) that block namespace / PVC reclaim.
+
+    CSI snapshot finalizers commonly leave troshka-* namespaces Terminating
+    after a mid-capture destroy; stripping them unblocks PVC→RBD reclaim.
+    """
+    snaps = _list_volume_snapshots(custom_api, namespace)
+    if snaps is None:
+        return
+
+    for item in dict(snaps).get("items", []) or []:  # type: ignore[call-overload]
+        name = (item.get("metadata") or {}).get("name")
+        if name:
+            _clear_one_volume_snapshot(custom_api, namespace, name)
+
+    _clear_volume_snapshot_contents_for_ns(custom_api, namespace)
+
+
+def _strip_pvc_finalizers(core_api, namespace: str, name: str) -> None:
+    from kubernetes.client.exceptions import ApiException
+
+    try:
+        core_api.patch_namespaced_persistent_volume_claim(
+            name=name,
+            namespace=namespace,
+            body={"metadata": {"finalizers": None}},
+        )
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning(
+                "Failed to strip PVC %s/%s finalizers: %s",
+                namespace,
+                name,
+                e,
             )
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning(
-                    "Failed to strip VolumeSnapshotContent %s finalizers: %s",
-                    cname,
-                    e,
-                )
-        try:
-            custom_api.delete_cluster_custom_object(
-                group=_SNAPSHOT_API_GROUP,
-                version="v1",
-                plural="volumesnapshotcontents",
-                name=cname,
+
+
+def _delete_one_capture_temp_pvc(core_api, namespace: str, pvc) -> None:
+    """Strip finalizers and delete one capture/file-pull temp PVC."""
+    from kubernetes.client.exceptions import ApiException
+
+    name = getattr(getattr(pvc, "metadata", None), "name", None) or ""
+    if not name.startswith(_CAPTURE_TEMP_PVC_PREFIXES):
+        return
+    fins = list(getattr(pvc.metadata, "finalizers", None) or [])
+    if fins:
+        _strip_pvc_finalizers(core_api, namespace, name)
+    try:
+        core_api.delete_namespaced_persistent_volume_claim(
+            name=name, namespace=namespace
+        )
+        logger.info("Deleted capture temp PVC %s/%s", namespace, name)
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning(
+                "Failed to delete capture temp PVC %s/%s: %s", namespace, name, e
             )
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning(
-                    "Failed to delete VolumeSnapshotContent %s: %s", cname, e
-                )
 
 
 def _cleanup_capture_temp_pvcs(core_api, namespace: str) -> None:
@@ -199,36 +270,8 @@ def _cleanup_capture_temp_pvcs(core_api, namespace: str) -> None:
         logger.warning("Failed to list PVCs in %s", namespace, exc_info=True)
         return
 
-    for pvc in list(getattr(listed, "items", None) or []):
-        name = getattr(getattr(pvc, "metadata", None), "name", None) or ""
-        if not name.startswith(_CAPTURE_TEMP_PVC_PREFIXES):
-            continue
-        fins = list(getattr(pvc.metadata, "finalizers", None) or [])
-        if fins:
-            try:
-                core_api.patch_namespaced_persistent_volume_claim(
-                    name=name,
-                    namespace=namespace,
-                    body={"metadata": {"finalizers": None}},
-                )
-            except ApiException as e:
-                if e.status != 404:
-                    logger.warning(
-                        "Failed to strip PVC %s/%s finalizers: %s",
-                        namespace,
-                        name,
-                        e,
-                    )
-        try:
-            core_api.delete_namespaced_persistent_volume_claim(
-                name=name, namespace=namespace
-            )
-            logger.info("Deleted capture temp PVC %s/%s", namespace, name)
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning(
-                    "Failed to delete capture temp PVC %s/%s: %s", namespace, name, e
-                )
+    for pvc in getattr(listed, "items", None) or []:
+        _delete_one_capture_temp_pvc(core_api, namespace, pvc)
 
 
 def _cleanup_pattern_capture_temps(provider, namespace: str) -> None:
@@ -315,7 +358,7 @@ def _cleanup_project_persistent_volumes(core_api, namespace: str) -> list[dict]:
         logger.warning("Failed to list PVs for %s cleanup", namespace, exc_info=True)
         return targets
 
-    for pv in list(getattr(listed, "items", None) or []):
+    for pv in getattr(listed, "items", None) or []:
         claim = getattr(getattr(pv, "spec", None), "claim_ref", None)
         claim_ns = getattr(claim, "namespace", None) if claim else None
         if claim_ns != namespace:
@@ -331,6 +374,28 @@ def _cleanup_project_persistent_volumes(core_api, namespace: str) -> list[dict]:
     return targets
 
 
+def _troshka_orphan_ns_suffix(claim_ns: str | None) -> str | None:
+    """Return the 8-hex project prefix if claim_ns looks like troshka-<8hex>."""
+    if not claim_ns or not claim_ns.startswith("troshka-"):
+        return None
+    suffix = claim_ns[len("troshka-") :]
+    if len(suffix) != 8 or any(c not in "0123456789abcdef" for c in suffix):
+        return None
+    return suffix
+
+
+def _orphan_pv_entry(pv, phase: str, claim, claim_ns: str) -> dict:
+    tgt = _pv_rbd_target(pv) or {}
+    return {
+        "pv": getattr(pv.metadata, "name", ""),
+        "phase": phase,
+        "namespace": claim_ns,
+        "claim": getattr(claim, "name", "") if claim else "",
+        "pool": tgt.get("pool", ""),
+        "image": tgt.get("image", ""),
+    }
+
+
 def list_orphan_troshka_pvs(core_api, known_prefixes: set[str]) -> list[dict]:
     """Released/Failed PVs claiming a troshka-<8hex> ns with no matching project.
 
@@ -343,31 +408,44 @@ def list_orphan_troshka_pvs(core_api, known_prefixes: set[str]) -> list[dict]:
         listed = core_api.list_persistent_volume()
     except ApiException:
         return orphans
-    for pv in list(getattr(listed, "items", None) or []):
+    for pv in getattr(listed, "items", None) or []:
         phase = getattr(getattr(pv, "status", None), "phase", "") or ""
         if phase not in ("Released", "Failed"):
             continue
         claim = getattr(getattr(pv, "spec", None), "claim_ref", None)
         claim_ns = getattr(claim, "namespace", None) if claim else None
-        if not claim_ns or not claim_ns.startswith("troshka-"):
+        suffix = _troshka_orphan_ns_suffix(claim_ns)
+        if suffix is None or claim_ns is None or suffix in known_prefixes:
             continue
-        suffix = claim_ns[len("troshka-") :]
-        if len(suffix) != 8 or any(c not in "0123456789abcdef" for c in suffix):
-            continue
-        if suffix in known_prefixes:
-            continue
-        tgt = _pv_rbd_target(pv) or {}
-        orphans.append(
-            {
-                "pv": getattr(pv.metadata, "name", ""),
-                "phase": phase,
-                "namespace": claim_ns,
-                "claim": getattr(claim, "name", "") if claim else "",
-                "pool": tgt.get("pool", ""),
-                "image": tgt.get("image", ""),
-            }
-        )
+        orphans.append(_orphan_pv_entry(pv, phase, claim, claim_ns))
     return orphans
+
+
+def _pv_capacity_storage(pv) -> str:
+    capacity = getattr(getattr(pv, "spec", None), "capacity", None) or {}
+    if hasattr(capacity, "get"):
+        return capacity.get("storage", "") or ""
+    return getattr(capacity, "storage", "") if capacity else ""
+
+
+def _available_unclaimed_rbd_entry(pv) -> dict | None:
+    """Build a report entry for an Available unclaimed RBD PV, or None."""
+    phase = getattr(getattr(pv, "status", None), "phase", "") or ""
+    if phase != "Available":
+        return None
+    claim = getattr(getattr(pv, "spec", None), "claim_ref", None)
+    if claim and getattr(claim, "namespace", None):
+        return None
+    tgt = _pv_rbd_target(pv)
+    if not tgt:
+        return None
+    return {
+        "pv": tgt["pv"],
+        "phase": phase,
+        "size": _pv_capacity_storage(pv),
+        "pool": tgt["pool"],
+        "image": tgt["image"],
+    }
 
 
 def list_unclaimed_available_rbd_pvs(core_api) -> list[dict]:
@@ -379,30 +457,10 @@ def list_unclaimed_available_rbd_pvs(core_api) -> list[dict]:
         listed = core_api.list_persistent_volume()
     except ApiException:
         return found
-    for pv in list(getattr(listed, "items", None) or []):
-        phase = getattr(getattr(pv, "status", None), "phase", "") or ""
-        if phase != "Available":
-            continue
-        claim = getattr(getattr(pv, "spec", None), "claim_ref", None)
-        if claim and getattr(claim, "namespace", None):
-            continue
-        tgt = _pv_rbd_target(pv)
-        if not tgt:
-            continue
-        capacity = getattr(getattr(pv, "spec", None), "capacity", None) or {}
-        if hasattr(capacity, "get"):
-            size = capacity.get("storage", "")
-        else:
-            size = getattr(capacity, "storage", "") if capacity else ""
-        found.append(
-            {
-                "pv": tgt["pv"],
-                "phase": phase,
-                "size": size,
-                "pool": tgt["pool"],
-                "image": tgt["image"],
-            }
-        )
+    for pv in getattr(listed, "items", None) or []:
+        entry = _available_unclaimed_rbd_entry(pv)
+        if entry:
+            found.append(entry)
     return found
 
 
@@ -497,19 +555,36 @@ def reclaim_rbd_images(core_api, targets: list[dict]) -> list[dict]:
     return results
 
 
-def _force_clear_rook_finalizers(provider, project_id) -> None:
-    """Strip Rook / snapshot / PVC finalizers that leave namespaces Terminating.
-
-    CephCluster / CephBlockPool / disaster-protection Secret finalizers only
-    clear while the per-ns rook-operator is healthy. VolumeSnapshot finalizers
-    similarly stick after mid-capture destroy. Clear both so namespace GC can finish.
-    """
+def _strip_namespaced_core_finalizers(
+    list_fn, patch_fn, namespace: str, kind: str
+) -> None:
+    """Strip finalizers from all namespaced core objects of one kind."""
     from kubernetes.client.exceptions import ApiException
 
-    custom_api, core_api, _ = _get_k8s_clients(provider)
-    namespace = _project_ns(provider, project_id)
-    logger.info("Clearing stuck finalizers in %s", namespace)
+    try:
+        listed = list_fn(namespace=namespace)
+    except ApiException as e:
+        if e.status != 404:
+            logger.warning("Failed to list %ss in %s: %s", kind, namespace, e)
+        return
+    for obj in getattr(listed, "items", None) or []:
+        fins = list(getattr(obj.metadata, "finalizers", None) or [])
+        if not fins:
+            continue
+        name = obj.metadata.name
+        try:
+            patch_fn(
+                name=name,
+                namespace=namespace,
+                body={"metadata": {"finalizers": None}},
+            )
+            logger.info("Stripped finalizers from %s/%s", kind, name)
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning("Failed to strip %s/%s finalizers: %s", kind, name, e)
 
+
+def _strip_rook_crs(custom_api, namespace: str) -> None:
     for plural, name in (
         ("cephblockpools", "troshka-ceph-pool"),
         ("cephclusters", "troshka-ceph"),
@@ -518,42 +593,35 @@ def _force_clear_rook_finalizers(provider, project_id) -> None:
             custom_api, "ceph.rook.io", "v1", plural, namespace, name
         )
 
-    def _strip_core_finalizers(list_fn, patch_fn, kind: str) -> None:
-        try:
-            listed = list_fn(namespace=namespace)
-        except ApiException as e:
-            if e.status != 404:
-                logger.warning("Failed to list %ss in %s: %s", kind, namespace, e)
-            return
-        for obj in list(getattr(listed, "items", None) or []):
-            fins = list(getattr(obj.metadata, "finalizers", None) or [])
-            if not fins:
-                continue
-            name = obj.metadata.name
-            try:
-                patch_fn(
-                    name=name,
-                    namespace=namespace,
-                    body={"metadata": {"finalizers": None}},
-                )
-                logger.info("Stripped finalizers from %s/%s", kind, name)
-            except ApiException as e:
-                if e.status != 404:
-                    logger.warning(
-                        "Failed to strip %s/%s finalizers: %s", kind, name, e
-                    )
 
-    _strip_core_finalizers(
-        core_api.list_namespaced_secret, core_api.patch_namespaced_secret, "Secret"
+def _force_clear_rook_finalizers(provider, project_id) -> None:
+    """Strip Rook / snapshot / PVC finalizers that leave namespaces Terminating.
+
+    CephCluster / CephBlockPool / disaster-protection Secret finalizers only
+    clear while the per-ns rook-operator is healthy. VolumeSnapshot finalizers
+    similarly stick after mid-capture destroy. Clear both so namespace GC can finish.
+    """
+    custom_api, core_api, _ = _get_k8s_clients(provider)
+    namespace = _project_ns(provider, project_id)
+    logger.info("Clearing stuck finalizers in %s", namespace)
+
+    _strip_rook_crs(custom_api, namespace)
+    _strip_namespaced_core_finalizers(
+        core_api.list_namespaced_secret,
+        core_api.patch_namespaced_secret,
+        namespace,
+        "Secret",
     )
-    _strip_core_finalizers(
+    _strip_namespaced_core_finalizers(
         core_api.list_namespaced_config_map,
         core_api.patch_namespaced_config_map,
+        namespace,
         "ConfigMap",
     )
-    _strip_core_finalizers(
+    _strip_namespaced_core_finalizers(
         core_api.list_namespaced_persistent_volume_claim,
         core_api.patch_namespaced_persistent_volume_claim,
+        namespace,
         "PVC",
     )
     # Mid-capture leftovers: VolumeSnapshots + Contents (and any remaining
@@ -1177,6 +1245,31 @@ def _delete_namespace_jobs(provider, namespace):
         pass
 
 
+def _node_is_schedulable_worker(node) -> bool:
+    labels = node.metadata.labels or {}
+    taints = node.spec.taints or []
+    is_worker = "node-role.kubernetes.io/worker" in labels
+    is_unschedulable = node.spec.unschedulable or False
+    has_noschedule = any(t.effect == "NoSchedule" for t in taints)
+    return bool(is_worker and not is_unschedulable and not has_noschedule)
+
+
+def _node_allocatable_vcpus_ram_mb(node) -> tuple[int, int]:
+    alloc = node.status.allocatable or {}
+    cpu_str = alloc.get("cpu", "0")
+    mem_str = alloc.get("memory", "0")
+    vcpus = int(cpu_str)
+    if mem_str.endswith("Ki"):
+        ram_mb = int(mem_str[:-2]) // 1024
+    elif mem_str.endswith("Mi"):
+        ram_mb = int(mem_str[:-2])
+    elif mem_str.endswith("Gi"):
+        ram_mb = int(mem_str[:-2]) * 1024
+    else:
+        ram_mb = 0
+    return vcpus, ram_mb
+
+
 def _query_cluster_capacity(core_api):
     """Sum allocatable vCPUs and RAM across schedulable worker nodes.
 
@@ -1187,25 +1280,11 @@ def _query_cluster_capacity(core_api):
     try:
         nodes = core_api.list_node()
         for node in getattr(nodes, "items", []):
-            labels = node.metadata.labels or {}
-            taints = node.spec.taints or []
-
-            is_worker = "node-role.kubernetes.io/worker" in labels
-            is_unschedulable = node.spec.unschedulable or False
-            has_noschedule = any(t.effect == "NoSchedule" for t in taints)
-            if not is_worker or is_unschedulable or has_noschedule:
+            if not _node_is_schedulable_worker(node):
                 continue
-
-            alloc = node.status.allocatable or {}
-            cpu_str = alloc.get("cpu", "0")
-            mem_str = alloc.get("memory", "0")
-            total_vcpus += int(cpu_str)
-            if mem_str.endswith("Ki"):
-                total_ram_mb += int(mem_str[:-2]) // 1024
-            elif mem_str.endswith("Mi"):
-                total_ram_mb += int(mem_str[:-2])
-            elif mem_str.endswith("Gi"):
-                total_ram_mb += int(mem_str[:-2]) * 1024
+            vcpus, ram_mb = _node_allocatable_vcpus_ram_mb(node)
+            total_vcpus += vcpus
+            total_ram_mb += ram_mb
     except Exception as e:
         logger.warning(f"Failed to query cluster capacity: {e}")
         total_vcpus = 256
@@ -1371,7 +1450,7 @@ def _count_assigned_ingress(svc) -> int:
 def _resolve_vm_root_pvc(custom_api, core_api, namespace, vm_name):
     """Return ``(root_pvc_name, size_gb)`` for a KubeVirt VM's boot disk."""
     vm = custom_api.get_namespaced_custom_object(
-        group="kubevirt.io",
+        group=_KUBEVIRT_API_GROUP,
         version="v1",
         namespace=namespace,
         plural="virtualmachines",
@@ -1392,6 +1471,135 @@ def _resolve_vm_root_pvc(custom_api, core_api, namespace, vm_name):
     size_str = str((pvc.spec.resources.requests or {}).get("storage", "20Gi"))
     digits = "".join(c for c in size_str if c.isdigit())
     return pvc_name, int(digits or "20")
+
+
+def _ensure_project_namespace(core_api, namespace: str, project_id: str) -> None:
+    from kubernetes import client as k8s_client
+
+    try:
+        core_api.create_namespace(
+            body=k8s_client.V1Namespace(
+                metadata=k8s_client.V1ObjectMeta(
+                    name=namespace,
+                    labels=_project_namespace_labels(project_id),
+                )
+            )
+        )
+    except Exception as e:
+        if "AlreadyExists" not in str(e):
+            raise
+
+
+def _obc_s3_dict(cluster_s3: dict) -> dict:
+    return {
+        "access_key_id": cluster_s3.get("access_key_id", ""),
+        "secret_access_key": cluster_s3.get("secret_access_key", ""),
+        "region": cluster_s3.get("region", "us-east-1"),
+        "endpoint_url": cluster_s3.get("endpoint", ""),
+        "bucket": cluster_s3.get("bucket", ""),
+    }
+
+
+def _build_project_s3_cr_config(s3_config: dict, cluster_s3: dict | None) -> dict:
+    s3_cr_config = {
+        "bucket": s3_config.get("bucket", ""),
+        "endpoint": s3_config.get("endpoint_url", "") or s3_config.get("endpoint", ""),
+        "region": s3_config.get("region", ""),
+        "credentialsSecret": "s3-credentials",  # pragma: allowlist secret
+        "accessKeyId": s3_config.get("access_key_id", ""),
+        "secretKey": s3_config.get("secret_access_key", ""),
+    }
+    if cluster_s3:
+        s3_cr_config["obcConfig"] = {
+            "bucket": cluster_s3.get("bucket", ""),
+            "endpoint": cluster_s3.get("endpoint", ""),
+            "region": cluster_s3.get("region", "us-east-1"),
+            "credentialsSecret": "s3-obc-credentials",  # pragma: allowlist secret
+        }
+    return s3_cr_config
+
+
+def _apply_mtu_map(topology: dict, mtu_map: dict) -> None:
+    if not mtu_map:
+        return
+    for node in topology.get("nodes", []):
+        if node.get("type") != "networkNode":
+            continue
+        net_id = node.get("id")
+        if net_id in mtu_map:
+            node.setdefault("data", {})["mtu"] = mtu_map[net_id]
+
+
+def _central_s3_cr_config(central_s3: dict) -> dict:
+    return {
+        "bucket": central_s3.get("bucket", ""),
+        "endpoint": central_s3.get("endpoint_url", "")
+        or central_s3.get("endpoint", ""),
+        "region": central_s3.get("region", ""),
+        "credentialsSecret": "s3-central-credentials",  # pragma: allowlist secret
+        "accessKeyId": central_s3.get("access_key_id", ""),
+        "secretKey": central_s3.get("secret_access_key", ""),
+    }
+
+
+def _build_troshka_project_cr(
+    project_id: str,
+    namespace: str,
+    topology: dict,
+    s3_cr_config: dict,
+    central_s3: dict | None,
+    kwargs: dict,
+) -> dict:
+    project_cr = {
+        "apiVersion": f"{CRD_GROUP}/{CRD_VERSION}",
+        "kind": "TroshkaProject",
+        "metadata": {
+            "name": f"project-{project_id[:8]}",
+            "namespace": namespace,
+        },
+        "spec": {
+            "projectId": project_id,
+            "topology": topology,
+            "s3Config": s3_cr_config,
+            "action": "deploy",
+        },
+    }
+    if central_s3:
+        project_cr["spec"]["centralS3Config"] = _central_s3_cr_config(central_s3)
+    if kwargs.get("common_password"):
+        project_cr["spec"]["commonPassword"] = kwargs["common_password"]
+    if kwargs.get("registry_credentials"):
+        project_cr["spec"]["registryCredentials"] = kwargs["registry_credentials"]
+    if kwargs.get("exec_ssh_key"):
+        project_cr["spec"]["execSshKey"] = kwargs["exec_ssh_key"]
+        logger.info(
+            "deploy_project: execSshKey set, length=%d",
+            len(kwargs["exec_ssh_key"]),
+        )
+    return project_cr
+
+
+def _ensure_project_s3_secrets(
+    provider, namespace: str, s3_config: dict, kwargs: dict
+) -> tuple[dict | None, dict | None]:
+    """Create project S3 secrets; return (cluster_s3, obc_s3)."""
+    from app.services.s3_storage import get_cluster_s3_config
+
+    db = kwargs.get("db")
+    cluster_s3 = get_cluster_s3_config(db, provider.id) if db else None
+    obc_s3 = None
+    if cluster_s3:
+        obc_s3 = _obc_s3_dict(cluster_s3)
+        _ensure_s3_secret(provider, namespace, obc_s3, "s3-obc-credentials")
+
+    _ensure_s3_secret(provider, namespace, s3_config, "s3-credentials")
+
+    central_s3 = kwargs.get("central_s3_config")
+    if central_s3:
+        _ensure_s3_secret(provider, namespace, central_s3, "s3-central-credentials")
+
+    _ensure_cache_s3_secrets(provider, s3_config, central_s3, obc_s3)
+    return cluster_s3, central_s3
 
 
 class KubeVirtDriver(ProviderDriver):
@@ -1533,13 +1741,13 @@ class KubeVirtDriver(ProviderDriver):
                 raise
 
         route_body = {
-            "apiVersion": "route.openshift.io/v1",
+            "apiVersion": _ROUTE_API_VERSION,
             "kind": "Route",
             "metadata": {
                 "name": f"console-{hostname}",
                 "namespace": namespace,
                 "labels": {"app": "troshka-vnc", "troshka-host": hostname},
-                "annotations": {"haproxy.router.openshift.io/timeout": "3600s"},
+                "annotations": {_HAPROXY_TIMEOUT_ANNOTATION: "3600s"},
             },
             "spec": {
                 "host": hostname,
@@ -1740,7 +1948,7 @@ class KubeVirtDriver(ProviderDriver):
         # like ext 6444 → VIP:6443.
         passthrough = guest_port == 6443
         route_body = {
-            "apiVersion": "route.openshift.io/v1",
+            "apiVersion": _ROUTE_API_VERSION,
             "kind": "Route",
             "metadata": {
                 "name": route_name,
@@ -1749,7 +1957,7 @@ class KubeVirtDriver(ProviderDriver):
                     "app": "troshka-route-access",
                     "troshka-project": project_id[:8],
                 },
-                "annotations": {"haproxy.router.openshift.io/timeout": "3600s"},
+                "annotations": {_HAPROXY_TIMEOUT_ANNOTATION: "3600s"},
             },
             "spec": {
                 "to": {"kind": "Service", "name": svc_name},
@@ -1821,7 +2029,7 @@ class KubeVirtDriver(ProviderDriver):
                 src_spec = _s
         name = route_name[:63]
         route_body = {
-            "apiVersion": "route.openshift.io/v1",
+            "apiVersion": _ROUTE_API_VERSION,
             "kind": "Route",
             "metadata": {
                 "name": name,
@@ -1830,7 +2038,7 @@ class KubeVirtDriver(ProviderDriver):
                     "app": "troshka-route-access",
                     "troshka-project": project_id[:8],
                 },
-                "annotations": {"haproxy.router.openshift.io/timeout": "3600s"},
+                "annotations": {_HAPROXY_TIMEOUT_ANNOTATION: "3600s"},
             },
             "spec": {
                 "to": src_spec.get("to"),
@@ -1956,105 +2164,15 @@ class KubeVirtDriver(ProviderDriver):
         custom_api, core_api, _ = _get_k8s_clients(provider)
         namespace = _project_ns(provider, project_id)
 
-        from kubernetes import client as k8s_client
-
-        try:
-            core_api.create_namespace(
-                body=k8s_client.V1Namespace(
-                    metadata=k8s_client.V1ObjectMeta(
-                        name=namespace,
-                        labels=_project_namespace_labels(project_id),
-                    )
-                )
-            )
-        except Exception as e:
-            if "AlreadyExists" not in str(e):
-                raise
-
-        # Use OBC config for local RGW when available
-        from app.services.s3_storage import get_cluster_s3_config
-
-        db = kwargs.get("db")
-        cluster_s3 = get_cluster_s3_config(db, provider.id) if db else None
-        obc_s3 = None
-        if cluster_s3:
-            obc_s3 = {
-                "access_key_id": cluster_s3.get("access_key_id", ""),
-                "secret_access_key": cluster_s3.get("secret_access_key", ""),
-                "region": cluster_s3.get("region", "us-east-1"),
-                "endpoint_url": cluster_s3.get("endpoint", ""),
-                "bucket": cluster_s3.get("bucket", ""),
-            }
-            _ensure_s3_secret(provider, namespace, obc_s3, "s3-obc-credentials")
-
-        _ensure_s3_secret(provider, namespace, s3_config, "s3-credentials")
-
-        central_s3 = kwargs.get("central_s3_config")
-        if central_s3:
-            _ensure_s3_secret(provider, namespace, central_s3, "s3-central-credentials")
-
-        _ensure_cache_s3_secrets(provider, s3_config, central_s3, obc_s3)
-
-        s3_cr_config = {
-            "bucket": s3_config.get("bucket", ""),
-            "endpoint": s3_config.get("endpoint_url", "")
-            or s3_config.get("endpoint", ""),
-            "region": s3_config.get("region", ""),
-            "credentialsSecret": "s3-credentials",  # pragma: allowlist secret
-            "accessKeyId": s3_config.get("access_key_id", ""),
-            "secretKey": s3_config.get("secret_access_key", ""),
-        }
-        if cluster_s3:
-            s3_cr_config["obcConfig"] = {
-                "bucket": cluster_s3.get("bucket", ""),
-                "endpoint": cluster_s3.get("endpoint", ""),
-                "region": cluster_s3.get("region", "us-east-1"),
-                "credentialsSecret": "s3-obc-credentials",  # pragma: allowlist secret
-            }
-
-        # Enrich network nodes with resolved MTU from the map
-        mtu_map = kwargs.get("mtu_map", {})
-        if mtu_map:
-            for node in topology.get("nodes", []):
-                if node.get("type") == "networkNode":
-                    net_id = node.get("id")
-                    if net_id in mtu_map:
-                        node.setdefault("data", {})["mtu"] = mtu_map[net_id]
-
-        project_cr = {
-            "apiVersion": f"{CRD_GROUP}/{CRD_VERSION}",
-            "kind": "TroshkaProject",
-            "metadata": {
-                "name": f"project-{project_id[:8]}",
-                "namespace": namespace,
-            },
-            "spec": {
-                "projectId": project_id,
-                "topology": topology,
-                "s3Config": s3_cr_config,
-                "action": "deploy",
-            },
-        }
-        if central_s3:
-            project_cr["spec"]["centralS3Config"] = {
-                "bucket": central_s3.get("bucket", ""),
-                "endpoint": central_s3.get("endpoint_url", "")
-                or central_s3.get("endpoint", ""),
-                "region": central_s3.get("region", ""),
-                "credentialsSecret": "s3-central-credentials",  # pragma: allowlist secret
-                "accessKeyId": central_s3.get("access_key_id", ""),
-                "secretKey": central_s3.get("secret_access_key", ""),
-            }
-        if kwargs.get("common_password"):
-            project_cr["spec"]["commonPassword"] = kwargs["common_password"]
-        if kwargs.get("registry_credentials"):
-            project_cr["spec"]["registryCredentials"] = kwargs["registry_credentials"]
-        if kwargs.get("exec_ssh_key"):
-            project_cr["spec"]["execSshKey"] = kwargs["exec_ssh_key"]
-            logger.info(
-                "deploy_project: execSshKey set, length=%d",
-                len(kwargs["exec_ssh_key"]),
-            )
+        _ensure_project_namespace(core_api, namespace, project_id)
+        cluster_s3, central_s3 = _ensure_project_s3_secrets(
+            provider, namespace, s3_config, kwargs
+        )
+        s3_cr_config = _build_project_s3_cr_config(s3_config, cluster_s3)
+        _apply_mtu_map(topology, kwargs.get("mtu_map", {}))
+        project_cr = _build_troshka_project_cr(
+            project_id, namespace, topology, s3_cr_config, central_s3, kwargs
+        )
 
         custom_api.create_namespaced_custom_object(
             group=CRD_GROUP,
@@ -2247,7 +2365,7 @@ def kubevirt_vm_is_headless(provider, project_id, vm_id, vm_node_data=None) -> b
     try:
         custom_api, _, _ = _get_k8s_clients(provider)
         vm = custom_api.get_namespaced_custom_object(
-            group="kubevirt.io",
+            group=_KUBEVIRT_API_GROUP,
             version="v1",
             namespace=namespace,
             plural="virtualmachines",
@@ -2344,12 +2462,15 @@ def force_stop_kubevirt_vm(custom_api, core_api, namespace: str, kv_name: str) -
     except Exception:
         pass
     if not wait_virt_launcher_gone(core_api, namespace, kv_name, timeout=30):
-        logger.warning("Timed out waiting for %s virt-launcher to terminate", kv_name)
+        logger.warning(
+            "Timed out waiting for virt-launcher to terminate (namespace=%s)",
+            sanitize_log(namespace),
+        )
     try:
         patch_kubevirt_run_strategy(custom_api, namespace, kv_name, "Halted")
     except Exception:
         pass
-    logger.info("Force-stopped KubeVirt VM %s in %s", kv_name, namespace)
+    logger.info("Force-stopped KubeVirt VM (namespace=%s)", sanitize_log(namespace))
 
 
 def wait_virt_launcher_compute_ready(
@@ -2692,6 +2813,16 @@ def _kubevirt_ws_pod_exec(core_v1, pod_name, namespace, command, timeout, attemp
     ) from last_err
 
 
+def _safe_ssh_remote_path(remote_path: str) -> str:
+    """Reject shell metacharacters before building remote SSH commands."""
+    path = (remote_path or "").strip()
+    if not path or path.startswith("-") or any(c in path for c in "\n\r\0"):
+        raise ValueError("invalid remote path")
+    if not re.match(r"^[/\w.@+-]+$", path):
+        raise ValueError("invalid remote path")
+    return path
+
+
 def kubevirt_upload_to_vm(
     provider,
     project_id,
@@ -2711,7 +2842,9 @@ def kubevirt_upload_to_vm(
     if not password:
         raise RuntimeError("No password for KubeVirt file upload")
 
-    tmp = f"/tmp/troshka-up-{uuid.uuid4().hex}"
+    remote_path = _safe_ssh_remote_path(remote_path)
+    # Guest VM ephemeral staging; moved to dest then removed (not host /tmp).
+    tmp = f"/tmp/troshka-up-{uuid.uuid4().hex}"  # NOSONAR — guest staging path
     tmp_q = shlex.quote(tmp)
     dest_q = shlex.quote(remote_path)
     parent_q = shlex.quote(os.path.dirname(remote_path) or ".")
@@ -2756,6 +2889,7 @@ def kubevirt_download_from_vm(
     if not password:
         raise RuntimeError("No password for KubeVirt file download")
 
+    remote_path = _safe_ssh_remote_path(remote_path)
     cmd = f"base64 -w0 {shlex.quote(remote_path)}"
     result = kubevirt_exec_ssh(
         provider,
@@ -2918,10 +3052,11 @@ def _detect_vnc_state(ocr_text):
         return "password"
     if re.search(r"[\]$#~]\s*$", last_lines, re.MULTILINE):
         return "shell"
-    _login = r"(?:\blogin\s*:?|\S+\s+login\s*:?)"
-    if re.search(_login + r"\s+[\w.-]+\s*$", last_lines, re.IGNORECASE | re.MULTILINE):
+    if re.search(
+        r"\blogin\s*:?\s*[\w.-]+\s*$", last_lines, re.IGNORECASE | re.MULTILINE
+    ):
         return "login_submit"
-    if re.search(_login, last_lines, re.IGNORECASE | re.MULTILINE):
+    if re.search(r"\blogin\s*:?", last_lines, re.IGNORECASE | re.MULTILINE):
         return "login"
     return "unknown"
 
@@ -3097,7 +3232,7 @@ class _VirtLauncherSerialConnection:
 def _serial_socket_path(custom_api, namespace, vm_name):
     """Return the virt-serial0 unix socket path inside the virt-launcher pod."""
     vmi = custom_api.get_namespaced_custom_object(
-        group="kubevirt.io",
+        group=_KUBEVIRT_API_GROUP,
         version="v1",
         namespace=namespace,
         plural="virtualmachineinstances",

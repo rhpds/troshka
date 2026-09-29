@@ -54,6 +54,31 @@ def _split_command(command):
     return {"command": [_SHELL, "-c", command]}
 
 
+def _add_container_mount(mount, disk_pvcs, volumes, volume_mounts, seen_vols, seen_mounts):
+    """Append one mount's PVC volume + volumeMount if not already present."""
+    disk_id = mount.get("diskNodeId", "")
+    mount_path = mount.get("mountPath", "")
+    if not disk_id or not mount_path:
+        return
+    pvc_name = disk_pvcs.get(disk_id)
+    if not pvc_name:
+        return
+    vol_name = f"disk-{disk_id[:8]}"
+    if vol_name not in seen_vols:
+        seen_vols.add(vol_name)
+        volumes.append(
+            {
+                "name": vol_name,
+                "persistentVolumeClaim": {"claimName": pvc_name},
+            }
+        )
+    mount_key = (vol_name, mount_path)
+    if mount_key in seen_mounts:
+        return
+    seen_mounts.add(mount_key)
+    volume_mounts.append({"name": vol_name, "mountPath": mount_path})
+
+
 def _collect_mount_specs(ctr, disk_pvcs):
     """Build shared pod volumes and per-container volumeMounts."""
     volumes = []
@@ -61,37 +86,20 @@ def _collect_mount_specs(ctr, disk_pvcs):
     seen_vols = set()
     seen_mounts = set()
 
-    def _add_mount(mount):
-        disk_id = mount.get("diskNodeId", "")
-        mount_path = mount.get("mountPath", "")
-        if not disk_id or not mount_path:
-            return
-        pvc_name = disk_pvcs.get(disk_id)
-        if not pvc_name:
-            return
-        vol_name = f"disk-{disk_id[:8]}"
-        if vol_name not in seen_vols:
-            seen_vols.add(vol_name)
-            volumes.append(
-                {
-                    "name": vol_name,
-                    "persistentVolumeClaim": {"claimName": pvc_name},
-                }
-            )
-        mount_key = (vol_name, mount_path)
-        if mount_key in seen_mounts:
-            return
-        seen_mounts.add(mount_key)
-        volume_mounts.append({"name": vol_name, "mountPath": mount_path})
-
     for mount in ctr.get("mounts", []):
-        _add_mount(mount)
+        _add_container_mount(
+            mount, disk_pvcs, volumes, volume_mounts, seen_vols, seen_mounts
+        )
     for ic in ctr.get("initContainers", []):
         for mount in ic.get("mounts", []):
-            _add_mount(mount)
+            _add_container_mount(
+                mount, disk_pvcs, volumes, volume_mounts, seen_vols, seen_mounts
+            )
     for pc in ctr.get("podContainers", []):
         for mount in pc.get("mounts", []):
-            _add_mount(mount)
+            _add_container_mount(
+                mount, disk_pvcs, volumes, volume_mounts, seen_vols, seen_mounts
+            )
 
     return volumes, volume_mounts
 

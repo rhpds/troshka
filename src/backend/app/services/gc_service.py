@@ -292,6 +292,28 @@ def _get_existing_bridges(host) -> set[str]:
     return set()
 
 
+def _missing_project_bridges(project, existing_bridges: set) -> list[str]:
+    """Return VNI strings whose ``br-<vni>`` bridge is absent on the host."""
+    project_vnis = {str(v) for v in (project.vni_map or {}).values()}
+    return [v for v in project_vnis if f"br-{v}" not in existing_bridges]
+
+
+def _repair_one_project_networks(
+    host, project, existing_bridges: set, db, setup_fn
+) -> int:
+    """Re-create missing VXLAN bridges for one project. Returns bridges repaired."""
+    missing = _missing_project_bridges(project, existing_bridges)
+    if not missing:
+        return 0
+    topo = project.deployed_topology or project.topology or {}
+    result = setup_fn(host, topo, project.vni_map or {}, db, project.id)
+    if result is True:
+        log.info("Repaired %d bridges for project %s", len(missing), project.id[:8])
+        return len(missing)
+    log.warning("Failed to repair bridges for project %s: %s", project.id[:8], result)
+    return 0
+
+
 def repair_networks(db: Session, host) -> dict:
     """Ensure VXLAN bridges exist for all active/stopped projects on this host."""
     from app.models.project import Project
@@ -313,23 +335,12 @@ def repair_networks(db: Session, host) -> dict:
         return {"repaired": 0}
 
     existing_bridges = _get_existing_bridges(host)
-
-    repaired = 0
-    for p in projects:
-        project_vnis = {str(v) for v in (p.vni_map or {}).values()}
-        if not project_vnis:
-            continue
-        missing = [v for v in project_vnis if f"br-{v}" not in existing_bridges]
-        if not missing:
-            continue
-        topo = p.deployed_topology or p.topology or {}
-        result = _setup_networks_via_troshkad(host, topo, p.vni_map or {}, db, p.id)
-        if result is True:
-            repaired += len(missing)
-            log.info("Repaired %d bridges for project %s", len(missing), p.id[:8])
-        else:
-            log.warning("Failed to repair bridges for project %s: %s", p.id[:8], result)
-
+    repaired = sum(
+        _repair_one_project_networks(
+            host, p, existing_bridges, db, _setup_networks_via_troshkad
+        )
+        for p in projects
+    )
     return {"repaired": repaired}
 
 
@@ -783,28 +794,7 @@ def _detect_unreferenced_goldens(provider) -> list[str]:
     return sorted(goldens - referenced - {""})
 
 
-def _reconcile_kubevirt_cluster(
-    db, host, host_id, report, *, dry_run: bool = True, reclaim_rbd: bool = False
-) -> None:
-    """Reconcile orphaned KubeVirt cluster resources.
-
-    Always reports orphan namespaces, unreferenced goldens, and Released/Failed
-    PVs whose claimRef is a troshka-<8hex> namespace with no matching project
-    (DB-proven Troshka leftovers). Available unclaimed RBD PVs are report-only
-    (no claimRef → cannot prove Troshka).
-
-    When ``dry_run`` is False, deletes orphan Released/Failed PVs. When
-    ``reclaim_rbd`` is also True, runs rook-toolbox RBD reclaim for those PVs'
-    volumeHandles (clone-chain aware).
-    """
-    if not host.provider_id:
-        return
-    from app.models.project import Project
-    from app.models.provider import Provider
-
-    provider = db.query(Provider).filter_by(id=host.provider_id).first()
-    if not provider or provider.type != "kubevirt":
-        return
+def _report_orphan_namespaces(db, provider, host_id, report) -> None:
     try:
         orphan_ns = _detect_orphan_kubevirt_namespaces(db, provider)
         report["kubevirt_orphan_namespaces"] = orphan_ns
@@ -822,6 +812,9 @@ def _reconcile_kubevirt_cluster(
             host_id[:8],
             exc_info=True,
         )
+
+
+def _report_unreferenced_goldens(provider, host_id, report) -> None:
     try:
         unref = _detect_unreferenced_goldens(provider)
         report["kubevirt_unreferenced_goldens"] = unref
@@ -840,7 +833,68 @@ def _reconcile_kubevirt_cluster(
             exc_info=True,
         )
 
+
+def _orphan_pvs_dry_run_report(
+    report: dict, orphan_pvs: list, reclaim_rbd: bool
+) -> None:
+    report["kubevirt_orphan_pvs_action"] = {
+        "dry_run": True,
+        "would_delete": len(orphan_pvs),
+    }
+    if reclaim_rbd:
+        report["kubevirt_rbd_reclaim"] = {
+            "dry_run": True,
+            "would_reclaim": [
+                {"pool": o["pool"], "image": o["image"]}
+                for o in orphan_pvs
+                if o.get("image")
+            ],
+        }
+
+
+def _delete_orphan_pvs_and_reclaim(
+    report: dict,
+    orphan_pvs: list,
+    *,
+    core_api,
+    delete_pv,
+    reclaim_rbd_images,
+    reclaim_rbd: bool,
+    host_id: str,
+) -> None:
+    deleted = 0
+    for o in orphan_pvs:
+        if o.get("pv") and delete_pv(core_api, o["pv"]):
+            deleted += 1
+    report["kubevirt_orphan_pvs_action"] = {
+        "deleted": deleted,
+        "total": len(orphan_pvs),
+    }
+    log.info(
+        "Host %s GC: deleted %d/%d orphan Troshka PV(s)",
+        host_id[:8],
+        deleted,
+        len(orphan_pvs),
+    )
+    if reclaim_rbd:
+        targets = [
+            {"pool": o["pool"], "image": o["image"]}
+            for o in orphan_pvs
+            if o.get("image")
+        ]
+        report["kubevirt_rbd_reclaim"] = reclaim_rbd_images(core_api, targets)
+        log.info(
+            "Host %s GC: RBD reclaim attempted for %d image(s)",
+            host_id[:8],
+            len(targets),
+        )
+
+
+def _reconcile_orphan_pvs(
+    db, provider, host_id, report, *, dry_run: bool, reclaim_rbd: bool
+) -> None:
     try:
+        from app.models.project import Project
         from app.services.providers.kubevirt import (
             _delete_persistent_volume,
             _get_k8s_clients,
@@ -864,53 +918,54 @@ def _reconcile_kubevirt_cluster(
                 [u["pv"] for u in unclaimed[:10]],
             )
 
-        if orphan_pvs and dry_run:
-            report["kubevirt_orphan_pvs_action"] = {
-                "dry_run": True,
-                "would_delete": len(orphan_pvs),
-            }
-            if reclaim_rbd:
-                report["kubevirt_rbd_reclaim"] = {
-                    "dry_run": True,
-                    "would_reclaim": [
-                        {"pool": o["pool"], "image": o["image"]}
-                        for o in orphan_pvs
-                        if o.get("image")
-                    ],
-                }
-        elif orphan_pvs and not dry_run:
-            deleted = 0
-            for o in orphan_pvs:
-                if o.get("pv") and _delete_persistent_volume(core_api, o["pv"]):
-                    deleted += 1
-            report["kubevirt_orphan_pvs_action"] = {
-                "deleted": deleted,
-                "total": len(orphan_pvs),
-            }
-            log.info(
-                "Host %s GC: deleted %d/%d orphan Troshka PV(s)",
-                host_id[:8],
-                deleted,
-                len(orphan_pvs),
-            )
-            if reclaim_rbd:
-                targets = [
-                    {"pool": o["pool"], "image": o["image"]}
-                    for o in orphan_pvs
-                    if o.get("image")
-                ]
-                report["kubevirt_rbd_reclaim"] = reclaim_rbd_images(core_api, targets)
-                log.info(
-                    "Host %s GC: RBD reclaim attempted for %d image(s)",
-                    host_id[:8],
-                    len(targets),
-                )
+        if not orphan_pvs:
+            return
+        if dry_run:
+            _orphan_pvs_dry_run_report(report, orphan_pvs, reclaim_rbd)
+            return
+        _delete_orphan_pvs_and_reclaim(
+            report,
+            orphan_pvs,
+            core_api=core_api,
+            delete_pv=_delete_persistent_volume,
+            reclaim_rbd_images=reclaim_rbd_images,
+            reclaim_rbd=reclaim_rbd,
+            host_id=host_id,
+        )
     except Exception:
         log.warning(
             "Host %s GC: orphan PV scan/cleanup failed (non-fatal)",
             host_id[:8],
             exc_info=True,
         )
+
+
+def _reconcile_kubevirt_cluster(
+    db, host, host_id, report, *, dry_run: bool = True, reclaim_rbd: bool = False
+) -> None:
+    """Reconcile orphaned KubeVirt cluster resources.
+
+    Always reports orphan namespaces, unreferenced goldens, and Released/Failed
+    PVs whose claimRef is a troshka-<8hex> namespace with no matching project
+    (DB-proven Troshka leftovers). Available unclaimed RBD PVs are report-only
+    (no claimRef → cannot prove Troshka).
+
+    When ``dry_run`` is False, deletes orphan Released/Failed PVs. When
+    ``reclaim_rbd`` is also True, runs rook-toolbox RBD reclaim for those PVs'
+    volumeHandles (clone-chain aware).
+    """
+    if not host.provider_id:
+        return
+    from app.models.provider import Provider
+
+    provider = db.query(Provider).filter_by(id=host.provider_id).first()
+    if not provider or provider.type != "kubevirt":
+        return
+    _report_orphan_namespaces(db, provider, host_id, report)
+    _report_unreferenced_goldens(provider, host_id, report)
+    _reconcile_orphan_pvs(
+        db, provider, host_id, report, dry_run=dry_run, reclaim_rbd=reclaim_rbd
+    )
 
 
 def _reconcile_shared_cache_entries(db, host, host_id, report):

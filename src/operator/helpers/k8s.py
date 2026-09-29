@@ -21,6 +21,9 @@ TOOLS_IMAGE = f"quay.io/redhat-gpte/troshka-tools:{_IMAGE_TAG}"
 DNSMASQ_IMAGE = f"quay.io/redhat-gpte/troshka-dnsmasq:{_IMAGE_TAG}"
 GATEWAY_IMAGE = f"quay.io/redhat-gpte/troshka-gateway:{_IMAGE_TAG}"
 
+# Public DNS fallback when the project has no dedicated nameserver IP.
+_DEFAULT_DNS_IP = "8.8.8.8"  # NOSONAR — public DNS fallback
+
 
 def lab_pod_dns_config(nameserver: str) -> dict:
     """dnsConfig for pods that resolve via the project lab dnsmasq (TCP via use-vc)."""
@@ -299,7 +302,7 @@ def build_exec_deployment(
                 },
                 "spec": {
                     "dnsPolicy": "None",
-                    "dnsConfig": lab_pod_dns_config(dns_ip or "8.8.8.8"),
+                    "dnsConfig": lab_pod_dns_config(dns_ip or _DEFAULT_DNS_IP),
                     "serviceAccountName": "troshka-network",
                     "initContainers": [
                         {

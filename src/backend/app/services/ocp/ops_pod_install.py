@@ -107,6 +107,9 @@ _LOG_MARKERS = (
 )
 
 # Fatal-failure markers (only consulted when the log has NOT reached "complete").
+_WORKER_JOIN_TIMED_OUT = "worker join timed out"
+_NODE_IMAGE_CREATE_FAILED = "node-image create failed"
+_ERROR_CANNOT_CREATE_POD = "error: cannot create pod"
 _FAILURE_MARKERS = (
     "level=fatal",
     "level=error msg=bootstrap failed",
@@ -115,10 +118,10 @@ _FAILURE_MARKERS = (
     "installation failed",
     "failed to wait for install",
     "recert failed",  # recert-mode block's fail-closed exit (kubeconfig/gate)
-    "worker join timed out",
+    _WORKER_JOIN_TIMED_OUT,
     "worker convergence timed out",
-    "node-image create failed",
-    "error: cannot create pod",
+    _NODE_IMAGE_CREATE_FAILED,
+    _ERROR_CANNOT_CREATE_POD,
     # Worker-join ImagePolicy admission failure. Must stay specific: a bare
     # "imagepolicy" substring-matches the benign installer bootstrap line
     # "Could not update clusterimagepolicy ..." and false-fails healthy installs.
@@ -127,6 +130,48 @@ _FAILURE_MARKERS = (
     "api not ready for worker join",
     "scc uid range not available for worker join",
 )
+
+
+def _worker_join_active(lowered: str) -> bool:
+    return (
+        ("joining" in lowered and "deferred worker" in lowered)
+        or "node-image create for" in lowered
+        or "node iso url:" in lowered
+        or "net-booting worker" in lowered
+        or "net-booted worker" in lowered
+        or "worker joined (iso ejected)" in lowered
+        or "waiting for worker" in lowered
+        or "joining workers in parallel" in lowered
+        or "worker nodes ready:" in lowered
+        or ("waiting for" in lowered and "worker node" in lowered)
+        or "waiting for api before worker join" in lowered
+        or "deferred workers ready:" in lowered
+    )
+
+
+def _worker_join_phase(lowered: str) -> str:
+    if _ERROR_CANNOT_CREATE_POD in lowered or _WORKER_JOIN_TIMED_OUT in lowered:
+        return PHASE_FAILED
+    if _NODE_IMAGE_CREATE_FAILED in lowered and "retrying in" in lowered:
+        return PHASE_WAITING
+    return PHASE_WAITING
+
+
+def _is_retryable_node_image_failure(lowered: str) -> bool:
+    # Retry breadcrumbs are not terminal — only the final exit-1 line is.
+    return (
+        _NODE_IMAGE_CREATE_FAILED in lowered
+        and "retrying in" in lowered
+        and _ERROR_CANNOT_CREATE_POD not in lowered
+        and _WORKER_JOIN_TIMED_OUT not in lowered
+    )
+
+
+def _phase_from_markers(lowered: str) -> str | None:
+    for marker, phase in _LOG_MARKERS:
+        if marker.lower() in lowered:
+            return phase
+    return None
 
 
 def _phase_from_input(value: str) -> str:
@@ -146,26 +191,8 @@ def _phase_from_input(value: str) -> str:
         return PHASE_COMPLETE
     if "deferred workers joined" in lowered:
         return PHASE_WAITING
-    worker_join_active = (
-        ("joining" in lowered and "deferred worker" in lowered)
-        or "node-image create for" in lowered
-        or "node iso url:" in lowered
-        or "net-booting worker" in lowered
-        or "net-booted worker" in lowered
-        or "worker joined (iso ejected)" in lowered
-        or "waiting for worker" in lowered
-        or "joining workers in parallel" in lowered
-        or "worker nodes ready:" in lowered
-        or ("waiting for" in lowered and "worker node" in lowered)
-        or "waiting for api before worker join" in lowered
-        or "deferred workers ready:" in lowered
-    )
-    if worker_join_active:
-        if "error: cannot create pod" in lowered or "worker join timed out" in lowered:
-            return PHASE_FAILED
-        if "node-image create failed" in lowered and "retrying in" in lowered:
-            return PHASE_WAITING
-        return PHASE_WAITING
+    if _worker_join_active(lowered):
+        return _worker_join_phase(lowered)
     # Troshka post-eject breadcrumb only — bare "Install complete!" is the
     # installer finishing wait-for, before eject / harvest / worker join.
     if _TROSHKA_INSTALL_COMPLETE_RE.search(text):
@@ -173,20 +200,43 @@ def _phase_from_input(value: str) -> str:
     if "msg=install complete" in lowered or "ejecting agent iso" in lowered:
         return PHASE_WAITING
     if any(marker in lowered for marker in _FAILURE_MARKERS):
-        # Retry breadcrumbs are not terminal — only the final exit-1 line is.
-        if (
-            "node-image create failed" in lowered
-            and "retrying in" in lowered
-            and "error: cannot create pod" not in lowered
-            and "worker join timed out" not in lowered
-        ):
-            pass
-        else:
+        if not _is_retryable_node_image_failure(lowered):
             return PHASE_FAILED
-    for marker, phase in _LOG_MARKERS:
-        if marker.lower() in lowered:
-            return phase
-    return PHASE_CREATING_IMAGE
+    return _phase_from_markers(lowered) or PHASE_CREATING_IMAGE
+
+
+def _cluster_has_harvested_creds(deployed: dict, cluster_key: str) -> bool:
+    for node in deployed.get("nodes") or []:
+        if node.get("type") != "vmNode":
+            continue
+        data = node.get("data") or {}
+        if data.get("clusterId") != cluster_key:
+            continue
+        if data.get("ocpKubeconfig") or data.get("ocpKubeadminPassword"):
+            return True
+    return False
+
+
+def cluster_needs_post_boot_restart(
+    project, topology: dict, cluster_key: str, log_text: str | None
+) -> bool:
+    """True when a restart must wipe boot disks before re-installing.
+
+    The install log alone is unreliable after cache clears or failed restarts;
+    harvested creds or a prior install-complete marker also imply post-boot.
+    """
+    if log_text:
+        lowered = log_text.lower()
+        if "post-boot restart" in lowered or "wiped boot disk" in lowered:
+            return True
+    if cluster_install_post_boot(log_text):
+        return True
+    if cluster_install_complete_in_log(log_text, cluster_key):
+        return True
+    if has_control_plane_usable_marker(log_text, cluster_key):
+        return True
+    deployed = project.deployed_topology or topology or {}
+    return _cluster_has_harvested_creds(deployed, cluster_key)
 
 
 def _aggregate_in_progress(clusters: dict[str, str]) -> str:
@@ -342,36 +392,6 @@ def install_stuck_reinitializing(log_text: str | None) -> bool:
         return False
     # Match the UI stuck heuristic: early init-wait lines are normal during node install.
     return lowered.count("waiting for cluster install to initialize") >= 15
-
-
-def cluster_needs_post_boot_restart(
-    project, topology: dict, cluster_key: str, log_text: str | None
-) -> bool:
-    """True when a restart must wipe boot disks before re-installing.
-
-    The install log alone is unreliable after cache clears or failed restarts;
-    harvested creds or a prior install-complete marker also imply post-boot.
-    """
-    if log_text:
-        lowered = log_text.lower()
-        if "post-boot restart" in lowered or "wiped boot disk" in lowered:
-            return True
-    if cluster_install_post_boot(log_text):
-        return True
-    if cluster_install_complete_in_log(log_text, cluster_key):
-        return True
-    if has_control_plane_usable_marker(log_text, cluster_key):
-        return True
-    deployed = project.deployed_topology or topology or {}
-    for node in deployed.get("nodes") or []:
-        if node.get("type") != "vmNode":
-            continue
-        data = node.get("data") or {}
-        if data.get("clusterId") != cluster_key:
-            continue
-        if data.get("ocpKubeconfig") or data.get("ocpKubeadminPassword"):
-            return True
-    return False
 
 
 def has_deferred_workers_joined_marker(log_text: str | None, cluster_id: str) -> bool:

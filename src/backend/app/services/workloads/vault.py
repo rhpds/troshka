@@ -35,7 +35,7 @@ def _split_envelope(vaulttext: str) -> tuple[bytes, bytes, bytes]:
         decoded = unhexlify(body).decode("ascii")
         salt_hex, hmac_hex, ct_hex = decoded.split("\n")
         return unhexlify(salt_hex), unhexlify(hmac_hex), unhexlify(ct_hex)
-    except (ValueError, UnicodeDecodeError) as exc:
+    except ValueError as exc:
         raise VaultError(f"malformed vault payload: {exc}") from exc
 
 

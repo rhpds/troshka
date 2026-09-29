@@ -203,6 +203,55 @@ def _bogus_mac_for_ip(ip: str) -> str:
     return "02:00:%02x:%02x:%02x:%02x" % (parts[0], parts[1], parts[2], parts[3])
 
 
+def _cluster_boundary_vips(boundary: dict) -> list[tuple[str, str]]:
+    """Return ``(label, vip)`` pairs for a cluster boundary node."""
+    d = boundary.get("data", {})
+    return [
+        (label, vip)
+        for label, key in (("api", "apiVip"), ("ingress", "ingressVip"))
+        if (vip := str(d.get(key) or "").strip())
+    ]
+
+
+def _cluster_member_ids(nodes: list[dict], boundary_id: str) -> set[str]:
+    return {
+        n["id"]
+        for n in nodes
+        if n.get("type") == "vmNode" and n.get("parentId") == boundary_id
+    }
+
+
+def _members_on_network(net_node_id: str, members: set[str], edges: list[dict]) -> bool:
+    for e in edges:
+        src, tgt = e.get("source"), e.get("target")
+        if src == net_node_id and tgt in members:
+            return True
+        if tgt == net_node_id and src in members:
+            return True
+    return False
+
+
+def _vip_reservations_for_cluster(
+    name: str,
+    vips: list[tuple[str, str]],
+    reserved_ips: set[str],
+) -> list[dict]:
+    """Build dhcp-host entries for unique VIPs not already reserved."""
+    reservations: list[dict] = []
+    seen: set[str] = set()
+    for label, vip in vips:
+        # Skip a VIP already reserved by a real NIC (SNO: api==ingress==node
+        # IP) or by the other VIP (api==ingress): a duplicate dhcp-host for
+        # the same address makes dnsmasq exit 1 and fails the network setup.
+        if vip in seen or vip in reserved_ips:
+            continue
+        seen.add(vip)
+        reservations.append(
+            {"mac": _bogus_mac_for_ip(vip), "ip": vip, "name": f"{name}-{label}"}
+        )
+    return reservations
+
+
 def _cluster_vip_reservations(
     net_node_id: str,
     nodes: list[dict],
@@ -221,38 +270,14 @@ def _cluster_vip_reservations(
     for boundary in nodes:
         if boundary.get("type") != "clusterNode":
             continue
-        d = boundary.get("data", {})
-        vips = [
-            (label, str(d.get(key) or "").strip())
-            for label, key in (("api", "apiVip"), ("ingress", "ingressVip"))
-        ]
-        vips = [(label, vip) for label, vip in vips if vip]
+        vips = _cluster_boundary_vips(boundary)
         if not vips:
             continue
-        members = {
-            n["id"]
-            for n in nodes
-            if n.get("type") == "vmNode" and n.get("parentId") == boundary["id"]
-        }
-        on_net = any(
-            (e.get("source") == net_node_id and e.get("target") in members)
-            or (e.get("target") == net_node_id and e.get("source") in members)
-            for e in edges
-        )
-        if not on_net:
+        members = _cluster_member_ids(nodes, boundary["id"])
+        if not _members_on_network(net_node_id, members, edges):
             continue
-        name = d.get("name", "cluster")
-        seen: set[str] = set()
-        for label, vip in vips:
-            # Skip a VIP already reserved by a real NIC (SNO: api==ingress==node
-            # IP) or by the other VIP (api==ingress): a duplicate dhcp-host for
-            # the same address makes dnsmasq exit 1 and fails the network setup.
-            if vip in seen or vip in reserved_ips:
-                continue
-            seen.add(vip)
-            reservations.append(
-                {"mac": _bogus_mac_for_ip(vip), "ip": vip, "name": f"{name}-{label}"}
-            )
+        name = boundary.get("data", {}).get("name", "cluster")
+        reservations.extend(_vip_reservations_for_cluster(name, vips, reserved_ips))
     return reservations
 
 
@@ -377,6 +402,58 @@ def _resolved_dns_records_for_network(
     return out
 
 
+def _apply_dhcp_reservations(
+    net_config: dict, data: dict, node_id: str, nodes, edges
+) -> None:
+    """Attach dhcp_config plus VIP/infra host reservations when DHCP is on."""
+    if not net_config["dhcp_enabled"]:
+        return
+    net_config["dhcp_config"] = _build_dhcp_config(data)
+    existing_ips = {h.get("ip") for h in net_config["dhcp_hosts"]}
+    net_config["dhcp_hosts"].extend(
+        _cluster_vip_reservations(node_id, nodes, edges, existing_ips)
+    )
+    existing_ips = {h.get("ip") for h in net_config["dhcp_hosts"]}
+    net_config["dhcp_hosts"].extend(_infra_ip_reservations(data, existing_ips))
+
+
+def _one_network_config(node, nodes, edges, vni_map, peer_ips) -> dict | None:
+    data = node.get("data", {})
+    if data.get("subtype", "network") != "network":
+        return None
+    node_id = node["id"]
+    vni = vni_map.get(node_id)
+    if not vni:
+        return None
+    (
+        connected_vms,
+        dhcp_hosts,
+        pxe_boot_iso_ids,
+        pxe_vm_boot_config,
+    ) = _find_connected_workloads(node_id, nodes, edges)
+    net_config = {
+        "node_id": node_id,
+        "name": data.get("name"),
+        "cidr": data.get("cidr"),
+        "vni": vni,
+        "bridge_name": f"br-{vni}",
+        "vxlan_name": f"vxlan-{vni}",
+        "dhcp_enabled": data.get("dhcp", False),
+        "dns_enabled": data.get("dns", False),
+        "dns_domain": data.get("dnsDomain", ""),
+        "dns_records": _resolved_dns_records_for_network(data, nodes, vni_map),
+        "connected_vms": connected_vms,
+        "dhcp_hosts": dhcp_hosts,
+        "peers": peer_ips,
+        "mtu": data.get("mtu"),
+    }
+    _apply_dhcp_reservations(net_config, data, node_id, nodes, edges)
+    pxe_config = _build_pxe_config(data, pxe_vm_boot_config, pxe_boot_iso_ids, vni)
+    if pxe_config:
+        net_config["pxe_config"] = pxe_config
+    return net_config
+
+
 def _build_network_configs(
     nodes: list, edges: list, vni_map: dict, peer_ips: list
 ) -> list:
@@ -385,60 +462,9 @@ def _build_network_configs(
     for node in nodes:
         if node.get("type") != "networkNode":
             continue
-        data = node.get("data", {})
-        if data.get("subtype", "network") != "network":
-            continue
-
-        node_id = node["id"]
-        vni = vni_map.get(node_id)
-        if not vni:
-            continue
-
-        (
-            connected_vms,
-            dhcp_hosts,
-            pxe_boot_iso_ids,
-            pxe_vm_boot_config,
-        ) = _find_connected_workloads(node_id, nodes, edges)
-
-        net_config = {
-            "node_id": node_id,
-            "name": data.get("name"),
-            "cidr": data.get("cidr"),
-            "vni": vni,
-            "bridge_name": f"br-{vni}",
-            "vxlan_name": f"vxlan-{vni}",
-            "dhcp_enabled": data.get("dhcp", False),
-            "dns_enabled": data.get("dns", False),
-            "dns_domain": data.get("dnsDomain", ""),
-            "dns_records": _resolved_dns_records_for_network(data, nodes, vni_map),
-            "connected_vms": connected_vms,
-            "dhcp_hosts": dhcp_hosts,
-            "peers": peer_ips,
-            "mtu": data.get("mtu"),
-        }
-
-        if net_config["dhcp_enabled"]:
-            net_config["dhcp_config"] = _build_dhcp_config(data)
-            # Reserve each cluster VIP on this network with a deterministic bogus
-            # (locally-administered) MAC, so dnsmasq holds the address and never
-            # hands it out from the dynamic pool. (Node static IPs are already
-            # reserved via their real NIC MAC in dhcp_hosts.)
-            existing_ips = {h.get("ip") for h in net_config["dhcp_hosts"]}
-            net_config["dhcp_hosts"].extend(
-                _cluster_vip_reservations(node_id, nodes, edges, existing_ips)
-            )
-            # Reserve Troshka's infra IPs (gateway .1, dnsmasq .2) the same way,
-            # skipping anything already reserved above (node NIC or VIP) so
-            # dnsmasq never gets a duplicate dhcp-host.
-            existing_ips = {h.get("ip") for h in net_config["dhcp_hosts"]}
-            net_config["dhcp_hosts"].extend(_infra_ip_reservations(data, existing_ips))
-
-        pxe_config = _build_pxe_config(data, pxe_vm_boot_config, pxe_boot_iso_ids, vni)
-        if pxe_config:
-            net_config["pxe_config"] = pxe_config
-
-        networks.append(net_config)
+        cfg = _one_network_config(node, nodes, edges, vni_map, peer_ips)
+        if cfg:
+            networks.append(cfg)
     return networks
 
 
@@ -525,64 +551,77 @@ def _inject_showroom_port_forward(
     return out
 
 
+def _enrich_gateway_port_forwards(raw_forwards: list, eip_map: dict) -> list[dict]:
+    """Attach EIP private IP / transit port metadata to gateway port forwards."""
+    port_forwards: list[dict] = []
+    for pf in raw_forwards:
+        pf_entry = dict(pf)
+        ext_ip = eip_map.get(pf.get("extIpId", ""), {})
+        pf_entry["_private_ip"] = ext_ip.get("_private_ip", "")
+        transit_map = ext_ip.get("_transit_port_map")
+        if transit_map:
+            ext_port_str = str(pf.get("extPort", ""))
+            pf_entry["_transit_port"] = transit_map.get(ext_port_str)
+        port_forwards.append(pf_entry)
+    return port_forwards
+
+
+def _bind_showroom_private_ip(port_forwards: list[dict], external_ips: list) -> None:
+    """Bind managed showroom 443 forward to the first EIP private IP."""
+    # Inject resets extIpId on the managed 443 forward. Host DNAT only
+    # installs when _private_ip is set — bind it to the first EIP.
+    first_priv = next(
+        (
+            eip.get("_private_ip") or ""
+            for eip in external_ips
+            if eip.get("_private_ip")
+        ),
+        "",
+    )
+    if not first_priv:
+        return
+    for pf in port_forwards:
+        if pf.get("managedByShowroom") and not pf.get("_private_ip"):
+            pf["_private_ip"] = first_priv
+
+
+def _gateway_config_from_node(data: dict, topology: dict, networks: list) -> dict:
+    """Build one gateway config dict from gateway node data."""
+    external_ips = topology.get("externalIps", [])
+    eip_map = {eip["id"]: eip for eip in external_ips}
+    port_forwards = _enrich_gateway_port_forwards(data.get("portForwards", []), eip_map)
+    first_vni = networks[0]["vni"] if networks else None
+    port_forwards = _inject_showroom_port_forward(port_forwards, topology, first_vni)
+    _bind_showroom_private_ip(port_forwards, external_ips)
+    gw_config = {
+        "name": data.get("name"),
+        "mode": data.get("gatewayMode", "nat"),
+        "outbound_policy": data.get("outboundPolicy", "allow-all"),
+        "outbound_ports": data.get("outboundPorts", ""),
+        "port_forwards": port_forwards,
+        "eip_private_ips": [
+            eip.get("_private_ip", "") for eip in external_ips if eip.get("_private_ip")
+        ],
+    }
+    if first_vni:
+        transit = _transit_subnet(first_vni)
+        gw_config["transit_ns_ip"] = transit["ns_ip"]
+    return gw_config
+
+
+def _is_gateway_network_node(node: dict) -> bool:
+    return (
+        node.get("type") == "networkNode"
+        and node.get("data", {}).get("subtype") == "gateway"
+    )
+
+
 def _build_gateway_config(nodes: list, topology: dict, networks: list) -> dict | None:
     """Build gateway config from the gateway node, if present."""
     for node in nodes:
-        if (
-            node.get("type") != "networkNode"
-            or node.get("data", {}).get("subtype") != "gateway"
-        ):
+        if not _is_gateway_network_node(node):
             continue
-        data = node.get("data", {})
-        external_ips = topology.get("externalIps", [])
-        eip_map = {eip["id"]: eip for eip in external_ips}
-
-        port_forwards = []
-        for pf in data.get("portForwards", []):
-            pf_entry = dict(pf)
-            ext_ip = eip_map.get(pf.get("extIpId", ""), {})
-            pf_entry["_private_ip"] = ext_ip.get("_private_ip", "")
-            transit_map = ext_ip.get("_transit_port_map")
-            if transit_map:
-                ext_port_str = str(pf.get("extPort", ""))
-                pf_entry["_transit_port"] = transit_map.get(ext_port_str)
-            port_forwards.append(pf_entry)
-
-        first_vni = networks[0]["vni"] if networks else None
-        port_forwards = _inject_showroom_port_forward(
-            port_forwards, topology, first_vni
-        )
-        # Inject resets extIpId on the managed 443 forward. Host DNAT only
-        # installs when _private_ip is set — bind it to the first EIP.
-        first_priv = next(
-            (
-                eip.get("_private_ip") or ""
-                for eip in external_ips
-                if eip.get("_private_ip")
-            ),
-            "",
-        )
-        if first_priv:
-            for pf in port_forwards:
-                if pf.get("managedByShowroom") and not pf.get("_private_ip"):
-                    pf["_private_ip"] = first_priv
-
-        gw_config = {
-            "name": data.get("name"),
-            "mode": data.get("gatewayMode", "nat"),
-            "outbound_policy": data.get("outboundPolicy", "allow-all"),
-            "outbound_ports": data.get("outboundPorts", ""),
-            "port_forwards": port_forwards,
-            "eip_private_ips": [
-                eip.get("_private_ip", "")
-                for eip in external_ips
-                if eip.get("_private_ip")
-            ],
-        }
-        if first_vni:
-            transit = _transit_subnet(first_vni)
-            gw_config["transit_ns_ip"] = transit["ns_ip"]
-        return gw_config
+        return _gateway_config_from_node(node.get("data", {}), topology, networks)
     return None
 
 
@@ -615,27 +654,42 @@ def _build_router_configs(nodes: list, edges: list, vni_map: dict) -> list:
     return router_configs
 
 
+def _edge_peer_id(edge: dict, node_id: str) -> str | None:
+    if edge["source"] == node_id:
+        return edge["target"]
+    if edge["target"] == node_id:
+        return edge["source"]
+    return None
+
+
+def _lb_backend_id_for_node(other_node: dict, other_id: str) -> str | None:
+    """Return backend id for a connected VM/pod, or None if not a backend."""
+    if other_node.get("type") == "vmNode":
+        return other_id
+    if other_node.get("type") != "containerNode":
+        return None
+    data = other_node.get("data", {})
+    if data.get("isShowroom") or data.get("name") == "showroom":
+        return None
+    if data.get("isPod"):
+        return other_id
+    return None
+
+
 def _find_connected_lb_backend_ids(node_id: str, nodes: list, edges: list) -> set[str]:
     """Find VM and pod IDs connected to a load balancer via canvas edges."""
+    nodes_by_id = {n["id"]: n for n in nodes}
     backend_ids: set[str] = set()
     for edge in edges:
-        if edge["source"] == node_id:
-            other_id = edge["target"]
-        elif edge["target"] == node_id:
-            other_id = edge["source"]
-        else:
+        other_id = _edge_peer_id(edge, node_id)
+        if not other_id:
             continue
-        other_node = next((n for n in nodes if n["id"] == other_id), None)
+        other_node = nodes_by_id.get(other_id)
         if not other_node:
             continue
-        if other_node.get("type") == "vmNode":
-            backend_ids.add(other_id)
-        elif other_node.get("type") == "containerNode":
-            data = other_node.get("data", {})
-            if data.get("isShowroom") or data.get("name") == "showroom":
-                continue
-            if data.get("isPod"):
-                backend_ids.add(other_id)
+        backend_id = _lb_backend_id_for_node(other_node, other_id)
+        if backend_id:
+            backend_ids.add(backend_id)
     return backend_ids
 
 

@@ -521,3 +521,54 @@ class TestRestoreIdentityObjects:
         core_api.create_namespaced_secret.side_effect = ApiException(status=500)
         with pytest.raises(ApiException):
             restore_identity_objects(core_api, "ns", _IDENTITY_OBJECTS)
+
+
+class TestCephRestorePollHelpers:
+    def test_check_mon_not_needed(self):
+        from helpers.ceph_restore import _check_mon_restore_status
+
+        assert _check_mon_restore_status(None, "ns", False) is True
+
+    def test_check_mon_done(self):
+        from helpers.ceph_restore import _check_mon_restore_status
+        from unittest.mock import patch
+
+        with patch("helpers.ceph_restore._mon_job_status", return_value="done"):
+            assert _check_mon_restore_status(MagicMock(), "ns", True) is True
+
+    def test_check_mon_failed_raises(self):
+        from helpers.ceph_restore import _check_mon_restore_status
+        from unittest.mock import patch
+
+        with patch("helpers.ceph_restore._mon_job_status", return_value="failed"):
+            with pytest.raises(RuntimeError, match="mon Job"):
+                _check_mon_restore_status(MagicMock(), "ns", True)
+
+    def test_filter_pending_osds(self):
+        from helpers.ceph_restore import _filter_pending_osd_restores
+        from unittest.mock import patch
+
+        def phase(_api, _ns, name):
+            return {"osd-0": "Succeeded", "osd-1": "Pending"}.get(name, "Pending")
+
+        with patch("helpers.ceph_restore._dv_phase", side_effect=phase):
+            pending = _filter_pending_osd_restores(MagicMock(), "ns", ["osd-0", "osd-1"])
+        assert pending == ["osd-1"]
+
+    def test_filter_pending_failed_raises(self):
+        from helpers.ceph_restore import _filter_pending_osd_restores
+        from unittest.mock import patch
+
+        with patch("helpers.ceph_restore._dv_phase", return_value="Failed"):
+            with pytest.raises(RuntimeError, match="failed to import"):
+                _filter_pending_osd_restores(MagicMock(), "ns", ["osd-0"])
+
+    def test_job_already_succeeded(self):
+        from helpers.ceph_restore import _job_already_succeeded
+
+        ok = MagicMock()
+        ok.status.succeeded = 1
+        assert _job_already_succeeded(ok) is True
+        bad = MagicMock()
+        bad.status.succeeded = 0
+        assert _job_already_succeeded(bad) is False

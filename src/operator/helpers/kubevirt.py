@@ -143,27 +143,22 @@ def collect_kubevirt_vm_warnings(spec, *, video_config_enabled: bool) -> list[st
     return warnings
 
 
-def parse_admission_api_warnings(exc: ApiException) -> list[str]:
-    """Extract user-visible messages from a Kubernetes admission API error."""
-    if getattr(exc, "status", None) not in (400, 422):
-        return []
-
-    data: dict | None = None
+def _decode_admission_error_body(exc: ApiException) -> dict | None:
+    """Parse ApiException.body into a dict, or None if unusable."""
     body = getattr(exc, "body", None)
     try:
         if isinstance(body, bytes):
             body = body.decode()
         if isinstance(body, str) and body:
-            data = json.loads(body)
-        elif isinstance(body, dict):
-            data = body
+            return json.loads(body)
+        if isinstance(body, dict):
+            return body
     except (json.JSONDecodeError, TypeError):
-        data = None
+        return None
+    return None
 
-    if not data:
-        reason = getattr(exc, "reason", None)
-        return [reason] if reason else []
 
+def _messages_from_admission_causes(data: dict) -> list[str]:
     messages: list[str] = []
     for cause in data.get("details", {}).get("causes", []) or []:
         msg = (cause.get("message") or "").strip()
@@ -171,16 +166,36 @@ def parse_admission_api_warnings(exc: ApiException) -> list[str]:
             continue
         field = (cause.get("field") or "").strip()
         messages.append(f"{msg} ({field})" if field else msg)
+    return messages
 
+
+def _top_level_admission_message(data: dict) -> list[str]:
+    top = (data.get("message") or "").strip()
+    if not top:
+        return []
+    # Drop noisy webhook prefix when we only have the aggregate message.
+    if ": " in top and top.lower().startswith("admission webhook"):
+        top = top.split(": ", 1)[1]
+    return [top]
+
+
+def parse_admission_api_warnings(exc: ApiException) -> list[str]:
+    """Extract user-visible messages from a Kubernetes admission API error."""
+    if getattr(exc, "status", None) not in (400, 422):
+        return []
+
+    data = _decode_admission_error_body(exc)
+    if not data:
+        reason = getattr(exc, "reason", None)
+        return [reason] if reason else []
+
+    messages = _messages_from_admission_causes(data)
     if messages:
         return messages
 
-    top = (data.get("message") or "").strip()
+    top = _top_level_admission_message(data)
     if top:
-        # Drop noisy webhook prefix when we only have the aggregate message.
-        if ": " in top and top.lower().startswith("admission webhook"):
-            top = top.split(": ", 1)[1]
-        return [top]
+        return top
 
     reason = getattr(exc, "reason", None)
     return [reason] if reason else []

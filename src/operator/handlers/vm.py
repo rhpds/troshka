@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 _CDI_API = "cdi.kubevirt.io"
 _KUBEVIRT_API = "kubevirt.io"
+_RBAC_API_VERSION = "rbac.authorization.k8s.io/v1"
 
 
 def _cleanup_legacy_pod(core_api, namespace, pod_name):
@@ -334,6 +335,64 @@ def _resolve_disk_s3(disk, s3_config, central_s3_config):
     return s3_path, s3_config, "s3-credentials"  # pragma: allowlist secret  # NOSONAR
 
 
+def _recreate_failed_clone_datavolume(custom_api, namespace, pvc_name, clone_dv, phase):
+    """Delete a terminally failed clone DV and recreate it."""
+    logger.warning(
+        f"DataVolume {pvc_name} in terminal failure (phase={phase}), " "recreating"
+    )
+    _try_delete_datavolume(custom_api, namespace, pvc_name)
+    try:
+        custom_api.create_namespaced_custom_object(
+            group=_CDI_API,
+            version="v1beta1",
+            namespace=namespace,
+            plural="datavolumes",
+            body=clone_dv,
+        )
+    except client.ApiException as re:
+        if re.status != 409:
+            raise
+
+
+def _handle_clone_dv_conflict(custom_api, namespace, pvc_name, clone_dv):
+    """Resolve a 409 on clone DV create: skip, wait, recreate, or create-after-404."""
+    try:
+        existing_dv = custom_api.get_namespaced_custom_object(
+            group=_CDI_API,
+            version="v1beta1",
+            namespace=namespace,
+            plural="datavolumes",
+            name=pvc_name,
+        )
+        existing_status = existing_dv.get("status", {})
+        phase = existing_status.get("phase", "")
+        if phase == "Succeeded":
+            logger.info(f"DataVolume {pvc_name} already exists and succeeded, skipping")
+            return
+        if phase in ("Failed", "Error") or _is_terminal_dv_condition(
+            existing_status.get("conditions", [])
+        ):
+            # A terminally failed clone (e.g. CloneValidationFailed from an
+            # undersized target) never recovers on its own — delete and
+            # recreate it with the current, corrected spec.
+            _recreate_failed_clone_datavolume(
+                custom_api, namespace, pvc_name, clone_dv, phase
+            )
+            return
+        logger.info(f"DataVolume {pvc_name} exists (phase={phase}), waiting")
+    except client.ApiException as ge:
+        if ge.status != 404:
+            raise
+        custom_api.create_namespaced_custom_object(
+            group=_CDI_API,
+            version="v1beta1",
+            namespace=namespace,
+            plural="datavolumes",
+            body=clone_dv,
+        )
+        logger.info(f"Created DataVolume {pvc_name} (after 404)")
+
+
 def _create_clone_datavolume(custom_api, namespace, pvc_name, clone_dv):
     """Create a clone DataVolume, handling 409 conflict with retry logic."""
     try:
@@ -347,56 +406,7 @@ def _create_clone_datavolume(custom_api, namespace, pvc_name, clone_dv):
     except client.ApiException as e:
         if e.status != 409:
             raise
-        try:
-            existing_dv = custom_api.get_namespaced_custom_object(
-                group=_CDI_API,
-                version="v1beta1",
-                namespace=namespace,
-                plural="datavolumes",
-                name=pvc_name,
-            )
-            existing_status = existing_dv.get("status", {})
-            phase = existing_status.get("phase", "")
-            if phase == "Succeeded":
-                logger.info(
-                    f"DataVolume {pvc_name} already exists and succeeded, skipping"
-                )
-            elif phase in ("Failed", "Error") or _is_terminal_dv_condition(
-                existing_status.get("conditions", [])
-            ):
-                # A terminally failed clone (e.g. CloneValidationFailed from an
-                # undersized target) never recovers on its own — delete and
-                # recreate it with the current, corrected spec.
-                logger.warning(
-                    f"DataVolume {pvc_name} in terminal failure (phase={phase}), "
-                    "recreating"
-                )
-                _try_delete_datavolume(custom_api, namespace, pvc_name)
-                try:
-                    custom_api.create_namespaced_custom_object(
-                        group=_CDI_API,
-                        version="v1beta1",
-                        namespace=namespace,
-                        plural="datavolumes",
-                        body=clone_dv,
-                    )
-                except client.ApiException as re:
-                    if re.status != 409:
-                        raise
-            else:
-                logger.info(f"DataVolume {pvc_name} exists (phase={phase}), waiting")
-        except client.ApiException as ge:
-            if ge.status == 404:
-                custom_api.create_namespaced_custom_object(
-                    group=_CDI_API,
-                    version="v1beta1",
-                    namespace=namespace,
-                    plural="datavolumes",
-                    body=clone_dv,
-                )
-                logger.info(f"Created DataVolume {pvc_name} (after 404)")
-            else:
-                raise
+        _handle_clone_dv_conflict(custom_api, namespace, pvc_name, clone_dv)
 
 
 def _golden_requested_gb(core_api, golden_name):
@@ -781,7 +791,7 @@ def _ensure_provider_exec_rbac(namespace):
         rbac_api.create_namespaced_role_binding(
             namespace=namespace,
             body={
-                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "apiVersion": _RBAC_API_VERSION,
                 "kind": "RoleBinding",
                 "metadata": {
                     "name": "troshka-provider-scc-exec",
@@ -846,7 +856,7 @@ def _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api):
         rbac_api.create_namespaced_role(
             namespace=namespace,
             body={
-                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "apiVersion": _RBAC_API_VERSION,
                 "kind": "Role",
                 "metadata": {"name": "troshka-bmc", "namespace": namespace},
                 "rules": [
@@ -882,7 +892,7 @@ def _ensure_bmc_sa_and_rbac(namespace, core_api, custom_api):
         rbac_api.create_namespaced_role_binding(
             namespace=namespace,
             body={
-                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "apiVersion": _RBAC_API_VERSION,
                 "kind": "RoleBinding",
                 "metadata": {"name": "troshka-bmc", "namespace": namespace},
                 "roleRef": {
@@ -923,7 +933,7 @@ def _find_bmc_nad(namespace, custom_api):
     return None
 
 
-def _setup_bmc(spec, namespace, core_api, custom_api, domain_uuid=""):
+def _setup_bmc(spec, namespace, core_api, custom_api, _domain_uuid=""):
     """Reconcile the project's sushy BMC Deployment whenever a BMC-enabled VM is
     (re)created, serving EVERY BMC-enabled node — not just this one.
 
@@ -1139,7 +1149,7 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
         domain_uuid = ""
     patch.status["domainUuid"] = domain_uuid
 
-    _setup_bmc(spec, namespace, core_api, custom_api, domain_uuid=domain_uuid)
+    _setup_bmc(spec, namespace, core_api, custom_api)
 
     awaiting_recert = spec.get("recertEnabled", False)
     power_on = spec.get("powerOnAtDeploy", True) and not awaiting_recert
@@ -1234,6 +1244,19 @@ def _disk_needs_reprovision(custom_api, core_api, namespace, pvc_name):
     return status in ("failed", "deleted")
 
 
+def _create_blank_disk_pvc(core_api, namespace, pvc_name, size_gb, body):
+    """Create a blank PVC for a disk, ignoring 409 conflicts."""
+    pvc = build_blank_pvc(pvc_name, namespace, size_gb)
+    pvc["metadata"]["ownerReferences"] = [owner_ref(body)]
+    try:
+        core_api.create_namespaced_persistent_volume_claim(
+            namespace=namespace, body=pvc
+        )
+    except client.ApiException as e:
+        if e.status != 409:
+            raise
+
+
 async def _provision_new_disks(
     new_disks,
     old_disks,
@@ -1276,16 +1299,9 @@ async def _provision_new_disks(
         )
 
         if not cloned and disk.get("blank"):
-            size_gb = disk.get("sizeGb", 20)
-            pvc = build_blank_pvc(pvc_name, namespace, size_gb)
-            pvc["metadata"]["ownerReferences"] = [owner_ref(body)]
-            try:
-                core_api.create_namespaced_persistent_volume_claim(
-                    namespace=namespace, body=pvc
-                )
-            except client.ApiException as e:
-                if e.status != 409:
-                    raise
+            _create_blank_disk_pvc(
+                core_api, namespace, pvc_name, disk.get("sizeGb", 20), body
+            )
 
         disk_pvcs[disk_id] = pvc_name
     return disk_pvcs
@@ -1557,7 +1573,7 @@ async def vm_update(
         domain_uuid = status.get("domainUuid", "")
     patch.status["domainUuid"] = domain_uuid
 
-    _setup_bmc(new_spec, namespace, core_api, custom_api, domain_uuid=domain_uuid)
+    _setup_bmc(new_spec, namespace, core_api, custom_api)
 
     power_on = new_spec.get("powerOnAtDeploy", True)
     patch.status["state"] = "Running" if power_on else "Stopped"

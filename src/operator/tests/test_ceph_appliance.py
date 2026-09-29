@@ -199,3 +199,20 @@ def test_keyring_sync_stays_alive_on_restore_seed():
     seed_block = script.split("seed keyrings present", 1)[1].split("sleep 2", 1)[0]
     assert "sleep infinity" in seed_block
     assert "exit 0" not in seed_block
+
+
+def test_appliance_resource_kind_classification():
+    from helpers.ceph_appliance import (
+        CONF_CONFIGMAP,
+        CEPH_EXTERNAL_SECRET,
+        IDENTITY_FSID,
+        IDENTITY_ADMIN,
+        _appliance_resource_kind,
+    )
+
+    assert _appliance_resource_kind(CONF_CONFIGMAP) == "configmap"
+    assert _appliance_resource_kind(CEPH_EXTERNAL_SECRET) == "secret"
+    assert _appliance_resource_kind(IDENTITY_FSID) == "secret"
+    assert _appliance_resource_kind(IDENTITY_ADMIN) == "secret"
+    assert _appliance_resource_kind("troshka-ceph-mon") == "pvc"
+    assert _appliance_resource_kind("troshka-ceph-osd-0") == "pvc"

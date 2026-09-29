@@ -1712,3 +1712,72 @@ class TestCorrectBootDevicesFromCaptures:
         topo = self._topo(["disk0"])  # both empty — nothing to switch to
         _correct_boot_devices_from_captures(topo, {"disk0": 100, "disk1": 200})
         assert topo["nodes"][0]["data"]["bootDevices"] == ["disk0"]
+
+
+class TestPatternCaptureSonarHelpers:
+    def test_first_content_disk_id(self):
+        from app.services.pattern_service import (
+            _EMPTY_DISK_MAX_BYTES,
+            _first_content_disk_id,
+        )
+
+        disks = [{"node_id": "a"}, {"node_id": "b"}]
+        assert _first_content_disk_id(disks, {"a": 100, "b": 100}) is None
+        assert (
+            _first_content_disk_id(disks, {"a": 100, "b": _EMPTY_DISK_MAX_BYTES + 1})
+            == "b"
+        )
+
+    def test_cluster_operators_all_available(self):
+        from app.services.pattern_service import _cluster_operators_all_available
+
+        assert _cluster_operators_all_available(None) is False
+        assert _cluster_operators_all_available("  28 True False\n") is True
+        assert (
+            _cluster_operators_all_available("  1 True True\n  27 True False\n")
+            is False
+        )
+
+    def test_cluster_s3_capture_configs(self):
+        from app.services.pattern_service import _cluster_s3_capture_configs
+
+        secret, capture = _cluster_s3_capture_configs(
+            {
+                "access_key_id": "ak",
+                "secret_access_key": "sk",
+                "region": "us-east-1",
+                "endpoint": "https://s3.example",
+                "bucket": "b1",
+            }
+        )
+        assert secret["access_key_id"] == "ak"
+        assert capture["bucket"] == "b1"
+        assert capture["credentialsSecret"] == "s3-credentials"
+
+    def test_kv_ceph_devices_or_abort_no_ceph(self):
+        from app.services.pattern_service import _kv_ceph_devices_or_abort
+
+        assert _kv_ceph_devices_or_abort(
+            False, None, None, "ns", "pid", None, None
+        ) == ([], [])
+
+    def test_build_direct_disk_params_skips_iso(self, monkeypatch):
+        from app.services import pattern_service as ps
+
+        monkeypatch.setattr(
+            "app.services.deploy_topology._disk_path",
+            lambda *a, **k: "/tmp/disk.qcow2",
+        )
+        params, meta = ps._build_direct_disk_params(
+            "vm1",
+            [
+                {"id": "d1", "data": {"format": "iso", "size": 1}},
+                {"id": "d2", "data": {"format": "qcow2", "size": 10}},
+            ],
+            "proj",
+            "pat",
+            None,
+            "bucket",
+        )
+        assert len(params) == 1
+        assert meta[0]["disk_id"] == "d2"

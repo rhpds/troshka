@@ -122,6 +122,65 @@ def _inventory_connection_mode(_target_map: dict | None) -> str:
     return "troshka"
 
 
+def _validate_run_inventory(topo: dict, target_map: dict | None) -> None:
+    vm_names = (target_map or {}).get("vm_names")
+    if vm_names:
+        from app.services.workloads.inventory import validate_vm_names
+
+        validate_vm_names(topo, vm_names)
+    elif _should_validate_inventory(target_map):
+        # Never require a bastion — the troshka connection mode execs via the
+        # Troshka API server-side, so no bastion/ProxyJump host is needed.
+        validate_ansible_groups(topo, require_bastion=False)
+
+
+def _merge_kubevirt_ceph_extra_vars(db, host, project, topo: dict, extra_vars: dict):
+    """Stamp projectCeph from TroshkaCeph CR into topo/extra_vars when present."""
+    if getattr(host, "host_type", None) != "kubevirt-cluster":
+        return topo, extra_vars
+    from app.models.provider import Provider
+    from app.services.project_ceph import (
+        build_project_ceph_stamp,
+        fetch_troshka_ceph_cr,
+        merge_project_ceph_extra_vars,
+    )
+    from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
+
+    provider = db.get(Provider, host.provider_id)
+    if provider:
+        _, _, api_client = _get_k8s_clients(provider)
+        from kubernetes import client as k8s_client
+
+        custom_api = k8s_client.CustomObjectsApi(api_client)
+        ns = _project_ns(provider, project.id)
+        ceph_cr = fetch_troshka_ceph_cr(custom_api, ns)
+        if ceph_cr:
+            stamp = build_project_ceph_stamp(
+                namespace=ns,
+                status=ceph_cr.get("status") or {},
+                spec=ceph_cr.get("spec") or {},
+            )
+            topo = dict(topo)
+            topo["projectCeph"] = stamp
+    return topo, merge_project_ceph_extra_vars(topo, extra_vars)
+
+
+def _build_run_extra_vars(
+    item, run, db, host, project, topo: dict
+) -> tuple[dict, dict]:
+    extra_vars = dict(item.extra_vars)
+    if run.extra_vars:
+        extra_vars.update(run.extra_vars)
+    topo, extra_vars = _merge_kubevirt_ceph_extra_vars(
+        db, host, project, topo, extra_vars
+    )
+    # Thread requirements_content to the pod AFTER user vars (HARD REQUIREMENT A)
+    # so user cannot clobber the real collections
+    if item.requirements_content:
+        extra_vars["requirements_content"] = item.requirements_content
+    return topo, extra_vars
+
+
 def run_workload_job(run_id: str) -> None:
     db = SessionLocal()
     try:
@@ -137,16 +196,7 @@ def run_workload_job(run_id: str) -> None:
         key = mint_run_key(db, project)
         topo = project.deployed_topology or project.topology or {}
 
-        # Validate inventory: targeted VM runs validate vm_names instead of AnsibleGroups
-        vm_names = (run.target_map or {}).get("vm_names")
-        if vm_names:
-            from app.services.workloads.inventory import validate_vm_names
-
-            validate_vm_names(topo, vm_names)
-        elif _should_validate_inventory(run.target_map):
-            # Never require a bastion — the troshka connection mode execs via the
-            # Troshka API server-side, so no bastion/ProxyJump host is needed.
-            validate_ansible_groups(topo, require_bastion=False)
+        _validate_run_inventory(topo, run.target_map)
 
         from app.core.config import config
         from app.services.workloads import repo_cache
@@ -159,47 +209,9 @@ def run_workload_job(run_id: str) -> None:
         )
 
         paths = RunPaths()
-        extra_vars = dict(item.extra_vars)
+        topo, extra_vars = _build_run_extra_vars(item, run, db, host, project, topo)
 
-        # Merge user-supplied extra_vars first
-        if run.extra_vars:
-            extra_vars.update(run.extra_vars)
-
-        if getattr(host, "host_type", None) == "kubevirt-cluster":
-            from app.models.provider import Provider
-            from app.services.project_ceph import (
-                build_project_ceph_stamp,
-                fetch_troshka_ceph_cr,
-                merge_project_ceph_extra_vars,
-            )
-            from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
-
-            provider = db.get(Provider, host.provider_id)
-            if provider:
-                _, _, api_client = _get_k8s_clients(provider)
-                from kubernetes import client as k8s_client
-
-                custom_api = k8s_client.CustomObjectsApi(api_client)
-                ns = _project_ns(provider, project.id)
-                ceph_cr = fetch_troshka_ceph_cr(custom_api, ns)
-                if ceph_cr:
-                    stamp = build_project_ceph_stamp(
-                        namespace=ns,
-                        status=ceph_cr.get("status") or {},
-                        spec=ceph_cr.get("spec") or {},
-                    )
-                    topo = dict(topo)
-                    topo["projectCeph"] = stamp
-            extra_vars = merge_project_ceph_extra_vars(topo, extra_vars)
-
-        # Thread requirements_content to the pod AFTER user vars (HARD REQUIREMENT A)
-        # so user cannot clobber the real collections
-        if item.requirements_content:
-            extra_vars["requirements_content"] = item.requirements_content
-
-        # Read stored kubeconfig (targeted by cluster_id if specified, else first)
         kubeconfig = _resolve_kubeconfig(topo, run.target_map)
-
         if _has_ocp(project) and not kubeconfig:
             raise RuntimeError(
                 f"Project {project.id} targets OCP but no admin kubeconfig is "
@@ -217,18 +229,10 @@ def run_workload_job(run_id: str) -> None:
             paths=paths,
         )
 
-        # Resolve scm_ref for agnosticd-v2 clone
         scm_ref = item.scm_ref or repo_cache.default_ref("agnosticd-v2")
-
-        # Runner-pod networking so the pod can resolve/reach the cluster API
-        # (api.<cluster>.local via the project dnsmasq). Works on BOTH providers:
-        # KubeVirt returns cluster NADs + a self-assign-IP prelude + dnsmasq (.2);
-        # troshkad returns podman network entries carrying the gateway dnsmasq (.1)
-        # and an empty prelude (podman does IPAM).
         networks, dns_nameserver, net_prelude = _resolve_pod_networks(
             host, project, topo
         )
-
         command = build_run_command(
             item,
             paths,
@@ -272,7 +276,7 @@ def _resolve_item(db, run):
     return _synthesize_ad_hoc(db, run)
 
 
-def _synthesize_ad_hoc(db, run):
+def _synthesize_ad_hoc(_db, run):
     """Build a ResolvedItem-like object for an ad-hoc single role.
 
     Synthesizes the minimal openshift-workloads extra_vars (``config`` +
@@ -978,6 +982,19 @@ def _check_exit_status_troshkad(host, logs: str, container_name: str) -> str:
     return _infer_status_from_logs(logs)
 
 
+def _exit_code_from_container_statuses(container_statuses) -> int | None:
+    if not container_statuses:
+        return None
+    for cs in container_statuses:
+        terminated = getattr(getattr(cs, "state", None), "terminated", None)
+        if not terminated:
+            continue
+        exit_code = getattr(terminated, "exit_code", None)
+        if exit_code is not None:
+            return exit_code
+    return None
+
+
 def _check_exit_status_kubevirt(host, run_id: str, logs: str) -> str:
     """[LIVE-ENV] Get runner Pod exit code via k8s container status.
 
@@ -993,13 +1010,9 @@ def _check_exit_status_kubevirt(host, run_id: str, logs: str) -> str:
         container_statuses = getattr(
             getattr(pod, "status", None), "container_statuses", None
         )
-        if container_statuses:
-            for cs in container_statuses:
-                terminated = getattr(getattr(cs, "state", None), "terminated", None)
-                if terminated:
-                    exit_code = getattr(terminated, "exit_code", None)
-                    if exit_code is not None:
-                        return "succeeded" if exit_code == 0 else "error"
+        exit_code = _exit_code_from_container_statuses(container_statuses)
+        if exit_code is not None:
+            return "succeeded" if exit_code == 0 else "error"
     except Exception:  # noqa: BLE001
         pass
     return _infer_status_from_logs(logs)

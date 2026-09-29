@@ -64,35 +64,73 @@ def freeze_deployed_cluster_ocp_versions(current: dict, deployed: dict) -> None:
             cluster["ocpVersion"] = frozen
 
 
-def _reconcile_canvas_clusters(
-    canvas_clusters: list,
-    deployed_clusters: list,
-    nodes: list,
-) -> list:
-    stripped_deployed = [_strip_deploy_only(c) for c in deployed_clusters]
-    has_ghost = any(_is_legacy_migration_ghost(c) for c in canvas_clusters)
-    has_real_canvas = any(not _is_legacy_migration_ghost(c) for c in canvas_clusters)
+def _should_drop_ghost(canvas_clusters: list, stripped_deployed: list) -> bool:
     # The legacy ghost (cluster-ocp) is only a synthetic migration artifact worth
     # dropping when a REAL cluster exists to replace it (another canvas cluster or
     # a deployed cluster). When "ocp"/cluster-ocp is the SOLE cluster it is a
     # legitimate single-cluster OCP project (every fresh sno/compact/standard
     # template makes exactly this id) — dropping it deletes the real box + member
     # VM. Only drop the ghost when there is something to replace it.
-    drop_ghost = has_ghost and (has_real_canvas or bool(stripped_deployed))
-    base = (
-        [c for c in canvas_clusters if not _is_legacy_migration_ghost(c)]
-        if drop_ghost
-        else list(canvas_clusters)
-    )
+    has_ghost = any(_is_legacy_migration_ghost(c) for c in canvas_clusters)
+    has_real_canvas = any(not _is_legacy_migration_ghost(c) for c in canvas_clusters)
+    return has_ghost and (has_real_canvas or bool(stripped_deployed))
 
-    if (has_ghost or not base) and stripped_deployed:
-        seen = {c.get("id") for c in base}
-        for dc in stripped_deployed:
-            if dc.get("id") not in seen:
-                base.append(dc)
-                seen.add(dc.get("id"))
 
+def _canvas_cluster_base(canvas_clusters: list, drop_ghost: bool) -> list:
+    if drop_ghost:
+        return [c for c in canvas_clusters if not _is_legacy_migration_ghost(c)]
+    return list(canvas_clusters)
+
+
+def _seed_missing_deployed(base: list, stripped_deployed: list) -> None:
+    seen = {c.get("id") for c in base}
+    for dc in stripped_deployed:
+        if dc.get("id") not in seen:
+            base.append(dc)
+            seen.add(dc.get("id"))
+
+
+def _pick_deployed_for_node(
+    stripped_deployed: list, cid: str, node_id: str
+) -> dict | None:
+    for c in stripped_deployed:
+        if c.get("id") == cid or c.get("nodeId") == node_id:
+            return c
+    return None
+
+
+def _cluster_entry_from_node(
+    node: dict, data: dict, cid: str, dep: dict | None
+) -> dict:
+    dep = dep or {}
+    return {
+        "id": cid,
+        "name": data.get("name") or dep.get("name") or cid,
+        "nodeId": node.get("id"),
+        "type": data.get("type") or dep.get("type") or "sno",
+        "controlPlane": (
+            data.get("controlPlane")
+            if data.get("controlPlane") is not None
+            else dep.get("controlPlane", 1)
+        ),
+        "workers": (
+            data.get("workers")
+            if data.get("workers") is not None
+            else dep.get("workers", 0)
+        ),
+        "baseDomain": data.get("baseDomain") or dep.get("baseDomain") or "local",
+        "apiVip": data.get("apiVip") or dep.get("apiVip"),
+        "ingressVip": data.get("ingressVip") or dep.get("ingressVip"),
+        "ocpVersion": dep.get("ocpVersion") or "",
+        "networkIds": dep.get("networkIds") or data.get("networkIds") or [],
+    }
+
+
+def _append_missing_cluster_nodes(
+    base: list, nodes: list, stripped_deployed: list
+) -> None:
     by_node = {c.get("nodeId"): c for c in base if c.get("nodeId")}
+    base_ids = {c.get("id") for c in base}
     for node in nodes:
         if node.get("type") != "clusterNode":
             continue
@@ -100,41 +138,23 @@ def _reconcile_canvas_clusters(
             continue
         data = node.get("data") or {}
         cid = data.get("clusterId")
-        if not cid or node.get("id") in by_node or cid in {c.get("id") for c in base}:
+        if not cid or node.get("id") in by_node or cid in base_ids:
             continue
-        dep = next(
-            (
-                c
-                for c in stripped_deployed
-                if c.get("id") == cid or c.get("nodeId") == node.get("id")
-            ),
-            None,
-        )
-        entry = {
-            "id": cid,
-            "name": data.get("name") or (dep or {}).get("name") or cid,
-            "nodeId": node.get("id"),
-            "type": data.get("type") or (dep or {}).get("type") or "sno",
-            "controlPlane": (
-                data.get("controlPlane")
-                if data.get("controlPlane") is not None
-                else (dep or {}).get("controlPlane", 1)
-            ),
-            "workers": (
-                data.get("workers")
-                if data.get("workers") is not None
-                else (dep or {}).get("workers", 0)
-            ),
-            "baseDomain": data.get("baseDomain")
-            or (dep or {}).get("baseDomain")
-            or "local",
-            "apiVip": data.get("apiVip") or (dep or {}).get("apiVip"),
-            "ingressVip": data.get("ingressVip") or (dep or {}).get("ingressVip"),
-            "ocpVersion": (dep or {}).get("ocpVersion") or "",
-            "networkIds": (dep or {}).get("networkIds") or data.get("networkIds") or [],
-        }
+        dep = _pick_deployed_for_node(stripped_deployed, cid, node.get("id"))
+        entry = _cluster_entry_from_node(node, data, cid, dep)
         base.append(entry)
+        by_node[entry["nodeId"]] = entry
+        base_ids.add(cid)
 
+
+def _sync_one_cluster_counts(cluster: dict, data: dict) -> None:
+    if data.get("controlPlane") is not None:
+        cluster["controlPlane"] = data["controlPlane"]
+    if data.get("workers") is not None:
+        cluster["workers"] = data["workers"]
+
+
+def _sync_cluster_counts_from_nodes(base: list, nodes: list) -> None:
     for node in nodes:
         if node.get("type") != "clusterNode":
             continue
@@ -145,14 +165,49 @@ def _reconcile_canvas_clusters(
         cluster = next((c for c in base if c.get("id") == cid), None)
         if not cluster:
             continue
-        if data.get("controlPlane") is not None:
-            cluster["controlPlane"] = data["controlPlane"]
-        if data.get("workers") is not None:
-            cluster["workers"] = data["workers"]
+        _sync_one_cluster_counts(cluster, data)
+
+
+def _reconcile_canvas_clusters(
+    canvas_clusters: list,
+    deployed_clusters: list,
+    nodes: list,
+) -> list:
+    stripped_deployed = [_strip_deploy_only(c) for c in deployed_clusters]
+    drop_ghost = _should_drop_ghost(canvas_clusters, stripped_deployed)
+    base = _canvas_cluster_base(canvas_clusters, drop_ghost)
+
+    has_ghost = any(_is_legacy_migration_ghost(c) for c in canvas_clusters)
+    if (has_ghost or not base) and stripped_deployed:
+        _seed_missing_deployed(base, stripped_deployed)
+
+    _append_missing_cluster_nodes(base, nodes, stripped_deployed)
+    _sync_cluster_counts_from_nodes(base, nodes)
 
     if not drop_ghost:
         return base
     return [c for c in base if not _is_legacy_migration_ghost(c)]
+
+
+def _resolve_ghost_member_cid(
+    data: dict, clusters: list, deployed_ids: set[str], inferred: str | None
+) -> str | None:
+    """Resolve a member still stamped with the legacy ghost cluster id."""
+    if not any(not _is_legacy_migration_ghost(c) for c in clusters):
+        return None
+    name = str(data.get("name") or "")
+    if re.match(r"^cp-\d+$", name):
+        sno = [
+            c
+            for c in clusters
+            if c.get("type") == "sno" and not _is_legacy_migration_ghost(c)
+        ]
+        deployed_sno = [c for c in sno if c.get("id") in deployed_ids]
+        if len(deployed_sno) == 1:
+            return deployed_sno[0].get("id")
+        if len(sno) == 1:
+            return sno[0].get("id")
+    return inferred
 
 
 def _resolve_member_cluster_id(
@@ -166,27 +221,47 @@ def _resolve_member_cluster_id(
     if inferred and inferred in by_id:
         return inferred
 
-    if cid == LEGACY_GHOST_CLUSTER_ID and any(
-        not _is_legacy_migration_ghost(c) for c in clusters
-    ):
-        name = str(data.get("name") or "")
-        if re.match(r"^cp-\d+$", name):
-            sno = [
-                c
-                for c in clusters
-                if c.get("type") == "sno" and not _is_legacy_migration_ghost(c)
-            ]
-            deployed_sno = [c for c in sno if c.get("id") in deployed_ids]
-            if len(deployed_sno) == 1:
-                return deployed_sno[0].get("id")
-            if len(sno) == 1:
-                return sno[0].get("id")
-        if inferred:
-            return inferred
+    if cid == LEGACY_GHOST_CLUSTER_ID:
+        ghost_cid = _resolve_ghost_member_cid(data, clusters, deployed_ids, inferred)
+        if ghost_cid:
+            return ghost_cid
 
     if cid in by_id:
         return cid
     return inferred if inferred in by_id else None
+
+
+def _heal_vm_node_membership(
+    node: dict, by_id: dict, clusters: list, deployed_ids: set[str]
+) -> None:
+    data = node.get("data") or {}
+    cid = _resolve_member_cluster_id(node, clusters, deployed_ids)
+    cluster = by_id.get(cid) if cid else None
+    if not cluster:
+        return
+    node["parentId"] = cluster.get("nodeId")
+    data["clusterId"] = cluster.get("id")
+
+
+def _heal_storage_node_membership(
+    node: dict,
+    node_by_id: dict,
+    by_id: dict,
+    clusters: list,
+    deployed_ids: set[str],
+) -> None:
+    if node.get("parentId") != LEGACY_GHOST_NODE_ID:
+        return
+    if not any(not _is_legacy_migration_ghost(c) for c in clusters):
+        return
+    owner_id = re.sub(r"-disk-\d+$", "", node.get("id", ""))
+    owner = node_by_id.get(owner_id)
+    if not owner:
+        return
+    cid = _resolve_member_cluster_id(owner, clusters, deployed_ids)
+    cluster = by_id.get(cid) if cid else None
+    if cluster:
+        node["parentId"] = cluster.get("nodeId")
 
 
 def _heal_membership(nodes: list, clusters: list, deployed_clusters: list) -> None:
@@ -197,29 +272,12 @@ def _heal_membership(nodes: list, clusters: list, deployed_clusters: list) -> No
     for node in nodes:
         ntype = node.get("type")
         data = node.get("data") or {}
-
         if ntype == "vmNode" and (data.get("os") == "rhcos" or data.get("clusterId")):
-            cid = _resolve_member_cluster_id(node, clusters, deployed_ids)
-            cluster = by_id.get(cid) if cid else None
-            if not cluster:
-                continue
-            node["parentId"] = cluster.get("nodeId")
-            data["clusterId"] = cluster.get("id")
-            continue
-
-        if (
-            ntype == "storageNode"
-            and node.get("parentId") == LEGACY_GHOST_NODE_ID
-            and any(not _is_legacy_migration_ghost(c) for c in clusters)
-        ):
-            owner_id = re.sub(r"-disk-\d+$", "", node.get("id", ""))
-            owner = node_by_id.get(owner_id)
-            if not owner:
-                continue
-            cid = _resolve_member_cluster_id(owner, clusters, deployed_ids)
-            cluster = by_id.get(cid) if cid else None
-            if cluster:
-                node["parentId"] = cluster.get("nodeId")
+            _heal_vm_node_membership(node, by_id, clusters, deployed_ids)
+        elif ntype == "storageNode":
+            _heal_storage_node_membership(
+                node, node_by_id, by_id, clusters, deployed_ids
+            )
 
 
 def _order_parents_before_children(nodes: list) -> list:

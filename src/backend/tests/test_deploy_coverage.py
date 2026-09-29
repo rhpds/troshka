@@ -1792,7 +1792,7 @@ from app.services.deploy_service import _deploy_cache_images_and_pxe
 
 class TestDeployCacheImagesAndPxe:
     @patch("app.services.deploy_service._setup_pxe_via_troshkad")
-    @patch("app.services.deploy_service.cache_library_images")
+    @patch("app.services.deploy_service.cache_library_images", return_value=[])
     @patch("app.services.deploy_service._update_deploy_progress")
     @patch("app.services.deploy_service._checkpoint")
     def test_calls_cache_and_pxe(self, mock_cp, mock_prog, mock_cache, mock_pxe):
@@ -1999,7 +1999,17 @@ class TestDeploySingleHostExecute:
         host = _make_host()
         topology = {"nodes": []}
         _deploy_single_host_execute(
-            s, host, PROJECT_ID, project, topology, {}, None, None, None, True, None, []
+            s,
+            host,
+            PROJECT_ID,
+            project,
+            topology,
+            {},
+            None,
+            None,
+            None,
+            True,
+            {"lb_config": None, "external_ips": []},
         )
         mock_complete.assert_called_once()
         mock_start.assert_called_once()
@@ -2029,7 +2039,17 @@ class TestDeploySingleHostExecute:
         project = MagicMock()
         host = _make_host()
         _deploy_single_host_execute(
-            s, host, PROJECT_ID, project, {}, {}, None, None, None, True, None, []
+            s,
+            host,
+            PROJECT_ID,
+            project,
+            {},
+            {},
+            None,
+            None,
+            None,
+            True,
+            {"lb_config": None, "external_ips": []},
         )
         mock_err.assert_called_once()
 
@@ -3146,7 +3166,7 @@ class TestDeployVmsOnHost:
     @patch("app.services.deploy_service._create_multihost_disks", return_value=None)
     @patch("app.services.deploy_service._create_seed_isos_via_troshkad")
     @patch("app.services.deploy_service._filter_topology_for_host")
-    @patch("app.services.deploy_service.cache_library_images")
+    @patch("app.services.deploy_service.cache_library_images", return_value=[])
     @patch("app.services.deploy_service._get_host_pool", return_value=None)
     @patch("app.services.deploy_service._update_deploy_progress")
     def test_success(
@@ -3179,7 +3199,7 @@ class TestDeployVmsOnHost:
     )
     @patch("app.services.deploy_service._create_seed_isos_via_troshkad")
     @patch("app.services.deploy_service._filter_topology_for_host")
-    @patch("app.services.deploy_service.cache_library_images")
+    @patch("app.services.deploy_service.cache_library_images", return_value=[])
     @patch("app.services.deploy_service._get_host_pool", return_value=None)
     @patch("app.services.deploy_service._update_deploy_progress")
     def test_disk_error(
@@ -3199,7 +3219,7 @@ class TestDeployVmsOnHost:
     @patch("app.services.deploy_service._create_multihost_disks", return_value=None)
     @patch("app.services.deploy_service._create_seed_isos_via_troshkad")
     @patch("app.services.deploy_service._filter_topology_for_host")
-    @patch("app.services.deploy_service.cache_library_images")
+    @patch("app.services.deploy_service.cache_library_images", return_value=[])
     @patch("app.services.deploy_service._get_host_pool", return_value=None)
     @patch("app.services.deploy_service._update_deploy_progress")
     @patch("app.services.clock_service.compute_clock_offset", return_value=-3600)

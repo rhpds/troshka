@@ -95,55 +95,65 @@ def extract_networks(topology):
     return networks
 
 
+def _resolve_vm_firmware(data):
+    firmware = data.get("firmware", "bios")
+    if firmware == "uefi" and data.get("secureBoot"):
+        return "uefi-secure"
+    return firmware
+
+
+def _vm_cdrom_from_data(data):
+    if not data.get("pxeBootIsoId"):
+        return {}
+    return {
+        "libraryIsoId": data.get("pxeBootIsoId", ""),
+        "s3Path": data.get("pxeBootIsoS3Path", ""),
+    }
+
+
+def _build_vm_entry(data, node):
+    vm = {
+        "id": data.get("id", node.get("id", "")),
+        "name": data.get("label", ""),
+        "cpus": data.get("cpus") or data.get("vcpus", 2),
+        "memory": data.get("memory") or data.get("ram", 4) * 1024,
+        "firmware": _resolve_vm_firmware(data),
+        "smbiosUuid": data.get("domainUuid", ""),
+        "os": data.get("os", ""),
+        "powerOnAtDeploy": data.get("powerOnAtDeploy", True),
+        "deferOcpInstall": data.get("deferOcpInstall", False),
+        "clusterId": data.get("clusterId", ""),
+        "disks": data.get("disks", []),
+        "nics": data.get("nics", []),
+        "cloudInit": {
+            "userData": data.get("ciGeneratedUserData") or data.get("ciUserData", ""),
+            "networkConfig": data.get("ciNetworkConfig", ""),
+        },
+        "recertEnabled": data.get("recertEnabled", False),
+        "bmcEnabled": data.get("bmcEnabled", False),
+        "bmcIp": data.get("bmcIp", ""),
+        "bootOrder": data.get("bootDevices", []),
+        "videoModel": data.get("videoModel", "virtio"),
+        "inputModel": data.get("inputModel", "virtio"),
+        "serialModel": data.get("serialModel", "isa"),
+        "serialConsole": data.get("serialConsole", True),
+        "serialExecType": data.get("serialExecType", ""),
+        "cdrom": _vm_cdrom_from_data(data),
+        "guestfishCommands": data.get("guestfishCommands", []),
+    }
+    if data.get("headless") is not None:
+        vm["headless"] = bool(data.get("headless"))
+    if data.get("legacyRootBus"):
+        vm["legacyRootBus"] = True
+    return vm
+
+
 def extract_vms(topology):
-    nodes = topology.get("nodes", [])
     vms = []
-    for node in nodes:
-        data = node.get("data", {})
-        if node.get("type") == "vmNode":
-            firmware = data.get("firmware", "bios")
-            if firmware == "uefi" and data.get("secureBoot"):
-                firmware = "uefi-secure"
-            vm = {
-                "id": data.get("id", node.get("id", "")),
-                "name": data.get("label", ""),
-                "cpus": data.get("cpus") or data.get("vcpus", 2),
-                "memory": data.get("memory") or data.get("ram", 4) * 1024,
-                "firmware": firmware,
-                "smbiosUuid": data.get("domainUuid", ""),
-                "os": data.get("os", ""),
-                "powerOnAtDeploy": data.get("powerOnAtDeploy", True),
-                "deferOcpInstall": data.get("deferOcpInstall", False),
-                "clusterId": data.get("clusterId", ""),
-                "disks": data.get("disks", []),
-                "nics": data.get("nics", []),
-                "cloudInit": {
-                    "userData": data.get("ciGeneratedUserData")
-                    or data.get("ciUserData", ""),
-                    "networkConfig": data.get("ciNetworkConfig", ""),
-                },
-                "recertEnabled": data.get("recertEnabled", False),
-                "bmcEnabled": data.get("bmcEnabled", False),
-                "bmcIp": data.get("bmcIp", ""),
-                "bootOrder": data.get("bootDevices", []),
-                "videoModel": data.get("videoModel", "virtio"),
-                "inputModel": data.get("inputModel", "virtio"),
-                "serialModel": data.get("serialModel", "isa"),
-                "serialConsole": data.get("serialConsole", True),
-                "serialExecType": data.get("serialExecType", ""),
-                "cdrom": {},
-                "guestfishCommands": data.get("guestfishCommands", []),
-            }
-            if data.get("headless") is not None:
-                vm["headless"] = bool(data.get("headless"))
-            if data.get("legacyRootBus"):
-                vm["legacyRootBus"] = True
-            if data.get("pxeBootIsoId"):
-                vm["cdrom"] = {
-                    "libraryIsoId": data.get("pxeBootIsoId", ""),
-                    "s3Path": data.get("pxeBootIsoS3Path", ""),
-                }
-            vms.append(vm)
+    for node in topology.get("nodes", []):
+        if node.get("type") != "vmNode":
+            continue
+        vms.append(_build_vm_entry(node.get("data", {}), node))
     return vms
 
 
@@ -182,6 +192,33 @@ def container_disk_pvc_name(ctr_id, disk_node_id):
     return f"pod-{ctr_id[:8]}-disk-{disk_node_id[:8]}"
 
 
+def _add_disk_mount(ctr_id, disk_node_id, node_map, seen, mounts):
+    key = (ctr_id, disk_node_id)
+    if key in seen:
+        return
+    seen.add(key)
+    node = node_map.get(disk_node_id, {})
+    size = node.get("data", {}).get("size", 5)
+    mounts.append((ctr_id, disk_node_id, int(size) if size else 5))
+
+
+def _iter_disk_node_ids(mount_lists):
+    for mounts in mount_lists:
+        for mount in mounts or []:
+            disk_id = mount.get("diskNodeId")
+            if disk_id:
+                yield disk_id
+
+
+def _disk_node_ids_for_container(ctr):
+    mount_lists = [ctr.get("mounts", [])]
+    for ic in ctr.get("initContainers", []):
+        mount_lists.append(ic.get("mounts", []))
+    for pc in ctr.get("podContainers", []):
+        mount_lists.append(pc.get("mounts", []))
+    return _iter_disk_node_ids(mount_lists)
+
+
 def collect_container_disk_mounts(topology):
     """Return unique (container_id, disk_node_id, size_gb) tuples from mount refs."""
     containers = extract_containers(topology)
@@ -191,29 +228,9 @@ def collect_container_disk_mounts(topology):
     node_map = {n["id"]: n for n in topology.get("nodes", [])}
     seen = set()
     mounts = []
-
-    def _add_disk(ctr_id, disk_node_id):
-        key = (ctr_id, disk_node_id)
-        if key in seen:
-            return
-        seen.add(key)
-        node = node_map.get(disk_node_id, {})
-        size = node.get("data", {}).get("size", 5)
-        mounts.append((ctr_id, disk_node_id, int(size) if size else 5))
-
     for ctr in containers:
-        ctr_id = ctr["id"]
-        for mount in ctr.get("mounts", []):
-            if mount.get("diskNodeId"):
-                _add_disk(ctr_id, mount["diskNodeId"])
-        for ic in ctr.get("initContainers", []):
-            for mount in ic.get("mounts", []):
-                if mount.get("diskNodeId"):
-                    _add_disk(ctr_id, mount["diskNodeId"])
-        for pc in ctr.get("podContainers", []):
-            for mount in pc.get("mounts", []):
-                if mount.get("diskNodeId"):
-                    _add_disk(ctr_id, mount["diskNodeId"])
+        for disk_node_id in _disk_node_ids_for_container(ctr):
+            _add_disk_mount(ctr["id"], disk_node_id, node_map, seen, mounts)
     return mounts
 
 
@@ -336,6 +353,41 @@ def _network_dot2(cidr):
     return f"{octets[0]}.{octets[1]}.{octets[2]}.2"
 
 
+def _is_lab_network_data(data):
+    if data.get("subtype", "") in ("gateway", "router", "loadbalancer"):
+        return False
+    if data.get("networkType") == "bmc":
+        return False
+    return True
+
+
+def _lab_cidr_from_node(node):
+    if node.get("type") != "networkNode":
+        return ""
+    data = node.get("data", {})
+    if not _is_lab_network_data(data):
+        return ""
+    return data.get("cidr", "") or ""
+
+
+def _resolve_showroom_dns_cidr(topology, dns_net_name):
+    """Pick the CIDR used for showroom DNS (.2). Explicit dnsNetwork name wins."""
+    named_cidr = dns_flag_cidr = first_cidr = ""
+    for node in topology.get("nodes", []):
+        cidr = _lab_cidr_from_node(node)
+        if not cidr:
+            continue
+        data = node.get("data", {})
+        first_cidr = first_cidr or cidr
+        if dns_net_name and data.get("name") == dns_net_name:
+            named_cidr = cidr
+        if not dns_flag_cidr and data.get("dns"):
+            dns_flag_cidr = cidr
+    if dns_net_name:
+        return named_cidr  # explicit config wins; never guess
+    return dns_flag_cidr or first_cidr
+
+
 def _dns_nameserver_for_showroom(topology, ctr):
     """Managed DNS nameserver (lab dnsmasq ``.2``) for a showroom pod so its
     ``oc``/wetty resolve lab names via the project dnsmasq, NOT the host OCP
@@ -346,26 +398,35 @@ def _dns_nameserver_for_showroom(topology, ctr):
     guess. Only when it is unset do we fall back to a ``dns:True`` lab net, then
     the first lab net."""
     dns_net_name = str(ctr.get("dnsNetwork") or "").strip()
-    named_cidr = dns_flag_cidr = first_cidr = ""
-    for node in topology.get("nodes", []):
-        if node.get("type") != "networkNode":
+    return _network_dot2(_resolve_showroom_dns_cidr(topology, dns_net_name))
+
+
+def _should_skip_showroom_enrich(ctr):
+    if not _is_showroom_container(ctr):
+        return True
+    return not ctr.get("infraNetworking") and bool(ctr.get("nics"))
+
+
+def _append_missing_lab_nics(ctr, lab_nets, used_ips):
+    existing_refs = {n.get("networkRef") for n in ctr.get("nics", [])}
+    new_nics = list(ctr.get("nics", []))
+    for net_id, cidr in lab_nets:
+        net_ref = f"net-{net_id[:8]}"
+        if net_ref in existing_refs:
             continue
-        data = node.get("data", {})
-        if data.get("subtype", "") in ("gateway", "router", "loadbalancer"):
-            continue
-        if data.get("networkType") == "bmc":
-            continue
-        cidr = data.get("cidr", "")
-        if not cidr:
-            continue
-        first_cidr = first_cidr or cidr
-        if dns_net_name and data.get("name") == dns_net_name:
-            named_cidr = cidr
-        if not dns_flag_cidr and data.get("dns"):
-            dns_flag_cidr = cidr
-    if dns_net_name:
-        return _network_dot2(named_cidr)  # explicit config wins; never guess
-    return _network_dot2(dns_flag_cidr or first_cidr)
+        ip = _showroom_ip_for_cidr(cidr, used_ips)
+        if ip:
+            used_ips.add(ip)
+        new_nics.append(
+            {
+                "id": f"infra-{net_id[:8]}",
+                "networkRef": net_ref,
+                "ip": ip,
+                "cidr": cidr,
+                "model": "virtio",
+            }
+        )
+    ctr["nics"] = new_nics
 
 
 def enrich_showroom_infra_networks(topology, containers):
@@ -375,32 +436,10 @@ def enrich_showroom_infra_networks(topology, containers):
         return
 
     used_ips = _collect_used_ips(topology)
-
     for ctr in containers:
-        if not _is_showroom_container(ctr):
+        if _should_skip_showroom_enrich(ctr):
             continue
-        if not ctr.get("infraNetworking") and ctr.get("nics"):
-            continue
-
-        existing_refs = {n.get("networkRef") for n in ctr.get("nics", [])}
-        new_nics = list(ctr.get("nics", []))
-        for net_id, cidr in lab_nets:
-            net_ref = f"net-{net_id[:8]}"
-            if net_ref in existing_refs:
-                continue
-            ip = _showroom_ip_for_cidr(cidr, used_ips)
-            if ip:
-                used_ips.add(ip)
-            new_nics.append(
-                {
-                    "id": f"infra-{net_id[:8]}",
-                    "networkRef": net_ref,
-                    "ip": ip,
-                    "cidr": cidr,
-                    "model": "virtio",
-                }
-            )
-        ctr["nics"] = new_nics
+        _append_missing_lab_nics(ctr, lab_nets, used_ips)
         ns = _dns_nameserver_for_showroom(topology, ctr)
         if ns:
             ctr["dnsNameserver"] = ns
@@ -473,48 +512,44 @@ def _network_dns_enabled(data):
     return bool((data or {}).get("dns") or (data or {}).get("subtype") == "dns")
 
 
+def _is_eligible_egress_network(net_id, nodes_by_id):
+    node = nodes_by_id.get(net_id)
+    if not node or _is_post_install_network_node(node):
+        return False
+    if node.get("type") != "networkNode":
+        return False
+    if (node.get("data") or {}).get("subtype") == "gateway":
+        return False
+    return True
+
+
+def _pick_egress_from(candidates, nodes_by_id, *, dns_only=False):
+    for net_id in candidates:
+        if not _is_eligible_egress_network(net_id, nodes_by_id):
+            continue
+        data = nodes_by_id[net_id].get("data") or {}
+        if dns_only and not _network_dns_enabled(data):
+            continue
+        return net_id
+    return ""
+
+
 def cluster_egress_network_id(cluster, topology):
     """Pick one egress network when multiple are gateway-connected (mirrors backend)."""
     if not cluster:
         return ""
     nodes_by_id = {n["id"]: n for n in topology.get("nodes", [])}
     gw_ids = gateway_connected_network_ids(topology)
-
-    def eligible(net_id):
-        node = nodes_by_id.get(net_id)
-        if not node or _is_post_install_network_node(node):
-            return None
-        if node.get("type") != "networkNode":
-            return None
-        if (node.get("data") or {}).get("subtype") == "gateway":
-            return None
-        return net_id
-
-    for net_id in cluster.get("networkIds") or []:
-        if net_id not in gw_ids:
-            continue
-        if not eligible(net_id):
-            continue
-        if _network_dns_enabled((nodes_by_id[net_id].get("data") or {})):
-            return net_id
-
-    for net_id in cluster.get("networkIds") or []:
-        if net_id in gw_ids and eligible(net_id):
-            return net_id
-
-    for net_id in sorted(gw_ids):
-        if not eligible(net_id):
-            continue
-        if _network_dns_enabled((nodes_by_id[net_id].get("data") or {})):
-            return net_id
-
-    for net_id in sorted(gw_ids):
-        if eligible(net_id):
-            return net_id
-    return ""
+    cluster_gw = [n for n in (cluster.get("networkIds") or []) if n in gw_ids]
+    return (
+        _pick_egress_from(cluster_gw, nodes_by_id, dns_only=True)
+        or _pick_egress_from(cluster_gw, nodes_by_id)
+        or _pick_egress_from(sorted(gw_ids), nodes_by_id, dns_only=True)
+        or _pick_egress_from(sorted(gw_ids), nodes_by_id)
+    )
 
 
-def install_nics_for_vm(vm, nic_network_map, topology):
+def install_nics_for_vm(vm, _nic_network_map, _topology):
     """NICs to attach at VM deploy time.
 
     Deferred workers need every canvas NIC (cluster + migration for CCLM).
@@ -656,32 +691,52 @@ def _apply_snapshot_disk_source(disk: dict, sd: dict, fmt: str, central: bool) -
         }
 
 
+def _build_iso_cdrom(sd, central, source_size_gb):
+    resolved = sd.get("resolvedS3Path", "")
+    if not resolved and sd.get("libraryItemId"):
+        # Refuse to guess a key: a wrong library/<id>.iso 404-crashloops CDI.
+        logger.warning(
+            "ISO %s has no resolvedS3Path; refusing to guess an S3 key "
+            "(would 404-crashloop CDI). Leaving cdrom without a source.",
+            sd.get("libraryItemId", ""),
+        )
+    cdrom = {
+        "libraryIsoId": sd.get("libraryItemId", ""),
+        "s3Path": resolved,
+        "central": central,
+    }
+    if source_size_gb > 0:
+        cdrom["sourceSizeGb"] = source_size_gb
+    return {"cdrom": cdrom}
+
+
+def _attach_disk_source(disk, sd, fmt, central, source_type):
+    if source_type == "pattern":
+        _apply_pattern_disk_source(disk, sd, central)
+        return
+    if source_type == "library":
+        if not _apply_library_disk_source(disk, sd, fmt, central):
+            disk["blank"] = True
+        return
+    if source_type == "snapshot":
+        if sd.get("resolvedS3Path"):
+            _apply_snapshot_disk_source(disk, sd, fmt, central)
+        else:
+            disk["blank"] = True
+        return
+    disk["blank"] = True
+
+
 def _build_disk_from_storage(sd, storage_id, bus="virtio", rotation_rate=None):
     """Build a disk dict from storage node data with pattern/library/blank source."""
     fmt = sd.get("format", "qcow2")
     size_gb = sd.get("size", sd.get("sizeGb", 20))
     source_type = sd.get("source", "")
     central = sd.get("centralSource", False)
-
     source_size_gb = int(sd.get("sourceSizeGb", 0) or 0)
 
     if fmt == "iso":
-        resolved = sd.get("resolvedS3Path", "")
-        if not resolved and sd.get("libraryItemId"):
-            # Refuse to guess a key: a wrong library/<id>.iso 404-crashloops CDI.
-            logger.warning(
-                "ISO %s has no resolvedS3Path; refusing to guess an S3 key "
-                "(would 404-crashloop CDI). Leaving cdrom without a source.",
-                sd.get("libraryItemId", ""),
-            )
-        cdrom = {
-            "libraryIsoId": sd.get("libraryItemId", ""),
-            "s3Path": resolved,
-            "central": central,
-        }
-        if source_size_gb > 0:
-            cdrom["sourceSizeGb"] = source_size_gb
-        return {"cdrom": cdrom}
+        return _build_iso_cdrom(sd, central, source_size_gb)
 
     disk = {
         "id": storage_id,
@@ -694,19 +749,7 @@ def _build_disk_from_storage(sd, storage_id, bus="virtio", rotation_rate=None):
     if rotation_rate is not None:
         disk["rotationRate"] = rotation_rate
 
-    if source_type == "pattern":
-        _apply_pattern_disk_source(disk, sd, central)
-    elif source_type == "library":
-        if not _apply_library_disk_source(disk, sd, fmt, central):
-            disk["blank"] = True
-    elif source_type == "snapshot":
-        if sd.get("resolvedS3Path"):
-            _apply_snapshot_disk_source(disk, sd, fmt, central)
-        else:
-            disk["blank"] = True
-    else:
-        disk["blank"] = True
-
+    _attach_disk_source(disk, sd, fmt, central, source_type)
     return {"disk": disk}
 
 
@@ -809,6 +852,54 @@ def _bogus_mac_for_ip(ip):
     return "02:00:%02x:%02x:%02x:%02x" % (parts[0], parts[1], parts[2], parts[3])
 
 
+def _cluster_vip_pairs(data):
+    vips = [
+        (label, str(data.get(key) or "").strip())
+        for label, key in (("api", "apiVip"), ("ingress", "ingressVip"))
+    ]
+    return [(label, vip) for label, vip in vips if vip]
+
+
+def _cluster_member_ids(nodes, boundary_id):
+    return {
+        n.get("id")
+        for n in nodes
+        if n.get("type") == "vmNode" and n.get("parentId") == boundary_id
+    }
+
+
+def _networks_for_members(edges, members, net_node_ids):
+    cluster_nets = set()
+    for edge in edges:
+        src, tgt = edge.get("source", ""), edge.get("target", "")
+        if src in members and tgt in net_node_ids:
+            cluster_nets.add(tgt)
+        elif tgt in members and src in net_node_ids:
+            cluster_nets.add(src)
+    return cluster_nets
+
+
+def _append_vip_leases(network_leases, cluster_nets, vips, name):
+    for net_id in cluster_nets:
+        leases = network_leases.setdefault(net_id, [])
+        # Seed with IPs already claimed by real VM NIC leases: a VIP equal to
+        # a node's own IP (SNO: api==ingress==the single node's IP) is already
+        # reserved, and api==ingress collapse to one — a duplicate dhcp-host
+        # for the same address makes dnsmasq exit 1 and fails network setup.
+        existing = {lease.get("ip") for lease in leases}
+        for label, vip in vips:
+            if vip in existing:
+                continue
+            existing.add(vip)
+            leases.append(
+                {
+                    "mac": _bogus_mac_for_ip(vip),
+                    "ip": vip,
+                    "hostname": f"{name}-{label}",
+                }
+            )
+
+
 def _add_cluster_vip_leases(nodes, edges, network_leases):
     """Reserve each OCP cluster's apiVip/ingressVip with a bogus MAC on the
     network its members attach to, so dnsmasq keeps the VIPs out of the dynamic
@@ -821,46 +912,16 @@ def _add_cluster_vip_leases(nodes, edges, network_leases):
         if boundary.get("type") != "clusterNode":
             continue
         data = boundary.get("data", {})
-        vips = [
-            (label, str(data.get(key) or "").strip())
-            for label, key in (("api", "apiVip"), ("ingress", "ingressVip"))
-        ]
-        vips = [(label, vip) for label, vip in vips if vip]
+        vips = _cluster_vip_pairs(data)
         if not vips:
             continue
-        members = {
-            n.get("id")
-            for n in nodes
-            if n.get("type") == "vmNode" and n.get("parentId") == boundary.get("id")
-        }
+        members = _cluster_member_ids(nodes, boundary.get("id"))
         if not members:
             continue
-        cluster_nets = set()
-        for edge in edges:
-            src, tgt = edge.get("source", ""), edge.get("target", "")
-            if src in members and tgt in net_node_ids:
-                cluster_nets.add(tgt)
-            elif tgt in members and src in net_node_ids:
-                cluster_nets.add(src)
-        name = data.get("name", "cluster")
-        for net_id in cluster_nets:
-            leases = network_leases.setdefault(net_id, [])
-            # Seed with IPs already claimed by real VM NIC leases: a VIP equal to
-            # a node's own IP (SNO: api==ingress==the single node's IP) is already
-            # reserved, and api==ingress collapse to one — a duplicate dhcp-host
-            # for the same address makes dnsmasq exit 1 and fails network setup.
-            existing = {lease.get("ip") for lease in leases}
-            for label, vip in vips:
-                if vip in existing:
-                    continue
-                existing.add(vip)
-                leases.append(
-                    {
-                        "mac": _bogus_mac_for_ip(vip),
-                        "ip": vip,
-                        "hostname": f"{name}-{label}",
-                    }
-                )
+        cluster_nets = _networks_for_members(edges, members, net_node_ids)
+        _append_vip_leases(
+            network_leases, cluster_nets, vips, data.get("name", "cluster")
+        )
 
 
 def build_static_leases(topology):
@@ -885,6 +946,27 @@ def build_static_leases(topology):
     return network_leases
 
 
+def _ceph_ip_hostnames(data):
+    """Yield (ip, hostname) for mon + OSD IPs on a cephClusterNode."""
+    ceph_ips = [str(data.get("labIp") or "").strip(), *(data.get("osdIps") or [])]
+    for idx, ip in enumerate(ceph_ips):
+        if not ip:
+            continue
+        label = "ceph-mon" if idx == 0 else f"ceph-osd-{idx - 1}"
+        yield ip, label
+
+
+def _reserve_ips_on_network(network_leases, net_id, ip_hostnames):
+    existing = {lease["ip"] for lease in network_leases.get(net_id, [])}
+    for ip, hostname in ip_hostnames:
+        if not ip or ip in existing:
+            continue
+        existing.add(ip)
+        network_leases.setdefault(net_id, []).append(
+            {"mac": _bogus_mac_for_ip(ip), "ip": ip, "hostname": hostname}
+        )
+
+
 def _add_ceph_leases(nodes, network_leases):
     """Reserve a Ceph appliance's mon labIp + OSD IPs (bogus MAC) on its network
     so dnsmasq keeps them out of the dynamic pool. Mirrors
@@ -896,16 +978,7 @@ def _add_ceph_leases(nodes, network_leases):
         net_id = str(data.get("networkRef") or "")
         if not net_id:
             continue
-        ceph_ips = [str(data.get("labIp") or "").strip(), *(data.get("osdIps") or [])]
-        existing = {lease["ip"] for lease in network_leases.get(net_id, [])}
-        for idx, ip in enumerate(ceph_ips):
-            if not ip or ip in existing:
-                continue
-            existing.add(ip)
-            label = "ceph-mon" if idx == 0 else f"ceph-osd-{idx - 1}"
-            network_leases.setdefault(net_id, []).append(
-                {"mac": _bogus_mac_for_ip(ip), "ip": ip, "hostname": label}
-            )
+        _reserve_ips_on_network(network_leases, net_id, _ceph_ip_hostnames(data))
 
 
 def _network_nad_for_ref(nodes, network_ref: str) -> tuple[str, str]:
@@ -924,25 +997,38 @@ def _network_nad_for_ref(nodes, network_ref: str) -> tuple[str, str]:
     return "", ""
 
 
+def _edge_other_end(edge, node_id):
+    src, tgt = edge.get("source", ""), edge.get("target", "")
+    if src == node_id:
+        return tgt
+    if tgt == node_id:
+        return src
+    return ""
+
+
+def _cluster_id_from_boundary(node):
+    data = node.get("data", {})
+    return (
+        data.get("clusterId")
+        or data.get("name")
+        or data.get("clusterName")
+        or ""
+    )
+
+
 def _linked_cluster_ids(nodes, edges, ceph_node_id: str) -> list[str]:
     linked: list[str] = []
+    nodes_by_id = {n.get("id"): n for n in nodes}
     for edge in edges:
-        src, tgt = edge.get("source", ""), edge.get("target", "")
-        other = tgt if src == ceph_node_id else src if tgt == ceph_node_id else ""
+        other = _edge_other_end(edge, ceph_node_id)
         if not other:
             continue
-        for node in nodes:
-            if node.get("id") != other or node.get("type") != "clusterNode":
-                continue
-            data = node.get("data", {})
-            cluster_id = (
-                data.get("clusterId")
-                or data.get("name")
-                or data.get("clusterName")
-                or ""
-            )
-            if cluster_id:
-                linked.append(str(cluster_id))
+        node = nodes_by_id.get(other)
+        if not node or node.get("type") != "clusterNode":
+            continue
+        cluster_id = _cluster_id_from_boundary(node)
+        if cluster_id:
+            linked.append(str(cluster_id))
     return linked
 
 

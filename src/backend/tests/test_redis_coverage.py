@@ -1067,9 +1067,9 @@ class TestGetJobInfo:
 
     @patch("app.core.redis.get_redis_raw")
     def test_get_job_info_normalizes_status_enum(self, mock_raw):
-        from enum import Enum
+        from enum import StrEnum
 
-        class JobStatus(str, Enum):
+        class JobStatus(StrEnum):
             STARTED = "started"
 
         mc = _set_redis_mock()

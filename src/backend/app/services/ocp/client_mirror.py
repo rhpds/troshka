@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import urllib.error
 import urllib.request
 from functools import lru_cache
 
@@ -161,7 +160,7 @@ def resolve_okd_scos_tag(ocp_version: str) -> str:
         picked = _pick_okd_scos_tag(tags, major, minor)
         if picked:
             return picked
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError) as exc:
         logger.debug("OKD tag resolve via GitHub failed for %s: %s", key, exc)
     if key in _OKD_TAG_FALLBACK:
         return _OKD_TAG_FALLBACK[key]

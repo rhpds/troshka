@@ -11,6 +11,8 @@ import subprocess
 
 from app.core.config import config
 
+_GIT_FILTER_BLOB_NONE = "--filter=blob:none"
+
 
 def _cfg() -> dict:
     return config.get("workloads", {}) or {}
@@ -55,10 +57,10 @@ def _worktree_dir(repo_key: str, ref: str) -> str:
 def _ensure_mirror(repo_key: str, git_url: str) -> str:
     mirror = _mirror_dir(repo_key)
     if os.path.isdir(mirror):
-        _git("fetch", "-q", "--filter=blob:none", "origin", cwd=mirror)
+        _git("fetch", "-q", _GIT_FILTER_BLOB_NONE, "origin", cwd=mirror)
     else:
         os.makedirs(os.path.dirname(mirror), exist_ok=True)
-        _git("clone", "-q", "--filter=blob:none", "--mirror", git_url, mirror)
+        _git("clone", "-q", _GIT_FILTER_BLOB_NONE, "--mirror", git_url, mirror)
     return mirror
 
 
@@ -67,7 +69,7 @@ def ensure_repo(repo_key: str, git_url: str, ref: str | None) -> str:
     mirror = _ensure_mirror(repo_key, git_url)
     worktree = _worktree_dir(repo_key, ref)
     if os.path.isdir(worktree):
-        _git("fetch", "-q", "--filter=blob:none", "origin", cwd=mirror)
+        _git("fetch", "-q", _GIT_FILTER_BLOB_NONE, "origin", cwd=mirror)
         _git("reset", "-q", "--hard", ref, cwd=worktree)
     else:
         os.makedirs(os.path.dirname(worktree), exist_ok=True)
