@@ -3,10 +3,20 @@ name: Backend CI
 on:
   push:
     branches: [main]
-    paths: ['src/backend/**', '.github/workflows/ci-backend.yml']
+    paths:
+      - 'src/backend/**'
+      - 'schemas/**'
+      - 'example_templates/**'
+      - 'scripts/lint-templates.py'
+      - '.github/workflows/ci-backend.yml'
   pull_request:
     branches: [main]
-    paths: ['src/backend/**', '.github/workflows/ci-backend.yml']
+    paths:
+      - 'src/backend/**'
+      - 'schemas/**'
+      - 'example_templates/**'
+      - 'scripts/lint-templates.py'
+      - '.github/workflows/ci-backend.yml'
 
 jobs:
   lint-and-test:
@@ -27,6 +37,10 @@ jobs:
 
       - name: Lint with ruff
         run: ruff check .
+
+      - name: Lint Troshka templates (JSON Schema)
+        working-directory: .
+        run: python3 scripts/lint-templates.py --quiet
 
       - name: Type check with pyright
         run: |

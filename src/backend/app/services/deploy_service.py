@@ -9756,6 +9756,15 @@ def _deploy_project_inner(  # pyright: ignore[reportGeneralTypeIssues]
                 "Deploy %s: resuming from step '%s'", project_id[:8], resume_from
             )
 
+        from app.services.ocp.pull_through_registry import (
+            check_pull_through_registry_for_project,
+        )
+
+        ptr_err = check_pull_through_registry_for_project(s, project, project.topology)
+        if ptr_err:
+            _set_deploy_error_and_notify(s, project_id, project, ptr_err)
+            return
+
         host, host_err = _deploy_resolve_host(s, project, project_id)
         if host:
             _host_id_for_inflight = host.id

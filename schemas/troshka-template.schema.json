@@ -1,0 +1,583 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://troshka.redhat.com/schemas/troshka-template.schema.json",
+  "title": "TroshkaTemplate",
+  "description": "Troshka project template YAML document (imported via API or shipped under src/backend/templates).",
+  "type": "object",
+  "required": ["vms", "networks"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+    },
+    "display_name": { "type": "string", "maxLength": 256 },
+    "description": { "type": "string", "maxLength": 4096 },
+    "category": { "type": "string", "maxLength": 64 },
+    "deploy_time": { "type": "string", "maxLength": 64 },
+    "versions": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "type": "string", "maxLength": 32 }
+    },
+    "distribution": {
+      "type": "string",
+      "enum": ["ocp", "okd", "okd-scos", "scos"]
+    },
+    "install_method": { "type": "string", "maxLength": 64 },
+    "install_via": { "type": "string", "enum": ["pod", "bastion"] },
+    "requires_pull_secret": { "type": "boolean" },
+    "placement": { "$ref": "#/$defs/placement" },
+    "networks": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 64,
+      "additionalProperties": { "$ref": "#/$defs/network" }
+    },
+    "vms": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 128,
+      "additionalProperties": { "$ref": "#/$defs/vm" }
+    },
+    "containers": {
+      "type": "object",
+      "maxProperties": 64,
+      "additionalProperties": { "$ref": "#/$defs/container" }
+    },
+    "ocp": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/ocpCluster" }
+    },
+    "gateway": { "$ref": "#/$defs/gateway" },
+    "showroom": { "$ref": "#/$defs/showroom" },
+    "workloads": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/workloadEntry" }
+    },
+    "requirements_content": { "$ref": "#/$defs/requirementsContent" },
+    "workloadsDone": {
+      "type": "array",
+      "maxItems": 64,
+      "items": { "type": "string", "maxLength": 256 }
+    },
+    "cephCluster": { "$ref": "#/$defs/cephCluster" },
+    "start_order": {
+      "type": "array",
+      "maxItems": 128,
+      "items": { "$ref": "#/$defs/startOrderEntry" }
+    },
+    "hidden_nodes": {
+      "type": "array",
+      "maxItems": 128,
+      "items": { "type": "string", "maxLength": 128 }
+    },
+    "dns_records": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/dnsRecord" }
+    },
+    "disconnected": { "type": "object", "additionalProperties": true },
+    "bastion_services": { "type": "object", "additionalProperties": true },
+    "pull_through_registry": { "type": "object", "additionalProperties": true },
+    "clock_target": {
+      "oneOf": [
+        { "type": "string", "maxLength": 64 },
+        { "type": "null" }
+      ]
+    }
+  },
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "shortString": {
+      "type": "string",
+      "maxLength": 256
+    },
+    "cidr": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[0-9a-fA-F:.]+/[0-9]{1,3}$"
+    },
+    "ipAddress": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "placement": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requires_kubevirt": { "type": "boolean" }
+      }
+    },
+    "dnsRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "maxLength": 253 },
+        "ip": { "$ref": "#/$defs/ipAddress" },
+        "target": { "type": "string", "maxLength": 253 }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cidr"],
+      "properties": {
+        "cidr": { "$ref": "#/$defs/cidr" },
+        "type": {
+          "type": "string",
+          "enum": ["bmc", "migration", "cluster", "lab", "mgmt"]
+        },
+        "gateway": { "type": "boolean" },
+        "dhcp": { "type": "boolean" },
+        "dns": { "type": "boolean" },
+        "domain": { "type": "string", "maxLength": 253 },
+        "dns_records": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/dnsRecord" }
+        },
+        "dhcpRangeStart": { "$ref": "#/$defs/ipAddress" },
+        "dhcpRangeEnd": { "$ref": "#/$defs/ipAddress" },
+        "mtu": { "type": "integer", "minimum": 576, "maximum": 65535 }
+      }
+    },
+    "disk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "maxLength": 128 },
+        "size_gb": { "type": "integer", "minimum": 1, "maximum": 65536 },
+        "bus": { "type": "string", "maxLength": 32 },
+        "bootable": { "type": "boolean" },
+        "ocp_mount": { "type": "string", "maxLength": 256 },
+        "library_item_id": { "type": "string", "maxLength": 64 },
+        "library_item_name": { "type": "string", "maxLength": 512 },
+        "rotation_rate": { "type": "integer", "minimum": 0, "maximum": 20000 },
+        "mount_path": { "type": "string", "maxLength": 512 }
+      }
+    },
+    "iso": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "maxLength": 128 },
+        "library_item_id": { "type": "string", "maxLength": 64 },
+        "library_item_name": { "type": "string", "maxLength": 512 }
+      }
+    },
+    "nic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["network"],
+      "properties": {
+        "network": { "type": "string", "maxLength": 128 },
+        "ip": { "$ref": "#/$defs/ipAddress" },
+        "model": { "type": "string", "maxLength": 32 }
+      }
+    },
+    "vm": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "role": { "type": "string", "maxLength": 64 },
+        "cluster": { "type": "string", "maxLength": 128 },
+        "vcpus": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "ram_gb": { "type": "integer", "minimum": 1, "maximum": 2048 },
+        "os": { "type": "string", "maxLength": 64 },
+        "firmware": { "type": "string", "maxLength": 32 },
+        "bmc": { "type": "boolean" },
+        "bmc_ip": { "$ref": "#/$defs/ipAddress" },
+        "recert": { "type": "boolean" },
+        "nested_virt": { "type": "boolean" },
+        "nestedVirt": { "type": "boolean" },
+        "power_on": { "type": "boolean" },
+        "cloud_init": { "type": "boolean" },
+        "minimal_cloud_init": { "type": "boolean" },
+        "userdata_only": { "type": "boolean" },
+        "user_data": { "type": "string", "maxLength": 131072 },
+        "network_config": { "type": "string", "maxLength": 65536 },
+        "packages": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "type": "string", "maxLength": 128 }
+        },
+        "login_user": { "type": "string", "maxLength": 64 },
+        "cloud_user_password": { "type": "string", "maxLength": 256 },
+        "uuid": { "type": "string", "maxLength": 64 },
+        "pxe_boot_iso_id": { "type": "string", "maxLength": 64 },
+        "pxe_boot_iso_name": { "type": "string", "maxLength": 512 },
+        "serial_exec": {
+          "oneOf": [
+            { "type": "boolean" },
+            {
+              "type": "string",
+              "maxLength": 32,
+              "description": "Network OS profile for serial bootstrap (ios, eos, junos, …)"
+            }
+          ]
+        },
+        "serial_only": { "type": "boolean" },
+        "headless": { "type": "boolean" },
+        "machine_type": { "type": "string", "maxLength": 64 },
+        "machineType": { "type": "string", "maxLength": 64 },
+        "legacy_root_bus": { "type": "boolean" },
+        "legacyRootBus": { "type": "boolean" },
+        "affinity_group": { "type": "string", "maxLength": 128 },
+        "separate_host": { "type": "boolean" },
+        "tags": {
+          "type": "object",
+          "maxProperties": 32,
+          "additionalProperties": { "type": "string", "maxLength": 256 }
+        },
+        "disks": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/disk" }
+        },
+        "isos": {
+          "type": "array",
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/iso" }
+        },
+        "nics": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/nic" }
+        }
+      }
+    },
+    "containerPort": {
+      "oneOf": [
+        { "type": "integer", "minimum": 1, "maximum": 65535 },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "container_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+            "host_port": { "type": ["integer", "null"], "minimum": 1, "maximum": 65535 },
+            "protocol": { "type": "string", "enum": ["tcp", "udp"] }
+          }
+        }
+      ]
+    },
+    "podSubContainer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "maxLength": 128 },
+        "image": { "type": "string", "maxLength": 512 },
+        "cpus": { "type": "number", "minimum": 0.1, "maximum": 256 },
+        "memory_mb": { "type": "integer", "minimum": 32, "maximum": 1048576 },
+        "env": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": {
+            "type": ["string", "number", "boolean"],
+            "maxLength": 4096
+          }
+        },
+        "ports": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/containerPort" }
+        },
+        "command": {
+          "oneOf": [
+            { "type": "string", "maxLength": 8192 },
+            {
+              "type": "array",
+              "maxItems": 64,
+              "items": { "type": "string", "maxLength": 1024 }
+            }
+          ]
+        },
+        "mounts": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "disk": { "type": "string", "maxLength": 128 },
+              "mount_path": { "type": "string", "maxLength": 512 }
+            }
+          }
+        }
+      }
+    },
+    "container": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "image": { "type": "string", "maxLength": 512 },
+        "registry_credential": { "type": "string", "maxLength": 128 },
+        "cpus": { "type": "number", "minimum": 0.1, "maximum": 256 },
+        "memory_mb": { "type": "integer", "minimum": 32, "maximum": 1048576 },
+        "env": {
+          "type": "object",
+          "maxProperties": 128,
+          "additionalProperties": {
+            "type": ["string", "number", "boolean"],
+            "maxLength": 4096
+          }
+        },
+        "ports": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/containerPort" }
+        },
+        "command": {
+          "oneOf": [
+            { "type": "string", "maxLength": 8192 },
+            {
+              "type": "array",
+              "maxItems": 64,
+              "items": { "type": "string", "maxLength": 1024 }
+            }
+          ]
+        },
+        "restart_policy": { "type": "string", "maxLength": 32 },
+        "privileged": { "type": "boolean" },
+        "build_content": { "type": "boolean" },
+        "is_pod": { "type": "boolean" },
+        "nics": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/nic" }
+        },
+        "disks": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/disk" }
+        },
+        "init_containers": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/podSubContainer" }
+        },
+        "containers": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/podSubContainer" }
+        }
+      }
+    },
+    "ocpClusterDisk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "size_gb": { "type": "integer", "minimum": 1, "maximum": 65536 },
+        "bootable": { "type": "boolean" },
+        "ocp_mount": { "type": "string", "maxLength": 256 }
+      }
+    },
+    "ocpCluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "type": {
+          "type": "string",
+          "enum": ["sno", "compact", "standard", "custom"]
+        },
+        "workers": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "ocp_version": { "type": "string", "maxLength": 32 },
+        "base_domain": { "type": "string", "maxLength": 253 },
+        "api_vip": { "$ref": "#/$defs/ipAddress" },
+        "ingress_vip": { "$ref": "#/$defs/ipAddress" },
+        "networks": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "type": "string", "maxLength": 128 }
+        },
+        "distribution": {
+          "type": "string",
+          "enum": ["ocp", "okd", "okd-scos", "scos"]
+        },
+        "control_plane_cpu": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "control_plane_memory": {
+          "type": "integer",
+          "minimum": 512,
+          "maximum": 2097152
+        },
+        "worker_cpu": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "worker_memory": {
+          "type": "integer",
+          "minimum": 512,
+          "maximum": 2097152
+        },
+        "control_plane_disks": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/ocpClusterDisk" }
+        },
+        "worker_disks": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/$defs/ocpClusterDisk" }
+        }
+      }
+    },
+    "outboundPort": {
+      "oneOf": [
+        { "type": "integer", "minimum": 1, "maximum": 65535 },
+        {
+          "type": "string",
+          "maxLength": 32,
+          "pattern": "^([0-9]{1,5}|icmp|[0-9]{1,5}/(tcp|udp))$"
+        }
+      ]
+    },
+    "portForward": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ext_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "int_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "int_ip": { "$ref": "#/$defs/ipAddress" },
+        "proto": { "type": "string", "enum": ["tcp", "udp"] }
+      }
+    },
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "network": { "type": "string", "maxLength": 128 },
+        "external_access": { "type": "boolean" },
+        "outbound_ports": {
+          "type": "array",
+          "maxItems": 256,
+          "items": { "$ref": "#/$defs/outboundPort" }
+        },
+        "port_forwards": {
+          "type": "array",
+          "maxItems": 128,
+          "items": { "$ref": "#/$defs/portForward" }
+        }
+      }
+    },
+    "showroomTab": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["terminal", "proxy", "web", "html", "iframe", "external"]
+        },
+        "name": { "type": "string", "maxLength": 128 },
+        "target": { "type": "string", "maxLength": 128 },
+        "vm": { "type": "string", "maxLength": 128 },
+        "cluster": { "type": "string", "maxLength": 128 },
+        "network": { "type": "string", "maxLength": 128 },
+        "url": { "type": "string", "maxLength": 2048 },
+        "proxy_port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "proxy_tls": { "type": "boolean" },
+        "proxy_path": { "type": "string", "maxLength": 512 },
+        "ssh_user": { "type": "string", "maxLength": 64 },
+        "ssh_pass": { "type": "string", "maxLength": 256 },
+        "ssh_port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "showroom": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "dns_network": { "type": "string", "maxLength": 128 },
+        "content_repo": { "type": "string", "maxLength": 1024 },
+        "content_ref": { "type": "string", "maxLength": 256 },
+        "build_content": { "type": "boolean" },
+        "disk_gb": { "type": "integer", "minimum": 1, "maximum": 1024 },
+        "tabs": {
+          "type": "array",
+          "maxItems": 32,
+          "items": { "$ref": "#/$defs/showroomTab" }
+        }
+      }
+    },
+    "workloadEntry": {
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 256 },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "role": { "type": "string", "maxLength": 256 },
+            "name": { "type": "string", "maxLength": 256 },
+            "role_fqcn": { "type": "string", "maxLength": 256 },
+            "runOnce": { "type": "boolean" },
+            "clusters": {
+              "type": "array",
+              "maxItems": 16,
+              "items": { "type": "string", "maxLength": 128 }
+            },
+            "data_prefix": { "type": "string", "maxLength": 128 }
+          }
+        }
+      ]
+    },
+    "requirementsContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "collections": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "maxLength": 256 },
+              "type": { "type": "string", "maxLength": 64 },
+              "version": { "type": "string", "maxLength": 256 },
+              "source": { "type": "string", "maxLength": 1024 }
+            }
+          }
+        }
+      }
+    },
+    "cephCluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "maxLength": 128 },
+        "network": { "type": "string", "maxLength": 128 },
+        "labIp": { "$ref": "#/$defs/ipAddress" },
+        "capacityGi": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "osdCount": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "clusters": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "type": "string", "maxLength": 128 }
+        }
+      }
+    },
+    "startOrderEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "vm": { "type": "string", "maxLength": 128 },
+        "container": { "type": "string", "maxLength": 128 },
+        "waitForVm": { "type": "string", "maxLength": 128 },
+        "delay": { "type": "integer", "minimum": 0, "maximum": 3600 },
+        "delay_sec": { "type": "integer", "minimum": 0, "maximum": 3600 }
+      }
+    }
+  }
+}

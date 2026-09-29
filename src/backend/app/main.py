@@ -709,6 +709,55 @@ app.include_router(user_routes.router, prefix=_API_PREFIX)
 app.include_router(update_routes.router, prefix=_API_PREFIX)
 
 
+def custom_openapi():
+    """Inject TroshkaTemplate JSON Schema into the generated OpenAPI document."""
+    if app.openapi_schema:
+        return app.openapi_schema
+    from fastapi.openapi.utils import get_openapi
+
+    from app.services.template_schema import load_template_schema
+
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    components = openapi_schema.setdefault("components", {})
+    schemas = components.setdefault("schemas", {})
+    try:
+        schemas["TroshkaTemplate"] = load_template_schema()
+    except FileNotFoundError:
+        logger.warning("TroshkaTemplate schema file missing; OpenAPI omit")
+    # Point import-template request body at TroshkaTemplate when present.
+    paths = openapi_schema.get("paths") or {}
+    import_path = paths.get(f"{_API_PREFIX}/projects/{{project_id}}/import-template")
+    if import_path and "TroshkaTemplate" in schemas:
+        post = import_path.get("post") or {}
+        post["requestBody"] = {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["template_yaml"],
+                        "properties": {
+                            "template_yaml": {
+                                "$ref": "#/components/schemas/TroshkaTemplate"
+                            }
+                        },
+                    }
+                }
+            },
+        }
+        import_path["post"] = post
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
+
+
 @app.get(f"{_API_PREFIX}/health")
 def health_check():
     return {"status": "healthy", "app": config.app.name, "version": "0.1.2"}

@@ -1183,6 +1183,13 @@ def _start_auto_deploy(
     """Start async deployment if auto_deploy is requested."""
     from app.core.redis import enqueue_job
     from app.services.deploy_service import deploy_project_async
+    from app.services.ocp.pull_through_registry import (
+        check_pull_through_registry_for_project,
+    )
+
+    ptr_err = check_pull_through_registry_for_project(db, project, project.topology)
+    if ptr_err:
+        raise HTTPException(status_code=400, detail=ptr_err)
 
     if body.host_id:
         project.host_id = body.host_id

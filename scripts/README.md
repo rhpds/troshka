@@ -21,4 +21,5 @@ Developer and operator utilities. All scripts auto-discover credentials from the
 
 | Script | Usage | Description |
 |--------|-------|-------------|
+| `lint-templates.py` | `./scripts/lint-templates.py [paths…]` | Validate Troshka template YAML against the JSON Schema (`schemas/troshka-template.schema.json`). Defaults to shipped + example templates. Exit 1 on failures |
 | `test-agnosticd-flow.sh` | `./test-agnosticd-flow.sh <pattern> [guid]` | End-to-end test simulating the AAP2/agnosticd deploy flow. Supports `--destroy`, `--status`, `--stop`, `--start` lifecycle commands |

@@ -732,11 +732,22 @@ def _parse_clock_target(clock_target_str):
 def _resolve_template_source(body):
     """Resolve template from either template_yaml or template_id."""
     from app.services.template_loader import resolve_inline_template, resolve_template
+    from app.services.template_schema import (
+        TemplateSchemaError,
+        schema_validation_detail,
+        validate_template_document,
+    )
 
     template_yaml = body.get("template_yaml")
     template_id = body.get("template_id")
 
     if template_yaml:
+        try:
+            template_yaml = validate_template_document(template_yaml)
+        except TemplateSchemaError as exc:
+            raise HTTPException(
+                status_code=400, detail=schema_validation_detail(exc)
+            ) from exc
         resolved = resolve_inline_template(template_yaml)
         return resolved, resolved.get("name", "inline")
     if template_id:
@@ -897,21 +908,23 @@ def create_project_from_template(
 
 
 def _validate_template_yaml(template_yaml):
-    """Validate that template_yaml is present and has required sections."""
-    if not template_yaml:
-        raise HTTPException(status_code=400, detail="template_yaml is required")
-    if not isinstance(template_yaml, dict):
+    """Validate template_yaml against the Troshka JSON Schema.
+
+    Normalizes legacy ``ocp:`` mappings in-place on the caller's dict when
+    validation succeeds (returns the prepared document).
+    """
+    from app.services.template_schema import (
+        TemplateSchemaError,
+        schema_validation_detail,
+        validate_template_document,
+    )
+
+    try:
+        return validate_template_document(template_yaml)
+    except TemplateSchemaError as exc:
         raise HTTPException(
-            status_code=400, detail="template_yaml must be a YAML mapping"
-        )
-    if "vms" not in template_yaml:
-        raise HTTPException(
-            status_code=400, detail="Template must contain a 'vms' section"
-        )
-    if "networks" not in template_yaml:
-        raise HTTPException(
-            status_code=400, detail="Template must contain a 'networks' section"
-        )
+            status_code=400, detail=schema_validation_detail(exc)
+        ) from exc
 
 
 def _lookup_library_item_by_exact_name(db, user_id, name):
@@ -1075,8 +1088,7 @@ def import_template(
         )
 
     template_yaml = body.get("template_yaml")
-    _validate_template_yaml(template_yaml)
-    assert template_yaml is not None
+    template_yaml = _validate_template_yaml(template_yaml)
     _resolve_template_library_items(db, user, template_yaml.get("vms", {}))
 
     try:
@@ -1477,6 +1489,16 @@ def restart_ocp_install(
     err = validate_restart_ocp_cluster_install(project, host, topology, cluster)
     if err:
         raise HTTPException(status_code=400, detail=err)
+
+    from app.services.ocp.pull_through_registry import (
+        check_pull_through_registry_for_project,
+    )
+
+    ptr_err = check_pull_through_registry_for_project(
+        db, project, topology, cluster_key=cluster
+    )
+    if ptr_err:
+        raise HTTPException(status_code=400, detail=ptr_err)
 
     from app.core.redis import enqueue_job, set_progress
     from app.services.deploy_service import (
@@ -1955,6 +1977,14 @@ def deploy_project(
     _validate_bmc_network(project.topology or {})
     _check_library_items_ready(project.topology, db)
     _validate_deploy_pool_and_host(db, user, storage_pool_id, host_id)
+
+    from app.services.ocp.pull_through_registry import (
+        check_pull_through_registry_for_project,
+    )
+
+    ptr_err = check_pull_through_registry_for_project(db, project, topology)
+    if ptr_err:
+        raise HTTPException(status_code=400, detail=ptr_err)
 
     if provider_id and not project.provider_id:
         project.provider_id = provider_id

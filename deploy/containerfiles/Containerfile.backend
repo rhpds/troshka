@@ -15,6 +15,7 @@ RUN grep -v -e '^libvirt-python' -e '^-e git+' requirements.txt > requirements-c
     pip install --no-cache-dir -r requirements-container.txt
 
 COPY src/backend/ .
+COPY schemas/ /opt/app-root/src/schemas/
 # The backend imports the shared troshka_serial package (serial/headless VM exec)
 # at deploy time from app/services/headless.py, kubevirt_serial.py, kubevirt.py.
 # Those add sys.path parents[4] / ../../.. == /opt/app-root in-image, so ship the

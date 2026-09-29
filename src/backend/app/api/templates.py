@@ -1,5 +1,5 @@
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -13,6 +13,7 @@ from app.services.template_loader import (
     generate_topology_from_template,
     resolve_template,
 )
+from app.services.template_schema import load_template_schema
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["templates"])
@@ -29,6 +30,16 @@ class DeployTemplateRequest(BaseModel):
     overrides: dict | None = None
     auto_deploy: bool = False
     auto_start: bool = True
+
+
+@router.get(
+    "/templates/schema",
+    summary="Troshka template JSON Schema",
+    responses={200: {"description": "JSON Schema for TroshkaTemplate"}},
+)
+def get_template_schema(_user: CurrentUser) -> dict[str, Any]:
+    """Return the canonical Troshka template JSON Schema (Draft 2020-12)."""
+    return load_template_schema()
 
 
 @router.post(
