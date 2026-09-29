@@ -89,21 +89,19 @@ export default function SettingsPage() {
       .then((r) => r.json())
       .then((data) => setRegistryCreds(data))
       .catch(() => {});
-    try {
-      const raw = localStorage.getItem("troshka-user");
-      const role = raw ? JSON.parse(raw).role : "";
-      if (role === "admin") {
+    // Prefer /auth/me over localStorage — troshka-user is not always written on login.
+    fetch("/api/v1/auth/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((me) => {
+        if (me?.role !== "admin") return;
         setIsAdmin(true);
-        fetch("/api/v1/admin/settings")
+        return fetch("/api/v1/admin/settings")
           .then((r) => (r.ok ? r.json() : null))
           .then((data) => {
             if (data?.ingress_controller) setIngressController(data.ingress_controller);
-          })
-          .catch(() => {});
-      }
-    } catch {
-      /* ignore */
-    }
+          });
+      })
+      .catch(() => {});
   }, []);
 
   const createKey = async () => {
