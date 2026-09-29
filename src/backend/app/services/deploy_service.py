@@ -238,10 +238,29 @@ def _ensure_acme_http01_sg(s, host, project) -> None:
         )
 
 
+def _showroom_dns_and_acme(
+    s, host, project, fqdn, eip, dp_type, dp_config, route53
+) -> None:
+    """Create showroom A-record (if needed) and open HTTP-01 SG for ACME."""
+    from app.services.dns_service import create_dns_records
+
+    if fqdn and dp_type and not fqdn.endswith(".sslip.io"):
+        dns_errors = create_dns_records(
+            dp_type, dp_config, [{"name": fqdn, "type": "A", "value": eip}], ttl=30
+        )
+        if dns_errors:
+            logger.warning(
+                "Deploy %s: showroom DNS record errors: %s",
+                project.id[:8],
+                dns_errors,
+            )
+    if fqdn and not route53.get("access_key_id"):
+        _ensure_acme_http01_sg(s, host, project)
+
+
 def _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns) -> str:
     """Create DNS + cert + TLS terminator for the troshkad showroom. Non-fatal.
     Returns the showroom URL."""
-    from app.services.dns_service import create_dns_records
     from app.services.showroom_scaffold import (
         _find_showroom_container,
         app_proxy_eip_public_host,
@@ -264,19 +283,7 @@ def _ensure_showroom_tls(s, host, project, topology, eip, first_vni, netns) -> s
         for h in app_proxy_internal_hosts(tabs)
     ]
     try:
-        # sslip.io needs no A-record create; only real DNS providers get writes.
-        if fqdn and dp_type and not fqdn.endswith(".sslip.io"):
-            dns_errors = create_dns_records(
-                dp_type, dp_config, [{"name": fqdn, "type": "A", "value": eip}], ttl=30
-            )
-            if dns_errors:
-                logger.warning(
-                    "Deploy %s: showroom DNS record errors: %s",
-                    project.id[:8],
-                    dns_errors,
-                )
-        if fqdn and not route53.get("access_key_id"):
-            _ensure_acme_http01_sg(s, host, project)
+        _showroom_dns_and_acme(s, host, project, fqdn, eip, dp_type, dp_config, route53)
         cert = _tls_cert_via_job(host, project.id, fqdn, eip, route53, extra_dns)
         if not cert:
             logger.warning("Deploy %s: showroom cert job failed", project.id[:8])
@@ -3143,6 +3150,19 @@ def resolve_ocp_install_started_at(
     return None
 
 
+def _cluster_install_start_epochs(topo: dict, cluster_keys: set[str]) -> list[float]:
+    """Collect ocpInstallStartedAt epochs for the given cluster keys."""
+    starts: list[float] = []
+    for cluster in topo.get("clusters") or []:
+        key = str(cluster.get("id") or cluster.get("name") or "")
+        if key not in cluster_keys:
+            continue
+        raw = cluster.get("ocpInstallStartedAt")
+        if isinstance(raw, (int, float)):
+            starts.append(float(raw))
+    return starts
+
+
 def _ops_pod_elapsed_base(
     project_id: str, clusters: list, monitor_start: float
 ) -> float:
@@ -3162,14 +3182,7 @@ def _ops_pod_elapsed_base(
             return monitor_start
         topo = p.deployed_topology or p.topology or {}
         cluster_keys = {_ops_cluster_key(c) for c in clusters}
-        starts: list[float] = []
-        for cluster in topo.get("clusters") or []:
-            key = str(cluster.get("id") or cluster.get("name") or "")
-            if key not in cluster_keys:
-                continue
-            raw = cluster.get("ocpInstallStartedAt")
-            if isinstance(raw, (int, float)):
-                starts.append(float(raw))
+        starts = _cluster_install_start_epochs(topo, cluster_keys)
         if starts:
             return min(starts)
         recert, install = _partition_ops_pod_clusters(topo, clusters)
@@ -4310,11 +4323,38 @@ def _harvest_ops_pod_creds(host, project_id: str, clusters: list, workdir: str) 
     return creds
 
 
+def _valid_kubeconfig_keys(creds: dict) -> set[str]:
+    """Cluster keys whose harvested kubeconfig validates."""
+    from app.services.ocp.kubeconfig_merge import is_valid_kubeconfig
+
+    keys: set[str] = set()
+    for key, (_pw, kc) in creds.items():
+        raw = kc.decode("utf-8", errors="replace") if isinstance(kc, bytes) else kc
+        if is_valid_kubeconfig(raw):
+            keys.add(key)
+    return keys
+
+
+def _maybe_inject_harvested_kubeconfigs(
+    host, project_id, project, topo, deployed
+) -> None:
+    """Inject merged cluster kubeconfigs into the showroom terminal when present."""
+    all_creds = _stored_cluster_creds(deployed) or _stored_cluster_creds(topo)
+    if not all_creds:
+        return
+    _inject_cluster_kubeconfigs(
+        host,
+        project_id,
+        deployed if project.deployed_topology else topo,
+        all_creds,
+        _ocp_clusters(deployed) or _ocp_clusters(topo),
+    )
+
+
 def _persist_ops_pod_creds(host, project_id: str, creds: dict) -> set[str]:
     """Write harvested creds into topology + inject cluster-terminal kubeconfig."""
     from app.core.database import SessionLocal
     from app.models.project import Project
-    from app.services.ocp.kubeconfig_merge import is_valid_kubeconfig
 
     stored_keys: set[str] = set()
     db = SessionLocal()
@@ -4331,19 +4371,8 @@ def _persist_ops_pod_creds(host, project_id: str, creds: dict) -> set[str]:
                 p.topology = topo
             p.deployed_topology = deployed
             db.commit()
-        for key, (_pw, kc) in creds.items():
-            raw = kc.decode("utf-8", errors="replace") if isinstance(kc, bytes) else kc
-            if is_valid_kubeconfig(raw):
-                stored_keys.add(key)
-        all_creds = _stored_cluster_creds(deployed) or _stored_cluster_creds(topo)
-        if all_creds:
-            _inject_cluster_kubeconfigs(
-                host,
-                project_id,
-                deployed if p.deployed_topology else topo,
-                all_creds,
-                _ocp_clusters(deployed) or _ocp_clusters(topo),
-            )
+        stored_keys |= _valid_kubeconfig_keys(creds)
+        _maybe_inject_harvested_kubeconfigs(host, project_id, p, topo, deployed)
     except Exception:
         logger.exception("Failed to store ops-pod creds for %s", project_id[:8])
     finally:
@@ -6520,9 +6549,7 @@ def _pick_disk_dv_status(friendly, cache_dv, clone_dv) -> str:
     """Pick the deploy status to show for a disk across cache and clone DVs."""
     if clone_dv:
         clone_phase = clone_dv.get("status", {}).get("phase", "")
-        if clone_phase == "Succeeded":
-            return _dv_status_suffix(_format_dv_status_line(friendly, clone_dv))
-        if clone_phase == "CloneInProgress":
+        if clone_phase in ("Succeeded", "CloneInProgress", "Failed"):
             return _dv_status_suffix(_format_dv_status_line(friendly, clone_dv))
         if clone_phase in ("CloneScheduled", "Pending", "ImportScheduled") and cache_dv:
             cache_phase = cache_dv.get("status", {}).get("phase", "")
@@ -6530,8 +6557,6 @@ def _pick_disk_dv_status(friendly, cache_dv, clone_dv) -> str:
                 return _dv_status_suffix(_format_dv_status_line(friendly, cache_dv))
             if cache_phase == "Succeeded":
                 return "waiting to clone"
-        if clone_phase == "Failed":
-            return _dv_status_suffix(_format_dv_status_line(friendly, clone_dv))
     if cache_dv:
         return _dv_status_suffix(_format_dv_status_line(friendly, cache_dv))
     if clone_dv:
@@ -6572,68 +6597,82 @@ def _fill_missing_disk_labels(topology, best_status):
                 best_status[label] = "waiting"
 
 
-def _collect_dv_progress(project_id, provider, topology):
-    """Collect DataVolume progress lines for deploy status display."""
+def _golden_name_map_from_topology(topology) -> dict[str, str]:
+    """Map golden-<hash16> DataVolume names to storage-node labels."""
     import hashlib
 
+    golden_name_map: dict[str, str] = {}
+    for node in topology.get("nodes", []):
+        ndata = node.get("data", {})
+        if node.get("type") == "storageNode" and ndata.get("resolvedS3Path"):
+            h = hashlib.sha256(ndata["resolvedS3Path"].encode()).hexdigest()[:16]
+            golden_name_map[f"golden-{h}"] = ndata.get("label", ndata.get("name", ""))
+    return golden_name_map
+
+
+def _list_project_datavolumes(custom_api, proj_ns: str) -> list:
+    """List DataVolumes in troshka-cache and the project namespace."""
+    all_dvs: list = []
+    for ns in ["troshka-cache", proj_ns]:
+        try:
+            dvs = custom_api.list_namespaced_custom_object(
+                group="cdi.kubevirt.io",
+                version="v1beta1",
+                namespace=ns,
+                plural="datavolumes",
+            )
+            items = dvs.get("items", []) if isinstance(dvs, dict) else []
+            if isinstance(items, list):
+                all_dvs.extend(items)
+        except Exception:
+            pass
+    return all_dvs
+
+
+def _index_clone_and_cache_dvs(
+    all_dvs, topology, golden_name_map: dict[str, str]
+) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Build label→DV maps for project clones and cache goldens."""
+    clone_name_map = _build_clone_name_map(topology)
+    clone_by_label: dict[str, dict] = {}
+    golden_ref_map: dict[str, str] = {}
+    for dv in all_dvs:
+        if dv["metadata"]["namespace"] == "troshka-cache":
+            continue
+        friendly = clone_name_map.get(dv["metadata"]["name"])
+        if not friendly:
+            continue
+        label = friendly[:24]
+        clone_by_label[label] = dv
+        pvc_src = dv.get("spec", {}).get("source", {}).get("pvc", {})
+        if pvc_src.get("namespace") == "troshka-cache":
+            golden_name = pvc_src.get("name", "")
+            if golden_name:
+                golden_ref_map[golden_name] = label
+    cache_by_label: dict[str, dict] = {}
+    for dv in all_dvs:
+        if dv["metadata"]["namespace"] != "troshka-cache":
+            continue
+        raw_name = dv["metadata"]["name"]
+        friendly = golden_name_map.get(raw_name) or golden_ref_map.get(raw_name)
+        if friendly:
+            cache_by_label[friendly[:24]] = dv
+    return clone_by_label, cache_by_label
+
+
+def _collect_dv_progress(project_id, provider, topology):
+    """Collect DataVolume progress lines for deploy status display."""
     from app.services.providers.kubevirt import _get_k8s_clients, _project_ns
 
     dv_lines: list[str] = []
     try:
-        golden_name_map: dict[str, str] = {}
-        for node in topology.get("nodes", []):
-            ndata = node.get("data", {})
-            if node.get("type") == "storageNode" and ndata.get("resolvedS3Path"):
-                h = hashlib.sha256(ndata["resolvedS3Path"].encode()).hexdigest()[:16]
-                golden_name_map[f"golden-{h}"] = ndata.get(
-                    "label", ndata.get("name", "")
-                )
-
+        golden_name_map = _golden_name_map_from_topology(topology)
         custom_api, _, api_client = _get_k8s_clients(provider)
         proj_ns = _project_ns(provider, project_id)
-        all_dvs: list = []
-        for ns in ["troshka-cache", proj_ns]:
-            try:
-                dvs = custom_api.list_namespaced_custom_object(
-                    group="cdi.kubevirt.io",
-                    version="v1beta1",
-                    namespace=ns,
-                    plural="datavolumes",
-                )
-                items = dvs.get("items", []) if isinstance(dvs, dict) else []
-                if isinstance(items, list):
-                    all_dvs.extend(items)
-            except Exception:
-                pass
-
-        clone_name_map = _build_clone_name_map(topology)
-        clone_by_label: dict[str, dict] = {}
-        golden_ref_map: dict[str, str] = {}
-        for dv in all_dvs:
-            if dv["metadata"]["namespace"] == "troshka-cache":
-                continue
-            raw_name = dv["metadata"]["name"]
-            friendly = clone_name_map.get(raw_name)
-            if not friendly:
-                continue
-            label = friendly[:24]
-            clone_by_label[label] = dv
-            pvc_src = dv.get("spec", {}).get("source", {}).get("pvc", {})
-            if pvc_src.get("namespace") == "troshka-cache":
-                golden_name = pvc_src.get("name", "")
-                if golden_name:
-                    golden_ref_map[golden_name] = label
-
-        cache_by_label: dict[str, dict] = {}
-        for dv in all_dvs:
-            if dv["metadata"]["namespace"] != "troshka-cache":
-                continue
-            raw_name = dv["metadata"]["name"]
-            friendly = golden_name_map.get(raw_name) or golden_ref_map.get(raw_name)
-            if not friendly:
-                continue
-            cache_by_label[friendly[:24]] = dv
-
+        all_dvs = _list_project_datavolumes(custom_api, proj_ns)
+        clone_by_label, cache_by_label = _index_clone_and_cache_dvs(
+            all_dvs, topology, golden_name_map
+        )
         all_labels = set(cache_by_label) | set(clone_by_label)
         best_status = {
             label: _pick_disk_dv_status(
@@ -6645,7 +6684,6 @@ def _collect_dv_progress(project_id, provider, topology):
         dv_lines = [f"{k}: {v}" for k, v in best_status.items()]
         ceph_lines = _collect_ceph_restore_progress(custom_api, api_client, proj_ns)
         if ceph_lines:
-            # Prepend so Ceph restore is visible even if step stays on images.
             dv_lines = ceph_lines + dv_lines
     except Exception:
         pass
@@ -6797,6 +6835,15 @@ def _disks_done_step_detail(op_stage, op_detail, status):
     return step, op_detail or step
 
 
+def _active_ceph_restore_step(all_disks_done, op_stage, op_detail, status):
+    """Return ceph step when flag is active and disks unfinished, else None."""
+    if not status.get("cephRestoreActive") or all_disks_done:
+        return None
+    if op_stage and not _is_ceph_restore_stage(op_stage):
+        return None
+    return "restoring ceph", op_detail or "importing mon/OSD devices"
+
+
 def _resolve_deploy_step(
     all_disks_done, op_stage, op_detail, dv_detail, dv_lines, status, last
 ):
@@ -6806,12 +6853,9 @@ def _resolve_deploy_step(
         ceph_lines and not all(ln.endswith(": done") for ln in ceph_lines)
     ):
         return _ceph_restore_step_detail(op_stage, op_detail, ceph_lines)
-    if (
-        status.get("cephRestoreActive")
-        and not all_disks_done
-        and (not op_stage or _is_ceph_restore_stage(op_stage))
-    ):
-        return "restoring ceph", op_detail or "importing mon/OSD devices"
+    active = _active_ceph_restore_step(all_disks_done, op_stage, op_detail, status)
+    if active:
+        return active
     if all_disks_done and op_stage:
         return _disks_done_step_detail(op_stage, op_detail, status)
     if _is_vm_lifecycle_stage(op_stage):
@@ -8932,17 +8976,8 @@ def _showroom_route_hostname(topology):
     return None
 
 
-def _showroom_resolver_ips(topology, showroom_node):
-    """DNS-network dnsmasq IPs for the showroom app-proxy nginx resolver.
-
-    Prefers the network named by the showroom's ``dnsNetwork``; else the first
-    non-BMC cluster network. Returns its dnsServerIp (if set) or both ``.1``/``.2``
-    (see :func:`showroom_scaffold.dns_network_resolver_ips`)."""
-    from app.services.showroom_scaffold import dns_network_resolver_ips
-
-    dns_net_name = str(
-        (showroom_node.get("data") or {}).get("dnsNetwork") or ""
-    ).strip()
+def _find_showroom_dns_network(topology, dns_net_name: str):
+    """Locate the cluster network used for showroom DNS resolution."""
     nets = [
         n
         for n in topology.get("nodes", [])
@@ -8950,9 +8985,8 @@ def _showroom_resolver_ips(topology, showroom_node):
         and (n.get("data") or {}).get("subtype") == "network"
         and (n.get("data") or {}).get("networkType") != "bmc"
     ]
-    net = None
     if dns_net_name:
-        net = next(
+        named = next(
             (
                 n
                 for n in nets
@@ -8965,8 +8999,23 @@ def _showroom_resolver_ips(topology, showroom_node):
             ),
             None,
         )
-    if net is None:
-        net = nets[0] if nets else None
+        if named is not None:
+            return named
+    return nets[0] if nets else None
+
+
+def _showroom_resolver_ips(topology, showroom_node):
+    """DNS-network dnsmasq IPs for the showroom app-proxy nginx resolver.
+
+    Prefers the network named by the showroom's ``dnsNetwork``; else the first
+    non-BMC cluster network. Returns its dnsServerIp (if set) or both ``.1``/``.2``
+    (see :func:`showroom_scaffold.dns_network_resolver_ips`)."""
+    from app.services.showroom_scaffold import dns_network_resolver_ips
+
+    dns_net_name = str(
+        (showroom_node.get("data") or {}).get("dnsNetwork") or ""
+    ).strip()
+    net = _find_showroom_dns_network(topology, dns_net_name)
     if net is None:
         return []
     d = net.get("data") or {}
@@ -10857,6 +10906,17 @@ def _extract_ocp_kubeadmin_password(nodes, vm_id=None):
     return _first_kubeadmin_password(nodes, lambda n: n.get("type") == "vmNode")
 
 
+def _apply_kubeadmin_pw_to_topology(topo: dict, vm_id: str, pw: str) -> bool:
+    """Set ocpKubeadminPassword on matching VM node. Returns True if changed."""
+    for n in topo.get("nodes", []):
+        if n.get("id") == vm_id and n.get("type") == "vmNode":
+            data = n.setdefault("data", {})
+            if data.get("ocpKubeadminPassword") != pw:
+                data["ocpKubeadminPassword"] = pw
+                return True
+    return False
+
+
 def _persist_ocp_kubeadmin_password(project_id, vm_id, pw):
     """Store the installer-generated kubeadmin password on the VM node so the UI
     shows the real value. Recert sets ocpKubeadminPassword directly; the Agent
@@ -10877,13 +10937,9 @@ def _persist_ocp_kubeadmin_password(project_id, vm_id, pw):
                 topo = getattr(p, attr, None)
                 if not topo:
                     continue
-                for n in topo.get("nodes", []):
-                    if n.get("id") == vm_id and n.get("type") == "vmNode":
-                        data = n.setdefault("data", {})
-                        if data.get("ocpKubeadminPassword") != pw:
-                            data["ocpKubeadminPassword"] = pw
-                            flag_modified(p, attr)
-                            changed = True
+                if _apply_kubeadmin_pw_to_topology(topo, vm_id, pw):
+                    flag_modified(p, attr)
+                    changed = True
             if changed:
                 db.commit()
         finally:

@@ -194,6 +194,21 @@ def _resolve_provider_type(project) -> str | None:
     return prov.type if prov else None
 
 
+def _hydrate_one_external_ip(ext_ip: dict, eip_by_canvas: dict) -> dict:
+    """Copy one externalIps entry and overlay DB EIP fields when allocated."""
+    entry = dict(ext_ip)
+    eip = eip_by_canvas.get(entry.get("id", ""))
+    if not eip:
+        return entry
+    entry["ip"] = eip.public_ip
+    entry["_private_ip"] = eip.private_ip
+    if eip.port_map:
+        entry["_transit_port_map"] = dict(eip.port_map)
+    else:
+        entry.pop("_transit_port_map", None)
+    return entry
+
+
 def _hydrate_response_external_ips(db, project_id: str, result: dict) -> None:
     """Attach allocated EIP addresses from the DB onto API topology snapshots."""
     from app.models.elastic_ip import ElasticIp
@@ -211,19 +226,9 @@ def _hydrate_response_external_ips(db, project_id: str, result: dict) -> None:
         external_ips = topo.get("externalIps")
         if not external_ips:
             continue
-        hydrated = []
-        for ext_ip in external_ips:
-            entry = dict(ext_ip)
-            eip = eip_by_canvas.get(entry.get("id", ""))
-            if eip:
-                entry["ip"] = eip.public_ip
-                entry["_private_ip"] = eip.private_ip
-                if eip.port_map:
-                    entry["_transit_port_map"] = dict(eip.port_map)
-                else:
-                    entry.pop("_transit_port_map", None)
-            hydrated.append(entry)
-        topo["externalIps"] = hydrated
+        topo["externalIps"] = [
+            _hydrate_one_external_ip(ext_ip, eip_by_canvas) for ext_ip in external_ips
+        ]
 
 
 def _gateway_external_endpoints_by_id(topology: dict | None) -> dict[str, list]:
@@ -343,8 +348,9 @@ def _sync_showroom_topology_on_save(db, project, topology: dict) -> None:
     )
 
 
-def _project_response_dict(project, db=None):
-    result = {
+def _project_response_base(project) -> dict:
+    """Core ProjectResponse fields from the ORM object."""
+    return {
         "id": project.id,
         "name": project.name,
         "description": project.description,
@@ -384,9 +390,36 @@ def _project_response_dict(project, db=None):
         "created_at": project.created_at,
         "updated_at": project.updated_at,
     }
-    # Heal stale pre-join powerOn/defer flags in the response so reload does not
-    # flash a false Apply-Changes dirty state (canvas auto-save may have reverted
-    # the editable topology after deferred workers joined).
+
+
+def _attach_host_provider_fields(result: dict, db, project, prov_type) -> None:
+    """Fill host/provider metadata (+ kubevirt capabilities) onto a response dict."""
+    from app.models.provider import Provider
+
+    host = db.query(Host).filter_by(id=project.host_id).first()
+    if not host:
+        return
+    result["host_instance_id"] = host.instance_id
+    result["host_ip"] = host.ip_address
+    provider = (
+        db.query(Provider).filter_by(id=host.provider_id).first()
+        if host.provider_id
+        else None
+    )
+    if not provider:
+        return
+    result["host_provider_name"] = provider.name
+    result["host_provider_type"] = provider.type
+    if (prov_type or provider.type) == "kubevirt":
+        from app.services.providers.kubevirt_capabilities import (
+            fetch_cluster_capabilities,
+        )
+
+        result["cluster_capabilities"] = fetch_cluster_capabilities(provider)
+
+
+def _project_response_dict(project, db=None):
+    result = _project_response_base(project)
     if project.topology and project.deployed_topology:
         from app.services.ocp.join_deferred_workers import (
             sync_joined_worker_flags_from_deployed,
@@ -413,28 +446,7 @@ def _project_response_dict(project, db=None):
     if prov_type:
         result["provider_type"] = prov_type
     if db is not None and project.host_id:
-        from app.models.provider import Provider
-
-        host = db.query(Host).filter_by(id=project.host_id).first()
-        if host:
-            result["host_instance_id"] = host.instance_id
-            result["host_ip"] = host.ip_address
-            provider = (
-                db.query(Provider).filter_by(id=host.provider_id).first()
-                if host.provider_id
-                else None
-            )
-            if provider:
-                result["host_provider_name"] = provider.name
-                result["host_provider_type"] = provider.type
-                if (prov_type or provider.type) == "kubevirt":
-                    from app.services.providers.kubevirt_capabilities import (
-                        fetch_cluster_capabilities,
-                    )
-
-                    result["cluster_capabilities"] = fetch_cluster_capabilities(
-                        provider
-                    )
+        _attach_host_provider_fields(result, db, project, prov_type)
     if db is not None:
         if project.owner_id:
             from app.models.user import User

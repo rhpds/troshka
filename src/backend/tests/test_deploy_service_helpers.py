@@ -11846,3 +11846,114 @@ class TestResolveLibraryDiskMeasured:
         _resolve_library_disk(data, mock_db, client, "bkt", {}, None, "", {})
         assert data["sourceSizeGb"] == 40
         assert data["size"] == 40
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# New helpers from Sonar S3776/coverage pass
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class TestIsControlPlaneVmData:
+    def test_worker_role(self):
+        from app.services.deploy_service import _is_control_plane_vm_data
+
+        assert _is_control_plane_vm_data({"clusterRole": "worker"}) is False
+
+    def test_workers_group_without_role(self):
+        from app.services.deploy_service import _is_control_plane_vm_data
+
+        assert _is_control_plane_vm_data({"tags": {"AnsibleGroup": "workers"}}) is False
+
+    def test_control_plane(self):
+        from app.services.deploy_service import _is_control_plane_vm_data
+
+        assert _is_control_plane_vm_data({"clusterRole": "control-plane"}) is True
+        assert _is_control_plane_vm_data({}) is True
+
+
+class TestEffectiveDnsIp:
+    def test_explicit_wins(self):
+        from app.services.deploy_service import _effective_dns_ip_for_network
+
+        assert (
+            _effective_dns_ip_for_network(
+                {"cidr": "10.0.0.0/24", "dnsServerIp": "10.0.0.53"}, True
+            )
+            == "10.0.0.53"
+        )
+
+    def test_kubevirt_uses_dot_two(self):
+        from app.services.deploy_service import _effective_dns_ip_for_network
+
+        assert (
+            _effective_dns_ip_for_network({"cidr": "10.0.0.0/24"}, True) == "10.0.0.2"
+        )
+
+    def test_troshkad_uses_dot_one(self):
+        from app.services.deploy_service import _effective_dns_ip_for_network
+
+        assert (
+            _effective_dns_ip_for_network({"cidr": "10.0.0.0/24"}, False) == "10.0.0.1"
+        )
+
+
+class TestActiveCephRestoreStep:
+    def test_inactive(self):
+        from app.services.deploy_service import _active_ceph_restore_step
+
+        assert _active_ceph_restore_step(False, "", "", {}) is None
+
+    def test_active_while_importing(self):
+        from app.services.deploy_service import _active_ceph_restore_step
+
+        step = _active_ceph_restore_step(
+            False, "Ceph Restore", "importing", {"cephRestoreActive": True}
+        )
+        assert step == ("restoring ceph", "importing")
+        # Empty stage also qualifies while the flag is set.
+        assert _active_ceph_restore_step(
+            False, "", "importing", {"cephRestoreActive": True}
+        ) == ("restoring ceph", "importing")
+
+
+class TestClusterInstallStartEpochs:
+    def test_collects_matching(self):
+        from app.services.deploy_service import _cluster_install_start_epochs
+
+        topo = {
+            "clusters": [
+                {"id": "a", "ocpInstallStartedAt": 100.0},
+                {"name": "b", "ocpInstallStartedAt": 50},
+                {"id": "c"},
+            ]
+        }
+        assert _cluster_install_start_epochs(topo, {"a", "b"}) == [100.0, 50.0]
+
+
+class TestApplyKubeadminPw:
+    def test_sets_password(self):
+        from app.services.deploy_service import _apply_kubeadmin_pw_to_topology
+
+        topo = {"nodes": [{"id": "vm1", "type": "vmNode", "data": {}}]}
+        assert _apply_kubeadmin_pw_to_topology(topo, "vm1", "secret") is True
+        assert topo["nodes"][0]["data"]["ocpKubeadminPassword"] == "secret"
+        assert _apply_kubeadmin_pw_to_topology(topo, "vm1", "secret") is False
+
+
+class TestGoldenNameMap:
+    def test_hashes_resolved_path(self):
+        import hashlib
+
+        from app.services.deploy_service import _golden_name_map_from_topology
+
+        path = "s3://bucket/disk.qcow2"
+        h = hashlib.sha256(path.encode()).hexdigest()[:16]
+        topo = {
+            "nodes": [
+                {
+                    "type": "storageNode",
+                    "data": {"resolvedS3Path": path, "label": "disk0"},
+                }
+            ]
+        }
+        assert _golden_name_map_from_topology(topo) == {f"golden-{h}": "disk0"}
