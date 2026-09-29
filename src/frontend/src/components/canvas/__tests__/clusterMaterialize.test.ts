@@ -1189,6 +1189,7 @@ describe("Cluster Network Anchors", () => {
       .filter(Boolean);
     expect(ips).toHaveLength(2);
     expect(new Set(ips).size).toBe(2);
+    expect(ips.sort()).toEqual(["10.0.0.10", "10.0.0.11"]);
   });
 
   it("applyClusterNetworks with different network counts updates member NICs", () => {
@@ -1390,6 +1391,66 @@ describe("clusterPrereqIssues", () => {
   it("no error when a member network has DNS", () => {
     const issues = clusterPrereqIssues({ id: "c", networkIds: ["net1"] } as any, [dnsNet, openGw]);
     expect(issues.some((i) => i.level === "error")).toBe(false);
+  });
+
+  it("errors when SNO member lacks a machine-net IP and installOnDeploy", () => {
+    const member = {
+      id: "vm1",
+      type: "vmNode",
+      data: { clusterId: "c", nics: [{ id: "n1", name: "eth0" }] },
+    } as any;
+    const issues = clusterPrereqIssues(
+      { id: "c", type: "sno", controlPlane: 1, workers: 0, networkIds: ["net1"], installOnDeploy: true } as any,
+      [dnsNet, openGw, member],
+    );
+    expect(issues.some((i) => i.level === "error" && /static machine-network IP/i.test(i.message))).toBe(
+      true,
+    );
+  });
+
+  it("errors when compact/standard lacks VIPs and installOnDeploy", () => {
+    const member = {
+      id: "vm1",
+      type: "vmNode",
+      data: { clusterId: "c", nics: [{ id: "n1", ip: "10.0.0.11" }] },
+    } as any;
+    const issues = clusterPrereqIssues(
+      {
+        id: "c",
+        type: "standard",
+        controlPlane: 3,
+        workers: 0,
+        networkIds: ["net1"],
+        apiVip: "",
+        ingressVip: "",
+        installOnDeploy: true,
+      } as any,
+      [dnsNet, openGw, member],
+    );
+    expect(issues.some((i) => /API VIP/i.test(i.message))).toBe(true);
+    expect(issues.some((i) => /Ingress VIP/i.test(i.message))).toBe(true);
+  });
+
+  it("does not require VIPs for SNO", () => {
+    const member = {
+      id: "vm1",
+      type: "vmNode",
+      data: { clusterId: "c", nics: [{ id: "n1", ip: "10.0.0.10" }] },
+    } as any;
+    const issues = clusterPrereqIssues(
+      {
+        id: "c",
+        type: "sno",
+        controlPlane: 1,
+        workers: 0,
+        networkIds: ["net1"],
+        apiVip: "",
+        ingressVip: "",
+        installOnDeploy: true,
+      } as any,
+      [dnsNet, openGw, member],
+    );
+    expect(issues.some((i) => /VIP/i.test(i.message))).toBe(false);
   });
 
   it("warns (not errors) when the gateway blocks outbound http/https/ntp", () => {

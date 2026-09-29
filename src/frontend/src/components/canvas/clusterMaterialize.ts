@@ -616,7 +616,7 @@ function isClusterMemberVm(node: Node, cluster: ClusterConfig): boolean {
 /**
  * Assign static IPs to cluster member NICs that lack one — one address per
  * entry in ``cluster.networkIds`` (eth0, eth1, …). Mirrors primary-network
- * SNO assignment for every attached network (cluster high-end, BMC from .11).
+ * SNO assignment for every attached network (machine-net .10-style, BMC from .11).
  */
 export function assignMissingClusterMemberNicIps(
   cluster: ClusterConfig,
@@ -1199,9 +1199,10 @@ function singleNodeClusterIp(cluster: ClusterConfig, nodes: Node[]): string {
 
 /**
  * SNO has no VIP; its single node needs a STATIC IP (not DHCP) which serves as
- * the node IP and the api/*.apps target. Assign the member's primary NIC a high
- * unused IP in the cluster network when it has none. Idempotent: returns the
- * same `nodes` ref when the member already has an IP (or it can't be resolved).
+ * the node IP and the api/*.apps target. Assign the member's primary NIC a
+ * template-style unused IP (prefer `.10`) in the cluster network when it has
+ * none. Idempotent: returns the same `nodes` ref when the member already has an
+ * IP (or it can't be resolved).
  */
 export function ensureSnoNodeIp(cluster: ClusterConfig, nodes: Node[]): Node[] {
   return assignMissingClusterMemberNicIps(cluster, nodes);
@@ -1344,8 +1345,8 @@ export interface ClusterPrereqIssue {
 
 /**
  * Unmet prerequisites for deploying an OCP cluster (empty = ready). Severities:
- *  - error: a member network with DNS enabled (api/api-int/apps resolution) is
- *    required — a cluster cannot function without it.
+ *  - error: DNS-enabled member network required; SNO members need a machine-net
+ *    static IP; compact/standard need API + Ingress VIPs when installOnDeploy.
  *  - warning: a gateway permitting outbound HTTP/HTTPS/NTP (or all) is needed
  *    for a full OCP install (image pulls + time sync), but not when a local /
  *    mirror registry supplies content, so it is advisory only.
@@ -1384,6 +1385,45 @@ export function clusterPrereqIssues(cluster: ClusterConfig, nodes: Node[]): Clus
       });
     }
   }
+
+  const members = nodes.filter((n) => isClusterMemberVm(n, cluster));
+  const isSno =
+    cluster.type === "sno" ||
+    (cluster.controlPlane ?? 0) + (cluster.workers ?? 0) <= 1;
+  const installOnDeploy = cluster.installOnDeploy !== false;
+
+  if (installOnDeploy && members.length > 0 && netIds.length > 0) {
+    const missingIp = members.some((m) => {
+      const nics = ((m.data as Record<string, unknown>).nics as Array<{ ip?: string }>) || [];
+      // Primary machine-net NIC is index 0 (aligned with networkIds[0]).
+      return !(nics[0]?.ip || "").trim();
+    });
+    if (missingIp) {
+      issues.push({
+        level: "error",
+        message: isSno
+          ? "Assign a static machine-network IP on the control-plane NIC (SNO has no VIP — api/api-int/*.apps use the node IP)."
+          : "Assign a static machine-network IP on each cluster member NIC before deploy.",
+      });
+    }
+  }
+
+  if (installOnDeploy && !isSno) {
+    if (!(cluster.apiVip || "").trim()) {
+      issues.push({
+        level: "error",
+        message: "Set an API VIP in the cluster's member network subnet (required for compact/standard).",
+      });
+    }
+    if (!(cluster.ingressVip || "").trim()) {
+      issues.push({
+        level: "error",
+        message:
+          "Set an Ingress VIP in the cluster's member network subnet (required for compact/standard).",
+      });
+    }
+  }
+
   return issues;
 }
 
