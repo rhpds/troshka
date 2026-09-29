@@ -419,6 +419,46 @@ class TestAdminQueueStatus:
             assert resp.status_code == 401
 
 
+class TestAdminSettings:
+    def test_get_defaults_to_default_ingress_controller(self):
+        from app.models.system_config import SystemConfig
+        from app.services.system_settings import INGRESS_CONTROLLER_KEY
+
+        db = TestSession()
+        try:
+            row = db.query(SystemConfig).filter_by(key=INGRESS_CONTROLLER_KEY).first()
+            if row:
+                db.delete(row)
+                db.commit()
+        finally:
+            db.close()
+        resp = client.get("/api/v1/admin/settings", headers=HEADERS)
+        assert resp.status_code == 200
+        assert resp.json()["ingress_controller"] == "default"
+
+    def test_put_ingress_controller(self):
+        resp = client.put(
+            "/api/v1/admin/settings",
+            headers=HEADERS,
+            json={"ingress_controller": "ingress-rhdp-net"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ingress_controller"] == "ingress-rhdp-net"
+        resp = client.get("/api/v1/admin/settings", headers=HEADERS)
+        assert resp.json()["ingress_controller"] == "ingress-rhdp-net"
+        # reset
+        client.put(
+            "/api/v1/admin/settings",
+            headers=HEADERS,
+            json={"ingress_controller": "default"},
+        )
+
+    def test_settings_forbidden_for_regular_user(self):
+        with patch("app.core.auth.config", _mock_oauth_config()):
+            resp = client.get("/api/v1/admin/settings", headers=REGULAR_HEADERS)
+            assert resp.status_code == 403
+
+
 class TestDebugThreads:
     def test_debug_threads_returns_200(self):
         """Admin user can access debug/threads endpoint."""

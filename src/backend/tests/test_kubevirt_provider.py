@@ -177,7 +177,7 @@ def test_create_route_access_creates_service_and_route():
         mock_custom = MagicMock()
         mock_core = MagicMock()
         mock_custom.create_namespaced_custom_object.return_value = {
-            "spec": {"host": "bastion-443.apps.cluster.example.com"}
+            "spec": {"host": "rt-bastion-443-troshka-proj-123.apps.cluster.example.com"}
         }
         mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
@@ -186,8 +186,15 @@ def test_create_route_access_creates_service_and_route():
             provider, host, "proj-1234-5678", "bastion", "10.0.0.10", 443
         )
 
-    assert result["hostname"] == "bastion-443.apps.cluster.example.com"
+    assert (
+        result["hostname"] == "rt-bastion-443-troshka-proj-123.apps.cluster.example.com"
+    )
     mock_core.create_namespaced_service.assert_called_once()
+    route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
+    assert (
+        route_body["spec"]["host"]
+        == "rt-bastion-443-troshka-proj-123.apps.cluster.example.com"
+    )
 
 
 def test_create_route_access_edge_for_port_443():
@@ -198,7 +205,7 @@ def test_create_route_access_edge_for_port_443():
         mock_custom = MagicMock()
         mock_core = MagicMock()
         mock_custom.create_namespaced_custom_object.return_value = {
-            "spec": {"host": "showroom-443.apps.cluster.example.com"}
+            "spec": {"host": "showroom-troshka-proj-123.apps.cluster.example.com"}
         }
         mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
@@ -207,11 +214,15 @@ def test_create_route_access_edge_for_port_443():
             provider, host, "proj-1234-5678", "showroom", "10.0.0.5", 443
         )
 
-    assert result["hostname"] == "showroom-443.apps.cluster.example.com"
+    assert result["hostname"] == "showroom-troshka-proj-123.apps.cluster.example.com"
     route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
     assert route_body["metadata"]["name"] == "showroom"
     assert route_body["spec"]["tls"]["termination"] == "edge"
     assert route_body["spec"]["port"]["targetPort"] == 1443
+    assert (
+        route_body["spec"]["host"]
+        == "showroom-troshka-proj-123.apps.cluster.example.com"
+    )
     svc_body = mock_core.create_namespaced_service.call_args[1]["body"]
     assert svc_body["metadata"]["name"] == "showroom"
     assert svc_body["spec"]["ports"][0]["port"] == 1443
@@ -226,7 +237,7 @@ def test_create_route_access_edge_for_port_80():
         mock_custom = MagicMock()
         mock_core = MagicMock()
         mock_custom.create_namespaced_custom_object.return_value = {
-            "spec": {"host": "showroom-80.apps.cluster.example.com"}
+            "spec": {"host": "showroom-troshka-proj-123.apps.cluster.example.com"}
         }
         mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
@@ -235,7 +246,7 @@ def test_create_route_access_edge_for_port_80():
             provider, host, "proj-1234-5678", "showroom", "10.0.0.5", 80
         )
 
-    assert result["hostname"] == "showroom-80.apps.cluster.example.com"
+    assert result["hostname"] == "showroom-troshka-proj-123.apps.cluster.example.com"
     route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
     assert route_body["metadata"]["name"] == "showroom"
     assert route_body["spec"]["tls"]["termination"] == "edge"

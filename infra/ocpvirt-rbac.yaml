@@ -66,16 +66,21 @@ rules:
     verbs: ["create", "update"]
   # Cluster network config — read OVN MTU for uplink-aware MTU selection
   - apiGroups: ["config.openshift.io"]
-    resources: ["networks"]
+    resources: ["networks", "ingresses"]
+    verbs: ["get", "list"]
+  # IngressController — resolve apps domain for the admin-selected controller
+  # (default vs ingress-rhdp-net → apps.<cluster>.rhdp.net)
+  - apiGroups: ["operator.openshift.io"]
+    resources: ["ingresscontrollers"]
     verbs: ["get", "list"]
   # Secrets — cloud-init userdata
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create", "delete", "get", "patch"]
-  # Namespace — ensure troshka namespace exists
+  # Namespace — ensure troshka namespace exists; patch guid for secondary ICs
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "create", "delete"]
+    verbs: ["get", "create", "delete", "patch"]
   # Nodes — find IPs for NodePort access
   - apiGroups: [""]
     resources: ["nodes"]

@@ -632,12 +632,17 @@ def _force_clear_rook_finalizers(provider, project_id) -> None:
     _cleanup_project_persistent_volumes(core_api, namespace)
 
 
-def _project_namespace_labels(project_id: str) -> dict[str, str]:
-    return {
+def _project_namespace_labels(
+    project_id: str, guid: str | None = None
+) -> dict[str, str]:
+    labels = {
         "app": "troshka",
         "troshka-project": project_id[:8],
         _KUBEMACPOOL_VM_IGNORE_LABEL: "ignore",
     }
+    # ingress-rhdp-net (and similar) select namespaces with guid Exists.
+    labels["guid"] = ((guid or project_id[:8]).strip().lower() or project_id[:8])[:63]
+    return labels
 
 
 _GW_BLOCKED_POD_PORTS = {80: 1080, 443: 1443, 8080: 18080}
@@ -1473,21 +1478,82 @@ def _resolve_vm_root_pvc(custom_api, core_api, namespace, vm_name):
     return pvc_name, int(digits or "20")
 
 
+def _create_or_update_route(custom_api, namespace: str, route_body: dict) -> str:
+    """Create a Route; on conflict return existing host, optionally re-pinning host."""
+    route_name = route_body["metadata"]["name"]
+    desired_host = (route_body.get("spec") or {}).get("host")
+    try:
+        result = custom_api.create_namespaced_custom_object(
+            group=_ROUTE_API,
+            version="v1",
+            namespace=namespace,
+            plural="routes",
+            body=route_body,
+        )
+        return dict(result).get("spec", {}).get("host", "")  # type: ignore[call-overload]
+    except Exception as e:
+        if "AlreadyExists" not in str(e):
+            raise
+    existing = custom_api.get_namespaced_custom_object(
+        group=_ROUTE_API,
+        version="v1",
+        namespace=namespace,
+        plural="routes",
+        name=route_name,
+    )
+    hostname = dict(existing).get("spec", {}).get("host", "")  # type: ignore[call-overload]
+    if desired_host and hostname != desired_host:
+        try:
+            custom_api.patch_namespaced_custom_object(
+                group=_ROUTE_API,
+                version="v1",
+                namespace=namespace,
+                plural="routes",
+                name=route_name,
+                body={"spec": {"host": desired_host}},
+            )
+            return desired_host
+        except Exception:
+            pass
+    return hostname
+
+
+def _route_apps_domain(custom_api, core_api, provider, namespace: str, project_id: str):
+    """Label namespace for secondary ICs and resolve the apps wildcard domain."""
+    from app.services.openshift_ingress import (
+        ensure_namespace_guid_label,
+        resolve_apps_domain,
+    )
+
+    ensure_namespace_guid_label(core_api, namespace, project_id[:8])
+    return resolve_apps_domain(
+        custom_api, provider.get_credentials().get("api_url", "")
+    )
+
+
 def _ensure_project_namespace(core_api, namespace: str, project_id: str) -> None:
     from kubernetes import client as k8s_client
 
+    labels = _project_namespace_labels(project_id)
     try:
         core_api.create_namespace(
             body=k8s_client.V1Namespace(
                 metadata=k8s_client.V1ObjectMeta(
                     name=namespace,
-                    labels=_project_namespace_labels(project_id),
+                    labels=labels,
                 )
             )
         )
     except Exception as e:
         if "AlreadyExists" not in str(e):
             raise
+        # Keep guid (and other labels) current for secondary IngressControllers.
+        try:
+            from app.services.openshift_ingress import ensure_namespace_guid_label
+
+            ensure_namespace_guid_label(core_api, namespace, labels["guid"])
+        except Exception:
+            pass
 
 
 def _obc_s3_dict(cluster_s3: dict) -> dict:
@@ -1947,6 +2013,25 @@ class KubeVirtDriver(ProviderDriver):
         # API (guest 6443) needs passthrough — including secondary listen keys
         # like ext 6444 → VIP:6443.
         passthrough = guest_port == 6443
+        from app.services.openshift_ingress import route_public_host
+
+        apps_domain = _route_apps_domain(
+            custom_api, core_api, provider, namespace, project_id
+        )
+        route_spec: dict = {
+            "to": {"kind": "Service", "name": svc_name},
+            "port": {"targetPort": pod_port},
+            "tls": (
+                {"termination": "passthrough"}
+                if passthrough
+                else {
+                    "termination": "edge",
+                    "insecureEdgeTerminationPolicy": "Redirect",
+                }
+            ),
+        }
+        if apps_domain:
+            route_spec["host"] = route_public_host(route_name, namespace, apps_domain)
         route_body = {
             "apiVersion": _ROUTE_API_VERSION,
             "kind": "Route",
@@ -1959,39 +2044,9 @@ class KubeVirtDriver(ProviderDriver):
                 },
                 "annotations": {_HAPROXY_TIMEOUT_ANNOTATION: "3600s"},
             },
-            "spec": {
-                "to": {"kind": "Service", "name": svc_name},
-                "port": {"targetPort": pod_port},
-                "tls": (
-                    {"termination": "passthrough"}
-                    if passthrough
-                    else {
-                        "termination": "edge",
-                        "insecureEdgeTerminationPolicy": "Redirect",
-                    }
-                ),
-            },
+            "spec": route_spec,
         }
-        try:
-            result = custom_api.create_namespaced_custom_object(
-                group=_ROUTE_API,
-                version="v1",
-                namespace=namespace,
-                plural="routes",
-                body=route_body,
-            )
-            hostname = dict(result).get("spec", {}).get("host", "")  # type: ignore[call-overload]
-        except Exception as e:
-            if "AlreadyExists" not in str(e):
-                raise
-            existing = custom_api.get_namespaced_custom_object(
-                group=_ROUTE_API,
-                version="v1",
-                namespace=namespace,
-                plural="routes",
-                name=route_name,
-            )
-            hostname = dict(existing).get("spec", {}).get("host", "")  # type: ignore[call-overload]
+        hostname = _create_or_update_route(custom_api, namespace, route_body)
 
         return {
             "hostname": hostname,
@@ -2002,12 +2057,10 @@ class KubeVirtDriver(ProviderDriver):
     def create_app_proxy_route(
         self, provider, project_id, route_name, source_route_name
     ):
-        """Clone the showroom route under a short route name, letting OpenShift
-        auto-generate the host (<route-name>-<namespace>.apps.<cluster>) so the
-        OAuth-protected app (console/oauth) is reachable at a deterministic hostname
-        the showroom's app-proxy nginx can Host-route. No explicit spec.host is set,
-        so no routes/custom-host permission is required. Returns the route name."""
-        custom_api, _core_api, _ = _get_k8s_clients(provider)
+        """Clone the showroom route under a short route name with an explicit
+        host on the configured IngressController domain so app-proxy nginx can
+        Host-route console/oauth. Returns the route name."""
+        custom_api, core_api, _ = _get_k8s_clients(provider)
         ns = _project_ns(provider, project_id)
         try:
             raw = custom_api.get_namespaced_custom_object(
@@ -2028,6 +2081,16 @@ class KubeVirtDriver(ProviderDriver):
             if isinstance(_s, dict):
                 src_spec = _s
         name = route_name[:63]
+        from app.services.openshift_ingress import route_public_host
+
+        apps_domain = _route_apps_domain(custom_api, core_api, provider, ns, project_id)
+        route_spec: dict = {
+            "to": src_spec.get("to"),
+            "port": src_spec.get("port"),
+            "tls": src_spec.get("tls"),
+        }
+        if apps_domain:
+            route_spec["host"] = route_public_host(name, ns, apps_domain)
         route_body = {
             "apiVersion": _ROUTE_API_VERSION,
             "kind": "Route",
@@ -2040,23 +2103,9 @@ class KubeVirtDriver(ProviderDriver):
                 },
                 "annotations": {_HAPROXY_TIMEOUT_ANNOTATION: "3600s"},
             },
-            "spec": {
-                "to": src_spec.get("to"),
-                "port": src_spec.get("port"),
-                "tls": src_spec.get("tls"),
-            },
+            "spec": route_spec,
         }
-        try:
-            custom_api.create_namespaced_custom_object(
-                group=_ROUTE_API,
-                version="v1",
-                namespace=ns,
-                plural="routes",
-                body=route_body,
-            )
-        except Exception as e:
-            if "AlreadyExists" not in str(e):
-                raise
+        _create_or_update_route(custom_api, ns, route_body)
         return name
 
     def find_showroom_route(self, provider, project_id, vm_name, port):
@@ -2098,36 +2147,19 @@ class KubeVirtDriver(ProviderDriver):
         return None
 
     def get_apps_domain(self, provider) -> str:
-        """Cluster apps wildcard domain (e.g. apps.<cluster>). Authoritative source
-        is ingresses.config.openshift.io/cluster .spec.domain, but that needs
-        cluster-scoped read the provider SA may lack — so fall back to deriving it
-        from the api_url (api.<base>[:port] -> apps.<base>), the OCP convention."""
-        custom_api, _core_api, _ = _get_k8s_clients(provider)
-        try:
-            ing = custom_api.get_cluster_custom_object(
-                group="config.openshift.io",
-                version="v1",
-                plural="ingresses",
-                name="cluster",
-            )
-            if isinstance(ing, dict):
-                spec = ing.get("spec")
-                if isinstance(spec, dict) and spec.get("domain"):
-                    return str(spec["domain"])
-        except Exception:
-            pass
-        # Fallback: derive from the API URL host (no RBAC required).
-        try:
-            from urllib.parse import urlparse
+        """Cluster apps wildcard for the configured IngressController.
 
-            host = (
-                urlparse(provider.get_credentials().get("api_url", "")).hostname or ""
-            )
-            if host.startswith("api."):
-                return "apps." + host[len("api.") :]
-        except Exception:
-            pass
-        return ""
+        Reads ``IngressController.status.domain`` for the admin-selected
+        controller (default → cluster apps domain; ingress-rhdp-net →
+        ``apps.<cluster>.rhdp.net``). Falls back to cluster ingress config /
+        api_url derivation when the controller is ``default``.
+        """
+        custom_api, _core_api, _ = _get_k8s_clients(provider)
+        from app.services.openshift_ingress import resolve_apps_domain
+
+        return resolve_apps_domain(
+            custom_api, provider.get_credentials().get("api_url", "")
+        )
 
     def delete_route_access(self, provider, project_id, namespace=None):
         custom_api, core_api, _ = _get_k8s_clients(provider)

@@ -82,6 +82,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       "/admin/hosts": "Hosts",
       "/admin/storage-pools": "Storage Pools",
       "/admin/dns-providers": "DNS Providers",
+      "/admin/settings": "System Settings",
       "/admin/queue": "Job Queue",
       "/getting-started": "Getting Started",
     };
@@ -317,6 +318,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     { label: "Hosts", path: "/admin/hosts" },
     { label: "Storage Pools", path: "/admin/storage-pools" },
     { label: "DNS Providers", path: "/admin/dns-providers" },
+    { label: "System Settings", path: "/admin/settings" },
     { label: "Job Queue", path: "/admin/queue" },
   ];
 

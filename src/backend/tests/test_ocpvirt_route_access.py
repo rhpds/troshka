@@ -156,6 +156,10 @@ def test_create_route_access_creates_service_and_route(
 
     route_body = mock_custom.create_namespaced_custom_object.call_args[1]["body"]
     assert route_body["spec"]["tls"]["termination"] == "passthrough"
+    assert (
+        route_body["spec"]["host"]
+        == "troshka-pf-a53cbd0d-bastion-443-troshka.apps.cluster"
+    )
 
 
 @patch("app.services.providers.ocpvirt._ensure_host_transit_port")

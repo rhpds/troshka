@@ -667,6 +667,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from app.api import admin_settings as admin_settings_routes  # noqa: E402
 from app.api import api_keys as api_key_routes  # noqa: E402
 from app.api import auth as auth_routes  # noqa: E402
 from app.api import disks as disk_routes  # noqa: E402
@@ -711,6 +712,7 @@ app.include_router(workload_routes.router, prefix=_API_PREFIX)
 app.include_router(ws_routes.router)
 app.include_router(storage_pool_routes.router, prefix=_API_PREFIX)
 app.include_router(dns_provider_routes.router, prefix=_API_PREFIX)
+app.include_router(admin_settings_routes.router, prefix=_API_PREFIX)
 app.include_router(portal_routes.router, prefix=_API_PREFIX)
 app.include_router(template_routes.router, prefix=_API_PREFIX)
 app.include_router(registry_cred_routes.router, prefix=_API_PREFIX)

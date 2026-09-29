@@ -565,7 +565,7 @@ def _setup_route_dnat(host, project_id, transit_port, int_ip, vm_port):
 def _create_or_get_route(custom_api, namespace, route_body, resource_name):
     """Create an OCP Route, returning the hostname.
 
-    On 409 conflict, merge-patches spec (TLS/port/target) then returns hostname.
+    On 409 conflict, merge-patches spec (TLS/port/target/host) then returns hostname.
     """
     from kubernetes import client
 
@@ -588,7 +588,7 @@ def _create_or_get_route(custom_api, namespace, route_body, resource_name):
                 patch_body = {
                     "spec": {
                         key: route_spec[key]
-                        for key in ("to", "port", "tls")
+                        for key in ("to", "port", "tls", "host")
                         if route_spec.get(key) is not None
                     }
                 }
@@ -612,7 +612,9 @@ def _create_or_get_route(custom_api, namespace, route_body, resource_name):
                         name=resource_name,
                     ),
                 )
-                return existing.get("spec", {}).get("host", "")
+                return existing.get("spec", {}).get("host", "") or route_spec.get(
+                    "host", ""
+                )
             except client.ApiException:
                 return ""
         raise
@@ -1223,6 +1225,30 @@ class OCPVirtDriver(ProviderDriver):
         # 6443, including secondary listen keys like ext 6444 → VIP:6443).
         # Showroom-style 443→80 HTTP needs edge termination.
         passthrough = int(vm_port) == 6443 or (port == 443 and int(vm_port) == 443)
+        from app.services.openshift_ingress import (
+            ensure_namespace_guid_label,
+            resolve_apps_domain,
+            route_public_host,
+        )
+
+        ensure_namespace_guid_label(core_api, namespace, project_id[:8])
+        apps_domain = resolve_apps_domain(custom_api, creds.get("api_url", ""))
+        route_spec: dict[str, Any] = {
+            "to": {"kind": "Service", "name": resource_name},
+            "port": {"targetPort": f"pf-{port}"},
+            "tls": (
+                {"termination": "passthrough"}
+                if passthrough
+                else {
+                    "termination": "edge",
+                    "insecureEdgeTerminationPolicy": "Redirect",
+                }
+            ),
+        }
+        if apps_domain:
+            route_spec["host"] = route_public_host(
+                resource_name, namespace, apps_domain
+            )
         route = {
             "apiVersion": _ROUTE_API_VERSION,
             "kind": "Route",
@@ -1231,18 +1257,7 @@ class OCPVirtDriver(ProviderDriver):
                 "namespace": namespace,
                 "labels": labels,
             },
-            "spec": {
-                "to": {"kind": "Service", "name": resource_name},
-                "port": {"targetPort": f"pf-{port}"},
-                "tls": (
-                    {"termination": "passthrough"}
-                    if passthrough
-                    else {
-                        "termination": "edge",
-                        "insecureEdgeTerminationPolicy": "Redirect",
-                    }
-                ),
-            },
+            "spec": route_spec,
         }
         hostname = _create_or_get_route(custom_api, namespace, route, resource_name)
 
@@ -1259,16 +1274,13 @@ class OCPVirtDriver(ProviderDriver):
     def create_app_proxy_route(
         self, provider, project_id, route_name, source_route_name
     ):
-        """Clone the showroom route under a short route name, letting OpenShift
-        auto-generate the host (<route-name>-<namespace>.apps.<cluster>) so the
-        OAuth-protected app (console/oauth) is reachable at a deterministic hostname
-        the showroom's app-proxy nginx can Host-route. No explicit spec.host is set,
-        so no routes/custom-host permission is required. Returns the assigned host."""
+        """Clone the showroom route under a short route name with an explicit
+        host on the configured IngressController domain. Returns the host."""
         from kubernetes import client
 
         creds = provider.get_credentials()
         namespace = creds.get("namespace", "troshka")
-        custom_api, _ = _get_k8s_clients(creds)
+        custom_api, core_api = _get_k8s_clients(creds)
         try:
             src = cast(
                 dict[str, Any],
@@ -1287,6 +1299,21 @@ class OCPVirtDriver(ProviderDriver):
             return ""
         src_spec = src.get("spec", {})
         name = route_name[:63]
+        from app.services.openshift_ingress import (
+            ensure_namespace_guid_label,
+            resolve_apps_domain,
+            route_public_host,
+        )
+
+        ensure_namespace_guid_label(core_api, namespace, project_id[:8])
+        apps_domain = resolve_apps_domain(custom_api, creds.get("api_url", ""))
+        route_spec: dict[str, Any] = {
+            "to": src_spec.get("to"),
+            "port": src_spec.get("port"),
+            "tls": src_spec.get("tls"),
+        }
+        if apps_domain:
+            route_spec["host"] = route_public_host(name, namespace, apps_domain)
         route = {
             "apiVersion": _ROUTE_API_VERSION,
             "kind": "Route",
@@ -1299,13 +1326,17 @@ class OCPVirtDriver(ProviderDriver):
                     "troshka/access-type": "route",
                 },
             },
-            "spec": {
-                "to": src_spec.get("to"),
-                "port": src_spec.get("port"),
-                "tls": src_spec.get("tls"),
-            },
+            "spec": route_spec,
         }
         return _create_or_get_route(custom_api, namespace, route, name)
+
+    def get_apps_domain(self, provider) -> str:
+        """Apps wildcard for the configured IngressController."""
+        creds = provider.get_credentials()
+        custom_api, _ = _get_k8s_clients(creds)
+        from app.services.openshift_ingress import resolve_apps_domain
+
+        return resolve_apps_domain(custom_api, creds.get("api_url", ""))
 
     def find_showroom_route(self, provider, project_id, vm_name, port):
         """Return {"hostname", "route_name"} for the existing showroom Route, or None.

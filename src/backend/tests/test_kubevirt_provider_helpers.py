@@ -1322,25 +1322,57 @@ class TestGetAppsDomain:
     def test_derives_from_api_url_when_ingress_unavailable(self):
         provider = self._provider("https://api.ocpv06.dal10.infra.demo.redhat.com:6443")
         capi = MagicMock()
+        capi.get_namespaced_custom_object.side_effect = Exception("forbidden")
         capi.get_cluster_custom_object.side_effect = Exception("forbidden")
-        with patch(
-            "app.services.providers.kubevirt._get_k8s_clients",
-            return_value=(capi, MagicMock(), MagicMock()),
+        with (
+            patch(
+                "app.services.providers.kubevirt._get_k8s_clients",
+                return_value=(capi, MagicMock(), MagicMock()),
+            ),
+            patch(
+                "app.services.openshift_ingress.get_ingress_controller_name",
+                return_value="default",
+            ),
         ):
             assert (
                 KubeVirtDriver().get_apps_domain(provider)
                 == "apps.ocpv06.dal10.infra.demo.redhat.com"
             )
 
+    def test_prefers_ingress_controller_domain(self):
+        provider = self._provider("https://api.x.example.com:6443")
+        capi = MagicMock()
+        capi.get_namespaced_custom_object.return_value = {
+            "status": {"domain": "apps.ocpv06.rhdp.net"}
+        }
+        with (
+            patch(
+                "app.services.providers.kubevirt._get_k8s_clients",
+                return_value=(capi, MagicMock(), MagicMock()),
+            ),
+            patch(
+                "app.services.openshift_ingress.get_ingress_controller_name",
+                return_value="ingress-rhdp-net",
+            ),
+        ):
+            assert KubeVirtDriver().get_apps_domain(provider) == "apps.ocpv06.rhdp.net"
+
     def test_prefers_ingress_config_domain(self):
         provider = self._provider("https://api.x.example.com:6443")
         capi = MagicMock()
+        capi.get_namespaced_custom_object.side_effect = Exception("forbidden")
         capi.get_cluster_custom_object.return_value = {
             "spec": {"domain": "apps.authoritative.example.com"}
         }
-        with patch(
-            "app.services.providers.kubevirt._get_k8s_clients",
-            return_value=(capi, MagicMock(), MagicMock()),
+        with (
+            patch(
+                "app.services.providers.kubevirt._get_k8s_clients",
+                return_value=(capi, MagicMock(), MagicMock()),
+            ),
+            patch(
+                "app.services.openshift_ingress.get_ingress_controller_name",
+                return_value="default",
+            ),
         ):
             assert (
                 KubeVirtDriver().get_apps_domain(provider)
@@ -1350,10 +1382,17 @@ class TestGetAppsDomain:
     def test_empty_when_no_usable_source(self):
         provider = self._provider("https://notapi.example.com:6443")
         capi = MagicMock()
+        capi.get_namespaced_custom_object.side_effect = Exception("nope")
         capi.get_cluster_custom_object.side_effect = Exception("nope")
-        with patch(
-            "app.services.providers.kubevirt._get_k8s_clients",
-            return_value=(capi, MagicMock(), MagicMock()),
+        with (
+            patch(
+                "app.services.providers.kubevirt._get_k8s_clients",
+                return_value=(capi, MagicMock(), MagicMock()),
+            ),
+            patch(
+                "app.services.openshift_ingress.get_ingress_controller_name",
+                return_value="default",
+            ),
         ):
             assert KubeVirtDriver().get_apps_domain(provider) == ""
 

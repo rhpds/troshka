@@ -101,3 +101,10 @@ rules:
     resources: ["securitycontextconstraints"]
     verbs: ["get", "patch"]
     resourceNames: ["troshka-network-pods", "troshka-privileged-jobs", "troshka-gateway", "rook-ceph"]
+  # IngressController — resolve apps domain for admin-selected controller
+  - apiGroups: ["operator.openshift.io"]
+    resources: ["ingresscontrollers"]
+    verbs: ["get", "list"]
+  - apiGroups: ["config.openshift.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list"]
