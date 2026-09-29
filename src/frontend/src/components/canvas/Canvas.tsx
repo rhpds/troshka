@@ -595,6 +595,14 @@ export default function Canvas({ onSnapshotVM, onRunWorkload }: CanvasProps) {
             dhcp: item.type === "dhcp" || item.type === "network",
             dns: item.type === "dns",
             dnsDomain: item.type === "dns" ? "lab.local" : "",
+            // Match ocp-sno.yaml gateway defaults so canvas-built OCP installs
+            // can pull images / sync time without a manual properties pass.
+            ...(item.type === "gateway"
+              ? {
+                  outboundPolicy: "restrict",
+                  outboundPorts: "53,80/tcp,443/tcp,123/udp",
+                }
+              : {}),
           },
         };
       } else if (item.type === "loadbalancer") {

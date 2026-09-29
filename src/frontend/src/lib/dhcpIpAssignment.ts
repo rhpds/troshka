@@ -217,13 +217,37 @@ export function pickIpForNetwork(
   return pickAvailableIp(range, usedIps);
 }
 
-/** High host in a CIDR (SNO / cluster primary NIC — gateway reserved). */
+/** High host in a CIDR (Ceph OSD / multi-node VIP helpers — gateway reserved). */
 export function pickHighEndNicIp(cidr: string, usedIps: Set<string>): string | null {
   const hosts = listCidrHosts(cidr);
   if (hosts.length === 0) return null;
   const reserved = new Set(usedIps);
   reserved.add(hosts[0]); // gateway
   for (let i = hosts.length - 1; i >= 0; i -= 1) {
+    if (!reserved.has(hosts[i])) return hosts[i];
+  }
+  return null;
+}
+
+/**
+ * Template-style machine-network host IP: prefer `.10` and upward (matches
+ * `ocp-sno.yaml` / SNO pattern). Gateway (first host, typically `.1`) is reserved.
+ * Falls back to `.2`–`.9` when `.10+` is exhausted.
+ */
+export function pickTemplateStyleNicIp(
+  cidr: string,
+  usedIps: Set<string>,
+): string | null {
+  const hosts = listCidrHosts(cidr);
+  if (hosts.length === 0) return null;
+  const reserved = new Set(usedIps);
+  reserved.add(hosts[0]); // gateway
+  // hosts[0]=.1 … hosts[9]=.10 on a typical /24
+  const preferFrom = Math.min(9, hosts.length - 1);
+  for (let i = preferFrom; i < hosts.length; i += 1) {
+    if (!reserved.has(hosts[i])) return hosts[i];
+  }
+  for (let i = 1; i < preferFrom; i += 1) {
     if (!reserved.has(hosts[i])) return hosts[i];
   }
   return null;
@@ -250,9 +274,10 @@ export function pickClusterMemberNicIp(
   if (netData.networkType === "bmc") {
     return pickBmcNicIp(cidr, usedIps);
   }
-  // Cluster / machine networks: high address (matches SNO primary assignment).
-  const high = pickHighEndNicIp(cidr, usedIps);
-  if (high) return high;
+  // Machine networks: .10-style (SNO template parity). Multi-node VIPs still use
+  // high-end addresses via suggestClusterVips — not this picker.
+  const preferred = pickTemplateStyleNicIp(cidr, usedIps);
+  if (preferred) return preferred;
   return pickIpForNetwork(netData, usedIps);
 }
 
