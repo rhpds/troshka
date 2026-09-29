@@ -1,0 +1,84 @@
+# Keep Dependabot quiet: few grouped PRs, no drive-by majors that break the UI.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /src/frontend
+    schedule:
+      interval: monthly
+      day: monday
+    open-pull-requests-limit: 3
+    ignore:
+      # 16.3.x blank-paged us via Instant Insights validationLevel — stay on 16.2.x
+      # until we deliberately migrate. Patches within 16.2 are fine.
+      - dependency-name: next
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+      - dependency-name: sharp
+        update-types:
+          - version-update:semver-major
+      # vitest 5 / vite 7 need an intentional migration (#19/#20/#23 closed for this)
+      - dependency-name: vitest
+        update-types:
+          - version-update:semver-major
+      - dependency-name: "@vitest/*"
+        update-types:
+          - version-update:semver-major
+      - dependency-name: vite
+        update-types:
+          - version-update:semver-major
+      - dependency-name: esbuild
+        update-types:
+          - version-update:semver-major
+    groups:
+      frontend-deps:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - next
+          - sharp
+          - vitest
+          - "@vitest/*"
+          - vite
+          - esbuild
+      frontend-tooling-patches:
+        patterns:
+          - next
+          - sharp
+          - vitest
+          - "@vitest/*"
+          - vite
+          - esbuild
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: pip
+    directory: /src/backend
+    schedule:
+      interval: monthly
+      day: monday
+    open-pull-requests-limit: 3
+    # httpx2 / httpcore2 must move in lockstep — group them
+    groups:
+      backend-deps:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - httpx2
+          - httpcore2
+      httpx2-stack:
+        patterns:
+          - httpx2
+          - httpcore2
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+      day: monday
+    open-pull-requests-limit: 1
+    groups:
+      github-actions:
+        patterns:
+          - "*"
