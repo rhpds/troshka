@@ -32,10 +32,15 @@ ARG OCP_VERSION=stable
 ARG WETTY_VERSION=2.5.0
 
 # nodejs 20 (ubi9's default stream is 16, too old for wetty) + build toolchain
-# (wetty's node-pty compiles native), then oc from the OpenShift mirror.
+# (wetty's node-pty / gc-stats compile native), then oc from the OpenShift mirror.
 # procps-ng gives `watch`, ncurses gives `clear`. libevent + ncurses-libs are the
 # runtime deps for the tmux binary copied from the builder stage. The wetty build
 # toolchain is removed in this same layer so the final image stays gcc-free.
+#
+# NEVER add --ignore-scripts to the wetty npm install. Install scripts must run
+# to compile native addons; skipping them makes wetty crash at startup and the
+# whole showroom pod stays NotReady (router 502). Sonar "don't run install
+# scripts" findings are false positives here — leave scripts enabled.
 RUN dnf module -y reset nodejs \
     && dnf module -y enable nodejs:20 \
     && dnf install -y nodejs npm gcc-c++ make python3 tar gzip util-linux \
@@ -44,7 +49,7 @@ RUN dnf module -y reset nodejs \
         "https://mirror.openshift.com/pub/openshift-v4/clients/ocp/${OCP_VERSION}/openshift-client-linux.tar.gz" \
         | tar xzf - -C /usr/local/bin oc kubectl \
     && chmod 0755 /usr/local/bin/oc /usr/local/bin/kubectl \
-    && npm install -g --ignore-scripts "wetty@${WETTY_VERSION}" \
+    && npm install -g "wetty@${WETTY_VERSION}" \
     && dnf remove -y gcc-c++ make \
     && dnf clean all \
     && rm -rf /var/cache/dnf
