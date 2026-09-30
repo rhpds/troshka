@@ -319,6 +319,32 @@ def test_redfish_insert_media_retries_bmc_readiness():
     assert "continue" in cmd
 
 
+def test_redfish_insert_media_polls_inserted_after_post_flake():
+    """InsertMedia curl timeout must not abort before VirtualMedia is Inserted.
+
+    Dedicated CI saw the ops runner die mid-InsertMedia while sushy still
+    attached the ISO — wait-for never started even though the node booted.
+    POST failures are non-fatal; we poll Inserted with a hard deadline, then
+    ForceRestart only once media is confirmed (or exit 1 if never Inserted).
+    """
+    from app.services.ocp.agent_template import _redfish_insert_media_cmd
+
+    cmd = _redfish_insert_media_cmd("  ", "192.168.100.11")
+    # POST curl non-zero must not kill the set -e subshell (capture rc, not || true).
+    assert "_ins_rc" in cmd
+    assert "set +e" in cmd
+    # Poll loop with heartbeat + deadline fail-fast.
+    assert "waiting for VirtualMedia Inserted" in cmd
+    assert "sleep 15" in cmd
+    assert "_ins_deadline" in cmd
+    assert "VirtualMedia not Inserted" in cmd
+    assert "exit 1" in cmd
+    # Still ForceRestart only after Inserted confirmed (Reset after poll).
+    assert cmd.index("waiting for VirtualMedia Inserted") < cmd.index(
+        "ComputerSystem.Reset"
+    )
+
+
 def test_redfish_eject_media_retries_and_is_set_e_safe():
     """Eject MUST happen (a stuck ISO risks a node re-booting from media), so a
     transiently-unreachable BMC is retried, not skipped. The retry is also set -e

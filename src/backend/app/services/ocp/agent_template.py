@@ -2386,6 +2386,11 @@ def _serve_iso_cmd(
 # the install hung/failed mid-mount with CDROM half-attached.
 _REDFISH_CURL = "curl -s --connect-timeout 5 --max-time 15"
 _REDFISH_CURL_INSERT = "curl -s --connect-timeout 5 --max-time 900"
+# After InsertMedia POST (success or curl flake), poll Inserted this long
+# before failing hard. Covers nested CI where sushy finishes attach after
+# the client times out / drops — without this, wait-for never starts.
+_INSERT_POLL_DEADLINE_SECS = 900
+_INSERT_POLL_SLEEP_SECS = 15
 
 
 def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
@@ -2418,18 +2423,35 @@ def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
         f"{b4}exit 1\n"
         f"{b2}fi\n"
         f"{b2}# Insert virtual media (Systems path, HTTP, with auth).\n"
-        f"{b2}# Do NOT swallow failures: a silent InsertMedia leaves the domain\n"
-        f"{b2}# without a CDROM (UEFI 'No bootable option') while the log claims\n"
-        f"{b2}# the node was booted from ISO.\n"
         f"{b2}# Long max-time: sushy downloads the full ISO before answering.\n"
+        f"{b2}# POST curl failure/timeout is NON-fatal: on nested CI the client can\n"
+        f"{b2}# drop while sushy still finishes attaching. We poll Inserted below\n"
+        f"{b2}# and only exit 1 if media never becomes Inserted (fail-fast) — that\n"
+        f"{b2}# way wait-for still runs when the node actually booted the agent.\n"
+        f"{b2}set +e\n"
         f'{b2}{c_ins} -u admin:$BMC_PASS -X POST "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \\\n'
         f"{b4}-H 'Content-Type: application/json' \\\n"
         f'{b4}-d "{{\\"Image\\": \\"${{ISO_URL}}\\", \\"Inserted\\": true, \\"WriteProtected\\": true}}"\n'
-        f'{b2}INSERTED=$({c} -u admin:$BMC_PASS "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd" | python3 -c "import json,sys; print(json.load(sys.stdin).get(\'Inserted\',\'\'))" 2>/dev/null || echo "")\n'
-        f'{b2}if [ "$INSERTED" != "True" ] && [ "$INSERTED" != "true" ]; then\n'
-        f'{b4}echo "ERROR: VirtualMedia not Inserted on $BMC_IP (Inserted=$INSERTED ISO_URL=$ISO_URL)"\n'
-        f"{b4}exit 1\n"
+        f"{b2}_ins_rc=$?\n"
+        f"{b2}set -e\n"
+        f'{b2}if [ "$_ins_rc" != "0" ]; then\n'
+        f'{b4}echo "  WARNING: InsertMedia POST returned $_ins_rc on $BMC_IP; polling Inserted..."\n'
         f"{b2}fi\n"
+        f"{b2}_ins_deadline=$(( $(date +%s) + {_INSERT_POLL_DEADLINE_SECS} ))\n"
+        f'{b2}INSERTED=""\n'
+        f"{b2}while true; do\n"
+        f'{b4}INSERTED=$({c} -u admin:$BMC_PASS "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd" | python3 -c "import json,sys; print(json.load(sys.stdin).get(\'Inserted\',\'\'))" 2>/dev/null || echo "")\n'
+        f'{b4}if [ "$INSERTED" = "True" ] || [ "$INSERTED" = "true" ]; then\n'
+        f'{b4}  echo "  VirtualMedia Inserted on $BMC_IP"\n'
+        f"{b4}  break\n"
+        f"{b4}fi\n"
+        f'{b4}if [ "$(date +%s)" -ge "$_ins_deadline" ]; then\n'
+        f'{b4}  echo "ERROR: VirtualMedia not Inserted on $BMC_IP after {_INSERT_POLL_DEADLINE_SECS}s (Inserted=$INSERTED ISO_URL=$ISO_URL)"\n'
+        f"{b4}  exit 1\n"
+        f"{b4}fi\n"
+        f'{b4}echo "  waiting for VirtualMedia Inserted on $BMC_IP (Inserted=$INSERTED)..."\n'
+        f"{b4}sleep {_INSERT_POLL_SLEEP_SECS}\n"
+        f"{b2}done\n"
         f"{b2}# InsertMedia attaches the CDROM but leaves BootSourceOverride on Hdd.\n"
         f"{b2}# Without Cd override the node reboots into an empty disk (agent never\n"
         f"{b2}# starts). Continuous (not Once): some BMCs revert Once on Reset.\n"

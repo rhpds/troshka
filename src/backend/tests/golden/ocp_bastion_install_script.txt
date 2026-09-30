@@ -102,18 +102,35 @@
         exit 1
       fi
       # Insert virtual media (Systems path, HTTP, with auth).
-      # Do NOT swallow failures: a silent InsertMedia leaves the domain
-      # without a CDROM (UEFI 'No bootable option') while the log claims
-      # the node was booted from ISO.
       # Long max-time: sushy downloads the full ISO before answering.
+      # POST curl failure/timeout is NON-fatal: on nested CI the client can
+      # drop while sushy still finishes attaching. We poll Inserted below
+      # and only exit 1 if media never becomes Inserted (fail-fast) — that
+      # way wait-for still runs when the node actually booted the agent.
+      set +e
       curl -s --connect-timeout 5 --max-time 900 -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \
         -H 'Content-Type: application/json' \
         -d "{\"Image\": \"${ISO_URL}\", \"Inserted\": true, \"WriteProtected\": true}"
-      INSERTED=$(curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Inserted',''))" 2>/dev/null || echo "")
-      if [ "$INSERTED" != "True" ] && [ "$INSERTED" != "true" ]; then
-        echo "ERROR: VirtualMedia not Inserted on $BMC_IP (Inserted=$INSERTED ISO_URL=$ISO_URL)"
-        exit 1
+      _ins_rc=$?
+      set -e
+      if [ "$_ins_rc" != "0" ]; then
+        echo "  WARNING: InsertMedia POST returned $_ins_rc on $BMC_IP; polling Inserted..."
       fi
+      _ins_deadline=$(( $(date +%s) + 900 ))
+      INSERTED=""
+      while true; do
+        INSERTED=$(curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Inserted',''))" 2>/dev/null || echo "")
+        if [ "$INSERTED" = "True" ] || [ "$INSERTED" = "true" ]; then
+          echo "  VirtualMedia Inserted on $BMC_IP"
+          break
+        fi
+        if [ "$(date +%s)" -ge "$_ins_deadline" ]; then
+          echo "ERROR: VirtualMedia not Inserted on $BMC_IP after 900s (Inserted=$INSERTED ISO_URL=$ISO_URL)"
+          exit 1
+        fi
+        echo "  waiting for VirtualMedia Inserted on $BMC_IP (Inserted=$INSERTED)..."
+        sleep 15
+      done
       # InsertMedia attaches the CDROM but leaves BootSourceOverride on Hdd.
       # Without Cd override the node reboots into an empty disk (agent never
       # starts). Continuous (not Once): some BMCs revert Once on Reset.
