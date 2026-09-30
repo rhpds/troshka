@@ -337,7 +337,12 @@ def test_redfish_eject_clears_continuous_cd_override():
 
 
 def test_disk_write_eject_watch_clears_cd_before_reboot():
-    """Watcher greps disk-write 100% then clears Continuous + ejects (ae766856)."""
+    """Watcher greps disk-write 100% then clears Continuous + ejects (ae766856).
+
+    EjectMedia only rewrites inactive libvirt XML; the live domain keeps the
+    agent ISO at boot order 1. Assisted then soft-reboots into the installer
+    again. ForceRestart (destroy+create) is required so live matches disk-first.
+    """
     from app.services.ocp.agent_template import (
         _start_disk_write_eject_watch_cmd,
         _stop_disk_write_eject_watch_cmd,
@@ -351,8 +356,23 @@ def test_disk_write_eject_watch_clears_cd_before_reboot():
     assert "clearing Continuous Cd" in start
     assert "VirtualMedia.EjectMedia" in start
     assert "Disabled" in start
+    # Live sync: must ForceRestart after eject (not only redefine inactive XML).
+    assert "live boots disk" in start
+    assert 'ResetType\\": \\"ForceRestart' in start
+    assert start.index("VirtualMedia.EjectMedia") < start.index(
+        'ResetType\\": \\"ForceRestart'
+    )
     stop = _stop_disk_write_eject_watch_cmd("  ")
     assert "kill $_DISK_EJECT_WATCH_PID" in stop
+
+
+def test_install_complete_eject_does_not_force_restart():
+    """Final safety-net eject must not destroy+create mid-bootstrap."""
+    from app.services.ocp.agent_template import _redfish_eject_media_cmd
+
+    cmd = _redfish_eject_media_cmd("  ", "192.168.100.10")
+    assert "VirtualMedia.EjectMedia" in cmd
+    assert "ForceRestart" not in cmd
 
 
 def test_redfish_insert_media_polls_inserted_after_post_flake():

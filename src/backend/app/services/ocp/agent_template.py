@@ -2492,17 +2492,37 @@ def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
     )
 
 
-def _redfish_eject_media_cmd(indent: str, bmc_ips_str: str) -> str:
+def _redfish_eject_media_cmd(
+    indent: str, bmc_ips_str: str, *, force_restart: bool = False
+) -> str:
     """Clear Continuous Cd override + EjectMedia per BMC.
 
     Called at disk-write 100% (early) and again after install-complete. Clearing
     BootSourceOverride is required: Continuous survives EjectMedia and would
     still prefer an empty CD on the next guest reboot.
+
+    ``force_restart``: sushy EjectMedia only ``defineXML``s the *inactive*
+    domain. The live domain keeps the agent ISO at boot order 1, so an assisted
+    soft-reboot re-enters the installer. Redfish ForceRestart is destroy+create
+    and reloads inactive (disk-first). Use only on the disk-write watcher — not
+    the install-complete safety net (would interrupt bootstrap).
     """
     b = indent
     b2 = indent + "  "
     b4 = indent + "    "
     c = _REDFISH_CURL
+    restart = ""
+    if force_restart:
+        restart = (
+            f'{b2}echo "  ForceRestart $BMC_IP so live domain drops CDROM '
+            f'(inactive already disk-first)"\n'
+            f"{b2}{c} -u admin:$BMC_PASS -X POST "
+            f'"http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}'
+            f'/Actions/ComputerSystem.Reset" \\\n'
+            f"{b4}-H 'Content-Type: application/json' \\\n"
+            f'{b4}-d "{{\\"ResetType\\": \\"ForceRestart\\"}}" '
+            f">/dev/null 2>&1 || true\n"
+        )
     return (
         f"{b}for BMC_IP in {bmc_ips_str}; do\n"
         f'{b2}echo "Ejecting agent ISO from BMC $BMC_IP..."\n'
@@ -2526,6 +2546,7 @@ def _redfish_eject_media_cmd(indent: str, bmc_ips_str: str) -> str:
         f"{b4}-H 'Content-Type: application/json' \\\n"
         f'{b4}-d "{{\\"Boot\\": {{\\"BootSourceOverrideEnabled\\": \\"Disabled\\", \\"BootSourceOverrideTarget\\": \\"Hdd\\"}}}}" >/dev/null 2>&1 || true\n'
         f"{b2}{c} -u admin:$BMC_PASS -X POST \"http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia\" -H 'Content-Type: application/json' -d '{{}}' >/dev/null 2>&1 || true\n"
+        f"{restart}"
         f"{b}done\n"
     )
 
@@ -2537,18 +2558,20 @@ def _start_disk_write_eject_watch_cmd(
 
     Continuous Cd is required for the initial ForceRestart into the agent ISO.
     Leaving it set through the post-disk guest reboot re-enters the agent
-    (ae766856 regression). This watcher races the reboot: clear+eject as soon as
-    assisted reports disk-write 100%, before firmware re-reads Continuous.
+    (ae766856 regression). This watcher races the reboot: clear+eject+ForceRestart
+    as soon as assisted reports disk-write 100%. ForceRestart is required because
+    EjectMedia only updates inactive libvirt XML — assisted soft-reboot would
+    otherwise keep the live CDROM and land back in the installer.
     """
     b = indent
     b2 = indent + "  "
-    eject = _redfish_eject_media_cmd(b2, bmc_ips_str)
+    eject = _redfish_eject_media_cmd(b2, bmc_ips_str, force_restart=True)
     return (
         f"{b}# Clear Continuous Cd + eject ISO at disk-write 100% (before guest reboot).\n"
         f"{b}(\n"
         f"{b2}for _dw in $(seq 1 360); do\n"
         f"{b2}  if grep -q 'Writing image to disk: 100%' {log_path} 2>/dev/null; then\n"
-        f"{b2}    echo 'Disk image written — clearing Continuous Cd + ejecting ISO so reboot hits disk'\n"
+        f"{b2}    echo 'Disk image written — clearing Continuous Cd + ejecting ISO + ForceRestart so live boots disk'\n"
         f"{eject}"
         f"{b2}    break\n"
         f"{b2}  fi\n"

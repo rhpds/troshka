@@ -157,7 +157,7 @@
     (
       for _dw in $(seq 1 360); do
         if grep -q 'Writing image to disk: 100%' /home/cloud-user/ocp-install/install.log 2>/dev/null; then
-          echo 'Disk image written — clearing Continuous Cd + ejecting ISO so reboot hits disk'
+          echo 'Disk image written — clearing Continuous Cd + ejecting ISO + ForceRestart so live boots disk'
       for BMC_IP in 192.168.100.10 192.168.100.11; do
         echo "Ejecting agent ISO from BMC $BMC_IP..."
         SYS_ID=""
@@ -171,6 +171,10 @@
           -H 'Content-Type: application/json' \
           -d "{\"Boot\": {\"BootSourceOverrideEnabled\": \"Disabled\", \"BootSourceOverrideTarget\": \"Hdd\"}}" >/dev/null 2>&1 || true
         curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1 || true
+        echo "  ForceRestart $BMC_IP so live domain drops CDROM (inactive already disk-first)"
+        curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/Actions/ComputerSystem.Reset" \
+          -H 'Content-Type: application/json' \
+          -d "{\"ResetType\": \"ForceRestart\"}" >/dev/null 2>&1 || true
       done
           break
         fi
