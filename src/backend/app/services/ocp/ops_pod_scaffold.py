@@ -13,6 +13,8 @@ pod's workdir by the pod-create runner in Task 5.
 
 from __future__ import annotations
 
+import ipaddress
+
 from app.services.deploy_topology import showroom_transit_octet3
 
 # Placeholder ops-pod execution-environment image. The real image is built and
@@ -108,6 +110,63 @@ def runner_pod_infra_network(
     if dns_nameserver:
         net["dns_nameserver"] = dns_nameserver
     return [net]
+
+
+def _ops_lab_host_ip(cidr: str) -> tuple[str, int]:
+    """Pick ``.50`` (or last usable) in ``cidr`` — same convention as KubeVirt ops."""
+    net = ipaddress.ip_network(cidr, strict=False)
+    host = net.network_address + 50
+    if host not in net or host == net.network_address:
+        host = list(net.hosts())[-2]
+    return str(host), net.prefixlen
+
+
+def ops_pod_bmc_serving_network(
+    topology: dict, project_id: str
+) -> tuple[dict | None, str | None]:
+    """BMC-bridge attachment + serving IP for troshkad ops-pod VirtualMedia.
+
+    Sushy-emulator runs in the project netns on ``br-bmc-<pid>``. The agent ISO
+    HTTP URL must be on that L2 (``.50``); the infra-transit ``172.30.x.4`` from
+    ``hostname -I`` is not reachable for the InsertMedia fetch.
+    """
+    bmc_cidr = None
+    for n in topology.get("nodes") or []:
+        if n.get("type") != "networkNode":
+            continue
+        d = n.get("data") or {}
+        if d.get("subtype") != "network" or d.get("networkType") != "bmc":
+            continue
+        bmc_cidr = d.get("cidr")
+        if bmc_cidr:
+            break
+    if not bmc_cidr:
+        return None, None
+    ip, _prefix = _ops_lab_host_ip(bmc_cidr)
+    pid = str(project_id)[:8]
+    return (
+        {
+            "bridge": f"br-bmc-{pid}",
+            "ip": ip,
+            "cidr": bmc_cidr,
+            "mac": "",
+        },
+        ip,
+    )
+
+
+def troshkad_ops_pod_networks(
+    topology: dict,
+    project_id: str,
+    vni_map: dict,
+    dns_nameserver: str = "",
+) -> tuple[list[dict], str | None]:
+    """Infra-transit + optional BMC networks for troshkad ``/pods/create``."""
+    nets = list(ops_pod_infra_network(vni_map, dns_nameserver=dns_nameserver))
+    bmc_net, serving_ip = ops_pod_bmc_serving_network(topology, project_id)
+    if bmc_net:
+        nets.append(bmc_net)
+    return nets, serving_ip
 
 
 # Day-1 manifest that pre-creates the ImagePruner singleton suspended. Shipped

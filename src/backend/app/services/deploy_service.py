@@ -2603,18 +2603,24 @@ def _ops_pod_create_params(
         OPS_POD_IMAGE,
         OPS_POD_WORKDIR,
         ops_pod_config_files,
-        ops_pod_infra_network,
+        troshkad_ops_pod_networks,
     )
 
     project_id = str(getattr(project, "id", ""))
     dns = _gateway_connected_dns_nameserver(topology)
-    networks = ops_pod_infra_network(vni_map, dns_nameserver=dns)
+    networks, serving_ip = troshkad_ops_pod_networks(
+        topology=topology,
+        project_id=project_id,
+        vni_map=vni_map,
+        dns_nameserver=dns,
+    )
     ptr = _resolve_ops_pod_pull_through_registry(s, project, topology)
     command = _ops_pod_command(
         clusters,
         topology,
         ocp_version,
         OPS_POD_WORKDIR,
+        serving_ip=serving_ip,
         pull_through_registry=ptr,
     )
     recert_clusters, install_clusters = _partition_ops_pod_clusters(topology, clusters)

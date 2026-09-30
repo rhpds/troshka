@@ -526,10 +526,18 @@ def _member_boot_devices(vm_node, topology):
 
 
 def _normalize_member_disks(vm_node, topology):
-    """Ensure diskControllers (incl. a cdrom) and bootDevices exist (never overwrite)."""
+    """Ensure diskControllers include a cdrom and bootDevices exist.
+
+    Palette materialize often stamps disk0/disk1 without a CDROM. Append
+    ``cdrom0`` when missing (idempotent). Only invent a controller list when
+    none exists. Never overwrite existing ``bootDevices``.
+    """
     data = vm_node["data"]
-    if not data.get("diskControllers"):
+    dcs = data.get("diskControllers")
+    if not dcs:
         data["diskControllers"] = [_cdrom_controller()]
+    elif not any(str(dc.get("name", "")).startswith("cdrom") for dc in dcs):
+        data["diskControllers"] = list(dcs) + [_cdrom_controller()]
     if "bootDevices" not in data:
         data["bootDevices"] = _member_boot_devices(vm_node, topology)
 
@@ -542,7 +550,7 @@ def normalize_cluster_member_fields(topology: dict) -> dict:
     ensures the OCP install fields exist with role-correct defaults ONLY IF
     MISSING (never overwrites an existing value): ``os``/``firmware``/
     ``secureBoot``/``powerOnAtDeploy``/``bootMethod``/``bmcEnabled``,
-    ``diskControllers`` (adding a cdrom for agent ISO boot when empty),
+    ``diskControllers`` (appending a cdrom for agent ISO boot when missing),
     ``bootDevices`` (first data disk's storage node, else empty), and the role
     pair ``clusterRole``/``tags.AnsibleGroup`` — synced to each other, defaulting
     to worker when neither is set. Non-member VMs are left untouched.

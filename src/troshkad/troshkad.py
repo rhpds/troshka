@@ -13089,8 +13089,8 @@ def _allow_infra_veth_forward(job, proj_ns, veth_host):
         )
 
 
-def _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id):
-    """Attach a pod's infra container to VXLAN bridges via veth pairs."""
+def _ensure_pod_netns(job, full_pod_name, infra_pid):
+    """Symlink the infra container netns under /var/run/netns; return names."""
     tok = _net_token(full_pod_name)
     netns_name = f"ctr-{tok}"
     os.makedirs(_VAR_RUN_NETNS, exist_ok=True)
@@ -13101,32 +13101,61 @@ def _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id):
     if os.path.lexists(ns_path):
         os.unlink(ns_path)
     os.symlink(proc_ns, ns_path)
+    return tok, netns_name
 
+
+def _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id):
+    """Attach a pod's infra container to VXLAN bridges via veth pairs."""
+    tok, netns_name = _ensure_pod_netns(job, full_pod_name, infra_pid)
     proj_ns = f"troshka-{project_id[:8]}"
     for idx, net in enumerate(networks):
-        bridge = _validate_bridge_name(net["bridge"])
-        mac = net.get("mac", "")
-        ip_addr = net.get("ip", "")
-        cidr = net.get("cidr", "")
-
-        veth_host = f"vp{tok}{idx}h"[:15]
-        veth_ctr = f"vp{tok}{idx}n"[:15]
-
-        _setup_pod_veth_pair(
-            job,
-            full_pod_name,
-            idx,
-            veth_host,
-            veth_ctr,
-            mac,
-            netns_name,
-            proj_ns,
-            bridge,
+        _attach_one_pod_bridge(
+            job, tok, netns_name, proj_ns, idx, net
         )
 
-        if ip_addr and cidr:
-            gw = net.get("gateway") or _gateway_from_ip(ip_addr)
-            _configure_pod_interface_ip(job, idx, ip_addr, cidr, netns_name, gateway=gw)
+
+def _attach_pod_extra_bridges(
+    job, full_pod_name, infra_pid, networks, project_id, start_idx=1
+):
+    """Attach additional bridges (e.g. BMC) after infra-transit eth0.
+
+    Reuses the infra container netns created by
+    :func:`_attach_pod_to_infra_transit`. ``start_idx`` is the first ethN
+    index (BMC serving IP is typically eth1).
+    """
+    tok, netns_name = _ensure_pod_netns(job, full_pod_name, infra_pid)
+    proj_ns = f"troshka-{project_id[:8]}"
+    for offset, net in enumerate(networks):
+        _attach_one_pod_bridge(
+            job, tok, netns_name, proj_ns, start_idx + offset, net
+        )
+
+
+def _attach_one_pod_bridge(job, tok, netns_name, proj_ns, idx, net):
+    """Create one veth pair onto ``net['bridge']`` as eth``idx`` in the pod ns."""
+    bridge = _validate_bridge_name(net["bridge"])
+    mac = net.get("mac", "")
+    ip_addr = net.get("ip", "")
+    cidr = net.get("cidr", "")
+
+    veth_host = f"vp{tok}{idx}h"[:15]
+    veth_ctr = f"vp{tok}{idx}n"[:15]
+
+    _setup_pod_veth_pair(
+        job,
+        "",  # unused inside _setup_pod_veth_pair beyond logging context
+        idx,
+        veth_host,
+        veth_ctr,
+        mac,
+        netns_name,
+        proj_ns,
+        bridge,
+    )
+
+    if ip_addr and cidr:
+        gw = net.get("gateway") or _gateway_from_ip(ip_addr)
+        _configure_pod_interface_ip(job, idx, ip_addr, cidr, netns_name, gateway=gw)
 
 
 def _gateway_from_ip(ip_addr):
@@ -13295,6 +13324,13 @@ def _handle_pod_create(job, params):
             dns = networks[0].get("dns_nameserver") or networks[0].get("gateway")
             if dns:
                 job["_pod_resolv_path"] = _write_pod_resolv_conf(full_pod_name, dns)
+            # Extra bridges (e.g. BMC) after eth0 infra-transit — sushy fetches
+            # the agent ISO from the BMC-net IP on eth1.
+            extras = [n for n in networks[1:] if n.get("bridge")]
+            if extras:
+                _attach_pod_extra_bridges(
+                    job, full_pod_name, infra_pid, extras, project_id, start_idx=1
+                )
         else:
             _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id)
             gw = _pod_dns_nameserver(networks[0])

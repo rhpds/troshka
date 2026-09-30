@@ -2377,10 +2377,18 @@ def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
         f"{b2}done\n"
         f'{b2}if [ -z "$SYS_ID" ]; then echo "  WARNING: BMC $BMC_IP never became ready; skipping"; continue; fi\n'
         f'{b2}echo "  System: $SYS_ID"\n'
-        f"{b2}# Insert virtual media (Systems path, HTTP, with auth)\n"
+        f"{b2}# Insert virtual media (Systems path, HTTP, with auth).\n"
+        f"{b2}# Do NOT swallow failures: a silent InsertMedia leaves the domain\n"
+        f"{b2}# without a CDROM (UEFI 'No bootable option') while the log claims\n"
+        f"{b2}# the node was booted from ISO.\n"
         f'{b2}{c} -u admin:$BMC_PASS -X POST "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \\\n'
         f"{b4}-H 'Content-Type: application/json' \\\n"
-        f'{b4}-d "{{\\"Image\\": \\"${{ISO_URL}}\\", \\"Inserted\\": true, \\"WriteProtected\\": true}}" || true\n'
+        f'{b4}-d "{{\\"Image\\": \\"${{ISO_URL}}\\", \\"Inserted\\": true, \\"WriteProtected\\": true}}"\n'
+        f'{b2}INSERTED=$({c} -u admin:$BMC_PASS "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd" | python3 -c "import json,sys; print(json.load(sys.stdin).get(\'Inserted\',\'\'))" 2>/dev/null || echo "")\n'
+        f'{b2}if [ "$INSERTED" != "True" ] && [ "$INSERTED" != "true" ]; then\n'
+        f'{b4}echo "ERROR: VirtualMedia not Inserted on $BMC_IP (Inserted=$INSERTED ISO_URL=$ISO_URL)"\n'
+        f"{b4}exit 1\n"
+        f"{b2}fi\n"
         f"{b2}# Power on from ISO when off; reboot when already running (ForceRestart\n"
         f"{b2}# is a no-op on a shut-off libvirt domain).\n"
         f'{b2}POWER=$({c} -u admin:$BMC_PASS "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('

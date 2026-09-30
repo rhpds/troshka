@@ -703,6 +703,46 @@ def test_normalize_canvas_member_gains_install_fields():
     assert d["tags"]["AnsibleGroup"] == "controllers"
 
 
+def test_normalize_appends_cdrom_when_data_disks_already_present():
+    """Palette-materialized members have disk0/disk1 but no cdrom — append one."""
+    from app.services.template_loader import normalize_cluster_member_fields
+
+    topo = {
+        "nodes": [
+            {
+                "id": "m1",
+                "type": "vmNode",
+                "data": {
+                    "os": "rhcos",
+                    "clusterId": "prod",
+                    "clusterRole": "control-plane",
+                    "name": "cp-0",
+                    "diskControllers": [
+                        {"id": "dp-1", "name": "disk0", "bus": "virtio"},
+                        {"id": "dp-2", "name": "disk1", "bus": "virtio"},
+                    ],
+                    "bootDevices": ["m1-disk-0"],
+                },
+            }
+        ],
+        "edges": [],
+    }
+    d = normalize_cluster_member_fields(topo)["nodes"][0]["data"]
+    names = [dc.get("name") for dc in d["diskControllers"]]
+    assert names[:2] == ["disk0", "disk1"]
+    assert any(str(n).startswith("cdrom") for n in names)
+    # Idempotent — second pass does not duplicate cdrom.
+    d2 = normalize_cluster_member_fields(topo)["nodes"][0]["data"]
+    assert (
+        sum(
+            1
+            for n in d2["diskControllers"]
+            if str(n.get("name", "")).startswith("cdrom")
+        )
+        == 1
+    )
+
+
 def test_normalize_unroled_member_defaults_to_worker():
     """A member with clusterId but NEITHER clusterRole NOR AnsibleGroup -> worker."""
     from app.services.template_loader import normalize_cluster_member_fields
@@ -809,7 +849,16 @@ def test_normalize_leaves_configured_member_untouched():
         "edges": [],
     }
     out = normalize_cluster_member_fields(topo)
-    assert out["nodes"][0]["data"] == data
+    got = out["nodes"][0]["data"]
+    # Non-disk fields must be preserved; missing cdrom is appended.
+    for key, val in data.items():
+        if key == "diskControllers":
+            continue
+        assert got[key] == val
+    assert got["diskControllers"][0] == data["diskControllers"][0]
+    assert any(
+        str(dc.get("name", "")).startswith("cdrom") for dc in got["diskControllers"]
+    )
 
 
 def test_normalize_skips_non_member_vm():
@@ -858,8 +907,10 @@ def test_normalize_bootdevices_from_connected_disk():
     }
     d = normalize_cluster_member_fields(topo)["nodes"][0]["data"]
     assert d["bootDevices"] == ["disk1"]
-    # Non-empty controllers are left intact (no forced cdrom).
-    assert d["diskControllers"] == [{"id": "dp-abc", "name": "disk0", "bus": "virtio"}]
+    assert d["diskControllers"][0] == {"id": "dp-abc", "name": "disk0", "bus": "virtio"}
+    assert any(
+        str(dc.get("name", "")).startswith("cdrom") for dc in d["diskControllers"]
+    )
 
 
 def test_customize_topology_normalizes_member_into_agent_hosts():

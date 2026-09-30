@@ -257,6 +257,19 @@ describe("cluster member disks (storageNodes + edges + bootDevices)", () => {
     const bootDevices = diskControllers.bootDevices as string[];
     expect(bootDevices).toContain(disks.find((d) => (d.data as Record<string, unknown>).bootable)?.id ?? disks[0].id);
   });
+
+  it("seeds a SATA cdrom0 controller for agent ISO VirtualMedia boot", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    const { nodes } = reconcileClusterVms(cluster, [node]);
+    const cp = nodes.find((n) => n.data.clusterRole === "control-plane")!;
+    const dcs = (cp.data as Record<string, unknown>).diskControllers as Array<{
+      name: string;
+      bus: string;
+    }>;
+    const cdrom = dcs.find((dc) => dc.name.startsWith("cdrom"));
+    expect(cdrom).toEqual(expect.objectContaining({ name: "cdrom0", bus: "sata" }));
+    expect(dcs.filter((dc) => !dc.name.startsWith("cdrom"))).toHaveLength(2);
+  });
 });
 
 describe("cluster member NICs (wired to cluster networks)", () => {
@@ -489,9 +502,21 @@ describe("applyClusterDisks", () => {
     );
     expect(disksAfter).toHaveLength(2);
 
-    // Check diskControllers count
+    // Check diskControllers count (data disks + cdrom0)
     const dcAfter = (cpAfter.data as Record<string, unknown>).diskControllers as any[];
-    expect(dcAfter).toHaveLength(2);
+    expect(dcAfter.filter((dc: { name: string }) => !dc.name.startsWith("cdrom"))).toHaveLength(2);
+    expect(dcAfter.some((dc: { name: string }) => dc.name.startsWith("cdrom"))).toBe(true);
+  });
+
+  it("keeps cdrom0 when rebuilding data disks", () => {
+    const { node, cluster } = makeCluster("ocp", { x: 0, y: 0 });
+    cluster.controlPlaneDisks = [{ sizeGb: 120, bootable: true }];
+    const { nodes: initial, edges: initialEdges } = reconcileClusterVms(cluster, [node]);
+    const updated = { ...cluster, controlPlaneDisks: [{ sizeGb: 120, bootable: true }, { sizeGb: 100 }] };
+    const { nodes: result } = applyClusterDisks(updated, initial, initialEdges);
+    const cpAfter = result.find((n) => n.data.clusterRole === "control-plane")!;
+    const dcs = (cpAfter.data as Record<string, unknown>).diskControllers as Array<{ name: string; bus: string }>;
+    expect(dcs.some((dc) => dc.name === "cdrom0" && dc.bus === "sata")).toBe(true);
   });
 
   it("removes stale disk nodes when disk count decreases", () => {

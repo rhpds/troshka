@@ -293,6 +293,13 @@ function buildMemberDisks(
     bootDevices.push(diskNodes[0].id);
   }
 
+  // Empty SATA CDROM for agent-ISO VirtualMedia (matches template_loader._cdrom_controller).
+  diskControllers.push({
+    id: generateDiskControllerId(),
+    name: "cdrom0",
+    bus: "sata",
+  });
+
   return { diskNodes, diskControllers, diskEdges, bootDevices };
 }
 
@@ -970,6 +977,17 @@ export function applyClusterDisks(
     if (newBootDevices.length === 0 && newDiskNodes.length > 0) {
       newBootDevices.push(newDiskNodes[0].id);
     }
+
+    // Preserve existing cdrom controller id when present; otherwise seed cdrom0.
+    const prevDcs =
+      ((member.data as Record<string, unknown>).diskControllers as VMDiskController[] | undefined) ??
+      [];
+    const prevCdrom = prevDcs.find((dc) => String(dc.name || "").startsWith("cdrom"));
+    newDiskControllers.push(
+      prevCdrom
+        ? { ...prevCdrom, name: prevCdrom.name || "cdrom0", bus: prevCdrom.bus || "sata" }
+        : { id: generateDiskControllerId(), name: "cdrom0", bus: "sata" },
+    );
 
     // Identify stale disk nodes to remove
     const staleDiskNodeIds = new Set<string>();
