@@ -530,3 +530,50 @@ def test_messages_from_admission_causes_with_field():
     assert kv_helpers._messages_from_admission_causes(data) == [
         "bad bus (spec.disks[0])"
     ]
+
+
+def test_short_disk_id_ocp_member_suffix_unique():
+    """Canvas OCP disks share an 8-char prefix; use -disk-N → dN instead."""
+    from helpers.k8s import short_disk_id
+
+    assert short_disk_id("ocp-tuyymq-cp-0-disk-0") == "d0"
+    assert short_disk_id("ocp-tuyymq-cp-0-disk-1") == "d1"
+    assert short_disk_id("ocp-tuyymq-cp-0-disk-0") != short_disk_id(
+        "ocp-tuyymq-cp-0-disk-1"
+    )
+
+
+def test_short_disk_id_uuid_keeps_prefix():
+    from helpers.k8s import short_disk_id
+
+    assert short_disk_id("1655489a-801d-42fc-b63c-80445856f2af") == "1655489a"
+    assert short_disk_id("disk0001") == "disk0001"
+
+
+def test_build_kubevirt_vm_ocp_disks_get_unique_volume_names():
+    """Regression: [:8] made ocp-*-disk-0 and ocp-*-disk-1 collide as disk-ocp-tuyy."""
+    vm_cr = {
+        "metadata": {"name": "vm-ocp-tuyy", "namespace": "troshka-test"},
+        "spec": {
+            "cpus": 8,
+            "memory": 16384,
+            "disks": [
+                {"id": "ocp-tuyymq-cp-0-disk-0", "bus": "virtio"},
+                {"id": "ocp-tuyymq-cp-0-disk-1", "bus": "virtio"},
+            ],
+            "nics": [],
+        },
+    }
+    disk_pvcs = {
+        "ocp-tuyymq-cp-0-disk-0": "vm-ocp-tuyy-disk-d0",
+        "ocp-tuyymq-cp-0-disk-1": "vm-ocp-tuyy-disk-d1",
+    }
+    body = build_kubevirt_vm(vm_cr, disk_pvcs, {}, None)
+    disks = body["spec"]["template"]["spec"]["domain"]["devices"]["disks"]
+    vols = body["spec"]["template"]["spec"]["volumes"]
+    disk_names = [d["name"] for d in disks]
+    vol_names = [v["name"] for v in vols]
+    assert disk_names == ["disk-d0", "disk-d1"]
+    assert vol_names == ["disk-d0", "disk-d1"]
+    assert vols[0]["persistentVolumeClaim"]["claimName"] == "vm-ocp-tuyy-disk-d0"
+    assert vols[1]["persistentVolumeClaim"]["claimName"] == "vm-ocp-tuyy-disk-d1"

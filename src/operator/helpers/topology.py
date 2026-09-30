@@ -2,6 +2,7 @@
 
 import logging
 
+from helpers.k8s import short_disk_id
 from helpers.rook_ceph import (
     DEFAULT_OSD_COUNT,
     MAX_OSD_COUNT,
@@ -189,7 +190,7 @@ def extract_containers(topology):
 
 def container_disk_pvc_name(ctr_id, disk_node_id):
     """PVC name for a blank disk attached to a container pod."""
-    return f"pod-{ctr_id[:8]}-disk-{disk_node_id[:8]}"
+    return f"pod-{ctr_id[:8]}-disk-{short_disk_id(disk_node_id)}"
 
 
 def _add_disk_mount(ctr_id, disk_node_id, node_map, seen, mounts):
@@ -1008,12 +1009,7 @@ def _edge_other_end(edge, node_id):
 
 def _cluster_id_from_boundary(node):
     data = node.get("data", {})
-    return (
-        data.get("clusterId")
-        or data.get("name")
-        or data.get("clusterName")
-        or ""
-    )
+    return data.get("clusterId") or data.get("name") or data.get("clusterName") or ""
 
 
 def _linked_cluster_ids(nodes, edges, ceph_node_id: str) -> list[str]:

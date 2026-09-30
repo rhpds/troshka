@@ -4,7 +4,15 @@ import logging
 import time
 from typing import cast
 from kubernetes import client
-from helpers.k8s import CRD_GROUP, CRD_VERSION, golden_pvc_name, owner_ref, TOOLS_IMAGE
+from helpers.k8s import (
+    CRD_GROUP,
+    CRD_VERSION,
+    golden_pvc_name,
+    owner_ref,
+    short_disk_id,
+    vm_disk_pvc_name,
+    TOOLS_IMAGE,
+)
 from helpers.kubevirt import (
     build_kubevirt_vm,
     build_cloudinit_secret,
@@ -449,8 +457,8 @@ async def _provision_disk_pvcs(
     """Provision all disk PVCs (cloned from S3 or blank). Returns disk_pvcs dict."""
     disk_pvcs = {}
     for disk in spec.get("disks", []):
-        disk_id = disk.get("id", "")[:8]
-        pvc_name = f"{name}-disk-{disk_id}"
+        disk_id = disk.get("id", "")
+        pvc_name = vm_disk_pvc_name(name, disk_id)
 
         s3_path, disk_s3, secret = _resolve_disk_s3(disk, s3_config, central_s3_config)
 
@@ -1246,7 +1254,7 @@ async def _clone_s3_disk(
         owner_name=name,
         owner_namespace=namespace,
     ):
-        patch.status["message"] = f"Disk clone retry for {disk_id[:8]}"
+        patch.status["message"] = f"Disk clone retry for {short_disk_id(disk_id)}"
         raise kopf.TemporaryError(f"Disk clone {pvc_name} not ready", delay=60)
     return True
 
@@ -1304,7 +1312,7 @@ async def _provision_new_disks(
     backing volume is missing or terminally failed (self-heal ErrorPvcNotFound)."""
     disk_pvcs = {}
     for disk_id, disk in new_disks.items():
-        pvc_name = f"{name}-disk-{disk_id[:8]}"
+        pvc_name = vm_disk_pvc_name(name, disk_id)
         if disk_id in old_disks:
             if not _disk_needs_reprovision(custom_api, core_api, namespace, pvc_name):
                 disk_pvcs[disk_id] = pvc_name
@@ -1368,7 +1376,7 @@ def _delete_removed_disks(old_disks, new_disks, name, namespace, core_api, custo
     """Delete PVCs and DataVolumes for disks that were removed."""
     removed = set(old_disks) - set(new_disks)
     for disk_id in removed:
-        old_pvc = f"{name}-disk-{disk_id[:8]}"
+        old_pvc = vm_disk_pvc_name(name, disk_id)
         _try_delete_datavolume(custom_api, namespace, old_pvc)
         _try_delete_pvc(core_api, namespace, old_pvc)
 
@@ -1384,7 +1392,7 @@ def _resize_existing_pvcs(old_disks, new_disks, name, namespace, core_api):
         if new_size <= old_size:
             continue
 
-        pvc_name = f"{name}-disk-{disk_id[:8]}"
+        pvc_name = vm_disk_pvc_name(name, disk_id)
         try:
             pvc = core_api.read_namespaced_persistent_volume_claim(
                 name=pvc_name, namespace=namespace
@@ -1659,8 +1667,8 @@ def _delete_pvc(core_api, namespace, pvc_name):
 def _delete_disk_resources(spec, name, custom_api, core_api, namespace):
     """Delete all disk DataVolumes and PVCs."""
     for disk in spec.get("disks", []):
-        disk_id = disk.get("id", "")[:8]
-        pvc_name = f"{name}-disk-{disk_id}"
+        disk_id = disk.get("id", "")
+        pvc_name = vm_disk_pvc_name(name, disk_id)
         _delete_datavolume(custom_api, namespace, pvc_name)
         _delete_pvc(core_api, namespace, pvc_name)
 

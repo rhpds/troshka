@@ -2377,6 +2377,25 @@ class TestKubevirtVmRedeploy:
             "vm-abcdef01-cdrom",
         ]
 
+    def test_kubevirt_redeploy_pvc_names_ocp_member_disks_unique(self):
+        """OCP canvas disks share an 8-char prefix — must not collide."""
+        from app.api.projects import _kubevirt_redeploy_pvc_names
+
+        names = _kubevirt_redeploy_pvc_names(
+            "vm-ocp-tuyy",
+            {
+                "disks": [
+                    {"id": "ocp-tuyymq-cp-0-disk-0"},
+                    {"id": "ocp-tuyymq-cp-0-disk-1"},
+                ],
+            },
+        )
+        assert names == [
+            "vm-ocp-tuyy-disk-d0",
+            "vm-ocp-tuyy-disk-d1",
+        ]
+        assert len(names) == len(set(names))
+
 
 # ---------------------------------------------------------------------------
 # _wait_kubevirt_vms_ready  (lines ~2544-2582)

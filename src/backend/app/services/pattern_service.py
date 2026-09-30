@@ -661,6 +661,8 @@ def _cancel_kubevirt_capture(pattern_id, host, project, db):
 
 def _build_capture_disk_manifest(disk_nodes, disk_to_vm, pattern_id, vm_nodes=None):
     """Build the disk manifest list for a KubeVirt capture request."""
+    from app.services.deploy_topology import _short_disk_id
+
     manifest = []
     for disk_node in disk_nodes:
         fmt = disk_node.get("data", {}).get("format", "qcow2")
@@ -686,7 +688,7 @@ def _build_capture_disk_manifest(disk_nodes, disk_to_vm, pattern_id, vm_nodes=No
                 "vmName": vm_name,
                 "vmId": vm_id,
                 "diskId": disk_id,
-                "pvcName": f"{vm_name}-disk-{disk_id[:8]}",
+                "pvcName": f"{vm_name}-disk-{_short_disk_id(disk_id)}",
                 # The operator converts every disk to qcow2 and uploads it to
                 # this key, so it must be .qcow2 (declared `fmt` kept below).
                 "s3Key": f"patterns/{pattern_id}/{disk_id}.{PATTERN_STORED_FORMAT}",

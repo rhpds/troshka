@@ -13,6 +13,7 @@ from helpers.k8s import (
     build_exec_deployment,
     build_gateway_deployment,
     ensure_kubemacpool_opt_out,
+    vm_disk_pvc_name,
 )
 from helpers.topology import (
     extract_networks,
@@ -2574,7 +2575,7 @@ def _collect_recert_configs(vms, vm_disks_map, bastion_boot_pvc):
             continue
         if not vm_disks:
             continue
-        rhcos_pvc = f"vm-{vm['id'][:8]}-disk-{vm_disks[0].get('id', '')[:8]}"
+        rhcos_pvc = vm_disk_pvc_name(f"vm-{vm['id'][:8]}", vm_disks[0].get("id", ""))
         recert_configs.append(
             {
                 "rhcosPvc": rhcos_pvc,
@@ -2602,7 +2603,9 @@ def _find_bastion_boot_pvc(vms, vm_disks_map):
         if vm.get("name") == "bastion" and vm.get("os") != "rhcos":
             bastion_disks = vm_disks_map.get(vm["id"], [])
             if bastion_disks:
-                return f"vm-{vm['id'][:8]}-disk-{bastion_disks[0].get('id', '')[:8]}"
+                return vm_disk_pvc_name(
+                    f"vm-{vm['id'][:8]}", bastion_disks[0].get("id", "")
+                )
     return None
 
 

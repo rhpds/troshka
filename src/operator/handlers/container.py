@@ -1,6 +1,6 @@
 import logging
 from kubernetes import client
-from helpers.k8s import GATEWAY_IMAGE, lab_pod_dns_config
+from helpers.k8s import GATEWAY_IMAGE, lab_pod_dns_config, short_disk_id
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ def _add_container_mount(mount, disk_pvcs, volumes, volume_mounts, seen_vols, se
     pvc_name = disk_pvcs.get(disk_id)
     if not pvc_name:
         return
-    vol_name = f"disk-{disk_id[:8]}"
+    vol_name = f"disk-{short_disk_id(disk_id)}"
     if vol_name not in seen_vols:
         seen_vols.add(vol_name)
         volumes.append(

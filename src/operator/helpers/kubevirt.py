@@ -5,6 +5,8 @@ import time
 
 from kubernetes.client.exceptions import ApiException
 
+from helpers.k8s import short_disk_id
+
 CACHE_NAMESPACE = "troshka-cache"
 STORAGE_CLASS = "ocs-storagecluster-ceph-rbd-virtualization"
 
@@ -328,7 +330,7 @@ def _add_disks_to_domain(spec, disk_pvcs, domain, volumes):
     boot_order = spec.get("bootOrder", [])
 
     for i, disk_info in enumerate(spec.get("disks", [])):
-        disk_id = disk_info.get("id", f"disk-{i}")[:8]
+        disk_id = short_disk_id(disk_info.get("id", f"disk-{i}"))
         vol_name = f"disk-{disk_id}"
         bus = disk_info.get("bus", "virtio")
 

@@ -38,6 +38,7 @@ from app.services.deploy_topology import (  # noqa: F401
     _find_vm_disks,
     _find_vm_networks,
     _seed_path,
+    _short_disk_id,
     _vm_dir,
     diff_topologies,
 )
@@ -6029,7 +6030,7 @@ _TROSHKA_CR_VERSION = "v1alpha1"
 def _kubevirt_redeploy_pvc_names(cr_name: str, vm_spec: dict) -> list[str]:
     """PVC names the operator creates for a TroshkaVM spec."""
     names = [
-        f"{cr_name}-disk-{disk['id'][:8]}"
+        f"{cr_name}-disk-{_short_disk_id(disk['id'])}"
         for disk in vm_spec.get("disks", [])
         if disk.get("id")
     ]

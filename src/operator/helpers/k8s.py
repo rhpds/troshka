@@ -83,6 +83,27 @@ def golden_pvc_name(s3_path):
     return f"golden-{h}"
 
 
+_DISK_SUFFIX_RE = re.compile(r"-disk-(\d+)$")
+
+
+def short_disk_id(disk_id: str) -> str:
+    """Stable short segment for KubeVirt volume / PVC names.
+
+    Canvas OCP member disks use ids like ``{memberId}-disk-{N}``, which share
+    an 8-char prefix — ``disk_id[:8]`` would collide (both become ``ocp-tuyy``).
+    Prefer ``d{N}`` when that suffix is present; otherwise first 8 chars (UUIDs).
+    """
+    match = _DISK_SUFFIX_RE.search(disk_id or "")
+    if match:
+        return f"d{match.group(1)}"
+    return (disk_id or "")[:8]
+
+
+def vm_disk_pvc_name(vm_cr_name: str, disk_id: str) -> str:
+    """PVC name the TroshkaVM operator creates for a disk."""
+    return f"{vm_cr_name}-disk-{short_disk_id(disk_id)}"
+
+
 def build_nad(network_cr):
     _spec = network_cr["spec"]
     name = network_cr["metadata"]["name"]

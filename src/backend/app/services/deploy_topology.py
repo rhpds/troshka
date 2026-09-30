@@ -1901,6 +1901,19 @@ def _vm_dir(project_id: str, pool=None) -> str:
     return f"/var/lib/troshka/vms/{project_id}"
 
 
+def _short_disk_id(disk_id: str) -> str:
+    """Stable short segment for disk filenames / KubeVirt PVC names.
+
+    Canvas OCP member disks use ids like ``{memberId}-disk-{N}``, which share
+    an 8-char prefix — ``disk_id[:8]`` would collide. Prefer ``d{N}`` when that
+    suffix is present; otherwise first 8 chars (UUIDs).
+    """
+    match = re.search(r"-disk-(\d+)$", disk_id or "")
+    if match:
+        return f"d{match.group(1)}"
+    return (disk_id or "")[:8]
+
+
 def _disk_path(
     project_id: str, vm_node_id: str, disk_node_id: str, fmt: str, pool=None
 ) -> str:
@@ -1911,13 +1924,9 @@ def _disk_path(
     (e.g. ``ocp-5423-ocp-5423.qcow2``). Prefer the ``-disk-N`` suffix when present.
     """
     vm_part = vm_node_id[:8]
-    disk_match = re.search(r"-disk-(\d+)$", disk_node_id)
-    if disk_match:
-        disk_part = f"d{disk_match.group(1)}"
-    else:
-        disk_part = disk_node_id[:8]
-        if disk_part == vm_part:
-            disk_part = disk_node_id[-8:]
+    disk_part = _short_disk_id(disk_node_id)
+    if disk_part == vm_part:
+        disk_part = disk_node_id[-8:]
     return f"{_vm_dir(project_id, pool)}/{vm_part}-{disk_part}.{fmt}"
 
 

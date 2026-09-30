@@ -4,6 +4,7 @@ import copy
 import logging
 import time
 
+from app.services.deploy_topology import _short_disk_id
 from app.services.providers.kubevirt import CRD_GROUP, CRD_VERSION
 
 logger = logging.getLogger(__name__)
@@ -912,7 +913,7 @@ def _register_disk_pvcs_from_mounts(
         if not disk_id or disk_id in seen:
             continue
         seen.add(disk_id)
-        disk_pvcs[disk_id] = f"pod-{ctr_id[:8]}-disk-{disk_id[:8]}"
+        disk_pvcs[disk_id] = f"pod-{ctr_id[:8]}-disk-{_short_disk_id(disk_id)}"
 
 
 def _container_disk_pvcs(ctr: dict) -> dict[str, str]:
@@ -1060,7 +1061,7 @@ def _add_showroom_volume_mount(
     pvc_name = disk_pvcs.get(disk_id)
     if not pvc_name:
         return
-    vol_name = f"disk-{disk_id[:8]}"
+    vol_name = f"disk-{_short_disk_id(disk_id)}"
     if vol_name not in seen_vols:
         seen_vols.add(vol_name)
         volumes.append(

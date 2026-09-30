@@ -51,6 +51,7 @@ from app.services.deploy_topology import (
     _order_vm_disks_by_boot,
     _pattern_cache_path,
     _seed_path,
+    _short_disk_id,
     _snapshot_cache_path,
     _vm_dir,
     _vm_domain_name,
@@ -4982,7 +4983,7 @@ def _wipe_vm_boot_disk_kubevirt(
     namespace = _project_ns(provider, project_id)
     kv_name = f"troshka-vm-{vm_node_id[:8]}"
     disk_paths = [
-        f"/var/run/kubevirt-private/vmi-disks/disk-{did[:8]}/disk.img"
+        f"/var/run/kubevirt-private/vmi-disks/disk-{_short_disk_id(did)}/disk.img"
         for did in disk_node_ids
     ]
     custom_api, core_api, _ = _get_k8s_clients(provider)
@@ -5143,7 +5144,9 @@ def _wipe_cluster_boot_disks_kubevirt(
         disk_ids = [d["node_id"] for d in boot_disks]
         _wipe_vm_boot_disk_kubevirt(s, host, project_id, vm["node_id"], disk_ids)
         wipe_count += len(boot_disks)
-        vol_names = ", ".join(f"disk-{d['node_id'][:8]}" for d in boot_disks)
+        vol_names = ", ".join(
+            f"disk-{_short_disk_id(d['node_id'])}" for d in boot_disks
+        )
         _append_restart_install_log_breadcrumb(
             project_id,
             cluster_key,
