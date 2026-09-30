@@ -757,7 +757,13 @@ def _ensure_s3_secret(
             raise
 
 
-def _apply_ops_pod_secret(core_api, namespace: str, secret: dict) -> None:
+def _is_namespace_terminating(exc: BaseException) -> bool:
+    """True when k8s rejected a create because the namespace is being deleted."""
+    msg = str(exc)
+    return "being terminated" in msg or "NamespaceTerminating" in msg
+
+
+def _apply_ops_pod_secret(core_api, namespace: str, secret: dict) -> bool:
     """Create-or-recreate the ops-pod/runner config Secret (idempotent).
 
     On a re-run the Secret already exists. The project provider SA can
@@ -766,22 +772,44 @@ def _apply_ops_pod_secret(core_api, namespace: str, secret: dict) -> None:
     instead — mirrors :func:`_apply_ops_pod`'s pod delete+recreate. The Secret is
     recreated immediately and before the Pod that mounts it (see
     :func:`create_ops_pod` ordering).
+
+    Returns False when the namespace is terminating (project delete raced the
+    create) so callers soft-skip instead of surfacing a 403.
     """
     name = secret["metadata"]["name"]
     try:
         core_api.create_namespaced_secret(namespace=namespace, body=secret)
+        return True
     except Exception as e:
+        if _is_namespace_terminating(e):
+            logger.warning(
+                "Ops secret %s: namespace %s terminating; skipping create",
+                name,
+                namespace,
+            )
+            return False
         if "AlreadyExists" not in str(e):
             raise
+    try:
         core_api.delete_namespaced_secret(name=name, namespace=namespace)
         core_api.create_namespaced_secret(namespace=namespace, body=secret)
+        return True
+    except Exception as e:
+        if _is_namespace_terminating(e):
+            logger.warning(
+                "Ops secret %s: namespace %s terminating during recreate; skipping",
+                name,
+                namespace,
+            )
+            return False
+        raise
 
 
 _OPS_POD_RECREATE_RETRIES = 12
 _OPS_POD_RECREATE_SLEEP = 2.0
 
 
-def _apply_ops_pod(core_api, namespace: str, pod: dict) -> None:
+def _apply_ops_pod(core_api, namespace: str, pod: dict) -> bool:
     """Create the ops Pod, replacing any pre-existing one (pods are immutable).
 
     Pod deletion is asynchronous (a grace period elapses before the old pod is
@@ -789,28 +817,44 @@ def _apply_ops_pod(core_api, namespace: str, pod: dict) -> None:
     pod is still ``Terminating``. Delete with ``grace_period_seconds=0`` and
     retry the recreate through the terminating window rather than failing the
     redeploy.
+
+    Returns False when the namespace itself is terminating (project delete race).
     """
     name = pod["metadata"]["name"]
     try:
         core_api.create_namespaced_pod(namespace=namespace, body=pod)
-        return
+        return True
     except Exception as e:
+        if _is_namespace_terminating(e):
+            logger.warning(
+                "Ops pod %s: namespace %s terminating; skipping create",
+                name,
+                namespace,
+            )
+            return False
         if "AlreadyExists" not in str(e):
             raise
     core_api.delete_namespaced_pod(
         name=name, namespace=namespace, grace_period_seconds=0
     )
-    _recreate_ops_pod(core_api, namespace, pod, name)
+    return _recreate_ops_pod(core_api, namespace, pod, name)
 
 
-def _recreate_ops_pod(core_api, namespace: str, pod: dict, name: str) -> None:
+def _recreate_ops_pod(core_api, namespace: str, pod: dict, name: str) -> bool:
     """Retry the Pod create until the terminating old pod is fully gone."""
     last_error: Exception | None = None
     for _ in range(_OPS_POD_RECREATE_RETRIES):
         try:
             core_api.create_namespaced_pod(namespace=namespace, body=pod)
-            return
+            return True
         except Exception as e:
+            if _is_namespace_terminating(e):
+                logger.warning(
+                    "Ops pod %s: namespace %s terminating during recreate; skipping",
+                    name,
+                    namespace,
+                )
+                return False
             if "AlreadyExists" not in str(e):
                 raise
             last_error = e
@@ -826,17 +870,21 @@ def create_ops_pod(provider, project_id: str, pod: dict, secret: dict) -> str:
     this only issues the live k8s calls. The Secret (per-cluster install/agent
     configs + pull secret) is created first so its volume mount resolves when the
     Pod starts. Returns the project namespace.
+
+    If the namespace is already terminating (project delete in flight), the create
+    is skipped without raising — callers must not treat that as a hard failure.
     """
     _, core_api, _ = _get_k8s_clients(provider)
     namespace = _project_ns(provider, project_id)
-    _apply_ops_pod_secret(core_api, namespace, secret)
-    _apply_ops_pod(core_api, namespace, pod)
-    logger.info(
-        "Ops pod %s: created Pod %s + Secret in %s",
-        project_id[:8],
-        pod["metadata"]["name"],
-        namespace,
-    )
+    if not _apply_ops_pod_secret(core_api, namespace, secret):
+        return namespace
+    if _apply_ops_pod(core_api, namespace, pod):
+        logger.info(
+            "Ops pod %s: created Pod %s + Secret in %s",
+            project_id[:8],
+            pod["metadata"]["name"],
+            namespace,
+        )
     return namespace
 
 

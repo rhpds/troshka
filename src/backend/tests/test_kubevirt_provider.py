@@ -429,6 +429,51 @@ def test_create_ops_pod_retries_recreate_through_terminating_window():
     assert core.create_namespaced_pod.call_count == 3
 
 
+def test_create_ops_pod_skips_when_namespace_terminating():
+    """Project delete races ops recreate: k8s 403s creates into a terminating NS.
+
+    That must not surface as a hard failure — soft-skip and return.
+    """
+    from app.services.providers.kubevirt import create_ops_pod
+
+    provider = _make_provider()
+    pod, secret = _ops_pod_manifests()
+    terminating = Exception(
+        '(403)\nReason: Forbidden\nHTTP response body: {"message":'
+        '"secrets \\"troshka-abcdef12-ops-config\\" is forbidden: unable to create '
+        'new content in namespace troshka-abcdef12 because it is being terminated",'
+        '"reason":"Forbidden"}'
+    )
+    with (
+        patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients,
+        patch(
+            "app.services.providers.kubevirt._project_ns",
+            return_value="troshka-abcdef12",
+        ),
+    ):
+        core = MagicMock()
+        core.create_namespaced_secret.side_effect = terminating
+        mock_clients.return_value = (MagicMock(), core, MagicMock())
+        ns = create_ops_pod(provider, "abcdef12-0000", pod, secret)
+
+    assert ns == "troshka-abcdef12"
+    core.create_namespaced_pod.assert_not_called()
+
+
+def test_apply_ops_pod_skips_when_namespace_terminating():
+    """Pod create into a terminating NS is also a soft skip (secret may succeed first)."""
+    from app.services.providers.kubevirt import _apply_ops_pod
+
+    pod = {"kind": "Pod", "metadata": {"name": "troshka-abcdef12-ops"}}
+    core = MagicMock()
+    core.create_namespaced_pod.side_effect = Exception(
+        "pods is forbidden: unable to create new content in namespace "
+        "troshka-abcdef12 because it is being terminated"
+    )
+    _apply_ops_pod(core, "troshka-abcdef12", pod)  # must not raise
+    core.delete_namespaced_pod.assert_not_called()
+
+
 def test_deploy_project_enriches_topology_with_mtu():
     """Verify deploy_project adds MTU from mtu_map to network nodes."""
     provider = _make_provider()
