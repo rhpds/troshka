@@ -315,8 +315,44 @@ def test_redfish_insert_media_retries_bmc_readiness():
     # InsertMedia alone leaves BootSourceOverride on Hdd — force Cd before Reset.
     assert "BootSourceOverrideTarget" in cmd
     assert '"Cd"' in cmd or '\\"Cd\\"' in cmd
+    # Continuous is required so ForceRestart actually hits the agent ISO (Once can
+    # clear on Reset). Must be paired with early eject at disk-write 100%.
+    assert "Continuous" in cmd
     # A BMC that never becomes ready is skipped, not fatal.
     assert "continue" in cmd
+
+
+def test_redfish_eject_clears_continuous_cd_override():
+    """Eject must disable Continuous Cd — override survives EjectMedia alone.
+
+    sushy rejects Disabled without BootSourceOverrideTarget (HTTP 400).
+    """
+    from app.services.ocp.agent_template import _redfish_eject_media_cmd
+
+    cmd = _redfish_eject_media_cmd("  ", "192.168.100.10")
+    assert "BootSourceOverrideEnabled" in cmd
+    assert "Disabled" in cmd
+    assert "Hdd" in cmd
+    assert cmd.index("Disabled") < cmd.index("VirtualMedia.EjectMedia")
+
+
+def test_disk_write_eject_watch_clears_cd_before_reboot():
+    """Watcher greps disk-write 100% then clears Continuous + ejects (ae766856)."""
+    from app.services.ocp.agent_template import (
+        _start_disk_write_eject_watch_cmd,
+        _stop_disk_write_eject_watch_cmd,
+    )
+
+    start = _start_disk_write_eject_watch_cmd(
+        "  ", "192.168.100.10", "/workdir/ocp/install.log"
+    )
+    assert "Writing image to disk: 100%" in start
+    assert "_DISK_EJECT_WATCH_PID" in start
+    assert "clearing Continuous Cd" in start
+    assert "VirtualMedia.EjectMedia" in start
+    assert "Disabled" in start
+    stop = _stop_disk_write_eject_watch_cmd("  ")
+    assert "kill $_DISK_EJECT_WATCH_PID" in stop
 
 
 def test_redfish_insert_media_polls_inserted_after_post_flake():
@@ -363,6 +399,7 @@ def test_redfish_eject_media_retries_and_is_set_e_safe():
     assert "--max-time 15" in cmd
     assert "VirtualMedia.EjectMedia" in cmd
     assert "BMC $BMC_IP not ready yet" in cmd
+    assert "Disabled" in cmd
 
 
 def test_openshift_install_log_awk_notes_post_disk_write_pause():

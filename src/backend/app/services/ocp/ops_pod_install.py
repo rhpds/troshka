@@ -52,6 +52,8 @@ from app.services.ocp.agent_template import (
     _redfish_eject_media_cmd,
     _redfish_insert_media_cmd,
     _serve_iso_cmd,
+    _start_disk_write_eject_watch_cmd,
+    _stop_disk_write_eject_watch_cmd,
     _wait_for_complete_cmd,
     install_member_nodes,
 )
@@ -739,7 +741,11 @@ def _cluster_install_block(
         + _agent_create_image_resume_cmd("  ", cluster_dir)
         + _boot_from_agent_iso_cmd("  ", cluster_dir, port, bmc_ips_str, serving_ip)
         + "  echo 'Waiting for cluster installation to complete...'\n"
+        + _start_disk_write_eject_watch_cmd(
+            "  ", bmc_ips_str, f"{cluster_dir}/install.log"
+        )
         + _resilient_wait_for_complete_cmd("  ", "openshift-install", ".", cluster_key)
+        + _stop_disk_write_eject_watch_cmd("  ")
         + "  echo 'Ejecting agent ISO from nodes...'\n"
         + _redfish_eject_media_cmd("  ", bmc_ips_str)
         + f"  touch {cluster_dir}/.install-complete\n"

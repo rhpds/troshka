@@ -2465,7 +2465,10 @@ def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
         f"{b2}# InsertMedia attaches the CDROM but leaves BootSourceOverride on Hdd.\n"
         f"{b2}# Without Cd override the node reboots into an empty disk (agent never\n"
         f"{b2}# starts). Continuous (not Once): some BMCs revert Once on Reset.\n"
-        f"{b2}# EjectMedia after install clears the ISO so later reboots use disk.\n"
+        f"{b2}# Continuous MUST be cleared + ISO ejected at disk-write 100% (see\n"
+        f"{b2}# _start_disk_write_eject_watch_cmd) — otherwise the post-disk guest\n"
+        f"{b2}# reboot re-enters the agent ISO. Final eject after install-complete\n"
+        f"{b2}# remains as a safety net.\n"
         f'{b2}{c} -u admin:$BMC_PASS -X PATCH "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}" \\\n'
         f"{b4}-H 'Content-Type: application/json' \\\n"
         f'{b4}-d "{{\\"Boot\\": {{\\"BootSourceOverrideEnabled\\": \\"Continuous\\", \\"BootSourceOverrideTarget\\": \\"Cd\\"}}}}" >/dev/null\n'
@@ -2490,7 +2493,12 @@ def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
 
 
 def _redfish_eject_media_cmd(indent: str, bmc_ips_str: str) -> str:
-    """Redfish loop: EjectMedia per BMC (called after install completes)."""
+    """Clear Continuous Cd override + EjectMedia per BMC.
+
+    Called at disk-write 100% (early) and again after install-complete. Clearing
+    BootSourceOverride is required: Continuous survives EjectMedia and would
+    still prefer an empty CD on the next guest reboot.
+    """
     b = indent
     b2 = indent + "  "
     b4 = indent + "    "
@@ -2514,17 +2522,63 @@ def _redfish_eject_media_cmd(indent: str, bmc_ips_str: str) -> str:
         f"{b4}sleep 5\n"
         f"{b2}done\n"
         f'{b2}if [ -z "$SYS_ID" ]; then echo "  WARNING: BMC $BMC_IP unreachable; ISO NOT ejected (node may re-boot from CD)"; continue; fi\n'
+        f'{b2}{c} -u admin:$BMC_PASS -X PATCH "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}" \\\n'
+        f"{b4}-H 'Content-Type: application/json' \\\n"
+        f'{b4}-d "{{\\"Boot\\": {{\\"BootSourceOverrideEnabled\\": \\"Disabled\\", \\"BootSourceOverrideTarget\\": \\"Hdd\\"}}}}" >/dev/null 2>&1 || true\n'
         f"{b2}{c} -u admin:$BMC_PASS -X POST \"http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia\" -H 'Content-Type: application/json' -d '{{}}' >/dev/null 2>&1 || true\n"
         f"{b}done\n"
     )
 
 
-def _wait_for_complete_cmd(indent: str, oi_bin: str, install_dir: str) -> str:
-    """`openshift-install agent wait-for install-complete` with timestamped output."""
+def _start_disk_write_eject_watch_cmd(
+    indent: str, bmc_ips_str: str, log_path: str
+) -> str:
+    """Background: on first disk-write 100% in ``log_path``, clear Cd + eject.
+
+    Continuous Cd is required for the initial ForceRestart into the agent ISO.
+    Leaving it set through the post-disk guest reboot re-enters the agent
+    (ae766856 regression). This watcher races the reboot: clear+eject as soon as
+    assisted reports disk-write 100%, before firmware re-reads Continuous.
+    """
+    b = indent
+    b2 = indent + "  "
+    eject = _redfish_eject_media_cmd(b2, bmc_ips_str)
     return (
-        f"{indent}{oi_bin} agent wait-for install-complete --dir {install_dir} "
-        f"--log-level debug 2>&1 | {_openshift_install_log_awk_pipe()}\n"
+        f"{b}# Clear Continuous Cd + eject ISO at disk-write 100% (before guest reboot).\n"
+        f"{b}(\n"
+        f"{b2}for _dw in $(seq 1 360); do\n"
+        f"{b2}  if grep -q 'Writing image to disk: 100%' {log_path} 2>/dev/null; then\n"
+        f"{b2}    echo 'Disk image written — clearing Continuous Cd + ejecting ISO so reboot hits disk'\n"
+        f"{eject}"
+        f"{b2}    break\n"
+        f"{b2}  fi\n"
+        f"{b2}  sleep 5\n"
+        f"{b2}done\n"
+        f"{b}) &\n"
+        f"{b}_DISK_EJECT_WATCH_PID=$!\n"
     )
+
+
+def _stop_disk_write_eject_watch_cmd(indent: str) -> str:
+    """Reap the background disk-write eject watcher (idempotent)."""
+    return f"{indent}kill $_DISK_EJECT_WATCH_PID 2>/dev/null || true\n"
+
+
+def _wait_for_complete_cmd(
+    indent: str, oi_bin: str, install_dir: str, tee_path: str | None = None
+) -> str:
+    """`openshift-install agent wait-for install-complete` with timestamped output.
+
+    ``tee_path`` appends the same stream to a file the disk-write eject watcher
+    greps (bastion); ops-pod already ``exec >> install.log`` so tee is optional.
+    """
+    cmd = (
+        f"{indent}{oi_bin} agent wait-for install-complete --dir {install_dir} "
+        f"--log-level debug 2>&1 | {_openshift_install_log_awk_pipe()}"
+    )
+    if tee_path:
+        cmd += f" | tee -a {tee_path}"
+    return cmd + "\n"
 
 
 def _build_install_script(
@@ -2620,42 +2674,49 @@ def _build_install_script(
                 "/home/cloud-user/create-image.log",
             )
             + "    \n"
-            "    echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"
+            + "    echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"
             + _serve_iso_cmd("    ", "/home/cloud-user/ocp-install", 8080)
             + "    \n"
             + _redfish_insert_media_cmd("    ", bmc_ips_str)
             + "    \n"
-            "    \n"
-            "    echo 'Waiting for cluster installation to complete...'\n"
+            + "    \n"
+            + "    echo 'Waiting for cluster installation to complete...'\n"
+            + _start_disk_write_eject_watch_cmd(
+                "    ",
+                bmc_ips_str,
+                "/home/cloud-user/ocp-install/install.log",
+            )
             + _wait_for_complete_cmd(
                 "    ",
                 "/home/cloud-user/openshift-install",
                 "/home/cloud-user/ocp-install",
+                tee_path="/home/cloud-user/ocp-install/install.log",
             )
             + "    OCP_EXIT=${PIPESTATUS[0]}\n"
-            "    INSTALL_END=$(date +%s)\n"
-            "    ELAPSED=$(( INSTALL_END - INSTALL_START ))\n"
-            "    echo ''\n"
-            "    echo '================================================'\n"
-            "    if [ $OCP_EXIT -ne 0 ]; then\n"
-            '    echo "Install FAILED at $(date) (exit code $OCP_EXIT)"\n'
-            '    echo "Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec"\n'
-            "    echo '================================================'\n"
-            "    kill $HTTP_PID 2>/dev/null\n"
-            "    exit 1\n"
-            "    fi\n"
-            '    echo "Install completed at $(date)"\n'
-            '    echo "Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec"\n'
-            "    echo '================================================'\n"
-            "    # Eject agent ISO via Redfish virtual media\n"
-            "    echo 'Ejecting agent ISO from nodes...'\n"
+            + _stop_disk_write_eject_watch_cmd("    ")
+            + "    INSTALL_END=$(date +%s)\n"
+            + "    ELAPSED=$(( INSTALL_END - INSTALL_START ))\n"
+            + "    echo ''\n"
+            + "    echo '================================================'\n"
+            + "    if [ $OCP_EXIT -ne 0 ]; then\n"
+            + '    echo "Install FAILED at $(date) (exit code $OCP_EXIT)"\n'
+            + '    echo "Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec"\n'
+            + "    echo '================================================'\n"
+            + "    kill $HTTP_PID 2>/dev/null\n"
+            + "    exit 1\n"
+            + "    fi\n"
+            + '    echo "Install completed at $(date)"\n'
+            + '    echo "Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec"\n'
+            + "    echo '================================================'\n"
+            + "    # Eject agent ISO via Redfish virtual media\n"
+            + "    echo 'Ejecting agent ISO from nodes...'\n"
             + _redfish_eject_media_cmd("    ", bmc_ips_str)
             + "    # Write static MOTD with cluster credentials\n"
-            "    KUBEADMIN_PW=$(cat /home/cloud-user/ocp-install/auth/kubeadmin-password)\n"
-            f"    printf '\\nOpenShift Console: https://console-openshift-console.apps.{cluster_name}.{base_domain}\\nUsername:          kubeadmin\\nPassword:          %s\\n\\n' \"$KUBEADMIN_PW\" | sudo tee /etc/motd >/dev/null\n"
-            "    # Trust the OCP CA so Firefox doesn't show cert warnings\n"
-            "    export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig\n"
-            "    oc get secret -n openshift-ingress router-certs-default -o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d | sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null && sudo update-ca-trust\n"
+            + "    KUBEADMIN_PW=$(cat /home/cloud-user/ocp-install/auth/kubeadmin-password)\n"
+            + f"    printf '\\nOpenShift Console: https://console-openshift-console.apps.{cluster_name}.{base_domain}\\nUsername:          kubeadmin\\nPassword:          %s\\n\\n' \"$KUBEADMIN_PW\" | sudo tee /etc/motd >/dev/null\n"
+            + "    # Trust the OCP CA so Firefox doesn't show cert warnings\n"
+            + "    export KUBECONFIG=/home/cloud-user/ocp-install/auth/kubeconfig\n"
+            + "    oc get secret -n openshift-ingress router-certs-default -o jsonpath='{.data.tls\\.crt}' 2>/dev/null | base64 -d | sudo tee /etc/pki/ca-trust/source/anchors/ocp-ingress.pem >/dev/null && sudo update-ca-trust\n"
             + _build_bastion_autologin_steps(cluster_name, base_domain)
             + "    # Cleanup: remove cached ISO, temp files, and pull secret from disk\n"
             + "    rm -f /home/cloud-user/pull-secret.json\n"

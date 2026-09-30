@@ -134,7 +134,10 @@
       # InsertMedia attaches the CDROM but leaves BootSourceOverride on Hdd.
       # Without Cd override the node reboots into an empty disk (agent never
       # starts). Continuous (not Once): some BMCs revert Once on Reset.
-      # EjectMedia after install clears the ISO so later reboots use disk.
+      # Continuous MUST be cleared + ISO ejected at disk-write 100% (see
+      # _start_disk_write_eject_watch_cmd) — otherwise the post-disk guest
+      # reboot re-enters the agent ISO. Final eject after install-complete
+      # remains as a safety net.
       curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS -X PATCH "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}" \
         -H 'Content-Type: application/json' \
         -d "{\"Boot\": {\"BootSourceOverrideEnabled\": \"Continuous\", \"BootSourceOverrideTarget\": \"Cd\"}}" >/dev/null
@@ -150,8 +153,34 @@
     
     
     echo 'Waiting for cluster installation to complete...'
-    /home/cloud-user/openshift-install agent wait-for install-complete --dir /home/cloud-user/ocp-install --log-level debug 2>&1 | awk '/v2GetClusterNotFound/ { next } /Unable to retrieve cluster metadata from Agent Rest API/ { next } /Agent Rest API never initialized\. Bootstrap Kube API never initialized/ { next } /Writing image to disk: 100%/ && !_disk_done++ { print strftime("[%H:%M:%S]") " " $0; print strftime("[%H:%M:%S]") " Disk image written; node will reboot into the installed OS. Progress may pause for several minutes."; fflush(); next } { print strftime("[%H:%M:%S]") " " $0; fflush() }'
+    # Clear Continuous Cd + eject ISO at disk-write 100% (before guest reboot).
+    (
+      for _dw in $(seq 1 360); do
+        if grep -q 'Writing image to disk: 100%' /home/cloud-user/ocp-install/install.log 2>/dev/null; then
+          echo 'Disk image written — clearing Continuous Cd + ejecting ISO so reboot hits disk'
+      for BMC_IP in 192.168.100.10 192.168.100.11; do
+        echo "Ejecting agent ISO from BMC $BMC_IP..."
+        SYS_ID=""
+        for _try in $(seq 1 30); do
+          SYS_ID=$(curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS http://${BMC_IP}:8000/redfish/v1/Systems | python3 -c "import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])" 2>/dev/null) && [ -n "$SYS_ID" ] && break
+          echo "  BMC $BMC_IP not ready yet (attempt $_try); retrying..."
+          sleep 5
+        done
+        if [ -z "$SYS_ID" ]; then echo "  WARNING: BMC $BMC_IP unreachable; ISO NOT ejected (node may re-boot from CD)"; continue; fi
+        curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS -X PATCH "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}" \
+          -H 'Content-Type: application/json' \
+          -d "{\"Boot\": {\"BootSourceOverrideEnabled\": \"Disabled\", \"BootSourceOverrideTarget\": \"Hdd\"}}" >/dev/null 2>&1 || true
+        curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1 || true
+      done
+          break
+        fi
+        sleep 5
+      done
+    ) &
+    _DISK_EJECT_WATCH_PID=$!
+    /home/cloud-user/openshift-install agent wait-for install-complete --dir /home/cloud-user/ocp-install --log-level debug 2>&1 | awk '/v2GetClusterNotFound/ { next } /Unable to retrieve cluster metadata from Agent Rest API/ { next } /Agent Rest API never initialized\. Bootstrap Kube API never initialized/ { next } /Writing image to disk: 100%/ && !_disk_done++ { print strftime("[%H:%M:%S]") " " $0; print strftime("[%H:%M:%S]") " Disk image written; node will reboot into the installed OS. Progress may pause for several minutes."; fflush(); next } { print strftime("[%H:%M:%S]") " " $0; fflush() }' | tee -a /home/cloud-user/ocp-install/install.log
     OCP_EXIT=${PIPESTATUS[0]}
+    kill $_DISK_EJECT_WATCH_PID 2>/dev/null || true
     INSTALL_END=$(date +%s)
     ELAPSED=$(( INSTALL_END - INSTALL_START ))
     echo ''
@@ -177,6 +206,9 @@
         sleep 5
       done
       if [ -z "$SYS_ID" ]; then echo "  WARNING: BMC $BMC_IP unreachable; ISO NOT ejected (node may re-boot from CD)"; continue; fi
+      curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS -X PATCH "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}" \
+        -H 'Content-Type: application/json' \
+        -d "{\"Boot\": {\"BootSourceOverrideEnabled\": \"Disabled\", \"BootSourceOverrideTarget\": \"Hdd\"}}" >/dev/null 2>&1 || true
       curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.EjectMedia" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1 || true
     done
     # Write static MOTD with cluster credentials
