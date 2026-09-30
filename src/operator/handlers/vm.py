@@ -774,6 +774,10 @@ async def _create_or_adopt_kubevirt_vm(
             raise
 
 
+_PROVIDER_SCC_EXEC_CLUSTER_ROLE = "system:openshift:scc:kubevirt-controller"
+_PROVIDER_SCC_EXEC_BINDING = "troshka-provider-scc-exec"
+
+
 def _ensure_provider_exec_rbac(namespace):
     """Let the KubeVirt provider SA exec into this project's virt-launcher pods.
 
@@ -785,8 +789,25 @@ def _ensure_provider_exec_rbac(namespace):
     exec. Grant that SCC's use to the provider SA, scoped to THIS project
     namespace via a RoleBinding (NOT cluster-wide — the SA can only exec into its
     own projects' launchers). Idempotent.
+
+    Skip (and warn) when the SCC ClusterRole is missing: a RoleBinding that
+    references a nonexistent ClusterRole poisons *all* SubjectAccessReviews for
+    the SA in that namespace (destroy finalizer strip, secret list, etc.).
     """
     rbac_api = client.RbacAuthorizationV1Api()
+    try:
+        rbac_api.read_cluster_role(name=_PROVIDER_SCC_EXEC_CLUSTER_ROLE)
+    except client.ApiException as e:
+        if e.status == 404:
+            logger.warning(
+                "Skipping %s in %s: ClusterRole %s missing "
+                "(apply infra/ocpvirt-rbac.yaml / deploy-full Step 3b)",
+                _PROVIDER_SCC_EXEC_BINDING,
+                namespace,
+                _PROVIDER_SCC_EXEC_CLUSTER_ROLE,
+            )
+            return
+        raise
     try:
         rbac_api.create_namespaced_role_binding(
             namespace=namespace,
@@ -794,13 +815,13 @@ def _ensure_provider_exec_rbac(namespace):
                 "apiVersion": _RBAC_API_VERSION,
                 "kind": "RoleBinding",
                 "metadata": {
-                    "name": "troshka-provider-scc-exec",
+                    "name": _PROVIDER_SCC_EXEC_BINDING,
                     "namespace": namespace,
                 },
                 "roleRef": {
                     "apiGroup": "rbac.authorization.k8s.io",
                     "kind": "ClusterRole",
-                    "name": "system:openshift:scc:kubevirt-controller",
+                    "name": _PROVIDER_SCC_EXEC_CLUSTER_ROLE,
                 },
                 "subjects": [
                     {

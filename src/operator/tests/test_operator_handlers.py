@@ -8563,7 +8563,9 @@ class TestStuckVirtLauncherHeal:
         if creating:
             cs = MagicMock()
             cs.name = "compute"
-            cs.state = MagicMock(waiting=MagicMock(reason="ContainerCreating"), running=None)
+            cs.state = MagicMock(
+                waiting=MagicMock(reason="ContainerCreating"), running=None
+            )
             cs.state.waiting.reason = "ContainerCreating"
             # Make hasattr(state, 'running') work with truthiness
             type(cs.state).running = property(lambda self: None)
@@ -11547,6 +11549,9 @@ class TestProviderExecRbac:
         with patch("handlers.vm.client.RbacAuthorizationV1Api", return_value=rbac):
             _ensure_provider_exec_rbac("troshka-abc123")
 
+        rbac.read_cluster_role.assert_called_once_with(
+            name="system:openshift:scc:kubevirt-controller"
+        )
         rbac.create_namespaced_role_binding.assert_called_once()
         kw = rbac.create_namespaced_role_binding.call_args.kwargs
         assert kw["namespace"] == "troshka-abc123"
@@ -11568,6 +11573,19 @@ class TestProviderExecRbac:
         rbac.create_namespaced_role_binding.side_effect = ApiException(status=409)
         with patch("handlers.vm.client.RbacAuthorizationV1Api", return_value=rbac):
             _ensure_provider_exec_rbac("troshka-abc123")  # must not raise
+
+    def test_skips_rolebinding_when_scc_clusterrole_missing(self):
+        from unittest.mock import MagicMock, patch
+
+        from kubernetes.client.exceptions import ApiException
+
+        from handlers.vm import _ensure_provider_exec_rbac
+
+        rbac = MagicMock()
+        rbac.read_cluster_role.side_effect = ApiException(status=404)
+        with patch("handlers.vm.client.RbacAuthorizationV1Api", return_value=rbac):
+            _ensure_provider_exec_rbac("troshka-abc123")  # must not raise
+        rbac.create_namespaced_role_binding.assert_not_called()
 
 
 class TestPollExportJobHelpers:

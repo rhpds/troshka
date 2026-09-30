@@ -73,10 +73,10 @@ rules:
   - apiGroups: ["operator.openshift.io"]
     resources: ["ingresscontrollers"]
     verbs: ["get", "list"]
-  # Secrets — cloud-init userdata
+  # Secrets — cloud-init userdata; list needed to strip stuck finalizers on destroy
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create", "delete", "get", "patch"]
+    verbs: ["create", "delete", "get", "list", "patch"]
   # Namespace — ensure troshka namespace exists; patch guid for secondary ICs
   - apiGroups: [""]
     resources: ["namespaces"]
@@ -111,10 +111,10 @@ rules:
   - apiGroups: ["troshka.redhat.com"]
     resources: ["troshkaprojects/finalizers", "troshkanetworks/finalizers", "troshkavms/finalizers", "troshkancephs/finalizers"]
     verbs: ["update"]
-  # Rook CephCluster — pattern Ceph capture preflight (phase/fsid fallback)
+  # Rook Ceph — preflight (get/list) + destroy finalizer strip (patch/delete)
   - apiGroups: ["ceph.rook.io"]
-    resources: ["cephclusters"]
-    verbs: ["get", "list"]
+    resources: ["cephclusters", "cephblockpools"]
+    verbs: ["get", "list", "patch", "delete"]
   # Deployments — operator install
   - apiGroups: ["apps"]
     resources: ["deployments"]
@@ -226,3 +226,18 @@ volumes:
   - secret
   - downwardAPI
 users: []
+---
+# OpenShift normally auto-creates system:openshift:scc:<name> ClusterRoles so
+# RoleBindings can grant `use` of an SCC. On some clusters (e.g. ocpv06) the
+# kubevirt-controller CR is missing even though the SCC exists. Binding to a
+# missing ClusterRole poisons ALL auth for the subject SA in that namespace
+# (destroy finalizer strip, console exec, etc.). Ensure the CR explicitly.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: system:openshift:scc:kubevirt-controller
+rules:
+  - apiGroups: ["security.openshift.io"]
+    resources: ["securitycontextconstraints"]
+    resourceNames: ["kubevirt-controller"]
+    verbs: ["use"]

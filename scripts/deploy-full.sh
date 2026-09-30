@@ -67,10 +67,13 @@ if [ "$SKIP_OPERATORS" = false ]; then
   #
   # Provider RBAC (infra/ocpvirt-rbac.yaml) is applied at cluster onboarding, so
   # permissions ADDED to it later (e.g. routes/custom-host for app-proxy console
-  # routes) never reach already-onboarded clusters and the live clusterrole goes
-  # stale. Re-apply it here too — but EXCLUDE the SecurityContextConstraints: the
-  # operator manages their user lists per-project (recert/gateway SAs), so
-  # re-applying the manifest's fixed lists would clobber active projects.
+  # routes, secrets list + ceph patch/delete for destroy finalizers, and the
+  # system:openshift:scc:kubevirt-controller ClusterRole that provider-scc-exec
+  # RoleBindings require) never reach already-onboarded clusters and the live
+  # clusterrole goes stale. Re-apply it here too — but EXCLUDE the
+  # SecurityContextConstraints: the operator manages their user lists
+  # per-project (recert/gateway SAs), so re-applying the manifest's fixed lists
+  # would clobber active projects.
   PROVIDER_RBAC=$(mktemp)
   python3 - infra/ocpvirt-rbac.yaml >"$PROVIDER_RBAC" <<'PY'
 import sys
