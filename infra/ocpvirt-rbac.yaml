@@ -111,10 +111,19 @@ rules:
   - apiGroups: ["troshka.redhat.com"]
     resources: ["troshkaprojects/finalizers", "troshkanetworks/finalizers", "troshkavms/finalizers", "troshkancephs/finalizers"]
     verbs: ["update"]
-  # Rook Ceph — preflight (get/list) + destroy finalizer strip (patch/delete)
+  # Rook Ceph — preflight (get/list any) + destroy finalizer strip only on
+  # Troshka's fixed CR names (never ODF/platform CephClusters).
   - apiGroups: ["ceph.rook.io"]
     resources: ["cephclusters", "cephblockpools"]
-    verbs: ["get", "list", "patch", "delete"]
+    verbs: ["get", "list"]
+  - apiGroups: ["ceph.rook.io"]
+    resources: ["cephclusters"]
+    resourceNames: ["troshka-ceph"]
+    verbs: ["patch", "delete"]
+  - apiGroups: ["ceph.rook.io"]
+    resources: ["cephblockpools"]
+    resourceNames: ["troshka-ceph-pool"]
+    verbs: ["patch", "delete"]
   # Deployments — operator install
   - apiGroups: ["apps"]
     resources: ["deployments"]
