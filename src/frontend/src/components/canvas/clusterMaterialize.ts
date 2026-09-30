@@ -82,7 +82,7 @@ function roleSpecs(cluster: ClusterConfig): RoleSpec[] {
       rowY: CP_ROW_Y,
       want: cluster.controlPlane ?? 0,
       cpu: cluster.controlPlaneCpu ?? 8,
-      memoryMb: cluster.controlPlaneMemory ?? 16384,
+      memoryMb: cluster.controlPlaneMemory ?? 32768,
       disk: cluster.controlPlaneDisks?.[0]?.sizeGb ?? cluster.controlPlaneDisk ?? 120,
     },
     {

@@ -170,7 +170,7 @@ def ocp_install_via(topology: dict) -> str:
     return _normalize_install_via(raw)
 
 
-_CP_SIZE_DEFAULTS = {"cpu": 8, "memory": 16384, "disk": 120}
+_CP_SIZE_DEFAULTS = {"cpu": 8, "memory": 32768, "disk": 120}
 _WORKER_SIZE_DEFAULTS = {"cpu": 4, "memory": 8192, "disk": 100}
 
 

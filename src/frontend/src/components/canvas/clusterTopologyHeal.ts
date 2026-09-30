@@ -51,7 +51,7 @@ function clusterConfigFromBoundaryNode(
     controlPlane: (d.controlPlane as number) ?? deployed?.controlPlane ?? 1,
     workers: (d.workers as number) ?? deployed?.workers ?? 0,
     controlPlaneCpu: deployed?.controlPlaneCpu ?? 8,
-    controlPlaneMemory: deployed?.controlPlaneMemory ?? 16384,
+    controlPlaneMemory: deployed?.controlPlaneMemory ?? 32768,
     controlPlaneDisk: deployed?.controlPlaneDisk ?? 120,
     workerCpu: deployed?.workerCpu ?? 4,
     workerMemory: deployed?.workerMemory ?? 8192,

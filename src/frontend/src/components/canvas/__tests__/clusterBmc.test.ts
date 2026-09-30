@@ -17,7 +17,7 @@ const cluster = {
   controlPlane: 1,
   workers: 0,
   controlPlaneCpu: 8,
-  controlPlaneMemory: 16384,
+  controlPlaneMemory: 32768,
   controlPlaneDisk: 120,
   workerCpu: 4,
   workerMemory: 8192,

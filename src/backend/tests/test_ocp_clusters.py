@@ -234,7 +234,7 @@ def test_materialize_generates_missing_cp_and_workers():
     assert sample["os"] == "rhcos" and sample["cluster"] == "prod"
     # _make_node emits the template-format keys _build_vm_data reads (vcpus /
     # ram_gb in GB), not raw cpu/memory-MB. Task 6: disks is now a list.
-    assert sample["vcpus"] == 8 and sample["ram_gb"] == 16
+    assert sample["vcpus"] == 8 and sample["ram_gb"] == 32
     assert sample["disks"] == [{"size_gb": 120, "bus": "virtio", "bootable": True}]
 
 
@@ -273,7 +273,7 @@ def test_materialized_node_data_carries_sizing():
         for n in members
         if "workers" in n["data"].get("tags", {}).get("AnsibleGroup", "")
     )
-    assert cp["data"]["vcpus"] == 8 and cp["data"]["ram"] == 16
+    assert cp["data"]["vcpus"] == 8 and cp["data"]["ram"] == 32
     assert wk["data"]["vcpus"] == 4 and wk["data"]["ram"] == 8
     # Ruling B: generated marker propagates into the final node.data.
     assert cp["data"]["generated"] is True and wk["data"]["generated"] is True
@@ -558,7 +558,7 @@ def test_migrate_adds_cluster_node():
     # The clusters[] entry must carry the generator's sizing/registry defaults.
     cluster = out["clusters"][0]
     assert cluster["controlPlaneCpu"] == 8
-    assert cluster["controlPlaneMemory"] == 16384
+    assert cluster["controlPlaneMemory"] == 32768
     assert cluster["controlPlaneDisk"] == 120
     assert cluster["workerCpu"] == 4
     assert cluster["workerMemory"] == 8192

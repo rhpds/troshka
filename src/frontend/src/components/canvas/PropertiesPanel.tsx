@@ -886,7 +886,7 @@ function ClusterEditor({
       <div className="props-section">
         <div className="props-section-title">Control Plane Sizing</div>
         <ClusterNumberField label="Control Plane vCPUs" min={1} value={cluster.controlPlaneCpu ?? 8} onCommit={(v) => onSizing({ controlPlaneCpu: v })} />
-        <ClusterNumberField label="Control Plane Memory (GB)" min={1} value={Math.round((cluster.controlPlaneMemory ?? 16384) / 1024)} onCommit={(v) => onSizing({ controlPlaneMemory: v * 1024 })} />
+        <ClusterNumberField label="Control Plane Memory (GB)" min={32} value={Math.round((cluster.controlPlaneMemory ?? 32768) / 1024)} onCommit={(v) => onSizing({ controlPlaneMemory: v * 1024 })} />
       </div>
       <div className="props-divider" />
 

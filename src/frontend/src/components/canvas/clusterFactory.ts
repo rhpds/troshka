@@ -6,7 +6,7 @@ import type { ClusterConfig } from "@/stores/canvasStore";
  *
  * These MUST match Plan 1's backend normalization defaults exactly
  * (see docs/superpowers/plans/2026-09-01-multi-cluster-ocp-plan1-data-model.md):
- *   CP     cpu 8  / memory 16384 / disk 120
+ *   CP     cpu 8  / memory 32768 / disk 120
  *   worker cpu 4  / memory 8192  / disk 100
  *   type "sno", controlPlane 1, workers 0, recert on.
  *
@@ -26,7 +26,7 @@ const CLUSTER_DEFAULTS = {
   controlPlane: 1,
   workers: 0,
   controlPlaneCpu: 8,
-  controlPlaneMemory: 16384,
+  controlPlaneMemory: 32768,
   controlPlaneDisk: 120,
   workerCpu: 4,
   workerMemory: 8192,
