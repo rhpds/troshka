@@ -97,10 +97,19 @@ rules:
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["create", "delete", "get", "list"]
-  # CRDs — kubevirt native operator install
+  # CRDs — install/update Troshka CRDs only (create stays unscoped: resourceNames
+  # does not apply to create; deploy-full Step 3b is the preferred apply path).
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
-    verbs: ["create", "delete", "get", "list", "patch"]
+    verbs: ["create", "get", "list"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    resourceNames:
+      - troshkaprojects.troshka.redhat.com
+      - troshkanetworks.troshka.redhat.com
+      - troshkavms.troshka.redhat.com
+      - troshkancephs.troshka.redhat.com
+    verbs: ["get", "list", "patch", "delete", "update"]
   # Troshka CRDs — kubevirt native operator
   - apiGroups: ["troshka.redhat.com"]
     resources: ["troshkaprojects", "troshkanetworks", "troshkavms", "troshkancephs"]
@@ -124,18 +133,27 @@ rules:
     resources: ["cephblockpools"]
     resourceNames: ["troshka-ceph-pool"]
     verbs: ["patch", "delete"]
-  # Deployments — operator install
+  # Deployments — operator install only (name-scoped mutate)
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["create", "delete", "get", "list", "patch"]
-  # RBAC — operator install (ClusterRole, ClusterRoleBinding, ServiceAccount)
+    verbs: ["create", "get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["troshka-operator"]
+    verbs: ["get", "list", "patch", "delete", "update"]
+  # RBAC — provider only VERIFIES admin-bootstrapped ClusterRole/Binding
+  # (see _verify_cluster_rbac); never create/replace (escalation prevention).
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles", "clusterrolebindings"]
-    verbs: ["create", "delete", "get", "patch"]
-  # ServiceAccounts — operator install
+    verbs: ["get"]
+  # ServiceAccounts — operator + provider bootstrap (name-scoped mutate)
   - apiGroups: [""]
     resources: ["serviceaccounts"]
-    verbs: ["create", "delete", "get"]
+    verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    resourceNames: ["troshka", "troshka-operator"]
+    verbs: ["get", "delete"]
   # NetworkAttachmentDefinitions — kubevirt native OVN networks
   - apiGroups: ["k8s.cni.cncf.io"]
     resources: ["net-attach-defs"]
