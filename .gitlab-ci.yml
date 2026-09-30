@@ -7,22 +7,61 @@ stages:
   - test
   - static-analysis
 
-test-backend:
+# ALM shared runners OOM (~exit 137) on the full backend suite + pytest-cov in
+# one container (~6k tests). Shard by test file across parallel jobs; Sonar
+# merges the per-shard coverage XMLs.
+.test-backend-shard:
   stage: test
   image: python:3.13
+  # Ask the K8s executor for more headroom when the runner honors these vars.
+  variables:
+    KUBERNETES_MEMORY_REQUEST: "4Gi"
+    KUBERNETES_MEMORY_LIMIT: "8Gi"
+    COVERAGE_CORE: sysmon
+  parallel: 4
   script:
     - cd src/backend
     - pip install --upgrade pip
     - pip install ".[dev]"
-    - pytest tests/ --cov=app --cov-report=xml:../../coverage.xml -v
+    - |
+      set -euo pipefail
+      files=()
+      while IFS= read -r f; do
+        files+=("$f")
+      done < <(find tests -name 'test_*.py' | sort)
+      shard=()
+      for i in "${!files[@]}"; do
+        if (( i % CI_NODE_TOTAL == CI_NODE_INDEX - 1 )); then
+          shard+=("${files[$i]}")
+        fi
+      done
+      echo "Shard ${CI_NODE_INDEX}/${CI_NODE_TOTAL}: ${#shard[@]} of ${#files[@]} test files"
+      if [ "${#shard[@]}" -eq 0 ]; then
+        echo "No files in this shard — writing empty coverage stub"
+        printf '%s\n' '<?xml version="1.0" ?><coverage version="7.0" timestamp="0" lines-valid="0" lines-covered="0" line-rate="0"><sources/><packages/></coverage>' \
+          > "../../coverage-${CI_NODE_INDEX}.xml"
+        exit 0
+      fi
+      pytest "${shard[@]}" \
+        --cov=app \
+        --cov-report="xml:../../coverage-${CI_NODE_INDEX}.xml" \
+        -v
     - cd ../..
-    - sed -i 's|<source>app</source>|<source>src/backend/app</source>|' coverage.xml
+    - sed -i 's|<source>app</source>|<source>src/backend/app</source>|' "coverage-${CI_NODE_INDEX}.xml"
   artifacts:
     paths:
-      - coverage.xml
+      - coverage-*.xml
     expire_in: 1 hour
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
   tags:
     - itup-alm-x86
+
+test-backend:
+  extends: .test-backend-shard
 
 test-operator:
   stage: test
