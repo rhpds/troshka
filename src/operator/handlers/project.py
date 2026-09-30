@@ -35,6 +35,7 @@ from helpers.bmc import (
     bmc_signature,
     build_bmc_deployment,
 )
+from helpers.stuck_pod_heal import heal_stuck_project_pods
 
 logger = logging.getLogger(__name__)
 
@@ -2972,7 +2973,9 @@ def _heal_one_stuck_launcher(
             body=patch_body,
         )
         core_api.delete_namespaced_pod(
-            name=pod.metadata.name, namespace=namespace  # type: ignore[union-attr]
+            name=pod.metadata.name,  # type: ignore[union-attr]
+            namespace=namespace,
+            grace_period_seconds=0,
         )
     except Exception as e:
         logger.warning(f"Failed to reschedule stuck launcher for {kv_name}: {e}")
@@ -3508,6 +3511,18 @@ async def project_status_check(spec, status, namespace, name, body, patch, **_):
     if phase not in ("Deploying", "Running"):
         return
 
+    core_api_ev = client.CoreV1Api()
+    apps_api_ev = client.AppsV1Api()
+    # Unstick gateway/showroom/etc. hung on NotReady nodes (Multus Terminating /
+    # ContainerCreating). Independent of VM list — run every tick.
+    heal_details, heal_errs = heal_stuck_project_pods(
+        core_api_ev, apps_api_ev, namespace
+    )
+    for line in heal_details:
+        logger.info("TroshkaProject %s stuck-pod heal: %s", name, line)
+    for err in heal_errs:
+        logger.warning("TroshkaProject %s stuck-pod heal: %s", name, err)
+
     custom_api = client.CustomObjectsApi()
 
     vms = cast(
@@ -3525,7 +3540,6 @@ async def project_status_check(spec, status, namespace, name, body, patch, **_):
 
     vmi_states = _fetch_vmi_states(custom_api, namespace)
 
-    core_api_ev = client.CoreV1Api()
     vm_states, ready_count, scheduling_errors = _collect_vm_states(
         vm_items, vmi_states, core_api_ev, namespace
     )
