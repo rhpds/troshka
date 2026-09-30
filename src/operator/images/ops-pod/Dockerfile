@@ -58,7 +58,9 @@ RUN dnf install -y --setopt=install_weak_deps=False \
 # image tracks the published source; a Galaxy/Automation-Hub ref can replace the
 # git URL once the collection is published there.
 # Pip + collection are version-pinned for reproducible builds (docker:S8544).
-ARG TROSHKA_COLLECTION_GIT=git+https://github.com/rhpds/troshka-ansible-collection.git@b7cfe39def29e8716565029c28e7210f4eddaf41
+# ansible-galaxy pins commits with a comma (not pip-style @sha) —
+# `git+https://…git@sha` makes git treat `@sha` as part of the URL path.
+ARG TROSHKA_COLLECTION_GIT=git+https://github.com/rhpds/troshka-ansible-collection.git,b7cfe39def29e8716565029c28e7210f4eddaf41
 # Pip packages are ==-pinned; collection is commit-pinned above. Sonar S8544
 # still wants a hashed lockfile — acceptable for this EE image (CI-only build).
 RUN pip install --no-cache-dir --only-binary :all: "ansible-core==2.18.6" "ansible-navigator==25.5.0" \
