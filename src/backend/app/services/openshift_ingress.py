@@ -107,6 +107,29 @@ def resolve_apps_domain(custom_api, api_url: str = "") -> str:
     return _domain_from_cluster_ingress(custom_api) or _domain_from_api_url(api_url)
 
 
+def _warn_guid_label_failed(namespace: str, value: str, err) -> None:
+    logger.warning(
+        "Failed to label namespace %s with guid=%s: %s", namespace, value, err
+    )
+
+
+def _create_namespace_with_guid(core_api, namespace: str, value: str) -> None:
+    from kubernetes import client as k8s_client
+
+    try:
+        core_api.create_namespace(
+            k8s_client.V1Namespace(
+                metadata=k8s_client.V1ObjectMeta(
+                    name=namespace,
+                    labels={"guid": value},
+                )
+            )
+        )
+    except Exception as create_err:
+        if "AlreadyExists" not in str(create_err):
+            _warn_guid_label_failed(namespace, value, create_err)
+
+
 def ensure_namespace_guid_label(core_api, namespace: str, guid: str) -> None:
     """Ensure ``guid`` exists on the namespace (required by ingress-rhdp-net).
 
@@ -117,7 +140,6 @@ def ensure_namespace_guid_label(core_api, namespace: str, guid: str) -> None:
     value = (guid or "").strip().lower()[:63]
     if not value:
         return
-    from kubernetes import client as k8s_client
 
     try:
         ns = core_api.read_namespace(namespace)
@@ -132,24 +154,6 @@ def ensure_namespace_guid_label(core_api, namespace: str, guid: str) -> None:
     except Exception as e:
         # AlreadyExists / NotFound handled by caller; patch failures log only.
         if "NotFound" in str(e) or getattr(e, "status", None) == 404:
-            try:
-                core_api.create_namespace(
-                    k8s_client.V1Namespace(
-                        metadata=k8s_client.V1ObjectMeta(
-                            name=namespace,
-                            labels={"guid": value},
-                        )
-                    )
-                )
-            except Exception as create_err:
-                if "AlreadyExists" not in str(create_err):
-                    logger.warning(
-                        "Failed to label namespace %s with guid=%s: %s",
-                        namespace,
-                        value,
-                        create_err,
-                    )
+            _create_namespace_with_guid(core_api, namespace, value)
             return
-        logger.warning(
-            "Failed to label namespace %s with guid=%s: %s", namespace, value, e
-        )
+        _warn_guid_label_failed(namespace, value, e)

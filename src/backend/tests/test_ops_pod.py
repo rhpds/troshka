@@ -268,9 +268,10 @@ def test_install_script_redfish_insert_media_per_cluster_bmcs():
     # Each cluster's Redfish loop targets its OWN BMC IPs.
     assert "for BMC_IP in 192.168.100.10 192.168.100.11; do" in script
     assert "for BMC_IP in 192.168.100.20; do" in script
-    # One InsertMedia loop per cluster (eject uses EjectMedia, counted separately).
+    # One InsertMedia loop per cluster. EjectMedia appears twice per cluster
+    # (disk-write 100% watcher + post-install cleanup).
     assert script.count("VirtualMedia.InsertMedia") == 2
-    assert script.count("VirtualMedia.EjectMedia") == 2
+    assert script.count("VirtualMedia.EjectMedia") == 4
 
 
 def test_install_script_per_cluster_bmc_password():
@@ -389,8 +390,9 @@ def test_install_script_distinct_http_ports():
 
 def test_install_script_runs_clusters_in_parallel():
     script = _install_script()
-    # Both cluster blocks are backgrounded subshells with captured PIDs.
-    assert script.count(") &\n") == 2
+    # Each cluster subshell is backgrounded; disk-write eject watchers also
+    # run in background (2 clusters × (install + watcher) = 4).
+    assert script.count(") &\n") == 4
     assert script.count("pids+=($!)") == 2
 
 

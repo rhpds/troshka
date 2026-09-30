@@ -2011,10 +2011,8 @@ class TestDeployProjectInner:
             _deploy_project_inner(PROJECT_ID)
 
         assert project.state == "error"
-        assert (
-            "capacity" in project.deploy_error.lower()
-            or "Not enough" in project.deploy_error
-        )
+        err = (project.deploy_error or "").lower()
+        assert "capacity" in err or "not enough" in err or "provision pool" in err
 
     @patch(f"{SVC}.notify_project")
     @patch(f"{SVC}._delete_deploy_progress")

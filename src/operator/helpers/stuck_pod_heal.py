@@ -22,6 +22,9 @@ _STUCK_CREATING_THRESHOLD_S = 180
 # NotReady nodes leave pods Terminating until force-deleted.
 _STUCK_TERMINATING_THRESHOLD_S = 120
 
+_LOG_HEAL = "Stuck-pod heal: %s"
+_KUBECTL_ANN_PREFIX = "kubectl.kubernetes.io/"
+
 
 def _should_skip_pod(pod) -> bool:
     """Skip pods healed elsewhere (virt-launcher, ops)."""
@@ -181,7 +184,7 @@ def _force_delete_pod(core_api, namespace: str, name: str) -> None:
     )
 
 
-def _deployment_name_for_pod(core_api, apps_api, namespace: str, pod) -> str | None:
+def _deployment_name_for_pod(apps_api, namespace: str, pod) -> str | None:
     owner = _controller_owner(pod)
     if owner is None:
         return None
@@ -265,47 +268,33 @@ def _as_str(val: Any, default: str = "") -> str:
     return val if isinstance(val, str) and val else default
 
 
-def _bare_pod_recreate_body(pod, *, annotations: dict, affinity: dict | None) -> dict:
-    meta = pod.metadata
-    spec = pod.spec
+def _pod_labels_and_annotations(meta) -> tuple[dict, dict]:
     labels = getattr(meta, "labels", None) or {}
     prior_ann = getattr(meta, "annotations", None) or {}
     if not isinstance(labels, dict):
         labels = {}
     if not isinstance(prior_ann, dict):
         prior_ann = {}
+    return labels, prior_ann
 
+
+def _plain_containers(spec) -> list:
     containers = getattr(spec, "containers", None) or []
     plain_containers = _plain(containers)
     if plain_containers is None:
         # Test doubles often stash plain dicts on the mock.
-        plain_containers = containers if isinstance(containers, list) else []
+        return containers if isinstance(containers, list) else []
+    return plain_containers or []
 
-    body: dict[str, Any] = {
-        "apiVersion": "v1",
-        "kind": "Pod",
-        "metadata": {
-            "name": meta.name,
-            "namespace": getattr(meta, "namespace", None),
-            "labels": dict(labels),
-            "annotations": dict(prior_ann),
-        },
-        "spec": {
-            "restartPolicy": _as_str(getattr(spec, "restart_policy", None), "Always")
-            or "Always",
-            "serviceAccountName": _as_str(
-                getattr(spec, "service_account_name", None), "default"
-            )
-            or "default",
-            "containers": plain_containers or [],
-        },
+
+def _strip_kubectl_annotations(annotations: dict) -> dict:
+    return {
+        k: v for k, v in annotations.items() if not k.startswith(_KUBECTL_ANN_PREFIX)
     }
-    body["metadata"]["annotations"].update(annotations)
-    for k in list(body["metadata"]["annotations"]):
-        if k.startswith("kubectl.kubernetes.io/"):
-            body["metadata"]["annotations"].pop(k, None)
 
-    owners = []
+
+def _owner_references_for_body(meta) -> list[dict[str, Any]]:
+    owners: list[dict[str, Any]] = []
     for ref in getattr(meta, "owner_references", None) or []:
         kind = getattr(ref, "kind", None)
         name = getattr(ref, "name", None)
@@ -314,7 +303,7 @@ def _bare_pod_recreate_body(pod, *, annotations: dict, affinity: dict | None) ->
         api_ver = getattr(ref, "api_version", None)
         if not isinstance(api_ver, str):
             api_ver = "troshka.redhat.com/v1alpha1"
-        entry = {
+        entry: dict[str, Any] = {
             "apiVersion": api_ver,
             "kind": kind,
             "name": name,
@@ -324,9 +313,10 @@ def _bare_pod_recreate_body(pod, *, annotations: dict, affinity: dict | None) ->
         if isinstance(uid, str):
             entry["uid"] = uid
         owners.append(entry)
-    if owners:
-        body["metadata"]["ownerReferences"] = owners
+    return owners
 
+
+def _copy_optional_spec_fields(spec, body_spec: dict) -> None:
     for attr, key in (
         ("init_containers", "initContainers"),
         ("volumes", "volumes"),
@@ -342,13 +332,50 @@ def _bare_pod_recreate_body(pod, *, annotations: dict, affinity: dict | None) ->
         if val is None and isinstance(raw, (list, dict, str, bool, int)):
             val = raw
         if val is not None and val != []:
-            body["spec"][key] = val
+            body_spec[key] = val
 
-    if affinity:
-        existing = _plain(getattr(spec, "affinity", None))
-        merged = dict(existing) if isinstance(existing, dict) else {}
-        merged.update(affinity)
-        body["spec"]["affinity"] = merged
+
+def _merge_affinity(spec, affinity: dict | None, body_spec: dict) -> None:
+    if not affinity:
+        return
+    existing = _plain(getattr(spec, "affinity", None))
+    merged = dict(existing) if isinstance(existing, dict) else {}
+    merged.update(affinity)
+    body_spec["affinity"] = merged
+
+
+def _bare_pod_recreate_body(pod, *, annotations: dict, affinity: dict | None) -> dict:
+    meta = pod.metadata
+    spec = pod.spec
+    labels, prior_ann = _pod_labels_and_annotations(meta)
+
+    body: dict[str, Any] = {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+            "name": meta.name,
+            "namespace": getattr(meta, "namespace", None),
+            "labels": dict(labels),
+            "annotations": _strip_kubectl_annotations(
+                {**dict(prior_ann), **annotations}
+            ),
+        },
+        "spec": {
+            "restartPolicy": _as_str(getattr(spec, "restart_policy", None), "Always")
+            or "Always",
+            "serviceAccountName": _as_str(
+                getattr(spec, "service_account_name", None), "default"
+            )
+            or "default",
+            "containers": _plain_containers(spec),
+        },
+    }
+    owners = _owner_references_for_body(meta)
+    if owners:
+        body["metadata"]["ownerReferences"] = owners
+
+    _copy_optional_spec_fields(spec, body["spec"])
+    _merge_affinity(spec, affinity, body["spec"])
     return body
 
 
@@ -356,7 +383,7 @@ def _heal_terminating(core_api, namespace: str, pod) -> str:
     name = pod.metadata.name
     _force_delete_pod(core_api, namespace, name)
     detail = f"force-deleted stuck Terminating pod {name}"
-    logger.info("Stuck-pod heal: %s", detail)
+    logger.info(_LOG_HEAL, detail)
     return detail
 
 
@@ -373,7 +400,7 @@ def _heal_creating(core_api, apps_api, namespace: str, pod) -> tuple[str, str | 
 def _heal_creating_deployment(
     core_api, apps_api, namespace, pod, node
 ) -> tuple[str, str | None]:
-    deploy_name = _deployment_name_for_pod(core_api, apps_api, namespace, pod)
+    deploy_name = _deployment_name_for_pod(apps_api, namespace, pod)
     annotations: dict[str, str] = {}
     if deploy_name:
         try:
@@ -394,7 +421,7 @@ def _heal_creating_deployment(
         _patch_deployment_heal(apps_api, namespace, deploy_name, plan)
     _force_delete_pod(core_api, namespace, pod.metadata.name)
     detail = f"force-deleted stuck creating {pod.metadata.name}; {plan['detail']}"
-    logger.info("Stuck-pod heal: %s", detail)
+    logger.info(_LOG_HEAL, detail)
     return detail, None
 
 
@@ -415,7 +442,7 @@ def _heal_creating_bare(core_api, namespace, pod, node) -> tuple[str, str | None
     _force_delete_pod(core_api, namespace, pod.metadata.name)
     _recreate_bare_pod(core_api, namespace, body, pod.metadata.name)
     detail = f"recreated stuck creating {pod.metadata.name}; {plan['detail']}"
-    logger.info("Stuck-pod heal: %s", detail)
+    logger.info(_LOG_HEAL, detail)
     return detail, None
 
 
