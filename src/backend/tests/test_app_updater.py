@@ -564,3 +564,103 @@ def test_apply_dev_new_code_bypasses_cooldown(monkeypatch, tmp_path):
     app_updater._apply_dev(initiated_by="t")
     assert len(calls) == 2
     assert app_updater._RESTART_LOCK.read_text().splitlines()[3] == "hash-B"
+
+
+# ---------------------------------------------------------------------------
+# Stuck rollout detect + heal (Multus sandbox hang during Apply update)
+# ---------------------------------------------------------------------------
+
+
+def _pod(
+    name,
+    *,
+    age_s=120,
+    phase="Pending",
+    node="ocp-virt6-host4",
+    scheduled=True,
+    running=False,
+    deleting=False,
+    owners=None,
+):
+    import datetime as dt
+
+    now = dt.datetime.now(dt.UTC)
+    created = now - dt.timedelta(seconds=age_s)
+    conditions = []
+    if scheduled:
+        conditions.append(SimpleNamespace(type="PodScheduled", status="True"))
+    cs = []
+    if running:
+        cs.append(SimpleNamespace(state=SimpleNamespace(running=SimpleNamespace())))
+    md = SimpleNamespace(
+        name=name,
+        creation_timestamp=created,
+        deletion_timestamp=(now if deleting else None),
+        owner_references=owners
+        or [SimpleNamespace(controller=True, kind="ReplicaSet", name="rs-1")],
+        annotations={},
+        labels={},
+    )
+    return SimpleNamespace(
+        metadata=md,
+        status=SimpleNamespace(
+            phase=phase, conditions=conditions, container_statuses=cs
+        ),
+        spec=SimpleNamespace(node_name=node),
+    )
+
+
+def test_is_rollout_pod_stuck_creating_true_after_threshold():
+    pod = _pod("troshka-backend-abc-xyz", age_s=120)
+    assert app_updater._is_rollout_pod_stuck(pod, now=None, threshold_s=60) is True
+
+
+def test_is_rollout_pod_stuck_creating_false_when_young():
+    pod = _pod("troshka-backend-abc-xyz", age_s=10)
+    assert app_updater._is_rollout_pod_stuck(pod, threshold_s=60) is False
+
+
+def test_is_rollout_pod_stuck_false_when_running():
+    pod = _pod("troshka-backend-abc-xyz", age_s=120, phase="Running", running=True)
+    assert app_updater._is_rollout_pod_stuck(pod, threshold_s=60) is False
+
+
+def test_plan_rollout_heal_reschedules_and_excludes_hot_node():
+    plan = app_updater._plan_rollout_heal({}, "ocp-virt6-host4")
+    assert plan["action"] == "reschedule"
+    assert plan["exclude"] == []
+    # Second hit on same node → exclude it
+    plan2 = app_updater._plan_rollout_heal(plan["annotations"], "ocp-virt6-host4")
+    assert plan2["action"] == "reschedule"
+    assert "ocp-virt6-host4" in plan2["exclude"]
+
+
+def test_plan_rollout_heal_exhausted_after_max_attempts():
+    ann = {app_updater.ANN_ROLLOUT_ATTEMPTS: "3"}
+    plan = app_updater._plan_rollout_heal(ann, "n1")
+    assert plan["action"] == "exhausted"
+    assert "after 3" in plan["message"]
+    assert "Multus" in plan["message"]
+
+
+def test_build_image_snapshot_includes_rollout_error(monkeypatch):
+    monkeypatch.setattr(
+        app_updater,
+        "_read_own_digests",
+        lambda: {"backend": "sha256:aaa", "frontend": "sha256:bbb"},
+    )
+    monkeypatch.setattr(app_updater, "_read_rolling_out", lambda: True)
+    monkeypatch.setattr(
+        app_updater,
+        "_heal_stuck_rollout_pods",
+        lambda: "Update pods stuck on Multus (ocp-virt6-host4); reschedule exhausted",
+    )
+    digests = {"troshka-backend": "sha256:NEW", "troshka-frontend": "sha256:bbb"}
+    monkeypatch.setattr(
+        app_updater,
+        "_fetch_registry_digest",
+        lambda image, tag: digests[image.rsplit("/", 1)[1]],
+    )
+    snap = app_updater._build_image_snapshot()
+    assert snap["rolling_out"] is True
+    assert "Multus" in snap["rollout_error"]

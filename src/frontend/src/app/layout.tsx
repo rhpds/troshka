@@ -199,9 +199,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         .catch(() => {});
     };
     check();
-    const iv = setInterval(check, 60000);
+    // Poll faster during rollouts so Multus self-heal progress surfaces quickly.
+    const ms = updateStatus?.rolling_out ? 15000 : 60000;
+    const iv = setInterval(check, ms);
     return () => clearInterval(iv);
-  }, [isAdmin]);
+  }, [isAdmin, updateStatus?.rolling_out]);
 
   // stale_key from the API (dev: content hash, image: component digests) so Dismiss
   // only hides the banner until the next code change, not permanently.
@@ -214,9 +216,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     isAdmin &&
     updateStatus &&
     updateStatus.mode !== "disabled" &&
-    updateStatus.up_to_date === false &&
+    (updateStatus.up_to_date === false || updateStatus.rolling_out || updateStatus.rollout_error) &&
     updateTargetKey != null &&
-    dismissedKey !== updateTargetKey;
+    (dismissedKey !== updateTargetKey || !!updateStatus.rollout_error || !!updateStatus.rolling_out);
   const updateBusy = applying || updateStatus?.rolling_out;
   const shortDigest = (d?: string) =>
     d ? d.replace(/^sha256:/, "").slice(0, 12) : "—";
@@ -532,6 +534,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               )}
               {updateError && (
                 <span style={{ color: "#fca5a5", fontWeight: 500 }}>{updateError}</span>
+              )}
+              {updateStatus?.rollout_error && (
+                <span style={{ color: "#fca5a5", fontWeight: 500 }}>
+                  {updateStatus.rollout_error}
+                </span>
               )}
               <Button variant="link" isInline onClick={dismissUpdate}>Dismiss</Button>
             </div>

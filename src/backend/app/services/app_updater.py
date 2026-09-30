@@ -113,6 +113,7 @@ COMPONENTS = {
     "backend": "troshka-backend",
     "frontend": "troshka-frontend",
 }
+_ROLLOUT_DEPLOYMENTS = list(COMPONENTS.values()) + ["troshka-worker"]
 
 _snapshot: dict = {}
 
@@ -259,7 +260,7 @@ def _read_rolling_out() -> bool:
     k8s_config.load_incluster_config()
     apps = client.AppsV1Api()
     ns = _get_own_namespace()
-    for suffix in COMPONENTS.values():
+    for suffix in _ROLLOUT_DEPLOYMENTS:
         try:
             dep = apps.read_namespaced_deployment(name=suffix, namespace=ns)
             desired = dep.spec.replicas or 1  # type: ignore[union-attr]
@@ -272,9 +273,298 @@ def _read_rolling_out() -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# Stuck rollout self-heal (Multus FailedCreatePodSandBox during Apply update)
+# ---------------------------------------------------------------------------
+
+ANN_ROLLOUT_ATTEMPTS = "troshka.io/app-rollout-reschedule-attempts"
+ANN_ROLLOUT_STUCK_NODES = "troshka.io/app-rollout-stuck-nodes"
+
+_ROLLOUT_STUCK_THRESHOLD_S = 90
+_ROLLOUT_MAX_ATTEMPTS = 3
+_ROLLOUT_NODE_EXCLUDE_AFTER = 2
+_ROLLOUT_POLL_INTERVAL_S = 30
+
+
+def _pod_is_scheduled(pod) -> bool:
+    for cond in getattr(getattr(pod, "status", None), "conditions", None) or []:
+        if (
+            getattr(cond, "type", None) == "PodScheduled"
+            and getattr(cond, "status", None) == "True"
+        ):
+            return True
+    return False
+
+
+def _pod_has_running_container(pod) -> bool:
+    for cs in getattr(getattr(pod, "status", None), "container_statuses", None) or []:
+        state = getattr(cs, "state", None)
+        if state is not None and getattr(state, "running", None) is not None:
+            return True
+    return False
+
+
+def _is_rollout_pod_stuck(
+    pod, *, now=None, threshold_s=_ROLLOUT_STUCK_THRESHOLD_S
+) -> bool:
+    """True when scheduled past threshold with no running container (Multus hang)."""
+    if now is None:
+        now = time.time()
+    if getattr(getattr(pod, "metadata", None), "deletion_timestamp", None) is not None:
+        return False
+    created = getattr(getattr(pod, "metadata", None), "creation_timestamp", None)
+    if created is None:
+        return False
+    if (now - created.timestamp()) < threshold_s:
+        return False
+    if not _pod_is_scheduled(pod):
+        return False
+    phase = str(getattr(getattr(pod, "status", None), "phase", "") or "").lower()
+    if phase in ("running", "succeeded", "failed"):
+        return False
+    if _pod_has_running_container(pod):
+        return False
+    return True
+
+
+def _parse_stuck_node_counts(annotations: dict | None) -> dict[str, int]:
+    raw = (annotations or {}).get(ANN_ROLLOUT_STUCK_NODES, "")
+    if not raw:
+        return {}
+    counts: dict[str, int] = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if ":" not in part:
+            continue
+        host, _, n = part.partition(":")
+        try:
+            counts[host] = int(n)
+        except ValueError:
+            continue
+    return counts
+
+
+def _format_stuck_node_counts(counts: dict[str, int]) -> str:
+    return ",".join(f"{h}:{c}" for h, c in sorted(counts.items()))
+
+
+def _plan_rollout_heal(annotations: dict | None, node: str) -> dict:
+    """Pure: decide reschedule vs exhausted and next annotations/exclude."""
+    annotations = dict(annotations or {})
+    attempts = int(annotations.get(ANN_ROLLOUT_ATTEMPTS, "0") or "0")
+    if attempts >= _ROLLOUT_MAX_ATTEMPTS:
+        return {
+            "action": "exhausted",
+            "message": (
+                f"Update pods stuck on Multus ({node}) after {attempts} "
+                "reschedule attempts"
+            ),
+            "attempts": attempts,
+            "exclude": [],
+            "annotations": annotations,
+        }
+
+    counts = _parse_stuck_node_counts(annotations)
+    counts[node] = counts.get(node, 0) + 1
+    attempts += 1
+    next_ann = dict(annotations)
+    next_ann[ANN_ROLLOUT_STUCK_NODES] = _format_stuck_node_counts(counts)
+    next_ann[ANN_ROLLOUT_ATTEMPTS] = str(attempts)
+    exclude = [h for h, c in counts.items() if c >= _ROLLOUT_NODE_EXCLUDE_AFTER]
+    return {
+        "action": "reschedule",
+        "attempts": attempts,
+        "exclude": exclude,
+        "annotations": next_ann,
+        "detail": f"rescheduled off {node} (attempt {attempts})",
+    }
+
+
+def _node_hostname_not_in_affinity(hostnames: list[str]) -> dict:
+    return {
+        "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+                "nodeSelectorTerms": [
+                    {
+                        "matchExpressions": [
+                            {
+                                "key": "kubernetes.io/hostname",
+                                "operator": "NotIn",
+                                "values": list(hostnames),
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+
+
+def _deployment_name_for_rs(apps_api, namespace: str, rs_name: str) -> str | None:
+    try:
+        rs = apps_api.read_namespaced_replica_set(name=rs_name, namespace=namespace)
+    except Exception:  # noqa: BLE001
+        return None
+    for ref in getattr(getattr(rs, "metadata", None), "owner_references", None) or []:
+        if (
+            getattr(ref, "controller", False)
+            and getattr(ref, "kind", None) == "Deployment"
+        ):
+            return str(ref.name)
+    return None
+
+
+def _controller_owner(pod) -> tuple[str, str] | None:
+    for ref in getattr(getattr(pod, "metadata", None), "owner_references", None) or []:
+        if not getattr(ref, "controller", False):
+            continue
+        kind = str(getattr(ref, "kind", "") or "")
+        name = str(getattr(ref, "name", "") or "")
+        if kind and name:
+            return kind, name
+    return None
+
+
+def _patch_rollout_deployment_heal(apps_api, namespace, deploy_name, plan) -> None:
+    try:
+        dep = apps_api.read_namespaced_deployment(name=deploy_name, namespace=namespace)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "app_updater: read Deployment %s/%s for heal: %s", namespace, deploy_name, e
+        )
+        return
+
+    meta_ann = dict(getattr(getattr(dep, "metadata", None), "annotations", None) or {})
+    meta_ann.update(plan["annotations"])
+    patch: dict = {"metadata": {"annotations": meta_ann}}
+    if plan["exclude"]:
+        affinity = _node_hostname_not_in_affinity(plan["exclude"])
+        bump = plan["annotations"].get(ANN_ROLLOUT_ATTEMPTS, "0")
+        patch["spec"] = {
+            "template": {
+                "metadata": {"annotations": {"troshka.io/app-rollout-heal-bump": bump}},
+                "spec": {"affinity": affinity},
+            }
+        }
+    try:
+        apps_api.patch_namespaced_deployment(
+            name=deploy_name, namespace=namespace, body=patch
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "app_updater: patch Deployment %s/%s heal failed: %s",
+            namespace,
+            deploy_name,
+            e,
+        )
+
+
+def _heal_one_stuck_rollout_pod(core_api, apps_api, namespace, pod) -> str | None:
+    """Force-delete a stuck creating pod; return exhausted error or None."""
+    node = getattr(getattr(pod, "spec", None), "node_name", None) or "unknown"
+    owner = _controller_owner(pod)
+    deploy_name = None
+    annotations: dict = {}
+    if owner:
+        kind, name = owner
+        if kind == "Deployment":
+            deploy_name = name
+        elif kind == "ReplicaSet":
+            deploy_name = _deployment_name_for_rs(apps_api, namespace, name)
+    if deploy_name:
+        try:
+            dep = apps_api.read_namespaced_deployment(
+                name=deploy_name, namespace=namespace
+            )
+            annotations = dict(
+                getattr(getattr(dep, "metadata", None), "annotations", None) or {}
+            )
+        except Exception:  # noqa: BLE001
+            annotations = {}
+
+    plan = _plan_rollout_heal(annotations, node)
+    if plan["action"] == "exhausted":
+        return plan["message"]
+
+    if deploy_name:
+        _patch_rollout_deployment_heal(apps_api, namespace, deploy_name, plan)
+    try:
+        core_api.delete_namespaced_pod(
+            name=pod.metadata.name, namespace=namespace, grace_period_seconds=0
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "app_updater: force-delete stuck pod %s/%s: %s",
+            namespace,
+            getattr(pod.metadata, "name", "?"),
+            e,
+        )
+        return None
+    logger.info(
+        "app_updater: healed stuck rollout pod %s off %s (%s)",
+        pod.metadata.name,
+        node,
+        plan["detail"],
+    )
+    return None
+
+
+def _heal_stuck_rollout_pods() -> str | None:
+    """Detect Multus-stuck app pods and reschedule; return error if exhausted."""
+    from kubernetes import client
+    from kubernetes import config as k8s_config
+
+    try:
+        k8s_config.load_incluster_config()
+        core = client.CoreV1Api()
+        apps = client.AppsV1Api()
+    except Exception:  # noqa: BLE001
+        logger.debug("app_updater: heal skipped (no in-cluster config)", exc_info=True)
+        return None
+
+    ns = _get_own_namespace()
+    errors: list[str] = []
+    for deploy_name in _ROLLOUT_DEPLOYMENTS:
+        try:
+            dep = apps.read_namespaced_deployment(name=deploy_name, namespace=ns)
+            selector = _selector_from_match_labels(
+                dep.spec.selector.match_labels  # type: ignore[union-attr]
+            )
+            if not selector:
+                continue
+            pods = core.list_namespaced_pod(namespace=ns, label_selector=selector)
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "app_updater: list pods for %s heal failed", deploy_name, exc_info=True
+            )
+            continue
+        for pod in pods.items or []:  # type: ignore[union-attr]
+            if not _is_rollout_pod_stuck(pod):
+                continue
+            try:
+                err = _heal_one_stuck_rollout_pod(core, apps, ns, pod)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "app_updater: heal %s failed: %s",
+                    getattr(getattr(pod, "metadata", None), "name", "?"),
+                    e,
+                )
+                continue
+            if err:
+                errors.append(err)
+    return errors[0] if errors else None
+
+
 def _build_image_snapshot() -> dict:
     running = _read_own_digests()
     rolling = _read_rolling_out()
+    rollout_error = None
+    if rolling:
+        try:
+            rollout_error = _heal_stuck_rollout_pods()
+        except Exception:  # noqa: BLE001
+            logger.exception("app_updater: stuck rollout heal failed")
+        rolling = _read_rolling_out()
     comps: dict = {}
     up_to_date = True
     for name, suffix in COMPONENTS.items():
@@ -290,7 +580,12 @@ def _build_image_snapshot() -> dict:
         }
         if current and available and current != available:
             up_to_date = False
-    return {"up_to_date": up_to_date, "rolling_out": rolling, "components": comps}
+    return {
+        "up_to_date": up_to_date,
+        "rolling_out": rolling,
+        "rollout_error": rollout_error,
+        "components": comps,
+    }
 
 
 def _poll() -> None:
@@ -301,6 +596,13 @@ def _poll() -> None:
         logger.exception("app update poll failed")
 
 
+def _next_poll_sleep() -> int:
+    """Poll faster while a rollout is in progress so Multus hangs heal quickly."""
+    if (_snapshot or {}).get("rolling_out"):
+        return _ROLLOUT_POLL_INTERVAL_S
+    return _poll_interval()
+
+
 def _poller_loop() -> None:
     time.sleep(10)
     mode = resolve_mode()
@@ -309,7 +611,7 @@ def _poller_loop() -> None:
         return
     _poll()
     while True:
-        time.sleep(_poll_interval())
+        time.sleep(_next_poll_sleep())
         try:
             _poll()
         except Exception:
@@ -381,7 +683,12 @@ def get_status() -> dict:
             _poll()
         except Exception:
             logger.debug("app_updater: lazy status poll failed", exc_info=True)
-    snap = _snapshot or {"up_to_date": True, "rolling_out": False, "components": {}}
+    snap = _snapshot or {
+        "up_to_date": True,
+        "rolling_out": False,
+        "rollout_error": None,
+        "components": {},
+    }
     return {"mode": "image", **snap}
 
 
