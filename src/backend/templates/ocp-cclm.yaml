@@ -27,12 +27,12 @@ ocp:
     worker_cpu: 8
     worker_memory: 32768
     control_plane_disks:
-      - size_gb: 120
+      - size_gb: 250
         bootable: true
       - size_gb: 250
         ocp_mount: /var/lib/containers
     worker_disks:
-      - size_gb: 120
+      - size_gb: 250
         bootable: true
       - size_gb: 250
         ocp_mount: /var/lib/containers
@@ -49,7 +49,7 @@ ocp:
     control_plane_cpu: 16
     control_plane_memory: 65536
     control_plane_disks:
-      - size_gb: 120
+      - size_gb: 250
         bootable: true
       - size_gb: 250
         ocp_mount: /var/lib/containers
@@ -114,7 +114,7 @@ vms:
     nested_virt: true
     recert: true
     disks:
-      - size_gb: 120
+      - size_gb: 250
         bootable: true
       - size_gb: 250
     nics:
@@ -132,7 +132,7 @@ vms:
     bmc: true
     nested_virt: true
     disks:
-      - size_gb: 120
+      - size_gb: 250
         bootable: true
       - size_gb: 250
     nics:
@@ -150,7 +150,7 @@ vms:
     bmc: true
     nested_virt: true
     disks:
-      - size_gb: 120
+      - size_gb: 250
         bootable: true
       - size_gb: 250
     nics:
@@ -169,7 +169,7 @@ vms:
     nested_virt: true
     recert: true
     disks:
-      - size_gb: 120
+      - size_gb: 250
         bootable: true
       - size_gb: 250
     nics:
