@@ -51,6 +51,7 @@ interface Host {
   auto_extend_threshold_pct: number;
   auto_extend_increment_gb: number;
   auto_extend_max_gb: number | null;
+  accepting_work: boolean;
   console_domain: string | null;
   provider_type: string | null;
 }
@@ -414,6 +415,27 @@ export default function AdminHostsPage() {
     } else {
       const data = await resp.json();
       setError(data.detail || "Failed to update auto-extend settings");
+    }
+  };
+
+  const updateAcceptingWork = async (hostId: string, accepting: boolean) => {
+    const prev = hosts.find((h) => h.id === hostId)?.accepting_work;
+    setHosts((list) =>
+      list.map((h) => (h.id === hostId ? { ...h, accepting_work: accepting } : h))
+    );
+    const resp = await fetch(`/api/v1/hosts/${hostId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ accepting_work: accepting }),
+    });
+    if (!resp.ok) {
+      setHosts((list) =>
+        list.map((h) =>
+          h.id === hostId ? { ...h, accepting_work: prev ?? true } : h
+        )
+      );
+      const data = await resp.json();
+      setError(data.detail || "Failed to update provision pool status");
     }
   };
 
@@ -849,7 +871,7 @@ export default function AdminHostsPage() {
           <p style={{ opacity: 0.6 }}>No hosts{filterProvider ? ` for this provider` : ""}. Click &quot;+ Add Host&quot; to provision one.</p>
         )}
         {filteredHosts.map((h) => (
-          <Card key={h.id} style={{ marginBottom: 8 }}>
+          <Card key={h.id} style={{ marginBottom: 8, opacity: h.accepting_work === false ? 0.7 : 1 }}>
             {/* Row 1: Host info + stats */}
             <CardBody style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <input
@@ -868,6 +890,11 @@ export default function AdminHostsPage() {
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${stateColors[h.state] || "#94a3b8"}22`, color: stateColors[h.state] || "#94a3b8" }}>
                     {h.state}
                   </span>
+                  {h.accepting_work === false && (
+                    <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: "#fbbf2422", color: "#fbbf24" }}>
+                      out of pool
+                    </span>
+                  )}
                   {h.state !== "stopped" && (
                   <span style={{ fontSize: 11, padding: "1px 6px", borderRadius: 4, background: `${agentColors[h.agent_status] || "#94a3b8"}22`, color: agentColors[h.agent_status] || "#94a3b8" }}>
                     {(h.agent_status === "waiting_ssh" || h.agent_status === "installing") && "⏳ "}
@@ -961,6 +988,18 @@ export default function AdminHostsPage() {
                     <div><strong>{h.used_eips || 0}</strong>/{h.max_eips}</div>
                   </div>
                 )}
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", justifyContent: "center", minWidth: 90 }}>
+                  <Tooltip content={h.accepting_work !== false
+                    ? "In provision pool — new deploys can land here"
+                    : "Out of provision pool — blocked from auto and manual placement"}>
+                    <Switch
+                      id={`accepting-work-${h.id}`}
+                      label={h.accepting_work !== false ? "In pool" : "Out of pool"}
+                      isChecked={h.accepting_work !== false}
+                      onChange={(_, checked) => updateAcceptingWork(h.id, checked)}
+                    />
+                  </Tooltip>
+                </div>
               </div>
             </CardBody>
             {/* Row 2: Action buttons */}

@@ -41,6 +41,7 @@ class HostResponse(BaseModel):
     auto_extend_threshold_pct: int = 80
     auto_extend_increment_gb: int = 100
     auto_extend_max_gb: int | None = None
+    accepting_work: bool = True
     console_domain: str | None = None
     provider_type: str | None = None
     ssh_port: int | None = None

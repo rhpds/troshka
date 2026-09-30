@@ -672,6 +672,19 @@ class TestUpdateHost:
         assert resp.status_code == 200
         assert resp.json()["status"] == "updated"
 
+    def test_update_accepting_work(self):
+        hid = _create_host()
+        resp = client.patch(
+            f"/api/v1/hosts/{hid}",
+            json={"accepting_work": False},
+            headers=ADMIN_HEADERS,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "updated"
+        get_resp = client.get(f"/api/v1/hosts/{hid}", headers=ADMIN_HEADERS)
+        assert get_resp.status_code == 200
+        assert get_resp.json()["accepting_work"] is False
+
     def test_update_disallowed_field(self):
         hid = _create_host()
         resp = client.patch(

@@ -181,7 +181,7 @@ export default function ProjectCanvasPage() {
           const provMap = new Map<string, string>();
           for (const p of providers) provMap.set(p.id, p.name);
           const active = hosts
-            .filter((h: any) => h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer")
+            .filter((h: any) => h.state === "active" && h.agent_status === "connected" && h.host_type !== "pattern_buffer" && h.accepting_work !== false)
             .map((h: any) => ({ ...h, provider_name: provMap.get(h.provider_id) || null }));
           setAvailableHosts(active);
         });
@@ -776,7 +776,8 @@ export default function ProjectCanvasPage() {
       h.storage_pool_id === currentHost.storage_pool_id &&
       h.id !== proj.host_id &&
       h.state === "active" &&
-      h.agent_status === "connected"
+      h.agent_status === "connected" &&
+      h.accepting_work !== false
     );
     setAvailableHosts(samePool);
     setShowMigrate(true);

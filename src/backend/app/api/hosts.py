@@ -1816,6 +1816,7 @@ def update_host(
         "auto_extend_threshold_pct": int,
         "auto_extend_increment_gb": int,
         "auto_extend_max_gb": (int, type(None)),
+        "accepting_work": bool,
     }
     for key, val in body.items():
         if key not in allowed:

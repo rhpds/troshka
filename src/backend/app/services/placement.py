@@ -18,6 +18,13 @@ from app.services.vxlan import allocate_vnis_for_project, build_host_network_con
 
 logger = logging.getLogger(__name__)
 
+# Hosts eligible for new project placement (auto or manual).
+_PLACEMENT_HOST_FILTERS = (
+    Host.state == "active",
+    Host.agent_status == "connected",
+    Host.accepting_work.is_(True),
+)
+
 
 def calculate_project_requirements(topology: dict) -> dict:
     """Calculate total resource requirements from a project's topology."""
@@ -184,9 +191,7 @@ def _storage_ready_anywhere(db: Session, pattern_disk_ids: list[str]) -> bool:
 
     if not pattern_disk_ids:
         return True
-    hosts = db.scalars(
-        select(Host).filter(Host.state == "active", Host.agent_status == "connected")
-    ).all()
+    hosts = db.scalars(select(Host).filter(*_PLACEMENT_HOST_FILTERS)).all()
     return any(
         pattern_disks_ready_on_provider(db, pattern_disk_ids, h.provider_id)
         for h in hosts
@@ -257,8 +262,7 @@ def find_available_host(
     in DB) to avoid piling jobs onto one cluster.
     """
     query = db.query(Host).filter(
-        Host.state == "active",
-        Host.agent_status == "connected",
+        *_PLACEMENT_HOST_FILTERS,
         Host.host_type != "pattern_buffer",
     )
     if storage_pool_id:
@@ -373,6 +377,14 @@ def diagnose_placement_failure(
             )
         return "No active, connected hosts are available. Add a host."
 
+    accepting = [h for h in hosts if h.accepting_work]
+    if not accepting:
+        return (
+            "All available hosts are removed from the provision pool. "
+            "Re-enable a host's 'In pool' switch to accept new deployments."
+        )
+    hosts = accepting
+
     for host in hosts:
         sync_host_capacity(db, host)
 
@@ -408,8 +420,7 @@ def _auto_select_pool(db: Session) -> str | None:
             db.query(Host)
             .filter(
                 Host.storage_pool_id == pool.id,
-                Host.state == "active",
-                Host.agent_status == "connected",
+                *_PLACEMENT_HOST_FILTERS,
             )
             .all()
         )
@@ -502,8 +513,7 @@ def _prepare_hosts(
 ) -> tuple[list[Host], dict[str, dict]] | tuple[None, None]:
     """Query and prepare available hosts with capacity tracking."""
     hosts_query = db.query(Host).filter(
-        Host.state == "active",
-        Host.agent_status == "connected",
+        *_PLACEMENT_HOST_FILTERS,
         Host.host_type != "pattern_buffer",
         # KubeVirt clusters have no troshkad WireGuard/VXLAN mesh and each host
         # is an entire OCP cluster — they can never be mesh peers for a
@@ -661,6 +671,11 @@ def _resolve_specified_host(
         return None, f"Host {host_id[:8]} not found"
     if host.state != "active" or host.agent_status != "connected":
         return None, f"Host {host_id[:8]} is not available"
+    if not host.accepting_work:
+        return (
+            None,
+            f"Host {host_id[:8]} is removed from the provision pool",
+        )
     return host, None
 
 
@@ -762,8 +777,7 @@ def _find_pool_for_anti_affinity(db: Session) -> str | None:
             db.query(Host)
             .filter(
                 Host.storage_pool_id == pool.id,
-                Host.state == "active",
-                Host.agent_status == "connected",
+                *_PLACEMENT_HOST_FILTERS,
                 Host.host_type != "pattern_buffer",
             )
             .count()

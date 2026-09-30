@@ -623,6 +623,67 @@ def test_find_available_host_excludes_pattern_buffer():
         db.close()
 
 
+def test_find_available_host_excludes_not_accepting_work():
+    """Hosts with accepting_work=False are out of the provision pool."""
+    db = TestSession()
+    try:
+        prov = _make_provider(db)
+        cordoned = _make_host(db, prov, vcpus=64, ram_mb=256000, accepting_work=False)
+        open_host = _make_host(db, prov, vcpus=32, ram_mb=128000, accepting_work=True)
+
+        with patch(
+            "app.services.placement._get_overcommit_ratios", return_value=(4.0, 1.5)
+        ):
+            host = find_available_host(db, 4, 8192, provider_id=prov.id)
+
+        assert host is not None
+        assert host.id == open_host.id
+
+        db.delete(cordoned)
+        db.delete(open_host)
+        db.delete(prov)
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_select_host_rejects_not_accepting_work():
+    """Manual host pick fails when the host is out of the provision pool."""
+    from app.services.placement import _select_host
+
+    db = TestSession()
+    try:
+        prov = _make_provider(db)
+        cordoned = _make_host(db, prov, vcpus=64, ram_mb=256000, accepting_work=False)
+        project = Project(
+            name="cordon-manual",
+            owner_id=_USER_ID,
+            topology={"nodes": []},
+        )
+        db.add(project)
+        db.commit()
+
+        reqs = {"total_vcpus": 4, "total_ram_mb": 4096, "requested_eips": 0}
+        host, _pool, error = _select_host(
+            db,
+            project,
+            reqs,
+            has_anti_affinity=False,
+            storage_pool_id=None,
+            host_id=cordoned.id,
+        )
+        assert host is None
+        assert error is not None
+        assert "provision pool" in error["error"].lower()
+
+        db.delete(project)
+        db.delete(cordoned)
+        db.delete(prov)
+        db.commit()
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # _auto_select_pool
 # ---------------------------------------------------------------------------
