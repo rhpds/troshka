@@ -1,5 +1,6 @@
 import type { Node, Edge } from "@xyflow/react";
 import type { ClusterConfig, VMDiskController, DiskSpec, VMNic } from "@/stores/canvasStore";
+import { coerceDiskSpecs } from "@/stores/canvasStore";
 import { generateDiskControllerId, generateNicId, generateMac } from "@/stores/canvasStore";
 import {
   collectUsedIps,
@@ -82,7 +83,7 @@ function roleSpecs(cluster: ClusterConfig): RoleSpec[] {
       want: cluster.controlPlane ?? 0,
       cpu: cluster.controlPlaneCpu ?? 8,
       memoryMb: cluster.controlPlaneMemory ?? 16384,
-      disk: cluster.controlPlaneDisk ?? 120,
+      disk: cluster.controlPlaneDisks?.[0]?.sizeGb ?? cluster.controlPlaneDisk ?? 120,
     },
     {
       role: "worker",
@@ -92,7 +93,7 @@ function roleSpecs(cluster: ClusterConfig): RoleSpec[] {
       want: cluster.workers ?? 0,
       cpu: cluster.workerCpu ?? 4,
       memoryMb: cluster.workerMemory ?? 8192,
-      disk: cluster.workerDisk ?? 100,
+      disk: cluster.workerDisks?.[0]?.sizeGb ?? cluster.workerDisk ?? 100,
     },
   ];
 }
@@ -255,7 +256,11 @@ function buildMemberDisks(
   diskEdges: Edge[];
   bootDevices: string[];
 } {
-  const specs = (role === "control-plane" ? cluster.controlPlaneDisks : cluster.workerDisks) ?? [
+  const specs = coerceDiskSpecs(
+    (role === "control-plane" ? cluster.controlPlaneDisks : cluster.workerDisks) as
+      | DiskSpec[]
+      | undefined,
+  ) ?? [
     { sizeGb: role === "control-plane" ? 120 : 100, bootable: true },
   ];
   const diskNodes: Node[] = [];
@@ -915,7 +920,9 @@ export function applyClusterDisks(
 
     // Get the disk specs for this role
     const diskSpecs = role === "control-plane" ? cluster.controlPlaneDisks : cluster.workerDisks;
-    const targetSpecs = diskSpecs ?? [{ sizeGb: role === "control-plane" ? 120 : 100, bootable: true }];
+    const targetSpecs = coerceDiskSpecs(diskSpecs as DiskSpec[] | undefined) ?? [
+      { sizeGb: role === "control-plane" ? 120 : 100, bootable: true },
+    ];
 
     // Collect existing disk nodes for this member
     const existingDiskNodeIds = new Set<string>();

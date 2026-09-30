@@ -1289,8 +1289,31 @@ def _attach_bastion_image(topology, bastion_image):
             break
 
 
+def _bastion_has_iso(topology, bastion_vm_id: str) -> bool:
+    """True when the bastion VM already has an ISO storage node attached.
+
+    Templates like bastion-builder declare ``isos:`` in YAML; project create must
+    not stack a second DVD from the user's default OCP ISO.
+    """
+    nodes_by_id = {n["id"]: n for n in topology.get("nodes", []) if n.get("id")}
+    for edge in topology.get("edges", []) or []:
+        if edge.get("target") != bastion_vm_id:
+            continue
+        src = nodes_by_id.get(edge.get("source") or "")
+        if not src or src.get("type") != "storageNode":
+            continue
+        data = src.get("data") or {}
+        if data.get("format") == "iso" or str(data.get("name", "")).endswith("-iso"):
+            return True
+    return False
+
+
 def _attach_bastion_iso(topology, bastion_iso):
-    """Reuse from IPI template."""
+    """Attach the selected/default RHEL DVD ISO to the bastion when missing.
+
+    No-op when the template already materialised an ISO on the bastion (e.g.
+    bastion-builder's ``isos: [dvd]``) so project create does not deploy two DVDs.
+    """
     if not bastion_iso:
         return
     bastion_vm = None
@@ -1302,6 +1325,8 @@ def _attach_bastion_iso(topology, bastion_iso):
             bastion_vm = node
             break
     if not bastion_vm:
+        return
+    if _bastion_has_iso(topology, bastion_vm["id"]):
         return
 
     iso_node_id = str(uuid.uuid4())
@@ -2217,6 +2242,10 @@ def _build_agent_config(cluster, members, topology, dns_ip_override=None):
 
     rendezvous_ip = _cluster_control_plane_ip(members) or str(net.network_address + 10)
 
+    # Prefer the project-netns chronyd Troshkad binds on the gateway (.1):
+    # nested labs often cannot reach public NTP (NAT/UDP 123), which leaves the
+    # host ``insufficient`` until chrony lucks into an upstream. Gateway first,
+    # public pools as fallback when outbound works.
     ac_lines = [
         "apiVersion: v1beta1",
         "kind: AgentConfig",
@@ -2224,6 +2253,7 @@ def _build_agent_config(cluster, members, topology, dns_ip_override=None):
         f"  name: {cluster_name}",
         f"rendezvousIP: {rendezvous_ip}",
         "additionalNTPSources:",
+        f"  - {gateway_ip}",
         "  - clock.redhat.com",
         "  - pool.ntp.org",
         "hosts:",
@@ -2351,7 +2381,11 @@ def _serve_iso_cmd(
 # BMC/sushy curls must not hang forever: a wedged Virtual BMC previously
 # blocked ISO eject after Install complete!, so the ops-pod never emitted
 # ``[<cluster>] install complete`` → no kubeconfig harvest / worker join.
+# Status/eject stay short. InsertMedia is longer: sushy fetches the whole
+# agent ISO (~1.4GB) synchronously before returning, and --max-time 15 left
+# the install hung/failed mid-mount with CDROM half-attached.
 _REDFISH_CURL = "curl -s --connect-timeout 5 --max-time 15"
+_REDFISH_CURL_INSERT = "curl -s --connect-timeout 5 --max-time 900"
 
 
 def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
@@ -2360,6 +2394,7 @@ def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
     b2 = indent + "  "
     b4 = indent + "    "
     c = _REDFISH_CURL
+    c_ins = _REDFISH_CURL_INSERT
     return (
         f"{b}for BMC_IP in {bmc_ips_str}; do\n"
         f'{b2}echo "Mounting ISO on BMC $BMC_IP..."\n'
@@ -2377,11 +2412,17 @@ def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
         f"{b2}done\n"
         f'{b2}if [ -z "$SYS_ID" ]; then echo "  WARNING: BMC $BMC_IP never became ready; skipping"; continue; fi\n'
         f'{b2}echo "  System: $SYS_ID"\n'
+        f"{b2}# Confirm the ISO HTTP server is still alive before asking sushy to fetch.\n"
+        f'{b2}if ! curl -sfI --connect-timeout 3 --max-time 10 "$ISO_URL" >/dev/null; then\n'
+        f'{b4}echo "ERROR: agent ISO not reachable at $ISO_URL (HTTP server dead?)"\n'
+        f"{b4}exit 1\n"
+        f"{b2}fi\n"
         f"{b2}# Insert virtual media (Systems path, HTTP, with auth).\n"
         f"{b2}# Do NOT swallow failures: a silent InsertMedia leaves the domain\n"
         f"{b2}# without a CDROM (UEFI 'No bootable option') while the log claims\n"
         f"{b2}# the node was booted from ISO.\n"
-        f'{b2}{c} -u admin:$BMC_PASS -X POST "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \\\n'
+        f"{b2}# Long max-time: sushy downloads the full ISO before answering.\n"
+        f'{b2}{c_ins} -u admin:$BMC_PASS -X POST "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \\\n'
         f"{b4}-H 'Content-Type: application/json' \\\n"
         f'{b4}-d "{{\\"Image\\": \\"${{ISO_URL}}\\", \\"Inserted\\": true, \\"WriteProtected\\": true}}"\n'
         f'{b2}INSERTED=$({c} -u admin:$BMC_PASS "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}/VirtualMedia/Cd" | python3 -c "import json,sys; print(json.load(sys.stdin).get(\'Inserted\',\'\'))" 2>/dev/null || echo "")\n'
@@ -2389,6 +2430,13 @@ def _redfish_insert_media_cmd(indent: str, bmc_ips_str: str) -> str:
         f'{b4}echo "ERROR: VirtualMedia not Inserted on $BMC_IP (Inserted=$INSERTED ISO_URL=$ISO_URL)"\n'
         f"{b4}exit 1\n"
         f"{b2}fi\n"
+        f"{b2}# InsertMedia attaches the CDROM but leaves BootSourceOverride on Hdd.\n"
+        f"{b2}# Without Cd override the node reboots into an empty disk (agent never\n"
+        f"{b2}# starts). Continuous (not Once): some BMCs revert Once on Reset.\n"
+        f"{b2}# EjectMedia after install clears the ISO so later reboots use disk.\n"
+        f'{b2}{c} -u admin:$BMC_PASS -X PATCH "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}" \\\n'
+        f"{b4}-H 'Content-Type: application/json' \\\n"
+        f'{b4}-d "{{\\"Boot\\": {{\\"BootSourceOverrideEnabled\\": \\"Continuous\\", \\"BootSourceOverrideTarget\\": \\"Cd\\"}}}}" >/dev/null\n'
         f"{b2}# Power on from ISO when off; reboot when already running (ForceRestart\n"
         f"{b2}# is a no-op on a shut-off libvirt domain).\n"
         f'{b2}POWER=$({c} -u admin:$BMC_PASS "http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('

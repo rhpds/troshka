@@ -532,13 +532,19 @@ function DiskListEditor({
   disks: DiskSpec[];
   onChange: (disks: DiskSpec[]) => void;
 }) {
+  // Tolerate snake_case size_gb leftover from older template imports.
+  const displayDisks = disks.map((d) => {
+    const raw = d as DiskSpec & { size_gb?: number };
+    return raw.sizeGb != null ? d : { ...d, sizeGb: raw.size_gb ?? 50 };
+  });
+
   const handleAddDisk = () => {
     const newDisk: DiskSpec = { sizeGb: 50, bus: "virtio", bootable: false };
-    onChange([...disks, newDisk]);
+    onChange([...displayDisks, newDisk]);
   };
 
   const handleRemoveDisk = (index: number) => {
-    const remaining = disks.filter((_, i) => i !== index);
+    const remaining = displayDisks.filter((_, i) => i !== index);
     // Keep exactly one boot disk: if we removed the boot disk (or none is
     // marked), make the first remaining disk bootable.
     if (remaining.length > 0 && !remaining.some((d) => d.bootable)) {
@@ -548,7 +554,7 @@ function DiskListEditor({
   };
 
   const handleUpdateDisk = (index: number, patch: Partial<DiskSpec>) => {
-    const updated = [...disks];
+    const updated = [...displayDisks];
     updated[index] = { ...updated[index], ...patch };
     onChange(updated);
   };
@@ -556,17 +562,17 @@ function DiskListEditor({
   // Boot is exclusive (radio-style): exactly one disk per role is the boot
   // disk. Selecting a disk clears bootable on all others.
   const handleSetBoot = (index: number) => {
-    onChange(disks.map((d, i) => ({ ...d, bootable: i === index })));
+    onChange(displayDisks.map((d, i) => ({ ...d, bootable: i === index })));
   };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      {disks.length === 0 ? (
+      {displayDisks.length === 0 ? (
         <span style={{ fontSize: 13, color: "var(--troshka-text-dim)" }}>
           No disks configured
         </span>
       ) : (
-        disks.map((disk, idx) => (
+        displayDisks.map((disk, idx) => (
           <div
             key={idx}
             style={{
@@ -881,7 +887,6 @@ function ClusterEditor({
         <div className="props-section-title">Control Plane Sizing</div>
         <ClusterNumberField label="Control Plane vCPUs" min={1} value={cluster.controlPlaneCpu ?? 8} onCommit={(v) => onSizing({ controlPlaneCpu: v })} />
         <ClusterNumberField label="Control Plane Memory (GB)" min={1} value={Math.round((cluster.controlPlaneMemory ?? 16384) / 1024)} onCommit={(v) => onSizing({ controlPlaneMemory: v * 1024 })} />
-        <ClusterNumberField label="Control Plane Disk (GB)" min={1} value={cluster.controlPlaneDisk ?? 120} onCommit={(v) => onSizing({ controlPlaneDisk: v })} />
       </div>
       <div className="props-divider" />
 
@@ -900,7 +905,6 @@ function ClusterEditor({
             <div className="props-section-title">Worker Sizing</div>
             <ClusterNumberField label="Worker vCPUs" min={1} value={cluster.workerCpu ?? 4} onCommit={(v) => onSizing({ workerCpu: v })} />
             <ClusterNumberField label="Worker Memory (GB)" min={1} value={Math.round((cluster.workerMemory ?? 8192) / 1024)} onCommit={(v) => onSizing({ workerMemory: v * 1024 })} />
-            <ClusterNumberField label="Worker Disk (GB)" min={1} value={cluster.workerDisk ?? 100} onCommit={(v) => onSizing({ workerDisk: v })} />
           </div>
           <div className="props-divider" />
 
@@ -5486,7 +5490,19 @@ export default function PropertiesPanel() {
           });
         };
         const handleDisksChange = (role: "control-plane" | "worker", disks: DiskSpec[]) => {
-          const patch = role === "control-plane" ? { controlPlaneDisks: disks } : { workerDisks: disks };
+          // Keep legacy single-disk ints aligned with the first list entry so
+          // applyClusterSizing / materialize fallbacks stay consistent.
+          const firstGb = disks[0]?.sizeGb;
+          const patch: Partial<ClusterConfig> =
+            role === "control-plane"
+              ? {
+                  controlPlaneDisks: disks,
+                  ...(firstGb != null ? { controlPlaneDisk: firstGb } : {}),
+                }
+              : {
+                  workerDisks: disks,
+                  ...(firstGb != null ? { workerDisk: firstGb } : {}),
+                };
           editCluster(patch);
           const updated = { ...cluster, ...patch };
           const { nodes: nextNodes, edges: nextEdges } = applyClusterDisks(

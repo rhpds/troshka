@@ -96,11 +96,17 @@
       done
       if [ -z "$SYS_ID" ]; then echo "  WARNING: BMC $BMC_IP never became ready; skipping"; continue; fi
       echo "  System: $SYS_ID"
+      # Confirm the ISO HTTP server is still alive before asking sushy to fetch.
+      if ! curl -sfI --connect-timeout 3 --max-time 10 "$ISO_URL" >/dev/null; then
+        echo "ERROR: agent ISO not reachable at $ISO_URL (HTTP server dead?)"
+        exit 1
+      fi
       # Insert virtual media (Systems path, HTTP, with auth).
-      # Do NOT swallow failures: a silent InsertMedia leave the domain
+      # Do NOT swallow failures: a silent InsertMedia leaves the domain
       # without a CDROM (UEFI 'No bootable option') while the log claims
       # the node was booted from ISO.
-      curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \
+      # Long max-time: sushy downloads the full ISO before answering.
+      curl -s --connect-timeout 5 --max-time 900 -u admin:$BMC_PASS -X POST "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd/Actions/VirtualMedia.InsertMedia" \
         -H 'Content-Type: application/json' \
         -d "{\"Image\": \"${ISO_URL}\", \"Inserted\": true, \"WriteProtected\": true}"
       INSERTED=$(curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}/VirtualMedia/Cd" | python3 -c "import json,sys; print(json.load(sys.stdin).get('Inserted',''))" 2>/dev/null || echo "")
@@ -108,6 +114,13 @@
         echo "ERROR: VirtualMedia not Inserted on $BMC_IP (Inserted=$INSERTED ISO_URL=$ISO_URL)"
         exit 1
       fi
+      # InsertMedia attaches the CDROM but leaves BootSourceOverride on Hdd.
+      # Without Cd override the node reboots into an empty disk (agent never
+      # starts). Continuous (not Once): some BMCs revert Once on Reset.
+      # EjectMedia after install clears the ISO so later reboots use disk.
+      curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS -X PATCH "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}" \
+        -H 'Content-Type: application/json' \
+        -d "{\"Boot\": {\"BootSourceOverrideEnabled\": \"Continuous\", \"BootSourceOverrideTarget\": \"Cd\"}}" >/dev/null
       # Power on from ISO when off; reboot when already running (ForceRestart
       # is a no-op on a shut-off libvirt domain).
       POWER=$(curl -s --connect-timeout 5 --max-time 15 -u admin:$BMC_PASS "http://${BMC_IP}:8000/redfish/v1/Systems/${SYS_ID}" | python3 -c "import json,sys; print(json.load(sys.stdin).get('PowerState',''))" 2>/dev/null || echo "")

@@ -58,27 +58,50 @@ def normalize_ocp_section(ocp: dict | list | None) -> list[dict]:
     return clusters
 
 
+def _normalize_disk_spec(disk: dict) -> dict:
+    """Map template snake_case disk keys to topology camelCase (sizeGb, ocpMount)."""
+    if not isinstance(disk, dict):
+        return {"sizeGb": 50}
+    out: dict = {}
+    size = disk.get("sizeGb", disk.get("size_gb"))
+    if size is not None:
+        out["sizeGb"] = size
+    bus = disk.get("bus")
+    if bus is not None:
+        out["bus"] = bus
+    if disk.get("bootable"):
+        out["bootable"] = True
+    mount = disk.get("ocpMount", disk.get("ocp_mount"))
+    if mount:
+        out["ocpMount"] = mount
+    return out
+
+
 def normalize_cluster_disks(cluster: dict) -> dict:
     """Upgrade legacy single-disk clusters to per-role disk lists; default networkIds.
 
     Legacy ``controlPlaneDisk``/``workerDisk`` (GB int) become a one-element
-    bootable list. Explicit ``controlPlaneDisks``/``workerDisks`` pass through.
+    bootable list. Explicit ``controlPlaneDisks``/``workerDisks`` pass through
+    with snake_case disk keys (``size_gb``, ``ocp_mount``) converted to camelCase.
     Accepts both camelCase (controlPlaneDisks) and snake_case (control_plane_disks)
-    from exported templates.
+    from exported templates. Aligns the legacy single-disk int with the first
+    list entry so sizing remains consistent.
     """
     out = dict(cluster)
     for camel, snake, legacy, default_gb in (
         ("controlPlaneDisks", "control_plane_disks", "controlPlaneDisk", 120),
         ("workerDisks", "worker_disks", "workerDisk", 100),
     ):
-        # Try camelCase first, then snake_case
-        if not out.get(camel):
-            disks = out.get(snake)
-            if disks:
-                out[camel] = disks
-            else:
-                gb = out.get(legacy) or default_gb
-                out[camel] = [{"sizeGb": gb, "bootable": True}]
+        disks = out.get(camel) or out.get(snake)
+        if disks:
+            out[camel] = [_normalize_disk_spec(d) for d in disks]
+        else:
+            gb = out.get(legacy) or default_gb
+            out[camel] = [{"sizeGb": gb, "bootable": True}]
+        first = out[camel][0] if out[camel] else None
+        if first and first.get("sizeGb") is not None:
+            out[legacy] = first["sizeGb"]
+        out.pop(snake, None)
     out.setdefault("networkIds", out.get("networkIds") or [])
     return out
 
@@ -238,10 +261,17 @@ def _build_one_topology_cluster(entry, vms_def, single):
         "controlPlaneMemory": entry.get(
             "control_plane_memory", _CP_SIZE_DEFAULTS["memory"]
         ),
-        "controlPlaneDisk": entry.get("control_plane_disk", _CP_SIZE_DEFAULTS["disk"]),
+        # Prefer list-derived legacy ints from normalize_cluster_disks.
+        "controlPlaneDisk": normalized.get(
+            "controlPlaneDisk",
+            entry.get("control_plane_disk", _CP_SIZE_DEFAULTS["disk"]),
+        ),
         "workerCpu": entry.get("worker_cpu", _WORKER_SIZE_DEFAULTS["cpu"]),
         "workerMemory": entry.get("worker_memory", _WORKER_SIZE_DEFAULTS["memory"]),
-        "workerDisk": entry.get("worker_disk", _WORKER_SIZE_DEFAULTS["disk"]),
+        "workerDisk": normalized.get(
+            "workerDisk",
+            entry.get("worker_disk", _WORKER_SIZE_DEFAULTS["disk"]),
+        ),
         "baseDomain": entry.get("base_domain", "ocp.local"),
         "apiVip": entry.get("api_vip"),
         "ingressVip": entry.get("ingress_vip"),
@@ -284,6 +314,19 @@ def _existing_role_names(vms_def, cluster_name, role, single):
     ]
 
 
+def _disk_spec_to_template(d: dict) -> dict:
+    """Emit a template-format disk dict from a camelCase (or mixed) DiskSpec."""
+    out = {
+        "size_gb": d.get("sizeGb", d.get("size_gb", 50)),
+        "bus": d.get("bus", "virtio"),
+        "bootable": d.get("bootable", False),
+    }
+    mount = d.get("ocpMount") or d.get("ocp_mount")
+    if mount:
+        out["ocp_mount"] = mount
+    return out
+
+
 def _make_node(cluster, role, cpu, memory, disks, network_ids):
     # Emit the template-format keys that _build_vm_data actually reads (vcpus /
     # ram_gb), so count-materialized sizing survives into the final node.data
@@ -295,14 +338,7 @@ def _make_node(cluster, role, cpu, memory, disks, network_ids):
         "cluster": cluster["name"],
         "vcpus": cpu,
         "ram_gb": round(memory / 1024),
-        "disks": [
-            {
-                "size_gb": d["sizeGb"],
-                "bus": d.get("bus", "virtio"),
-                "bootable": d.get("bootable", False),
-            }
-            for d in disks
-        ],
+        "disks": [_disk_spec_to_template(d) for d in disks],
         "nics": [{"network": nid} for nid in (network_ids or [])],
         # Mark auto-generated so count-driven add/remove (canvas + backend) only
         # ever reaps VMs it created, never a hand-enumerated/customized member.

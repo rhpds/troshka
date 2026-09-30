@@ -1210,6 +1210,29 @@ def test_normalize_cluster_disks_keeps_explicit_list():
     assert len(c["controlPlaneDisks"]) == 2 and c["networkIds"] == ["net1"]
 
 
+def test_normalize_cluster_disks_converts_snake_case_keys():
+    """Template YAML uses size_gb / ocp_mount; topology must be camelCase for the UI."""
+    from app.services.template_loader import normalize_cluster_disks
+
+    c = normalize_cluster_disks(
+        {
+            "control_plane_disks": [
+                {"size_gb": 250, "bootable": True},
+                {"size_gb": 250, "ocp_mount": "/var/lib/containers"},
+            ],
+            "worker_disks": [{"size_gb": 250, "bootable": True}],
+        }
+    )
+    assert c["controlPlaneDisks"] == [
+        {"sizeGb": 250, "bootable": True},
+        {"sizeGb": 250, "ocpMount": "/var/lib/containers"},
+    ]
+    assert c["workerDisks"] == [{"sizeGb": 250, "bootable": True}]
+    # Legacy single-disk ints stay aligned with the first list entry.
+    assert c["controlPlaneDisk"] == 250
+    assert c["workerDisk"] == 250
+
+
 # ---------------------------------------------------------------------------
 # Task 6: Backend — materialize members with per-role disks + uniform NICs (parity)
 # ---------------------------------------------------------------------------
@@ -1539,9 +1562,10 @@ def test_export_roundtrip_cluster_with_per_role_disks_and_networks():
 
     # Check that cluster has the disks and networks
     prod = topo["clusters"][0]
+    # Non-boot disks omit bootable:false (UI treats missing as false).
     assert prod["controlPlaneDisks"] == [
         {"sizeGb": 120, "bootable": True},
-        {"sizeGb": 100, "bootable": False},
+        {"sizeGb": 100},
     ]
     assert len(prod.get("networkIds", [])) == 2
 
@@ -1554,7 +1578,7 @@ def test_export_roundtrip_cluster_with_per_role_disks_and_networks():
     assert "control_plane_disks" in ocp_entry
     assert ocp_entry["control_plane_disks"] == [
         {"sizeGb": 120, "bootable": True},
-        {"sizeGb": 100, "bootable": False},
+        {"sizeGb": 100},
     ]
     assert "networks" in ocp_entry
     assert set(ocp_entry["networks"]) == {"cluster", "data"}
@@ -1566,7 +1590,7 @@ def test_export_roundtrip_cluster_with_per_role_disks_and_networks():
     prod2 = topo2["clusters"][0]
     assert prod2.get("controlPlaneDisks") == [
         {"sizeGb": 120, "bootable": True},
-        {"sizeGb": 100, "bootable": False},
+        {"sizeGb": 100},
     ]
     # Network IDs will be different (new UUIDs), but count should match
     assert len(prod2.get("networkIds", [])) == 2

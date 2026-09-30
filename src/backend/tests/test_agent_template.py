@@ -309,6 +309,12 @@ def test_redfish_insert_media_retries_bmc_readiness():
     # Timeouts so a wedged BMC cannot stall a retry forever.
     assert "--connect-timeout 5" in cmd
     assert "--max-time 15" in cmd
+    # InsertMedia must wait for sushy to fetch the full agent ISO (~1.4GB).
+    assert "--max-time 900" in cmd
+    assert "agent ISO not reachable" in cmd
+    # InsertMedia alone leaves BootSourceOverride on Hdd — force Cd before Reset.
+    assert "BootSourceOverrideTarget" in cmd
+    assert '"Cd"' in cmd or '\\"Cd\\"' in cmd
     # A BMC that never becomes ready is skipped, not fatal.
     assert "continue" in cmd
 
@@ -435,3 +441,103 @@ def test_agent_config_pins_root_device_to_boot_disk():
     members = [n for n in topo["nodes"] if n.get("type") == "vmNode"]
     ac = yaml.safe_load(_build_agent_config(cluster, members, topo))
     assert ac["hosts"][0]["rootDeviceHints"]["deviceName"] == "/dev/vda"
+    # Gateway chronyd (.1) first — public NTP is often unreachable in nested labs.
+    assert ac["additionalNTPSources"][0] == "10.0.0.1"
+    assert "pool.ntp.org" in ac["additionalNTPSources"]
+
+
+def test_attach_bastion_iso_skips_when_template_already_has_iso():
+    """Bastion Builder (and similar) declare isos: in YAML — do not add a second DVD."""
+    from app.services.ocp.agent_template import _attach_bastion_iso
+
+    topology = {
+        "nodes": [
+            {
+                "id": "bastion",
+                "type": "vmNode",
+                "position": {"x": 100, "y": 100},
+                "data": {
+                    "name": "bastion",
+                    "diskControllers": [
+                        {"id": "dp-disk0", "name": "disk0", "bus": "virtio"},
+                        {"id": "dp-cdrom0", "name": "cdrom0", "bus": "sata"},
+                    ],
+                },
+            },
+            {
+                "id": "dvd",
+                "type": "storageNode",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "name": "dvd",
+                    "label": "dvd",
+                    "format": "iso",
+                    "libraryItemName": "RHEL 10.2 Binary DVD",
+                },
+            },
+        ],
+        "edges": [
+            {
+                "id": "e-dvd",
+                "source": "dvd",
+                "target": "bastion",
+                "targetHandle": "dp-dp-cdrom0-left",
+            }
+        ],
+    }
+    bastion_iso = {
+        "id": "lib-iso-1",
+        "name": "RHEL 10.2 Binary DVD",
+        "size_bytes": 10 * 1024**3,
+    }
+    _attach_bastion_iso(topology, bastion_iso)
+    iso_nodes = [
+        n
+        for n in topology["nodes"]
+        if n.get("type") == "storageNode" and n.get("data", {}).get("format") == "iso"
+    ]
+    assert len(iso_nodes) == 1
+    assert iso_nodes[0]["data"]["name"] == "dvd"
+    # Must not append a second cdrom controller either.
+    bastion = next(n for n in topology["nodes"] if n["id"] == "bastion")
+    cdroms = [
+        dc
+        for dc in bastion["data"]["diskControllers"]
+        if str(dc.get("name", "")).startswith("cdrom")
+    ]
+    assert len(cdroms) == 1
+
+
+def test_attach_bastion_iso_adds_when_missing():
+    """OCP templates without a declared DVD still get the default bastion ISO."""
+    from app.services.ocp.agent_template import _attach_bastion_iso
+
+    topology = {
+        "nodes": [
+            {
+                "id": "bastion",
+                "type": "vmNode",
+                "position": {"x": 100, "y": 100},
+                "data": {
+                    "name": "bastion",
+                    "diskControllers": [
+                        {"id": "dp-disk0", "name": "disk0", "bus": "virtio"},
+                    ],
+                },
+            },
+        ],
+        "edges": [],
+    }
+    bastion_iso = {
+        "id": "lib-iso-1",
+        "name": "RHEL 10.2 Binary DVD",
+        "size_bytes": 10 * 1024**3,
+    }
+    _attach_bastion_iso(topology, bastion_iso)
+    iso_nodes = [
+        n
+        for n in topology["nodes"]
+        if n.get("type") == "storageNode" and n.get("data", {}).get("format") == "iso"
+    ]
+    assert len(iso_nodes) == 1
+    assert iso_nodes[0]["data"]["name"] == "rhel-dvd"

@@ -201,6 +201,52 @@ export interface DiskSpec {
   sizeGb: number;
   bus?: "virtio" | "sata" | "scsi";
   bootable?: boolean;
+  /** Extra disk mount path applied via MachineConfig (e.g. /var/lib/containers). */
+  ocpMount?: string;
+}
+
+/** Coerce template snake_case disk keys into the canvas DiskSpec shape. */
+export function coerceDiskSpec(disk: Record<string, unknown> | DiskSpec): DiskSpec {
+  const d = disk as Record<string, unknown>;
+  const sizeRaw = d.sizeGb ?? d.size_gb ?? 50;
+  const sizeGb = typeof sizeRaw === "number" ? sizeRaw : Number(sizeRaw) || 50;
+  const out: DiskSpec = { sizeGb };
+  if (d.bus === "virtio" || d.bus === "sata" || d.bus === "scsi") {
+    out.bus = d.bus;
+  }
+  if (d.bootable) out.bootable = true;
+  const mount = d.ocpMount ?? d.ocp_mount;
+  if (typeof mount === "string" && mount) out.ocpMount = mount;
+  return out;
+}
+
+export function coerceDiskSpecs(
+  disks: Array<Record<string, unknown> | DiskSpec> | undefined,
+): DiskSpec[] | undefined {
+  if (!disks) return undefined;
+  return disks.map(coerceDiskSpec);
+}
+
+/** Normalize per-role disk lists on a cluster (snake_case → camelCase + legacy sync). */
+export function normalizeClusterDiskFields(cluster: ClusterConfig): ClusterConfig {
+  const controlPlaneDisks = coerceDiskSpecs(
+    cluster.controlPlaneDisks as DiskSpec[] | undefined,
+  );
+  const workerDisks = coerceDiskSpecs(cluster.workerDisks as DiskSpec[] | undefined);
+  const next: ClusterConfig = { ...cluster };
+  if (controlPlaneDisks) {
+    next.controlPlaneDisks = controlPlaneDisks;
+    if (controlPlaneDisks[0]?.sizeGb != null) {
+      next.controlPlaneDisk = controlPlaneDisks[0].sizeGb;
+    }
+  }
+  if (workerDisks) {
+    next.workerDisks = workerDisks;
+    if (workerDisks[0]?.sizeGb != null) {
+      next.workerDisk = workerDisks[0].sizeGb;
+    }
+  }
+  return next;
 }
 
 /**
@@ -2167,7 +2213,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
             externalIps: synced.externalIps,
             vniMap,
             showroom: parseShowroomFromTopology(t.showroom, nodes, lbEdges),
-            clusters: finalClusters,
+            clusters: finalClusters.map(normalizeClusterDiskFields),
             clusterOcpPhases,
             deployedClusterRows,
             deployedClusters: stableClusterKey(deployedClusterBaseline),
@@ -2212,7 +2258,7 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
   },
 
   setClusters: (clusters) => {
-    set({ clusters });
+    set({ clusters: clusters.map(normalizeClusterDiskFields) });
     set({ topologyDirty: computeTopologyDirty(get()) });
   },
 
@@ -2223,14 +2269,14 @@ export const useCanvasStore = create<CanvasState>()(persist((set, get) => ({
 
   addCluster: (cluster) => {
     get().pushHistory();
-    set({ clusters: [...get().clusters, cluster] });
+    set({ clusters: [...get().clusters, normalizeClusterDiskFields(cluster)] });
     set({ topologyDirty: computeTopologyDirty(get()) });
   },
 
   updateCluster: (id, patch) => {
     set({
       clusters: get().clusters.map((c) =>
-        c.id === id ? { ...c, ...patch } : c,
+        c.id === id ? normalizeClusterDiskFields({ ...c, ...patch }) : c,
       ),
     });
     set({ topologyDirty: computeTopologyDirty(get()) });
