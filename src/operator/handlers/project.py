@@ -2657,6 +2657,17 @@ async def project_create(spec, meta, namespace, name, body, patch, **_):
     action = spec.get("action", "deploy")
     logger.info(f"TroshkaProject {name} created with action={action}")
 
+    try:
+        from helpers.namespaced_rbac import ensure_troshka_namespaced_rbac
+
+        ensure_troshka_namespaced_rbac(namespace)
+    except Exception:
+        logger.warning(
+            "Failed to ensure namespaced RBAC in %s (continuing)",
+            namespace,
+            exc_info=True,
+        )
+
     if action == "capture":
         capture_config = {
             "patternId": spec.get("patternId", name),

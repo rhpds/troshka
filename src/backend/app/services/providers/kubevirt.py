@@ -935,9 +935,89 @@ def _verify_cluster_rbac(rbac_api, kind: str, name: str) -> None:
 
 
 def _load_provider_rbac_docs() -> list[dict]:
-    """Parse infra/ocpvirt-rbac.yaml (provider SA + troshka-provider ClusterRole)."""
+    """Parse infra/ocpvirt-rbac.yaml (provider SA + ClusterRoles)."""
     with open(PROVIDER_RBAC_PATH) as f:
         return [yaml.safe_load(doc) for doc in f.read().split("\n---\n") if doc.strip()]
+
+
+PROVIDER_NAMESPACED_ROLE = "troshka-provider-namespaced"
+OPERATOR_NAMESPACED_ROLE = "troshka-operator-namespaced"
+_PROVIDER_NS_BINDING = "troshka-provider-namespaced"
+_OPERATOR_NS_BINDING = "troshka-operator-namespaced"
+
+
+def _rolebinding_body(
+    *,
+    binding_name: str,
+    namespace: str,
+    cluster_role: str,
+    sa_name: str,
+    sa_namespace: str,
+) -> dict:
+    return {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "RoleBinding",
+        "metadata": {"name": binding_name, "namespace": namespace},
+        "roleRef": {
+            "apiGroup": "rbac.authorization.k8s.io",
+            "kind": "ClusterRole",
+            "name": cluster_role,
+        },
+        "subjects": [
+            {
+                "kind": "ServiceAccount",
+                "name": sa_name,
+                "namespace": sa_namespace,
+            }
+        ],
+    }
+
+
+def _ensure_namespaced_rolebinding(
+    rbac_api,
+    namespace: str,
+    *,
+    binding_name: str,
+    cluster_role: str,
+    sa_name: str,
+    sa_namespace: str,
+) -> None:
+    """Idempotent RoleBinding granting a ClusterRole in one namespace."""
+    from kubernetes.client.exceptions import ApiException
+
+    body = _rolebinding_body(
+        binding_name=binding_name,
+        namespace=namespace,
+        cluster_role=cluster_role,
+        sa_name=sa_name,
+        sa_namespace=sa_namespace,
+    )
+    try:
+        rbac_api.create_namespaced_role_binding(namespace=namespace, body=body)
+    except ApiException as e:
+        if e.status != 409:
+            raise
+
+
+def ensure_troshka_namespaced_rbac(rbac_api, namespace: str) -> None:
+    """Grant provider + operator namespaced mutate ClusterRoles in ``namespace``."""
+    _ensure_namespaced_rolebinding(
+        rbac_api,
+        namespace,
+        binding_name=_PROVIDER_NS_BINDING,
+        cluster_role=PROVIDER_NAMESPACED_ROLE,
+        sa_name="troshka",
+        sa_namespace="troshka",
+    )
+    operator_ns = "troshka-operator"
+    _ensure_namespaced_rolebinding(
+        rbac_api,
+        namespace,
+        binding_name=_OPERATOR_NS_BINDING,
+        cluster_role=OPERATOR_NAMESPACED_ROLE,
+        sa_name="troshka-operator",
+        sa_namespace=operator_ns,
+    )
 
 
 def _ensure_provider_rbac(provider) -> None:
@@ -946,7 +1026,8 @@ def _ensure_provider_rbac(provider) -> None:
     Cluster-scoped RBAC (ClusterRole/ClusterRoleBinding) and SCCs are admin-owned
     bootstrap: the provider SA only verifies the ClusterRole/ClusterRoleBinding are
     present (it cannot legally write them). Namespaced resources it has rights to
-    (Namespace, ServiceAccount) are (re)applied.
+    (Namespace, ServiceAccount) are (re)applied. Per-NS RoleBindings for namespaced
+    mutate roles are ensured on system namespaces.
     """
     from kubernetes import client
 
@@ -964,6 +1045,16 @@ def _ensure_provider_rbac(provider) -> None:
             _verify_cluster_rbac(rbac_api, kind, name)
             continue
         _apply_manifest(kind, name, ns, doc, core_api, apps_api)
+
+    creds = provider.get_credentials()
+    operator_ns = creds.get("namespace", "troshka-operator")
+    for ns in ("troshka", CACHE_NAMESPACE, operator_ns):
+        try:
+            ensure_troshka_namespaced_rbac(rbac_api, ns)
+        except Exception:
+            logger.warning(
+                "Failed to ensure namespaced RBAC in %s (continuing)", ns, exc_info=True
+            )
 
 
 def _handle_create_conflict(kind, name, ns, body, apps_api):
@@ -1025,25 +1116,38 @@ def _deploy_operator(provider):
     for filename in manifest_order:
         path = os.path.join(deploy_dir, filename)
         with open(path) as f:
-            body = yaml.safe_load(f)
+            docs = list(yaml.safe_load_all(f))
 
-        kind = body["kind"]
-        name = body["metadata"]["name"]
-        ns = body["metadata"].get("namespace")
+        for body in docs:
+            if not body:
+                continue
+            kind = body["kind"]
+            name = body["metadata"]["name"]
+            ns = body["metadata"].get("namespace")
 
-        if ns:
-            body["metadata"]["namespace"] = operator_ns
-            ns = operator_ns
-        if kind == "Namespace":
-            body["metadata"]["name"] = operator_ns
-            name = operator_ns
-        # Cluster-scoped RBAC is admin-owned bootstrap — the provider SA can only
-        # verify it exists, never create/replace it (escalation prevention).
-        if kind in ("ClusterRole", "ClusterRoleBinding"):
-            _verify_cluster_rbac(rbac_api, kind, name)
-            continue
+            if ns:
+                body["metadata"]["namespace"] = operator_ns
+                ns = operator_ns
+            if kind == "Namespace":
+                body["metadata"]["name"] = operator_ns
+                name = operator_ns
+            # Cluster-scoped RBAC is admin-owned bootstrap — the provider SA can only
+            # verify it exists, never create/replace it (escalation prevention).
+            if kind in ("ClusterRole", "ClusterRoleBinding"):
+                _verify_cluster_rbac(rbac_api, kind, name)
+                continue
 
-        _apply_manifest(kind, name, ns, body, core_api, apps_api)
+            _apply_manifest(kind, name, ns, body, core_api, apps_api)
+
+    # Operator + provider namespaced mutate bindings in the operator NS.
+    try:
+        ensure_troshka_namespaced_rbac(rbac_api, operator_ns)
+    except Exception:
+        logger.warning(
+            "Failed to ensure namespaced RBAC in %s (continuing)",
+            operator_ns,
+            exc_info=True,
+        )
 
     logger.info("Operator deployed successfully")
 
@@ -1554,6 +1658,17 @@ def _ensure_project_namespace(core_api, namespace: str, project_id: str) -> None
             ensure_namespace_guid_label(core_api, namespace, labels["guid"])
         except Exception:
             pass
+
+    # Provider + operator namespaced mutate RoleBindings (idempotent).
+    try:
+        rbac_api = k8s_client.RbacAuthorizationV1Api(core_api.api_client)
+        ensure_troshka_namespaced_rbac(rbac_api, namespace)
+    except Exception:
+        logger.warning(
+            "Failed to ensure namespaced RBAC in %s (continuing)",
+            namespace,
+            exc_info=True,
+        )
 
 
 def _obc_s3_dict(cluster_s3: dict) -> dict:

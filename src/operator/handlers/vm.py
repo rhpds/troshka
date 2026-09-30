@@ -1076,6 +1076,16 @@ async def vm_create(spec, meta, namespace, name, body, patch, **_):
     # Ensure the provider SA can exec into this project's virt-launcher pods
     # (console/serial VM exec) — scoped SCC-use RoleBinding, idempotent.
     _ensure_provider_exec_rbac(namespace)
+    try:
+        from helpers.namespaced_rbac import ensure_troshka_namespaced_rbac
+
+        ensure_troshka_namespaced_rbac(namespace)
+    except Exception:
+        logger.warning(
+            "Failed to ensure namespaced RBAC in %s (continuing)",
+            namespace,
+            exc_info=True,
+        )
 
     s3_config = _get_s3_config_from_project(namespace)
     central_s3_config = _get_central_s3_config_from_project(namespace)

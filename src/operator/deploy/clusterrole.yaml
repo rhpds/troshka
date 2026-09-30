@@ -3,17 +3,108 @@ kind: ClusterRole
 metadata:
   name: troshka-operator
 rules:
+  # --- Cluster-scoped + cluster-wide READ (kopf --all-namespaces) ---
   - apiGroups: ["troshka.redhat.com"]
     resources: ["troshkaprojects", "troshkanetworks", "troshkavms", "troshkancephs"]
-    verbs: ["*"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["troshka.redhat.com"]
+    resources: ["troshkaprojects/status", "troshkanetworks/status", "troshkavms/status", "troshkancephs/status"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["ceph.rook.io"]
+    resources: ["cephclusters", "cephblockpools"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines", "virtualmachineinstances"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["kubevirt.io"]
+    resources: ["kubevirts"]
+    verbs: ["get", "list"]
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["k8s.cni.cncf.io"]
+    resources: ["network-attachment-definitions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["route.openshift.io"]
+    resources: ["routes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents"]
+    verbs: ["get", "list", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods", "services", "secrets", "configmaps", "persistentvolumeclaims", "serviceaccounts", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes", "persistentvolumes"]
+    verbs: ["get", "list"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["volumeattachments"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterrolebindings"]
+    verbs: ["create", "delete", "get", "patch"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    verbs: ["bind"]
+    resourceNames:
+      - system:openshift:scc:kubevirt-controller
+      - troshka-rook-system
+      - troshka-rook-cluster-mgmt
+      - troshka-rook-global
+      - troshka-rook-osd
+      - troshka-rook-mgr
+      - troshka-provider-namespaced
+      - troshka-operator-namespaced
+  - apiGroups: ["objectbucket.io"]
+    resources: ["objectbucketclaims"]
+    verbs: ["get", "create"]
+  - apiGroups: ["kopf.dev"]
+    resources: ["clusterkopfpeerings"]
+    verbs: ["create", "delete", "get", "list", "watch", "patch"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["security.openshift.io"]
+    resources: ["securitycontextconstraints"]
+    verbs: ["get", "patch"]
+    resourceNames: ["troshka-network-pods", "troshka-privileged-jobs", "troshka-gateway", "rook-ceph"]
+  - apiGroups: ["operator.openshift.io"]
+    resources: ["ingresscontrollers"]
+    verbs: ["get", "list"]
+  - apiGroups: ["config.openshift.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list"]
+---
+# Namespaced MUTATE for the operator SA — RoleBinding per troshka-* NS only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: troshka-operator-namespaced
+rules:
+  - apiGroups: ["troshka.redhat.com"]
+    resources: ["troshkaprojects", "troshkanetworks", "troshkavms", "troshkancephs"]
+    verbs: ["create", "delete", "get", "list", "watch", "patch", "update"]
   - apiGroups: ["troshka.redhat.com"]
     resources: ["troshkaprojects/status", "troshkanetworks/status", "troshkavms/status", "troshkancephs/status"]
     verbs: ["*"]
   - apiGroups: ["troshka.redhat.com"]
     resources: ["troshkaprojects/finalizers", "troshkanetworks/finalizers", "troshkavms/finalizers", "troshkancephs/finalizers"]
     verbs: ["update"]
-  # Rook — create Troshka per-project Ceph; mutate only our fixed CR names
-  # (never ODF CephCluster / CephBlockPool in openshift-storage).
   - apiGroups: ["ceph.rook.io"]
     resources: ["cephclusters", "cephblockpools"]
     verbs: ["create", "get", "list", "watch"]
@@ -25,7 +116,6 @@ rules:
     resources: ["cephblockpools"]
     resourceNames: ["troshka-ceph-pool"]
     verbs: ["get", "list", "watch", "update", "patch", "delete"]
-  # Status / finalizers subresources for the same Troshka CRs
   - apiGroups: ["ceph.rook.io"]
     resources: ["cephclusters/status", "cephclusters/finalizers"]
     resourceNames: ["troshka-ceph"]
@@ -37,10 +127,6 @@ rules:
   - apiGroups: ["kubevirt.io"]
     resources: ["virtualmachines", "virtualmachineinstances"]
     verbs: ["*"]
-  - apiGroups: ["kubevirt.io"]
-    resources: ["kubevirts"]
-    verbs: ["get", "list"]
-  # Freeze/thaw a running VMI's guest filesystems for consistent online pattern capture
   - apiGroups: ["subresources.kubevirt.io"]
     resources: ["virtualmachineinstances/freeze", "virtualmachineinstances/unfreeze"]
     verbs: ["update"]
@@ -53,29 +139,18 @@ rules:
   - apiGroups: ["route.openshift.io"]
     resources: ["routes"]
     verbs: ["*"]
-  # routes/custom-host — set an explicit spec.host on app-proxy routes
-  # (subresource is not covered by routes: ["*"])
   - apiGroups: ["route.openshift.io"]
     resources: ["routes/custom-host"]
     verbs: ["create", "update"]
   - apiGroups: ["snapshot.storage.k8s.io"]
     resources: ["volumesnapshots"]
     verbs: ["*"]
-  - apiGroups: ["snapshot.storage.k8s.io"]
-    resources: ["volumesnapshotcontents"]
-    verbs: ["get", "list", "patch", "delete"]
   - apiGroups: [""]
-    resources: ["namespaces", "pods", "services", "secrets", "configmaps", "persistentvolumeclaims", "serviceaccounts"]
+    resources: ["pods", "services", "secrets", "configmaps", "persistentvolumeclaims", "serviceaccounts"]
     verbs: ["*"]
   - apiGroups: [""]
     resources: ["pods/log", "pods/exec"]
     verbs: ["get", "create"]
-  - apiGroups: [""]
-    resources: ["nodes", "persistentvolumes"]
-    verbs: ["get", "list"]
-  - apiGroups: ["storage.k8s.io"]
-    resources: ["volumeattachments"]
-    verbs: ["get", "list", "delete"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["create", "delete", "get", "list", "patch"]
@@ -85,45 +160,9 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "rolebindings"]
     verbs: ["*"]
-  - apiGroups: ["rbac.authorization.k8s.io"]
-    resources: ["clusterrolebindings"]
-    verbs: ["create", "delete", "get", "patch"]
-  # Bind the kubevirt-controller SCC clusterrole to the provider SA per project
-  # (so console/serial VM exec into virt-launcher works). RBAC escalation-
-  # prevention requires 'bind' on the referenced clusterrole.
-  - apiGroups: ["rbac.authorization.k8s.io"]
-    resources: ["clusterroles"]
-    verbs: ["bind"]
-    resourceNames:
-      - system:openshift:scc:kubevirt-controller
-      - troshka-rook-system
-      - troshka-rook-cluster-mgmt
-      - troshka-rook-global
-      - troshka-rook-osd
-      - troshka-rook-mgr
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
-  # OBC for local pattern storage (Ceph RGW)
   - apiGroups: ["objectbucket.io"]
     resources: ["objectbucketclaims"]
     verbs: ["get", "create"]
-  # kopf operator framework — peering and CRD discovery
-  - apiGroups: ["kopf.dev"]
-    resources: ["clusterkopfpeerings"]
-    verbs: ["create", "delete", "get", "list", "watch", "patch"]
-  - apiGroups: ["apiextensions.k8s.io"]
-    resources: ["customresourcedefinitions"]
-    verbs: ["get", "list", "watch"]
-  # SCC management for network pods
-  - apiGroups: ["security.openshift.io"]
-    resources: ["securitycontextconstraints"]
-    verbs: ["get", "patch"]
-    resourceNames: ["troshka-network-pods", "troshka-privileged-jobs", "troshka-gateway", "rook-ceph"]
-  # IngressController — resolve apps domain for admin-selected controller
-  - apiGroups: ["operator.openshift.io"]
-    resources: ["ingresscontrollers"]
-    verbs: ["get", "list"]
-  - apiGroups: ["config.openshift.io"]
-    resources: ["ingresses"]
-    verbs: ["get", "list"]

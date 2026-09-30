@@ -98,6 +98,21 @@ PY
     oc apply -f src/operator/crds/ --kubeconfig="$kc" >/dev/null 2>&1 && crd_ok=true
     oc apply -f src/operator/deploy/clusterrole.yaml --kubeconfig="$kc" >/dev/null 2>&1 && operator_rbac_ok=true
     oc apply -f "$PROVIDER_RBAC" --kubeconfig="$kc" >/dev/null 2>&1 && provider_rbac_ok=true
+    # Per-NS RoleBindings for namespaced mutate ClusterRoles (provider + operator).
+    # Must run AFTER the ClusterRoles exist; covers existing project namespaces.
+    if [ "$provider_rbac_ok" = true ] && [ "$operator_rbac_ok" = true ]; then
+      while IFS= read -r ns; do
+        [ -z "$ns" ] && continue
+        oc create rolebinding troshka-provider-namespaced \
+          --clusterrole=troshka-provider-namespaced \
+          --serviceaccount=troshka:troshka \
+          -n "$ns" --kubeconfig="$kc" >/dev/null 2>&1 || true
+        oc create rolebinding troshka-operator-namespaced \
+          --clusterrole=troshka-operator-namespaced \
+          --serviceaccount=troshka-operator:troshka-operator \
+          -n "$ns" --kubeconfig="$kc" >/dev/null 2>&1 || true
+      done < <(oc get ns -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' --kubeconfig="$kc" | grep -E '^troshka')
+    fi
     if [ "$crd_ok" = true ] && [ "$operator_rbac_ok" = true ] && [ "$provider_rbac_ok" = true ]; then
       echo "CRDs + operator/provider RBAC applied"
     else
