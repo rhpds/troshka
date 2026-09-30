@@ -940,6 +940,48 @@ def _reconcile_orphan_pvs(
         )
 
 
+def _reconcile_orphan_troshka_services(
+    provider, host_id, report, *, dry_run: bool
+) -> None:
+    """Reap Services whose troshka-* Namespace is already gone (OVN crash guard)."""
+    try:
+        from app.services.providers.kubevirt import (
+            _get_k8s_clients,
+            gc_orphan_troshka_namespaced_services,
+            list_orphan_troshka_namespaced_services,
+        )
+
+        _, core_api, _ = _get_k8s_clients(provider)
+        if dry_run:
+            names = [
+                f"{ns}/{name}"
+                for ns, name in list_orphan_troshka_namespaced_services(core_api)
+            ]
+            report["kubevirt_orphan_services"] = names
+            if names:
+                log.warning(
+                    "Host %s GC: %d orphan Troshka Service(s) (dry-run): %s",
+                    host_id[:8],
+                    len(names),
+                    names[:10],
+                )
+            return
+        removed = gc_orphan_troshka_namespaced_services(core_api)
+        report["kubevirt_orphan_services_deleted"] = removed
+        if removed:
+            log.warning(
+                "Host %s GC: deleted %d orphan Troshka Service(s)",
+                host_id[:8],
+                removed,
+            )
+    except Exception:
+        log.warning(
+            "Host %s GC: orphan Service scan failed (non-fatal)",
+            host_id[:8],
+            exc_info=True,
+        )
+
+
 def _reconcile_kubevirt_cluster(
     db, host, host_id, report, *, dry_run: bool = True, reclaim_rbd: bool = False
 ) -> None:
@@ -966,6 +1008,7 @@ def _reconcile_kubevirt_cluster(
     _reconcile_orphan_pvs(
         db, provider, host_id, report, dry_run=dry_run, reclaim_rbd=reclaim_rbd
     )
+    _reconcile_orphan_troshka_services(provider, host_id, report, dry_run=dry_run)
 
 
 def _reconcile_shared_cache_entries(db, host, host_id, report):

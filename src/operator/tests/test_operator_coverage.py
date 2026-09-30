@@ -801,13 +801,69 @@ class TestProjectDelete:
     ):
         project_delete = self._get_project_delete_fn()
 
+        empty = MagicMock()
+        empty.items = []
+        mock_client.AppsV1Api.return_value.list_namespaced_deployment.return_value = (
+            empty
+        )
+        mock_client.CoreV1Api.return_value.list_namespaced_service.return_value = empty
+        mock_client.CoreV1Api.return_value.list_namespaced_pod.return_value = empty
+        mock_client.CoreV1Api.return_value.list_namespaced_persistent_volume_claim.return_value = (
+            empty
+        )
+
         asyncio.run(project_delete(namespace="troshka-abc", name="abc"))
         mock_abort.assert_called_once()
-        # _delete_custom_resources 6 times:
-        # VMIs, VMs, DVs, NADs, Routes, TroshkaCeph
-        assert mock_del.call_count == 6
-        # Should call _remove_sa_from_sccs 3 times
+        # VMI, VM, DV, TroshkaVM, TroshkaNetwork, NAD, Routes, TroshkaCeph
+        assert mock_del.call_count == 8
         assert mock_scc.call_count == 3
+        plurals = [c.args[3] for c in mock_del.call_args_list]
+        assert "troshkavms" in plurals
+        assert "troshkanetworks" in plurals
+        # Deployments/pods drained before NAD (Multus/OVN safety)
+        nad_idx = plurals.index("network-attachment-definitions")
+        assert plurals.index("troshkavms") < nad_idx
+        assert plurals.index("troshkanetworks") < nad_idx
+        mock_client.AppsV1Api.return_value.list_namespaced_deployment.assert_called()
+        mock_client.CoreV1Api.return_value.list_namespaced_service.assert_called()
+        mock_client.CoreV1Api.return_value.list_namespaced_pod.assert_called()
+
+    @patch("handlers.project.time.sleep")
+    @patch("handlers.project.client")
+    def test_wait_services_gone_holds_finalizer(self, mock_client, _sleep):
+        from handlers.project import _wait_namespaced_services_gone
+        import kopf
+
+        lingering = MagicMock()
+        lingering.items = [MagicMock()]
+        mock_client.CoreV1Api.return_value.list_namespaced_service.return_value = (
+            lingering
+        )
+
+        # conftest mocks kopf — TemporaryError is a MagicMock, not a real Exception
+        try:
+            _wait_namespaced_services_gone("troshka-abc", attempts=2)
+        except Exception:
+            pass
+        kopf.TemporaryError.assert_called()
+        assert "holding TroshkaProject finalizer" in str(kopf.TemporaryError.call_args)
+
+    @patch("handlers.project.time.sleep")
+    @patch("handlers.project.client")
+    def test_wait_pods_gone_holds_finalizer_before_nad(self, mock_client, _sleep):
+        from handlers.project import _wait_namespaced_pods_gone
+        import kopf
+
+        lingering = MagicMock()
+        lingering.items = [MagicMock()]
+        mock_client.CoreV1Api.return_value.list_namespaced_pod.return_value = lingering
+
+        try:
+            _wait_namespaced_pods_gone("troshka-abc", attempts=2)
+        except Exception:
+            pass
+        kopf.TemporaryError.assert_called()
+        assert "before NAD delete" in str(kopf.TemporaryError.call_args)
 
 
 # ---------------------------------------------------------------------------

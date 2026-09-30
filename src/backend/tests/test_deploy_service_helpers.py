@@ -4322,6 +4322,21 @@ class TestDestroyCleanupRouteAccess:
         _destroy_cleanup_route_access(host, "proj-123", session)
         mock_driver.delete_route_access.assert_called_once_with(provider, "proj-123")
 
+    @patch("app.services.providers.get_provider_driver")
+    def test_kubevirt_cleanup(self, mock_get_driver):
+        from app.services.deploy_service import _destroy_cleanup_route_access
+
+        mock_driver = MagicMock()
+        mock_get_driver.return_value = mock_driver
+        host = MagicMock()
+        host.provider_id = "prov-1"
+        session = MagicMock()
+        provider = MagicMock()
+        provider.type = "kubevirt"
+        session.query.return_value.filter_by.return_value.first.return_value = provider
+        _destroy_cleanup_route_access(host, "proj-123", session)
+        mock_driver.delete_route_access.assert_called_once_with(provider, "proj-123")
+
     def test_non_ocpvirt_skipped(self):
         from app.services.deploy_service import _destroy_cleanup_route_access
 

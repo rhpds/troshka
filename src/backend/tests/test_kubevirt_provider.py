@@ -116,12 +116,84 @@ def test_destroy_project_deletes_cr_and_namespace():
         empty_list.items = []
         mock_core.list_namespaced_pod.return_value = empty_list
         mock_core.list_namespaced_persistent_volume_claim.return_value = empty_list
+        mock_core.list_namespaced_service.return_value = empty_list
+        mock_custom.get_namespaced_custom_object.side_effect = Exception("NotFound")
         mock_clients.return_value = (mock_custom, mock_core, MagicMock())
 
         driver.destroy_project(provider, "12345678-1234-1234-1234-123456789abc")
 
     mock_custom.delete_namespaced_custom_object.assert_called_once()
     mock_core.delete_namespace.assert_called_once_with(name="troshka-12345678")
+
+
+def test_destroy_project_refuses_namespace_delete_while_cr_lingers():
+    """Never delete Namespace while TroshkaProject finalizer is still running.
+
+    Deleting the NS early left orphan Services (vnc-proxy-project-*) that crash
+    OVN on node restart: gateway sync fails with namespace not found.
+    """
+    provider = _make_provider()
+    driver = get_provider_driver(provider)
+
+    with (
+        patch("app.services.providers.kubevirt._get_k8s_clients") as mock_clients,
+        patch("app.services.providers.kubevirt.time.sleep"),
+        patch(
+            "app.services.providers.kubevirt._PROJECT_CR_GONE_ATTEMPTS",
+            3,
+        ),
+    ):
+        mock_custom = MagicMock()
+        mock_core = MagicMock()
+        mock_custom.list_namespaced_custom_object.return_value = {"items": []}
+        empty_list = MagicMock()
+        empty_list.items = []
+        mock_core.list_namespaced_pod.return_value = empty_list
+        mock_core.list_namespaced_persistent_volume_claim.return_value = empty_list
+        # CR keeps existing for the whole wait window
+        mock_custom.get_namespaced_custom_object.return_value = {
+            "metadata": {"name": "project-12345678"}
+        }
+        mock_clients.return_value = (mock_custom, mock_core, MagicMock())
+
+        try:
+            driver.destroy_project(provider, "12345678-1234-1234-1234-123456789abc")
+            raised = False
+        except RuntimeError as e:
+            raised = True
+            assert (
+                "refusing to delete namespace" in str(e).lower()
+                or "still present" in str(e).lower()
+            )
+
+        assert raised
+        mock_core.delete_namespace.assert_not_called()
+
+
+def test_gc_orphan_troshka_services_deletes_svc_when_namespace_missing():
+    """Services whose Namespace is gone break OVN; GC must reap them."""
+    from app.services.providers.kubevirt import gc_orphan_troshka_namespaced_services
+
+    core = MagicMock()
+    svc = MagicMock()
+    svc.metadata.name = "vnc-proxy-project-5e459cd6"
+    svc.metadata.namespace = "troshka-5e459cd6"
+    svc.metadata.labels = {"app": "troshka"}
+    listed = MagicMock()
+    listed.items = [svc]
+    core.list_service_for_all_namespaces.return_value = listed
+
+    from kubernetes.client.exceptions import ApiException
+
+    core.read_namespace.side_effect = ApiException(status=404)
+
+    removed = gc_orphan_troshka_namespaced_services(core)
+    assert removed == 1
+    core.delete_namespaced_service.assert_called_once_with(
+        name="vnc-proxy-project-5e459cd6",
+        namespace="troshka-5e459cd6",
+        grace_period_seconds=0,
+    )
 
 
 def test_setup_console_returns_config():

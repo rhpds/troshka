@@ -1163,7 +1163,9 @@ def _delete_all_volume_snapshots(custom_api, namespace, snaps: dict) -> None:
             _strip_and_delete_volume_snapshot(custom_api, namespace, snap_name)
 
 
-def _delete_snapshot_contents_for_namespace(custom_api, namespace, contents: dict) -> None:
+def _delete_snapshot_contents_for_namespace(
+    custom_api, namespace, contents: dict
+) -> None:
     for item in contents.get("items", []):
         meta = item.get("metadata") or {}
         ref = (item.get("spec") or {}).get("volumeSnapshotRef") or {}
@@ -3798,6 +3800,136 @@ def _delete_custom_resources(
         logger.warning(f"Failed to list {resource_label}s in {namespace}: {e}")
 
 
+def _delete_namespaced_deployments(namespace: str) -> None:
+    """Delete all Deployments in the project namespace (vnc-proxy, gateway, …)."""
+    apps_api = client.AppsV1Api()
+    try:
+        deps = apps_api.list_namespaced_deployment(namespace=namespace)
+    except Exception as e:
+        logger.warning(f"Failed to list Deployments in {namespace}: {e}")
+        return
+    for dep in getattr(deps, "items", None) or []:
+        name = getattr(getattr(dep, "metadata", None), "name", "") or ""
+        if not name:
+            continue
+        try:
+            apps_api.delete_namespaced_deployment(
+                name=name, namespace=namespace, grace_period_seconds=0
+            )
+            logger.info(f"Deleted Deployment {name}")
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning(f"Failed to delete Deployment {name}: {e}")
+
+
+def _force_delete_namespaced_pods(namespace: str) -> None:
+    """Force-delete pods so Multus CNI DEL runs while NADs still exist."""
+    core_api = client.CoreV1Api()
+    try:
+        pods = core_api.list_namespaced_pod(namespace=namespace)
+    except Exception as e:
+        logger.warning(f"Failed to list pods in {namespace}: {e}")
+        return
+    for pod in getattr(pods, "items", None) or []:
+        name = getattr(getattr(pod, "metadata", None), "name", "") or ""
+        if not name:
+            continue
+        try:
+            core_api.delete_namespaced_pod(
+                name=name, namespace=namespace, grace_period_seconds=0
+            )
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning(f"Failed to force-delete pod {name}: {e}")
+
+
+def _wait_namespaced_pods_gone(namespace: str, attempts: int = 30) -> None:
+    """Block NAD teardown until Multus-attached pods are gone."""
+    core_api = client.CoreV1Api()
+    for _ in range(attempts):
+        try:
+            pods = core_api.list_namespaced_pod(namespace=namespace)
+            if not getattr(pods, "items", None):
+                return
+        except ApiException as e:
+            if e.status == 404:
+                return
+        except Exception:
+            return
+        time.sleep(2)
+    raise kopf.TemporaryError(
+        f"Pods still present in {namespace}; holding finalizer before NAD delete",
+        delay=15,
+    )
+
+
+def _delete_namespaced_services(namespace: str) -> None:
+    """Delete all Services before Namespace teardown (OVN orphan guard)."""
+    core_api = client.CoreV1Api()
+    try:
+        svcs = core_api.list_namespaced_service(namespace=namespace)
+    except Exception as e:
+        logger.warning(f"Failed to list Services in {namespace}: {e}")
+        return
+    for svc in getattr(svcs, "items", None) or []:
+        name = getattr(getattr(svc, "metadata", None), "name", "") or ""
+        if not name:
+            continue
+        try:
+            core_api.delete_namespaced_service(
+                name=name, namespace=namespace, grace_period_seconds=0
+            )
+            logger.info(f"Deleted Service {name}")
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning(f"Failed to delete Service {name}: {e}")
+
+
+def _delete_namespaced_pvcs(namespace: str) -> None:
+    core_api = client.CoreV1Api()
+    try:
+        pvcs = core_api.list_namespaced_persistent_volume_claim(namespace=namespace)
+    except Exception as e:
+        logger.warning(f"Failed to list PVCs in {namespace}: {e}")
+        return
+    for pvc in getattr(pvcs, "items", None) or []:
+        name = getattr(getattr(pvc, "metadata", None), "name", "") or ""
+        if not name:
+            continue
+        try:
+            core_api.delete_namespaced_persistent_volume_claim(
+                name=name, namespace=namespace
+            )
+            logger.info(f"Deleted PVC {name}")
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning(f"Failed to delete PVC {name}: {e}")
+
+
+def _wait_namespaced_services_gone(namespace: str, attempts: int = 30) -> None:
+    """Block TroshkaProject finalizer until no Services remain.
+
+    Clearing the finalizer while Services linger lets Namespace deletion race
+    ahead and orphan them — OVN then crashloops on ``namespace not found``.
+    """
+    core_api = client.CoreV1Api()
+    for _ in range(attempts):
+        try:
+            svcs = core_api.list_namespaced_service(namespace=namespace)
+            if not getattr(svcs, "items", None):
+                return
+        except ApiException as e:
+            if e.status == 404:
+                return
+        except Exception:
+            return
+        time.sleep(2)
+    raise kopf.TemporaryError(
+        f"Services still present in {namespace}; holding TroshkaProject finalizer",
+        delay=15,
+    )
+
+
 def _remove_sa_from_sccs(custom_api, namespace, sa_name, scc_names):
     """Remove a service account reference from the specified SCCs."""
     sa_ref = f"system:serviceaccount:{namespace}:{sa_name}"
@@ -3866,6 +3998,31 @@ async def project_delete(namespace, name, **_):
         namespace,
         "DataVolume",
     )
+    # Child TroshkaVM first (disk/PVC reclaim) — TroshkaNetwork later, after
+    # Multus pods are drained, so network_delete does not remove NADs early.
+    _delete_custom_resources(
+        custom_api,
+        CRD_GROUP,
+        CRD_VERSION,
+        "troshkavms",
+        namespace,
+        "TroshkaVM",
+    )
+
+    # Drain Multus-attached workloads BEFORE deleting NADs — CNI DEL against a
+    # missing OVN secondary NAD is a known OVN-K failure mode.
+    _delete_namespaced_deployments(namespace)
+    _force_delete_namespaced_pods(namespace)
+    _wait_namespaced_pods_gone(namespace)
+
+    _delete_custom_resources(
+        custom_api,
+        CRD_GROUP,
+        CRD_VERSION,
+        "troshkanetworks",
+        namespace,
+        "TroshkaNetwork",
+    )
     _delete_custom_resources(
         custom_api,
         "k8s.cni.cncf.io",
@@ -3890,6 +4047,10 @@ async def project_delete(namespace, name, **_):
         namespace,
         "TroshkaCeph",
     )
+
+    _delete_namespaced_services(namespace)
+    _delete_namespaced_pvcs(namespace)
+    _wait_namespaced_services_gone(namespace)
 
     _remove_sa_from_sccs(
         custom_api,

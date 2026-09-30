@@ -250,20 +250,8 @@ async def network_delete(spec, meta, namespace, name, **_):
         namespace,
     )
 
-    nad_name = f"{name}-nad"
-    try:
-        custom_api.delete_namespaced_custom_object(
-            group="k8s.cni.cncf.io",
-            version="v1",
-            namespace=namespace,
-            plural="network-attachment-definitions",
-            name=nad_name,
-        )
-        logger.info(f"Deleted NAD {nad_name}")
-    except client.ApiException as e:
-        if e.status != 404:
-            logger.warning(f"Failed to delete NAD {nad_name}: {e}")
-
+    # Delete Multus-attached Deployments before the NAD — CNI DEL against a
+    # missing OVN secondary network is a known OVN-K failure mode.
     for dep_name in [f"dnsmasq-{name}", f"gateway-{namespace}"]:
         try:
             apps_api.delete_namespaced_deployment(name=dep_name, namespace=namespace)
@@ -278,3 +266,17 @@ async def network_delete(spec, meta, namespace, name, **_):
         except client.ApiException as e:
             if e.status != 404:
                 logger.warning(f"Failed to delete configmap {resource_name}: {e}")
+
+    nad_name = f"{name}-nad"
+    try:
+        custom_api.delete_namespaced_custom_object(
+            group="k8s.cni.cncf.io",
+            version="v1",
+            namespace=namespace,
+            plural="network-attachment-definitions",
+            name=nad_name,
+        )
+        logger.info(f"Deleted NAD {nad_name}")
+    except client.ApiException as e:
+        if e.status != 404:
+            logger.warning(f"Failed to delete NAD {nad_name}: {e}")

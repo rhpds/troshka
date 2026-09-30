@@ -23,6 +23,13 @@ _SNAPSHOT_API_GROUP = "snapshot.storage.k8s.io"
 # Pattern capture / file-pull temp PVCs. Mid-destroy without reclaiming these
 # leaves TiB on the shared Ceph pool (export-/scratch- clones + snapshots).
 _CAPTURE_TEMP_PVC_PREFIXES = ("export-", "scratch-", "ceph-export-", "filepull-")
+# destroy_project: wait for TroshkaProject finalizer before Namespace delete.
+# 90 * 2s = 3 min — long enough for VMI/DV/Route cleanup; never delete NS early.
+_PROJECT_CR_GONE_ATTEMPTS = 90
+_PROJECT_CR_GONE_SLEEP_S = 2
+_NS_SERVICES_GONE_ATTEMPTS = 30
+_NS_SERVICES_GONE_SLEEP_S = 2
+_TROSHKA_NS_PREFIX = "troshka-"
 
 
 def patch_kubevirt_run_strategy(custom_api, namespace, kv_name, strategy: str):
@@ -419,6 +426,117 @@ def list_orphan_troshka_pvs(core_api, known_prefixes: set[str]) -> list[dict]:
             continue
         orphans.append(_orphan_pv_entry(pv, phase, claim, claim_ns))
     return orphans
+
+
+def _project_cr_still_present(custom_api, namespace: str, cr_name: str) -> bool:
+    """True when TroshkaProject CR is still readable (finalizer may be running)."""
+    try:
+        custom_api.get_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural="troshkaprojects",
+            name=cr_name,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _wait_for_project_cr_gone(custom_api, namespace: str, cr_name: str) -> bool:
+    """Poll until TroshkaProject is gone. Returns False on timeout."""
+    for _ in range(_PROJECT_CR_GONE_ATTEMPTS):
+        if not _project_cr_still_present(custom_api, namespace, cr_name):
+            return True
+        time.sleep(_PROJECT_CR_GONE_SLEEP_S)
+    return not _project_cr_still_present(custom_api, namespace, cr_name)
+
+
+def _list_ns_service_names(core_api, namespace: str) -> list[str]:
+    try:
+        listed = core_api.list_namespaced_service(namespace=namespace)
+    except Exception:
+        return []
+    names = []
+    for svc in getattr(listed, "items", None) or []:
+        name = getattr(getattr(svc, "metadata", None), "name", "") or ""
+        if name:
+            names.append(name)
+    return names
+
+
+def _delete_namespaced_services(core_api, namespace: str) -> None:
+    for name in _list_ns_service_names(core_api, namespace):
+        try:
+            core_api.delete_namespaced_service(
+                name=name, namespace=namespace, grace_period_seconds=0
+            )
+        except Exception:
+            logger.warning(
+                "Failed to delete Service %s/%s during destroy", namespace, name
+            )
+
+
+def _wait_for_ns_services_gone(core_api, namespace: str) -> bool:
+    for _ in range(_NS_SERVICES_GONE_ATTEMPTS):
+        if not _list_ns_service_names(core_api, namespace):
+            return True
+        time.sleep(_NS_SERVICES_GONE_SLEEP_S)
+    return not _list_ns_service_names(core_api, namespace)
+
+
+def list_orphan_troshka_namespaced_services(core_api) -> list[tuple[str, str]]:
+    """Return ``(namespace, name)`` for Services in missing troshka-* namespaces."""
+    from kubernetes.client.exceptions import ApiException
+
+    try:
+        listed = core_api.list_service_for_all_namespaces()
+    except Exception as e:
+        logger.warning("List orphan Troshka Services failed: %s", e)
+        return []
+
+    orphans: list[tuple[str, str]] = []
+    ns_missing: dict[str, bool] = {}
+    for svc in getattr(listed, "items", None) or []:
+        meta = getattr(svc, "metadata", None)
+        if not meta:
+            continue
+        ns = getattr(meta, "namespace", "") or ""
+        name = getattr(meta, "name", "") or ""
+        if not ns.startswith(_TROSHKA_NS_PREFIX) or not name:
+            continue
+        if ns not in ns_missing:
+            try:
+                core_api.read_namespace(name=ns)
+                ns_missing[ns] = False
+            except ApiException as e:
+                ns_missing[ns] = e.status == 404
+            except Exception:
+                ns_missing[ns] = False
+        if ns_missing[ns]:
+            orphans.append((ns, name))
+    return orphans
+
+
+def gc_orphan_troshka_namespaced_services(core_api) -> int:
+    """Delete Troshka Services whose Namespace object is already gone.
+
+    Orphan Services (NS NotFound, Service still in etcd) crash OVN node gateway
+    init on reboot: ``failed to get namespace "troshka-…"``.
+    """
+    removed = 0
+    for ns, name in list_orphan_troshka_namespaced_services(core_api):
+        try:
+            core_api.delete_namespaced_service(
+                name=name, namespace=ns, grace_period_seconds=0
+            )
+            removed += 1
+            logger.warning(
+                "GC: deleted orphan Service %s/%s (Namespace missing)", ns, name
+            )
+        except Exception as e:
+            logger.warning("GC: failed to delete orphan Service %s/%s: %s", ns, name, e)
+    return removed
 
 
 def _pv_capacity_storage(pv) -> str:
@@ -2400,7 +2518,9 @@ class KubeVirtDriver(ProviderDriver):
                 project_id[:8],
             )
 
-        # Delete TroshkaProject CR and wait for finalizers
+        # Delete TroshkaProject CR; wait until finalizer finishes. Never delete
+        # the Namespace while the CR still exists — that races past Services and
+        # can leave orphans that crash OVN (namespace not found on service sync).
         cr_name = f"project-{project_id[:8]}"
         try:
             custom_api.delete_namespaced_custom_object(
@@ -2413,18 +2533,19 @@ class KubeVirtDriver(ProviderDriver):
         except Exception:
             pass
 
-        for _ in range(30):
-            try:
-                custom_api.get_namespaced_custom_object(
-                    group=CRD_GROUP,
-                    version=CRD_VERSION,
-                    namespace=namespace,
-                    plural="troshkaprojects",
-                    name=cr_name,
-                )
-                time.sleep(2)
-            except Exception:
-                break
+        if not _wait_for_project_cr_gone(custom_api, namespace, cr_name):
+            raise RuntimeError(
+                f"TroshkaProject {cr_name} still present after cleanup wait; "
+                "refusing to delete namespace (would orphan Services / OVN risk)"
+            )
+
+        # Belt-and-suspenders: clear any leftover Services before NS delete.
+        _delete_namespaced_services(core_api, namespace)
+        if not _wait_for_ns_services_gone(core_api, namespace):
+            raise RuntimeError(
+                f"Services still present in {namespace} after CR gone; "
+                "refusing to delete namespace"
+            )
 
         try:
             core_api.delete_namespace(name=namespace)

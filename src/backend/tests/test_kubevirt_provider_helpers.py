@@ -670,6 +670,9 @@ class TestKubeVirtDriverDestroyProject:
 
         # get returns 404 (project CR already gone) to skip wait loop
         mock_custom.get_namespaced_custom_object.side_effect = Exception("NotFound")
+        empty_list = MagicMock()
+        empty_list.items = []
+        mock_core.list_namespaced_service.return_value = empty_list
 
         provider = MagicMock()
         driver = KubeVirtDriver()

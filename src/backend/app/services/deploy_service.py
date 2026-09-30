@@ -13731,7 +13731,7 @@ def _destroy_cleanup_sg_rules(host, project_id, session):
 
 
 def _destroy_cleanup_route_access(host, project_id, session):
-    """Clean up OCP Route-based external access (OCP Virt only)."""
+    """Clean up OCP Route-based external access (ocpvirt + kubevirt)."""
     try:
         from app.models.provider import Provider
         from app.services.providers import get_provider_driver
@@ -13739,7 +13739,9 @@ def _destroy_cleanup_route_access(host, project_id, session):
         if not host or not host.provider_id:
             return
         provider = session.query(Provider).filter_by(id=host.provider_id).first()
-        if not provider or provider.type != "ocpvirt":
+        # Route/showroom Services often lack ownerRefs — delete explicitly so
+        # they cannot outlive a stalled Namespace on either provider type.
+        if not provider or provider.type not in ("ocpvirt", "kubevirt"):
             return
         driver = get_provider_driver(provider)
         driver.delete_route_access(provider, project_id)
