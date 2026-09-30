@@ -2327,12 +2327,22 @@ from app.services.ocp.client_mirror import (
 
 
 def _openshift_install_log_awk_pipe() -> str:
-    """Pipe awk stage: timestamp lines, drop assisted-service poll noise."""
+    """Pipe awk stage: timestamp lines, drop assisted-service poll noise.
+
+    Also emits a one-shot breadcrumb after ``Writing image to disk: 100%`` —
+    the node then reboots into the written OS and ``wait-for`` can go quiet
+    for several minutes, which looks like a hang without this note.
+    """
     return (
         "awk '"
         "/v2GetClusterNotFound/ { next } "
         "/Unable to retrieve cluster metadata from Agent Rest API/ { next } "
         "/Agent Rest API never initialized\\. Bootstrap Kube API never initialized/ { next } "
+        "/Writing image to disk: 100%/ && !_disk_done++ { "
+        'print strftime("[%H:%M:%S]") " " $0; '
+        'print strftime("[%H:%M:%S]") " Disk image written; node will reboot into the installed OS. '
+        'Progress may pause for several minutes."; '
+        "fflush(); next } "
         '{ print strftime("[%H:%M:%S]") " " $0; fflush() }\''
     )
 

@@ -365,6 +365,19 @@ def test_redfish_eject_media_retries_and_is_set_e_safe():
     assert "BMC $BMC_IP not ready yet" in cmd
 
 
+def test_openshift_install_log_awk_notes_post_disk_write_pause():
+    """After Writing image to disk: 100% the node reboots; log goes quiet.
+
+    Emit a one-shot Troshka breadcrumb so operators don't treat the pause as a hang.
+    """
+    from app.services.ocp.agent_template import _openshift_install_log_awk_pipe
+
+    awk = _openshift_install_log_awk_pipe()
+    assert "Writing image to disk: 100%" in awk
+    assert "Disk image written" in awk
+    assert "reboot" in awk.lower()
+
+
 def test_build_install_script_golden():
     """Full-output snapshot of the bastion agent-based installer.
 
