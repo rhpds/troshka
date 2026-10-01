@@ -580,3 +580,81 @@ def test_deploy_project_enriches_topology_with_mtu():
             n for n in body["spec"]["topology"]["nodes"] if n["type"] == "networkNode"
         )
         assert net_node["data"]["mtu"] == 8950
+
+
+def test_namespace_missing_cached_paths():
+    """Cover _namespace_missing_cached cache / 404 / other errors."""
+    from kubernetes.client.exceptions import ApiException
+
+    from app.services.providers.kubevirt import _namespace_missing_cached
+
+    core = MagicMock()
+    cache = {}
+    core.read_namespace.side_effect = ApiException(status=404)
+    assert _namespace_missing_cached(core, "troshka-dead", cache) is True
+    assert cache["troshka-dead"] is True
+    # Cached hit — no second API call
+    core.read_namespace.reset_mock()
+    assert _namespace_missing_cached(core, "troshka-dead", cache) is True
+    core.read_namespace.assert_not_called()
+
+    core.read_namespace.side_effect = None
+    core.read_namespace.return_value = MagicMock()
+    assert _namespace_missing_cached(core, "troshka-live", cache) is False
+
+    core.read_namespace.side_effect = ApiException(status=500)
+    assert _namespace_missing_cached(core, "troshka-err", cache) is False
+
+    core.read_namespace.side_effect = RuntimeError("boom")
+    assert _namespace_missing_cached(core, "troshka-boom", cache) is False
+
+
+def test_apply_one_operator_manifest_paths():
+    """Cover _apply_one_operator_manifest verify vs apply branches."""
+    from app.services.providers.kubevirt import _apply_one_operator_manifest
+
+    rbac = MagicMock()
+    core = MagicMock()
+    apps = MagicMock()
+    with patch("app.services.providers.kubevirt._verify_cluster_rbac") as verify, patch(
+        "app.services.providers.kubevirt._apply_manifest"
+    ) as apply:
+        _apply_one_operator_manifest(None, "op-ns", rbac, core, apps)
+        verify.assert_not_called()
+        apply.assert_not_called()
+
+        _apply_one_operator_manifest(
+            {
+                "kind": "ClusterRole",
+                "metadata": {"name": "troshka-operator"},
+            },
+            "op-ns",
+            rbac,
+            core,
+            apps,
+        )
+        verify.assert_called_once()
+        apply.assert_not_called()
+
+        _apply_one_operator_manifest(
+            {
+                "kind": "Deployment",
+                "metadata": {"name": "op", "namespace": "old"},
+            },
+            "op-ns",
+            rbac,
+            core,
+            apps,
+        )
+        apply.assert_called_once()
+        body = apply.call_args[0][3]
+        assert body["metadata"]["namespace"] == "op-ns"
+
+        _apply_one_operator_manifest(
+            {"kind": "Namespace", "metadata": {"name": "x"}},
+            "op-ns",
+            rbac,
+            core,
+            apps,
+        )
+        assert apply.call_args[0][1] == "op-ns"

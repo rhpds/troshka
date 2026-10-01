@@ -1,5 +1,6 @@
 import sys
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 
@@ -664,3 +665,53 @@ def test_build_image_snapshot_includes_rollout_error(monkeypatch):
     snap = app_updater._build_image_snapshot()
     assert snap["rolling_out"] is True
     assert "Multus" in snap["rollout_error"]
+
+
+def test_list_rollout_deploy_pods_happy_and_empty_selector():
+    core = MagicMock()
+    apps = MagicMock()
+    dep = MagicMock()
+    dep.spec.selector.match_labels = {"app": "troshka-backend"}
+    apps.read_namespaced_deployment.return_value = dep
+    pod = MagicMock()
+    listed = MagicMock()
+    listed.items = [pod]
+    core.list_namespaced_pod.return_value = listed
+    out = app_updater._list_rollout_deploy_pods(core, apps, "ns", "troshka-backend")
+    assert out == [pod]
+
+    dep.spec.selector.match_labels = {}
+    assert (
+        app_updater._list_rollout_deploy_pods(core, apps, "ns", "troshka-backend")
+        is None
+    )
+
+
+def test_list_rollout_deploy_pods_list_failure():
+    core = MagicMock()
+    apps = MagicMock()
+    apps.read_namespaced_deployment.side_effect = RuntimeError("nope")
+    assert (
+        app_updater._list_rollout_deploy_pods(core, apps, "ns", "troshka-backend")
+        is None
+    )
+
+
+def test_heal_stuck_pods_for_deploy_heals_and_collects_errors(monkeypatch):
+    core = MagicMock()
+    apps = MagicMock()
+    stuck = _pod("troshka-backend-abc-xyz", age_s=120)
+    ok = _pod("troshka-backend-ok", age_s=120, phase="Running", running=True)
+    monkeypatch.setattr(
+        app_updater,
+        "_list_rollout_deploy_pods",
+        lambda *a, **k: [stuck, ok],
+    )
+    monkeypatch.setattr(
+        app_updater,
+        "_heal_one_stuck_rollout_pod",
+        lambda *a, **k: "exhausted",
+    )
+    errors = []
+    app_updater._heal_stuck_pods_for_deploy(core, apps, "ns", "troshka-backend", errors)
+    assert errors == ["exhausted"]
