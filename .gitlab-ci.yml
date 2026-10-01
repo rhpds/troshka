@@ -13,12 +13,12 @@ stages:
 .test-backend-shard:
   stage: test
   image: python:3.13
-  # Ask the K8s executor for more headroom when the runner honors these vars.
+  # Modest requests: 8×8Gi was starving the shared ALM node and still OOM'd.
+  # Prefer more shards with smaller peak RSS over one fat pod.
   variables:
-    KUBERNETES_MEMORY_REQUEST: "4Gi"
-    KUBERNETES_MEMORY_LIMIT: "8Gi"
-    COVERAGE_CORE: sysmon
-  parallel: 8
+    KUBERNETES_MEMORY_REQUEST: "2Gi"
+    KUBERNETES_MEMORY_LIMIT: "4Gi"
+  parallel: 16
   script:
     - cd src/backend
     - pip install --upgrade pip
@@ -44,8 +44,8 @@ stages:
           > "../../coverage-${CI_NODE_INDEX}.xml"
         exit 0
       fi
-      # One test file per coverage process — multi-file batches still OOM on ALM
-      # even under the line budget (cumulative cov tracer cost).
+      # One file per coverage process; disable pytest-cov plugin (coverage CLI only).
+      # ctrace: sysmon peaked higher on ALM and still OOM'd single files.
       rm -f .coverage .coverage.*
       fail=0
       batch_num=0
@@ -53,7 +53,8 @@ stages:
         batch_num=$((batch_num + 1))
         n=$(wc -l < "$f" | tr -d ' ')
         echo "  batch ${batch_num}: 1 file (~${n} lines) $f"
-        if ! coverage run --parallel-mode --source=app -m pytest "$f" -q --tb=line; then
+        if ! COVERAGE_CORE=ctrace coverage run --parallel-mode --source=app \
+            -m pytest "$f" -q --tb=line -p no:cov -p no:cacheprovider; then
           fail=1
         fi
       done
