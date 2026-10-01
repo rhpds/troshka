@@ -803,3 +803,47 @@ def test_heal_one_stuck_rollout_pod_delete_failure_returns_none(monkeypatch):
         app_updater, "_patch_rollout_deployment_heal", lambda *a, **k: None
     )
     assert app_updater._heal_one_stuck_rollout_pod(core, apps, "ns", pod) is None
+
+
+def test_heal_one_stuck_rollout_pod_via_replicaset(monkeypatch):
+    core = MagicMock()
+    apps = MagicMock()
+    pod = _pod(
+        "troshka-backend-abc-xyz",
+        age_s=120,
+        owners=[SimpleNamespace(controller=True, kind="ReplicaSet", name="rs-1")],
+    )
+    monkeypatch.setattr(
+        app_updater, "_deployment_name_for_rs", lambda *a, **k: "troshka-backend"
+    )
+    dep = MagicMock()
+    dep.metadata.annotations = {app_updater.ANN_ROLLOUT_ATTEMPTS: "3"}
+    apps.read_namespaced_deployment.return_value = dep
+    msg = app_updater._heal_one_stuck_rollout_pod(core, apps, "ns", pod)
+    assert msg and "reschedule attempts" in msg.lower()
+    core.delete_namespaced_pod.assert_not_called()
+
+
+def test_heal_one_stuck_rollout_pod_annotation_read_failure(monkeypatch):
+    core = MagicMock()
+    apps = MagicMock()
+    pod = _pod(
+        "troshka-backend-abc-xyz",
+        age_s=120,
+        owners=[
+            SimpleNamespace(controller=True, kind="Deployment", name="troshka-backend")
+        ],
+    )
+    apps.read_namespaced_deployment.side_effect = RuntimeError("403")
+    monkeypatch.setattr(
+        app_updater, "_patch_rollout_deployment_heal", lambda *a, **k: None
+    )
+    assert app_updater._heal_one_stuck_rollout_pod(core, apps, "ns", pod) is None
+    core.delete_namespaced_pod.assert_called_once()
+
+
+def test_heal_stuck_pods_for_deploy_noop_when_list_none(monkeypatch):
+    monkeypatch.setattr(app_updater, "_list_rollout_deploy_pods", lambda *a, **k: None)
+    errors = []
+    app_updater._heal_stuck_pods_for_deploy(MagicMock(), MagicMock(), "ns", "d", errors)
+    assert errors == []

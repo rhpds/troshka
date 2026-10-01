@@ -3242,6 +3242,59 @@ class TestPodNetHelpers(unittest.TestCase):
         troshkad._wire_pod_networks(job, "pod", 7, [], "aabbccdd-xxxx")
         self.assertEqual(job, {})
 
+    @patch("troshkad._attach_one_pod_bridge")
+    @patch("troshkad._ensure_pod_netns", return_value=("tok1", "ctr-tok1"))
+    def test_attach_pod_to_bridges_loops(self, mock_ns, mock_one):
+        nets = [{"bridge": "br0"}, {"bridge": "br1"}]
+        troshkad._attach_pod_to_bridges({}, "pod", 1, nets, "aabbccdd-xxxx")
+        self.assertEqual(mock_one.call_count, 2)
+        mock_ns.assert_called_once()
+
+    @patch("troshkad._attach_one_pod_bridge")
+    @patch("troshkad._ensure_pod_netns", return_value=("tok1", "ctr-tok1"))
+    def test_attach_pod_extra_bridges_offset(self, mock_ns, mock_one):
+        nets = [{"bridge": "br-bmc"}]
+        troshkad._attach_pod_extra_bridges(
+            {}, "pod", 1, nets, "aabbccdd-xxxx", start_idx=1
+        )
+        mock_one.assert_called_once()
+        self.assertEqual(mock_one.call_args[0][4], 1)
+
+    @patch("troshkad._configure_pod_interface_ip")
+    @patch("troshkad._setup_pod_veth_pair")
+    @patch("troshkad._validate_bridge_name", side_effect=lambda b: b)
+    def test_attach_one_pod_bridge_with_ip(self, mock_val, mock_veth, mock_ip):
+        net = {
+            "bridge": "br0",
+            "mac": "aa:bb:cc:dd:ee:ff",
+            "ip": "10.1.2.3",
+            "cidr": "24",
+        }
+        troshkad._attach_one_pod_bridge({}, "tok", "ns", "proj", 0, net)
+        mock_veth.assert_called_once()
+        mock_ip.assert_called_once()
+        self.assertEqual(mock_ip.call_args[1]["gateway"], "10.1.2.1")
+
+    @patch("troshkad._configure_pod_interface_ip")
+    @patch("troshkad._setup_pod_veth_pair")
+    @patch("troshkad._validate_bridge_name", side_effect=lambda b: b)
+    def test_attach_one_pod_bridge_without_ip(self, mock_val, mock_veth, mock_ip):
+        troshkad._attach_one_pod_bridge(
+            {}, "tok", "ns", "proj", 2, {"bridge": "br0"}
+        )
+        mock_veth.assert_called_once()
+        mock_ip.assert_not_called()
+
+    def test_gateway_from_ip_invalid_returns_empty(self):
+        self.assertEqual(troshkad._gateway_from_ip("not-an-ip"), "")
+
+    def test_write_pod_resolv_conf_writes_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("troshkad._TMP_DIR", tmp):
+                path = troshkad._write_pod_resolv_conf("mypod", "8.8.8.8")
+                with open(path) as f:
+                    self.assertEqual(f.read(), "nameserver 8.8.8.8\n")
+
 
 if __name__ == "__main__":
     unittest.main()
