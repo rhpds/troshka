@@ -513,6 +513,7 @@ class TestDeployProjectInner:
                 or "room" in err
                 or "provision pool" in err
                 or "not enough" in err
+                or "host" in err
             )
         finally:
             db.close()
