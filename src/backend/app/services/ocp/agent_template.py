@@ -32,6 +32,8 @@ _INGRESS_VIP_OFFSET = 3
 _DEFAULT_BASE_DOMAIN = "ocp.local"
 # Default Virtual BMC address on the lab BMC network.
 _DEFAULT_BASTION_BMC_IP = "192.168.100.50"  # NOSONAR — lab BMC default
+_CLOUD_INIT_INDENT_NL = "    \n"
+_CLOUD_INIT_BANNER = "    echo '================================================'\n"
 
 
 @dataclass
@@ -2696,13 +2698,13 @@ def _build_install_script(
                 "/home/cloud-user/openshift-install",
                 "/home/cloud-user/create-image.log",
             )
-            + "    \n"
+            + _CLOUD_INIT_INDENT_NL
             + "    echo 'Agent ISO created. Serving via HTTP and booting nodes...'\n"
             + _serve_iso_cmd("    ", "/home/cloud-user/ocp-install", 8080)
-            + "    \n"
+            + _CLOUD_INIT_INDENT_NL
             + _redfish_insert_media_cmd("    ", bmc_ips_str)
-            + "    \n"
-            + "    \n"
+            + _CLOUD_INIT_INDENT_NL
+            + _CLOUD_INIT_INDENT_NL
             + "    echo 'Waiting for cluster installation to complete...'\n"
             + _start_disk_write_eject_watch_cmd(
                 "    ",
@@ -2720,17 +2722,17 @@ def _build_install_script(
             + "    INSTALL_END=$(date +%s)\n"
             + "    ELAPSED=$(( INSTALL_END - INSTALL_START ))\n"
             + "    echo ''\n"
-            + "    echo '================================================'\n"
+            + _CLOUD_INIT_BANNER
             + "    if [ $OCP_EXIT -ne 0 ]; then\n"
             + '    echo "Install FAILED at $(date) (exit code $OCP_EXIT)"\n'
             + '    echo "Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec"\n'
-            + "    echo '================================================'\n"
+            + _CLOUD_INIT_BANNER
             + "    kill $HTTP_PID 2>/dev/null\n"
             + "    exit 1\n"
             + "    fi\n"
             + '    echo "Install completed at $(date)"\n'
             + '    echo "Total time: $(( ELAPSED / 60 )) min $(( ELAPSED % 60 )) sec"\n'
-            + "    echo '================================================'\n"
+            + _CLOUD_INIT_BANNER
             + "    # Eject agent ISO via Redfish virtual media\n"
             + "    echo 'Ejecting agent ISO from nodes...'\n"
             + _redfish_eject_media_cmd("    ", bmc_ips_str)

@@ -30,6 +30,7 @@ _PROJECT_CR_GONE_SLEEP_S = 2
 _NS_SERVICES_GONE_ATTEMPTS = 30
 _NS_SERVICES_GONE_SLEEP_S = 2
 _TROSHKA_NS_PREFIX = "troshka-"
+_NS_RBAC_CONTINUE_MSG = "Failed to ensure namespaced RBAC in %s (continuing)"
 
 
 def patch_kubevirt_run_strategy(custom_api, namespace, kv_name, strategy: str):
@@ -485,10 +486,24 @@ def _wait_for_ns_services_gone(core_api, namespace: str) -> bool:
     return not _list_ns_service_names(core_api, namespace)
 
 
-def list_orphan_troshka_namespaced_services(core_api) -> list[tuple[str, str]]:
-    """Return ``(namespace, name)`` for Services in missing troshka-* namespaces."""
+def _namespace_missing_cached(core_api, ns: str, cache: dict[str, bool]) -> bool:
+    """Return True if namespace is 404; cache results per ns."""
     from kubernetes.client.exceptions import ApiException
 
+    if ns in cache:
+        return cache[ns]
+    try:
+        core_api.read_namespace(name=ns)
+        cache[ns] = False
+    except ApiException as e:
+        cache[ns] = e.status == 404
+    except Exception:
+        cache[ns] = False
+    return cache[ns]
+
+
+def list_orphan_troshka_namespaced_services(core_api) -> list[tuple[str, str]]:
+    """Return ``(namespace, name)`` for Services in missing troshka-* namespaces."""
     try:
         listed = core_api.list_service_for_all_namespaces()
     except Exception as e:
@@ -505,15 +520,7 @@ def list_orphan_troshka_namespaced_services(core_api) -> list[tuple[str, str]]:
         name = getattr(meta, "name", "") or ""
         if not ns.startswith(_TROSHKA_NS_PREFIX) or not name:
             continue
-        if ns not in ns_missing:
-            try:
-                core_api.read_namespace(name=ns)
-                ns_missing[ns] = False
-            except ApiException as e:
-                ns_missing[ns] = e.status == 404
-            except Exception:
-                ns_missing[ns] = False
-        if ns_missing[ns]:
+        if _namespace_missing_cached(core_api, ns, ns_missing):
             orphans.append((ns, name))
     return orphans
 
@@ -1218,9 +1225,7 @@ def _ensure_provider_rbac(provider) -> None:
         try:
             ensure_troshka_namespaced_rbac(rbac_api, ns)
         except Exception:
-            logger.warning(
-                "Failed to ensure namespaced RBAC in %s (continuing)", ns, exc_info=True
-            )
+            logger.warning(_NS_RBAC_CONTINUE_MSG, ns, exc_info=True)
 
 
 def _handle_create_conflict(kind, name, ns, body, apps_api):
@@ -1251,6 +1256,29 @@ def _apply_manifest(kind, name, ns, body, core_api, apps_api):
             _handle_create_conflict(kind, name, ns, body, apps_api)
         else:
             raise
+
+
+def _apply_one_operator_manifest(body, operator_ns, rbac_api, core_api, apps_api):
+    """Apply or verify one operator deploy manifest document."""
+    if not body:
+        return
+    kind = body["kind"]
+    name = body["metadata"]["name"]
+    ns = body["metadata"].get("namespace")
+
+    if ns:
+        body["metadata"]["namespace"] = operator_ns
+        ns = operator_ns
+    if kind == "Namespace":
+        body["metadata"]["name"] = operator_ns
+        name = operator_ns
+    # Cluster-scoped RBAC is admin-owned bootstrap — the provider SA can only
+    # verify it exists, never create/replace it (escalation prevention).
+    if kind in ("ClusterRole", "ClusterRoleBinding"):
+        _verify_cluster_rbac(rbac_api, kind, name)
+        return
+
+    _apply_manifest(kind, name, ns, body, core_api, apps_api)
 
 
 def _deploy_operator(provider):
@@ -1285,35 +1313,15 @@ def _deploy_operator(provider):
             docs = list(yaml.safe_load_all(f))
 
         for body in docs:
-            if not body:
-                continue
-            kind = body["kind"]
-            name = body["metadata"]["name"]
-            ns = body["metadata"].get("namespace")
-
-            if ns:
-                body["metadata"]["namespace"] = operator_ns
-                ns = operator_ns
-            if kind == "Namespace":
-                body["metadata"]["name"] = operator_ns
-                name = operator_ns
-            # Cluster-scoped RBAC is admin-owned bootstrap — the provider SA can only
-            # verify it exists, never create/replace it (escalation prevention).
-            if kind in ("ClusterRole", "ClusterRoleBinding"):
-                _verify_cluster_rbac(rbac_api, kind, name)
-                continue
-
-            _apply_manifest(kind, name, ns, body, core_api, apps_api)
+            _apply_one_operator_manifest(
+                body, operator_ns, rbac_api, core_api, apps_api
+            )
 
     # Operator + provider namespaced mutate bindings in the operator NS.
     try:
         ensure_troshka_namespaced_rbac(rbac_api, operator_ns)
     except Exception:
-        logger.warning(
-            "Failed to ensure namespaced RBAC in %s (continuing)",
-            operator_ns,
-            exc_info=True,
-        )
+        logger.warning(_NS_RBAC_CONTINUE_MSG, operator_ns, exc_info=True)
 
     logger.info("Operator deployed successfully")
 
@@ -1830,11 +1838,7 @@ def _ensure_project_namespace(core_api, namespace: str, project_id: str) -> None
         rbac_api = k8s_client.RbacAuthorizationV1Api(core_api.api_client)
         ensure_troshka_namespaced_rbac(rbac_api, namespace)
     except Exception:
-        logger.warning(
-            "Failed to ensure namespaced RBAC in %s (continuing)",
-            namespace,
-            exc_info=True,
-        )
+        logger.warning(_NS_RBAC_CONTINUE_MSG, namespace, exc_info=True)
 
 
 def _obc_s3_dict(cluster_s3: dict) -> dict:

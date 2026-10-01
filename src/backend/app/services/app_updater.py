@@ -509,6 +509,49 @@ def _heal_one_stuck_rollout_pod(core_api, apps_api, namespace, pod) -> str | Non
     return None
 
 
+def _list_rollout_deploy_pods(core_api, apps_api, namespace: str, deploy_name: str):
+    """Return pods for a rollout Deployment, or None if listing fails."""
+    try:
+        dep = apps_api.read_namespaced_deployment(name=deploy_name, namespace=namespace)
+        selector = _selector_from_match_labels(
+            dep.spec.selector.match_labels  # type: ignore[union-attr]
+        )
+        if not selector:
+            return None
+        pods = core_api.list_namespaced_pod(
+            namespace=namespace, label_selector=selector
+        )
+        return pods.items or []  # type: ignore[union-attr]
+    except Exception:  # noqa: BLE001
+        logger.debug(
+            "app_updater: list pods for %s heal failed", deploy_name, exc_info=True
+        )
+        return None
+
+
+def _heal_stuck_pods_for_deploy(
+    core_api, apps_api, namespace: str, deploy_name: str, errors: list[str]
+) -> None:
+    """Heal Multus-stuck pods for one Deployment; append exhausted errors."""
+    pods = _list_rollout_deploy_pods(core_api, apps_api, namespace, deploy_name)
+    if pods is None:
+        return
+    for pod in pods:
+        if not _is_rollout_pod_stuck(pod):
+            continue
+        try:
+            err = _heal_one_stuck_rollout_pod(core_api, apps_api, namespace, pod)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "app_updater: heal %s failed: %s",
+                getattr(getattr(pod, "metadata", None), "name", "?"),
+                e,
+            )
+            continue
+        if err:
+            errors.append(err)
+
+
 def _heal_stuck_rollout_pods() -> str | None:
     """Detect Multus-stuck app pods and reschedule; return error if exhausted."""
     from kubernetes import client
@@ -525,33 +568,7 @@ def _heal_stuck_rollout_pods() -> str | None:
     ns = _get_own_namespace()
     errors: list[str] = []
     for deploy_name in _ROLLOUT_DEPLOYMENTS:
-        try:
-            dep = apps.read_namespaced_deployment(name=deploy_name, namespace=ns)
-            selector = _selector_from_match_labels(
-                dep.spec.selector.match_labels  # type: ignore[union-attr]
-            )
-            if not selector:
-                continue
-            pods = core.list_namespaced_pod(namespace=ns, label_selector=selector)
-        except Exception:  # noqa: BLE001
-            logger.debug(
-                "app_updater: list pods for %s heal failed", deploy_name, exc_info=True
-            )
-            continue
-        for pod in pods.items or []:  # type: ignore[union-attr]
-            if not _is_rollout_pod_stuck(pod):
-                continue
-            try:
-                err = _heal_one_stuck_rollout_pod(core, apps, ns, pod)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "app_updater: heal %s failed: %s",
-                    getattr(getattr(pod, "metadata", None), "name", "?"),
-                    e,
-                )
-                continue
-            if err:
-                errors.append(err)
+        _heal_stuck_pods_for_deploy(core, apps, ns, deploy_name, errors)
     return errors[0] if errors else None
 
 

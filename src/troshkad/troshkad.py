@@ -13089,7 +13089,7 @@ def _allow_infra_veth_forward(job, proj_ns, veth_host):
         )
 
 
-def _ensure_pod_netns(job, full_pod_name, infra_pid):
+def _ensure_pod_netns(full_pod_name, infra_pid):
     """Symlink the infra container netns under /var/run/netns; return names."""
     tok = _net_token(full_pod_name)
     netns_name = f"ctr-{tok}"
@@ -13106,7 +13106,7 @@ def _ensure_pod_netns(job, full_pod_name, infra_pid):
 
 def _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id):
     """Attach a pod's infra container to VXLAN bridges via veth pairs."""
-    tok, netns_name = _ensure_pod_netns(job, full_pod_name, infra_pid)
+    tok, netns_name = _ensure_pod_netns(full_pod_name, infra_pid)
     proj_ns = f"troshka-{project_id[:8]}"
     for idx, net in enumerate(networks):
         _attach_one_pod_bridge(
@@ -13123,7 +13123,7 @@ def _attach_pod_extra_bridges(
     :func:`_attach_pod_to_infra_transit`. ``start_idx`` is the first ethN
     index (BMC serving IP is typically eth1).
     """
-    tok, netns_name = _ensure_pod_netns(job, full_pod_name, infra_pid)
+    tok, netns_name = _ensure_pod_netns(full_pod_name, infra_pid)
     proj_ns = f"troshka-{project_id[:8]}"
     for offset, net in enumerate(networks):
         _attach_one_pod_bridge(
@@ -13276,6 +13276,45 @@ def _create_pod_containers(
         )
 
 
+def _start_pod_infra(job, full_pod_name: str) -> int:
+    """Return infra container PID, starting the infra container if needed."""
+    infra_name = f"{full_pod_name}-infra"
+    out = _run_cmd(job, ["podman", "inspect", "--format", _STATE_PID_FMT, infra_name])
+    infra_pid = int(out.strip())
+    if infra_pid == 0:
+        _run_cmd(job, ["podman", "start", infra_name])
+        out = _run_cmd(
+            job, ["podman", "inspect", "--format", _STATE_PID_FMT, infra_name]
+        )
+        infra_pid = int(out.strip())
+    return infra_pid
+
+
+def _wire_pod_networks(job, full_pod_name, infra_pid, networks, project_id) -> None:
+    """Attach pod networking (infra-transit and/or VXLAN bridges) and DNS."""
+    if not networks:
+        return
+    if networks[0].get("infra_transit"):
+        _attach_pod_to_infra_transit(
+            job, full_pod_name, infra_pid, networks[0], project_id
+        )
+        dns = networks[0].get("dns_nameserver") or networks[0].get("gateway")
+        if dns:
+            job["_pod_resolv_path"] = _write_pod_resolv_conf(full_pod_name, dns)
+        # Extra bridges (e.g. BMC) after eth0 infra-transit — sushy fetches
+        # the agent ISO from the BMC-net IP on eth1.
+        extras = [n for n in networks[1:] if n.get("bridge")]
+        if extras:
+            _attach_pod_extra_bridges(
+                job, full_pod_name, infra_pid, extras, project_id, start_idx=1
+            )
+        return
+    _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id)
+    gw = _pod_dns_nameserver(networks[0])
+    if gw:
+        job["_pod_resolv_path"] = _write_pod_resolv_conf(full_pod_name, gw)
+
+
 def _handle_pod_create(job, params):
     pod_name = params["pod_name"]
     project_id = params.get("project_id", "")
@@ -13305,37 +13344,8 @@ def _handle_pod_create(job, params):
     _run_cmd(job, cmd)
     _job_log(job, f"Pod created: {full_pod_name}")
 
-    infra_name = f"{full_pod_name}-infra"
-    out = _run_cmd(job, ["podman", "inspect", "--format", _STATE_PID_FMT, infra_name])
-    infra_pid = int(out.strip())
-
-    if infra_pid == 0:
-        _run_cmd(job, ["podman", "start", infra_name])
-        out = _run_cmd(
-            job, ["podman", "inspect", "--format", _STATE_PID_FMT, infra_name]
-        )
-        infra_pid = int(out.strip())
-
-    if networks:
-        if networks[0].get("infra_transit"):
-            _attach_pod_to_infra_transit(
-                job, full_pod_name, infra_pid, networks[0], project_id
-            )
-            dns = networks[0].get("dns_nameserver") or networks[0].get("gateway")
-            if dns:
-                job["_pod_resolv_path"] = _write_pod_resolv_conf(full_pod_name, dns)
-            # Extra bridges (e.g. BMC) after eth0 infra-transit — sushy fetches
-            # the agent ISO from the BMC-net IP on eth1.
-            extras = [n for n in networks[1:] if n.get("bridge")]
-            if extras:
-                _attach_pod_extra_bridges(
-                    job, full_pod_name, infra_pid, extras, project_id, start_idx=1
-                )
-        else:
-            _attach_pod_to_bridges(job, full_pod_name, infra_pid, networks, project_id)
-            gw = _pod_dns_nameserver(networks[0])
-            if gw:
-                job["_pod_resolv_path"] = _write_pod_resolv_conf(full_pod_name, gw)
+    infra_pid = _start_pod_infra(job, full_pod_name)
+    _wire_pod_networks(job, full_pod_name, infra_pid, networks, project_id)
 
     _create_pod_containers(
         job,
