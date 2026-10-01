@@ -26,17 +26,10 @@ stages:
     - |
       set -euo pipefail
       # Largest files first, then round-robin across shards.
-      # Known ALM OOM under full --source=app: handled by test-backend-heavy.
-      skip_files=(tests/test_kubevirt_coverage.py)
       files=()
       while IFS= read -r line; do
         f="${line##* }"
-        [ -n "$f" ] && [ -f "$f" ] || continue
-        skip=0
-        for s in "${skip_files[@]}"; do
-          [ "$f" = "$s" ] && skip=1 && break
-        done
-        [ "$skip" -eq 0 ] && files+=("$f")
+        [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
       done < <(find tests -name 'test_*.py' -print0 | xargs -0 wc -l | grep -v ' total$' | sort -nr)
       shard=()
       for i in "${!files[@]}"; do
@@ -87,49 +80,6 @@ stages:
 test-backend:
   extends: .test-backend-shard
 
-# Isolated job for files that balloon RSS even without coverage (~6GB local for
-# the full module). One test per subprocess so RSS is released between cases;
-# 8Gi headroom for import spikes. Sonar coverage for kubevirt comes from other
-# shard files.
-test-backend-heavy:
-  stage: test
-  image: python:3.13
-  variables:
-    KUBERNETES_MEMORY_REQUEST: "4Gi"
-    KUBERNETES_MEMORY_LIMIT: "8Gi"
-  script:
-    - cd src/backend
-    - pip install --upgrade pip
-    - pip install ".[dev]"
-    - |
-      set -euo pipefail
-      f=tests/test_kubevirt_coverage.py
-      echo "Heavy file (no cov, one test per process): $f"
-      pytest --collect-only -q "$f" -p no:cov | grep '::' > /tmp/heavy-tests.txt || true
-      total=$(wc -l < /tmp/heavy-tests.txt | tr -d ' ')
-      echo "Collected ${total} tests"
-      fail=0
-      batch_num=0
-      while IFS= read -r t; do
-        [ -z "$t" ] && continue
-        batch_num=$((batch_num + 1))
-        echo "  batch ${batch_num}/${total}: $t"
-        if ! pytest "$t" -q --tb=line -p no:cov -p no:cacheprovider; then
-          fail=1
-        fi
-      done < /tmp/heavy-tests.txt
-      if [ "$fail" -ne 0 ]; then
-        echo "One or more heavy batches failed"
-        exit 1
-      fi
-  retry:
-    max: 2
-    when:
-      - runner_system_failure
-      - stuck_or_timeout_failure
-  tags:
-    - itup-alm-x86
-
 test-operator:
   stage: test
   image: python:3.13
@@ -172,7 +122,6 @@ sonarqube:
     SONAR_PROJECT_KEY: "com.redhat.rhpds.troshka"
   needs:
     - job: test-backend
-    - job: test-backend-heavy
     - job: test-operator
       optional: true
     - job: test-troshkad

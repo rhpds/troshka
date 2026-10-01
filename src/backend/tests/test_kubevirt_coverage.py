@@ -13,7 +13,7 @@ import os
 
 os.environ.setdefault("TROSHKA_DATABASE__URL", "sqlite:///./test.db")
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 from kubernetes.client.exceptions import ApiException
@@ -312,73 +312,43 @@ class TestDeployOperator:
         mock_clients.return_value = (MagicMock(), MagicMock(), MagicMock())
         provider = _make_provider()
 
-        manifest_bodies = {
-            "namespace.yaml": {
+        # Order matches _deploy_operator manifest_order.
+        manifest_order_bodies = [
+            {
                 "kind": "Namespace",
                 "metadata": {"name": "troshka-operator"},
             },
-            "serviceaccount.yaml": {
+            {
                 "kind": "ServiceAccount",
                 "metadata": {"name": "sa", "namespace": "troshka-operator"},
             },
-            "clusterrole.yaml": {"kind": "ClusterRole", "metadata": {"name": "cr"}},
-            "clusterrolebinding.yaml": {
+            {"kind": "ClusterRole", "metadata": {"name": "cr"}},
+            {
                 "kind": "ClusterRoleBinding",
                 "metadata": {"name": "crb", "namespace": "troshka-operator"},
                 "subjects": [{"namespace": "old"}],
             },
-            "deployment.yaml": {
+            {
                 "kind": "Deployment",
                 "metadata": {"name": "op", "namespace": "troshka-operator"},
             },
-        }
+        ]
 
-        def mock_open_side_effect(path):
-            filename = os.path.basename(path)
-            m = MagicMock()
-            import copy
-
-            _body = copy.deepcopy(
-                manifest_bodies.get(
-                    filename, {"kind": "Unknown", "metadata": {"name": "x"}}
-                )
-            )
-            m.__enter__ = lambda s: s
-            m.__exit__ = MagicMock(return_value=False)
-            m.read = lambda: ""
-            # We need yaml.safe_load to return the body
-            return m
-
-        import yaml
-
-        with patch("builtins.open", mock_open_side_effect):
-            with patch.object(
-                yaml,
-                "safe_load",
-                side_effect=lambda f: manifest_bodies.get(
-                    os.path.basename(f.name) if hasattr(f, "name") else "",
-                    {"kind": "Unknown", "metadata": {"name": "x"}},
-                ),
-            ):
-                # This approach is fragile; instead, patch at file-read level
-                pass
-
-        # Simpler approach: patch yaml.safe_load + open together
         call_count = [0]
-        manifest_order_bodies = list(manifest_bodies.values())
 
-        def fake_safe_load(f):
+        def fake_safe_load_all(_f):
+            # Code uses yaml.safe_load_all(f) per manifest file — not safe_load.
+            # A bare MagicMock file handle makes safe_load_all allocate until OOM.
             import copy
 
             body = copy.deepcopy(manifest_order_bodies[call_count[0]])
             call_count[0] += 1
-            return body
+            yield body
 
-        with patch("builtins.open", MagicMock()):
-            with patch("yaml.safe_load", side_effect=fake_safe_load):
-                from app.services.providers.kubevirt import _deploy_operator
-
-                _deploy_operator(provider)
+        with patch("builtins.open", mock_open(read_data="")), patch(
+            "yaml.safe_load_all", side_effect=fake_safe_load_all
+        ), patch("app.services.providers.kubevirt.ensure_troshka_namespaced_rbac"):
+            _deploy_operator(provider)
 
         # Namespaced manifests (Namespace, ServiceAccount, Deployment) are applied;
         # cluster RBAC (ClusterRole, ClusterRoleBinding) is verify-only.
@@ -414,26 +384,26 @@ _OPERATOR_MANIFEST_BODIES = [
 def _run_deploy_operator_with_mocked_rbac(rbac):
     """Drive _deploy_operator with a MagicMock RbacAuthorizationV1Api.
 
-    provider RBAC docs load empty (open is a bare MagicMock whose read()/split()
-    iterate empty), so only the operator manifest_order reaches yaml.safe_load.
+    Manifests come from yaml.safe_load_all; open uses mock_open so
+    _load_provider_rbac_docs sees empty file content (no MagicMock iteration).
     """
     from kubernetes import client
 
     idx = [0]
 
-    def fake_safe_load(_f):
+    def fake_safe_load_all(_f):
         import copy
 
         body = copy.deepcopy(_OPERATOR_MANIFEST_BODIES[idx[0]])
         idx[0] += 1
-        return body
+        yield body
 
     provider = _make_provider(namespace="troshka-operator")
     with patch("app.services.providers.kubevirt._apply_crds"), patch(
         "app.services.providers.kubevirt._get_k8s_clients",
         return_value=(MagicMock(), MagicMock(), MagicMock()),
-    ), patch("builtins.open", MagicMock()), patch(
-        "yaml.safe_load", side_effect=fake_safe_load
+    ), patch("builtins.open", mock_open(read_data="")), patch(
+        "yaml.safe_load_all", side_effect=fake_safe_load_all
     ), patch.object(
         client, "RbacAuthorizationV1Api", return_value=rbac
     ), patch.object(
