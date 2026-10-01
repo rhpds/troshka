@@ -18,24 +18,28 @@ stages:
     KUBERNETES_MEMORY_REQUEST: "4Gi"
     KUBERNETES_MEMORY_LIMIT: "8Gi"
     COVERAGE_CORE: sysmon
-  parallel: 4
+  parallel: 6
   script:
     - cd src/backend
     - pip install --upgrade pip
     - pip install ".[dev]"
     - |
       set -euo pipefail
+      # Largest files first, then round-robin — alphabetical sharding piled
+      # multi-kLOC coverage modules onto one ALM runner and OOM'd shard 4.
       files=()
-      while IFS= read -r f; do
-        files+=("$f")
-      done < <(find tests -name 'test_*.py' | sort)
+      while IFS= read -r line; do
+        # wc -l: "  3766 tests/foo.py"
+        f="${line##* }"
+        [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
+      done < <(find tests -name 'test_*.py' -print0 | xargs -0 wc -l | grep -v ' total$' | sort -nr)
       shard=()
       for i in "${!files[@]}"; do
         if (( i % CI_NODE_TOTAL == CI_NODE_INDEX - 1 )); then
           shard+=("${files[$i]}")
         fi
       done
-      echo "Shard ${CI_NODE_INDEX}/${CI_NODE_TOTAL}: ${#shard[@]} of ${#files[@]} test files"
+      echo "Shard ${CI_NODE_INDEX}/${CI_NODE_TOTAL}: ${#shard[@]} of ${#files[@]} test files (size-balanced)"
       if [ "${#shard[@]}" -eq 0 ]; then
         echo "No files in this shard — writing empty coverage stub"
         printf '%s\n' '<?xml version="1.0" ?><coverage version="7.0" timestamp="0" lines-valid="0" lines-covered="0" line-rate="0"><sources/><packages/></coverage>' \

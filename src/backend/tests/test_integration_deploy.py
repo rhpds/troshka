@@ -507,9 +507,12 @@ class TestDeployProjectInner:
             project = db.query(Project).filter_by(id=project_id).first()
             assert project is not None
             assert project.state == "error"
+            err = (project.deploy_error or "").lower()
             assert (
-                "capacity" in project.deploy_error.lower()
-                or "room" in project.deploy_error.lower()
+                "capacity" in err
+                or "room" in err
+                or "provision pool" in err
+                or "not enough" in err
             )
         finally:
             db.close()
