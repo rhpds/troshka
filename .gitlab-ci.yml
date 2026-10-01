@@ -25,11 +25,9 @@ stages:
     - pip install ".[dev]"
     - |
       set -euo pipefail
-      # Largest files first, then round-robin — alphabetical sharding piled
-      # multi-kLOC coverage modules onto one ALM runner and OOM'd shard 4.
+      # Largest files first, then round-robin across shards.
       files=()
       while IFS= read -r line; do
-        # wc -l: "  3766 tests/foo.py"
         f="${line##* }"
         [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
       done < <(find tests -name 'test_*.py' -print0 | xargs -0 wc -l | grep -v ' total$' | sort -nr)
@@ -46,10 +44,24 @@ stages:
           > "../../coverage-${CI_NODE_INDEX}.xml"
         exit 0
       fi
-      pytest "${shard[@]}" \
-        --cov=app \
-        --cov-report="xml:../../coverage-${CI_NODE_INDEX}.xml" \
-        -v
+      # Batch within the shard so pytest-cov memory resets between groups
+      # (single-process cov over ~40 files still OOM'd ALM runners).
+      rm -f .coverage .coverage.*
+      batch_size=6
+      fail=0
+      for ((i=0; i<${#shard[@]}; i+=batch_size)); do
+        batch=("${shard[@]:i:batch_size}")
+        echo "  batch $((i/batch_size+1)): ${#batch[@]} files"
+        if ! coverage run --parallel-mode --source=app -m pytest "${batch[@]}" -q --tb=line; then
+          fail=1
+        fi
+      done
+      coverage combine
+      coverage xml -o "../../coverage-${CI_NODE_INDEX}.xml"
+      if [ "$fail" -ne 0 ]; then
+        echo "One or more pytest batches failed in this shard"
+        exit 1
+      fi
     - cd ../..
     - sed -i 's|<source>app</source>|<source>src/backend/app</source>|' "coverage-${CI_NODE_INDEX}.xml"
   artifacts:
