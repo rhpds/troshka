@@ -641,9 +641,10 @@ def test_apply_one_operator_manifest_paths():
     rbac = MagicMock()
     core = MagicMock()
     apps = MagicMock()
-    with patch("app.services.providers.kubevirt._verify_cluster_rbac") as verify, patch(
-        "app.services.providers.kubevirt._apply_manifest"
-    ) as apply:
+    with (
+        patch("app.services.providers.kubevirt._verify_cluster_rbac") as verify,
+        patch("app.services.providers.kubevirt._apply_manifest") as apply,
+    ):
         _apply_one_operator_manifest(None, "op-ns", rbac, core, apps)
         verify.assert_not_called()
         apply.assert_not_called()
@@ -683,3 +684,37 @@ def test_apply_one_operator_manifest_paths():
             apps,
         )
         assert apply.call_args[0][1] == "op-ns"
+
+
+def test_safe_ssh_remote_path_accepts_and_rejects():
+    import pytest
+
+    from app.services.providers.kubevirt import _safe_ssh_remote_path
+
+    assert _safe_ssh_remote_path("/tmp/ok.file") == "/tmp/ok.file"
+    for bad in ("", "-evil", "/tmp/a;b", "path with spaces"):
+        with pytest.raises(ValueError):
+            _safe_ssh_remote_path(bad)
+
+
+def test_reclaim_rbd_images_skips_empty_and_maps_status():
+    from app.services.providers.kubevirt import reclaim_rbd_images
+
+    core = MagicMock()
+    with patch(
+        "app.services.providers.kubevirt._rook_toolbox_exec",
+        side_effect=["OK done", RuntimeError("toolbox down")],
+    ) as exec_mock:
+        out = reclaim_rbd_images(
+            core,
+            [
+                {"pool": "p", "image": ""},
+                {"pool": "p1", "image": "img1"},
+                {"image": "img2"},
+            ],
+        )
+    assert exec_mock.call_count == 2
+    assert out[0]["status"] == "ok"
+    assert out[0]["image"] == "img1"
+    assert out[1]["status"] == "error"
+    assert out[1]["image"] == "img2"

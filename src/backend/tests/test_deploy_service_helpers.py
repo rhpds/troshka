@@ -11994,6 +11994,147 @@ class TestAggregateClusterOcpStatus:
         assert _aggregate_cluster_ocp_status(["error", "failed"]) == "error"
 
 
+class TestResetClusterInstallHelpers:
+    def test_reset_member_creds_scoped(self):
+        from app.services.deploy_service import _reset_cluster_member_install_creds
+
+        topo = {
+            "nodes": [
+                {
+                    "type": "vmNode",
+                    "data": {
+                        "clusterId": "c1",
+                        "ocpKubeadminPassword": "x",
+                        "ocpKubeconfig": "y",
+                    },
+                },
+                {
+                    "type": "vmNode",
+                    "data": {
+                        "clusterId": "c2",
+                        "ocpKubeadminPassword": "keep",
+                    },
+                },
+                {"type": "networkNode", "data": {"clusterId": "c1"}},
+            ]
+        }
+        _reset_cluster_member_install_creds(topo, "c1")
+        assert "ocpKubeadminPassword" not in topo["nodes"][0]["data"]
+        assert "ocpKubeconfig" not in topo["nodes"][0]["data"]
+        assert topo["nodes"][1]["data"]["ocpKubeadminPassword"] == "keep"
+
+    def test_reset_install_state_stamps_cluster(self):
+        from app.services.deploy_service import _reset_cluster_install_state_in_topology
+
+        topo = {
+            "clusters": [
+                {
+                    "id": "c1",
+                    "ocpInstallStatus": "ready",
+                    "ocpInstallElapsed": 9,
+                },
+                {"id": "c2", "ocpInstallStatus": "ready"},
+            ],
+            "nodes": [
+                {
+                    "type": "vmNode",
+                    "data": {"clusterId": "c1", "ocpKubeconfig": "k"},
+                }
+            ],
+        }
+        _reset_cluster_install_state_in_topology(topo, "c1")
+        assert topo["clusters"][0]["ocpInstallStatus"] == "monitoring"
+        assert "ocpInstallElapsed" not in topo["clusters"][0]
+        assert "ocpInstallStartedAt" in topo["clusters"][0]
+        assert topo["clusters"][1]["ocpInstallStatus"] == "ready"
+        assert "ocpKubeconfig" not in topo["nodes"][0]["data"]
+
+
+class TestApplyClusterOcpInstallStatus:
+    def test_status_and_elapsed(self):
+        from app.services.deploy_service import _apply_cluster_ocp_install_status
+
+        topo = {
+            "clusters": [
+                {"id": "c1", "ocpInstallStatus": "monitoring"},
+                {"name": "other", "ocpInstallStatus": "error"},
+            ]
+        }
+        assert _apply_cluster_ocp_install_status(topo, "c1", "ready", 42) is True
+        assert topo["clusters"][0]["ocpInstallStatus"] == "ready"
+        assert topo["clusters"][0]["ocpInstallElapsed"] == 42
+        assert _apply_cluster_ocp_install_status(topo, "c1", "ready", 42) is False
+        assert topo["clusters"][1]["ocpInstallStatus"] == "error"
+
+
+class TestDownloadProgressHelpers:
+    def test_format_in_progress_variants(self):
+        from app.services.deploy_service import _format_in_progress_download
+
+        assert "50%" in _format_in_progress_download("img", 2 * 1024**3, 1.0)
+        assert "downloading 2.0 GB" in _format_in_progress_download(
+            "img", 2 * 1024**3, 0
+        )
+        assert _format_in_progress_download("img", 0, 0) == "img: downloading..."
+
+    def test_build_download_progress_items(self):
+        from app.services.deploy_service import _build_download_progress_items
+
+        jobs = [
+            {"job_id": "a", "name": "one", "expected_size": 1024**3},
+            {"job_id": "b", "name": "two", "expected_size": 0},
+            {"job_id": "c", "name": "three", "expected_size": 0},
+        ]
+        with patch(
+            "app.services.deploy_service._get_download_progress_gb", return_value=0.0
+        ):
+            items = _build_download_progress_items(jobs, {"a"}, {"b"}, host=MagicMock())
+        assert items[0].startswith("one: done")
+        assert items[1] == "two: failed"
+        assert items[2] == "three: downloading..."
+
+
+class TestWaitOrClaimSharedCache:
+    def test_claim_when_not_downloading(self):
+        from app.services.deploy_service import _wait_or_claim_shared_cache
+
+        with patch(
+            "app.services.deploy_service._check_shared_cache",
+            return_value=("ready", None),
+        ):
+            assert (
+                _wait_or_claim_shared_cache(
+                    MagicMock(), MagicMock(), MagicMock(), {"item_id": "i", "name": "n"}
+                )
+                == "claim"
+            )
+
+    def test_waited_and_timeout(self):
+        from app.services.deploy_service import _wait_or_claim_shared_cache
+
+        ic = {"item_id": "i", "name": "n"}
+        pool = MagicMock(id="p1")
+        with patch(
+            "app.services.deploy_service._check_shared_cache",
+            return_value=("downloading", None),
+        ), patch(
+            "app.services.deploy_service._wait_for_shared_cache", return_value=True
+        ):
+            assert _wait_or_claim_shared_cache(MagicMock(), pool, MagicMock(), ic) == (
+                "waited"
+            )
+        with patch(
+            "app.services.deploy_service._check_shared_cache",
+            return_value=("downloading", None),
+        ), patch(
+            "app.services.deploy_service._wait_for_shared_cache", return_value=False
+        ):
+            assert (
+                _wait_or_claim_shared_cache(MagicMock(), pool, MagicMock(), ic)
+                == "claim"
+            )
+
+
 class TestFallbackDeployStep:
     def test_images(self):
         from app.services.deploy_service import _fallback_deploy_step

@@ -11,6 +11,7 @@ import threading
 import time
 import unittest
 import urllib.request
+from types import SimpleNamespace
 
 # Generate test TLS cert + key in a temp dir
 TEST_DIR = tempfile.mkdtemp(prefix="troshkad-test-")
@@ -3279,9 +3280,7 @@ class TestPodNetHelpers(unittest.TestCase):
     @patch("troshkad._setup_pod_veth_pair")
     @patch("troshkad._validate_bridge_name", side_effect=lambda b: b)
     def test_attach_one_pod_bridge_without_ip(self, mock_val, mock_veth, mock_ip):
-        troshkad._attach_one_pod_bridge(
-            {}, "tok", "ns", "proj", 2, {"bridge": "br0"}
-        )
+        troshkad._attach_one_pod_bridge({}, "tok", "ns", "proj", 2, {"bridge": "br0"})
         mock_veth.assert_called_once()
         mock_ip.assert_not_called()
 
@@ -3294,6 +3293,47 @@ class TestPodNetHelpers(unittest.TestCase):
                 path = troshkad._write_pod_resolv_conf("mypod", "8.8.8.8")
                 with open(path) as f:
                     self.assertEqual(f.read(), "nameserver 8.8.8.8\n")
+
+    @patch("troshkad.subprocess.run")
+    def test_list_namespace_bridges_filters_br(self, mock_run):
+        mock_run.return_value = SimpleNamespace(
+            returncode=0,
+            stdout="1: br-abc: <BROADCAST>\n2: eth0: <BROADCAST>\n3: br-xyz@if2: <UP>\n",
+        )
+        bridges = troshkad._list_namespace_bridges("ns1")
+        self.assertEqual(bridges, ["br-abc", "br-xyz"])
+
+        mock_run.return_value = SimpleNamespace(returncode=1, stdout="")
+        self.assertEqual(troshkad._list_namespace_bridges("ns1"), [])
+
+    @patch("troshkad._restart_dead_dnsmasq", return_value=True)
+    @patch("troshkad._is_process_alive", return_value=False)
+    @patch("troshkad._check_dnsmasq_project_alive", return_value=True)
+    @patch("troshkad._get_project_prefix_from_pidfile", return_value="aabb")
+    @patch(
+        "troshkad._get_conf_from_pidfile",
+        return_value=("dnsmasq-aabb", "/tmp/dnsmasq-aabb.conf"),
+    )
+    @patch("troshkad.os.path.exists", return_value=True)
+    def test_process_single_dnsmasq_pidfile_restarts_dead(
+        self, _ex, _conf, _pref, _alive_proj, _alive_proc, mock_restart
+    ):
+        self.assertTrue(
+            troshkad._process_single_dnsmasq_pidfile("/run/troshka-dnsmasq-aabb.pid")
+        )
+        mock_restart.assert_called_once()
+
+    @patch("troshkad.os.remove")
+    @patch("troshkad.os.path.exists", return_value=False)
+    @patch(
+        "troshkad._get_conf_from_pidfile",
+        return_value=("dnsmasq-aabb", "/tmp/missing.conf"),
+    )
+    def test_process_single_dnsmasq_pidfile_removes_stale(self, _conf, _ex, mock_rm):
+        self.assertFalse(
+            troshkad._process_single_dnsmasq_pidfile("/run/troshka-dnsmasq-aabb.pid")
+        )
+        mock_rm.assert_called_once()
 
 
 if __name__ == "__main__":

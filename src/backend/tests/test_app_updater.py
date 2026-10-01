@@ -847,3 +847,154 @@ def test_heal_stuck_pods_for_deploy_noop_when_list_none(monkeypatch):
     errors = []
     app_updater._heal_stuck_pods_for_deploy(MagicMock(), MagicMock(), "ns", "d", errors)
     assert errors == []
+
+
+def test_pod_has_running_container_true_and_false():
+    running = SimpleNamespace(
+        status=SimpleNamespace(
+            container_statuses=[
+                SimpleNamespace(state=SimpleNamespace(running=SimpleNamespace()))
+            ]
+        )
+    )
+    idle = SimpleNamespace(
+        status=SimpleNamespace(
+            container_statuses=[
+                SimpleNamespace(state=SimpleNamespace(running=None, waiting=object()))
+            ]
+        )
+    )
+    assert app_updater._pod_has_running_container(running) is True
+    assert app_updater._pod_has_running_container(idle) is False
+    assert app_updater._pod_has_running_container(SimpleNamespace(status=None)) is False
+
+
+def test_deployment_name_for_rs_paths():
+    apps = MagicMock()
+    apps.read_namespaced_replica_set.side_effect = RuntimeError("gone")
+    assert app_updater._deployment_name_for_rs(apps, "ns", "rs-1") is None
+
+    rs = SimpleNamespace(
+        metadata=SimpleNamespace(
+            owner_references=[
+                SimpleNamespace(
+                    controller=True, kind="Deployment", name="troshka-backend"
+                )
+            ]
+        )
+    )
+    apps.read_namespaced_replica_set.side_effect = None
+    apps.read_namespaced_replica_set.return_value = rs
+    assert app_updater._deployment_name_for_rs(apps, "ns", "rs-1") == "troshka-backend"
+
+    rs.metadata.owner_references = [
+        SimpleNamespace(controller=False, kind="Deployment", name="other")
+    ]
+    assert app_updater._deployment_name_for_rs(apps, "ns", "rs-1") is None
+
+
+def test_patch_rollout_deployment_heal_read_failure():
+    apps = MagicMock()
+    apps.read_namespaced_deployment.side_effect = RuntimeError("403")
+    app_updater._patch_rollout_deployment_heal(
+        apps, "ns", "troshka-backend", {"annotations": {}, "exclude": []}
+    )
+    apps.patch_namespaced_deployment.assert_not_called()
+
+
+def test_patch_rollout_deployment_heal_with_and_without_exclude():
+    apps = MagicMock()
+    dep = SimpleNamespace(metadata=SimpleNamespace(annotations={"keep": "1"}))
+    apps.read_namespaced_deployment.return_value = dep
+
+    plan = {
+        "annotations": {app_updater.ANN_ROLLOUT_ATTEMPTS: "2"},
+        "exclude": [],
+    }
+    app_updater._patch_rollout_deployment_heal(apps, "ns", "troshka-backend", plan)
+    body = apps.patch_namespaced_deployment.call_args.kwargs["body"]
+    assert "spec" not in body
+    assert body["metadata"]["annotations"]["keep"] == "1"
+    assert body["metadata"]["annotations"][app_updater.ANN_ROLLOUT_ATTEMPTS] == "2"
+
+    plan_ex = {
+        "annotations": {app_updater.ANN_ROLLOUT_ATTEMPTS: "3"},
+        "exclude": ["node-a"],
+    }
+    app_updater._patch_rollout_deployment_heal(apps, "ns", "troshka-backend", plan_ex)
+    body = apps.patch_namespaced_deployment.call_args.kwargs["body"]
+    assert "affinity" in body["spec"]["template"]["spec"]
+    assert (
+        body["spec"]["template"]["metadata"]["annotations"][
+            "troshka.io/app-rollout-heal-bump"
+        ]
+        == "3"
+    )
+
+
+def test_patch_rollout_deployment_heal_swallows_patch_errors():
+    apps = MagicMock()
+    apps.read_namespaced_deployment.return_value = SimpleNamespace(
+        metadata=SimpleNamespace(annotations={})
+    )
+    apps.patch_namespaced_deployment.side_effect = RuntimeError("conflict")
+    app_updater._patch_rollout_deployment_heal(
+        apps,
+        "ns",
+        "troshka-backend",
+        {"annotations": {"a": "1"}, "exclude": ["n1"]},
+    )
+
+
+def test_next_poll_sleep_rollout_vs_idle(monkeypatch):
+    monkeypatch.setattr(app_updater, "_snapshot", {"rolling_out": True})
+    assert app_updater._next_poll_sleep() == app_updater._ROLLOUT_POLL_INTERVAL_S
+    monkeypatch.setattr(app_updater, "_snapshot", {"rolling_out": False})
+    monkeypatch.setattr(app_updater, "_poll_interval", lambda: 99)
+    assert app_updater._next_poll_sleep() == 99
+
+
+def test_read_rolling_out_paths(monkeypatch):
+    monkeypatch.setattr(app_updater, "_get_own_namespace", lambda: "troshka")
+    apps = MagicMock()
+
+    rolling = MagicMock()
+    rolling.spec.replicas = 2
+    rolling.status.updated_replicas = 1
+    rolling.status.ready_replicas = 2
+    ready = MagicMock()
+    ready.spec.replicas = 1
+    ready.status.updated_replicas = 1
+    ready.status.ready_replicas = 1
+    apps.read_namespaced_deployment.side_effect = [rolling, ready]
+    with patch("kubernetes.config.load_incluster_config"), patch(
+        "kubernetes.client.AppsV1Api", return_value=apps
+    ):
+        assert app_updater._read_rolling_out() is True
+
+    apps.read_namespaced_deployment.side_effect = RuntimeError("boom")
+    with patch("kubernetes.config.load_incluster_config"), patch(
+        "kubernetes.client.AppsV1Api", return_value=apps
+    ):
+        assert app_updater._read_rolling_out() is False
+
+    apps.read_namespaced_deployment.side_effect = None
+    apps.read_namespaced_deployment.return_value = ready
+    with patch("kubernetes.config.load_incluster_config"), patch(
+        "kubernetes.client.AppsV1Api", return_value=apps
+    ):
+        assert app_updater._read_rolling_out() is False
+
+
+def test_poll_swallows_build_errors(monkeypatch):
+    def boom():
+        raise RuntimeError("x")
+
+    monkeypatch.setattr(app_updater, "_build_image_snapshot", boom)
+    app_updater._poll()
+
+
+def test_poller_loop_disabled_mode_exits(monkeypatch):
+    monkeypatch.setattr(app_updater, "resolve_mode", lambda: "disabled")
+    with patch.object(app_updater.time, "sleep", lambda *_: None):
+        app_updater._poller_loop()
