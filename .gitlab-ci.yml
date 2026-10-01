@@ -87,34 +87,24 @@ stages:
 test-backend:
   extends: .test-backend-shard
 
-# Isolated job for files that OOM under full-app coverage on ALM runners.
-# Narrow --source to the package under test so the tracer stays small.
+# Isolated job for files that OOM under any coverage tracer on ALM runners.
+# Still execute the tests (no cov) so regressions are caught; Sonar coverage
+# for this module comes from other kubevirt test files in the shards.
 test-backend-heavy:
   stage: test
   image: python:3.13
   variables:
-    KUBERNETES_MEMORY_REQUEST: "3Gi"
-    KUBERNETES_MEMORY_LIMIT: "6Gi"
+    KUBERNETES_MEMORY_REQUEST: "2Gi"
+    KUBERNETES_MEMORY_LIMIT: "4Gi"
   script:
     - cd src/backend
     - pip install --upgrade pip
     - pip install ".[dev]"
     - |
       set -euo pipefail
-      rm -f .coverage .coverage.*
       f=tests/test_kubevirt_coverage.py
-      echo "Heavy file: $f (narrow source=app.services.providers.kubevirt)"
-      COVERAGE_CORE=ctrace coverage run --parallel-mode \
-        --source=app.services.providers.kubevirt \
-        -m pytest "$f" -q --tb=line -p no:cov -p no:cacheprovider
-      coverage combine
-      coverage xml -o "../../coverage-heavy.xml"
-    - cd ../..
-    - sed -i 's|<source>.*</source>|<source>src/backend/app</source>|' coverage-heavy.xml || true
-  artifacts:
-    paths:
-      - coverage-heavy.xml
-    expire_in: 1 hour
+      echo "Heavy file (no coverage — ALM OOM under tracer): $f"
+      pytest "$f" -q --tb=line -p no:cov -p no:cacheprovider
   retry:
     max: 2
     when:
