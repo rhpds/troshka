@@ -1,6 +1,6 @@
 import sys
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -715,3 +715,91 @@ def test_heal_stuck_pods_for_deploy_heals_and_collects_errors(monkeypatch):
     errors = []
     app_updater._heal_stuck_pods_for_deploy(core, apps, "ns", "troshka-backend", errors)
     assert errors == ["exhausted"]
+
+
+def test_heal_stuck_pods_for_deploy_swallows_heal_exceptions(monkeypatch):
+    core = MagicMock()
+    apps = MagicMock()
+    stuck = _pod("troshka-backend-abc-xyz", age_s=120)
+    monkeypatch.setattr(
+        app_updater, "_list_rollout_deploy_pods", lambda *a, **k: [stuck]
+    )
+
+    def boom(*a, **k):
+        raise RuntimeError("patch failed")
+
+    monkeypatch.setattr(app_updater, "_heal_one_stuck_rollout_pod", boom)
+    errors = []
+    app_updater._heal_stuck_pods_for_deploy(core, apps, "ns", "troshka-backend", errors)
+    assert errors == []
+
+
+def test_heal_stuck_rollout_pods_no_incluster_config():
+    with patch(
+        "kubernetes.config.load_incluster_config", side_effect=RuntimeError("no")
+    ):
+        assert app_updater._heal_stuck_rollout_pods() is None
+
+
+def test_heal_stuck_rollout_pods_returns_first_error(monkeypatch):
+    core = MagicMock()
+    apps = MagicMock()
+    monkeypatch.setattr(app_updater, "_get_own_namespace", lambda: "troshka")
+    calls = []
+
+    def fake_heal(core_api, apps_api, ns, deploy_name, errors):
+        calls.append(deploy_name)
+        if deploy_name == "troshka-backend":
+            errors.append("exhausted-backend")
+
+    monkeypatch.setattr(app_updater, "_heal_stuck_pods_for_deploy", fake_heal)
+    with patch("kubernetes.config.load_incluster_config"), patch(
+        "kubernetes.client.CoreV1Api", return_value=core
+    ), patch("kubernetes.client.AppsV1Api", return_value=apps):
+        assert app_updater._heal_stuck_rollout_pods() == "exhausted-backend"
+    assert "troshka-backend" in calls
+
+
+def test_heal_one_stuck_rollout_pod_deletes_and_patches(monkeypatch):
+    core = MagicMock()
+    apps = MagicMock()
+    pod = _pod(
+        "troshka-backend-abc-xyz",
+        age_s=120,
+        owners=[
+            SimpleNamespace(controller=True, kind="Deployment", name="troshka-backend")
+        ],
+    )
+    dep = MagicMock()
+    dep.metadata.annotations = {}
+    apps.read_namespaced_deployment.return_value = dep
+    patched = []
+
+    monkeypatch.setattr(
+        app_updater,
+        "_patch_rollout_deployment_heal",
+        lambda *a, **k: patched.append(a),
+    )
+    assert app_updater._heal_one_stuck_rollout_pod(core, apps, "ns", pod) is None
+    core.delete_namespaced_pod.assert_called_once()
+    assert patched
+
+
+def test_heal_one_stuck_rollout_pod_delete_failure_returns_none(monkeypatch):
+    core = MagicMock()
+    apps = MagicMock()
+    pod = _pod(
+        "troshka-backend-abc-xyz",
+        age_s=120,
+        owners=[
+            SimpleNamespace(controller=True, kind="Deployment", name="troshka-backend")
+        ],
+    )
+    dep = MagicMock()
+    dep.metadata.annotations = {}
+    apps.read_namespaced_deployment.return_value = dep
+    core.delete_namespaced_pod.side_effect = RuntimeError("gone")
+    monkeypatch.setattr(
+        app_updater, "_patch_rollout_deployment_heal", lambda *a, **k: None
+    )
+    assert app_updater._heal_one_stuck_rollout_pod(core, apps, "ns", pod) is None

@@ -3176,5 +3176,72 @@ class TestGatewayTlsProxyHandlers(unittest.TestCase):
         mock_stop.assert_called_once_with("abcdef12-0000-0000-0000-000000000000")
 
 
+class TestPodNetHelpers(unittest.TestCase):
+    """Coverage for pod infra/net helpers extracted for cognitive complexity."""
+
+    @patch("troshkad._run_cmd")
+    def test_start_pod_infra_starts_when_pid_zero(self, mock_run):
+        calls = {"n": 0}
+
+        def side_effect(job, cmd, **kwargs):
+            calls["n"] += 1
+            if "inspect" in cmd:
+                return "0" if calls["n"] == 1 else "4242"
+            return ""
+
+        mock_run.side_effect = side_effect
+        pid = troshkad._start_pod_infra({}, "troshka-aabbccdd-mypod")
+        self.assertEqual(pid, 4242)
+        self.assertTrue(any("start" in c[0][1] for c in mock_run.call_args_list))
+
+    @patch("troshkad.os.symlink")
+    @patch("troshkad.os.unlink")
+    @patch("troshkad.os.path.lexists", return_value=True)
+    @patch("troshkad.os.makedirs")
+    def test_ensure_pod_netns_replaces_stale_link(
+        self, mock_makedirs, mock_lexists, mock_unlink, mock_symlink
+    ):
+        tok, name = troshkad._ensure_pod_netns("troshka-aabbccdd-mypod", 99)
+        self.assertTrue(name.startswith("ctr-"))
+        mock_unlink.assert_called_once()
+        mock_symlink.assert_called_once()
+        self.assertTrue(tok)
+
+    @patch("troshkad._attach_pod_extra_bridges")
+    @patch("troshkad._write_pod_resolv_conf", return_value="/tmp/resolv")
+    @patch("troshkad._attach_pod_to_infra_transit")
+    def test_wire_pod_networks_infra_transit_with_extras(
+        self, mock_transit, mock_resolv, mock_extras
+    ):
+        job = {}
+        nets = [
+            {
+                "infra_transit": True,
+                "dns_nameserver": "1.1.1.1",
+                "gateway": "10.0.0.1",
+            },
+            {"bridge": "br-bmc"},
+        ]
+        troshkad._wire_pod_networks(job, "pod", 7, nets, "aabbccdd-xxxx")
+        mock_transit.assert_called_once()
+        mock_extras.assert_called_once()
+        self.assertEqual(job["_pod_resolv_path"], "/tmp/resolv")
+
+    @patch("troshkad._pod_dns_nameserver", return_value="10.0.0.1")
+    @patch("troshkad._write_pod_resolv_conf", return_value="/tmp/resolv")
+    @patch("troshkad._attach_pod_to_bridges")
+    def test_wire_pod_networks_bridge_path(self, mock_bridges, mock_resolv, mock_dns):
+        job = {}
+        nets = [{"bridge": "br0", "gateway": "10.0.0.1"}]
+        troshkad._wire_pod_networks(job, "pod", 7, nets, "aabbccdd-xxxx")
+        mock_bridges.assert_called_once()
+        self.assertEqual(job["_pod_resolv_path"], "/tmp/resolv")
+
+    def test_wire_pod_networks_empty_is_noop(self):
+        job = {}
+        troshkad._wire_pod_networks(job, "pod", 7, [], "aabbccdd-xxxx")
+        self.assertEqual(job, {})
+
+
 if __name__ == "__main__":
     unittest.main()

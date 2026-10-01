@@ -196,6 +196,31 @@ def test_gc_orphan_troshka_services_deletes_svc_when_namespace_missing():
     )
 
 
+def test_list_orphan_troshka_services_list_failure_returns_empty():
+    from app.services.providers.kubevirt import list_orphan_troshka_namespaced_services
+
+    core = MagicMock()
+    core.list_service_for_all_namespaces.side_effect = RuntimeError("api down")
+    assert list_orphan_troshka_namespaced_services(core) == []
+
+
+def test_gc_orphan_troshka_services_swallows_delete_errors():
+    from kubernetes.client.exceptions import ApiException
+
+    from app.services.providers.kubevirt import gc_orphan_troshka_namespaced_services
+
+    core = MagicMock()
+    svc = MagicMock()
+    svc.metadata.name = "svc"
+    svc.metadata.namespace = "troshka-deadbeef"
+    listed = MagicMock()
+    listed.items = [svc]
+    core.list_service_for_all_namespaces.return_value = listed
+    core.read_namespace.side_effect = ApiException(status=404)
+    core.delete_namespaced_service.side_effect = RuntimeError("race")
+    assert gc_orphan_troshka_namespaced_services(core) == 0
+
+
 def test_setup_console_returns_config():
     provider = _make_provider()
     driver = get_provider_driver(provider)
