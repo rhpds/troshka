@@ -2353,7 +2353,7 @@ class TestCreatePodContainerHelpers(unittest.TestCase):
     @patch("troshkad._run_cmd")
     @patch("troshkad._append_podman_image_command")
     def test_create_main_container_env_mounts_privileged(self, mock_img, mock_run):
-        job = {"_pod_resolv_path": None, "output": []}
+        job = {"job_id": "t2", "_pod_resolv_path": None, "output": []}
         ctr = {
             "name": "main",
             "image": "img:1",
