@@ -87,9 +87,9 @@ stages:
 test-backend:
   extends: .test-backend-shard
 
-# Isolated job for files that OOM under any coverage tracer on ALM runners.
-# Still execute the tests (no cov) so regressions are caught; Sonar coverage
-# for this module comes from other kubevirt test files in the shards.
+# Isolated job for files that balloon RSS even without coverage (~6GB local for
+# the full module). Run tests in small subprocess batches so each process exits
+# and frees memory. Sonar coverage for kubevirt comes from other shard files.
 test-backend-heavy:
   stage: test
   image: python:3.13
@@ -103,8 +103,37 @@ test-backend-heavy:
     - |
       set -euo pipefail
       f=tests/test_kubevirt_coverage.py
-      echo "Heavy file (no coverage — ALM OOM under tracer): $f"
-      pytest "$f" -q --tb=line -p no:cov -p no:cacheprovider
+      echo "Heavy file (no cov, batched subprocesses): $f"
+      pytest --collect-only -q "$f" -p no:cov | grep '::' > /tmp/heavy-tests.txt || true
+      total=$(wc -l < /tmp/heavy-tests.txt | tr -d ' ')
+      echo "Collected ${total} tests"
+      fail=0
+      batch_size=5
+      batch_num=0
+      batch=()
+      flush_batch() {
+        if [ "${#batch[@]}" -eq 0 ]; then
+          return
+        fi
+        batch_num=$((batch_num + 1))
+        echo "  batch ${batch_num}: ${#batch[@]} tests"
+        if ! pytest "${batch[@]}" -q --tb=line -p no:cov -p no:cacheprovider; then
+          fail=1
+        fi
+        batch=()
+      }
+      while IFS= read -r t; do
+        [ -z "$t" ] && continue
+        batch+=("$t")
+        if [ "${#batch[@]}" -ge "$batch_size" ]; then
+          flush_batch
+        fi
+      done < /tmp/heavy-tests.txt
+      flush_batch
+      if [ "$fail" -ne 0 ]; then
+        echo "One or more heavy batches failed"
+        exit 1
+      fi
   retry:
     max: 2
     when:
