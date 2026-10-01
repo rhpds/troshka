@@ -20,9 +20,11 @@ from app.services.providers.kubevirt import (
     _cleanup_capture_temp_pvcs,
     _cleanup_volume_snapshots,
     _clear_one_volume_snapshot_content,
+    _delete_namespaced_services,
     _delete_one_capture_temp_pvc,
     _ensure_project_namespace,
     _force_clear_rook_finalizers,
+    _list_ns_service_names,
     _list_volume_snapshot_contents,
     _list_volume_snapshots,
     _node_allocatable_vcpus_ram_mb,
@@ -35,6 +37,7 @@ from app.services.providers.kubevirt import (
     _strip_pvc_finalizers,
     _strip_rook_crs,
     _troshka_orphan_ns_suffix,
+    _wait_for_ns_services_gone,
     list_orphan_troshka_pvs,
     list_unclaimed_available_rbd_pvs,
 )
@@ -173,6 +176,10 @@ class TestUnclaimedRbdHelpers:
         )
         assert _pv_capacity_storage(pv) == "5Gi"
 
+    def test_capacity_empty(self):
+        pv = SimpleNamespace(spec=SimpleNamespace(capacity=None))
+        assert _pv_capacity_storage(pv) == ""
+
     @patch(
         "app.services.providers.kubevirt._pv_rbd_target",
         return_value={"pv": "pv-x", "pool": "p", "image": "img"},
@@ -195,6 +202,21 @@ class TestUnclaimedRbdHelpers:
         )
         assert _available_unclaimed_rbd_entry(pv) is None
 
+    def test_skips_non_available_phase(self):
+        pv = SimpleNamespace(
+            status=SimpleNamespace(phase="Bound"),
+            spec=SimpleNamespace(claim_ref=None, capacity={}),
+        )
+        assert _available_unclaimed_rbd_entry(pv) is None
+
+    @patch("app.services.providers.kubevirt._pv_rbd_target", return_value=None)
+    def test_skips_when_no_rbd_target(self, _tgt):
+        pv = SimpleNamespace(
+            status=SimpleNamespace(phase="Available"),
+            spec=SimpleNamespace(claim_ref=None, capacity={}),
+        )
+        assert _available_unclaimed_rbd_entry(pv) is None
+
     @patch(
         "app.services.providers.kubevirt._pv_rbd_target",
         return_value={"pv": "pv-x", "pool": "p", "image": "img"},
@@ -208,6 +230,56 @@ class TestUnclaimedRbdHelpers:
         core_api.list_persistent_volume.return_value = SimpleNamespace(items=[pv])
         found = list_unclaimed_available_rbd_pvs(core_api)
         assert len(found) == 1
+
+    def test_list_unclaimed_api_exception(self):
+        core_api = MagicMock()
+        core_api.list_persistent_volume.side_effect = _api_exc(500)
+        assert list_unclaimed_available_rbd_pvs(core_api) == []
+
+
+class TestNsServiceHelpers:
+    def test_list_names_happy_and_empty_meta(self):
+        core = MagicMock()
+        core.list_namespaced_service.return_value = SimpleNamespace(
+            items=[
+                SimpleNamespace(metadata=SimpleNamespace(name="svc-a")),
+                SimpleNamespace(metadata=SimpleNamespace(name="")),
+                SimpleNamespace(metadata=None),
+            ]
+        )
+        assert _list_ns_service_names(core, "ns") == ["svc-a"]
+
+    def test_list_names_exception(self):
+        core = MagicMock()
+        core.list_namespaced_service.side_effect = RuntimeError("down")
+        assert _list_ns_service_names(core, "ns") == []
+
+    def test_delete_services_swallows_errors(self):
+        core = MagicMock()
+        core.list_namespaced_service.return_value = SimpleNamespace(
+            items=[SimpleNamespace(metadata=SimpleNamespace(name="svc-a"))]
+        )
+        core.delete_namespaced_service.side_effect = RuntimeError("gone")
+        _delete_namespaced_services(core, "ns")
+        core.delete_namespaced_service.assert_called_once()
+
+    @patch("app.services.providers.kubevirt.time.sleep", return_value=None)
+    def test_wait_services_gone_immediate(self, _sleep):
+        core = MagicMock()
+        core.list_namespaced_service.return_value = SimpleNamespace(items=[])
+        assert _wait_for_ns_services_gone(core, "ns") is True
+        _sleep.assert_not_called()
+
+    @patch("app.services.providers.kubevirt._NS_SERVICES_GONE_ATTEMPTS", 2)
+    @patch("app.services.providers.kubevirt.time.sleep", return_value=None)
+    def test_wait_services_gone_times_out(self, _sleep):
+        core = MagicMock()
+        sticky = SimpleNamespace(
+            items=[SimpleNamespace(metadata=SimpleNamespace(name="svc-a"))]
+        )
+        core.list_namespaced_service.return_value = sticky
+        assert _wait_for_ns_services_gone(core, "ns") is False
+        assert _sleep.call_count == 2
 
 
 class TestRookFinalizerHelpers:

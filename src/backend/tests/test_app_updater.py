@@ -1,4 +1,5 @@
 import sys
+from datetime import UTC
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -998,3 +999,60 @@ def test_poller_loop_disabled_mode_exits(monkeypatch):
     monkeypatch.setattr(app_updater, "resolve_mode", lambda: "disabled")
     with patch.object(app_updater.time, "sleep", lambda *_: None):
         app_updater._poller_loop()
+
+
+def test_get_own_namespace_env_and_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv("POD_NAMESPACE", "from-env")
+    assert app_updater._get_own_namespace() == "from-env"
+
+    monkeypatch.delenv("POD_NAMESPACE", raising=False)
+    ns_file = tmp_path / "namespace"
+    ns_file.write_text("from-file\n")
+    with patch("builtins.open", side_effect=FileNotFoundError):
+        assert app_updater._get_own_namespace() == "troshka"
+
+
+def test_pod_schedule_and_running_helpers():
+    unscheduled = SimpleNamespace(
+        status=SimpleNamespace(conditions=[], container_statuses=None)
+    )
+    assert app_updater._pod_is_scheduled(unscheduled) is False
+    assert app_updater._pod_has_running_container(unscheduled) is False
+
+    scheduled = SimpleNamespace(
+        status=SimpleNamespace(
+            conditions=[SimpleNamespace(type="PodScheduled", status="True")],
+            container_statuses=[
+                SimpleNamespace(state=SimpleNamespace(running=SimpleNamespace()))
+            ],
+        )
+    )
+    assert app_updater._pod_is_scheduled(scheduled) is True
+    assert app_updater._pod_has_running_container(scheduled) is True
+
+
+def test_is_rollout_pod_stuck_guards():
+    from datetime import datetime
+
+    old = datetime(2020, 1, 1, tzinfo=UTC)
+    # deleting → not stuck
+    deleting = SimpleNamespace(
+        metadata=SimpleNamespace(deletion_timestamp="x", creation_timestamp=old),
+        status=SimpleNamespace(conditions=[], container_statuses=None, phase="Pending"),
+    )
+    assert app_updater._is_rollout_pod_stuck(deleting) is False
+    # no creation timestamp
+    no_created = SimpleNamespace(
+        metadata=SimpleNamespace(deletion_timestamp=None, creation_timestamp=None),
+        status=SimpleNamespace(conditions=[], container_statuses=None, phase="Pending"),
+    )
+    assert app_updater._is_rollout_pod_stuck(no_created) is False
+    # too young
+    young = SimpleNamespace(
+        metadata=SimpleNamespace(
+            deletion_timestamp=None,
+            creation_timestamp=datetime.now(UTC),
+        ),
+        status=SimpleNamespace(conditions=[], container_statuses=None, phase="Pending"),
+    )
+    assert app_updater._is_rollout_pod_stuck(young) is False

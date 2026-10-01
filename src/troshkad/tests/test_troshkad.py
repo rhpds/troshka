@@ -2331,6 +2331,45 @@ class TestPodResolvConf(unittest.TestCase):
         )
 
 
+class TestCreatePodContainerHelpers(unittest.TestCase):
+    @patch("troshkad._run_cmd")
+    @patch("troshkad._append_podman_image_command")
+    def test_create_init_container_env_and_mounts(self, mock_img, mock_run):
+        job = {"job_id": "t1", "_pod_resolv_path": None, "output": []}
+        ic = {
+            "name": "init",
+            "image": "img:1",
+            "env": {"A": "1"},
+            "mounts": ["/host:/mnt"],
+        }
+        troshkad._create_init_container(job, "pod-x", ic)
+        cmd = mock_run.call_args[0][1]
+        self.assertIn("-e", cmd)
+        self.assertIn("A=1", cmd)
+        self.assertIn("-v", cmd)
+        self.assertIn("/host:/mnt", cmd)
+        mock_img.assert_called_once()
+
+    @patch("troshkad._run_cmd")
+    @patch("troshkad._append_podman_image_command")
+    def test_create_main_container_env_mounts_privileged(self, mock_img, mock_run):
+        job = {"_pod_resolv_path": None, "output": []}
+        ctr = {
+            "name": "main",
+            "image": "img:1",
+            "env": {"B": "2"},
+            "mounts": ["/data:/data"],
+        }
+        troshkad._create_main_container(
+            job, "pod-x", ctr, "Never", True, file_mounts=["/f:/f:ro"]
+        )
+        cmd = mock_run.call_args[0][1]
+        self.assertIn("B=2", cmd)
+        self.assertIn("/data:/data", cmd)
+        self.assertIn("/f:/f:ro", cmd)
+        self.assertIn("--privileged", cmd)
+
+
 class TestAppendPodmanImageCommand(unittest.TestCase):
     """Tests for podman argv command handling."""
 
