@@ -88,14 +88,15 @@ test-backend:
   extends: .test-backend-shard
 
 # Isolated job for files that balloon RSS even without coverage (~6GB local for
-# the full module). Run tests in small subprocess batches so each process exits
-# and frees memory. Sonar coverage for kubevirt comes from other shard files.
+# the full module). One test per subprocess so RSS is released between cases;
+# 8Gi headroom for import spikes. Sonar coverage for kubevirt comes from other
+# shard files.
 test-backend-heavy:
   stage: test
   image: python:3.13
   variables:
-    KUBERNETES_MEMORY_REQUEST: "2Gi"
-    KUBERNETES_MEMORY_LIMIT: "4Gi"
+    KUBERNETES_MEMORY_REQUEST: "4Gi"
+    KUBERNETES_MEMORY_LIMIT: "8Gi"
   script:
     - cd src/backend
     - pip install --upgrade pip
@@ -103,33 +104,20 @@ test-backend-heavy:
     - |
       set -euo pipefail
       f=tests/test_kubevirt_coverage.py
-      echo "Heavy file (no cov, batched subprocesses): $f"
+      echo "Heavy file (no cov, one test per process): $f"
       pytest --collect-only -q "$f" -p no:cov | grep '::' > /tmp/heavy-tests.txt || true
       total=$(wc -l < /tmp/heavy-tests.txt | tr -d ' ')
       echo "Collected ${total} tests"
       fail=0
-      batch_size=5
       batch_num=0
-      batch=()
-      flush_batch() {
-        if [ "${#batch[@]}" -eq 0 ]; then
-          return
-        fi
-        batch_num=$((batch_num + 1))
-        echo "  batch ${batch_num}: ${#batch[@]} tests"
-        if ! pytest "${batch[@]}" -q --tb=line -p no:cov -p no:cacheprovider; then
-          fail=1
-        fi
-        batch=()
-      }
       while IFS= read -r t; do
         [ -z "$t" ] && continue
-        batch+=("$t")
-        if [ "${#batch[@]}" -ge "$batch_size" ]; then
-          flush_batch
+        batch_num=$((batch_num + 1))
+        echo "  batch ${batch_num}/${total}: $t"
+        if ! pytest "$t" -q --tb=line -p no:cov -p no:cacheprovider; then
+          fail=1
         fi
       done < /tmp/heavy-tests.txt
-      flush_batch
       if [ "$fail" -ne 0 ]; then
         echo "One or more heavy batches failed"
         exit 1
