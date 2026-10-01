@@ -18,7 +18,7 @@ stages:
     KUBERNETES_MEMORY_REQUEST: "4Gi"
     KUBERNETES_MEMORY_LIMIT: "8Gi"
     COVERAGE_CORE: sysmon
-  parallel: 6
+  parallel: 8
   script:
     - cd src/backend
     - pip install --upgrade pip
@@ -44,39 +44,19 @@ stages:
           > "../../coverage-${CI_NODE_INDEX}.xml"
         exit 0
       fi
-      # Batch within the shard so coverage memory resets between groups.
-      # Cap each batch by line budget — a single 3kLOC file alone can OOM ALM.
+      # One test file per coverage process — multi-file batches still OOM on ALM
+      # even under the line budget (cumulative cov tracer cost).
       rm -f .coverage .coverage.*
-      line_budget=2500
       fail=0
-      batch=()
-      batch_lines=0
       batch_num=0
-      flush_batch() {
-        if [ "${#batch[@]}" -eq 0 ]; then
-          return 0
-        fi
+      for f in "${shard[@]}"; do
         batch_num=$((batch_num + 1))
-        echo "  batch ${batch_num}: ${#batch[@]} files (~${batch_lines} lines)"
-        if ! coverage run --parallel-mode --source=app -m pytest "${batch[@]}" -q --tb=line; then
+        n=$(wc -l < "$f" | tr -d ' ')
+        echo "  batch ${batch_num}: 1 file (~${n} lines) $f"
+        if ! coverage run --parallel-mode --source=app -m pytest "$f" -q --tb=line; then
           fail=1
         fi
-        batch=()
-        batch_lines=0
-      }
-      for f in "${shard[@]}"; do
-        n=$(wc -l < "$f" | tr -d ' ')
-        if [ "${#batch[@]}" -gt 0 ] && [ $((batch_lines + n)) -gt "$line_budget" ]; then
-          flush_batch
-        fi
-        batch+=("$f")
-        batch_lines=$((batch_lines + n))
-        # Huge files always run alone.
-        if [ "$n" -gt "$line_budget" ]; then
-          flush_batch
-        fi
       done
-      flush_batch
       coverage combine
       coverage xml -o "../../coverage-${CI_NODE_INDEX}.xml"
       if [ "$fail" -ne 0 ]; then
