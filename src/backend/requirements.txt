@@ -53,6 +53,7 @@ redis==8.1.0
 requests==2.34.2
 rq==2.12.0
 ruff==0.16.9
+vulture==2.16
 s3transfer==0.19.2
 six==1.17.0
 SQLAlchemy==2.1.1

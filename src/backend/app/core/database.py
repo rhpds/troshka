@@ -39,7 +39,7 @@ engine = create_engine(
 
 
 @event.listens_for(engine, "checkout")
-def _on_checkout(dbapi_conn, connection_record, connection_proxy):
+def _on_checkout(_dbapi_conn, _connection_record, _connection_proxy):
     pool = cast(QueuePool, engine.pool)
     _log.debug(
         "DB pool: %d/%d checked out, %d overflow",
@@ -50,7 +50,7 @@ def _on_checkout(dbapi_conn, connection_record, connection_proxy):
 
 
 @event.listens_for(engine, "checkin")
-def _on_checkin(dbapi_conn, connection_record):
+def _on_checkin(_dbapi_conn, _connection_record):
     pool = cast(QueuePool, engine.pool)
     if pool.checkedout() > pool.size():
         _log.warning(

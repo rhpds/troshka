@@ -57,6 +57,16 @@ repos:
         args: ["--fix"]
         files: ^src/backend/
 
+  # Dead code (backend) — matches CI vulture step (min_confidence from pyproject)
+  - repo: local
+    hooks:
+      - id: vulture-backend
+        name: Vulture check (backend)
+        entry: bash -c 'cd src/backend && if [ -x ./venv/bin/vulture ]; then ./venv/bin/vulture; else vulture; fi'
+        language: system
+        files: ^src/backend/app/.*\.py$
+        pass_filenames: false
+
   # Python type checking (backend) — matches CI pyright step
   - repo: local
     hooks:

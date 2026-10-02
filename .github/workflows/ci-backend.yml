@@ -38,6 +38,9 @@ jobs:
       - name: Lint with ruff
         run: ruff check .
 
+      - name: Dead code with vulture
+        run: vulture
+
       - name: Lint Troshka templates (JSON Schema)
         working-directory: .
         run: python3 scripts/lint-templates.py --quiet
