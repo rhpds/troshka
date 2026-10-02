@@ -4470,6 +4470,21 @@ def _setup_namespace_and_veth(
         pass
 
     _run_cmd(job, ["sysctl", "-w", "net.ipv4.ip_forward=1"], timeout=10)
+    # Netns defaults to ip_forward=0; without this, guests reach local dnsmasq
+    # but cannot be forwarded out the gateway veth (dnf/HTTPS hang).
+    _run_cmd(
+        job,
+        [
+            "ip",
+            "netns",
+            "exec",
+            ns,
+            "sysctl",
+            "-w",
+            "net.ipv4.ip_forward=1",
+        ],
+        timeout=10,
+    )
     _job_log(job, "Namespace and veth pair configured")
 
 
