@@ -1,3 +1,6 @@
+# Lint/format on commit; pytest only on push (see pytest-backend).
+default_stages: [pre-commit]
+
 repos:
   # Security: Secret scanning
   - repo: https://github.com/Yelp/detect-secrets
@@ -99,6 +102,18 @@ repos:
             package-lock\.json
           )
 
+  # Full backend suite on push (not commit) — matches CI pytest; ~1m locally.
+  # Escape: SKIP=pytest-backend git push
+  - repo: local
+    hooks:
+      - id: pytest-backend
+        name: Pytest (backend)
+        entry: bash -c 'cd src/backend && if [ -x ./venv/bin/python3 ]; then ./venv/bin/python3 -m pytest tests/ -q --tb=line; else python3 -m pytest tests/ -q --tb=line; fi'
+        language: system
+        files: ^src/backend/
+        pass_filenames: false
+        stages: [pre-push]
+
 
 fail_fast: false
-minimum_pre_commit_version: "2.20.0"
+minimum_pre_commit_version: "3.2.0"
