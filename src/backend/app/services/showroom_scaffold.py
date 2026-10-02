@@ -5,12 +5,19 @@ from __future__ import annotations
 import base64
 import json
 import re
+import secrets
 import uuid
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 NOOKBAG_BUNDLE = "https://github.com/rhpds/nookbag/releases/download/nookbag-v0.3.2/nookbag-v0.3.2.zip"
 WETTY_IMAGE = "quay.io/rhpds/wetty:v2.5"
 WETTY_BASE_PORT = 8001
+
+# Static capability token for showroom edge access (query ?token= + cookie).
+SHOWROOM_ACCESS_TOKEN_KEY = "_showroom_access_token"
+SHOWROOM_URL_KEY = "_showroom_url"
+SHOWROOM_COOKIE_NAME = "troshka_sr"
 
 # Cluster-terminal (bastionless oc shell) image: a purpose-built UBI9 (glibc)
 # wetty image with `oc` + the cluster-shell wrapper baked in, running as an
@@ -47,6 +54,89 @@ def _id() -> str:
 
 def _mac() -> str:
     return "52:54:00:" + ":".join(f"{b:02x}" for b in uuid.uuid4().bytes[:3])
+
+
+def mint_showroom_access_token() -> str:
+    """Mint a static URL-safe showroom capability token (not short-lived)."""
+    return secrets.token_urlsafe(32)
+
+
+def ensure_showroom_access_token(store: dict[str, Any]) -> str:
+    """Return existing ``_showroom_access_token`` on ``store``, or mint and set it."""
+    token = str(store.get(SHOWROOM_ACCESS_TOKEN_KEY) or "").strip()
+    if token:
+        return token
+    token = mint_showroom_access_token()
+    store[SHOWROOM_ACCESS_TOKEN_KEY] = token
+    return token
+
+
+def showroom_url_with_token(base_url: str, token: str) -> str:
+    """Append ``token`` query param to a showroom base URL (idempotent replace)."""
+    base_url = (base_url or "").strip()
+    token = (token or "").strip()
+    if not base_url or not token:
+        return base_url
+    parts = urlsplit(base_url)
+    query = [
+        (k, v)
+        for k, v in parse_qsl(parts.query, keep_blank_values=True)
+        if k != "token"
+    ]
+    query.append(("token", token))
+    path = parts.path or "/"
+    return urlunsplit(
+        (parts.scheme, parts.netloc, path, urlencode(query), parts.fragment)
+    )
+
+
+def _is_oauth_app_proxy_host(host: str) -> bool:
+    """True when the internal host is an OAuth companion (must stay ungated)."""
+    return "oauth" in (host or "").lower()
+
+
+def _oauth_exempt_app_proxy_hosts(resolved: list[dict[str, Any]]) -> set[str]:
+    """Hosts that must not require the showroom capability token.
+
+    ``proxy_hosts[0]`` is the iframe target; ``[1:]`` are OAuth companions.
+    Hostnames containing ``oauth`` are also exempt (belt-and-suspenders).
+    """
+    exempt: set[str] = set()
+    for item in resolved:
+        hosts = list(item.get("appProxyHosts") or [])
+        for h in hosts[1:]:
+            if h:
+                exempt.add(h)
+        for h in hosts:
+            if h and _is_oauth_app_proxy_host(h):
+                exempt.add(h)
+    return exempt
+
+
+def _nginx_token_maps(access_token: str) -> list[str]:
+    """http-context maps for query-token or cookie acceptance."""
+    return [
+        "  map $arg_token $troshka_sr_arg_ok {",
+        "    default 0;",
+        f'    "{access_token}" 1;',
+        "  }",
+        f"  map $cookie_{SHOWROOM_COOKIE_NAME} $troshka_sr_cookie_ok {{",
+        "    default 0;",
+        f'    "{access_token}" 1;',
+        "  }",
+    ]
+
+
+def _nginx_token_gate_lines(access_token: str, indent: str = "    ") -> list[str]:
+    """Deny unless query token or cookie matches; set cookie on success."""
+    cookie = f"{SHOWROOM_COOKIE_NAME}={access_token}; Path=/; Secure; HttpOnly; SameSite=None"
+    return [
+        f"{indent}set $troshka_sr_ok 0;",
+        f"{indent}if ($troshka_sr_arg_ok) {{ set $troshka_sr_ok 1; }}",
+        f"{indent}if ($troshka_sr_cookie_ok) {{ set $troshka_sr_ok 1; }}",
+        f"{indent}if ($troshka_sr_ok = 0) {{ return 401; }}",
+        f'{indent}add_header Set-Cookie "{cookie}";',
+    ]
 
 
 def _slugify(name: str) -> str:
@@ -431,30 +521,44 @@ def derive_apps_domain(route_hostname: str) -> str:
 
 
 def fill_app_proxy_tab_urls(
-    ui_yaml: str, project_id: str, apps_domain: str, namespace: str
+    ui_yaml: str,
+    project_id: str,
+    apps_domain: str,
+    namespace: str,
+    access_token: str | None = None,
 ) -> str:
     """Replace __TROSHKA_APP_PROXY__<internal>__ placeholders in the rendered
     ui-config with the deterministic public https URL (deploy-time substitution)."""
 
     def _repl(m: re.Match[str]) -> str:
         internal = m.group(1)
-        return "https://" + app_proxy_public_host(
+        url = "https://" + app_proxy_public_host(
             project_id, internal, apps_domain, namespace
         )
+        if access_token:
+            return showroom_url_with_token(url, access_token)
+        return url
 
     return re.sub(r"__TROSHKA_APP_PROXY__([a-z0-9.-]+)__", _repl, ui_yaml)
 
 
 def fill_app_proxy_tab_urls_eip(
-    ui_yaml: str, project_id: str, eip: str, namespace: str = "lab"
+    ui_yaml: str,
+    project_id: str,
+    eip: str,
+    namespace: str = "lab",
+    access_token: str | None = None,
 ) -> str:
     """Cloud fill: same placeholders → https://tpf-…-<ns>.<eip>.sslip.io."""
 
     def _repl(m: re.Match[str]) -> str:
         internal = m.group(1)
-        return "https://" + app_proxy_eip_public_host(
+        url = "https://" + app_proxy_eip_public_host(
             project_id, internal, eip, namespace
         )
+        if access_token:
+            return showroom_url_with_token(url, access_token)
+        return url
 
     return re.sub(r"__TROSHKA_APP_PROXY__([a-z0-9.-]+)__", _repl, ui_yaml)
 
@@ -641,11 +745,15 @@ def build_ui_config_yaml(
     return "\n".join(lines) + "\n"
 
 
-def _nginx_wetty_location(item: dict[str, Any]) -> list[str]:
+def _nginx_wetty_location(
+    item: dict[str, Any], access_token: str | None = None
+) -> list[str]:
     """nginx location block for a wetty (terminal) tab."""
     path = item["wettyPath"].rstrip("/")
+    gate = _nginx_token_gate_lines(access_token, "      ") if access_token else []
     return [
         f"    location ^~ {path} {{",
+        *gate,
         f"      proxy_pass http://127.0.0.1:{item['wettyPort']}{path};",
         "      proxy_http_version 1.1;",
         "      proxy_set_header Upgrade $http_upgrade;",
@@ -656,13 +764,17 @@ def _nginx_wetty_location(item: dict[str, Any]) -> list[str]:
     ]
 
 
-def _nginx_proxy_location(item: dict[str, Any]) -> list[str]:
+def _nginx_proxy_location(
+    item: dict[str, Any], access_token: str | None = None
+) -> list[str]:
     """nginx location block for an inline (non-app-proxy) proxy tab."""
     loc = item["proxyPath"]
     proxy_host = item.get("proxyHost")
     host_value = proxy_host if proxy_host else "$host"
+    gate = _nginx_token_gate_lines(access_token, "      ") if access_token else []
     blocks = [
         f"    location {loc} {{",
+        *gate,
         f"      proxy_pass {item['proxyTarget']};",
         "      proxy_http_version 1.1;",
         "      proxy_set_header Upgrade $http_upgrade;",
@@ -690,7 +802,9 @@ def _collect_app_proxy_hosts(resolved: list[dict[str, Any]]) -> list[str]:
     return app_hosts
 
 
-def _nginx_tab_locations(resolved: list[dict[str, Any]]) -> list[str]:
+def _nginx_tab_locations(
+    resolved: list[dict[str, Any]], access_token: str | None = None
+) -> list[str]:
     """Emit wetty + inline-proxy location blocks for resolved tabs."""
     blocks: list[str] = []
     for item in resolved:
@@ -700,19 +814,22 @@ def _nginx_tab_locations(resolved: list[dict[str, Any]]) -> list[str]:
             and item.get("wettyPath")
             and item.get("wettyPort")
         ):
-            blocks.extend(_nginx_wetty_location(item))
+            blocks.extend(_nginx_wetty_location(item, access_token=access_token))
         if (
             tab.get("type") == "proxy"
             and item.get("proxyPath")
             and item.get("proxyTarget")
         ):
-            blocks.extend(_nginx_proxy_location(item))
+            blocks.extend(_nginx_proxy_location(item, access_token=access_token))
     return blocks
 
 
 def build_nginx_config(
-    resolved: list[dict[str, Any]], resolver_ips: list[str] | None = None
+    resolved: list[dict[str, Any]],
+    resolver_ips: list[str] | None = None,
+    access_token: str | None = None,
 ) -> str:
+    access_token = (access_token or "").strip() or None
     blocks = [
         "user root;",
         "events {}",
@@ -723,21 +840,34 @@ def build_nginx_config(
         "    default upgrade;",
         "    '' close;",
         "  }",
-        "  server {",
-        "    listen 80;",
-        "    location / {",
-        "      proxy_pass http://127.0.0.1:8000;",
-        "      proxy_set_header Host $host;",
-        "      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
-        "      proxy_set_header X-Forwarded-Proto $scheme;",
-        "    }",
     ]
-    blocks.extend(_nginx_tab_locations(resolved))
+    if access_token:
+        blocks.extend(_nginx_token_maps(access_token))
+    main_gate = _nginx_token_gate_lines(access_token, "      ") if access_token else []
+    blocks.extend(
+        [
+            "  server {",
+            "    listen 80;",
+            "    location / {",
+            *main_gate,
+            "      proxy_pass http://127.0.0.1:8000;",
+            "      proxy_set_header Host $host;",
+            "      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;",
+            "      proxy_set_header X-Forwarded-Proto $scheme;",
+            "    }",
+        ]
+    )
+    blocks.extend(_nginx_tab_locations(resolved, access_token=access_token))
     blocks.append("  }")  # close main server
     app_hosts = _collect_app_proxy_hosts(resolved)
     if app_hosts:
         blocks.append(
-            build_app_proxy_config(app_hosts, resolver_ips=resolver_ips).rstrip("\n")
+            build_app_proxy_config(
+                app_hosts,
+                resolver_ips=resolver_ips,
+                access_token=access_token,
+                oauth_exempt_hosts=_oauth_exempt_app_proxy_hosts(resolved),
+            ).rstrip("\n")
         )
     blocks.append("}")  # close http
     return "\n".join(blocks) + "\n"
@@ -765,7 +895,10 @@ def dns_network_resolver_ips(cidr: str, dns_server_ip: str = "") -> list[str]:
 
 
 def build_app_proxy_config(
-    internal_hosts: list[str], resolver_ips: list[str] | None = None
+    internal_hosts: list[str],
+    resolver_ips: list[str] | None = None,
+    access_token: str | None = None,
+    oauth_exempt_hosts: set[str] | None = None,
 ) -> str:
     """nginx server blocks that embed OAuth-protected cluster apps (console, oauth)
     in the showroom iframe, baked at scaffold time.
@@ -789,11 +922,18 @@ def build_app_proxy_config(
     proxy CrashLoopBackOffs (KubeVirt, where the pod's own resolver can't resolve
     the lab domain). Deferred resolution lets nginx start and self-heal once the
     console is up.
+
+    When ``access_token`` is set, non-oauth app-proxy vhosts require
+    ``?token=`` or the ``troshka_sr`` cookie. OAuth companion hosts in
+    ``oauth_exempt_hosts`` (and any host with ``oauth`` in the name) stay open so
+    nested OAuth redirects keep working.
     """
     # Skip blank hosts: an empty entry would emit `proxy_pass https://;`, which
     # nginx rejects and the showroom proxy would fail to start.
     internal_hosts = [h.strip() for h in internal_hosts if (h or "").strip()]
     resolver_ips = [ip.strip() for ip in (resolver_ips or []) if (ip or "").strip()]
+    access_token = (access_token or "").strip() or None
+    oauth_exempt_hosts = set(oauth_exempt_hosts or ())
     resolver_line = (
         f'    resolver {" ".join(resolver_ips)} valid=10s ipv6=off;'
         if resolver_ips
@@ -857,12 +997,19 @@ def build_app_proxy_config(
                 f'    set ${var} "{host}";',
                 f"    proxy_pass https://${var};",
             ]
+        gate_host = host in oauth_exempt_hosts or _is_oauth_app_proxy_host(host)
+        gate = (
+            _nginx_token_gate_lines(access_token, "    ")
+            if access_token and not gate_host
+            else []
+        )
         blocks.extend(
             [
                 "server {",
                 "  listen 80;",
                 f"  server_name {_app_proxy_server_name_regex(code, all_codes)};",
                 "  location / {",
+                *gate,
                 *proxy_lines,
                 "    proxy_ssl_server_name on;",
                 f"    proxy_ssl_name {host};",
@@ -1116,6 +1263,7 @@ def regenerate_showroom_containers(
     vms_def: dict[str, Any],
     vm_name_to_id: dict[str, str],
     resolver_ips: list[str] | None = None,
+    access_token: str | None = None,
 ) -> None:
     """Rebuild an existing showroom node's init/pod containers + nginx/ui-config in
     place from its ``showroomTabs``.
@@ -1133,7 +1281,9 @@ def regenerate_showroom_containers(
     tabs = data.get("showroomTabs") or []
     resolved = resolve_showroom_tabs(tabs, vms_def, vm_name_to_id)
     nginx_b64 = base64.b64encode(
-        build_nginx_config(resolved, resolver_ips=resolver_ips).encode()
+        build_nginx_config(
+            resolved, resolver_ips=resolver_ips, access_token=access_token
+        ).encode()
     ).decode()
     ui_config_b64 = base64.b64encode(build_ui_config_yaml(resolved).encode()).decode()
     content_repo = str(data.get("contentRepo", ""))
@@ -1158,6 +1308,7 @@ def build_showroom_from_config(
     vm_row_y: int,
     clusters: list[dict[str, Any]] | None = None,
     resolver_ips: list[str] | None = None,
+    access_token: str | None = None,
 ) -> tuple[dict[str, Any], list[dict], list[dict], list[dict], dict[str, Any]]:
     """Return showroom container node, disks, edges, and topology.showroom metadata.
 
@@ -1176,7 +1327,9 @@ def build_showroom_from_config(
     )
     resolved = resolve_showroom_tabs(tabs, vms_def, vm_name_to_id)
     nginx_b64 = base64.b64encode(
-        build_nginx_config(resolved, resolver_ips=resolver_ips).encode()
+        build_nginx_config(
+            resolved, resolver_ips=resolver_ips, access_token=access_token
+        ).encode()
     ).decode()
     ui_config_b64 = base64.b64encode(build_ui_config_yaml(resolved).encode()).decode()
 

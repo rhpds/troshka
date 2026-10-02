@@ -5681,15 +5681,29 @@ def _prepare_showroom_topology(
         build_vms_def_from_topology,
         inject_showroom_gateway_port_forwards,
     )
-    from app.services.showroom_scaffold import regenerate_showroom_containers
+    from app.services.showroom_scaffold import (
+        SHOWROOM_ACCESS_TOKEN_KEY,
+        regenerate_showroom_containers,
+    )
 
     vms_def, vm_name_to_id = build_vms_def_from_topology(current)
-    regenerate_showroom_containers(cur, vms_def, vm_name_to_id)
+    proj = s.query(Project).filter_by(id=p_id).first()
+    token = ""
+    if proj is not None:
+        token = str(
+            (proj.deployed_topology or {}).get(SHOWROOM_ACCESS_TOKEN_KEY)
+            or current.get(SHOWROOM_ACCESS_TOKEN_KEY)
+            or ""
+        ).strip()
+    regenerate_showroom_containers(
+        cur, vms_def, vm_name_to_id, access_token=token or None
+    )
     provider = getattr(h, "provider_type", None) or ""
     inject_showroom_gateway_port_forwards(current, vni_map, provider)
+    if token:
+        current[SHOWROOM_ACCESS_TOKEN_KEY] = token
     _deploy_create_provider_routes(s, p_id, current, host=h)
 
-    proj = s.query(Project).filter_by(id=p_id).first()
     if proj is not None:
         proj.topology = current
         flag_modified(proj, "topology")
@@ -5712,6 +5726,7 @@ def _reconfigure_showroom(
     )
     from app.services.deploy_topology import build_vms_def_from_topology
     from app.services.showroom_scaffold import (
+        SHOWROOM_ACCESS_TOKEN_KEY,
         _find_showroom_container,
         regenerate_showroom_containers,
     )
@@ -5726,7 +5741,16 @@ def _reconfigure_showroom(
     # deployed spec and the terminal would never (re)deploy. Regenerating first
     # makes the diff reflect the real spec that should be running.
     vms_def, vm_name_to_id = build_vms_def_from_topology(current)
-    regenerate_showroom_containers(cur, vms_def, vm_name_to_id)
+    token = str(
+        (deployed or {}).get(SHOWROOM_ACCESS_TOKEN_KEY)
+        or current.get(SHOWROOM_ACCESS_TOKEN_KEY)
+        or ""
+    ).strip()
+    if token:
+        current[SHOWROOM_ACCESS_TOKEN_KEY] = token
+    regenerate_showroom_containers(
+        cur, vms_def, vm_name_to_id, access_token=token or None
+    )
     if not _showroom_config_changed(cur, _find_showroom_container(deployed)):
         return
     try:

@@ -215,7 +215,10 @@ def test_maybe_setup_runs_for_cloud_with_showroom():
             sess, host, topo, proj, [{"ip": "1.2.3.4"}], {"net": 5}
         )
     mk.assert_called_once()
-    assert proj.deployed_topology["_showroom_url"] == "https://x"
+    url = proj.deployed_topology["_showroom_url"]
+    assert url.startswith("https://x")
+    assert "token=" in url
+    assert proj.deployed_topology.get("_showroom_access_token")
 
 
 def test_maybe_setup_does_not_leak_url_into_editable_topology():
@@ -236,9 +239,11 @@ def test_maybe_setup_does_not_leak_url_into_editable_topology():
         ds._maybe_setup_showroom_tls(
             sess, host, shared, proj, [{"ip": "1.2.3.4"}], {"net": 5}
         )
-    assert proj.deployed_topology["_showroom_url"] == "https://x"
+    assert proj.deployed_topology["_showroom_url"].startswith("https://x")
+    assert "token=" in proj.deployed_topology["_showroom_url"]
     # The editable topology must NOT have gained the URL.
     assert "_showroom_url" not in proj.topology
+    assert "_showroom_access_token" not in proj.topology
 
 
 def test_maybe_setup_is_non_fatal_on_error():
@@ -278,3 +283,39 @@ def test_patch_live_showroom_ui_config_uses_containers_exec():
     assert path == "/containers/exec"
     params = mk_start.call_args[0][2]
     assert params["container_name"] == "troshka-d0969e66-showroom-proxy"
+
+
+def test_stamp_showroom_access_url_reuses_token():
+    proj = _proj()
+    proj.topology = {"nodes": []}
+    proj.deployed_topology = {
+        "_showroom_access_token": "static-token-abc",
+        "nodes": [],
+    }
+    url = ds._stamp_showroom_access_url(proj, "https://showroom.example.com")
+    assert url == "https://showroom.example.com/?token=static-token-abc"
+    assert proj.deployed_topology["_showroom_access_token"] == "static-token-abc"
+    assert proj.deployed_topology["_showroom_url"] == url
+    # Second stamp keeps the same token
+    url2 = ds._stamp_showroom_access_url(proj, "https://showroom.example.com")
+    assert "token=static-token-abc" in url2
+
+
+def test_showroom_public_base_url_from_route_endpoint():
+    topo = {
+        "nodes": [
+            {
+                "data": {
+                    "subtype": "gateway",
+                    "externalEndpoints": [
+                        {
+                            "vmName": "showroom",
+                            "hostname": "showroom-ns.apps.example.com",
+                            "port": 443,
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+    assert ds._showroom_public_base_url(topo) == "https://showroom-ns.apps.example.com"

@@ -1345,6 +1345,7 @@ def reconfigure_showroom_kubevirt(
     )
     from app.services.deploy_topology import build_vms_def_from_topology
     from app.services.showroom_scaffold import (
+        SHOWROOM_ACCESS_TOKEN_KEY,
         _find_showroom_container,
         regenerate_showroom_containers,
     )
@@ -1353,7 +1354,16 @@ def reconfigure_showroom_kubevirt(
     if not cur:
         return
     vms_def, vm_name_to_id = build_vms_def_from_topology(current)
-    regenerate_showroom_containers(cur, vms_def, vm_name_to_id)
+    token = str(
+        (deployed or {}).get(SHOWROOM_ACCESS_TOKEN_KEY)
+        or current.get(SHOWROOM_ACCESS_TOKEN_KEY)
+        or ""
+    ).strip()
+    if token:
+        current[SHOWROOM_ACCESS_TOKEN_KEY] = token
+    regenerate_showroom_containers(
+        cur, vms_def, vm_name_to_id, access_token=token or None
+    )
     if not _showroom_config_changed(cur, _find_showroom_container(deployed)):
         return
     try:

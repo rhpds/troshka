@@ -2583,73 +2583,32 @@ def _redfish_eject_media_cmd(
     )
 
 
-def _redfish_force_restart_cmd(indent: str, bmc_ips_str: str) -> str:
-    """ForceRestart each BMC so the live domain reloads inactive (disk-first) XML.
-
-    Pair with ``_redfish_eject_media_cmd`` after disk-write: EjectMedia alone only
-    rewrites inactive libvirt XML; destroy+create is what drops the live CDROM.
-    """
-    b = indent
-    b2 = indent + "  "
-    b4 = indent + "    "
-    c = _REDFISH_CURL
-    return (
-        f"{b}for BMC_IP in {bmc_ips_str}; do\n"
-        f'{b2}SYS_ID=""\n'
-        f"{b2}for _try in $(seq 1 12); do\n"
-        f"{b4}SYS_ID=$({c} -u admin:$BMC_PASS http://${{BMC_IP}}:8000/redfish/v1/Systems | python3 -c \"import json,sys; print(json.load(sys.stdin)['Members'][0]['@odata.id'].split('/')[-1])\" 2>/dev/null) && [ -n \"$SYS_ID\" ] && break\n"
-        f"{b4}sleep 5\n"
-        f"{b2}done\n"
-        f'{b2}[ -z "$SYS_ID" ] && continue\n'
-        f'{b2}echo "  ForceRestart $BMC_IP so live domain drops CDROM '
-        f'(inactive already disk-first)"\n'
-        f"{b2}{c} -u admin:$BMC_PASS -X POST "
-        f'"http://${{BMC_IP}}:8000/redfish/v1/Systems/${{SYS_ID}}'
-        f'/Actions/ComputerSystem.Reset" \\\n'
-        f"{b4}-H 'Content-Type: application/json' \\\n"
-        f'{b4}-d "{{\\"ResetType\\": \\"ForceRestart\\"}}" '
-        f">/dev/null 2>&1 || true\n"
-        f"{b}done\n"
-    )
-
-
 def _start_disk_write_eject_watch_cmd(
     indent: str, bmc_ips_str: str, log_path: str
 ) -> str:
-    """Background: eject at disk-write 100%, ForceRestart after assisted Rebooting.
+    """Background: log disk-write 100%; do **not** Redfish-eject/ForceRestart yet.
 
-    Continuous Cd is required for the initial ForceRestart into the agent ISO.
-    Leaving it set through the post-disk guest reboot re-enters the agent
-    (ae766856 regression). EjectMedia only updates inactive libvirt XML, so a
-    ForceRestart (destroy+create) is still required for the live domain to boot
-    disk-first — but doing that *immediately* at disk-write 100% can cut the
-    assisted pivot short and land on bare RHCOS (Ignition: no config / no
-    kube-apiserver). Wait for the Rebooting stage (or a short timeout) first.
+    KubeVirt BMC ``set_boot_device`` / ``eject_image`` both delete the live VMI.
+    Calling either at disk-write 100% kills assisted before it can finalize
+    (upload logs → report Rebooting → soft-reboot) and leaves bare RHCOS with
+    ``Ignition: no config provided by user`` and no kube-apiserver.
+
+    Continuous Cd on the KubeVirt BMC already assigns **disk-first** boot order
+    (empty disk falls through to the agent ISO on first boot; post-write soft
+    reboot hits the installed OS). ISO cleanup stays on the install-complete
+    eject (no ForceRestart). ``bmc_ips_str`` retained for call-site symmetry.
     """
+    _ = bmc_ips_str  # eject deferred to install-complete; see docstring
     b = indent
     b2 = indent + "  "
-    b4 = indent + "    "
-    eject = _redfish_eject_media_cmd(b2, bmc_ips_str, force_restart=False)
-    restart = _redfish_force_restart_cmd(b2, bmc_ips_str)
     return (
-        f"{b}# Clear Continuous Cd + eject ISO at disk-write 100%; ForceRestart after Rebooting.\n"
+        f"{b}# Disk-write 100%: do not Redfish-eject/ForceRestart (KubeVirt BMC "
+        f"VMI delete would cut the assisted pivot).\n"
         f"{b}(\n"
         f"{b2}for _dw in $(seq 1 360); do\n"
         f"{b2}  if grep -q 'Writing image to disk: 100%' {log_path} 2>/dev/null; then\n"
-        f"{b2}    echo 'Disk image written — clearing Continuous Cd + ejecting ISO'\n"
-        f"{eject}"
-        f"{b2}    echo 'Waiting for assisted Rebooting stage before ForceRestart "
-        f"(avoid cutting pivot short)...'\n"
-        f"{b2}    for _rb in $(seq 1 36); do\n"
-        f"{b4}if grep -qE 'installation stage Rebooting|reached installation stage Rebooting' "
-        f"{log_path} 2>/dev/null; then\n"
-        f"{b4}  echo 'Assisted reported Rebooting — ForceRestart so live boots disk'\n"
-        f"{b4}  break\n"
-        f"{b4}fi\n"
-        f"{b4}sleep 5\n"
-        f"{b2}    done\n"
-        f"{b2}    # Timeout: still ForceRestart so a soft-reboot cannot keep live CDROM.\n"
-        f"{restart}"
+        f"{b2}    echo 'Disk image written — leaving BMC media alone so assisted "
+        f"can finalize and soft-reboot into the installed OS'\n"
         f"{b2}    break\n"
         f"{b2}  fi\n"
         f"{b2}  sleep 5\n"

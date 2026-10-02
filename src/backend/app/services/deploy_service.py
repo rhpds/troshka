@@ -200,6 +200,79 @@ def _showroom_fqdn(project, eip: str = "") -> str:
     return ""
 
 
+def _resolve_showroom_access_token(project, topology: dict | None = None) -> str:
+    """Reuse a persisted showroom capability token, or mint a new static one.
+
+    Prefers ``deployed_topology._showroom_access_token``, then the working
+    ``topology`` copy (minted during refresh), else mints.
+    """
+    from app.services.showroom_scaffold import (
+        SHOWROOM_ACCESS_TOKEN_KEY,
+        mint_showroom_access_token,
+    )
+
+    for store in (project.deployed_topology, topology):
+        if isinstance(store, dict):
+            existing = str(store.get(SHOWROOM_ACCESS_TOKEN_KEY) or "").strip()
+            if existing:
+                return existing
+    token = mint_showroom_access_token()
+    if isinstance(topology, dict):
+        topology[SHOWROOM_ACCESS_TOKEN_KEY] = token
+    return token
+
+
+def _stamp_showroom_access_url(
+    project, base_url: str, topology: dict | None = None
+) -> str:
+    """Persist static access token + tokenized ``_showroom_url`` on deployed only.
+
+    Scrubs token/URL keys off the editable ``project.topology`` when it is a
+    distinct dict (same pattern as the TLS showroom URL stamp).
+    """
+    from app.services.showroom_scaffold import (
+        SHOWROOM_ACCESS_TOKEN_KEY,
+        SHOWROOM_URL_KEY,
+        showroom_url_with_token,
+    )
+
+    base_url = (base_url or "").strip()
+    if not base_url:
+        return ""
+    token = _resolve_showroom_access_token(project, topology)
+    if isinstance(topology, dict):
+        topology[SHOWROOM_ACCESS_TOKEN_KEY] = token
+    deployed = copy.deepcopy(project.deployed_topology or topology or {})
+    deployed[SHOWROOM_ACCESS_TOKEN_KEY] = token
+    url = showroom_url_with_token(base_url, token)
+    deployed[SHOWROOM_URL_KEY] = url
+    project.deployed_topology = deployed
+    editable = project.topology
+    if isinstance(editable, dict) and editable is not deployed:
+        editable.pop(SHOWROOM_ACCESS_TOKEN_KEY, None)
+        editable.pop(SHOWROOM_URL_KEY, None)
+    return url
+
+
+def _showroom_public_base_url(topology: dict) -> str:
+    """HTTPS base URL for the showroom route hostname, if present."""
+    hostname = _showroom_route_hostname(topology)
+    if not hostname:
+        return ""
+    port = None
+    for node in topology.get("nodes", []):
+        data = node.get("data") or {}
+        if data.get("subtype") != "gateway":
+            continue
+        for ep in data.get("externalEndpoints") or []:
+            if ep.get("vmName") == "showroom" and ep.get("hostname") == hostname:
+                port = ep.get("port")
+                break
+    if str(port or "") == "80":
+        return f"http://{hostname}"
+    return f"https://{hostname}"
+
+
 def _resolve_showroom_dns_provider(s, project):
     """Return (type, config) for the project's DnsProvider, or (None, {})."""
     if not project.dns_provider_id:
@@ -412,17 +485,19 @@ def _maybe_setup_showroom_tls(s, host, topology, project, external_ips, vni_map)
         # Fill console/oauth iframe URLs (Host-based app-proxy via sslip.io → EIP).
         from app.services.showroom_scaffold import _find_showroom_container
 
+        token = _resolve_showroom_access_token(project, topology)
         showroom_node = _find_showroom_container(topology)
         if showroom_node:
-            filled = _fill_showroom_app_proxy_urls_eip(showroom_node, project.id, eip)
+            filled = _fill_showroom_app_proxy_urls_eip(
+                showroom_node, project.id, eip, access_token=token
+            )
             if filled:
                 _patch_live_showroom_ui_config(host, project.id, filled)
         # deployed_topology may be the SAME dict object as project.topology
         # (aliased in _deploy_complete_and_notify). Deep-copy before writing the
         # URL so the editable topology never gains _showroom_url (canvas drift).
-        deployed_topo = copy.deepcopy(project.deployed_topology or {})
-        deployed_topo["_showroom_url"] = url
-        project.deployed_topology = deployed_topo
+        stamped = _stamp_showroom_access_url(project, url, topology)
+        logger.info("Deploy %s: showroom access URL %s", project.id[:8], stamped)
         s.commit()
     except Exception:
         logger.warning(
@@ -5971,7 +6046,12 @@ def redeploy_container_bg(project_id: str, container_id: str) -> None:
             else None
         )
         topo = copy.deepcopy(project.topology or {})
-        _refresh_showroom_spec(topo, project_id)
+        from app.services.showroom_scaffold import SHOWROOM_ACCESS_TOKEN_KEY
+
+        existing_token = str(
+            (project.deployed_topology or {}).get(SHOWROOM_ACCESS_TOKEN_KEY) or ""
+        ).strip()
+        _refresh_showroom_spec(topo, project_id, access_token=existing_token or None)
         if any(
             _is_showroom_node(n) and n.get("id") == container_id
             for n in topo.get("nodes", [])
@@ -8574,10 +8654,23 @@ def _create_app_proxy_routes(driver, provider, project_id, topology, showroom_ro
                 internal,
                 exc_info=True,
             )
-    _fill_showroom_app_proxy_urls(showroom_node, project_id, apps_domain, namespace)
+    _fill_showroom_app_proxy_urls(
+        showroom_node,
+        project_id,
+        apps_domain,
+        namespace,
+        access_token=str(
+            topology.get("_showroom_access_token")
+            or (showroom_node.get("data") or {}).get("_showroom_access_token")
+            or ""
+        ).strip()
+        or None,
+    )
 
 
-def _fill_showroom_app_proxy_urls(showroom_node, project_id, apps_domain, namespace):
+def _fill_showroom_app_proxy_urls(
+    showroom_node, project_id, apps_domain, namespace, access_token: str | None = None
+):
     """Substitute the __TROSHKA_APP_PROXY__ placeholder in the showroom pod's baked
     ui-config (UI_CONFIG_B64 init env) with the deterministic public host URL."""
     import base64
@@ -8592,12 +8685,16 @@ def _fill_showroom_app_proxy_urls(showroom_node, project_id, apps_domain, namesp
                 ui = base64.b64decode(ev["value"]).decode()
             except Exception:
                 continue
-            filled = fill_app_proxy_tab_urls(ui, project_id, apps_domain, namespace)
+            filled = fill_app_proxy_tab_urls(
+                ui, project_id, apps_domain, namespace, access_token=access_token
+            )
             if filled != ui:
                 ev["value"] = base64.b64encode(filled.encode()).decode()
 
 
-def _fill_showroom_app_proxy_urls_eip(showroom_node, project_id, eip) -> str | None:
+def _fill_showroom_app_proxy_urls_eip(
+    showroom_node, project_id, eip, access_token: str | None = None
+) -> str | None:
     """Cloud: fill app-proxy placeholders with sslip.io hosts aimed at the EIP.
 
     Returns the filled ui-config yaml (or None if nothing to fill).
@@ -8615,7 +8712,9 @@ def _fill_showroom_app_proxy_urls_eip(showroom_node, project_id, eip) -> str | N
                 ui = base64.b64decode(ev["value"]).decode()
             except Exception:
                 continue
-            filled = fill_app_proxy_tab_urls_eip(ui, project_id, eip)
+            filled = fill_app_proxy_tab_urls_eip(
+                ui, project_id, eip, access_token=access_token
+            )
             if filled != ui:
                 ev["value"] = base64.b64encode(filled.encode()).decode()
                 filled_out = filled
@@ -9249,7 +9348,7 @@ def _showroom_resolver_ips(topology, showroom_node):
     )
 
 
-def _refresh_showroom_spec(topology, project_id):
+def _refresh_showroom_spec(topology, project_id, access_token: str | None = None):
     """Regenerate the showroom node's init/pod containers from its showroomTabs
     (the authoritative backend generator) before deploying. The frontend
     materialization is incomplete (it never emits the cluster-terminal wetty
@@ -9258,20 +9357,27 @@ def _refresh_showroom_spec(topology, project_id):
     than trust persisted podContainers. No-op if there is no showroom node."""
     from app.services.deploy_topology import build_vms_def_from_topology
     from app.services.showroom_scaffold import (
+        SHOWROOM_ACCESS_TOKEN_KEY,
         _find_showroom_container,
         derive_apps_domain,
+        mint_showroom_access_token,
         regenerate_showroom_containers,
     )
 
     node = _find_showroom_container(topology)
     if not node:
         return
+    token = (access_token or topology.get(SHOWROOM_ACCESS_TOKEN_KEY) or "").strip()
+    if not token:
+        token = mint_showroom_access_token()
+    topology[SHOWROOM_ACCESS_TOKEN_KEY] = token
     vms_def, vm_name_to_id = build_vms_def_from_topology(topology)
     regenerate_showroom_containers(
         node,
         vms_def,
         vm_name_to_id,
         resolver_ips=_showroom_resolver_ips(topology, node),
+        access_token=token,
     )
     # regen resets the app-proxy console tab URL to the __TROSHKA_APP_PROXY__
     # placeholder; re-fill it from the persisted showroom route hostname so the
@@ -9282,7 +9388,9 @@ def _refresh_showroom_spec(topology, project_id):
         apps_domain = derive_apps_domain(hostname)
         namespace = _ns_from_showroom_hostname(hostname)
         if apps_domain and namespace:
-            _fill_showroom_app_proxy_urls(node, project_id, apps_domain, namespace)
+            _fill_showroom_app_proxy_urls(
+                node, project_id, apps_domain, namespace, access_token=token
+            )
 
 
 def _kubevirt_prebake_showroom(topology, project_id, provider, driver):
@@ -9303,6 +9411,9 @@ def _kubevirt_prebake_showroom(topology, project_id, provider, driver):
     if not node:
         return
     _refresh_showroom_spec(topology, project_id)
+    from app.services.showroom_scaffold import SHOWROOM_ACCESS_TOKEN_KEY
+
+    token = str(topology.get(SHOWROOM_ACCESS_TOKEN_KEY) or "").strip() or None
     try:
         apps_domain = driver.get_apps_domain(provider)
     except Exception:
@@ -9314,7 +9425,9 @@ def _kubevirt_prebake_showroom(topology, project_id, provider, driver):
         apps_domain = ""
     if apps_domain:
         namespace = _project_ns(provider, project_id)
-        _fill_showroom_app_proxy_urls(node, project_id, apps_domain, namespace)
+        _fill_showroom_app_proxy_urls(
+            node, project_id, apps_domain, namespace, access_token=token
+        )
 
 
 def _deploy_create_containers(host, project_id, topology, vni_map, pool):
@@ -10053,6 +10166,19 @@ def _deploy_complete_and_notify(
 
     if host and vni_map:
         _maybe_setup_showroom_tls(s, host, topology, project, external_ips, vni_map)
+
+    # Route providers: stamp tokenized showroom URL from the OCP Route hostname
+    # (cloud TLS path stamps inside _maybe_setup_showroom_tls).
+    route_base = _showroom_public_base_url(topology)
+    if route_base and not (project.deployed_topology or {}).get("_showroom_url"):
+        _stamp_showroom_access_url(project, route_base, topology)
+    elif route_base:
+        # Refresh stamp if routes exist but URL lacks token (upgrade path).
+        from app.services.showroom_scaffold import SHOWROOM_URL_KEY
+
+        current = str((project.deployed_topology or {}).get(SHOWROOM_URL_KEY) or "")
+        if "token=" not in current:
+            _stamp_showroom_access_url(project, route_base, topology)
 
     s.commit()
     _notify_client_topology_update(project_id, project, s)

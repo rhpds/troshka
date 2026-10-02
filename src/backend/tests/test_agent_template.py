@@ -350,14 +350,11 @@ def test_redfish_eject_clears_continuous_cd_override():
     assert cmd.index("Disabled") < cmd.index("VirtualMedia.EjectMedia")
 
 
-def test_disk_write_eject_watch_clears_cd_before_reboot():
-    """Watcher ejects at disk-write 100%, ForceRestarts after Rebooting.
+def test_disk_write_watch_does_not_redfish_at_100_percent():
+    """Disk-write 100% must not Redfish-eject/ForceRestart.
 
-    EjectMedia only rewrites inactive libvirt XML; the live domain keeps the
-    agent ISO at boot order 1. Assisted then soft-reboots into the installer
-    again. ForceRestart (destroy+create) is required so live matches disk-first,
-    but must wait for assisted Rebooting (or timeout) — immediate ForceRestart
-    at 100% can cut the pivot short (bare RHCOS, no kube-apiserver).
+    KubeVirt BMC boot/eject deletes the live VMI; doing that at 100% cuts
+    assisted before Rebooting and leaves bare RHCOS (no kube-apiserver).
     """
     from app.services.ocp.agent_template import (
         _start_disk_write_eject_watch_cmd,
@@ -369,20 +366,10 @@ def test_disk_write_eject_watch_clears_cd_before_reboot():
     )
     assert "Writing image to disk: 100%" in start
     assert "_DISK_EJECT_WATCH_PID" in start
-    assert "clearing Continuous Cd" in start
-    assert "VirtualMedia.EjectMedia" in start
-    assert "Disabled" in start
-    assert "Waiting for assisted Rebooting stage" in start
-    assert "installation stage Rebooting" in start
-    # Live sync after Rebooting wait (not only redefine inactive XML).
-    assert "live boots disk" in start or "live domain drops CDROM" in start
-    assert 'ResetType\\": \\"ForceRestart' in start
-    assert start.index("VirtualMedia.EjectMedia") < start.index(
-        'ResetType\\": \\"ForceRestart'
-    )
-    assert start.index("Waiting for assisted Rebooting stage") < start.index(
-        'ResetType\\": \\"ForceRestart'
-    )
+    assert "leaving BMC media alone" in start
+    assert "VirtualMedia.EjectMedia" not in start
+    assert "ResetType" not in start
+    assert "BootSourceOverride" not in start
     stop = _stop_disk_write_eject_watch_cmd("  ")
     assert "kill $_DISK_EJECT_WATCH_PID" in stop
 
