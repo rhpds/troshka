@@ -179,7 +179,7 @@ wait_cloudformation_stack() {
   local stack="$1"
   local region="$2"
   local timeout_sec="${3:-5400}"
-  local interval_sec="${TROSHKA_CFN_POLL_INTERVAL:-15}"
+  local interval_sec="${TROSHKA_CFN_POLL_INTERVAL:-60}"
   local deadline=$((SECONDS + timeout_sec))
   local status=""
 
