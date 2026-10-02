@@ -954,13 +954,21 @@ function applyDeployedTopologySnapshot(
   if (deployed?.nodes?.length) {
     useCanvasStore.setState(buildDeployedBaseline(deployed));
   }
-  if (project.bmc) {
-    (window as any).__deployedTopology = { bmc: project.bmc };
-  } else if (deployed?.bmc) {
-    (window as any).__deployedTopology = deployed;
-  }
   if (project.state === "draft") {
     delete (window as any).__deployedTopology;
+    return;
+  }
+  // Keep the FULL deployed topology on window (showroom URL/token, endpoints,
+  // bmc, …). Previously we replaced it with `{ bmc }` whenever top-level bmc
+  // was present — Open Showroom then fell back to a bare route hostname and
+  // hit nginx 401 after capability-token gating.
+  if (deployed && typeof deployed === "object") {
+    (window as any).__deployedTopology = {
+      ...deployed,
+      ...(project.bmc ? { bmc: project.bmc } : {}),
+    };
+  } else if (project.bmc) {
+    (window as any).__deployedTopology = { bmc: project.bmc };
   }
 }
 

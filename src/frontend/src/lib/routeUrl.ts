@@ -57,12 +57,55 @@ export function formatOcpRouteUrl(hostname: string, port: string | number): stri
   return `https://${hostname}`;
 }
 
+export type DeployedShowroomTopo = {
+  _showroom_url?: string;
+  _showroom_access_token?: string;
+  nodes?: Array<{ data?: Record<string, unknown> }>;
+};
+
+/** Append ``?token=`` (or ``&token=``) when missing; replace an existing token. */
+export function withShowroomAccessToken(
+  url: string,
+  token: string | null | undefined,
+): string {
+  const base = (url || "").trim();
+  const t = (token || "").trim();
+  if (!base || !t) return base;
+  try {
+    const u = new URL(base);
+    u.searchParams.set("token", t);
+    return u.toString();
+  } catch {
+    if (/[?&]token=/.test(base)) {
+      return base.replace(/([?&])token=[^&]*/, `$1token=${encodeURIComponent(t)}`);
+    }
+    return base.includes("?")
+      ? `${base}&token=${encodeURIComponent(t)}`
+      : `${base}?token=${encodeURIComponent(t)}`;
+  }
+}
+
+/** Prefer stamped showroom URL; else base URL + access token from deployed topo. */
+export function showroomPublicUrl(
+  baseUrl: string | null | undefined,
+  deployed?: DeployedShowroomTopo | null,
+): string | null {
+  const stamped = (deployed?._showroom_url || "").trim();
+  if (stamped) {
+    if (stamped.includes("token=") || !deployed?._showroom_access_token) return stamped;
+    return withShowroomAccessToken(stamped, deployed._showroom_access_token);
+  }
+  const base = (baseUrl || "").trim();
+  if (!base) return null;
+  return withShowroomAccessToken(base, deployed?._showroom_access_token) || base;
+}
+
 /** Resolve the project showroom URL from deployed topology or gateway endpoints. */
 export function resolveShowroomUrl(
   nodes: Array<{ data?: Record<string, unknown> }>,
-  deployed?: { _showroom_url?: string; nodes?: Array<{ data?: Record<string, unknown> }> } | null,
+  deployed?: DeployedShowroomTopo | null,
 ): string | null {
-  const stamped = (deployed?._showroom_url || "").trim();
+  const stamped = showroomPublicUrl(null, deployed);
   if (stamped) return stamped;
 
   const scan = (list: Array<{ data?: Record<string, unknown> }> | undefined) => {
@@ -73,7 +116,10 @@ export function resolveShowroomUrl(
         if (!ep || typeof ep !== "object") continue;
         const row = ep as RouteEndpoint;
         if (row.vmName === "showroom" && row.hostname) {
-          return formatOcpRouteUrl(row.hostname, row.port ?? 443);
+          return showroomPublicUrl(
+            formatOcpRouteUrl(row.hostname, row.port ?? 443),
+            deployed,
+          );
         }
       }
     }

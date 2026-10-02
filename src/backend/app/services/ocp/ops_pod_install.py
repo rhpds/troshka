@@ -721,6 +721,8 @@ def _cluster_install_block(
     workdir: str,
     serving_ip: str | None = None,
     deferred_workers: list[dict] | None = None,
+    *,
+    early_disk_eject: bool = True,
 ) -> str:
     """One cluster's install steps, wrapped in a backgrounded subshell.
 
@@ -756,7 +758,10 @@ def _cluster_install_block(
         + _boot_from_agent_iso_cmd("  ", cluster_dir, port, bmc_ips_str, serving_ip)
         + "  echo 'Waiting for cluster installation to complete...'\n"
         + _start_disk_write_eject_watch_cmd(
-            "  ", bmc_ips_str, f"{cluster_dir}/install.log"
+            "  ",
+            bmc_ips_str,
+            f"{cluster_dir}/install.log",
+            early_eject=early_disk_eject,
         )
         + _resilient_wait_for_complete_cmd("  ", "openshift-install", ".", cluster_key)
         + _stop_disk_write_eject_watch_cmd("  ")
@@ -1075,6 +1080,7 @@ def build_ops_pod_install_script(
     serving_ip: str | None = None,
     topology: dict | None = None,
     distribution: str | None = None,
+    early_disk_eject: bool = True,
 ) -> str:
     """Generate the ops-pod bash script that installs every cluster in parallel.
 
@@ -1088,6 +1094,9 @@ def build_ops_pod_install_script(
     PID individually and propagates failure, so the script exits non-zero if ANY
     cluster install failed (Task 7's monitor relies on this — a bare ``wait``
     would always return 0 and mask a failed install).
+
+    ``early_disk_eject``: troshkad/libvirt BMCs need eject+ForceRestart at
+    disk-write 100%; KubeVirt BMCs must leave media alone (VMI delete).
     """
     parts: list[str] = [
         "#!/bin/bash\n",
@@ -1117,6 +1126,7 @@ def build_ops_pod_install_script(
                 workdir,
                 serving_ip=serving_ip,
                 deferred_workers=deferred_workers_for_cluster(topo, cluster),
+                early_disk_eject=early_disk_eject,
             )
         )
     parts.append(_ops_pod_join_and_hold_cmd())

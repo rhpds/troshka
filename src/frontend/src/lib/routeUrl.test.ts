@@ -5,6 +5,8 @@ import {
   formatOcpRouteUrl,
   isOcpRoutableForward,
   resolveShowroomUrl,
+  showroomPublicUrl,
+  withShowroomAccessToken,
   type RouteEndpoint,
 } from "./routeUrl";
 
@@ -89,31 +91,61 @@ describe("formatEipAccessUrl", () => {
   });
 });
 
+describe("withShowroomAccessToken", () => {
+  it("appends token query", () => {
+    expect(withShowroomAccessToken("https://showroom.example.com", "abc")).toBe(
+      "https://showroom.example.com/?token=abc",
+    );
+  });
+
+  it("replaces existing token", () => {
+    expect(
+      withShowroomAccessToken("https://showroom.example.com/?token=old", "new"),
+    ).toBe("https://showroom.example.com/?token=new");
+  });
+});
+
+describe("showroomPublicUrl", () => {
+  it("prefers stamped url and fills missing token from access token", () => {
+    expect(
+      showroomPublicUrl("https://ignored.example.com", {
+        _showroom_url: "https://showroom.example.com",
+        _showroom_access_token: "tok",
+      }),
+    ).toBe("https://showroom.example.com/?token=tok");
+  });
+});
+
 describe("resolveShowroomUrl", () => {
   it("prefers stamped _showroom_url", () => {
     expect(
-      resolveShowroomUrl([], { _showroom_url: "https://showroom.example.com" }),
-    ).toBe("https://showroom.example.com");
+      resolveShowroomUrl([], {
+        _showroom_url: "https://showroom.example.com/?token=abc",
+      }),
+    ).toBe("https://showroom.example.com/?token=abc");
   });
 
-  it("falls back to gateway showroom route endpoint", () => {
+  it("falls back to gateway showroom route endpoint with token", () => {
     expect(
-      resolveShowroomUrl([
-        {
-          data: {
-            subtype: "gateway",
-            externalEndpoints: [
-              {
-                vmName: "showroom",
-                hostname: "showroom-troshka-1e559f8a.apps.example.com",
-                port: 443,
-                type: "route",
-              },
-            ],
+      resolveShowroomUrl(
+        [
+          {
+            data: {
+              subtype: "gateway",
+              externalEndpoints: [
+                {
+                  vmName: "showroom",
+                  hostname: "showroom-troshka-1e559f8a.apps.example.com",
+                  port: 443,
+                  type: "route",
+                },
+              ],
+            },
           },
-        },
-      ]),
-    ).toBe("https://showroom-troshka-1e559f8a.apps.example.com");
+        ],
+        { _showroom_access_token: "tok123" },
+      ),
+    ).toBe("https://showroom-troshka-1e559f8a.apps.example.com/?token=tok123");
   });
 
   it("returns null when no showroom is present", () => {

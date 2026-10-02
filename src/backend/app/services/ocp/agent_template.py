@@ -2584,31 +2584,53 @@ def _redfish_eject_media_cmd(
 
 
 def _start_disk_write_eject_watch_cmd(
-    indent: str, bmc_ips_str: str, log_path: str
+    indent: str,
+    bmc_ips_str: str,
+    log_path: str,
+    *,
+    early_eject: bool = True,
 ) -> str:
-    """Background: log disk-write 100%; do **not** Redfish-eject/ForceRestart yet.
+    """Background watcher at disk-write 100%.
 
-    KubeVirt BMC ``set_boot_device`` / ``eject_image`` both delete the live VMI.
-    Calling either at disk-write 100% kills assisted before it can finalize
-    (upload logs → report Rebooting → soft-reboot) and leaves bare RHCOS with
-    ``Ignition: no config provided by user`` and no kube-apiserver.
+    ``early_eject=True`` (troshkad/libvirt BMC): clear Continuous Cd + eject +
+    ForceRestart immediately. EjectMedia only rewrites inactive XML; without
+    ForceRestart the live domain keeps the agent ISO and soft-reboot re-enters
+    the installer (ae766856 / 552ef598).
 
-    Continuous Cd on the KubeVirt BMC already assigns **disk-first** boot order
-    (empty disk falls through to the agent ISO on first boot; post-write soft
-    reboot hits the installed OS). ISO cleanup stays on the install-complete
-    eject (no ForceRestart). ``bmc_ips_str`` retained for call-site symmetry.
+    ``early_eject=False`` (KubeVirt BMC): log only. KubeVirt ``set_boot_device`` /
+    ``eject_image`` delete the live VMI, which cuts assisted before Rebooting
+    and leaves bare RHCOS. That BMC already uses disk-first boot order under
+    Continuous Cd, so soft-reboot hits the installed OS; ISO cleanup stays on
+    the install-complete eject.
     """
-    _ = bmc_ips_str  # eject deferred to install-complete; see docstring
     b = indent
     b2 = indent + "  "
+    if not early_eject:
+        return (
+            f"{b}# Disk-write 100%: leave BMC media alone (KubeVirt BMC VMI delete "
+            f"would cut the assisted pivot).\n"
+            f"{b}(\n"
+            f"{b2}for _dw in $(seq 1 360); do\n"
+            f"{b2}  if grep -q 'Writing image to disk: 100%' {log_path} 2>/dev/null; then\n"
+            f"{b2}    echo 'Disk image written — leaving BMC media alone so assisted "
+            f"can finalize and soft-reboot into the installed OS'\n"
+            f"{b2}    break\n"
+            f"{b2}  fi\n"
+            f"{b2}  sleep 5\n"
+            f"{b2}done\n"
+            f"{b}) &\n"
+            f"{b}_DISK_EJECT_WATCH_PID=$!\n"
+        )
+    eject = _redfish_eject_media_cmd(b2, bmc_ips_str, force_restart=True)
     return (
-        f"{b}# Disk-write 100%: do not Redfish-eject/ForceRestart (KubeVirt BMC "
-        f"VMI delete would cut the assisted pivot).\n"
+        f"{b}# Clear Continuous Cd + eject ISO at disk-write 100% + ForceRestart "
+        f"(libvirt live domain keeps CDROM otherwise).\n"
         f"{b}(\n"
         f"{b2}for _dw in $(seq 1 360); do\n"
         f"{b2}  if grep -q 'Writing image to disk: 100%' {log_path} 2>/dev/null; then\n"
-        f"{b2}    echo 'Disk image written — leaving BMC media alone so assisted "
-        f"can finalize and soft-reboot into the installed OS'\n"
+        f"{b2}    echo 'Disk image written — clearing Continuous Cd + ejecting ISO + "
+        f"ForceRestart so live boots disk'\n"
+        f"{eject}"
         f"{b2}    break\n"
         f"{b2}  fi\n"
         f"{b2}  sleep 5\n"

@@ -1,3 +1,4 @@
+import copy
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -319,3 +320,31 @@ def test_showroom_public_base_url_from_route_endpoint():
         ]
     }
     assert ds._showroom_public_base_url(topo) == "https://showroom-ns.apps.example.com"
+
+
+def test_ensure_showroom_access_url_stamped_from_route():
+    proj = _proj()
+    topo = {
+        "nodes": [
+            {
+                "data": {
+                    "subtype": "gateway",
+                    "externalEndpoints": [
+                        {
+                            "vmName": "showroom",
+                            "hostname": "showroom-ns.apps.example.com",
+                            "port": 443,
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+    proj.topology = {"nodes": []}
+    proj.deployed_topology = copy.deepcopy(topo)
+    assert ds.ensure_showroom_access_url_stamped(proj) is True
+    url = proj.deployed_topology["_showroom_url"]
+    assert url.startswith("https://showroom-ns.apps.example.com")
+    assert "token=" in url
+    # Idempotent once tokenized
+    assert ds.ensure_showroom_access_url_stamped(proj) is False

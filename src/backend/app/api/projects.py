@@ -449,6 +449,21 @@ def _attach_response_owner_email(db, project, result: dict) -> None:
 
 
 def _project_response_dict(project, db=None):
+    if db is not None:
+        try:
+            from sqlalchemy.orm.attributes import flag_modified
+
+            from app.services.deploy_service import ensure_showroom_access_url_stamped
+
+            if ensure_showroom_access_url_stamped(project):
+                flag_modified(project, "deployed_topology")
+                db.commit()
+        except Exception:
+            logger.warning(
+                "Failed to lazy-stamp showroom access URL for %s",
+                getattr(project, "id", "?")[:8],
+                exc_info=True,
+            )
     result = _project_response_base(project)
     _sync_joined_worker_topology(project, result)
     dp = _resolve_deploy_progress(project)

@@ -574,9 +574,14 @@ export default function ProjectCanvasPage() {
       ) {
         return c;
       }
-      // Stored error is terminal until the next rebuild stamps monitoring —
-      // do not let stale waiting frames flap the canvas back to Deploying.
-      if (c.ocpInstallStatus === "error" && status === "monitoring") {
+      // Stored error is terminal while idle — do not let a held ops pod's
+      // waiting frames flap Republish off. During deploy/redeploy, in-progress
+      // frames must replace leftover error so Status & Log is not stuck ERROR.
+      if (
+        c.ocpInstallStatus === "error" &&
+        status === "monitoring" &&
+        projectState !== "deploying"
+      ) {
         return c;
       }
       if (c.ocpInstallStatus === status) return c;
@@ -899,6 +904,7 @@ export default function ProjectCanvasPage() {
             window as unknown as {
               __deployedTopology?: {
                 _showroom_url?: string;
+                _showroom_access_token?: string;
                 nodes?: Array<{ data?: Record<string, unknown> }>;
               };
             }
@@ -908,7 +914,9 @@ export default function ProjectCanvasPage() {
       nodes as Array<{ data?: Record<string, unknown> }>,
       deployed || null,
     );
-  }, [nodes, projectState]);
+    // Recompute when gateway endpoints / project state change; also when the
+    // deployed snapshot is applied to window (nodes refresh after loadProject).
+  }, [nodes, projectState, hasDeployedTopology]);
   const containerCount = nodes.filter((n) => n.type === "containerNode").length;
   const netCount = nodes.filter((n) => n.type === "networkNode" && (n.data as Record<string, any>).subtype === "network").length;
   const diskCount = nodes.filter((n) => n.type === "storageNode").length;

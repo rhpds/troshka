@@ -5,7 +5,15 @@ import { createPortal } from "react-dom";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { NetworkNodeData } from "@/stores/canvasStore";
 import { useCanvasStore, stableNodeData, stableStringify } from "@/stores/canvasStore";
-import { findRouteForForward, formatEipAccessUrl, formatOcpRouteUrl, isDeployInProgress, isOcpRoutableForward } from "@/lib/routeUrl";
+import {
+  findRouteForForward,
+  formatEipAccessUrl,
+  formatOcpRouteUrl,
+  isDeployInProgress,
+  isOcpRoutableForward,
+  showroomPublicUrl,
+  type DeployedShowroomTopo,
+} from "@/lib/routeUrl";
 import { isShowroomContainer, SHOWROOM_GATEWAY_TARGET_HANDLE } from "@/lib/showroomValidation";
 import { isRouteManagedForward, isShowroomManagedForward } from "@/lib/showroomPortForwards";
 import { GATEWAY_NETWORK_SOURCE_HANDLE } from "@/lib/gatewayValidation";
@@ -369,8 +377,26 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                           <tr key={i} style={{ borderBottom: "1px solid var(--troshka-border)" }}>
                             <td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 11 }}>
                               {(() => {
+                                const deployedTopo =
+                                  typeof window !== "undefined"
+                                    ? (
+                                        window as unknown as {
+                                          __deployedTopology?: DeployedShowroomTopo;
+                                        }
+                                      ).__deployedTopology
+                                    : undefined;
                                 if (routeMatch) {
-                                  const url = formatOcpRouteUrl(routeMatch.hostname!, pf.extPort);
+                                  const routeUrl = formatOcpRouteUrl(
+                                    routeMatch.hostname!,
+                                    pf.extPort,
+                                  );
+                                  const showroom =
+                                    isShowroomManagedForward(pf) ||
+                                    routeMatch.vmName === "showroom";
+                                  const url = showroom
+                                    ? showroomPublicUrl(routeUrl, deployedTopo) ||
+                                      routeUrl
+                                    : routeUrl;
                                   return (
                                     <>
                                       <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--troshka-green)", textDecoration: "none" }}>{url}</a>
@@ -386,27 +412,24 @@ function NetworkNodeComponent({ data, selected, id }: NodeProps) {
                                     : undefined);
                                 if (eipIp) {
                                   const showroom = isShowroomManagedForward(pf);
-                                  const stamped =
-                                    typeof window !== "undefined"
-                                      ? (
-                                          window as unknown as {
-                                            __deployedTopology?: {
-                                              _showroom_url?: string;
-                                            };
-                                          }
-                                        ).__deployedTopology?._showroom_url
-                                      : undefined;
+                                  const stamped = showroom
+                                    ? showroomPublicUrl(null, deployedTopo)
+                                    : null;
                                   const url = formatEipAccessUrl(eipIp, pf.extPort, {
                                     showroom,
                                     showroomUrl: stamped,
                                   });
+                                  const tokenized =
+                                    showroom && url
+                                      ? showroomPublicUrl(url, deployedTopo) || url
+                                      : url;
                                   const addr = `${eipIp}:${pf.extPort}`;
-                                  const label = url || addr;
-                                  const copyText = url || addr;
+                                  const label = tokenized || addr;
+                                  const copyText = tokenized || addr;
                                   return (
                                     <>
-                                      {url ? (
-                                        <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--troshka-green)", textDecoration: "none" }}>{label}</a>
+                                      {tokenized ? (
+                                        <a href={tokenized} target="_blank" rel="noopener noreferrer" style={{ color: "var(--troshka-green)", textDecoration: "none" }}>{label}</a>
                                       ) : (
                                         <span>{addr}</span>
                                       )}

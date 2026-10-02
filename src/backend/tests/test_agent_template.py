@@ -350,26 +350,38 @@ def test_redfish_eject_clears_continuous_cd_override():
     assert cmd.index("Disabled") < cmd.index("VirtualMedia.EjectMedia")
 
 
-def test_disk_write_watch_does_not_redfish_at_100_percent():
-    """Disk-write 100% must not Redfish-eject/ForceRestart.
-
-    KubeVirt BMC boot/eject deletes the live VMI; doing that at 100% cuts
-    assisted before Rebooting and leaves bare RHCOS (no kube-apiserver).
-    """
+def test_disk_write_watch_libvirt_ejects_and_force_restarts():
+    """troshkad/libvirt: eject + ForceRestart at disk-write 100% (ae766856)."""
     from app.services.ocp.agent_template import (
         _start_disk_write_eject_watch_cmd,
         _stop_disk_write_eject_watch_cmd,
     )
 
     start = _start_disk_write_eject_watch_cmd(
-        "  ", "192.168.100.10", "/workdir/ocp/install.log"
+        "  ", "192.168.100.10", "/workdir/ocp/install.log", early_eject=True
     )
     assert "Writing image to disk: 100%" in start
     assert "_DISK_EJECT_WATCH_PID" in start
+    assert "clearing Continuous Cd" in start
+    assert "VirtualMedia.EjectMedia" in start
+    assert 'ResetType\\": \\"ForceRestart' in start
+    stop = _stop_disk_write_eject_watch_cmd("  ")
+    assert "kill $_DISK_EJECT_WATCH_PID" in stop
+
+
+def test_disk_write_watch_kubevirt_leaves_media_alone():
+    """KubeVirt BMC: no Redfish at 100% (eject/boot would delete the live VMI)."""
+    from app.services.ocp.agent_template import (
+        _start_disk_write_eject_watch_cmd,
+        _stop_disk_write_eject_watch_cmd,
+    )
+
+    start = _start_disk_write_eject_watch_cmd(
+        "  ", "192.168.100.10", "/workdir/ocp/install.log", early_eject=False
+    )
     assert "leaving BMC media alone" in start
     assert "VirtualMedia.EjectMedia" not in start
     assert "ResetType" not in start
-    assert "BootSourceOverride" not in start
     stop = _stop_disk_write_eject_watch_cmd("  ")
     assert "kill $_DISK_EJECT_WATCH_PID" in stop
 

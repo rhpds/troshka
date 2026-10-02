@@ -273,6 +273,34 @@ def _showroom_public_base_url(topology: dict) -> str:
     return f"https://{hostname}"
 
 
+def ensure_showroom_access_url_stamped(project) -> bool:
+    """Lazy-stamp tokenized ``_showroom_url`` on deployed_topology when missing.
+
+    Used on project GET so Open Showroom / External Access / Ansible see
+    ``?token=`` without requiring a full redeploy. Returns True if persisted.
+    """
+    from app.services.showroom_scaffold import SHOWROOM_URL_KEY
+
+    deployed = project.deployed_topology
+    if not isinstance(deployed, dict):
+        return False
+    current = str(deployed.get(SHOWROOM_URL_KEY) or "")
+    if current and "token=" in current:
+        return False
+    # Prefer route hostname from deployed (authoritative endpoints), then editable.
+    base = _showroom_public_base_url(deployed)
+    if not base and isinstance(project.topology, dict):
+        base = _showroom_public_base_url(project.topology)
+    if not base and current:
+        # Strip a bare URL stamp that lacks token and re-stamp.
+        base = current.split("?", 1)[0]
+    if not base:
+        return False
+    before = current
+    stamped = _stamp_showroom_access_url(project, base, deployed)
+    return bool(stamped) and stamped != before
+
+
 def _resolve_showroom_dns_provider(s, project):
     """Return (type, config) for the project's DnsProvider, or (None, {})."""
     if not project.dns_provider_id:
@@ -2489,6 +2517,7 @@ def _build_ops_pod_runner_script(
     serving_ip=None,
     pull_through_registry: dict | None = None,
     distribution: str | None = None,
+    early_disk_eject: bool = True,
 ) -> str:
     """Ops-pod bash script: per-cluster recert and/or fresh agent install blocks."""
     from app.services.ocp.join_deferred_workers import deferred_workers_for_cluster
@@ -2535,6 +2564,7 @@ def _build_ops_pod_runner_script(
                 workdir,
                 serving_ip=serving_ip,
                 deferred_workers=deferred_workers_for_cluster(topology, cluster),
+                early_disk_eject=early_disk_eject,
             )
         )
     if recert_clusters:
@@ -2558,6 +2588,7 @@ def _ops_pod_command(
     net_ip_assignments=None,
     serving_ip=None,
     pull_through_registry=None,
+    early_disk_eject: bool = True,
 ):
     """Full ``bash -c`` argv: ensure workdirs exist, then run the installer.
 
@@ -2577,6 +2608,7 @@ def _ops_pod_command(
         serving_ip=serving_ip,
         pull_through_registry=pull_through_registry,
         distribution=_resolve_ops_pod_distribution(clusters, topology),
+        early_disk_eject=early_disk_eject,
     )
     preamble = "\n".join(_ops_pod_workdir_lines(clusters, workdir))
     return ["bash", "-c", preamble + "\n" + script]
@@ -3093,6 +3125,7 @@ def _deploy_ops_pod_kubevirt(
     # _resolve_agent_dns_ip). troshkad keeps .1 (host dnsmasq) and is untouched.
     _kubevirt_override_agent_dns(topology, clusters)
     ptr = _resolve_ops_pod_pull_through_registry(s, project, topology)
+    # KubeVirt BMC eject/boot-override deletes the live VMI — never early-eject.
     command = _ops_pod_command(
         clusters,
         topology,
@@ -3101,6 +3134,7 @@ def _deploy_ops_pod_kubevirt(
         net_ip_assignments=net_ip_assignments,
         serving_ip=serving_ip,
         pull_through_registry=ptr,
+        early_disk_eject=False,
     )
     recert_clusters, install_clusters = _partition_ops_pod_clusters(topology, clusters)
     pull_secret_json = _resolve_ops_pod_pull_secret(s, project, topology)
@@ -3208,12 +3242,62 @@ def _stamp_recert_install_started(project, clusters: list) -> bool:
     return changed
 
 
+def _stamp_fresh_install_clusters_monitoring(project, clusters: list) -> bool:
+    """Force install-path clusters to ``monitoring`` when the ops pod starts.
+
+    Rebuild clears error→monitoring, but a leftover canvas autosave (or a prior
+    manual error stamp) can put ``ocpInstallStatus=error`` back on topology.
+    Project ``ocp_status=monitoring`` alone is not enough: resume treats
+    all-cluster-error as terminal and flips the project back to error, and the
+    Status & Log modal keys ERROR off the per-cluster stamp.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services.ocp.ops_pod_install import (
+        _cluster_key as _ops_cluster_key,
+    )
+
+    _, install_clusters = _partition_ops_pod_clusters(
+        project.deployed_topology or project.topology or {},
+        clusters,
+    )
+    keys = {_ops_cluster_key(c) for c in install_clusters}
+    if not keys:
+        return False
+    now = int(_time.time())
+    changed = False
+    for attr in ("topology", "deployed_topology"):
+        topo = getattr(project, attr, None)
+        if not isinstance(topo, dict):
+            continue
+        for cluster in topo.get("clusters") or []:
+            key = str(cluster.get("id") or cluster.get("name") or "")
+            if key not in keys:
+                continue
+            if cluster.get("ocpInstallStatus") != "monitoring":
+                cluster["ocpInstallStatus"] = "monitoring"
+                changed = True
+            if cluster.get("ocpInstallStartedAt") is None:
+                cluster["ocpInstallStartedAt"] = now
+                changed = True
+            if "ocpInstallElapsed" in cluster:
+                cluster.pop("ocpInstallElapsed", None)
+                changed = True
+        if changed:
+            try:
+                flag_modified(project, attr)
+            except Exception:
+                pass  # plain dict-backed test doubles / non-SA objects
+    return changed
+
+
 def _mark_ocp_install_started(s, project, clusters: list | None = None) -> None:
     """Set the initial in-progress OCP status for a pod (bastionless) install.
 
     Mirrors the bastion path's initial state (see ``_deploy_complete_and_notify``
     / kubevirt deploy) so the SAME OCP-status UI works for pod installs.
-    When ``clusters`` is provided, stamps ``ocpInstallStartedAt`` on recert
+    When ``clusters`` is provided, clears leftover per-cluster error/ready on
+    fresh-install clusters and stamps ``ocpInstallStartedAt`` on recert
     clusters so the RE-CERTING timer starts at ops-pod start.
     """
     project.ocp_status = "monitoring"
@@ -3221,6 +3305,7 @@ def _mark_ocp_install_started(s, project, clusters: list | None = None) -> None:
     project.ocp_install_elapsed = None
     project.ocp_monitor_started_at = datetime.datetime.now(datetime.UTC)
     if clusters:
+        _stamp_fresh_install_clusters_monitoring(project, clusters)
         _stamp_recert_install_started(project, clusters)
     s.commit()
 
@@ -5928,30 +6013,42 @@ def _resume_one_ops_pod_monitor(db, p) -> None:
     if not host:
         return
 
-    # Finalized per-cluster error is terminal until the next rebuild stamps
-    # monitoring. A held ops pod + periodic resume used to flip project
-    # ocp_status back to monitoring every scan (canvas Deploying / Republish off).
+    # Per-cluster error is terminal only when the ops pod is gone or the live
+    # log already has a fatal breadcrumb. A stale error stamp (manual fail, or
+    # canvas autosave after rebuild) with a healthy running install must heal
+    # — otherwise Status & Log stays ERROR while wait-for is still progressing.
     cluster_statuses = [
         c.get("ocpInstallStatus")
         for c in (topo.get("clusters") or [])
         if c.get("ocpInstallStatus")
     ]
-    if cluster_statuses and all(s == "error" for s in cluster_statuses):
+    all_clusters_error = bool(cluster_statuses) and all(
+        s == "error" for s in cluster_statuses
+    )
+    pod_alive = _ops_pod_running(host, _ops_pod_container_name(p.id), p.id)
+    log_failed = (
+        _ops_pod_logs_show_terminal_failure(host, p.id, clusters)
+        if pod_alive
+        else False
+    )
+
+    if all_clusters_error and (not pod_alive or log_failed):
         if p.ocp_status != "error":
             p.ocp_status = "error"
             db.commit()
         return
 
-    if p.ocp_status == "error":
-        if not _ops_pod_running(host, _ops_pod_container_name(p.id), p.id):
+    if p.ocp_status == "error" or all_clusters_error:
+        if not pod_alive:
             return  # genuinely failed — leave it error
-        if _ops_pod_logs_show_terminal_failure(host, p.id, clusters):
+        if log_failed:
             return  # real install failure; pod held for logs — do not flap
         logger.info(
             "Auto-recovering ops-pod monitor for errored project %s (pod alive)",
             p.id[:8],
         )
         p.ocp_status = "monitoring"
+        _stamp_fresh_install_clusters_monitoring(p, clusters)
         db.commit()
     else:
         logger.info("Resuming ops-pod install monitor for %s", p.id[:8])
