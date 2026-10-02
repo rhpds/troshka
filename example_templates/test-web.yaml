@@ -5,6 +5,7 @@ networks:
   network-00:
     cidr: 10.0.0.0/24
     dhcp: true
+    dns: true
 gateway:
   external_access: true
   port_forwards:
