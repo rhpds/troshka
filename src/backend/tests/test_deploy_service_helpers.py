@@ -8221,6 +8221,10 @@ class TestResumeOpsPodMonitorTerminalFailure:
                 return_value=[{"id": "ocp"}],
             ),
             patch(
+                "app.services.deploy_service._ops_pod_running",
+                return_value=False,
+            ),
+            patch(
                 "app.services.deploy_service._start_ops_pod_install_monitor"
             ) as start_mon,
         ):

@@ -1530,10 +1530,17 @@ def test_inject_stored_cluster_kubeconfigs_uses_topology_creds(mock_start, _w):
     assert "/showroom/kube/config" in mock_start.call_args[0][2]["command"][2]
 
 
+@patch(
+    "app.services.deploy_service._ops_pod_logs_show_terminal_failure",
+    return_value=False,
+)
+@patch("app.services.deploy_service._ops_pod_running", return_value=True)
 @patch("app.services.deploy_service._start_ops_pod_install_monitor")
 @patch("app.services.template_loader.ocp_install_via", return_value="pod")
 @patch("app.core.database.SessionLocal")
-def test_resume_ops_pod_monitors_restarts_stuck_pod_installs(mock_sl, _via, mock_start):
+def test_resume_ops_pod_monitors_restarts_stuck_pod_installs(
+    mock_sl, _via, mock_start, _running, _logs
+):
     """Worker startup re-attaches the monitor for a project stuck at
     ocp_status='monitoring' (prior worker died mid-install)."""
     import app.services.deploy_service as ds
@@ -1548,7 +1555,7 @@ def test_resume_ops_pod_monitors_restarts_stuck_pod_installs(mock_sl, _via, mock
         deployed_topology={"clusters": [{"id": "ocp", "name": "ocp"}]},
         topology={},
     )
-    host = SimpleNamespace(id="h1")
+    host = SimpleNamespace(id="h1", host_type="ec2")
     db = MagicMock()
 
     def _query(model):
@@ -1569,12 +1576,16 @@ def test_resume_ops_pod_monitors_restarts_stuck_pod_installs(mock_sl, _via, mock
     assert mock_start.call_args[0][2] == [{"id": "ocp", "name": "ocp"}]  # clusters
 
 
+@patch(
+    "app.services.deploy_service._ops_pod_logs_show_terminal_failure",
+    return_value=False,
+)
 @patch("app.services.deploy_service._ops_pod_running", return_value=True)
 @patch("app.services.deploy_service._start_ops_pod_install_monitor")
 @patch("app.services.template_loader.ocp_install_via", return_value="pod")
 @patch("app.core.database.SessionLocal")
 def test_resume_recovers_errored_project_when_ops_pod_alive(
-    mock_sl, _via, mock_start, _running
+    mock_sl, _via, mock_start, _running, _logs
 ):
     """A project stuck at ocp_status='error' whose ops pod is STILL alive is a
     false failure (e.g. flagged during a slow start) — resume flips it back to

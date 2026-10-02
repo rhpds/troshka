@@ -3862,7 +3862,7 @@ def _ops_pod_running(host, container_name: str, project_id: str) -> bool:
     a slow image pull can't false-fail the install (see
     :func:`_ops_pod_running_kubevirt`).
     """
-    if host.host_type == "kubevirt-cluster":
+    if getattr(host, "host_type", None) == "kubevirt-cluster":
         return _ops_pod_running_kubevirt(host, project_id)
 
     from app.services.troshkad_client import get_all_container_states
@@ -3886,7 +3886,7 @@ def _read_ops_pod_cluster_logs(
     ``""`` (→ ``creating-image``), so a cluster that hasn't produced output yet
     still appears as in-progress.
     """
-    if host.host_type == "kubevirt-cluster":
+    if getattr(host, "host_type", None) == "kubevirt-cluster":
         return _read_ops_pod_cluster_logs_kubevirt(
             host, project_id, cluster_keys, workdir
         )

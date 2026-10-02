@@ -1230,7 +1230,7 @@ def import_template(
         topology = generate_topology_from_template(resolved)
         topology["ocpInstallVia"] = install_via
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
+        raise HTTPException(status_code=400, detail=f"Invalid template: {e}") from e
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid template: {e}") from e
 
