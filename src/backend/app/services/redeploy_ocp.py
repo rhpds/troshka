@@ -51,11 +51,14 @@ def clear_topology_ocp_for_rebuild(topology: dict) -> None:
     """Strip markers that would send the next deploy down the recert path.
 
     Also clears pattern disk sources so rebuild cannot boot a leftover
-    pattern-backed image ahead of a fresh agent ISO.
+    pattern-backed image ahead of a fresh agent ISO. Install status is set to
+    ``monitoring`` (not deleted) so the canvas cannot keep showing Ready from a
+    prior successful install while create-image/boot runs.
     """
     for cluster in topology.get("clusters") or []:
         for key in _CLUSTER_INSTALL_KEYS:
             cluster.pop(key, None)
+        cluster["ocpInstallStatus"] = "monitoring"
     for node in topology.get("nodes") or []:
         data = node.get("data")
         if not isinstance(data, dict):

@@ -151,7 +151,7 @@ def test_clear_topology_ocp_for_rebuild_strips_markers():
         ],
     }
     clear_topology_ocp_for_rebuild(topo)
-    assert "ocpInstallStatus" not in topo["clusters"][0]
+    assert topo["clusters"][0]["ocpInstallStatus"] == "monitoring"
     assert "ocpInstallElapsed" not in topo["clusters"][0]
     assert "ocpInstallStartedAt" not in topo["clusters"][0]
     assert topo["clusters"][0]["recert"] is True  # template flag; not the path signal
@@ -197,7 +197,7 @@ def test_apply_ocp_rebuild_to_project_clears_both_topologies_and_project_fields(
     apply_ocp_rebuild_to_project(proj)
     assert "ocpKubeconfig" not in proj.topology["nodes"][0]["data"]
     assert "ocpKubeconfig" not in proj.deployed_topology["nodes"][0]["data"]
-    assert "ocpInstallStatus" not in proj.topology["clusters"][0]
+    assert proj.topology["clusters"][0]["ocpInstallStatus"] == "monitoring"
     assert proj.ocp_status is None
     assert proj.ocp_status_detail is None
     assert proj.ocp_install_elapsed is None
@@ -235,9 +235,21 @@ def test_redeploy_ocp_recert_requires_all_ready():
 
 
 @patch("app.core.redis.enqueue_job")
+@patch("app.services.deploy_service._delete_deploy_progress")
 @patch("app.services.deploy_service._mark_deploy_cancelled")
-def test_redeploy_ocp_rebuild_clears_markers(mock_cancel, mock_enqueue):
+def test_redeploy_ocp_rebuild_clears_markers(
+    mock_cancel, mock_delete_progress, mock_enqueue
+):
     pid = _create_project(topology=_ocp_topo())
+    db = TestSession()
+    proj = db.query(Project).filter_by(id=pid).first()
+    proj.deploy_progress = {
+        "step": "control-plane-usable",
+        "detail": "reached at 5m 4s",
+    }
+    db.commit()
+    db.close()
+
     resp = client.post(
         f"/api/v1/projects/{pid}/redeploy",
         headers=HEADERS,
@@ -245,14 +257,16 @@ def test_redeploy_ocp_rebuild_clears_markers(mock_cancel, mock_enqueue):
     )
     assert resp.status_code == 200
     mock_enqueue.assert_called_once()
+    mock_delete_progress.assert_called_once_with(pid)
     args = mock_enqueue.call_args.args
     assert args[4] == "rebuild"
 
     db = TestSession()
     proj = db.query(Project).filter_by(id=pid).first()
     assert "ocpKubeconfig" not in (proj.topology["nodes"][0]["data"])
-    assert "ocpInstallStatus" not in proj.topology["clusters"][0]
+    assert proj.topology["clusters"][0]["ocpInstallStatus"] == "monitoring"
     assert proj.ocp_status is None
+    assert proj.deploy_progress is None
     assert proj.state == "deploying"
     db.close()
 

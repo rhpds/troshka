@@ -8,7 +8,7 @@ import Palette from "@/components/canvas/Palette";
 import PropertiesPanel from "@/components/canvas/PropertiesPanel";
 import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
-import { useCanvasStore, computeTopologyDirty, computeTopologyDiff, setLatestVmStates, setLatestContainerStates, _saveTopologyToApi, applyDeployedTopologyFromServer, type ExternalIp, type TopologyDiffEntry } from "@/stores/canvasStore";
+import { useCanvasStore, computeTopologyDirty, computeTopologyDiff, setLatestVmStates, setLatestContainerStates, _saveTopologyToApi, applyDeployedTopologyFromServer, resetClustersForOcpRedeploy, type ExternalIp, type TopologyDiffEntry } from "@/stores/canvasStore";
 import { healClusterTopology } from "@/components/canvas/clusterTopologyHeal";
 import { reconcileDeployedClusters } from "@/components/canvas/clusterNetworkBackfill";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
@@ -219,6 +219,15 @@ export default function ProjectCanvasPage() {
     if (ws.projectState === "deploying") {
       setOcpStatus(null);
       setOcpInstallElapsed(null);
+      // Prior install milestones (control-plane-usable, etc.) must not linger.
+      setDeployProgress(null);
+      // Drop stale Ready/complete from the last install so the status button
+      // shows Deploying/Re-Cert for the new cycle.
+      const store = useCanvasStore.getState();
+      useCanvasStore.setState({
+        clusterOcpPhases: {},
+        clusters: resetClustersForOcpRedeploy(store.clusters),
+      });
     }
     if (ws.projectState === "active" && prev !== "active") {
       void useCanvasStore.getState().loadProject(projectId);
@@ -529,14 +538,21 @@ export default function ProjectCanvasPage() {
           : phase === "failed" || phase === "cancelled" || phase === "timeout"
             ? "error"
             : "monitoring";
-      // Don't clobber a persisted ready with a stale in-progress frame (finalize
-      // may have stamped ready in the DB while the last WS progress was waiting).
-      if (c.ocpInstallStatus === "ready" && status === "monitoring") return c;
+      // While a new deploy/redeploy is running, in-progress frames must replace
+      // a leftover Ready. Only protect ready→monitoring once the project is idle
+      // (finalize stamped ready while a late waiting frame can still arrive).
+      if (
+        c.ocpInstallStatus === "ready" &&
+        status === "monitoring" &&
+        projectState !== "deploying"
+      ) {
+        return c;
+      }
       if (c.ocpInstallStatus === status) return c;
       return { ...c, ocpInstallStatus: status };
     });
     useCanvasStore.setState({ clusterOcpPhases: phases, clusters });
-  }, [ws.clusterOcpPhases]);
+  }, [ws.clusterOcpPhases, projectState]);
 
   // Timer countdown ticker
   useEffect(() => {
@@ -892,6 +908,7 @@ export default function ProjectCanvasPage() {
     try {
       await saveTopology();
       setProjectState("deploying");
+      setDeployProgress(null);
       const deployParams = new URLSearchParams();
       if (deployHostId?.startsWith("provider:")) {
         deployParams.set("provider_id", deployHostId.slice(9));
@@ -924,6 +941,12 @@ export default function ProjectCanvasPage() {
 
   const doRedeploy = async (ocpMode?: OcpRedeployMode) => {
     setProjectState("deploying");
+    setDeployProgress(null);
+    const store = useCanvasStore.getState();
+    useCanvasStore.setState({
+      clusterOcpPhases: {},
+      clusters: resetClustersForOcpRedeploy(store.clusters),
+    });
     const r = await fetch(`/api/v1/projects/${projectId}/redeploy`, {
       method: "POST",
       headers: ocpMode ? { "Content-Type": "application/json" } : undefined,

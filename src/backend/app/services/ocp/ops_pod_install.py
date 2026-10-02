@@ -131,6 +131,14 @@ _FAILURE_MARKERS = (
     "no iso for",
     "api not ready for worker join",
     "scc uid range not available for worker join",
+    # Troshka serve/boot hard failures (ops-pod/bastion). Without these the
+    # monitor stays on "booting" forever while the pod holds after exit 1 —
+    # project looks Ready/monitoring instead of Error.
+    # Keep these specific: "ISO HTTP server ready" must NOT match.
+    "agent iso not reachable",
+    "exited before becoming ready",
+    "iso not reachable at",
+    "] install failed",
 )
 
 
@@ -737,7 +745,13 @@ def _cluster_install_block(
         f'  echo "[{cluster_key}] starting agent-based install"\n'
         + _fresh_install_reset_cmd("  ", cluster_dir)
         + '  HTTP_PID=""\n'
-        + "  trap 'kill $HTTP_PID 2>/dev/null || true' EXIT\n"
+        # On any non-zero exit, stamp a Troshka failure breadcrumb so the monitor
+        # finalizes ocpInstallStatus=error (plain ERROR: lines alone used to leave
+        # the phase stuck on "booting" while the pod held forever).
+        + "  trap '"
+        + "_rc=$?; kill $HTTP_PID 2>/dev/null || true; "
+        + f'if [ "$_rc" -ne 0 ]; then echo "[{cluster_key}] install failed"; fi; '
+        + "exit $_rc' EXIT\n"
         + _agent_create_image_resume_cmd("  ", cluster_dir)
         + _boot_from_agent_iso_cmd("  ", cluster_dir, port, bmc_ips_str, serving_ip)
         + "  echo 'Waiting for cluster installation to complete...'\n"

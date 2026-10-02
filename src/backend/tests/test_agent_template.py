@@ -290,6 +290,20 @@ def test_build_install_script_uses_selenium_autologin_not_nss():
     assert "console-openshift-console.apps.ocp.ocp.local" in script
 
 
+def test_serve_iso_waits_for_http_server_ready():
+    """Serve must not hand ISO_URL to Redfish before python -m http.server binds.
+
+    Rebuild often finds the BMC already ready, so the old single-shot curl raced
+    server startup and failed with a false 'ISO not reachable'.
+    """
+    from app.services.ocp.agent_template import _serve_iso_cmd
+
+    cmd = _serve_iso_cmd("  ", "/workdir/ocp", 8080, serving_ip="192.168.100.50")
+    assert "waiting for ISO HTTP server" in cmd
+    assert "ISO HTTP server ready" in cmd
+    assert 'kill -0 "$HTTP_PID"' in cmd
+
+
 def test_redfish_insert_media_retries_bmc_readiness():
     """A not-yet-ready BMC must not crash the set -e subshell on the first node.
 

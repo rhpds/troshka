@@ -11,6 +11,7 @@ from app.services.deploy_service import (
     validate_restart_ocp_cluster_install,
 )
 from app.services.ocp.ops_pod_install import (
+    PHASE_BOOTING,
     PHASE_COMPLETE,
     PHASE_FAILED,
     PHASE_WAITING,
@@ -78,6 +79,33 @@ def test_phase_from_input_treats_bootstrap_timeout_as_failed():
         "bootstrap process timed out: context deadline exceeded"
     )
     assert _phase_from_input(log) == PHASE_FAILED
+
+
+def test_phase_from_input_agent_iso_unreachable_is_failed():
+    """Serve/boot hard-fail must terminal-fail — not stay stuck on booting.
+
+    The ops pod holds after exit 1; without a failure marker the monitor never
+    finalizes error and the UI can keep showing Ready/Deploying.
+    """
+    log = (
+        "Agent ISO ready. Serving via HTTP and booting nodes...\n"
+        "HTTP server PID: 421\n"
+        "ISO URL: http://192.168.100.50:8080/agent.x86_64.iso\n"
+        "Mounting ISO on BMC 192.168.100.10...\n"
+        "  System: ad89166a-964a-498d-9875-33d0f5db359a\n"
+        "ERROR: agent ISO not reachable at "
+        "http://192.168.100.50:8080/agent.x86_64.iso (HTTP server dead?)\n"
+        "[ocp-08a6aa] install failed\n"
+    )
+    assert _phase_from_input(log) == PHASE_FAILED
+    # Success breadcrumb must not trip the failure markers.
+    assert (
+        _phase_from_input(
+            "Agent ISO ready. Serving via HTTP and booting nodes...\n"
+            "ISO HTTP server ready\n"
+        )
+        == PHASE_BOOTING
+    )
 
 
 def test_phase_from_input_installer_install_complete_is_not_troshka_complete():

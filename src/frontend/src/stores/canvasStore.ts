@@ -870,10 +870,12 @@ export function stableClusterKey(clusters: ClusterConfig[] | undefined): string 
 
 /** Per-cluster install status — never infer from a sibling or project-wide OCP health.
 
-  Live terminal phases (``complete``/``failed``) win over a stale stored
-  ``monitoring`` stamp: finalize can persist ready in the DB without a topology
-  WS push, while the last ``ocp-install-progress`` frame left the canvas on
-  monitoring.
+  Precedence:
+  - live ``failed``/cancelled/timeout → error
+  - stored ``error`` or ``monitoring`` wins over a stale live ``complete``
+    (rebuild clears stamps to monitoring but WS phases can linger as complete)
+  - live ``complete`` → ready (covers finalize before topology WS lands)
+  - otherwise stored ready / in-progress phase → monitoring
 */
 export function resolveClusterOcpInstallStatus(
   cluster: ClusterConfig | undefined,
@@ -884,17 +886,27 @@ export function resolveClusterOcpInstallStatus(
     livePhases[clusterKey] ||
     (cluster?.id ? livePhases[cluster.id] : undefined) ||
     (cluster?.name ? livePhases[cluster.name] : undefined);
-  if (phase === "complete") return "ready";
   if (phase === "failed" || phase === "cancelled" || phase === "timeout") {
     return "error";
   }
 
   const stored = cluster?.ocpInstallStatus;
-  if (stored === "ready" || stored === "error" || stored === "monitoring") {
+  if (stored === "error" || stored === "monitoring") {
     return stored;
   }
+  if (phase === "complete") return "ready";
+  if (stored === "ready") return "ready";
   if (phase) return "monitoring";
   return null;
+}
+
+/** Reset per-cluster install UI for a new deploy/redeploy cycle. */
+export function resetClustersForOcpRedeploy(clusters: ClusterConfig[]): ClusterConfig[] {
+  return clusters.map((c) =>
+    c.ocpInstallStatus === "monitoring"
+      ? c
+      : { ...c, ocpInstallStatus: "monitoring", ocpInstallElapsed: undefined },
+  );
 }
 
 function buildDeployedBaseline(deployed: DeployedTopologySnapshot | null | undefined) {

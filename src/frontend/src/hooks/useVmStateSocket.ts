@@ -124,6 +124,9 @@ export function useVmStateSocket(projectId: string | null): VmStateSocket {
           case "project-state":
             setProjectState(msg.state || null);
             setDeployError(msg.deploy_error ?? null);
+            // New deploy/redeploy cycle — drop prior progress so overlays don't
+            // show stale milestones (e.g. control-plane-usable from last install).
+            if (msg.state === "deploying") setDeployProgress(null);
             if ("auto_stop_expires_at" in msg) setAutoStopExpiresAt(msg.auto_stop_expires_at ?? null);
             if ("lifetime_expires_at" in msg) setLifetimeExpiresAt(msg.lifetime_expires_at ?? null);
             if ("auto_stopped" in msg) setAutoStopped(!!msg.auto_stopped);

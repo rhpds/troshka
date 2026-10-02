@@ -6578,7 +6578,10 @@ def redeploy_project(
         destroy_ctx["wipe_all_disks"] = True
 
     # Cancel any in-flight deploy thread for this project
-    from app.services.deploy_service import _mark_deploy_cancelled
+    from app.services.deploy_service import (
+        _delete_deploy_progress,
+        _mark_deploy_cancelled,
+    )
 
     _mark_deploy_cancelled(project.id)
 
@@ -6597,8 +6600,12 @@ def redeploy_project(
     else:
         project.ocp_status = "monitoring"
     project.deploy_error = None
+    # Drop leftover progress (e.g. control-plane-usable from the prior install)
+    # so the Deploying overlay does not show stale detail until new steps arrive.
+    project.deploy_progress = None
     project.deploy_started_at = datetime.datetime.now(datetime.UTC)
     db.commit()
+    _delete_deploy_progress(project.id)
 
     from app.core.redis import enqueue_job
     from app.workers.jobs import job_redeploy_bg

@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { useCanvasStore, type ClusterConfig } from "@/stores/canvasStore";
+import {
+  resolveClusterOcpInstallStatus,
+  useCanvasStore,
+  type ClusterConfig,
+} from "@/stores/canvasStore";
 import ClusterNode, {
   clusterIsRecertPath,
   formatClusterOcpStatusLabel,
@@ -36,6 +40,31 @@ describe("formatClusterOcpStatusLabel", () => {
     expect(formatClusterOcpStatusLabel("monitoring", { recert: true })).toBe("Re-Cert");
     expect(formatClusterOcpStatusLabel(null)).toBe("Status");
     expect(formatClusterOcpStatusLabel(null, { recert: true })).toBe("Status");
+  });
+});
+
+describe("resolveClusterOcpInstallStatus", () => {
+  it("does not show Ready from a stale complete phase during rebuild monitoring", () => {
+    const cluster = {
+      id: "ocp-08a6aa",
+      name: "ocp",
+      ocpInstallStatus: "monitoring",
+    } as ClusterConfig;
+    expect(
+      resolveClusterOcpInstallStatus(cluster, "ocp-08a6aa", {
+        "ocp-08a6aa": "complete",
+      }),
+    ).toBe("monitoring");
+  });
+
+  it("still surfaces live failed over stored ready", () => {
+    const cluster = {
+      id: "ocp",
+      ocpInstallStatus: "ready",
+    } as ClusterConfig;
+    expect(
+      resolveClusterOcpInstallStatus(cluster, "ocp", { ocp: "failed" }),
+    ).toBe("error");
   });
 });
 

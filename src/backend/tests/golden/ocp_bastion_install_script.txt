@@ -79,6 +79,27 @@
     BASTION_IP=$(hostname -I | awk '{print $1}')
     ISO_URL="http://${BASTION_IP}:8080/agent.x86_64.iso"
     echo "ISO URL: $ISO_URL"
+    # Wait until the server actually listens. On rebuild the BMC is often
+    # already up, so the Redfish path can race python -m http.server startup
+    # and fail with a false 'ISO not reachable' before bind completes.
+    for _iso_try in $(seq 1 30); do
+      if curl -sfI --connect-timeout 1 --max-time 3 "$ISO_URL" >/dev/null; then
+        echo "ISO HTTP server ready"
+        break
+      fi
+      if ! kill -0 "$HTTP_PID" 2>/dev/null; then
+        echo "ERROR: ISO HTTP server (pid $HTTP_PID) exited before becoming ready"
+        cat /tmp/http-server.log 2>/dev/null || true
+        exit 1
+      fi
+      echo "  waiting for ISO HTTP server (attempt $_iso_try)..."
+      sleep 1
+    done
+    if ! curl -sfI --connect-timeout 1 --max-time 3 "$ISO_URL" >/dev/null; then
+      echo "ERROR: agent ISO not reachable at $ISO_URL after waiting"
+      cat /tmp/http-server.log 2>/dev/null || true
+      exit 1
+    fi
     
     for BMC_IP in 192.168.100.10 192.168.100.11; do
       echo "Mounting ISO on BMC $BMC_IP..."
