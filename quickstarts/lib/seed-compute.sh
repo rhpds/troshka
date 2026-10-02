@@ -169,9 +169,10 @@ wait_compute_creds_usable() {
   echo "Checking compute IAM credentials propagate..."
   while (( SECONDS < deadline )); do
     attempt=$((attempt + 1))
-    if AWS_ACCESS_KEY_ID="${COMPUTE_AK}" AWS_SECRET_ACCESS_KEY="${COMPUTE_SK}" \
-      AWS_SESSION_TOKEN="" AWS_PROFILE="" aws sts get-caller-identity \
-      --region "${REGION}" >/dev/null 2>&1; then
+    # Must unset AWS_PROFILE (empty string still selects profile "").
+    if env -u AWS_PROFILE -u AWS_SESSION_TOKEN \
+      AWS_ACCESS_KEY_ID="${COMPUTE_AK}" AWS_SECRET_ACCESS_KEY="${COMPUTE_SK}" \
+      aws sts get-caller-identity --region "${REGION}" >/dev/null 2>&1; then
       echo "Compute IAM credentials usable (attempt ${attempt})."
       return 0
     fi
