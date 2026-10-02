@@ -2367,6 +2367,42 @@ def _agent_create_image_cmd(indent: str, oi_bin: str, log_path: str) -> str:
     )
 
 
+def _wait_for_iso_http_ready_cmd(
+    indent: str, log_path: str = "/tmp/http-server.log"
+) -> str:
+    """Poll ``$ISO_URL`` until HEAD succeeds or ``$HTTP_PID`` dies.
+
+    Shared by control-plane agent ISO serve and deferred-worker ``node.iso``
+    serve. Without this wait, Redfish can race ``python -m http.server`` startup
+    (especially when the BMC is already up) and fail with a false
+    'ISO not reachable'.
+    """
+    i = indent
+    return (
+        f"{i}# Wait until the server actually listens. On rebuild the BMC is often\n"
+        f"{i}# already up, so the Redfish path can race python -m http.server startup\n"
+        f"{i}# and fail with a false 'ISO not reachable' before bind completes.\n"
+        f"{i}for _iso_try in $(seq 1 30); do\n"
+        f'{i}  if curl -sfI --connect-timeout 1 --max-time 3 "$ISO_URL" >/dev/null; then\n'
+        f'{i}    echo "ISO HTTP server ready"\n'
+        f"{i}    break\n"
+        f"{i}  fi\n"
+        f'{i}  if ! kill -0 "$HTTP_PID" 2>/dev/null; then\n'
+        f'{i}    echo "ERROR: ISO HTTP server (pid $HTTP_PID) exited before becoming ready"\n'
+        f"{i}    cat {log_path} 2>/dev/null || true\n"
+        f"{i}    exit 1\n"
+        f"{i}  fi\n"
+        f'{i}  echo "  waiting for ISO HTTP server (attempt $_iso_try)..."\n'
+        f"{i}  sleep 1\n"
+        f"{i}done\n"
+        f'{i}if ! curl -sfI --connect-timeout 1 --max-time 3 "$ISO_URL" >/dev/null; then\n'
+        f'{i}  echo "ERROR: agent ISO not reachable at $ISO_URL after waiting"\n'
+        f"{i}  cat {log_path} 2>/dev/null || true\n"
+        f"{i}  exit 1\n"
+        f"{i}fi\n"
+    )
+
+
 def _serve_iso_cmd(
     indent: str, workdir: str, port: int, serving_ip: str | None = None
 ) -> str:
@@ -2396,27 +2432,7 @@ def _serve_iso_cmd(
         f"{bastion_ip_line}"
         f'{i}ISO_URL="http://${{BASTION_IP}}:{port}/agent.x86_64.iso"\n'
         f'{i}echo "ISO URL: $ISO_URL"\n'
-        f"{i}# Wait until the server actually listens. On rebuild the BMC is often\n"
-        f"{i}# already up, so the Redfish path can race python -m http.server startup\n"
-        f"{i}# and fail with a false 'ISO not reachable' before bind completes.\n"
-        f"{i}for _iso_try in $(seq 1 30); do\n"
-        f'{i}  if curl -sfI --connect-timeout 1 --max-time 3 "$ISO_URL" >/dev/null; then\n'
-        f'{i}    echo "ISO HTTP server ready"\n'
-        f"{i}    break\n"
-        f"{i}  fi\n"
-        f'{i}  if ! kill -0 "$HTTP_PID" 2>/dev/null; then\n'
-        f'{i}    echo "ERROR: ISO HTTP server (pid $HTTP_PID) exited before becoming ready"\n'
-        f"{i}    cat /tmp/http-server.log 2>/dev/null || true\n"
-        f"{i}    exit 1\n"
-        f"{i}  fi\n"
-        f'{i}  echo "  waiting for ISO HTTP server (attempt $_iso_try)..."\n'
-        f"{i}  sleep 1\n"
-        f"{i}done\n"
-        f'{i}if ! curl -sfI --connect-timeout 1 --max-time 3 "$ISO_URL" >/dev/null; then\n'
-        f'{i}  echo "ERROR: agent ISO not reachable at $ISO_URL after waiting"\n'
-        f"{i}  cat /tmp/http-server.log 2>/dev/null || true\n"
-        f"{i}  exit 1\n"
-        f"{i}fi\n"
+        + _wait_for_iso_http_ready_cmd(i, "/tmp/http-server.log")
     )
 
 

@@ -17,6 +17,7 @@ from app.services.ocp.agent_template import (
     _cluster_members_for,
     _redfish_eject_media_cmd,
     _redfish_insert_media_cmd,
+    _wait_for_iso_http_ready_cmd,
     deferred_worker_cluster_nic,
 )
 
@@ -223,6 +224,7 @@ def _serve_node_iso_cmd(
 ) -> str:
     """Start a directory HTTP server and set ``ISO_URL`` for Redfish."""
     i = indent
+    log_path = f"/tmp/http-server-{port}.log"
     if serving_ip:
         ip_line = f"{i}BASTION_IP={serving_ip}\n"
     else:
@@ -231,11 +233,12 @@ def _serve_node_iso_cmd(
         f"{i}sudo firewall-cmd --add-port={port}/tcp --permanent 2>/dev/null && "
         "sudo firewall-cmd --reload 2>/dev/null || true\n"
         f"{i}cd {serve_dir}\n"
-        f"{i}nohup python3 -m http.server {port} > /tmp/http-server-{port}.log 2>&1 &\n"
+        f"{i}nohup python3 -m http.server {port} > {log_path} 2>&1 &\n"
         f"{i}HTTP_PID=$!\n"
         + ip_line
         + f'{i}ISO_URL="http://${{BASTION_IP}}:{port}/{iso_basename}"\n'
         + f'{i}echo "Node ISO URL: $ISO_URL"\n'
+        + _wait_for_iso_http_ready_cmd(i, log_path)
     )
 
 

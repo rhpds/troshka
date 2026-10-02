@@ -403,3 +403,27 @@ def test_build_join_cmd_parallelizes_multiple_workers():
 
 def test_build_join_cmd_empty_when_no_workers():
     assert build_join_deferred_workers_cmd("  ", "source", [], "x", 8080, None) == ""
+
+
+def test_serve_node_iso_waits_for_http_server_ready():
+    """Deferred-worker node.iso serve must wait like control-plane agent ISO serve.
+
+    Without the wait, Redfish HEAD races python -m http.server startup and fails
+    with a false 'ISO not reachable (HTTP server dead?)' — seen on CCLM source
+    worker join (ports 8180/8181) after SNO install-complete.
+    """
+    from app.services.ocp.join_deferred_workers import _serve_node_iso_cmd
+
+    cmd = _serve_node_iso_cmd(
+        "  ",
+        "/workdir/source/nodes/source-worker-0",
+        8180,
+        "node.iso",
+        serving_ip="192.168.100.50",
+    )
+    assert "waiting for ISO HTTP server" in cmd
+    assert "ISO HTTP server ready" in cmd
+    assert 'kill -0 "$HTTP_PID"' in cmd
+    assert "http.server 8180" in cmd
+    assert "/tmp/http-server-8180.log" in cmd
+    assert "Node ISO URL:" in cmd
