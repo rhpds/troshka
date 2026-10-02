@@ -1,3 +1,4 @@
+import atexit
 import os
 import sys
 
@@ -5,24 +6,40 @@ _SRC_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _SRC_ROOT not in sys.path:
     sys.path.insert(0, _SRC_ROOT)
 
-os.environ["TROSHKA_DATABASE__URL"] = "sqlite:///./test.db"
+# Per-process file DB + a SINGLE SQLAlchemy engine (SessionLocal). Previously
+# conftest built a second engine on the same sqlite:///./test.db file while the
+# app used QueuePool — two engines → "database is locked" deadlocks that hung
+# until pytest-timeout (flaky on slow GitLab ALM shards).
+_TEST_DB_PATH = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), f"test-{os.getpid()}.db")
+)
+os.environ["TROSHKA_DATABASE__URL"] = f"sqlite:///{_TEST_DB_PATH}"
 
-from sqlalchemy import create_engine
+
+def _cleanup_test_db() -> None:
+    for suffix in ("", "-wal", "-shm"):
+        path = _TEST_DB_PATH + suffix
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+atexit.register(_cleanup_test_db)
+
 from sqlalchemy.dialects import sqlite
-from sqlalchemy.orm import sessionmaker
 
 sqlite.base.SQLiteTypeCompiler.visit_JSONB = lambda self, type_, **kw: "JSON"
 sqlite.base.SQLiteTypeCompiler.visit_UUID = lambda self, type_, **kw: "VARCHAR(36)"
 
-from app.core.database import Base
+from app.core.database import Base, SessionLocal, engine
 from app.models import *  # noqa: F403 — ensure all models register with Base
 
-test_engine = create_engine(
-    "sqlite:///./test.db", connect_args={"check_same_thread": False}
-)
+# Same engine the app uses — do not create a second one on this file.
+test_engine = engine
+TestSession = SessionLocal
 Base.metadata.drop_all(bind=test_engine)
 Base.metadata.create_all(bind=test_engine)
-TestSession = sessionmaker(bind=test_engine)
 
 
 def get_test_db():

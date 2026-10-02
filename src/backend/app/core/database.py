@@ -5,7 +5,7 @@ from typing import cast
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
-from sqlalchemy.pool import QueuePool
+from sqlalchemy.pool import QueuePool, StaticPool
 
 from app.core.config import config
 
@@ -26,21 +26,50 @@ def _db_pool_int(name: str, default: int) -> int:
         return default
 
 
-engine = create_engine(
-    config.database.url,
-    pool_pre_ping=True,
-    pool_size=_db_pool_int("pool_size", 5),
-    max_overflow=_db_pool_int("max_overflow", 10),
-    pool_timeout=_db_pool_int("pool_timeout", 30),
-    # Recycle idle connections so a burst of activity doesn't leave connections
-    # parked idle for hours (which, with a large fleet, exhausts max_connections).
-    pool_recycle=_db_pool_int("pool_recycle", 1800),
-)
+def _create_engine():
+    """Build the process engine.
+
+    Postgres uses QueuePool. SQLite (tests) needs ``check_same_thread=False`` and
+    a busy ``timeout`` so TestClient / deploy threads don't hang forever on locks.
+    In-memory SQLite requires StaticPool (one shared connection); file SQLite
+    keeps QueuePool so background threads each get a connection.
+    """
+    url = str(config.database.url)
+    if url.startswith("sqlite"):
+        connect_args = {"check_same_thread": False, "timeout": 30}
+        memory = url in ("sqlite://", "sqlite:///:memory:") or ":memory:" in url
+        if memory:
+            return create_engine(url, connect_args=connect_args, poolclass=StaticPool)
+        return create_engine(
+            url,
+            connect_args=connect_args,
+            pool_pre_ping=True,
+            pool_size=_db_pool_int("pool_size", 5),
+            max_overflow=_db_pool_int("max_overflow", 10),
+            pool_timeout=_db_pool_int("pool_timeout", 30),
+            pool_recycle=_db_pool_int("pool_recycle", 1800),
+        )
+    return create_engine(
+        url,
+        pool_pre_ping=True,
+        pool_size=_db_pool_int("pool_size", 5),
+        max_overflow=_db_pool_int("max_overflow", 10),
+        pool_timeout=_db_pool_int("pool_timeout", 30),
+        # Recycle idle connections so a burst of activity doesn't leave connections
+        # parked idle for hours (which, with a large fleet, exhausts max_connections).
+        pool_recycle=_db_pool_int("pool_recycle", 1800),
+    )
+
+
+engine = _create_engine()
 
 
 @event.listens_for(engine, "checkout")
 def _on_checkout(_dbapi_conn, _connection_record, _connection_proxy):
-    pool = cast(QueuePool, engine.pool)
+    pool = engine.pool
+    if not isinstance(pool, QueuePool):
+        return
+    pool = cast(QueuePool, pool)
     _log.debug(
         "DB pool: %d/%d checked out, %d overflow",
         pool.checkedout(),
@@ -51,7 +80,10 @@ def _on_checkout(_dbapi_conn, _connection_record, _connection_proxy):
 
 @event.listens_for(engine, "checkin")
 def _on_checkin(_dbapi_conn, _connection_record):
-    pool = cast(QueuePool, engine.pool)
+    pool = engine.pool
+    if not isinstance(pool, QueuePool):
+        return
+    pool = cast(QueuePool, pool)
     if pool.checkedout() > pool.size():
         _log.warning(
             "DB pool pressure: %d/%d checked out, %d overflow",

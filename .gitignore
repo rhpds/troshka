@@ -28,6 +28,8 @@ deploy/compose/updater/
 # Database
 *.db
 *.sqlite3
+src/backend/tests/test-*.db
+src/backend/tests/test-*.db-*
 
 # OS
 .DS_Store
