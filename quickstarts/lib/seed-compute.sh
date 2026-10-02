@@ -245,6 +245,10 @@ seed_provider_and_host() {
   echo "Setting default image ${HOST_AMI}..."
   api_post "/api/v1/providers/${provider_id}/set-image?image_id=${HOST_AMI}" >/dev/null
 
+  # Console before host provision so agent install gets console_domain + vncd/LE.
+  # If hosts already exist, setup-console backfills domains and requeues agent reinstall.
+  ensure_console_sslip "${provider_id}"
+
   host_count="$(api_get "/api/v1/hosts/" | jq -r --arg p "${provider_id}" \
     '[.[] | select(.provider_id==$p and .state!="terminated")] | length')"
   if [[ "${host_count}" != "0" ]]; then
@@ -263,6 +267,28 @@ seed_provider_and_host() {
   host_id="$(api_post "/api/v1/hosts/" "${host_body}" | jq -r .id)"
   echo "Host ${host_id:0:8} provisioning (agent install continues in background)."
   echo "  Watch: Admin → Hosts, or GET /api/v1/hosts/"
+}
+
+# VNC console via sslip.io + Let's Encrypt (no Route53). Override with
+# TROSHKA_CONSOLE_DOMAIN; skip with TROSHKA_SKIP_CONSOLE=1.
+ensure_console_sslip() {
+  local provider_id="$1"
+  if [[ "${TROSHKA_SKIP_CONSOLE:-}" == "1" || "${TROSHKA_SKIP_CONSOLE:-}" == "true" ]]; then
+    echo "Skipping console setup (TROSHKA_SKIP_CONSOLE)."
+    return 0
+  fi
+  local domain configured out
+  domain="${TROSHKA_CONSOLE_DOMAIN:-sslip.io}"
+  configured="$(api_get "/api/v1/providers/" | jq -r --arg id "${provider_id}" \
+    '.[] | select(.id==$id) | .console_base_domain // empty')"
+  if [[ -n "${configured}" && "${configured}" != "null" ]]; then
+    echo "Console already configured (${configured})."
+    return 0
+  fi
+  echo "Setting up console (${domain})..."
+  out="$(api_post "/api/v1/providers/${provider_id}/setup-console" \
+    "$(jq -n --arg d "${domain}" '{base_domain:$d}')")"
+  echo "Console ready: $(echo "${out}" | jq -c '{base_domain,mode,hosts_queued}')"
 }
 
 echo "Seeding compute (provider=${PROVIDER_NAME}, flavor=${AMI_FLAVOR})..."

@@ -118,7 +118,7 @@ Install seeds an EC2 provider (`ec2-<cluster>`) and provisions one host:
 | Default | Fedora Cloud Base (Fedora Project) | `m8i.xlarge` | 100 GiB |
 | `--production` | RHEL 9 Hourly (marketplace) | `m8i.2xlarge` | 500 GiB |
 
-Agent install continues in the background after the script exits — watch **Admin → Hosts** until `connected`. Compute VPC/SG are created via Troshka `create-vpc` (separate from the EKS VPC). IAM user `<cluster>-compute` + Secrets Manager `<cluster>/compute` hold the provider keys.
+Agent install continues in the background after the script exits — watch **Admin → Hosts** until `connected`. Compute VPC/SG are created via Troshka `create-vpc` (separate from the EKS VPC). IAM user `<cluster>-compute` + Secrets Manager `<cluster>/compute` hold the provider keys. Console is seeded as **sslip.io** (VNC via Let's Encrypt HTTP-01; no Route53) — skip with `TROSHKA_SKIP_CONSOLE=1`, override domain with `TROSHKA_CONSOLE_DOMAIN`.
 
 Library: install also registers an `s4-library` provider (in-cluster S4) and imports **Fedora Cloud 43** via `import-url` (troshkad on the seeded host pulls the official Fedora URL into S4). Skip with `TROSHKA_SKIP_FEDORA_IMAGE=1`. Override URL/name via `TROSHKA_FEDORA_QCOW_URL` / `TROSHKA_FEDORA_LIBRARY_NAME`.
 

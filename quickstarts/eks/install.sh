@@ -566,6 +566,7 @@ Permissions: docs/quickstarts/eks.md and deploy/eks/iam-deployer-policy.json
 Compute: EC2 provider + one host seeded automatically
   Default:      Fedora Cloud AMI, m8i.xlarge, 100 GiB (in-cluster S4)
   --production: RHEL 9 Hourly AMI, m8i.2xlarge, 500 GiB (+ RDS/S3/ElastiCache)
+  Console:      sslip.io VNC proxy (Setup Console) seeded automatically
   Override:     TROSHKA_HOST_AMI / TROSHKA_HOST_INSTANCE_TYPE / TROSHKA_HOST_DISK_GB
 Teardown: ${_script_dir}/teardown.sh
 
