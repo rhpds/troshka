@@ -5504,6 +5504,7 @@ def _finalize_cluster_ocp_status(
     from app.core.database import SessionLocal
     from app.models.project import Project
     from app.services.ocp.ops_pod_install import cluster_phase_to_ocp_status
+    from app.services.ws_pubsub import notify_project
 
     status = cluster_phase_to_ocp_status(phase)
     if not status:
@@ -5528,6 +5529,17 @@ def _finalize_cluster_ocp_status(
         if changed:
             db.commit()
             _sync_project_ocp_status_from_clusters(project_id, elapsed_secs)
+            # Push so the canvas status button / redeploy gate leave "monitoring"
+            # without requiring a full page reload.
+            db.refresh(project)
+            notify_project(
+                project_id,
+                {
+                    "type": "topology-update",
+                    "topology": project.topology,
+                    "deployed_topology": project.deployed_topology,
+                },
+            )
     except Exception:
         logger.exception(
             "Failed to finalize cluster %s ocp status for %s",

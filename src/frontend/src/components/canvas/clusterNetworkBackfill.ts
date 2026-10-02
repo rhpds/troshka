@@ -134,7 +134,16 @@ export function reconcileDeployedClusters(
     if (dep.baseDomain && dep.baseDomain !== out.baseDomain) {
       out = { ...out, baseDomain: dep.baseDomain };
     }
-    if (dep.ocpInstallStatus && dep.ocpInstallStatus !== out.ocpInstallStatus) {
+    // Deployed stamp wins, but never regress a terminal ready/error to monitoring
+    // (stale deployed rows can lag finalize while the canvas already healed).
+    if (
+      dep.ocpInstallStatus &&
+      dep.ocpInstallStatus !== out.ocpInstallStatus &&
+      !(
+        (out.ocpInstallStatus === "ready" || out.ocpInstallStatus === "error") &&
+        dep.ocpInstallStatus === "monitoring"
+      )
+    ) {
       out = { ...out, ocpInstallStatus: dep.ocpInstallStatus };
     }
     if (

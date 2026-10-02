@@ -10,6 +10,7 @@ import StartOrderPanel from "@/components/canvas/StartOrderPanel";
 import ExternalIpsPanel from "@/components/canvas/ExternalIpsPanel";
 import { useCanvasStore, computeTopologyDirty, computeTopologyDiff, setLatestVmStates, setLatestContainerStates, _saveTopologyToApi, applyDeployedTopologyFromServer, type ExternalIp, type TopologyDiffEntry } from "@/stores/canvasStore";
 import { healClusterTopology } from "@/components/canvas/clusterTopologyHeal";
+import { reconcileDeployedClusters } from "@/components/canvas/clusterNetworkBackfill";
 import ReconfigureWarningModal from "@/components/canvas/ReconfigureWarningModal";
 import SavePatternModal from "@/components/canvas/SavePatternModal";
 import RunWorkloadModal from "@/components/canvas/RunWorkloadModal";
@@ -407,6 +408,14 @@ export default function ProjectCanvasPage() {
     // Apply Changes does not read canvas vs deployed drift as a user edit.
     if (update.deployed_topology?.nodes?.length) {
       applyDeployedTopologyFromServer(update.deployed_topology, projectState);
+      const depClusters = update.deployed_topology.clusters;
+      if (Array.isArray(depClusters) && depClusters.length > 0) {
+        const storeNow = useCanvasStore.getState();
+        useCanvasStore.setState({
+          deployedClusterRows: depClusters as typeof storeNow.deployedClusterRows,
+          clusters: reconcileDeployedClusters(storeNow.clusters, depClusters),
+        });
+      }
     }
   }, [ws.topologyUpdate, projectState]);
 
@@ -454,6 +463,25 @@ export default function ProjectCanvasPage() {
     }
   }, [ws.ocpHealth, ocpStatus]);
 
+  // Project-level ready means no cluster is still monitoring — heal canvas stamps
+  // that were left on "monitoring" when finalize wrote ready without a live WS push.
+  // Re-run when clusters load (ocpStatus can be ready before loadProject finishes).
+  const storeClusters = useCanvasStore((s) => s.clusters);
+  useEffect(() => {
+    if (ocpStatus !== "ready") return;
+    const store = useCanvasStore.getState();
+    let changed = false;
+    const phases = { ...store.clusterOcpPhases };
+    const clusters = store.clusters.map((c) => {
+      if (c.ocpInstallStatus === "ready" || c.ocpInstallStatus === "error") return c;
+      changed = true;
+      const key = c.id || c.name;
+      if (key) phases[key] = "complete";
+      return { ...c, ocpInstallStatus: "ready" };
+    });
+    if (changed) useCanvasStore.setState({ clusters, clusterOcpPhases: phases });
+  }, [ocpStatus, storeClusters]);
+
   const resolvedOcpHealth = useMemo(() => {
     const fallback =
       ocpStatus === "ready"
@@ -493,7 +521,7 @@ export default function ProjectCanvasPage() {
     const store = useCanvasStore.getState();
     const clusters = store.clusters.map((c) => {
       const key = c.id || c.name;
-      const phase = phases[key];
+      const phase = phases[key] || (c.id && phases[c.id]) || (c.name && phases[c.name]);
       if (!phase) return c;
       const status =
         phase === "complete"
@@ -501,6 +529,9 @@ export default function ProjectCanvasPage() {
           : phase === "failed" || phase === "cancelled" || phase === "timeout"
             ? "error"
             : "monitoring";
+      // Don't clobber a persisted ready with a stale in-progress frame (finalize
+      // may have stamped ready in the DB while the last WS progress was waiting).
+      if (c.ocpInstallStatus === "ready" && status === "monitoring") return c;
       if (c.ocpInstallStatus === status) return c;
       return { ...c, ocpInstallStatus: status };
     });
@@ -910,8 +941,66 @@ export default function ProjectCanvasPage() {
 
   const handleRepublish = async (message: string) => {
     const store = useCanvasStore.getState();
+    // Authoritative install status lives on the server (finalize stamps ready on
+    // topology + deployed_topology). Refresh before gating rebuild vs recert so a
+    // stale canvas "monitoring" stamp cannot block Re-cert.
+    let clustersForModal = store.clusters;
+    try {
+      const resp = await fetch(`/api/v1/projects/${projectId}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        const serverClusters =
+          (data.deployed_topology?.clusters as typeof store.clusters | undefined) ||
+          (data.topology?.clusters as typeof store.clusters | undefined) ||
+          [];
+        if (serverClusters.length > 0) {
+          const byId = new Map(
+            serverClusters.filter((c) => c?.id).map((c) => [String(c.id), c]),
+          );
+          const base =
+            store.clusters.length > 0
+              ? store.clusters
+              : (serverClusters as typeof store.clusters);
+          clustersForModal = base.map((c) => {
+            const srv = byId.get(String(c.id));
+            if (!srv?.ocpInstallStatus) return c;
+            return { ...c, ocpInstallStatus: srv.ocpInstallStatus };
+          });
+          // Project-level ready is authoritative when every cluster should clear.
+          if (data.ocp_status === "ready") {
+            clustersForModal = clustersForModal.map((c) =>
+              c.ocpInstallStatus === "error"
+                ? c
+                : { ...c, ocpInstallStatus: "ready" },
+            );
+          }
+          const phases = { ...store.clusterOcpPhases };
+          for (const c of clustersForModal) {
+            const key = c.id || c.name;
+            if (!key) continue;
+            if (c.ocpInstallStatus === "ready") phases[key] = "complete";
+            else if (c.ocpInstallStatus === "error") phases[key] = "failed";
+          }
+          useCanvasStore.setState({
+            clusters: clustersForModal,
+            clusterOcpPhases: phases,
+            deployedClusterRows: serverClusters.map((c) => {
+              const row = { ...c } as Record<string, unknown>;
+              delete row._generatedInstallConfig;
+              delete row._generatedAgentConfig;
+              delete row.controlPlaneDisks;
+              delete row.workerDisks;
+              return row as unknown as (typeof store.clusters)[number];
+            }),
+          });
+          if (data.ocp_status) setOcpStatus(data.ocp_status);
+        }
+      }
+    } catch {
+      /* keep canvas clusters */
+    }
     const clusters = collectOcpClusters({
-      clusters: store.clusters,
+      clusters: clustersForModal,
       nodes: store.nodes,
     });
     if (clusters.length > 0) {

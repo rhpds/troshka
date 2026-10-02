@@ -868,21 +868,33 @@ export function stableClusterKey(clusters: ClusterConfig[] | undefined): string 
   );
 }
 
-/** Per-cluster install status — never infer from a sibling or project-wide OCP health. */
+/** Per-cluster install status — never infer from a sibling or project-wide OCP health.
+
+  Live terminal phases (``complete``/``failed``) win over a stale stored
+  ``monitoring`` stamp: finalize can persist ready in the DB without a topology
+  WS push, while the last ``ocp-install-progress`` frame left the canvas on
+  monitoring.
+*/
 export function resolveClusterOcpInstallStatus(
   cluster: ClusterConfig | undefined,
   clusterKey: string,
   livePhases: Record<string, string>,
 ): "ready" | "error" | "monitoring" | null {
+  const phase =
+    livePhases[clusterKey] ||
+    (cluster?.id ? livePhases[cluster.id] : undefined) ||
+    (cluster?.name ? livePhases[cluster.name] : undefined);
+  if (phase === "complete") return "ready";
+  if (phase === "failed" || phase === "cancelled" || phase === "timeout") {
+    return "error";
+  }
+
   const stored = cluster?.ocpInstallStatus;
   if (stored === "ready" || stored === "error" || stored === "monitoring") {
     return stored;
   }
-  const phase = livePhases[clusterKey];
-  if (!phase) return null;
-  if (phase === "complete") return "ready";
-  if (phase === "failed" || phase === "cancelled" || phase === "timeout") return "error";
-  return "monitoring";
+  if (phase) return "monitoring";
+  return null;
 }
 
 function buildDeployedBaseline(deployed: DeployedTopologySnapshot | null | undefined) {
@@ -2675,10 +2687,16 @@ export function _saveTopologyToApi(
     topologyWorkloadsDone?: string[] | null;
   },
 ): Promise<Record<string, unknown> | null> {
+  // Prefer deployed install stamps over a stale canvas "monitoring" so auto-save
+  // cannot re-persist Re-Cert after finalize already wrote ready.
+  const clustersForSave = reconcileDeployedClusters(
+    state.clusters ?? [],
+    state.deployedClusterRows ?? [],
+  );
   const healed = healClusterTopology({
     nodes: state.nodes,
     edges: state.edges,
-    clusters: state.clusters ?? [],
+    clusters: clustersForSave,
     deployedClusters: state.deployedClusterRows,
   });
   const cleanNodes = healed.nodes.map((n) => {

@@ -67,6 +67,8 @@ function clusterConfigFromBoundaryNode(
     monitorHealth: deployed?.monitorHealth,
     configureBastionBrowser: deployed?.configureBastionBrowser,
     installOnDeploy: deployed?.installOnDeploy,
+    ocpInstallStatus: deployed?.ocpInstallStatus,
+    ocpInstallElapsed: deployed?.ocpInstallElapsed,
   };
 }
 

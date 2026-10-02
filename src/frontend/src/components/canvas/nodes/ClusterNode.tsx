@@ -1,7 +1,7 @@
 "use client";
 
 import React, { memo } from "react";
-import { Handle, NodeResizer, Position, type NodeProps } from "@xyflow/react";
+import { Handle, NodeResizer, Position, type Edge, type Node, type NodeProps } from "@xyflow/react";
 import type { ClusterNodeData } from "@/stores/canvasStore";
 import { resolveClusterOcpInstallStatus, useCanvasStore } from "@/stores/canvasStore";
 import { clusterPrereqIssues } from "../clusterMaterialize";
@@ -11,6 +11,78 @@ function formatOcpVersionLabel(version?: string): string | null {
   const trimmed = version?.trim();
   if (!trimmed) return null;
   return trimmed.startsWith("v") ? trimmed : `v${trimmed}`;
+}
+
+/** True when this cluster will (or is) re-cert rather than fresh-install — mirrors backend. */
+export function clusterIsRecertPath(
+  clusterId: string,
+  nodes: Node[],
+  edges: Edge[],
+): boolean {
+  const members = nodes.filter(
+    (n) =>
+      n.type === "vmNode" &&
+      String((n.data as Record<string, unknown>)?.clusterId || "") === clusterId,
+  );
+  for (const m of members) {
+    if ((m.data as Record<string, unknown>)?.ocpKubeconfig) return true;
+  }
+  const memberIds = new Set(members.map((m) => m.id));
+  for (const e of edges) {
+    const other =
+      memberIds.has(e.source) ? e.target : memberIds.has(e.target) ? e.source : null;
+    if (!other) continue;
+    const sn = nodes.find((n) => n.id === other);
+    if (sn?.type !== "storageNode") continue;
+    const d = sn.data as Record<string, unknown>;
+    if (d?.source === "pattern" && d?.patternId) return true;
+  }
+  return false;
+}
+
+/** Canvas status-button label — text, not just border color. */
+export function formatClusterOcpStatusLabel(
+  installStatus: "ready" | "error" | "monitoring" | null,
+  opts: { recert?: boolean } = {},
+): string {
+  const recert = !!opts.recert;
+  if (installStatus === "ready") return "Ready";
+  if (installStatus === "error") return "Error";
+  if (installStatus === "monitoring") return recert ? "Re-Cert" : "Deploying";
+  // Unknown — don't assume in-progress (pattern clusters keep kubeconfig forever).
+  return "Status";
+}
+
+function statusButtonColors(
+  installStatus: "ready" | "error" | "monitoring" | null,
+  recert: boolean,
+): { bg: string; border: string; fg: string } {
+  if (installStatus === "ready") {
+    return {
+      bg: "rgba(34,197,94,0.18)",
+      border: "rgba(34,197,94,0.55)",
+      fg: "rgb(134,239,172)",
+    };
+  }
+  if (installStatus === "error") {
+    return {
+      bg: "rgba(239,68,68,0.18)",
+      border: "rgba(239,68,68,0.55)",
+      fg: "rgb(252,165,165)",
+    };
+  }
+  if (recert) {
+    return {
+      bg: "rgba(192,132,252,0.18)",
+      border: "rgba(192,132,252,0.5)",
+      fg: "rgb(216,180,254)",
+    };
+  }
+  return {
+    bg: "rgba(34,211,238,0.18)",
+    border: "rgba(34,211,238,0.4)",
+    fg: "rgb(165,243,252)",
+  };
 }
 
 function ClusterNodeComponent({ id, data, selected }: NodeProps) {
@@ -40,14 +112,11 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
   // built. clusterKey mirrors the backend _cluster_key (id, falling back to name).
   const clusterKey = clusterId || d.name;
   const showInstallLog = projectState === "active" || projectState === "stopped";
-  // Status button color reflects this cluster's outcome only — siblings don't bleed.
+  // Status button label + color reflect this cluster only — siblings don't bleed.
   const installStatus = resolveClusterOcpInstallStatus(cluster, clusterKey, clusterOcpPhases);
-  const statusColor =
-    installStatus === "ready"
-      ? { bg: "rgba(34,197,94,0.18)", border: "rgba(34,197,94,0.55)" }
-      : installStatus === "error"
-        ? { bg: "rgba(239,68,68,0.18)", border: "rgba(239,68,68,0.55)" }
-        : { bg: "rgba(34,211,238,0.18)", border: "rgba(34,211,238,0.4)" };
+  const isRecert = clusterIsRecertPath(clusterId, nodes, edges);
+  const statusLabel = formatClusterOcpStatusLabel(installStatus, { recert: isRecert });
+  const statusColor = statusButtonColors(installStatus, isRecert);
   const clusterForPrereq = cluster
     ? backfillClusterNetworkIds([cluster], nodes, edges)[0]
     : undefined;
@@ -187,25 +256,26 @@ function ClusterNodeComponent({ id, data, selected }: NodeProps) {
           {showInstallLog && (
             <button
               type="button"
-              title="View this cluster's install status & log"
+              title={`View install log (${statusLabel})`}
               className="nodrag"
+              aria-label={`OpenShift status: ${statusLabel}`}
               onClick={(e) => {
                 e.stopPropagation();
                 openClusterLog(clusterKey, d.name);
               }}
               style={{
                 fontSize: 10,
-                fontWeight: 500,
+                fontWeight: 600,
                 padding: "2px 8px",
                 borderRadius: 6,
                 cursor: "pointer",
                 background: statusColor.bg,
                 border: `1px solid ${statusColor.border}`,
-                color: "var(--troshka-text, #e5e7eb)",
+                color: statusColor.fg,
                 whiteSpace: "nowrap",
               }}
             >
-              📋 Status
+              📋 {statusLabel}
             </button>
           )}
         </div>
