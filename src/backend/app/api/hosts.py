@@ -790,6 +790,12 @@ def _do_ssh_wait_and_install(
     h.agent_status = "installing"
     s.commit()
 
+    # Console FQDN must exist before deploy_agent — vncd/LE setup is skipped when
+    # console_domain is empty. Previously DNS was assigned after install, so the
+    # API returned ws_url while troshka-vncd never started.
+    _setup_console_dns(h, s, provider_console_domain)
+    s.commit()
+
     _sm, _ca_cert, _host_cert, _host_key = _build_storage_mode_kwargs(h, s, nfs_kwargs)
     from app.services.agent_ca_service import get_agent_ca_cert as _get_aca
 
@@ -821,8 +827,6 @@ def _do_ssh_wait_and_install(
     if result["success"] and provider_type == "ocpvirt" and h.instance_id:
         _detach_install_iso(h, s)
 
-    # Create console DNS/Route record
-    _setup_console_dns(h, s, provider_console_domain)
     s.commit()
 
 
